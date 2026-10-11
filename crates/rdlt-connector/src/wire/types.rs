@@ -7,8 +7,9 @@ use super::{Invalid, narrow, required, v1};
 use crate::cursor::Cursor;
 use crate::id::{StreamName, TablePath};
 use crate::schema::{ColumnPath, TableSchema};
-use crate::types::{DecimalType, Field, Fields, LogicalType, TimeUnit, TypeKind};
-use rdlt_wire::limits::{NESTING_DEPTH, count};
+use crate::types::preorder::{self, Shape, Unread};
+use crate::types::{DecimalType, Field, LogicalType, TimeUnit, TypeKind};
+use rdlt_wire::limits::count;
 
 impl From<TimeUnit> for v1::TimeUnit {
     fn from(unit: TimeUnit) -> Self {
@@ -34,18 +35,24 @@ pub(super) fn time_unit(value: i32) -> Result<TimeUnit, Invalid> {
 
 impl From<&LogicalType> for v1::LogicalType {
     fn from(logical: &LogicalType) -> Self {
-        let mut nodes = Vec::new();
-        push(logical, "", false, &mut nodes);
+        let nodes = preorder::nodes(None, logical)
+            .map(|(named, logical)| v1::TypeNode {
+                name: named
+                    .map(|(name, _)| String::from(&**name))
+                    .unwrap_or_default(),
+                nullable: named.is_some_and(|(_, nullable)| nullable),
+                kind: Some(kind(logical)),
+            })
+            .collect();
         Self { nodes }
     }
 }
 
-/// Pushes the nodes of `logical`, the type of a field `name` that may hold nulls if `nullable`,
-/// in pre-order.
-fn push(logical: &LogicalType, name: &str, nullable: bool, nodes: &mut Vec<v1::TypeNode>) {
+/// The wire's kind of `logical`'s own node, without the types nested in it.
+fn kind(logical: &LogicalType) -> v1::type_node::Kind {
     use v1::type_node::Kind;
     let unit = |unit: &TimeUnit| v1::TimeUnit::from(*unit) as i32;
-    let kind = match logical {
+    match logical {
         LogicalType::Null => Kind::Null(v1::Unit {}),
         LogicalType::Bool => Kind::Bool(v1::Unit {}),
         LogicalType::Int8 => Kind::Int8(v1::Unit {}),
@@ -70,30 +77,9 @@ fn push(logical: &LogicalType, name: &str, nullable: bool, nodes: &mut Vec<v1::T
         LogicalType::Uuid => Kind::Uuid(v1::Unit {}),
         LogicalType::Json => Kind::Json(v1::Unit {}),
         LogicalType::Struct(fields) => {
-            Kind::Struct(u32::try_from(fields.iter().count()).unwrap_or(u32::MAX))
+            Kind::Struct(u32::try_from(fields.len()).unwrap_or(u32::MAX))
         }
         LogicalType::List(_) => Kind::List(v1::Unit {}),
-    };
-    nodes.push(v1::TypeNode {
-        name: name.to_owned(),
-        nullable,
-        kind: Some(kind),
-    });
-    match logical {
-        LogicalType::Struct(fields) => {
-            for field in fields.iter() {
-                push(
-                    field.logical_type(),
-                    field.name(),
-                    field.is_nullable(),
-                    nodes,
-                );
-            }
-        }
-        LogicalType::List(item) => {
-            push(item.logical_type(), item.name(), item.is_nullable(), nodes);
-        }
-        _ => {}
     }
 }
 
@@ -101,31 +87,24 @@ impl TryFrom<v1::LogicalType> for LogicalType {
     type Error = Invalid;
 
     fn try_from(logical: v1::LogicalType) -> Result<Self, Invalid> {
-        let mut nodes = logical.nodes.into_iter();
-        let (_, _, decoded) = node(&mut nodes, 1)?;
-        if nodes.next().is_some() {
-            return Err(Invalid::OutOfRange("type nodes"));
-        }
+        let (_, decoded) =
+            preorder::whole(logical.nodes, shape).map_err(|unread| match unread {
+                Unread::Deep => Invalid::OutOfRange("nesting depth"),
+                Unread::Ended => Invalid::Missing("type node"),
+                Unread::Beyond => Invalid::OutOfRange("type nodes"),
+                // Every node on the wire names a field; a root's name is not read.
+                Unread::Unnamed => Invalid::Missing("field name"),
+                Unread::Fields(error) => Invalid::rejected("struct fields", error),
+                Unread::Node(invalid) => invalid,
+            })?;
         Ok(decoded)
     }
 }
 
-/// The next node's field name, nullability and type, its subtree read from `nodes`; it sits
-/// `depth` levels deep, and no node may sit deeper than the nesting limit.
-fn node(
-    nodes: &mut impl Iterator<Item = v1::TypeNode>,
-    depth: u64,
-) -> Result<(String, bool, LogicalType), Invalid> {
+/// The naming and shape of `node`, a field's node on the wire.
+fn shape(node: v1::TypeNode) -> Result<preorder::Node, Invalid> {
     use v1::type_node::Kind;
-    if depth > NESTING_DEPTH {
-        return Err(Invalid::OutOfRange("nesting depth"));
-    }
-    let next = required("type node", nodes.next())?;
-    let child = |nodes: &mut _| {
-        let (name, nullable, logical) = node(nodes, depth + 1)?;
-        Ok::<_, Invalid>(Field::new(name, logical, nullable))
-    };
-    let logical = match required("logical type", next.kind)? {
+    let leaf = match required("logical type", node.kind)? {
         Kind::Null(_) => LogicalType::Null,
         Kind::Bool(_) => LogicalType::Bool,
         Kind::Int8(_) => LogicalType::Int8,
@@ -152,16 +131,18 @@ fn node(
         Kind::Uuid(_) => LogicalType::Uuid,
         Kind::Json(_) => LogicalType::Json,
         Kind::Struct(count) => {
-            let fields = (0..count)
-                .map(|_| child(nodes))
-                .collect::<Result<Vec<_>, _>>()?;
-            let fields =
-                Fields::new(fields).map_err(|error| Invalid::rejected("struct fields", error))?;
-            LogicalType::Struct(fields)
+            let count = usize::try_from(count).unwrap_or(usize::MAX);
+            return Ok((
+                Some((Arc::from(node.name), node.nullable)),
+                Shape::Struct(count),
+            ));
         }
-        Kind::List(_) => LogicalType::List(Box::new(child(nodes)?)),
+        Kind::List(_) => {
+            return Ok((Some((Arc::from(node.name), node.nullable)), Shape::List));
+        }
     };
-    Ok((next.name, next.nullable, logical))
+    let shape = Shape::Leaf(leaf);
+    Ok((Some((Arc::from(node.name), node.nullable)), shape))
 }
 
 impl From<&Field> for v1::Field {
