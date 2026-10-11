@@ -47,7 +47,7 @@ The owner chose to keep all of this in one milestone.
   and infers one shape for them. The model knows the span of pushes the engine may gather with
   each one: the batches between two checkpoints, or the whole read where the stream checkpoints on
   demand.
-  - Where every push in a span arrives alike, the model is exact, as before.
+  - Where every push in a span arrives alike, the model is exact.
   - Where they differ, a value its own push rules out is surely discarded or surely lands in a
     variant column. A value only the span's join rules out is *perhaps* discarded: its cell is
     optional, a row perhaps dropped is held at most once, and discard counts are ranges.

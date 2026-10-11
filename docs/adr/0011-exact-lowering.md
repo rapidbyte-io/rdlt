@@ -41,20 +41,13 @@ and M3d deferred.
     `discard_row` dropped, rows that held nothing, and a null merge key went unseen: every null
     check on incoming arrays uses logical nulls.
   - Arrow multiplies dates into timestamps unchecked, wrapping silently in release builds: dates
-    and wall-clock times are placed in their columns' units and zones with checked arithmetic.
+    and wall-clock times are placed in their columns' units with checked arithmetic.
   - Arrow refuses a wall-clock timestamp that its column's named zone skips or repeats, failing
-    the batch: such times take the offset before the shift, or the earlier instant, as dates do.
-  - The first fix read a skipped time as UTC to find its offset, which moved it backward in zones
-    east of UTC (a date in Tehran landed on the day before): the offset is the one in force a day
-    earlier, and the reference finds the shift by bisection instead.
-  - A `Date64` beyond a `Date32`'s days became null in a timestamp column and was refused on its
-    way to JSON or text: dates go to timestamps from their own days, and to JSON, and within
-    structs and lists, as `Date64`s. A `Date` column still refuses them.
-  - Arrow renders a `Date64` as a date and a time: it is rendered as a date.
-  - Amended 2026-10-03 (ADR 0046): a `Date64` is the day it is within wherever it goes, a
-    struct's and a list's included, and one a `Date32` cannot hold is refused; a decimal beyond
-    its declared precision is refused; Arrow renders a zoned instant only where chrono holds it
-    and its local time at an offset of whole minutes, and never a time of day.
+    the batch: a widening never consults a zone (below), so no such time is refused.
+  - A `Date64` is the day it is within wherever it goes, a struct's and a list's included, and one
+    a `Date32` cannot hold is refused; a decimal beyond its declared precision is refused; Arrow
+    renders a zoned instant only where chrono holds it and its local time at an offset of whole
+    minutes, and never a time of day.
   - Arrow widens times of day outside a day unchecked (`Time64` microseconds to nanoseconds
     overflowed, panicking in debug builds): times are rescaled here and refused where the finer
     type cannot hold them.
@@ -65,16 +58,10 @@ and M3d deferred.
   finer one, which holds every value only within the `i64` of that unit; a value beyond it is
   refused with `value_unrepresentable` rather than wrapped or rounded. The differential predicts
   each refusal independently.
-- **Dates and wall-clock times in zoned columns.** A date in a zoned timestamp column is its
-  midnight there, as Arrow converts it, and a wall-clock time is that time there. Where a named
-  zone's clocks show the time twice, the earlier instant; where they skip it, the offset in force
-  before they did, so the time moves forward by the gap, as PostgreSQL and `java.time` move it.
-  Beyond the years a named zone's offsets are known for, the value is refused; fixed offsets hold
-  everywhere.
-  - Amended 2026-10-04 (ADR 0046): superseded. A date in a timestamp column of any zone is its
-    midnight in UTC, and a wall-clock time widened into a zoned column keeps its count from the
-    epoch: a zone shows an instant and never moves it, so a widening changes no value, row id or
-    history hash.
+- **Dates and wall-clock times in zoned columns.** A date in a timestamp column of any zone is its
+  midnight in UTC, and a wall-clock time widened into a zoned column keeps its count from the
+  epoch: a zone shows an instant and never moves it, so a widening changes no value, row id or
+  history hash.
 - **Normalizing does not depend on encodings.** A property test normalizes every drawn batch as
   drawn and with every encoding plain, and requires the same parts, ids, lineage and values; its
   dates stay within a `Date32`'s days, as a far `Date64` has no other encoding. It
