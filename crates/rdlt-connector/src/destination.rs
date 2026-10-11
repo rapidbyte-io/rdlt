@@ -98,7 +98,7 @@ pub struct MergeKey {
 
 /// How a history table keeps every version of each key (SCD2).
 ///
-/// Written rows carry, besides their data, `valid_from` (when the version begins), `row_hash` (16
+/// Written rows carry, besides their data, `valid_from` (when the version begins), `row_hash` (32
 /// bytes of `Binary`, equal for rows whose data columns are equal, null on a delete), a null
 /// `valid_to` and a true `is_current`. The key's rows apply in `seq` order, each past the key's
 /// newest version's `seq`, its tombstone and the table's bound where the table is a change
