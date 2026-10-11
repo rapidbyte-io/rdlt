@@ -67,36 +67,31 @@ hold the whole of M4's code and review it only at the end. M4a is the protocol a
     needs that differ from those sent, then the batch. A new schema epoch sends every dictionary
     again.
   - The `Decoder` validates a schema once and caches it with its dictionaries (§12.4). A frame's
-    body length and every buffer's offset and length are checked against the body before Arrow
-    reads it, and compressed bodies are refused.
-    (ADR 0038 replaces the check of each buffer with one of the frame's whole shape.)
+    shape is walked against its schema before Arrow reads it: its buffers ordered, disjoint,
+    padded and within the body, each long enough for its node, and its values and the bytes its
+    views name within their limits; compressed bodies are refused (ADR 0038).
   - Delta dictionaries are refused: no end negotiates them, and a peer sending one delta after
-    another would grow a dictionary without bound, copying it whole each time.
-    (ADR 0039 bounds the dictionaries a decoder holds together.)
-  - No node may declare more values than the larger of the row limit and eight per byte of body.
-    Every value but a null or a run needs at least a bit, so a tiny frame cannot declare a child
-    of 2^40 values for whatever reads the batch next to iterate.
-    (Superseded by ADR 0038: a frame's values have one limit.)
+    another would grow a dictionary without bound, copying it whole each time. The
+    dictionaries a decoder holds are bounded together, by what a read keeps (ADR 0039).
+  - A frame's values have one limit, `batch_values` (ADR 0038).
   - The flatbuffer verifier's depth follows the nesting limit, so a schema nested to the limit
     passes it and one nested deeper is refused by the nesting limit, by name.
-  - Arrow's decode runs inside `catch_unwind`. On corrupt node lengths Arrow's readers panic; the
-    decoder turns such a panic into a typed error (§12.8).
-    (ADR 0038 has the build require unwinding.)
+  - Arrow's decode runs inside `catch_unwind`, and `rdlt-wire` does not compile with
+    `panic = "abort"`. On corrupt node lengths Arrow's readers panic; the decoder turns such a
+    panic into a typed error (§12.8; ADR 0038).
 - **Limits** (§12.8) are `rdlt_wire::Limits`, with the spec's defaults, enforced on receive with a
   typed `Refusal { code, field, limit, actual }`.
-  - The decoder enforces frame size, rows per batch, columns per schema and nesting depth.
-    (ADR 0038 adds the values of a frame, the bytes its views name and the bytes of a schema
-    message, each with a limit or a refusal field of its own, and has a sender cut a batch to
-    its receiver's limits.)
+  - The decoder enforces frame size, rows per batch, columns per schema, nesting depth, the values
+    of a frame, the bytes its views name and the bytes of a schema message, each with a limit or a
+    refusal field of its own, and a sender cuts a batch to its receiver's limits (ADR 0038).
   - JSON pushes, cursors, configuration documents and control strings have `admit_*` functions,
     which M4b's receive paths call.
 - **Fuzzing** (§20.7) gains two targets:
   - `wire_messages` decodes every message from arbitrary bytes, and converts those that decode.
   - `ipc_frame` corrupts real encodings of a few batches, so the corruption reaches the framing
     checks and Arrow's readers.
-  - libfuzzer aborts on any panic, even a contained one, so `ipc_frame` quiets the panic hook, and
-    only a panic that escapes the decoder fails it.
-    (Superseded by ADR 0038: a contained panic skips the hook.)
+  - `ipc_frame` fails only on a panic that escapes the decoder: a contained panic skips the hook
+    (ADR 0038).
   - The nightly fuzz job runs one target per matrix leg, twenty minutes each.
 - **The gates now cover `rdlt-wire`.** Coverage and mutation testing include it, as §20.14 lists.
 
@@ -105,6 +100,4 @@ hold the whole of M4's code and review it only at the end. M4a is the protocol a
 - A connector author never sees the protocol: M4b's `serve` and the host speak it.
 - The `.proto` files are the contract with connectors in other languages. From 1.0, `buf breaking`
   guards them (§12.7).
-- Arrow panics that the decoder contains are still printed by the default panic hook, as the
-  engine's contained panics are.
-  (Superseded by ADR 0038: the decoder's contained panics are not printed.)
+- The decoder's contained panics are not printed (ADR 0038).

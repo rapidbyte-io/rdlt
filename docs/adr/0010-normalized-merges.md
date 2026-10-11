@@ -53,13 +53,10 @@ minors.
   `schema_change_unsupported`. That is the price of letting the cut into chunks and pieces
   decide no column's existence or type. A table's column order, and which of two colliding names
   takes a hashed suffix, follow the order in which its columns are first valued: a column first
-  valued in a later piece follows every column the table was created with, metadata included. An
-  array the stream's declared schema holds, at any depth, is never new: the declared schema
-  creates only the stream's own table, and each array's table is created by its first rows.
-  - Amended 2026-10-05 (ADR 0046): a declared array is taken as given only while the stream's
-    table is created, which creates its table too, or where state records its table; after that
-    a new one is a change its column's policy decides. An array deeper than the stream
-    normalizes is stored whole and has no table.
+  valued in a later piece follows every column the table was created with, metadata included. A
+  declared array is taken as given only while the stream's table is created, which creates its
+  table too, or where state records its table; after that a new one is a change its column's
+  policy decides. An array deeper than the stream normalizes is stored whole and has no table.
 - **Simulation.** Simulated streams normalize under every write mode and policy. The simulated
   destination merges child tables by their root, and the oracle checks each child table against
   the rows the model keeps: each key's last kept row for merges.
