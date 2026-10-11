@@ -155,7 +155,7 @@ impl ConnectorError {
         );
         Self {
             limit: Some(limit),
-            ..Self::data(message).with_code("limit_exceeded")
+            ..Self::data(message).with_code(rdlt_wire::limits::LIMIT_EXCEEDED)
         }
     }
 

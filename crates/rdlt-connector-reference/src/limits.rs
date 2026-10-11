@@ -105,7 +105,7 @@ pub(crate) fn within(
         return Ok(());
     }
     let message = format!("stream {stream}: {name} is {actual}, over the limit of {limit}");
-    Err(ConnectorError::config(message).with_code("limit_exceeded"))
+    Err(ConnectorError::config(message).with_code(rdlt_wire::limits::LIMIT_EXCEEDED))
 }
 
 /// Batches: how many of a merge's batches, each of the columns its rows hold, a destination

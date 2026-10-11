@@ -18,7 +18,7 @@ use crate::cost::tests::{batch, every_type, item, nested};
 fn refused(batch: &RecordBatch) -> (&'static str, u64) {
     let refusal = admit(batch, true, &Limits::default()).unwrap_err();
     assert!(refusal.actual > refusal.limit);
-    (refusal.name, refusal.limit)
+    (refusal.field.name(), refusal.limit)
 }
 
 #[test]
@@ -97,7 +97,7 @@ fn a_batch_of_more_rows_or_columns_than_the_limit_is_refused() {
         .map(|_| Arc::new(NullArray::new(1)) as ArrayRef)
         .collect();
     let wide: ArrayRef = Arc::new(StructArray::new(fields, columns, None));
-    assert_eq!(refused(&batch(wide)), ("batch columns", 10_000));
+    assert_eq!(refused(&batch(wide)), ("schema columns", 10_000));
 }
 
 #[test]
@@ -127,7 +127,7 @@ fn an_encoded_column_counts_as_the_columns_its_layout_has() {
         Arc::new(RunArray::<Int16Type>::try_new(&ends, &words).unwrap()) as ArrayRef
     };
     admit(&wide(3_333, &runs), true, &Limits::default()).unwrap();
-    assert_eq!(refused(&wide(3_334, &runs)), ("batch columns", 10_000));
+    assert_eq!(refused(&wide(3_334, &runs)), ("schema columns", 10_000));
     // Its values count toward the batch's, beside its rows and its runs.
     let long = RunArray::<Int32Type>::try_new(&Int32Array::from(vec![1 << 20]), &NullArray::new(1))
         .unwrap();
@@ -199,9 +199,12 @@ fn a_batch_that_is_cut_as_it_is_sent_is_held_to_its_rows_and_schema_alone() {
     admit(&batch(Arc::new(nulls)), false, &Limits::default()).unwrap();
     let rows: ArrayRef = Arc::new(NullArray::new((1 << 20) + 1));
     let refusal = admit(&batch(rows), false, &Limits::default()).unwrap_err();
-    assert_eq!((refusal.name, refusal.limit), ("batch rows", 1 << 20));
+    assert_eq!(
+        (refusal.field.name(), refusal.limit),
+        ("batch rows", 1 << 20)
+    );
     let refusal = admit(&nested(65), false, &Limits::default()).unwrap_err();
-    assert_eq!((refusal.name, refusal.limit), ("nesting depth", 64));
+    assert_eq!((refusal.field.name(), refusal.limit), ("nesting depth", 64));
 }
 
 /// A list of each kind holding `item`, by name: a map's entries hold a key beside it.
@@ -235,7 +238,7 @@ fn refused_by(kind: DataType, columns: u64, depth: u64) -> Option<&'static str> 
     let schema = arrow_schema::Schema::new(vec![Field::new("c", kind, true)]);
     super::columns(&schema, &limits)
         .err()
-        .map(|refused| refused.name)
+        .map(|refused| refused.field.name())
 }
 
 #[test]
@@ -258,7 +261,7 @@ fn every_kind_of_list_counts_its_columns_and_levels() {
         );
         assert_eq!(
             refused_by(kind, columns - 1, depth),
-            Some("batch columns"),
+            Some("schema columns"),
             "{name}"
         );
     }
@@ -276,7 +279,7 @@ fn a_union_s_members_count_below_it_and_a_dictionary_counts_as_its_values() {
     .unwrap();
     let union = DataType::Union(fields, arrow_schema::UnionMode::Dense);
     assert_eq!(refused_by(union.clone(), 3, 2), None);
-    assert_eq!(refused_by(union.clone(), 2, 2), Some("batch columns"));
+    assert_eq!(refused_by(union.clone(), 2, 2), Some("schema columns"));
     assert_eq!(refused_by(union, 3, 1), Some("nesting depth"));
     let dictionary =
         |kind: DataType| DataType::Dictionary(Box::new(DataType::Int8), Box::new(kind));

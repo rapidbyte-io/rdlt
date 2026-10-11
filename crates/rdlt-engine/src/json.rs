@@ -11,7 +11,7 @@ mod tests;
 
 use std::borrow::Cow;
 
-use rdlt_wire::limits::{NESTING_DEPTH, count};
+use rdlt_wire::limits::{LIMIT_EXCEEDED, NESTING_DEPTH, count};
 
 pub(crate) use check::{NotJson, check_batch, held as held_by_check, schema_holds_json};
 #[cfg(test)]
@@ -41,7 +41,7 @@ impl JsonError {
     pub(crate) fn code(&self) -> &'static str {
         match self {
             Self::Invalid(_) => "json_invalid",
-            Self::TooDeep | Self::Exponent => "limit_exceeded",
+            Self::TooDeep | Self::Exponent => LIMIT_EXCEEDED,
         }
     }
 }

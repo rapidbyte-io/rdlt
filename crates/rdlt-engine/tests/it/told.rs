@@ -321,7 +321,7 @@ async fn a_table_as_wide_as_a_schema_may_be_commits_through_a_log_and_a_wider_is
         (ErrorKind::Source, Some("limit_exceeded"))
     );
     let said = format!("{:?}", error.report());
-    assert!(said.contains("batch columns"), "{said}");
+    assert!(said.contains("schema columns"), "{said}");
     assert_eq!(beyond.report.commits, 0);
 }
 

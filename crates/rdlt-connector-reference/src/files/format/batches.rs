@@ -10,7 +10,7 @@ use arrow_ipc::writer::{
 };
 use arrow_schema::DataType;
 use rdlt_connector::{ConnectorError, LimitExceeded, Result};
-use rdlt_wire::Limits;
+use rdlt_wire::{Limit, Limits};
 
 use crate::limits::CHUNK_BYTES;
 
@@ -58,7 +58,7 @@ fn node(array: &dyn Array, limits: &Limits) -> Result<()> {
         let values = u64::try_from(child.len()).unwrap_or(u64::MAX);
         // A reader takes a dictionary as a batch of its own, of at most a batch's rows.
         if dictionary && values > limits.batch_rows {
-            return Err(exceeds("batch rows", limits.batch_rows, values));
+            return Err(exceeds(Limit::BatchRows.name(), limits.batch_rows, values));
         }
         node(child.as_ref(), limits)?;
     }
@@ -149,7 +149,11 @@ const FRAMING: u64 = 128;
 fn unfit(batch: &RecordBatch, limits: &Limits) -> Result<Option<ConnectorError>> {
     let rows = u64::try_from(batch.num_rows()).unwrap_or(u64::MAX);
     if rows > limits.batch_rows {
-        return Ok(Some(exceeds("batch rows", limits.batch_rows, rows)));
+        return Ok(Some(exceeds(
+            Limit::BatchRows.name(),
+            limits.batch_rows,
+            rows,
+        )));
     }
     if let Err(refused) = admitted(batch, limits) {
         let nested = refused.limit().is_some_and(|limit| limit.name == VALUES);
@@ -192,10 +196,11 @@ fn unfit(batch: &RecordBatch, limits: &Limits) -> Result<Option<ConnectorError>>
         .map(&frame)
         .find(|bytes| *bytes > limits.frame_bytes)
     {
-        return Err(exceeds("frame bytes", limits.frame_bytes, bytes));
+        return Err(exceeds(Limit::FrameBytes.name(), limits.frame_bytes, bytes));
     }
     let bytes = frame(&encoded);
-    Ok((bytes > limits.frame_bytes).then(|| exceeds("frame bytes", limits.frame_bytes, bytes)))
+    Ok((bytes > limits.frame_bytes)
+        .then(|| exceeds(Limit::FrameBytes.name(), limits.frame_bytes, bytes)))
 }
 
 /// The name of the limit on the values a column nests.

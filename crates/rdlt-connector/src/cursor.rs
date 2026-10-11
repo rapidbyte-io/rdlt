@@ -9,7 +9,7 @@ use bytes::Bytes;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::error::{ConnectorError, LimitExceeded, Result, ResultExt};
+use crate::error::{ConnectorError, Result, ResultExt};
 use rdlt_wire::limits::{CURSOR_BYTES, count};
 
 /// A partition's resume position: versioned bytes only the connector interprets.
@@ -26,14 +26,11 @@ impl Cursor {
     /// The bytes are copied into an allocation of their own: a cursor waits for its commit, and
     /// must not keep the message or buffer it was cut from alive meanwhile.
     pub fn new(version: u16, bytes: &[u8]) -> Result<Self> {
-        let actual = count(bytes.len());
-        if actual > CURSOR_BYTES {
-            return Err(ConnectorError::exceeds(LimitExceeded {
-                name: "cursor bytes",
-                limit: CURSOR_BYTES,
-                actual,
-            }));
-        }
+        rdlt_wire::Limits::admit(
+            rdlt_wire::Limit::CursorBytes,
+            CURSOR_BYTES,
+            count(bytes.len()),
+        )?;
         Ok(Self {
             version,
             bytes: Bytes::copy_from_slice(bytes),

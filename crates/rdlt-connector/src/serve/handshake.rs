@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use super::probes::Probes;
 use super::service::{Connected, Service};
-use crate::error::{ConnectorError, ConnectorErrorKind, LimitExceeded};
+use crate::error::{ConnectorError, ConnectorErrorKind};
 use crate::spec::ConnectContext;
 use crate::wire::v1;
 
@@ -98,13 +98,7 @@ impl Service {
         if self.connected.initialized() {
             return Err(configured());
         }
-        if let Err(refusal) = self.limits.admit_config(request.config_json.len()) {
-            return Err(ConnectorError::exceeds(LimitExceeded {
-                name: "config bytes",
-                limit: refusal.limit,
-                actual: refusal.actual,
-            }));
-        }
+        self.limits.admit_config(request.config_json.len())?;
         let config: serde_json::Value =
             serde_json::from_str(&request.config_json).map_err(|error| {
                 ConnectorError::config(format!("the configuration is not JSON: {error}"))
