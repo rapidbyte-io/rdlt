@@ -1,11 +1,16 @@
-//! Temporal values, numbers and booleans as text: as Arrow renders them wherever it can, and
-//! exactly, in UTC, where it cannot.
+//! Temporal values, numbers and booleans as text: every date, time, duration and timestamp
+//! rendered here, exactly; numbers and booleans as Arrow renders them.
 //!
-//! Arrow is asked to render only what it holds: a zoned instant whose time in its zone `chrono`
-//! holds, at an offset of whole minutes. Beyond that its formatter panics or writes a time of
-//! another day, so times of day and durations, which it truncates past 2^32 seconds, are always
-//! rendered here.
+//! Temporal text is Arrow's wherever Arrow renders the value, but for a `Date64`, its date where
+//! Arrow adds a time, a zero duration, `PT0S` where Arrow writes `P0D`, and a zoned instant whose
+//! offset has seconds, in UTC where Arrow rounds the offset to the minute and names another
+//! instant.
+//!
+//! A zoned instant is rendered at its zone's offset where `chrono` holds the instant and its
+//! time in the zone, and the offset then is whole minutes, which is all the text of an offset
+//! holds; any other is rendered in UTC. A year beyond `0000`-`9999` takes its sign.
 
+use std::cmp::Ordering;
 use std::fmt::Write as _;
 use std::sync::Arc;
 
@@ -14,12 +19,11 @@ use arrow_array::timezone::Tz;
 use arrow_array::{Array, ArrayRef};
 use arrow_cast::display::{ArrayFormatter, FormatOptions};
 use arrow_schema::{ArrowError, DataType, TimeUnit};
-use chrono::NaiveDateTime;
 use chrono::{Offset as _, TimeDelta, TimeZone as _};
 
 use rdlt_connector::instants::{self, DAY};
 
-use super::{NANOS_PER_SECOND, fixed_offset, naive};
+use super::{NANOS_PER_SECOND, naive};
 
 /// Each value of `array`, a boolean, number or temporal array, as text; nulls stay null.
 pub(crate) fn text(array: &ArrayRef) -> Result<ArrayRef, ArrowError> {
@@ -40,128 +44,128 @@ pub(crate) fn text(array: &ArrayRef) -> Result<ArrayRef, ArrowError> {
     Ok(Arc::new(builder.finish()))
 }
 
-/// Renders the values of one temporal array.
+/// Renders the values of one array of booleans, numbers or temporal values.
 pub(crate) struct Renderer<'a> {
     array: &'a dyn Array,
-    formatter: ArrayFormatter<'a>,
-    /// For a zoned timestamp, whether Arrow renders an instant in the zone.
-    ///
-    /// It does where `chrono` holds the instant and its time there, and the zone's offset then is
-    /// whole minutes, which is all the text of an offset holds; other instants are rendered in
-    /// UTC.
-    zoned: Option<Box<dyn Fn(i64) -> bool + 'a>>,
+    kind: Kind<'a>,
+}
+
+/// How a renderer renders its array's values.
+enum Kind<'a> {
+    /// Durations, in ISO 8601 seconds.
+    Duration,
+    /// Times of day, as clocks.
+    Clock,
+    /// Dates, as the days they are within.
+    Date,
+    /// Timestamps without a zone, as their wall-clock time.
+    Naive,
+    /// Timestamps of a unit, in a zone.
+    Zoned(TimeUnit, Tz),
+    /// Booleans and numbers, as Arrow renders them.
+    Other(ArrayFormatter<'a>),
 }
 
 impl<'a> Renderer<'a> {
-    /// A renderer of `array`'s values.
+    /// A renderer of `array`'s values; a zone Arrow does not read is refused.
     pub(crate) fn new(array: &'a dyn Array) -> Result<Self, ArrowError> {
-        // Arrow renders a `Date64` as a date and time; it is a date, as a `Date32` is.
-        let options = FormatOptions::default().with_datetime_format(Some("%Y-%m-%d"));
-        let formatter = ArrayFormatter::try_new(array, &options)?;
-        let zoned = match array.data_type() {
-            DataType::Timestamp(unit, Some(zone)) => Some(rendered_in(*unit, zone)?),
-            _ => None,
+        let kind = match array.data_type() {
+            DataType::Duration(_) => Kind::Duration,
+            DataType::Time32(_) | DataType::Time64(_) => Kind::Clock,
+            DataType::Date32 | DataType::Date64 => Kind::Date,
+            DataType::Timestamp(_, None) => Kind::Naive,
+            DataType::Timestamp(unit, Some(zone)) => Kind::Zoned(*unit, zone.parse()?),
+            _ => Kind::Other(ArrayFormatter::try_new(array, &FormatOptions::default())?),
         };
-        Ok(Self {
-            array,
-            formatter,
-            zoned,
-        })
+        Ok(Self { array, kind })
     }
 
     /// Appends the text of the value at `row`, which is not null, to `out`.
     pub(crate) fn write(&self, row: usize, out: &mut String) {
-        let data_type = self.array.data_type();
         let stored = || instants::stored(self.array, row).unwrap_or_default();
-        let denoted = || instants::nanos(data_type, i128::from(stored())).unwrap_or_default();
-        match data_type {
-            DataType::Duration(_) => {
-                out.push_str(&duration(denoted()));
-                return;
+        let nanos = |count: i64| {
+            instants::nanos(self.array.data_type(), i128::from(count)).unwrap_or_default()
+        };
+        match &self.kind {
+            Kind::Duration => duration(nanos(stored()), out),
+            Kind::Clock => clock(nanos(stored()), out),
+            Kind::Date => date(nanos(stored()).div_euclid(DAY), out),
+            Kind::Naive => instant(nanos(stored()), out),
+            Kind::Zoned(unit, zone) => {
+                let value = stored();
+                if let Some(seconds) = offset(value, *unit, *zone) {
+                    instant(nanos(value) + i128::from(seconds) * NANOS_PER_SECOND, out);
+                    offset_text(seconds, out);
+                } else {
+                    instant(nanos(value), out);
+                    out.push('Z');
+                }
             }
-            DataType::Time32(_) | DataType::Time64(_) => {
-                out.push_str(&clock(denoted()));
-                return;
-            }
-            _ => {}
+            Kind::Other(formatter) => formatter
+                .value(row)
+                .write(out)
+                .expect("Arrow renders every boolean and number"),
         }
-        if self
-            .zoned
-            .as_ref()
-            .is_some_and(|renders| !renders(stored()))
-        {
-            out.push_str(&self.beyond(row));
+    }
+}
+
+/// The seconds `zone` is ahead of UTC at the instant `value` of `unit`, where its text there
+/// names the instant: `chrono` holds the instant and its time in the zone, and the offset is
+/// whole minutes.
+fn offset(value: i64, unit: TimeUnit, zone: Tz) -> Option<i64> {
+    let utc = naive(value, unit)?;
+    let seconds = i64::from(zone.offset_from_utc_datetime(&utc).fix().local_minus_utc());
+    let held = utc
+        .checked_add_signed(TimeDelta::seconds(seconds))
+        .is_some();
+    (seconds % 60 == 0 && held).then_some(seconds)
+}
+
+/// Appends an offset of `seconds`, whole minutes, as RFC 3339 writes it: `Z` for none, else
+/// `±HH:MM`.
+fn offset_text(seconds: i64, out: &mut String) {
+    let sign = match seconds.cmp(&0) {
+        Ordering::Equal => {
+            out.push('Z');
             return;
         }
-        let start = out.len();
-        if self.formatter.value(row).write(out).is_err() {
-            out.truncate(start);
-            out.push_str(&self.beyond(row));
-        }
-    }
-
-    /// The text of a value Arrow cannot render: exact, and for instants in UTC.
-    fn beyond(&self, row: usize) -> String {
-        let data_type = self.array.data_type();
-        let stored = instants::stored(self.array, row).unwrap_or_default();
-        let instant = instants::nanos(data_type, i128::from(stored)).unwrap_or_default();
-        let day = date(instant.div_euclid(DAY));
-        match data_type {
-            DataType::Date32 | DataType::Date64 => day,
-            DataType::Timestamp(_, zone) => {
-                let suffix = if zone.is_some() { "Z" } else { "" };
-                format!("{day}T{}{suffix}", clock(instant.rem_euclid(DAY)))
-            }
-            other => unreachable!("{other} is not temporal"),
-        }
-    }
+        Ordering::Less => '-',
+        Ordering::Greater => '+',
+    };
+    let minutes = seconds.unsigned_abs() / 60;
+    write!(out, "{sign}{:02}:{:02}", minutes / 60, minutes % 60)
+        .expect("writing to a string cannot fail");
 }
 
-/// Whether Arrow renders a timestamp of `unit` in `zone`: `chrono` holds the instant and its time
-/// in the zone, and the zone's offset then is whole minutes.
-fn rendered_in<'a>(
-    unit: TimeUnit,
-    zone: &str,
-) -> Result<Box<dyn Fn(i64) -> bool + 'a>, ArrowError> {
-    let offset = offset_in(zone)?;
-    Ok(Box::new(move |value: i64| {
-        naive(value, unit).is_some_and(|utc| {
-            let offset = offset(&utc);
-            offset % 60 == 0 && utc.checked_add_signed(TimeDelta::seconds(offset)).is_some()
-        })
-    }))
+/// Appends the date and time `nanos` after the epoch, `YYYY-MM-DDTHH:MM:SS` and a fraction where
+/// there is one.
+fn instant(nanos: i128, out: &mut String) {
+    date(nanos.div_euclid(DAY), out);
+    out.push('T');
+    clock(nanos.rem_euclid(DAY), out);
 }
 
-/// The seconds a zone is ahead of UTC at a UTC time.
-type Offset = Box<dyn Fn(&NaiveDateTime) -> i64>;
-
-/// The seconds `zone` is ahead of UTC at a UTC time.
-fn offset_in(zone: &str) -> Result<Offset, ArrowError> {
-    if let Some(seconds) = fixed_offset(zone) {
-        return Ok(Box::new(move |_| seconds));
-    }
-    let tz: Tz = zone.parse()?;
-    Ok(Box::new(move |utc| {
-        i64::from(tz.offset_from_utc_datetime(utc).fix().local_minus_utc())
-    }))
-}
-
-/// `nanos` as an ISO 8601 duration of seconds, as Arrow renders it: `PT1.5S`, `-PT0.5S`.
-pub(super) fn duration(nanos: i128) -> String {
+/// Appends `nanos` as an ISO 8601 duration of seconds, as Arrow renders it but for zero, which is
+/// `PT0S`: `PT1.5S`, `-PT0.5S`.
+pub(super) fn duration(nanos: i128, out: &mut String) {
     let sign = if nanos < 0 { "-" } else { "" };
     let nanos = nanos.unsigned_abs();
     let seconds = nanos / NANOS_PER_SECOND.unsigned_abs();
-    let fraction = nanos % NANOS_PER_SECOND.unsigned_abs();
+    let mut fraction = nanos % NANOS_PER_SECOND.unsigned_abs();
     if fraction == 0 {
-        format!("{sign}PT{seconds}S")
-    } else {
-        let digits = format!("{fraction:09}");
-        format!("{sign}PT{seconds}.{}S", digits.trim_end_matches('0'))
+        write!(out, "{sign}PT{seconds}S").expect("writing to a string cannot fail");
+        return;
     }
+    let mut digits: usize = 9;
+    while fraction.is_multiple_of(10) {
+        fraction /= 10;
+        digits -= 1;
+    }
+    write!(out, "{sign}PT{seconds}.{fraction:0digits$}S").expect("writing to a string cannot fail");
 }
 
-/// The date `days` since the epoch, `YYYY-MM-DD`, its year signed beyond `0000`–`9999`.
-pub(super) fn date(days: i128) -> String {
+/// Appends the date `days` since the epoch, `YYYY-MM-DD`, its year signed beyond `0000`-`9999`.
+pub(super) fn date(days: i128, out: &mut String) {
     // Howard Hinnant's civil_from_days.
     let shifted = days + 719_468;
     let era = shifted.div_euclid(146_097);
@@ -176,30 +180,30 @@ pub(super) fn date(days: i128) -> String {
         month_index - 9
     };
     let year = year_of_era + era * 400 + i128::from(month <= 2);
-    let mut text = String::new();
     match year {
-        0..=9_999 => write!(text, "{year:04}"),
-        10_000.. => write!(text, "+{year}"),
-        _ => write!(text, "-{:04}", year.unsigned_abs()),
+        0..=9_999 => write!(out, "{year:04}"),
+        10_000.. => write!(out, "+{year}"),
+        _ => write!(out, "-{:04}", year.unsigned_abs()),
     }
     .expect("writing to a string cannot fail");
-    write!(text, "-{month:02}-{day:02}").expect("writing to a string cannot fail");
-    text
+    write!(out, "-{month:02}-{day:02}").expect("writing to a string cannot fail");
 }
 
-/// A time of day `nanos` after midnight, `HH:MM:SS` and a fraction where there is one, as
-/// `chrono` renders one: three, six or nine digits.
-pub(super) fn clock(nanos: i128) -> String {
+/// Appends a time of day `nanos` after midnight, `HH:MM:SS` and a fraction where there is one,
+/// as `chrono` renders one: three, six or nine digits.
+pub(super) fn clock(nanos: i128, out: &mut String) {
     let sign = if nanos < 0 { "-" } else { "" };
     let nanos = nanos.unsigned_abs();
     let seconds = nanos / NANOS_PER_SECOND.unsigned_abs();
     let fraction = nanos % NANOS_PER_SECOND.unsigned_abs();
     let (hours, minutes, seconds) = (seconds / 3_600, seconds / 60 % 60, seconds % 60);
-    let fraction = match fraction {
-        0 => String::new(),
-        _ if fraction.is_multiple_of(1_000_000) => format!(".{:03}", fraction / 1_000_000),
-        _ if fraction.is_multiple_of(1_000) => format!(".{:06}", fraction / 1_000),
-        _ => format!(".{fraction:09}"),
-    };
-    format!("{sign}{hours:02}:{minutes:02}:{seconds:02}{fraction}")
+    write!(out, "{sign}{hours:02}:{minutes:02}:{seconds:02}")
+        .expect("writing to a string cannot fail");
+    match fraction {
+        0 => Ok(()),
+        _ if fraction.is_multiple_of(1_000_000) => write!(out, ".{:03}", fraction / 1_000_000),
+        _ if fraction.is_multiple_of(1_000) => write!(out, ".{:06}", fraction / 1_000),
+        _ => write!(out, ".{fraction:09}"),
+    }
+    .expect("writing to a string cannot fail");
 }

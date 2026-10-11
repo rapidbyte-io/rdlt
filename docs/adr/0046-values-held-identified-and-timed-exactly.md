@@ -62,9 +62,13 @@ trusted them in ways that broke data quietly or failed whole streams on one row:
   name map in state that names a source column as a metadata column is `state_invalid`, and a
   table view checks its columns are distinct when it is built. A table rdlt wrote is loaded as a
   source only once its `_rdlt_` columns are renamed or left out at the source.
-- **Temporal values are rendered and converted exactly over every type's whole range.** Arrow
-  renders a zoned instant only where chrono holds the instant and its time in the zone at an
-  offset of whole minutes, and times of day never: the engine renders the rest exactly, in UTC.
+- **Temporal values are rendered and converted exactly over every type's whole range.** The
+  engine renders every date, time of day, duration and timestamp, as Arrow renders those chrono
+  holds: a zoned instant at its zone's offset where chrono holds it and its time there at an
+  offset of whole minutes, and in UTC with `Z` otherwise. Only a `Date64`, a date where Arrow
+  adds a time, a zero duration, `PT0S` where Arrow writes `P0D`, and a zoned instant whose offset
+  has seconds (Asia/Kolkata before 1941), in UTC where Arrow rounds the offset to the minute and
+  names another instant, are rendered otherwise.
   A Date64 is the day it is within everywhere, a struct's and a list's included, and one a
   Date32 cannot hold is refused. A change time becomes microseconds by a checked conversion of
   the engine's own: a date's midnight, and an instant between two microseconds the earlier. A
