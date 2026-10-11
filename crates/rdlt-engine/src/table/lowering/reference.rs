@@ -5,7 +5,9 @@
 //! column has and however the destination stores it. The reference says what each value means as
 //! a [`Canon`]; the differential reads every stored cell back to one and compares.
 
-use rdlt_connector::{ColumnKey, ColumnPath, LogicalType};
+use std::collections::BTreeSet;
+
+use rdlt_connector::{ChangeOp, ColumnKey, ColumnPath, LogicalType};
 use rdlt_testkit::canon::{Canon, canonical, holds};
 use rdlt_testkit::drawn::Scalar;
 
@@ -17,20 +19,27 @@ use crate::table::TableView;
 pub(super) struct Expected {
     /// Each kept row's value in each of the view's columns.
     pub(super) rows: Vec<Vec<Canon>>,
+    /// The position in the batch of each kept row, in order.
+    pub(super) kept: Vec<usize>,
     /// For each of the view's columns, the type of the batch's values it holds, if any.
     pub(super) sources: Vec<Option<LogicalType>>,
+    /// For each of the batch's columns, the view's column its values go to as they are, where
+    /// one does: where its unchanged flag is kept.
+    pub(super) written: Vec<Option<usize>>,
     pub(super) discarded_rows: u64,
     pub(super) discarded_values: u64,
-    /// Whether a kept value is beyond what its column's type holds, which refuses the batch: a
-    /// time in a unit whose `i64` cannot hold it.
+    /// Whether a kept value is beyond what its column's type holds where the column's policy
+    /// refuses it, which refuses the batch: a time in a unit whose `i64` cannot hold it.
     pub(super) refused: bool,
 }
 
 /// `rows` of a batch whose columns are `columns`, names and types, lowered into `view` value by
-/// value; a value no column of the view holds is a change `policy` discards.
+/// value, each column following its policy in `policies`: a value no column of the view holds is
+/// a change the policy discards, and a value its column's type cannot hold is refused, dropped
+/// with its row or nulled.
 pub(super) fn lower(
     view: &TableView,
-    policy: SchemaPolicy,
+    policies: &[SchemaPolicy],
     columns: &[(String, LogicalType)],
     rows: &[Vec<Scalar>],
 ) -> Expected {
@@ -40,8 +49,78 @@ pub(super) fn lower(
         .map(|(index, (name, logical))| holding(view, name, logical, exact(rows, index)))
         .collect();
     let splits = splits(view, columns);
+    let mut expected = outline(view, columns, &targets, &splits);
+    let held = |value: &Scalar, split: &Option<usize>| held(view, value, *split);
+    for (position, row) in rows.iter().enumerate() {
+        let (mut drops, mut discarded, mut refused) = (false, 0, false);
+        let mut nulled = vec![false; columns.len()];
+        for (index, value) in row.iter().enumerate() {
+            if *value == Scalar::Null || held(value, &splits[index]).is_some() {
+                continue;
+            }
+            let unheld = match targets[index] {
+                // A change: no column of the view holds the value.
+                None => true,
+                Some(column) => {
+                    let to = view.model.columns[column].logical_type();
+                    !holds(value, &columns[index].1, to)
+                }
+            };
+            if !unheld {
+                continue;
+            }
+            match policies[index] {
+                SchemaPolicy::DiscardRow => drops = true,
+                SchemaPolicy::DiscardValue => {
+                    discarded += 1;
+                    nulled[index] = true;
+                }
+                // A change under another policy is applied or refused before lowering; a value
+                // its column cannot hold refuses the batch.
+                _ if targets[index].is_none() => discarded += 1,
+                _ => refused = true,
+            }
+        }
+        if drops {
+            expected.discarded_rows += 1;
+            continue;
+        }
+        expected.discarded_values += discarded;
+        expected.refused |= refused;
+        let mut cells = vec![Canon::Null; view.model.columns.len()];
+        for (index, ((value, target), (_, logical))) in
+            row.iter().zip(&targets).zip(columns).enumerate()
+        {
+            if let Some((own, (scalar, from))) = held(value, &splits[index]) {
+                cells[own] = canonical(&scalar, &from);
+            } else if let Some(column) = target
+                && !nulled[index]
+            {
+                cells[*column] = canonical(value, logical);
+            }
+        }
+        expected.rows.push(cells);
+        expected.kept.push(position);
+    }
+    expected
+}
+
+/// What lowering a batch whose columns are `columns` into `view` gives before any row: where each
+/// column's values go, `targets` the columns holding them as they are and `splits` the own
+/// columns of those of JSON that read them.
+fn outline(
+    view: &TableView,
+    columns: &[(String, LogicalType)],
+    targets: &[Option<usize>],
+    splits: &[Option<usize>],
+) -> Expected {
     let mut expected = Expected {
         sources: vec![None; view.model.columns.len()],
+        written: targets
+            .iter()
+            .zip(splits)
+            .map(|(target, split)| if split.is_none() { *target } else { None })
+            .collect(),
         ..Expected::default()
     };
     for (target, (_, logical)) in targets.iter().zip(columns) {
@@ -52,43 +131,21 @@ pub(super) fn lower(
     for own in splits.iter().flatten() {
         expected.sources[*own] = Some(view.model.columns[*own].logical_type().clone());
     }
-    // The column a split value goes to, where its own column holds it.
-    let held = |value: &Scalar, split: &Option<usize>| {
-        let (Scalar::Json(value), Some(own)) = (value, split) else {
-            return None;
-        };
-        let to = view.model.columns[*own].logical_type();
-        rdlt_testkit::held::held(value, to).map(|scalar| (*own, scalar))
-    };
-    for row in rows {
-        let changes = row
-            .iter()
-            .zip(&targets)
-            .zip(&splits)
-            .filter(|((value, target), split)| {
-                target.is_none() && **value != Scalar::Null && held(value, split).is_none()
-            })
-            .count() as u64;
-        if changes > 0 && policy == SchemaPolicy::DiscardRow {
-            expected.discarded_rows += 1;
-            continue;
-        }
-        expected.discarded_values += changes;
-        let mut cells = vec![Canon::Null; view.model.columns.len()];
-        for (((value, target), (_, logical)), split) in
-            row.iter().zip(&targets).zip(columns).zip(&splits)
-        {
-            if let Some((own, (scalar, from))) = held(value, split) {
-                cells[own] = canonical(&scalar, &from);
-            } else if let Some(column) = target {
-                let to = view.model.columns[*column].logical_type();
-                expected.refused |= !holds(value, logical, to);
-                cells[*column] = canonical(value, logical);
-            }
-        }
-        expected.rows.push(cells);
-    }
     expected
+}
+
+/// The column `value`, of a column of JSON whose own column is `split`, goes to and what it is
+/// there, where its own column holds it.
+fn held(
+    view: &TableView,
+    value: &Scalar,
+    split: Option<usize>,
+) -> Option<(usize, (Scalar, LogicalType))> {
+    let (Scalar::Json(value), Some(own)) = (value, split) else {
+        return None;
+    };
+    let to = view.model.columns[own].logical_type();
+    rdlt_testkit::held::held(value, to).map(|scalar| (own, scalar))
 }
 
 /// For each of `columns`, its own column where it is JSON and its own column is of another type,
@@ -159,4 +216,69 @@ fn holding(view: &TableView, name: &str, logical: &LogicalType, exact: bool) -> 
     };
     own.filter(|index| fits(index) || cast(*index))
         .or_else(|| variants.into_iter().map(|(_, index)| index).find(fits))
+}
+
+/// Of `kept`, positions of a batch's rows, those a merge by key keeps: the last of each key in
+/// `keys`, in their order.
+pub(super) fn merged(kept: &[usize], keys: &[i64]) -> Vec<usize> {
+    kept.iter()
+        .enumerate()
+        .filter(|(at, row)| {
+            !kept[at + 1..]
+                .iter()
+                .any(|later| keys[*later] == keys[**row])
+        })
+        .map(|(_, row)| *row)
+        .collect()
+}
+
+/// The view's columns that pushed `flags` flag unchanged, where the pushed batch has `columns`
+/// data columns after its key and `written[i]` is where data column `i` goes as it is; `None`
+/// where the row flags nothing.
+///
+/// Pushed ordinal 1 is the key, data column 0; pushed ordinal `3 + i` is data column `1 + i`;
+/// the op, sequence and unchanged columns and every ordinal past the fields flag nothing.
+pub(super) fn written(
+    flags: Option<u16>,
+    columns: usize,
+    written: &[Option<usize>],
+) -> Option<BTreeSet<usize>> {
+    let flags = flags?;
+    let data = |pushed: usize| match pushed {
+        1 => Some(0),
+        pushed if (3..3 + columns).contains(&pushed) => Some(pushed - 2),
+        _ => None,
+    };
+    Some(
+        (0..16)
+            .filter(|pushed| flags & (1 << pushed) != 0)
+            .filter_map(|pushed| written[data(pushed)?])
+            .collect(),
+    )
+}
+
+/// Of `kept`, positions of a change batch's rows, those a merge with hard deletes keeps: each
+/// row no later row of its key supersedes.
+///
+/// An insert or update that flags no stored column unchanged supersedes, as a delete does;
+/// `flags[i]` are those row `i` flags.
+pub(super) fn unsuperseded(
+    kept: &[usize],
+    keys: &[i64],
+    ops: &[ChangeOp],
+    flags: &[Option<BTreeSet<usize>>],
+) -> Vec<usize> {
+    let supersedes = |row: usize| match ops[row] {
+        ChangeOp::Insert | ChangeOp::Update => flags[row].as_ref().is_none_or(BTreeSet::is_empty),
+        ChangeOp::Delete => true,
+        ChangeOp::Truncate => false,
+    };
+    kept.iter()
+        .copied()
+        .filter(|row| {
+            !kept
+                .iter()
+                .any(|later| *later > *row && keys[*later] == keys[*row] && supersedes(*later))
+        })
+        .collect()
 }
