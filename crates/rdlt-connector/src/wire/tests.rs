@@ -1238,3 +1238,64 @@ fn a_connector_error_code_outside_the_grammar_or_the_host_s_is_replaced() {
         ["connector_lost", "deadline_exceeded", "tls", "transport"]
     );
 }
+
+proptest! {
+    #[test]
+    fn the_stored_and_wire_forms_list_the_same_nodes_and_read_back(
+        logical in logical_type(),
+    ) {
+        let wire = v1::LogicalType::from(&logical);
+        let stored: Vec<serde_json::Value> =
+            serde_json::from_value(serde_json::to_value(&logical).unwrap()).unwrap();
+        prop_assert_eq!(wire.nodes.len(), stored.len());
+        prop_assert_eq!(&crate::types::LogicalType::try_from(wire).unwrap(), &logical);
+        let read: crate::types::LogicalType =
+            serde_json::from_value(serde_json::Value::Array(stored)).unwrap();
+        prop_assert_eq!(read, logical);
+    }
+}
+
+#[test]
+fn both_forms_read_to_the_nesting_limit_and_refuse_beyond_it_however_deep() {
+    use crate::types::LogicalType;
+    let depth = usize::try_from(rdlt_wire::limits::NESTING_DEPTH).unwrap();
+    for (levels, holds) in [(depth, true), (depth + 1, false), (3_000, false)] {
+        let logical = nested(levels);
+        let wire = v1::LogicalType::from(&logical);
+        let read = LogicalType::try_from(wire);
+        assert_eq!(read.is_ok(), holds, "wire, {levels}");
+        if !holds {
+            assert!(
+                matches!(read, Err(Invalid::OutOfRange("nesting depth"))),
+                "{levels}"
+            );
+        }
+        let stored = serde_json::to_value(&logical).unwrap();
+        let stored = serde_json::from_value::<LogicalType>(stored);
+        assert_eq!(stored.is_ok(), holds, "stored, {levels}");
+        if let Err(error) = stored {
+            assert!(
+                error.to_string().contains("nests beyond the limit of"),
+                "{levels}: {error}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_struct_claiming_more_fields_than_follow_is_refused_on_the_wire() {
+    use v1::type_node::Kind;
+    let node = |kind| v1::TypeNode {
+        name: "a".to_owned(),
+        nullable: true,
+        kind: Some(kind),
+    };
+    // Room for four billion fields would abort the test; one node follows.
+    let claimed = v1::LogicalType {
+        nodes: vec![node(Kind::Struct(u32::MAX)), node(Kind::Int8(v1::Unit {}))],
+    };
+    assert!(matches!(
+        crate::types::LogicalType::try_from(claimed),
+        Err(Invalid::Missing("type node"))
+    ));
+}

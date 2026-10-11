@@ -2,8 +2,7 @@
 //! the form nests no deeper however deep the type.
 //!
 //! A struct's node says how many fields follow it, and a list's is followed by its item's. A
-//! field's node carries its name and nullability; a type's own root carries neither. A form is
-//! read with recursion bounded by the nesting limit, counting the root as the first level.
+//! field's node carries its name and nullability; a type's own root carries neither.
 
 use std::sync::Arc;
 
@@ -11,8 +10,8 @@ use serde::de::Error as _;
 use serde::ser::SerializeSeq;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use super::{DecimalType, Field, Fields, LogicalType, TimeUnit};
-use rdlt_wire::limits::NESTING_DEPTH;
+use super::preorder::{self, Shape, Unread};
+use super::{DecimalType, Field, LogicalType, TimeUnit};
 
 #[cfg(test)]
 mod tests;
@@ -85,110 +84,76 @@ impl Kind {
     }
 }
 
-/// Serializes the nodes of `logical`, its root named as `root` says, without recursion.
-fn nodes<S: Serializer>(
-    root: Option<(&Arc<str>, bool)>,
+/// A stored node that gives a name or a nullability, but not both.
+#[derive(Debug, thiserror::Error)]
+#[error("a stored type's node names a field by half")]
+struct HalfNamed;
+
+impl Node {
+    /// The node's naming and shape, as the shared reader reads them.
+    fn read(self) -> Result<preorder::Node, HalfNamed> {
+        use LogicalType as T;
+        let named = match (self.name, self.nullable) {
+            (Some(name), Some(nullable)) => Some((name, nullable)),
+            (None, None) => None,
+            _ => return Err(HalfNamed),
+        };
+        let shape = match self.kind {
+            Kind::Null => Shape::Leaf(T::Null),
+            Kind::Bool => Shape::Leaf(T::Bool),
+            Kind::Int8 => Shape::Leaf(T::Int8),
+            Kind::Int16 => Shape::Leaf(T::Int16),
+            Kind::Int32 => Shape::Leaf(T::Int32),
+            Kind::Int64 => Shape::Leaf(T::Int64),
+            Kind::Float32 => Shape::Leaf(T::Float32),
+            Kind::Float64 => Shape::Leaf(T::Float64),
+            Kind::Decimal(decimal) => Shape::Leaf(T::Decimal(decimal)),
+            Kind::Utf8 => Shape::Leaf(T::Utf8),
+            Kind::Binary => Shape::Leaf(T::Binary),
+            Kind::Date => Shape::Leaf(T::Date),
+            Kind::Time(unit) => Shape::Leaf(T::Time(unit)),
+            Kind::Timestamp(unit, zone) => Shape::Leaf(T::Timestamp(unit, zone)),
+            Kind::Duration(unit) => Shape::Leaf(T::Duration(unit)),
+            Kind::Uuid => Shape::Leaf(T::Uuid),
+            Kind::Json => Shape::Leaf(T::Json),
+            Kind::Struct(count) => Shape::Struct(count),
+            Kind::List => Shape::List,
+        };
+        Ok((named, shape))
+    }
+}
+
+/// Serializes the nodes of `logical`, its root named as `root` says.
+fn serialized<S: Serializer>(
+    root: preorder::Named<'_>,
     logical: &LogicalType,
     serializer: S,
 ) -> Result<S::Ok, S::Error> {
     let mut seq = serializer.serialize_seq(None)?;
-    let mut pending = vec![(root, logical)];
-    while let Some((named, logical)) = pending.pop() {
+    for (named, logical) in preorder::nodes(root, logical) {
         seq.serialize_element(&Node {
             name: named.map(|(name, _)| Arc::clone(name)),
             nullable: named.map(|(_, nullable)| nullable),
             kind: Kind::of(logical),
         })?;
-        match logical {
-            LogicalType::Struct(fields) => pending.extend(fields.0.iter().rev().map(below)),
-            LogicalType::List(item) => pending.push(below(item)),
-            _ => {}
-        }
     }
     seq.end()
 }
 
-/// What a node and the nodes below it describe: a field's name and nullability, where the root is
-/// a field's, and its type.
-type Read = (Option<(Arc<str>, bool)>, LogicalType);
-
-/// A field as a node's naming and the type its nodes describe.
-fn below(field: &Field) -> (Option<(&Arc<str>, bool)>, &LogicalType) {
-    (Some((&field.name, field.nullable)), &field.logical_type)
-}
-
-/// Reads the field or type the next node of `nodes` begins, at `depth` levels of nesting.
-fn read<E: serde::de::Error>(nodes: &mut std::vec::IntoIter<Node>, depth: u64) -> Result<Read, E> {
-    use LogicalType as T;
-    if depth > NESTING_DEPTH {
-        return Err(E::custom(format!(
-            "a stored type nests beyond the limit of {NESTING_DEPTH} levels"
-        )));
-    }
-    let node = nodes
-        .next()
-        .ok_or_else(|| E::custom("a stored type ends before the nodes it names"))?;
-    let named = match (node.name, node.nullable) {
-        (Some(name), Some(nullable)) => Some((name, nullable)),
-        (None, None) => None,
-        _ => return Err(E::custom("a stored type's node names a field by half")),
-    };
-    let field = |nodes: &mut _| match read::<E>(nodes, depth.saturating_add(1))? {
-        (Some((name, nullable)), logical) => Ok(Field::new(name, logical, nullable)),
-        (None, _) => Err(E::custom("a stored type's field has no name")),
-    };
-    let logical = match node.kind {
-        Kind::Null => T::Null,
-        Kind::Bool => T::Bool,
-        Kind::Int8 => T::Int8,
-        Kind::Int16 => T::Int16,
-        Kind::Int32 => T::Int32,
-        Kind::Int64 => T::Int64,
-        Kind::Float32 => T::Float32,
-        Kind::Float64 => T::Float64,
-        Kind::Decimal(decimal) => T::Decimal(decimal),
-        Kind::Utf8 => T::Utf8,
-        Kind::Binary => T::Binary,
-        Kind::Date => T::Date,
-        Kind::Time(unit) => T::Time(unit),
-        Kind::Timestamp(unit, zone) => T::Timestamp(unit, zone),
-        Kind::Duration(unit) => T::Duration(unit),
-        Kind::Uuid => T::Uuid,
-        Kind::Json => T::Json,
-        Kind::Struct(count) => {
-            // Each field takes a node at least, so no more are read than are there.
-            let fields = (0..count.min(nodes.len()))
-                .map(|_| field(nodes))
-                .collect::<Result<Vec<_>, E>>()?;
-            if fields.len() < count {
-                return Err(E::custom("a stored type ends before the nodes it names"));
-            }
-            T::Struct(Fields::new(fields).map_err(E::custom)?)
-        }
-        Kind::List => T::List(Box::new(field(nodes)?)),
-    };
-    Ok((named, logical))
-}
-
-/// Reads one field or type from the whole of `nodes`, refusing nodes left over.
-fn whole<E: serde::de::Error>(nodes: Vec<Node>) -> Result<Read, E> {
-    let mut nodes = nodes.into_iter();
-    let read = read::<E>(&mut nodes, 1)?;
-    if !nodes.as_slice().is_empty() {
-        return Err(E::custom("a stored type has nodes beyond its own"));
-    }
-    Ok(read)
+/// Reads one field or type from stored `nodes`.
+fn deserialized<E: serde::de::Error>(nodes: Vec<Node>) -> Result<preorder::Read, E> {
+    preorder::whole(nodes, Node::read).map_err(|unread: Unread<HalfNamed>| E::custom(unread))
 }
 
 impl Serialize for LogicalType {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        nodes(None, self, serializer)
+        serialized(None, self, serializer)
     }
 }
 
 impl<'de> Deserialize<'de> for LogicalType {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        match whole(Vec::<Node>::deserialize(deserializer)?)? {
+        match deserialized(Vec::<Node>::deserialize(deserializer)?)? {
             (None, logical) => Ok(logical),
             (Some(_), _) => Err(D::Error::custom("a stored type's root names a field")),
         }
@@ -197,7 +162,7 @@ impl<'de> Deserialize<'de> for LogicalType {
 
 impl Serialize for Field {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        nodes(
+        serialized(
             Some((&self.name, self.nullable)),
             &self.logical_type,
             serializer,
@@ -207,7 +172,7 @@ impl Serialize for Field {
 
 impl<'de> Deserialize<'de> for Field {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        match whole(Vec::<Node>::deserialize(deserializer)?)? {
+        match deserialized(Vec::<Node>::deserialize(deserializer)?)? {
             (Some((name, nullable)), logical) => Ok(Self::new(name, logical, nullable)),
             (None, _) => Err(D::Error::custom("a stored field has no name")),
         }

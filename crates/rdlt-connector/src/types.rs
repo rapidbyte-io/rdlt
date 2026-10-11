@@ -3,6 +3,7 @@
 mod arrow;
 mod flat;
 mod lattice;
+pub(crate) mod preorder;
 #[cfg(test)]
 pub(crate) mod tests;
 
