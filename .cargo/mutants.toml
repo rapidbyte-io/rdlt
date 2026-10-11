@@ -15,12 +15,15 @@ all_features = true
 # true there is the code as it is.
 #
 # A mutant that returns what the function already returns is the code as it is: an admission's
-# limits are the wire's defaults, and a dialect reserves no table name, unless they say otherwise.
+# limits are the wire's defaults, a dialect reserves no table name, and a sandbox names no program
+# that confines a connector, unless they say otherwise; one that names an empty path for a sandbox
+# is the code as it is too, as the guard on roots passes over a path that is not absolute.
 # So is one that joins a directory's open flags, each a bit of its own, with `^` for `|`; and one
 # that takes every widen a destination refuses for a column not yet kept from widening: the
 # resolver widens no column kept from it on any path, so a refusal never names one, and the guard
 # only bounds the loop were that to change. A JSON lines reader's `Debug` names the type and
-# nothing else, since its decoder has none: what it writes is no behaviour a test can hold. The
+# nothing else, since its decoder has none: what it writes is no behaviour a test can hold; so does
+# the `Debug` of what a host is told each spawned connector's process id by, a function. The
 # engine's inline test env has one core, which a mutant answering one also has. A mutant that
 # judges a plain column of 64-bit integers through the rows it names reads what the plain arm
 # reads, which spares only the mapping; and one that has a normalized flush's walk read every
@@ -41,6 +44,8 @@ exclude_re = [
   "crates/rdlt-engine/src/normalize/rounding\\.rs:.*replace integers -> bool with true$",
   "crates/rdlt-engine/src/table/exact\\.rs:.*delete match arm DataType::Int64 in rounds$",
   "crates/rdlt-engine/src/table/registry\\.rs:.*replace match guard !resolver\\.unwidened\\.contains\\(&column\\) with true in Tables::fit$",
+  "crates/rdlt-host/src/local/process\\.rs:.*replace <impl fmt::Debug for Told>::fmt -> fmt::Result with Ok\\(Default::default\\(\\)\\)",
+  "crates/rdlt-host/src/local/sandbox\\.rs:.*replace Sandbox::programs -> Vec<PathBuf> with vec!\\[(Default::default\\(\\))?\\]",
 ]
 # A mutant that hangs a test is caught when nextest terminates the test, which it does well within
 # this; cargo-mutants' own timeout would count it as a timeout instead. It is above what a mutant
