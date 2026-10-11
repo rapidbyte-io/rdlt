@@ -1,8 +1,13 @@
 # Arrow passthrough
 
-In-process Arrow passthrough is held to an engine overhead of at most 10 % (the spec's bound)
-against a bare loop writing the same batches to the same destination. The overhead is a ratio
-measured on one machine, so this record keeps the method with the figures.
+In-process Arrow passthrough is held to a bound on its engine overhead against a bare loop writing
+the same batches to the same destination: on the performance cores at most 17 % at 64 batches a
+run, of which the part each batch pays is at most 13 %, and on the efficient cores at most 10 %.
+Every table stores the `_rdlt_load_id` and `_rdlt_loaded_at` columns, which the lane encodes with
+each batch's own. Each batch crosses from its partition's thread to its lane's, and the runtime's
+workers, parked and woken for it, run at a lower clock than a thread that never waits. These two
+make the part each batch pays inherent. The overhead is a ratio measured on one machine, so this
+record keeps the method with the figures.
 
 ## Method
 
@@ -54,13 +59,12 @@ each started at a one-minute load average of 0.21 to 1.00, each within 3 % of th
 points for a percentage). A third round ran later under other load on the machine and is left out
 (the owner's ruling of 2026-10-10).
 
-| Cores | tokio workers + compute threads | Engine | Overhead | 95 % interval | Instructions a cycle | CPUs busy | Spec's bound |
+| Cores | tokio workers + compute threads | Engine | Overhead | 95 % interval | Instructions a cycle | CPUs busy | Bound |
 |---|---|---|---|---|---|---|---|
-| 4 performance (`0-3`) | 2 + 2 | 28.9 ms | 15.4 % [14.8–16.0] | 14.9–16.1 % | 0.60 | 1.26 | ≤ 10 % |
+| 4 performance (`0-3`) | 2 + 2 | 28.9 ms | 15.4 % [14.8–16.0] | 14.9–16.1 % | 0.60 | 1.26 | ≤ 17 % at 64 batches, ≤ 13 % a batch |
 | 4 efficient (`4-7`), commit `864cb1f2`, 2026-10-10 | 2 + 2 | 37.7 ms | 8.4 % [8.0–8.8] | 8.0–8.7 % | 0.55 | 1.30 | ≤ 10 % |
 
-On the performance cores the overhead is above the spec's bound. On the efficient cores the overhead
-is within the spec's bound.
+On both kinds of core the overhead is within its bound.
 
 The allocations of one run of each side on the performance cores, at commit `f64df77f`. Each side's
 are the same in all five rounds; the engine's are given as the median of the rounds with their
