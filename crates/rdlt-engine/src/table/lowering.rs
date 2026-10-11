@@ -243,7 +243,7 @@ impl LoweringPlan {
         let checked = batch.clone();
         let batch = keyed(stream, view, batch, &self.sources, changes.as_ref())?;
         // A key column changed in a zero holds no longer what it converted to.
-        converted.retain(|(index, _)| Arc::ptr_eq(checked.column(*index), batch.column(*index)));
+        converted.stale(&checked, &batch);
         let rows = batch.num_rows();
         let (mut columns, held) = self.model_columns(&batch, &fitted, &converted)?;
         let (constants, loaded_at) = self.constants(stamp, rows).map_err(failed)?;
@@ -315,7 +315,7 @@ impl LoweringPlan {
         let fitted = match &kept {
             Some(kept) => {
                 // Rows went, so what the columns converted to holds rows the batch does not.
-                converted.clear();
+                converted = unheld::Converted::default();
                 fitted.filtered(kept)?
             }
             None => fitted,
