@@ -16,7 +16,7 @@ use arrow_array::{
 use arrow_buffer::i256;
 use arrow_schema::DataType;
 
-use super::root_ids;
+use super::{leb128, root_ids};
 
 /// `bytes` after their length in LEB128, as the canonical encoding writes them.
 fn prefixed(bytes: &[u8]) -> Vec<u8> {
@@ -634,5 +634,24 @@ fn a_length_written_after_its_bytes_widens_past_127() {
         let mut expected = vec![9_u8];
         expected.extend(prefixed(&vec![7_u8; written]));
         assert_eq!(row, expected, "{written} bytes");
+    }
+}
+
+#[test]
+fn a_length_takes_the_bytes_leb128_gives_it_up_to_the_widest() {
+    let cases: [(usize, &[u8]); 5] = [
+        (0, &[0]),
+        (0x7f, &[0x7f]),
+        (0x80, &[0x80, 0x01]),
+        (300, &[0xac, 0x02]),
+        (
+            usize::MAX,
+            &[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01],
+        ),
+    ];
+    for (count, expected) in cases {
+        let mut row = Vec::new();
+        leb128(&mut row, count);
+        assert_eq!(row, expected, "{count}");
     }
 }
