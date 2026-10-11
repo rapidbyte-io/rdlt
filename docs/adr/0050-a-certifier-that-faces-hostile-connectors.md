@@ -158,7 +158,7 @@ things did not hold to that:
 - A connector that leaves its process group and ends itself when its launcher is killed is
   counted as killed. A sandboxed spawn, with a process namespace of its own, closes that.
 - A destination that reads a column back as another kind than it was written as, beyond the
-  casts listed, fails the clause: `K-DESTINATION` no longer takes ids read back as text.
+  casts listed, fails the clause: `K-DESTINATION` does not take ids read back as text.
 - `ClauseResult` has a `note`, and `rdlt_host::Kills` counts the connections it cut.
 - A read-back remains the destination's own account of what it published.
 - A source clause charges a push with `cost::push_charge`, as the engine admits it (ADR 0039):

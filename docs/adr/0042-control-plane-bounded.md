@@ -98,8 +98,8 @@ still taken largely on trust:
   - An open's answer is the engine's own committed state echoed back, so the engine keeps it
     within the bound: a commit after which the state would hold more decoded than the state
     limit, as the scan of an open's answer carrying it counts it, is refused before it is logged
-    or sent, with `state_bytes_exceeded`. A pipeline can always open what it committed. Amended
-    2026-10-03 (ADR 0041): this check and the stored state's are one, measured decoded.
+    or sent, with `state_bytes_exceeded`. A pipeline can always open what it committed. This check
+    and the stored state's are one, measured decoded (ADR 0041).
   - A charge waits as any request of the budget does, in turn, and fails its call at the
     budget's deadline; one larger than its share fails it at once. No charge is held while
     another is waited for, and none while its holder waits for anything but the answer's bytes.

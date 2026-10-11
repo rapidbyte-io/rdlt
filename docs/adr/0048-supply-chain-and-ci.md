@@ -27,22 +27,21 @@ This record decides what holds each statement, and says where a check ends.
 ## Decision
 
 - **`unsafe` code is in one crate, held by the compiler and by the lint together.**
-  - The audited code is a crate of its own, `rdlt-adopt`: two files, `src/lib.rs` and its
-    tests, compiled on Unix only. It allows `unsafe` code with `#[expect(unsafe_code)]` on the
-    one statement and the one function that need it, under the workspace's `deny`.
-    Amended 2026-10-02 (ADR 0043): it holds a second audited module, `src/exec.rs` and its
-    tests, the lint's list of audited files naming both. `inheriting_only` registers the
-    workspace's only `pre_exec` hook, which marks every descriptor of a spawned child from 3
-    up close-on-exec, but those it is given, once they are in place: a `close_range` system
-    call with `CLOSE_RANGE_CLOEXEC`, through `libc`, for each range between them, on Linux
-    5.11 and later. Where that call fails, the hook fails the spawn (`Marking::AtOnce`, for a
-    sandboxed connector), or marks each descriptor with `fcntl` up to the soft limit capped at
-    65,536 (`Marking::OrOneByOne`, for a trusted one). After the fork it makes only plain
-    system calls, `close_range`, `getrlimit` and `fcntl`, which take no lock and allocate
-    nothing, as is all that matters there; it reads only what was allocated before the fork,
-    and closes nothing. `marks_at_once` asks the kernel once, in the parent, through the same
-    call. `rdlt-host` alone may use it; the dependency rule names `rdlt-connector` and
-    `rdlt-host` as the only users of the crate.
+  - The audited code is a crate of its own, `rdlt-adopt`: two audited modules, `src/lib.rs` and
+    `src/exec.rs`, with their tests, compiled on Unix only; the lint's list of audited files names
+    the four and the crate's manifest (ADR 0043). It allows `unsafe` code with
+    `#[expect(unsafe_code)]` on each statement and function that needs it, under the
+    workspace's `deny`. `inheriting_only` registers the workspace's only `pre_exec` hook, which
+    marks every descriptor of a spawned child from 3 up close-on-exec, but those it is given, once
+    they are in place: a `close_range` system call with `CLOSE_RANGE_CLOEXEC`, through `libc`, for
+    each range between them, on Linux 5.11 and later. Where that call fails, the hook fails the
+    spawn (`Marking::AtOnce`, for a sandboxed connector), or marks each descriptor with `fcntl` up
+    to the soft limit capped at 65,536 (`Marking::OrOneByOne`, for a trusted one). After the fork it
+    makes only plain system calls, `close_range`, `getrlimit` and `fcntl`, which take no lock and
+    allocate nothing, as is all that matters there; it reads only what was allocated before the
+    fork, and closes nothing. `marks_at_once` asks the kernel once, in the parent, through the same
+    call. `rdlt-host` alone may use it; the dependency rule names `rdlt-connector` and `rdlt-host`
+    as the only users of the crate.
   - `rdlt_adopt::adopt` is a safe function, so that a crate forbidding `unsafe` code can call
     it. It checks what it can: the descriptor is open, a socket, not a standard stream, not
     close-on-exec, and taken once. Each is asked of the descriptor through `fcntl` and
@@ -50,7 +49,8 @@ This record decides what holds each statement, and says where a check ends.
     holds is not there; `is_open` asks the same of any number, for a connector's own check of
     what it was started with. That nothing else in the process owns the descriptor is left
     to its caller, which calls it first thing in a connector's `main`. The dependency rule
-    (`cargo xtask deps`) lets `rdlt-connector` alone use the crate, in tests as well.
+    (`cargo xtask deps`) lets `rdlt-connector` and `rdlt-host` alone use the crate, and none as a
+    dev-dependency.
   - **What the compiler holds.** Every other target's root file carries
     `#![forbid(unsafe_code)]`: libraries, binaries, examples, integration tests, benches and
     fuzz targets, `rdlt-connector`'s library included. The compiler then refuses `unsafe` code

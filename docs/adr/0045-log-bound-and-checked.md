@@ -67,7 +67,7 @@ a local directory, and `ObjectStoreWal` in S3 and in stores that answer as S3 do
   once it is empty.
 - One durable write per commit: what was logged since the previous commit, the commit's frame
   and an `End` frame go into the chunk published at that commit.
-- Claims are gone. A replay takes a log over by deleting what its load staged, then publishing
+- A replay takes a log over by deleting what its load staged, then publishing
   a fence chunk at the number after its highest, a log that needs nothing included: a load still
   running then finds that name taken while the log is open, and the log gone once the replay
   removes it, and fails as `wal_fenced` before it answers its commit, whatever was removed. A
@@ -134,7 +134,7 @@ a local directory, and `ObjectStoreWal` in S3 and in stores that answer as S3 do
   load opened on and the destination it is written for, then schemas, batches, seals and
   phases, then a commit or a close, then an `End` naming the chunks still needed and the commits
   received in them. A fence chunk holds a `Fence` naming its pipeline, load and number, then an
-  `End`. A receipt is no longer a frame of its own: it is durable in the next chunk's `End`.
+  `End`. A receipt is no frame of its own: it is durable in the next chunk's `End`.
 - A chunk is published whole, so no visible chunk is ever torn and any damage is refused as
   `wal_unreadable`. A scan reads the highest chunk, then exactly the chunks its `End` names, any
   of them missing refused; chunks a crash left between a publish and its deletions are not read.
@@ -302,7 +302,7 @@ draw is then taken again among the reads and commits that run told, so every dra
   reads it within the frame limit like any other frame.
 - **A seal moved past by a newer load is still left to it.** Replay keeps ADR 0029's rule: a
   seal of a stream that cannot read again applies only where its partition stands where the seal
-  started. A fenced load can no longer publish once fenced, and every attempt replays the logs it
+  started. A fenced load cannot publish, and every attempt replays the logs it
   lists before it reads, so a commit its source was told of is replayed before any newer load of
   the pipeline reads, unless the newer load could not fence its log, in which case it fails as
   `wal_running` instead of reading. It rests on every load of a pipeline and destination keeping
@@ -348,7 +348,3 @@ draw is then taken again among the reads and commits that run told, so every dra
 - A replay of a log whose load still runs is fenced and its load fails, rather than both
   writing.
 - Each commit lists the pipeline's logs once more, to declare its horizon.
-- A destination that predates the horizon keeps every receipt, as before.
-
-ADR 0029 (Store, Writer, Claims, Replay, Damage), ADR 0033 (refusals), ADR 0006, ADR 0047 and
-ADR 0027 are amended by this one.

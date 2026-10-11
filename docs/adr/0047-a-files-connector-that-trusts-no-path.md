@@ -103,11 +103,11 @@ when it is read and never written in a form its reader refuses.
 - **A commit removes what it supersedes.** Once its manifest is durable, a commit removes the
   files the manifest before it listed, or the commit read, that the latest manifest does not
   list, with the directories of their own that leaves empty. A commit that fails removes what it
-  wrote that the latest manifest does not list. What a crash leaves is removed by the next open,
-  as before. A reader that finds a listed file gone reads the latest manifest again, a bounded
-  number of times, and fails with `file_missing` only when the manifest it read is still the
-  latest. A discard of what older sessions staged makes the latest manifest's name durable
-  before it removes anything: a manifest a power loss could take back decides nothing.
+  wrote that the latest manifest does not list. What a crash leaves is removed by the next open.
+  A reader that finds a listed file gone reads the latest manifest again, a bounded number of
+  times, and fails with `file_missing` only when the manifest it read is still the latest. A
+  discard of what older sessions staged makes the latest manifest's name durable before it
+  removes anything: a manifest a power loss could take back decides nothing.
 - **Every durable step is ordered.** A file is synced before it is linked or renamed into
   place, and its directory after; a commit answered from its receipt syncs its manifests'
   directory again before it answers, since the commit it repeats may have failed between the
@@ -129,12 +129,11 @@ when it is read and never written in a form its reader refuses.
   dictionary's rows as the values they stand for, null where the key is null or the value it
   stands for is.
 - **Lists stay short.** A table's catalog keeps 8 versions behind the latest, as manifests do. A
-  manifest keeps every receipt of each of its 16 latest loads: a commit repeated however far
-  back in its load is answered with its receipt, and how many receipts a load may hold is the
-  engine's to bound, not the destination's. Amended 2026-10-03 (ADR 0045): the engine bounds
-  them, declaring with each commit the oldest it may repeat, and the manifest forgets the
-  receipts before it, of whichever load; with no horizon it keeps them all. An append table's commit merges the
-  files it adds with each other, whatever rows each holds, and a file listed before them with
+  manifest keeps the receipt of every commit the engine may still repeat: a commit repeated
+  however far back is answered with its receipt. The engine declares with each commit the oldest
+  it may repeat, its horizon, and the manifest forgets the receipts before it, of whichever
+  load; a commit that declares none forgets none (ADR 0045). An append table's commit merges
+  the files it adds with each other, whatever rows each holds, and a file listed before them with
   those after it while it holds at most twice their rows, never reading more than 64 MiB into
   one file and keeping row order. Every two files next to each other in a list then either at
   least halve in rows or were together more than 64 MiB when they were listed. So a table
@@ -162,9 +161,9 @@ when it is read and never written in a form its reader refuses.
   row of many columns among many rows of few costs the table its own cells in the file and
   where it is read. The halving cut above measures each file's batches under the file's own
   columns, and a joined batch it cuts is read back as the columns each part holds. A file a
-  writer staged, and a tombstone file, is read under its whole schema as before. The
-  compaction of lists is unchanged: lines of any columns share a file and read back as above,
-  and Arrow files of differing columns join with none, as files of differing schemas never did.
+  writer staged, and a tombstone file, is read under its whole schema. In a
+  compaction, lines of any columns share a file and read back as above, and Arrow files of
+  differing columns join with none.
 - **Locks are on the open file.** A table's lock and a keeper's are `flock` locks on a lock
   file, taken through the standard library on Linux and macOS alike: they belong to the
   descriptor that took them, and no other open or close of the file in the process releases
@@ -186,7 +185,7 @@ when it is read and never written in a form its reader refuses.
 
 ## Consequences
 
-A name, a link or a manifest no longer leads the connectors out of their roots, and no file they
+No name, link or manifest leads the connectors out of their roots, and no file they
 read costs more than its limit before it is refused. The connectors are confined, not
 tamper-proof: whoever may write the private directory as the destination's user can still change
 what the tables hold.

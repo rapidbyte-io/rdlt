@@ -119,7 +119,7 @@ Arrow columns and the rows normalizing makes of both escaped that in several way
   range. A frozen table still refuses, and a merge key still refuses to change. Row identity
   reads the batch as it arrived, and history hashes the columns as the table stores them. The
   values are read as a shredding job is, sure of its stack. A column of integers that JSON text is read
-  into is no longer recorded exact (ADR 0026): its integers are read only as the plan lowers
+  into is not recorded exact (ADR 0026): its integers are read only as the plan lowers
   them. The cost model charges what reading takes: two null slots of the column's type a row,
   its null text where stored as text, and for each byte of text one more and two slots of the
   widest list item the type holds.

@@ -132,7 +132,7 @@ one run to the next, broke both:
   hold go to a variant column, and a variant kept so leaves them to the JSON variant. Where the
   column's policy refuses variants, or the destination cannot add a column, the change is
   refused as `schema_change_unsupported`. A refused new column or table has its new names
-  hashed, as before. A child table keeps none of its root's columns from widening.
+  hashed. A child table keeps none of its root's columns from widening.
 
 Rejected:
 - **Reading stored JSON with no recursion limit**, on a stack grown as needed: a stored form that
@@ -155,9 +155,9 @@ Rejected:
 ## Consequences
 
 - A document nested to the limit loads and opens again; one nested deeper is refused where it
-  arrives, as before. The wire carries schemas nested to the limit in frames too.
-- State, logs and files catalogs written by earlier builds must be cleared; a reset reads the state
-  it resets, so it cannot clear state it cannot read.
+  arrives. The wire carries schemas nested to the limit in frames too.
+- State, logs and files catalogs of another format are refused and must be cleared; a reset reads
+  the state it resets, so it cannot clear state it cannot read.
 - A stream whose table would pass the schema columns stops at its change, typed, until its table
   is reset or its policy discards new columns; more memory raises the limit.
 - A normalized stream with more array paths than its child table limit stops, typed; at the least
