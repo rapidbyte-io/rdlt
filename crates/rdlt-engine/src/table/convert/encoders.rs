@@ -7,7 +7,7 @@ use arrow_json::writer::{Encoder, EncoderFactory, EncoderOptions, NullableEncode
 use arrow_schema::{ArrowError, DataType, FieldRef};
 
 use super::super::temporal;
-use super::render_bytes;
+use super::hex;
 use rdlt_connector::{Field, LogicalType};
 
 /// Encodes the canonical extension types: `Json` text as the JSON it holds, a UUID as its
@@ -29,7 +29,7 @@ impl EncoderFactory for Extensions {
                 Box::new(RawJson(array.as_string::<i32>()))
             }
             (Some(LogicalType::Uuid), DataType::FixedSizeBinary(16)) => {
-                Box::new(UuidText(array.as_fixed_size_binary()))
+                Box::new(UuidText(array.as_fixed_size_binary(), String::new()))
             }
             // JSON has no non-finite numbers, which arrow-json writes as `null`; they are named.
             // arrow-json also writes some finite ones with more digits than they need.
@@ -109,13 +109,15 @@ impl Encoder for RawJson<'_> {
     }
 }
 
-/// Writes a UUID as a JSON string of its hyphenated form.
-struct UuidText<'a>(&'a arrow_array::FixedSizeBinaryArray);
+/// Writes a UUID as a JSON string of its hyphenated form, rendered into a reused buffer.
+struct UuidText<'a>(&'a arrow_array::FixedSizeBinaryArray, String);
 
 impl Encoder for UuidText<'_> {
     fn encode(&mut self, idx: usize, out: &mut Vec<u8>) {
+        self.1.clear();
+        hex(self.0.value(idx), true, &mut self.1);
         out.push(b'"');
-        out.extend_from_slice(render_bytes(self.0.value(idx), true).as_bytes());
+        out.extend_from_slice(self.1.as_bytes());
         out.push(b'"');
     }
 }
