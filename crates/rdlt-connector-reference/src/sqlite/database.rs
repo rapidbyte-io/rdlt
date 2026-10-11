@@ -212,7 +212,7 @@ pub(super) fn borrowed(value: &SqlValue) -> ToSqlOutput<'_> {
         SqlValue::Null => ValueRef::Null,
         SqlValue::Integer(integer) => ValueRef::Integer(*integer),
         SqlValue::Text(text) => ValueRef::Text(text.as_bytes()),
-        SqlValue::Blob(blob) => ValueRef::Blob(blob.as_slice()),
+        SqlValue::Blob(blob) => ValueRef::Blob(blob.as_ref()),
     })
 }
 

@@ -1,6 +1,9 @@
 //! The catalog tables: epochs, state records, receipts, and the tables and generations written.
 
+use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use bytes::Bytes;
 
 use super::owned::OWNERS;
 use super::upsert::Row;
@@ -131,35 +134,58 @@ impl<D: SqlDialect> SqlPlanner<D> {
         sql.finish()
     }
 
-    /// The statements applying `changes` to `pipeline`'s state records, in order.
+    /// The statements applying `changes` to `pipeline`'s state records: every key a change
+    /// names deleted, then the keys whose last change puts a record inserted, each in as few
+    /// statements as the dialect's bound on values allows.
+    ///
+    /// The commit is fenced and the state table keyed by pipeline and key, so this writes what
+    /// the changes in order would.
     pub fn state_changes(&self, pipeline: &PipelineId, changes: &[StateChange]) -> Vec<Statement> {
-        changes
+        let mut last: BTreeMap<&str, Option<&Bytes>> = BTreeMap::new();
+        for change in changes {
+            match change {
+                StateChange::Put(record) => last.insert(&record.key, Some(&record.value)),
+                StateChange::Delete(key) => last.insert(key, None),
+            };
+        }
+        let most = self.dialect.max_params();
+        let keys: Vec<&str> = last.keys().copied().collect();
+        let mut plan = Vec::new();
+        for chunk in keys.chunks(most.saturating_sub(1).max(1)) {
+            let mut sql = self.sql();
+            let name = sql.bind(SqlValue::Text(pipeline.to_string()));
+            let listed: Vec<String> = chunk
+                .iter()
+                .map(|key| sql.bind(SqlValue::Text((*key).to_owned())))
+                .collect();
+            sql.push(&format!(
+                "DELETE FROM {STATE} WHERE pipeline = {name} AND key IN ({})",
+                listed.join(", ")
+            ));
+            plan.push(sql.finish());
+        }
+        let puts: Vec<(&str, &Bytes)> = last
             .iter()
-            .flat_map(|change| match change {
-                StateChange::Put(record) => {
-                    let key = [
-                        ("pipeline", SqlValue::Text(pipeline.to_string())),
-                        ("key", SqlValue::Text(record.key.clone())),
-                    ];
-                    let values = [("value", SqlValue::Blob(record.value.to_vec()))];
-                    let row = Row {
-                        table: STATE,
-                        key: &key,
-                        values: &values,
-                    };
-                    self.upsert(&row, true)
-                }
-                StateChange::Delete(key) => {
-                    let mut sql = self.sql();
+            .filter_map(|(key, value)| value.map(|value| (*key, value)))
+            .collect();
+        for chunk in puts.chunks((most / 3).max(1)) {
+            let mut sql = self.sql();
+            let rows: Vec<String> = chunk
+                .iter()
+                .map(|(key, value)| {
                     let name = sql.bind(SqlValue::Text(pipeline.to_string()));
-                    let key = sql.bind(SqlValue::Text(key.clone()));
-                    sql.push(&format!(
-                        "DELETE FROM {STATE} WHERE pipeline = {name} AND key = {key}"
-                    ));
-                    vec![sql.finish()]
-                }
-            })
-            .collect()
+                    let key = sql.bind(SqlValue::Text((*key).to_owned()));
+                    let value = sql.bind(SqlValue::Blob((*value).clone()));
+                    format!("({name}, {key}, {value})")
+                })
+                .collect();
+            sql.push(&format!(
+                "INSERT INTO {STATE} (pipeline, key, value) VALUES {}",
+                rows.join(", ")
+            ));
+            plan.push(sql.finish());
+        }
+        plan
     }
 
     /// The query returning the receipt of `(load_id, commit_seq)` as a row of commit time, rows

@@ -1,6 +1,7 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use bytes::Bytes;
 use rdlt_connector::sqlgen::{SqlValue, Statement};
 use rdlt_connector::{ConnectorError, ConnectorErrorKind};
 use rusqlite::config::DbConfig;
@@ -311,7 +312,7 @@ fn a_statement_run_again_binds_its_own_values() {
         sql: "INSERT INTO t VALUES (?1, ?2, ?3, ?4)".to_owned(),
         params: vec![
             SqlValue::Text(text.to_owned()),
-            SqlValue::Blob(blob.to_vec()),
+            SqlValue::Blob(Bytes::copy_from_slice(blob)),
             SqlValue::Integer(integer),
             SqlValue::Null,
         ],

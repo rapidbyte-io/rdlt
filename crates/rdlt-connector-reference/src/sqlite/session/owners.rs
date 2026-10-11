@@ -1,6 +1,7 @@
 //! Who owns a destination table, and how the database takes its name: the check every change of
 //! a table starts from, in the transaction that makes the change.
 
+use bytes::Bytes;
 use rdlt_connector::prelude::*;
 use rdlt_connector::sqlgen::{Owned, SqlPlanner, SqlValue, Sqlite, Standing};
 use rdlt_connector::{Epoch, PipelineId};
@@ -28,7 +29,7 @@ fn planned(value: Value) -> SqlValue {
         Value::Null | Value::Real(_) => SqlValue::Null,
         Value::Integer(integer) => SqlValue::Integer(integer),
         Value::Text(text) => SqlValue::Text(text),
-        Value::Blob(blob) => SqlValue::Blob(blob),
+        Value::Blob(blob) => SqlValue::Blob(Bytes::from(blob)),
     }
 }
 

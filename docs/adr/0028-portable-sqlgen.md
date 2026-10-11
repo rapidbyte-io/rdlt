@@ -30,6 +30,13 @@ Status: accepted, 2026-09-29.
   catalog alike, which a test checks by running each against SQLite. A dialect whose database
   selects nothing without a table names the one it reads, as Oracle's `DUAL`
   (`SqlDialect::values_table`).
+  A commit's state changes are written as one path for every dialect: each key a change names is
+  deleted, in lists of keys as long as `SqlDialect::max_params` allows, then the keys whose last
+  change puts a record are inserted, as many rows a statement as that allows; the commit is
+  fenced and the state keyed by pipeline and key, so this writes what the changes in order would.
+  The state insert writes several rows a statement, so a dialect must accept multi-row `VALUES`.
+  A plan binding more values a statement than `SqlDialect::max_params` is refused as the
+  `statement parameters` limit before anything runs.
 - **Keys are compared a column at a time**, in correlated `EXISTS`: a merge's delete of the
   published rows its staged keys replace, and a child table's children of each root's winning row.
   The merge's delete also takes the rows whose first key column is among the staged rows', which
@@ -45,8 +52,9 @@ Status: accepted, 2026-09-29.
     (`SqlPlanner::key_indexes`, `_rdlt_key__{table}`);
   - a child table by its root id (`SqlPlanner::root_index`, `_rdlt_root__{target}`).
 
-  The prefix is one no user table takes, and each index is created through the dialect's
-  `create_index`, whose default is `CREATE INDEX IF NOT EXISTS`.
+  The prefix is one no user table takes, each index is created through the dialect's
+  `create_index`, whose default is `CREATE INDEX IF NOT EXISTS`, and the staged index is dropped
+  through its `drop_index`.
 - **A replace generation swaps in only where schema changes commit with their transaction.**
   Every dialect declares `transactional_ddl`, which has no default. The planner refuses a swap
   that renames or drops a generation table for one that does not, as `Unsupported`; a generation
