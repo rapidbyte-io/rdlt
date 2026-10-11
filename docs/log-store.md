@@ -73,7 +73,7 @@ metadata a create gives its object, which the probe checks while it looks and ca
 | Store | Observed |
 |---|---|
 | AWS S3 | Conditional create (`If-None-Match: *`) since 2024, and listings are strongly consistent. |
-| MinIO | Passes, in the tests (a build of `RELEASE.2026-08-04`). |
+| MinIO | Passes, in the tests (a build of `RELEASE.2026-08-04`). It denies a write racing the deletion of the last object in the directory the write lands in; a publish so denied after its log was removed is refused as the removal's. |
 | RustFS | Passes, in the tests. It refuses a range ending past a signed 64-bit length, which the log never asks for. |
 | A store without conditional create | Refused by the probe. |
 

@@ -12,7 +12,7 @@ use object_store::{MultipartId, PutPayload};
 use rdlt_connector::{BoxFuture, PipelineId};
 
 use super::Shared;
-use super::calls::missing;
+use super::calls::{Calls, missing};
 use super::fault::ObjectFault;
 use super::head::{Kind, Reference};
 use crate::wal::{Chunk, StagedChunk};
@@ -134,10 +134,14 @@ impl Staged {
             }
             return Err(missing());
         }
-        let (payload, uploaded) = self.head().await?;
-        let body = uploaded.as_ref().map(|(key, _)| key);
         let shared = Arc::clone(&self.shared);
         let calls = &shared.calls;
+        let mark = shared.keys.mark(&self.pipeline, self.chunk.load);
+        let (payload, uploaded) = match self.head().await {
+            Ok(head) => head,
+            Err(error) => return Err(closed_or(calls, &mark, error).await),
+        };
+        let body = uploaded.as_ref().map(|(key, _)| key);
         let head = shared.keys.head(&self.pipeline, self.chunk);
         match calls.create(&head, payload).await {
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
@@ -146,11 +150,17 @@ impl Staged {
                 }
                 return Err(error);
             }
-            created => created?,
+            Err(error) => {
+                let error = closed_or(calls, &mark, error).await;
+                if let Some(body) = body.filter(|_| error.kind() == io::ErrorKind::NotFound) {
+                    calls.delete(body).await?;
+                }
+                return Err(error);
+            }
+            Ok(()) => {}
         }
         // Asked only once the head is there: a removal that closed the log after this answer
         // lists the log after it, and deletes the head with the rest.
-        let mark = shared.keys.mark(&self.pipeline, self.chunk.load);
         if calls.head(&mark).await?.is_none() {
             calls.delete(&head).await?;
             if let Some(body) = body {
@@ -161,6 +171,19 @@ impl Staged {
         let kind = uploaded.map_or(Kind::Whole, |(_, reference)| Kind::Parts(reference));
         shared.heads.note(&self.pipeline, self.chunk, kind);
         Ok(())
+    }
+}
+
+/// What a publish refused with `error` answers: [`io::ErrorKind::NotFound`] where `error` is a
+/// denial and the log's `mark` is seen gone, as `MinIO` denies a write racing the deletion of
+/// the directory it lands in, which a removal of the log makes; `error` otherwise.
+async fn closed_or(calls: &Calls, mark: &Path, error: io::Error) -> io::Error {
+    if error.kind() != io::ErrorKind::PermissionDenied {
+        return error;
+    }
+    match calls.head(mark).await {
+        Ok(None) => missing(),
+        _ => error,
     }
 }
 

@@ -307,6 +307,76 @@ async fn a_staging_whose_look_at_its_log_is_refused_reports_the_refusal_not_a_cl
     );
 }
 
+/// The publishes a denial is tried at: of a whole chunk, of one in parts of four bytes, and of
+/// the body of one in parts.
+const DENIED: [(usize, Op); 3] = [
+    (1 << 20, Op::Put { create: true }),
+    (4, Op::Put { create: true }),
+    (4, Op::Complete),
+];
+
+/// A plan denying every request that is `denied`.
+fn denying(denied: Op) -> rdlt_testkit::objects::Plan {
+    Box::new(move |call| {
+        if call.op == denied {
+            Fault::Denied
+        } else {
+            Fault::None
+        }
+    })
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_publish_denied_once_its_log_was_removed_is_refused_as_its_log_is_gone() {
+    // MinIO answers a write racing the deletion of the directory it lands in as forbidden.
+    for (part, denied) in DENIED {
+        let objects = objects(faultless());
+        let wal = opened(&objects, options(part)).await;
+        let orders = pipeline("closing");
+        let mut staged = publishing(&wal, &orders).await;
+        staged
+            .append(Bytes::from_static(b"01234"))
+            .await
+            .expect("appends");
+        wal.remove_log(&orders, chunk(1, 0).load)
+            .await
+            .expect("removes");
+        objects.plan(denying(denied));
+        let refused = staged.publish().await.expect_err("its log is gone");
+        assert_eq!(
+            refused.kind(),
+            io::ErrorKind::NotFound,
+            "{denied:?}: {refused}"
+        );
+        assert_eq!(wal.leftovers(&orders).await.expect("lists"), []);
+        let left = super::keys(&objects).await;
+        assert!(
+            !left.iter().any(|key| key.contains("p.closing/logs/")),
+            "{denied:?}: {left:?}"
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_publish_denied_while_its_log_is_open_reports_the_denial() {
+    for (part, denied) in DENIED {
+        let objects = objects(faultless());
+        let wal = opened(&objects, options(part)).await;
+        let mut staged = publishing(&wal, &pipeline("open")).await;
+        staged
+            .append(Bytes::from_static(b"01234"))
+            .await
+            .expect("appends");
+        objects.plan(denying(denied));
+        let refused = staged.publish().await.expect_err("denied");
+        assert_eq!(
+            judged(refused),
+            (Some("wal_storage_denied".to_owned()), false),
+            "{denied:?}"
+        );
+    }
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_refusal_of_the_credentials_is_denied_and_final() {
     let objects = objects(faultless());
