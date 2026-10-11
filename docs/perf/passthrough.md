@@ -37,28 +37,36 @@ measured on one machine, so this record keeps the method with the figures.
 
 ## Results
 
-Commit `864cb1f2`, 2026-10-10. Intel Core Ultra X7 358H (4 performance, 8 efficient and 4 low-power
+Commit `f64df77f`, 2026-10-11. Intel Core Ultra X7 358H (4 performance, 8 efficient and 4 low-power
 cores) on mains power, platform profile `performance`, governor `powersave`, energy preference
-`performance`, turbo on. Two rounds, interleaved with the shredding benches in opposite orders; each
-invocation started at a one-minute load average of at most 1.0 with its cores idle, the load average
-0.21 to 1.00 at their starts. Each figure is the median of the two rounds, their range in brackets,
-and each round lies within 3 % of the median (1.5 points for a percentage); the interval's ends are
-the medians of the rounds' ends. A third round ran later under other load on the machine and is left
-out (the owner's ruling of 2026-10-10).
+`performance`, turbo on. Five rounds on the performance cores, interleaved with rounds of the
+merge-base and with the wide, shredding and served benches, in alternating orders; each invocation
+started at a one-minute load average under 1.0 with its cores idle, the load average 0.92 to 0.98
+at their starts. Each figure is the median of the five rounds, their range in brackets, and each
+round lies within 3 % of the median (1.5 points for a percentage) except the fifth round's
+instructions a cycle, 0.63; the interval's ends are the medians of the rounds' ends. Other load on
+the machine raised the one-minute load average to 2.66 by the end of the fifth round's run; the
+round is kept, and its overhead, 16.0 %, is the top of the range.
+
+The efficient-cores row is not re-measured at that commit: it is from commit `864cb1f2`,
+2026-10-10, the median of two rounds interleaved with the shredding benches in opposite orders,
+each started at a one-minute load average of 0.21 to 1.00, each within 3 % of the median (1.5
+points for a percentage). A third round ran later under other load on the machine and is left out
+(the owner's ruling of 2026-10-10).
 
 | Cores | tokio workers + compute threads | Engine | Overhead | 95 % interval | Instructions a cycle | CPUs busy | Spec's bound |
 |---|---|---|---|---|---|---|---|
-| 4 performance (`0-3`) | 2 + 2 | 28.3 ms | 17.0 % [16.7–17.4] | 16.3–17.8 % | 0.63 | 1.31 | ≤ 10 % |
-| 4 efficient (`4-7`) | 2 + 2 | 37.7 ms | 8.4 % [8.0–8.8] | 8.0–8.7 % | 0.55 | 1.30 | ≤ 10 % |
+| 4 performance (`0-3`) | 2 + 2 | 28.9 ms | 15.4 % [14.8–16.0] | 14.9–16.1 % | 0.60 | 1.26 | ≤ 10 % |
+| 4 efficient (`4-7`), commit `864cb1f2`, 2026-10-10 | 2 + 2 | 37.7 ms | 8.4 % [8.0–8.8] | 8.0–8.7 % | 0.55 | 1.30 | ≤ 10 % |
 
 On the performance cores the overhead is above the spec's bound. On the efficient cores the overhead
 is within the spec's bound.
 
-The allocations of one run of each side on the performance cores. The bare loop's are the same in
-every round; the engine's vary by a few allocations a batch from run to run, so they are the
-median of the two rounds with their range.
+The allocations of one run of each side on the performance cores, at commit `f64df77f`. Each side's
+are the same in all five rounds; the engine's are given as the median of the rounds with their
+range.
 
 | Side | Allocations, reallocations and bytes a row | A batch |
 |---|---|---|
 | Bare loop | 0.001, 0.000, 3 B | 62.062, 22.156, 270028 B |
-| Engine | 0.005, 0.001, 4 B | 396.094 [396.094–396.094], 40.328 [40.328–40.328], 322263 B [322263–322263] |
+| Engine | 0.004, 0.000, 4 B | 351.969 [351.969–351.969], 30.484 [30.484–30.484], 318137 B [318137–318137] |
