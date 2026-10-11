@@ -43,8 +43,17 @@ minors.
   value already discarded.
 - **New arrays meet the policy once the stream's table exists.** ADR 0009 governed a new array only
   once state recorded the stream's table. A new column is governed once the table has been created,
-  whether by a declared schema, an earlier unit, or an earlier load; a new array now is too,
-  judged as its unit starts, so the unit that creates the table takes every array it holds. An
+  whether by a declared schema, an earlier flush, or an earlier load; a new array now is too,
+  judged as each flush starts, so every flush that finds the table not yet created takes every
+  array any of its chunks or pieces holds, and each table it finds not yet created takes every
+  column they hold. A column whose first kept value lies in a later piece of such a flush is
+  added to the table an earlier piece created, and two partitions whose flushes both find the
+  table not yet created both take every column, the second adding to the table the first
+  created; a destination that cannot add columns refuses either addition,
+  `schema_change_unsupported`. That is the price of letting the cut into chunks and pieces
+  decide no column's existence or type. A table's column order, and which of two colliding names
+  takes a hashed suffix, follow the order in which its columns are first valued: a column first
+  valued in a later piece follows every column the table was created with, metadata included. An
   array the stream's declared schema holds, at any depth, is never new: the declared schema
   creates only the stream's own table, and each array's table is created by its first rows.
   - Amended 2026-10-05 (ADR 0046): a declared array is taken as given only while the stream's

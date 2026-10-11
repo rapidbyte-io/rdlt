@@ -47,6 +47,19 @@ pub(crate) struct Shape {
     pub(crate) key: Vec<Arc<str>>,
 }
 
+/// The kind of push a unit was written from, which decides what makes the columns of the
+/// stream's own table: an Arrow batch's every column, whatever values it holds, and a JSON
+/// push's values alone.
+///
+/// Child tables' columns are made by values whatever the kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PushKind {
+    /// Arrow batches.
+    Arrow,
+    /// JSON pushes, shredded.
+    Json,
+}
+
 /// One table's rows from a normalized batch.
 #[derive(Clone, Debug)]
 pub(crate) struct Part {

@@ -34,7 +34,7 @@ pub(crate) use lowering::{
 };
 #[cfg(test)]
 pub(crate) use lowering::{Check, nulled_at, refused, split_lowered};
-pub(crate) use model::Model;
+pub(crate) use model::{Creation, Model};
 pub(crate) use registry::{Admission, Tables, TablesDelta, shared};
 pub(crate) use resolve::{Incoming, Resolver, Settings};
 pub(crate) use session::{SharedSession, answered};

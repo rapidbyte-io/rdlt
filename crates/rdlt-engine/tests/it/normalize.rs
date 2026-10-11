@@ -1,20 +1,23 @@
 //! Normalized streams end to end: child tables, lineage, naming and replace.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use arrow_array::Array;
 use arrow_array::cast::AsArray;
 use arrow_array::types::Int64Type;
-use arrow_array::{ArrayRef, Int64Array, ListArray, RecordBatch, StructArray};
+use arrow_array::{ArrayRef, Int64Array, ListArray, RecordBatch, StringArray, StructArray};
 use arrow_schema::Field;
-use rdlt_connector::{Field as RdltField, Fields, LogicalType, TableSchema};
+use rdlt_connector::{Destination, Field as RdltField, Fields, LogicalType, TableSchema};
 use rdlt_connector_reference::{published, schema};
 use rdlt_engine::{
-    ErrorKind, Nested, RunOutcome, RunStatus, SchemaPolicy, SchemaSettings, StreamPlan, WriteMode,
+    BatchPolicy, ErrorKind, Nested, RunOutcome, RunStatus, SchemaPolicy, SchemaSettings,
+    StreamPlan, WriteMode,
 };
 use serde_json::{Value, json};
 
 use crate::support::batches::{BatchStream, batches};
+use crate::support::destinations::limited;
 use crate::support::{commit_every, engine, memory, pipeline, published_json, stream};
 
 fn normalized(name: &str) -> StreamPlan {
@@ -214,7 +217,7 @@ async fn containers_deeper_than_max_depth_land_as_json() {
 
 #[tokio::test(start_paused = true)]
 async fn nested_arrow_batches_normalize_like_json() {
-    let skus = Arc::new(arrow_array::StringArray::from(vec!["x", "y"])) as ArrayRef;
+    let skus = Arc::new(StringArray::from(vec!["x", "y"])) as ArrayRef;
     let items = StructArray::try_from(vec![("sku", skus)]).expect("a struct of skus");
     let item = Arc::new(Field::new("item", items.data_type().clone(), true));
     let offsets = arrow_buffer::OffsetBuffer::from_lengths([2]);
@@ -841,6 +844,350 @@ async fn the_children_of_a_dropped_row_change_no_schema() {
     assert_eq!(
         outcome.report.streams["events"].discarded_rows, 3,
         "row 2, its item and the item's tag"
+    );
+}
+
+/// A batch of `ids`' rows, each holding one item whose `z` is `z`'s value, and `extra` where
+/// given.
+fn items_of(ids: Vec<i64>, extra: Option<Vec<Option<i64>>>, z: ArrayRef) -> RecordBatch {
+    let rows = ids.len();
+    let items = StructArray::try_from(vec![("z", z)]).expect("a struct of z");
+    let item = Arc::new(Field::new("item", items.data_type().clone(), true));
+    let offsets = arrow_buffer::OffsetBuffer::from_lengths(vec![1; rows]);
+    let list = ListArray::new(item, offsets, Arc::new(items), None);
+    let mut columns = vec![("id", Arc::new(Int64Array::from(ids)) as ArrayRef)];
+    if let Some(extra) = extra {
+        columns.push(("extra", Arc::new(Int64Array::from(extra)) as ArrayRef));
+    }
+    columns.push(("items", Arc::new(list) as ArrayRef));
+    RecordBatch::try_from_iter(columns).expect("a batch of items")
+}
+
+/// What loading `groups` of `store`'s stream, a load each, as `plan` leaves: whether every load
+/// succeeded, and the schemas of the stream's table and of `child`.
+async fn grouped(
+    store: &str,
+    groups: Vec<RecordBatch>,
+    plan: fn() -> StreamPlan,
+    child: &str,
+) -> (bool, Option<TableSchema>, Option<TableSchema>) {
+    let mut succeeded = true;
+    for group in groups.into_iter().take(4) {
+        let streams = vec![BatchStream::new("events", vec![group])];
+        let outcome = load(store, streams, vec![plan()]).await;
+        succeeded &= outcome.report.status == RunStatus::Succeeded;
+    }
+    (succeeded, schema(store, "events"), schema(store, child))
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_child_column_no_kept_row_holds_a_value_in_makes_no_column_however_rows_are_grouped() {
+    fn plan() -> StreamPlan {
+        stream("events")
+            .schema(
+                SchemaSettings::new()
+                    .nested(Nested::normalize())
+                    .policy(SchemaPolicy::Freeze),
+            )
+            .column(
+                "extra",
+                SchemaSettings::new().policy(SchemaPolicy::DiscardRow),
+            )
+    }
+    let first = || items_of(vec![1], None, Arc::new(Int64Array::from(vec![5])));
+    let texts = |texts: Vec<Option<&str>>| Arc::new(StringArray::from(texts)) as ArrayRef;
+    // Row 2 goes for its extra value, and with it the only text in `z`.
+    let together = vec![
+        first(),
+        items_of(
+            vec![2, 3],
+            Some(vec![Some(1), None]),
+            texts(vec![Some("t"), None]),
+        ),
+    ];
+    let apart = vec![
+        first(),
+        items_of(vec![2], Some(vec![Some(1)]), texts(vec![Some("t")])),
+        items_of(vec![3], Some(vec![None]), texts(vec![None])),
+    ];
+    let together = grouped("valued_together", together, plan, "events__items").await;
+    let apart = grouped("valued_apart", apart, plan, "events__items").await;
+    assert!(together.0 && apart.0, "{together:?} {apart:?}");
+    assert_eq!(together, apart);
+    let items = together.2.expect("the items table");
+    let z = items.fields().iter().find(|field| field.name() == "z");
+    assert_eq!(z.map(RdltField::logical_type), Some(&LogicalType::Int64));
+}
+
+#[tokio::test(start_paused = true)]
+async fn dropping_rows_for_a_new_array_removes_no_column_of_the_streams_table() {
+    fn plan() -> StreamPlan {
+        normalized("events").column(
+            "tags",
+            SchemaSettings::new().policy(SchemaPolicy::DiscardRow),
+        )
+    }
+    let tagged = |ids: Vec<i64>, texts: Vec<Option<&str>>, tags: &[Option<&str>]| {
+        let mut list =
+            arrow_array::builder::ListBuilder::new(arrow_array::builder::StringBuilder::new());
+        for tag in tags.iter().take(4) {
+            if let Some(tag) = tag {
+                list.values().append_value(tag);
+            }
+            list.append(tag.is_some());
+        }
+        RecordBatch::try_from_iter([
+            ("id", Arc::new(Int64Array::from(ids)) as ArrayRef),
+            ("text", Arc::new(StringArray::from(texts)) as ArrayRef),
+            ("tags", Arc::new(list.finish()) as ArrayRef),
+        ])
+        .expect("a batch of tagged rows")
+    };
+    let first = || {
+        RecordBatch::try_from_iter([("id", Arc::new(Int64Array::from(vec![1])) as ArrayRef)])
+            .expect("a batch of ids")
+    };
+    // Row 2 goes for its tags, a new array, and holds the only text.
+    let together = vec![
+        first(),
+        tagged(vec![2, 3], vec![Some("t"), None], &[Some("x"), None]),
+    ];
+    let apart = vec![
+        first(),
+        tagged(vec![2], vec![Some("t")], &[Some("x")]),
+        tagged(vec![3], vec![None], &[None]),
+    ];
+    let together = grouped("rooted_together", together, plan, "events__tags").await;
+    let apart = grouped("rooted_apart", apart, plan, "events__tags").await;
+    assert!(together.0 && apart.0, "{together:?} {apart:?}");
+    assert_eq!(together, apart);
+    let events = together.1.expect("the stream's table");
+    assert!(
+        events.fields().iter().any(|field| field.name() == "text"),
+        "{events:?}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_json_column_only_rows_dropped_for_a_new_array_held_makes_no_column_however_grouped() {
+    fn plan() -> StreamPlan {
+        stream("events")
+            .schema(
+                SchemaSettings::new()
+                    .nested(Nested::normalize())
+                    .policy(SchemaPolicy::Freeze),
+            )
+            .column(
+                "tags",
+                SchemaSettings::new().policy(SchemaPolicy::DiscardRow),
+            )
+    }
+    // Row 2 goes for its tags, a new array, and holds the only `a`.
+    let (first, second, third) = (
+        r#"{"id":1}"#,
+        r#"{"id":2,"a":"v","tags":["t"]}"#,
+        r#"{"id":3}"#,
+    );
+    let mut outcomes = Vec::new();
+    for (store, loads) in [
+        (
+            "json_together",
+            vec![first.to_owned(), [second, third].join("\n")],
+        ),
+        (
+            "json_apart",
+            vec![first.to_owned(), second.to_owned(), third.to_owned()],
+        ),
+    ] {
+        let mut succeeded = true;
+        for push in loads.iter().take(4) {
+            let streams = vec![BatchStream::json("events", &[push.as_str()])];
+            let outcome = load(store, streams, vec![plan()]).await;
+            succeeded &= outcome.report.status == RunStatus::Succeeded;
+        }
+        outcomes.push((succeeded, schema(store, "events")));
+    }
+    assert!(
+        outcomes.iter().all(|(succeeded, _)| *succeeded),
+        "{outcomes:?}"
+    );
+    assert_eq!(outcomes[0], outcomes[1]);
+    let events = outcomes[0].1.clone().expect("the stream's table");
+    assert!(
+        events.fields().iter().all(|field| field.name() != "a"),
+        "{events:?}"
+    );
+}
+
+/// Loads `push`, cut into chunks of 16 bytes, into a new table of a stream normalized under
+/// `policy`, at `destination`.
+async fn in_chunks(
+    store: &str,
+    push: &str,
+    policy: SchemaPolicy,
+    destination: Arc<dyn Destination>,
+) -> RunOutcome {
+    let batching =
+        BatchPolicy::new(8 << 20, 1 << 20, Duration::from_secs(1), 16).expect("a valid policy");
+    let plan = stream("events").schema(
+        SchemaSettings::new()
+            .nested(Nested::normalize())
+            .policy(policy),
+    );
+    let source = batches(store, vec![BatchStream::json("events", &[push])]).await;
+    engine(commit_every(1000).batch(batching))
+        .run(pipeline(store, [plan]), source, destination)
+        .await
+}
+
+/// Loads `push`, cut into chunks of 16 bytes, into a new table of a frozen normalized stream.
+async fn frozen_in_chunks(store: &str, push: &str) -> RunOutcome {
+    in_chunks(store, push, SchemaPolicy::Freeze, memory(store).await).await
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_flush_that_creates_a_table_takes_a_column_only_a_later_chunk_holds_values_in() {
+    // The first record fills a chunk, so the second, the only one holding `a`, is cut apart.
+    let outcome = frozen_in_chunks(
+        "creating_chunks_column",
+        "{\"id\":10000000001}\n{\"id\":2,\"a\":\"v\"}",
+    )
+    .await;
+    succeeded(&outcome);
+    let events = schema("creating_chunks_column", "events").expect("the stream's table");
+    assert!(
+        events.fields().iter().any(|field| field.name() == "a"),
+        "{events:?}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_flush_that_creates_a_table_takes_an_array_only_a_later_chunk_holds_items_in() {
+    let outcome = frozen_in_chunks(
+        "creating_chunks_array",
+        "{\"id\":10000000001}\n{\"id\":2,\"tags\":[\"t\"]}",
+    )
+    .await;
+    succeeded(&outcome);
+    assert!(schema("creating_chunks_array", "events__tags").is_some());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_destination_that_cannot_add_columns_refuses_one_only_a_later_chunk_of_its_first_flush_holds()
+ {
+    // The first chunk creates the table without `a`, which no row of it holds: the second
+    // chunk's `a` is then a column to add, which the destination cannot.
+    let store = "creating_chunks_fixed";
+    let fixed = limited(memory(store).await, |capabilities| {
+        capabilities.schema_changes.add_column = false;
+    });
+    let outcome = in_chunks(
+        store,
+        "{\"id\":10000000001}\n{\"id\":2,\"a\":\"v\"}",
+        SchemaPolicy::Evolve,
+        fixed,
+    )
+    .await;
+    assert_eq!(outcome.report.status, RunStatus::Failed);
+    let error = outcome.error.expect("the run failed");
+    assert_eq!(
+        (error.kind(), error.code()),
+        (ErrorKind::Schema, Some("schema_change_unsupported")),
+        "{error:?}"
+    );
+    let events = schema(store, "events").expect("the first chunk created the table");
+    assert!(
+        events.fields().iter().all(|field| field.name() != "a"),
+        "{events:?}"
+    );
+}
+
+/// Loads two hundred thousand rows of one Arrow batch into a new table of a frozen normalized
+/// stream at `destination`, under a budget of 34 MiB, which lowers the flush in several pieces:
+/// only the last row's item holds `z`.
+async fn in_pieces(store: &str, destination: Arc<dyn Destination>) -> RunOutcome {
+    const ROWS: usize = 200_000;
+    let z: Vec<Option<&str>> = (0..ROWS)
+        .map(|row| (row == ROWS - 1).then_some("v"))
+        .take(ROWS)
+        .collect();
+    let ids = (0..ROWS).map(|row| i64::try_from(row).expect("a row fits"));
+    let batch = items_of(
+        ids.take(ROWS).collect(),
+        None,
+        Arc::new(StringArray::from(z)),
+    );
+    let plan = stream("events").schema(
+        SchemaSettings::new()
+            .nested(Nested::normalize())
+            .policy(SchemaPolicy::Freeze),
+    );
+    let source = batches(store, vec![BatchStream::new("events", vec![batch])]).await;
+    let config = commit_every(1_000_000_000).memory(34 << 20).lanes(1);
+    engine(config)
+        .run(pipeline(store, [plan]), source, destination)
+        .await
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_flush_that_creates_a_table_takes_a_child_column_only_a_later_piece_holds_values_in() {
+    let store = "creating_pieces";
+    succeeded(&in_pieces(store, memory(store).await).await);
+    let items = schema(store, "events__items").expect("the items table");
+    assert!(
+        items.fields().iter().any(|field| field.name() == "z"),
+        "{items:?}"
+    );
+    // A destination that cannot add columns refuses `z`, so the piece holding its value did not
+    // create the table: the flush was lowered in more than one piece.
+    let store = "creating_pieces_fixed";
+    let fixed = limited(memory(store).await, |capabilities| {
+        capabilities.schema_changes.add_column = false;
+    });
+    let error = in_pieces(store, fixed)
+        .await
+        .error
+        .expect("a later piece's column is refused");
+    assert_eq!(
+        (error.kind(), error.code()),
+        (ErrorKind::Schema, Some("schema_change_unsupported")),
+        "{error:?}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_tables_columns_follow_the_order_in_which_they_are_first_valued() {
+    let push = "{\"id\":10000000001}\n{\"id\":2,\"a\":\"v\"}";
+    let names = |store: &str| -> Vec<String> {
+        let events = schema(store, "events").expect("the stream's table");
+        events
+            .fields()
+            .iter()
+            .map(|field| field.name().to_owned())
+            .collect()
+    };
+    // Cut between the rows, `a` is first valued after the first chunk created the table, so it
+    // follows every column the table was created with, its metadata columns included.
+    let store = "ordered_chunks";
+    succeeded(&in_chunks(store, push, SchemaPolicy::Evolve, memory(store).await).await);
+    assert_eq!(
+        names(store),
+        ["id", "_rdlt_load_id", "_rdlt_loaded_at", "_rdlt_id", "a"]
+    );
+    // Whole, `a` is valued as the table is created, among its columns.
+    let store = "ordered_whole";
+    let source = batches(store, vec![BatchStream::json("events", &[push])]).await;
+    let outcome = engine(commit_every(1000))
+        .run(
+            pipeline(store, [normalized("events")]),
+            source,
+            memory(store).await,
+        )
+        .await;
+    succeeded(&outcome);
+    assert_eq!(
+        names(store),
+        ["id", "a", "_rdlt_load_id", "_rdlt_loaded_at", "_rdlt_id"]
     );
 }
 

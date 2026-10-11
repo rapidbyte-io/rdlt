@@ -127,11 +127,11 @@ pub fn pruned(
     let Some(root) = parts.next() else {
         return Ok(0);
     };
-    let root = normalize::Pruned::whole(root);
+    let root = normalize::Pruned::whole(root, normalize::PushKind::Arrow);
     let kept: BooleanArray = (0..root.part.batch.num_rows())
         .map(|row| Some(row % every.get() != 0))
         .collect();
-    let mut dropped = normalize::Dropped::default();
+    let mut dropped = normalize::Dropped::new(normalize::PushKind::Arrow);
     dropped.unkept(&root, &kept);
     let mut left = kept.true_count();
     for part in parts {

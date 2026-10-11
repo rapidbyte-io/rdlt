@@ -24,6 +24,16 @@ pub(crate) struct Model {
     pub(crate) exact: BTreeSet<Arc<str>>,
 }
 
+/// Whether a batch's table takes every column, as one being created does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Creation {
+    /// As the table's model says: only until it is created.
+    AsModeled,
+    /// For every batch of the flush that found the table not yet created, so where the flush
+    /// was cut decides no column's existence or type.
+    ByFlush,
+}
+
 impl Model {
     /// The committed model of a table, or an empty one when nothing is committed.
     pub(crate) fn from_state(state: Option<&TableState>) -> Result<Self, Error> {

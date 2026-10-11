@@ -4,6 +4,11 @@
 //!
 //! Rows are known by their part and position, not their ids, which rows sharing a key share: a
 //! bit for each of a part's rows as normalized, set where the row went.
+//!
+//! A part keeps only the columns a row left in it holds a value in, as a JSON field is a column
+//! only where a value holds it, so dropped rows keep no column. The stream's own part of an Arrow
+//! push keeps every column its batch gives it, as a stream that does not normalize does, so
+//! dropping rows removes none of its columns.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -15,16 +20,19 @@ use arrow_buffer::{BooleanBuffer, BooleanBufferBuilder};
 use arrow_schema::ArrowError;
 use arrow_select::filter::FilterBuilder;
 
-use super::{Lineage, Parent, Part};
+use super::{Lineage, Parent, Part, PushKind};
 
 /// The rows dropped from a unit so far: by their part's path, a bit for each of its rows as
 /// normalized, set where the row was dropped.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct Dropped {
     rows: BTreeMap<Vec<Arc<str>>, Bits>,
+    /// The kind of push the unit was written from.
+    kind: PushKind,
 }
 
-/// A part without its dropped rows.
+/// A part without its dropped rows, and without the columns no row left holds a value in where
+/// values make its columns.
 #[derive(Debug)]
 pub(crate) struct Pruned {
     pub(crate) part: Part,
@@ -35,6 +43,14 @@ pub(crate) struct Pruned {
 }
 
 impl Dropped {
+    /// No rows dropped yet from a unit written from a push of `kind`.
+    pub(crate) fn new(kind: PushKind) -> Self {
+        Self {
+            rows: BTreeMap::new(),
+            kind,
+        }
+    }
+
     /// Whether no row was dropped.
     pub(crate) fn is_empty(&self) -> bool {
         self.rows.is_empty()
@@ -61,7 +77,7 @@ impl Dropped {
                 Some((dropped, parent.row.as_primitive::<UInt32Type>().values()))
             });
             if own.is_none() && parents.is_none() {
-                return Ok(Pruned::whole(part));
+                return Ok(Pruned::whole(part, self.kind));
             }
             BooleanBuffer::collect_bool(rows, |row| {
                 let gone = own.is_some_and(|own| own.get(row))
@@ -71,7 +87,7 @@ impl Dropped {
         };
         let count = rows - kept.count_set_bits();
         if count == 0 {
-            return Ok(Pruned::whole(part));
+            return Ok(Pruned::whole(part, self.kind));
         }
         let own = self.rows.entry(part.path.clone()).or_default();
         for row in (0..rows).filter(|row| !kept.value(*row)) {
@@ -79,7 +95,7 @@ impl Dropped {
         }
         Ok(Pruned {
             count: u64::try_from(count).expect("a part's rows are counted in 64 bits"),
-            part: retain(part, &kept)?,
+            part: valued(retain(part, &kept)?, self.kind),
             kept: Some(kept),
         })
     }
@@ -106,10 +122,10 @@ impl Dropped {
 }
 
 impl Pruned {
-    /// `part` with every row.
-    pub(crate) fn whole(part: Part) -> Self {
+    /// `part`, of a unit written from a push of `kind`, with every row.
+    pub(crate) fn whole(part: Part, kind: PushKind) -> Self {
         Self {
-            part,
+            part: valued(part, kind),
             count: 0,
             kept: None,
         }
@@ -147,8 +163,7 @@ fn at(row: u32) -> usize {
     usize::try_from(row).expect("a 32-bit position fits in an index")
 }
 
-/// `part` with only the rows `kept` keeps, and without the columns only dropped rows held values
-/// in, so dropped rows change no schema.
+/// `part` with only the rows `kept` keeps.
 fn retain(part: Part, kept: &BooleanBuffer) -> Result<Part, ArrowError> {
     // One predicate filters the batch and every array of its lineage.
     let predicate = FilterBuilder::new(&BooleanArray::new(kept.clone(), None))
@@ -168,24 +183,40 @@ fn retain(part: Part, kept: &BooleanBuffer) -> Result<Part, ArrowError> {
             })
         })
         .transpose()?;
-    let batch = predicate.filter_record_batch(&part.batch)?;
-    let held = |array: &ArrayRef| array.logical_null_count() < array.len();
-    let columns: Vec<usize> = (0..batch.num_columns())
-        .filter(|column| held(batch.column(*column)) || !held(part.batch.column(*column)))
-        .collect();
     Ok(Part {
         path: part.path,
-        columns: columns
-            .iter()
-            .map(|column| part.columns[*column].clone())
-            .collect(),
-        batch: batch.project(&columns)?,
+        columns: part.columns,
+        batch: predicate.filter_record_batch(&part.batch)?,
         lineage: Lineage {
             id: filter(&part.lineage.id)?,
             root_row: filter(&part.lineage.root_row)?,
             parent,
         },
     })
+}
+
+/// `part`, of a unit written from a push of `kind`, without the columns none of its rows holds a
+/// value in, unless it is the stream's own table's of an Arrow push.
+fn valued(part: Part, kind: PushKind) -> Part {
+    let held = |array: &ArrayRef| array.logical_null_count() < array.len();
+    let batch = &part.batch;
+    let typed = part.path.is_empty() && kind == PushKind::Arrow;
+    if typed || batch.columns().iter().all(held) {
+        return part;
+    }
+    let columns: Vec<usize> = (0..batch.num_columns())
+        .filter(|column| held(batch.column(*column)))
+        .collect();
+    Part {
+        columns: columns
+            .iter()
+            .map(|column| part.columns[*column].clone())
+            .collect(),
+        batch: batch
+            .project(&columns)
+            .expect("the columns a part keeps are among its batch's"),
+        ..part
+    }
 }
 
 #[cfg(test)]

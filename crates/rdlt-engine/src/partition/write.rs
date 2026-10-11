@@ -23,12 +23,13 @@ use self::changes::{Ignored, split_changes};
 use self::held::Held;
 use self::pieces::{Lowered, Piece, Pieces};
 use self::queue::queue;
-use super::coalesce::Flushed;
+use super::coalesce::{Flushed, Unit};
 use super::{ChangeMode, OpenSegment, PartitionContext, PartitionJob};
 use crate::budget::{Denied, MemoryBudget, Reservation, Shares, TooLarge};
 use crate::cost::CHANGE_ROW;
 use crate::error::{Error, ErrorKind};
 use crate::limits::{MAX_PIECE_BYTES, ROW_EXCEEDS_BUDGET};
+use crate::normalize::PushKind;
 use crate::table::{Incoming, LoweringPlan, Prepared, Stamp, aligned};
 
 /// Writes pushes gathered together: Arrow batches as one batch, JSON shredded into batches.
@@ -38,9 +39,13 @@ pub(super) async fn write_flushed(
     open: &mut OpenSegment,
     flushed: Flushed,
 ) -> Result<(), Error> {
+    let kind = match flushed.unit {
+        Unit::Arrow(_) => PushKind::Arrow,
+        Unit::Json(_) => PushKind::Json,
+    };
     let (units, shred) = units::of(job, context, flushed).await?;
     open.shred.add(&shred);
-    write(job, context, open, units).await
+    write(job, context, open, units, kind).await
 }
 
 /// Reserves `bytes` for the lowering this partition does next, all of them in one request, so
@@ -88,8 +93,8 @@ fn reserved_times(context: &PartitionContext) -> u64 {
     1 + u64::from(context.wal.is_some())
 }
 
-/// Lowers `units`, each some batches of one schema and the memory they hold, into the partition's
-/// table and queues them on its lane, in order.
+/// Lowers `units`, each some batches of one schema and the memory they hold, written from pushes
+/// of `kind`, into the partition's table and queues them on its lane, in order.
 ///
 /// - Each unit's plan is found in order, since finding it may change the table.
 /// - The unit is then cut into pieces by what lowering each holds at once as its table stores
@@ -107,9 +112,10 @@ async fn write(
     context: &PartitionContext,
     open: &mut OpenSegment,
     units: Vec<(Vec<RecordBatch>, Held)>,
+    kind: PushKind,
 ) -> Result<(), Error> {
     if let Some(shape) = context.tables.shape(job.table) {
-        return normalized::write_normalized(job, context, open, units, &shape).await;
+        return normalized::write_normalized(job, context, open, units, &shape, kind).await;
     }
     let judged = judged(job, open, units)?;
     let rounding: BTreeSet<ColumnPath> = judged

@@ -131,6 +131,17 @@ Arrow columns and the rows normalizing makes of both escaped that in several way
 - **An array no child table can be named after follows the stream's policy.** Its path is not a
   valid table path: the discard policies drop it, the others refuse, `table_path_invalid`
   (`ErrorKind::Schema`), on a first load too. No escaped or hashed name is made up for it.
+- **A normalized column is made by values.** A column of a child table, or of the stream's own
+  table where the flush was shredded from JSON, is made only where a row its piece keeps, after
+  dropped rows and their descendants go, holds a value in it: an Arrow child column holding only
+  nulls makes no column and brings no type, as a JSON field no row holds makes none. The stream's
+  own table of an Arrow push keeps every column its batch gives it, nulls typed included, in a
+  piece any of whose rows it keeps, as a stream that does not normalize does. Whether a table is
+  being created is judged once a flush, so a table the flush creates takes every column of every
+  chunk and piece of it (ADR 0010). So the cut into chunks and pieces within a flush decides no
+  column's existence or type, and how rows are grouped into flushes decides nothing for a child
+  or JSON-root column beyond which flush first holds a value in it, which then meets the
+  column's policy: a column holding values only in dropped rows is no column.
 - **Errors quote a record's content cut short.** A key or a number an error quotes is shown to
   `QUOTED_BYTES`, 128, as other text a connector sent is.
 - Rejected:
