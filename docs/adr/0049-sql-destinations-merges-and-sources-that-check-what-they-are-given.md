@@ -320,8 +320,10 @@ given:
   private file stays.
 - The check of a database's place is by path after its directory is asked: it holds while the
   directories above are the operator's, as ADR 0047 leaves them.
-- The exact conversion repeats what the engine's own lowering does for arriving values; one
-  implementation in the connector SDK would serve both.
+- The merge retypes a stored column by rules of its own: it converts the destination's stored
+  Arrow types and refuses a 64-bit integer into a float outright, where the engine converts
+  arriving values by logical type, judges each integer a float would take, and renders JSON and
+  text. The rule both apply, widening a temporal value, is `rdlt_connector::instants` for both.
 - An Arrow merge table lists a file for each shape of its rows: the fifteen of most rows, and
   the others in groups, about one for each 2^20 cells the group's rows lack of each other's
   columns, so the count follows what was written and no constant bounds it short of the
