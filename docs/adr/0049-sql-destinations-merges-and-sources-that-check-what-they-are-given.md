@@ -149,8 +149,8 @@ given:
   the wider type cannot hold fails, and a pair outside the list is refused, a struct losing a
   field among them. An id or a sequence a destination keeps as text compares as the bytes of
   the text. A `Date64` that is no whole day is the day it falls in, as the engine reads it.
-  - Amended 2026-10-04 (ADR 0046): temporal values widen through `rdlt_connector::instants`, as
-    the engine's do: a date is its midnight in UTC, and a zone never moves an instant.
+  - Temporal values widen through `rdlt_connector::instants`, as the engine's do (ADR 0046): a
+    date is its midnight in UTC, and a zone never moves an instant.
 - **A schema change the held rows do not fit is refused where it is applied.** The memory
   destination converts what a table holds, its rows, generations and tombstones, before a
   column takes a type, and refuses the change as `schema_conflict`: the table stays at the
@@ -194,7 +194,7 @@ given:
     as batches of all of them, at what the whole schema costs, and a line of very many columns
     still starts a run of its own. What a writer staged is read as it was written, since its
     flags count its columns. A reader of the destination is given every column, an absent one
-    as nulls its rows share. No entry of the merge gives every column of every row any more,
+    as nulls its rows share. No entry of the merge gives every column of every row,
     and nothing is refused for its width.
   - A line's columns are found by one pass over its bytes that decodes nothing but its keys
     and nests no call, so a record is taken or refused as its decoder takes or refuses it. A
@@ -234,16 +234,16 @@ given:
     over a key's upserts find what each column was last set to: a commit of flagged updates
     costs its rows times its columns.
 - **Receipts are kept.** A SQL destination and the memory destination store a receipt for every
-  commit and answer a repeated commit from it, however far back in its load and however many
-  loads ago. The engine's log can hold a commit's frame after the frames of many later commits
-  are gone, so a destination that forgot receipts by a rule of its own would refuse a replay
-  the engine may make, or apply a commit twice. Which loads and commits can still be repeated
-  is the engine's knowledge: a horizon it declares is left to the work on the write-ahead log.
-  Amended 2026-10-03 (ADR 0045): each commit declares that horizon, and a SQL destination and the
-  memory destination forget the receipts before it within the commit.
+  commit the engine may still repeat and answer a repeated commit from it, however far back in its
+  load and however many loads ago. The engine's log can hold a commit's frame after the frames of
+  many later commits are gone, so a destination that forgot receipts by a rule of its own would
+  refuse a replay the engine may make, or apply a commit twice. Which loads and commits can still be
+  repeated is the engine's knowledge: a commit declares the oldest it may repeat, its horizon, and a
+  SQL destination and the memory destination forget the receipts before it within that commit; a
+  commit that declares none forgets none (ADR 0045).
 - **Tombstones are kept** by the rules of ADR 0027 and no other. A delete of a key the table
-  never held leaves one too: its insert may be sent again alone. What a merge no longer does is
-  pay for each tombstone it leaves as it was. A history table's upsert lifts its key's
+  never held leaves one too: its insert may be sent again alone. A merge pays nothing for a
+  tombstone it leaves as it was. A history table's upsert lifts its key's
   tombstone as a change table's does.
 - **A sequence no change can follow is the source's to give.** A destination cannot tell an
   implausible source position from a real one, so the guard of ADR 0027 trusts them; a table
@@ -306,9 +306,8 @@ given:
 - Dialects with identifiers under 63 bytes are unsupported.
 - A stream holding a float that is no number, or negative zero, does not load into SQLite.
 - `_rdlt_receipts` grows by a row a commit, and a change table's tombstones by a row a key
-  hard-deleted, until the engine declares what it may still repeat. Amended 2026-10-03
-  (ADR 0045): receipts are forgotten before the horizon each commit declares; tombstones are
-  not, as no commit horizon shows one unneeded.
+  hard-deleted; receipts are forgotten before the horizon each commit declares, and tombstones
+  are not, as no commit horizon shows one unneeded (ADR 0045).
 - A growing log whose group is kept nowhere accepts a start past its head and fails the read
   to be tried again until the head is there: a host that wants a forged start refused keeps
   the group in a file. A group file's beginning is the calendar's: a clock set back between
@@ -337,9 +336,8 @@ given:
 - A SQLite database with a second hard link is refused.
 - A merge gives its rows back by the columns they hold, not in the order they were published.
 - The engine answers `schema_conflict` by resolving names again, which helps a clashing new
-  column and not a widen of a column that exists. Amended 2026-10-03 (ADR 0041): a refused widen
-  now routes the column's values to a variant column, or is refused typed where none may take
-  them.
+  column and not a widen of a column that exists; a refused widen routes the column's values to
+  a variant column, or is refused typed where none may take them (ADR 0041).
 - A connector that flags its key column is refused at every destination, since the engine
   carries the flag through.
 - Cost tests of a SQL plan count the steps SQLite's virtual machine takes, many operations

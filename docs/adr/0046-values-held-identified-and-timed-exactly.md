@@ -92,7 +92,7 @@ trusted them in ways that broke data quietly or failed whole streams on one row:
 - **A value its column cannot hold follows the column's schema policy, row by row.** The
   policies that decide a value that would change the schema decide one no type of the column
   holds, and a change time no version can begin at: Evolve and Freeze refuse the batch with a
-  typed error as before (`value_unrepresentable`, `change_time_invalid`, `change_time_null`);
+  typed error (`value_unrepresentable`, `change_time_invalid`, `change_time_null`);
   DiscardRow drops the row, its child rows with it in a normalized stream; DiscardValue nulls
   the value, and a version whose change time it nulls begins when its batch arrived. Each is
   counted, a value refused on two counts once. A value is found refused by converting halves of
