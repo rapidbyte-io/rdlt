@@ -37,6 +37,11 @@ impl SqlDialect for Sqlite {
         true
     }
 
+    fn max_params(&self) -> usize {
+        // SQLite's default since 3.32; the reference destination holds its connections to it.
+        32_766
+    }
+
     fn upserts(&self) -> Upserts {
         Upserts::OnConflict
     }

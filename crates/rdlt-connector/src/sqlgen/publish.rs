@@ -122,7 +122,12 @@ impl<D: SqlDialect> SqlPlanner<D> {
     /// The query returning what `pipeline` staged at `epoch` in `segments`, as rows of table,
     /// generation (or null), merge key columns and sequence column (or nulls; read them with
     /// [`merge_key`]), rows and bytes.
-    pub fn staged(&self, pipeline: &PipelineId, epoch: Epoch, segments: &SegmentSet) -> Statement {
+    pub fn staged(
+        &self,
+        pipeline: &PipelineId,
+        epoch: Epoch,
+        segments: &SegmentSet,
+    ) -> Result<Statement> {
         let mut sql = self.sql();
         sql.push(&format!(
             "SELECT name, generation, merge_key, merge_seq, SUM(rows), SUM(bytes) FROM {SEGMENTS} \
@@ -133,7 +138,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
             " GROUP BY name, generation, merge_key, merge_seq \
              ORDER BY name, generation, merge_key, merge_seq",
         );
-        sql.finish()
+        self.single(sql.finish())
     }
 
     /// What a commit publishes, in the order it publishes it: `staged`, what
@@ -230,7 +235,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
         delete.push(&format!("DELETE FROM {staging} WHERE "));
         self.rows_of(&mut delete, staged, of.pipeline, epoch, segments);
         plan.push(delete.finish());
-        Ok(plan)
+        self.bounded(plan)
     }
 
     /// The statement inserting into `target` the `names` of the staged rows `of` names.
@@ -334,15 +339,27 @@ impl<D: SqlDialect> SqlPlanner<D> {
         let mut sql = self.sql();
         sql.push(&format!("DELETE FROM {staging} WHERE "));
         self.rows_of(&mut sql, staged, pipeline, epoch, segments);
-        Ok(sql.finish())
+        self.single(sql.finish())
     }
 
     /// The statement forgetting what `pipeline` staged at `epoch` in `segments`, once published.
-    pub fn forget(&self, pipeline: &PipelineId, epoch: Epoch, segments: &SegmentSet) -> Statement {
+    pub fn forget(
+        &self,
+        pipeline: &PipelineId,
+        epoch: Epoch,
+        segments: &SegmentSet,
+    ) -> Result<Statement> {
         let mut sql = self.sql();
         sql.push(&format!("DELETE FROM {SEGMENTS} WHERE "));
         self.staged_by(&mut sql, pipeline, epoch, segments, SEGMENT_COLUMNS);
-        sql.finish()
+        self.single(sql.finish())
+    }
+
+    /// `statement`, refused where it binds more values than the dialect takes.
+    fn single(&self, statement: Statement) -> Result<Statement> {
+        let [statement] = <[Statement; 1]>::try_from(self.bounded(vec![statement])?)
+            .expect("one statement in, one out");
+        Ok(statement)
     }
 
     /// The statements removing what sessions of `pipeline` older than `epoch` staged in

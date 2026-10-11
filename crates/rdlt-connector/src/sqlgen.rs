@@ -26,7 +26,7 @@ mod tests;
 mod upsert;
 
 use crate::commit::SegmentSet;
-use crate::error::{ConnectorError, ConnectorErrorKind, Result};
+use crate::error::{ConnectorError, ConnectorErrorKind, LimitExceeded, Result};
 use crate::id::{Epoch, PipelineId};
 use crate::types::LogicalType;
 
@@ -198,6 +198,12 @@ pub trait SqlDialect: Send + Sync {
         None
     }
 
+    /// The most values one statement may bind, where the database's limit is lower than what a
+    /// statement the planner writes binds: by default 999, the fewest a supported database takes.
+    fn max_params(&self) -> usize {
+        999
+    }
+
     /// Whether no destination table may take the name `name`: the database keeps it for itself,
     /// or would take it for another table's, as one matching names without case takes another
     /// case of a name; no name by default.
@@ -263,6 +269,20 @@ impl<D: SqlDialect> SqlPlanner<D> {
             dialect: &self.dialect,
             text: String::new(),
             params: Vec::new(),
+        }
+    }
+
+    /// `plan`, refused where one of its statements binds more values than the dialect takes:
+    /// a commit's segments in more ranges than one statement can name.
+    pub(super) fn bounded(&self, plan: Vec<Statement>) -> Result<Vec<Statement>> {
+        let limit = self.dialect.max_params();
+        match plan.iter().map(|statement| statement.params.len()).max() {
+            Some(actual) if actual > limit => Err(ConnectorError::exceeds(LimitExceeded {
+                name: "statement parameters",
+                limit: u64::try_from(limit).unwrap_or(u64::MAX),
+                actual: u64::try_from(actual).unwrap_or(u64::MAX),
+            })),
+            _ => Ok(plan),
         }
     }
 

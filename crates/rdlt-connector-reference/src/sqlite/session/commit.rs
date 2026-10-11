@@ -49,7 +49,7 @@ pub(super) fn publish(
     let mut staged = Vec::new();
     for row in query(
         transaction,
-        &planner.staged(pipeline, epoch, &meta.segments),
+        &planner.staged(pipeline, epoch, &meta.segments)?,
     )? {
         let (table, count, size) = staged_segment(&row)?;
         staged.push(table);
@@ -70,7 +70,7 @@ pub(super) fn publish(
     }
     run(
         transaction,
-        &planner.forget(pipeline, epoch, &meta.segments),
+        &planner.forget(pipeline, epoch, &meta.segments)?,
     )?;
     abandon(transaction, planner, (pipeline, epoch), &meta.abandoned)?;
     Ok((rows, bytes))
@@ -87,7 +87,7 @@ fn abandon(
     if abandoned.is_empty() {
         return Ok(());
     }
-    for row in query(transaction, &planner.staged(pipeline, epoch, abandoned))? {
+    for row in query(transaction, &planner.staged(pipeline, epoch, abandoned)?)? {
         let (staged, ..) = staged_segment(&row)?;
         let table = owned(transaction, planner, pipeline, &staged.name)?;
         run(
@@ -95,7 +95,7 @@ fn abandon(
             &planner.abandon(&table, &staged, (pipeline, epoch), abandoned)?,
         )?;
     }
-    run(transaction, &planner.forget(pipeline, epoch, abandoned))?;
+    run(transaction, &planner.forget(pipeline, epoch, abandoned)?)?;
     Ok(())
 }
 

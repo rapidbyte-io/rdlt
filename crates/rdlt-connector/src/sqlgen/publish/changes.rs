@@ -90,7 +90,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
             computed.finish(),
             self.keyed(&merging, &merging.target, &[MERGED, MARKED, BURIED]),
         ];
-        plan.extend(self.bounded(&merging, &merging.target, false));
+        plan.extend(self.below_bound(&merging, &merging.target, false));
         plan.extend([
             self.moved(
                 &merging,
@@ -100,7 +100,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
             ),
             self.keyed(&merging, &merging.tombstones, &[MERGED, BURIED]),
         ]);
-        plan.extend(self.bounded(&merging, &merging.tombstones, true));
+        plan.extend(self.below_bound(&merging, &merging.tombstones, true));
         plan.push(self.moved(
             &merging,
             &merging.tombstones,
@@ -201,7 +201,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
     /// Without a new bound, the table is not read: its rows before the bound are listed by a
     /// join from the bound, which then has no row, and found by their first key column through
     /// the key's index, as the rows without one are.
-    fn bounded(&self, changed: &Changed<'_>, table: &str, bound_too: bool) -> [Statement; 2] {
+    fn below_bound(&self, changed: &Changed<'_>, table: &str, bound_too: bool) -> [Statement; 2] {
         let Changed {
             op,
             seq,
