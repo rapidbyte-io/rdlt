@@ -46,31 +46,36 @@ reach 0.59 and 0.55 (measured at 2 048, 16 384 and 65 536 rows alike). No cost t
 
 ## Results
 
-Intel Core Ultra X7 358H, mains power, 2026-10-07, commit `28726685db15`, governor `powersave`
-with energy preference `performance`, one-minute load average 0.89–1.07 and five-minute 1.34–2.55
+Intel Core Ultra X7 358H, mains power, 2026-10-11, commit `57d5f5066dc8`, governor `powersave`
+with energy preference `performance`, one-minute load average 0.77–0.99 and five-minute 1.16–1.78
 before the runs; criterion's estimate, the median of five rounds and their range, and how many
 rounds fall within ±3 % of the median.
 
 | Case | Time a batch | Rounds within ±3 % | Rows a second | Instructions a cycle | A row | A batch |
 |---|---|---|---|---|---|---|
-| `append_native` | 1.49 µs (1.41–1.57 µs) | 3 of 5 | 44.0 G | 1.70 | 0 allocations, 0 bytes | 9 allocations, 928 bytes |
-| `append_text` | 26.54 ms (25.52–27.75 ms) | 3 of 5 | 2.47 M | 5.82 | 2.001 allocations, 338 bytes | 131 162 allocations, 22.2 MB |
-| `merge_unique` | 7.86 ms (7.68–8.56 ms) | 4 of 5 | 8.34 M | 3.92 | 0.167 allocations, 79 bytes | 10 971 allocations, 5.18 MB |
-| `merge_duplicates` | 6.80 ms (6.61–7.01 ms) | 4 of 5 | 9.64 M | 3.56 | 0.085 allocations, 115 bytes | 5 560 allocations, 7.51 MB |
-| `history` | 127.29 ms (125.22–128.53 ms) | 5 of 5 | 515 k | 3.99 | 14.006 allocations, 619 bytes | 917 882 allocations, 40.6 MB |
-| `changes` | 18.44 ms (17.87–19.71 ms) | 2 of 5 | 3.55 M | 4.72 | 2.007 allocations, 92 bytes | 131 557 allocations, 6.01 MB |
-| `split_json` | 20.29 ms (19.71–21.10 ms) | 3 of 5 | 3.23 M | 3.84 | 11.170 allocations, 1 793 bytes | 732 066 allocations, 117 MB |
-| `one_bad_value` | 12.46 ms (11.90–15.53 ms) | 2 of 5 | 5.26 M | 2.30 | 4.001 allocations, 306 bytes | 262 178 allocations, 20.0 MB |
-| `temporal_widening` | 657 µs (607–714 µs) | 2 of 5 | 99.7 M | 5.84 | 0 allocations, 8 bytes | 12 allocations, 525 kB |
+| `append_native` | 1.49 µs (1.45–1.50 µs) | 5 of 5 | 44.0 G | 1.69 | 0 allocations, 0 bytes | 9 allocations, 928 bytes |
+| `append_text` | 25.19 ms (24.45–25.79 ms) | 5 of 5 | 2.60 M | 5.70 | 2.001 allocations, 338 bytes | 131 162 allocations, 22.2 MB |
+| `merge_unique` | 7.88 ms (7.71–8.15 ms) | 4 of 5 | 8.32 M | 3.93 | 0.167 allocations, 79 bytes | 10 971 allocations, 5.18 MB |
+| `merge_duplicates` | 6.71 ms (6.52–7.11 ms) | 4 of 5 | 9.77 M | 3.52 | 0.085 allocations, 115 bytes | 5 560 allocations, 7.51 MB |
+| `history` | 138.78 ms (137.19–142.35 ms) | 5 of 5 | 472 k | 3.59 | 0.006 allocations, 75 bytes | 373 allocations, 4.93 MB |
+| `changes` | 1.93 ms (1.91–2.02 ms) | 4 of 5 | 33.9 M | 5.14 | 0.007 allocations, 43 bytes | 448 allocations, 2.85 MB |
+| `split_json` | 20.24 ms (19.75–21.36 ms) | 4 of 5 | 3.24 M | 3.60 | 11.170 allocations, 1 794 bytes | 732 066 allocations, 118 MB |
+| `one_bad_value` | 110 µs (110–118 µs) | 3 of 5 | 596 M | 3.48 | 0.005 allocations, 33 bytes | 311 allocations, 2.13 MB |
+| `one_dropped_row` | 523 µs (523–560 µs) | 4 of 5 | 125 M | 0.62 | 0.005 allocations, 135 bytes | 344 allocations, 8.83 MB |
+| `temporal_widening` | 48.6 µs (48.1–52.4 µs) | 4 of 5 | 1.35 G | 3.16 | 0 allocations, 8 bytes | 19 allocations, 526 kB |
 
 Allocation counts are the same in every round. One CPU is busy throughout every case.
 
 - A native append allocates nothing a row: its columns are shared, and the load's constant
   columns sliced.
 - A text append makes two allocations a row; the same columns widened natively make none.
-- `one_bad_value` makes four allocations a row where `temporal_widening`, which widens seconds
-  with no value beyond their column, makes none.
-- `history` and `split_json` allocate most: 14 and 11 allocations a row.
+- The temporal cases allocate a batch, not a row: `one_bad_value` nulls its one value in 311
+  allocations, `one_dropped_row` drops its one row in 344, and `temporal_widening` widens its
+  seconds in 19.
+- Dropping a row costs about five times nulling a value, 523 µs against 110 µs, and allocates
+  four times the bytes, 8.83 MB against 2.13 MB.
+- `split_json` allocates most, 11 allocations a row; every other case but a text append makes
+  under one allocation in five rows.
 
 The wall times of the cases under 30 ms fall outside ±3 % in one or more of five rounds on this
 shared machine, as the counts above say; the review's protocol compares changes in interleaved
