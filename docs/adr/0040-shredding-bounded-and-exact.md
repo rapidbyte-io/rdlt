@@ -120,9 +120,12 @@ Arrow columns and the rows normalizing makes of both escaped that in several way
   reads the batch as it arrived, and history hashes the columns as the table stores them. The
   values are read as a shredding job is, sure of its stack. A column of integers that JSON text is read
   into is not recorded exact (ADR 0026): its integers are read only as the plan lowers
-  them. The cost model charges what reading takes: two null slots of the column's type a row,
-  its null text where stored as text, and for each byte of text one more and two slots of the
-  widest list item the type holds.
+  them. Each value is observed once to fit it, and the join of the values that fit is kept to read
+  them; where the policy drops rows, the kept values are observed again and joined alone, since
+  a dropped string would turn a field of numbers into JSON, which keeps their text as sent. The
+  cost model charges what reading takes: two null slots of the column's type a row, its null
+  text where stored as text, and for each byte of text one more and two slots of the widest list
+  item the type holds.
 - **The cost model charges a null its target's width.** A column typed null converted to a type
   of no fixed width becomes nulls of that type, which take its null slot; inside structs and list
   items too, and an absent struct field its slot, its key and its null text.
