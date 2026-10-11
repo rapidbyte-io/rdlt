@@ -63,6 +63,8 @@ fn a_connection_is_opened_hardened() {
         pragma(&connection, "journal_size_limit"),
         Value::Integer(journal)
     );
+    // A commit is durable once it returns: the log is synced at every commit.
+    assert_eq!(pragma(&connection, "synchronous"), Value::Integer(2));
 }
 
 #[test]
