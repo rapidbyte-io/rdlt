@@ -418,3 +418,28 @@ fn a_negative_zero_key_a_discarding_policy_converted_is_stored_as_zero() {
     let id = prepared.batch.column_by_name("id").unwrap();
     assert_eq!(zero_signs(id.as_ref()), [false]);
 }
+
+/// A key column holding no float, plain or behind dictionary keys, comes back as it arrived:
+/// nothing is decoded and no mask of its rows is built.
+#[test]
+fn a_key_holding_no_float_is_neither_decoded_nor_walked() {
+    const ROWS: i32 = 65_536;
+    let heap = &crate::cost::tests::HEAP;
+    let stream = rdlt_connector::StreamName::new("s").unwrap();
+    let ints: ArrayRef = Arc::new(Int64Array::from_iter_values(0..i64::from(ROWS)));
+    let names: ArrayRef = Arc::new(
+        DictionaryArray::<Int32Type>::try_new(
+            Int32Array::from_iter_values((0..ROWS).map(|row| row % 2)),
+            Arc::new(StringArray::from(vec!["a", "b"])),
+        )
+        .unwrap(),
+    );
+    for column in [ints, names] {
+        heap.reset_peak_usage();
+        let before = heap.current_usage();
+        let keyed = key_values(&stream, "id", &column, &|_| true).unwrap();
+        let peak = heap.peak_usage().saturating_sub(before);
+        assert!(Arc::ptr_eq(&keyed, &column), "{}", column.data_type());
+        assert!(peak < 1_024, "{}: {peak} bytes", column.data_type());
+    }
+}

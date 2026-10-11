@@ -115,6 +115,9 @@ pub(crate) fn key_values(
     if nulls(column, keyed) {
         return refuse("merge_key_null", "a null");
     }
+    if !holds_floats(column.data_type()) {
+        return Ok(Arc::clone(column));
+    }
     let read = |error: ArrowError| {
         Error::internal(format!("stream {stream}: reading key column {name}")).with_source(error)
     };
@@ -140,6 +143,23 @@ fn nulls(column: &ArrayRef, keyed: &dyn Fn(usize) -> bool) -> bool {
         .any(|row| keyed(row) && nulls.as_ref().is_some_and(|nulls| nulls.is_null(row)))
 }
 
+/// Whether a value of `data_type` holds a float at any depth, in any encoding.
+fn holds_floats(data_type: &DataType) -> bool {
+    match data_type {
+        DataType::Float16 | DataType::Float32 | DataType::Float64 => true,
+        DataType::Struct(fields) => fields.iter().any(|field| holds_floats(field.data_type())),
+        DataType::List(item)
+        | DataType::LargeList(item)
+        | DataType::ListView(item)
+        | DataType::LargeListView(item)
+        | DataType::FixedSizeList(item, _)
+        | DataType::Map(item, _) => holds_floats(item.data_type()),
+        DataType::Dictionary(_, values) => holds_floats(values),
+        DataType::RunEndEncoded(_, values) => holds_floats(values.data_type()),
+        _ => false,
+    }
+}
+
 /// What `array`'s floats hold at any depth: which rows hold a NaN, and the array with each
 /// negative zero the zero it equals, where it holds one.
 struct Floats {
@@ -147,7 +167,7 @@ struct Floats {
     zeroed: Option<ArrayRef>,
 }
 
-/// The floats of `array`, holding only what its rows name, walked once.
+/// The floats of `array`, which holds one at some depth and only what its rows name, walked once.
 ///
 /// Decoding leaves nothing beneath a null row, so only a float's own validity is read.
 fn floats(array: &ArrayRef) -> Result<Floats, ArrowError> {
@@ -181,10 +201,7 @@ fn floats(array: &ArrayRef) -> Result<Floats, ArrowError> {
         DataType::LargeList(field) => listed(array.as_list::<i64>(), field),
         DataType::FixedSizeList(field, size) => fixed(array, field, *size),
         DataType::Map(field, sorted) => mapped(array, field, *sorted),
-        _ => Ok(Floats {
-            nans: vec![false; array.len()],
-            zeroed: None,
-        }),
+        other => unreachable!("{other} holds no float"),
     }
 }
 
@@ -194,6 +211,10 @@ fn structured(array: &ArrayRef, fields: &Fields) -> Result<Floats, ArrowError> {
     let mut nans = vec![false; array.len()];
     let mut zeroed = Vec::with_capacity(rows.num_columns());
     for column in rows.columns() {
+        if !holds_floats(column.data_type()) {
+            zeroed.push(None);
+            continue;
+        }
         let found = floats(column)?;
         for (row, nan) in found.nans.into_iter().enumerate() {
             nans[row] |= nan;
