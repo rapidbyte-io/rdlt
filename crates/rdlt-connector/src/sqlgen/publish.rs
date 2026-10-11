@@ -173,6 +173,11 @@ impl<D: SqlDialect> SqlPlanner<D> {
     /// then removing them from staging; a target without columns does not exist, which is a
     /// `Data` error.
     ///
+    /// While a table's writer appends, a commit reads its own staged rows by the staging table's
+    /// index of who staged them, which [`SqlPlanner::staged_index`] creates where the rows are
+    /// staged and a keyed writer drops; a keyed commit scans its staging and finds each key's rows
+    /// by its key index.
+    ///
     /// A merge keeps one row per key: a staged row replaces the published rows with its key, and
     /// among staged rows of one key the greatest sequence wins. It needs no unique key: the key
     /// indexes are not unique, so a table that appended repeated keys merges as any other. A child

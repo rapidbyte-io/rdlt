@@ -36,8 +36,11 @@ Status: accepted, 2026-09-29.
   lets the database find them by the key's index rather than test every row of the table; a test
   checks SQLite's plan for it. Derived tables take their alias without `AS`, which Oracle refuses.
 - **No commit changes a table's indexes.** Where a table's rows are staged, its writer indexes
-  what a commit finds rows in (the SQLite writer runs both, and a test checks that a commit then
+  what a commit finds rows in (the SQLite writer runs each, and a test checks that a commit then
   changes no table or index):
+  - the staging of a table its writer appends to, by pipeline, epoch and segment
+    (`SqlPlanner::staged_index`, `_rdlt_staged__{staging}`), which a keyed writer drops: a keyed
+    commit finds each key's staged rows by the key index, a lookup this index would take;
   - every merge table, its staging and, for a change stream, its tombstones, by the key
     (`SqlPlanner::key_indexes`, `_rdlt_key__{table}`);
   - a child table by its root id (`SqlPlanner::root_index`, `_rdlt_root__{target}`).
