@@ -766,5 +766,20 @@ fn a_union_under_an_object_is_an_internal_error() {
     let children: Vec<ArrayRef> = vec![Arc::new(Int32Array::from(vec![1, 2]))];
     let union =
         UnionArray::try_new(fields, ScalarBuffer::from(vec![0_i8, 0]), None, children).unwrap();
-    assert!(normalize(&under_a_null_object(Arc::new(union)), &shape(8)).is_err());
+    // The key keeps identity from reading the union, so normalizing meets it first.
+    let object = under_a_null_object(Arc::new(union));
+    let ids: ArrayRef = Arc::new(Int64Array::from(vec![1, 2]));
+    let batch =
+        RecordBatch::try_from_iter([("id", ids), ("s", Arc::clone(object.column(0)))]).unwrap();
+    let keyed = Shape {
+        key: vec![Arc::from("id")],
+        ..shape(8)
+    };
+    let error = normalize(&batch, &keyed).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("a union cannot be a column of a table"),
+        "{error}"
+    );
 }
