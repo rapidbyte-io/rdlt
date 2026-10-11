@@ -59,9 +59,10 @@ pub(super) fn predict(world: &World, relaxed: &[Relaxed], phase: usize) -> Predi
 }
 
 /// Whether rows of `stream` go before their batch's schema is resolved, in `phase` or before: in a
-/// stream that normalizes, rows holding items of a new array whose column drops rows go, taking
-/// the columns only they hold values in; which columns arrive then depends on how the engine
-/// groups batches, so the stream's refusals are only ever possible.
+/// stream that normalizes, rows holding items of a new array whose column drops rows go, and a
+/// unit left with none of the stream's rows resolves none of its columns; which columns arrive
+/// then depends on how the engine groups batches, so the stream's refusals are only ever
+/// possible.
 fn prunes(stream: &SimStream, phase: usize) -> bool {
     (0..=phase).any(|at| {
         (0..stream.partitions.len()).any(|partition| {

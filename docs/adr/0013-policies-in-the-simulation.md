@@ -95,9 +95,9 @@ sequences.
   possible. A column of scalars stays one column of the stream's own table, and its refusals are
   predicted as exactly as any other stream's.
 - A normalized stream's rows that a new array drops go before their batch's schema is resolved,
-  taking with them the columns only they hold values in. Which columns arrive then depends on how
-  the engine groups a flush's batches, so where rows go the oracle predicts refusals, keys' too,
-  only as possible.
+  and a unit left with none of the stream's rows resolves none of its columns. Which columns
+  arrive then depends on how the engine groups a flush's batches, so where rows go the oracle
+  predicts refusals, keys' too, only as possible.
 - Seeds that once found a defect are replayed on every change, in the test job; the simulation's
   shards run only the sweeps.
 - Faults beyond connector calls, multi-threaded runs, replay and the simulation's own coverage
