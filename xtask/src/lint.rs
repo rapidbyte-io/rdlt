@@ -72,6 +72,7 @@ pub(crate) fn lint_tree(root: &Path) -> anyhow::Result<Vec<(PathBuf, Finding)>> 
 pub(crate) fn run(root: &Path) -> anyhow::Result<ExitCode> {
     let mut findings = lint_tree(root)?;
     findings.extend(unsafe_code::check(root)?);
+    findings.extend(crate::adr::check(root)?);
     let mut errors = 0;
     for (path, finding) in &findings {
         let level = match finding.rule.severity() {

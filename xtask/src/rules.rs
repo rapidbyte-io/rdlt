@@ -37,6 +37,7 @@ pub(crate) enum Rule {
     IncludedCode,
     UnlistedWorkspace,
     UnguardedUnwind,
+    RecordHistory,
 }
 
 impl Rule {

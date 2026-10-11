@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+mod adr;
 mod codegen;
 mod coverage;
 mod deny;
@@ -31,7 +32,8 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Check comments, structure and error style in every Rust file, and where `unsafe` code is.
+    /// Check comments, structure and error style in every Rust file, where `unsafe` code is, and
+    /// that ADRs state their decisions.
     Lint,
     /// Check that workspace crates depend only on what the architecture allows.
     Deps,
