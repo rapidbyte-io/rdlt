@@ -6,6 +6,7 @@ use arrow_array::{
     Array, ArrayRef, BinaryArray, BooleanArray, FixedSizeBinaryArray, Int8Array, Int64Array,
     RecordBatch,
 };
+use proptest::prelude::Strategy;
 use rdlt_connector::{ChangeOp, OP_COLUMN, SEQ_COLUMN, UNCHANGED_COLUMN};
 
 use super::{ChangeRows, compact_changes};
@@ -45,7 +46,7 @@ fn pushed(ops: &[ChangeOp], flags: Vec<Option<Vec<u8>>>) -> RecordBatch {
 }
 
 #[test]
-fn a_split_keeps_the_data_and_moves_the_flags_to_its_ordinals() {
+fn a_split_keeps_the_data_and_reads_the_flags_through_its_ordinals() {
     // Pushed field 2 is `b`, data field 1; pushed field 5 is `c`, data field 2; pushed field 1
     // is the op column, which no data field is.
     let batch = pushed(
@@ -60,10 +61,11 @@ fn a_split_keeps_the_data_and_moves_the_flags_to_its_ordinals() {
         .map(|f| f.name().clone())
         .collect();
     assert_eq!(names, ["a", "b", "c"]);
-    let flags = changes.unchanged.as_ref().unwrap();
-    assert_eq!(flags.value(0), [0b110]);
-    assert!(flags.is_null(1));
     assert_eq!(changes.flagged(), [1, 2]);
+    let over = changes.unchanged_over(&[Some(0), Some(1), Some(2)]);
+    let over = over.as_binary::<i32>();
+    assert_eq!(over.value(0), [0b110]);
+    assert!(over.is_null(1));
     assert_eq!(changes.seq.value(1), seq(2));
     assert_eq!(changes.op(0), Some(ChangeOp::Update));
 }
@@ -89,8 +91,6 @@ fn flags_past_the_eighth_field_are_read_from_their_byte() {
     columns.push((UNCHANGED_COLUMN.into(), Arc::new(flags)));
     let (_, changes) = ChangeRows::split(&RecordBatch::try_from_iter(columns).unwrap()).unwrap();
     assert_eq!(changes.flagged(), [1, 2, 10]);
-    let flags = changes.unchanged.as_ref().unwrap();
-    assert_eq!(flags.value(1), [0b10, 0b100]);
     // Written one field along, field 10 is written as field 11.
     let written: Vec<Option<usize>> = (1..12).map(Some).collect();
     let written = changes.unchanged_over(&written);
@@ -115,6 +115,74 @@ fn flags_move_to_the_fields_their_columns_are_written_as() {
         .unwrap()
         .1;
     assert!(none.unchanged_over(&[Some(0)]).is_null(0));
+}
+
+#[test]
+fn flags_on_change_columns_and_past_the_fields_are_dropped() {
+    // Pushed ordinals 1, 3 and 4 are the op, sequence and flags; 6 and 7 are past the six
+    // fields, and 15 is in a second byte; only 0 (`a`) is a data field's.
+    let flags = vec![
+        Some(vec![0b1101_1011, 0b1000_0000, 0]),
+        Some(vec![0b1101_1010]),
+        Some(vec![]),
+    ];
+    let batch = pushed(&[ChangeOp::Update; 3], flags);
+    let (_, changes) = ChangeRows::split(&batch).unwrap();
+    assert_eq!(changes.flagged(), [0]);
+    let written = changes.unchanged_over(&[Some(4), Some(5), Some(6)]);
+    let written = written.as_binary::<i32>();
+    assert_eq!(written.value(0), [0b1_0000]);
+    // A row with flags, none of them kept, is an empty value, not a null.
+    assert!(written.is_valid(1) && written.value(1).is_empty());
+    assert!(written.is_valid(2) && written.value(2).is_empty());
+}
+
+proptest::proptest! {
+    #[test]
+    fn one_remap_writes_what_remapping_through_the_data_does(
+        rows in proptest::collection::vec(
+            proptest::option::of(proptest::collection::vec(proptest::prelude::any::<u8>(), 0..6)),
+            0..8,
+        ),
+        (data, change) in (1..12_usize).prop_flat_map(|data| {
+            // The op, sequence and flag columns' places among `data + 3` fields.
+            let places: Vec<usize> = (0..data + 3).collect();
+            (proptest::strategy::Just(data), proptest::sample::subsequence(places, 3))
+        }),
+        written in proptest::collection::vec(proptest::option::of(0..40_usize), 12),
+    ) {
+        let fields = data + 3;
+        let ops = Int8Array::from(vec![ChangeOp::Update.code(); rows.len()]);
+        let seqs = FixedSizeBinaryArray::try_from_sparse_iter_with_size(
+            (0..rows.len()).map(|row| Some(seq(u8::try_from(row).unwrap()))),
+            16,
+        )
+        .unwrap();
+        let flags: BinaryArray = rows.iter().cloned().collect();
+        let mut named = 0;
+        let columns: Vec<(String, ArrayRef)> = (0..fields)
+            .map(|field| match change.iter().position(|at| *at == field) {
+                Some(0) => (OP_COLUMN.to_owned(), Arc::new(ops.clone()) as ArrayRef),
+                Some(1) => (SEQ_COLUMN.to_owned(), Arc::new(seqs.clone()) as ArrayRef),
+                Some(_) => (UNCHANGED_COLUMN.to_owned(), Arc::new(flags.clone()) as ArrayRef),
+                None => {
+                    named += 1;
+                    let values = Int64Array::from(vec![0; rows.len()]);
+                    (format!("d{named}"), Arc::new(values) as ArrayRef)
+                }
+            })
+            .collect();
+        let batch = RecordBatch::try_from_iter(columns).unwrap();
+        let (_, changes) = ChangeRows::split(&batch).unwrap();
+        let written = &written[..data];
+        let to_data = super::data_ordinals(&batch);
+        let twice = rdlt_connector::remap_unchanged(
+            &rdlt_connector::remap_unchanged(&flags, &to_data),
+            written,
+        );
+        let once = changes.unchanged_over(written);
+        proptest::prop_assert_eq!(once.to_data(), twice.to_data());
+    }
 }
 
 #[test]

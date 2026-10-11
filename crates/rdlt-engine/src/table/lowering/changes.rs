@@ -1,10 +1,11 @@
 //! The parts of a lowering plan only change streams use: their op, sequence and unchanged
-//! columns, split from a pushed batch and carried to its table, and their compaction.
+//! columns, split from a pushed batch and carried to its table, the flags remapped once, and
+//! their compaction.
 
 #[cfg(test)]
 mod tests;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use arrow_array::cast::AsArray;
@@ -30,9 +31,12 @@ pub(crate) struct ChangeRows {
     pub(crate) op: Int8Array,
     /// Each row's source position, 16 bytes of `Binary`.
     pub(crate) seq: BinaryArray,
-    /// Each row's unchanged flags, a bitmap over the data batch's field ordinals, where the
-    /// batch flags any.
+    /// Each row's unchanged flags as pushed, a bitmap over the pushed batch's field ordinals,
+    /// where the batch flags any.
     pub(crate) unchanged: Option<BinaryArray>,
+    /// For each field of the pushed batch, its place among the data's fields; none for a change
+    /// column.
+    pub(crate) ordinals: Arc<[Option<usize>]>,
 }
 
 /// For each field of `batch`, a change batch, its place among the data's fields; none for a
@@ -65,8 +69,7 @@ pub(crate) fn aligned(batch: &RecordBatch, stored: &[Option<Stored>]) -> Vec<Opt
 }
 
 impl ChangeRows {
-    /// `batch`, a valid change batch, as its data and its change columns: the flags of
-    /// `_rdlt_unchanged` move from the batch's field ordinals to the data's.
+    /// `batch`, a valid change batch, as its data and its change columns.
     pub(crate) fn split(batch: &RecordBatch) -> Result<(RecordBatch, Self), ArrowError> {
         let column = |name: &str| {
             batch
@@ -76,21 +79,25 @@ impl ChangeRows {
         let op = column(OP_COLUMN)?.as_primitive::<Int8Type>().clone();
         let seq = arrow_cast::cast(column(SEQ_COLUMN)?, &DataType::Binary)?;
         let seq = seq.as_binary::<i32>().clone();
-        let data_ordinal = data_ordinals(batch);
         let unchanged = batch
             .column_by_name(UNCHANGED_COLUMN)
-            .map(|flags| remap_unchanged(flags.as_binary::<i32>(), &data_ordinal));
-        let data = Self::data(batch)?;
-        Ok((data, Self { op, seq, unchanged }))
+            .map(|flags| flags.as_binary::<i32>().clone());
+        let ordinals: Arc<[Option<usize>]> = data_ordinals(batch).into();
+        let data = projected(batch, &ordinals)?;
+        Ok((
+            data,
+            Self {
+                op,
+                seq,
+                unchanged,
+                ordinals,
+            },
+        ))
     }
 
     /// The data columns of `batch`, a change batch, as they are: none is copied.
     pub(crate) fn data(batch: &RecordBatch) -> Result<RecordBatch, ArrowError> {
-        let ordinals = data_ordinals(batch);
-        let kept: Vec<usize> = (0..ordinals.len())
-            .filter(|ordinal| ordinals[*ordinal].is_some())
-            .collect();
-        batch.project(&kept)
+        projected(batch, &data_ordinals(batch))
     }
 
     /// The rows `keep` keeps.
@@ -103,6 +110,7 @@ impl ChangeRows {
                 Some(flags) => Some(filter(flags)?.as_binary::<i32>().clone()),
                 None => None,
             },
+            ordinals: Arc::clone(&self.ordinals),
         })
     }
 
@@ -111,26 +119,37 @@ impl ChangeRows {
         ChangeOp::from_code(self.op.value(row))
     }
 
-    /// The data fields, by ordinal, some row flags unchanged.
+    /// The data fields, by ordinal, some row flags unchanged, in ascending order.
+    ///
+    /// Only the bytes holding the pushed batch's fields are read, however long a bitmap is.
     pub(crate) fn flagged(&self) -> Vec<usize> {
         let Some(flags) = &self.unchanged else {
             return Vec::new();
         };
-        let mut flagged = BTreeSet::new();
+        let mut any = vec![0_u8; self.ordinals.len().div_ceil(8)];
         for bitmap in flags.iter().flatten() {
-            flagged.extend(UnchangedFlags::new(bitmap).ordinals());
+            any.iter_mut()
+                .zip(bitmap)
+                .for_each(|(any, byte)| *any |= byte);
         }
-        flagged.into_iter().collect()
+        UnchangedFlags::new(&any)
+            .ordinals_below(self.ordinals.len())
+            .filter_map(|pushed| self.ordinals[pushed])
+            .collect()
     }
 
     /// The unchanged flags over a table's written fields, where data field `i` is written as
-    /// field `written[i]`, if it is written.
+    /// field `written[i]`, if it is written: one remap from the pushed batch's ordinals.
     pub(crate) fn unchanged_over(&self, written: &[Option<usize>]) -> ArrayRef {
-        let rows = self.op.len();
-        match &self.unchanged {
-            Some(flags) => Arc::new(remap_unchanged(flags, written)),
-            None => Arc::new(BinaryArray::new_null(rows)),
-        }
+        let Some(flags) = &self.unchanged else {
+            return Arc::new(BinaryArray::new_null(self.op.len()));
+        };
+        let to: Vec<Option<usize>> = self
+            .ordinals
+            .iter()
+            .map(|data| data.and_then(|data| written.get(data).copied().flatten()))
+            .collect();
+        Arc::new(remap_unchanged(flags, &to))
     }
 
     /// When each row was deleted: `at` for deletes and truncates, null for other rows.
@@ -236,8 +255,7 @@ impl LoweringPlan {
         let mut stored: Vec<(ArrayRef, LogicalType)> = Vec::new();
         if names.stored {
             stored.push((Arc::new(changes.op.clone()), LogicalType::Int8));
-            let written = self.written_ordinals();
-            stored.push((changes.unchanged_over(&written), LogicalType::Binary));
+            stored.push((changes.unchanged_over(&self.written), LogicalType::Binary));
         }
         if names.deleted_at.is_some() {
             stored.push((changes.deleted_at(loaded_at), loaded_at_type()));
@@ -268,16 +286,24 @@ impl LoweringPlan {
             }
         }
     }
+}
 
-    /// Where each incoming column is written: the position of the table's column it goes to, if
-    /// any, by the incoming column's ordinal.
-    pub(super) fn written_ordinals(&self) -> Vec<Option<usize>> {
-        let mut written = vec![None; self.incoming.schema.fields().len()];
-        for (column, source) in self.sources.iter().enumerate() {
-            if let Source::Incoming(index, _) = source {
-                written[*index] = Some(column);
-            }
+/// Where each of `fields` incoming columns is written, by its ordinal: the position of the
+/// table's column it goes to, if any, where `sources` says where each column takes its values.
+pub(super) fn written(sources: &[Source], fields: usize) -> Vec<Option<usize>> {
+    let mut written = vec![None; fields];
+    for (column, source) in sources.iter().enumerate() {
+        if let Source::Incoming(index, _) = source {
+            written[*index] = Some(column);
         }
-        written
     }
+    written
+}
+
+/// The fields of `batch` that `ordinals` gives a data ordinal, as they are.
+fn projected(batch: &RecordBatch, ordinals: &[Option<usize>]) -> Result<RecordBatch, ArrowError> {
+    let kept: Vec<usize> = (0..ordinals.len())
+        .filter(|ordinal| ordinals[*ordinal].is_some())
+        .collect();
+    batch.project(&kept)
 }
