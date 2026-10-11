@@ -150,8 +150,8 @@ pub async fn serve_listener<L: Listener>(
     stop: impl Future<Output = ()>,
 ) {
     let mut doors = Doors::new(served, listening, limits);
-    let every = doors.shared.limits.report_every;
-    let mut reports = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
+    // Its first tick, at once, finds nothing refused yet.
+    let mut reports = tokio::time::interval(doors.shared.limits.report_every);
     reports.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     // After an accept failed, accepting waits out a pause, and nothing else does.
     let pause = tokio::time::sleep(Duration::ZERO);
