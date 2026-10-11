@@ -24,9 +24,9 @@ never sees.
   false) and becomes current; a hard delete closes it and records a tombstone; a soft delete closes
   it and opens a deleted version keeping its data; a truncate does so to every version sequenced
   before it. A change stream's change applies only past its key's newest version, tombstone and
-  bound, so replays, retries and the snapshot's overlap change nothing. Amended 2026-10-02: a
-  soft delete or truncate carries its deletion time or is refused, a truncate applies before a
-  change of its own sequence, and an upsert lifts its key's tombstone (ADR 0049). A version keeps the
+  bound, so replays, retries and the snapshot's overlap change nothing. A soft delete or
+  truncate carries its deletion time or is refused, a truncate applies before a change of its own
+  sequence, and an upsert lifts its key's tombstone (ADR 0049). A version keeps the
   sequence of the row that opened it; closing changes only `valid_to` and `is_current`. A change
   equal to the current version leaves the guard where it was: sources send each key's changes in
   order, sending some again at most, so a change sent again is behind the guard or equal to the
@@ -39,19 +39,18 @@ never sees.
     version an empty span. A change time of another type, or beyond what microseconds hold, is
     `change_time_invalid`, refused where the catalog declares it and else at the batch; a null one
     is `change_time_null`. Versions follow the sequence, whatever their times.
-  - Amended 2026-10-03 (ADR 0046): a version begins no earlier than the latest instant its key's
-    versions hold, so none ends before it begins; a change time no version can begin at follows
-    its column's schema policy row by row; versions begun when their batch arrived follow a load
-    clock that never reads earlier; validity a destination stores without timestamps is integer
-    microseconds.
-  - Amended 2026-10-03 (ADR 0046): `row_hash` is BLAKE3's 256 bits of the data columns as their
-    logical types hold them, before they are lowered.
-  - `row_hash` is the xxh3-128 of the row's data columns as one object of its non-null columns by
-    name, the encoding row ids use (ADR 0009), JSON by the values its text says: an added null
-    column, a wider type, another encoding or JSON rendered again changes no hash, so schema
-    changes open no versions. The change time is left out:
-    when a change happened is not what it changed. It is 16 bytes of `Binary`, as the sequence and
-    lineage ids are, not the spec's `FixedSizeBinary(16)`; a delete's row carries none.
+  - A version begins no earlier than the latest instant its key's versions hold, so none ends
+    before it begins; a change time no version can begin at follows its column's schema policy
+    row by row; versions begun when their batch arrived follow a load clock that never reads
+    earlier; validity a destination stores without timestamps is integer microseconds
+    (ADR 0046).
+  - `row_hash` is the BLAKE3-256 of the row's data columns as their logical types hold them,
+    before they are lowered (ADR 0046), as one object of its non-null columns by name, the
+    encoding row ids use (ADR 0009), JSON by the values its text says: an added null column, a
+    wider type, another encoding or JSON rendered again changes no hash, so schema changes open
+    no versions. The change time is left out: when a change happened is not what it changed. It
+    is 32 bytes of `Binary`, as lineage ids are (ADR 0046), not the spec's `FixedSizeBinary(16)`;
+    a delete's row carries none.
   - A table records whether it keeps history with its sequences' state record. A history stream
     into a table created without history, or any other stream into a history table, is refused as
     `table_history_mismatch`: its rows have no versions to close, or a merge would take its

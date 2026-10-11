@@ -214,10 +214,6 @@ log.
   schema bytes and name lengths are unlimited there. Order, disjointness, counts, buffer lengths
   and views within their buffers hold for a log as for a connector.
 
-This supersedes ADR 0015 where it says buffers are checked against the body, bounds a node by the
-larger of the row limit and eight values a byte, has contained panics printed, and has the
-`ipc_frame` fuzz target quiet the hook.
-
 ## Consequences
 
 - A receiver refuses, with a typed error naming why, some frames a sender could build:

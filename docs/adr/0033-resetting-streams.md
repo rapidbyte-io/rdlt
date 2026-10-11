@@ -44,17 +44,18 @@ streams, which need the write-ahead log to know phases, are **M5d4**: the M5 exi
     beginning, it would wait for rows its source forgot. The simulation found that a source
     starting such a read where it last acknowledged instead is unsafe: a commit it acknowledged
     may still wait in a crashed load's log, and a racing run would move past it for good.
-    Amended 2026-10-03 (ADR 0045): a stream whose source no longer lists it, or now calls it one
-    it reads again, is refused as well while a log holds rows of it that its source was told
-    were committed and no commit received; a run of the pipeline lands them first. This
-    refusal comes after the reset's session opens, which fences any load still running, and
-    after each log is fenced, so no load logs rows once the reset read them.
+    A stream its source does not list, or calls one it reads again, is refused as
+    `reset_unreplayable` too while a log holds rows of it that its source was told were committed
+    and no commit received; a run of the pipeline lands them first (ADR 0045). This refusal
+    comes after the reset's session opens, which fences any load still running, and after each
+    log is fenced, so no load logs rows once the reset read them.
   - A destination that does not declare `drop_tables` refuses a `Tables` reset as
     `drop_unsupported`, and a reset naming no streams is refused as `no_streams`.
-  - These refusals, and `reset_unreplayable`, come before the destination opens, fencing nothing.
-    `stream_not_found` can only come after: the pipeline's state is read by opening the
-    destination, which fences its older sessions as any reset does. A state read that fences
-    nothing lands with M7.
+  - These refusals, and `reset_unreplayable` of a stream its source says it cannot read again,
+    come before the destination opens, fencing nothing. `stream_not_found`, and
+    `reset_unreplayable` of rows a log holds, can only come after: the pipeline's state is read
+    by opening the destination, which fences its older sessions as any reset does. A state read
+    that fences nothing lands with M7.
   - A full read a run began before the stream was reset is over: a retry of that run, which the
     reset fenced, starts a new read in a generation of its own rather than resuming the one it
     remembered, whose rows were the stream's before the reset. The run keeps each read's
@@ -72,13 +73,13 @@ streams, which need the write-ahead log to know phases, are **M5d4**: the M5 exi
   `TableChange`: schema changes take effect at once in every destination, so a drop there and a
   crash before the state commit would leave state naming a table that is gone. On the commit it
   lands with the state delta. The name comes from the engine's own recorded names, never from a
-  destination's path map, which is store-wide. Amended 2026-10-01: SQLite and the memory
-  destination keep a path map for each pipeline (ADR 0049).
+  destination's path map, which the simulation's destination keeps for the whole store (SQLite
+  and the memory destination keep one for each pipeline, ADR 0049).
   - A destination drops the table with its generations, staging, tombstones and owner record. A
     table another pipeline owns fails the whole commit as `table_owned`; one that does not exist is
-    no drop at all, so a reset retried after a crash is harmless. Amended 2026-10-01: a table
-    that exists and no pipeline owns is refused as `table_unowned`, and one named as the
-    destination's own as `table_name_reserved`, in SQLite and memory (ADR 0049).
+    no drop at all, so a reset retried after a crash is harmless. A table that exists and no
+    pipeline owns is refused as `table_unowned`, and one named as the destination's own as
+    `table_name_reserved`, in SQLite and memory (ADR 0049).
   - SQLite drops in the commit's transaction, refused as `Unsupported` where schema changes do not
     commit with transactions. The files destination makes the manifest the truth: the commit
     records the dropped names, removes their catalogs after it lands, and the next open removes
@@ -87,10 +88,10 @@ streams, which need the write-ahead log to know phases, are **M5d4**: the M5 exi
     catalog another pipeline claimed after it looked at the owner.
 - **Ownership holds through commits and drops.**
   - A generation swapped into another pipeline's table is refused as `table_owned`, in every
-    destination: memory, the simulation and SQLite resolve a path to a table through store-wide
-    maps, where one pipeline's swap could empty another's table. Amended 2026-10-01: SQLite
-    and memory resolve the path among the pipeline's own tables, so a swap changes its own
-    table or none, and the owner is checked before it does (ADR 0049).
+    destination: the simulation resolves a path to a table through a map the store shares, where
+    one pipeline's swap could empty another's table; SQLite and memory resolve the path among the
+    pipeline's own tables, so a swap changes its own table or none, and the owner is checked
+    before it does (ADR 0049).
   - A session a newer one fenced may not claim a table no pipeline owns: its schema change or
     writer fails as fenced. Otherwise a load the reset fenced, still writing, claims the table
     the reset just released, and another pipeline stays shut out. The simulation found this.
