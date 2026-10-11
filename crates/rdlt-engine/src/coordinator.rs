@@ -393,12 +393,15 @@ impl Coordinator {
                 rows,
                 bytes,
             } => {
-                let asked = self
+                // Rows of a partition that seals on its own count once sealed.
+                if self
                     .parts
                     .partitions
                     .get(partition)
-                    .is_some_and(|run| run.on_demand);
-                self.due.written(partition, asked, rows, bytes);
+                    .is_some_and(|run| run.on_demand)
+                {
+                    self.due.written(partition, rows, bytes);
+                }
             }
             Progress::Abandoned { partition, segment } => {
                 self.due.abandoned(partition);
@@ -442,7 +445,7 @@ impl Coordinator {
             }
         }
         self.sealing.insert(seal.partition);
-        self.due.sealed(seal.partition);
+        self.due.sealed(seal.partition, seal.rows, seal.bytes);
         self.sealed.push(seal);
     }
 

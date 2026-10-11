@@ -58,7 +58,7 @@ impl CommitPolicy {
         self.bytes
     }
 
-    /// Whether `rows` and `bytes` written since the last commit reach a threshold.
+    /// Whether `rows` and `bytes` a commit could take reach a threshold.
     pub(crate) fn is_due(&self, rows: u64, bytes: u64) -> bool {
         self.rows.is_some_and(|limit| rows >= limit.get())
             || self.bytes.is_some_and(|limit| bytes >= limit.get())

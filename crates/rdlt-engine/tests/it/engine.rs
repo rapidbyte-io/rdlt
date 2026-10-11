@@ -254,16 +254,23 @@ async fn a_newer_run_fences_an_older_one() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn the_row_threshold_commits_as_rows_arrive() {
-    let (_, source) = Script::new(vec![ScriptStream::new("events", 1, 100, 10)])
-        .connect("threshold")
-        .await;
-    let plan = pipeline("threshold", [stream("events")]);
-    let outcome = engine(commit_every(20))
-        .run(plan, source, memory("threshold").await)
-        .await;
-    assert_eq!(outcome.report.rows, 100);
-    assert!(outcome.report.commits >= 5, "{}", outcome.report.commits);
+async fn the_row_threshold_commits_as_sealed_rows_reach_it() {
+    for batch in [10, 50] {
+        let name = format!("threshold-{batch}");
+        let (_, source) = Script::new(vec![ScriptStream::new("events", 1, 1_000, batch)])
+            .connect(&name)
+            .await;
+        let plan = pipeline(&name, [stream("events")]);
+        let outcome = engine(commit_every(100))
+            .run(plan, source, memory(&name).await)
+            .await;
+        assert_eq!(outcome.report.rows, 1_000);
+        // Each commit takes the seals that reached 100 rows: ten of them, at either batch.
+        assert_eq!(
+            outcome.report.counters.commits.size, 10,
+            "batches of {batch}"
+        );
+    }
 }
 
 #[tokio::test(start_paused = true)]
