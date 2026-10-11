@@ -269,3 +269,6 @@ pub trait Sandbox: fmt::Debug + Send + Sync {
         Vec::new()
     }
 }
+
+#[cfg(test)]
+mod tests;
