@@ -21,18 +21,21 @@ what loading tables of 1 000 and 5 000 columns costs.
 
 ## Results
 
-Intel Core Ultra X7 358H, mains power, 2026-10-07, commit `28726685db15`, governor `powersave`
-with energy preference `performance`, one-minute load average 0.91–0.99 before the runs; the
-median of five rounds and their range.
+Intel Core Ultra X7 358H, mains power, 2026-10-11, commit `f64df77f787a`, governor `powersave`
+with energy preference `performance`, one-minute load average 0.94–0.99 before the runs; five
+rounds, interleaved with rounds of the merge-base and with the passthrough, shredding and served
+benches, in alternating orders; the median of the five rounds and their range. The fifth round
+ran under other load on the machine, which raised the one-minute load average to 2.79 by its end,
+and the first ran slower than the other three too; both are kept, the slowest two of each case.
 
 | Case | Time a run | Rounds within ±3 % | Rows a second | MB a second | CPUs busy | Allocations a row |
 |---|---|---|---|---|---|---|
-| `arrow/1000` | 26.45 ms (26.01–28.66 ms) | 4 of 5 | 257 k | 2 309 | 1.14 | 28.6 |
-| `arrow/5000` | 102.69 ms (100.19–104.63 ms) | 5 of 5 | 12.9 k | 593 | 1.04 | 728 |
-| `json/1000` | 234.93 ms (229.54–271.30 ms) | 3 of 5 | 20.6 k | 285 | 1.45 | 283 |
-| `json/5000` | 1.02 s (1.01–1.19 s) | 3 of 5 | 890 | 66 | 1.58 | 8 214 |
+| `arrow/1000` | 21.22 ms (21.05–25.44 ms) | 3 of 5 | 320 k | 2 879 | 1.07 | 25.8 |
+| `arrow/5000` | 83.08 ms (82.10–96.05 ms) | 3 of 5 | 16.0 k | 733 | 1.03 | 657 |
+| `json/1000` | 210.39 ms (209.12–253.80 ms) | 3 of 5 | 23.0 k | 318 | 1.48 | 255 |
+| `json/5000` | 928.58 ms (917.04 ms–1.18 s) | 4 of 5 | 982 | 72 | 1.62 | 7 304 |
 
 The same bytes take nearly four times as long at 5 000 columns as at 1 000 pushed as Arrow, and
-four and a third times as long pushed as JSON: the engine's work grows with the columns a flush
-holds, not with its bytes. A row of 5 000 columns makes 728 allocations pushed as Arrow, 0.15 a
-column, and 8 214 pushed as JSON, 1.6 a column.
+4.4 times as long pushed as JSON: the engine's work grows with the columns a flush holds, not with
+its bytes. A row of 5 000 columns makes 657 allocations pushed as Arrow, 0.13 a column, and 7 304
+pushed as JSON, 1.5 a column.
