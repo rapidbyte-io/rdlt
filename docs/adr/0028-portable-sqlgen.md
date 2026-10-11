@@ -39,7 +39,7 @@ Status: accepted, 2026-09-29.
   what a commit finds rows in (the SQLite writer runs both, and a test checks that a commit then
   changes no table or index):
   - every merge table, its staging and, for a change stream, its tombstones, by the key
-    (`SqlPlanner::key_indexes`, `_rdlt_key__{table}`), where ADR 0027 indexed change tables only;
+    (`SqlPlanner::key_indexes`, `_rdlt_key__{table}`);
   - a child table by its root id (`SqlPlanner::root_index`, `_rdlt_root__{target}`).
 
   The prefix is one no user table takes, and each index is created through the dialect's
@@ -71,7 +71,6 @@ Status: accepted, 2026-09-29.
   `ALTER TABLE … RENAME TO` and `DROP TABLE IF EXISTS`, are standard SQL that some databases
   spell otherwise; a dialect for one of those needs a hook for them.
 - Implementing `SqlDialect` requires `transactional_ddl`.
-- `SqlPlanner::claim` returns statements, as a guarded write takes two. Amended 2026-10-02: a
-  claim is no call of its own; creating a table plans it (ADR 0049).
+- A claim is no call of its own: creating a table plans it (ADR 0049).
 - A second table whose derived tables would take a first's name fails its first load, where it
   would have mixed rows with the first.

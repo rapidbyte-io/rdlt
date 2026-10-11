@@ -25,9 +25,9 @@ the spec's `D-MERGE` names the seq guard, which the clause never exercised.
   `change_merge_unsupported`, whatever its delete modes: ignoring every delete and truncate still
   needs the seq guard and the change columns. A destination that merges changes needs no delete
   mode for a stream that removes nothing.
-  - `partial_updates_unsupported` stays a configuration error, as M5a made it: the plan asks for
-    something the destination cannot do, which the operator fixes. Spec §9.3 calls it
-    unsupported, and is amended by this ADR.
+  - `partial_updates_unsupported` is a configuration error, which differs from spec §9.3, where
+    it is unsupported: the plan asks for something the destination cannot do, which the operator
+    fixes.
 - **Tombstones.** A change stream's table remembers each key a hard delete removed, with the
   delete's sequence, and the latest hard truncate's sequence, the bound. A change sequenced at or
   before its key's tombstone, or before the bound, never applies. A later change of the key lifts
@@ -38,22 +38,20 @@ the spec's `D-MERGE` names the seq guard, which the clause never exercised.
     its garbage collection keeps; a SQL destination in the table `_rdlt_tombstones__{name}`, whose
     bound is a row naming no key.
   - Tombstones are kept for as long as the table is merged, one per key a hard delete removed:
-    that is the cost of hard deletes, and a hard truncate prunes them. Amended 2026-10-01: no
-    rule prunes them by age or count, and a delete of a key the table never held leaves one too
-    (ADR 0049). A table replaced whole, by a
-    generation, forgets them. Amended 2026-10-03 (ADR 0045): the horizon a commit declares for
-    receipts prunes no tombstone, since a source sends a change before a delete again whenever
-    it resumes past it, not only a replay.
+    that is the cost of hard deletes, and a hard truncate prunes them. No rule prunes them by
+    age or count, and a delete of a key the table never held leaves one too (ADR 0049). The
+    horizon a commit declares for receipts prunes no tombstone, since a source sends a change
+    before a delete again whenever it resumes past it, not only a replay (ADR 0045). A table
+    replaced whole, by a generation, forgets them.
   - Changes the snapshot holds are never sent again: a source resumes past its position, so
     tombstones start with the changes, not the snapshot.
 - **SQL change merges** (`sqlgen`, and the SQLite destination through it).
   - A change table's staging gains the op column and the unchanged flags, which the writer stores
-    as the text `,i,j,` of the ordinals of the target columns it flags. Amended 2026-10-02: as
-    bytes, one a target column, set where it is flagged, which a commit reads at a position
-    (ADR 0049). It resolves them when it
-    stages, in the transaction that stages the rows; a flag naming a column the table lacks, or
-    its key or sequence column, is a `Data` error. The staging columns and the tombstones table are
-    created where rows are staged, so a commit changes no table's columns.
+    as bytes, one per target column, set where it is flagged, which a commit reads at a position
+    (ADR 0049). It resolves them when it stages, in the transaction that stages the rows; a flag
+    naming a column the table lacks, or its key or sequence column, is a `Data` error. The
+    staging columns and the tombstones table are created where rows are staged, so a commit
+    changes no table's columns.
   - One statement reads the table, its tombstones and the commit's staged rows, and computes into
     staging each changed key's row, each key removed, and the bound; the statements after it only
     move those rows. Staged duplicates of one key and sequence land once. The SQL uses common table
@@ -61,10 +59,10 @@ the spec's `D-MERGE` names the seq guard, which the clause never exercised.
     `LIMIT`, no DDL, so it runs on any SQL database the planner targets.
   - A change table, its staging and its tombstones are indexed by the key, where rows are
     staged, and a commit finds every row its changes touch by the key: it reads the table whole
-    only to apply a truncate. Amended 2026-10-01: that holds where deletes are soft too, and a
-    commit meets its truncates in one ordered pass, not once a row (ADR 0049). A commit of a thousand changes to a table of a million rows takes
-    about 50 ms in SQLite, as it does at a hundred thousand rows; without the indexes it took 28 s
-    at a hundred thousand.
+    only to apply a truncate. That holds where deletes are soft too, and a commit meets its
+    truncates in one ordered pass, not once a row (ADR 0049). A commit of a thousand changes to a
+    table of a million rows takes about 50 ms in SQLite, as it does at a hundred thousand rows;
+    without the indexes it took 28 s at a hundred thousand.
   - A staged row whose op is none of a change stream's is refused where it is staged: the codes
     past a truncate's are those the commit computes its rows under.
   - A change stream merges into its table, never a generation, and a generation swapped in clears
@@ -101,4 +99,4 @@ the spec's `D-MERGE` names the seq guard, which the clause never exercised.
   merges into it until it declares them.
 - Destinations store tombstones: a hard delete costs a row that stays until a later change of the
   key or a hard truncate.
-- A changed stream's replayed change can no longer bring back a removed row, in any destination.
+- A changed stream's replayed change cannot bring back a removed row, in any destination.

@@ -27,15 +27,14 @@ takes the rest of what a streaming source must be able to tell a run:
   with the same guards: a new phase waits for a commit, and an ended partition waits for its
   end's commit. Signals heard together plan each stream once. Elsewhere the signal is ignored: a
   run that does not follow plans only at its phases. A source signals when its partitions
-  change; each signal costs one `plan` call.
-  (ADR 0039 keeps a signal as its partition's state: signals a partition sends before the
-  coordinator hears them cost one `plan` call together.)
+  change; signals a partition sends before the coordinator hears them are kept as its state and
+  cost one `plan` call together (ADR 0039).
 - **The lag hook.** `Emitter::behind(records)` sends `SourceEvent::Behind { records }`, on the
   wire a `BehindFrame` (9): how many records the read is behind its source's newest, as the
   source measures it. The coordinator keeps, per stream, the latest count of each partition by
   id, so a partition read again keeps its place. It forgets a partition a re-plan retires,
   whether its read was running or had ended, and every partition when the stream begins a new
-  phase; a read asked to stop no longer moves it.
+  phase; a read asked to stop does not move it.
   `StreamReport::behind` is the total, `None` where no partition that still lags said. Freshness
   (time since the last commit) is the engine's own measure and lands with M7's metrics.
 - **Retention loss.**
@@ -56,7 +55,7 @@ takes the rest of what a streaming source must be able to tell a run:
     to serve.
   - The failed read's open segment is abandoned, as a stopped partition's is: no checkpoint
     seals its rows, and the write-ahead log must not hold them for the rest of a load that may
-    run for months. An abandoned segment's rows no longer count toward the commit policy's
+    run for months. An abandoned segment's rows do not count toward the commit policy's
     thresholds (`Progress::Abandoned`), so a long run's abandoned rows never keep a commit due.
 - **The reference offset-log source** gains `retention` (messages each partition keeps). A read
   from before its earliest offset fails as `retention_lost`; a read with no cursor starts at the

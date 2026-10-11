@@ -72,8 +72,8 @@ partition inside a run; the second is an operator's command between runs. So the
   - a running partition the plan no longer names is stopped through a token of its own. What it
     sealed up to its last checkpoint commits; what it read after (for an on-demand stream,
     everything since its last barrier) is read again should a plan name it again. Its state entry
-    stays, as initial planning keeps the entries of partitions a plan drops (amended 2026-10-03:
-    a done one's marker may go when state would pass its limit, reported, ADR 0041);
+    stays, as initial planning keeps the entries of partitions a plan drops; a done one's marker
+    may go when state would pass its limit, which is reported (ADR 0041);
   - an ended partition whose end is not yet committed waits for a later plan. Read again from its
     committed position, it would read again what its end seals;
   - a partition read again takes the place its ended read had, so a run that reads for ever
@@ -82,13 +82,13 @@ partition inside a run; the second is an operator's command between runs. So the
   Re-planning does not commit. The commit policy alone decides when a following run commits.
 - **Read slots.** In a following run an unbounded partition's read holds no read slot: it lives as
   long as the run, mostly waiting, and a topic may have more partitions than slots. The memory
-  budget still bounds what they hold. Bounded partitions share the slots as before.
+  budget still bounds what they hold. Bounded partitions share the slots.
 - **The commit default.** An unset commit policy resolves per run:
   - `CommitPolicy::streaming()` (every 10 s, or 1 GiB) where the run follows its source or reads
     changes (spec §6.4);
   - 60 s or 1 GiB otherwise.
 
-  A policy that is set is kept. `EngineConfig::commit` is now `Option`.
+  A policy that is set is kept. `EngineConfig::commit` is an `Option`.
 - **A bounded write-ahead log.** A partition that ends without sealing its open segment (a
   stopped one, or an unbounded one with rows after its last checkpoint) tells the log, which
   settles the segment, so it holds no chunk back. The writer forgets a settled segment once no
@@ -123,7 +123,7 @@ partition inside a run; the second is an operator's command between runs. So the
     on demand) until every row has arrived. Every read then sends the batches and checkpoints the
     model infers types and discards by. Seed 4516 found reads that cut batches wherever rows had
     arrived.
-  - Then every row arrives, and the phase converges as before. The model's checks cover
+  - Then every row arrives, and the phase converges. The model's checks cover
     exactly-once.
   - A refusal the model says every run must meet only may happen in a following run, which may
     end before the rows that need it arrive.
