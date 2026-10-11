@@ -22,8 +22,8 @@ impl Lowering {
 
     /// A batch of `rows` rows of each kind, in the order the bench reports them: appends stored
     /// natively and as text, merges of unique and of duplicated keys, a history table, a change
-    /// stream with unchanged flags, a split column of JSON, a value the stream discards, and
-    /// instants widened into a finer column.
+    /// stream with unchanged flags, a split column of JSON, a value the stream discards, a row
+    /// it drops, and instants widened into a finer column.
     pub fn all(rows: u32) -> Vec<Self> {
         LoweringCase::ALL
             .into_iter()

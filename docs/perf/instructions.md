@@ -18,7 +18,7 @@ The cases are those of the engine's `allocations` bench whose names hold a `/`.
 | `wal/encode` | `bench::sample_log` of one 8,192-row batch of the passthrough workload's columns |
 | `wal/scan` | `bench::scan_log` of that log |
 | `ipc/roundtrip` | `rdlt_wire`'s `Encoder` and `Decoder` over that batch: its schema and its frames encoded, then decoded |
-| `lowering/history`, `lowering/changes`, `lowering/one_bad_value`, `lowering/temporal_widening` | preparing the lowering bench's batch of that name, of 8,192 rows, on the calling thread, as [lowering.md](lowering.md) describes it |
+| `lowering/history`, `lowering/changes`, `lowering/one_bad_value`, `lowering/one_dropped_row`, `lowering/temporal_widening` | preparing the lowering bench's batch of that name, of 8,192 rows, on the calling thread, as [lowering.md](lowering.md) describes it |
 
 The passthrough case fixes its layout whatever the host has: a count is the same on every machine
 only on one layout, so this is a measuring fixture, not a deployment default; every timed

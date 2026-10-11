@@ -21,9 +21,12 @@ reserves for it.
     variant holds (a string every tenth value, an object every hundredth).
   - `one_bad_value`: instants in seconds into a column of nanoseconds, the middle one beyond it,
     which the stream's `DiscardValue` policy nulls.
+  - `one_dropped_row`: the same instants, the middle one's row dropped by the stream's
+    `DiscardRow` policy, into a table holding the 32-bit `n` in 64 bits.
   - `temporal_widening`: instants in seconds into a column of microseconds, a tenth null.
-- **Checks.** Every run asserts the rows the case keeps (half for `merge_duplicates`) and the
-  values it discards (one for `one_bad_value`); the cases' unit tests pin what each prepares.
+- **Checks.** Every run asserts the rows the case keeps (half for `merge_duplicates`, all but
+  one for `one_dropped_row`) and the values it discards (one for `one_bad_value`); the cases'
+  unit tests pin what each prepares.
 - **Throughput.** Rows a second of the pushed batch.
 - **Allocations.** The `allocations` root prepares each case once to make its plan, then counts
   a second prepare.

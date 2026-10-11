@@ -57,7 +57,7 @@ const LAYOUT: Cores = Cores::new(
 type Case = (&'static str, fn(usize));
 
 /// Every case the instruction counts run.
-const CASES: [Case; 17] = [
+const CASES: [Case; 18] = [
     ("passthrough/null_sink", passed_through),
     ("shred/nested", |times| shredded(Corpus::Nested, times)),
     ("shred/with_arrays", |times| {
@@ -91,6 +91,9 @@ const CASES: [Case; 17] = [
     ("lowering/changes", |times| lowered("changes", times)),
     ("lowering/one_bad_value", |times| {
         lowered("one_bad_value", times);
+    }),
+    ("lowering/one_dropped_row", |times| {
+        lowered("one_dropped_row", times);
     }),
     ("lowering/temporal_widening", |times| {
         lowered("temporal_widening", times);
