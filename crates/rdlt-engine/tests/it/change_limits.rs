@@ -238,6 +238,22 @@ async fn a_change_stream_pushing_rows_fails_as_the_source_s_error() {
 }
 
 #[tokio::test]
+async fn a_change_push_the_engine_reads_is_validated_there() {
+    // The batch has no operation column; the push goes through the sink, not the emitter.
+    let source = Arc::new(Pushing {
+        inner: changes(9, &orders(&[])).await,
+        push: Some(Push::Changes(ids())),
+        phased: false,
+    });
+    let plan = stream("orders").read(ReadMode::Cdc).write(WriteMode::Merge);
+    let outcome = run_limited(plan, source, "changes_invalid_push", |_| {}).await;
+    assert_eq!(outcome.report.status, RunStatus::Failed);
+    let error = outcome.error.expect("the run failed");
+    assert_eq!(error.kind(), ErrorKind::Source, "{error}");
+    assert_eq!(error.code(), Some("change_batch"), "{error}");
+}
+
+#[tokio::test]
 async fn a_stream_not_read_as_changes_pushing_changes_fails_as_the_source_s_error() {
     let source = Arc::new(Pushing {
         inner: generator(&[("orders", 10, 1, 5)]).await,

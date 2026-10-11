@@ -148,15 +148,6 @@ async fn json_over_the_limit_is_refused_before_it_is_sent() {
 }
 
 #[tokio::test]
-async fn change_batches_are_validated() {
-    let (mut out, _feed) = emitter();
-    assert_eq!(
-        out.changes(ids(vec![1])).await.unwrap_err().code(),
-        Some("change_batch")
-    );
-}
-
-#[tokio::test]
 async fn emitting_after_a_stop_request_fails_with_stopped() {
     let (mut out, feed) = emitter();
     feed.stop();

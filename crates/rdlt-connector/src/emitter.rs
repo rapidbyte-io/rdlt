@@ -12,7 +12,6 @@ use arrow_schema::SchemaRef;
 use bytes::Bytes;
 use serde::Serialize;
 
-use crate::change::validate_change_batch;
 use crate::cursor::Cursor;
 use crate::error::{Result, ResultExt};
 use crate::sink::{LogLevel, PartitionSink, Push, SourceEvent};
@@ -97,14 +96,14 @@ impl<C: Serialize> Emitter<C> {
         self.sink.send(SourceEvent::Push(Push::Arrow(batch))).await
     }
 
-    /// Pushes a change batch; an empty batch pushes nothing.
+    /// Pushes a change batch, which the engine validates where it reads it; an empty batch pushes
+    /// nothing.
     pub async fn changes(&mut self, batch: RecordBatch) -> Result<()> {
         if batch.num_rows() == 0 {
             return Ok(());
         }
         check_batch(&batch, &self.sink)?;
         self.check_schema(&batch)?;
-        validate_change_batch(&batch)?;
         self.sink
             .send(SourceEvent::Push(Push::Changes(batch)))
             .await
