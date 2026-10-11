@@ -25,6 +25,11 @@ all_features = true
 # judges a plain column of 64-bit integers through the rows it names reads what the plain arm
 # reads, which spares only the mapping; and one that has a normalized flush's walk read every
 # column for such integers, not only one whose type holds them, finds none in the others.
+#
+# One mutant is excluded because it never ends rather than because it is the code as it is: one
+# that writes a length in LEB128 while the length is under 0x80 pushes bytes until memory runs out,
+# which kills a whole run, not just its test. A bound on the loop would cost every value's length
+# about 4 % more instructions to normalize. The length's test pins every other mutant of the loop.
 exclude_re = [
   "crates/rdlt-adopt/src/exec\\.rs:.*replace marks_at_once -> bool with true",
   "crates/rdlt-connector-reference/src/files/format/json\\.rs:.*replace <impl std::fmt::Debug for Rows>::fmt -> std::fmt::Result with Ok\\(Default::default\\(\\)\\)",
@@ -32,6 +37,7 @@ exclude_re = [
   "crates/rdlt-connector/src/sink\\.rs:.*replace Admission::limits -> Limits with Default::default\\(\\)",
   "crates/rdlt-connector/src/sqlgen\\.rs:.*replace SqlDialect::reserves_table -> bool with false",
   "crates/rdlt-engine/src/env/inline\\.rs:.*replace <impl Env for InlineEnv>::cores -> NonZeroUsize with 1\\.try_into\\(\\)\\.unwrap\\(\\)",
+  "crates/rdlt-engine/src/normalize/identity\\.rs:.*replace >= with < in leb128$",
   "crates/rdlt-engine/src/normalize/rounding\\.rs:.*replace integers -> bool with true$",
   "crates/rdlt-engine/src/table/exact\\.rs:.*delete match arm DataType::Int64 in rounds$",
   "crates/rdlt-engine/src/table/registry\\.rs:.*replace match guard !resolver\\.unwidened\\.contains\\(&column\\) with true in Tables::fit$",
