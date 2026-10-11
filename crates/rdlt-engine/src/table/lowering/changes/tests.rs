@@ -9,7 +9,7 @@ use arrow_array::{
 use proptest::prelude::Strategy;
 use rdlt_connector::{ChangeOp, OP_COLUMN, SEQ_COLUMN, UNCHANGED_COLUMN};
 
-use super::{ChangeRows, compact_changes};
+use super::ChangeRows;
 
 fn seq(position: u8) -> [u8; 16] {
     let mut bytes = [0; 16];
@@ -206,80 +206,94 @@ fn deletes_and_truncates_record_when_other_rows_do_not() {
     assert_eq!(kept.op(1), Some(ChangeOp::Update));
 }
 
-/// A merge batch: key `k`, op, sequence and unchanged flags, one row per `(key, op, seq, flags)`,
-/// where the flags are one byte, or none.
-fn merge_batch(rows: &[(i64, ChangeOp, u8, Option<u8>)]) -> RecordBatch {
-    let flags: BinaryArray = rows
-        .iter()
-        .map(|row| row.3.map(|byte| vec![byte]))
-        .collect();
-    RecordBatch::try_from_iter([
-        (
-            "k",
-            Arc::new(Int64Array::from_iter_values(rows.iter().map(|row| row.0))) as ArrayRef,
+/// A merge batch's key column and its change rows: one row per `(key, op, seq, flags)`, the
+/// flags one byte over two data fields, `k` (bit 0) and `v` (bit 1), or none.
+fn merge_rows(rows: &[(i64, ChangeOp, u8, Option<u8>)]) -> (ArrayRef, ChangeRows) {
+    let keys: ArrayRef = Arc::new(Int64Array::from_iter_values(rows.iter().map(|row| row.0)));
+    let changes = ChangeRows {
+        op: Int8Array::from_iter_values(rows.iter().map(|row| row.1.code())),
+        seq: BinaryArray::from_iter_values(rows.iter().map(|row| seq(row.2))),
+        unchanged: Some(
+            rows.iter()
+                .map(|row| row.3.map(|byte| vec![byte]))
+                .collect(),
         ),
-        (
-            "op",
-            Arc::new(Int8Array::from_iter_values(
-                rows.iter().map(|row| row.1.code()),
-            )) as ArrayRef,
-        ),
-        (
-            "seq",
-            Arc::new(BinaryArray::from_iter_values(
-                rows.iter().map(|row| seq(row.2)),
-            )) as ArrayRef,
-        ),
-        ("unchanged", Arc::new(flags) as ArrayRef),
-    ])
-    .unwrap()
+        ordinals: Arc::from([Some(0), Some(1)]),
+    };
+    (keys, changes)
 }
 
-fn kept(batch: &RecordBatch, hard: bool) -> Vec<(i64, u8)> {
-    let compacted = compact_changes(batch, &[0], [1, 2, 3], hard).unwrap();
-    let keys = compacted.column(0).as_primitive::<Int64Type>();
-    let seqs = compacted.column(2).as_binary::<i32>();
-    (0..compacted.num_rows())
-        .map(|row| (keys.value(row), seqs.value(row)[15]))
+/// The keys and last sequence bytes of the rows `unsuperseded` keeps, where data field `i` is
+/// written as `written[i]`.
+fn kept_with(
+    rows: &[(i64, ChangeOp, u8, Option<u8>)],
+    written: &[Option<usize>],
+    hard: bool,
+) -> Vec<(i64, u8)> {
+    let (keys, changes) = merge_rows(rows);
+    let keep = changes
+        .unsuperseded(&[Arc::clone(&keys)], written, hard)
+        .unwrap();
+    let keys = keys.as_primitive::<Int64Type>();
+    (0..keys.len())
+        .filter(|row| keep.as_ref().is_none_or(|keep| keep.value(*row)))
+        .map(|row| (keys.value(row), changes.seq.value(row)[15]))
         .collect()
+}
+
+fn kept(rows: &[(i64, ChangeOp, u8, Option<u8>)], hard: bool) -> Vec<(i64, u8)> {
+    kept_with(rows, &[Some(0), Some(1)], hard)
 }
 
 #[test]
 fn a_later_whole_row_supersedes_the_rows_of_its_key_before_it() {
     use ChangeOp::{Delete, Insert, Update};
-    let batch = merge_batch(&[
+    let rows = [
         (1, Insert, 1, None),
         (2, Insert, 2, None),
         (1, Update, 3, Some(1)),
         (1, Update, 4, None),
         (2, Delete, 5, None),
-    ]);
-    assert_eq!(kept(&batch, true), [(1, 4), (2, 5)]);
+    ];
+    assert_eq!(kept(&rows, true), [(1, 4), (2, 5)]);
     // A soft delete keeps the row's last values, so the rows before it stay.
-    assert_eq!(kept(&batch, false), [(2, 2), (1, 4), (2, 5)]);
+    assert_eq!(kept(&rows, false), [(2, 2), (1, 4), (2, 5)]);
 }
 
 #[test]
 fn a_partial_row_supersedes_nothing_and_a_truncate_keeps_every_row() {
     use ChangeOp::{Insert, Truncate, Update};
-    let partial = merge_batch(&[(1, Insert, 1, None), (1, Update, 2, Some(1))]);
+    let partial = [(1, Insert, 1, None), (1, Update, 2, Some(1))];
     assert_eq!(kept(&partial, true), [(1, 1), (1, 2)]);
-    let truncated = merge_batch(&[
+    let truncated = [
         (1, Insert, 1, None),
         (0, Truncate, 2, None),
         (1, Update, 3, None),
-    ]);
+    ];
     assert_eq!(kept(&truncated, true), [(1, 1), (0, 2), (1, 3)]);
-    let lone = merge_batch(&[(1, Insert, 1, None)]);
+    let lone = [(1, Insert, 1, None)];
     assert_eq!(kept(&lone, true), [(1, 1)]);
 }
 
 #[test]
 fn a_whole_row_supersedes_a_lone_row_before_it_even_with_empty_flags() {
     use ChangeOp::{Insert, Update};
-    let pair = merge_batch(&[(1, Insert, 1, None), (1, Update, 2, None)]);
+    let pair = [(1, Insert, 1, None), (1, Update, 2, None)];
     assert_eq!(kept(&pair, true), [(1, 2)]);
     // Flags that flag nothing leave nothing unchanged.
-    let flagless = merge_batch(&[(1, Insert, 1, Some(0)), (1, Update, 2, Some(0))]);
+    let flagless = [(1, Insert, 1, Some(0)), (1, Update, 2, Some(0))];
     assert_eq!(kept(&flagless, true), [(1, 2)]);
+}
+
+#[test]
+fn a_row_flagging_only_fields_the_table_does_not_write_supersedes() {
+    use ChangeOp::{Insert, Update};
+    let rows = [(1, Insert, 1, None), (1, Update, 2, Some(0b10))];
+    // `v` is written, and the update leaves it unchanged: both rows stay.
+    assert_eq!(
+        kept_with(&rows, &[Some(0), Some(1)], true),
+        [(1, 1), (1, 2)]
+    );
+    // `v` is not written, so the update flags nothing the table holds and supersedes.
+    assert_eq!(kept_with(&rows, &[Some(0), None], true), [(1, 2)]);
 }

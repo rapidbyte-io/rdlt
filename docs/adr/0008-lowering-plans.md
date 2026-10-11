@@ -16,7 +16,11 @@ child tables and lineage ids. Building M3b surfaced decisions the spec leaves op
   columns the schema policy discards, and the metadata columns' encoding. Tables keep up to eight
   plans per table for its current view, so a batch whose schema was seen before skips schema
   resolution; a schema change makes a new view and drops the old view's plans. Per batch, a plan
-  discards, converts and lowers columns and adds the metadata columns.
+  discards, converts and lowers columns; a merge table's plan then keeps the rows its merge keeps,
+  compared by the key as the table stores it (the last row of each key, or for a change stream
+  the rows no later row of their key supersedes), and adds the metadata columns for those rows. A
+  row's sequence is its position among the rows received, and a change stream's row's is its
+  source's position.
 - **Lowering runs on the compute pool.** A partition finds each batch's plan in order, since
   finding it may change the table, then lowers the flush's batches on the pool eight at a time,
   Arrow batches concatenated there too. Each window's lowered batches are charged to the memory

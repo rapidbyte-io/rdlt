@@ -5,22 +5,21 @@
 #[cfg(test)]
 mod tests;
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use arrow_array::cast::AsArray;
 use arrow_array::types::{Int8Type, TimestampMicrosecondType};
 use arrow_array::{
-    Array, ArrayRef, BinaryArray, BooleanArray, Int8Array, PrimitiveArray, RecordBatch, UInt32Array,
+    Array, ArrayRef, BinaryArray, BooleanArray, Int8Array, PrimitiveArray, RecordBatch,
 };
-use arrow_row::{RowConverter, SortField};
+use arrow_buffer::{BooleanBuffer, BooleanBufferBuilder};
 use arrow_schema::{ArrowError, DataType};
 use rdlt_connector::cost::Stored;
 use rdlt_connector::{
     ChangeOp, LogicalType, OP_COLUMN, SEQ_COLUMN, UNCHANGED_COLUMN, UnchangedFlags, remap_unchanged,
 };
 
-use super::merge::compact;
+use super::merge::{kept_or_none, sorted};
 use super::{LoweringPlan, Source, lower_array};
 use crate::table::lower::loaded_at_type;
 
@@ -144,12 +143,7 @@ impl ChangeRows {
         let Some(flags) = &self.unchanged else {
             return Arc::new(BinaryArray::new_null(self.op.len()));
         };
-        let to: Vec<Option<usize>> = self
-            .ordinals
-            .iter()
-            .map(|data| data.and_then(|data| written.get(data).copied().flatten()))
-            .collect();
-        Arc::new(remap_unchanged(flags, &to))
+        Arc::new(remap_unchanged(flags, &self.pushed_to(written)))
     }
 
     /// When each row was deleted: `at` for deletes and truncates, null for other rows.
@@ -166,65 +160,74 @@ impl ChangeRows {
     pub(crate) fn truncates(&self, row: usize) -> bool {
         self.op(row) == Some(ChangeOp::Truncate)
     }
-}
 
-/// `batch`, a change stream's merge batch, without the rows a later row of their key supersedes.
-///
-/// An insert or update that flags nothing unchanged supersedes, and, where deletes remove rows
-/// outright, a delete. A batch holding a truncate keeps every row, since rows before it must meet
-/// it.
-///
-/// `key` are the key columns' positions; `op`, `seq` and `unchanged` the change columns'.
-pub(crate) fn compact_changes(
-    batch: &RecordBatch,
-    key: &[usize],
-    [op, seq, unchanged]: [usize; 3],
-    hard: bool,
-) -> Result<RecordBatch, ArrowError> {
-    let ops = batch.column(op).as_primitive::<Int8Type>();
-    let truncated = (0..batch.num_rows())
-        .any(|row| ChangeOp::from_code(ops.value(row)) == Some(ChangeOp::Truncate));
-    if truncated || batch.num_rows() < 2 {
-        return Ok(batch.clone());
-    }
-    let seqs = arrow_cast::cast(batch.column(seq), &DataType::Binary)?;
-    let seqs = seqs.as_binary::<i32>();
-    let flags = batch.column(unchanged).as_binary::<i32>();
-    let columns: Vec<ArrayRef> = key
-        .iter()
-        .map(|index| Arc::clone(batch.column(*index)))
-        .collect();
-    let fields = columns
-        .iter()
-        .map(|column| SortField::new(column.data_type().clone()))
-        .collect();
-    let keys = RowConverter::new(fields)?.convert_columns(&columns)?;
-    let supersedes = |row: usize| match ChangeOp::from_code(ops.value(row)) {
-        Some(ChangeOp::Insert | ChangeOp::Update) => {
-            flags.is_null(row) || flags.value(row).iter().all(|byte| *byte == 0)
+    /// The rows of a merge batch, whose key columns as its table stores them are `keys`, that no
+    /// later row of their key supersedes; none where every row stays.
+    ///
+    /// An insert or update that flags none of the fields its table writes unchanged supersedes,
+    /// where data field `i` is written as `written[i]`, and, where deletes remove rows outright
+    /// (`hard`), a delete. A row stays where its sequence is at least the greatest of its key's
+    /// superseding rows'. A batch holding a truncate keeps every row, since rows before it must
+    /// meet it.
+    pub(crate) fn unsuperseded(
+        &self,
+        keys: &[ArrayRef],
+        written: &[Option<usize>],
+        hard: bool,
+    ) -> Result<Option<BooleanArray>, ArrowError> {
+        let rows = self.op.len();
+        if rows < 2 || (0..rows).any(|row| self.truncates(row)) {
+            return Ok(None);
         }
-        Some(ChangeOp::Delete) => hard,
-        _ => false,
-    };
-    // The greatest sequence of each key's superseding rows.
-    let mut latest: BTreeMap<&[u8], &[u8]> = BTreeMap::new();
-    for row in (0..batch.num_rows()).filter(|row| supersedes(*row)) {
-        let seq = seqs.value(row);
-        let entry = latest.entry(keys.row(row).data()).or_insert(seq);
-        *entry = (*entry).max(seq);
+        let to = self.pushed_to(written);
+        let supersedes = BooleanBuffer::collect_bool(rows, |row| match self.op(row) {
+            Some(ChangeOp::Insert | ChangeOp::Update) => self.flags_nothing(row, &to),
+            Some(ChangeOp::Delete) => hard,
+            _ => false,
+        });
+        // Where no row supersedes, every row stays, and the keys need no sort.
+        if supersedes.count_set_bits() == 0 {
+            return Ok(None);
+        }
+        let (keyed, order) = sorted(keys)?;
+        let mut kept = BooleanBufferBuilder::new(rows);
+        kept.append_n(rows, false);
+        for run in order.chunk_by(|left, right| keyed.row(*left) == keyed.row(*right)) {
+            let latest = run
+                .iter()
+                .filter(|row| supersedes.value(**row))
+                .map(|row| self.seq.value(*row))
+                .max();
+            for row in run {
+                if latest.is_none_or(|latest| self.seq.value(*row) >= latest) {
+                    kept.set_bit(*row, true);
+                }
+            }
+        }
+        Ok(kept_or_none(kept.finish()))
     }
-    let kept: Vec<u32> = (0..batch.num_rows())
-        .filter(|row| {
-            latest
-                .get(keys.row(*row).data())
-                .is_none_or(|latest| seqs.value(*row) >= *latest)
-        })
-        .map(|row| u32::try_from(row).unwrap_or(u32::MAX))
-        .collect();
-    if kept.len() == batch.num_rows() {
-        return Ok(batch.clone());
+
+    /// For each field of the pushed batch, the table's field it is written as, where data field
+    /// `i` is written as `written[i]`; none for a change column or a field not written.
+    fn pushed_to(&self, written: &[Option<usize>]) -> Vec<Option<usize>> {
+        self.ordinals
+            .iter()
+            .map(|data| data.and_then(|data| written.get(data).copied().flatten()))
+            .collect()
     }
-    arrow_select::take::take_record_batch(batch, &UInt32Array::from(kept))
+
+    /// Whether row `row` flags none of the fields `to` maps to a table's field unchanged.
+    ///
+    /// Only the bytes holding the pushed batch's fields are read, however long a bitmap is.
+    fn flags_nothing(&self, row: usize, to: &[Option<usize>]) -> bool {
+        let Some(flags) = &self.unchanged else {
+            return true;
+        };
+        flags.is_null(row)
+            || UnchangedFlags::new(flags.value(row))
+                .ordinals_below(to.len())
+                .all(|pushed| to[pushed].is_none())
+    }
 }
 
 impl LoweringPlan {
@@ -265,26 +268,6 @@ impl LoweringPlan {
             columns.push(lower_array(&array, &logical, lowered)?);
         }
         Ok(())
-    }
-
-    /// `prepared` compacted as its table's merges keep rows: the last row of each key, or for a
-    /// change stream's, the rows no later row of their key supersedes.
-    pub(super) fn compacted(&self, prepared: RecordBatch) -> Result<RecordBatch, ArrowError> {
-        let view = &self.view;
-        match (view.compacts(), &view.meta.changes) {
-            (false, _) => Ok(prepared),
-            (true, None) => compact(&prepared, &view.key),
-            (true, Some(names)) => {
-                let schema = prepared.schema();
-                let seq = view.meta.seq.as_deref().unwrap_or_default();
-                let columns = [
-                    schema.index_of(&names.op)?,
-                    schema.index_of(seq)?,
-                    schema.index_of(&names.unchanged)?,
-                ];
-                compact_changes(&prepared, &view.key, columns, names.deleted_at.is_none())
-            }
-        }
     }
 }
 
