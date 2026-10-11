@@ -84,6 +84,25 @@ fn a_discard_keeps_what_the_latest_manifest_lists_and_enters_no_link() {
 }
 
 #[test]
+fn a_staging_directory_that_is_a_link_or_others_may_write_fails_the_discard() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let root = crate::scratch::tempdir().expect("a temporary directory");
+    let outside = crate::scratch::tempdir().expect("a temporary directory");
+    let older = staged(outside.path(), 1);
+    let staging = root.path().join("staging");
+    std::os::unix::fs::symlink(outside.path().join("staging"), &staging).unwrap();
+    let dir = Dir::ambient(root.path()).unwrap();
+    let linked = discard(&dir, Epoch(9)).expect_err("a linked staging is refused");
+    assert_eq!(linked.code(), Some("not_a_directory"));
+    assert!(older.exists(), "the discard followed the link");
+    std::fs::remove_file(&staging).unwrap();
+    std::fs::create_dir(&staging).unwrap();
+    std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o777)).unwrap();
+    let shared = discard(&dir, Epoch(9)).expect_err("a shared staging is refused");
+    assert_eq!(shared.code(), Some("not_private"));
+}
+
+#[test]
 fn a_check_makes_the_private_directory_durable_in_the_root_and_leaves_no_probe() {
     let root = crate::scratch::tempdir().expect("a temporary directory");
     trace::clear();
@@ -118,6 +137,27 @@ fn a_check_makes_the_private_directory_durable_in_the_root_and_leaves_no_probe()
     let again = super::held_or_opened(root.path(), &held).expect("the held directory");
     assert!(Arc::ptr_eq(&rdlt, &again));
     checked(&again).expect("the check passes");
+}
+
+#[test]
+fn a_check_fails_where_the_private_directory_takes_no_file() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let root = crate::scratch::tempdir().expect("a temporary directory");
+    let (_, rdlt) = private(root.path()).expect("the directory opens");
+    let mode = |bits| {
+        let path = root.path().join("_rdlt");
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(bits)).unwrap();
+    };
+    mode(0o500);
+    // Where permissions bind nothing, as for root, the fault cannot be made.
+    let writable = std::fs::write(root.path().join("_rdlt").join("probe"), b"").is_ok();
+    let refused = checked(&rdlt);
+    mode(0o700);
+    if !writable {
+        let error = refused.expect_err("a read-only directory takes no write");
+        assert_eq!(error.kind(), ConnectorErrorKind::Config);
+    }
+    checked(&rdlt).expect("the check passes once it is writable");
 }
 
 #[test]
