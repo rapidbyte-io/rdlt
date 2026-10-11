@@ -323,3 +323,90 @@ fn a_zoned_instant_whose_local_time_chrono_cannot_hold_renders_in_utc() {
         "+262142-12-31T23:59:59Z"
     );
 }
+
+/// How many values of `array` that `arrow_renders` lets through, each asserted to render here as
+/// Arrow renders it.
+fn as_arrow_renders(array: &ArrayRef, arrow_renders: &dyn Fn(i64) -> bool) -> usize {
+    use arrow_cast::display::{ArrayFormatter, FormatOptions};
+    let options = FormatOptions::default().with_datetime_format(Some("%Y-%m-%d"));
+    let ours = text(array).unwrap();
+    let arrow = ArrayFormatter::try_new(array.as_ref(), &options).unwrap();
+    let mut compared = 0;
+    for row in 0..array.len() {
+        let value = rdlt_connector::instants::stored(array.as_ref(), row).unwrap();
+        if !arrow_renders(value) {
+            continue;
+        }
+        let expected = arrow.value(row).to_string();
+        assert_eq!(
+            ours.as_string::<i32>().value(row),
+            expected,
+            "{} {value}",
+            array.data_type()
+        );
+        compared += 1;
+    }
+    compared
+}
+
+/// Every value Arrow renders renders here as Arrow renders it: dates, naive timestamps, and zoned
+/// ones whose instant and time in their zone `chrono` holds at an offset of whole minutes, in
+/// every unit and kind of zone.
+#[test]
+fn each_value_arrow_renders_renders_as_arrow_renders_it() {
+    use arrow_array::timezone::Tz;
+    use chrono::{Offset as _, TimeDelta, TimeZone as _};
+    let mut compared = 0_usize;
+    for unit in [
+        TimeUnit::Second,
+        TimeUnit::Millisecond,
+        TimeUnit::Microsecond,
+        TimeUnit::Nanosecond,
+    ] {
+        // A day either side of chrono's ends keeps Arrow's formatter from panicking.
+        let held = |value: i64| {
+            super::super::naive(value, unit).is_some_and(|utc| {
+                utc.checked_add_signed(TimeDelta::days(1)).is_some()
+                    && utc.checked_sub_signed(TimeDelta::days(1)).is_some()
+            })
+        };
+        for zone in ZONES {
+            let column = array(&DataType::Timestamp(unit, zone.map(Arc::from)), edges(unit));
+            compared += match zone {
+                None => as_arrow_renders(&column, &held),
+                Some(zone) => {
+                    let tz: Tz = zone.parse().unwrap();
+                    let whole = |value: i64| {
+                        held(value)
+                            && super::super::naive(value, unit).is_some_and(|utc| {
+                                tz.offset_from_utc_datetime(&utc).fix().local_minus_utc() % 60 == 0
+                            })
+                    };
+                    as_arrow_renders(&column, &whole)
+                }
+            };
+        }
+    }
+    let days: Vec<i32> = vec![
+        i32::MIN,
+        -719_529,
+        -719_528,
+        -1,
+        0,
+        1,
+        2_932_896,
+        2_932_897,
+        i32::MAX,
+    ];
+    let dated = |day: i64| super::super::naive(day * 86_400, TimeUnit::Second).is_some();
+    let date32: ArrayRef = Arc::new(Date32Array::from(days.clone()));
+    compared += as_arrow_renders(&date32, &dated);
+    let millis: Vec<i64> = days
+        .iter()
+        .map(|day| i64::from(*day) * 86_400_000 - 1)
+        .collect();
+    let dated_ms = |ms: i64| super::super::naive(ms.div_euclid(1_000), TimeUnit::Second).is_some();
+    let date64: ArrayRef = Arc::new(Date64Array::from(millis));
+    compared += as_arrow_renders(&date64, &dated_ms);
+    assert!(compared > 500, "only {compared} values compared");
+}

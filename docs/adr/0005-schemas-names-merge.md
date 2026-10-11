@@ -54,10 +54,11 @@ contract M2b settles. Building M2b surfaced decisions the spec leaves open or ge
   something about its data, not a destination constraint, so a later batch with nulls needs no
   change.
 - **Lowering.** A type the destination does not store natively lands as text: UUIDs hyphenated,
-  bytes in hex, anything else as Arrow renders it. Nested values stay native only when the policy
-  is `native` and every type inside them is native; otherwise they, and `Json`, become `Json`, or
-  JSON text where the destination has no JSON type. The `json` nested policy only lowers: the
-  logical type stays a struct or list.
+  bytes in lower-case hex, temporal values as the engine renders them, exactly (ADR 0046), anything
+  else as Arrow renders it. Nested values stay native only when the policy is `native` and every
+  type inside them is native; otherwise they, and `Json`, become `Json`, or JSON text where the
+  destination has no JSON type. The `json` nested policy only lowers: the logical type stays a
+  struct or list.
 - **Metadata columns.** Every row carries `_rdlt_load_id` (the load's UUID) and
   `_rdlt_loaded_at` (the attempt's start, microseconds, UTC); merge rows carry `_rdlt_seq`, 16
   bytes of `Binary`: the segment id then the row's index in the segment, big-endian. Every

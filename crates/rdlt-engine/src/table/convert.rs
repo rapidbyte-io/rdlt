@@ -307,8 +307,8 @@ pub(crate) fn json(array: &ArrayRef, logical: &LogicalType) -> Result<ArrayRef, 
 }
 
 /// Each value of `array`, of `logical`, as text: UUIDs hyphenated, bytes in lower-case hex,
-/// nested values and JSON as JSON text, anything else as Arrow renders it, or exactly where
-/// Arrow cannot.
+/// nested values and JSON as JSON text, temporal values as the engine renders them, exactly, and
+/// anything else as Arrow renders it.
 pub(crate) fn text(array: &ArrayRef, logical: &LogicalType) -> Result<ArrayRef, ArrowError> {
     let array = &decoded(array)?;
     precise(array)?;

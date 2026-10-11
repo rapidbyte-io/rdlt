@@ -30,9 +30,10 @@ and M3d deferred.
   - arrow-json encodes a list's items with the list's field, so JSON and UUID items lost their
     extension types (JSON came out double-encoded): the engine encodes such lists itself.
   - Temporal text beyond the years `chrono` holds failed the batch (dates, timestamps) or was
-    written as `<invalid>` (durations), and times of day outside a day failed it too: durations
-    are always rendered by the engine, as Arrow renders them in range (`PT1.5S`); other values
-    Arrow cannot render are rendered exactly, in UTC, with expanded years and signed clocks.
+    written as `<invalid>` (durations), and times of day outside a day failed it too: the engine
+    renders every temporal value itself, as Arrow renders those in range (a zero duration as
+    `PT0S`, where Arrow writes `P0D`), exactly, with expanded years and signed clocks, and an
+    instant chrono cannot place in its zone in UTC.
   - A named zone's historical offset with seconds (Asia/Kolkata before 1941) lost them in text,
     naming another instant: such instants are rendered in UTC.
   - JSON has no non-finite numbers, and arrow-json wrote them as `null`: they are the JSON
@@ -45,9 +46,7 @@ and M3d deferred.
   - Arrow refuses a wall-clock timestamp that its column's named zone skips or repeats, failing
     the batch: a widening never consults a zone (below), so no such time is refused.
   - A `Date64` is the day it is within wherever it goes, a struct's and a list's included, and one
-    a `Date32` cannot hold is refused; a decimal beyond its declared precision is refused; Arrow
-    renders a zoned instant only where chrono holds it and its local time at an offset of whole
-    minutes, and never a time of day.
+    a `Date32` cannot hold is refused; a decimal beyond its declared precision is refused.
   - Arrow widens times of day outside a day unchecked (`Time64` microseconds to nanoseconds
     overflowed, panicking in debug builds): times are rescaled here and refused where the finer
     type cannot hold them.
