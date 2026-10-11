@@ -10,7 +10,7 @@ use arrow_array::{
     UInt8Array, UnionArray,
 };
 use arrow_buffer::{NullBuffer, OffsetBuffer, ScalarBuffer};
-use arrow_schema::{DataType, Field as ArrowField, Fields, UnionFields};
+use arrow_schema::{ArrowError, DataType, Field as ArrowField, Fields, UnionFields};
 use bytes::Bytes;
 use proptest::prelude::*;
 use rdlt_connector::cost::Allocations;
@@ -777,9 +777,7 @@ fn a_union_under_an_object_is_an_internal_error() {
     };
     let error = normalize(&batch, &keyed).unwrap_err();
     assert!(
-        error
-            .to_string()
-            .contains("a union cannot be a column of a table"),
+        matches!(&error, ArrowError::InvalidArgumentError(message) if message == "a union cannot be a column of a table"),
         "{error}"
     );
 }
