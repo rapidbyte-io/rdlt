@@ -61,10 +61,16 @@ impl Passthrough {
     ) -> Result<Self, ComputePoolError> {
         Ok(Self {
             runner: Runner::within(cores, "passthrough", stream(), None, memory)?,
-            batches: (0..batches)
-                .map(|index| Self::batch(i64::from(index) * i64::from(rows), rows))
-                .collect(),
+            batches: Self::run_of(batches, rows),
         })
+    }
+
+    /// `batches` batches of `rows` rows of the workload's columns, their ids running on from one
+    /// batch to the next.
+    pub(super) fn run_of(batches: u32, rows: u32) -> Vec<RecordBatch> {
+        (0..batches)
+            .map(|index| Self::batch(i64::from(index) * i64::from(rows), rows))
+            .collect()
     }
 
     /// One batch of `rows` rows of the workload's columns, its ids running from `first`: the
