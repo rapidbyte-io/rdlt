@@ -14,7 +14,7 @@ use rdlt_connector::LogicalType;
 
 use super::ShredError;
 use super::build::Column;
-use super::keys::ObjectKeys;
+use super::keys::OpenKeys;
 use super::meter::{Columns, Meter};
 use super::observe::Observed;
 use super::observing::Look;
@@ -130,20 +130,21 @@ pub(crate) fn fitting(texts: &StringArray, column: &LogicalType) -> (BooleanArra
 /// Whether an object in the JSON value `text`, at any depth, repeats a key.
 fn repeats_a_key(text: &str) -> bool {
     let mut reader = Reader::new(text);
-    let mut open: Vec<Option<ObjectKeys<'_>>> = Vec::new();
+    let mut open = OpenKeys::default();
+    // Each key as its escapes read, one after another.
+    let mut keys = String::new();
     while let Ok(Some(token)) = reader.next() {
         match token {
-            Token::BeginObject => open.push(Some(ObjectKeys::default())),
-            Token::BeginArray => open.push(None),
-            Token::EndObject | Token::EndArray => {
-                open.pop();
-            }
-            Token::Key(key) => {
-                if let Some(Some(keys)) = open.last_mut()
-                    && keys.note(key.unescaped()).is_err()
-                {
+            Token::BeginObject => open.open(),
+            Token::EndObject => {
+                if open.close(&keys).is_some() {
                     return true;
                 }
+            }
+            Token::Key(key) => {
+                let start = keys.len();
+                keys.push_str(&key.unescaped());
+                open.key(start..keys.len());
             }
             _ => {}
         }

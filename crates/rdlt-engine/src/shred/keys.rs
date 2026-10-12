@@ -1,29 +1,56 @@
-//! The keys of one JSON object, to refuse a key it repeats however the key was escaped.
+//! The keys of the objects open in one JSON value, to refuse a key an object repeats however the
+//! key was escaped.
 
-use std::borrow::Cow;
-use std::collections::BTreeSet;
+use std::ops::Range;
 
-use super::ShredError;
-use crate::limits::QUOTED_BYTES;
-
-/// The keys an object held so far, each as its escapes read: borrowed from the text where it had
-/// none to read.
+/// The keys of each object open in a value, as ranges of a text that holds each key written one
+/// way only, so that two keys are the same where their text is.
+///
+/// Kept from value to value, it allocates only to grow.
 #[derive(Debug, Default)]
-pub(super) struct ObjectKeys<'a>(BTreeSet<Cow<'a, str>>);
+pub(crate) struct OpenKeys {
+    /// The keys the open objects have named, the innermost object's last.
+    keys: Vec<Range<usize>>,
+    /// Where each open object's keys start among `keys`, the innermost last.
+    objects: Vec<usize>,
+}
 
-impl<'a> ObjectKeys<'a> {
-    /// Notes `key`, the object's next key.
-    ///
-    /// # Errors
-    ///
-    /// [`ShredError::DuplicateKey`], the key shown cut to a limit, where the object held it.
-    pub(super) fn note(&mut self, key: Cow<'a, str>) -> Result<(), ShredError> {
-        if self.0.contains(key.as_ref()) {
-            let shown = rdlt_connector::text::shown(&key, QUOTED_BYTES);
-            return Err(ShredError::DuplicateKey(shown));
-        }
-        self.0.insert(key);
-        Ok(())
+impl OpenKeys {
+    /// Forgets every open object, for a value that stopped before closing them.
+    pub(crate) fn clear(&mut self) {
+        self.keys.clear();
+        self.objects.clear();
+    }
+
+    /// Opens an object inside the innermost one.
+    pub(crate) fn open(&mut self) {
+        self.objects.push(self.keys.len());
+    }
+
+    /// Notes `key`, a range of the text, as the innermost object's next key.
+    pub(crate) fn key(&mut self, key: Range<usize>) {
+        self.keys.push(key);
+    }
+
+    /// Closes the innermost object, whose keys `text` holds: the key it named again first, if it
+    /// repeated one.
+    pub(crate) fn close(&mut self, text: &str) -> Option<Range<usize>> {
+        let first = self.objects.pop().unwrap_or_default();
+        let keys = self.keys.get_mut(first..).unwrap_or_default();
+        let named = |key: &Range<usize>| text.get(key.clone()).unwrap_or_default();
+        keys.sort_unstable_by(|one, other| {
+            named(one)
+                .cmp(named(other))
+                .then(one.start.cmp(&other.start))
+        });
+        // Sorted so, each key named again follows where it was named before.
+        let repeated = keys
+            .windows(2)
+            .filter(|pair| named(&pair[0]) == named(&pair[1]))
+            .map(|pair| pair[1].clone())
+            .min_by_key(|key| key.start);
+        self.keys.truncate(first);
+        repeated
     }
 }
 

@@ -91,3 +91,22 @@ fn the_exact_parse_allocates_no_string_a_number() {
     let one = exact(r#"{"j":18446744073709551616}"#);
     assert!(ten - one < 1_000.0, "{ten} allocations against {one}");
 }
+
+#[test]
+fn rendering_a_drifted_column_allocates_nothing_a_value() {
+    // An object in one row and an array in the next: `v` can only be a column of JSON.
+    let rows = format!("{}\n{}\n", r#"{"v":{"x":1,"y":"a"}}"#, r#"{"v":[1,2]}"#);
+    let drifted = bytes::Bytes::from(rows.repeat(500));
+    let plain = bytes::Bytes::from(format!("{}\n", r#"{"v":7}"#).repeat(1_000));
+    let shred = |push: bytes::Bytes| {
+        counted(HEAP, || {
+            rdlt_engine::bench::shred(&[push], 1 << 20).unwrap();
+        })
+        .allocations
+    };
+    let (drifted, plain) = (shred(drifted), shred(plain));
+    assert!(
+        drifted - plain < 100.0,
+        "{drifted} allocations against {plain}"
+    );
+}

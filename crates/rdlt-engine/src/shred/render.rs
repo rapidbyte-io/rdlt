@@ -4,43 +4,85 @@
 //! recurses no deeper than the nesting limit. Numbers keep the text they were written as: integers
 //! read exactly render as their digits, and a float only as the exact parse noted its text.
 
-use std::borrow::Cow;
-use std::fmt;
+#[cfg(test)]
+mod tests;
+
+use std::fmt::{self, Display, Write as _};
 
 use serde::de::{DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 
 use super::ShredError;
-use super::keys::ObjectKeys;
+use super::keys::OpenKeys;
 use super::visit::{Context, nest};
+use crate::limits::QUOTED_BYTES;
 
-/// One value rendered onto `text`; an object repeating a key fails.
+/// What a parse renders its values of JSON into, kept from value to value so that rendering one
+/// allocates only to grow: the value's text and the keys of the objects open in it.
+#[derive(Debug, Default)]
+pub(crate) struct Rendering {
+    pub(crate) text: String,
+    pub(crate) keys: OpenKeys,
+}
+
+impl Rendering {
+    /// Readies it for the next value.
+    pub(crate) fn clear(&mut self) {
+        self.text.clear();
+        self.keys.clear();
+    }
+}
+
+/// Writes `text` onto `out` as a JSON string, quoted, escaped as sonic-rs escapes one: `"` and `\`
+/// behind a backslash, the control characters JSON names by a letter so, the others as `\u00XX`,
+/// and every other character as it is.
+pub(crate) fn escape(text: &str, out: &mut String) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    out.push('"');
+    let mut plain = 0;
+    for (at, byte) in text.bytes().enumerate() {
+        let escaped = match byte {
+            b'"' => "\\\"",
+            b'\\' => "\\\\",
+            b'\n' => "\\n",
+            b'\r' => "\\r",
+            b'\t' => "\\t",
+            0x08 => "\\b",
+            0x0c => "\\f",
+            0..0x20 => "\\u00",
+            _ => continue,
+        };
+        // An escaped byte is ASCII, so `at` is a character's boundary.
+        out.push_str(text.get(plain..at).unwrap_or_default());
+        out.push_str(escaped);
+        if escaped == "\\u00" {
+            out.push(char::from(HEX[usize::from(byte >> 4)]));
+            out.push(char::from(HEX[usize::from(byte & 0xf)]));
+        }
+        plain = at + 1;
+    }
+    out.push_str(text.get(plain..).unwrap_or_default());
+    out.push('"');
+}
+
+/// One value rendered onto `rendering`'s text; an object repeating a key fails.
 pub(crate) struct Render<'a> {
-    pub(crate) text: &'a mut String,
+    pub(crate) rendering: &'a mut Rendering,
     pub(crate) context: &'a Context,
 }
 
 impl Render<'_> {
-    /// Renders `value` with sonic-rs, which escapes strings and writes floats in their shortest
-    /// round-trip form.
-    fn serialized<E: serde::de::Error, T: serde::Serialize + ?Sized>(
-        &mut self,
-        value: &T,
-    ) -> Result<(), E> {
-        let rendered = sonic_rs::to_string(value).map_err(|error| {
-            self.context.fail(ShredError::Internal(format!(
-                "rendering a JSON value: {error}"
-            )))
-        })?;
-        self.text.push_str(&rendered);
-        Ok(())
-    }
-
     /// A value nested in this one.
     fn inner(&mut self) -> Render<'_> {
         Render {
-            text: &mut *self.text,
+            rendering: &mut *self.rendering,
             context: self.context,
         }
+    }
+
+    /// Writes the integer `value` as its digits.
+    fn integer(self, value: impl Display) {
+        // Writing into a `String` cannot fail.
+        let _ = write!(self.rendering.text, "{value}");
     }
 }
 
@@ -60,22 +102,24 @@ impl<'de> Visitor<'de> for Render<'_> {
     }
 
     fn visit_unit<E>(self) -> Result<(), E> {
-        self.text.push_str("null");
+        self.rendering.text.push_str("null");
         Ok(())
     }
 
     fn visit_bool<E>(self, value: bool) -> Result<(), E> {
-        self.text.push_str(if value { "true" } else { "false" });
+        self.rendering
+            .text
+            .push_str(if value { "true" } else { "false" });
         Ok(())
     }
 
     fn visit_i64<E>(self, value: i64) -> Result<(), E> {
-        self.text.push_str(&value.to_string());
+        self.integer(value);
         Ok(())
     }
 
     fn visit_u64<E>(self, value: u64) -> Result<(), E> {
-        self.text.push_str(&value.to_string());
+        self.integer(value);
         Ok(())
     }
 
@@ -83,7 +127,7 @@ impl<'de> Visitor<'de> for Render<'_> {
     /// exact parse, which notes each number's text.
     fn visit_f64<E: serde::de::Error>(self, value: f64) -> Result<(), E> {
         self.context.float(value);
-        let text = &mut *self.text;
+        let text = &mut self.rendering.text;
         let written = self.context.noted_number(|written| {
             if let Some(written) = written {
                 text.push_str(written);
@@ -97,8 +141,8 @@ impl<'de> Visitor<'de> for Render<'_> {
         Ok(())
     }
 
-    fn visit_i128<E: serde::de::Error>(self, value: i128) -> Result<(), E> {
-        self.text.push_str(&value.to_string());
+    fn visit_i128<E>(self, value: i128) -> Result<(), E> {
+        self.integer(value);
         Ok(())
     }
 
@@ -109,53 +153,100 @@ impl<'de> Visitor<'de> for Render<'_> {
                 "an integer's digits: {error}"
             )))
         })?;
-        self.text.push_str(digits);
+        self.rendering.text.push_str(digits);
         Ok(())
     }
 
-    fn visit_str<E: serde::de::Error>(mut self, value: &str) -> Result<(), E> {
-        self.serialized(value)
+    fn visit_str<E>(self, value: &str) -> Result<(), E> {
+        escape(value, &mut self.rendering.text);
+        Ok(())
     }
 
     fn visit_map<A: MapAccess<'de>>(mut self, mut map: A) -> Result<(), A::Error> {
         nest(move || {
-            let mut keys = ObjectKeys::default();
+            self.rendering.text.push('{');
+            self.rendering.keys.open();
             let mut first = true;
-            self.text.push('{');
-            while let Some(key) = map.next_key::<String>()? {
-                if !first {
-                    self.text.push(',');
-                }
+            while map
+                .next_key_seed(Key {
+                    rendering: &mut *self.rendering,
+                    first,
+                })?
+                .is_some()
+            {
                 first = false;
-                self.serialized(key.as_str())?;
-                self.text.push(':');
-                keys.note(Cow::Owned(key))
-                    .map_err(|error| self.context.fail(error))?;
                 map.next_value_seed(self.inner())?;
             }
-            self.text.push('}');
+            let rendering = &mut *self.rendering;
+            if let Some(key) = rendering.keys.close(&rendering.text) {
+                let key = rendering.text.get(key).unwrap_or_default();
+                return Err(self.context.fail(repeated(key)));
+            }
+            rendering.text.push('}');
             Ok(())
         })
     }
 
     fn visit_seq<A: SeqAccess<'de>>(mut self, mut seq: A) -> Result<(), A::Error> {
         nest(move || {
-            self.text.push('[');
+            self.rendering.text.push('[');
             let mut first = true;
             loop {
                 // The separator goes before each item, and comes off again when none follows.
-                let before = self.text.len();
+                let before = self.rendering.text.len();
                 if !first {
-                    self.text.push(',');
+                    self.rendering.text.push(',');
                 }
                 if seq.next_element_seed(self.inner())?.is_none() {
-                    self.text.truncate(before);
+                    self.rendering.text.truncate(before);
                     break;
                 }
                 first = false;
             }
-            self.text.push(']');
+            self.rendering.text.push(']');
             Ok(())
         })
+    }
+}
+
+/// The refusal of `key`, a key as JSON text renders it, which an object named again.
+#[cold]
+fn repeated(key: &str) -> ShredError {
+    let key: String = sonic_rs::from_str(key).unwrap_or_else(|_| key.to_owned());
+    ShredError::DuplicateKey(rdlt_connector::text::shown(&key, QUOTED_BYTES))
+}
+
+/// An object's next key, written onto the text after the separator where it is not the first,
+/// and noted among the object's keys.
+struct Key<'a> {
+    rendering: &'a mut Rendering,
+    first: bool,
+}
+
+impl<'de> DeserializeSeed<'de> for Key<'_> {
+    type Value = ();
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
+        deserializer.deserialize_str(self)
+    }
+}
+
+impl Visitor<'_> for Key<'_> {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("an object key")
+    }
+
+    fn visit_str<E>(self, key: &str) -> Result<(), E> {
+        let text = &mut self.rendering.text;
+        if !self.first {
+            text.push(',');
+        }
+        let start = text.len();
+        escape(key, text);
+        self.rendering.keys.key(start..text.len());
+        text.push(':');
+        Ok(())
     }
 }

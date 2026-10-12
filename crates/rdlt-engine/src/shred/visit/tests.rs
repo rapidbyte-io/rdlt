@@ -4,6 +4,7 @@ use super::{Context, Field, Render, Row, Skip, Value};
 use crate::shred::ShredError;
 use crate::shred::build::{Column, Record};
 use crate::shred::meter::{Columns, Meter};
+use crate::shred::render::Rendering;
 
 fn expected(visitor: &dyn Expected) -> String {
     visitor.to_string()
@@ -45,10 +46,10 @@ fn every_visitor_says_what_it_expects() {
         }),
         "a JSON value"
     );
-    let mut text = String::new();
+    let mut rendering = Rendering::default();
     assert_eq!(
         expected(&Render {
-            text: &mut text,
+            rendering: &mut rendering,
             context: &context,
         }),
         "a JSON value"
@@ -69,14 +70,14 @@ fn a_noted_number_is_handed_out_once() {
 fn a_float_renders_only_the_note_made_for_it() {
     let context = Context::new(Meter::reserved(), Columns::new(u64::MAX));
     let render = |text: &str| {
-        let mut rendered = String::new();
+        let mut rendering = Rendering::default();
         let mut deserializer = sonic_rs::Deserializer::from_str(text);
         let render = Render {
-            text: &mut rendered,
+            rendering: &mut rendering,
             context: &context,
         };
         serde::de::DeserializeSeed::deserialize(render, &mut deserializer)
-            .map(|()| rendered)
+            .map(|()| rendering.text)
             .map_err(|_| context.fault())
     };
     context.note_number("1.50");
