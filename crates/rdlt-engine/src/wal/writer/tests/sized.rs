@@ -72,6 +72,38 @@ async fn a_chunk_is_published_between_commits_only_once_a_batch_would_take_it_pa
 }
 
 #[tokio::test]
+async fn a_failed_deletion_as_a_full_chunk_is_published_fails_the_frames_after_it() {
+    let store = Arc::new(MemoryWal::default());
+    let observed = Arc::clone(&store);
+    drive(Arc::clone(&store), |mut log| async move {
+        log.send(table(0)).await;
+        log.batch(1, 0).await;
+        log.commit(1, &[1]).await.expect("durable");
+        log.committed(1).await;
+        let header = sized(&observed, 0, |frame| matches!(frame, Frame::Header(_)));
+        let schema = sized(&observed, 0, |frame| matches!(frame, Frame::Schema(_)));
+        let batch = sized(&observed, 0, |frame| matches!(frame, Frame::Batch(_)));
+        // A chunk holds one batch: the second is written once the first's chunk is published,
+        // recording commit 1's receipt, and chunk 0 deleted.
+        let first = u64::try_from(PREAMBLE).expect("small") + header + schema + batch;
+        let shared = Arc::clone(log.writer.shared());
+        shared
+            .limit
+            .store(8 * (first + schema + batch - 1), Ordering::SeqCst);
+        *observed.unremovable.lock() = true;
+        log.batch(2, 0).await;
+        log.batch(2, 0).await;
+        assert!(
+            log.commit(2, &[2]).await.is_err(),
+            "deleting chunk 0 failed before the batch was written"
+        );
+    })
+    .await
+    .expect("the writer ends");
+    assert_eq!(super::numbers(&store), [0, 1]);
+}
+
+#[tokio::test]
 async fn a_chunk_holding_a_commit_s_seals_takes_no_other_frame_before_the_commit() {
     let store = Arc::new(MemoryWal::default());
     let observed = Arc::clone(&store);

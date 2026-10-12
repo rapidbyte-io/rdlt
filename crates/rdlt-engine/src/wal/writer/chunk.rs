@@ -116,7 +116,8 @@ impl Log {
         }
     }
 
-    /// Forgets chunk `number`, deleted: a settled segment no chunk holds is forgotten too.
+    /// Forgets chunk `number`, which no replay needs, before it is deleted: what it held, and a
+    /// settled segment no chunk holds.
     pub(super) fn forgotten(&mut self, number: u64) -> Option<Written> {
         let written = self.written.remove(&number)?;
         for segment in &written.segments {
@@ -271,6 +272,7 @@ impl Log {
         if full {
             self.append(Frame::Relieved.encode()?).await?;
             self.publish().await?;
+            self.remove_unneeded().await?;
         }
         if self.current().schemas.contains_key(&table) {
             self.shared.release(schema);

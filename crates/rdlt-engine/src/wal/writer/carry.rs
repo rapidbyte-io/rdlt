@@ -2,7 +2,8 @@
 //! keeps open keeps no settled frame of another segment.
 //!
 //! The copies go to the chunk staged, and the old chunk is needed no more once that chunk is
-//! published: its deletion follows the publish, so the log always holds one copy a replay reads.
+//! published: its deletion follows the publish, and the answer where a commit publishes it, so
+//! the log always holds one copy a replay reads.
 //! Replay stages only the segments of commits without receipts, and the old chunk's commits all
 //! have theirs.
 
@@ -100,6 +101,7 @@ impl Log {
         if first {
             self.append(Frame::Relieved.encode()?).await?;
             self.publish().await?;
+            self.remove_unneeded().await?;
         }
         let mut wrote = 0_u64;
         for number in chosen.numbers {

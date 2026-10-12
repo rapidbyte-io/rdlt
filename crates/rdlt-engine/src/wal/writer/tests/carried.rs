@@ -96,7 +96,6 @@ async fn a_carried_segment_replays_once_after_the_commit_that_takes_it() {
 #[tokio::test]
 async fn a_chunk_holding_more_of_open_segments_than_of_settled_ones_stays() {
     let store = Arc::new(MemoryWal::default());
-    let observed = Arc::clone(&store);
     drive(Arc::clone(&store), |mut log| async move {
         log.send(table(0)).await;
         for number in 1..=3 {
@@ -104,10 +103,11 @@ async fn a_chunk_holding_more_of_open_segments_than_of_settled_ones_stays() {
             round(&mut log, number, 1, 2).await;
         }
         log.commit(4, &[]).await.expect("durable");
-        assert_eq!(numbers(&observed), [0, 1, 2, 3]);
     })
     .await
     .expect("the writer ends");
+    // The writer ends once it deleted all it was to.
+    assert_eq!(numbers(&store), [0, 1, 2, 3]);
 }
 
 #[tokio::test]
@@ -123,10 +123,17 @@ async fn a_failed_deletion_after_a_carry_leaves_one_copy_a_replay_reads() {
         log.batch(1000, 0).await;
         log.commit(2, &[20, 21, 22, 23]).await.expect("durable");
         // The open segment's frames are carried at the receipt; deleting the chunk they came
-        // from, once the next is published, fails, as a crash between the two leaves the log.
+        // from, once the next is published and its commit answered, fails, as a crash between
+        // the two leaves the log.
         log.committed(2).await;
         *failing.unremovable.lock() = true;
-        assert!(log.commit(3, &[]).await.is_err());
+        log.commit(3, &[])
+            .await
+            .expect("durable before what it frees is deleted");
+        assert!(
+            log.commit(4, &[]).await.is_err(),
+            "the failed deletion fails what follows"
+        );
     })
     .await
     .expect("the writer ends");
@@ -195,22 +202,21 @@ async fn a_segment_open_for_long_holds_back_no_commit_a_replay_never_repeats() {
         }
         log.batch(50, 0).await;
         log.commit(5, &[50]).await.expect("durable");
-        assert!(
-            numbers(&store).contains(&0),
-            "the open segment keeps chunk 0"
-        );
         // Every receipt before commit 5 is in a published chunk: only commit 5 may be repeated.
         let oldest = *log.writer.shared().oldest.lock();
         assert_eq!(oldest.map(rdlt_connector::CommitSeq::get), Some(5));
     })
     .await
     .expect("the writer ends");
+    assert!(
+        numbers(&store).contains(&0),
+        "the open segment keeps chunk 0"
+    );
 }
 
 #[tokio::test]
 async fn a_carry_that_would_take_the_log_past_what_it_may_hold_is_left_undone() {
     let store = Arc::new(MemoryWal::default());
-    let observed = Arc::clone(&store);
     drive(Arc::clone(&store), |mut log| async move {
         log.send(table(0)).await;
         // Four settled batches and one open: carrying would copy the open one.
@@ -227,13 +233,13 @@ async fn a_carry_that_would_take_the_log_past_what_it_may_hold_is_left_undone() 
             .store(held, std::sync::atomic::Ordering::Relaxed);
         log.committed(1).await;
         log.commit(2, &[]).await.expect("durable");
-        assert!(
-            numbers(&observed).contains(&0),
-            "chunk 0 was not carried out of"
-        );
     })
     .await
     .expect("the writer ends");
+    assert!(
+        numbers(&store).contains(&0),
+        "chunk 0 was not carried out of"
+    );
     let open = batches(&store)
         .into_iter()
         .filter(|(segment, _)| *segment == 1000)

@@ -11,7 +11,6 @@ use super::{drive, numbers, owner, table};
 #[tokio::test]
 async fn a_segment_its_partition_abandons_holds_no_chunk_back() {
     let store = Arc::new(MemoryWal::default());
-    let observed = Arc::clone(&store);
     drive(Arc::clone(&store), |mut log| async move {
         log.send(table(0)).await;
         log.batch(1, 0).await;
@@ -25,14 +24,10 @@ async fn a_segment_its_partition_abandons_holds_no_chunk_back() {
         log.committed(1).await;
         log.batch(3, 0).await;
         log.commit(2, &[3]).await.expect("durable");
-        assert_eq!(
-            numbers(&observed),
-            [1],
-            "chunk 0 holds only settled segments"
-        );
     })
     .await
     .expect("the writer ends");
+    assert_eq!(numbers(&store), [1], "chunk 0 holds only settled segments");
 }
 
 #[test]
