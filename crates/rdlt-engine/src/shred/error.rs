@@ -14,6 +14,7 @@ pub(crate) enum ShredError {
     Record {
         /// The record's place among the pushes, from zero.
         index: usize,
+        /// What broke and where in the record.
         what: String,
     },
     /// A record is not an object.
