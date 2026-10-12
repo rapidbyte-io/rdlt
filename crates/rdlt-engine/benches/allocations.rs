@@ -4,7 +4,8 @@
 //! The workloads are the shred bench's single-core groups, both sides of the passthrough pairs,
 //! each batch the lowering bench prepares, each run of the normalized and wide benches, and the
 //! wal bench's load logged into memory; the timed benches keep the system allocator, since
-//! counting every call slows the runs that allocate most. An argument, the name of one of those benches, counts only its workloads.
+//! counting every call slows the runs that allocate most. An argument, the name of one of those
+//! benches, counts only its workloads.
 //!
 //! A case's name, then a count of iterations, as `cargo xtask instructions` runs it under
 //! callgrind, makes the case's inputs, runs its work that many times, once without a count, and
@@ -59,7 +60,7 @@ const LAYOUT: Cores = Cores::new(
 type Case = (&'static str, fn(usize));
 
 /// Every case the instruction counts run.
-const CASES: [Case; 28] = [
+const CASES: [Case; 27] = [
     ("passthrough/null_sink", passed_through),
     ("shred/nested", |times| shredded(Corpus::Nested, times)),
     ("shred/with_arrays", |times| {
@@ -100,7 +101,6 @@ const CASES: [Case; 28] = [
     }),
     ("wal/encode", log_encoded),
     ("wal/scan", log_scanned),
-    ("wal/logged", logged_load),
     ("ipc/roundtrip", round_tripped),
     ("json/check", json_checked),
     ("lowering/history", |times| lowered("history", times)),
@@ -337,17 +337,6 @@ fn report(id: &str, run: impl FnOnce() -> (usize, usize)) {
         allocated.per(units(rows)),
         allocated.per(units(batches))
     );
-}
-
-/// The engine logging [`BATCHES`] batches of [`ROWS`] rows ahead in memory, a commit each batch,
-/// on [`LAYOUT`].
-fn logged_load(times: usize) {
-    let every = NonZeroU64::new(1).expect("one is not zero");
-    let logged =
-        Logged::try_new(LAYOUT, memory_wal(), BATCHES, ROWS, Some(every)).expect("the pool starts");
-    for _ in 0..times {
-        black_box(logged.run());
-    }
 }
 
 /// The engine moving [`BATCHES`] batches of [`ROWS`] rows from a replaying source to the null
