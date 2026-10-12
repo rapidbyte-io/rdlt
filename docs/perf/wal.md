@@ -62,37 +62,158 @@ What the engine writes to its log while it moves batches, and what a replay read
 
 ### Results
 
-This change on `7d3604e0`, 2026-10-12. Intel Core Ultra X7 358H, cores 0 to 3 (performance), on
-mains power, governor `powersave`, energy preference `performance`. Three rounds, each started at a
-one-minute load average of 1.32, 3.25 and 3.16 (the rounds follow one another, so the second and
-third started while the machine's load average still held the round before). Each figure is the
+This change on `3c0260b2`, 2026-10-12. Intel Core Ultra X7 358H, cores 0 to 3 (performance), on
+mains power, governor `powersave`, energy preference `performance`. Three rounds, interleaved with
+the other states and prototypes this page compares, five runs a round in alternating order; this
+change's runs started at a one-minute load average of 3.75, 3.16 and 3.33. Each figure is the
 median of the three rounds, their range in brackets. Rust 1.98.1.
-
-The three rounds did not all lie within 3 % of the median: the ranges below show which did not.
 
 | Case | Throughput |
 |---|---|
-| `wal/encode/1MiB` | 860 MiB/s [859–879] |
-| `wal/encode/7MiB` | 1067 MiB/s [961–1081] |
+| `wal/encode/1MiB` | 1307 MiB/s [1160–1366] |
+| `wal/encode/7MiB` | 1371 MiB/s [1193–1506] |
 
 | Case | Throughput | Log phase a commit | Appended ÷ frames | Carried ÷ frames | Publishes a commit | Removes a commit | Fsyncs a commit, setup included |
 |---|---|---|---|---|---|---|---|
-| `wal/engine/tmpfs/each` | 930 MiB/s [908–967] | 1.026 ms [0.927–1.083] | 1.642 [1.638–1.706] | 0.614 [0.610–0.678] | 1.00 | 1.00 | 3.6 |
-| `wal/engine/tmpfs/16` | 2001 MiB/s [1963–2017] | 1.161 ms [1.076–1.195] | 1.027 [1.027–1.031] | 0.000 [0.000–0.004] | 1.06 | 1.00 | 8.0 |
-| `wal/engine/tmpfs/once` | 1784 MiB/s [1693–1822] | 2.493 ms [2.162–2.633] | 1.027 | 0.000 | 2.00 | 1.00 | 13.0 |
-| `wal/engine/disk/each` | 244 MiB/s [242–250] | 3.733 ms [3.731–3.918] | 1.915 [1.907–1.931] | 0.887 [0.879–0.903] | 1.00 | 1.00 | 3.6 |
-| `wal/engine/disk/16` | 918 MiB/s [902–950] | 13.562 ms [13.303–14.219] | 1.244 [1.216–1.260] | 0.217 [0.189–0.233] | 1.06 | 1.00 | 8.0 |
-| `wal/engine/disk/once` | 1407 MiB/s [1368–1413] | 21.815 ms [17.861–22.403] | 1.027 | 0.000 | 2.00 | 1.00 | 13.0 |
+| `wal/engine/tmpfs/each` | 894 MiB/s [834–894] | 1.082 ms [1.073–1.129] | 1.770 [1.730–1.803] | 0.742 [0.702–0.774] | 1.00 | 1.00 | 3.6 |
+| `wal/engine/tmpfs/16` | 2327 MiB/s [2187–2545] | 0.626 ms [0.599–0.631] | 1.027 [1.027–1.039] | 0.000 [0.000–0.012] | 1.06 | 1.00 | 8.0 |
+| `wal/engine/tmpfs/once` | 2154 MiB/s [1932–2216] | 2.588 ms [2.050–2.688] | 1.027 | 0.000 | 2.00 | 1.00 | 13.0 |
+| `wal/engine/disk/each` | 251 MiB/s [245–252] | 3.935 ms [3.623–4.183] | 1.919 [1.919–1.923] | 0.891 [0.891–0.895] | 1.00 | 1.00 | 3.6 |
+| `wal/engine/disk/16` | 940 MiB/s [898–948] | 15.678 ms [12.793–18.080] | 1.240 [1.220–1.264] | 0.213 [0.193–0.237] | 1.06 | 1.00 | 8.0 |
+| `wal/engine/disk/once` | 1443 MiB/s [1432–1597] | 23.813 ms [23.410–24.237] | 1.027 | 0.000 | 2.00 | 1.00 | 13.0 |
 
-`reliefs` is 0 in every round. On disk, `carried` varies between rounds: 0.879 to 0.903 at
-`each` and 0.189 to 0.233 at `16`. On tmpfs it is 0.610 to 0.678 at `each` and 0.000 to 0.004 at
-`16`; at `once` it is 0 on both roots.
+`reliefs` is 0 in every round.
 
 | Case | Throughput | Read ÷ logged | Reads |
 |---|---|---|---|
-| `wal/replay/tmpfs` | 475 MiB/s [462–499] | 2.000 | 5387 |
-| `wal/replay/disk` | 463 MiB/s [453–465] | 2.000 | 5387 |
+| `wal/replay/tmpfs` | 489 MiB/s [438–514] | 2.000 | 5387 |
+| `wal/replay/disk` | 456 MiB/s [391–456] | 2.000 | 5387 |
 
 | Case, 8 batches of 8,192 rows | Allocations a row | Reallocations a row | Bytes a row | Allocations a batch | Reallocations a batch | Bytes a batch |
 |---|---|---|---|---|---|---|
-| `wal/engine/memory/each` | 0.102 | 0.012 | 611 | 834.000 | 99.375 | 5008268 |
+| `wal/engine/memory/each` | 0.101 | 0.013 | 431 | 830.625 | 109.750 | 3532168 |
+
+A batch frame's bytes are copied twice in user space: the wire's encoder writes the batch into its
+IPC messages (`arrow::encode`, `crates/rdlt-engine/src/wal/frame/arrow.rs`), and `Framing` writes
+the frame's head, its header and those messages into one buffer (`Framing::batch`,
+`crates/rdlt-engine/src/wal/frame.rs`), which the store writes as it is.
+
+### Against main
+
+Frames built in one pass, each site's into one buffer, against main at `3c0260b2`, in the same
+rounds. The change was to move `wal/engine/{tmpfs,disk}/each` above main with the ranges apart,
+`wal/engine/tmpfs/once` at least 10 % and `wal/encode/7MiB` beyond noise; to allocate at most 2.2
+times a batch frame's bytes for the frame; and to add no more than 2 % to any case of
+`just instructions`.
+
+| Case | Main | One pass | Change | Rule |
+|---|---|---|---|---|
+| `wal/encode/7MiB` | 773 MiB/s [678–793] | 1293 MiB/s [1012–1780] | +67 %, ranges apart | met |
+| `wal/engine/tmpfs/once` | 1667 MiB/s [1514–1721] | 2026 MiB/s [1842–2131] | +22 %, ranges apart | met |
+| `wal/engine/tmpfs/each` | 891 MiB/s [834–940] | 813 MiB/s [771–828] | −9 %, ranges apart | missed |
+| `wal/engine/disk/each` | 238 MiB/s [233–245] | 242 MiB/s [234–250] | +2 %, ranges overlap | missed |
+| Bytes a batch frame of 12,000 rows allocates, over its bytes | | 2.51 | | missed, at most 2.2 |
+
+`just instructions 3c0260b2` finds no case above 2 %: `wal/encode` takes 29.6 % fewer
+instructions (4801702 to 3380703) and 8 % fewer allocations (151 to 139), and every other case is
+within 0.1 %. The case writes its batch frame into one buffer with the log's other frames, so its
+count includes copying that buffer to its exact length; a load encodes each batch frame alone,
+with no copy. `wal/engine/memory/each` allocates 3532096 bytes a batch, main 5008268.
+
+At `each` on tmpfs, frames built in one pass carry 0.718 [0.706–0.750] of the frames' bytes into
+later chunks, main 0.690 [0.670–0.698].
+
+### Commits answered before their chunks are deleted
+
+A commit answered before the writer deletes the chunks it frees, against frames built in one pass
+before deletion was deferred, in the same rounds. The change was to lower the log phase a commit
+at `wal/engine/{tmpfs,disk}/each` with the ranges apart, with the fsyncs a commit unchanged and
+the throughput not lower beyond noise.
+
+| Case | Before | After | Change | Rule |
+|---|---|---|---|---|
+| `wal/engine/tmpfs/each`, log phase a commit | 1.136 ms [1.129–1.199] | 1.082 ms [1.073–1.129] | −5 %, ranges overlap | missed |
+| `wal/engine/disk/each`, log phase a commit | 3.991 ms [3.742–3.998] | 3.935 ms [3.623–4.183] | −1 %, ranges overlap | missed |
+| `wal/engine/{tmpfs,disk}/each`, fsyncs a commit | 3.6 | 3.6 | none | met |
+| `wal/engine/tmpfs/each` | 813 MiB/s [771–828] | 894 MiB/s [834–894] | +10 %, ranges apart | met |
+| `wal/engine/disk/each` | 242 MiB/s [234–250] | 251 MiB/s [245–252] | +4 %, ranges overlap | met |
+
+### A frame's representation
+
+A batch frame is written into one buffer: its head, its header, then the batch's IPC messages
+copied in after it. Against it, a piece list was measured on a prototype that is not kept: the
+frame as its head and header in one small buffer and the wire encoder's own buffers, uncopied,
+appended as a list, the local log writing them with `write_vectored`. Both were built on frames
+built in one pass, before deletion was deferred, and run by the method above in three interleaved
+rounds on 2026-10-12.
+
+The piece list would replace the single buffer only where it moved `wal/engine/tmpfs/once` and
+`wal/engine/disk/once` at least 10 % more MiB/s, the ranges apart; `wal/engine/*/each` was not
+lower beyond noise; and a batch frame allocated no more bytes.
+
+| Case | One buffer | Pieces | Change |
+|---|---|---|---|
+| `wal/engine/tmpfs/once` | 2026 MiB/s [1842–2131] | 2267 MiB/s [1968–2382] | +12 %, ranges overlap |
+| `wal/engine/disk/once` | 1539 MiB/s [1473–1573] | 1557 MiB/s [1541–1652] | +1 %, ranges overlap |
+| `wal/engine/tmpfs/each` | 813 MiB/s [771–828] | 799 MiB/s [792–801] | −2 %, ranges overlap |
+| `wal/engine/disk/each` | 242 MiB/s [234–250] | 240 MiB/s [238–241] | −1 %, ranges overlap |
+| `wal/encode/1MiB` | 1197 MiB/s [1109–1304] | 9852 MiB/s [9322–9883] | 8.2 times |
+| `wal/encode/7MiB` | 1293 MiB/s [1012–1780] | 7999 MiB/s [7720–8089] | 6.2 times |
+| Bytes a batch frame of 12,000 rows allocates, over its bytes | 2.51 | 1.51 | |
+
+The frame stays one buffer. The piece list allocates less and encodes a frame six to eight times
+faster, but the engine's runs do not show it: `once` moved 12 % on tmpfs and 1 % on disk, the
+ranges overlapping on both. Writing frames to the store as they are encoded is not built either,
+since it needs the piece list.
+
+### Carrying open segments
+
+At a commit each batch, each receipt carries the frames of segments still open out of the chunks
+it leaves holding little else, rewriting them into the chunk staged (ADR 0041). With this change
+that copies most of what the log writes twice:
+
+| Case | Carried ÷ frames | Appended ÷ frames |
+|---|---|---|
+| `wal/engine/tmpfs/each` | 0.742 [0.702–0.774] | 1.770 [1.730–1.803] |
+| `wal/engine/disk/each` | 0.891 [0.891–0.895] | 1.919 [1.919–1.923] |
+
+Appended counts the carried bytes too, so carried ÷ appended stays below 0.5 unless carried is at
+least the frames: the figure that says how much a carry rewrites is carried ÷ frames.
+
+A prototype that carries only in a relief, the receipt's carry deleted, was measured against this
+change in the same rounds. The rule: carrying only in a relief replaces eager carry where carried
+is at least half of the frames at a commit each batch, and the prototype moves at least 10 % more
+MiB/s there, the ranges apart. It fired on both roots:
+
+| Case | Eager carry | Relief-only carry | Change |
+|---|---|---|---|
+| `wal/engine/tmpfs/each` | 894 MiB/s [834–894] | 1933 MiB/s [1892–2102] | +116 %, ranges apart |
+| `wal/engine/disk/each` | 251 MiB/s [245–252] | 388 MiB/s [364–402] | +55 %, ranges apart |
+| `wal/engine/tmpfs/each`, log phase a commit | 1.082 ms [1.073–1.129] | 0.444 ms [0.380–0.469] | −59 % |
+| `wal/engine/disk/each`, log phase a commit | 3.935 ms [3.623–4.183] | 2.312 ms [2.280–2.331] | −41 % |
+
+Carrying only in a relief appends 1.03 of the frames and carries nothing in these runs, since no
+relief comes. It gives up ADR 0041's bound that a copy costs at most what it frees and an open
+segment keeps at most as much of others' data as of its own, so the log holds more on disk between
+reliefs, within ADR 0045's limit. Eager carry still runs in this change.
+
+### Re-encoding a batch's schema
+
+Each batch frame holds the schema message as well as the batch. The signal is the share of
+`rdlt_wire::Encoder::schema` (inclusive) in the instructions of encoding one batch frame, for a
+batch of 1,000 rows of 1,000 columns. The count comes from callgrind at 1 and 3 iterations,
+differenced, on the release profile with fat LTO, with this change.
+
+`Encoder::schema` takes 4,081,717 of the 27,987,387 instructions of a frame, which is 14.6 %:
+
+| Part of `Encoder::schema` | Instructions a frame |
+|---|---|
+| Writing the schema message | 1.60 M |
+| Verifying the flatbuffer | 1.56 M |
+| Reading it back into the columns the encoder keeps | 0.84 M |
+| Dropping them | 0.38 M |
+
+The rule: a cache of the schema message is built only if the share is at least 3 % of the frame's
+encoding. The share is above it, and the cache is not built. It needs an encoder that starts a
+fresh dictionary epoch without re-encoding the schema, which is a new `rdlt-wire` API, and a
+message kept for each table version under the budget. Only a batch of 1,000 columns was measured.
