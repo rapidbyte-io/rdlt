@@ -392,11 +392,12 @@ pub fn sample_log(batch: RecordBatch) -> Vec<u8> {
         })),
         Frame::End(End::default()),
     ];
-    let mut log = frame::preamble().to_vec();
+    let mut framing = frame::Framing::with_capacity(0);
+    framing.preamble();
     for frame in &frames {
-        log.extend_from_slice(&frame.encode().expect("the frame encodes"));
+        framing.frame(frame).expect("the frame encodes");
     }
-    log
+    Vec::from(framing.finish())
 }
 
 /// The commit of segment 1 that [`sample_log`] holds, recording where its partition stands.

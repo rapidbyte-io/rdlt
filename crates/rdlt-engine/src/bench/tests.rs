@@ -271,6 +271,21 @@ fn pruning_a_normalized_batch_drops_each_dropped_roots_children_with_it() {
 }
 
 #[test]
+fn a_sample_log_is_the_frames_each_encoded_alone_after_the_preamble() {
+    use crate::wal::frame::{frames, limits, preamble};
+
+    let ids: ArrayRef = Arc::new(Int64Array::from(vec![1, 2, 3]));
+    let batch = RecordBatch::try_from_iter([("id", ids)]).expect("a valid batch");
+    let log = super::sample_log(batch);
+    let limits = limits(EngineConfig::default().memory().get());
+    let mut expected = preamble().to_vec();
+    for frame in frames(&log, limits).expect("the log's frames read") {
+        expected.extend_from_slice(&frame.encode().expect("the frame encodes"));
+    }
+    assert_eq!(log, expected);
+}
+
+#[test]
 fn a_sample_log_reads_back_with_its_one_commit_and_a_garbled_one_is_refused() {
     let ids: ArrayRef = Arc::new(Int64Array::from(vec![1, 2, 3]));
     let batch = RecordBatch::try_from_iter([("id", ids)]).expect("a valid batch");

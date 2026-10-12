@@ -211,7 +211,6 @@ impl Framing {
     }
 
     /// Writes the preamble a chunk starts with.
-    #[cfg(test)]
     pub(crate) fn preamble(&mut self) {
         self.out.put_slice(&preamble());
     }

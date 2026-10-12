@@ -171,11 +171,13 @@ impl Log {
             .stage(&self.owner.pipeline, chunk)
             .await
             .map_err(|error| self.lost(error))?;
-        let mut head = frame::preamble().to_vec();
-        head.extend_from_slice(&self.header(self.chunk)?);
+        let mut framing = frame::Framing::with_capacity(0);
+        framing.preamble();
+        framing.frame(&Frame::Header(self.chunk_header(self.chunk)))?;
+        let head = framing.finish();
         self.take(count(head.len()));
         self.staged = Some(staged);
-        self.put(Bytes::from(head)).await
+        self.put(head).await
     }
 
     /// Appends `bytes` to the chunk staged.
@@ -243,11 +245,6 @@ impl Log {
             opened: self.owner.opened,
             origin: self.owner.origin,
         }
-    }
-
-    /// The header frame of chunk `chunk`.
-    pub(super) fn header(&self, chunk: u64) -> Result<Bytes, Error> {
-        Frame::Header(self.chunk_header(chunk)).encode()
     }
 
     /// Writes `frame`, a batch frame of `segment` for the table at `table`, counted with
