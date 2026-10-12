@@ -125,7 +125,7 @@ one-minute load average of 0.38 to 0.97, the median with its range in brackets.
 
 | Corpus | Throughput | Instructions a cycle |
 |---|---|---|
-| `nested` | 603 MiB/s [601–604] | 5.93 |
+| `nested` | 593 MiB/s [559–593] | 6.01 |
 | `sparse` | 593 MiB/s [592–594] | 5.95 |
 | `flat_narrow` | 441 MiB/s [441–442] | 5.20 |
 | `wide_200` | 486 MiB/s [484–487] | 5.56 |
@@ -133,32 +133,37 @@ one-minute load average of 0.38 to 0.97, the median with its range in brackets.
 
 ### More cores
 
-This change on `7d3604e0`, 2026-10-12, cores `0-3` (performance), three rounds started at one-minute
-load averages of 1.82, 1.26 and 1.35; the median, with the range in brackets. Each 8 MiB push is a
+This change on `6caed3b0`, 2026-10-12, cores `0-3` (performance), three rounds interleaved with the
+merge-base in alternating orders, started at one-minute load averages of 2.65, 3.96 and 1.79 (the
+merge-base's 2.95, 2.78 and 1.22); the median, with the range in brackets. Each 8 MiB push is a
 call. The process was pinned to cores `0-3` for all three rows, so the pools of N = 1 and 2
-had cores to spare. Efficient cores were not run in this record.
+had cores to spare. Efficient cores were not run in this record. The second round ran under the
+heaviest load and gives the low end of each range.
 
 | Cores | N | tokio workers + compute threads | Throughput | Against N = 1 | Spec's bound |
 |---|---|---|---|---|---|
-| performance (`0-3`) | 1 | 1 + 1 | 580 MiB/s [577–582] | 1 | |
-| performance (`0-3`) | 2 | 1 + 1 | 581 MiB/s [578–582] | 1.00× | ≥ 1.4×, not met |
-| performance (`0-3`) | 4 | 1 + 3 | 1286 MiB/s [1285–1299] | 2.22× [2.22–2.23] | ≥ 2.8×, not met |
+| performance (`0-3`) | 1 | 1 + 1 | 597 MiB/s [534–600] | 1 | |
+| performance (`0-3`) | 2 | 1 + 1 | 583 MiB/s [520–595] | 0.98× | ≥ 1.4×, not met |
+| performance (`0-3`) | 4 | 1 + 3 | 1402 MiB/s [1337–1406] | 2.35× [2.35–2.50] | ≥ 2.8×, not met |
+
+The bound of 0.7·N at N = 4 is 2.8×, which this change does not reach.
 
 ### Cliffs
 
 Where the shredder parses a chunk again, observes it, or reads its numbers exactly, on one core
-(`0`), `shred_cliffs` with this change on `7d3604e0`, 2026-10-12, three rounds started at one-minute
-load averages of 1.82, 1.26 and 1.35; the median, with the range in brackets. The pass counts are
-the same in every round, over 32 MiB in 1 MiB chunks.
+(`0`), `shred_cliffs`. The `array_form` and `pretty` rows are this change on `6caed3b0`, 2026-10-12,
+the three rounds of More cores; the others are this change on `7d3604e0`, 2026-10-12, three rounds
+started at one-minute load averages of 1.82, 1.26 and 1.35. Each figure is the median, with the
+range in brackets. The pass counts are the same in every round, over 32 MiB in 1 MiB chunks.
 
 | Corpus | Throughput | Instructions a cycle | Parsed | Tripped | Observed | Rebuilt | Exact |
 |---|---|---|---|---|---|---|---|
-| `array_form` | 327 MiB/s [323–328] | 6.66 | 32 | 0 | 0 | 0 | 0 |
+| `array_form` | 380 MiB/s [365–384] | 6.00 | 32 | 0 | 0 | 0 | 0 |
 | `drift_json` | 166 MiB/s [165–171] | 5.13 | 32 | 0 | 0 | 32 | 32 |
 | `drift_scalar` | 292 MiB/s [291–301] | 6.06 | 32 | 0 | 0 | 32 | 0 |
 | `int_arrays` | 66 MiB/s [65–67] | 6.33 | 32 | 32 | 32 | 32 | 0 |
 | `big_numbers` | 194 MiB/s [192–197] | 4.75 | 64 | 0 | 0 | 0 | 32 |
-| `pretty` | 348 MiB/s [347–349] | 6.94 | 32 | 0 | 0 | 0 | 0 |
+| `pretty` | 391 MiB/s [348–391] | 5.53 | 32 | 0 | 0 | 0 | 0 |
 
 ### Columns of JSON
 
