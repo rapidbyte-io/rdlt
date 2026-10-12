@@ -56,7 +56,8 @@ impl BatchPolicy {
         self.max_latency
     }
 
-    /// Bytes of JSON records each shredding job takes.
+    /// Bytes of JSON pushes each shredding job takes, whitespace between records included: its
+    /// chunk ends at the first record end past them.
     pub fn chunk_bytes(&self) -> NonZeroUsize {
         self.chunk_bytes
     }

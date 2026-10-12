@@ -11,11 +11,9 @@ fn observed(text: &str) -> (Shape, u64) {
     let chunk = chunks(&[Bytes::from(text.to_owned())], 1 << 30)
         .unwrap()
         .remove(0);
-    let rows = u64::try_from(chunk.rows).unwrap();
-    (
-        parse(chunk, limits(), &limits().beyond()).unwrap().shape,
-        rows,
-    )
+    let parsed = parse(chunk, limits(), &limits().beyond()).unwrap();
+    let rows = u64::try_from(parsed.rows).unwrap();
+    (parsed.shape, rows)
 }
 
 /// Records of every kind, nested in objects and lists, with nulls, empty and missing values.
@@ -38,13 +36,14 @@ fn a_batch_built_again_holds_no_more_than_its_build_was_reckoned_to_take() {
             .collect();
         let (joined, plans, _) = join(&parsed, limits()).unwrap();
         for (chunk, plan) in parsed.drain(..).zip(plans) {
-            let rows = u64::try_from(chunk.chunk.rows).unwrap();
-            let text = u64::try_from(chunk.chunk.bytes).unwrap();
+            let rows = u64::try_from(chunk.rows).unwrap();
+            let text = u64::try_from(chunk.chunk.bytes()).unwrap();
             // Each column's buffers are rounded up to 64 bytes, which is not reckoned.
             let rounding = 3 * 64 * (joined.columns() + 1);
             let reckoned = built(&joined, &chunk.shape, rows).bytes + 2 * text + rounding;
             let local = sized(&joined, &chunk.shape);
-            let columns = again(&chunk.chunk, &local, plan.exact || chunk.exact).unwrap();
+            let exact = plan.exact || chunk.exact;
+            let columns = again(&chunk.chunk, chunk.rows, &local, exact).unwrap();
             let held: usize = columns
                 .iter()
                 .map(|column| column.get_array_memory_size())

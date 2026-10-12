@@ -115,7 +115,12 @@ pub fn shred(pushes: &[Bytes], chunk_bytes: usize) -> Result<Vec<RecordBatch>, R
 pub fn shred_counted(pushes: &[Bytes], chunk_bytes: usize) -> Result<crate::ShredCounts, Refused> {
     static INLINE: LazyLock<Pool> = LazyLock::new(Pool::inline);
     let limits = shred::ShredLimits::new(rdlt_wire::limits::SCHEMA_COLUMNS);
-    let shredding = ready(shred::observe(&INLINE, pushes, chunk_bytes, limits))?;
+    let shredding = ready(shred::observe(
+        &INLINE,
+        pushes.to_vec(),
+        chunk_bytes,
+        limits,
+    ))?;
     Ok(shredding.counts())
 }
 
