@@ -15,9 +15,10 @@ all_features = true
 # true there is the code as it is.
 #
 # A mutant that returns what the function already returns is the code as it is: an admission's
-# limits are the wire's defaults, a dialect reserves no table name, and a sandbox names no program
-# that confines a connector, unless they say otherwise; one that names an empty path for a sandbox
-# is the code as it is too, as the guard on roots passes over a path that is not absolute.
+# limits are the wire's defaults, a dialect reserves no table name, a sandbox names no program
+# that confines a connector, and a secret resolver reads from no directory, unless they say
+# otherwise; one that names an empty path for a sandbox is the code as it is too, as the guard on
+# roots passes over a path that is not absolute.
 # So is one that joins a directory's or a database's open flags, each a bit of its own, with `^` for
 # `|`; and one that takes every widen a destination refuses for a column not yet kept from widening:
 # the resolver widens no column kept from it on any path, so a refusal never names one, and the
@@ -36,6 +37,8 @@ all_features = true
 # later with the same sequence as the newer one reads the same sequence. A mutant that reads what a
 # struct in an Arrow file's batch nests through the struct's data rather than its columns reads the
 # same arrays: a struct's data is made of its columns, cut to its rows, and has no offset of its own.
+# A mutant that lets the start of a secret a cut text ends with be empty finds that empty start only
+# where no longer one ends the text, and it counts no bytes, as finding none does.
 #
 # One mutant is excluded because it never ends rather than because it is the code as it is: one
 # that writes a length in LEB128 while the length is under 0x80 pushes bytes until memory runs out,
@@ -59,6 +62,8 @@ exclude_re = [
   "crates/rdlt-engine/src/table/registry\\.rs:.*replace match guard !resolver\\.unwidened\\.contains\\(&column\\) with true in Tables::fit$",
   "crates/rdlt-host/src/local/process\\.rs:.*replace <impl fmt::Debug for Told>::fmt -> fmt::Result with Ok\\(Default::default\\(\\)\\)",
   "crates/rdlt-host/src/local/sandbox\\.rs:.*replace Sandbox::programs -> Vec<PathBuf> with vec!\\[(Default::default\\(\\))?\\]",
+  "crates/rdlt-host/src/secrets/redact\\.rs:.*replace > with >= in starts$",
+  "crates/rdlt-host/src/secrets/resolve\\.rs:.*replace SecretResolver::directories -> Vec<PathBuf> with vec!\\[\\]$",
 ]
 # A mutant that hangs a test is caught when nextest terminates the test, which it does well within
 # this; cargo-mutants' own timeout would count it as a timeout instead. It is above what a mutant
