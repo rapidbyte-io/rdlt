@@ -2,9 +2,9 @@
 //! workload allocates, a row and a batch, and each case the instruction counts run.
 //!
 //! The workloads are the shred bench's single-core groups, both sides of the passthrough pairs,
-//! each batch the lowering bench prepares, and each run of the normalized and wide benches; the
-//! timed benches keep the system allocator, since counting every call slows the runs that
-//! allocate most. An argument, the name of one of those benches, counts only its workloads.
+//! each batch the lowering bench prepares, each run of the normalized and wide benches, and the
+//! wal bench's load logged into memory; the timed benches keep the system allocator, since
+//! counting every call slows the runs that allocate most. An argument, the name of one of those benches, counts only its workloads.
 //!
 //! A case's name, then a count of iterations, as `cargo xtask instructions` runs it under
 //! callgrind, makes the case's inputs, runs its work that many times, once without a count, and
@@ -39,7 +39,7 @@ const COUNTED: [(&str, fn()); 6] = [
     ("lowering", lowering),
     ("normalized", normalizing),
     ("wide", widening),
-    ("logged", logging),
+    ("wal", logging),
 ];
 
 /// Bytes of JSON each shredding and normalizing case reads.
@@ -293,8 +293,8 @@ fn widening() {
     }
 }
 
-/// The logged load of the wal bench: the engine logging a commit each batch into memory, run
-/// once.
+/// The wal bench's load logged ahead, its log in memory and a commit each batch: what one run
+/// allocates, a row and a batch of those it loads.
 fn logging() {
     let every = NonZeroU64::new(1).expect("one is not zero");
     let cores = Cores::try_from_host().expect("the host says how many cores the bench may use");

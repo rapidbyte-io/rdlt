@@ -22,11 +22,6 @@ fn timed() -> bool {
     std::env::args().any(|arg| arg == "--bench")
 }
 
-/// Whether criterion only lists the benchmarks, which must neither set up nor print.
-fn listing() -> bool {
-    std::env::args().any(|arg| arg == "--list")
-}
-
 /// The roots logs are kept under: tmpfs where the host has one, and the disk beside the build.
 #[expect(clippy::print_stderr, reason = "a skipped case is said once")]
 fn roots() -> Vec<(&'static str, PathBuf)> {
@@ -53,37 +48,42 @@ fn encoding(c: &mut Criterion) {
     group.finish();
 }
 
+/// Bytes: the batch frames a run of `batches` batches logs, each the size of the first.
+fn frame_bytes(batches: u32) -> u64 {
+    Logged::frame_len(Logged::ROWS) * u64::from(batches)
+}
+
+/// Each case's load made when it first runs, so a process that runs one case makes that one
+/// alone, and its counters printed after it.
 #[expect(
     clippy::print_stdout,
     reason = "the run's counters are printed beside criterion's times"
 )]
 fn logging(c: &mut Criterion) {
-    let cores = Cores::try_from_host().expect("the host says how many cores the bench may use");
     let batches = if timed() { Logged::BATCHES } else { 16 };
     let mut group = c.benchmark_group("wal/engine");
     group.sampling_mode(SamplingMode::Flat).sample_size(10);
+    group.throughput(Throughput::Bytes(frame_bytes(batches)));
     for (root, path) in roots() {
         for (cadence, every) in CADENCES {
-            let mut run = (!listing()).then(|| {
-                let dir = tempfile::tempdir_in(&path).expect("a directory of the bench's own");
-                let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(dir.path()));
-                let every = every.and_then(NonZeroU64::new);
-                let logged = Logged::try_new(cores, store, batches, Logged::ROWS, every)
-                    .expect("the pool starts");
-                (dir, logged, None)
-            });
-            if let Some((_, logged, _)) = &run {
-                group.throughput(Throughput::Bytes(logged.frame_bytes()));
-            }
+            let mut case = None;
+            let mut last = None;
             group.bench_function(BenchmarkId::new(root, cadence), |b| {
-                if let Some((_, logged, last)) = &mut run {
-                    b.iter(|| *last = Some(logged.run()));
-                }
+                let (_, logged) = case.get_or_insert_with(|| {
+                    let cores = Cores::try_from_host().expect("the host says how many cores");
+                    let dir = tempfile::tempdir_in(&path).expect("a directory of the bench's own");
+                    let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(dir.path()));
+                    let every = every.and_then(NonZeroU64::new);
+                    let logged = Logged::try_new(cores, store, batches, Logged::ROWS, every)
+                        .expect("the pool starts");
+                    (dir, logged)
+                });
+                b.iter(|| last = Some(logged.run()));
             });
-            if let Some((_, logged, Some(report))) = run {
+            if let (Some((_, logged)), Some(report)) = (&case, &last) {
                 println!(
                     "wal/engine/{root}/{cadence}: {}",
-                    counted(&report, logged.frame_bytes())
+                    counted(report, logged.frame_bytes())
                 );
             }
         }
@@ -112,6 +112,8 @@ fn counted(report: &Report, frames: u64) -> String {
     )
 }
 
+/// Each root's log left when its case first runs, so a process that runs one case leaves that
+/// one alone, and its read amplification printed after it.
 #[expect(
     clippy::print_stdout,
     reason = "the read amplification is printed beside criterion's times"
@@ -121,33 +123,30 @@ fn counted(report: &Report, frames: u64) -> String {
     reason = "a ratio printed to three places"
 )]
 fn replaying(c: &mut Criterion) {
-    let cores = Cores::try_from_host().expect("the host says how many cores the bench may use");
     let batches = if timed() { Logged::BATCHES } else { 16 };
     let mut group = c.benchmark_group("wal/replay");
     group.sampling_mode(SamplingMode::Flat).sample_size(10);
+    group.throughput(Throughput::Bytes(frame_bytes(batches)));
     for (root, path) in roots() {
-        let left = (!listing()).then(|| {
-            let dir = tempfile::tempdir_in(&path).expect("a directory of the bench's own");
-            let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(dir.path()));
-            let logged = Logged::try_new(cores, store, batches, Logged::ROWS, None)
-                .expect("the pool starts");
-            logged.leave();
-            let first = replay_scan(dir.path(), "logged").expect("the log reads");
-            (dir, first)
-        });
-        if let Some((_, first)) = &left {
-            group.throughput(Throughput::Bytes(first.logged));
-        }
+        let mut left = None;
+        let mut last = None;
         group.bench_function(root, |b| {
-            if let Some((dir, _)) = &left {
-                b.iter(|| black_box(replay_scan(dir.path(), "logged").expect("the log reads")));
-            }
+            let dir = left.get_or_insert_with(|| {
+                let cores = Cores::try_from_host().expect("the host says how many cores");
+                let dir = tempfile::tempdir_in(&path).expect("a directory of the bench's own");
+                let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(dir.path()));
+                Logged::try_new(cores, store, batches, Logged::ROWS, None)
+                    .expect("the pool starts")
+                    .leave();
+                dir
+            });
+            b.iter(|| last = Some(replay_scan(dir.path(), "logged").expect("the log reads")));
         });
-        if let Some((_, first)) = left {
+        if let Some(read) = last {
             println!(
                 "wal/replay/{root}: read {:.3} of the log, {} reads",
-                first.read as f64 / first.logged as f64,
-                first.reads
+                read.read as f64 / read.logged as f64,
+                read.reads
             );
         }
     }
