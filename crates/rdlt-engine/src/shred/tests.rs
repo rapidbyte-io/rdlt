@@ -1301,6 +1301,8 @@ fn a_record_is_parsed_exactly_only_for_a_float_the_fast_parse_may_have_misread()
         counted(b"{\"f\":1.5,\"s\":\"1e1234567890123456789\"}\n").exact,
         0
     );
+    // A zero beside an exponent too short to read as zero: read right as well.
+    assert!(!parsed("{\"a\":0.0,\"n\":\"1e5\"}").exact);
 }
 
 /// The first chunk of `text`, observed: parsed with no room to build anything.
