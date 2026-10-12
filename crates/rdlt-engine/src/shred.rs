@@ -1,15 +1,15 @@
 //! JSON shredding: pushes of JSON records become Arrow batches, on the compute pool, built only
 //! once what they take is paid for.
 //!
-//! The pushes of a coalesced unit are scanned on the pool for where their records lie, grouped
-//! into chunks. Each chunk is parsed on the pool, its values observed and, speculatively, built
-//! into columns typed by what the chunk held, within what its text was admitted for; a chunk whose
-//! builders would take more is read again only to observe its values and count them. The
-//! observations are joined in push order into one shape, whose columns and cells are bounded, and
-//! what building every chunk's batch against that shape takes is known before any is built. A
-//! chunk whose own shape is that shape keeps its columns; any other is parsed again and built
-//! against it, on the pool. The join is the same whatever the order chunks finish in, so the
-//! batches are too.
+//! The pushes of a coalesced unit are cut into chunks on the pool at a record end past each
+//! chunk's bytes, without walking their records. Each chunk is parsed on the pool, finding and
+//! counting its own records, its values observed and, speculatively, built into columns typed by
+//! what the chunk held, within what its text was admitted for; a chunk whose builders would take
+//! more is read again only to observe its values and count them. The observations are joined in
+//! push order into one shape, whose columns and cells are bounded, and what building every
+//! chunk's batch against that shape takes is known before any is built. A chunk whose own shape
+//! is that shape keeps its columns; any other is parsed again and built against it, on the pool.
+//! The join is the same whatever the order chunks finish in, so the batches are too.
 
 mod build;
 mod conform;
@@ -45,6 +45,7 @@ use crate::limits::MAX_CELLS;
 use crate::report::ShredCounts;
 
 use build::Record;
+use error::numbered;
 use meter::{Beyond, Columns, Meter};
 use observe::Shape;
 use records::{Chunk, chunks};
@@ -97,6 +98,8 @@ impl ShredLimits {
 /// were observed to be and how many.
 struct Parsed {
     chunk: Chunk,
+    /// The records the parse read.
+    rows: usize,
     /// `None` where the builders would have taken more than the chunk was admitted for.
     record: Option<Record>,
     shape: Shape,
@@ -164,13 +167,13 @@ impl Shredding {
             schema,
             ..
         } = self;
-        pool.run_all(parsed.into_iter().zip(plans).map(|(chunk, plan)| {
-            let (shape, schema) = (Arc::clone(&shape), Arc::clone(&schema));
-            move || job(|| batch(chunk, plan, &shape, schema))
-        }))
-        .await
-        .into_iter()
-        .collect()
+        let built = pool
+            .run_all(parsed.into_iter().zip(plans).map(|(chunk, plan)| {
+                let (shape, schema) = (Arc::clone(&shape), Arc::clone(&schema));
+                move || job(|| batch(chunk, plan, &shape, schema))
+            }))
+            .await;
+        numbered(built, RecordBatch::num_rows)
     }
 }
 
@@ -181,11 +184,13 @@ impl Shredding {
 /// numbers exact.
 fn parse(chunk: Chunk, limits: ShredLimits, beyond: &Arc<Beyond>) -> Result<Parsed, ShredError> {
     let (mut exact, mut counts) = (false, ShredCounts::default());
+    let allowance = count(chunk.bytes()).saturating_mul(limits.admitted);
+    // The most records it may hold: blank lines among lines count too.
+    let most = chunk.count();
     loop {
         counts.parse(exact);
-        let allowance = count(chunk.bytes).saturating_mul(limits.admitted);
         let context = Context::new(Meter::new(allowance), Columns::new(limits.columns));
-        let mut record = Record::empty(chunk.rows);
+        let mut record = Record::empty(most);
         let appended = each(&chunk, exact, &context, |bytes| {
             let row = Row {
                 record: &mut record,
@@ -203,6 +208,7 @@ fn parse(chunk: Chunk, limits: ShredLimits, beyond: &Arc<Beyond>) -> Result<Pars
             continue;
         }
         return Ok(Parsed {
+            rows: appended.rows,
             shape: record.shape(),
             record: Some(record),
             spoiled: context.spoiled(),
@@ -223,9 +229,9 @@ fn observed(
     limits: ShredLimits,
     beyond: &Arc<Beyond>,
 ) -> Result<Parsed, ShredError> {
+    let allowance = count(chunk.bytes()).saturating_mul(limits.admitted);
     loop {
         counts.observe(exact);
-        let allowance = count(chunk.bytes).saturating_mul(limits.admitted);
         let meter = Meter::observing(allowance, beyond);
         let context = Context::new(meter, Columns::new(limits.columns));
         let mut shape = Shape::default();
@@ -242,6 +248,7 @@ fn observed(
         }
         return Ok(Parsed {
             chunk,
+            rows: appended.rows,
             record: None,
             shape,
             spoiled: true,
@@ -273,6 +280,8 @@ struct Appended {
     /// Whether the parse stopped at a float that may be a rounded integer, or, parsing exactly,
     /// whether it parsed so.
     imprecise: bool,
+    /// The records it read.
+    rows: usize,
 }
 
 /// Parses each record of `chunk` with `record`, its numbers exact where `exact` says.
@@ -280,14 +289,17 @@ struct Appended {
 /// The fast parse reads an integer beyond 64 bits as the float nearest it, and refuses one beyond a
 /// float's range, so it stops at the first float that may be one, or at the first refusal, leaving
 /// the chunk to be parsed again exactly. A parse whose builders trip their meter stops there.
+/// A record it refuses is numbered within the chunk.
 fn each(
     chunk: &Chunk,
     exact: bool,
     context: &Context,
     mut record: impl FnMut(&[u8]) -> Result<(), sonic_rs::Error>,
 ) -> Result<Appended, ShredError> {
-    for (index, bytes) in chunk.records().enumerate() {
-        let bytes = bytes?;
+    let mut rows = 0;
+    for bytes in chunk.records() {
+        let (bytes, index) = (bytes?, rows);
+        rows += 1;
         let parsed = record(bytes);
         // The fast parse reads a float of a vast negative exponent as zero, as it reads `0.0`:
         // a record where it read a zero and that may hold such a number is parsed exactly.
@@ -303,12 +315,13 @@ fn each(
                 return Ok(Appended {
                     tripped: true,
                     imprecise: false,
+                    rows,
                 });
             }
             // The fast parse refuses an integer beyond a float's range as it refuses invalid JSON;
             // the exact parse tells them apart.
             if exact {
-                return Err(invalid(chunk.before + index, &error));
+                return Err(invalid(index, &error));
             }
             context.reparse();
         }
@@ -319,15 +332,19 @@ fn each(
     Ok(Appended {
         tripped: false,
         imprecise: exact || context.imprecise(),
+        rows,
     })
 }
 
-/// The error for record `index` of the pushes, which sonic-rs refused with `error`: what broke and
+/// The error for record `index` of a chunk, which sonic-rs refused with `error`: what broke and
 /// where, without the excerpt of the record sonic-rs quotes after it.
 fn invalid(index: usize, error: &sonic_rs::Error) -> ShredError {
     let message = error.to_string();
     let what = message.lines().next().unwrap_or_default();
-    ShredError::Invalid(format!("record {}: {what}", index + 1))
+    ShredError::Record {
+        index,
+        what: what.to_owned(),
+    }
 }
 
 /// The shape every chunk's records fit, the join of each chunk's in push order, and how each
@@ -354,13 +371,13 @@ fn join(parsed: &[Parsed], limits: ShredLimits) -> Result<(Shape, Vec<Plan>, u64
     let (mut cells, mut takes, mut admitted) = (0_u64, cost::shape(&joined), 0_u64);
     let mut plans = Vec::with_capacity(parsed.len());
     for chunk in parsed {
-        let rows = count(chunk.chunk.rows);
+        let rows = count(chunk.rows);
         let size = cost::built(&joined, &chunk.shape, rows);
         cells = cells.saturating_add(size.cells);
         let again =
             chunk.record.is_none() || chunk.spoiled || !conform::shape_fits(&chunk.shape, &joined);
         let exact = chunk.exact || chunk.json_floats || cost::floats_in_json(&joined, &chunk.shape);
-        let bytes = count(chunk.chunk.bytes);
+        let bytes = count(chunk.chunk.bytes());
         // What the chunk's parse holds until the build, and its batch's columns' fixed parts:
         // all of them built again, or those it lacks fitted.
         let held = if again {
@@ -396,18 +413,18 @@ fn batch(
 ) -> Result<RecordBatch, ShredError> {
     let Parsed {
         chunk,
+        rows,
         record,
         shape: local,
         ..
     } = parsed;
-    let rows = chunk.rows;
     let columns = match record {
         Some(record) if !plan.again => {
             conform::columns(&record.finish_columns()?, &local, shape, rows)?
         }
         speculative => {
             drop(speculative);
-            again(&chunk, &cost::sized(shape, &local), plan.exact)?
+            again(&chunk, rows, &cost::sized(shape, &local), plan.exact)?
         }
     };
     let options = arrow_array::RecordBatchOptions::new().with_row_count(Some(rows));
@@ -415,19 +432,20 @@ fn batch(
         .map_err(|error| ShredError::Internal(format!("building a batch: {error}")))
 }
 
-/// The columns of `chunk`'s records built against `shape`, presized for what they hold: every
-/// value fits it, so no column stops building and no builder grows past what was reserved.
+/// The columns of `chunk`'s `rows` records built against `shape`, presized for what they hold:
+/// every value fits it, so no column stops building and no builder grows past what was reserved.
 ///
 /// Its meter has no limit, so the build never trips.
 fn again(
     chunk: &Chunk,
+    rows: usize,
     shape: &Shape,
     exact: bool,
 ) -> Result<Vec<arrow_array::ArrayRef>, ShredError> {
     let unbuilt = |what: &str| ShredError::Internal(format!("building a chunk again: {what}"));
     let context = Context::new(Meter::reserved(), Columns::new(u64::MAX));
     let mut record =
-        Record::new(shape, chunk.rows, &context.meter).map_err(|_| unbuilt("its builders"))?;
+        Record::new(shape, rows, &context.meter).map_err(|_| unbuilt("its builders"))?;
     let appended = each(chunk, exact, &context, |bytes| {
         let row = Row {
             record: &mut record,
@@ -457,34 +475,35 @@ pub(crate) fn job<T>(work: impl FnOnce() -> T) -> T {
 /// `limits`: what the batches will be, and what building them takes beyond what the pushes were
 /// admitted for.
 ///
-/// A push is a JSON array of objects, or objects on their own lines; blank lines are skipped.
+/// A push is a JSON array of objects, or objects on their own lines; blank lines are skipped. The
+/// pushes are cut into chunks without walking their records, and each chunk's job finds and
+/// counts its own: a record refused is numbered among the pushes from the rows of the chunks
+/// before its own.
 ///
 /// # Errors
 ///
 /// Why the pushes cannot be shredded.
 pub(crate) async fn observe(
     pool: &Pool,
-    pushes: &[Bytes],
+    pushes: Vec<Bytes>,
     chunk_bytes: usize,
     limits: ShredLimits,
 ) -> Result<Shredding, ShredError> {
-    let scanned = pushes.to_vec();
     let chunks = pool
-        .run_all([move || chunks(&scanned, chunk_bytes)])
+        .run_all([move || chunks(&pushes, chunk_bytes)])
         .await
         .pop()
         .ok_or_else(|| {
-            ShredError::Internal("the scan of the pushes returned nothing".to_owned())
+            ShredError::Internal("the cut of the pushes returned nothing".to_owned())
         })??;
     let beyond = limits.beyond();
-    let parsed: Vec<Parsed> = pool
+    let parsed = pool
         .run_all(chunks.into_iter().map(|chunk| {
             let beyond = Arc::clone(&beyond);
             move || job(|| parse(chunk, limits, &beyond))
         }))
-        .await
-        .into_iter()
-        .collect::<Result<_, _>>()?;
+        .await;
+    let parsed = numbered(parsed, |parsed: &Parsed| parsed.rows)?;
     let (shape, plans, excess) = join(&parsed, limits)?;
     let schema = TableSchema::new(shape.logical_fields())
         .map_err(|error| ShredError::Internal(format!("naming the columns: {error}")))?;
@@ -516,7 +535,7 @@ pub(crate) async fn shred(
     chunk_bytes: usize,
     limits: ShredLimits,
 ) -> Result<Vec<RecordBatch>, ShredError> {
-    observe(pool, pushes, chunk_bytes, limits)
+    observe(pool, pushes.to_vec(), chunk_bytes, limits)
         .await?
         .build(pool)
         .await

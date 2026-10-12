@@ -17,10 +17,11 @@ fn found(pushes: &[&str], chunk_bytes: usize) -> Vec<Vec<String>> {
             let records: Vec<String> = chunk
                 .records()
                 .map(|record| {
-                    String::from_utf8(record.expect("the scan finds it again").to_vec()).unwrap()
+                    String::from_utf8(record.expect("the cut finds it again").to_vec()).unwrap()
                 })
                 .collect();
-            assert_eq!(records.len(), chunk.rows);
+            assert!(!records.is_empty(), "a chunk holds a record");
+            assert!(records.len() <= chunk.count());
             records
         })
         .collect()
@@ -31,7 +32,7 @@ fn refused(push: &str) -> String {
     match chunks(&pushes, 1 << 20) {
         Err(ShredError::Invalid(what)) => what,
         Err(other) => panic!("{push:?} was refused as {other}"),
-        Ok(_) => panic!("{push:?} was scanned"),
+        Ok(_) => panic!("{push:?} was cut"),
     }
 }
 
@@ -43,7 +44,7 @@ fn a_chunk_keeps_a_span_of_each_push_however_many_records_it_holds() {
     let chunks = chunks(&pushes, usize::MAX).unwrap();
     assert_eq!(chunks.len(), 1);
     assert_eq!(chunks[0].parts.len(), 2, "one span a push");
-    assert_eq!((chunks[0].rows, chunks[0].before), (200_000, 0));
+    assert_eq!(chunks[0].count(), 200_000);
     assert_eq!(chunks[0].records().count(), 200_000);
     assert!(chunks[0].records().all(|record| record == Ok(&b"{}"[..])));
 }
@@ -55,7 +56,7 @@ fn chunks_end_at_the_record_that_fills_them_across_pushes() {
         "[{\"a\":4}, {\"a\":5}]",
         " \n",
     ];
-    // Seven bytes a record: a chunk of ten bytes ends at every second record.
+    // Seven bytes a record and one between: a chunk of ten bytes ends at every second record.
     assert_eq!(
         found(&pushes, 10),
         [
@@ -66,10 +67,39 @@ fn chunks_end_at_the_record_that_fills_them_across_pushes() {
     );
     let pushes: Vec<Bytes> = pushes.iter().map(|push| Bytes::from(*push)).collect();
     let chunks = chunks(&pushes, 10).unwrap();
-    let before: Vec<usize> = chunks.iter().map(|chunk| chunk.before).collect();
-    assert_eq!(before, [0, 2, 4]);
+    let counted: Vec<usize> = chunks.iter().map(Chunk::count).collect();
+    assert_eq!(counted, [2, 2, 1]);
     // The second chunk holds the end of one push and the start of the next.
     assert_eq!(chunks[1].parts.len(), 2);
+}
+
+#[test]
+fn lines_are_cut_at_the_first_line_end_past_each_chunk_s_bytes() {
+    let push = Bytes::from_static(b"{\"a\":1}\n{\"a\":22}\n{\"a\":333}\n{\"a\":4444}\n");
+    let chunks = chunks(&[push], 10).unwrap();
+    let spans: Vec<Vec<&[u8]>> = chunks
+        .iter()
+        .map(|c| c.records().map(Result::unwrap).collect())
+        .collect();
+    assert_eq!(
+        spans,
+        [
+            vec![&b"{\"a\":1}"[..], b"{\"a\":22}"],
+            vec![b"{\"a\":333}", b"{\"a\":4444}"]
+        ]
+    );
+}
+
+#[test]
+fn a_crlf_line_end_is_cut_whole_and_a_blank_chunk_is_dropped() {
+    let push = Bytes::from_static(b"{\"a\":1}\r\n\r\n\r\n   \n{\"a\":2}\r\n");
+    let chunks = chunks(&[push], 4).unwrap();
+    let records: Vec<&[u8]> = chunks
+        .iter()
+        .flat_map(|c| c.records().map(Result::unwrap))
+        .collect();
+    assert_eq!(records, [&b"{\"a\":1}"[..], b"{\"a\":2}"]);
+    assert!(chunks.iter().all(|chunk| chunk.records().count() > 0));
 }
 
 #[test]
@@ -82,52 +112,82 @@ fn an_array_that_is_not_one_is_refused_where_it_breaks() {
     assert!(found(&["[]", " [ ] ", ""], 1).is_empty());
 }
 
+/// A record whose string holds brackets, commas, escaped quotes and runs of escaped backslashes,
+/// so it may end in `\\"`, `\\\\"` or hold `\"`.
+const RECORD: &str = r#"\{"k":"([a-z,\]\[{} ]|\\\\|\\"){0,6}"\}"#;
+
+/// JSON whitespace around a record: in lines, its line end, and blank, whitespace-only and
+/// carriage-return lines among it.
+const GAP: &str = "([ \t]{0,2}\r?\n){0,3}[ \t\r]{0,2}";
+
+/// A push of `records`, as an array or as lines, with `gaps` around them.
+fn push_of(records: &[String], array: bool, gaps: &[String]) -> String {
+    let mut push = String::new();
+    if array {
+        push.push('[');
+    }
+    for (index, record) in records.iter().enumerate() {
+        push.push_str(&gaps[index]);
+        push.push_str(record);
+        push.push_str(&gaps[index + 1]);
+        if !array {
+            push.push('\n');
+        } else if index + 1 < records.len() {
+            push.push(',');
+        }
+    }
+    if array {
+        push.push_str(&gaps[0]);
+        push.push(']');
+    }
+    push
+}
+
 proptest! {
-    /// Records are found again as they were scanned, whatever the form, the whitespace and the
-    /// chunk size.
+    /// Cut across pushes of either form, whatever the whitespace and the chunk size, the chunks
+    /// hold each push's records in order, each chunk at least one and no more than it counts.
     #[test]
     fn every_record_is_found_once_in_order(
-        records in proptest::collection::vec("\\{\"k\":\"[a-z,\\]\\[{} ]{0,6}\"\\}", 0..40),
-        spaces in proptest::collection::vec("[ \t\r\n]{0,3}", 41),
-        chunk_bytes in 1_usize..200,
-        array in any::<bool>(),
+        pushes in proptest::collection::vec(
+            (
+                proptest::collection::vec(RECORD, 0..12),
+                any::<bool>(),
+                proptest::collection::vec(GAP, 13),
+            ),
+            1..4,
+        ),
+        chunk_bytes in 1_usize..=64,
     ) {
-        let mut push = String::new();
-        if array {
-            push.push('[');
+        let texts: Vec<Bytes> = pushes
+            .iter()
+            .map(|(records, array, gaps)| Bytes::from(push_of(records, *array, gaps)))
+            .collect();
+        let expected: Vec<&str> = pushes
+            .iter()
+            .flat_map(|(records, _, _)| records.iter().map(String::as_str))
+            .collect();
+        let chunks = chunks(&texts, chunk_bytes).unwrap();
+        let mut cut = Vec::new();
+        for chunk in &chunks {
+            let records: Vec<&[u8]> = chunk.records().map(Result::unwrap).collect();
+            prop_assert!(!records.is_empty());
+            prop_assert!(records.len() <= chunk.count());
+            cut.extend(records.into_iter().map(|record| std::str::from_utf8(record).unwrap()));
         }
-        for (index, record) in records.iter().enumerate() {
-            push.push_str(&spaces[index]);
-            push.push_str(record);
-            if array {
-                push.push_str(&spaces[index + 1]);
-                if index + 1 < records.len() {
-                    push.push(',');
-                }
-            } else {
-                push.push('\n');
-            }
-        }
-        if array {
-            push.push(']');
-        }
-        let found: Vec<String> = found(&[push.as_str()], chunk_bytes).concat();
-        prop_assert_eq!(found, records);
+        prop_assert_eq!(cut, expected);
     }
 }
 
 #[test]
 fn a_span_that_breaks_when_it_is_found_again_is_an_error_not_an_end() {
-    // A span no scan of a whole push cuts: its first element closes a bracket it never opened.
+    // A span no cut of a whole push makes: its first element closes a bracket it never opened.
     let chunk = Chunk {
         parts: vec![Part {
             push: Bytes::from_static(b"[{}},{}]"),
             form: Form::Elements,
             span: 1..7,
+            elements: 2,
         }],
-        rows: 2,
-        before: 0,
-        bytes: 6,
     };
     let found: Vec<_> = chunk.records().collect();
     assert!(
@@ -140,10 +200,8 @@ fn a_span_that_breaks_when_it_is_found_again_is_an_error_not_an_end() {
             push: Bytes::from_static(b"[{},{}}]"),
             form: Form::Elements,
             span: 1..7,
+            elements: 2,
         }],
-        rows: 2,
-        before: 0,
-        bytes: 6,
     };
     let found: Vec<_> = chunk.records().take(3).collect();
     assert!(

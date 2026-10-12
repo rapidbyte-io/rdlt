@@ -324,7 +324,8 @@ budget before it is held, or bounded by a limit with a typed refusal.
   - A decoder's dictionaries are within one frame's bytes together, and the host charges them
     and the decoder's schema, with the message it came from, to the read's part of what reads
     keep while the decoder holds them.
-  - A JSON push's records are found by a scan that keeps a span a chunk, not a range a record.
+  - A JSON push is cut into chunks that keep a span of each push and, of an array, how many
+    elements it holds, not a range a record; each chunk's job finds its records again.
   - Row identity reads integers, temporal values and decimals where they lie.
   - A state record's value is the JSON it is wherever the record is JSON, and the log's seal
     and commit frames are reserved from the log's share before they are encoded, at most twice
@@ -424,8 +425,10 @@ admitted, and what a remote connector's calls hold in transport.
   The wire's limits gained `dictionary_bytes`, with a least of 256 KiB.
 - A cut costs a trip to the compute pool a piece.
 - The dictionary and staged limits follow the frame limit: one and four frames' bytes.
-- An array-form JSON push is scanned for its elements twice: once to chunk it, once as each
-  chunk is parsed.
+- An array-form JSON push is scanned for its elements twice: once to cut it, which counts each
+  chunk's, and once as each chunk is parsed. A chunk of JSON lines is counted by its line ends
+  in its job, beside its parse, blank lines included: its builders are presized for at least
+  its records.
 - Checkpoints wait for room in the cursors' share. A source whose cursors are megabytes commits
   more often, and one whose cursor is beyond the share cannot be loaded under that budget.
 - A batch decoded from a frame is charged for the dictionaries its keys name, which the host

@@ -118,7 +118,7 @@ async fn shredded(
     let chunk_bytes = context.batch.chunk_bytes().get();
     let limits = ShredLimits::new(context.budget.limits().schema_columns);
     let observe = || async {
-        shred::observe(pool, &pushes, chunk_bytes, limits)
+        shred::observe(pool, pushes.clone(), chunk_bytes, limits)
             .await
             .map_err(failed)
     };

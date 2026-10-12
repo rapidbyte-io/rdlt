@@ -30,10 +30,13 @@ fast-path evaluation. Building M3a surfaced decisions the spec leaves open or ge
   charge what they are made with and grow by, within twice the chunk's text; a chunk that would
   pass that is read again observing kinds and counts, and what the batches take beyond the
   push's admission is reserved before any of them is built (ADR 0040).
-- **Pushes are split into records on the pool.** Each push's records are found on the compute
-  pool before chunking: JSON lines by their line ends, a JSON array by its top-level commas,
-  scanned without recursion however deep its values nest. Each record is then parsed on its own,
-  so a line holds exactly one record and an array element exactly one value.
+- **Pushes are cut into chunks on the pool without walking their records.** JSON lines are cut
+  at the first line end past each chunk's bytes, found by jumping past those bytes; a JSON
+  array's top-level commas are found by one scan of its structure, without recursion however
+  deep its values nest, which checks it is an array and counts each chunk's elements. Each
+  chunk's job finds its own records, and counts a chunk of lines by its line ends, then parses
+  each record on its own, so a line holds exactly one record and an array element exactly one
+  value.
 - **Values are typed by what they hold.** Integers are read exactly at any width: those that
   fit 64 signed bits are `Int64`; those above them that fit 64 unsigned bits, `Decimal(20, 0)`;
   within 38 digits `Decimal(38, 0)`; within 76 digits `Decimal(76, 0)`; and a column holding an

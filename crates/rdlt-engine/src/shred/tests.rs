@@ -730,7 +730,7 @@ fn cells_are_bounded_at_the_limit_before_anything_is_built() {
 fn cells_count_a_list_s_items_at_their_own_level() {
     let cells = |text: &str| {
         let parsed = parsed(text);
-        let rows = u64::try_from(parsed.chunk.rows).unwrap();
+        let rows = u64::try_from(parsed.rows).unwrap();
         super::cost::built(&parsed.shape, &parsed.shape, rows).cells
     };
     assert_eq!(
@@ -807,6 +807,82 @@ fn a_refusal_names_where_the_json_broke_without_quoting_the_data() {
     let later = crate::compute::ready(shred(&crate::compute::Pool::inline(), &pushes, 1, limits()))
         .unwrap_err();
     assert!(later.to_string().contains("record 4:"), "{later}");
+}
+
+#[test]
+fn a_bad_record_is_numbered_in_its_push_whichever_chunk_holds_it() {
+    for array in [false, true] {
+        let mut rows: Vec<String> = (0..300).map(|id| format!(r#"{{"id":{id}}}"#)).collect();
+        rows[250] = r#"{"id":}"#.to_owned();
+        let push = if array {
+            format!("[{}]", rows.join(","))
+        } else {
+            rows.join("\n")
+        };
+        let pushes = [Bytes::from(push)];
+        let cut = chunks(&pushes, 1024).unwrap().len();
+        assert!(cut >= 3, "{cut} chunks");
+        let refused = crate::compute::ready(shred(
+            &crate::compute::Pool::inline(),
+            &pushes,
+            1024,
+            limits(),
+        ))
+        .unwrap_err();
+        assert_eq!(refused.code(), "json_invalid");
+        assert!(
+            matches!(refused, super::ShredError::Record { index: 250, .. }),
+            "{refused:?}"
+        );
+    }
+}
+
+#[test]
+fn a_record_a_job_refuses_is_numbered_past_the_rows_of_the_jobs_before() {
+    let refused = super::ShredError::Record {
+        index: 1,
+        what: "x".to_owned(),
+    };
+    let results = [Ok(2), Ok(3), Ok(0), Err(refused), Ok(4)];
+    let numbered = super::numbered(results, |rows| *rows);
+    assert!(
+        matches!(numbered, Err(super::ShredError::Record { index: 6, .. })),
+        "{numbered:?}"
+    );
+    assert_eq!(
+        super::numbered([Ok(2), Ok(3)], |rows| *rows),
+        Ok(vec![2, 3])
+    );
+    let other = [Ok(2), Err(super::ShredError::NotObject)];
+    assert_eq!(
+        super::numbered(other, |rows| *rows),
+        Err(super::ShredError::NotObject)
+    );
+}
+
+#[test]
+fn blank_lines_among_records_cost_passes_but_not_their_batch() {
+    // Ten blank lines a record: a chunk presized for every line takes more than its text was
+    // admitted for, and is observed and built again.
+    let dense: Vec<String> = (0..200)
+        .map(|id| format!("{{\"id\":{id},{}", &wide_object(0, 10)[1..]))
+        .collect();
+    let padded = dense.join(&format!("\n{}", " \r\n".repeat(10)));
+    let dense = dense.join("\n");
+    let counts = |push: &str| {
+        let pushes = vec![Bytes::from(push.to_owned())];
+        crate::compute::ready(super::observe(
+            &crate::compute::Pool::inline(),
+            pushes,
+            1 << 20,
+            limits(),
+        ))
+        .unwrap()
+        .counts()
+    };
+    assert_eq!(counts(&dense).tripped, 0);
+    assert_eq!(counts(&padded).tripped, 1);
+    assert_eq!(batch_of(&[&padded], 1 << 20), batch_of(&[&dense], 1 << 20));
 }
 
 #[test]
@@ -931,10 +1007,10 @@ fn numbers_in_a_column_of_json_keep_the_text_they_were_written_as() {
 #[test]
 fn a_push_takes_more_than_it_was_admitted_for_only_where_its_batches_hold_more() {
     let excess = |text: String| {
-        let pushes = [Bytes::from(text)];
+        let pushes = vec![Bytes::from(text)];
         crate::compute::ready(super::observe(
             &crate::compute::Pool::inline(),
-            &pushes,
+            pushes,
             1 << 20,
             limits(),
         ))
@@ -1102,8 +1178,8 @@ fn a_batch_holds_its_columns_at_their_count_not_the_builders_capacity() {
 /// How many chunks shredding `push` in one chunk builds again, and the batch.
 fn built_again(push: &str) -> (u64, RecordBatch) {
     let pool = crate::compute::Pool::inline();
-    let pushes = [Bytes::from(push.to_owned())];
-    let observed = crate::compute::ready(super::observe(&pool, &pushes, 1 << 20, limits()));
+    let pushes = vec![Bytes::from(push.to_owned())];
+    let observed = crate::compute::ready(super::observe(&pool, pushes, 1 << 20, limits()));
     let observed = observed.unwrap();
     let rebuilt = observed.counts().rebuilt;
     let mut batches = crate::compute::ready(observed.build(&pool)).unwrap();
@@ -1122,8 +1198,8 @@ fn hundreds(first: &str, then: &str) -> String {
 #[test]
 fn an_observation_counts_its_passes_apart_from_the_chunks_building_will_build_again() {
     let pool = crate::compute::Pool::inline();
-    let pushes = [Bytes::from(hundreds("1", "\"x\""))];
-    let observed = crate::compute::ready(super::observe(&pool, &pushes, 1 << 20, limits()));
+    let pushes = vec![Bytes::from(hundreds("1", "\"x\""))];
+    let observed = crate::compute::ready(super::observe(&pool, pushes, 1 << 20, limits()));
     let observed = observed.unwrap();
     let passes = ShredCounts {
         parsed: 1,
@@ -1317,13 +1393,13 @@ fn a_chunk_built_again_where_it_needs_exact_numbers_but_was_not_planned_so_is_re
     let text = "{\"a\":1e20}";
     let shape = parsed(text).shape;
     let chunk = || chunks(&[Bytes::from(text)], 1 << 20).unwrap().remove(0);
-    let built = super::again(&chunk(), &shape, true).unwrap();
+    let built = super::again(&chunk(), 1, &shape, true).unwrap();
     assert_eq!(
         built[0].as_primitive::<Float64Type>().value(0).to_bits(),
         1e20_f64.to_bits()
     );
     assert!(matches!(
-        super::again(&chunk(), &shape, false),
+        super::again(&chunk(), 1, &shape, false),
         Err(super::ShredError::Internal(_))
     ));
 }
