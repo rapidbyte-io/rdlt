@@ -20,6 +20,18 @@ use rdlt_engine::bench::{
 };
 use rdlt_engine::{Cores, Env, SystemEnv};
 
+/// Bytes of each cliff corpus run as a test: enough to cross several chunks.
+const TESTED_CLIFF_BYTES: usize = 4 << 20;
+/// Rows of each column of JSON checked when timed.
+const JSON_ROWS: usize = 100_000;
+/// Rows of each column of JSON checked as a test.
+const TESTED_JSON_ROWS: usize = 8_192;
+
+/// Whether criterion times the benchmarks, rather than running each once as a test.
+fn timed() -> bool {
+    std::env::args().any(|arg| arg == "--bench")
+}
+
 fn single_core(c: &mut Criterion) {
     let mut corpora: Vec<(String, Vec<Bytes>)> = Corpus::SHREDDED
         .into_iter()
@@ -57,10 +69,15 @@ fn single_core(c: &mut Criterion) {
     reason = "each corpus's passes are printed beside criterion's times"
 )]
 fn cliffs(c: &mut Criterion) {
+    let corpus_bytes = if timed() {
+        CORPUS_BYTES
+    } else {
+        TESTED_CLIFF_BYTES
+    };
     let mut group = c.benchmark_group("shred_cliffs");
     group.sample_size(10);
     for corpus in Corpus::CLIFFS {
-        let pushes = corpus.pushes(CORPUS_BYTES);
+        let pushes = corpus.pushes(corpus_bytes);
         let bytes: usize = pushes.iter().map(Bytes::len).sum();
         group.throughput(Throughput::Bytes(u64::try_from(bytes).unwrap_or(u64::MAX)));
         let mut counted = false;
@@ -224,10 +241,11 @@ fn normalizing(c: &mut Criterion) {
 
 /// The check of a column of JSON, plain and with escapes, as an Arrow push's is checked.
 fn json_checking(c: &mut Criterion) {
+    let rows = if timed() { JSON_ROWS } else { TESTED_JSON_ROWS };
     let mut group = c.benchmark_group("json_check");
     group.sample_size(10);
     for (name, escaped) in [("plain", false), ("escaped", true)] {
-        let batch = json_column(100_000, escaped);
+        let batch = json_column(rows, escaped);
         group.throughput(Throughput::Bytes(logical_bytes(std::slice::from_ref(
             &batch,
         ))));

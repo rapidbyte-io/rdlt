@@ -2,6 +2,7 @@ use std::io::Cursor;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
+use arrow_array::cast::AsArray;
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use arrow_ipc::reader::StreamReader;
 use bytes::Bytes;
@@ -329,15 +330,17 @@ fn a_log_another_load_wrote_is_refused_as_foreign() {
 }
 
 #[test]
-fn a_column_of_json_checks_and_a_broken_value_is_refused() {
+fn a_column_of_json_checks_with_escapes_where_asked_and_a_broken_value_is_refused() {
     for escaped in [false, true] {
         let batch = json_column(1_000, escaped);
         assert_eq!(batch.num_rows(), 1_000);
         check_json(&batch).unwrap();
     }
-    let broken = json_column(3, true).slice(0, 3);
+    let escaped = json_column(8, true);
+    let values = escaped.column(0).as_string::<i32>();
+    assert!(values.iter().flatten().any(|value| value.contains('\\')));
     let column = arrow_array::StringArray::from(vec![r#"{"a":"\x01"}"#]);
-    let schema = broken.schema();
+    let schema = escaped.schema();
     let refused = RecordBatch::try_new(schema, vec![Arc::new(column)]).unwrap();
     assert_eq!(check_json(&refused).unwrap_err().code, "json_invalid");
 }
