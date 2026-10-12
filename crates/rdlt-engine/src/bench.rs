@@ -10,6 +10,7 @@ mod mix;
 mod normalized;
 mod passthrough;
 mod pools;
+mod resident;
 mod runner;
 #[cfg(test)]
 mod tests;
@@ -42,6 +43,7 @@ pub use mix::Mix;
 pub use normalized::Normalized;
 pub use passthrough::Passthrough;
 pub use pools::pool_cores;
+pub use resident::{Resident, reset_peak, resident_kib};
 pub use wide::{Form, Wide};
 
 /// Why the shredder refused pushes.

@@ -128,6 +128,24 @@ miri:
 instructions base="origin/main":
     cargo xtask instructions --base "{{ base }}" --limit 2
 
+# Run each resident-memory workload once a process, by cores and with glibc's malloc tunables
+# and without, and fail where a run raises the process's peak past its budget's bound (ADR 0039);
+# Linux only
+resident:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [[ "$(uname -s)" == Linux ]] || { echo "just resident runs only on Linux, which has /proc" >&2; exit 2; }
+    cargo bench --package rdlt-engine --features bench --bench resident --no-run
+    tunables="glibc.malloc.trim_threshold=268435456:glibc.malloc.mmap_threshold=33554432"
+    status=0
+    for workload in passthrough normalized; do
+        for cores in 2 4 "$(nproc)"; do
+            cargo bench --package rdlt-engine --features bench --bench resident -- "$workload" "$cores" || status=1
+            GLIBC_TUNABLES="$tunables" cargo bench --package rdlt-engine --features bench --bench resident -- "$workload" "$cores" || status=1
+        done
+    done
+    exit "$status"
+
 # Mutation testing of a crate: its mutants against the tests of every mutated package that links
 # it, which are all the tests that can catch one, the crate's own first, where most are caught.
 # Extra arguments go to cargo-mutants, for example --shard 1/4 or --in-diff pr.diff
