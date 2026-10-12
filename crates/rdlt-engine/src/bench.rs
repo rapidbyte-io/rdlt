@@ -27,6 +27,8 @@ use crate::env::Env;
 use crate::normalize::{self, Shape};
 use crate::shred::{self, ShredError};
 
+use connectors::sink;
+
 pub use connectors::{
     Replayed, SinkSession, SinkWriter, Sinking, ipc_sink, null_sink, register, replay,
     replay_config, replay_factory, sink_factory, split_replay_config,
@@ -181,6 +183,82 @@ pub fn scan_log(bytes: &[u8]) -> Result<usize, Refused> {
             .map_err(code)?;
     }
     Ok(scanned.commits.len())
+}
+
+/// What reading a load's log as a replay does took: the batch frames it read, the bytes the log
+/// holds, the bytes read and the reads made.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReplayRead {
+    /// Batch frames read and decoded.
+    pub batches: usize,
+    /// Bytes the log's chunks hold.
+    pub logged: u64,
+    /// Bytes read from the store.
+    pub read: u64,
+    /// Read requests made of the store.
+    pub reads: u64,
+}
+
+/// Reads the log of pipeline `pipeline`'s only load under `base` as replay does: scans it, then
+/// reads and decodes each batch frame it found.
+///
+/// # Errors
+///
+/// Why the log does not read.
+pub fn replay_scan(base: &std::path::Path, pipeline: &str) -> Result<ReplayRead, Refused> {
+    use crate::report::Tally;
+    use crate::wal::CountedStore;
+    use crate::wal::{WalStore, frame, scan};
+    let code = |error: crate::error::Error| Refused {
+        code: match error.code() {
+            Some("wal_unreadable") => "wal_unreadable",
+            Some("wal_foreign") => "wal_foreign",
+            _ => "other",
+        },
+        message: error.to_string(),
+    };
+    let wal = |error: std::io::Error| code(crate::error::Error::from_wal(error));
+    let tally = Arc::new(Tally::default());
+    let local: Arc<dyn WalStore> = Arc::new(crate::LocalWal::new(base));
+    let store = CountedStore::new(local, Arc::clone(&tally));
+    let pipeline = rdlt_connector::PipelineId::parse(pipeline).expect("a valid pipeline");
+    // The local store reads on the blocking pool, so its calls need a runtime.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a runtime starts");
+    let loads = runtime.block_on(store.loads(&pipeline)).map_err(wal)?;
+    let [load] = loads.as_slice() else {
+        return Err(Refused {
+            code: "other",
+            message: format!("{} logs where one was expected", loads.len()),
+        });
+    };
+    let logged = runtime
+        .block_on(store.chunks(&pipeline, *load))
+        .map_err(wal)?
+        .iter()
+        .map(|(_, len)| len)
+        .sum();
+    let limits = frame::limits(crate::config::EngineConfig::default().memory().get());
+    let scanned = runtime
+        .block_on(scan::scan(&store, &pipeline, *load, limits.frame_bytes))
+        .map_err(code)?;
+    let mut batches = 0;
+    for located in scanned.batches.values().flatten() {
+        runtime
+            .block_on(scan::batch(&store, &pipeline, *located, limits))
+            .and_then(scan::Read::decode)
+            .map_err(code)?;
+        batches += 1;
+    }
+    let log = tally.counters().log;
+    Ok(ReplayRead {
+        batches,
+        logged,
+        read: log.read,
+        reads: log.requests.read,
+    })
 }
 
 /// A write-ahead log of one chunk holding a frame of each kind a commit's chunk holds, as the log
