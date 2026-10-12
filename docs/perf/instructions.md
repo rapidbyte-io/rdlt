@@ -19,6 +19,7 @@ The cases are those of the engine's `allocations` bench whose names hold a `/`.
 | `wal/scan` | `bench::scan_log` of that log |
 | `wal/logged` | `bench::Logged` moving 8 batches of 8,192 rows into the IPC sink through a log kept in memory, a commit each batch, on one runtime worker and one compute thread |
 | `ipc/roundtrip` | `rdlt_wire`'s `Encoder` and `Decoder` over that batch: its schema and its frames encoded, then decoded |
+| `json/check` | `bench::check_json` over a column of 8,192 escaped JSON values, the string-heavy corpus's rows |
 | `lowering/append_text`, `lowering/merge_unique`, `lowering/merge_duplicates`, `lowering/history`, `lowering/changes`, `lowering/split_json`, `lowering/one_bad_value`, `lowering/one_dropped_row`, `lowering/temporal_widening` | preparing the lowering bench's batch of that name, of 8,192 rows, on the calling thread, as [lowering.md](lowering.md) describes it |
 
 The passthrough case fixes its layout whatever the host has: a count is the same on every machine

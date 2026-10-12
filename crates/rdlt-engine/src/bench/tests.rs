@@ -15,8 +15,9 @@ use serde_json::json;
 use super::connectors::Replay;
 use super::{CHUNK_BYTES, Corpus, PUSH_BYTES};
 use super::{
-    Refused, Replayed, SinkWriter, Sinking, ipc_sink, normalize, null_sink, pruned, register,
-    replay, replay_factory, shred, shred_counted, shred_on, split_replay_config,
+    Refused, Replayed, SinkWriter, Sinking, check_json, ipc_sink, json_column, normalize,
+    null_sink, pruned, register, replay, replay_factory, shred, shred_counted, shred_on,
+    split_replay_config,
 };
 use crate::compute::Cores;
 use crate::env::Env;
@@ -325,4 +326,18 @@ fn a_log_another_load_wrote_is_refused_as_foreign() {
     }
     let refused = super::scan_log(&log).expect_err("another load's log");
     assert_eq!(refused.code, "wal_foreign", "{}", refused.message);
+}
+
+#[test]
+fn a_column_of_json_checks_and_a_broken_value_is_refused() {
+    for escaped in [false, true] {
+        let batch = json_column(1_000, escaped);
+        assert_eq!(batch.num_rows(), 1_000);
+        check_json(&batch).unwrap();
+    }
+    let broken = json_column(3, true).slice(0, 3);
+    let column = arrow_array::StringArray::from(vec![r#"{"a":"\x01"}"#]);
+    let schema = broken.schema();
+    let refused = RecordBatch::try_new(schema, vec![Arc::new(column)]).unwrap();
+    assert_eq!(check_json(&refused).unwrap_err().code, "json_invalid");
 }

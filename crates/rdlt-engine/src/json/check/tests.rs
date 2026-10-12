@@ -18,7 +18,7 @@ use crate::json::JsonError;
 
 /// `field` marked as a column of JSON.
 fn json(field: Field) -> Field {
-    field.with_metadata([("ARROW:extension:name".to_owned(), "arrow.json".to_owned())].into())
+    super::marked_json(field)
 }
 
 /// What checking a batch whose only column is `array`, of `field`, finds.

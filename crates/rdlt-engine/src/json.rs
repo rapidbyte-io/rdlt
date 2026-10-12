@@ -13,6 +13,8 @@ use std::borrow::Cow;
 
 use rdlt_wire::limits::{LIMIT_EXCEEDED, NESTING_DEPTH, count};
 
+#[cfg(feature = "bench")]
+pub(crate) use check::bench_field;
 pub(crate) use check::{NotJson, check_batch, held as held_by_check, schema_holds_json};
 #[cfg(test)]
 pub(crate) use number::{canonical_float, canonical_number};

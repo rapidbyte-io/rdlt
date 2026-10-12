@@ -62,6 +62,41 @@ impl From<ShredError> for Refused {
     }
 }
 
+/// A batch of one column of JSON, `rows` rows of the nested corpus's objects, or of the
+/// string-heavy corpus's where `escaped` says.
+///
+/// # Panics
+///
+/// Panics where `rows` is zero or the batch does not build, which it always does.
+pub fn json_column(rows: usize, escaped: bool) -> RecordBatch {
+    let corpus = if escaped {
+        Corpus::StringHeavy
+    } else {
+        Corpus::Nested
+    };
+    let count = u64::try_from(rows).expect("rows fit");
+    let per_push = std::num::NonZeroU64::new(count).expect("at least one row");
+    let text = corpus.rows(count, per_push).concat();
+    let text = String::from_utf8(text).expect("the corpus is UTF-8");
+    let values = arrow_array::StringArray::from_iter_values(text.lines().collect::<Vec<_>>());
+    let schema = Arc::new(arrow_schema::Schema::new(vec![crate::json::bench_field(
+        "payload",
+    )]));
+    RecordBatch::try_new(schema, vec![Arc::new(values)]).expect("the batch builds")
+}
+
+/// Checks every value of `batch`'s columns of JSON, as an Arrow push's are checked.
+///
+/// # Errors
+///
+/// The first value that is not JSON, with its code.
+pub fn check_json(batch: &RecordBatch) -> Result<(), Refused> {
+    crate::json::check_batch(batch).map_err(|refused| Refused {
+        code: refused.error.code(),
+        message: refused.error.to_string(),
+    })
+}
+
 /// Shreds the JSON `pushes` on the calling thread, in chunks of `chunk_bytes`.
 pub fn shred(pushes: &[Bytes], chunk_bytes: usize) -> Result<Vec<RecordBatch>, Refused> {
     // One pool for every call, so a call allocates nothing for it.
