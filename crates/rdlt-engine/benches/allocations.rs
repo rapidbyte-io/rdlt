@@ -5,7 +5,9 @@
 //! each batch the lowering bench prepares, each run of the normalized and wide benches, and the
 //! wal bench's load logged into memory; the timed benches keep the system allocator, since
 //! counting every call slows the runs that allocate most. An argument, the name of one of those
-//! benches, counts only its workloads.
+//! benches, counts only its workloads. The workloads run at the benches' full sizes only when
+//! `--bench` is among the arguments, as `just bench` passes it; otherwise, as a test run, they
+//! run on small inputs that still check each workload's shape and counting.
 //!
 //! A case's name, then a count of iterations, as `cargo xtask instructions` runs it under
 //! callgrind, makes the case's inputs, runs its work that many times, once without a count, and
@@ -45,6 +47,14 @@ const COUNTED: [(&str, fn()); 6] = [
 
 /// Bytes of JSON each shredding and normalizing case reads.
 const COUNTED_BYTES: usize = 1 << 20;
+/// Bytes of JSON each cliff corpus has as a test: several chunks, so a push still crosses one.
+const TESTED_CLIFF_BYTES: usize = 4 << 20;
+/// Rows of the stream the normalized cases read as a test.
+const TESTED_ROOTS: u64 = 20_000;
+/// Batches each wide case pushes as a test.
+const TESTED_PUSHES: u32 = 1;
+/// Rows of each lowering batch as a test.
+const TESTED_LOWERING_ROWS: u32 = 8_192;
 /// Batches the passthrough case moves each time.
 const BATCHES: u32 = 8;
 /// Rows of each batch the passthrough, log, codec and lowering cases move.
@@ -198,21 +208,31 @@ fn usage() -> ExitCode {
     ExitCode::FAILURE
 }
 
+/// Whether `--bench` asks for the benches' full sizes, rather than a test run's small ones.
+fn timed() -> bool {
+    std::env::args().any(|arg| arg == "--bench")
+}
+
 /// The single-core shred and normalize groups' workloads.
 fn shredding() {
+    let (shredded_bytes, cliff_bytes) = if timed() {
+        (CORPUS_BYTES, CORPUS_BYTES)
+    } else {
+        (COUNTED_BYTES, TESTED_CLIFF_BYTES)
+    };
     for corpus in Corpus::SHREDDED {
-        let pushes = corpus.pushes(CORPUS_BYTES);
+        let pushes = corpus.pushes(shredded_bytes);
         report(&format!("shred/{}", corpus.name()), || {
             moved(&shred(&pushes, CHUNK_BYTES).expect("the corpus shreds"))
         });
     }
     for corpus in Corpus::CLIFFS {
-        let pushes = corpus.pushes(CORPUS_BYTES);
+        let pushes = corpus.pushes(cliff_bytes);
         report(&format!("shred/{}", corpus.name()), || {
             moved(&shred(&pushes, CHUNK_BYTES).expect("the corpus shreds"))
         });
     }
-    let pushes = Corpus::WithArrays.pushes(CORPUS_BYTES);
+    let pushes = Corpus::WithArrays.pushes(shredded_bytes);
     for (name, key) in [
         ("shred_only", None),
         ("keyed", Some(&["id"][..])),
@@ -248,7 +268,12 @@ fn passing_through() {
 
 /// Each batch the lowering bench prepares, prepared once after the prepare that makes it.
 fn lowering() {
-    for lowering in Lowering::all(Lowering::ROWS) {
+    let rows = if timed() {
+        Lowering::ROWS
+    } else {
+        TESTED_LOWERING_ROWS
+    };
+    for lowering in Lowering::all(rows) {
         black_box(lowering.prepare());
         report(&format!("lowering/{}", lowering.name()), || {
             black_box(lowering.prepare());
@@ -264,10 +289,14 @@ fn lowering() {
 /// its batches the flushes.
 fn normalizing() {
     let cores = Cores::try_from_host().expect("the host says how many cores the bench may use");
+    let roots = if timed() {
+        Normalized::ROOTS
+    } else {
+        TESTED_ROOTS
+    };
     for per_push in Normalized::PUSH_ROWS {
-        let bench =
-            Normalized::try_new(cores, Normalized::ROOTS, per_push).expect("the pool starts");
-        let flushes = Normalized::ROOTS.div_ceil(per_push.get());
+        let bench = Normalized::try_new(cores, roots, per_push).expect("the pool starts");
+        let flushes = roots.div_ceil(per_push.get());
         report(&format!("normalized/keyless/{per_push}"), || {
             let rows = bench.run();
             (
@@ -281,12 +310,13 @@ fn normalizing() {
 /// Each case of the wide bench, run once: its batches the pushes.
 fn widening() {
     let cores = Cores::try_from_host().expect("the host says how many cores the bench may use");
+    let pushes = if timed() { Wide::PUSHES } else { TESTED_PUSHES };
     for (form, name) in [(Form::Arrow, "arrow"), (Form::Json, "json")] {
         for columns in Wide::COLUMNS {
-            let bench = Wide::try_new(cores, form, columns, Wide::PUSHES).expect("the pool starts");
+            let bench = Wide::try_new(cores, form, columns, pushes).expect("the pool starts");
             report(&format!("wide/{name}/{columns}"), || {
                 let rows = bench.run();
-                let pushes = usize::try_from(Wide::PUSHES).expect("pushes fit in usize");
+                let pushes = usize::try_from(pushes).expect("pushes fit in usize");
                 (usize::try_from(rows).expect("rows fit in usize"), pushes)
             });
         }
