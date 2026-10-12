@@ -175,7 +175,7 @@ are the same in every round, over 32 MiB in 1 MiB chunks.
 `json_check` checks a column of 100 000 JSON values as an Arrow push's is checked, on one core,
 at the same commit and in the same rounds as Cliffs. `plain` holds values without escapes and `escaped`
 the string-heavy corpus's. The `json/check` case of the `allocations` bench, 8,192 escaped values,
-allocates 16,385 times a call.
+allocates twice a call.
 
 | Column | Throughput |
 |---|---|
