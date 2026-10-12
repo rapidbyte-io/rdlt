@@ -43,9 +43,7 @@ impl Logged {
         let commit = every.and_then(|every| NonZeroU64::new(every.get() * u64::from(rows)));
         Ok(Self {
             runner: Runner::logging(cores, "logged", stream(), commit, store)?,
-            batches: (0..batches)
-                .map(|index| Passthrough::batch(i64::from(index) * i64::from(rows), rows))
-                .collect(),
+            batches: Passthrough::run_of(batches, rows),
         })
     }
 
