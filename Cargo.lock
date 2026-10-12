@@ -3055,7 +3055,6 @@ dependencies = [
  "http-body",
  "hyper",
  "hyper-util",
- "memchr",
  "nix",
  "proptest",
  "prost",
