@@ -428,7 +428,8 @@ admitted, and what a remote connector's calls hold in transport.
 - An array-form JSON push is scanned for its elements twice: once to cut it, which counts each
   chunk's, and once as each chunk is parsed. A chunk of JSON lines is counted by its line ends
   in its job, beside its parse, blank lines included: its builders are presized for at least
-  its records.
+  its records, so blank lines among them can trip its first parse, which then costs an
+  observation, a build again and the reservation it plans.
 - Checkpoints wait for room in the cursors' share. A source whose cursors are megabytes commits
   more often, and one whose cursor is beyond the share cannot be loaded under that budget.
 - A batch decoded from a frame is charged for the dictionaries its keys name, which the host
