@@ -164,23 +164,63 @@ pub(crate) fn canonical_float(value: f64) -> String {
     String::from_utf8(out).unwrap_or_default()
 }
 
-/// Appends the canonical text of the float `value` to `out`, as [`canonical_float`] gives it.
+/// Appends the canonical text of the float `value` to `out`, as [`canonical_float`] gives it: read
+/// from the shortest text's digits and exponent in one pass.
 pub(crate) fn write_float(value: f64, out: &mut Vec<u8>) {
-    if value.is_finite() {
-        written_float(ryu::Buffer::new().format_finite(value), out);
-    } else {
+    if !value.is_finite() {
         write!(out, "{value}").unwrap_or_default();
+        return;
     }
+    let mut buffer = ryu::Buffer::new();
+    let written = buffer.format_finite(value).as_bytes();
+    let (negative, written) = match written.split_first() {
+        Some((b'-', rest)) => (true, rest),
+        _ => (false, written),
+    };
+    let (mantissa, exponent) = match written.iter().position(|byte| *byte == b'e') {
+        Some(at) => (&written[..at], exponent_of(&written[at + 1..])),
+        None => (written, 0),
+    };
+    let point = mantissa
+        .iter()
+        .position(|byte| *byte == b'.')
+        .unwrap_or(mantissa.len());
+    let digits = Digits {
+        whole: &mantissa[..point],
+        fraction: mantissa.get(point + 1..).unwrap_or_default(),
+    };
+    let count = digits.len();
+    let Some(first) = (0..count).find(|at| digits.get(*at) != b'0') else {
+        out.push(b'0');
+        return;
+    };
+    let last = (0..count)
+        .rev()
+        .find(|at| digits.get(*at) != b'0')
+        .unwrap_or(first);
+    // The value is the digits from `first` to `last` times ten to `place`.
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "a float's digits and fraction are at most 17 and 324"
+    )]
+    let place = exponent - digits.fraction.len() as i64 + (count - 1 - last) as i64;
+    if negative {
+        out.push(b'-');
+    }
+    let significant = (first..=last).map(|at| digits.get(at));
+    let plain = plain(significant, last - first + 1, place, out);
+    debug_assert!(plain, "every finite float is plain within the limit");
 }
 
-/// Appends the canonical text of `written`, a finite float's shortest text, whose exponent is a
-/// few digits.
-fn written_float(written: &str, out: &mut Vec<u8>) {
-    let start = out.len();
-    if write_number(written, out).is_err() {
-        out.truncate(start);
-        out.extend_from_slice(written.as_bytes());
-    }
+/// The exponent ryu writes after `e`: a sign and at most three digits.
+fn exponent_of(written: &[u8]) -> i64 {
+    let (sign, digits) = match written.split_first() {
+        Some((b'-', rest)) => (-1, rest),
+        _ => (1, written),
+    };
+    sign * digits
+        .iter()
+        .fold(0_i64, |value, digit| value * 10 + i64::from(digit - b'0'))
 }
 
 /// The digits of a number's mantissa, read across its point.
