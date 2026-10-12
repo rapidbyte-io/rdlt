@@ -110,6 +110,41 @@ fn a_file_a_commit_writes_is_named_for_its_own_load_and_number_and_for_no_other_
     assert!(crate::rooted::component(first.as_ref()).is_ok());
 }
 
+#[test]
+fn a_table_that_keeps_changing_is_checked_a_bounded_number_of_times_and_no_other_error_again() {
+    use rdlt_connector::{ConnectorError, ConnectorErrorKind, Result};
+
+    use super::fitted::TABLE_CHANGED;
+    use super::{CHECKS, checked_while_changed};
+    let failed = |code: &'static str| {
+        move || -> Result<()> {
+            Err(ConnectorError::new(ConnectorErrorKind::Transient, "checked").with_code(code))
+        }
+    };
+    // How many checks ran, and the code of the error they ended with, if they did, where the
+    // first `changes` of them find the table changed.
+    let checked = |changes: u32, then: &dyn Fn() -> Result<()>| {
+        let mut calls = 0;
+        let done = checked_while_changed(|| {
+            calls += 1;
+            assert!(calls <= CHECKS, "checked {calls} times");
+            if calls <= changes {
+                failed(TABLE_CHANGED)()
+            } else {
+                then()
+            }
+        });
+        let code = done.err().map(|error| error.code().map(str::to_owned));
+        (calls, code)
+    };
+    let refused = |code: &str| Some(Some(code.to_owned()));
+    let taken = || Ok(());
+    assert_eq!(checked(u32::MAX, &taken), (CHECKS, refused(TABLE_CHANGED)));
+    assert_eq!(checked(CHECKS - 1, &taken), (CHECKS, None));
+    let locked = failed("lock_timeout");
+    assert_eq!(checked(0, &locked), (1, refused("lock_timeout")));
+}
+
 /// One pipeline's sessions over a root, driven as the engine drives them but on the test's own
 /// thread, so each step they take is recorded and can be refused.
 pub(crate) struct Sessions {

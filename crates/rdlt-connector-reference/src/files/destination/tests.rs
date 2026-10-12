@@ -189,6 +189,18 @@ fn a_private_directory_is_read_only_where_it_exists_and_is_its_user_s() {
     );
 }
 
+#[test]
+fn a_private_directory_no_pipeline_opened_reads_back_no_rows_and_one_it_cannot_open_fails() {
+    let root = crate::scratch::tempdir().unwrap();
+    private(root.path()).unwrap();
+    let read = super::published(root.path(), "rows").expect("nothing is published");
+    assert!(read.is_empty());
+    std::fs::write(root.path().join("_rdlt").join("pipelines"), b"").unwrap();
+    let error = super::published(root.path(), "rows").expect_err("the pipelines are a file");
+    assert_eq!(error.kind(), ConnectorErrorKind::Config);
+    assert_eq!(error.code(), Some("not_a_directory"));
+}
+
 fn schema() -> TableSchema {
     TableSchema::new(vec![Field::new("x", LogicalType::Int64, true)]).unwrap()
 }

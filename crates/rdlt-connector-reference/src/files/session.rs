@@ -90,18 +90,8 @@ impl Session for FilesSession {
     async fn apply_schema(&mut self, change: &TableChange) -> Result<()> {
         let (location, table) = (self.location.clone(), change.table().clone());
         let (change, shared) = (change.clone(), Arc::clone(&self.shared));
-        blocking(move || {
-            // A table that changes while its rows are checked is checked again.
-            let mut tries = CHECKS;
-            loop {
-                tries -= 1;
-                match changed_under_lock(&location, &shared, &change) {
-                    Err(error) if error.code() == Some(TABLE_CHANGED) && tries > 0 => {}
-                    done => return done,
-                }
-            }
-        })
-        .await?;
+        blocking(move || checked_while_changed(|| changed_under_lock(&location, &shared, &change)))
+            .await?;
         self.learn(&table);
         Ok(())
     }
@@ -145,6 +135,19 @@ impl Session for FilesSession {
 /// How often a change of a column's type checks its table's rows before it gives up on a table
 /// that keeps changing.
 const CHECKS: u32 = 3;
+
+/// Runs `check` until it ends otherwise than with its table changed, at most [`CHECKS`] times:
+/// a table that changes while its rows are checked is checked again.
+fn checked_while_changed(mut check: impl FnMut() -> Result<()>) -> Result<()> {
+    let mut tries = CHECKS;
+    loop {
+        tries -= 1;
+        match check() {
+            Err(error) if error.code() == Some(TABLE_CHANGED) && tries > 0 => {}
+            done => return done,
+        }
+    }
+}
 
 /// Applies `change` to its table's catalog: its rows are checked against it first, outside the
 /// table's lock, and the change is taken under the lock where the table is still as checked.
