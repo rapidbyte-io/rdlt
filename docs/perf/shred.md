@@ -17,15 +17,25 @@ are ratios measured on one machine, so this record keeps the method with the fig
   - `wide_200`: 200 columns, integers and short strings by turns;
   - `string_heavy`: long strings with escapes;
   - `with_arrays`: `nested` with up to three orders of a few tags each, for normalizing.
+  - The cliff corpora of the `shred_cliffs` group, 32 MiB cut into 8 MiB pushes, one core:
+    `array_form` (`nested` rows as the elements of one JSON array a push); `drift_json` (a column
+    of integers that is an object holding a float in one row of four thousand); `drift_scalar`
+    (the same column, a string in one row of four thousand); `int_arrays` (an id and sixty-four
+    one-digit integers a row); `big_numbers` (integers beyond 64 bits, beyond a decimal's 38
+    digits and floats beyond 2⁶³); `pretty` (`nested` rows printed over several lines each, as
+    the elements of one JSON array a push). The bench prints the passes each makes: chunks
+    parsed, tripped (past twice their text), observed, rebuilt and read exactly.
 - **Running it.** `just bench shred <cores> <filter>`, which pins the cores with `taskset` and
   records the commit, the load average, each core's governor and energy preference, the
   allocations, and `perf stat`'s instructions a cycle of each benchmark, ten seconds of it.
   Criterion takes 10 samples a benchmark; each figure is its point estimate.
   One-core groups run on core 0, on the calling thread.
-- **Cores.** `shred_cores/N` shreds `nested` within N cores, pinned to N cores of one type, since
-  this machine mixes them. The bench builds each compute pool through `SystemEnv::try_new` beside
-  a runtime of one worker, which only waits: the pool has N − 1 threads, one at N = 1. The bound
-  compares N cores, the waiting worker included, with one.
+- **Cores.** `shred_cores/N` shreds `nested` with a pool for N cores, each 8 MiB push a call,
+  shredded alone as a partition shreds one. The bench runs every N its cores allow in one process,
+  pinned to the cores `just bench` was given, of one type, since this machine mixes them.
+  The bench builds each compute pool through `SystemEnv::try_new` beside a runtime of one worker,
+  which only waits: the pool has N − 1 threads, one at N = 1. The bound compares N cores, the
+  waiting worker included, with one.
 - **Allocations.** The `allocations` bench, whose global allocator is `stats_alloc`'s counting
   system allocator, runs each one-core workload once and prints its allocations, reallocations
   and bytes requested, a row and a batch of what it shredded. The timed bench keeps the system
@@ -123,13 +133,44 @@ one-minute load average of 0.38 to 0.97, the median with its range in brackets.
 
 ### More cores
 
+Commit `ac0a3223`, 2026-10-12, cores `0-3` (performance), three rounds started at one-minute load
+averages of 1.82, 1.26 and 1.35; the median, with the range in brackets. Each 8 MiB push is a
+call. The process was pinned to cores `0-3` for all three rows, so the pools of N = 1 and 2
+had cores to spare. Efficient cores were not run in this record.
+
 | Cores | N | tokio workers + compute threads | Throughput | Against N = 1 | Spec's bound |
 |---|---|---|---|---|---|
-| performance (`0`) | 1 | 1 + 1 | 612 MiB/s | 1 | |
-| performance (`0-3`) | 4 | 1 + 3 | 1528 MiB/s | 2.50× [2.48–2.51] | ≥ 2.8×, not met |
-| efficient (`4`) | 1 | 1 + 1 | 453 MiB/s | 1 | |
-| efficient (`4-7`) | 4 | 1 + 3 | 1185 MiB/s | 2.62× [2.61–2.62] | ≥ 2.8×, not met |
-| efficient (`4-11`) | 8 | 1 + 7 | 2122 MiB/s | 4.69× [4.68–4.69] | ≥ 5.6×, not met |
+| performance (`0`) | 1 | 1 + 1 | 580 MiB/s [577–582] | 1 | |
+| performance (`0-3`) | 2 | 1 + 1 | 581 MiB/s [578–582] | 1.00× | ≥ 1.4×, not met |
+| performance (`0-3`) | 4 | 1 + 3 | 1286 MiB/s [1285–1299] | 2.22× [2.22–2.23] | ≥ 2.8×, not met |
+
+### Cliffs
+
+Where the shredder parses a chunk again, observes it, or reads its numbers exactly, on one core
+(`0`), `shred_cliffs` at commit `ac0a3223`, 2026-10-12, three rounds started at one-minute load
+averages of 1.82, 1.26 and 1.35; the median, with the range in brackets. The pass counts are the
+same in every round, over 32 MiB in 1 MiB chunks.
+
+| Corpus | Throughput | Instructions a cycle | Parsed | Tripped | Observed | Rebuilt | Exact |
+|---|---|---|---|---|---|---|---|
+| `array_form` | 327 MiB/s [323–328] | 6.66 | 32 | 0 | 0 | 0 | 0 |
+| `drift_json` | 166 MiB/s [165–171] | 5.13 | 32 | 0 | 0 | 32 | 32 |
+| `drift_scalar` | 292 MiB/s [291–301] | 6.06 | 32 | 0 | 0 | 32 | 0 |
+| `int_arrays` | 66 MiB/s [65–67] | 6.33 | 32 | 32 | 32 | 32 | 0 |
+| `big_numbers` | 194 MiB/s [192–197] | 4.75 | 64 | 0 | 0 | 0 | 32 |
+| `pretty` | 348 MiB/s [347–349] | 6.94 | 32 | 0 | 0 | 0 | 0 |
+
+### Columns of JSON
+
+`json_check` checks a column of 100 000 JSON values as an Arrow push's is checked, on one core,
+at the same commit and in the same rounds. `plain` holds values without escapes and `escaped`
+the string-heavy corpus's. The `json/check` case of the `allocations` bench, 8,192 escaped values,
+allocates 16,385 times a call.
+
+| Column | Throughput |
+|---|---|
+| `json_check/plain` | 678 MiB/s [669–710] |
+| `json_check/escaped` | 698 MiB/s [688–700] |
 
 ### Metering
 
