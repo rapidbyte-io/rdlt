@@ -101,24 +101,49 @@ pub(crate) fn exponent_within(written: &str) -> bool {
     exponent.trim_start_matches('0').len() <= EXPONENT_DIGITS
 }
 
-/// Whether `bytes`, JSON text, may hold a number whose exponent has more than
-/// [`EXPONENT_DIGITS`] digits beside its leading zeros: a digit, an `e` and such digits, which
-/// a string may hold too.
-pub(crate) fn may_hold_long_exponent(bytes: &[u8]) -> bool {
-    memchr::memchr2_iter(b'e', b'E', bytes).any(|at| {
-        let after_digit = at > 0 && bytes[at - 1].is_ascii_digit();
-        let rest = &bytes[at + 1..];
-        let rest = rest
-            .strip_prefix(b"+")
-            .or_else(|| rest.strip_prefix(b"-"))
-            .unwrap_or(rest);
-        let zeros = rest.iter().take_while(|byte| **byte == b'0').count();
-        let digits = rest[zeros..]
+/// Digits: the fewest an integer the fast parse reads as a float has, as
+/// `-9223372036854775809` has; every integer of fewer digits is within 64 bits.
+const ROUNDED_DIGITS: usize = 19;
+
+/// What numbers JSON text may hold that the fast parse reads otherwise than the exact one.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct LongNumbers {
+    /// Whether it may hold an exponent of more than [`EXPONENT_DIGITS`] digits beside its leading
+    /// zeros, which the fast parse reads as zero or refuses.
+    pub(crate) exponent: bool,
+    /// Whether it holds a run of [`ROUNDED_DIGITS`] digits or more, as an integer beyond 64 bits
+    /// does, which the fast parse rounds to a float.
+    pub(crate) integer: bool,
+}
+
+/// What numbers `bytes`, JSON text, may hold that the fast parse reads otherwise than the exact
+/// one, read from its runs of digits in one pass; a string may hold such digits too.
+///
+/// An exponent is a run after a digit, an `e` and an optional sign.
+pub(crate) fn long_numbers(bytes: &[u8]) -> LongNumbers {
+    let mut long = LongNumbers::default();
+    let mut at = 0;
+    while let Some(offset) = bytes[at..].iter().position(u8::is_ascii_digit) {
+        let start = at + offset;
+        let run = bytes[start..]
             .iter()
             .take_while(|byte| byte.is_ascii_digit())
             .count();
-        after_digit && digits > EXPONENT_DIGITS
-    })
+        at = start + run;
+        long.integer |= run >= ROUNDED_DIGITS;
+        let before = &bytes[..start];
+        let before = before
+            .strip_suffix(b"+")
+            .or_else(|| before.strip_suffix(b"-"))
+            .unwrap_or(before);
+        let after_exponent = matches!(before, [.., digit, b'e' | b'E'] if digit.is_ascii_digit());
+        let zeros = bytes[start..at]
+            .iter()
+            .take_while(|byte| **byte == b'0')
+            .count();
+        long.exponent |= after_exponent && run - zeros > EXPONENT_DIGITS;
+    }
+    long
 }
 
 /// The canonical text of the float `value`: of the shortest text that reads back as it, a tie

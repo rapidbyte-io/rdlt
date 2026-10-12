@@ -114,10 +114,9 @@ fn malformed_pushes_are_invalid_json() {
     ] {
         assert_eq!(refused(push), "json_invalid", "{push:?}");
     }
-    // Alone, and after a float that sends its chunk through the exact parse.
+    // Alone, and after an integer that sends its chunk through the exact parse.
     for invalid_utf8 in [
         &b"{\"a\":\"\xff\"}"[..],
-        b"{\"a\":1e30}\n{\"a\":\"\xff\"}",
         b"{\"a\":99999999999999999999999999999999999999999}\n{\"a\":\"\xff\"}",
     ] {
         assert_eq!(
@@ -179,8 +178,8 @@ fn nested(levels: u64, open: &str, close: &str) -> String {
 #[test]
 fn values_nest_up_to_the_limit_and_no_deeper() {
     // After an integer, the column stops building and only checks the deep values' nesting;
-    // after a float that may be a rounded integer, the chunk is parsed exactly.
-    for before in ["", "{\"a\":1}\n", "{\"a\":1e30}\n"] {
+    // after an integer beyond 64 bits, the chunk is parsed exactly.
+    for before in ["", "{\"a\":1}\n", "{\"a\":18446744073709551616}\n"] {
         for (open, close) in [("[", "]"), ("{\"b\":", "}")] {
             let deepest = format!("{before}{}", nested(NESTING_DEPTH, open, close));
             assert_eq!(
@@ -210,7 +209,7 @@ fn a_value_nested_past_the_limit_is_refused_even_where_the_chunk_is_parsed_exact
     let prefixes = [
         format!("{{\"n\":{},\"a\":", "9".repeat(400)),
         "{\"n\":1e400,\"a\":".to_owned(),
-        "{\"n\":1e30}\n{\"a\":".to_owned(),
+        "{\"n\":18446744073709551616}\n{\"a\":".to_owned(),
     ];
     for prefix in &prefixes {
         for levels in [depth + 1, 1_000_000] {
@@ -219,7 +218,7 @@ fn a_value_nested_past_the_limit_is_refused_even_where_the_chunk_is_parsed_exact
         }
     }
     let beside = format!(
-        "{{\"n\":1e30}}\n{{\"a\":{}{}}}",
+        "{{\"n\":18446744073709551616}}\n{{\"a\":{}{}}}",
         "[".repeat(1_000_000),
         "]".repeat(1_000_000)
     );
@@ -227,17 +226,23 @@ fn a_value_nested_past_the_limit_is_refused_even_where_the_chunk_is_parsed_exact
     // An empty container at the limit is a value at the limit.
     let levels = depth - 1;
     let at_limit = format!(
-        "{{\"n\":1e30,\"a\":{}{}}}",
+        "{{\"n\":18446744073709551616,\"a\":{}{}}}",
         "[".repeat(levels),
         "]".repeat(levels)
     );
     assert_eq!(batch_of(&[&at_limit], 1 << 20).num_rows(), 1);
     // Containers side by side nest no deeper than one.
-    let siblings = format!("{{\"n\":1e30,\"a\":[{}]}}", vec!["[]"; 1_000].join(","));
+    let siblings = format!(
+        "{{\"n\":18446744073709551616,\"a\":[{}]}}",
+        vec!["[]"; 1_000].join(",")
+    );
     assert_eq!(batch_of(&[&siblings], 1 << 20).num_rows(), 1);
     // Brackets inside strings, even escaped quotes before them, nest nothing.
     let text = format!("\\\"{}", "[".repeat(1_000));
-    let texts = batch_of(&[&format!("{{\"n\":1e30,\"a\":\"{text}\"}}")], 1 << 20);
+    let texts = batch_of(
+        &[&format!("{{\"n\":18446744073709551616,\"a\":\"{text}\"}}")],
+        1 << 20,
+    );
     assert_eq!(texts.num_rows(), 1);
 }
 
@@ -1239,6 +1244,29 @@ fn a_chunk_is_parsed_exactly_only_where_a_zero_may_be_a_vast_exponent() {
     assert!(parsed(&format!("{{\"a\":0.0,\"n\":{lookalike}}}")).exact);
 }
 
+/// The passes shredding `push` in one chunk takes.
+fn counted(push: &'static [u8]) -> ShredCounts {
+    let pool = crate::compute::Pool::inline();
+    let pushes = vec![Bytes::from_static(push)];
+    let observed = crate::compute::ready(super::observe(&pool, pushes, 1 << 20, limits()));
+    observed.unwrap().counts()
+}
+
+#[test]
+fn a_float_beyond_two_to_the_sixty_third_written_with_an_exponent_parses_once() {
+    let counts = counted(b"{\"f\":1.5e30}\n{\"f\":2.5e40}\n");
+    assert_eq!((counts.parsed, counts.exact), (1, 0));
+    // A record holding such a float and a run of digits as long as an integer beyond 64 bits is
+    // parsed exactly, even where the run is a string's; a run in another record is not.
+    assert!(counted(b"{\"f\":1.5e30,\"s\":\"1234567890123456789\"}\n").exact > 0);
+    assert_eq!(
+        counted(b"{\"f\":1.5e30}\n{\"n\":1234567890123456789}\n").exact,
+        0
+    );
+    // An integer just beyond 64 bits the fast parse reads as -2⁶³, a float at the bound.
+    assert!(counted(b"{\"f\":1.5e30}\n{\"n\":-9223372036854775809}\n").exact > 0);
+}
+
 /// The first chunk of `text`, observed: parsed with no room to build anything.
 fn observed_only(text: &str) -> Result<Parsed, super::ShredError> {
     let records = Bytes::from(text.to_owned());
@@ -1313,11 +1341,11 @@ fn an_observation_refuses_records_that_are_not_objects_and_notes_floats_only_in_
             "{record}"
         );
     }
-    // A float that may be a rounded integer has the chunk observed exactly, which reads an
-    // integer beyond 38 digits as its digits.
+    // An integer beyond 64 bits has the chunk observed exactly, which reads an integer beyond 38
+    // digits as its digits.
     let vast = "1".repeat(42);
     assert_eq!(
-        observed_only(&format!("{{\"a\":1e30}}\n{vast}")).err(),
+        observed_only(&format!("{{\"a\":18446744073709551616}}\n{vast}")).err(),
         Some(super::ShredError::NotObject)
     );
     assert!(!observed_only("{\"a\":1.5}").unwrap().json_floats);
@@ -1388,9 +1416,9 @@ fn a_shape_counts_a_column_for_each_list_s_items_at_every_depth() {
 
 #[test]
 fn a_chunk_built_again_where_it_needs_exact_numbers_but_was_not_planned_so_is_refused_unbuilt() {
-    // A whole float beyond 64 bits, which may be an integer the fast parse rounded: its chunk is
-    // parsed exactly, and a build planned otherwise is a fault, not a guess.
-    let text = "{\"a\":1e20}";
+    // A whole float beyond 64 bits written with as many digits as an integer the fast parse
+    // rounds: its chunk is parsed exactly, and a build planned otherwise is a fault, not a guess.
+    let text = "{\"a\":100000000000000000000.0}";
     let shape = parsed(text).shape;
     let chunk = || chunks(&[Bytes::from(text)], 1 << 20).unwrap().remove(0);
     let built = super::again(&chunk(), 1, &shape, true).unwrap();

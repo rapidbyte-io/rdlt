@@ -41,11 +41,12 @@ fast-path evaluation. Building M3a surfaced decisions the spec leaves open or ge
   fit 64 signed bits are `Int64`; those above them that fit 64 unsigned bits, `Decimal(20, 0)`;
   within 38 digits `Decimal(38, 0)`; within 76 digits `Decimal(76, 0)`; and a column holding an
   integer beyond 76 digits is `Json`, each such integer kept as the text it was written as. A
-  chunk whose fast parse read a float that may be a rounded integer is parsed again with its
-  numbers as text. Integers and floats together are `Float64` while every integer is exact as a
-  float, and `Json` otherwise. Mixed kinds are `Json`, each value rendered as compact JSON text
-  as it is parsed, keys in their order. Objects are structs and arrays lists, whatever the
-  nesting policy: lowering applies the policy. Negative zero reads as zero.
+  chunk whose fast parse read a float that may be a rounded integer, a whole float of 2⁶³ or more
+  in a record holding 19 or more digits in a row, is parsed again with its numbers as text.
+  Integers and floats together are `Float64` while every integer is exact as a float, and `Json`
+  otherwise. Mixed kinds are `Json`, each value rendered as compact JSON text as it is parsed,
+  keys in their order. Objects are structs and arrays lists, whatever the nesting policy:
+  lowering applies the policy. Negative zero reads as zero.
 - **Hostile input is refused, typed.** A record that is not an object is `json_not_object`; an
   object repeating a key, however escaped and at any depth, `json_duplicate_key`; a value nested
   deeper than `NESTING_DEPTH` (64, the record counting as the first level), more columns than

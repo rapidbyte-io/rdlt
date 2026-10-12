@@ -180,8 +180,8 @@ impl Shredding {
 /// Parses `chunk`, observing its values and building them into columns as they arrive, within
 /// what it was admitted for; a chunk whose builders would take more is observed instead.
 ///
-/// A chunk the fast parse finds a float that may be a rounded integer in is parsed again with its
-/// numbers exact.
+/// A chunk where the fast parse may have rounded an integer, or misread a vast exponent, is parsed
+/// again with its numbers exact.
 fn parse(chunk: Chunk, limits: ShredLimits, beyond: &Arc<Beyond>) -> Result<Parsed, ShredError> {
     let (mut exact, mut counts) = (false, ShredCounts::default());
     let allowance = count(chunk.bytes()).saturating_mul(limits.admitted);
@@ -221,8 +221,8 @@ fn parse(chunk: Chunk, limits: ShredLimits, beyond: &Arc<Beyond>) -> Result<Pars
     }
 }
 
-/// Observes `chunk`'s values, exactly where `exact` says or where the fast parse finds a float
-/// that may be a rounded integer, building nothing; `counts` are the passes over it before.
+/// Observes `chunk`'s values, exactly where `exact` says or where the fast parse may have misread a
+/// number, building nothing; `counts` are the passes over it before.
 fn observed(
     chunk: Chunk,
     (mut exact, mut counts): (bool, ShredCounts),
@@ -277,8 +277,8 @@ where
 struct Appended {
     /// Whether the builders would have taken more than the chunk was admitted for.
     tripped: bool,
-    /// Whether the parse stopped at a float that may be a rounded integer, or, parsing exactly,
-    /// whether it parsed so.
+    /// Whether the parse stopped at a number it may have misread, or, parsing exactly, whether it
+    /// parsed so.
     imprecise: bool,
     /// The records it read.
     rows: usize,
@@ -287,8 +287,9 @@ struct Appended {
 /// Parses each record of `chunk` with `record`, its numbers exact where `exact` says.
 ///
 /// The fast parse reads an integer beyond 64 bits as the float nearest it, and refuses one beyond a
-/// float's range, so it stops at the first float that may be one, or at the first refusal, leaving
-/// the chunk to be parsed again exactly. A parse whose builders trip their meter stops there.
+/// float's range, so it stops at the first record holding a whole float of 2⁶³ or more and a run
+/// of digits as long as such an integer, or at the first refusal, leaving the chunk to be parsed
+/// again exactly. A parse whose builders trip their meter stops there.
 /// A record it refuses is numbered within the chunk.
 fn each(
     chunk: &Chunk,
@@ -301,10 +302,15 @@ fn each(
         let (bytes, index) = (bytes?, rows);
         rows += 1;
         let parsed = record(bytes);
-        // The fast parse reads a float of a vast negative exponent as zero, as it reads `0.0`:
-        // a record where it read a zero and that may hold such a number is parsed exactly.
-        if context.zeroed() && !exact && crate::json::may_hold_long_exponent(bytes) {
-            context.reparse();
+        // The fast parse reads a float of a vast negative exponent as zero, as it reads `0.0`, and
+        // an integer beyond 64 bits as a whole float, as it reads `1.5e30`: a record where it read
+        // either and that may hold such a number is parsed exactly.
+        let (zeroed, rounded) = (context.zeroed(), context.rounded());
+        if !exact && (zeroed || rounded) {
+            let long = crate::json::long_numbers(bytes);
+            if zeroed && long.exponent || rounded && long.integer {
+                context.reparse();
+            }
         }
         if let Err(error) = parsed {
             if let Some(fault) = context.fault() {
