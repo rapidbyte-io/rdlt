@@ -43,7 +43,7 @@ M5b follows H1b.
   - The fast parse reads such an integer as the float nearest it, a whole float of magnitude 2⁶³
     or more. Such a float flags its chunk only where its record holds a run of 19 or more digits,
     as the only integer literals sonic-rs reads as floats do; a float written with an exponent,
-    as `1.5e30` is, does not.
+    as `1.5e30` is, does not by itself.
   - A flagged chunk is parsed again with exact numbers: sonic-rs's raw numbers, walked through the
     same visitors.
   - An integer beyond u64 within 38 digits is a `Decimal(38,0)`, within 76 digits a
