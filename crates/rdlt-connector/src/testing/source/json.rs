@@ -11,6 +11,7 @@ use std::ops::Range;
 
 use bytes::Bytes;
 
+use crate::json::{Mark, Structure};
 use crate::testing::Violation;
 use crate::testing::limits::{RECORD_BYTES, YIELD_BYTES};
 
@@ -32,35 +33,49 @@ impl<'a> Records<'a> {
     }
 
     /// The end of the record that begins at `self.at`: of a container, where its brackets
-    /// close; of a string, its closing quote; of anything else, the next separator.
+    /// close; of a string, its closing quote; of anything else, the next separator outside a
+    /// string.
     fn end(&self) -> usize {
-        let text = &self.text[self.at..];
-        let (mut depth, mut quoted, mut escaped) = (0_usize, false, false);
-        for (index, byte) in text.iter().enumerate() {
-            match byte {
-                _ if escaped => escaped = false,
-                b'\\' if quoted => escaped = true,
-                b'"' => {
-                    quoted = !quoted;
-                    if !quoted && depth == 0 {
-                        return self.at + index + 1;
+        match self.text[self.at] {
+            b'"' | b'{' | b'[' => {
+                let mut depth = 0_usize;
+                for mark in Structure::new(self.text, self.at) {
+                    match mark {
+                        Mark::Text(range) if depth == 0 => return range.end,
+                        Mark::Open(_) => depth += 1,
+                        Mark::Close(at, _) if depth > 0 => {
+                            depth -= 1;
+                            if depth == 0 {
+                                return at + 1;
+                            }
+                        }
+                        Mark::Close(at, _) | Mark::Comma(at) if depth == 0 => return at,
+                        Mark::Close(..) | Mark::Comma(_) | Mark::Text(_) => {}
                     }
                 }
-                _ if quoted => {}
-                b'{' | b'[' => depth += 1,
-                b'}' | b']' if depth > 0 => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return self.at + index + 1;
+                self.text.len()
+            }
+            _ => {
+                let mut from = self.at;
+                while let Some(found) = self.text[from..].iter().position(|byte| {
+                    matches!(
+                        byte,
+                        b'"' | b'}' | b']' | b',' | b' ' | b'\t' | b'\n' | b'\r'
+                    )
+                }) {
+                    let at = from + found;
+                    if self.text[at] != b'"' {
+                        return at;
+                    }
+                    // A quote within the value opens a string, whatever the text before it.
+                    match Structure::new(self.text, at).next() {
+                        Some(Mark::Text(range)) => from = range.end,
+                        _ => break,
                     }
                 }
-                b'}' | b']' | b',' | b' ' | b'\t' | b'\n' | b'\r' if depth == 0 => {
-                    return self.at + index;
-                }
-                _ => {}
+                self.text.len()
             }
         }
-        self.text.len()
     }
 }
 

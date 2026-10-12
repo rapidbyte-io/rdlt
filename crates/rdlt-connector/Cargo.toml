@@ -44,6 +44,7 @@ arrow-data.workspace = true
 arrow-schema.workspace = true
 base64.workspace = true
 bytes.workspace = true
+memchr.workspace = true
 rdlt-connector-macros = { workspace = true, optional = true }
 rdlt-wire.workspace = true
 regex-syntax = { workspace = true, optional = true }

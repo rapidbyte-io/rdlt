@@ -11,6 +11,7 @@ mod tests;
 
 use std::borrow::Cow;
 
+use rdlt_connector::json::{Mark, Structure};
 use rdlt_wire::limits::{LIMIT_EXCEEDED, NESTING_DEPTH, count};
 
 #[cfg(feature = "bench")]
@@ -369,28 +370,17 @@ fn unescaped(piece: &[u8]) -> Result<(), JsonError> {
 /// Whether the containers of JSON `text` nest deeper than the limit: a linear scan of its
 /// brackets outside its strings, for whoever parses it recursively after.
 pub(crate) fn too_deep(text: &[u8]) -> bool {
-    let (mut depth, mut in_string, mut escaped) = (0_u64, false, false);
-    for byte in text {
-        if in_string {
-            if escaped {
-                escaped = false;
-            } else if *byte == b'\\' {
-                escaped = true;
-            } else if *byte == b'"' {
-                in_string = false;
-            }
-            continue;
-        }
-        match byte {
-            b'"' => in_string = true,
-            b'[' | b'{' => {
+    let mut depth = 0_u64;
+    for mark in Structure::new(text, 0) {
+        match mark {
+            Mark::Open(_) => {
                 depth += 1;
                 if depth > NESTING_DEPTH {
                     return true;
                 }
             }
-            b']' | b'}' => depth = depth.saturating_sub(1),
-            _ => {}
+            Mark::Close(..) => depth = depth.saturating_sub(1),
+            Mark::Comma(_) | Mark::Text(_) => {}
         }
     }
     false
