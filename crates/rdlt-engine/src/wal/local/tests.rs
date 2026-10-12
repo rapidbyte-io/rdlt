@@ -921,3 +921,46 @@ async fn a_directory_on_the_way_to_the_base_the_user_cannot_open_fails_as_it_is(
         "{failed}"
     );
 }
+
+#[tokio::test]
+async fn a_file_where_a_log_s_directory_belongs_is_refused() {
+    let base = tempfile::tempdir().expect("a temporary directory");
+    let wal = LocalWal::new(base.path());
+    let x = pipeline("x");
+    published(&wal, &pipeline("y"), chunk(7, 0), b"Y").await;
+    // This user's own regular file, which opens to read all the same.
+    let path = wal.pipeline_dir(&x);
+    std::fs::write(&path, b"").expect("writes");
+    set_mode(&path, 0o600);
+    let refused = wal.loads(&x).await.expect_err("refused");
+    let why = "it is not a directory";
+    // The walk names the real path, which a temporary directory behind a link (macOS) is not.
+    let path = path.canonicalize().expect("a real path");
+    assert_eq!(
+        refusal(&refused),
+        Some(&Refusal::NotPrivate { path, why }),
+        "{refused}"
+    );
+}
+
+#[tokio::test]
+async fn a_log_s_directory_the_user_cannot_open_fails_as_it_is() {
+    if rustix::process::geteuid().is_root() {
+        return;
+    }
+    let base = tempfile::tempdir().expect("a temporary directory");
+    let wal = LocalWal::new(base.path());
+    let x = pipeline("x");
+    published(&wal, &x, chunk(7, 0), b"X").await;
+    let path = wal.pipeline_dir(&x);
+    set_mode(&path, 0o000);
+    let failed = wal.loads(&x).await.expect_err("it cannot be opened");
+    set_mode(&path, 0o700);
+    // The kernel's answer, as it is: no refusal that the name is no directory.
+    assert!(refusal(&failed).is_none(), "{failed}");
+    assert_eq!(
+        failed.kind(),
+        std::io::ErrorKind::PermissionDenied,
+        "{failed}"
+    );
+}
