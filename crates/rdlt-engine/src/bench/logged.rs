@@ -11,7 +11,6 @@ use arrow_array::RecordBatch;
 
 use super::runner::{Runner, stream};
 use super::{Passthrough, Replayed, Sinking, ipc_sink, replay, sink};
-use crate::wal::frame::{self, Frame};
 use crate::{ComputePoolError, Cores, Report, WalStore};
 
 /// Batches logged ahead into a store as the engine moves them, and an engine to move them.
@@ -95,11 +94,5 @@ impl Logged {
 
 /// Bytes: `batch` encoded as a batch frame.
 fn encoded_len(batch: &RecordBatch) -> u64 {
-    let frame = Frame::Batch(frame::Batch {
-        segment: rdlt_connector::SegmentId(1),
-        table: 0,
-        ordinal: 0,
-        batch: batch.clone(),
-    });
-    frame.encode().expect("the frame encodes").len() as u64
+    super::batch_frame(batch.clone()).len() as u64
 }

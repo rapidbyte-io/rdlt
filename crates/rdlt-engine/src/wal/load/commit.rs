@@ -92,7 +92,9 @@ impl LoadLog {
         for begun in begun {
             frames.extend_from_slice(&Frame::Begun(begun).encode()?);
         }
-        frames.extend_from_slice(&frame::commit(meta, seals.count, phases)?);
+        let mut commit = frame::Framing::with_capacity(0);
+        commit.commit(meta, seals.count, phases)?;
+        frames.extend_from_slice(&commit.finish());
         let frame = frames
             .len()
             .saturating_sub(usize::try_from(prepaid).unwrap_or(usize::MAX));

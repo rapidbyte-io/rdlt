@@ -196,52 +196,136 @@ const END: u8 = 9;
 const FENCE: u8 = 10;
 const RELIEVED: u8 = 11;
 
-impl Frame {
-    fn kind(&self) -> u8 {
-        match self {
-            Self::Header(_) => HEADER,
-            Self::Schema(_) => SCHEMA,
-            Self::Batch(_) => BATCH,
-            Self::Seal(_) => SEAL,
-            Self::Commit(_) => COMMIT,
-            Self::Closed => CLOSED,
-            Self::Begun(_) => BEGUN,
-            Self::End(_) => END,
-            Self::Fence(_) => FENCE,
-            Self::Relieved => RELIEVED,
+/// Frames written one after another into one buffer, each once: its head, its payload, then its
+/// checksum written into its head.
+pub(crate) struct Framing {
+    out: BytesMut,
+}
+
+impl Framing {
+    /// A buffer for frames of about `bytes` in all.
+    pub(crate) fn with_capacity(bytes: usize) -> Self {
+        Self {
+            out: BytesMut::with_capacity(bytes),
         }
     }
 
-    /// The frame's bytes.
-    pub(crate) fn encode(&self) -> Result<Bytes, Error> {
-        let payload = match self {
-            Self::Header(header) => json(header)?,
-            Self::Schema(table) => json(table)?,
-            Self::Batch(batch) => batch_payload(batch)?,
-            Self::Seal(seal) => json(seal)?,
-            Self::Begun(begun) => json(begun)?,
-            Self::Commit(commit) => {
-                return self::commit(&commit.meta, commit.seals, commit.phases);
+    /// Writes the preamble a chunk starts with.
+    #[cfg(test)]
+    pub(crate) fn preamble(&mut self) {
+        self.out.put_slice(&preamble());
+    }
+
+    /// Writes `frame`.
+    pub(crate) fn frame(&mut self, frame: &Frame) -> Result<(), Error> {
+        match frame {
+            Frame::Header(header) => self.json(HEADER, header),
+            Frame::Schema(table) => self.json(SCHEMA, table),
+            Frame::Batch(batch) => self.batch(batch),
+            Frame::Seal(seal) => self.json(SEAL, seal),
+            Frame::Begun(begun) => self.json(BEGUN, begun),
+            Frame::Commit(commit) => self.commit(&commit.meta, commit.seals, commit.phases),
+            Frame::Closed => self.payload(CLOSED, |_| Ok(())),
+            Frame::Relieved => self.payload(RELIEVED, |_| Ok(())),
+            Frame::End(end) => self.json(END, end),
+            Frame::Fence(fence) => self.json(FENCE, fence),
+        }
+    }
+
+    /// Writes the frame of the commit `meta` describes, after `seals` seal frames and `phases`
+    /// phase frames, from where the commit lies.
+    pub(crate) fn commit(
+        &mut self,
+        meta: &CommitMeta,
+        seals: u32,
+        phases: u32,
+    ) -> Result<(), Error> {
+        self.json(
+            COMMIT,
+            &Written {
+                meta,
+                seals,
+                phases,
+            },
+        )
+    }
+
+    /// Bytes written so far.
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.out.len()
+    }
+
+    /// The frames.
+    pub(crate) fn finish(self) -> Bytes {
+        self.out.freeze()
+    }
+
+    /// Writes a frame of `kind` whose payload is `payload`, as a test forges one.
+    #[cfg(test)]
+    pub(crate) fn raw(&mut self, kind: u8, payload: &[u8]) -> Result<(), Error> {
+        self.payload(kind, |out| {
+            out.put_slice(payload);
+            Ok(())
+        })
+    }
+
+    fn json(&mut self, kind: u8, value: &impl Serialize) -> Result<(), Error> {
+        self.payload(kind, |out| {
+            serde_json::to_writer(out.writer(), value).map_err(|error| unencoded(&error))
+        })
+    }
+
+    fn batch(&mut self, batch: &Batch) -> Result<(), Error> {
+        let header = serde_json::to_vec(&BatchHeader {
+            segment: batch.segment,
+            table: batch.table,
+            ordinal: batch.ordinal,
+            rows: u64::try_from(batch.batch.num_rows()).unwrap_or(u64::MAX),
+        })
+        .map_err(|error| unencoded(&error))?;
+        let data = arrow::encode(&batch.batch)?;
+        self.out.reserve(HEAD + 4 + header.len() + data.len());
+        self.payload(BATCH, |out| {
+            out.put_u32_le(arrow::length(header.len())?);
+            out.put_slice(&header);
+            data.write(out)
+        })
+    }
+
+    /// Writes a frame of `kind` whose payload `write` puts after its head, then its length and
+    /// checksum into the head; a frame that fails leaves nothing of itself.
+    fn payload(
+        &mut self,
+        kind: u8,
+        write: impl FnOnce(&mut BytesMut) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        let start = self.out.len();
+        self.out.put_bytes(0, HEAD);
+        let written = write(&mut self.out).and_then(|()| announced(self.out.len() - start - HEAD));
+        let len = match written {
+            Ok(len) => len,
+            Err(error) => {
+                self.out.truncate(start);
+                return Err(error);
             }
-            Self::Closed | Self::Relieved => Vec::new(),
-            Self::End(end) => json(end)?,
-            Self::Fence(fence) => json(fence)?,
         };
-        framed(self.kind(), &payload)
+        self.out[start] = kind;
+        self.out[start + 1..start + 5].copy_from_slice(&len.to_le_bytes());
+        let summed = crc32c::crc32c(&self.out[start..start + 5]);
+        let check = crc32c::crc32c_append(summed, &self.out[start + HEAD..]);
+        self.out[start + 5..start + HEAD].copy_from_slice(&check.to_le_bytes());
+        Ok(())
     }
 }
 
-/// The bytes of the frame of the commit `meta` describes, after `seals` seal frames and `phases`
-/// phase frames, encoded from where it lies.
-pub(crate) fn commit(meta: &CommitMeta, seals: u32, phases: u32) -> Result<Bytes, Error> {
-    framed(
-        COMMIT,
-        &json(&Written {
-            meta,
-            seals,
-            phases,
-        })?,
-    )
+impl Frame {
+    /// The frame's bytes.
+    pub(crate) fn encode(&self) -> Result<Bytes, Error> {
+        let mut framing = Framing::with_capacity(0);
+        framing.frame(self)?;
+        Ok(framing.finish())
+    }
 }
 
 /// The preamble every chunk starts with.
@@ -281,48 +365,21 @@ pub(crate) fn check_preamble(bytes: &[u8]) -> Result<(), Error> {
 
 /// The checksum of a frame of `kind` holding `payload`.
 fn checksum(kind: u8, payload: &[u8]) -> Result<u32, Error> {
-    let len = u32::try_from(payload.len())
-        .map_err(|_| Error::internal("a write-ahead log frame beyond 4 GiB"))?;
+    let len = announced(payload.len())?;
     let mut head = [0; 5];
     head[0] = kind;
     head[1..].copy_from_slice(&len.to_le_bytes());
     Ok(crc32c::crc32c_append(crc32c::crc32c(&head), payload))
 }
 
-/// A frame of `kind` holding `payload`.
-fn framed(kind: u8, payload: &[u8]) -> Result<Bytes, Error> {
-    let check = checksum(kind, payload)?;
-    let mut frame = BytesMut::with_capacity(HEAD + payload.len());
-    frame.put_u8(kind);
-    frame.put_u32_le(u32::try_from(payload.len()).unwrap_or(u32::MAX));
-    frame.put_u32_le(check);
-    frame.put_slice(payload);
-    Ok(frame.freeze())
-}
-
-fn json(value: &impl Serialize) -> Result<Vec<u8>, Error> {
-    serde_json::to_vec(value).map_err(|error| unencoded(&error))
+/// The length a frame's head announces for a payload of `len` bytes.
+fn announced(len: usize) -> Result<u32, Error> {
+    u32::try_from(len).map_err(|_| Error::internal("a write-ahead log frame beyond 4 GiB"))
 }
 
 /// The error of a frame whose payload does not encode.
 fn unencoded(error: &serde_json::Error) -> Error {
     Error::internal(format!("encoding a write-ahead log frame: {error}"))
-}
-
-fn batch_payload(batch: &Batch) -> Result<Vec<u8>, Error> {
-    let header = json(&BatchHeader {
-        segment: batch.segment,
-        table: batch.table,
-        ordinal: batch.ordinal,
-        rows: u64::try_from(batch.batch.num_rows()).unwrap_or(u64::MAX),
-    })?;
-    let ipc = arrow::encode(&batch.batch)?;
-    let len = u32::try_from(header.len()).unwrap_or(u32::MAX);
-    let mut payload = Vec::with_capacity(4 + header.len() + ipc.len());
-    payload.extend_from_slice(&len.to_le_bytes());
-    payload.extend_from_slice(&header);
-    payload.extend_from_slice(&ipc);
-    Ok(payload)
 }
 
 /// The length of the payload a frame's head, its first [`HEAD`] bytes, announces.

@@ -1,11 +1,12 @@
 //! A batch frame's Arrow data, in the wire's framing (`rdlt_wire::codec`): the IPC schema
-//! message, then the dictionary and record batch messages, each length-prefixed.
+//! message, the count of messages, then each dictionary and record batch message's header and
+//! body, each after its length.
 //!
 //! The wire's decoder checks every message's shape against its schema and its body before Arrow
 //! reads it, so data a checksum passes but a crash or a bug garbled is refused, never a panic.
 
 use arrow_array::RecordBatch;
-use bytes::{Buf, BufMut, Bytes};
+use bytes::{Buf, BufMut, Bytes, BytesMut};
 use rdlt_wire::{Decoder, Encoder, IpcFrame, Limits};
 
 use crate::error::Error;
@@ -31,22 +32,44 @@ pub(crate) fn limits(memory: u64) -> Limits {
     }
 }
 
-/// `batch`'s Arrow data.
-pub(super) fn encode(batch: &RecordBatch) -> Result<Vec<u8>, Error> {
+/// A batch's Arrow data as the wire's encoder made it: its schema message, then its messages.
+pub(super) struct Encoded {
+    schema: Bytes,
+    frames: Vec<IpcFrame>,
+}
+
+impl Encoded {
+    /// Bytes: what the data takes framed, each message after its length.
+    pub(super) fn len(&self) -> usize {
+        let messages = self
+            .frames
+            .iter()
+            .map(|frame| 8 + frame.header.len() + frame.body.len());
+        4 + self.schema.len() + 4 + messages.sum::<usize>()
+    }
+
+    /// Writes the data to `out`: the schema message, the count of messages, then each message's
+    /// header and body, each after its length.
+    pub(super) fn write(&self, out: &mut BytesMut) -> Result<(), Error> {
+        prefixed(out, &self.schema)?;
+        out.put_u32_le(length(self.frames.len())?);
+        for frame in &self.frames {
+            prefixed(out, &frame.header)?;
+            prefixed(out, &frame.body)?;
+        }
+        Ok(())
+    }
+}
+
+/// `batch`'s Arrow data, its messages kept as the encoder made them.
+pub(super) fn encode(batch: &RecordBatch) -> Result<Encoded, Error> {
     let mut encoder = Encoder::default();
     let unencoded = |error: rdlt_wire::WireError| {
         Error::internal("encoding a write-ahead log batch").with_source(error)
     };
     let schema = encoder.schema(batch.schema_ref()).map_err(unencoded)?;
     let frames = encoder.batch(batch).map_err(unencoded)?;
-    let mut out = Vec::new();
-    put(&mut out, &schema)?;
-    out.put_u32_le(length(frames.len())?);
-    for frame in &frames {
-        put(&mut out, &frame.header)?;
-        put(&mut out, &frame.body)?;
-    }
-    Ok(out)
+    Ok(Encoded { schema, frames })
 }
 
 /// The error for a batch whose data does not decode, as `what` says.
@@ -112,11 +135,12 @@ pub(super) fn decode(data: Bytes, limits: Limits) -> Result<RecordBatch, Error> 
     measured(data, limits)?.decode()
 }
 
-fn length(len: usize) -> Result<u32, Error> {
+pub(super) fn length(len: usize) -> Result<u32, Error> {
     u32::try_from(len).map_err(|_| Error::internal("a write-ahead log batch message beyond 4 GiB"))
 }
 
-fn put(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), Error> {
+/// Writes `bytes` to `out` after their length.
+fn prefixed(out: &mut BytesMut, bytes: &[u8]) -> Result<(), Error> {
     out.put_u32_le(length(bytes.len())?);
     out.put_slice(bytes);
     Ok(())

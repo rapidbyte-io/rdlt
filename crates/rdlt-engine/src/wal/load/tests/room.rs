@@ -86,7 +86,8 @@ impl Load {
     /// Bytes: what one of the load's commits writes, its seal and its commit frame.
     pub(super) fn committed(&self) -> u64 {
         let commit = self.commit(&[u64::MAX], CommitSeq::FIRST);
-        let frame = frame::commit(&commit, 1, 0).expect("encodes");
+        let mut frame = frame::Framing::with_capacity(0);
+        frame.commit(&commit, 1, 0).expect("encodes");
         // A seal frame of the tests takes well under a KiB.
         length(frame.len()) + 1_024
     }
