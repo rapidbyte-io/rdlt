@@ -62,8 +62,8 @@ What the engine writes to its log while it moves batches, and what a replay read
 
 ### Results
 
-Commit `ac0a3223`, 2026-10-12. Intel Core Ultra X7 358H, cores 0 to 3 (performance), on mains
-power, governor `powersave`, energy preference `performance`. Three rounds, each started at a
+This change on `7d3604e0`, 2026-10-12. Intel Core Ultra X7 358H, cores 0 to 3 (performance), on
+mains power, governor `powersave`, energy preference `performance`. Three rounds, each started at a
 one-minute load average of 1.32, 3.25 and 3.16 (the rounds follow one another, so the second and
 third started while the machine's load average still held the round before). Each figure is the
 median of the three rounds, their range in brackets. Rust 1.98.1.

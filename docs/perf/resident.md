@@ -25,7 +25,7 @@ What a run holds resident beyond its inputs, against the limit its budget gives 
 
 ## Results
 
-Commit `ac0a3223`, 2026-10-12, one run of each line, not timed. Intel Core Ultra X7 358H, 16
+This change on `7d3604e0`, 2026-10-12, one run of each line, not timed. Intel Core Ultra X7 358H, 16
 CPUs, Linux 7.2.5, Rust 1.98.1.
 
 | Workload | Cores | Malloc | peak_memory | Growth | Limit | Growth ÷ limit | Growth ÷ peak_memory |
