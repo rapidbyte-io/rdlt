@@ -1,4 +1,4 @@
-//! JSON text of values whose text JSON writers disagree on.
+//! JSON text of the values JSON writers disagree on, and the marks of a JSON text's structure.
 
 use arrow_array::Array;
 use arrow_array::cast::AsArray;
