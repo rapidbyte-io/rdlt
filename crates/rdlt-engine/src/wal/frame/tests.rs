@@ -203,11 +203,20 @@ fn a_frame_built_once_has_the_checksum_of_its_kind_length_and_payload() {
 }
 
 #[test]
-fn a_frame_and_its_framing_s_length_agree_for_every_kind() {
+fn a_framing_s_length_grows_by_each_frame_s_head_and_announced_payload() {
+    let mut framing = Framing::with_capacity(0);
+    let mut announced = Vec::new();
     for frame in sample_frames() {
-        let mut framing = Framing::with_capacity(0);
+        let before = framing.len();
         framing.frame(&frame).unwrap();
-        assert_eq!(framing.len(), frame.encode().unwrap().len());
+        announced.push((before, framing.len() - before));
+    }
+    let total = framing.len();
+    let bytes = framing.finish();
+    assert_eq!(bytes.len(), total);
+    for (start, grown) in announced {
+        let len = u32::from_le_bytes(bytes[start + 1..start + 5].try_into().unwrap());
+        assert_eq!(grown, HEAD + usize::try_from(len).unwrap());
     }
 }
 

@@ -1,7 +1,6 @@
 //! A commit as a load's log writes it: its seals, then the phases it begins and its frame, made
 //! durable before the destination sees it.
 
-use bytes::Bytes;
 use rdlt_connector::{CommitMeta, PartitionState, SegmentSet};
 use rdlt_wire::limits::count;
 use tokio::sync::oneshot;
@@ -88,13 +87,12 @@ impl LoadLog {
         // Reserved before they are encoded for what they take at most, but what they record of
         // tables, which each table's change reserved.
         let held = reserved(budget, commit_bytes(&begun, meta).saturating_sub(prepaid)).await?;
-        let mut frames = Vec::new();
+        let mut framing = frame::Framing::with_capacity(0);
         for begun in begun {
-            frames.extend_from_slice(&Frame::Begun(begun).encode()?);
+            framing.frame(&Frame::Begun(begun))?;
         }
-        let mut commit = frame::Framing::with_capacity(0);
-        commit.commit(meta, seals.count, phases)?;
-        frames.extend_from_slice(&commit.finish());
+        framing.commit(meta, seals.count, phases)?;
+        let frames = framing.finish();
         let frame = frames
             .len()
             .saturating_sub(usize::try_from(prepaid).unwrap_or(usize::MAX));
@@ -108,7 +106,7 @@ impl LoadLog {
             .send(Command::Commit {
                 seq: meta.commit_seq,
                 segments: seals.segments,
-                frame: Bytes::from(frames),
+                frame: frames,
                 held,
                 durable,
             })

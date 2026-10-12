@@ -7,7 +7,6 @@ mod tests;
 
 use std::io;
 
-use bytes::Bytes;
 use rdlt_connector::{LoadId, PipelineId};
 
 use crate::crash::crash_point;
@@ -227,20 +226,20 @@ async fn fence(
     chunk: Chunk,
     end: End,
 ) -> Result<Fenced, Error> {
-    let mut bytes = frame::preamble().to_vec();
-    let fence = Frame::Fence(Fence {
+    let mut framing = frame::Framing::with_capacity(0);
+    framing.preamble();
+    framing.frame(&Frame::Fence(Fence {
         pipeline: pipeline.clone(),
         load: chunk.load,
         chunk: chunk.number,
-    });
-    bytes.extend_from_slice(&fence.encode()?);
-    bytes.extend_from_slice(&Frame::End(end).encode()?);
+    }))?;
+    framing.frame(&Frame::End(end))?;
     let mut staged = match store.stage(pipeline, chunk).await {
         Ok(staged) => staged,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Fenced::Gone),
         Err(error) => return Err(Error::from_wal(error)),
     };
-    if let Err(error) = staged.append(Bytes::from(bytes)).await {
+    if let Err(error) = staged.append(framing.finish()).await {
         // A fence that failed to write gives back what it staged.
         drop(staged.discard().await);
         return missing(store, pipeline, chunk.load, error).await;

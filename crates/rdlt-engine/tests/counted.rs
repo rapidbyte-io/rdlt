@@ -24,7 +24,7 @@ fn a_run_counts_what_the_global_counting_allocator_served_it() {
 }
 
 #[test]
-fn a_batch_frame_allocates_little_more_than_twice_its_bytes() {
+fn a_batch_frame_allocates_at_most_two_and_six_tenths_times_its_bytes() {
     let batch = rdlt_engine::bench::Passthrough::batch(0, 12_000);
     let mut len = 0;
     let allocated = counted(HEAP, || {
