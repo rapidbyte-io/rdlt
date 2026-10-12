@@ -43,14 +43,15 @@ impl<'a> Records<'a> {
                     match mark {
                         Mark::Text(range) if depth == 0 => return range.end,
                         Mark::Open(_) => depth += 1,
-                        Mark::Close(at, _) if depth > 0 => {
+                        // The scan starts at the record's own bracket, so a close always
+                        // has an open before it.
+                        Mark::Close(at, _) => {
                             depth -= 1;
                             if depth == 0 {
                                 return at + 1;
                             }
                         }
-                        Mark::Close(at, _) | Mark::Comma(at) if depth == 0 => return at,
-                        Mark::Close(..) | Mark::Comma(_) | Mark::Text(_) => {}
+                        Mark::Comma(_) | Mark::Text(_) => {}
                     }
                 }
                 self.text.len()
@@ -68,9 +69,8 @@ impl<'a> Records<'a> {
                         return at;
                     }
                     // A quote within the value opens a string, whatever the text before it.
-                    match Structure::new(self.text, at).next() {
-                        Some(Mark::Text(range)) => from = range.end,
-                        _ => break,
+                    if let Some(Mark::Text(range)) = Structure::new(self.text, at).next() {
+                        from = range.end;
                     }
                 }
                 self.text.len()
@@ -97,6 +97,8 @@ impl Iterator for Records<'_> {
                 }
                 _ => {
                     let record = self.at..self.end();
+                    // Each record moves the scan forward, or what reads them never ends.
+                    debug_assert!(record.end > record.start, "an empty record at {}", self.at);
                     self.at = record.end;
                     return Some(record);
                 }
