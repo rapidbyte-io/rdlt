@@ -1,5 +1,6 @@
 mod abandoned;
 mod carried;
+mod chosen;
 mod relieved;
 mod sized;
 mod taken;
@@ -411,12 +412,11 @@ async fn a_chunk_goes_once_a_published_chunk_records_it_settled() {
         assert_eq!(numbers(&observed), [0], "a receipt alone deletes nothing");
         log.batch(3, 0).await;
         log.commit(2, &[2, 3]).await.expect("durable");
-        // Commit 3 is answered once what commit 2 left unneeded is deleted.
         log.batch(4, 0).await;
         log.commit(3, &[4]).await.expect("durable");
-        // Segment 2 was open when commit 1's receipt settled the rest of chunk 0: its frame was
-        // carried into chunk 1, and chunk 0 went once chunk 1 was published.
-        assert_eq!(numbers(&observed), [1, 2], "chunk 1 holds segment 2");
+        // Segment 2 was open when commit 1's receipt settled the rest of chunk 0, and commit 2,
+        // which takes it, waits for its receipt: chunk 0 stays.
+        assert_eq!(numbers(&observed), [0, 1, 2], "chunk 0 holds segment 2");
         log.committed(2).await;
         log.committed(3).await;
         log.batch(5, 0).await;

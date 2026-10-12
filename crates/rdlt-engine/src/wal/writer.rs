@@ -235,8 +235,7 @@ impl Log {
     }
 
     /// Whether `command` waits for the commit of the seals the chunk staged holds: a batch frame,
-    /// or what may carry frames into the chunk staged, publish it, or name a table or segment a
-    /// batch frame held back names.
+    /// or what names a table or segment a batch frame held back names.
     ///
     /// A close is not held back: one that comes while seals are staged came without their
     /// commit, and fails the log.
@@ -244,10 +243,7 @@ impl Log {
         self.holding()
             && matches!(
                 command,
-                Command::Batch { .. }
-                    | Command::Committed { .. }
-                    | Command::Abandon { .. }
-                    | Command::Retire { .. }
+                Command::Batch { .. } | Command::Abandon { .. } | Command::Retire { .. }
             )
     }
 
@@ -301,7 +297,7 @@ impl Log {
                 self.note(&removed);
             }
             Command::Committed { seq } => {
-                let result = self.committed(seq).await;
+                let result = self.committed(seq);
                 self.note(&result);
             }
             Command::Abandon { segment } => self.abandon(segment),
@@ -359,7 +355,6 @@ impl Log {
     /// Settles `segment`, which its partition ended without sealing.
     fn abandon(&mut self, segment: SegmentId) {
         self.settle([segment]);
-        self.note_room();
     }
 
     /// Keeps the schema frames of `tables` no more.
@@ -414,9 +409,9 @@ impl Log {
         *self.shared.oldest.lock() = oldest;
     }
 
-    /// Notes commit `seq`'s receipt, and carries open segments out of chunks it leaves holding
-    /// little else.
-    async fn committed(&mut self, seq: CommitSeq) -> Result<(), Error> {
+    /// Notes commit `seq`'s receipt: its segments are settled, and the next chunk published
+    /// records it.
+    fn committed(&mut self, seq: CommitSeq) -> Result<(), Error> {
         self.failure()?;
         crash_point!("engine.receipt.after");
         if let Some(segments) = self.pending.remove(&seq) {
@@ -424,8 +419,6 @@ impl Log {
             self.unrecorded.insert(seq);
             self.note_oldest();
         }
-        self.carry().await?;
-        self.note_room();
         Ok(())
     }
 }

@@ -1,9 +1,9 @@
-//! Carrying the frames of segments still open out of old chunks, so a segment its partition
-//! keeps open keeps no settled frame of another segment.
+//! Carrying the frames of segments still open out of old chunks in a relief, so the settled frames
+//! of other segments those chunks hold go when the log is short of room.
 //!
-//! The copies go to the chunk staged, and the old chunk is needed no more once that chunk is
-//! published: its deletion follows the publish, and the answer where a commit publishes it, so
-//! the log always holds one copy a replay reads.
+//! The copies go to the chunk the relief publishes, and the old chunk is needed no more once that
+//! chunk is published: its deletion follows the publish, so the log always holds one copy a
+//! replay reads.
 //! Replay stages only the segments of commits without receipts, and the old chunk's commits all
 //! have theirs.
 
@@ -13,8 +13,8 @@ use rdlt_connector::SegmentId;
 
 use super::super::frame::Frame;
 use super::super::store::Chunk;
+use super::Log;
 use super::chunk::Logged;
-use super::{Kept, Log};
 use crate::error::Error;
 
 /// The old chunks a relief carries, what it copies of them, and what deleting them frees.
@@ -26,45 +26,14 @@ struct Chosen {
 }
 
 impl Log {
-    /// Carries the frames of the open segments of each old chunk that holds at least as many
-    /// bytes beside them as they take, its frames of settled segments, its header, seals, commit
-    /// and end: what a carry copies is never more than what it frees beside the copy.
+    /// Carries the frames of the open segments of the old chunks, those that free the most first,
+    /// each the log has room to copy beside those before it and the frames that end the chunks
+    /// it writes, and each that keeps the chunk it goes to within what a chunk holds: whether
+    /// publishing the chunk then frees more than the relief writes, with `unneeded` bytes of
+    /// chunks no replay needs freed however the carry goes.
     ///
-    /// A carry the log has no room for, beside the frames that end the chunk staged, or that
-    /// would take the chunk staged past what a chunk holds, is left undone: the old chunk stays,
-    /// and a later carry may free it.
-    pub(super) async fn carry(&mut self) -> Result<(), Error> {
-        for number in self.carriable() {
-            let written = &self.written[&number];
-            let copies = written.copies();
-            if copies == 0 || !worth(written.len, copies) || !self.takes(copies) {
-                continue;
-            }
-            if !self.shared.reserve(copies, self.shared.kept(Kept::Closing)) {
-                break;
-            }
-            let wrote = self.carry_chunk(number).await?;
-            self.shared.release(copies.saturating_sub(wrote));
-        }
-        Ok(())
-    }
-
-    /// Whether the chunk staged takes `copies` bytes of carried frames: they keep it within what
-    /// a chunk holds, or it holds no batch frame yet.
-    fn takes(&self, copies: u64) -> bool {
-        self.written.get(&self.chunk).is_none_or(|written| {
-            written.batches.is_empty() || written.len.saturating_add(copies) <= self.most()
-        })
-    }
-
-    /// Carries the frames of the open segments of the old chunks, the oldest first, each the log
-    /// has room to copy beside those before it and the frames that end the chunks it writes, and
-    /// each that keeps the chunk it goes to within what a chunk holds: whether publishing the
-    /// chunk then frees more than the relief writes, with `unneeded` bytes of chunks no replay
-    /// needs freed however the carry goes.
-    ///
-    /// The copies go to the chunk staged where it takes them; where it holds batch frames and
-    /// takes none, it is published first and they go to the next.
+    /// The copies go to the chunk staged where those it takes pay; where it holds batch frames and
+    /// takes none that do, it is published first and they go to the next.
     pub(super) async fn carry_to_free(&mut self, unneeded: u64) -> Result<bool, Error> {
         let limit = self.shared.limit.load(Ordering::SeqCst);
         let held = self.shared.held.load(Ordering::SeqCst);
@@ -80,7 +49,10 @@ impl Log {
             copied == 0 && !batched || len.saturating_add(copied).saturating_add(copy) <= most
         });
         let mut first = false;
-        if chosen.numbers.is_empty() && batched {
+        // Where what fits beside the chunk staged's batch frames does not pay, what fits a chunk
+        // of its own may.
+        if batched && chosen.gained.saturating_add(unneeded) <= chosen.copied.saturating_add(ending)
+        {
             let fresh = self.chosen(room, |copied, copy| {
                 copied == 0 || next.saturating_add(copied).saturating_add(copy) <= most
             });
@@ -111,11 +83,20 @@ impl Log {
         Ok(true)
     }
 
-    /// The old chunks to carry, the oldest first, each whose copy fits `room` beside those before
-    /// it and `fits` the chunk it goes to, given what those before it copied.
+    /// The old chunks to carry, those that free the most beside their copy first, the oldest
+    /// first among equals, each whose copy fits `room` beside those before it and `fits` the
+    /// chunk it goes to, given what those before it copied.
+    ///
+    /// A chunk that frees little beside a large copy, as one a relief gathered open frames into,
+    /// comes after the chunks that free more, and takes only the room they leave.
     fn chosen(&self, mut room: u64, fits: impl Fn(u64, u64) -> bool) -> Chosen {
         let mut chosen = Chosen::default();
-        for number in self.carriable() {
+        let mut carriable = self.carriable();
+        carriable.sort_by_key(|number| {
+            let written = &self.written[number];
+            std::cmp::Reverse(written.len.saturating_sub(written.copies()))
+        });
+        for number in carriable {
             let written = &self.written[&number];
             let copy = written.copies();
             if copy == 0 || copy > room || !fits(chosen.copied, copy) {
@@ -147,7 +128,7 @@ impl Log {
     }
 
     /// Whether a commit waiting for its receipt takes `segment`.
-    pub(super) fn taken(&self, segment: SegmentId) -> bool {
+    fn taken(&self, segment: SegmentId) -> bool {
         self.pending
             .values()
             .any(|segments| segments.contains(segment))
@@ -195,9 +176,4 @@ impl Log {
             .add(|counters| counters.log.carried = counters.log.carried.saturating_add(wrote));
         Ok(wrote)
     }
-}
-
-/// Whether a carry of `copies` bytes out of a chunk of `len` frees at least as much beside them.
-fn worth(len: u64, copies: u64) -> bool {
-    len.saturating_sub(copies) >= copies
 }

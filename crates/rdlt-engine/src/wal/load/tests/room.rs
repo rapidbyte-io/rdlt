@@ -344,8 +344,8 @@ async fn a_chunk_a_burst_between_commits_fills_with_two_partitions_is_carried_al
 #[tokio::test]
 async fn a_carry_gathers_open_frames_into_chunks_no_larger_than_an_eighth_of_the_log() {
     // Two segments interleaved, one frame of the first to three of the second, over some eight
-    // capped chunks: once the second commits, its receipt carries the first's frames out of
-    // each, and the next batch publishes the chunks they went to.
+    // capped chunks: once the second commits, the next batch finds the log full, and its relief
+    // carries the first's frames out of each.
     let load = Load::new(&[1]);
     let limit = 200 * load.frame();
     let store = Arc::new(MemoryWal::default());
@@ -386,4 +386,11 @@ async fn a_carry_gathers_open_frames_into_chunks_no_larger_than_an_eighth_of_the
             bytes.len()
         );
     }
+    // The relief carried the first's frames out of every chunk the second's settled frames
+    // were in, and those chunks went.
+    let settled = super::frames(&observed)
+        .into_iter()
+        .filter(|frame| matches!(frame, Frame::Batch(batch) if batch.segment == SegmentId(2)))
+        .count();
+    assert_eq!(settled, 0);
 }
