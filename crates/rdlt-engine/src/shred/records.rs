@@ -277,18 +277,17 @@ impl Records<'_> {
             return Ok(None);
         }
         let start = self.at;
-        let (end, separated) = match element_end(&mut Structure::new(self.bytes, start)) {
-            End::Comma(end) => (end, true),
-            End::Unended => (self.bytes.len(), false),
+        let end = match element_end(&mut Structure::new(self.bytes, start)) {
+            End::Comma(end) => end,
+            End::Unended => self.bytes.len(),
             End::Close(_) | End::Unbalanced => return Err(broken("unbalanced brackets")),
         };
         self.at = end + 1;
-        let element = trimmed(self.bytes, start..end);
-        // Only a span of no elements ends without one.
-        if element.is_none() && (separated || start > 0) {
+        // A span begins and ends at a record, so an element with nothing in it is broken.
+        let Some(element) = trimmed(self.bytes, start..end) else {
             return Err(broken("an empty element"));
-        }
-        Ok(element)
+        };
+        Ok(Some(element))
     }
 }
 
