@@ -120,19 +120,24 @@ const RECORD: &str = r#"\{"k":"([a-z,\]\[{} ]|\\\\|\\"){0,6}"\}"#;
 /// carriage-return lines among it.
 const GAP: &str = "([ \t]{0,2}\r?\n){0,3}[ \t\r]{0,2}";
 
-/// A push of `records`, as an array or as lines, with `gaps` around them.
-fn push_of(records: &[String], array: bool, gaps: &[String]) -> String {
-    let mut push = String::new();
+/// A push of `records`, as an array or as lines, with `gaps` around them: the first before the
+/// push's `[` or first line, the last after its `]` or last line, which ends in a line end
+/// where `ended` says.
+fn push_of(records: &[String], array: bool, gaps: &[String], ended: bool) -> String {
+    let mut push = gaps[0].clone();
     if array {
         push.push('[');
     }
     for (index, record) in records.iter().enumerate() {
-        push.push_str(&gaps[index]);
+        let last = index + 1 == records.len();
+        if array {
+            push.push_str(&gaps[index]);
+        }
         push.push_str(record);
         push.push_str(&gaps[index + 1]);
-        if !array {
+        if !array && (ended || !last) {
             push.push('\n');
-        } else if index + 1 < records.len() {
+        } else if array && !last {
             push.push(',');
         }
     }
@@ -140,19 +145,22 @@ fn push_of(records: &[String], array: bool, gaps: &[String]) -> String {
         push.push_str(&gaps[0]);
         push.push(']');
     }
+    push.push_str(&gaps[13]);
     push
 }
 
 proptest! {
-    /// Cut across pushes of either form, whatever the whitespace and the chunk size, the chunks
-    /// hold each push's records in order, each chunk at least one and no more than it counts.
+    /// Cut across pushes of either form, whitespace-only ones and lines without a last line end
+    /// among them, whatever the whitespace and the chunk size, the chunks hold each push's records
+    /// in order, each chunk at least one and no more than it counts.
     #[test]
     fn every_record_is_found_once_in_order(
         pushes in proptest::collection::vec(
             (
                 proptest::collection::vec(RECORD, 0..12),
                 any::<bool>(),
-                proptest::collection::vec(GAP, 13),
+                proptest::collection::vec(GAP, 14),
+                any::<bool>(),
             ),
             1..4,
         ),
@@ -160,11 +168,13 @@ proptest! {
     ) {
         let texts: Vec<Bytes> = pushes
             .iter()
-            .map(|(records, array, gaps)| Bytes::from(push_of(records, *array, gaps)))
+            .map(|(records, array, gaps, ended)| {
+                Bytes::from(push_of(records, *array, gaps, *ended))
+            })
             .collect();
         let expected: Vec<&str> = pushes
             .iter()
-            .flat_map(|(records, _, _)| records.iter().map(String::as_str))
+            .flat_map(|(records, ..)| records.iter().map(String::as_str))
             .collect();
         let chunks = chunks(&texts, chunk_bytes).unwrap();
         let mut cut = Vec::new();
