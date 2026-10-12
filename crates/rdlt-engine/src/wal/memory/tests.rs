@@ -297,3 +297,34 @@ async fn a_store_takes_what_exactly_fills_its_capacity_and_refuses_a_byte_more()
     assert_eq!(refused.kind(), io::ErrorKind::StorageFull);
     assert_eq!(store.disk.staged(), 6);
 }
+
+#[tokio::test]
+async fn removing_a_log_frees_what_it_staged_and_leaves_every_other_log_s_staging() {
+    let (orders, users) = (
+        orders(),
+        PipelineId::parse("users").expect("a valid pipeline"),
+    );
+    let store = MemoryWal::default();
+    let chunk = |n| Chunk {
+        load: load(n),
+        number: 0,
+    };
+    let mut stagings = Vec::new();
+    for (pipeline, n) in [(&orders, 1), (&orders, 2), (&users, 1)] {
+        store.open(pipeline, load(n));
+        let mut staged = store.stage(pipeline, chunk(n)).await.expect("stages");
+        staged
+            .append(Bytes::from_static(b"held"))
+            .await
+            .expect("appends");
+        stagings.push(staged);
+    }
+    store.remove_log(&orders, load(1)).await.expect("removes");
+    // The other two logs' stagings, four bytes each, are all the disk holds.
+    assert_eq!(store.disk.staged(), 8);
+    for staged in stagings.split_off(1) {
+        staged.publish().await.expect("publishes");
+    }
+    assert_eq!(store.stored(&orders).len(), 1);
+    assert_eq!(store.stored(&users).len(), 1);
+}
