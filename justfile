@@ -213,7 +213,7 @@ bench-package name:
     #!/usr/bin/env bash
     set -euo pipefail
     manifest=$(awk -v name="{{ name }}" '/^\[\[bench\]\]/ { bench = 1; next } /^\[/ { bench = 0 } bench && $0 == "name = \"" name "\"" { print FILENAME }' crates/*/Cargo.toml)
-    [[ "{{ name }}" != allocations && -n $manifest ]] || { echo "{{ name }} is not a timed bench of any crate" >&2; exit 2; }
+    [[ "{{ name }}" != allocations && "{{ name }}" != resident && -n $manifest ]] || { echo "{{ name }} is not a timed bench of any crate" >&2; exit 2; }
     features=$(grep -q '^bench = ' "$manifest" && echo "--features bench" || true)
     echo "$(basename "$(dirname "$manifest")") $features"
 
