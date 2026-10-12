@@ -767,6 +767,28 @@ fn chunks_that_lack_columns_or_hold_them_in_another_order_are_fitted_without_par
 }
 
 #[test]
+fn a_chunk_planned_to_fit_takes_the_columns_it_was_parsed_into_not_its_bytes_again() {
+    // The chunk's bytes are swapped for another's of the same shape, so the columns parsed
+    // and a build from the bytes hold different values.
+    let mut swapped = parsed(r#"{"a":1}"#);
+    swapped.chunk = parsed(r#"{"a":2}"#).chunk;
+    let (shape, plans, _) = super::join(std::slice::from_ref(&swapped), limits()).unwrap();
+    assert!(!plans[0].again);
+    let schema = TableSchema::new(shape.logical_fields()).unwrap().to_arrow();
+    let fitted = super::batch(swapped, plans[0], &shape, Arc::new(schema.clone())).unwrap();
+    assert_eq!(fitted.column(0).as_primitive::<Int64Type>().values(), &[1]);
+
+    let mut again = parsed(r#"{"a":1}"#);
+    again.chunk = parsed(r#"{"a":2}"#).chunk;
+    let plan = super::Plan {
+        again: true,
+        ..plans[0]
+    };
+    let rebuilt = super::batch(again, plan, &shape, Arc::new(schema)).unwrap();
+    assert_eq!(rebuilt.column(0).as_primitive::<Int64Type>().values(), &[2]);
+}
+
+#[test]
 fn fitted_chunks_hold_the_values_the_reference_does() {
     let pushes: Vec<Bytes> = [
         r#"{"a":1,"o":{"x":1},"w":1}"#,
