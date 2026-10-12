@@ -13,6 +13,9 @@ use crate::meta::{
 use crate::schema::TableSchema;
 use crate::types::{Field, LogicalType};
 
+#[cfg(test)]
+mod tests;
+
 /// One row a history stream writes: its op, key, name, sequence and when it takes effect.
 #[derive(Clone, Copy)]
 pub(super) struct Row {
