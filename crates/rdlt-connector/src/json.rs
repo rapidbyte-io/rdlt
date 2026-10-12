@@ -5,6 +5,10 @@ use arrow_array::cast::AsArray;
 use arrow_array::types::{Float32Type, Float64Type};
 use arrow_schema::DataType;
 
+mod structure;
+
+pub use structure::{Mark, Structure};
+
 /// Writes the float at `row` of `array` as JSON: a finite float as the shortest text that reads
 /// back as it, and one that is not finite as a JSON string of its name, `"NaN"`, `"Infinity"` or
 /// `"-Infinity"`.
