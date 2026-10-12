@@ -15,7 +15,8 @@ use arrow_schema::{DataType, Field as ArrowField, Schema, SchemaRef};
 use bytes::Bytes;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use rdlt_engine::bench::{
-    CHUNK_BYTES, CORPUS_BYTES, Corpus, PUSH_BYTES, normalize, pool_cores, shred, shred_on,
+    CHUNK_BYTES, CORPUS_BYTES, Corpus, PUSH_BYTES, normalize, pool_cores, shred, shred_counted,
+    shred_on,
 };
 use rdlt_engine::{Cores, Env, SystemEnv};
 
@@ -49,8 +50,40 @@ fn single_core(c: &mut Criterion) {
     group.finish();
 }
 
+/// The cliff corpora on one core, each with its passes printed: where the shredder parses a
+/// chunk again, observes it, or reads its numbers exactly.
+#[expect(
+    clippy::print_stdout,
+    reason = "each corpus's passes are printed beside criterion's times"
+)]
+fn cliffs(c: &mut Criterion) {
+    let mut group = c.benchmark_group("shred_cliffs");
+    group.sample_size(10);
+    for corpus in Corpus::CLIFFS {
+        let pushes = corpus.pushes(CORPUS_BYTES);
+        let bytes: usize = pushes.iter().map(Bytes::len).sum();
+        group.throughput(Throughput::Bytes(u64::try_from(bytes).unwrap_or(u64::MAX)));
+        group.bench_function(corpus.name(), |b| {
+            let counts = shred_counted(&pushes, CHUNK_BYTES).expect("the corpus shreds");
+            println!(
+                "shred_cliffs/{}: parsed {}, tripped {}, observed {}, rebuilt {}, exact {}",
+                corpus.name(),
+                counts.parsed,
+                counts.tripped,
+                counts.observed,
+                counts.rebuilt,
+                counts.exact
+            );
+            b.iter(|| black_box(shred(&pushes, CHUNK_BYTES).expect("the corpus shreds")));
+        });
+    }
+    group.finish();
+}
+
 /// The nested corpus shredded by pools of each count of cores [`pool_cores`] gives for the
 /// host's, each beside the bench's one runtime worker, which only waits.
+///
+/// Each 8 MiB push is a flush, shredded alone as a partition shreds one.
 #[expect(
     clippy::print_stdout,
     reason = "criterion reports times; each pool's threads are printed beside them"
@@ -79,8 +112,11 @@ fn many_cores(c: &mut Criterion) {
                 env
             });
             b.iter(|| {
-                let batches = runtime.block_on(shred_on(pool, &pushes, CHUNK_BYTES));
-                black_box(batches.expect("the corpus shreds"))
+                for push in &pushes {
+                    let batches =
+                        runtime.block_on(shred_on(pool, std::slice::from_ref(push), CHUNK_BYTES));
+                    black_box(batches.expect("the corpus shreds"));
+                }
             });
         });
     }
@@ -186,6 +222,7 @@ fn normalizing(c: &mut Criterion) {
 criterion_group!(
     benches,
     single_core,
+    cliffs,
     many_cores,
     arrow_json_fast_path,
     normalizing

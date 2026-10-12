@@ -58,7 +58,7 @@ const LAYOUT: Cores = Cores::new(
 type Case = (&'static str, fn(usize));
 
 /// Every case the instruction counts run.
-const CASES: [Case; 23] = [
+const CASES: [Case; 27] = [
     ("passthrough/null_sink", passed_through),
     ("shred/nested", |times| shredded(Corpus::Nested, times)),
     ("shred/with_arrays", |times| {
@@ -72,6 +72,18 @@ const CASES: [Case; 23] = [
     }),
     ("shred/string_heavy", |times| {
         shredded(Corpus::StringHeavy, times);
+    }),
+    ("shred/array_form", |times| {
+        shredded(Corpus::ArrayForm, times);
+    }),
+    ("shred/drift_json", |times| {
+        shredded(Corpus::DriftJson, times);
+    }),
+    ("shred/drift_scalar", |times| {
+        shredded(Corpus::DriftScalar, times);
+    }),
+    ("shred/big_numbers", |times| {
+        shredded(Corpus::BigNumbers, times);
     }),
     ("normalize/keyless/nested", |times| {
         normalized(Corpus::Nested, &[], times);
@@ -187,6 +199,12 @@ fn usage() -> ExitCode {
 /// The single-core shred and normalize groups' workloads.
 fn shredding() {
     for corpus in Corpus::SHREDDED {
+        let pushes = corpus.pushes(CORPUS_BYTES);
+        report(&format!("shred/{}", corpus.name()), || {
+            moved(&shred(&pushes, CHUNK_BYTES).expect("the corpus shreds"))
+        });
+    }
+    for corpus in Corpus::CLIFFS {
         let pushes = corpus.pushes(CORPUS_BYTES);
         report(&format!("shred/{}", corpus.name()), || {
             moved(&shred(&pushes, CHUNK_BYTES).expect("the corpus shreds"))
