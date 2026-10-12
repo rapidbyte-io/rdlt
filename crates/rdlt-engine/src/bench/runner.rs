@@ -11,8 +11,8 @@ use rdlt_connector::{Destination, PipelineId, Source, StreamName};
 use tokio::runtime::Runtime;
 
 use crate::{
-    CommitPolicy, ComputePoolError, Cores, Engine, EngineConfig, PipelinePlan, Report, RetryPolicy,
-    RunOutcome, StreamPlan, SystemEnv, WalStore,
+    CommitPolicy, ComputePoolError, Cores, Engine, EngineConfig, GrowthLimits, PipelinePlan,
+    Report, RetryPolicy, RunOutcome, StreamPlan, SystemEnv, WalStore,
 };
 
 /// A runtime, and an engine on it with the plan it loads.
@@ -48,15 +48,17 @@ impl Runner {
     }
 
     /// A runner as [`Runner::try_new`] makes it whose loads are each logged ahead into `store`,
-    /// one attempt a run, so a run whose commit fails leaves its log.
+    /// holding at most `log_bytes` on disk, one attempt a run, so a run whose commit fails leaves
+    /// its log.
     pub(super) fn logging(
         cores: Cores,
         pipeline: &str,
         stream: StreamPlan,
         commit: Option<NonZeroU64>,
-        store: Arc<dyn WalStore>,
+        (store, log_bytes): (Arc<dyn WalStore>, NonZeroU64),
     ) -> Result<Self, ComputePoolError> {
-        Self::build(cores, pipeline, stream, commit, Self::MEMORY, Some(store))
+        let log = Some((store, log_bytes));
+        Self::build(cores, pipeline, stream, commit, Self::MEMORY, log)
     }
 
     /// A runtime and an engine as [`Runner::try_new`] makes them, within a budget of `memory`
@@ -85,7 +87,7 @@ impl Runner {
         stream: StreamPlan,
         commit: Option<NonZeroU64>,
         memory: u64,
-        log: Option<Arc<dyn WalStore>>,
+        log: Option<(Arc<dyn WalStore>, NonZeroU64)>,
     ) -> Result<Self, ComputePoolError> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(cores.workers().get())
@@ -99,14 +101,17 @@ impl Runner {
         let mut builder = EngineConfig::builder()
             .memory(memory)
             .commit(policy.expect("a valid policy"));
-        if log.is_some() {
-            builder = builder.retry(RetryPolicy::default().max_attempts(1));
+        if let Some((_, log_bytes)) = &log {
+            let growth = GrowthLimits::default().with_log_bytes(log_bytes.get());
+            builder = builder
+                .retry(RetryPolicy::default().max_attempts(1))
+                .growth(growth.expect("a limit of more than zero"));
         }
         let config = builder.build().expect("a valid configuration");
         let pipeline = PipelineId::parse(pipeline).expect("a valid id");
         let mut env = SystemEnv::try_new(cores)?;
         let mut plan = PipelinePlan::new(pipeline, [stream]).expect("a valid plan");
-        if let Some(store) = log {
+        if let Some((store, _)) = log {
             env = env.with_wal(store);
             plan = plan.with_wal(true);
         }

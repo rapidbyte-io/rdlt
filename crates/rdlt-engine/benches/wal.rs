@@ -1,5 +1,6 @@
 //! The write-ahead log: a batch frame encoded, the engine logging every batch ahead on a disk
-//! and on tmpfs at a commit each batch, every sixteen and once, and a replay's read of a log.
+//! and on tmpfs at a commit each batch, every sixteen and once, and on tmpfs at a commit each
+//! batch into a log of little room, and a replay's read of a log.
 
 #![forbid(unsafe_code)]
 
@@ -8,14 +9,20 @@ use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use criterion::measurement::WallTime;
 use criterion::{
-    BenchmarkId, Criterion, SamplingMode, Throughput, criterion_group, criterion_main,
+    BenchmarkGroup, BenchmarkId, Criterion, SamplingMode, Throughput, criterion_group,
+    criterion_main,
 };
 use rdlt_engine::bench::{Logged, Passthrough, logical_bytes, replay_scan, sample_log};
-use rdlt_engine::{Cores, LocalWal, Report, WalStore};
+use rdlt_engine::{Cores, GrowthLimits, LocalWal, Report, WalStore};
 
 /// Commit cadences: a commit each batch, every sixteen, and once.
 const CADENCES: [(&str, Option<u64>); 3] = [("each", Some(1)), ("16", Some(16)), ("once", None)];
+
+/// Batch frames the tight case's log holds at most: few enough that, committing each batch, a
+/// batch finds the log full and a relief makes room.
+const TIGHT: u64 = 4;
 
 /// Whether criterion times the benchmarks, rather than running each once as a test.
 fn timed() -> bool {
@@ -53,42 +60,76 @@ fn frame_bytes(batches: u32) -> u64 {
     Logged::frame_len(Logged::ROWS) * u64::from(batches)
 }
 
-/// Each case's load made when it first runs, so a process that runs one case makes that one
-/// alone, and its counters printed after it.
-#[expect(
-    clippy::print_stdout,
-    reason = "the run's counters are printed beside criterion's times"
-)]
+/// Every root's case at each cadence, and tmpfs's tight case.
 fn logging(c: &mut Criterion) {
     let batches = if timed() { Logged::BATCHES } else { 16 };
     let mut group = c.benchmark_group("wal/engine");
     group.sampling_mode(SamplingMode::Flat).sample_size(10);
     group.throughput(Throughput::Bytes(frame_bytes(batches)));
-    for (root, path) in roots() {
+    let roots = roots();
+    let log_bytes = GrowthLimits::default().log_bytes();
+    for (root, path) in &roots {
         for (cadence, every) in CADENCES {
-            let mut case = None;
-            let mut last = None;
-            group.bench_function(BenchmarkId::new(root, cadence), |b| {
-                let (_, logged) = case.get_or_insert_with(|| {
-                    let cores = Cores::try_from_host().expect("the host says how many cores");
-                    let dir = tempfile::tempdir_in(&path).expect("a directory of the bench's own");
-                    let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(dir.path()));
-                    let every = every.and_then(NonZeroU64::new);
-                    let logged = Logged::try_new(cores, store, batches, Logged::ROWS, every)
-                        .expect("the pool starts");
-                    (dir, logged)
-                });
-                b.iter(|| last = Some(logged.run()));
-            });
-            if let (Some((_, logged)), Some(report)) = (&case, &last) {
-                println!(
-                    "wal/engine/{root}/{cadence}: {}",
-                    counted(report, logged.frame_bytes())
-                );
-            }
+            engine(
+                &mut group,
+                (*root, path.as_path()),
+                cadence,
+                every,
+                log_bytes,
+                batches,
+            );
         }
     }
+    let tight =
+        NonZeroU64::new(Logged::frame_len(Logged::ROWS) * TIGHT).expect("a frame has bytes");
+    for (root, path) in roots.iter().filter(|(root, _)| *root == "tmpfs") {
+        engine(
+            &mut group,
+            (*root, path.as_path()),
+            "tight",
+            Some(1),
+            tight,
+            batches,
+        );
+    }
     group.finish();
+}
+
+/// The case `<root>/<name>`: its load made when it first runs, so a process that runs one case
+/// makes that one alone, committing every `every` batches or once into a log holding at most
+/// `log_bytes`, and its counters printed after it.
+#[expect(
+    clippy::print_stdout,
+    reason = "the run's counters are printed beside criterion's times"
+)]
+fn engine(
+    group: &mut BenchmarkGroup<'_, WallTime>,
+    (root, path): (&str, &Path),
+    name: &str,
+    every: Option<u64>,
+    log_bytes: NonZeroU64,
+    batches: u32,
+) {
+    let mut case = None;
+    let mut last = None;
+    group.bench_function(BenchmarkId::new(root, name), |b| {
+        let (_, logged) = case.get_or_insert_with(|| {
+            let cores = Cores::try_from_host().expect("the host says how many cores");
+            let dir = tempfile::tempdir_in(path).expect("a directory of the bench's own");
+            let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(dir.path()));
+            let every = every.and_then(NonZeroU64::new);
+            let logged = Logged::limited(cores, (store, log_bytes), batches, Logged::ROWS, every)
+                .expect("the pool starts");
+            (dir, logged)
+        });
+        b.iter(|| last = Some(logged.run()));
+    });
+    if let (Some((_, logged)), Some(report)) = (&case, &last) {
+        println!(
+            "wal/engine/{root}/{name}: {}",
+            counted(report, logged.frame_bytes())
+        );
+    }
 }
 
 /// The report's log counters a commit: what a run of `frames` bytes of batch frames logged.
