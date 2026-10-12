@@ -45,7 +45,12 @@ all_features = true
 # that writes a length in LEB128 while the length is under 0x80 pushes bytes until memory runs out,
 # which kills a whole run, not just its test. A bound on the loop would cost every value's length
 # about 4 % more instructions to normalize. The length's test pins every other mutant of the loop.
+#
+# A mutant that joins a hex digit to the value before it with `^` for `|` is the code as it is:
+# the value is shifted left four bits first, so its low four bits are clear and both give one
+# result.
 exclude_re = [
+  "crates/rdlt-engine/src/json/text\\.rs:.*replace \\| with \\^ in hex$",
   "crates/rdlt-adopt/src/exec\\.rs:.*replace marks_at_once -> bool with true",
   "crates/rdlt-connector-reference/src/files/format/batches\\.rs:.*delete match arm DataType::Struct\\(_\\) in children$",
   "crates/rdlt-connector-reference/src/files/format/json\\.rs:.*replace <impl std::fmt::Debug for Rows>::fmt -> std::fmt::Result with Ok\\(Default::default\\(\\)\\)",

@@ -1289,6 +1289,20 @@ fn a_float_beyond_two_to_the_sixty_third_written_with_an_exponent_parses_once() 
     assert!(counted(b"{\"f\":1.5e30}\n{\"n\":-9223372036854775809}\n").exact > 0);
 }
 
+#[test]
+fn a_record_is_parsed_exactly_only_for_a_float_the_fast_parse_may_have_misread() {
+    // A whole float below 2⁶³ beside a string as long as an integer beyond 64 bits: read right.
+    assert_eq!(
+        counted(b"{\"f\":2.0,\"s\":\"1234567890123456789\"}\n").exact,
+        0
+    );
+    // A float that is not zero beside a string shaped like a vast exponent: read right too.
+    assert_eq!(
+        counted(b"{\"f\":1.5,\"s\":\"1e1234567890123456789\"}\n").exact,
+        0
+    );
+}
+
 /// The first chunk of `text`, observed: parsed with no room to build anything.
 fn observed_only(text: &str) -> Result<Parsed, super::ShredError> {
     let records = Bytes::from(text.to_owned());
