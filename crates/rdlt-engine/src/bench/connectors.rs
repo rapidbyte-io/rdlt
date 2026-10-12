@@ -176,6 +176,8 @@ pub enum Sinking {
     Ipc,
     /// Counts its rows and drops it, so a run measures the engine alone.
     Discard,
+    /// Counts its rows and drops it, and refuses every commit, so a logged run leaves its log.
+    Refuse,
 }
 
 impl Sinking {
@@ -202,7 +204,7 @@ pub async fn null_sink() -> Arc<dyn rdlt_connector::Destination> {
 }
 
 /// A sink doing `sinking` with each batch.
-async fn sink(sinking: Sinking) -> Arc<dyn rdlt_connector::Destination> {
+pub(super) async fn sink(sinking: Sinking) -> Arc<dyn rdlt_connector::Destination> {
     let destination = sink_factory()
         .connect(sinking.config(), ConnectContext::new())
         .await
@@ -248,6 +250,7 @@ impl DestinationConnector for Sink {
             session: SinkSession {
                 staged: Arc::default(),
                 sinking: self.sinking,
+                refuses: self.sinking == Sinking::Refuse,
             },
             epoch: Epoch(1),
             state: Vec::new(),
@@ -260,6 +263,7 @@ impl DestinationConnector for Sink {
 pub struct SinkSession {
     staged: Arc<Mutex<BTreeMap<SegmentId, u64>>>,
     sinking: Sinking,
+    refuses: bool,
 }
 
 impl Session for SinkSession {
@@ -278,6 +282,11 @@ impl Session for SinkSession {
     }
 
     async fn commit(&mut self, meta: &CommitMeta) -> Result<Receipt> {
+        if self.refuses {
+            return Err(ConnectorError::internal(
+                "the bench sink refuses every commit",
+            ));
+        }
         let mut staged = self.staged.lock();
         let rows = meta
             .segments
@@ -337,7 +346,7 @@ impl TableWriter for SinkWriter {
     async fn write(&mut self, segment: SegmentId, batch: RecordBatch) -> Result<()> {
         let bytes = match self.sinking {
             Sinking::Ipc => self.encode(&batch)?.len() as u64,
-            Sinking::Discard => 0,
+            Sinking::Discard | Sinking::Refuse => 0,
         };
         let rows = batch.num_rows() as u64;
         *self.staged.lock().entry(segment).or_default() += rows;

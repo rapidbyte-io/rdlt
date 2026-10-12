@@ -43,3 +43,16 @@ fn a_logged_run_on_a_local_disk_leaves_no_log_once_it_commits() {
     let loads = runtime.block_on(store.loads(&pipeline)).unwrap();
     assert_eq!(loads, []);
 }
+
+#[test]
+fn a_refused_commit_leaves_a_log_whose_scan_reads_every_batch() {
+    let dir = tempfile::tempdir().unwrap();
+    let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(dir.path()));
+    let logged = Logged::try_new(cores(), store, 8, 1_000, None).unwrap();
+    let report = logged.leave();
+    assert_eq!(report.commits, 0);
+    let read = crate::bench::replay_scan(dir.path(), "logged").unwrap();
+    assert_eq!(read.batches, 8);
+    assert!(read.logged >= logged.frame_bytes(), "{read:?}");
+    assert!(read.read >= read.logged, "{read:?}");
+}

@@ -10,7 +10,7 @@ use std::sync::Arc;
 use arrow_array::RecordBatch;
 
 use super::runner::{Runner, stream};
-use super::{Passthrough, Replayed, ipc_sink, replay};
+use super::{Passthrough, Replayed, Sinking, ipc_sink, replay, sink};
 use crate::wal::frame::{self, Frame};
 use crate::{ComputePoolError, Cores, Report, WalStore};
 
@@ -58,6 +58,21 @@ impl Logged {
         let replayed = Replayed::Batches(self.batches.clone());
         let source = self.runner.block_on(replay("logged", replayed));
         self.runner.load(source, self.runner.block_on(ipc_sink()))
+    }
+
+    /// Runs the engine as [`Logged::run`] does into a sink that refuses its commit, so the
+    /// load's log stays for a replay to read; its report.
+    ///
+    /// # Panics
+    ///
+    /// Panics where the run succeeds.
+    pub fn leave(&self) -> Report {
+        let replayed = Replayed::Batches(self.batches.clone());
+        let source = self.runner.block_on(replay("logged", replayed));
+        let sink = self.runner.block_on(sink(Sinking::Refuse));
+        let outcome = self.runner.outcome(source, sink);
+        assert!(outcome.error.is_some(), "the refusing sink fails the run");
+        outcome.report
     }
 
     /// Bytes: the batch frames of every batch a run logs, as one frame each.
