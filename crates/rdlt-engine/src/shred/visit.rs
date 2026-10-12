@@ -42,8 +42,11 @@ pub(crate) struct Context {
     zeroed: Cell<bool>,
     /// Whether a value of a column that stopped building held a float.
     json_floats: Cell<bool>,
-    /// The text of the number the exact parse visits, which JSON text renders as it is.
-    number: RefCell<Option<String>>,
+    /// The text of the float the exact parse noted last, which JSON text renders as it was
+    /// written.
+    number: RefCell<String>,
+    /// Whether `number` holds a note not yet handed out.
+    noted: Cell<bool>,
     /// How many objects the observing parse has opened.
     objects: Cell<u64>,
     pub(crate) meter: Meter,
@@ -69,7 +72,8 @@ impl Context {
             imprecise: Cell::new(false),
             zeroed: Cell::new(false),
             json_floats: Cell::new(false),
-            number: RefCell::new(None),
+            number: RefCell::new(String::new()),
+            noted: Cell::new(false),
             objects: Cell::new(0),
             meter,
             columns,
@@ -158,14 +162,22 @@ impl Context {
         self.json_floats.get()
     }
 
-    /// Notes `text`, the number the exact parse visits next.
-    pub(crate) fn number(&self, text: &str) {
-        *self.number.borrow_mut() = Some(text.to_owned());
+    /// Notes `text`, the float the exact parse visits next, in place of any note before it.
+    ///
+    /// The exact parse notes every float it visits, so a note a visitor leaves is overwritten
+    /// before another float of the parse can be rendered with it.
+    pub(crate) fn note_number(&self, text: &str) {
+        let mut number = self.number.borrow_mut();
+        number.clear();
+        number.push_str(text);
+        self.noted.set(true);
     }
 
-    /// The text of the number being visited, where the exact parse noted it.
-    pub(crate) fn number_text(&self) -> Option<String> {
-        self.number.borrow_mut().take()
+    /// Hands `write` the text of the float being visited, where the exact parse noted it, and
+    /// forgets the note.
+    pub(crate) fn noted_number<T>(&self, write: impl FnOnce(Option<&str>) -> T) -> T {
+        let noted = self.noted.replace(false);
+        write(noted.then_some(self.number.borrow().as_str()))
     }
 }
 
@@ -335,9 +347,11 @@ impl<'a> Value<'a> {
         }
     }
 
-    /// Makes the column, holding nulls only, one of `observed`, sized as a value of it is.
-    fn make<E: de::Error>(&mut self, observed: &Observed) -> Result<(), E> {
+    /// Makes the column, holding nulls only, one of what `observed` builds, sized as a value of it
+    /// is; `observed` runs only for such a column.
+    fn make<E: de::Error>(&mut self, observed: impl FnOnce() -> Observed) -> Result<(), E> {
         if let Column::Null(nulls) = *self.column {
+            let observed = observed();
             if let Observed::Array(..) = observed {
                 self.context
                     .columns
@@ -346,7 +360,7 @@ impl<'a> Value<'a> {
                 self.context.meter.charge(KEY).map_err(over)?;
             }
             *self.column =
-                Column::new(observed, nulls, self.capacity, &self.context.meter).map_err(over)?;
+                Column::new(&observed, nulls, self.capacity, &self.context.meter).map_err(over)?;
         }
         Ok(())
     }
@@ -403,7 +417,6 @@ impl<'de> Visitor<'de> for Value<'_> {
     }
 
     fn visit_f64<E: de::Error>(self, value: f64) -> Result<(), E> {
-        self.context.number_text();
         self.context.float(value);
         self.scalar(Scalar::Float(value))
     }
@@ -431,7 +444,7 @@ impl<'de> Visitor<'de> for Value<'_> {
     }
 
     fn visit_map<A: MapAccess<'de>>(mut self, map: A) -> Result<(), A::Error> {
-        self.make(&Observed::Object(Shape::default()))?;
+        self.make(|| Observed::Object(Shape::default()))?;
         match self.column {
             Column::Struct(record) => object(record, map, self.context, self.depth),
             _ => self.spoil().visit_map(map),
@@ -440,7 +453,7 @@ impl<'de> Visitor<'de> for Value<'_> {
 
     fn visit_seq<A: SeqAccess<'de>>(mut self, mut seq: A) -> Result<(), A::Error> {
         nest(move || {
-            self.make(&Observed::Array(Box::new(Observed::Null), 0))?;
+            self.make(|| Observed::Array(Box::new(Observed::Null), 0))?;
             let Column::List(list) = self.column else {
                 return self.spoil().visit_seq(seq);
             };

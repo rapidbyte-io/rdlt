@@ -101,7 +101,7 @@ fn number<'de, V: Visitor<'de>>(
             return Err(context.fail(refused));
         }
         // A column of JSON renders the number as it was written.
-        context.number(&text);
+        context.note_number(&text);
         // Negative zero reads as zero, as the fast parse reads it.
         return visitor.visit_f64(if float == 0.0 { 0.0 } else { float });
     }

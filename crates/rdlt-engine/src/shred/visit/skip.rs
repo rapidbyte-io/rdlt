@@ -52,7 +52,6 @@ impl<'de> Visitor<'de> for Skip<'_> {
     fn visit_f64<E>(self, value: f64) -> Result<(), E> {
         // The column's values are rendered as JSON text when it is built again, its floats as
         // they were written, which only the exact parse keeps.
-        self.context.number_text();
         self.context.float(value);
         self.context.json_float();
         Ok(())
