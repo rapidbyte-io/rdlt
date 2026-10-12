@@ -11,8 +11,8 @@ use rdlt_connector::{Destination, PipelineId, Source, StreamName};
 use tokio::runtime::Runtime;
 
 use crate::{
-    CommitPolicy, ComputePoolError, Cores, Engine, EngineConfig, PipelinePlan, Report, StreamPlan,
-    SystemEnv,
+    CommitPolicy, ComputePoolError, Cores, Engine, EngineConfig, PipelinePlan, Report, RetryPolicy,
+    RunOutcome, StreamPlan, SystemEnv, WalStore,
 };
 
 /// A runtime, and an engine on it with the plan it loads.
@@ -41,6 +41,28 @@ impl Runner {
         stream: StreamPlan,
         commit: Option<NonZeroU64>,
     ) -> Result<Self, ComputePoolError> {
+        Self::build(cores, pipeline, stream, commit, None)
+    }
+
+    /// A runner as [`Runner::try_new`] makes it whose loads are each logged ahead into `store`,
+    /// one attempt a run, so a run whose commit fails leaves its log.
+    pub(super) fn logging(
+        cores: Cores,
+        pipeline: &str,
+        stream: StreamPlan,
+        commit: Option<NonZeroU64>,
+        store: Arc<dyn WalStore>,
+    ) -> Result<Self, ComputePoolError> {
+        Self::build(cores, pipeline, stream, commit, Some(store))
+    }
+
+    fn build(
+        cores: Cores,
+        pipeline: &str,
+        stream: StreamPlan,
+        commit: Option<NonZeroU64>,
+        log: Option<Arc<dyn WalStore>>,
+    ) -> Result<Self, ComputePoolError> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(cores.workers().get())
             .enable_all()
@@ -50,16 +72,23 @@ impl Runner {
             Some(rows) => CommitPolicy::new(None, Some(rows.get()), None),
             None => CommitPolicy::new(None, None, Some(1 << 40)),
         };
-        let config = EngineConfig::builder()
+        let mut builder = EngineConfig::builder()
             .memory(1 << 30)
-            .commit(policy.expect("a valid policy"))
-            .build()
-            .expect("a valid configuration");
+            .commit(policy.expect("a valid policy"));
+        if log.is_some() {
+            builder = builder.retry(RetryPolicy::default().max_attempts(1));
+        }
+        let config = builder.build().expect("a valid configuration");
         let pipeline = PipelineId::parse(pipeline).expect("a valid id");
-        let plan = PipelinePlan::new(pipeline, [stream]).expect("a valid plan");
+        let mut env = SystemEnv::try_new(cores)?;
+        let mut plan = PipelinePlan::new(pipeline, [stream]).expect("a valid plan");
+        if let Some(store) = log {
+            env = env.with_wal(store);
+            plan = plan.with_wal(true);
+        }
         Ok(Self {
             runtime,
-            engine: Engine::new(config, Arc::new(SystemEnv::try_new(cores)?)),
+            engine: Engine::new(config, Arc::new(env)),
             plan,
         })
     }
@@ -79,14 +108,19 @@ impl Runner {
         source: Arc<dyn Source>,
         destination: Arc<dyn Destination>,
     ) -> Report {
-        self.runtime.block_on(async {
-            let outcome = self
-                .engine
-                .run(self.plan.clone(), source, destination)
-                .await;
-            assert!(outcome.error.is_none(), "{:?}", outcome.error);
-            outcome.report
-        })
+        let outcome = self.outcome(source, destination);
+        assert!(outcome.error.is_none(), "{:?}", outcome.error);
+        outcome.report
+    }
+
+    /// Runs the engine from `source` into `destination`; its outcome, failed or not.
+    pub(super) fn outcome(
+        &self,
+        source: Arc<dyn Source>,
+        destination: Arc<dyn Destination>,
+    ) -> RunOutcome {
+        self.runtime
+            .block_on(self.engine.run(self.plan.clone(), source, destination))
     }
 }
 

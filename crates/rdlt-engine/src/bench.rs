@@ -3,6 +3,7 @@
 mod connectors;
 mod corpora;
 mod loading;
+mod logged;
 mod lowering;
 mod measure;
 mod mix;
@@ -32,6 +33,7 @@ pub use connectors::{
 };
 pub use corpora::{CHUNK_BYTES, CORPUS_BYTES, Corpus, PUSH_BYTES};
 pub use loading::{Load, Loading};
+pub use logged::Logged;
 pub use lowering::Lowering;
 pub use measure::{Allocations, Paired, counted, logical_bytes};
 pub use mix::Mix;
@@ -138,6 +140,11 @@ pub fn pruned(
         left += dropped.prune(part)?.part.batch.num_rows();
     }
     Ok(left)
+}
+
+/// A write-ahead log store in memory, for counting what logging takes without a disk.
+pub fn memory_wal() -> Arc<dyn crate::WalStore> {
+    Arc::new(crate::wal::memory::MemoryWal::default())
 }
 
 /// Reads `bytes` as the only chunk of a write-ahead log, as replay reads one, then each batch it
