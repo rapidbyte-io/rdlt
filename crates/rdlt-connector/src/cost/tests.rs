@@ -19,9 +19,9 @@ use arrow_schema::{DataType, Field, Fields, IntervalUnit, UnionFields};
 use bytes::Bytes;
 use proptest::prelude::*;
 
-use super::{Allocations, JSON_CHARGE, Piece, Rendering, nulls, push_charge, schema_bytes};
+use super::{Allocations, JSON_CHARGE, Piece, Rendering, Stored, nulls, push_charge, schema_bytes};
 use crate::sink::Push;
-use crate::types::TypeKind;
+use crate::types::{self, LogicalType, TypeKind};
 
 /// A destination storing every scalar as it is.
 pub(crate) fn native() -> Rendering {
@@ -722,5 +722,62 @@ fn a_string_view_outside_a_nested_value_costs_its_view_and_its_bytes_however_sto
     let strings: ArrayRef = Arc::new(arrow_array::StringViewArray::from(vec!["abc", "de"]));
     for rendering in [native(), Rendering::native(), Rendering::text()] {
         assert_eq!(expanded(&rendering, &strings), 2 * (16 + 8) + 5);
+    }
+}
+
+/// What lowering every row of `column` into a table column stored as `stored` says holds at once.
+fn lowered(column: &ArrayRef, stored: Stored) -> u64 {
+    let batch = batch(Arc::clone(column));
+    let mut measure = Rendering::native().lowering(&batch, vec![Some(stored)], 0, u64::MAX);
+    measure.expanded(0..column.len())
+}
+
+#[test]
+fn a_column_of_json_stored_as_text_holds_each_value_decoded_and_its_json_text_beside() {
+    let ids: ArrayRef = Arc::new(Int64Array::from(vec![1, 2, 3]));
+    let stored = Stored {
+        column: LogicalType::Json,
+        text: true,
+        read: false,
+    };
+    // Each row its eight bytes decoded, and its JSON text: twenty bytes at most, and an offset.
+    assert_eq!(lowered(&ids, stored), 3 * (8 + 20 + 8));
+}
+
+#[test]
+fn json_text_read_into_a_column_costs_two_of_its_null_slots_a_row_and_two_item_slots_a_byte() {
+    let lists: ArrayRef = Arc::new(StringArray::from(vec!["[1,2]", "[3]"]));
+    let item = types::Field::new("item", LogicalType::Int64, true);
+    let ints = LogicalType::List(Box::new(item));
+    // The text: three offsets and eight bytes, and in a column stored as text that again beside.
+    // A list's null slot is an offset and its brackets, its null text two offsets, the brackets
+    // and a validity byte; its widest item a 64-bit integer and its validity byte.
+    for (as_text, text, null_text) in [(false, 3 * 8 + 8, 0), (true, 2 * (3 * 8 + 8), 19)] {
+        let stored = Stored {
+            column: ints.clone(),
+            text: as_text,
+            read: true,
+        };
+        // Each byte of text itself, one more and two item slots; each row two null slots and,
+        // stored as text, a null's text.
+        let read = text * (1 + 1 + 2 * 9) + 2 * (2 * (8 + 2) + null_text);
+        assert_eq!(lowered(&lists, stored), read, "as text {as_text}");
+    }
+}
+
+#[test]
+fn the_text_of_a_nested_array_is_measured_as_its_json_text() {
+    let list: ArrayRef = Arc::new(ListArray::new(
+        item(DataType::Int64),
+        OffsetBuffer::from_lengths([3]),
+        Arc::new(Int64Array::from(vec![1, 2, 3])),
+        None,
+    ));
+    // Two offsets, the brackets and a comma an item, and each integer's longest text and offset.
+    for json in [false, true] {
+        assert_eq!(
+            super::text_bytes(list.as_ref(), json),
+            2 * 8 + 2 + 3 + 3 * (20 + 8)
+        );
     }
 }
