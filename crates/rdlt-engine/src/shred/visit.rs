@@ -5,7 +5,7 @@ mod skip;
 #[cfg(test)]
 mod tests;
 
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, RefCell, RefMut};
 use std::fmt;
 
 use arrow_buffer::i256;
@@ -16,7 +16,7 @@ use super::ShredError;
 use super::build::{Column, List, Record, Scalar};
 use super::meter::{Columns, KEY, Meter, Over};
 use super::observe::{Observed, Shape};
-use super::render::Render;
+use super::render::{Render, Rendering};
 pub(crate) use skip::Skip;
 
 /// Stack a nesting level may use before [`nest`] grows the stack, 128 KiB: more than any one level
@@ -51,6 +51,8 @@ pub(crate) struct Context {
     number: RefCell<String>,
     /// Whether `number` holds a note not yet handed out.
     noted: Cell<bool>,
+    /// What the values of columns of JSON are rendered into, one after another.
+    rendering: RefCell<Rendering>,
     /// How many objects the observing parse has opened.
     objects: Cell<u64>,
     pub(crate) meter: Meter,
@@ -79,6 +81,7 @@ impl Context {
             json_floats: Cell::new(false),
             number: RefCell::new(String::new()),
             noted: Cell::new(false),
+            rendering: RefCell::new(Rendering::default()),
             objects: Cell::new(0),
             meter,
             columns,
@@ -189,6 +192,13 @@ impl Context {
         number.clear();
         number.push_str(text);
         self.noted.set(true);
+    }
+
+    /// What a value of a column of JSON is rendered into, readied for it.
+    pub(crate) fn rendering(&self) -> RefMut<'_, Rendering> {
+        let mut rendering = self.rendering.borrow_mut();
+        rendering.clear();
+        rendering
     }
 
     /// Hands `write` the text of the float being visited, where the exact parse noted it, and
@@ -392,18 +402,18 @@ impl<'de> DeserializeSeed<'de> for Value<'_> {
             return Err(self.context.fail(ShredError::TooDeep));
         }
         if let Column::Json(..) = self.column {
-            let mut text = String::new();
+            let mut rendering = self.context.rendering();
             let render = Render {
-                text: &mut text,
+                rendering: &mut rendering,
                 context: self.context,
             };
             render.deserialize(deserializer)?;
             let meter = &self.context.meter;
             // Only a JSON null renders as `null`; a string holding it is quoted.
-            let appended = if text == "null" {
+            let appended = if rendering.text == "null" {
                 self.column.null(meter)
             } else {
-                self.column.json(&text, meter)
+                self.column.json(&rendering.text, meter)
             };
             return appended.map_err(over);
         }
