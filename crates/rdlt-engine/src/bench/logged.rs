@@ -11,7 +11,7 @@ use arrow_array::RecordBatch;
 
 use super::runner::{Runner, stream};
 use super::{Passthrough, Replayed, Sinking, ipc_sink, replay, sink};
-use crate::{ComputePoolError, Cores, Report, WalStore};
+use crate::{ComputePoolError, Cores, GrowthLimits, Report, WalStore};
 
 /// Batches logged ahead into a store as the engine moves them, and an engine to move them.
 #[derive(Debug)]
@@ -39,9 +39,26 @@ impl Logged {
         rows: u32,
         every: Option<NonZeroU64>,
     ) -> Result<Self, ComputePoolError> {
+        let log_bytes = GrowthLimits::default().log_bytes();
+        Self::limited(cores, (store, log_bytes), batches, rows, every)
+    }
+
+    /// Batches logged as [`Logged::try_new`] logs them, into a log holding at most `log_bytes`
+    /// on disk.
+    ///
+    /// # Errors
+    ///
+    /// When the compute pool's threads do not start.
+    pub fn limited(
+        cores: Cores,
+        (store, log_bytes): (Arc<dyn WalStore>, NonZeroU64),
+        batches: u32,
+        rows: u32,
+        every: Option<NonZeroU64>,
+    ) -> Result<Self, ComputePoolError> {
         let commit = every.and_then(|every| NonZeroU64::new(every.get() * u64::from(rows)));
         Ok(Self {
-            runner: Runner::logging(cores, "logged", stream(), commit, store)?,
+            runner: Runner::logging(cores, "logged", stream(), commit, (store, log_bytes))?,
             batches: Passthrough::run_of(batches, rows),
         })
     }
