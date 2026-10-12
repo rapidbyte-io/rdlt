@@ -133,8 +133,8 @@ one-minute load average of 0.38 to 0.97, the median with its range in brackets.
 
 ### More cores
 
-Commit `ac0a3223`, 2026-10-12, cores `0-3` (performance), three rounds started at one-minute load
-averages of 1.82, 1.26 and 1.35; the median, with the range in brackets. Each 8 MiB push is a
+This change on `7d3604e0`, 2026-10-12, cores `0-3` (performance), three rounds started at one-minute
+load averages of 1.82, 1.26 and 1.35; the median, with the range in brackets. Each 8 MiB push is a
 call. The process was pinned to cores `0-3` for all three rows, so the pools of N = 1 and 2
 had cores to spare. Efficient cores were not run in this record.
 
@@ -147,9 +147,9 @@ had cores to spare. Efficient cores were not run in this record.
 ### Cliffs
 
 Where the shredder parses a chunk again, observes it, or reads its numbers exactly, on one core
-(`0`), `shred_cliffs` at commit `ac0a3223`, 2026-10-12, three rounds started at one-minute load
-averages of 1.82, 1.26 and 1.35; the median, with the range in brackets. The pass counts are the
-same in every round, over 32 MiB in 1 MiB chunks.
+(`0`), `shred_cliffs` with this change on `7d3604e0`, 2026-10-12, three rounds started at one-minute
+load averages of 1.82, 1.26 and 1.35; the median, with the range in brackets. The pass counts are
+the same in every round, over 32 MiB in 1 MiB chunks.
 
 | Corpus | Throughput | Instructions a cycle | Parsed | Tripped | Observed | Rebuilt | Exact |
 |---|---|---|---|---|---|---|---|
