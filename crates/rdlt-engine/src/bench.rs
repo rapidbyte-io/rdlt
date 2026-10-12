@@ -69,6 +69,19 @@ pub fn shred(pushes: &[Bytes], chunk_bytes: usize) -> Result<Vec<RecordBatch>, R
     ready(shredded(&INLINE, pushes, chunk_bytes))
 }
 
+/// What shredding the JSON `pushes` on the calling thread, in chunks of `chunk_bytes`, took in
+/// passes over its chunks.
+///
+/// # Errors
+///
+/// Why the shredder refused the pushes.
+pub fn shred_counted(pushes: &[Bytes], chunk_bytes: usize) -> Result<crate::ShredCounts, Refused> {
+    static INLINE: LazyLock<Pool> = LazyLock::new(Pool::inline);
+    let limits = shred::ShredLimits::new(rdlt_wire::limits::SCHEMA_COLUMNS);
+    let shredding = ready(shred::observe(&INLINE, pushes, chunk_bytes, limits))?;
+    Ok(shredding.counts())
+}
+
 /// Shreds the JSON `pushes` on `env`'s compute pool, in chunks of `chunk_bytes`, as a partition
 /// does.
 pub async fn shred_on(

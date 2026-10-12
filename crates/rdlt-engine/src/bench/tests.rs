@@ -13,9 +13,10 @@ use rdlt_connector::{
 use serde_json::json;
 
 use super::connectors::Replay;
+use super::{CHUNK_BYTES, CORPUS_BYTES, Corpus};
 use super::{
     Refused, Replayed, SinkWriter, Sinking, ipc_sink, normalize, null_sink, pruned, register,
-    replay, replay_factory, shred, shred_on, split_replay_config,
+    replay, replay_factory, shred, shred_counted, shred_on, split_replay_config,
 };
 use crate::compute::Cores;
 use crate::env::Env;
@@ -36,6 +37,30 @@ fn shredding_inline_and_on_a_pool_gives_the_same_batches() {
     let pooled = runtime.block_on(shred_on(&env, &pushes, 8)).unwrap();
     assert_eq!(inline, pooled);
     assert_eq!(inline.iter().map(RecordBatch::num_rows).sum::<usize>(), 3);
+}
+
+#[test]
+fn shredding_each_push_alone_shreds_every_row_of_the_corpus() {
+    let pushes = Corpus::Nested.pushes(CORPUS_BYTES / 4);
+    let whole: usize = shred(&pushes, CHUNK_BYTES)
+        .unwrap()
+        .iter()
+        .map(RecordBatch::num_rows)
+        .sum();
+    let alone: usize = pushes
+        .iter()
+        .flat_map(|push| shred(std::slice::from_ref(push), CHUNK_BYTES).unwrap())
+        .map(|batch| batch.num_rows())
+        .sum();
+    assert_eq!(alone, whole);
+}
+
+#[test]
+fn counting_a_shred_counts_one_parse_a_chunk_of_plain_rows() {
+    let pushes = Corpus::Nested.pushes(4 << 20);
+    let counts = shred_counted(&pushes, CHUNK_BYTES).unwrap();
+    assert_eq!(counts.parsed, 4);
+    assert_eq!((counts.tripped, counts.rebuilt, counts.exact), (0, 0, 0));
 }
 
 #[test]

@@ -90,6 +90,17 @@ fn an_array_form_push_is_one_json_array_of_whole_rows() {
 }
 
 #[test]
+fn each_cliff_corpus_reaches_its_cliff() {
+    let counts =
+        |corpus: Corpus| crate::bench::shred_counted(&corpus.pushes(4 << 20), CHUNK_BYTES).unwrap();
+    assert!(counts(Corpus::DriftJson).rebuilt > 0);
+    assert!(counts(Corpus::DriftJson).exact > 0);
+    assert!(counts(Corpus::DriftScalar).rebuilt > 0);
+    assert!(counts(Corpus::IntArrays).tripped > 0);
+    assert!(counts(Corpus::BigNumbers).exact > 0);
+}
+
+#[test]
 fn a_corpus_is_cut_into_pushes_of_whole_lines_once_it_holds_its_bytes() {
     let row = |index: u64| format!(r#"{{"id":{index}}}"#);
     let pushes = corpus(10_000, 1_000, |index, _| row(index));
