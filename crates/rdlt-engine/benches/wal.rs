@@ -22,6 +22,11 @@ fn timed() -> bool {
     std::env::args().any(|arg| arg == "--bench")
 }
 
+/// Whether criterion only lists the benchmarks, which must neither set up nor print.
+fn listing() -> bool {
+    std::env::args().any(|arg| arg == "--list")
+}
+
 /// The roots logs are kept under: tmpfs where the host has one, and the disk beside the build.
 #[expect(clippy::print_stderr, reason = "a skipped case is said once")]
 fn roots() -> Vec<(&'static str, PathBuf)> {
@@ -57,22 +62,23 @@ fn logging(c: &mut Criterion) {
     let batches = if timed() { Logged::BATCHES } else { 16 };
     let mut group = c.benchmark_group("wal/engine");
     group.sampling_mode(SamplingMode::Flat).sample_size(10);
-    group.throughput(Throughput::Elements(
-        u64::from(batches) * u64::from(Logged::ROWS),
-    ));
     for (root, path) in roots() {
         for (cadence, every) in CADENCES {
-            let mut run = None;
+            let mut run = (!listing()).then(|| {
+                let dir = tempfile::tempdir_in(&path).expect("a directory of the bench's own");
+                let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(dir.path()));
+                let every = every.and_then(NonZeroU64::new);
+                let logged = Logged::try_new(cores, store, batches, Logged::ROWS, every)
+                    .expect("the pool starts");
+                (dir, logged, None)
+            });
+            if let Some((_, logged, _)) = &run {
+                group.throughput(Throughput::Bytes(logged.frame_bytes()));
+            }
             group.bench_function(BenchmarkId::new(root, cadence), |b| {
-                let (_dir, logged, last) = run.get_or_insert_with(|| {
-                    let dir = tempfile::tempdir_in(&path).expect("a directory of the bench's own");
-                    let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(dir.path()));
-                    let every = every.and_then(NonZeroU64::new);
-                    let logged = Logged::try_new(cores, store, batches, Logged::ROWS, every)
-                        .expect("the pool starts");
-                    (dir, logged, None)
-                });
-                b.iter(|| *last = Some(logged.run()));
+                if let Some((_, logged, last)) = &mut run {
+                    b.iter(|| *last = Some(logged.run()));
+                }
             });
             if let Some((_, logged, Some(report))) = run {
                 println!(
@@ -119,22 +125,23 @@ fn replaying(c: &mut Criterion) {
     let batches = if timed() { Logged::BATCHES } else { 16 };
     let mut group = c.benchmark_group("wal/replay");
     group.sampling_mode(SamplingMode::Flat).sample_size(10);
-    group.throughput(Throughput::Elements(
-        u64::from(batches) * u64::from(Logged::ROWS),
-    ));
     for (root, path) in roots() {
-        let mut left = None;
+        let left = (!listing()).then(|| {
+            let dir = tempfile::tempdir_in(&path).expect("a directory of the bench's own");
+            let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(dir.path()));
+            let logged = Logged::try_new(cores, store, batches, Logged::ROWS, None)
+                .expect("the pool starts");
+            logged.leave();
+            let first = replay_scan(dir.path(), "logged").expect("the log reads");
+            (dir, first)
+        });
+        if let Some((_, first)) = &left {
+            group.throughput(Throughput::Bytes(first.logged));
+        }
         group.bench_function(root, |b| {
-            let (dir, _) = left.get_or_insert_with(|| {
-                let dir = tempfile::tempdir_in(&path).expect("a directory of the bench's own");
-                let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(dir.path()));
-                let logged = Logged::try_new(cores, store, batches, Logged::ROWS, None)
-                    .expect("the pool starts");
-                logged.leave();
-                let first = replay_scan(dir.path(), "logged").expect("the log reads");
-                (dir, first)
-            });
-            b.iter(|| black_box(replay_scan(dir.path(), "logged").expect("the log reads")));
+            if let Some((dir, _)) = &left {
+                b.iter(|| black_box(replay_scan(dir.path(), "logged").expect("the log reads")));
+            }
         });
         if let Some((_, first)) = left {
             println!(
