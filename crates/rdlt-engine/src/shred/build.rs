@@ -28,7 +28,7 @@ use rdlt_wire::limits::count;
 
 use super::ShredError;
 use super::meter::{BUILDER, Meter, Over, RECORD};
-use super::observe::Observed;
+use super::observe::{Observed, exact_in_float};
 pub(crate) use list::List;
 pub(crate) use record::Record;
 
@@ -246,7 +246,7 @@ impl Column {
         match (self, value) {
             (Self::Bool(builder), Scalar::Bool(value)) => builder.append_value(value),
             (Self::Int { builder, exact }, Scalar::Int(value)) => {
-                *exact &= Observed::integer(value) == Observed::Int { exact: true };
+                *exact &= exact_in_float(value);
                 builder.append_value(value);
             }
             (Self::Wide(builder) | Self::Huge(builder), Scalar::Int(value)) => {
@@ -271,9 +271,7 @@ impl Column {
                 clippy::cast_precision_loss,
                 reason = "the integer is exact as a float"
             )]
-            (Self::Float(builder), Scalar::Int(value))
-                if Observed::integer(value) == (Observed::Int { exact: true }) =>
-            {
+            (Self::Float(builder), Scalar::Int(value)) if exact_in_float(value) => {
                 builder.append_value(value as f64);
             }
             (Self::Text(builder, room), Scalar::Text(value)) => {

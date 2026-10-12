@@ -5,6 +5,7 @@
 
 use std::alloc::System;
 use std::hint::black_box;
+use std::num::NonZeroU64;
 
 use rdlt_engine::bench::counted;
 use stats_alloc::{INSTRUMENTED_SYSTEM, Region, StatsAlloc};
@@ -49,4 +50,19 @@ fn a_json_frame_once_encoded_holds_no_more_than_its_bytes() {
         "{held} bytes held by a {}-byte frame",
         frame.len()
     );
+}
+
+#[test]
+fn shredding_rows_of_arrays_allocates_no_observation_a_row() {
+    let pushes = rdlt_engine::bench::Corpus::WithArrays.pushes(1 << 20);
+    let rows: usize = pushes
+        .iter()
+        .map(|push| memchr::memchr_iter(b'\n', push).count())
+        .sum();
+    let rows = NonZeroU64::new(u64::try_from(rows).unwrap()).unwrap();
+    let allocated = counted(HEAP, || {
+        rdlt_engine::bench::shred(&pushes, rdlt_engine::bench::CHUNK_BYTES).unwrap();
+    });
+    let a_row = allocated.per(rows).allocations;
+    assert!(a_row <= 0.1, "{a_row} allocations a row");
 }

@@ -132,7 +132,7 @@ impl Observed {
     /// What the integer `value` is observed as.
     pub(crate) fn integer(value: i64) -> Self {
         Self::Int {
-            exact: value.unsigned_abs() <= EXACT_IN_FLOAT,
+            exact: exact_in_float(value),
         }
     }
 
@@ -215,4 +215,9 @@ impl Observed {
             Self::Json => LogicalType::Json,
         }
     }
+}
+
+/// Whether the integer `value` is exact as a 64-bit float.
+pub(super) fn exact_in_float(value: i64) -> bool {
+    value.unsigned_abs() <= EXACT_IN_FLOAT
 }

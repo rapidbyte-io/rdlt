@@ -83,11 +83,17 @@ impl<'de> Visitor<'de> for Render<'_> {
     /// exact parse, which notes each number's text.
     fn visit_f64<E: serde::de::Error>(self, value: f64) -> Result<(), E> {
         self.context.float(value);
-        let Some(written) = self.context.number_text() else {
+        let text = &mut *self.text;
+        let written = self.context.noted_number(|written| {
+            if let Some(written) = written {
+                text.push_str(written);
+            }
+            written.is_some()
+        });
+        if !written {
             let missing = "a float of a column of JSON came without the text it was written as";
             return Err(self.context.fail(ShredError::Internal(missing.to_owned())));
-        };
-        self.text.push_str(&written);
+        }
         Ok(())
     }
 

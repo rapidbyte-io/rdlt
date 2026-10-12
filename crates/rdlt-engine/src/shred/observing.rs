@@ -221,7 +221,6 @@ impl<'de> Visitor<'de> for Look<'_> {
     }
 
     fn visit_f64<E>(self, value: f64) -> Result<(), E> {
-        self.context.number_text();
         self.context.float(value);
         self.scalar(Scalar::Float(value));
         Ok(())
