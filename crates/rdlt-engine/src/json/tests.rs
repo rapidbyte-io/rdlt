@@ -6,7 +6,10 @@ use sonic_rs::JsonValueTrait as _;
 
 use super::number::PLAIN_BYTES;
 
-use super::{EXPONENT_DIGITS, JsonError, Reader, Token, canonical_float, canonical_number, check};
+use super::{
+    EXPONENT_DIGITS, JsonError, Reader, Token, canonical_float, canonical_number, check,
+    write_float, write_number,
+};
 
 fn tokens(text: &str) -> Result<Vec<Token<'_>>, JsonError> {
     let mut reader = Reader::new(text);
@@ -292,6 +295,17 @@ proptest! {
         let widened = canonical_float(f64::from(float));
         prop_assert_eq!(widened.parse::<f64>().unwrap().to_bits(), f64::from(float).to_bits());
         prop_assert_eq!(widened.parse::<f32>().unwrap().to_bits(), single);
+    }
+
+    #[test]
+    fn a_float_s_canonical_text_is_its_shortest_text_s_canonical_number(
+        value in prop::num::f64::NORMAL | prop::num::f64::SUBNORMAL | prop::num::f64::ZERO
+    ) {
+        let mut direct = Vec::new();
+        write_float(value, &mut direct);
+        let mut oracle = Vec::new();
+        write_number(ryu::Buffer::new().format_finite(value), &mut oracle).unwrap();
+        prop_assert_eq!(direct, oracle);
     }
 
     #[test]
