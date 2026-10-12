@@ -2,16 +2,17 @@ use std::sync::Arc;
 
 use arrow_array::types::Int32Type;
 use arrow_array::{
-    Array, ArrayRef, DictionaryArray, Int8Array, Int32Array, ListArray, NullArray, RecordBatch,
-    StringArray, StructArray,
+    Array, ArrayRef, DictionaryArray, FixedSizeListArray, Int8Array, Int32Array, LargeListArray,
+    LargeListViewArray, ListArray, ListViewArray, MapArray, NullArray, RecordBatch, StringArray,
+    StructArray,
 };
-use arrow_buffer::OffsetBuffer;
-use arrow_schema::{Field, Fields};
+use arrow_buffer::{OffsetBuffer, ScalarBuffer};
+use arrow_schema::{DataType, Field, Fields};
 use rdlt_connector::{ConnectorErrorKind, Result};
 use rdlt_wire::Limits;
 use rdlt_wire::limits::{BATCH_ROWS, BATCH_VALUES, FRAME_BYTES};
 
-use super::{chunks, unfit};
+use super::{chunks, fitted, unfit};
 use crate::files::FileFormat;
 use crate::rooted::Dir;
 
@@ -163,6 +164,69 @@ fn rows_whose_values_together_are_beyond_a_frame_s_are_written_in_batches_a_read
     assert!(read.len() > 1, "{}", read.len());
 }
 
+/// Two rows of three items each, as every kind of list and as a map; and the values one row
+/// counts in its frame.
+fn paired() -> [(&'static str, ArrayRef, u64); 6] {
+    let items = || Arc::new(Int8Array::from(vec![1_i8, 2, 3, 4, 5, 6])) as ArrayRef;
+    let item = Arc::new(Field::new("item", DataType::Int8, true));
+    let lengths = || OffsetBuffer::from_lengths([3, 3]);
+    let list = ListArray::new(Arc::clone(&item), lengths(), items(), None);
+    let large_lengths = OffsetBuffer::<i64>::from_lengths([3, 3]);
+    let large = LargeListArray::new(Arc::clone(&item), large_lengths, items(), None);
+    let fixed = FixedSizeListArray::new(Arc::clone(&item), 3, items(), None);
+    let (offsets, sizes) = (
+        ScalarBuffer::from(vec![0, 3]),
+        ScalarBuffer::from(vec![3, 3]),
+    );
+    let view = ListViewArray::new(Arc::clone(&item), offsets, sizes, items(), None);
+    let (offsets, sizes) = (
+        ScalarBuffer::from(vec![0, 3]),
+        ScalarBuffer::from(vec![3, 3]),
+    );
+    let large_view = LargeListViewArray::new(item, offsets, sizes, items(), None);
+    let fields = Fields::from(vec![
+        Field::new("keys", DataType::Int8, false),
+        Field::new("values", DataType::Int8, true),
+    ]);
+    let entries = StructArray::new(fields, vec![items(), items()], None);
+    let field = Arc::new(Field::new("entries", entries.data_type().clone(), false));
+    let map = MapArray::new(field, lengths(), entries, None, false);
+    // A row is a value, and so is each item; a map's item is an entry, a key and a value. A
+    // list view's items are counted as it names them and as the whole child it is written with.
+    [
+        ("list", Arc::new(list), 4),
+        ("large list", Arc::new(large), 4),
+        ("fixed-size list", Arc::new(fixed), 4),
+        ("list view", Arc::new(view), 10),
+        ("large list view", Arc::new(large_view), 10),
+        ("map", Arc::new(map), 10),
+    ]
+}
+
+#[test]
+fn a_row_counts_the_values_it_holds_and_not_those_of_the_rows_beside_it() {
+    let parts = |batch: &RecordBatch, batch_values| -> Result<Vec<usize>> {
+        let limits = Limits {
+            batch_values,
+            ..Limits::default()
+        };
+        let mut parts = Vec::new();
+        fitted(batch.clone(), &limits, &mut |part| {
+            parts.push(part.num_rows());
+            Ok(())
+        })?;
+        Ok(parts)
+    };
+    for (name, column, row) in paired() {
+        let batch = single(column);
+        // The two rows together are beyond a frame of one row's values; each alone fits it.
+        assert_eq!(parts(&batch, row).unwrap(), [1, 1], "{name}");
+        let error = parts(&batch, row - 1).expect_err(name);
+        let limit = error.limit().expect("a limit");
+        assert_eq!((limit.name, limit.actual), ("batch values", row), "{name}");
+    }
+}
+
 #[test]
 fn a_row_larger_than_a_frame_is_refused_unwritten() {
     let frame = usize::try_from(FRAME_BYTES).unwrap();
@@ -238,7 +302,6 @@ fn a_row_larger_than_a_frame_is_refused_among_small_rows_and_leaves_no_file() {
 
 #[test]
 fn a_batch_is_halved_until_its_parts_fit_and_refused_only_as_one_row() {
-    use super::fitted;
     let limits = Limits {
         frame_bytes: 4096,
         ..Limits::default()
@@ -310,6 +373,32 @@ fn a_batch_whose_frame_is_the_limit_fits_and_one_byte_less_refuses_it() {
     let refusal = unfit(&batch, &limits(size - 1))
         .unwrap()
         .expect("one byte over");
+    let limit = refusal.limit().expect("a limit");
+    assert_eq!(
+        (limit.name, limit.limit, limit.actual),
+        ("frame bytes", size - 1, size)
+    );
+}
+
+#[test]
+fn a_dictionary_whose_frame_is_the_limit_fits_and_one_byte_less_refuses_it() {
+    let values = StringArray::from(vec!["x".repeat(4096)]);
+    let keys = Int32Array::from(vec![0]);
+    let keyed = DictionaryArray::<Int32Type>::try_new(keys, Arc::new(values)).unwrap();
+    let batch = single(Arc::new(keyed));
+    let limits = |frame_bytes| Limits {
+        frame_bytes,
+        ..Limits::default()
+    };
+    // A dictionary beyond a frame is refused whatever the rows, not halved.
+    let size = unfit(&batch, &limits(0))
+        .expect_err("no frame fits no bytes")
+        .limit()
+        .map(|limit| limit.actual)
+        .expect("a limit");
+    assert!(size > 4096, "{size}");
+    assert!(unfit(&batch, &limits(size)).unwrap().is_none());
+    let refusal = unfit(&batch, &limits(size - 1)).expect_err("one byte over");
     let limit = refusal.limit().expect("a limit");
     assert_eq!(
         (limit.name, limit.limit, limit.actual),
