@@ -115,6 +115,16 @@ pub(crate) fn floats_in_json(joined: &Shape, local: &Shape) -> bool {
     })
 }
 
+/// Whether a column of `joined` that is JSON holds, in the records observed as `local`, values it
+/// renders as they were read; their text is no longer than the chunk's text they were read from.
+pub(crate) fn renders_json(joined: &Shape, local: &Shape) -> bool {
+    joined.fields().iter().any(|(name, observed)| {
+        local
+            .get(name)
+            .is_some_and(|local| node_renders_json(observed, local))
+    })
+}
+
 /// Whether `joined` holds a column of text or of JSON at any depth.
 pub(crate) fn holds_text(joined: &Shape) -> bool {
     joined
@@ -202,6 +212,8 @@ fn fitting(joined: &Observed, local: Option<&Observed>, rows: u64) -> u64 {
         (Observed::Float | Observed::Wide, Some(Observed::Int { .. })) => {
             node(joined, local, rows).bytes
         }
+        // Its offsets and validity; its text is reckoned once for all such columns.
+        (Observed::Json, Some(local)) if local.renders_as_read() => node(joined, None, rows).bytes,
         _ => 0,
     }
 }
@@ -213,6 +225,15 @@ fn node_floats_in_json(joined: &Observed, local: &Observed) -> bool {
         (Observed::Array(joined, _), Observed::Array(local, _)) => {
             node_floats_in_json(joined, local)
         }
+        _ => false,
+    }
+}
+
+fn node_renders_json(joined: &Observed, local: &Observed) -> bool {
+    match (joined, local) {
+        (Observed::Json, local) => local.renders_as_read(),
+        (Observed::Object(joined), Observed::Object(local)) => renders_json(joined, local),
+        (Observed::Array(joined, _), Observed::Array(local, _)) => node_renders_json(joined, local),
         _ => false,
     }
 }

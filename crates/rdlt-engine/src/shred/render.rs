@@ -1,8 +1,9 @@
 //! Values of `Json` columns, rendered as compact JSON text as they are parsed.
 //!
-//! Only a chunk's second parse renders, over records its first parse already checked, so rendering
-//! recurses no deeper than the nesting limit. Numbers keep the text they were written as: integers
-//! read exactly render as their digits, and a float only as the exact parse noted its text.
+//! A column of scalars that became JSON as a chunk was first parsed renders as that parse goes,
+//! over records nothing checked yet, so each level of a value is held to the nesting limit as it
+//! is rendered. Numbers keep the text they were written as: integers read exactly render as their
+//! digits, and a float only as the exact parse noted its text.
 
 #[cfg(test)]
 mod tests;
@@ -11,10 +12,15 @@ use std::fmt::{self, Display, Write as _};
 
 use serde::de::{DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 
+use arrow_array::builder::StringBuilder;
+use arrow_array::{Array, ArrayRef};
+
 use super::ShredError;
+use super::build::{Scalar, scalar_at};
 use super::keys::OpenKeys;
 use super::visit::{Context, nest};
 use crate::limits::QUOTED_BYTES;
+use rdlt_wire::limits::NESTING_DEPTH;
 
 /// What a parse renders its values of JSON into, kept from value to value so that rendering one
 /// allocates only to grow: the value's text and the keys of the objects open in it.
@@ -22,6 +28,9 @@ use crate::limits::QUOTED_BYTES;
 pub(crate) struct Rendering {
     pub(crate) text: String,
     pub(crate) keys: OpenKeys,
+    /// Whether the value held a float the parse kept no text of: the fast parse reads a float
+    /// as its value alone, so its column cannot hold it as JSON text.
+    pub(crate) unwritten: bool,
 }
 
 impl Rendering {
@@ -29,6 +38,7 @@ impl Rendering {
     pub(crate) fn clear(&mut self) {
         self.text.clear();
         self.keys.clear();
+        self.unwritten = false;
     }
 }
 
@@ -64,10 +74,56 @@ pub(crate) fn escape(text: &str, out: &mut String) {
     out.push('"');
 }
 
-/// One value rendered onto `rendering`'s text; an object repeating a key fails.
+/// Writes `value` onto `out` as JSON text, as it was read; a float or an integer beyond 76 digits,
+/// whose text JSON text keeps as it was written, writes nothing.
+pub(crate) fn scalar(value: Scalar<'_>, out: &mut String) {
+    match value {
+        Scalar::Bool(value) => out.push_str(if value { "true" } else { "false" }),
+        Scalar::Int(value) => integer(value, out),
+        Scalar::Wide(value) => integer(value, out),
+        Scalar::Huge(value) => integer(value, out),
+        Scalar::Vast(value) => integer(value, out),
+        Scalar::Text(value) => escape(value, out),
+        Scalar::Float(_) | Scalar::Beyond => {}
+    }
+}
+
+/// Writes the integer `value` onto `out` as its digits.
+fn integer(value: impl Display, out: &mut String) {
+    // Writing into a `String` cannot fail.
+    let _ = write!(out, "{value}");
+}
+
+/// The values of `array`, a column of scalars that render as they were read, as a column of JSON
+/// text: built in a buffer of the text's own size, which the values' text was no shorter than.
+pub(crate) fn json_text(array: &dyn Array) -> ArrayRef {
+    let mut value = String::new();
+    let rendered = |row: usize, value: &mut String| {
+        value.clear();
+        scalar_at(array, row).map(|read| scalar(read, value))
+    };
+    let mut bytes = 0;
+    for row in 0..array.len() {
+        if rendered(row, &mut value).is_some() {
+            bytes += value.len();
+        }
+    }
+    let mut column = StringBuilder::with_capacity(array.len(), bytes);
+    for row in 0..array.len() {
+        match rendered(row, &mut value) {
+            Some(()) => column.append_value(&value),
+            None => column.append_null(),
+        }
+    }
+    std::sync::Arc::new(column.finish())
+}
+
+/// One value, `depth` levels deep, rendered onto `rendering`'s text; an object repeating a key
+/// fails, as does a value nested past the limit.
 pub(crate) struct Render<'a> {
     pub(crate) rendering: &'a mut Rendering,
     pub(crate) context: &'a Context,
+    pub(crate) depth: u64,
 }
 
 impl Render<'_> {
@@ -76,13 +132,8 @@ impl Render<'_> {
         Render {
             rendering: &mut *self.rendering,
             context: self.context,
+            depth: self.depth + 1,
         }
-    }
-
-    /// Writes the integer `value` as its digits.
-    fn integer(self, value: impl Display) {
-        // Writing into a `String` cannot fail.
-        let _ = write!(self.rendering.text, "{value}");
     }
 }
 
@@ -90,6 +141,9 @@ impl<'de> DeserializeSeed<'de> for Render<'_> {
     type Value = ();
 
     fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
+        if self.depth > NESTING_DEPTH {
+            return Err(self.context.fail(ShredError::TooDeep));
+        }
         deserializer.deserialize_any(self)
     }
 }
@@ -114,18 +168,18 @@ impl<'de> Visitor<'de> for Render<'_> {
     }
 
     fn visit_i64<E>(self, value: i64) -> Result<(), E> {
-        self.integer(value);
+        integer(value, &mut self.rendering.text);
         Ok(())
     }
 
     fn visit_u64<E>(self, value: u64) -> Result<(), E> {
-        self.integer(value);
+        integer(value, &mut self.rendering.text);
         Ok(())
     }
 
-    /// A float, as it was written: a chunk whose column of JSON holds one is built with the
-    /// exact parse, which notes each number's text.
-    fn visit_f64<E: serde::de::Error>(self, value: f64) -> Result<(), E> {
+    /// A float, as it was written where the exact parse noted its text; the fast parse notes
+    /// none, and the value is then left unwritten.
+    fn visit_f64<E>(self, value: f64) -> Result<(), E> {
         self.context.float(value);
         let text = &mut self.rendering.text;
         let written = self.context.noted_number(|written| {
@@ -134,15 +188,12 @@ impl<'de> Visitor<'de> for Render<'_> {
             }
             written.is_some()
         });
-        if !written {
-            let missing = "a float of a column of JSON came without the text it was written as";
-            return Err(self.context.fail(ShredError::Internal(missing.to_owned())));
-        }
+        self.rendering.unwritten |= !written;
         Ok(())
     }
 
     fn visit_i128<E>(self, value: i128) -> Result<(), E> {
-        self.integer(value);
+        integer(value, &mut self.rendering.text);
         Ok(())
     }
 

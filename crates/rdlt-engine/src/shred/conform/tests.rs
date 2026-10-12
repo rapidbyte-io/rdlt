@@ -33,6 +33,17 @@ fn columns_fit_the_joined_shape_when_only_nulls_order_or_integer_widening_differ
         (exact.clone(), Observed::Float),
         (inexact.clone(), Observed::Wide),
         (Observed::Json, Observed::Json),
+        (exact.clone(), Observed::Json),
+        (Observed::Text, Observed::Json),
+        (Observed::Wide, Observed::Json),
+        (Observed::Huge, Observed::Json),
+        (Observed::Vast, Observed::Json),
+        (Observed::Bool, Observed::Json),
+        (list(Observed::Text), list(Observed::Json)),
+        (
+            object(&[("a", Observed::Text)]),
+            object(&[("a", Observed::Json)]),
+        ),
         (list(Observed::Null), list(Observed::Text)),
         (list(exact.clone()), list(Observed::Float)),
         (
@@ -52,17 +63,9 @@ fn columns_fit_the_joined_shape_when_only_nulls_order_or_integer_widening_differ
 fn columns_whose_values_joined_to_another_kind_do_not_fit() {
     let exact = Observed::Int { exact: true };
     for (local, joined) in [
-        (exact.clone(), Observed::Json),
-        (Observed::Text, Observed::Json),
         (Observed::Float, Observed::Json),
-        (Observed::Wide, Observed::Json),
-        (Observed::Bool, Observed::Json),
+        (list(Observed::Float), list(Observed::Json)),
         (list(exact.clone()), Observed::Json),
-        (list(Observed::Text), list(Observed::Json)),
-        (
-            object(&[("a", Observed::Text)]),
-            object(&[("a", Observed::Json)]),
-        ),
         (
             object(&[("a", Observed::Text)]),
             object(&[("b", Observed::Text)]),

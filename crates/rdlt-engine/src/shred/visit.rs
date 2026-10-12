@@ -350,6 +350,13 @@ impl<'a> Value<'a> {
             .scalar(value, self.capacity, &self.context.meter)
         {
             Ok(true) => Ok(()),
+            Ok(false) if self.column.renders_as_read() && value.observed().renders_as_read() => {
+                let meter = &self.context.meter;
+                self.column.render(self.capacity, meter).map_err(over)?;
+                let mut rendering = self.context.rendering();
+                super::render::scalar(value, &mut rendering.text);
+                self.column.json(&rendering.text, meter).map_err(over)
+            }
             Ok(false) => {
                 if let Scalar::Float(_) = value {
                     self.context.json_float();
@@ -406,8 +413,16 @@ impl<'de> DeserializeSeed<'de> for Value<'_> {
             let render = Render {
                 rendering: &mut rendering,
                 context: self.context,
+                depth: self.depth,
             };
             render.deserialize(deserializer)?;
+            if rendering.unwritten {
+                // The chunk is built again exactly, which keeps the float's text.
+                drop(rendering);
+                self.context.json_float();
+                self.spoil();
+                return Ok(());
+            }
             let meter = &self.context.meter;
             // Only a JSON null renders as `null`; a string holding it is quoted.
             let appended = if rendering.text == "null" {

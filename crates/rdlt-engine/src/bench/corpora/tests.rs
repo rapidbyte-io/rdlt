@@ -108,9 +108,15 @@ fn each_cliff_corpus_reaches_its_cliff() {
         |corpus: Corpus| crate::bench::shred_counted(&corpus.pushes(4 << 20), CHUNK_BYTES).unwrap();
     assert!(counts(Corpus::DriftJson).rebuilt > 0);
     assert!(counts(Corpus::DriftJson).exact > 0);
-    assert!(counts(Corpus::DriftScalar).rebuilt > 0);
     assert!(counts(Corpus::IntArrays).tripped > 0);
     assert!(counts(Corpus::BigNumbers).exact > 0);
+}
+
+#[test]
+fn a_column_of_integers_drifting_to_strings_is_fitted_without_a_second_parse() {
+    let pushes = Corpus::DriftScalar.pushes(4 << 20);
+    let counts = crate::bench::shred_counted(&pushes, CHUNK_BYTES).unwrap();
+    assert_eq!(counts.rebuilt, 0, "{counts:?}");
 }
 
 #[test]

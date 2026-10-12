@@ -55,8 +55,10 @@ Arrow columns and the rows normalizing makes of both escaped that in several way
 - **What building takes beyond the admission is reserved before it is built.** Once every chunk
   is parsed or observed and the shapes joined, the bytes each chunk's batch takes against the
   joined shape are reckoned from the counts, with its columns' fixed parts (640 bytes an array, a
-  struct's 1,536) and what its parse holds until then. A chunk that fits keeps its columns; one
-  built again is built presized. What all of it and the joined shape take beyond the pushes'
+  struct's 1,536) and what its parse holds until then. A chunk that fits keeps its columns, and
+  renders its scalars in a column the join made `Json` as JSON text, reckoned at most the chunk's
+  own text: compact JSON text is never longer than the valid JSON it was read from. One built
+  again is built presized. What all of it and the joined shape take beyond the pushes'
   admission, reckoned over the flush, is reserved from the data
   share (`acquire_working`) before any of it is built and held with the batches; more than one
   request may take is refused, `json_exceeds_budget` (`ErrorKind::Source`). `shred` is now

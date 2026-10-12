@@ -19,17 +19,20 @@ fast-path evaluation. Building M3a surfaced decisions the spec leaves open or ge
   straight into a column typed by the values the chunk held so far: a column starts as nulls and
   takes its first value's type, and converts itself when a later value widens it without loss (a
   float after integers exact as floats, a large unsigned integer after integers). Any other value
-  makes the column `Json`, which it cannot build from the values it already took, so it stops
-  building and only checks its later values' nesting. The chunks' shapes are joined in push
-  order. A chunk whose columns fit the joined shape keeps them, fitted without its values:
-  columns are matched by name, columns it lacks or held only nulls in become nulls of the joined
-  type, and integers are cast to the floats or decimals the join widened them to. Only a chunk
-  holding a column that stopped building, or one the join made `Json` or another kind, is parsed
-  again and built against the joined shape. Batches therefore always have the joined shape, as
-  the spec requires, and optional keys cost no second parse. The pass is metered: builders
-  charge what they are made with and grow by, within twice the chunk's text; a chunk that would
-  pass that is read again observing kinds and counts, and what the batches take beyond the
-  push's admission is reserved before any of them is built (ADR 0040).
+  makes the column `Json`. A column of scalars but floats renders the values it took as JSON text,
+  which holds them as they were read, and goes on building as JSON. Any other column cannot: a
+  float's text as it was written, an object and an array are gone, so it stops building and only
+  checks its later values' nesting. The chunks' shapes are joined in push order. A chunk whose
+  columns fit the joined shape keeps them, fitted without its text: columns are matched by name,
+  columns it lacks or held only nulls in become nulls of the joined type, integers are cast to
+  the floats or decimals the join widened them to, and scalars but floats are rendered as JSON
+  text where the join made their column `Json`. Only a chunk holding a column that stopped
+  building, or one the join made another kind, or `Json` over floats, objects or arrays, is
+  parsed again and built against the joined shape. Batches therefore always have the joined
+  shape, as the spec requires, and optional keys cost no second parse. The pass is metered:
+  builders charge what they are made with and grow by, within twice the chunk's text; a chunk
+  that would pass that is read again observing kinds and counts, and what the batches take
+  beyond the push's admission is reserved before any of them is built (ADR 0040).
 - **Pushes are cut into chunks on the pool without walking their records.** JSON lines are cut
   at the first line end past each chunk's bytes, found by jumping past those bytes; a JSON
   array's top-level commas are found by one scan of its structure, without recursion however
@@ -93,6 +96,8 @@ fast-path evaluation. Building M3a surfaced decisions the spec leaves open or ge
 
 JSON pushes load in parallel; [docs/perf/shred.md](../perf/shred.md) records their throughput
 against the old engine on one core. Integers load exactly at any width, as decimals within 76
-digits and as JSON text beyond. A chunk whose shape drifts is parsed twice, so drift costs
-throughput where it happens and nowhere else. The engine's integration tests run compute jobs
-inline, since the paused test clock would otherwise advance while a job runs on another thread.
+digits and as JSON text beyond. A chunk whose shape drifts to objects, arrays or floats under a
+column of JSON is parsed twice, so that drift costs throughput where it happens and nowhere
+else; drift between scalars costs no second parse. The engine's integration tests run compute
+jobs inline, since the paused test clock would otherwise advance while a job runs on another
+thread.

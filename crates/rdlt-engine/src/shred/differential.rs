@@ -15,13 +15,17 @@ use crate::compute::{Pool, ready};
 
 /// The batches of `pushes`, shredded in chunks of `chunk_bytes`, as one, or the error's code.
 pub(super) fn shredded(pushes: &[Bytes], chunk_bytes: usize) -> Result<Option<RecordBatch>, Code> {
-    let batches = ready(shred(
-        &Pool::inline(),
-        pushes,
-        chunk_bytes,
-        super::tests::limits(),
-    ))
-    .map_err(|error| Code(error.code()))?;
+    shredded_within(pushes, chunk_bytes, super::tests::limits())
+}
+
+/// The batches of `pushes`, shredded as [`shredded`] does within `limits`.
+pub(super) fn shredded_within(
+    pushes: &[Bytes],
+    chunk_bytes: usize,
+    limits: super::ShredLimits,
+) -> Result<Option<RecordBatch>, Code> {
+    let batches = ready(shred(&Pool::inline(), pushes, chunk_bytes, limits))
+        .map_err(|error| Code(error.code()))?;
     let Some(first) = batches.first() else {
         return Ok(None);
     };
@@ -180,6 +184,8 @@ enum Fault {
     NotObject(Json),
     RepeatedKey,
     TooDeep,
+    /// Too deep after its column became JSON in place: an integer, then a string.
+    TooDeepAfterDrift,
     Truncated,
 }
 
@@ -189,6 +195,7 @@ fn fault() -> impl Strategy<Value = Option<Fault>> {
         1 => scalar().prop_map(|value| Some(Fault::NotObject(value))),
         1 => Just(Some(Fault::RepeatedKey)),
         1 => Just(Some(Fault::TooDeep)),
+        1 => Just(Some(Fault::TooDeepAfterDrift)),
         1 => Just(Some(Fault::Truncated)),
     ]
 }
@@ -208,6 +215,13 @@ fn pushes(
             Some(Fault::NotObject(value)) => rendered[at] = render(value),
             Some(Fault::RepeatedKey) => rendered[at] = r#"{"a":1,"b":2,"a":3}"#.to_owned(),
             Some(Fault::TooDeep) => rendered[at] = format!(r#"{{"a":{}}}"#, render(&nested(64))),
+            Some(Fault::TooDeepAfterDrift) => {
+                let deep = format!(r#"{{"a":{}}}"#, render(&nested(64)));
+                rendered.splice(
+                    at..=at,
+                    [r#"{"a":1}"#.to_owned(), r#"{"a":"x"}"#.to_owned(), deep],
+                );
+            }
             Some(Fault::Truncated) => rendered[at] = r#"{"a":[1,"#.to_owned(),
         }
     }
@@ -243,13 +257,21 @@ proptest! {
         chunk_bytes in 1_usize..400,
     ) {
         let pushes = pushes(&records, &cuts, fault.as_ref(), at);
-        let expected = reference::shred(&pushes);
-        let actual = shredded(&pushes, chunk_bytes);
-        match (expected, actual) {
-            (Ok(expected), Ok(Some(actual))) => prop_assert_eq!(normalized(&actual), normalized(&expected)),
-            (Ok(expected), Ok(None)) => prop_assert_eq!(expected.num_rows(), 0),
-            (Err(expected), Err(actual)) => prop_assert_eq!(actual, expected),
-            (expected, actual) => prop_assert!(false, "reference {expected:?}, shredder {actual:?}"),
+        // Chunks whose builders pass their small allowance are observed and built again; with
+        // room for them, each is built as it is parsed, its drifted columns converted in place.
+        let roomy = super::ShredLimits {
+            admitted: 1 << 20,
+            ..super::tests::limits()
+        };
+        for limits in [super::tests::limits(), roomy] {
+            let expected = reference::shred(&pushes);
+            let actual = shredded_within(&pushes, chunk_bytes, limits);
+            match (expected, actual) {
+                (Ok(expected), Ok(Some(actual))) => prop_assert_eq!(normalized(&actual), normalized(&expected)),
+                (Ok(expected), Ok(None)) => prop_assert_eq!(expected.num_rows(), 0),
+                (Err(expected), Err(actual)) => prop_assert_eq!(actual, expected),
+                (expected, actual) => prop_assert!(false, "reference {expected:?}, shredder {actual:?}"),
+            }
         }
     }
 }

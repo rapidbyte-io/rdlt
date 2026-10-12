@@ -178,17 +178,37 @@ fn nested(levels: u64, open: &str, close: &str) -> String {
 #[test]
 fn values_nest_up_to_the_limit_and_no_deeper() {
     // After an integer, the column stops building and only checks the deep values' nesting;
-    // after an integer beyond 64 bits, the chunk is parsed exactly.
-    for before in ["", "{\"a\":1}\n", "{\"a\":18446744073709551616}\n"] {
+    // after an integer beyond 64 bits, the chunk is parsed exactly; after an integer and a
+    // string, the column renders as JSON text where it is parsed, fast or exactly.
+    let roomy = ShredLimits {
+        admitted: 1 << 20,
+        ..limits()
+    };
+    for before in [
+        "",
+        "{\"a\":1}\n",
+        "{\"a\":18446744073709551616}\n",
+        "{\"a\":1}\n{\"a\":\"x\"}\n",
+        "{\"n\":18446744073709551616}\n{\"a\":1}\n{\"a\":\"x\"}\n",
+    ] {
         for (open, close) in [("[", "]"), ("{\"b\":", "}")] {
             let deepest = format!("{before}{}", nested(NESTING_DEPTH, open, close));
-            assert_eq!(
-                batch_of(&[&deepest], 1 << 20).num_rows(),
-                1 + before.len().min(1)
-            );
+            let rows = 1 + before.lines().count();
+            assert_eq!(batch_of(&[&deepest], 1 << 20).num_rows(), rows);
+            assert_eq!(roomy_batch(&deepest, 1 << 20).1.num_rows(), rows);
             let deeper = format!("{before}{}", nested(NESTING_DEPTH + 1, open, close));
             assert_eq!(refused(&deeper), "limit_exceeded", "{before:?} {open}");
+            let pushes = [Bytes::from(deeper)];
+            let refused_roomy = super::differential::shredded_within(&pushes, 1 << 20, roomy);
+            assert_eq!(
+                refused_roomy.unwrap_err().0,
+                "limit_exceeded",
+                "{before:?} {open}"
+            );
         }
+        // Far past the limit, as the shredder refuses it before it builds anything.
+        let far = format!("{before}{}", nested(200, "{\"b\":", "}"));
+        assert_eq!(refused(&far), "limit_exceeded", "{before:?}");
     }
 }
 
@@ -490,7 +510,7 @@ fn nested_objects_and_arrays_become_structs_and_lists_with_their_items_joined() 
 }
 
 #[test]
-fn a_column_that_changes_type_in_a_later_chunk_is_built_again_as_their_join() {
+fn a_column_that_changes_type_in_a_later_chunk_is_fitted_to_their_join() {
     let batch = batch_of(&["{\"a\":1}\n{\"a\":2}", "{\"a\":\"x\",\"b\":true}"], 1);
     assert_eq!(types(&batch)[0].1, LogicalType::Json);
     assert_eq!(
@@ -614,7 +634,9 @@ fn every_kind_keeps_its_type_across_chunks() {
 #[test]
 fn only_a_chunk_whose_columns_stopped_building_is_parsed_again() {
     assert!(!parsed("{\"a\":1}\n{\"a\":2.5}\n{\"b\":[1]}").spoiled);
-    assert!(parsed("{\"a\":1}\n{\"a\":\"x\"}").spoiled);
+    assert!(!parsed("{\"a\":1}\n{\"a\":\"x\"}").spoiled);
+    assert!(parsed("{\"a\":\"x\"}\n{\"a\":2.5}").spoiled);
+    assert!(parsed("{\"a\":2.5}\n{\"a\":\"x\"}").spoiled);
     assert!(parsed("{\"a\":{\"b\":true}}\n{\"a\":{\"b\":[]}}").spoiled);
     // Integers widen in place, however wide, parsed exactly once one may be beyond 64 bits.
     let wide = parsed("{\"a\":1}\n{\"a\":18446744073709551615}\n{\"a\":18446744073709551616}");
@@ -756,14 +778,16 @@ fn chunks_that_lack_columns_or_hold_them_in_another_order_are_fitted_without_par
         parsed(r#"{"a":1,"o":{"x":1}}"#),
         parsed(r#"{"b":"t","a":2.5,"l":[]}"#),
         parsed(r#"{"a":null,"o":{"y":true,"x":2},"l":[1]}"#),
-        parsed(r#"{"a":"x"}"#),
+        parsed(r#"{"a":{"z":1}}"#),
     ];
     let joined = super::join(&chunks[..3], limits()).unwrap().0;
     for chunk in &chunks[..3] {
         assert!(!chunk.spoiled && super::conform::shape_fits(&chunk.shape, &joined));
     }
-    let with_text = super::join(&chunks, limits()).unwrap().0;
-    assert!(!super::conform::shape_fits(&chunks[0].shape, &with_text));
+    // Integers render into a column of JSON as they were read; floats need their text again.
+    let with_object = super::join(&chunks, limits()).unwrap().0;
+    assert!(super::conform::shape_fits(&chunks[0].shape, &with_object));
+    assert!(!super::conform::shape_fits(&chunks[1].shape, &with_object));
 }
 
 #[test]
@@ -1225,7 +1249,7 @@ fn hundreds(first: &str, then: &str) -> String {
 #[test]
 fn an_observation_counts_its_passes_apart_from_the_chunks_building_will_build_again() {
     let pool = crate::compute::Pool::inline();
-    let pushes = vec![Bytes::from(hundreds("1", "\"x\""))];
+    let pushes = vec![Bytes::from(hundreds("1", r#"{"b":1}"#))];
     let observed = crate::compute::ready(super::observe(&pool, pushes, 1 << 20, limits()));
     let observed = observed.unwrap();
     let passes = ShredCounts {
@@ -1253,8 +1277,13 @@ fn a_chunk_whose_columns_fit_is_built_once_and_one_whose_column_spoiled_twice() 
     let decimals = batch.column(0).as_primitive::<Decimal256Type>();
     assert_eq!(decimals.value_as_string(0), "1");
     assert_eq!(decimals.value_as_string(199), vast);
-    // A string after integers spoils the column, which is built again as JSON text.
-    let (again, _) = built_again(&hundreds("1", "\"x\""));
+    // A string after integers makes the column one of JSON text where it is built.
+    let (again, batch) = built_again(&hundreds("-1", "\"x\""));
+    assert_eq!(again, 0);
+    let texts = batch.column(0).as_string::<i32>();
+    assert_eq!((texts.value(0), texts.value(199)), ("-1", "\"x\""));
+    // An object after integers spoils the column, which is built again as JSON text.
+    let (again, _) = built_again(&hundreds("1", r#"{"b":1}"#));
     assert_eq!(again, 1);
 }
 
@@ -1645,5 +1674,82 @@ proptest::proptest! {
                 }
             }
         }
+    }
+}
+
+#[test]
+fn a_string_holding_a_raw_control_character_is_invalid_json() {
+    // A value of JSON text renders no longer than it was written only because of this.
+    for control in ['\u{0}', '\u{1}', '\n', '\u{1f}'] {
+        assert_eq!(
+            refused(&format!("{{\"a\":\"x{control}y\"}}")),
+            "json_invalid"
+        );
+    }
+}
+
+/// The batch `push` shreds into in chunks of `chunk_bytes`, every chunk with room for its
+/// builders, and how many chunks building it parses again.
+fn roomy_batch(push: &str, chunk_bytes: usize) -> (u64, RecordBatch) {
+    let roomy = ShredLimits {
+        admitted: 1 << 20,
+        ..limits()
+    };
+    let pool = crate::compute::Pool::inline();
+    let pushes = vec![Bytes::from(push.to_owned())];
+    let observed = crate::compute::ready(super::observe(&pool, pushes, chunk_bytes, roomy));
+    let observed = observed.unwrap();
+    let rebuilt = observed.counts().rebuilt;
+    let batches = crate::compute::ready(observed.build(&pool)).unwrap();
+    let batch = arrow_select::concat::concat_batches(&batches[0].schema(), &batches).unwrap();
+    (rebuilt, batch)
+}
+
+#[test]
+fn a_float_after_scalars_rendered_as_json_has_its_chunk_parsed_again_exactly() {
+    // An integer beyond 64 bits has the chunk parsed exactly before it is built, which renders
+    // its digits: it is built once.
+    for (float, again) in [("1.50", 1), ("-0", 1), ("18446744073709551616", 0)] {
+        let push = format!("{{\"v\":1}}\n{{\"v\":\"x\"}}\n{{\"v\":{float}}}\n{{\"v\":true}}");
+        let (rebuilt, batch) = roomy_batch(&push, 1 << 20);
+        assert_eq!(rebuilt, again, "{float}");
+        let expected = ["1", "\"x\"", float, "true"].map(|text| Some(text.to_owned()));
+        assert_eq!(texts(&batch, 0), expected, "{float}");
+    }
+}
+
+proptest::proptest! {
+    #[test]
+    fn scalars_of_any_kind_render_into_a_column_of_json_as_they_were_read(
+        text in "\\PC{0,24}|[\\x00-\\x7f]{0,8}",
+        int in proptest::num::i64::ANY,
+        wide in (i64::MAX as u64 + 1)..=u64::MAX,
+        huge in proptest::num::i128::ANY,
+        flag in proptest::bool::ANY,
+        order in proptest::strategy::Strategy::prop_shuffle(proptest::strategy::Just(
+            (0..7).collect::<Vec<usize>>(),
+        )),
+        chunk_bytes in proptest::sample::select(vec![1_usize, 1 << 20]),
+    ) {
+        let huge = huge % 10_i128.pow(38);
+        let kinds = [
+            serde_json::to_string(&text).unwrap(),
+            int.to_string(),
+            wide.to_string(),
+            huge.to_string(),
+            "-1234567890123456789012345678901234567890".to_owned(),
+            flag.to_string(),
+            "null".to_owned(),
+        ];
+        let written: Vec<&String> = order.iter().map(|kind| &kinds[*kind]).collect();
+        let push: Vec<String> = written.iter().map(|value| format!("{{\"v\":{value}}}")).collect();
+        // Built where it is parsed, or fitted to the join: no chunk is parsed again.
+        let (rebuilt, batch) = roomy_batch(&push.join("\n"), chunk_bytes);
+        proptest::prop_assert_eq!(rebuilt, 0);
+        let expected: Vec<Option<String>> = written
+            .iter()
+            .map(|value| (value.as_str() != "null").then(|| (*value).clone()))
+            .collect();
+        proptest::prop_assert_eq!(texts(&batch, 0), expected);
     }
 }

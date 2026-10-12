@@ -1,10 +1,10 @@
 use bytes::Bytes;
 
-use super::{built, fitted, floats_in_json, holds_text, sized};
+use super::{built, fitted, floats_in_json, holds_text, renders_json, sized};
 use crate::shred::observe::{Observed, Shape};
 use crate::shred::records::chunks;
 use crate::shred::tests::limits;
-use crate::shred::{again, join, parse};
+use crate::shred::{ShredLimits, again, conform, join, parse};
 
 /// The shape `text`'s records were observed to hold, and their rows.
 fn observed(text: &str) -> (Shape, u64) {
@@ -23,6 +23,7 @@ const KINDS: &[&str] = &[
     r#"{"j":"x","l":[1,2,3],"m":[[1],[],null],"a":[{"x":1},{"y":"z"},{}],"e":[],"o":null}"#,
     r#"{"g":12345678901234567890123456789012345678901234567890123456789012345678901234567890}"#,
     r#"{"b":null,"t":null,"a":[null,{"x":2,"z":[true]}],"k":[0.5,1.5],"s":["a",null,"bc"]}"#,
+    r#"{"j":"\u0001\u0002\u001f\"\\","t":"\u0001\u0001\u0001\u0001"}"#,
 ];
 
 #[test]
@@ -54,6 +55,69 @@ fn a_batch_built_again_holds_no_more_than_its_build_was_reckoned_to_take() {
             );
         }
     }
+}
+
+#[test]
+fn a_chunk_fitted_to_the_join_holds_no_more_beside_its_columns_than_was_reckoned() {
+    // Room for every chunk's builders, so each keeps its columns.
+    let roomy = ShredLimits {
+        admitted: 1 << 20,
+        ..limits()
+    };
+    for chunk_bytes in [1, 64, 1 << 20] {
+        let pushes: Vec<Bytes> = KINDS.iter().map(|text| Bytes::from(*text)).collect();
+        let mut parsed: Vec<_> = chunks(&pushes, chunk_bytes)
+            .unwrap()
+            .into_iter()
+            .map(|chunk| parse(chunk, roomy, &roomy.beyond()).unwrap())
+            .collect();
+        let (joined, plans, _) = join(&parsed, roomy).unwrap();
+        let mut rendered = 0;
+        for (chunk, plan) in parsed.drain(..).zip(plans) {
+            if plan.again {
+                continue;
+            }
+            let rows = u64::try_from(chunk.rows).unwrap();
+            let text = u64::try_from(chunk.chunk.bytes()).unwrap();
+            let rounding = 3 * 64 * (joined.columns() + 1);
+            let renders = renders_json(&joined, &chunk.shape);
+            rendered += usize::from(renders);
+            let reckoned = fitted(&joined, &chunk.shape, rows) + if renders { text } else { 0 };
+            let own = chunk.record.unwrap().finish_columns().unwrap();
+            let size = |columns: &[arrow_array::ArrayRef]| -> usize {
+                columns
+                    .iter()
+                    .map(|column| column.get_array_memory_size())
+                    .sum()
+            };
+            let fitted = conform::columns(&own, &chunk.shape, &joined, chunk.rows).unwrap();
+            let beside = size(&fitted).saturating_sub(size(&own));
+            assert!(
+                u64::try_from(beside).unwrap() <= reckoned + rounding,
+                "{beside} > {reckoned} in chunks of {chunk_bytes}"
+            );
+        }
+        if chunk_bytes == 1 {
+            assert!(
+                rendered > 0,
+                "a chunk of scalars fitted to a column of JSON"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_chunk_s_scalars_render_into_a_column_of_json_within_its_text() {
+    let (local, rows) = observed(r#"{"a":1,"o":{"p":"x"}}"#);
+    let (other, _) = observed(r#"{"a":{"b":1},"o":{"p":[1]}}"#);
+    let mut joined = local.clone();
+    joined.join(&other);
+    assert!(renders_json(&joined, &local));
+    assert!(!renders_json(&local, &local));
+    // Two offsets and a byte of validity for each column of a single row, its text apart.
+    assert_eq!(fitted(&joined, &local, rows), 2 * (2 * 4 + 1));
+    let (floats, _) = observed(r#"{"a":1.5}"#);
+    assert!(!renders_json(&joined, &floats));
 }
 
 #[test]
