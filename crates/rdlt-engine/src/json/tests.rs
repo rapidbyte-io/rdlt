@@ -2,6 +2,7 @@ use std::borrow::Cow;
 
 use proptest::prelude::*;
 use rdlt_wire::limits::NESTING_DEPTH;
+use sonic_rs::JsonValueTrait as _;
 
 use super::number::PLAIN_BYTES;
 
@@ -325,7 +326,8 @@ fn exact(written: &str) -> (bool, String, i64) {
 
 #[test]
 fn an_exponent_is_within_the_limit_by_its_digits_beside_its_leading_zeros() {
-    use super::{exponent_within, may_hold_long_exponent};
+    use super::exponent_within;
+    let may_hold_long_exponent = |bytes: &[u8]| super::long_numbers(bytes).exponent;
     let digits = "9".repeat(EXPONENT_DIGITS);
     for (written, within) in [
         (format!("1e{digits}"), true),
@@ -348,6 +350,10 @@ fn an_exponent_is_within_the_limit_by_its_digits_beside_its_leading_zeros() {
     ));
     assert!(may_hold_long_exponent(
         format!("\"x1e1{digits}\"").as_bytes()
+    ));
+    // However many such numbers it holds.
+    assert!(may_hold_long_exponent(
+        format!("[1e1{digits},1e1{digits}]").as_bytes()
     ));
 }
 
@@ -373,7 +379,75 @@ fn a_vast_number_s_power_counts_from_its_first_significant_digit() {
     assert_eq!(canonical_number("0.00125e500").unwrap(), "1.25e497");
     // Text that opens with an exponent's letter is no number.
     let digits = "1".repeat(EXPONENT_DIGITS + 1);
-    assert!(!super::may_hold_long_exponent(
-        format!("e{digits}").as_bytes()
-    ));
+    assert!(!super::long_numbers(format!("e{digits}").as_bytes()).exponent);
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(rdlt_testkit::cases(4096)))]
+
+    #[test]
+    fn an_integer_sonic_reads_as_a_float_is_always_found(
+        digits in "[1-9][0-9]{17,40}", sign in prop::bool::ANY, wrap in 0_usize..3,
+    ) {
+        let number = format!("{}{digits}", if sign { "-" } else { "" });
+        let text = match wrap {
+            0 => number.clone(),
+            1 => format!(r#"{{"a":{number}}}"#),
+            _ => format!("[1,{number},2]"),
+        };
+        // As a value of its own, and through serde as the shredder's visitors read it.
+        let read_as_float = matches!(
+            sonic_rs::from_str::<sonic_rs::Value>(&number).map(|v| v.is_f64()),
+            Ok(true)
+        ) || matches!(
+            sonic_rs::from_str::<serde_json::Value>(&number).map(|v| v.is_f64()),
+            Ok(true)
+        );
+        prop_assert!(!read_as_float || super::long_numbers(text.as_bytes()).integer);
+    }
+
+    #[test]
+    fn a_run_of_digits_is_long_by_its_length_alone(
+        digits in "[0-9]{1,40}", before in "[ ,:\\[\"a-z.+-]{0,3}", after in "[ ,\\]}\".eE]{0,3}",
+    ) {
+        let text = format!("{before}{digits}{after}");
+        prop_assert_eq!(super::long_numbers(text.as_bytes()).integer, digits.len() >= 19);
+    }
+}
+
+#[test]
+fn a_run_of_nineteen_digits_or_more_may_be_an_integer_sonic_reads_as_a_float() {
+    for (text, integer) in [
+        ("999999999999999999", false),
+        ("-999999999999999999", false),
+        ("9223372036854775807", true),
+        ("9223372036854775808", true),
+        ("-9223372036854775808", true),
+        ("-9223372036854775809", true),
+        ("18446744073709551616", true),
+        ("{\"a\":-18446744073709551616}", true),
+        ("[1,99999999999999999999,2]", true),
+        ("[18446744073709551616,18446744073709551616]", true),
+        ("123456789.123456789", false),
+        ("1234567890123456789.5", true),
+        ("0.1234567890123456789", true),
+        ("1e123456789012345678", false),
+        ("1e1234567890123456789", true),
+        ("1.5e30", false),
+        ("\"1234567890123456789\"", true),
+    ] {
+        assert_eq!(
+            super::long_numbers(text.as_bytes()).integer,
+            integer,
+            "{text}"
+        );
+    }
+    // Every integer below nineteen digits sonic-rs reads as an integer; from there, some as
+    // floats.
+    let read = |text: &str| sonic_rs::from_str::<serde_json::Value>(text).unwrap();
+    assert!(!read("-999999999999999999").is_f64());
+    assert!(!read("-9223372036854775808").is_f64());
+    assert!(read("-9223372036854775809").is_f64());
+    assert!(!read("18446744073709551615").is_f64());
+    assert!(read("18446744073709551616").is_f64());
 }

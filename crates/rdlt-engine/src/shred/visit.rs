@@ -37,9 +37,13 @@ pub(crate) fn nest<T>(parse: impl FnOnce() -> T) -> T {
 pub(crate) struct Context {
     fault: Cell<Option<ShredError>>,
     spoiled: Cell<bool>,
+    /// Whether the chunk must be parsed again exactly.
     imprecise: Cell<bool>,
     /// Whether the fast parse read a float of zero since this was last asked.
     zeroed: Cell<bool>,
+    /// Whether the fast parse read a whole float of magnitude [`ROUNDED_FROM`] or more since this
+    /// was last asked.
+    rounded: Cell<bool>,
     /// Whether a value of a column that stopped building held a float.
     json_floats: Cell<bool>,
     /// The text of the float the exact parse noted last, which JSON text renders as it was
@@ -53,8 +57,8 @@ pub(crate) struct Context {
     pub(crate) columns: Columns,
 }
 
-/// The smallest magnitude of a float that may be an integer beyond 64 bits the fast parse
-/// rounded: 2⁶³, below which every integer parses exactly.
+/// The smallest magnitude of a float the fast parse may have read from an integer beyond 64 bits,
+/// rounding it: 2⁶³, below which every integer parses exactly.
 const ROUNDED_FROM: f64 = 9_223_372_036_854_775_808.0;
 
 /// The integers a 38-digit decimal holds are below this in magnitude.
@@ -71,6 +75,7 @@ impl Context {
             spoiled: Cell::new(false),
             imprecise: Cell::new(false),
             zeroed: Cell::new(false),
+            rounded: Cell::new(false),
             json_floats: Cell::new(false),
             number: RefCell::new(String::new()),
             noted: Cell::new(false),
@@ -109,7 +114,7 @@ impl Context {
     /// parse reads as zero.
     pub(crate) fn float(&self, value: f64) {
         if value.abs() >= ROUNDED_FROM && value.fract() == 0.0 {
-            self.imprecise.set(true);
+            self.rounded.set(true);
         }
         if value == 0.0 {
             self.zeroed.set(true);
@@ -119,6 +124,12 @@ impl Context {
     /// Whether the parse read a float of zero since this was last asked.
     pub(crate) fn zeroed(&self) -> bool {
         self.zeroed.replace(false)
+    }
+
+    /// Whether the parse read a whole float of magnitude [`ROUNDED_FROM`] or more since this was
+    /// last asked.
+    pub(crate) fn rounded(&self) -> bool {
+        self.rounded.replace(false)
     }
 
     /// Charges an observation `bytes` it holds: within its chunk's allowance, or beyond it as far
@@ -146,7 +157,7 @@ impl Context {
         self.imprecise.set(true);
     }
 
-    /// Whether the parse read a float that may be a rounded integer, or must parse again exactly.
+    /// Whether the chunk must be parsed again exactly.
     pub(crate) fn imprecise(&self) -> bool {
         self.imprecise.get()
     }
