@@ -313,6 +313,48 @@ fn batches_join_apart_where_one_would_hold_more_absent_cells_than_a_fold_makes()
     assert_eq!(folded(&wide, rows).unwrap().len(), MAX_SHAPES + 1);
 }
 
+/// Rows of `ids` that hold 7 in `columns` beside their key and sequence, but for the first
+/// row's first such column where `gap` says so.
+fn holding(ids: std::ops::Range<i64>, columns: std::ops::Range<usize>, gap: bool) -> RecordBatch {
+    let count = usize::try_from(ids.end - ids.start).unwrap();
+    let seqs = ids.clone().map(|id| position(u64::try_from(id).unwrap()));
+    let mut held: Vec<(String, ArrayRef)> = vec![
+        ("id".into(), Arc::new(Int64Array::from_iter_values(ids))),
+        ("seq".into(), Arc::new(BinaryArray::from_iter_values(seqs))),
+    ];
+    let first = columns.start;
+    for column in columns {
+        let lacking = gap && column == first;
+        let values: Int64Array = (0..count)
+            .map(|row| (!(lacking && row == 0)).then_some(7_i64))
+            .collect();
+        held.push((format!("c{column}"), Arc::new(values)));
+    }
+    RecordBatch::try_from_iter(held).expect("a valid batch")
+}
+
+#[test]
+fn batches_join_while_joined_they_hold_at_most_a_fold_s_absent_cells() {
+    // Fifteen larger batches stay as they are. The two smallest, of 1024 rows, hold the two halves
+    // of 1024 columns: joined, each row lacks the other half, exactly a fold's absent cells.
+    let wide = schema(Kind::Upsert, 1024);
+    let fold = |gap: bool| {
+        let mut batches: Vec<RecordBatch> = (0..15_i64)
+            .map(|batch| only(batch * 2_000..(batch + 1) * 2_000, 0))
+            .collect();
+        batches.push(holding(30_000..31_024, 0..512, gap));
+        batches.push(holding(31_024..32_048, 512..1024, false));
+        folded(&wide, batches).unwrap()
+    };
+    let joined = fold(false);
+    assert_eq!(joined.len(), MAX_SHAPES);
+    let last = joined.last().unwrap().columns().iter();
+    let absent = last.map(Array::null_count).sum::<usize>();
+    assert_eq!(absent, usize::try_from(FOLD_CELLS).unwrap());
+    // One more cell without a value, a null written in a column its batch holds, keeps them apart.
+    assert_eq!(fold(true).len(), MAX_SHAPES + 1);
+}
+
 #[test]
 fn folding_commit_after_commit_keeps_each_batch_within_a_fold_s_absent_cells() {
     let width = 1000;
