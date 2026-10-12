@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 550165e90c25e67f2550f25cf16d3a00b10e32ebb31f94182927e350e83ab48b # shrinks to drawn = ([("b", Shape { logical: Timestamp(Millisecond, None), encoding: Plain, children: [] }), ("c", Shape { logical: Struct(Fields([Field { name: "x", logical_type: List(Field { name: "item", logical_type: Int16, nullable: true }), nullable: true }, Field { name: "y", logical_type: List(Field { name: "item", logical_type: Int32, nullable: true }), nullable: true }, Field { name: "z", logical_type: Int8, nullable: true }])), encoding: Plain, children: [Shape { logical: List(Field { name: "item", logical_type: Int16, nullable: true }), encoding: FixedSize(2), children: [Shape { logical: Int16, encoding: Unsigned, children: [] }] }, Shape { logical: List(Field { name: "item", logical_type: Int32, nullable: true }), encoding: LargeView, children: [Shape { logical: Int32, encoding: Unsigned, children: [] }] }, Shape { logical: Int8, encoding: RunEnd, children: [] }] })], [[Null, Null], [Null, Null], [Temporal(70167), Null], [Temporal(-862615800000), Struct([("x", List([Int(112), Null])), ("y", Null), ("z", Int(-46))])]]), from = 3, batch_rows = 3, batch_values = 1
