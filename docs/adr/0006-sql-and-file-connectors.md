@@ -26,10 +26,10 @@ and building them surfaced decisions the spec leaves open.
   reason). While a table's writer appends, its staging is indexed by pipeline, epoch and segment,
   as is the catalog of staged segments, so an append commit finds its own rows, and every commit
   its tables, rows and bytes, without scanning what is staged for later commits or by other
-  pipelines; a load of one commit pays for the index as it stages, about half again its time
-  (docs/perf/sqlite.md). A keyed writer drops the index (ADR 0028): a keyed commit scans its
-  staging and finds each key's rows by its key index, a lookup an index by who staged a row
-  would take.
+  pipelines; a load of one commit pays for the index as it stages, about a third more time (2.74 s
+  against 2.05 s for a million rows; docs/perf/sqlite.md). A keyed writer drops the index
+  (ADR 0028): a keyed commit scans its staging and finds each key's rows by its key index, a
+  lookup an index by who staged a row would take.
 - **Merges delete and insert.** A commit ranks its staged rows per key by sequence, deletes the
   published rows of those keys and inserts the first of each. The writer's `TableRef` decides:
   each staged segment records its merge key, so a table that switches between append and merge
