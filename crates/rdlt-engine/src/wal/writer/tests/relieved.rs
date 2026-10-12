@@ -13,7 +13,7 @@ use super::super::Command;
 use super::{Driving, chunks, drive, frames, load, numbers, pipeline, table};
 
 /// Has the writer publish chunks between commits while each frees anything.
-async fn relieve(log: &Driving) {
+pub(super) async fn relieve(log: &Driving) {
     let (done, answer) = oneshot::channel();
     log.send(Command::Relieve { done }).await;
     answer
@@ -23,7 +23,7 @@ async fn relieve(log: &Driving) {
 }
 
 /// The segments of the batch frames chunk `number` holds.
-fn batches_of(store: &MemoryWal, number: u64) -> Vec<u64> {
+pub(super) fn batches_of(store: &MemoryWal, number: u64) -> Vec<u64> {
     frames(store)
         .into_iter()
         .filter(|(chunk, _)| *chunk == number)
@@ -129,8 +129,7 @@ async fn a_relief_carries_open_frames_out_of_the_chunks_it_has_room_to_copy() {
     drive(Arc::clone(&store), |mut log| async move {
         log.send(table(0)).await;
         // Chunk 0 holds a batch of segment 1 beside five of segment 2; chunk 1 one of segment 3
-        // beside three of segment 4. Each holds more open than settled once 1 and 3 settle, so
-        // no carry follows their receipts.
+        // beside three of segment 4.
         log.batch(1, 0).await;
         for _ in 0..5 {
             log.batch(2, 0).await;
@@ -187,13 +186,13 @@ async fn a_relief_carries_open_frames_out_of_the_chunks_it_has_room_to_copy() {
 }
 
 #[tokio::test]
-async fn a_relief_with_room_for_one_chunk_s_copies_carries_that_chunk_first() {
+async fn a_relief_with_room_for_one_chunk_s_copies_carries_the_one_that_frees_most_first() {
     let store = Arc::new(MemoryWal::default());
     let observed = Arc::clone(&store);
     drive(Arc::clone(&store), |mut log| async move {
         log.send(table(0)).await;
-        // Chunks 0 and 1 each hold a batch of a settled segment beside three of an open one,
-        // which outweigh the rest of their chunk, so the carry after each receipt leaves them.
+        // Chunks 0 and 1 each hold a batch of a settled segment beside three of an open one;
+        // chunk 1's end names chunk 0, so deleting chunk 1 frees more.
         for (number, settled, open) in [(1, 1, 2), (2, 3, 4)] {
             log.batch(settled, 0).await;
             for _ in 0..3 {
@@ -229,10 +228,10 @@ async fn a_relief_with_room_for_one_chunk_s_copies_carries_that_chunk_first() {
         let most = shared.limit.load(Ordering::SeqCst) / crate::limits::LOG_PARTS;
         assert!(6 * frame + 2 * schema <= most, "{frame} {schema} {most}");
         relieve(&log).await;
-        // Chunk 0's open frames went first, and the room that freed copied chunk 1's; the
+        // Chunk 1's open frames went first, and the room that freed copied chunk 0's; the
         // copies were then gathered into one chunk.
         assert_eq!(numbers(&observed), [2, 5]);
-        assert_eq!(batches_of(&observed, 5), [2, 2, 2, 4, 4, 4]);
+        assert_eq!(batches_of(&observed, 5), [4, 4, 4, 2, 2, 2]);
     })
     .await
     .expect("the writer ends");
@@ -298,8 +297,7 @@ async fn a_relief_whose_chunk_takes_no_copy_gathers_open_frames_into_the_next() 
     drive(Arc::clone(&store), |mut log| async move {
         log.send(table(0)).await;
         // Chunk 0 holds a batch of segment 1 beside five of segment 2, chunk 1 one of segment 3
-        // beside three of segment 4, chunk 2 one of segment 6 beside three of segment 7: more
-        // open than settled once 1, 3 and 6 settle, so no carry follows their receipts.
+        // beside three of segment 4, chunk 2 one of segment 6 beside three of segment 7.
         log.batch(1, 0).await;
         for _ in 0..5 {
             log.batch(2, 0).await;
@@ -326,9 +324,9 @@ async fn a_relief_whose_chunk_takes_no_copy_gathers_open_frames_into_the_next() 
         };
         let frame = sized(|frame| matches!(frame, Frame::Batch(_)));
         let schema = sized(|frame| matches!(frame, Frame::Schema(_)));
-        // A chunk holds the open frames of chunks 0 and 1 and a thousand bytes more, but not
-        // those of chunk 2 beside them, nor the chunk staged filled with segment 5's frames
-        // beside any.
+        // A chunk holds eight open frames, two schemas and a thousand bytes more: those of chunks
+        // 1 and 2, or of 0 and 1, but not of all three, nor the chunk staged filled with segment
+        // 5's frames beside any.
         let most = 8 * frame + 2 * schema + 1_000;
         let shared = Arc::clone(log.writer.shared());
         shared.limit.store(8 * most, Ordering::SeqCst);
@@ -342,9 +340,9 @@ async fn a_relief_whose_chunk_takes_no_copy_gathers_open_frames_into_the_next() 
         relieve(&log).await;
         let held = numbers(&observed);
         assert!(!held.contains(&0) && !held.contains(&1), "{held:?}");
-        // The chunk staged is published first, and the open frames of chunks 0 and 1 go to the
-        // next.
-        assert_eq!(batches_of(&observed, 4), [2, 2, 2, 2, 2, 4, 4, 4]);
+        // The chunk staged is published first, and the open frames of the chunks that free the
+        // most go to the next: chunks 2 and 1, whose ends name more chunks.
+        assert_eq!(batches_of(&observed, 4), [7, 7, 7, 4, 4, 4]);
         let fives = held
             .iter()
             .flat_map(|number| batches_of(&observed, *number))
@@ -363,7 +361,7 @@ async fn a_relief_whose_deletion_fails_publishes_the_chunk_staged_and_carries_no
     drive(Arc::clone(&store), |mut log| async move {
         log.send(table(0)).await;
         // Chunk 0 holds a settled segment alone; chunk 1 a batch of segment 1 beside five of
-        // segment 2, more open than settled once 1 settles, so no carry follows its receipt.
+        // segment 2.
         log.batch(9, 0).await;
         log.commit(1, &[9]).await.expect("durable");
         log.batch(1, 0).await;

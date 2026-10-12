@@ -1,13 +1,16 @@
-//! Segments still open when the chunks they began in are otherwise settled: their frames are
-//! carried into the chunk being written, so they keep no settled frame of another segment.
+//! Segments still open when the chunks they began in are otherwise settled: a relief carries
+//! their frames into the chunk it publishes, so they keep no settled frame of another segment.
 
 use std::sync::Arc;
 
 use rdlt_connector::SegmentId;
+use tokio::sync::oneshot;
 
 use super::super::super::frame::Frame;
 use super::super::super::memory::MemoryWal;
 use super::super::super::scan::scan;
+use super::super::Command;
+use super::relieved::relieve;
 use super::{Driving, batch_frame, drive, frames, length, load, numbers, pipeline, table};
 
 /// The segment and ordinal of every batch frame the store holds, in order.
@@ -26,23 +29,23 @@ fn batches(store: &MemoryWal) -> Vec<(u64, u64)> {
 const FRAME_BYTES: u64 = 1 << 28;
 
 #[tokio::test]
-async fn an_open_segment_keeps_no_more_of_other_segments_back_than_itself() {
+async fn a_relief_leaves_an_open_segment_no_settled_frame_of_another_beside_it() {
     let store = Arc::new(MemoryWal::default());
     let observed = Arc::clone(&store);
     drive(Arc::clone(&store), |mut log| async move {
         log.send(table(0)).await;
         // Segment 1000's partition writes a batch between every commit and never seals it;
-        // the others write four a commit and are committed.
+        // the others write four a commit and are committed. A relief follows each round.
         for number in 1..=50_u64 {
             round(&mut log, number, 4, 1).await;
-            // What is kept of committed segments is no more than the open segment holds, beside
-            // the round committed last.
+            relieve(&log).await;
             let kept = batches(&observed);
             let open = kept.iter().filter(|(segment, _)| *segment == 1000).count();
             let settled = kept.len() - open;
-            assert!(
-                settled <= open + 4,
-                "round {number}: {settled} settled, {open} open"
+            assert_eq!(
+                (settled, u64::try_from(open).expect("few")),
+                (0, number),
+                "round {number}"
             );
         }
     })
@@ -78,6 +81,8 @@ async fn a_carried_segment_replays_once_after_the_commit_that_takes_it() {
         for number in 1..=3 {
             round(&mut log, number, 4, 1).await;
         }
+        relieve(&log).await;
+        assert!(log.tally.counters().log.carried > 0, "the relief carried");
         // The open segment is sealed and committed; the destination never answers.
         log.commit(4, &[1000]).await.expect("durable");
     })
@@ -94,23 +99,6 @@ async fn a_carried_segment_replays_once_after_the_commit_that_takes_it() {
 }
 
 #[tokio::test]
-async fn a_chunk_holding_more_of_open_segments_than_of_settled_ones_stays() {
-    let store = Arc::new(MemoryWal::default());
-    drive(Arc::clone(&store), |mut log| async move {
-        log.send(table(0)).await;
-        for number in 1..=3 {
-            // Copying the open batches would cost more than freeing the settled one gives.
-            round(&mut log, number, 1, 2).await;
-        }
-        log.commit(4, &[]).await.expect("durable");
-    })
-    .await
-    .expect("the writer ends");
-    // The writer ends once it deleted all it was to.
-    assert_eq!(numbers(&store), [0, 1, 2, 3]);
-}
-
-#[tokio::test]
 async fn a_failed_deletion_after_a_carry_leaves_one_copy_a_replay_reads() {
     let store = Arc::new(MemoryWal::default());
     let failing = Arc::clone(&store);
@@ -122,33 +110,39 @@ async fn a_failed_deletion_after_a_carry_leaves_one_copy_a_replay_reads() {
         }
         log.batch(1000, 0).await;
         log.commit(2, &[20, 21, 22, 23]).await.expect("durable");
-        // The open segment's frames are carried at the receipt; deleting the chunk they came
-        // from, once the next is published and its commit answered, fails, as a crash between
-        // the two leaves the log.
         log.committed(2).await;
+        // A relief carries the open segment's frames out of chunks 0 and 1; deleting them once
+        // the chunk it carried them to is published fails, as a crash between the two leaves
+        // the log.
         *failing.unremovable.lock() = true;
-        log.commit(3, &[])
-            .await
-            .expect("durable before what it frees is deleted");
+        let (done, answer) = oneshot::channel();
+        log.send(Command::Relieve { done }).await;
+        let relieved = answer.await.expect("the writer answers");
+        assert!(relieved.is_err(), "the deletion failed");
         assert!(
-            log.commit(4, &[]).await.is_err(),
+            log.commit(3, &[]).await.is_err(),
             "the failed deletion fails what follows"
         );
     })
     .await
     .expect("the writer ends");
-    assert_eq!(numbers(&store), [1, 2], "chunk 1 was to go");
-    // The chunk the copies came from is needed no more: a replay reads the copies alone, and
-    // no commit it makes takes the open segment.
-    let scanned = scan(store.as_ref(), &pipeline(), load(), FRAME_BYTES)
+    assert_eq!(numbers(&store), [0, 1, 2], "chunks 0 and 1 were to go");
+    // Chunk 2 holds the copies once, and its end names neither chunk they came from: a replay
+    // never reads the open segment's frames twice, and no commit it makes takes them.
+    let (_, relieved) = frames(&store).pop().expect("chunk 2");
+    let copies = relieved
+        .iter()
+        .filter(|frame| matches!(frame, Frame::Batch(batch) if batch.segment.0 == 1000))
+        .count();
+    assert_eq!(copies, 2);
+    assert!(
+        matches!(relieved.last(), Some(Frame::End(end)) if end.live.is_empty()),
+        "{relieved:?}"
+    );
+    // A replay reads the log a failed deletion leaves.
+    scan(store.as_ref(), &pipeline(), load(), FRAME_BYTES)
         .await
         .expect("the log reads");
-    assert_eq!(scanned.batches[&SegmentId(1000)].len(), 2);
-    assert!(
-        scanned
-            .pending()
-            .all(|logged| !logged.meta.segments.contains(SegmentId(1000)))
-    );
 }
 
 #[tokio::test]
@@ -161,10 +155,11 @@ async fn a_carried_segment_replays_its_batches_in_the_order_they_were_logged() {
             log.batch(segment, 0).await;
         }
         log.commit(1, &[10, 11, 12, 13]).await.expect("durable");
-        // The open segment logs a batch in the next chunk before the receipt carries its first
+        // The open segment logs a batch in the next chunk before a relief carries its first
         // one there after it.
         log.batch(1000, 0).await;
         log.committed(1).await;
+        relieve(&log).await;
         log.commit(2, &[1000]).await.expect("durable");
         // Only the first batch was carried: its table's schema was in the chunk already.
         let first = length(&batch_frame(1000, 0, 0, 1));
@@ -195,8 +190,8 @@ async fn a_segment_open_for_long_holds_back_no_commit_a_replay_never_repeats() {
     let store = Arc::new(MemoryWal::default());
     drive(Arc::clone(&store), |mut log| async move {
         log.send(table(0)).await;
-        // Segment 1000 stays open, and holds more of each chunk than any commit does, so every
-        // chunk stays, commit 1's among them; commits go on.
+        // Segment 1000 stays open, and no relief comes, so every chunk stays, commit 1's among
+        // them; commits go on.
         for number in 1..=4 {
             round(&mut log, number, 1, 2).await;
         }
@@ -226,8 +221,9 @@ async fn a_segment_a_commit_waiting_for_its_receipt_takes_is_not_carried() {
         log.commit(1, &[1]).await.expect("durable");
         log.commit(2, &[2]).await.expect("durable");
         // Commit 1's receipt settles the rest of chunk 0, but segment 2 stays where commit 2
-        // took it.
+        // took it: a relief carries nothing.
         log.committed(1).await;
+        relieve(&log).await;
         log.commit(3, &[]).await.expect("durable");
         assert_eq!(log.tally.counters().log.carried, 0);
     })
@@ -268,6 +264,7 @@ async fn a_carry_that_would_take_the_log_past_what_it_may_hold_is_left_undone() 
             .limit
             .store(held, std::sync::atomic::Ordering::Relaxed);
         log.committed(1).await;
+        relieve(&log).await;
         log.commit(2, &[]).await.expect("durable");
     })
     .await
