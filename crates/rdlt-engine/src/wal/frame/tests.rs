@@ -478,12 +478,84 @@ fn a_logged_batch_beyond_what_a_request_for_lowering_holds_is_refused() {
     };
     decode(&frame(nulls(request)), limits).expect("as many rows as a request holds");
     assert!(decode(&frame(nulls(request + 1)), limits).is_err());
+    // Two columns hold twice the values of their rows.
+    let pairs = |rows: usize| {
+        let column = || Arc::new(NullArray::new(rows)) as arrow_array::ArrayRef;
+        RecordBatch::try_from_iter([("n", column()), ("m", column())]).expect("a batch")
+    };
+    decode(&frame(pairs(request / 2)), limits).expect("as many values as a request holds");
+    let refused = decode(&frame(pairs(request / 2 + 1)), limits).expect_err("too many values");
+    assert!(refused.to_string().contains("batch values"), "{refused}");
     let blob = |bytes: usize| {
         let column = Arc::new(BinaryArray::from_iter_values([vec![7_u8; bytes]]));
         RecordBatch::try_from_iter([("b", column as arrow_array::ArrayRef)]).expect("a batch")
     };
     decode(&frame(blob(request - (1 << 10))), limits).expect("a frame within a request");
     assert!(decode(&frame(blob(request)), limits).is_err());
+}
+
+#[test]
+fn a_logged_dictionary_larger_than_a_connector_s_frame_reads_back_within_a_request() {
+    use arrow_array::types::Int32Type;
+    use arrow_array::{DictionaryArray, Int32Array, StringArray};
+    use arrow_buffer::{Buffer, OffsetBuffer};
+    // At 512 MiB of memory a request holds 128 MiB, and so may the dictionaries of a batch the
+    // engine logs: more than a connector's dictionaries may take.
+    let limits = super::limits(512 << 20);
+    let connector = rdlt_wire::Limits::default().held_dictionary_bytes();
+    let bytes = usize::try_from(connector).expect("fits") + (1 << 10);
+    let values = StringArray::new(
+        OffsetBuffer::from_lengths([bytes]),
+        Buffer::from_vec(vec![b'd'; bytes]),
+        None,
+    );
+    let tags =
+        DictionaryArray::<Int32Type>::try_new(Int32Array::from(vec![0, 0]), Arc::new(values))
+            .expect("a dictionary");
+    let batch = RecordBatch::try_from_iter([("tag", Arc::new(tags) as arrow_array::ArrayRef)])
+        .expect("a batch");
+    let frame = Frame::Batch(Batch {
+        segment: SegmentId(1),
+        table: 0,
+        ordinal: 0,
+        batch,
+    });
+    let bytes = frame.encode().expect("the frame encodes");
+    let read = super::decode(&bytes, limits).expect("it reads back");
+    assert!(read == frame, "the batch reads back as it was logged");
+}
+
+#[test]
+fn a_logged_batch_is_measured_to_hold_what_decoding_it_allocates() {
+    use arrow_array::types::Int32Type;
+    use arrow_array::{DictionaryArray, Int32Array, Int64Array, StringArray};
+    use rdlt_connector::cost::Allocations;
+    let ids = Arc::new(Int64Array::from_iter_values(0..10_000));
+    let tags = Arc::new(StringArray::from_iter_values(
+        (0..1_000).map(|tag| format!("tag {tag}")),
+    ));
+    let keys = Int32Array::from_iter_values((0..10_000).map(|row| row % 1_000));
+    let tagged = DictionaryArray::<Int32Type>::try_new(keys, tags).expect("a dictionary");
+    let batch = RecordBatch::try_from_iter([
+        ("id", ids as arrow_array::ArrayRef),
+        ("tag", Arc::new(tagged) as arrow_array::ArrayRef),
+    ])
+    .expect("a batch");
+    let bytes = Frame::Batch(Batch {
+        segment: SegmentId(1),
+        table: 0,
+        ordinal: 0,
+        batch,
+    })
+    .encode()
+    .expect("the frame encodes");
+    let pending = super::pending(&bytes, limits()).expect("the frame reads");
+    let held = pending.held();
+    let decoded = pending.decode().expect("the batch decodes").batch;
+    // What its buffers and its dictionary's were measured to take before it was decoded, they
+    // take; what else the batch holds is little.
+    let holds = Allocations::of(&decoded).bytes();
+    assert!(held <= holds && holds - held < 1 << 10, "{held} {holds}");
 }
 
 #[test]
