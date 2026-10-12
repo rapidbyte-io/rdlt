@@ -37,6 +37,23 @@ pub enum Corpus {
     /// Rows of an object and of as many items as their id modulo four, each item of two tags,
     /// so the rows normalizing them makes follow from the rows' count alone.
     Orders,
+    /// Nested rows as the elements of one JSON array a push, rather than lines.
+    ArrayForm,
+    /// Nested rows with a column of integers that is an object holding a float in one row of
+    /// four thousand, so a flush joins a column of JSON over chunks that parsed it as integers,
+    /// and parses them again exactly.
+    DriftJson,
+    /// Nested rows with a column of integers that is a string in one row of four thousand, so a
+    /// flush joins a column of JSON over chunks that parsed scalars alone.
+    DriftScalar,
+    /// Rows of an id and sixty-four one-digit integers, whose builders take more than the text
+    /// they come from.
+    IntArrays,
+    /// Rows of integers beyond 64 bits, beyond a decimal's 38 digits and of floats beyond 2⁶³,
+    /// which the fast parse cannot read exactly.
+    BigNumbers,
+    /// Nested rows printed over several lines each, as the elements of one JSON array a push.
+    Pretty,
 }
 
 impl Corpus {
@@ -49,6 +66,16 @@ impl Corpus {
         Self::StringHeavy,
     ];
 
+    /// The cliff corpora: each meets a path the shredder takes for some data alone.
+    pub const CLIFFS: [Self; 6] = [
+        Self::ArrayForm,
+        Self::DriftJson,
+        Self::DriftScalar,
+        Self::IntArrays,
+        Self::BigNumbers,
+        Self::Pretty,
+    ];
+
     /// The corpus's name in benchmark ids.
     pub fn name(self) -> String {
         match self {
@@ -59,13 +86,25 @@ impl Corpus {
             Self::StringHeavy => "string_heavy".to_owned(),
             Self::WithArrays => "with_arrays".to_owned(),
             Self::Orders => "orders".to_owned(),
+            Self::ArrayForm => "array_form".to_owned(),
+            Self::DriftJson => "drift_json".to_owned(),
+            Self::DriftScalar => "drift_scalar".to_owned(),
+            Self::IntArrays => "int_arrays".to_owned(),
+            Self::BigNumbers => "big_numbers".to_owned(),
+            Self::Pretty => "pretty".to_owned(),
         }
     }
 
     /// The corpus's rows until they hold `bytes`, cut into pushes of whole lines of
-    /// [`PUSH_BYTES`] or a little more.
+    /// [`PUSH_BYTES`] or a little more; the array-form corpora give one JSON array a push.
     pub fn pushes(self, bytes: usize) -> Vec<Bytes> {
-        corpus(bytes, PUSH_BYTES, |index, mix| self.row(index, mix))
+        match self {
+            Self::ArrayForm => arrays(bytes, PUSH_BYTES, |index, mix| self.row(index, mix)),
+            Self::Pretty => arrays(bytes, PUSH_BYTES, |index, mix| {
+                pretty(&self.row(index, mix))
+            }),
+            _ => corpus(bytes, PUSH_BYTES, |index, mix| self.row(index, mix)),
+        }
     }
 
     /// The corpus's first `rows` rows, cut into pushes of `per_push` lines, the last of the rest.
@@ -89,13 +128,17 @@ impl Corpus {
     /// The corpus's row `index`, its values drawn from `mix`.
     fn row(self, index: u64, mix: &mut Mix) -> String {
         match self {
-            Self::Nested => nested(index, mix),
+            Self::Nested | Self::ArrayForm | Self::Pretty => nested(index, mix),
             Self::Sparse => sparse(index, mix),
             Self::FlatNarrow => flat_narrow(index, mix),
             Self::Wide(columns) => wide(columns, mix),
             Self::StringHeavy => string_heavy(index, mix),
             Self::WithArrays => with_arrays(index, mix),
             Self::Orders => orders(index),
+            Self::DriftJson => drift_json(index, mix),
+            Self::DriftScalar => drift_scalar(index, mix),
+            Self::IntArrays => int_arrays(index, mix),
+            Self::BigNumbers => big_numbers(index, mix),
         }
     }
 }
@@ -128,6 +171,85 @@ fn corpus(
         pushes.push(Bytes::from(push));
     }
     pushes
+}
+
+/// Rows from `row` until they hold `bytes`, as the elements of one JSON array a push of
+/// `push_bytes` or a little more.
+fn arrays(
+    bytes: usize,
+    push_bytes: usize,
+    mut row: impl FnMut(u64, &mut Mix) -> String,
+) -> Vec<Bytes> {
+    let mut mix = Mix::new(SEED);
+    let mut pushes = Vec::new();
+    let mut push = String::from("[");
+    let (mut total, mut index) = (0, 0);
+    while total < bytes {
+        if push.len() > 1 {
+            push.push_str(",\n");
+        }
+        let element = row(index, &mut mix);
+        total += element.len() + 2;
+        push.push_str(&element);
+        if push.len() >= push_bytes {
+            push.push(']');
+            pushes.push(Bytes::from(std::mem::replace(&mut push, String::from("["))));
+        }
+        index += 1;
+    }
+    if push.len() > 1 {
+        push.push(']');
+        pushes.push(Bytes::from(push));
+    }
+    pushes
+}
+
+/// `row`, a compact JSON object, printed over several lines.
+fn pretty(row: &str) -> String {
+    let value: serde_json::Value = serde_json::from_str(row).expect("a generated row is JSON");
+    serde_json::to_string_pretty(&value).expect("a JSON value prints")
+}
+
+/// A nested row whose `payload` is an integer, but in one row of four thousand an object holding
+/// a float.
+fn drift_json(index: u64, mix: &mut Mix) -> String {
+    let row = nested(index, mix);
+    let payload = if index % 4_000 == 3_999 {
+        format!(r#"{{"ratio":{}.5,"tags":[1,2]}}"#, mix.below(100))
+    } else {
+        mix.below(1 << 20).to_string()
+    };
+    format!(r#"{},"payload":{payload}}}"#, &row[..row.len() - 1])
+}
+
+/// A nested row whose `code` is an integer, but in one row of four thousand a string.
+fn drift_scalar(index: u64, mix: &mut Mix) -> String {
+    let row = nested(index, mix);
+    let code = if index % 4_000 == 3_999 {
+        format!(r#""c{}""#, mix.below(100))
+    } else {
+        mix.below(1_000).to_string()
+    };
+    format!(r#"{},"code":{code}}}"#, &row[..row.len() - 1])
+}
+
+/// A row of an id and sixty-four one-digit integers.
+fn int_arrays(index: u64, mix: &mut Mix) -> String {
+    let values: Vec<String> = (0..64).map(|_| mix.below(10).to_string()).collect();
+    format!(r#"{{"id":{index},"values":[{}]}}"#, values.join(","))
+}
+
+/// A row of numbers the fast parse cannot read exactly: beyond 64 bits, beyond 38 digits, and a
+/// whole float beyond 2⁶³.
+fn big_numbers(index: u64, mix: &mut Mix) -> String {
+    format!(
+        r#"{{"id":{index},"wide":{},"huge":{}{:024},"vast":9{:045},"float":{}.5e30}}"#,
+        10_000_000_000_000_000_000_u64 + index,
+        1 + mix.below(9),
+        index,
+        index,
+        1 + mix.below(9),
+    )
 }
 
 /// Nested rows of about 170 bytes.
