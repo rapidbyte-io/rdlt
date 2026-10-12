@@ -24,9 +24,12 @@ pub(super) struct Runner {
 }
 
 impl Runner {
-    /// A runtime of `cores`' workers, and an engine within `cores` of a budget of 1 GiB that
-    /// loads `stream` as the pipeline `pipeline`, committing every `commit` rows or once at the
-    /// end.
+    /// Bytes: the memory budget a runner has unless it is given one.
+    pub(super) const MEMORY: u64 = 1 << 30;
+
+    /// A runtime of `cores`' workers, and an engine within `cores` of a budget of
+    /// [`Runner::MEMORY`] that loads `stream` as the pipeline `pipeline`, committing every
+    /// `commit` rows or once at the end.
     ///
     /// # Errors
     ///
@@ -41,7 +44,7 @@ impl Runner {
         stream: StreamPlan,
         commit: Option<NonZeroU64>,
     ) -> Result<Self, ComputePoolError> {
-        Self::build(cores, pipeline, stream, commit, None)
+        Self::build(cores, pipeline, stream, commit, Self::MEMORY, None)
     }
 
     /// A runner as [`Runner::try_new`] makes it whose loads are each logged ahead into `store`,
@@ -53,7 +56,27 @@ impl Runner {
         commit: Option<NonZeroU64>,
         store: Arc<dyn WalStore>,
     ) -> Result<Self, ComputePoolError> {
-        Self::build(cores, pipeline, stream, commit, Some(store))
+        Self::build(cores, pipeline, stream, commit, Self::MEMORY, Some(store))
+    }
+
+    /// A runtime and an engine as [`Runner::try_new`] makes them, within a budget of `memory`
+    /// bytes.
+    ///
+    /// # Errors
+    ///
+    /// When the compute pool's threads do not start.
+    ///
+    /// # Panics
+    ///
+    /// Panics where the runtime does not start or `pipeline` is no valid id.
+    pub(super) fn within(
+        cores: Cores,
+        pipeline: &str,
+        stream: StreamPlan,
+        commit: Option<NonZeroU64>,
+        memory: u64,
+    ) -> Result<Self, ComputePoolError> {
+        Self::build(cores, pipeline, stream, commit, memory, None)
     }
 
     fn build(
@@ -61,6 +84,7 @@ impl Runner {
         pipeline: &str,
         stream: StreamPlan,
         commit: Option<NonZeroU64>,
+        memory: u64,
         log: Option<Arc<dyn WalStore>>,
     ) -> Result<Self, ComputePoolError> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -73,7 +97,7 @@ impl Runner {
             None => CommitPolicy::new(None, None, Some(1 << 40)),
         };
         let mut builder = EngineConfig::builder()
-            .memory(1 << 30)
+            .memory(memory)
             .commit(policy.expect("a valid policy"));
         if log.is_some() {
             builder = builder.retry(RetryPolicy::default().max_attempts(1));

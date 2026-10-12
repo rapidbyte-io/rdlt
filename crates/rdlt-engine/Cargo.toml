@@ -134,3 +134,8 @@ required-features = ["bench"]
 name = "allocations"
 harness = false
 required-features = ["bench"]
+
+[[bench]]
+name = "resident"
+harness = false
+required-features = ["bench"]

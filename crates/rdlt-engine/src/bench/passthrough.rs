@@ -12,7 +12,7 @@ use rdlt_connector::{Destination, SegmentId, Source, TableWriter};
 use super::runner::{Runner, stream};
 use super::{Replayed, SinkWriter, Sinking, ipc_sink, logical_bytes, replay};
 use crate::fixtures::events;
-use crate::{ComputePoolError, Cores};
+use crate::{ComputePoolError, Cores, Report};
 
 /// Batches written to the same destination by a bare loop and by the engine, on a runtime and a
 /// compute pool that split the same cores.
@@ -41,8 +41,26 @@ impl Passthrough {
     ///
     /// Panics where the runtime does not start.
     pub fn try_new(cores: Cores, batches: u32, rows: u32) -> Result<Self, ComputePoolError> {
+        Self::within(cores, batches, rows, Runner::MEMORY)
+    }
+
+    /// As [`Passthrough::try_new`], the engine within a budget of `memory` bytes.
+    ///
+    /// # Errors
+    ///
+    /// When the compute pool's threads do not start.
+    ///
+    /// # Panics
+    ///
+    /// Panics where the runtime does not start.
+    pub fn within(
+        cores: Cores,
+        batches: u32,
+        rows: u32,
+        memory: u64,
+    ) -> Result<Self, ComputePoolError> {
         Ok(Self {
-            runner: Runner::try_new(cores, "passthrough", stream(), None)?,
+            runner: Runner::within(cores, "passthrough", stream(), None, memory)?,
             batches: (0..batches)
                 .map(|index| Self::batch(i64::from(index) * i64::from(rows), rows))
                 .collect(),
@@ -85,9 +103,18 @@ impl Passthrough {
     ///
     /// Panics where the run fails.
     pub fn engine_run(&self) -> u64 {
+        self.engine_report().rows
+    }
+
+    /// Runs the engine as [`Passthrough::engine_run`] does; its report.
+    ///
+    /// # Panics
+    ///
+    /// Panics where the run fails, or reports other rows than the batches hold.
+    pub fn engine_report(&self) -> Report {
         let replayed = Replayed::Batches(self.batches.clone());
         let source = self.block_on(replay("passthrough", replayed));
-        self.run(source, self.block_on(ipc_sink()))
+        self.report(source, self.block_on(ipc_sink()))
     }
 
     /// The logical bytes of `batches` batches of `rows` rows, known before they are made: every
@@ -116,8 +143,12 @@ impl Passthrough {
     ///
     /// Panics where the run fails, or reports other rows than the batches hold.
     pub fn run(&self, source: Arc<dyn Source>, destination: Arc<dyn Destination>) -> u64 {
+        self.report(source, destination).rows
+    }
+
+    fn report(&self, source: Arc<dyn Source>, destination: Arc<dyn Destination>) -> Report {
         let report = self.runner.load(source, destination);
         assert_eq!(report.rows, self.rows());
-        report.rows
+        report
     }
 }

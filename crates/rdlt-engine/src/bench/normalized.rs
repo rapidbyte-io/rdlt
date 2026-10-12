@@ -11,7 +11,7 @@ use bytes::Bytes;
 
 use super::runner::{Runner, stream};
 use super::{CHUNK_BYTES, Corpus, Replayed, null_sink, replay};
-use crate::{ComputePoolError, Cores, Nested, SchemaSettings};
+use crate::{ComputePoolError, Cores, Nested, Report, SchemaSettings};
 
 /// The rows of the orders corpus pushed `per_push` a push, normalized through the engine.
 #[derive(Debug)]
@@ -48,9 +48,27 @@ impl Normalized {
         roots: u64,
         per_push: NonZeroU64,
     ) -> Result<Self, ComputePoolError> {
+        Self::within(cores, roots, per_push, Runner::MEMORY)
+    }
+
+    /// As [`Normalized::try_new`], the engine within a budget of `memory` bytes.
+    ///
+    /// # Errors
+    ///
+    /// When the compute pool's threads do not start.
+    ///
+    /// # Panics
+    ///
+    /// Panics where the runtime does not start.
+    pub fn within(
+        cores: Cores,
+        roots: u64,
+        per_push: NonZeroU64,
+        memory: u64,
+    ) -> Result<Self, ComputePoolError> {
         let stream = stream().schema(SchemaSettings::new().nested(Nested::normalize()));
         Ok(Self {
-            runner: Runner::try_new(cores, "normalized", stream, None)?,
+            runner: Runner::within(cores, "normalized", stream, None, memory)?,
             pushes: Corpus::Orders.rows(roots, per_push),
             roots,
         })
@@ -63,6 +81,16 @@ impl Normalized {
     /// Panics where the count does not fit in 64 bits, which happens on no platform Rust supports.
     pub fn bytes(&self) -> u64 {
         let bytes: usize = self.pushes.iter().map(Bytes::len).sum();
+        u64::try_from(bytes).expect("a length fits in 64 bits")
+    }
+
+    /// The bytes of the largest push.
+    ///
+    /// # Panics
+    ///
+    /// Panics where the count does not fit in 64 bits, which happens on no platform Rust supports.
+    pub fn largest_push(&self) -> u64 {
+        let bytes = self.pushes.iter().map(Bytes::len).max().unwrap_or(0);
         u64::try_from(bytes).expect("a length fits in 64 bits")
     }
 
@@ -101,12 +129,21 @@ impl Normalized {
     ///
     /// Panics where the run fails or loads other rows than [`Normalized::rows`].
     pub fn run(&self) -> u64 {
+        self.report().rows
+    }
+
+    /// Runs the engine as [`Normalized::run`] does; its report.
+    ///
+    /// # Panics
+    ///
+    /// Panics where the run fails or loads other rows than [`Normalized::rows`].
+    pub fn report(&self) -> Report {
         let replayed = Replayed::Json(self.pushes.clone());
         let (source, destination) = self
             .runner
             .block_on(async { (replay("normalized", replayed).await, null_sink().await) });
         let report = self.runner.load(source, destination);
         assert_eq!(report.rows, self.rows());
-        report.rows
+        report
     }
 }
