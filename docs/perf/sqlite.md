@@ -31,9 +31,9 @@ and what a merge into a table of a million rows costs.
 
 ## Results
 
-Intel Core Ultra X7 358H, mains power, 2026-10-12, commit `1f4d48a1`, governor `powersave` with
-energy preference `performance`, one-minute load average 0.92–0.98 before the runs; the median of
-three rounds and their range.
+Intel Core Ultra X7 358H, mains power, 2026-10-12, this change on `8b05f0a7`, governor `powersave`
+with energy preference `performance`, one-minute load average 0.92–0.98 before the runs; the median
+of three rounds and their range.
 
 | Case | Time a run | Rounds within ±3 % | Rows a second | `pread64` | `pwrite64` | `fsync` |
 |---|---|---|---|---|---|---|
