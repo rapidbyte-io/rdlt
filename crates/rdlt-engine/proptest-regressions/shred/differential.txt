@@ -5,3 +5,5 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 7230485de423ae6c24b1323d00dcf86c7788cdd29872313da7861a616fa0da50 # shrinks to records = [Object([("c", Array([Array([Int(-9223372036854775808), Null, Null]), Null])), ("b", Object([("d", Float(953110.4692884684)), ("a", Null), ("b", Array([Text("aa"), Null]))]))]), Object([("b", Object([("d", Float(0.0))]))])], cuts = [(0, false)], fault = None, at = 0, chunk_bytes = 1
+cc 3ced2a0ffb5504de33b99f59459812a5e203d9332cebe97e75602a0479646fe5 # shrinks to records = [Object([("b", Object([("c", Array([Text(""), Bool(false)]))]))]), Object([("b", Object([("c", Array([Float(0.0)]))]))]), Object([]), Object([]), Object([]), Object([]), Object([]), Object([])], cuts = [(0, false)], fault = None, at = 0, chunk_bytes = 23
+cc 2b60f73b4e750dc9c192290e8f1e642a5ff231e5a99d0c8e42b43553ceef7fe2 # shrinks to records = [Object([])], cuts = [(0, false)], fault = Some(TooDeepAfterDrift), at = 0, chunk_bytes = 18

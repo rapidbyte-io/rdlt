@@ -1,7 +1,6 @@
 use serde::de::Expected;
 
 use super::{Context, Field, Render, Row, Skip, Value};
-use crate::shred::ShredError;
 use crate::shred::build::{Column, Record};
 use crate::shred::meter::{Columns, Meter};
 use crate::shred::render::Rendering;
@@ -51,6 +50,7 @@ fn every_visitor_says_what_it_expects() {
         expected(&Render {
             rendering: &mut rendering,
             context: &context,
+            depth: 1,
         }),
         "a JSON value"
     );
@@ -67,7 +67,7 @@ fn a_noted_number_is_handed_out_once() {
 }
 
 #[test]
-fn a_float_renders_only_the_note_made_for_it() {
+fn a_float_renders_only_the_note_made_for_it_and_without_one_is_left_unwritten() {
     let context = Context::new(Meter::reserved(), Columns::new(u64::MAX));
     let render = |text: &str| {
         let mut rendering = Rendering::default();
@@ -75,12 +75,12 @@ fn a_float_renders_only_the_note_made_for_it() {
         let render = Render {
             rendering: &mut rendering,
             context: &context,
+            depth: 1,
         };
-        serde::de::DeserializeSeed::deserialize(render, &mut deserializer)
-            .map(|()| rendering.text)
-            .map_err(|_| context.fault())
+        serde::de::DeserializeSeed::deserialize(render, &mut deserializer).unwrap();
+        (rendering.text, rendering.unwritten)
     };
     context.note_number("1.50");
-    assert_eq!(render("1.5"), Ok("1.50".to_owned()));
-    assert!(matches!(render("2.5"), Err(Some(ShredError::Internal(_)))));
+    assert_eq!(render("1.5"), ("1.50".to_owned(), false));
+    assert_eq!(render("[2.5]"), ("[]".to_owned(), true));
 }

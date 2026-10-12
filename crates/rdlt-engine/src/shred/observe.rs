@@ -179,6 +179,15 @@ impl Observed {
         }
     }
 
+    /// Whether a column of JSON text renders the values as they were read, without the text they
+    /// were written as: scalars but floats, which render as they were written.
+    pub(crate) fn renders_as_read(&self) -> bool {
+        matches!(
+            self,
+            Self::Bool | Self::Int { .. } | Self::Wide | Self::Huge | Self::Vast | Self::Text
+        )
+    }
+
     /// Whether the values hold a float, at any depth.
     pub(crate) fn floats(&self) -> bool {
         match self {

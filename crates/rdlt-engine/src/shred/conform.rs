@@ -2,9 +2,11 @@
 //! chunk again.
 //!
 //! A chunk's own shape differs from the joined one whenever it lacks a column other chunks have,
-//! holds only nulls in one, meets the columns in another order, or holds integers other chunks
-//! widen to floats or decimals. None of those needs the values again: the columns are reordered
-//! by name, the missing and null ones become nulls of the joined type, and integers are cast.
+//! holds only nulls in one, meets the columns in another order, holds integers other chunks
+//! widen to floats or decimals, or holds scalars but floats in a column other chunks made `Json`.
+//! None of those needs the chunk's text again: the columns are reordered by name, the missing and
+//! null ones become nulls of the joined type, integers are cast, and scalars are rendered as
+//! JSON text as they were read.
 
 #[cfg(test)]
 mod tests;
@@ -23,6 +25,7 @@ use super::observe::{Observed, Shape};
 pub(crate) fn fits(local: &Observed, joined: &Observed) -> bool {
     match (local, joined) {
         (Observed::Null, _) | (Observed::Int { .. }, Observed::Float | Observed::Wide) => true,
+        (local, Observed::Json) if local.renders_as_read() => true,
         (Observed::Object(local), Observed::Object(joined)) => shape_fits(local, joined),
         (Observed::Array(local, _), Observed::Array(joined, _)) => fits(local, joined),
         (local, joined) => local.logical_type() == joined.logical_type(),
@@ -92,6 +95,7 @@ fn fit(array: &ArrayRef, local: &Observed, joined: &Observed) -> Result<ArrayRef
         (Observed::Int { .. }, Observed::Float | Observed::Wide) => {
             arrow_cast::cast(array, &joined.logical_type().to_arrow()).map_err(failed)
         }
+        (local, Observed::Json) if local.renders_as_read() => Ok(super::render::json_text(array)),
         _ => Ok(Arc::clone(array)),
     }
 }

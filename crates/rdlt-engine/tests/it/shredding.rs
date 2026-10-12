@@ -73,12 +73,12 @@ fn wide_object(first: usize, count: usize, value: &str) -> String {
 
 #[tokio::test(start_paused = true)]
 async fn a_stream_reports_the_passes_shredding_its_committed_json_took() {
-    // A hundred records of an integer, then a hundred of a string, which spoils the column: the
+    // A hundred records of an integer, then a hundred of an object, which spoils the column: the
     // chunk is parsed once and built again as JSON text. The note makes the chunk's text hold
     // what its builders take.
     let note = "x".repeat(64);
     let records = |value: &str| vec![format!("{{\"a\":{value},\"n\":\"{note}\"}}"); 100].join("\n");
-    let text = format!("{}\n{}", records("1"), records("\"x\""));
+    let text = format!("{}\n{}", records("1"), records(r#"{"b":1}"#));
     let (_, outcome) = run("shred_counts", 1 << 30, text).await;
     assert!(outcome.error.is_none(), "{:?}", outcome.error);
     let shred = ShredCounts {

@@ -389,7 +389,15 @@ fn join(parsed: &[Parsed], limits: ShredLimits) -> Result<(Shape, Vec<Plan>, u64
         } else {
             let fitted = cost::fitted(&joined, &chunk.shape, rows);
             let arrays = cost::arrays(&joined, Some(&chunk.shape));
-            chunk.spent.saturating_add(fitted).saturating_add(arrays)
+            // Values rendered as JSON text take no more than the text they were read from.
+            let rendered = if cost::renders_json(&joined, &chunk.shape) {
+                bytes
+            } else {
+                0
+            };
+            (chunk.spent.saturating_add(fitted))
+                .saturating_add(arrays)
+                .saturating_add(rendered)
         };
         takes = takes.saturating_add(held);
         admitted = admitted.saturating_add(bytes.saturating_mul(limits.admitted));

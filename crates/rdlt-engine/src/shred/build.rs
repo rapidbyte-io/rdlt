@@ -3,9 +3,11 @@
 //!
 //! A column starts as nulls and takes the type of its first value. A later value of a wider type
 //! the column can take without loss (a float after exact integers, a large unsigned integer after
-//! integers) converts it. Any other makes the column `Json`, which it cannot build without the
-//! values it already took, so the column stops building and the chunk is built again once the
-//! push's shape is known.
+//! integers) converts it. Any other makes the column `Json`. A column of scalars but floats
+//! renders the values it took as JSON text, which holds them as they were read, and goes on as a
+//! column of JSON. Any other column cannot build `Json` without the values it took (a float's
+//! text as it was written, an object, an array), so it stops building and the chunk is built
+//! again once the push's shape is known.
 //!
 //! A builder is presized for the rows of its level and charged for them when it is made; a level
 //! that holds more grows its builders as they would grow themselves, doubling, and is charged for
@@ -22,8 +24,11 @@ use arrow_array::builder::{
     ArrayBuilder, BooleanBuilder, Decimal128Builder, Decimal256Builder, Float64Builder,
     Int64Builder, StringBuilder,
 };
-use arrow_array::{ArrayRef, NullArray};
+use arrow_array::cast::AsArray;
+use arrow_array::types::{Decimal128Type, Decimal256Type, Int64Type};
+use arrow_array::{Array, ArrayRef, NullArray};
 use arrow_buffer::i256;
+use arrow_schema::DataType;
 use rdlt_wire::limits::count;
 
 use super::ShredError;
@@ -296,6 +301,51 @@ impl Column {
         Ok(())
     }
 
+    /// Whether a column of JSON text renders the column's values as they were read.
+    pub(crate) fn renders_as_read(&self) -> bool {
+        matches!(
+            self,
+            Self::Bool(_)
+                | Self::Int { .. }
+                | Self::Wide(_)
+                | Self::Huge(_)
+                | Self::Vast(_)
+                | Self::Text(..)
+        )
+    }
+
+    /// Makes the column, one that renders as it was read, a column of JSON text holding its
+    /// values, sized for `capacity` rows and charged to `meter`: a value joined its type to
+    /// `Json`.
+    ///
+    /// # Errors
+    ///
+    /// [`Over`] where the meter has no room for the column of JSON text.
+    pub(crate) fn render(&mut self, capacity: usize, meter: &Meter) -> Result<(), Over> {
+        let built: ArrayRef = match self {
+            Self::Bool(builder) => Arc::new(builder.finish()),
+            Self::Int { builder, .. } => Arc::new(builder.finish()),
+            Self::Wide(builder) | Self::Huge(builder) => Arc::new(builder.finish()),
+            Self::Vast(builder) => Arc::new(builder.finish()),
+            Self::Text(builder, _) => Arc::new(builder.finish()),
+            _ => return Ok(()),
+        };
+        let mut json = Self::new(&Observed::Json, 0, capacity.max(built.len()), meter)?;
+        let mut text = String::new();
+        for row in 0..built.len() {
+            text.clear();
+            match scalar_at(&built, row) {
+                Some(value) => {
+                    super::render::scalar(value, &mut text);
+                    json.json(&text, meter)?;
+                }
+                None => json.null(meter)?,
+            }
+        }
+        *self = json;
+        Ok(())
+    }
+
     /// Stops building: a value joined the column's type to `Json`.
     pub(crate) fn spoil(&mut self) {
         *self = Self::Spoiled;
@@ -360,6 +410,26 @@ impl Column {
             }
         };
         Ok(array)
+    }
+}
+
+/// The value at `row` of `array`, a column built of scalars that render as they were read, or
+/// `None` for a null; a column of any other type reads as nulls.
+pub(crate) fn scalar_at(array: &dyn Array, row: usize) -> Option<Scalar<'_>> {
+    if array.is_null(row) {
+        return None;
+    }
+    match array.data_type() {
+        DataType::Boolean => Some(Scalar::Bool(array.as_boolean().value(row))),
+        DataType::Int64 => Some(Scalar::Int(array.as_primitive::<Int64Type>().value(row))),
+        DataType::Decimal128(..) => Some(Scalar::Huge(
+            array.as_primitive::<Decimal128Type>().value(row),
+        )),
+        DataType::Decimal256(..) => Some(Scalar::Vast(
+            array.as_primitive::<Decimal256Type>().value(row),
+        )),
+        DataType::Utf8 => Some(Scalar::Text(array.as_string::<i32>().value(row))),
+        _ => None,
     }
 }
 
