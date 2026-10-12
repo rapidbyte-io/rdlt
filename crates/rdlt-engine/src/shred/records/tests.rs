@@ -74,6 +74,30 @@ fn chunks_end_at_the_record_that_fills_them_across_pushes() {
 }
 
 #[test]
+fn an_array_closes_its_chunk_only_where_its_last_part_fills_it() {
+    // Seven bytes an element and one between, ten a chunk: the chunk closes at every second
+    // element. The second array's last element fills nothing, so the line after it joins it.
+    assert_eq!(
+        found(
+            &["[{\"a\":1},{\"a\":2},{\"a\":3},{\"a\":4}]", "{\"a\":5}\n"],
+            10
+        ),
+        [
+            vec!["{\"a\":1}", "{\"a\":2}"],
+            vec!["{\"a\":3}", "{\"a\":4}"],
+            vec!["{\"a\":5}"],
+        ]
+    );
+    assert_eq!(
+        found(&["[{\"a\":1},{\"a\":2},{\"a\":3}]", "{\"a\":4}\n"], 10),
+        [
+            vec!["{\"a\":1}", "{\"a\":2}"],
+            vec!["{\"a\":3}", "{\"a\":4}"],
+        ]
+    );
+}
+
+#[test]
 fn lines_are_cut_at_the_first_line_end_past_each_chunk_s_bytes() {
     let push = Bytes::from_static(b"{\"a\":1}\n{\"a\":22}\n{\"a\":333}\n{\"a\":4444}\n");
     let chunks = chunks(&[push], 10).unwrap();
