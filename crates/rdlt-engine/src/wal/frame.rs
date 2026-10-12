@@ -249,8 +249,11 @@ impl Framing {
         self.out.len()
     }
 
-    /// The frames.
+    /// The frames, holding exactly their bytes, which is what the budget charges.
     pub(crate) fn finish(self) -> Bytes {
+        if self.out.capacity() > self.out.len() {
+            return Bytes::copy_from_slice(&self.out);
+        }
         self.out.freeze()
     }
 
