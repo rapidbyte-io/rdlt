@@ -187,6 +187,58 @@ async fn a_relief_carries_open_frames_out_of_the_chunks_it_has_room_to_copy() {
 }
 
 #[tokio::test]
+async fn a_relief_with_room_for_one_chunk_s_copies_carries_that_chunk_first() {
+    let store = Arc::new(MemoryWal::default());
+    let observed = Arc::clone(&store);
+    drive(Arc::clone(&store), |mut log| async move {
+        log.send(table(0)).await;
+        // Chunks 0 and 1 each hold a batch of a settled segment beside three of an open one,
+        // which outweigh the rest of their chunk, so the carry after each receipt leaves them.
+        for (number, settled, open) in [(1, 1, 2), (2, 3, 4)] {
+            log.batch(settled, 0).await;
+            for _ in 0..3 {
+                log.batch(open, 0).await;
+            }
+            log.commit(number, &[settled]).await.expect("durable");
+        }
+        log.committed(1).await;
+        log.committed(2).await;
+        // Chunk 2 holds a large batch whose commit waits for its receipt: it holds most of the
+        // log, so a chunk may hold the open frames of chunks 0 and 1 together.
+        log.rows(5, 0, 40_000).await;
+        log.commit(3, &[5]).await.expect("durable");
+        assert_eq!(numbers(&observed), [0, 1, 2]);
+        let sized = |kind: fn(&Frame) -> bool| {
+            let frame = frames(&observed)[1]
+                .1
+                .iter()
+                .find(|frame| kind(frame))
+                .cloned();
+            let frame = frame.expect("a frame").encode().expect("encodes");
+            u64::try_from(frame.len()).expect("a length")
+        };
+        let frame = sized(|frame| matches!(frame, Frame::Batch(_)));
+        let schema = sized(|frame| matches!(frame, Frame::Schema(_)));
+        // Room to copy one chunk's open frames and schema, not both chunks'.
+        let shared = Arc::clone(log.writer.shared());
+        let held = shared.held.load(Ordering::SeqCst);
+        let closing = shared.closing.load(Ordering::SeqCst);
+        shared
+            .limit
+            .store(held + 3 * frame + schema + closing, Ordering::SeqCst);
+        let most = shared.limit.load(Ordering::SeqCst) / crate::limits::LOG_PARTS;
+        assert!(6 * frame + 2 * schema <= most, "{frame} {schema} {most}");
+        relieve(&log).await;
+        // Chunk 0's open frames went first, and the room that freed copied chunk 1's; the
+        // copies were then gathered into one chunk.
+        assert_eq!(numbers(&observed), [2, 5]);
+        assert_eq!(batches_of(&observed, 5), [2, 2, 2, 4, 4, 4]);
+    })
+    .await
+    .expect("the writer ends");
+}
+
+#[tokio::test]
 async fn a_relief_with_nothing_to_copy_frees_a_log_a_commit_took_past_its_bound() {
     let store = Arc::new(MemoryWal::default());
     let observed = Arc::clone(&store);
