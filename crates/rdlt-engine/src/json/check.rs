@@ -76,6 +76,18 @@ fn holds_json(data_type: &DataType) -> bool {
     }
 }
 
+/// `field` marked as a column of JSON.
+#[cfg(any(test, feature = "bench"))]
+pub(crate) fn marked_json(field: Field) -> Field {
+    field.with_metadata([("ARROW:extension:name".to_owned(), "arrow.json".to_owned())].into())
+}
+
+/// A column of JSON text named `name`, as [`check_batch`] reads one.
+#[cfg(feature = "bench")]
+pub(crate) fn bench_field(name: &str) -> Field {
+    marked_json(Field::new(name, DataType::Utf8, false))
+}
+
 /// Whether `field` is a column of JSON: the JSON extension over text, as it is or encoded.
 fn is_json(field: &Field) -> bool {
     rdlt_connector::Field::extension_type(field) == Some(LogicalType::Json)

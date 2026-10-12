@@ -23,7 +23,8 @@ use arrow_array::RecordBatch;
 use rdlt_engine::Cores;
 use rdlt_engine::bench::{
     CHUNK_BYTES, CORPUS_BYTES, Corpus, Form, Logged, Lowering, Normalized, Passthrough, Replayed,
-    Wide, counted, memory_wal, normalize, null_sink, pruned, replay, sample_log, scan_log, shred,
+    Wide, check_json, counted, json_column, memory_wal, normalize, null_sink, pruned, replay,
+    sample_log, scan_log, shred,
 };
 use rdlt_wire::{Decoder, Encoder, Limits};
 use stats_alloc::{INSTRUMENTED_SYSTEM, StatsAlloc};
@@ -58,7 +59,7 @@ const LAYOUT: Cores = Cores::new(
 type Case = (&'static str, fn(usize));
 
 /// Every case the instruction counts run.
-const CASES: [Case; 27] = [
+const CASES: [Case; 28] = [
     ("passthrough/null_sink", passed_through),
     ("shred/nested", |times| shredded(Corpus::Nested, times)),
     ("shred/with_arrays", |times| {
@@ -101,6 +102,7 @@ const CASES: [Case; 27] = [
     ("wal/scan", log_scanned),
     ("wal/logged", logged_load),
     ("ipc/roundtrip", round_tripped),
+    ("json/check", json_checked),
     ("lowering/history", |times| lowered("history", times)),
     ("lowering/changes", |times| lowered("changes", times)),
     ("lowering/one_bad_value", |times| {
@@ -414,6 +416,14 @@ fn log_scanned(times: usize) {
     let log = sample_log(Passthrough::batch(0, ROWS));
     for _ in 0..times {
         black_box(scan_log(&log).expect("the log reads back"));
+    }
+}
+
+/// Checking a column of [`ROWS`] escaped JSON values.
+fn json_checked(times: usize) {
+    let batch = json_column(ROWS as usize, true);
+    for _ in 0..times {
+        check_json(&batch).expect("the column is JSON");
     }
 }
 

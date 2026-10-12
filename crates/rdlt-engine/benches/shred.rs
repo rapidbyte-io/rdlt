@@ -15,8 +15,8 @@ use arrow_schema::{DataType, Field as ArrowField, Schema, SchemaRef};
 use bytes::Bytes;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use rdlt_engine::bench::{
-    CHUNK_BYTES, CORPUS_BYTES, Corpus, PUSH_BYTES, normalize, pool_cores, shred, shred_counted,
-    shred_on,
+    CHUNK_BYTES, CORPUS_BYTES, Corpus, PUSH_BYTES, check_json, json_column, logical_bytes,
+    normalize, pool_cores, shred, shred_counted, shred_on,
 };
 use rdlt_engine::{Cores, Env, SystemEnv};
 
@@ -222,12 +222,29 @@ fn normalizing(c: &mut Criterion) {
     group.finish();
 }
 
+/// The check of a column of JSON, plain and with escapes, as an Arrow push's is checked.
+fn json_checking(c: &mut Criterion) {
+    let mut group = c.benchmark_group("json_check");
+    group.sample_size(10);
+    for (name, escaped) in [("plain", false), ("escaped", true)] {
+        let batch = json_column(100_000, escaped);
+        group.throughput(Throughput::Bytes(logical_bytes(std::slice::from_ref(
+            &batch,
+        ))));
+        group.bench_function(name, |b| {
+            b.iter(|| check_json(&batch).expect("the column is JSON"));
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     single_core,
     cliffs,
     many_cores,
     arrow_json_fast_path,
-    normalizing
+    normalizing,
+    json_checking
 );
 criterion_main!(benches);
