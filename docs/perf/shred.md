@@ -111,14 +111,14 @@ invocation started at a one-minute load average of at most 1.0 with its cores id
 and each round of every engine figure lies within 3 % of the median. A third round ran later under
 other load on the machine and is left out (the owner's ruling of 2026-10-10).
 
-The One core, Cliffs, Columns of JSON and Normalizing tables come from commit `1a0c4cc5`,
+The One core, Cliffs, Columns of JSON and Normalizing tables come from this change on `3c0260b2`,
 2026-10-12, on core 0: four rounds of `shred/nested`, `shred/wide_200`, `shred/string_heavy` and
-`normalize/keyless`, and two of every other benchmark, the first two of the four. The rounds
-started at one-minute load averages of 2.81, 2.52, 2.92 and 6.21. Each figure is the median of
-every run of its benchmark, with the range of the runs in brackets.
+`normalize/keyless`, and two of every other benchmark, the first two of the four. The rounds started
+at one-minute load averages of 2.81, 2.52, 2.92 and 6.21. Each figure is the median of every run of
+its benchmark, with the range of the runs in brackets.
 
-The `normalize/*` rows of the Allocations table come from commit `a40d359e`, 2026-10-11: five
-rounds interleaved with the merge-base in alternating orders, each started at a one-minute load
+The `normalize/*` rows of the Allocations table come from this change on `3c0260b2`, 2026-10-11:
+five rounds interleaved with the merge-base in alternating orders, each started at a one-minute load
 average of 0.38 to 0.97, the median with its range in brackets.
 
 ### Against the old engine
@@ -129,7 +129,7 @@ average of 0.38 to 0.97, the median with its range in brackets.
 
 ### One core
 
-Commit `1a0c4cc5`, 2026-10-12, rounds as above.
+This change on `3c0260b2`, 2026-10-12, rounds as above.
 
 | Corpus | Throughput | Instructions a cycle |
 |---|---|---|
@@ -141,11 +141,11 @@ Commit `1a0c4cc5`, 2026-10-12, rounds as above.
 
 ### More cores
 
-This change on `6caed3b0`, 2026-10-12, cores `0-3` (performance), three rounds interleaved with the
-merge-base in alternating orders, started at one-minute load averages of 2.65, 3.96 and 1.79 (the
-merge-base's 2.95, 2.78 and 1.22); the median, with the range in brackets. Each 8 MiB push is a
-call. The process was pinned to cores `0-3` for all three rows, so the pools of N = 1 and 2
-had cores to spare. Efficient cores were not run in this record.
+The record scan of this change alone on `3c0260b2`, 2026-10-12, cores `0-3` (performance), three
+rounds interleaved with the merge-base in alternating orders, started at one-minute load averages of
+2.65, 3.96 and 1.79 (the merge-base's 2.95, 2.78 and 1.22); the median, with the range in brackets.
+Each 8 MiB push is a call. The process was pinned to cores `0-3` for all three rows, so the pools of
+N = 1 and 2 had cores to spare. Efficient cores were not run in this record.
 
 | Cores | N | tokio workers + compute threads | Throughput | Against N = 1 | Spec's bound |
 |---|---|---|---|---|---|
@@ -158,8 +158,8 @@ The bound of 0.7·N at N = 4 is 2.8×, which this change does not reach.
 ### Cliffs
 
 Where the shredder parses a chunk again, observes it, or reads its numbers exactly, on one core
-(`0`), `shred_cliffs`. Commit `1a0c4cc5`, 2026-10-12, rounds as above. The pass counts are the
-same in every round, over 32 MiB in 1 MiB chunks.
+(`0`), `shred_cliffs` with this change on `3c0260b2`, 2026-10-12, rounds as above. The pass counts
+are the same in every round, over 32 MiB in 1 MiB chunks.
 
 | Corpus | Throughput | Instructions a cycle | Parsed | Tripped | Observed | Rebuilt | Exact |
 |---|---|---|---|---|---|---|---|
@@ -210,7 +210,7 @@ A normalized stream's batches are split into child tables after shredding, and e
 its lineage. The `normalize` group measures it on one core, on `with_arrays`: `shred_only`
 shreds it; `keyed` shreds and normalizes rows identified by their `id`; `keyless` shreds and
 normalizes rows identified by their whole content, whose canonical encoding is the extra cost.
-Commit `1a0c4cc5`, 2026-10-12, rounds as above.
+This change on `3c0260b2`, 2026-10-12, rounds as above.
 
 | Group | Time | Throughput | Against `shred_only` |
 |---|---|---|---|
@@ -253,8 +253,8 @@ The shredder checks the remaining stack at every level of nesting. `stacker::may
 
 ### Build target
 
-The build target is the default, x86-64. A build for x86-64-v3 (`-C target-cpu=x86-64-v3`) of
-`1a0c4cc5`, run against the default build on core 0 in the first two rounds above, is faster on 15
-of the 16 benchmarks, by 3 % (`shred/nested`) to 13 % (`shred/string_heavy`), and slower on
-`shred_cliffs/int_arrays` in both rounds: 534 ms against 507 ms, 5.3 % slower. It would also
-exclude CPUs older than Haswell, so the default stays.
+The build target is the default, x86-64. A build for x86-64-v3 (`-C target-cpu=x86-64-v3`) of this
+change on `3c0260b2`, run against the default build on core 0 in the first two rounds above, is
+faster on 15 of the 16 benchmarks, by 3 % (`shred/nested`) to 13 % (`shred/string_heavy`), and
+slower on `shred_cliffs/int_arrays` in both rounds: 534 ms against 507 ms, 5.3 % slower. It would
+also exclude CPUs older than Haswell, so the default stays.
