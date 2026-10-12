@@ -34,6 +34,10 @@ const SNAPSHOT_ROWS: u64 = 3;
 /// Where the changes start, past the position the snapshot captured.
 const CAPTURED: u64 = 100;
 
+/// How long certifying a log deaf to a stop takes at most: its read is given up on as the stop
+/// window passes, long before the clause's own bound.
+const GIVEN_UP: Duration = Duration::from_mins(1);
+
 #[derive(Default, Deserialize, JsonSchema)]
 #[serde(default)]
 #[expect(
@@ -283,7 +287,7 @@ async fn a_change_log_whose_slot_moves_but_where_it_was_told_fails_s_ack() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_change_log_that_waits_for_changes_deaf_to_a_stop_fails_s_stop() {
+async fn a_change_log_that_waits_for_changes_deaf_to_a_stop_fails_s_stop_as_its_window_passes() {
     let deaf = [
         json!({ "name": "log_deaf", "deaf": true }),
         // Its changes follow a snapshot and a catch-up.
@@ -292,7 +296,9 @@ async fn a_change_log_that_waits_for_changes_deaf_to_a_stop_fails_s_stop() {
         json!({ "name": "log_deaf_slow", "deaf": true, "slow_start": true }),
     ];
     for config in deaf {
-        let report = certify_source::<Log>(config.clone()).await;
+        let report = tokio::time::timeout(GIVEN_UP, certify_source::<Log>(config.clone()))
+            .await
+            .expect("the deaf read is given up on as its stop window passes");
         assert!(
             matches!(report.outcome("S-STOP"), Some(Outcome::Failed(_))),
             "{config}: {report}"

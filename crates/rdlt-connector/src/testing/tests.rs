@@ -611,6 +611,7 @@ struct VaultConfig {
     publish_on_write: bool,
     keep_staging: bool,
     no_fence: bool,
+    /// Refuses a commit, or a claim of a table, by a session a newer one fenced as a data error.
     wrong_fence_kind: bool,
     refuse_connect: bool,
     forget_receipts: bool,
@@ -840,6 +841,15 @@ impl VaultConfig {
         }
     }
 
+    /// The refusal of what a session a newer one fenced does, as `wrong_fence_kind` shapes it.
+    fn fenced(&self, message: &str) -> ConnectorError {
+        if self.wrong_fence_kind {
+            ConnectorError::data(message)
+        } else {
+            ConnectorError::fenced(message)
+        }
+    }
+
     /// The pipeline's current epoch, from the store this configuration keeps epochs in.
     fn epoch(&self, shared: &VaultStore, stores: &VaultStores, pipeline: &PipelineId) -> u64 {
         let epochs = |store: &VaultStore| store.epochs.get(pipeline).copied().unwrap_or_default();
@@ -1000,13 +1010,13 @@ impl DestinationConnector for Vault {
 
 impl VaultSession {
     /// Claims `table` for the session's pipeline, as the vault's flags allow: a claim of a table
-    /// no pipeline owns by a session a newer one fenced is refused as fenced, unless
-    /// `stale_claims`.
+    /// no pipeline owns by a session a newer one fenced is refused as fenced, or as a data error
+    /// under `wrong_fence_kind`, unless `stale_claims`.
     fn claimed(&self, store: &mut VaultStore, table: &str) -> Result<()> {
         let owned = store.owners.contains_key(table);
         let current = self.config.epoch(store, &self.stores, &self.pipeline);
         if !owned && current != self.epoch && !self.config.stale_claims {
-            return Err(ConnectorError::fenced("a newer session opened"));
+            return Err(self.config.fenced("a newer session opened"));
         }
         store
             .claim(&self.pipeline, table, self.config.share_tables)
@@ -1338,12 +1348,7 @@ impl Session for VaultSession {
         let mut store = self.stores.shared.lock().unwrap();
         let current = self.config.epoch(&store, &self.stores, &self.pipeline);
         if !self.config.no_fence && current != self.epoch {
-            let error = if self.config.wrong_fence_kind {
-                ConnectorError::data("stale")
-            } else {
-                ConnectorError::fenced("stale")
-            };
-            return Err(error);
+            return Err(self.config.fenced("stale"));
         }
         let key = (self.pipeline.clone(), meta.load_id, meta.commit_seq);
         let recall = !self.config.republish && !self.config.forget_receipts;
@@ -1629,6 +1634,7 @@ impl VaultConfig {
             trust_times: self.history_trusts_times,
             clamp_by_starts: self.history_clamps_by_starts,
             clamp_by_ends: self.history_clamps_by_ends,
+            skip_unkeyed: self.skip_unkeyed,
         }
     }
 
@@ -1922,7 +1928,7 @@ const BROKEN: &[(&str, &[&str])] = &[
     ("keep_staging", &["D-DISCARD"]),
     ("keep_abandoned", &["D-DISCARD"]),
     ("no_fence", &["D-FENCE"]),
-    ("wrong_fence_kind", &["D-FENCE"]),
+    ("wrong_fence_kind", &["D-DROP", "D-FENCE"]),
     ("forget_receipts", &["D-IDEMPOTENT"]),
     ("forget_at_horizon", &["D-IDEMPOTENT"]),
     ("forget_others", &["D-IDEMPOTENT"]),
@@ -1992,7 +1998,7 @@ const BROKEN: &[(&str, &[&str])] = &[
     ("truncate_everything", &["D-TRUNCATE"]),
     ("hard_on_soft", &["D-DELETE", "D-TRUNCATE"]),
     ("drop_unchanged", &["D-PARTIAL"]),
-    ("skip_unkeyed", &["D-TRUNCATE"]),
+    ("skip_unkeyed", &["D-TRUNCATE", "D-HIST"]),
     ("session_tombstones", &["D-DELETE", "D-TRUNCATE"]),
     ("keep_replaced_tombstones", &["D-DELETE"]),
 ];

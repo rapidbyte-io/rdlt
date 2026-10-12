@@ -41,6 +41,8 @@ pub(super) struct Flaws {
     pub(super) clamp_by_starts: bool,
     /// Begins a version no earlier than its key's versions ended, whenever they began.
     pub(super) clamp_by_ends: bool,
+    /// Skips a change whose key is null: a truncate, which names no key, never applies.
+    pub(super) skip_unkeyed: bool,
 }
 
 /// One history table's merge: its key and history columns, and the flaws it has.
@@ -107,6 +109,13 @@ impl Versioning<'_> {
         values.join("\u{1}")
     }
 
+    fn unkeyed(&self, row: &RecordBatch) -> bool {
+        self.key.columns.iter().any(|column| {
+            row.column_by_name(column)
+                .is_none_or(|values| values.is_null(0))
+        })
+    }
+
     fn op(&self, row: &RecordBatch) -> ChangeOp {
         let op = self
             .key
@@ -140,6 +149,9 @@ impl Versioning<'_> {
     }
 
     fn apply(&self, stored: &mut Vec<RecordBatch>, tombstones: &mut Tombstones, row: &RecordBatch) {
+        if self.flaws.skip_unkeyed && self.unkeyed(row) {
+            return;
+        }
         let seq = self.seq(row);
         let changes = self.key.changes.is_some();
         if self.op(row) == ChangeOp::Truncate {
