@@ -179,6 +179,28 @@ fn a_null_key_into_values_holding_runs_at_any_depth_is_a_null_and_the_others_the
     }
 }
 
+#[test]
+fn a_null_key_into_unions_holding_no_runs_is_taken_as_arrow_takes_it() {
+    // Values holding no run-end encoding are taken through every key at once, so a null key's
+    // row in a union, which has no nulls of its own, is what Arrow's take gives: for bytes naming
+    // no value, a null of the first member, not of the member the present key's value is in.
+    let members = UnionFields::try_new(
+        [0, 1],
+        [
+            Field::new("a", DataType::Int32, true),
+            Field::new("b", DataType::Utf8, true),
+        ],
+    )
+    .unwrap();
+    let children: Vec<ArrayRef> = vec![
+        Arc::new(Int32Array::new_null(1)),
+        Arc::new(StringArray::from(vec!["x"])),
+    ];
+    let union = UnionArray::try_new(members, vec![1_i8].into(), None, children).unwrap();
+    let named = decoded(&keyed(&[None, Some(0)], Arc::new(union))).unwrap();
+    assert_eq!(shown(&named), ["{a=null}", "{b=x}"]);
+}
+
 /// Lists of four, two and four items keyed into `x y z`: the items `x y z x | y z | x y z x`.
 fn lists_of_keys() -> ArrayRef {
     let keys = Int8Array::from_iter_values((0..10).map(|item| item % 3));

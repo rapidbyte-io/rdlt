@@ -230,11 +230,12 @@ async fn a_log_scans_back_to_what_its_load_wrote() {
                 .expect("the batch reads");
             let held = read_batch.held();
             let decoded = read_batch.decode().expect("the batch decodes");
-            // What its buffers were measured to take before it was decoded, they take; what else
-            // the batch holds is little.
+            // What its buffers were measured to take before it was decoded, they take, its
+            // values' bytes at least; what else the batch holds is little.
+            let values = u64::try_from(decoded.num_rows() * size_of::<i64>()).expect("a few bytes");
             let holds = Allocations::of(&decoded).bytes();
             assert!(
-                held <= holds && holds - held < 1 << 10,
+                values <= held && held <= holds && holds - held < 1 << 10,
                 "{held} {holds}: {located:?}"
             );
             read.push((segment.0, located.table, decoded));
