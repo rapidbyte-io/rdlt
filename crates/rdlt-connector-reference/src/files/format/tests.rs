@@ -20,6 +20,7 @@ use arrow_schema::{DataType, Field, Fields, Schema, SchemaRef};
 use proptest::prelude::*;
 use rdlt_connector::ConnectorErrorKind;
 use rdlt_testkit::drawn::{Drawn, Scalar, array, field, values};
+use rdlt_wire::Limits;
 use rdlt_wire::limits::{FRAME_BYTES, NESTING_DEPTH, SCHEMA_COLUMNS};
 
 use super::lines::{Bounded, LINE_LIMIT, Lines, content, holds_a_record};
@@ -333,6 +334,48 @@ proptest! {
         prop_assert!(read.is_ok(), "reading a corrupted file unwound");
         if let Ok(Err(error)) = read {
             prop_assert_eq!(error.kind(), ConnectorErrorKind::Data);
+        }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(rdlt_testkit::cases(64)))]
+
+    #[test]
+    fn every_batch_the_writer_fits_to_limits_a_reader_under_them_reads(
+        drawn in values::drawn(),
+        from in 0_usize..6,
+        batch_rows in 1_u64..4,
+        batch_values in 1_u64..48,
+    ) {
+        let drawn = batch(&drawn);
+        let from = from.min(drawn.num_rows());
+        let batch = drawn.slice(from, drawn.num_rows() - from);
+        let limits = Limits { batch_rows, batch_values, ..Limits::default() };
+        let (root, _dir) = scratch();
+        let path = root.path().join("rows.arrow");
+        let file = std::fs::File::create(&path).unwrap();
+        let mut writer = FileWriter::try_new(file, batch.schema_ref()).unwrap();
+        let fitted = super::batches::fitted(batch.clone(), &limits, &mut |part| {
+            writer.write(part).unwrap();
+            Ok(())
+        });
+        writer.finish().unwrap();
+        // A batch refused here is refused for a limit; one written reads back whole.
+        if let Err(error) = fitted {
+            prop_assert!(error.limit().is_some(), "{}", error);
+        } else {
+            let file = std::fs::File::open(&path).unwrap();
+            let mut read = super::ipc::IpcFile::open(file, limits).unwrap();
+            let mut parts = Vec::new();
+            while let Some(part) = read.next().unwrap() {
+                parts.push(part);
+            }
+            let rows: usize = parts.iter().map(RecordBatch::num_rows).sum();
+            prop_assert_eq!(rows, batch.num_rows());
+            if rows > 0 {
+                prop_assert_eq!(joined(&parts), batch);
+            }
         }
     }
 }

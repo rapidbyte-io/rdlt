@@ -9,7 +9,7 @@ use arrow_buffer::OffsetBuffer;
 use arrow_schema::{Field, Fields};
 use rdlt_connector::{ConnectorErrorKind, Result};
 use rdlt_wire::Limits;
-use rdlt_wire::limits::{BATCH_ROWS, FRAME_BYTES};
+use rdlt_wire::limits::{BATCH_ROWS, BATCH_VALUES, FRAME_BYTES};
 
 use super::{chunks, unfit};
 use crate::files::FileFormat;
@@ -18,6 +18,11 @@ use crate::rooted::Dir;
 /// The rows one batch holds, as a count.
 fn most() -> usize {
     usize::try_from(BATCH_ROWS).unwrap()
+}
+
+/// The values one frame holds, as a count.
+fn values() -> usize {
+    usize::try_from(BATCH_VALUES).unwrap()
 }
 
 fn single(column: ArrayRef) -> RecordBatch {
@@ -101,18 +106,26 @@ fn dictionary(values: usize) -> ArrayRef {
 }
 
 #[test]
-fn a_dictionary_of_more_values_than_a_batch_holds_rows_is_refused_unwritten() {
-    // A reader takes a dictionary as a batch of its own, so its values are bounded as rows are.
-    written(&single(dictionary(most()))).expect("a dictionary a reader accepts");
-    assert_eq!(refused(&single(dictionary(most() + 1))), "batch rows");
-    // Nested in a struct, the same.
-    let field = Field::new("d", dictionary(1).data_type().clone(), true);
-    let nested = |values| {
-        let fields = Fields::from(vec![field.clone()]);
-        Arc::new(StructArray::new(fields, vec![dictionary(values)], None)) as ArrayRef
+fn a_dictionary_s_values_are_bounded_as_a_frame_of_their_own() {
+    // More values than a batch holds rows: each batch the rows are cut into shares them.
+    let read = written(&single(dictionary(most() + 1))).expect("a dictionary within a frame");
+    assert_eq!(read.len(), 2);
+    // A list of nulls: the list is a value and so is each null, at the limit and one beyond.
+    let keyed = |nulls| {
+        let list = listed(Arc::new(NullArray::new(nulls)));
+        let keys = Int32Array::from(vec![0]);
+        Arc::new(DictionaryArray::<Int32Type>::try_new(keys, list).unwrap()) as ArrayRef
     };
-    written(&single(nested(most()))).expect("a dictionary a reader accepts");
-    assert_eq!(refused(&single(nested(most() + 1))), "batch rows");
+    written(&single(keyed(values() - 1))).expect("a dictionary at the limit");
+    assert_eq!(refused(&single(keyed(values()))), "batch values");
+    // Nested in a struct, the same.
+    let field = Field::new("d", keyed(0).data_type().clone(), true);
+    let nested = |nulls| {
+        let fields = Fields::from(vec![field.clone()]);
+        Arc::new(StructArray::new(fields, vec![keyed(nulls)], None)) as ArrayRef
+    };
+    written(&single(nested(values() - 1))).expect("a dictionary at the limit");
+    assert_eq!(refused(&single(nested(values()))), "batch values");
 }
 
 /// One row holding the list `items`.
@@ -123,17 +136,31 @@ fn listed(items: ArrayRef) -> ArrayRef {
 }
 
 #[test]
-fn values_beyond_a_batch_s_rows_are_written_only_where_their_bytes_bound_them() {
-    // A reader bounds the values of a nested column by the rows of a batch, or by the bits of
-    // the batch's body where those are more: values of no bytes are bounded by the rows alone.
-    written(&single(listed(Arc::new(NullArray::new(most()))))).expect("as many as rows");
-    let nulls = single(listed(Arc::new(NullArray::new(most() + 1))));
-    assert_eq!(refused(&nulls), "values per node");
-    let empty = Arc::new(StructArray::new_empty_fields(most() + 1, None));
-    assert_eq!(refused(&single(listed(empty))), "values per node");
-    // Values that take bytes are bounded by the frame they are written in.
+fn a_row_s_values_are_bounded_by_a_frame_s_whatever_bytes_they_take() {
+    // The list is a value and so is each item: at the limit, and one beyond.
+    written(&single(listed(Arc::new(NullArray::new(values() - 1))))).expect("at the limit");
+    let nulls = single(listed(Arc::new(NullArray::new(values()))));
+    assert_eq!(refused(&nulls), "batch values");
+    let empty = Arc::new(StructArray::new_empty_fields(values(), None));
+    assert_eq!(refused(&single(listed(empty))), "batch values");
+    // More values than a batch holds rows, of no bytes and of a byte each.
+    let nulls = single(listed(Arc::new(NullArray::new(2 * most()))));
+    written(&nulls).expect("nulls within a frame's values");
     let bytes = single(listed(Arc::new(Int8Array::from(vec![7_i8; most() + 1]))));
     written(&bytes).expect("values of a byte each");
+}
+
+#[test]
+fn rows_whose_values_together_are_beyond_a_frame_s_are_written_in_batches_a_reader_accepts() {
+    // As many rows as a batch holds, in one column more than a frame's values hold for so many.
+    let columns = BATCH_VALUES / BATCH_ROWS + 1;
+    let batch = RecordBatch::try_from_iter_with_nullable((0..columns).map(|column| {
+        let nulls = Arc::new(NullArray::new(most())) as ArrayRef;
+        (format!("c{column}"), nulls, true)
+    }))
+    .unwrap();
+    let read = written(&batch).expect("rows of nulls");
+    assert!(read.len() > 1, "{}", read.len());
 }
 
 #[test]

@@ -32,37 +32,57 @@ pub(super) fn chunks<'a>(
         .map(move |from| batch.slice(from, step.min(rows - from)))
 }
 
-/// Checks that a reader under `limits` accepts `batch`, which holds at most a batch's rows,
-/// whatever bytes it is written as: its dictionaries and the values its columns nest.
+/// The values a reader counts in the frame `batch` is written as: every value of every column,
+/// nested ones included, and every item a list view names; checks that a reader under `limits`
+/// accepts each dictionary's values, which are a frame of their own.
 ///
 /// # Errors
 ///
-/// The limit a reader would refuse the batch for.
-pub(super) fn admitted(batch: &RecordBatch, limits: &Limits) -> Result<()> {
-    batch
-        .columns()
-        .iter()
-        .try_for_each(|column| node(column.as_ref(), limits))
+/// The limit a reader would refuse a dictionary for.
+fn counted(batch: &RecordBatch, limits: &Limits) -> Result<u64> {
+    batch.columns().iter().try_fold(0_u64, |values, column| {
+        Ok(values.saturating_add(values_of(column.as_ref(), limits)?))
+    })
 }
 
-/// Checks `array` and what it nests as [`admitted`] does.
-fn node(array: &dyn Array, limits: &Limits) -> Result<()> {
-    let length = u64::try_from(array.len()).unwrap_or(u64::MAX);
+/// The values `array` and what it nests count in its frame, as [`counted`] counts them.
+fn values_of(array: &dyn Array, limits: &Limits) -> Result<u64> {
+    let mut values = count(array.len()).saturating_add(named(array));
     let dictionary = matches!(array.data_type(), DataType::Dictionary(..));
-    // A reader bounds a node's values by a batch's rows, or by the bits of the batch's body
-    // where those are more: values that take no bytes are bounded by the rows alone.
-    if length > limits.batch_rows && !weighs(array.data_type()) {
-        return Err(exceeds(VALUES, limits.batch_rows, length));
-    }
     for child in children(array) {
-        let values = u64::try_from(child.len()).unwrap_or(u64::MAX);
-        // A reader takes a dictionary as a batch of its own, of at most a batch's rows.
-        if dictionary && values > limits.batch_rows {
-            return Err(exceeds(Limit::BatchRows.name(), limits.batch_rows, values));
+        let nested = values_of(child.as_ref(), limits)?;
+        if dictionary {
+            if nested > limits.batch_values {
+                return Err(exceeds(
+                    Limit::BatchValues.name(),
+                    limits.batch_values,
+                    nested,
+                ));
+            }
+        } else {
+            values = values.saturating_add(nested);
         }
-        node(child.as_ref(), limits)?;
     }
-    Ok(())
+    Ok(values)
+}
+
+/// The items the list views of `array` name, which a reader counts beside its child's values.
+fn named(array: &dyn Array) -> u64 {
+    fn sizes<O: OffsetSizeTrait>(sizes: &[O]) -> u64 {
+        sizes
+            .iter()
+            .map(|size| count(size.as_usize()))
+            .fold(0, u64::saturating_add)
+    }
+    match array.data_type() {
+        DataType::ListView(_) => sizes(array.as_list_view::<i32>().value_sizes()),
+        DataType::LargeListView(_) => sizes(array.as_list_view::<i64>().value_sizes()),
+        _ => 0,
+    }
+}
+
+fn count(values: usize) -> u64 {
+    u64::try_from(values).unwrap_or(u64::MAX)
 }
 
 /// What `array` nests, as it is written: of a list, a map or a struct that is part of a
@@ -91,17 +111,6 @@ fn children(array: &dyn Array) -> Vec<ArrayRef> {
             let data = array.to_data();
             data.child_data().iter().cloned().map(make_array).collect()
         }
-    }
-}
-
-/// Whether every value of a column of `data_type` takes at least a bit of the batch it is
-/// written in.
-fn weighs(data_type: &DataType) -> bool {
-    match data_type {
-        DataType::Null | DataType::RunEndEncoded(..) | DataType::FixedSizeBinary(0) => false,
-        DataType::Struct(fields) => fields.iter().any(|field| weighs(field.data_type())),
-        DataType::FixedSizeList(item, size) => *size > 0 && weighs(item.data_type()),
-        _ => true,
     }
 }
 
@@ -155,13 +164,13 @@ fn unfit(batch: &RecordBatch, limits: &Limits) -> Result<Option<ConnectorError>>
             rows,
         )));
     }
-    if let Err(refused) = admitted(batch, limits) {
-        let nested = refused.limit().is_some_and(|limit| limit.name == VALUES);
-        return if nested {
-            Ok(Some(refused))
-        } else {
-            Err(refused)
-        };
+    let values = counted(batch, limits)?;
+    if values > limits.batch_values {
+        return Ok(Some(exceeds(
+            Limit::BatchValues.name(),
+            limits.batch_values,
+            values,
+        )));
     }
     // What a batch holds in memory is more than what it is written as: one far within a frame
     // needs no measuring.
@@ -202,9 +211,6 @@ fn unfit(batch: &RecordBatch, limits: &Limits) -> Result<Option<ConnectorError>>
     Ok((bytes > limits.frame_bytes)
         .then(|| exceeds(Limit::FrameBytes.name(), limits.frame_bytes, bytes)))
 }
-
-/// The name of the limit on the values a column nests.
-const VALUES: &str = "values per node";
 
 fn exceeds(name: &'static str, limit: u64, actual: u64) -> ConnectorError {
     ConnectorError::exceeds(LimitExceeded {

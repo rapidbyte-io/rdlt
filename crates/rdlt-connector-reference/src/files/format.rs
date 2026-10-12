@@ -272,7 +272,7 @@ pub(super) struct Writer<'a> {
 
 enum Sink {
     Jsonl(lines::Bounded<BufWriter<File>>),
-    Arrow(Box<arrow_ipc::writer::FileWriter<Counted<BufWriter<File>>>>),
+    Arrow(Box<arrow_ipc::writer::FileWriter<BufWriter<File>>>),
 }
 
 impl std::fmt::Debug for Writer<'_> {
@@ -313,11 +313,7 @@ impl<'a> Writer<'a> {
         writer.sink = Some(match format {
             FileFormat::Jsonl => Sink::Jsonl(lines::Bounded::new(file, LINE_BYTES)),
             FileFormat::Arrow => {
-                let counted = Counted {
-                    inner: file,
-                    written: 0,
-                };
-                let started = arrow_ipc::writer::FileWriter::try_new(counted, schema);
+                let started = arrow_ipc::writer::FileWriter::try_new(file, schema);
                 Sink::Arrow(Box::new(started.map_err(|error| writer.encoded(error))?))
             }
         });
@@ -403,10 +399,7 @@ impl<'a> Writer<'a> {
         let sink = self.sink.take().expect("the writer is unfinished");
         let buffered = match sink {
             Sink::Jsonl(lines) => Ok(lines.into_inner()),
-            Sink::Arrow(mut writer) => writer
-                .finish()
-                .and_then(|()| writer.into_inner())
-                .map(|counted| counted.inner),
+            Sink::Arrow(mut writer) => writer.finish().and_then(|()| writer.into_inner()),
         };
         let buffered = buffered.map_err(|error| self.encoded(error))?;
         let failed = io::failed("writing", &self.path);
@@ -439,25 +432,5 @@ impl Drop for Writer<'_> {
         if !self.finished {
             drop(self.dir.remove_file(self.name));
         }
-    }
-}
-
-/// A writer that counts the bytes written through it.
-struct Counted<W> {
-    inner: W,
-    written: u64,
-}
-
-impl<W: Write> Write for Counted<W> {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        let written = self.inner.write(bytes)?;
-        self.written = self
-            .written
-            .saturating_add(u64::try_from(written).unwrap_or(u64::MAX));
-        Ok(written)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.inner.flush()
     }
 }
