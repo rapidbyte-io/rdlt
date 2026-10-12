@@ -1,6 +1,6 @@
 use std::num::NonZeroU64;
 
-use super::{CHUNK_BYTES, CORPUS_BYTES, Corpus, PUSH_BYTES, corpus};
+use super::{CHUNK_BYTES, CORPUS_BYTES, Corpus, PUSH_BYTES, arrays, corpus};
 use crate::config::BatchPolicy;
 
 #[test]
@@ -141,6 +141,25 @@ fn a_corpus_is_cut_into_pushes_of_whole_lines_once_it_holds_its_bytes() {
 fn a_corpus_whose_bytes_end_on_a_row_holds_no_row_more() {
     let pushes = corpus(50, 1_000, |_, _| "row!".to_owned());
     assert_eq!(pushes.concat(), b"row!\n".repeat(10));
+}
+
+/// An element of four bytes, of which a corpus of 60 bytes holds ten, refused past the
+/// eleventh so a corpus that never holds its bytes ends.
+fn element(index: u64) -> String {
+    assert!(index <= 10, "element {index} of a corpus of ten");
+    "row!".to_owned()
+}
+
+#[test]
+fn an_array_corpus_whose_bytes_end_on_an_element_holds_no_element_more() {
+    let pushes = arrays(60, 1_000, |index, _| element(index));
+    assert_eq!(pushes, [format!("[{}]", ["row!"; 10].join(",\n"))]);
+}
+
+#[test]
+fn an_array_corpus_whose_last_element_fills_a_push_ends_on_that_push() {
+    let pushes = arrays(60, 5, |index, _| element(index));
+    assert_eq!(pushes, vec![&b"[row!]"[..]; 10]);
 }
 
 #[test]
