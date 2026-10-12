@@ -63,17 +63,20 @@ fn cliffs(c: &mut Criterion) {
         let pushes = corpus.pushes(CORPUS_BYTES);
         let bytes: usize = pushes.iter().map(Bytes::len).sum();
         group.throughput(Throughput::Bytes(u64::try_from(bytes).unwrap_or(u64::MAX)));
+        let mut counted = false;
         group.bench_function(corpus.name(), |b| {
-            let counts = shred_counted(&pushes, CHUNK_BYTES).expect("the corpus shreds");
-            println!(
-                "shred_cliffs/{}: parsed {}, tripped {}, observed {}, rebuilt {}, exact {}",
-                corpus.name(),
-                counts.parsed,
-                counts.tripped,
-                counts.observed,
-                counts.rebuilt,
-                counts.exact
-            );
+            if !std::mem::replace(&mut counted, true) {
+                let counts = shred_counted(&pushes, CHUNK_BYTES).expect("the corpus shreds");
+                println!(
+                    "shred_cliffs/{}: parsed {}, tripped {}, observed {}, rebuilt {}, exact {}",
+                    corpus.name(),
+                    counts.parsed,
+                    counts.tripped,
+                    counts.observed,
+                    counts.rebuilt,
+                    counts.exact
+                );
+            }
             b.iter(|| black_box(shred(&pushes, CHUNK_BYTES).expect("the corpus shreds")));
         });
     }

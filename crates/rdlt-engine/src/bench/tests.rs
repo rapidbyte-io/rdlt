@@ -13,7 +13,7 @@ use rdlt_connector::{
 use serde_json::json;
 
 use super::connectors::Replay;
-use super::{CHUNK_BYTES, CORPUS_BYTES, Corpus};
+use super::{CHUNK_BYTES, Corpus, PUSH_BYTES};
 use super::{
     Refused, Replayed, SinkWriter, Sinking, ipc_sink, normalize, null_sink, pruned, register,
     replay, replay_factory, shred, shred_counted, shred_on, split_replay_config,
@@ -41,7 +41,9 @@ fn shredding_inline_and_on_a_pool_gives_the_same_batches() {
 
 #[test]
 fn shredding_each_push_alone_shreds_every_row_of_the_corpus() {
-    let pushes = Corpus::Nested.pushes(CORPUS_BYTES / 4);
+    let pushes = Corpus::Nested.pushes(2 * PUSH_BYTES + PUSH_BYTES / 2);
+    assert!(pushes.len() > 1);
+    assert!(pushes.last().unwrap().len() < pushes[0].len());
     let whole: usize = shred(&pushes, CHUNK_BYTES)
         .unwrap()
         .iter()

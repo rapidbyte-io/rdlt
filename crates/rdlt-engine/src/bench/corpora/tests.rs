@@ -90,6 +90,19 @@ fn an_array_form_push_is_one_json_array_of_whole_rows() {
 }
 
 #[test]
+fn a_pretty_push_prints_its_rows_over_several_lines() {
+    for push in Corpus::Pretty.pushes(1 << 18) {
+        let rows: Vec<serde_json::Value> = serde_json::from_slice(&push).unwrap();
+        let lines = std::str::from_utf8(&push).unwrap().lines().count();
+        assert!(
+            lines >= rows.len() * 4,
+            "{lines} lines for {} rows",
+            rows.len()
+        );
+    }
+}
+
+#[test]
 fn each_cliff_corpus_reaches_its_cliff() {
     let counts =
         |corpus: Corpus| crate::bench::shred_counted(&corpus.pushes(4 << 20), CHUNK_BYTES).unwrap();
