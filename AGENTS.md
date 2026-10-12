@@ -6,8 +6,8 @@ decisions and their reasons are in `docs/adr/`. Read those before changing code.
 ## Before you start
 
 - Check the latest nightly run (`gh run list --workflow nightly.yml --limit 1`). A failing nightly
-  is fixed before other work: its gates (the simulation's seeds and coverage, fuzzing, stress and
-  mutation testing) run nowhere else.
+  is fixed before other work: its gates (the simulation's seeds and coverage, fuzzing, stress,
+  mutation testing and the resident-memory check) run nowhere else.
 
 ## Before you push
 
