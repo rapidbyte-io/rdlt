@@ -530,6 +530,10 @@ proptest! {
             Just(r#"\""#.to_owned()), Just(r"\\".to_owned()), Just(r"\/".to_owned()),
             Just(r"\b".to_owned()), Just(r"é".to_owned()), Just(r"😀".to_owned()),
             Just(r"\ud83d".to_owned()), Just("\u{1}".to_owned()), Just(r"\x".to_owned()),
+            Just(r"\u00e9".to_owned()), Just(r"\u00E9".to_owned()),
+            Just(r"\ud83d\ude00".to_owned()),
+            Just(r"\n".to_owned()), Just(r"\t".to_owned()), Just(r"\f".to_owned()),
+            Just(r"\r".to_owned()),
         ], 0..8)
     ) {
         let body = pieces.concat();
