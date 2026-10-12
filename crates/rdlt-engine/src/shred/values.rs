@@ -140,7 +140,7 @@ fn repeats_a_key(text: &str) -> bool {
             }
             Token::Key(key) => {
                 if let Some(Some(keys)) = open.last_mut()
-                    && keys.note(key).is_err()
+                    && keys.note(key.unescaped()).is_err()
                 {
                     return true;
                 }

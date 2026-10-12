@@ -7,7 +7,7 @@ use sonic_rs::JsonValueTrait as _;
 use super::number::PLAIN_BYTES;
 
 use super::{
-    EXPONENT_DIGITS, JsonError, Reader, Token, canonical_float, canonical_number, check,
+    EXPONENT_DIGITS, JsonError, Reader, Text, Token, canonical_float, canonical_number,
     write_float, write_number,
 };
 
@@ -20,6 +20,27 @@ fn tokens(text: &str) -> Result<Vec<Token<'_>>, JsonError> {
     Ok(tokens)
 }
 
+fn check(text: &str) -> Result<(), JsonError> {
+    tokens(text).map(drop)
+}
+
+/// The string a reader reads from `written`, the text after its opening quote.
+fn text(written: &str) -> Text<'_> {
+    Text::read(written, 0).unwrap().0
+}
+
+/// The strings and keys of `text` in order, their escapes read.
+fn strings(text: &str) -> Vec<String> {
+    let strings = tokens(text)
+        .unwrap()
+        .into_iter()
+        .filter_map(|token| match token {
+            Token::String(text) | Token::Key(text) => Some(text.unescaped().into_owned()),
+            _ => None,
+        });
+    strings.collect()
+}
+
 fn nested(depth: usize) -> String {
     format!("{}{}", "[".repeat(depth), "]".repeat(depth))
 }
@@ -27,21 +48,22 @@ fn nested(depth: usize) -> String {
 #[test]
 fn a_value_reads_as_its_tokens_in_order() {
     use Token as T;
-    let text = r#" {"a": [1, -2.5e3, "x\n\u00e9\ud83d\ude00"], "": {}, "b": [true, false, null]} "#;
+    let written =
+        r#" {"a": [1, -2.5e3, "x\n\u00e9\ud83d\ude00"], "": {}, "b": [true, false, null]} "#;
     assert_eq!(
-        tokens(text).unwrap(),
+        tokens(written).unwrap(),
         vec![
             T::BeginObject,
-            T::Key(Cow::Borrowed("a")),
+            T::Key(text(r#"a""#)),
             T::BeginArray,
             T::Number("1"),
             T::Number("-2.5e3"),
-            T::String(Cow::Owned("x\né😀".to_owned())),
+            T::String(text(r#"x\n\u00e9\ud83d\ude00""#)),
             T::EndArray,
-            T::Key(Cow::Borrowed("")),
+            T::Key(text(r#"""#)),
             T::BeginObject,
             T::EndObject,
-            T::Key(Cow::Borrowed("b")),
+            T::Key(text(r#"b""#)),
             T::BeginArray,
             T::Bool(true),
             T::Bool(false),
@@ -52,10 +74,34 @@ fn a_value_reads_as_its_tokens_in_order() {
     );
     assert_eq!(tokens("[]").unwrap(), vec![T::BeginArray, T::EndArray]);
     assert_eq!(tokens(" 0 ").unwrap(), vec![T::Number("0")]);
-    assert_eq!(
-        tokens(r#""\"\\\/\b\f\r\t""#).unwrap(),
-        vec![T::String(Cow::Owned("\"\\/\u{8}\u{c}\r\t".to_owned()))]
-    );
+    assert_eq!(strings(written), ["a", "x\né😀", "", "b"]);
+    assert_eq!(strings(r#""\"\\\/\b\f\r\t""#), ["\"\\/\u{8}\u{c}\r\t"]);
+}
+
+#[test]
+fn a_string_without_escapes_is_borrowed_and_one_with_them_is_built() {
+    assert!(matches!(text(r#"a é""#).unescaped(), Cow::Borrowed("a é")));
+    assert!(matches!(text(r#"a\u0020""#).unescaped(), Cow::Owned(owned) if owned == "a "));
+}
+
+#[test]
+fn a_reset_reader_reads_its_new_text_as_a_new_reader_would() {
+    let mut reader = Reader::new(r#"[{"a": "bc", "d": ["#);
+    for _ in 0..6 {
+        reader.next().unwrap();
+    }
+    reader.reset("]");
+    assert_eq!(reader.next(), Err(JsonError::Invalid("a value is due")));
+    reader.reset(r#"{"x"#);
+    assert_eq!(reader.next(), Ok(Some(Token::BeginObject)));
+    assert!(reader.next().is_err());
+    reader.reset("1");
+    assert_eq!(reader.next(), Ok(Some(Token::Number("1"))));
+    assert_eq!(reader.next(), Ok(None));
+    reader.reset(" {} ");
+    assert_eq!(reader.next(), Ok(Some(Token::BeginObject)));
+    assert_eq!(reader.next(), Ok(Some(Token::EndObject)));
+    assert_eq!(reader.next(), Ok(None));
 }
 
 #[test]
@@ -472,4 +518,40 @@ fn a_run_of_nineteen_digits_or_more_may_be_an_integer_sonic_reads_as_a_float() {
     assert!(read("-9223372036854775809").is_f64());
     assert!(!read("18446744073709551615").is_f64());
     assert!(read("18446744073709551616").is_f64());
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(rdlt_testkit::cases(4096)))]
+
+    #[test]
+    fn a_reader_s_strings_unescaped_are_what_serde_json_reads(
+        pieces in prop::collection::vec(prop_oneof![
+            "[a-z ]{0,6}",
+            Just(r#"\""#.to_owned()), Just(r"\\".to_owned()), Just(r"\/".to_owned()),
+            Just(r"\b".to_owned()), Just(r"é".to_owned()), Just(r"😀".to_owned()),
+            Just(r"\ud83d".to_owned()), Just("\u{1}".to_owned()), Just(r"\x".to_owned()),
+        ], 0..8)
+    ) {
+        let body = pieces.concat();
+        let text = format!(r#"{{"k{body}":"{body}"}}"#);
+        let read = || -> Result<Vec<String>, JsonError> {
+            let mut reader = Reader::new(&text);
+            let mut strings = Vec::new();
+            while let Some(token) = reader.next()? {
+                if let Token::String(text) | Token::Key(text) = token {
+                    strings.push(text.unescaped().into_owned());
+                }
+            }
+            Ok(strings)
+        };
+        let theirs: Result<serde_json::Map<String, serde_json::Value>, _> = serde_json::from_str(&text);
+        match (read(), theirs) {
+            (Ok(strings), Ok(map)) => {
+                let (key, value) = map.into_iter().next().unwrap();
+                prop_assert_eq!(strings, vec![key, value.as_str().unwrap().to_owned()]);
+            }
+            (Err(_), Err(_)) => {}
+            (ours, theirs) => prop_assert!(false, "{ours:?} against {theirs:?}"),
+        }
+    }
 }

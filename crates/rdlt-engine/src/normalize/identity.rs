@@ -398,12 +398,12 @@ fn json(text: &str, out: &mut Vec<u8>) -> Result<(), JsonError> {
             }
             Token::String(text) => {
                 let mut string = vec![STRING];
-                length(&mut string, text.as_bytes());
+                length(&mut string, text.unescaped().as_bytes());
                 place(&mut open, out, Some(&string));
             }
             Token::Key(name) => {
                 if let Some(Open::Object { key, .. }) = open.last_mut() {
-                    *key = name.into_owned();
+                    *key = name.unescaped().into_owned();
                 }
             }
             Token::BeginObject => open.push(Open::Object {

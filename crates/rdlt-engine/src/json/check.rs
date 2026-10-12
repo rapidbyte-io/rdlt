@@ -19,7 +19,7 @@ use arrow_buffer::{ArrowNativeType, BooleanBufferBuilder};
 use arrow_schema::{DataType, Field, Schema};
 use rdlt_connector::LogicalType;
 
-use super::{JsonError, check};
+use super::{JsonError, Reader};
 use crate::named::{self, Ends, Offsets, Rows, Views};
 
 mod held;
@@ -193,11 +193,14 @@ fn nested(array: &dyn Array, valid: Rows<'_>) -> Result<(), JsonError> {
     }
 }
 
-/// Checks the text `text` gives for each row `rows` names, where it gives one.
+/// Checks the text `text` gives for each row `rows` names, where it gives one: each one JSON value
+/// nested no deeper than the limit, all read by one reader.
 fn checked<'a>(rows: &Rows<'_>, text: impl Fn(usize) -> Option<&'a str>) -> Result<(), JsonError> {
+    let mut reader = Reader::new("");
     for row in rows.ranges().flatten() {
         if let Some(text) = text(row) {
-            check(text)?;
+            reader.reset(text);
+            while reader.next()?.is_some() {}
         }
     }
     Ok(())

@@ -66,3 +66,10 @@ fn shredding_rows_of_arrays_allocates_no_observation_a_row() {
     let a_row = allocated.per(rows).allocations;
     assert!(a_row <= 0.1, "{a_row} allocations a row");
 }
+
+#[test]
+fn checking_a_column_of_escaped_json_allocates_nothing_a_row() {
+    let batch = rdlt_engine::bench::json_column(8_192, true);
+    let allocated = counted(HEAP, || rdlt_engine::bench::check_json(&batch).unwrap());
+    assert!(allocated.allocations < 64.0, "{allocated:?}");
+}

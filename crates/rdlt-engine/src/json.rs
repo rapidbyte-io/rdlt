@@ -8,8 +8,7 @@ mod check;
 mod number;
 #[cfg(test)]
 mod tests;
-
-use std::borrow::Cow;
+mod text;
 
 use rdlt_connector::json::{Mark, Structure};
 use rdlt_wire::limits::{LIMIT_EXCEEDED, NESTING_DEPTH, count};
@@ -22,6 +21,7 @@ pub(crate) use number::{canonical_float, canonical_number};
 pub(crate) use number::{
     exponent_within, long_numbers, may_hold_exponent, write_float, write_number,
 };
+pub(crate) use text::Text;
 
 /// Digits: the most a JSON number's exponent may have, beside its leading zeros, so its value's
 /// place is a 64-bit integer whatever its digits are.
@@ -52,16 +52,16 @@ impl JsonError {
 }
 
 /// One step through JSON text.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Token<'a> {
     Null,
     Bool(bool),
     /// A number, as it is written.
     Number(&'a str),
-    /// A string, its escapes read.
-    String(Cow<'a, str>),
-    /// An object member's key, its escapes read; its value's tokens follow.
-    Key(Cow<'a, str>),
+    /// A string as it is written, its escapes checked; [`Text::unescaped`] reads them.
+    String(Text<'a>),
+    /// An object member's key, as a string is; its value's tokens follow.
+    Key(Text<'a>),
     BeginObject,
     EndObject,
     BeginArray,
@@ -101,6 +101,15 @@ impl<'a> Reader<'a> {
             open: Vec::new(),
             next: Next::Value,
         }
+    }
+
+    /// Reads `text` next, which holds one JSON value, from its start: only the room the reader
+    /// grew for its containers is kept.
+    pub(crate) fn reset(&mut self, text: &'a str) {
+        self.text = text;
+        self.at = 0;
+        self.open.clear();
+        self.next = Next::Value;
     }
 
     /// The next token; `None` once the value has ended and nothing but whitespace follows.
@@ -214,100 +223,11 @@ impl<'a> Reader<'a> {
         Ok(token)
     }
 
-    /// The string whose opening quote is at the reader's place, its escapes read.
-    fn string(&mut self) -> Result<Cow<'a, str>, JsonError> {
-        let bytes = self.text.as_bytes();
-        let start = self.at + 1;
-        let Some(end) = memchr::memchr2(b'"', b'\\', &bytes[start..]).map(|end| start + end) else {
-            return Err(JsonError::Invalid("a string does not end"));
-        };
-        if bytes[end] == b'"' {
-            unescaped(&bytes[start..end])?;
-            self.at = end + 1;
-            return Ok(Cow::Borrowed(&self.text[start..end]));
-        }
-        let mut owned = String::with_capacity(end - start + 16);
-        owned.push_str(&self.text[start..end]);
-        unescaped(&bytes[start..end])?;
+    /// The string whose opening quote is at the reader's place.
+    fn string(&mut self) -> Result<Text<'a>, JsonError> {
+        let (text, end) = Text::read(self.text, self.at + 1)?;
         self.at = end;
-        loop {
-            match bytes.get(self.at) {
-                Some(b'"') => {
-                    self.at += 1;
-                    return Ok(Cow::Owned(owned));
-                }
-                Some(b'\\') => self.escape(&mut owned)?,
-                Some(_) => {
-                    let run = memchr::memchr2(b'"', b'\\', &bytes[self.at..])
-                        .ok_or(JsonError::Invalid("a string does not end"))?;
-                    let piece = &bytes[self.at..self.at + run];
-                    unescaped(piece)?;
-                    owned.push_str(&self.text[self.at..self.at + run]);
-                    self.at += run;
-                }
-                None => return Err(JsonError::Invalid("a string does not end")),
-            }
-        }
-    }
-
-    /// Reads the escape at the reader's place onto `owned`.
-    fn escape(&mut self, owned: &mut String) -> Result<(), JsonError> {
-        let bytes = self.text.as_bytes();
-        let Some(&kind) = bytes.get(self.at + 1) else {
-            return Err(JsonError::Invalid("a string does not end"));
-        };
-        self.at += 2;
-        let short = match kind {
-            b'"' => '"',
-            b'\\' => '\\',
-            b'/' => '/',
-            b'b' => '\u{8}',
-            b'f' => '\u{c}',
-            b'n' => '\n',
-            b'r' => '\r',
-            b't' => '\t',
-            b'u' => return self.unicode(owned),
-            _ => return Err(JsonError::Invalid("a string holds an unknown escape")),
-        };
-        owned.push(short);
-        Ok(())
-    }
-
-    /// Reads a `\u` escape, whose four hex digits are at the reader's place, onto `owned`: a
-    /// surrogate only as half of a pair.
-    fn unicode(&mut self, owned: &mut String) -> Result<(), JsonError> {
-        let high = self.hex()?;
-        let code = match high {
-            0xd800..=0xdbff => {
-                let bytes = self.text.as_bytes();
-                if bytes.get(self.at..self.at + 2) != Some(b"\\u") {
-                    return Err(JsonError::Invalid("a string holds a lone surrogate"));
-                }
-                self.at += 2;
-                let low = self.hex()?;
-                if !(0xdc00..=0xdfff).contains(&low) {
-                    return Err(JsonError::Invalid("a string holds a lone surrogate"));
-                }
-                0x10000 + ((high - 0xd800) << 10) + (low - 0xdc00)
-            }
-            0xdc00..=0xdfff => return Err(JsonError::Invalid("a string holds a lone surrogate")),
-            other => other,
-        };
-        let character =
-            char::from_u32(code).ok_or(JsonError::Invalid("a string holds no character"))?;
-        owned.push(character);
-        Ok(())
-    }
-
-    /// The four hex digits at the reader's place.
-    fn hex(&mut self) -> Result<u32, JsonError> {
-        let digits = self
-            .text
-            .get(self.at..self.at + 4)
-            .filter(|digits| digits.bytes().all(|byte| byte.is_ascii_hexdigit()))
-            .ok_or(JsonError::Invalid("a string holds a short unicode escape"))?;
-        self.at += 4;
-        u32::from_str_radix(digits, 16).map_err(|_| JsonError::Invalid("a unicode escape"))
+        Ok(text)
     }
 
     /// The number at the reader's place, as it is written.
@@ -358,17 +278,6 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// Refuses `piece`, part of a string between its escapes, where it holds a control character,
-/// which JSON writes only escaped.
-fn unescaped(piece: &[u8]) -> Result<(), JsonError> {
-    if piece.iter().any(|byte| *byte < 0x20) {
-        return Err(JsonError::Invalid(
-            "a string holds an unescaped control character",
-        ));
-    }
-    Ok(())
-}
-
 /// Whether the containers of JSON `text` nest deeper than the limit: a linear scan of its
 /// brackets outside its strings, for whoever parses it recursively after.
 pub(crate) fn too_deep(text: &[u8]) -> bool {
@@ -386,15 +295,4 @@ pub(crate) fn too_deep(text: &[u8]) -> bool {
         }
     }
     false
-}
-
-/// Checks that `text` is one JSON value nested no deeper than the limit.
-///
-/// # Errors
-///
-/// Why it is not.
-pub(crate) fn check(text: &str) -> Result<(), JsonError> {
-    let mut reader = Reader::new(text);
-    while reader.next()?.is_some() {}
-    Ok(())
 }
