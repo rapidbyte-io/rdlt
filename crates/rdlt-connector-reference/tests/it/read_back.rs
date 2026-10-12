@@ -169,8 +169,9 @@ async fn the_sqlite_destination_reads_a_large_table_back_in_bounded_batches() {
     assert_eq!(rows, [1024, 1024, 1024, 1024, 904]);
 }
 
-#[tokio::test]
-async fn the_sqlite_destination_ends_a_batch_read_back_at_its_bytes_as_at_its_rows() {
+/// The rows of each batch the SQLite destination reads back of a table whose one column, of
+/// `kind`, holds `values`.
+async fn sqlite_batches(kind: LogicalType, values: arrow_array::ArrayRef) -> Vec<usize> {
     let directory = tempfile::tempdir().expect("a temporary directory");
     let path = directory.path().join("wide.db");
     let (destination, reader) = readable_destination_factory::<SqliteDestination>()
@@ -183,8 +184,8 @@ async fn the_sqlite_destination_ends_a_batch_read_back_at_its_bytes_as_at_its_ro
     };
     let mut opened = destination.open(&context).await.expect("a session opens");
     let wide = table("wide");
-    let schema = TableSchema::new(vec![Field::new("text", LogicalType::Utf8, false)])
-        .expect("the schema is valid");
+    let schema =
+        TableSchema::new(vec![Field::new("value", kind, false)]).expect("the schema is valid");
     let create = TableChange::Create {
         table: wide.clone(),
         schema,
@@ -194,13 +195,7 @@ async fn the_sqlite_destination_ends_a_batch_read_back_at_its_bytes_as_at_its_ro
         .apply_schema(&create)
         .await
         .expect("the table is created");
-    // Forty rows of a tenth of a megabyte: a megabyte is passed at every eleventh.
-    let texts = vec!["x".repeat(100_000); 40];
-    let batch = RecordBatch::try_from_iter([(
-        "text",
-        Arc::new(arrow_array::StringArray::from(texts)) as _,
-    )])
-    .expect("the batch is valid");
+    let batch = RecordBatch::try_from_iter([("value", values)]).expect("the batch is valid");
     let mut writer = opened.session.writer(&wide).await.expect("a writer opens");
     writer
         .write(SegmentId(1), batch)
@@ -228,8 +223,28 @@ async fn the_sqlite_destination_ends_a_batch_read_back_at_its_bytes_as_at_its_ro
     let batches = PublishedRows::gather(&*reader, &wide)
         .await
         .expect("the table reads back");
-    let rows: Vec<usize> = batches.iter().map(RecordBatch::num_rows).collect();
-    assert_eq!(rows, [11, 11, 11, 7]);
+    batches.iter().map(RecordBatch::num_rows).collect()
+}
+
+#[tokio::test]
+async fn the_sqlite_destination_ends_a_batch_read_back_at_its_bytes_as_at_its_rows() {
+    // Forty texts or blobs of a tenth of a megabyte: a megabyte is passed at every eleventh.
+    let texts = vec!["x".repeat(100_000); 40];
+    let blobs = vec![vec![7_u8; 100_000]; 40];
+    let cases: [(LogicalType, arrow_array::ArrayRef); 2] = [
+        (
+            LogicalType::Utf8,
+            Arc::new(arrow_array::StringArray::from(texts)),
+        ),
+        (
+            LogicalType::Binary,
+            Arc::new(arrow_array::BinaryArray::from_iter_values(blobs)),
+        ),
+    ];
+    for (kind, values) in cases {
+        let rows = sqlite_batches(kind.clone(), values).await;
+        assert_eq!(rows, [11, 11, 11, 7], "{kind:?}");
+    }
 }
 
 #[tokio::test]
