@@ -226,7 +226,7 @@ async fn fence(
     chunk: Chunk,
     end: End,
 ) -> Result<Fenced, Error> {
-    let mut framing = frame::Framing::with_capacity(0);
+    let mut framing = frame::Framing::default();
     framing.preamble();
     framing.frame(&Frame::Fence(Fence {
         pipeline: pipeline.clone(),

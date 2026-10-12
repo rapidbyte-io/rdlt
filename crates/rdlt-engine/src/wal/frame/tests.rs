@@ -159,14 +159,14 @@ fn decoded(bytes: &[u8]) -> Frame {
 
 /// A frame of `kind` holding `payload`, whatever it holds.
 fn forged(kind: u8, payload: &[u8]) -> Bytes {
-    let mut framing = Framing::with_capacity(0);
+    let mut framing = Framing::default();
     framing.raw(kind, payload).expect("a frame");
     framing.finish()
 }
 
 /// The frame of the commit `meta` describes, after `seals` seal and `phases` phase frames.
 fn commit(meta: &CommitMeta, seals: u32, phases: u32) -> Result<Bytes, crate::Error> {
-    let mut framing = Framing::with_capacity(0);
+    let mut framing = Framing::default();
     framing.commit(meta, seals, phases)?;
     Ok(framing.finish())
 }
@@ -181,7 +181,7 @@ fn arrow_data(batch: &RecordBatch) -> Result<Vec<u8>, crate::Error> {
 #[test]
 fn every_kind_of_frame_reads_back_as_written_through_one_framing() {
     let frames = sample_frames();
-    let mut framing = Framing::with_capacity(0);
+    let mut framing = Framing::default();
     framing.preamble();
     for frame in &frames {
         framing.frame(frame).unwrap();
@@ -192,7 +192,7 @@ fn every_kind_of_frame_reads_back_as_written_through_one_framing() {
 
 #[test]
 fn a_frame_built_once_has_the_checksum_of_its_kind_length_and_payload() {
-    let mut framing = Framing::with_capacity(0);
+    let mut framing = Framing::default();
     framing.raw(BATCH, b"payload").unwrap();
     let frame = framing.finish();
     let mut head = vec![BATCH];
@@ -204,7 +204,7 @@ fn a_frame_built_once_has_the_checksum_of_its_kind_length_and_payload() {
 
 #[test]
 fn a_framing_s_length_grows_by_each_frame_s_head_and_announced_payload() {
-    let mut framing = Framing::with_capacity(0);
+    let mut framing = Framing::default();
     let mut announced = Vec::new();
     for frame in sample_frames() {
         let before = framing.len();
@@ -614,7 +614,7 @@ fn a_commit_recording_a_value_that_is_not_json_does_not_encode() {
         key: "k".to_owned(),
         value: Bytes::from_static(b"\x00\xffvalue"),
     })];
-    let mut framing = Framing::with_capacity(0);
+    let mut framing = Framing::default();
     framing.preamble();
     let refused = framing.commit(&meta, 0, 0).unwrap_err().report();
     assert!(
