@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use std::time::UNIX_EPOCH;
 
 use arrow_array::RecordBatch;
@@ -15,8 +15,8 @@ use rdlt_testkit::drawn::{self, Drawn};
 use rdlt_testkit::nested;
 
 use super::{
-    Batch, BatchHeader, BegunPhase, Committing, End, Fence, Frame, HEAD, Header, PREAMBLE, Seal,
-    Table, VERSION,
+    BATCH, Batch, BatchHeader, BegunPhase, Committing, End, Fence, Frame, Framing, HEAD, Header,
+    PREAMBLE, Seal, Table, VERSION,
 };
 
 fn load() -> LoadId {
@@ -54,8 +54,8 @@ fn commit_meta() -> CommitMeta {
     }
 }
 
-/// One frame of every kind but a batch's.
-fn metadata() -> Vec<Frame> {
+/// One frame of every kind.
+fn sample_frames() -> Vec<Frame> {
     let schema = TableSchema::new(vec![Field::new("id", LogicalType::Int64, false)])
         .expect("a valid schema");
     let meta = commit_meta();
@@ -72,6 +72,12 @@ fn metadata() -> Vec<Frame> {
             index: 0,
             table: table(),
             schema,
+        }),
+        Frame::Batch(Batch {
+            segment: SegmentId(4),
+            table: 0,
+            ordinal: 2,
+            batch: ids(),
         }),
         Frame::Seal(Seal {
             segment: SegmentId(4),
@@ -106,6 +112,13 @@ fn metadata() -> Vec<Frame> {
             chunk: 5,
         }),
     ]
+}
+
+/// A batch of three ids, one of them null.
+fn ids() -> RecordBatch {
+    let values = arrow_array::Int64Array::from(vec![Some(1), None, Some(3)]);
+    RecordBatch::try_from_iter([("id", Arc::new(values) as arrow_array::ArrayRef)])
+        .expect("a batch")
 }
 
 /// The drawn batch as Arrow data.
@@ -144,9 +157,70 @@ fn decoded(bytes: &[u8]) -> Frame {
     decode(bytes, limits()).expect("the frame decodes")
 }
 
+/// A frame of `kind` holding `payload`, whatever it holds.
+fn forged(kind: u8, payload: &[u8]) -> Bytes {
+    let mut framing = Framing::with_capacity(0);
+    framing.raw(kind, payload).expect("a frame");
+    framing.finish()
+}
+
+/// The frame of the commit `meta` describes, after `seals` seal and `phases` phase frames.
+fn commit(meta: &CommitMeta, seals: u32, phases: u32) -> Result<Bytes, crate::Error> {
+    let mut framing = Framing::with_capacity(0);
+    framing.commit(meta, seals, phases)?;
+    Ok(framing.finish())
+}
+
+/// `batch`'s Arrow data as a batch frame holds it.
+fn arrow_data(batch: &RecordBatch) -> Result<Vec<u8>, crate::Error> {
+    let mut out = BytesMut::new();
+    super::arrow::encode(batch)?.write(&mut out)?;
+    Ok(out.to_vec())
+}
+
 #[test]
-fn every_metadata_frame_decodes_as_it_was_written() {
-    for frame in metadata() {
+fn every_kind_of_frame_reads_back_as_written_through_one_framing() {
+    let frames = sample_frames();
+    let mut framing = Framing::with_capacity(0);
+    framing.preamble();
+    for frame in &frames {
+        framing.frame(frame).unwrap();
+    }
+    let chunk = framing.finish();
+    assert_eq!(super::frames(&chunk, limits()).unwrap(), frames);
+}
+
+#[test]
+fn a_frame_built_once_has_the_checksum_of_its_kind_length_and_payload() {
+    let mut framing = Framing::with_capacity(0);
+    framing.raw(BATCH, b"payload").unwrap();
+    let frame = framing.finish();
+    let mut head = vec![BATCH];
+    head.extend_from_slice(&7_u32.to_le_bytes());
+    let check = crc32c::crc32c_append(crc32c::crc32c(&head), b"payload");
+    assert_eq!(&frame[5..9], &check.to_le_bytes());
+    assert_eq!(&frame[9..], b"payload");
+}
+
+#[test]
+fn a_frame_and_its_framing_s_length_agree_for_every_kind() {
+    for frame in sample_frames() {
+        let mut framing = Framing::with_capacity(0);
+        framing.frame(&frame).unwrap();
+        assert_eq!(framing.len(), frame.encode().unwrap().len());
+    }
+}
+
+#[test]
+fn a_frame_beyond_4_gib_is_refused() {
+    let most = usize::try_from(u32::MAX).expect("a 64-bit target");
+    assert_eq!(super::announced(most).unwrap(), u32::MAX);
+    assert!(super::announced(most + 1).is_err());
+}
+
+#[test]
+fn every_frame_decodes_as_it_was_written() {
+    for frame in sample_frames() {
         let bytes = frame.encode().expect("the frame encodes");
         assert_eq!(decoded(&bytes), frame);
     }
@@ -154,7 +228,7 @@ fn every_metadata_frame_decodes_as_it_was_written() {
 
 #[test]
 fn a_seal_that_does_not_name_its_phase_is_refused() {
-    let frame = metadata()
+    let frame = sample_frames()
         .into_iter()
         .find(|frame| matches!(frame, Frame::Seal(_)))
         .expect("a seal");
@@ -167,7 +241,7 @@ fn a_seal_that_does_not_name_its_phase_is_refused() {
         .remove("phase")
         .expect("the seal names its phase");
     let payload = serde_json::to_vec(&payload).expect("JSON encodes");
-    let lacking = super::framed(bytes[0], &payload).expect("a frame");
+    let lacking = forged(bytes[0], &payload);
     assert!(decode(&lacking, limits()).is_err());
 }
 
@@ -189,7 +263,7 @@ proptest! {
 
 #[test]
 fn a_chunk_s_frames_read_back_and_any_byte_changed_or_cut_is_refused() {
-    let frames = metadata();
+    let frames = sample_frames();
     let mut chunk = super::preamble().to_vec();
     let mut starts = Vec::new();
     for frame in &frames {
@@ -219,7 +293,7 @@ fn a_chunk_s_frames_read_back_and_any_byte_changed_or_cut_is_refused() {
 fn a_frame_of_zeros_is_no_frame() {
     // An empty frame of kind 0 whose checksum is zero, as a region of zeros reads.
     assert!(decode(&[0; HEAD], limits()).is_err());
-    let empty = super::framed(0, &[]).expect("a frame");
+    let empty = forged(0, &[]);
     assert_ne!(
         &empty[5..],
         &[0; 4],
@@ -261,11 +335,11 @@ fn a_chunk_of_another_format_or_none_at_all_is_told_from_one_damaged() {
 
 #[test]
 fn a_frame_whose_checksum_matches_but_whose_payload_does_not_decode_is_an_error() {
-    let frame = super::framed(2, b"not json").expect("a frame");
+    let frame = forged(2, b"not json");
     assert!(decode(&frame, limits()).is_err());
     // An unknown kind is refused too, and a closing or relieving frame that holds anything.
     for kind in [99, 7, 6, 11] {
-        let frame = super::framed(kind, b"{}").expect("a frame");
+        let frame = forged(kind, b"{}");
         assert!(decode(&frame, limits()).is_err(), "kind {kind}");
     }
 }
@@ -288,7 +362,7 @@ fn batch_frame(arrow: &[u8], rows: u64) -> Bytes {
         .to_vec();
     payload.extend_from_slice(&header);
     payload.extend_from_slice(arrow);
-    super::framed(3, &payload).expect("a frame")
+    forged(BATCH, &payload)
 }
 
 #[test]
@@ -390,7 +464,7 @@ fn a_logged_batch_whose_rows_are_forged_is_refused_not_decoded_as_said() {
     let rows = 0x0151_5151_usize;
     let column = Arc::new(NullArray::new(rows)) as arrow_array::ArrayRef;
     let batch = RecordBatch::try_from_iter([("n", column)]).expect("a batch");
-    let logged = super::arrow::encode(&batch).expect("the batch encodes");
+    let logged = arrow_data(&batch).expect("the batch encodes");
     let said = i64::try_from(rows).expect("fits").to_le_bytes();
     for forged in [-1_i64, i64::MAX, i64::MIN, 1 << 40] {
         // The batch's length, its column's and its column's nulls, as a tamperer rewrites them.
@@ -418,7 +492,7 @@ fn a_batch_whose_buffers_share_bytes_is_refused_whatever_its_size() {
     use arrow_array::Int64Array;
     let values = Arc::new(Int64Array::from(vec![Some(1), None, Some(3)])) as arrow_array::ArrayRef;
     let batch = RecordBatch::try_from_iter([("n", values)]).expect("a batch");
-    let logged = super::arrow::encode(&batch).expect("the batch encodes");
+    let logged = arrow_data(&batch).expect("the batch encodes");
     assert_eq!(
         super::arrow::decode(Bytes::from(logged.clone()), limits()).expect("it decodes"),
         batch
@@ -474,7 +548,7 @@ fn a_batch_that_cannot_be_encoded_fails_with_the_encoders_error_as_its_cause() {
     let keys = Int8Array::from(vec![0]);
     let outer = DictionaryArray::<Int8Type>::try_new(keys, Arc::new(inner)).unwrap();
     let batch = RecordBatch::try_from_iter([("c", Arc::new(outer) as ArrayRef)]).unwrap();
-    let report = super::arrow::encode(&batch).unwrap_err().report();
+    let report = arrow_data(&batch).unwrap_err().report();
     assert_eq!(report.message, "encoding a write-ahead log batch");
     assert_eq!(report.causes.len(), 1, "{report:?}");
     assert!(report.causes[0].contains("dictionary"), "{report:?}");
@@ -518,7 +592,7 @@ fn a_commit_frame_takes_little_more_than_the_state_it_records() {
         frame.len()
     );
     assert_eq!(
-        super::commit(&committing.meta, 0, 0).expect("the frame encodes"),
+        commit(&committing.meta, 0, 0).expect("the frame encodes"),
         frame
     );
     assert_eq!(decoded(&frame), Frame::Commit(Box::new(committing)));
@@ -531,13 +605,17 @@ fn a_commit_recording_a_value_that_is_not_json_does_not_encode() {
         key: "k".to_owned(),
         value: Bytes::from_static(b"\x00\xffvalue"),
     })];
-    let refused = super::commit(&meta, 0, 0).unwrap_err().report();
+    let mut framing = Framing::with_capacity(0);
+    framing.preamble();
+    let refused = framing.commit(&meta, 0, 0).unwrap_err().report();
     assert!(
         refused
             .message
             .starts_with("encoding a write-ahead log frame"),
         "{refused:?}"
     );
+    // What the commit wrote before it failed is gone, and the frames before it kept.
+    assert_eq!(framing.len(), PREAMBLE);
 }
 
 #[test]
@@ -636,7 +714,7 @@ fn objects(value: &serde_json::Value, at: String, found: &mut Vec<String>) {
 
 #[test]
 fn a_frame_with_a_field_this_build_does_not_know_is_refused() {
-    for frame in metadata() {
+    for frame in sample_frames() {
         let bytes = frame.encode().expect("the frame encodes");
         let Ok(payload) = serde_json::from_slice::<serde_json::Value>(&bytes[HEAD..]) else {
             continue;
@@ -654,7 +732,7 @@ fn a_frame_with_a_field_this_build_does_not_know_is_refused() {
                 .expect("an object")
                 .insert("unknown".to_owned(), serde_json::json!(1));
             let grown = serde_json::to_vec(&grown).expect("JSON encodes");
-            let framed = super::framed(bytes[0], &grown).expect("a frame");
+            let framed = forged(bytes[0], &grown);
             assert!(
                 decode(&framed, limits()).is_err(),
                 "{frame:?} with a field at {pointer:?}"
@@ -666,7 +744,7 @@ fn a_frame_with_a_field_this_build_does_not_know_is_refused() {
 #[test]
 fn a_frame_lacking_any_member_it_writes_is_refused() {
     use rdlt_testkit::required::every_member_required;
-    let mut frames = metadata();
+    let mut frames = sample_frames();
     // Each member that may hold nothing, holding nothing.
     frames.push(Frame::Header(Header {
         pipeline: PipelineId::parse("orders").expect("a valid pipeline"),

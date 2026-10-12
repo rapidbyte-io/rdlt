@@ -313,6 +313,22 @@ pub fn replay_scan(base: &std::path::Path, pipeline: &str) -> Result<ReplayRead,
     })
 }
 
+/// The write-ahead log frame of `batch`, as a load logs it.
+///
+/// # Panics
+///
+/// Panics where the frame does not encode, which a valid batch always does.
+pub fn batch_frame(batch: RecordBatch) -> Bytes {
+    use crate::wal::frame::{Batch, Frame};
+    let frame = Frame::Batch(Batch {
+        segment: rdlt_connector::SegmentId(1),
+        table: 0,
+        ordinal: 0,
+        batch,
+    });
+    frame.encode().expect("the frame encodes")
+}
+
 /// A write-ahead log of one chunk holding a frame of each kind a commit's chunk holds, as the log
 /// of load 1 of pipeline `fuzzed`, whose batch frame holds `batch`: something for fuzzing to cut
 /// and garble.

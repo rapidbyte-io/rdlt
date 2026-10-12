@@ -22,3 +22,14 @@ fn a_run_counts_what_the_global_counting_allocator_served_it() {
     assert!(allocated.reallocations >= 1.0, "{allocated:?}");
     assert!(allocated.bytes >= 1024.0, "{allocated:?}");
 }
+
+#[test]
+fn a_batch_frame_allocates_little_more_than_twice_its_bytes() {
+    let batch = rdlt_engine::bench::Passthrough::batch(0, 12_000);
+    let mut len = 0;
+    let allocated = counted(HEAP, || {
+        len = rdlt_engine::bench::batch_frame(batch.clone()).len();
+    });
+    let ratio = allocated.bytes / f64::from(u32::try_from(len).expect("a frame within 4 GiB"));
+    assert!(ratio <= 2.6, "{ratio} of a {len}-byte frame");
+}
