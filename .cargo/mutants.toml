@@ -19,26 +19,27 @@ all_features = true
 # that confines a connector, and a secret resolver reads from no directory, unless they say
 # otherwise; one that names an empty path for a sandbox is the code as it is too, as the guard on
 # roots passes over a path that is not absolute.
-# So is one that joins a directory's or a database's open flags, each a bit of its own, with `^` for
-# `|`; and one that takes every widen a destination refuses for a column not yet kept from widening:
-# the resolver widens no column kept from it on any path, so a refusal never names one, and the
-# guard only bounds the loop were that to change. So is one that opens a database to write with
-# neither the flag that creates it nor the one that spares SQLite's own lock, by `&` for the second
-# `|`: the database was created, private, before SQLite opens it, in a directory no one else writes,
-# and a connection is used by one thread at a time, so that lock never holds anything up. A JSON
-# lines reader's `Debug` names the type and nothing else, since its decoder has none, and so does
-# that of the function a host is told each spawned connector's process id through; a file writer's
-# names its path only for a failing test's message: what they write is no behaviour a test can hold.
+# So is one that joins a directory's or a database's open flags, each a bit of its own (read-only is
+# none, on Linux and macOS alike), with `^` for `|`; and one that takes every widen a destination
+# refuses for a column not yet kept from widening: the resolver widens no column kept from it on any
+# path, so a refusal never names one, and the guard only bounds the loop were that to change. So is
+# one that opens a database to write with neither the flag that creates it nor the one that spares
+# SQLite's own lock, by `&` for the second `|`: the database was created, private, before SQLite
+# opens it, in a directory no one else writes, and a connection is used by one thread at a time, so
+# that lock never holds anything up. A JSON lines reader's `Debug` names the type and nothing else,
+# since its decoder has none, and so does that of the function a host is told each spawned
+# connector's process id through; a file writer's names its path only for a failing test's message:
+# what they write is no behaviour a test can hold.
 # The engine's inline test env has one core, which a mutant answering one also has. A mutant that
 # judges a plain column of 64-bit integers through the rows it names reads what the plain arm reads,
 # which spares only the mapping; and one that has a normalized flush's walk read every column for
-# such integers, not only one whose type holds them, finds none in the others. A history table
-# reads a key's newest version for its sequence alone, so a mutant that takes a version it loads
-# later with the same sequence as the newer one reads the same sequence. A mutant that reads what a
+# such integers, not only one whose type holds them, finds none in the others. A history table reads
+# a key's newest version for its sequence alone, so a mutant that takes, of two versions it loads
+# with one sequence, the later as the newer reads the same sequence. A mutant that reads what a
 # struct in an Arrow file's batch nests through the struct's data rather than its columns reads the
-# same arrays: a struct's data is made of its columns, cut to its rows, and has no offset of its own.
-# A mutant that lets the start of a secret a cut text ends with be empty finds that empty start only
-# where no longer one ends the text, and it counts no bytes, as finding none does.
+# same arrays: a struct's data is made of its columns, cut to its rows, and has no offset of its
+# own. A mutant that lets `starts` try a secret's empty start tries it only after every longer start
+# has failed, and it counts no bytes, as finding none does.
 #
 # One mutant is excluded because it never ends rather than because it is the code as it is: one
 # that writes a length in LEB128 while the length is under 0x80 pushes bytes until memory runs out,
@@ -60,6 +61,7 @@ exclude_re = [
   "crates/rdlt-engine/src/normalize/rounding\\.rs:.*replace integers -> bool with true$",
   "crates/rdlt-engine/src/table/exact\\.rs:.*delete match arm DataType::Int64 in rounds$",
   "crates/rdlt-engine/src/table/registry\\.rs:.*replace match guard !resolver\\.unwidened\\.contains\\(&column\\) with true in Tables::fit$",
+  "crates/rdlt-engine/src/wal/local/dir\\.rs:.*replace \\| with \\^ in Dir::dir$",
   "crates/rdlt-host/src/local/process\\.rs:.*replace <impl fmt::Debug for Told>::fmt -> fmt::Result with Ok\\(Default::default\\(\\)\\)",
   "crates/rdlt-host/src/local/sandbox\\.rs:.*replace Sandbox::programs -> Vec<PathBuf> with vec!\\[(Default::default\\(\\))?\\]",
   "crates/rdlt-host/src/secrets/redact\\.rs:.*replace > with >= in starts$",
