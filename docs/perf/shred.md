@@ -123,6 +123,9 @@ one-minute load average of 0.38 to 0.97, the median with its range in brackets.
 
 ### One core
 
+The `nested` row is this change on `6caed3b0`, 2026-10-12, the three rounds of More cores, with
+their one-minute load averages of 2.65, 3.96 and 1.79; the other rows are the commit above's.
+
 | Corpus | Throughput | Instructions a cycle |
 |---|---|---|
 | `nested` | 593 MiB/s [559–593] | 6.01 |
@@ -137,8 +140,7 @@ This change on `6caed3b0`, 2026-10-12, cores `0-3` (performance), three rounds i
 merge-base in alternating orders, started at one-minute load averages of 2.65, 3.96 and 1.79 (the
 merge-base's 2.95, 2.78 and 1.22); the median, with the range in brackets. Each 8 MiB push is a
 call. The process was pinned to cores `0-3` for all three rows, so the pools of N = 1 and 2
-had cores to spare. Efficient cores were not run in this record. The second round ran under the
-heaviest load and gives the low end of each range.
+had cores to spare. Efficient cores were not run in this record.
 
 | Cores | N | tokio workers + compute threads | Throughput | Against N = 1 | Spec's bound |
 |---|---|---|---|---|---|
