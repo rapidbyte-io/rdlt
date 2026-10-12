@@ -22,8 +22,8 @@ use std::process::ExitCode;
 use arrow_array::RecordBatch;
 use rdlt_engine::Cores;
 use rdlt_engine::bench::{
-    CHUNK_BYTES, CORPUS_BYTES, Corpus, Form, Lowering, Normalized, Passthrough, Replayed, Wide,
-    counted, normalize, null_sink, pruned, replay, sample_log, scan_log, shred,
+    CHUNK_BYTES, CORPUS_BYTES, Corpus, Form, Logged, Lowering, Normalized, Passthrough, Replayed,
+    Wide, counted, memory_wal, normalize, null_sink, pruned, replay, sample_log, scan_log, shred,
 };
 use rdlt_wire::{Decoder, Encoder, Limits};
 use stats_alloc::{INSTRUMENTED_SYSTEM, StatsAlloc};
@@ -32,12 +32,13 @@ use stats_alloc::{INSTRUMENTED_SYSTEM, StatsAlloc};
 static HEAP: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
 
 /// The benches whose workloads this counts, each with what counts them.
-const COUNTED: [(&str, fn()); 5] = [
+const COUNTED: [(&str, fn()); 6] = [
     ("shred", shredding),
     ("passthrough", passing_through),
     ("lowering", lowering),
     ("normalized", normalizing),
     ("wide", widening),
+    ("logged", logging),
 ];
 
 /// Bytes of JSON each shredding and normalizing case reads.
@@ -57,7 +58,7 @@ const LAYOUT: Cores = Cores::new(
 type Case = (&'static str, fn(usize));
 
 /// Every case the instruction counts run.
-const CASES: [Case; 22] = [
+const CASES: [Case; 23] = [
     ("passthrough/null_sink", passed_through),
     ("shred/nested", |times| shredded(Corpus::Nested, times)),
     ("shred/with_arrays", |times| {
@@ -86,6 +87,7 @@ const CASES: [Case; 22] = [
     }),
     ("wal/encode", log_encoded),
     ("wal/scan", log_scanned),
+    ("wal/logged", logged_load),
     ("ipc/roundtrip", round_tripped),
     ("lowering/history", |times| lowered("history", times)),
     ("lowering/changes", |times| lowered("changes", times)),
@@ -271,6 +273,29 @@ fn widening() {
     }
 }
 
+/// The logged load of the wal bench: the engine logging a commit each batch into memory, run
+/// once.
+fn logging() {
+    let every = NonZeroU64::new(1).expect("one is not zero");
+    let cores = Cores::try_from_host().expect("the host says how many cores the bench may use");
+    let logged = Logged::try_new(
+        cores,
+        memory_wal(),
+        Logged::BATCHES,
+        Logged::ROWS,
+        Some(every),
+    )
+    .expect("the pool starts");
+    let rows = usize::try_from(BATCHES * ROWS).expect("rows fit in usize");
+    report("wal/engine/memory/each", || {
+        black_box(logged.run());
+        (
+            rows,
+            usize::try_from(BATCHES).expect("batches fit in usize"),
+        )
+    });
+}
+
 /// The rows and the count of `batches`.
 fn moved(batches: &[RecordBatch]) -> (usize, usize) {
     (
@@ -298,6 +323,17 @@ fn report(id: &str, run: impl FnOnce() -> (usize, usize)) {
         allocated.per(units(rows)),
         allocated.per(units(batches))
     );
+}
+
+/// The engine logging [`BATCHES`] batches of [`ROWS`] rows ahead in memory, a commit each batch,
+/// on [`LAYOUT`].
+fn logged_load(times: usize) {
+    let every = NonZeroU64::new(1).expect("one is not zero");
+    let logged =
+        Logged::try_new(LAYOUT, memory_wal(), BATCHES, ROWS, Some(every)).expect("the pool starts");
+    for _ in 0..times {
+        black_box(logged.run());
+    }
 }
 
 /// The engine moving [`BATCHES`] batches of [`ROWS`] rows from a replaying source to the null
