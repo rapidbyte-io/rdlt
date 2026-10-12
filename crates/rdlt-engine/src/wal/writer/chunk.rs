@@ -172,7 +172,7 @@ impl Log {
             .stage(&self.owner.pipeline, chunk)
             .await
             .map_err(|error| self.lost(error))?;
-        let mut framing = frame::Framing::with_capacity(0);
+        let mut framing = frame::Framing::default();
         framing.preamble();
         framing.frame(&Frame::Header(self.chunk_header(self.chunk)))?;
         let head = framing.finish();

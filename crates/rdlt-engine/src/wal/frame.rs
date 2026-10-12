@@ -198,18 +198,12 @@ const RELIEVED: u8 = 11;
 
 /// Frames written one after another into one buffer, each once: its head, its payload, then its
 /// checksum written into its head.
+#[derive(Default)]
 pub(crate) struct Framing {
     out: BytesMut,
 }
 
 impl Framing {
-    /// A buffer for frames of about `bytes` in all.
-    pub(crate) fn with_capacity(bytes: usize) -> Self {
-        Self {
-            out: BytesMut::with_capacity(bytes),
-        }
-    }
-
     /// Writes the preamble a chunk starts with.
     pub(crate) fn preamble(&mut self) {
         self.out.put_slice(&preamble());
@@ -321,7 +315,7 @@ impl Framing {
 impl Frame {
     /// The frame's bytes.
     pub(crate) fn encode(&self) -> Result<Bytes, Error> {
-        let mut framing = Framing::with_capacity(0);
+        let mut framing = Framing::default();
         framing.frame(self)?;
         Ok(framing.finish())
     }

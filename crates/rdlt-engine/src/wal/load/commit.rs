@@ -87,7 +87,7 @@ impl LoadLog {
         // Reserved before they are encoded for what they take at most, but what they record of
         // tables, which each table's change reserved.
         let held = reserved(budget, commit_bytes(&begun, meta).saturating_sub(prepaid)).await?;
-        let mut framing = frame::Framing::with_capacity(0);
+        let mut framing = frame::Framing::default();
         for begun in begun {
             framing.frame(&Frame::Begun(begun))?;
         }

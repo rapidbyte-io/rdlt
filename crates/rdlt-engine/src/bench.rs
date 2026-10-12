@@ -392,7 +392,7 @@ pub fn sample_log(batch: RecordBatch) -> Vec<u8> {
         })),
         Frame::End(End::default()),
     ];
-    let mut framing = frame::Framing::with_capacity(0);
+    let mut framing = frame::Framing::default();
     framing.preamble();
     for frame in &frames {
         framing.frame(frame).expect("the frame encodes");
