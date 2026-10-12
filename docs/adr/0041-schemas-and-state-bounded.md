@@ -97,11 +97,13 @@ one run to the next, broke both:
   bytes of the settled, the writer appends the open segments' batch frames, and each table's
   schema frame read from the chunk, to the chunk it writes, then removes the old chunks. Replay
   stages only the segments of commits without receipts, all logged after the carry, so copies a
-  crash leaves are never staged; a chunk's removal is durable before anything after it. Copying
-  costs at most what it frees, and an open segment keeps at most as much of others' data as of
-  its own. Each batch frame carries its ordinal among the load's batches, and replay stages a
-  segment's batches in that order wherever a carry left them: a change stream's rows of one key
-  and one sequence apply in the order they were written, so a crash never changes which wins.
+  crash leaves are never staged; a freed chunk's removal is durable before any later frame is
+  written: at once after a publish between commits, and after the commit's answer where a commit
+  frees it. Copying costs at most what it frees, and an open segment keeps at most as much of
+  others' data as of its own. Each batch frame carries its ordinal among the load's batches, and
+  replay stages a segment's batches in that order wherever a carry left them: a change stream's
+  rows of one key and one sequence apply in the order they were written, so a crash never changes
+  which wins.
 - **Stored state stays what a message can carry.** The engine measures what an open's answer
   carrying the stored state holds decoded, as the host's scan counts it, from the records it
   opened on and each commit that lands, and a commit's request alike. A commit whose request, or
