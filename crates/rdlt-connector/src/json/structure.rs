@@ -25,6 +25,7 @@ pub enum Mark {
 #[derive(Clone, Debug)]
 pub struct Structure<'a> {
     text: &'a [u8],
+    /// Just past the last mark it gave: where the next is looked for.
     at: usize,
 }
 
@@ -34,12 +35,6 @@ impl<'a> Structure<'a> {
     pub fn new(text: &'a [u8], at: usize) -> Self {
         Self { text, at }
     }
-
-    /// Where the walk stands: just past the last mark it gave.
-    #[must_use]
-    pub fn at(&self) -> usize {
-        self.at
-    }
 }
 
 impl Iterator for Structure<'_> {
@@ -47,9 +42,7 @@ impl Iterator for Structure<'_> {
 
     fn next(&mut self) -> Option<Mark> {
         let rest = self.text.get(self.at..)?;
-        let found = rest
-            .iter()
-            .position(|byte| matches!(byte, b'"' | b'[' | b']' | b'{' | b'}' | b','))?;
+        let found = rest.iter().position(|byte| MARKS[usize::from(*byte)])?;
         let at = self.at + found;
         self.at = at + 1;
         Some(match self.text[at] {
@@ -65,18 +58,26 @@ impl Iterator for Structure<'_> {
     }
 }
 
+/// Whether a byte outside a string is a mark: a quote, a bracket or a comma.
+const MARKS: [bool; 256] = {
+    let mut marks = [false; 256];
+    let mut at = 0;
+    while at < 6 {
+        marks[b"\"[]{},"[at] as usize] = true;
+        at += 1;
+    }
+    marks
+};
+
 /// Just past the quote that closes the string whose contents start at `from`, or the text's end
 /// where none does.
 fn string_end(text: &[u8], mut from: usize) -> usize {
-    while let Some(found) = text
-        .get(from..)
-        .and_then(|rest| memchr::memchr2(b'"', b'\\', rest))
-    {
-        let at = from + found;
-        if text[at] == b'"' {
-            return at + 1;
+    while let Some(byte) = text.get(from) {
+        match byte {
+            b'"' => return from + 1,
+            b'\\' => from += 2,
+            _ => from += 1,
         }
-        from = at + 2;
     }
     text.len()
 }
