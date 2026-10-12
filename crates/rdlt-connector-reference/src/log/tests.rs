@@ -198,6 +198,15 @@ fn each_message_is_its_seed_stream_partition_and_offset_alone() {
     }
 }
 
+#[test]
+fn the_config_schema_names_what_a_stream_takes_where_it_says_none() {
+    let factory = source_factory::<LogSource>();
+    let stream = &factory.spec().config_schema["$defs"]["LoggedStream"]["properties"];
+    assert_eq!(stream["replayable"]["default"], json!(true));
+    assert_eq!(stream["batch_rows"]["default"], json!(10));
+    assert_eq!(stream["checkpoint_batches"]["default"], json!(1));
+}
+
 #[tokio::test]
 async fn a_stream_without_partitions_or_rows_to_a_batch_is_refused() {
     for (partitions, batch_rows) in [(0, 10), (1, 0)] {

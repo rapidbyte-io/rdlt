@@ -7,6 +7,7 @@ use arrow_schema::{ArrowError, DataType, Field, Schema};
 use rdlt_connector::{ChangeOp, Deletion, HistoryColumns};
 
 use super::super::admitted;
+use super::super::changes::merge_changes;
 use super::super::refused::{code, failed};
 use super::{Row, apply, empty, key, merge, row, rows, soft, stored_schema, written};
 
@@ -67,6 +68,15 @@ fn a_flag_on_a_key_the_sequence_or_no_stored_column_is_refused_under_its_code() 
         );
         let checked = admitted(&flagged(bit), Some(&stored_schema()), &key(Deletion::Hard));
         assert_eq!(refusal(checked), Some(code), "bit {bit}");
+    }
+    // A change stream's merge refuses a flag on the key or the sequence itself, in a batch
+    // given to it without the check that admits one.
+    let hard = key(Deletion::Hard);
+    let changes = hard.changes.as_ref().expect("a change stream");
+    for bit in [0, 2] {
+        let incoming = [flagged(bit)];
+        let merged = merge_changes(&stored_schema(), &[], &[], &incoming, &hard, changes);
+        assert_eq!(refusal(merged), Some("flag_on_key"), "bit {bit}");
     }
     // A field the batch has and the table does not store is no column to keep.
     let narrow = Arc::new(Schema::new(vec![

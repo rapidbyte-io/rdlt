@@ -31,7 +31,9 @@ all_features = true
 # The engine's inline test env has one core, which a mutant answering one also has. A mutant that
 # judges a plain column of 64-bit integers through the rows it names reads what the plain arm reads,
 # which spares only the mapping; and one that has a normalized flush's walk read every column for
-# such integers, not only one whose type holds them, finds none in the others.
+# such integers, not only one whose type holds them, finds none in the others. A history table
+# reads a key's newest version for its sequence alone, so a mutant that takes a version it loads
+# later with the same sequence as the newer one reads the same sequence.
 #
 # One mutant is excluded because it never ends rather than because it is the code as it is: one
 # that writes a length in LEB128 while the length is under 0x80 pushes bytes until memory runs out,
@@ -41,6 +43,7 @@ exclude_re = [
   "crates/rdlt-adopt/src/exec\\.rs:.*replace marks_at_once -> bool with true",
   "crates/rdlt-connector-reference/src/files/format/json\\.rs:.*replace <impl std::fmt::Debug for Rows>::fmt -> std::fmt::Result with Ok\\(Default::default\\(\\)\\)",
   "crates/rdlt-connector-reference/src/files/format\\.rs:.*replace <impl std::fmt::Debug for Writer<'_>>::fmt -> std::fmt::Result with Ok\\(Default::default\\(\\)\\)",
+  "crates/rdlt-connector-reference/src/merge/history\\.rs:.*replace > with >= in History::hold$",
   "crates/rdlt-connector-reference/src/rooted\\.rs:.*replace \\| with \\^ in Dir::(resolved|dir|opened|create)$",
   "crates/rdlt-connector-reference/src/sqlite/database\\.rs:.*replace \\| with \\^ in (connect_waiting|reading)$",
   "crates/rdlt-connector-reference/src/sqlite/database\\.rs:72:9: replace \\| with & in connect_waiting$",
