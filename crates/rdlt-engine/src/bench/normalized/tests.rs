@@ -43,3 +43,11 @@ fn the_rows_loaded_follow_from_the_roots_alone() {
     assert_eq!(Normalized::loaded(4), 4 + 3 * 6);
     assert_eq!(Normalized::loaded(0), 0);
 }
+
+#[test]
+fn the_largest_push_is_the_length_of_the_longest() {
+    let pushes = Corpus::Orders.rows(203, NonZeroU64::new(50).unwrap());
+    let longest = pushes.iter().map(bytes::Bytes::len).max().unwrap();
+    assert!(pushes.iter().any(|push| push.len() < longest));
+    assert_eq!(normalized(203, 50).largest_push(), longest as u64);
+}

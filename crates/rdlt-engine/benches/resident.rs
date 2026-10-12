@@ -5,7 +5,7 @@
 //! The call is `resident <workload> <cores>`, the workload `passthrough` or `normalized`. The
 //! peak is reset once the inputs are made, so it counts what the run adds to the inputs' base. A
 //! test runner lists the bench with `--list` and finds no test in it, and cargo's `--bench` is
-//! ignored. The exit code is 1 where the run passes its limit, and 2 on a wrong call or on a host
+//! ignored. The exit code is 1 where the run exceeds its limit, and 2 on a wrong call or on a host
 //! without `/proc`.
 
 #![forbid(unsafe_code)]
@@ -61,14 +61,15 @@ fn main() -> ExitCode {
     }
     let cores = Cores::from_count(cores);
     let (peak_memory, base, high, push) = run(workload, cores);
-    let threads = u64::try_from(cores.count().get()).expect("a count fits in 64 bits");
+    let threads = cores.workers().get() + cores.compute_threads().get() + 1;
+    let threads = u64::try_from(threads).expect("a count fits in 64 bits");
     let limit = Resident {
         memory: MEMORY,
         push,
         threads,
     }
     .limit();
-    let growth = (high - base) * 1024;
+    let growth = high.saturating_sub(base).saturating_mul(1024);
     let tunables = if std::env::var_os("GLIBC_TUNABLES").is_some() {
         "/tunables"
     } else {

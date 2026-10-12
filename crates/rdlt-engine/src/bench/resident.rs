@@ -14,7 +14,7 @@ pub struct Resident {
     pub memory: u64,
     /// Bytes: the largest push or frame a partition holds before it is admitted.
     pub push: u64,
-    /// The process's runtime workers and compute threads.
+    /// The process's threads: its runtime workers, its compute threads and its main thread.
     pub threads: u64,
 }
 
