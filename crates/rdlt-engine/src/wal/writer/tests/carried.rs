@@ -215,6 +215,42 @@ async fn a_segment_open_for_long_holds_back_no_commit_a_replay_never_repeats() {
 }
 
 #[tokio::test]
+async fn a_segment_a_commit_waiting_for_its_receipt_takes_is_not_carried() {
+    let store = Arc::new(MemoryWal::default());
+    drive(Arc::clone(&store), |mut log| async move {
+        log.send(table(0)).await;
+        // Chunk 0 holds a batch of segment 1 beside one of segment 2, which commit 2 takes in
+        // chunk 1 and waits for its receipt.
+        log.batch(1, 0).await;
+        log.batch(2, 0).await;
+        log.commit(1, &[1]).await.expect("durable");
+        log.commit(2, &[2]).await.expect("durable");
+        // Commit 1's receipt settles the rest of chunk 0, but segment 2 stays where commit 2
+        // took it.
+        log.committed(1).await;
+        log.commit(3, &[]).await.expect("durable");
+        assert_eq!(log.tally.counters().log.carried, 0);
+    })
+    .await
+    .expect("the writer ends");
+    assert_eq!(numbers(&store), [0, 1, 2]);
+    assert_eq!(
+        batches(&store),
+        [(1, 0), (2, 1)],
+        "chunk 0 is kept and segment 2's batch is not copied"
+    );
+    let scanned = scan(store.as_ref(), &pipeline(), load(), FRAME_BYTES)
+        .await
+        .expect("the log reads");
+    let taking = scanned
+        .pending()
+        .filter(|logged| logged.meta.segments.contains(SegmentId(2)))
+        .count();
+    assert_eq!(taking, 1, "commit 2 replays");
+    assert_eq!(scanned.batches[&SegmentId(2)].len(), 1);
+}
+
+#[tokio::test]
 async fn a_carry_that_would_take_the_log_past_what_it_may_hold_is_left_undone() {
     let store = Arc::new(MemoryWal::default());
     drive(Arc::clone(&store), |mut log| async move {
