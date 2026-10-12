@@ -9,7 +9,6 @@ use rdlt_engine::{Chunk, ErrorKind, GrowthLimits, LocalWal, RunOutcome, RunStatu
 
 use crate::support::batches::{BatchStream, batches};
 use crate::support::destinations::{Step, counting, failing};
-use crate::support::logs::Counted;
 use crate::support::memory_wal::Memory;
 use crate::support::script::{Script, ScriptStream, id};
 use crate::support::{
@@ -103,8 +102,7 @@ async fn a_source_that_cannot_read_again_is_never_read_in_full() {
 async fn a_logged_load_publishes_every_row_once_and_leaves_no_log() {
     let base = tempfile::tempdir().expect("a temporary directory");
     for replayable in [true, false] {
-        let counted = Arc::new(Counted::new(LocalWal::new(base.path())));
-        let store: Arc<dyn WalStore> = Arc::clone(&counted) as Arc<dyn WalStore>;
+        let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(base.path()));
         let name = format!("wal_logged_{replayable}");
         let mut events = ScriptStream::new("events", 2, 30, 7);
         events.replayable = replayable;
@@ -120,18 +118,14 @@ async fn a_logged_load_publishes_every_row_once_and_leaves_no_log() {
         assert!(outcome.error.is_none(), "{:?}", outcome.error);
         assert_eq!(outcome.report.status, RunStatus::Succeeded);
         assert_eq!(published_ids(&name, "events"), ids(2, 30));
-        let commits = usize::try_from(outcome.report.attempts[0].commits).expect("few commits");
+        let commits = outcome.report.attempts[0].commits;
         assert!(commits > 1, "{commits} commits");
         // Each commit's chunk and the closing one are published, after every batch's frame.
-        assert_eq!(counted.publishes(), commits + 1);
-        assert!(counted.appends() > 2 * commits);
-        // The run's report counts what the store was asked as the store counts it.
         let counters = &outcome.report.counters;
-        let requests = counters.log.requests;
-        let count = |requests: u64| usize::try_from(requests).expect("a count");
-        assert_eq!(count(requests.append), counted.appends());
-        assert_eq!(count(requests.publish), counted.publishes());
-        assert!(counters.log.appended > 0);
+        let log = counters.log;
+        assert_eq!(log.requests.publish, commits + 1);
+        assert!(log.requests.append > 2 * commits);
+        assert!(log.appended > 0);
         let commits_by = counters.commits;
         let made = commits_by.interval
             + commits_by.size
@@ -215,8 +209,7 @@ async fn a_replay_whose_commit_fails_closes_the_session_it_opened() {
 #[tokio::test(start_paused = true)]
 async fn a_load_that_needs_no_log_keeps_none_though_the_engine_has_a_store() {
     let base = tempfile::tempdir().expect("a temporary directory");
-    let counted = Arc::new(Counted::new(LocalWal::new(base.path())));
-    let store: Arc<dyn WalStore> = Arc::clone(&counted) as Arc<dyn WalStore>;
+    let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(base.path()));
     let (_, source) = Script::new(vec![ScriptStream::new("events", 2, 30, 7)])
         .connect("wal_unneeded")
         .await;
@@ -229,11 +222,11 @@ async fn a_load_that_needs_no_log_keeps_none_though_the_engine_has_a_store() {
         .await;
     assert_eq!(outcome.report.status, RunStatus::Succeeded);
     assert_eq!(published_ids("wal_unneeded", "events"), ids(2, 30));
-    assert_eq!((counted.appends(), counted.publishes()), (0, 0));
     // The log opened for the load, and removed as it needed none.
     let log = outcome.report.counters.log;
     assert_eq!((log.requests.open_log, log.requests.remove_log), (1, 1));
     assert_eq!((log.requests.append, log.appended, log.read), (0, 0, 0));
+    assert_eq!(log.requests.publish, 0);
 }
 
 #[tokio::test(start_paused = true)]
