@@ -1,4 +1,5 @@
-//! The bench module's allocation counter in a process whose global allocator it is.
+//! What the bench module's allocation counter sees and what the log's frames allocate and hold,
+//! in a process whose global allocator counts.
 
 #![forbid(unsafe_code)]
 
@@ -6,7 +7,7 @@ use std::alloc::System;
 use std::hint::black_box;
 
 use rdlt_engine::bench::counted;
-use stats_alloc::{INSTRUMENTED_SYSTEM, StatsAlloc};
+use stats_alloc::{INSTRUMENTED_SYSTEM, Region, StatsAlloc};
 
 #[global_allocator]
 static HEAP: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
@@ -32,4 +33,20 @@ fn a_batch_frame_allocates_at_most_two_and_six_tenths_times_its_bytes() {
     });
     let ratio = allocated.bytes / f64::from(u32::try_from(len).expect("a frame within 4 GiB"));
     assert!(ratio <= 2.6, "{ratio} of a {len}-byte frame");
+}
+
+#[test]
+fn a_json_frame_once_encoded_holds_no_more_than_its_bytes() {
+    let region = Region::new(HEAP);
+    let frame = rdlt_engine::bench::schema_frame(1_500);
+    let change = region.change();
+    let held = change
+        .bytes_allocated
+        .saturating_sub(change.bytes_deallocated);
+    assert!(frame.len() > 32 * 1024, "a {}-byte frame", frame.len());
+    assert!(
+        held <= frame.len() + 1024,
+        "{held} bytes held by a {}-byte frame",
+        frame.len()
+    );
 }

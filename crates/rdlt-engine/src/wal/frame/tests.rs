@@ -221,6 +221,25 @@ fn a_framing_s_length_grows_by_each_frame_s_head_and_announced_payload() {
 }
 
 #[test]
+fn a_batch_frame_fills_the_buffer_it_reserves_so_it_is_kept_not_copied() {
+    let wide = arrow_array::Int64Array::from_iter_values(0..10_000);
+    let wide = RecordBatch::try_from_iter([("id", Arc::new(wide) as arrow_array::ArrayRef)])
+        .expect("a batch");
+    for batch in [ids(), wide] {
+        let mut framing = Framing::default();
+        framing
+            .frame(&Frame::Batch(Batch {
+                segment: SegmentId(1),
+                table: 0,
+                ordinal: 0,
+                batch,
+            }))
+            .unwrap();
+        assert_eq!(framing.out.capacity(), framing.out.len());
+    }
+}
+
+#[test]
 fn a_frame_beyond_4_gib_is_refused() {
     let most = usize::try_from(u32::MAX).expect("a 64-bit target");
     assert_eq!(super::announced(most).unwrap(), u32::MAX);

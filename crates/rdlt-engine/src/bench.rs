@@ -329,6 +329,33 @@ pub fn batch_frame(batch: RecordBatch) -> Bytes {
     frame.encode().expect("the frame encodes")
 }
 
+/// The write-ahead log frame of a table of `columns` integer columns, as a load logs it.
+///
+/// # Panics
+///
+/// Panics where the frame does not encode, which a table of integer columns always does.
+pub fn schema_frame(columns: usize) -> Bytes {
+    use arrow_schema::{DataType, Field, Schema};
+    use rdlt_connector::{SchemaVersion, TablePath, TableRef, TableSchema};
+
+    use crate::wal::frame::{Frame, Table};
+    let fields = (0..columns).map(|column| Field::new(format!("c{column}"), DataType::Int64, true));
+    let schema = TableSchema::from_arrow(&Schema::new(fields.collect::<Vec<_>>()))
+        .expect("integer columns map to a table's");
+    let frame = Frame::Schema(Table {
+        index: 0,
+        table: TableRef {
+            path: TablePath::new(["t"]).expect("a valid path"),
+            name: "t".into(),
+            version: SchemaVersion(1),
+            generation: None,
+            merge: None,
+        },
+        schema,
+    });
+    frame.encode().expect("the frame encodes")
+}
+
 /// A write-ahead log of one chunk holding a frame of each kind a commit's chunk holds, as the log
 /// of load 1 of pipeline `fuzzed`, whose batch frame holds `batch`: something for fuzzing to cut
 /// and garble.
