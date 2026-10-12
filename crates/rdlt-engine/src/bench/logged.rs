@@ -81,17 +81,27 @@ impl Logged {
     ///
     /// Panics where a frame does not encode, which a valid batch always does.
     pub fn frame_bytes(&self) -> u64 {
-        self.batches
-            .iter()
-            .map(|batch| {
-                let frame = Frame::Batch(frame::Batch {
-                    segment: rdlt_connector::SegmentId(1),
-                    table: 0,
-                    ordinal: 0,
-                    batch: batch.clone(),
-                });
-                frame.encode().expect("the frame encodes").len() as u64
-            })
-            .sum()
+        self.batches.iter().map(encoded_len).sum()
     }
+
+    /// Bytes: the batch frame of one batch of `rows` rows, the size of every frame a run of such
+    /// batches logs.
+    ///
+    /// # Panics
+    ///
+    /// Panics where the frame does not encode, which a valid batch always does.
+    pub fn frame_len(rows: u32) -> u64 {
+        encoded_len(&Passthrough::batch(0, rows))
+    }
+}
+
+/// Bytes: `batch` encoded as a batch frame.
+fn encoded_len(batch: &RecordBatch) -> u64 {
+    let frame = Frame::Batch(frame::Batch {
+        segment: rdlt_connector::SegmentId(1),
+        table: 0,
+        ordinal: 0,
+        batch: batch.clone(),
+    });
+    frame.encode().expect("the frame encodes").len() as u64
 }

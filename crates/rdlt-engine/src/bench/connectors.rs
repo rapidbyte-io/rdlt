@@ -250,7 +250,6 @@ impl DestinationConnector for Sink {
             session: SinkSession {
                 staged: Arc::default(),
                 sinking: self.sinking,
-                refuses: self.sinking == Sinking::Refuse,
             },
             epoch: Epoch(1),
             state: Vec::new(),
@@ -263,7 +262,6 @@ impl DestinationConnector for Sink {
 pub struct SinkSession {
     staged: Arc<Mutex<BTreeMap<SegmentId, u64>>>,
     sinking: Sinking,
-    refuses: bool,
 }
 
 impl Session for SinkSession {
@@ -282,7 +280,7 @@ impl Session for SinkSession {
     }
 
     async fn commit(&mut self, meta: &CommitMeta) -> Result<Receipt> {
-        if self.refuses {
+        if self.sinking == Sinking::Refuse {
             return Err(ConnectorError::internal(
                 "the bench sink refuses every commit",
             ));
