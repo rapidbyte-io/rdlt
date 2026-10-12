@@ -212,27 +212,36 @@ pub fn scan_log(bytes: &[u8]) -> Result<usize, Refused> {
     let pipeline = rdlt_connector::PipelineId::parse("fuzzed").expect("a valid pipeline");
     let load = rdlt_connector::LoadId::from_parts(std::time::UNIX_EPOCH, 1);
     let chunk = Chunk { load, number: 0 };
-    let code = |error: crate::error::Error| Refused {
+    ready(store.open_log(&pipeline, load)).map_err(refused_wal)?;
+    let mut staged = ready(store.stage(&pipeline, chunk)).map_err(refused_wal)?;
+    ready(staged.append(Bytes::copy_from_slice(bytes))).map_err(refused_wal)?;
+    ready(staged.publish()).map_err(refused_wal)?;
+    let limits = frame::limits(crate::config::EngineConfig::default().memory().get());
+    let scanned = ready(scan::scan(&store, &pipeline, load, limits.frame_bytes))
+        .map_err(|error| refused(&error))?;
+    for located in scanned.batches.values().flatten() {
+        ready(scan::batch(&store, &pipeline, *located, limits))
+            .and_then(scan::Read::decode)
+            .map_err(|error| refused(&error))?;
+    }
+    Ok(scanned.commits.len())
+}
+
+/// `error` as a refusal: a log unreadable or foreign by its code, any other as `other`.
+fn refused(error: &crate::error::Error) -> Refused {
+    Refused {
         code: match error.code() {
             Some("wal_unreadable") => "wal_unreadable",
             Some("wal_foreign") => "wal_foreign",
             _ => "other",
         },
         message: error.to_string(),
-    };
-    let wal = |error: std::io::Error| code(crate::error::Error::from_wal(error));
-    ready(store.open_log(&pipeline, load)).map_err(wal)?;
-    let mut staged = ready(store.stage(&pipeline, chunk)).map_err(wal)?;
-    ready(staged.append(Bytes::copy_from_slice(bytes))).map_err(wal)?;
-    ready(staged.publish()).map_err(wal)?;
-    let limits = frame::limits(crate::config::EngineConfig::default().memory().get());
-    let scanned = ready(scan::scan(&store, &pipeline, load, limits.frame_bytes)).map_err(code)?;
-    for located in scanned.batches.values().flatten() {
-        ready(scan::batch(&store, &pipeline, *located, limits))
-            .and_then(scan::Read::decode)
-            .map_err(code)?;
     }
-    Ok(scanned.commits.len())
+}
+
+/// `error`, a log store's failure, as a refusal.
+fn refused_wal(error: std::io::Error) -> Refused {
+    refused(&crate::error::Error::from_wal(error))
 }
 
 /// What reading a load's log as a replay does took: the batch frames it read, the bytes the log
@@ -259,15 +268,6 @@ pub fn replay_scan(base: &std::path::Path, pipeline: &str) -> Result<ReplayRead,
     use crate::report::Tally;
     use crate::wal::CountedStore;
     use crate::wal::{WalStore, frame, scan};
-    let code = |error: crate::error::Error| Refused {
-        code: match error.code() {
-            Some("wal_unreadable") => "wal_unreadable",
-            Some("wal_foreign") => "wal_foreign",
-            _ => "other",
-        },
-        message: error.to_string(),
-    };
-    let wal = |error: std::io::Error| code(crate::error::Error::from_wal(error));
     let tally = Arc::new(Tally::default());
     let local: Arc<dyn WalStore> = Arc::new(crate::LocalWal::new(base));
     let store = CountedStore::new(local, Arc::clone(&tally));
@@ -277,7 +277,9 @@ pub fn replay_scan(base: &std::path::Path, pipeline: &str) -> Result<ReplayRead,
         .enable_all()
         .build()
         .expect("a runtime starts");
-    let loads = runtime.block_on(store.loads(&pipeline)).map_err(wal)?;
+    let loads = runtime
+        .block_on(store.loads(&pipeline))
+        .map_err(refused_wal)?;
     let [load] = loads.as_slice() else {
         return Err(Refused {
             code: "other",
@@ -286,20 +288,20 @@ pub fn replay_scan(base: &std::path::Path, pipeline: &str) -> Result<ReplayRead,
     };
     let logged = runtime
         .block_on(store.chunks(&pipeline, *load))
-        .map_err(wal)?
+        .map_err(refused_wal)?
         .iter()
         .map(|(_, len)| len)
         .sum();
     let limits = frame::limits(crate::config::EngineConfig::default().memory().get());
     let scanned = runtime
         .block_on(scan::scan(&store, &pipeline, *load, limits.frame_bytes))
-        .map_err(code)?;
+        .map_err(|error| refused(&error))?;
     let mut batches = 0;
     for located in scanned.batches.values().flatten() {
         runtime
             .block_on(scan::batch(&store, &pipeline, *located, limits))
             .and_then(scan::Read::decode)
-            .map_err(code)?;
+            .map_err(|error| refused(&error))?;
         batches += 1;
     }
     let log = tally.counters().log;
