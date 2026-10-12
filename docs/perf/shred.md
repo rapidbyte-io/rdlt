@@ -117,8 +117,8 @@ The One core, Cliffs, Columns of JSON and Normalizing tables come from this chan
 at one-minute load averages of 2.81, 2.52, 2.92 and 6.21. Each figure is the median of every run of
 its benchmark, with the range of the runs in brackets.
 
-The `normalize/*` rows of the Allocations table come from this change on `3c0260b2`, 2026-10-11:
-five rounds interleaved with the merge-base in alternating orders, each started at a one-minute load
+The `normalize/*` rows of the Allocations table come from commit `a40d359e`, 2026-10-11: five
+rounds interleaved with the merge-base in alternating orders, each started at a one-minute load
 average of 0.38 to 0.97, the median with its range in brackets.
 
 ### Against the old engine
