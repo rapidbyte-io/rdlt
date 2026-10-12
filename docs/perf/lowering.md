@@ -57,7 +57,7 @@ not built: rendering is what these cases spend.
 
 ## Results
 
-Intel Core Ultra X7 358H, 2026-10-12, the code of commit `615a0978`, governor `powersave` with
+Intel Core Ultra X7 358H, 2026-10-12, this change on `8b05f0a7`, governor `powersave` with
 energy preference `performance`, one-minute load average 0.44-1.75 and five-minute 1.09-2.58 at
 the start of each round; criterion's estimate, the median of five rounds and their range, and how
 many rounds fall within ±3 % of the median.
