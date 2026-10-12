@@ -111,9 +111,15 @@ invocation started at a one-minute load average of at most 1.0 with its cores id
 and each round of every engine figure lies within 3 % of the median. A third round ran later under
 other load on the machine and is left out (the owner's ruling of 2026-10-10).
 
-The `normalize/*` rows of the Normalizing and Allocations tables come from commit `a40d359e`,
-2026-10-11: five rounds interleaved with the merge-base in alternating orders, each started at a
-one-minute load average of 0.38 to 0.97, the median with its range in brackets.
+The One core, Cliffs, Columns of JSON and Normalizing tables come from commit `1a0c4cc5`,
+2026-10-12, on core 0: four rounds of `shred/nested`, `shred/wide_200`, `shred/string_heavy` and
+`normalize/keyless`, and two of every other benchmark, the first two of the four. The rounds
+started at one-minute load averages of 2.81, 2.52, 2.92 and 6.21. Each figure is the median of
+every run of its benchmark, with the range of the runs in brackets.
+
+The `normalize/*` rows of the Allocations table come from commit `a40d359e`, 2026-10-11: five
+rounds interleaved with the merge-base in alternating orders, each started at a one-minute load
+average of 0.38 to 0.97, the median with its range in brackets.
 
 ### Against the old engine
 
@@ -123,16 +129,15 @@ one-minute load average of 0.38 to 0.97, the median with its range in brackets.
 
 ### One core
 
-The `nested` row is this change on `6caed3b0`, 2026-10-12, the three rounds of More cores, with
-their one-minute load averages of 2.65, 3.96 and 1.79; the other rows are the commit above's.
+Commit `1a0c4cc5`, 2026-10-12, rounds as above.
 
 | Corpus | Throughput | Instructions a cycle |
 |---|---|---|
-| `nested` | 593 MiB/s [559–593] | 6.01 |
-| `sparse` | 593 MiB/s [592–594] | 5.95 |
-| `flat_narrow` | 441 MiB/s [441–442] | 5.20 |
-| `wide_200` | 486 MiB/s [484–487] | 5.56 |
-| `string_heavy` | 584 MiB/s [582–585] | 5.20 |
+| `nested` | 591 MiB/s [589–606] | 6.05 |
+| `sparse` | 575 MiB/s [570–580] | 6.04 |
+| `flat_narrow` | 454 MiB/s [452–457] | 5.24 |
+| `wide_200` | 461 MiB/s [436–471] | 5.41 |
+| `string_heavy` | 530 MiB/s [508–543] | 4.86 |
 
 ### More cores
 
@@ -153,31 +158,29 @@ The bound of 0.7·N at N = 4 is 2.8×, which this change does not reach.
 ### Cliffs
 
 Where the shredder parses a chunk again, observes it, or reads its numbers exactly, on one core
-(`0`), `shred_cliffs`. The `array_form` and `pretty` rows are this change on `6caed3b0`, 2026-10-12,
-the three rounds of More cores; the others are this change on `7d3604e0`, 2026-10-12, three rounds
-started at one-minute load averages of 1.82, 1.26 and 1.35. Each figure is the median, with the
-range in brackets. The pass counts are the same in every round, over 32 MiB in 1 MiB chunks.
+(`0`), `shred_cliffs`. Commit `1a0c4cc5`, 2026-10-12, rounds as above. The pass counts are the
+same in every round, over 32 MiB in 1 MiB chunks.
 
 | Corpus | Throughput | Instructions a cycle | Parsed | Tripped | Observed | Rebuilt | Exact |
 |---|---|---|---|---|---|---|---|
-| `array_form` | 380 MiB/s [365–384] | 6.00 | 32 | 0 | 0 | 0 | 0 |
-| `drift_json` | 166 MiB/s [165–171] | 5.13 | 32 | 0 | 0 | 32 | 32 |
-| `drift_scalar` | 292 MiB/s [291–301] | 6.06 | 32 | 0 | 0 | 32 | 0 |
-| `int_arrays` | 66 MiB/s [65–67] | 6.33 | 32 | 32 | 32 | 32 | 0 |
-| `big_numbers` | 194 MiB/s [192–197] | 4.75 | 64 | 0 | 0 | 0 | 32 |
-| `pretty` | 391 MiB/s [348–391] | 5.53 | 32 | 0 | 0 | 0 | 0 |
+| `array_form` | 358 MiB/s [356–359] | 5.91 | 32 | 0 | 0 | 0 | 0 |
+| `drift_json` | 167 MiB/s [166–167] | 5.21 | 32 | 0 | 0 | 32 | 32 |
+| `drift_scalar` | 285 MiB/s [285–285] | 6.14 | 32 | 0 | 0 | 32 | 0 |
+| `int_arrays` | 63 MiB/s [62–64] | 5.92 | 32 | 32 | 32 | 32 | 0 |
+| `big_numbers` | 184 MiB/s [184–184] | 4.66 | 64 | 0 | 0 | 0 | 32 |
+| `pretty` | 359 MiB/s [358–360] | 5.47 | 32 | 0 | 0 | 0 | 0 |
 
 ### Columns of JSON
 
 `json_check` checks a column of 100 000 JSON values as an Arrow push's is checked, on one core,
-at the same commit and in the same rounds. `plain` holds values without escapes and `escaped`
+at the same commit and in the same rounds as Cliffs. `plain` holds values without escapes and `escaped`
 the string-heavy corpus's. The `json/check` case of the `allocations` bench, 8,192 escaped values,
 allocates 16,385 times a call.
 
 | Column | Throughput |
 |---|---|
-| `json_check/plain` | 678 MiB/s [669–710] |
-| `json_check/escaped` | 698 MiB/s [688–700] |
+| `json_check/plain` | 635 MiB/s [631–639] |
+| `json_check/escaped` | 957 MiB/s [942–971] |
 
 ### Metering
 
@@ -207,12 +210,13 @@ A normalized stream's batches are split into child tables after shredding, and e
 its lineage. The `normalize` group measures it on one core, on `with_arrays`: `shred_only`
 shreds it; `keyed` shreds and normalizes rows identified by their `id`; `keyless` shreds and
 normalizes rows identified by their whole content, whose canonical encoding is the extra cost.
+Commit `1a0c4cc5`, 2026-10-12, rounds as above.
 
 | Group | Time | Throughput | Against `shred_only` |
 |---|---|---|---|
-| `shred_only` | 66.9 ms | 479 MiB/s [476–482] | 1 |
-| `keyed` | 109.8 ms | 292 MiB/s [291–293] | 1.64× |
-| `keyless` | 168.8 ms | 190 MiB/s [189–191] | 2.52× |
+| `shred_only` | 67.6 ms | 473 MiB/s [471–476] | 1 |
+| `keyed` | 115.1 ms | 278 MiB/s [278–278] | 1.70× |
+| `keyless` | 174.5 ms | 184 MiB/s [179–190] | 2.58× |
 
 ### Allocations
 
@@ -239,3 +243,18 @@ own and measured in the same rounds on core 0, shred `nested` 23.5 % slower:
 |---|---|---|---|---|---|
 | Release profile (`lto = "fat"`, `codegen-units = 1`) | 603 MiB/s | 486 MiB/s | 584 MiB/s | 177 MiB/s | 1 302 867 923 |
 | Cargo's release defaults | 461 MiB/s | 397 MiB/s | 506 MiB/s | 156 MiB/s | 1 555 860 022 |
+
+### Stack check
+
+The shredder checks the remaining stack at every level of nesting. `stacker::maybe_grow` and
+`visit::nest` are inlined, so the check's share is that of `stacker::remaining_stack` plus
+`rust_psm_stack_pointer`: 0.46 % of the instructions of `shred/nested`, 0.52 % of
+`shred/with_arrays` and 0.22 % of `shred/array_form`. `shred_cliffs/pretty` has no instruction case.
+
+### Build target
+
+The build target is the default, x86-64. A build for x86-64-v3 (`-C target-cpu=x86-64-v3`) of
+`1a0c4cc5`, run against the default build on core 0 in the first two rounds above, is faster on 15
+of the 16 benchmarks, by 3 % (`shred/nested`) to 13 % (`shred/string_heavy`), and slower on
+`shred_cliffs/int_arrays` in both rounds: 534 ms against 507 ms, 5.3 % slower. It would also
+exclude CPUs older than Haswell, so the default stays.
