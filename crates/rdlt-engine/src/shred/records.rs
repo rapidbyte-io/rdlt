@@ -62,9 +62,10 @@ impl Chunk {
     /// The records, in order; a span that breaks as its records are found again ends them with
     /// an internal error, since the cut checked the array it was cut from.
     pub(super) fn records(&self) -> impl Iterator<Item = Result<&[u8], ShredError>> {
-        self.parts.iter().flat_map(|part| {
-            let bytes = &part.push[part.span.clone()];
-            Records::within(bytes, part.form).map(move |record| record.map(|range| &bytes[range]))
+        self.parts.iter().flat_map(|part| Records {
+            bytes: &part.push[part.span.clone()],
+            form: part.form,
+            at: 0,
         })
     }
 }
@@ -224,7 +225,9 @@ fn element_end(structure: &mut Structure<'_>) -> End {
     End::Unended
 }
 
-/// Finds the records of a span a cut made one at a time, keeping only where it stands.
+/// The records of a span a cut made from its first record's first byte to its last record's
+/// last, found one at a time, keeping only where it stands; a record that does not read ends
+/// them with an internal error.
 struct Records<'a> {
     bytes: &'a [u8],
     form: Form,
@@ -232,32 +235,26 @@ struct Records<'a> {
     at: usize,
 }
 
-impl<'a> Records<'a> {
-    /// The records in `bytes`, which a cut of their push made from its first record's first byte
-    /// to its last record's last; a record that does not read ends them with an internal error.
-    fn within(
-        bytes: &'a [u8],
-        form: Form,
-    ) -> impl Iterator<Item = Result<Range<usize>, ShredError>> + 'a {
-        let mut records = Self { bytes, form, at: 0 };
-        std::iter::from_fn(move || match records.next_record() {
-            Ok(next) => next.map(Ok),
-            Err(error) => {
-                // Past the bytes, so nothing is read after the record that broke.
-                records.at = records.bytes.len() + 1;
-                Some(Err(error))
-            }
-        })
-    }
+impl<'a> Iterator for Records<'a> {
+    type Item = Result<&'a [u8], ShredError>;
 
-    /// Where the next record lies, without the whitespace around it; `None` after the last.
-    fn next_record(&mut self) -> Result<Option<Range<usize>>, ShredError> {
-        match self.form {
+    fn next(&mut self) -> Option<Self::Item> {
+        let next = match self.form {
             Form::Lines => Ok(self.line()),
             Form::Elements => self.element(),
+        };
+        match next {
+            Ok(record) => record.map(|range| Ok(&self.bytes[range])),
+            Err(error) => {
+                // Past the bytes, so nothing is read after the record that broke.
+                self.at = self.bytes.len() + 1;
+                Some(Err(error))
+            }
         }
     }
+}
 
+impl Records<'_> {
     /// The next line that is not blank.
     fn line(&mut self) -> Option<Range<usize>> {
         while let Some(rest) = self.bytes.get(self.at..).filter(|rest| !rest.is_empty()) {
