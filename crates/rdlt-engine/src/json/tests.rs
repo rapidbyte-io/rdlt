@@ -351,6 +351,13 @@ fn an_exponent_is_within_the_limit_by_its_digits_beside_its_leading_zeros() {
     assert!(may_hold_long_exponent(
         format!("\"x1e1{digits}\"").as_bytes()
     ));
+    // A number without one, and a letter before an `e`, hold no exponent.
+    assert!(super::may_hold_exponent(
+        format!("[1e1{digits}]").as_bytes()
+    ));
+    assert!(super::may_hold_exponent(b"{\"a\":1.5E3}"));
+    assert!(!super::may_hold_exponent(b"{\"name\":0.0}"));
+    assert!(!super::may_hold_exponent(b"e1"));
     // However many such numbers it holds.
     assert!(may_hold_long_exponent(
         format!("[1e1{digits},1e1{digits}]").as_bytes()

@@ -101,6 +101,15 @@ pub(crate) fn exponent_within(written: &str) -> bool {
     exponent.trim_start_matches('0').len() <= EXPONENT_DIGITS
 }
 
+/// Whether `bytes`, JSON text, may hold a number written with an exponent: an `e` after a digit,
+/// which a string may hold too.
+pub(crate) fn may_hold_exponent(bytes: &[u8]) -> bool {
+    memchr::memchr2_iter(b'e', b'E', bytes).any(|at| {
+        at.checked_sub(1)
+            .is_some_and(|before| bytes[before].is_ascii_digit())
+    })
+}
+
 /// Digits: the fewest an integer the fast parse reads as a float has, as
 /// `-9223372036854775809` has; every integer of fewer digits is within 64 bits.
 const ROUNDED_DIGITS: usize = 19;

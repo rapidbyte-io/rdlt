@@ -19,7 +19,9 @@ pub(crate) use check::bench_field;
 pub(crate) use check::{NotJson, check_batch, held as held_by_check, schema_holds_json};
 #[cfg(test)]
 pub(crate) use number::{canonical_float, canonical_number};
-pub(crate) use number::{exponent_within, long_numbers, write_float, write_number};
+pub(crate) use number::{
+    exponent_within, long_numbers, may_hold_exponent, write_float, write_number,
+};
 
 /// Digits: the most a JSON number's exponent may have, beside its leading zeros, so its value's
 /// place is a 64-bit integer whatever its digits are.

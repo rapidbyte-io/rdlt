@@ -39,10 +39,10 @@ pub(crate) struct Context {
     spoiled: Cell<bool>,
     /// Whether the chunk must be parsed again exactly.
     imprecise: Cell<bool>,
-    /// Whether the fast parse read a float of zero since this was last asked.
+    /// Whether the fast parse read a float of zero since the last record was confirmed.
     zeroed: Cell<bool>,
-    /// Whether the fast parse read a whole float of magnitude [`ROUNDED_FROM`] or more since this
-    /// was last asked.
+    /// Whether the fast parse read a whole float of magnitude [`ROUNDED_FROM`] or more since the
+    /// last record was confirmed.
     rounded: Cell<bool>,
     /// Whether a value of a column that stopped building held a float.
     json_floats: Cell<bool>,
@@ -121,15 +121,22 @@ impl Context {
         }
     }
 
-    /// Whether the parse read a float of zero since this was last asked.
-    pub(crate) fn zeroed(&self) -> bool {
-        self.zeroed.replace(false)
-    }
-
-    /// Whether the parse read a whole float of magnitude [`ROUNDED_FROM`] or more since this was
-    /// last asked.
-    pub(crate) fn rounded(&self) -> bool {
-        self.rounded.replace(false)
+    /// Notes that the chunk must be parsed again exactly where the fast parse may have misread a
+    /// number of the record `bytes`, which it has just read, and forgets the floats it read.
+    ///
+    /// It reads a float of a vast negative exponent as zero, as it reads `0.0`, and an integer
+    /// beyond 64 bits as a whole float, as it reads `1.5e30`: the record must hold such a
+    /// number's digits too. A zero, common in data, is confirmed fast where no exponent follows a
+    /// digit.
+    pub(crate) fn confirm(&self, bytes: &[u8]) {
+        let zeroed = self.zeroed.replace(false) && crate::json::may_hold_exponent(bytes);
+        let rounded = self.rounded.replace(false);
+        if zeroed || rounded {
+            let long = crate::json::long_numbers(bytes);
+            if zeroed && long.exponent || rounded && long.integer {
+                self.reparse();
+            }
+        }
     }
 
     /// Charges an observation `bytes` it holds: within its chunk's allowance, or beyond it as far

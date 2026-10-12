@@ -302,15 +302,8 @@ fn each(
         let (bytes, index) = (bytes?, rows);
         rows += 1;
         let parsed = record(bytes);
-        // The fast parse reads a float of a vast negative exponent as zero, as it reads `0.0`, and
-        // an integer beyond 64 bits as a whole float, as it reads `1.5e30`: a record where it read
-        // either and that may hold such a number is parsed exactly.
-        let (zeroed, rounded) = (context.zeroed(), context.rounded());
-        if !exact && (zeroed || rounded) {
-            let long = crate::json::long_numbers(bytes);
-            if zeroed && long.exponent || rounded && long.integer {
-                context.reparse();
-            }
+        if !exact {
+            context.confirm(bytes);
         }
         if let Err(error) = parsed {
             if let Some(fault) = context.fault() {
