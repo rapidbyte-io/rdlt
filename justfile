@@ -220,11 +220,11 @@ bench-package name:
 # Measure a bench as every recorded figure is measured: on the CPUs `cores` lists, every CPU
 # this process may use by default, saved as criterion's baseline named after the commit, then each
 # benchmark under `perf stat` for the instructions a cycle and the CPUs kept busy, and once under
-# a count-only `strace -c` for the syscalls a run makes, then the bench's allocation counts, with
-# the commit, load, governor and thread counts. Connectors a bench serves in processes of their
-# own run on the CPUs `connectors` lists, by default every online CPU outside `cores`; their CPU
-# time is in the CPUs kept busy and their syscalls are counted. Linux only, which can hold a
-# process to chosen CPUs; the record is in `target/bench`
+# a count-only `strace -c` for the syscalls a run makes, then the bench's allocation counts at
+# full size (`--bench`), with the commit, load, governor and thread counts. Connectors a bench
+# serves in processes of their own run on the CPUs `connectors` lists, by default every online CPU
+# outside `cores`; their CPU time is in the CPUs kept busy and their syscalls are counted. Linux
+# only, which can hold a process to chosen CPUs; the record is in `target/bench`
 bench $name $cores="" $filter="" $connectors="":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -296,7 +296,7 @@ bench $name $cores="" $filter="" $connectors="":
             }
         ' target/bench/strace.txt | tee -a "$record"
     done
-    if "$counter" --list | grep -qx "$name: test"; then taskset -c "$cores" "$counter" "$name" | tee -a "$record"; fi
+    if "$counter" --list | grep -qx "$name: test"; then taskset -c "$cores" "$counter" --bench "$name" | tee -a "$record"; fi
     echo "load after: $(cut -d' ' -f1-3 /proc/loadavg)" | tee -a "$record"
 
 # Everything the pull-request gate runs, instruction and allocation counts against main among it.
