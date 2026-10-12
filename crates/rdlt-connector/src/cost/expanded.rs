@@ -122,12 +122,14 @@ impl<'t> Within<'t> {
     }
 
     /// Inside a value measured here, converted to `target`.
+    ///
+    /// Like the value, it is neither stored as text nor read from JSON text: a column stored as
+    /// text is measured converted, and as JSON text apart, and one read from JSON text measured
+    /// converted, before any value inside it is.
     fn inside(self, target: Option<&'t LogicalType>) -> Self {
         Self {
             nested: true,
             target,
-            text: false,
-            reach: Reach::Converted,
             ..self
         }
     }

@@ -1013,9 +1013,18 @@ fn what_the_codec_refuses_is_reported_by_what_went_wrong() {
 }
 
 #[test]
-fn a_catalog_beyond_its_stream_limit_is_refused_before_its_streams_are_read() {
+fn a_catalog_of_its_stream_limit_is_read_and_one_beyond_refused_before_its_streams_are() {
+    use crate::limits::MAX_CATALOG_STREAMS;
+    let full = (0..MAX_CATALOG_STREAMS)
+        .map(|index| {
+            let name = StreamName::new(format!("s{index}")).unwrap();
+            v1::StreamSpec::from(&StreamSpec::new(name))
+        })
+        .collect();
+    let read = Catalog::try_from(v1::Catalog { streams: full }).unwrap();
+    assert_eq!(read.len(), MAX_CATALOG_STREAMS);
     // Each stream has no name, which reading one would refuse first.
-    let streams = vec![v1::StreamSpec::default(); crate::limits::MAX_CATALOG_STREAMS + 1];
+    let streams = vec![v1::StreamSpec::default(); MAX_CATALOG_STREAMS + 1];
     let refused = Catalog::try_from(v1::Catalog { streams }).unwrap_err();
     assert!(
         matches!(refused, Invalid::OutOfRange("catalog streams")),
@@ -1194,6 +1203,32 @@ fn identifier_rules_beyond_their_limits_are_refused_where_they_are_received() {
         ),
         "{refused}"
     );
+}
+
+#[test]
+fn reserved_words_or_prefixes_beyond_their_limit_are_refused_before_they_are_kept() {
+    use crate::limits::{MAX_RESERVED_PREFIXES, MAX_RESERVED_WORDS};
+    let reserving = |words: usize, prefixes: usize| {
+        let mut rules = v1::IdentifierRules::from(&Capabilities::minimal().identifiers);
+        rules.reserved = (0..words).map(|word| format!("w{word}")).collect();
+        rules.reserved_table_prefixes = (0..prefixes).map(|prefix| format!("p{prefix}")).collect();
+        IdentifierRules::try_from(rules)
+    };
+    let full = reserving(MAX_RESERVED_WORDS, MAX_RESERVED_PREFIXES).unwrap();
+    assert_eq!(
+        (full.reserved.len(), full.reserved_table_prefixes.len()),
+        (MAX_RESERVED_WORDS, MAX_RESERVED_PREFIXES)
+    );
+    for (words, prefixes) in [
+        (MAX_RESERVED_WORDS + 1, MAX_RESERVED_PREFIXES),
+        (MAX_RESERVED_WORDS, MAX_RESERVED_PREFIXES + 1),
+    ] {
+        let refused = reserving(words, prefixes).unwrap_err();
+        assert!(
+            matches!(refused, Invalid::OutOfRange("reserved words")),
+            "{words} words, {prefixes} prefixes: {refused}"
+        );
+    }
 }
 
 #[test]
