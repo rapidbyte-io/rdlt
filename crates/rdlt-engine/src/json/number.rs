@@ -208,6 +208,8 @@ pub(crate) fn write_float(value: f64, out: &mut Vec<u8>) {
         out.push(b'-');
     }
     let significant = (first..=last).map(|at| digits.get(at));
+    // The longest plain text of a finite float is about 341 bytes: 17 digits behind the 324 places
+    // of the smallest subnormal, so it is within PLAIN_BYTES.
     let plain = plain(significant, last - first + 1, place, out);
     debug_assert!(plain, "every finite float is plain within the limit");
 }

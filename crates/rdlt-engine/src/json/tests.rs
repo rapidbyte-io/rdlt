@@ -299,7 +299,8 @@ proptest! {
 
     #[test]
     fn a_float_s_canonical_text_is_its_shortest_text_s_canonical_number(
-        value in prop::num::f64::NORMAL | prop::num::f64::SUBNORMAL | prop::num::f64::ZERO
+        value in prop::num::f64::POSITIVE | prop::num::f64::NEGATIVE | prop::num::f64::NORMAL
+            | prop::num::f64::SUBNORMAL | prop::num::f64::ZERO
     ) {
         let mut direct = Vec::new();
         write_float(value, &mut direct);
