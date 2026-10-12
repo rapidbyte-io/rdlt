@@ -46,10 +46,18 @@ all_features = true
 # which kills a whole run, not just its test. A bound on the loop would cost every value's length
 # about 4 % more instructions to normalize. The length's test pins every other mutant of the loop.
 #
+# So are the mutants of the JSON scanner's step that stop it moving forward: one that steps back
+# or stays where it is, by `-` or `*` for `+` in where the next mark is found or where looking
+# resumes, and one that sends a string's end to the text's start. The scanner then gives the
+# same marks forever and what reads them grows until memory runs out. A bound on the loop would
+# cost every byte the shredder scans; the scanner's tests pin every other mutant of the step.
+#
 # A mutant that joins a hex digit to the value before it with `^` for `|` is the code as it is:
 # the value is shifted left four bits first, so its low four bits are clear and both give one
 # result.
 exclude_re = [
+  "crates/rdlt-connector/src/json/structure\\.rs:4[67]:[0-9]+: replace \\+ with [-*] in <impl Iterator for Structure<'_>>::next$",
+  "crates/rdlt-connector/src/json/structure\\.rs:.*replace string_end -> usize with [01]$",
   "crates/rdlt-engine/src/json/text\\.rs:.*replace \\| with \\^ in hex$",
   "crates/rdlt-adopt/src/exec\\.rs:.*replace marks_at_once -> bool with true",
   "crates/rdlt-connector-reference/src/files/format/batches\\.rs:.*delete match arm DataType::Struct\\(_\\) in children$",
