@@ -108,20 +108,23 @@ out of old chunks, a piece at a time, however large a frame.
 
 A source that sends more than its log holds between commits loads through it: a batch that finds
 the log full has it publish a chunk that lets go of what was committed, waits for a commit where
-one can free room, and a commit is due at once; a batch that waits takes the room before any
-batch that began to wait after it, so no partition starves while others checkpoint. A load whose
+one can free room, and a commit is due at once; a batch that waits takes the room before any batch
+that began to wait after it, so no partition starves while others checkpoint. A load whose
 partitions' frames sent and not yet committed with a receipt, beside one commit's frames, take at
-most three quarters of `log_bytes` loads through it, however late its receipts arrive; the rest
-of the log is kept for gathering chunks, for commits and for what ends a chunk. A chunk holds at
-most an eighth of `log_bytes`, but where it holds a single batch frame or the frames gathered out
-of a single chunk, and beside that the seals and frame of the commit that ends it: batches sent
-while a commit's frame follows its seals wait for that commit, and go to the chunks after it. So
-a chunk's frames can always be gathered into a later one. A load fails `log_bytes_exceeded` where the frames its partitions have sent and not yet
-checkpointed fill its log, as a source that never checkpoints does: give such a load a larger
-`log_bytes`, at least four thirds of what its partitions send between checkpoints.
+most three quarters of `log_bytes` loads through it, however late its receipts arrive; the rest of
+the log is kept for gathering chunks, for commits and for what ends a chunk. A chunk holds at most
+an eighth of `log_bytes`, but where it holds a single batch frame or the frames gathered out of a
+single chunk, and beside that the seals and frame of the commit that ends it: batches sent while a
+commit's frame follows its seals wait for that commit, and go to the chunks after it. So a chunk's
+frames can always be gathered into a later one. Committed frames that share a chunk with a segment
+still open stay until that segment is committed or a relief carries its frames out, so a log fills
+toward `log_bytes` before anything is carried. A load fails `log_bytes_exceeded` where the frames
+its partitions have sent and not yet checkpointed fill its log, as a source that never checkpoints
+does: give such a load a larger `log_bytes`, at least four thirds of what its partitions send
+between checkpoints.
 
 A log never holds more than `log_bytes`, but where a commit is larger than the room kept for one,
-an eighth of `log_bytes` or the largest commit before it, and the carry's eighth: it is written
-all the same, seals and commit in one chunk, and the log holds more by at most that commit's
-frames until its receipt or the next relief frees what it settled. Batches wait or are refused
+an eighth of `log_bytes` or the largest commit before it, and the carry's eighth: it is written all
+the same, seals and commit in one chunk, and the log holds more by at most that commit's frames
+until a later chunk, a commit's or a relief's, frees what it settled. Batches wait or are refused
 meanwhile.

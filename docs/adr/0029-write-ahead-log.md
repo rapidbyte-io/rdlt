@@ -49,7 +49,8 @@ A load's log is kept in a `WalStore`: a local directory (`LocalWal`) or object s
   commit is answered, and a receipt is recorded in the next chunk's `End` (ADR 0045); a chunk
   goes once every segment and commit in it has a receipt. Every chunk starts with the header and
   the schema frames its batches name, so it reads alone. Segments still open are carried out of
-  chunks whose other segments settled, and a version's schema frame is forgotten once no batch
+  chunks whose other segments settled when a full log is relieved, and a version's schema frame
+  is forgotten once no batch
   of it can come (ADR 0041). After a failed append or publish every later command fails: what
   the chunk holds is unknown.
 - **Order.** A batch's frame is queued before its partition can seal its segment, and a commit's

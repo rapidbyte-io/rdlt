@@ -176,7 +176,9 @@ lowering may take, logged under more memory than replays it, is refused as
 ### Disk is bounded, and a full disk is retried
 
 - `GrowthLimits::log_bytes`, 4 GiB by default, is what a load's log may hold on disk, the staged
-  chunk included. At half of it a commit is due, and again at each eighth more.
+  chunk included. At half of it a commit is due, and again at each eighth more. Where a segment
+  stays open long, those commits meet settled data only a relief frees, so a log filling toward
+  three quarters of its bound makes about two commits that cannot shrink it.
 - Every frame is counted against the bound before it is written, in one count changed only by
   a compare and swap against the bound. A batch counts its frame and its table's schema frame;
   a commit counts each of its seal frames, then its phase and commit frames, as it sends them;
@@ -190,20 +192,29 @@ lowering may take, logged under more memory than replays it, is refused as
   commit that ends it. Before a batch frame would take it past that, it is published between
   commits, closed by a relief frame; a batch counts what ending its chunk writes beside its
   frames. A carry copies into it only what keeps it within that. While it holds a commit's
-  seals, the writer holds back every batch frame, receipt and abandonment sent until the
+  seals, the writer holds back every batch frame and abandonment sent until the
   commit's frame publishes it, and then writes them in turn. So the open frames of any chunk
   holding settled ones fit the carry's room, however long a commit's frame comes after its
   seals. What it holds back holds none of the log's memory the commit's frames need: the
   schema frames their batches would write are the writer's to keep from the first seal on,
   their memory released. A close that comes while seals are staged came without their commit,
   and fails the log.
-- A carry follows each receipt for each old chunk whose open frames take no more than what else it
-  holds, while the log has room. A batch that finds no room has the writer publish chunks between
+- Open frames are carried only in a relief. A settled chunk that an open segment shares stays
+  until the segment settles or a relief carries its frames out, so the log fills toward its
+  bound before any carry. A batch that finds no room has the writer publish chunks between
   commits, each closed by a relief frame where a commit's chunk has its commit, while each frees
   more than it writes: the chunks whose receipts arrived go, and the chunks whose open frames it
-  has room to copy, the oldest first, which gathers small chunks into one and frees what others
-  hold of settled segments; where the chunk staged holds batch frames and takes no copy, it is
-  published first, and the copies go to the next. Then, while a commit can free room, as a
+  copies, which gathers small chunks into one and frees what others hold of settled segments. A
+  relief takes the old chunks whose copies fit its room by what deleting each frees beside its
+  copy, the most first and the oldest among equals: beside the chunk staged's batch frames while
+  they fit and pay, and otherwise into a chunk of their own, the chunk staged published first,
+  the first of them whatever its size. A batch first finding no room leaves at least the carry's
+  eighth for copies, unless a commit took it; so a round publishes whenever any one chunk whose
+  copy fits that room frees more beside it than ending the chunks the relief writes takes. What
+  reliefs leave is the headers and ends of chunks holding open frames alone, chunks whose settled
+  frames pay for no end, and chunks a commit awaiting its receipt pins, which its receipt frees.
+  The choice is greedy, so not always the most a relief could free. Then, while a commit can
+  free room, as a
   checkpoint sealed that no commit took or a commit under way can, the batch waits, and a commit
   is due at once. Where none can, the batch takes the carry's room, as it may be what brings its
   partition's checkpoint, and is refused, `log_bytes_exceeded`, before its source hears of it,
@@ -220,10 +231,10 @@ lowering may take, logged under more memory than replays it, is refused as
   writes no other frame, as its seals go in one chunk with its commit, so a commit with several
   seals passes the bound by
   at most its own frames beyond the room kept for it, the larger of an eighth of the bound and
-  the largest commit before it, beside the carry's room. The log holds more until the carry
-  that follows its receipt, or a later relief, frees what it settled; every batch waits or is
+  the largest commit before it, beside the carry's room. The log holds more until a later
+  publish, a commit's or a relief's, frees what it settled; every batch waits or is
   refused meanwhile, as it finds no room.
-- What a carry or a relief copies is read back 256 KiB at a time, through a buffer reserved from
+- What a relief copies is read back 256 KiB at a time, through a buffer reserved from
   the budget's share for logs with the store's staging: a carry never waits or is left undone
   for memory, however large a frame it copies.
 - What a store stages in memory beside the log, a part for `ObjectStoreWal`
@@ -321,8 +332,8 @@ draw is then taken again among the reads and commits that run told, so every dra
   apart, and small batches beside commits, whose seal, commit, header and end frames, counted
   after they were written, used up the room kept for the carry that would free the chunks they
   kept. Every frame is now counted before it is written, beside room for what ends a chunk, a
-  carry and a commit; a carry follows each receipt chunk by chunk; a batch has the log publish
-  chunks that record the receipts that arrived and gather open frames out of chunks it then
+  carry and a commit; a batch has the log publish chunks that record the receipts that arrived
+  and gather open frames, the chunks that free the most first, out of chunks it then
   deletes, waits for a commit where one can free room, and is refused only where the frames of
   unsealed segments leave none; a chunk holds at most an eighth of the bound, carried frames
   and a slow commit's window included, so its open frames fit a carry; a carry copies a frame a

@@ -92,15 +92,17 @@ one run to the next, broke both:
   new view of the same version. Before each commit the versions all of whose views are gone,
   every batch of which was logged before, are retired: the writer forgets their frames and the
   log their indexes. A batch of such a version is described again, under an index never used.
-- **An open segment is carried out of settled chunks.** When a receipt leaves old chunks holding
-  only settled segments and open ones, none taken by a commit still waiting, and at least as many
-  bytes of the settled, the writer appends the open segments' batch frames, and each table's
-  schema frame read from the chunk, to the chunk it writes, then removes the old chunks. Replay
+- **An open segment is carried out of settled chunks in a relief.** A settled chunk that an open
+  segment shares stays until the segment settles or a relief carries it out, so the log fills
+  toward its bound (ADR 0045) before any carry, and an open segment may keep more of others'
+  data than of its own meanwhile. A relief appends the open segments' batch frames of old chunks
+  holding only settled segments and open ones, none taken by a commit still waiting, and each
+  table's schema frame read from the chunk, to the chunk it publishes, then removes the old
+  chunks. Replay
   stages only the segments of commits without receipts, all logged after the carry, so copies a
   crash leaves are never staged; a freed chunk's removal is durable before any later frame is
   written: at once after a publish between commits, and after the commit's answer where a commit
-  frees it. Copying costs at most what it frees, and an open segment keeps at most as much of
-  others' data as of its own. Each batch frame carries its ordinal among the load's batches, and
+  frees it. Each batch frame carries its ordinal among the load's batches, and
   replay stages a segment's batches in that order wherever a carry left them: a change stream's
   rows of one key and one sequence apply in the order they were written, so a crash never changes
   which wins.
