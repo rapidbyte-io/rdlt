@@ -73,3 +73,21 @@ fn checking_a_column_of_escaped_json_allocates_nothing_a_row() {
     let allocated = counted(HEAP, || rdlt_engine::bench::check_json(&batch).unwrap());
     assert!(allocated.allocations < 64.0, "{allocated:?}");
 }
+
+#[test]
+fn the_exact_parse_allocates_no_string_a_number() {
+    // `j`, beyond 64 bits, has each chunk parsed again exactly; sonic-rs's tree of a record
+    // allocates alike for one number as for ten.
+    let exact = |row: &str| {
+        let push = bytes::Bytes::from(format!("{row}\n").repeat(1_000));
+        counted(HEAP, || {
+            rdlt_engine::bench::shred(&[push], 1 << 20).unwrap();
+        })
+        .allocations
+    };
+    let ten = exact(
+        r#"{"a":1.5,"b":2.5,"c":3.5,"d":4.5,"e":5.5,"f":6.5,"g":7.5,"h":8.5,"i":9.5,"j":18446744073709551616}"#,
+    );
+    let one = exact(r#"{"j":18446744073709551616}"#);
+    assert!(ten - one < 1_000.0, "{ten} allocations against {one}");
+}

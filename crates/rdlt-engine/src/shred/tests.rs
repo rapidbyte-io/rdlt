@@ -1486,3 +1486,164 @@ fn a_build_refuses_arrays_nested_past_the_limit_as_it_parses_them() {
         Some(super::ShredError::TooDeep)
     );
 }
+
+/// A JSON value as it is written, and the text a column of JSON holds for it: `None` where an
+/// object in it repeats a key, which refuses its record.
+#[derive(Clone, Debug)]
+struct Written {
+    text: String,
+    rendered: Option<String>,
+}
+
+/// `text` with every character written as its unicode escape.
+fn all_escaped(text: &str) -> String {
+    use std::fmt::Write as _;
+    let mut escaped = String::from("\"");
+    for unit in text.encode_utf16() {
+        write!(escaped, "\\u{unit:04X}").unwrap();
+    }
+    escaped.push('"');
+    escaped
+}
+
+/// A string, written with the escapes JSON text renders it with or with every character escaped.
+fn written_string() -> impl proptest::strategy::Strategy<Value = (String, String)> {
+    use proptest::prelude::*;
+    let text = prop_oneof![
+        "[a-c]{0,3}",
+        "\\PC{0,6}",
+        Just("q\"\\/\n\u{1}\u{1f}\u{7f}é😀".to_owned()),
+    ];
+    (text, any::<bool>()).prop_map(|(text, escaped)| {
+        let rendered = serde_json::to_string(&text).unwrap();
+        let written = if escaped {
+            all_escaped(&text)
+        } else {
+            rendered.clone()
+        };
+        (written, rendered)
+    })
+}
+
+/// A number, written as JSON text may write it: integers within and beyond 64 bits, `-0`, and
+/// floats.
+fn written_number() -> impl proptest::strategy::Strategy<Value = Written> {
+    use proptest::prelude::*;
+    prop_oneof![
+        Just("0"),
+        Just("-7"),
+        Just("9223372036854775807"),
+        Just("-9223372036854775808"),
+        Just("18446744073709551616"),
+        Just("-170141183460469231731687303715884105728"),
+        Just("1234567890123456789012345678901234567890123456789012345678901234567890123456789"),
+        Just("-0"),
+        Just("-0.0"),
+        Just("1.50"),
+        Just("1E2"),
+        Just("2.5e-3"),
+        Just("0.12345678901234567891"),
+    ]
+    .prop_map(|number| Written {
+        text: number.to_owned(),
+        rendered: Some(number.to_owned()),
+    })
+}
+
+/// An object of up to three fields of `value`, their keys escaped or not, some repeating a key.
+fn written_object(
+    value: impl proptest::strategy::Strategy<Value = Written>,
+) -> impl proptest::strategy::Strategy<Value = Written> {
+    use proptest::prelude::*;
+    let key = prop_oneof![
+        "[a-c]".prop_map(|key| (serde_json::to_string(&key).unwrap(), key)),
+        "[a-c]".prop_map(|key| (all_escaped(&key), key)),
+    ];
+    prop::collection::vec((key, value), 0..4).prop_map(|fields| {
+        let text = fields
+            .iter()
+            .map(|((written, _), value)| format!("{written}:{}", value.text))
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut keys: Vec<&String> = fields.iter().map(|((_, key), _)| key).collect();
+        keys.sort();
+        let unique = keys.windows(2).all(|pair| pair[0] != pair[1]);
+        let rendered = fields
+            .iter()
+            .map(|((_, key), value)| {
+                let key = serde_json::to_string(key).unwrap();
+                value
+                    .rendered
+                    .as_ref()
+                    .map(|value| format!("{key}:{value}"))
+            })
+            .collect::<Option<Vec<_>>>()
+            .filter(|_| unique)
+            .map(|fields| format!("{{{}}}", fields.join(",")));
+        Written {
+            text: format!("{{{text}}}"),
+            rendered,
+        }
+    })
+}
+
+/// A value nesting up to four levels deep: scalars of every kind, and arrays and objects.
+fn written() -> impl proptest::strategy::Strategy<Value = Written> {
+    use proptest::prelude::*;
+    let scalar = prop_oneof![
+        Just(Written {
+            text: "null".to_owned(),
+            rendered: Some("null".to_owned()),
+        }),
+        any::<bool>().prop_map(|value| Written {
+            text: value.to_string(),
+            rendered: Some(value.to_string()),
+        }),
+        written_number(),
+        written_string().prop_map(|(text, rendered)| Written {
+            text,
+            rendered: Some(rendered),
+        }),
+    ];
+    scalar.prop_recursive(4, 24, 4, |inner| {
+        let array = prop::collection::vec(inner.clone(), 0..4).prop_map(|items| {
+            let text: Vec<&str> = items.iter().map(|item| item.text.as_str()).collect();
+            Written {
+                text: format!("[{}]", text.join(",")),
+                rendered: items
+                    .iter()
+                    .map(|item| item.rendered.clone())
+                    .collect::<Option<Vec<_>>>()
+                    .map(|items| format!("[{}]", items.join(","))),
+            }
+        });
+        prop_oneof![array, written_object(inner)]
+    })
+}
+
+proptest::proptest! {
+    #[test]
+    fn a_drifted_column_holds_what_render_writes_whichever_parse_built_it(
+        value in written(),
+        exact in proptest::bool::ANY,
+        chunk_bytes in proptest::sample::select(vec![1_usize, 1 << 20]),
+    ) {
+        // `v` is a column of integers in the first record and an object in the last; the last
+        // holds a float where `exact` says, so its chunk is built again with the exact parse.
+        let last = if exact { r#"{"x":0.1}"# } else { r#"{"x":0}"# };
+        let push = format!("{{\"v\":1}}\n{{\"v\":{},\"f\":1.5}}\n{{\"v\":{last}}}\n", value.text);
+        let shredded = shredded(&[Bytes::from(push)], chunk_bytes);
+        match value.rendered {
+            None => proptest::prop_assert_eq!(shredded.unwrap_err().0, "json_duplicate_key"),
+            Some(rendered) => {
+                let batch = shredded.unwrap().unwrap();
+                let column = batch.column_by_name("v").unwrap().as_string::<i32>();
+                if rendered == "null" {
+                    proptest::prop_assert!(column.is_null(1));
+                } else {
+                    proptest::prop_assert_eq!(column.value(1), rendered);
+                }
+            }
+        }
+    }
+}
