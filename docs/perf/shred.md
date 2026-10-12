@@ -140,7 +140,7 @@ had cores to spare. Efficient cores were not run in this record.
 
 | Cores | N | tokio workers + compute threads | Throughput | Against N = 1 | Spec's bound |
 |---|---|---|---|---|---|
-| performance (`0`) | 1 | 1 + 1 | 580 MiB/s [577–582] | 1 | |
+| performance (`0-3`) | 1 | 1 + 1 | 580 MiB/s [577–582] | 1 | |
 | performance (`0-3`) | 2 | 1 + 1 | 581 MiB/s [578–582] | 1.00× | ≥ 1.4×, not met |
 | performance (`0-3`) | 4 | 1 + 3 | 1286 MiB/s [1285–1299] | 2.22× [2.22–2.23] | ≥ 2.8×, not met |
 

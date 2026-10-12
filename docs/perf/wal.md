@@ -30,10 +30,11 @@ What the engine writes to its log while it moves batches, and what a replay read
 
 ### Method
 
-- **Cases.** `wal/encode/{1MiB,7MiB}` encodes one batch, of 12,000 rows and about 1 MiB or of 80,000 rows and about 7 MiB, into a log
-  in memory. `wal/engine/<root>/<cadence>`
-  runs the engine over 256 batches of 12,000 rows, about 1 MiB each, of the passthrough workload's columns, into the IPC sink, logging each ahead of the sink, the log kept under `root` and
-  committing at `cadence`. The roots are `tmpfs` (`/dev/shm`) and `disk` (the build's target
+- **Cases.** `wal/encode/{1MiB,7MiB}` encodes one batch into a log in memory, of 12,000 rows and
+  about 1 MiB or of 80,000 rows and about 7 MiB. `wal/engine/<root>/<cadence>` runs the engine
+  over 256 batches of 12,000 rows, about 1 MiB each, of the passthrough workload's columns, into
+  the IPC sink, logging each ahead of the sink, the log kept under `root` and committing at
+  `cadence`. The roots are `tmpfs` (`/dev/shm`) and `disk` (the build's target
   directory). The cadences are `each` (a commit each batch, 257 commits), `16` (a commit every
   sixteen batches, 17 commits) and `once` (one commit). `wal/replay/<root>` scans a log of the
   same 256 batches, left by an `once` run. The engine runs move their batches into the IPC sink,
@@ -55,8 +56,9 @@ What the engine writes to its log while it moves batches, and what a replay read
   it. It is one run, so the figure is the same every round.
 - **Replay's source.** `wal/replay/disk` reads a log it has just written, so it reads from the
   page cache.
-- **Allocations.** `wal/engine/memory/each` runs the `each` cadence against a log kept in
-  memory and prints the allocations of one run.
+- **Allocations.** `wal/engine/memory/each` is a case of the `allocations` bench, not of the
+  timed run: 8 batches of 8,192 rows, a commit each batch, the log kept in memory. Its counts are
+  not comparable with the timed cases' 256 batches of 12,000 rows.
 
 ### Results
 
@@ -73,7 +75,7 @@ The three rounds did not all lie within 3 % of the median: the ranges below show
 | `wal/encode/1MiB` | 860 MiB/s [859–879] |
 | `wal/encode/7MiB` | 1067 MiB/s [961–1081] |
 
-| Case | Throughput | Log phase a commit | Appended ÷ frames | Carried ÷ frames | Publishes a commit | Removes a commit | Fsyncs a commit |
+| Case | Throughput | Log phase a commit | Appended ÷ frames | Carried ÷ frames | Publishes a commit | Removes a commit | Fsyncs a commit, setup included |
 |---|---|---|---|---|---|---|---|
 | `wal/engine/tmpfs/each` | 930 MiB/s [908–967] | 1.026 ms [0.927–1.083] | 1.642 [1.638–1.706] | 0.614 [0.610–0.678] | 1.00 | 1.00 | 3.6 |
 | `wal/engine/tmpfs/16` | 2001 MiB/s [1963–2017] | 1.161 ms [1.076–1.195] | 1.027 [1.027–1.031] | 0.000 [0.000–0.004] | 1.06 | 1.00 | 8.0 |
@@ -82,15 +84,15 @@ The three rounds did not all lie within 3 % of the median: the ranges below show
 | `wal/engine/disk/16` | 918 MiB/s [902–950] | 13.562 ms [13.303–14.219] | 1.244 [1.216–1.260] | 0.217 [0.189–0.233] | 1.06 | 1.00 | 8.0 |
 | `wal/engine/disk/once` | 1407 MiB/s [1368–1413] | 21.815 ms [17.861–22.403] | 1.027 | 0.000 | 2.00 | 1.00 | 13.0 |
 
-`reliefs` was 0 in every run. On disk, `carried` varies between runs: 0.879 to 0.903 at `each`
-and 0.189 to 0.233 at `16`. On tmpfs it was 0.610 to 0.678 at `each` and 0.000 to 0.004 at `16`;
-at `once` it is 0 on both roots.
+`reliefs` is 0 in every round. On disk, `carried` varies between rounds: 0.879 to 0.903 at
+`each` and 0.189 to 0.233 at `16`. On tmpfs it is 0.610 to 0.678 at `each` and 0.000 to 0.004 at
+`16`; at `once` it is 0 on both roots.
 
 | Case | Throughput | Read ÷ logged | Reads |
 |---|---|---|---|
 | `wal/replay/tmpfs` | 475 MiB/s [462–499] | 2.000 | 5387 |
 | `wal/replay/disk` | 463 MiB/s [453–465] | 2.000 | 5387 |
 
-| Case | Allocations a row | Reallocations a row | Bytes a row | Allocations a batch | Reallocations a batch | Bytes a batch |
+| Case, 8 batches of 8,192 rows | Allocations a row | Reallocations a row | Bytes a row | Allocations a batch | Reallocations a batch | Bytes a batch |
 |---|---|---|---|---|---|---|
 | `wal/engine/memory/each` | 0.102 | 0.012 | 611 | 834.000 | 99.375 | 5008268 |
