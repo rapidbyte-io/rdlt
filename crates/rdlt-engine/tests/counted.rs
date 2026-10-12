@@ -1,5 +1,5 @@
-//! What the bench module's allocation counter sees and what the log's frames allocate and hold,
-//! in a process whose global allocator counts.
+//! What the bench module's allocation counter sees, and what the log's frames, shredding rows of
+//! arrays and checking escaped JSON allocate and hold, in a process whose global allocator counts.
 
 #![forbid(unsafe_code)]
 
