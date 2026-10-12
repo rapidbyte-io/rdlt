@@ -278,14 +278,8 @@ fn widening() {
 fn logging() {
     let every = NonZeroU64::new(1).expect("one is not zero");
     let cores = Cores::try_from_host().expect("the host says how many cores the bench may use");
-    let logged = Logged::try_new(
-        cores,
-        memory_wal(),
-        Logged::BATCHES,
-        Logged::ROWS,
-        Some(every),
-    )
-    .expect("the pool starts");
+    let logged =
+        Logged::try_new(cores, memory_wal(), BATCHES, ROWS, Some(every)).expect("the pool starts");
     let rows = usize::try_from(BATCHES * ROWS).expect("rows fit in usize");
     report("wal/engine/memory/each", || {
         black_box(logged.run());
