@@ -121,6 +121,22 @@ async fn a_literal_dollar_brace_is_written_doubled_and_sent_single() {
     assert_eq!(sent, json!({ "template": "${name} costs $5, ${env:X}" }));
 }
 
+#[tokio::test]
+async fn a_text_is_rewritten_only_where_a_reference_or_a_doubled_literal_changes_it() {
+    let (vault, redactions) = (vault(), Redactions::new());
+    for (text, sent) in [
+        ("", None),
+        ("plain $ { }", None),
+        ("$${env:X}", Some("${env:X}")),
+        ("key ${secret:api-key}, $${", Some("key k-12345, ${")),
+    ] {
+        let pieces = pieces(text).expect("well formed");
+        let resolved = super::reference::resolved(&pieces, text, &vault, &redactions).await;
+        let resolved = resolved.map(|resolved| resolved.expect("it resolves").as_str().to_owned());
+        assert_eq!(resolved.as_deref(), sent, "{text}");
+    }
+}
+
 #[test]
 fn a_text_splits_into_its_literal_pieces_and_its_references() {
     let reference = |kind, name: &str| {
@@ -746,6 +762,14 @@ fn a_text_that_is_one_reference_and_nothing_else_parses_as_it() {
         ("${env:}", ReferenceFault::Name),
     ] {
         assert_eq!(SecretReference::parse(text), Err(fault), "{text}");
+    }
+}
+
+#[test]
+fn a_kind_shows_as_the_word_a_reference_names_it_by() {
+    for kind in [SecretKind::Env, SecretKind::File, SecretKind::Named] {
+        let reference = SecretReference::parse(&format!("${{{kind}:name}}"));
+        assert_eq!(reference.map(|reference| reference.kind), Ok(kind));
     }
 }
 

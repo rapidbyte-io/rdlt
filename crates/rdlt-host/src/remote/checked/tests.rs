@@ -64,3 +64,20 @@ fn a_body_s_trailers_keep_only_details_that_decode() {
     assert!(trailers.get(DETAILS).is_none());
     assert!(trailers.get("grpc-status").is_some());
 }
+
+#[test]
+fn a_checked_body_ends_and_is_sized_as_the_body_it_holds() {
+    for body in [
+        tonic::body::Body::empty(),
+        tonic::body::Body::new(Trailing(Some(detailed("AAAA")))),
+    ] {
+        let (ended, size) = (body.is_end_stream(), body.size_hint());
+        let checked = CheckedBody(body);
+        assert_eq!(checked.is_end_stream(), ended);
+        let checked_size = checked.size_hint();
+        assert_eq!(
+            (checked_size.lower(), checked_size.upper()),
+            (size.lower(), size.upper())
+        );
+    }
+}
