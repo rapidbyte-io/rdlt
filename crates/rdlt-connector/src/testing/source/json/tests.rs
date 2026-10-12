@@ -25,7 +25,7 @@ fn records(text: &str) -> Vec<&str> {
 
 #[test]
 fn a_push_is_the_rows_of_its_arrays_and_each_value_beside_one() {
-    let cases: [(&str, &[&str]); 18] = [
+    let cases: [(&str, &[&str]); 19] = [
         ("", &[]),
         ("  \n", &[]),
         ("[]", &[]),
@@ -50,6 +50,8 @@ fn a_push_is_the_rows_of_its_arrays_and_each_value_beside_one() {
         ("\\\" 7", &["\\\" 7"]),
         // A container ends where the brackets it opened close, not where one within it does.
         ("[{\"a\": [1]}, 2]", &["{\"a\": [1]}", "2"]),
+        // A string record ends at its closing quote, not at the separator after a space.
+        ("[\"a\" , 1]", &["\"a\"", "1"]),
     ];
     for (text, expected) in cases {
         assert_eq!(records(text), expected, "{text:?}");
