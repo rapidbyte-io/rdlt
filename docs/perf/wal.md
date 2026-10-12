@@ -4,11 +4,11 @@ What the write-ahead log's own bookkeeping costs beside the frames it writes.
 
 ## The room a log keeps for ending its chunks
 
-After every publish and receipt the writer notes the room it keeps for its own frames: what
-ending the chunk staged writes, and what staging and ending one more after it writes (a preamble
-and header, a closing frame, and an end frame naming every chunk and commit the log then holds).
-Those lengths are counted, not encoded: an end frame's from the digits of its numbers, a header's
-by writing its JSON to a counter that keeps only how many bytes it was given.
+After every publish the writer notes the room it keeps for its own frames: what ending the chunk
+staged writes, and what staging and ending one more after it writes (a preamble and header, a
+closing frame, and an end frame naming every chunk and commit the log then holds). Those lengths
+are counted, not encoded: an end frame's from the digits of its numbers, a header's by writing its
+JSON to a counter that keeps only how many bytes it was given.
 
 - **Signal.** The heap's peak while `Log::ending()` measures a fresh log, as `peak_alloc` counts
   it in the test's own process: exact, whatever the machine or its load.
@@ -36,8 +36,10 @@ What the engine writes to its log while it moves batches, and what a replay read
   the IPC sink, logging each ahead of the sink, the log kept under `root` and committing at
   `cadence`. The roots are `tmpfs` (`/dev/shm`) and `disk` (the build's target
   directory). The cadences are `each` (a commit each batch, 257 commits), `16` (a commit every
-  sixteen batches, 17 commits) and `once` (one commit). `wal/replay/<root>` scans a log of the
-  same 256 batches, left by an `once` run. The engine runs move their batches into the IPC sink,
+  sixteen batches, 17 commits) and `once` (one commit). `wal/engine/tmpfs/tight` commits each
+  batch into a log whose limit is four batch frames, about 4.2 MB, so that a batch finds the log
+  full and a relief makes room in every run. `wal/replay/<root>` scans a log of the same 256
+  batches, left by an `once` run. The engine runs move their batches into the IPC sink,
   whose encoding is part of each case's time.
 - **Running it.** `just bench wal 0-3`, which pins the cases to cores 0 to 3 and records the
   commit, the load average, the governor, `perf stat`'s instructions a cycle and the CPUs kept
@@ -48,12 +50,13 @@ What the engine writes to its log while it moves batches, and what a replay read
   cases count the batch's logical bytes. Replay's throughput counts the same frame bytes, and
   `read ÷ logged` beside it is the bytes the scan read over the bytes the log holds.
 - **Counters.** The engine's report gives the log phase (milliseconds a commit), the bytes the
-  log appended and carried (rewrote into a later chunk) over the frames' bytes, and the publish
-  and remove requests a commit.
+  log appended and carried (rewrote into a later chunk) over the frames' bytes, and the reliefs
+  a run.
 - **Fsyncs.** A commit's fsyncs are the `fsync` and `fdatasync` calls of the case's `strace -c`
   count, divided by that run's commits. The count comes from the case's run in test mode: 16
-  batches, so 17 commits at `each`, 2 at `16` and 1 at `once`, and the calls of its setup are in
-  it. It is one run, so the figure is the same every round.
+  batches, so 17 commits at `each` and `tight`, 2 at `16` and 1 at `once`, and the calls of its
+  setup are in it. It is one run, so the figure is the same every round, but at `tight`, whose
+  run fires none to five reliefs, each a publish of its own.
 - **Replay's source.** `wal/replay/disk` reads a log it has just written, so it reads from the
   page cache.
 - **Allocations.** `wal/engine/memory/each` is a case of the `allocations` bench, not of the
@@ -62,36 +65,35 @@ What the engine writes to its log while it moves batches, and what a replay read
 
 ### Results
 
-This change on `3c0260b2`, 2026-10-12. Intel Core Ultra X7 358H, cores 0 to 3 (performance), on
+This change on `b951816a`, 2026-10-12. Intel Core Ultra X7 358H, cores 0 to 3 (performance), on
 mains power, governor `powersave`, energy preference `performance`. Three rounds, interleaved with
-the other states and prototypes this page compares, five runs a round in alternating order; this
-change's runs started at a one-minute load average of 3.75, 3.16 and 3.33. Each figure is the
-median of the three rounds, their range in brackets. Rust 1.98.1.
+main in alternating order; a fourth, which another build disturbed, was dropped. This change's
+runs started at a one-minute load average of 3.48, 1.27 and 3.58. Each figure is the median of the
+three rounds, their range in brackets. Rust 1.98.1.
 
 | Case | Throughput |
 |---|---|
-| `wal/encode/1MiB` | 1307 MiB/s [1160–1366] |
-| `wal/encode/7MiB` | 1371 MiB/s [1193–1506] |
+| `wal/encode/1MiB` | 1228 MiB/s [1208–1299] |
+| `wal/encode/7MiB` | 1140 MiB/s [1055–1140] |
 
-| Case | Throughput | Log phase a commit | Appended ÷ frames | Carried ÷ frames | Publishes a commit | Removes a commit | Fsyncs a commit, setup included |
-|---|---|---|---|---|---|---|---|
-| `wal/engine/tmpfs/each` | 894 MiB/s [834–894] | 1.082 ms [1.073–1.129] | 1.770 [1.730–1.803] | 0.742 [0.702–0.774] | 1.00 | 1.00 | 3.6 |
-| `wal/engine/tmpfs/16` | 2327 MiB/s [2187–2545] | 0.626 ms [0.599–0.631] | 1.027 [1.027–1.039] | 0.000 [0.000–0.012] | 1.06 | 1.00 | 8.0 |
-| `wal/engine/tmpfs/once` | 2154 MiB/s [1932–2216] | 2.588 ms [2.050–2.688] | 1.027 | 0.000 | 2.00 | 1.00 | 13.0 |
-| `wal/engine/disk/each` | 251 MiB/s [245–252] | 3.935 ms [3.623–4.183] | 1.919 [1.919–1.923] | 0.891 [0.891–0.895] | 1.00 | 1.00 | 3.6 |
-| `wal/engine/disk/16` | 940 MiB/s [898–948] | 15.678 ms [12.793–18.080] | 1.240 [1.220–1.264] | 0.213 [0.193–0.237] | 1.06 | 1.00 | 8.0 |
-| `wal/engine/disk/once` | 1443 MiB/s [1432–1597] | 23.813 ms [23.410–24.237] | 1.027 | 0.000 | 2.00 | 1.00 | 13.0 |
-
-`reliefs` is 0 in every round.
+| Case | Throughput | Log phase a commit | Appended ÷ frames | Carried ÷ frames | Reliefs a run | Fsyncs a commit, setup included |
+|---|---|---|---|---|---|---|
+| `wal/engine/tmpfs/each` | 1905 MiB/s [1672–2158] | 0.506 ms [0.390–0.536] | 1.029 | 0.000 | 0 | 3.6 |
+| `wal/engine/tmpfs/16` | 2335 MiB/s [2020–2435] | 0.604 ms [0.582–0.827] | 1.027 | 0.000 | 0 | 8.0 |
+| `wal/engine/tmpfs/once` | 1958 MiB/s [1833–2036] | 2.326 ms [2.241–2.433] | 1.027 | 0.000 | 0 | 13.0 |
+| `wal/engine/tmpfs/tight` | 1972 MiB/s [1438–2015] | 0.305 ms [0.301–0.399] | 1.033 [1.029–1.033] | 0.004 [0.000–0.004] | 35 [29–42] | 4.8 [4.8–5.0] |
+| `wal/engine/disk/each` | 395 MiB/s [366–410] | 2.306 ms [2.224–2.535] | 1.028 | 0.000 | 0 | 3.6 |
+| `wal/engine/disk/16` | 1161 MiB/s [994–1202] | 10.189 ms [9.994–11.320] | 1.027 | 0.000 | 0 | 8.0 |
+| `wal/engine/disk/once` | 1362 MiB/s [1293–1523] | 22.856 ms [20.188–32.477] | 1.027 | 0.000 | 0 | 13.0 |
 
 | Case | Throughput | Read ÷ logged | Reads |
 |---|---|---|---|
-| `wal/replay/tmpfs` | 489 MiB/s [438–514] | 2.000 | 5387 |
-| `wal/replay/disk` | 456 MiB/s [391–456] | 2.000 | 5387 |
+| `wal/replay/tmpfs` | 467 MiB/s [396–475] | 2.000 | 5387 |
+| `wal/replay/disk` | 428 MiB/s [405–454] | 2.000 | 5387 |
 
-| Case, 8 batches of 8,192 rows | Allocations a row | Reallocations a row | Bytes a row | Allocations a batch | Reallocations a batch | Bytes a batch |
-|---|---|---|---|---|---|---|
-| `wal/engine/memory/each` | 0.101 | 0.013 | 431 | 830.625 | 109.750 | 3532168 |
+| Case, 8 batches of 8,192 rows | Allocations a batch | Bytes a batch |
+|---|---|---|
+| `wal/engine/memory/each` | 829.625 | 3533804 |
 
 A batch frame's bytes are copied twice in user space: the wire's encoder writes the batch into its
 IPC messages (`arrow::encode`, `crates/rdlt-engine/src/wal/frame/arrow.rs`), and `Framing` writes
@@ -100,35 +102,46 @@ the frame's head, its header and those messages into one buffer (`Framing::batch
 
 ### Against main
 
-Frames built in one pass, each site's into one buffer, against main at `3c0260b2`, in the same
-rounds. The change was to move `wal/engine/{tmpfs,disk}/each` above main with the ranges apart,
-`wal/engine/tmpfs/once` at least 10 % and `wal/encode/7MiB` beyond noise; to allocate at most 2.2
-times a batch frame's bytes for the frame; and to add no more than 2 % to any case of
-`just instructions`.
+Carrying only in a relief, chunks chosen by what they free, against main at `b951816a`, whose
+receipts carried open segments, in the same rounds. The change was to move
+`wal/engine/{tmpfs,disk}/each` above main with the ranges apart, with no case slower beyond noise,
+in throughput or log phase, and a case where reliefs fire.
 
-| Case | Main | One pass | Change | Rule |
-|---|---|---|---|---|
-| `wal/encode/7MiB` | 773 MiB/s [678–793] | 1293 MiB/s [1012–1780] | +67 %, ranges apart | met |
-| `wal/engine/tmpfs/once` | 1667 MiB/s [1514–1721] | 2026 MiB/s [1842–2131] | +22 %, ranges apart | met |
-| `wal/engine/tmpfs/each` | 891 MiB/s [834–940] | 813 MiB/s [771–828] | −9 %, ranges apart | missed |
-| `wal/engine/disk/each` | 238 MiB/s [233–245] | 242 MiB/s [234–250] | +2 %, ranges overlap | missed |
-| Bytes a batch frame of 12,000 rows allocates, over its bytes | | 2.51 | | missed, at most 2.2 |
+| Case | Main | This change | Change |
+|---|---|---|---|
+| `wal/engine/tmpfs/each` | 848 MiB/s [706–876] | 1905 MiB/s [1672–2158] | +125 %, ranges apart |
+| `wal/engine/disk/each` | 233 MiB/s [233–238] | 395 MiB/s [366–410] | +70 %, ranges apart |
+| `wal/engine/tmpfs/each`, log phase a commit | 1.147 ms [1.095–1.273] | 0.506 ms [0.390–0.536] | −56 %, ranges apart |
+| `wal/engine/disk/each`, log phase a commit | 3.984 ms [3.810–3.989] | 2.306 ms [2.224–2.535] | −42 %, ranges apart |
+| `wal/engine/tmpfs/16` | 1907 MiB/s [1883–2187] | 2335 MiB/s [2020–2435] | +22 %, ranges overlap |
+| `wal/engine/disk/16` | 772 MiB/s [753–908] | 1161 MiB/s [994–1202] | +50 %, ranges apart |
+| `wal/engine/tmpfs/once` | 1818 MiB/s [1759–2064] | 1958 MiB/s [1833–2036] | +8 %, ranges overlap |
+| `wal/engine/disk/once` | 1390 MiB/s [1313–1532] | 1362 MiB/s [1293–1523] | −2 %, ranges overlap |
+| `wal/engine/tmpfs/tight` | 1527 MiB/s [1430–1612] | 1972 MiB/s [1438–2015] | +29 %, ranges overlap |
+| `wal/engine/tmpfs/tight`, log phase a commit | 0.479 ms [0.451–0.487] | 0.305 ms [0.301–0.399] | −36 %, ranges apart |
+| `wal/engine/tmpfs/tight`, reliefs a run | 42 [30–52] | 35 [29–42] | |
+| `wal/replay/tmpfs` | 428 MiB/s [384–462] | 467 MiB/s [396–475] | +9 %, ranges overlap |
+| `wal/replay/disk` | 413 MiB/s [349–437] | 428 MiB/s [405–454] | +4 %, ranges overlap |
+| `wal/encode/1MiB` | 1024 MiB/s [935–1317] | 1228 MiB/s [1208–1299] | +20 %, ranges overlap |
+| `wal/encode/7MiB` | 1030 MiB/s [866–1075] | 1140 MiB/s [1055–1140] | +11 %, ranges overlap |
 
-`just instructions 3c0260b2` finds no case above 2 %: `wal/encode` takes 29.6 % fewer
-instructions (4801702 to 3380703) and 8 % fewer allocations (151 to 139), and every other case is
-within 0.1 %. The case writes its batch frame into one buffer with the log's other frames, so its
-count includes copying that buffer to its exact length; a load encodes each batch frame alone,
-with no copy. `wal/engine/memory/each` allocates 3532096 bytes a batch, main 5008268.
+The rule is met: both commit-each cases move up with the ranges apart; no case is lower with the
+ranges apart, the lowest median being `disk/once` at −2 %; and reliefs fire in every run of
+`tight`. The encode cases run the same code in both, so their spread is this machine's noise.
+Main carries 0.738 [0.718–0.750] of the frames at `tmpfs/each` and 0.903 [0.903–0.915] at
+`disk/each`, appending 1.766 and 1.931 of them; this change carries none there. Fsyncs a commit
+are the same in both on every case but `tight`, where they vary with the test-mode run's reliefs
+in both. `wal/engine/memory/each` allocates 3533804 bytes a batch, main 3481226 to 3533840.
 
-At `each` on tmpfs, frames built in one pass carry 0.718 [0.706–0.750] of the frames' bytes into
-later chunks, main 0.690 [0.670–0.698].
+`just instructions b951816a` finds no case above 2 %: `passthrough/null_sink` +0.05 %,
+`shred/drift_json` −0.01 %, every other case unchanged.
 
 ### Commits answered before their chunks are deleted
 
 A commit answered before the writer deletes the chunks it frees, against frames built in one pass
-before deletion was deferred, in the same rounds. The change was to lower the log phase a commit
-at `wal/engine/{tmpfs,disk}/each` with the ranges apart, with the fsyncs a commit unchanged and
-the throughput not lower beyond noise.
+before deletion was deferred, in rounds on `3c0260b2`. The change
+was to lower the log phase a commit at `wal/engine/{tmpfs,disk}/each` with the ranges apart, with
+the fsyncs a commit unchanged and the throughput not lower beyond noise.
 
 | Case | Before | After | Change | Rule |
 |---|---|---|---|---|
@@ -168,34 +181,30 @@ since it needs the piece list.
 
 ### Carrying open segments
 
-At a commit each batch, each receipt carries the frames of segments still open out of the chunks
-it leaves holding little else, rewriting them into the chunk staged (ADR 0041). With this change
-that copies most of what the log writes twice:
+Frames of a segment still open are carried only in a relief (ADR 0041, ADR 0045). A settled chunk
+that an open segment shares stays until the segment settles or a batch finds the log full; its
+relief then copies the open frames into the chunk it publishes, taking the old chunks by what
+deleting each frees beside its copy, the most first, and deletes them. So the log fills toward its
+limit before it carries anything, and at a commit each batch with room to spare it carries
+nothing; main, whose receipts carried open segments, rewrote most of what the log wrote a second
+time.
 
-| Case | Carried ÷ frames | Appended ÷ frames |
-|---|---|---|
-| `wal/engine/tmpfs/each` | 0.742 [0.702–0.774] | 1.770 [1.730–1.803] |
-| `wal/engine/disk/each` | 0.891 [0.891–0.895] | 1.919 [1.919–1.923] |
+| Case | Main, carried ÷ frames | Main, appended ÷ frames | This change, carried ÷ frames | This change, appended ÷ frames |
+|---|---|---|---|---|
+| `wal/engine/tmpfs/each` | 0.738 [0.718–0.750] | 1.766 [1.746–1.779] | 0.000 | 1.029 |
+| `wal/engine/disk/each` | 0.903 [0.903–0.915] | 1.931 [1.931–1.943] | 0.000 | 1.028 |
+| `wal/engine/tmpfs/tight` | 0.004 [0.000–0.004] | 1.033 [1.029–1.033] | 0.004 [0.000–0.004] | 1.033 [1.029–1.033] |
 
-Appended counts the carried bytes too, so carried ÷ appended stays below 0.5 unless carried is at
-least the frames: the figure that says how much a carry rewrites is carried ÷ frames.
+Appended counts the carried bytes too, so the figure that says how much a carry rewrites is
+carried ÷ frames.
 
-A prototype that carries only in a relief, the receipt's carry deleted, was measured against this
-change in the same rounds. The rule: carrying only in a relief replaces eager carry where carried
-is at least half of the frames at a commit each batch, and the prototype moves at least 10 % more
-MiB/s there, the ranges apart. It fired on both roots:
-
-| Case | Eager carry | Relief-only carry | Change |
-|---|---|---|---|
-| `wal/engine/tmpfs/each` | 894 MiB/s [834–894] | 1933 MiB/s [1892–2102] | +116 %, ranges apart |
-| `wal/engine/disk/each` | 251 MiB/s [245–252] | 388 MiB/s [364–402] | +55 %, ranges apart |
-| `wal/engine/tmpfs/each`, log phase a commit | 1.082 ms [1.073–1.129] | 0.444 ms [0.380–0.469] | −59 % |
-| `wal/engine/disk/each`, log phase a commit | 3.935 ms [3.623–4.183] | 2.312 ms [2.280–2.331] | −41 % |
-
-Carrying only in a relief appends 1.03 of the frames and carries nothing in these runs, since no
-relief comes. It gives up ADR 0041's bound that a copy costs at most what it frees and an open
-segment keeps at most as much of others' data as of its own, so the log holds more on disk between
-reliefs, within ADR 0045's limit. Eager carry still runs in this change.
+At `tight` both carry 0.4 % of the frames over 29 to 52 reliefs a run: a relief there mostly
+publishes what commits freed, and seldom finds open frames to carry, so the case shows that reliefs
+run within a small log, not how much the choice by freed bytes copies. The log there held at most
+3,241,665 bytes, about 77 % of its limit, by a directory poll every 2 ms through 20 s of runs, which
+can miss a shorter peak; main's peak was the same within 24 bytes. In single exploratory runs at
+limits of 16 to 32 frames, the reliefs of both designs fired or not with timing and load, and
+either could copy more than the frames under pressure; no timed case covers those limits.
 
 ### Re-encoding a batch's schema
 
