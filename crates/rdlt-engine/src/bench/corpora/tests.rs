@@ -44,6 +44,52 @@ fn each_corpus_is_the_rows_its_seed_draws() {
 }
 
 #[test]
+fn each_cliff_corpus_is_the_rows_its_seed_draws() {
+    for (corpus, digest) in [
+        (
+            Corpus::ArrayForm,
+            "68ebe681ed27c5870a889954c3d98734c6de8bc4fc1c51a5ae90df35ba81fdbe",
+        ),
+        (
+            Corpus::DriftJson,
+            "db1549339ff49a8dbe42d2337798432ebe9874cd91ae1482037ecda2d0f292e1",
+        ),
+        (
+            Corpus::DriftScalar,
+            "ddb6852fdd8e7f0ac0dc3449f6fdf14177d3bf9cb72ef616b0a2954f261e98d1",
+        ),
+        (
+            Corpus::IntArrays,
+            "6e215153f6fb2dfe90246be17132441d38261b45fc69b9a424284489d91647db",
+        ),
+        (
+            Corpus::BigNumbers,
+            "80d2eaab9fb4abb3898e37b90910f4481febc6f681d3bf10f63a6b064ae888bf",
+        ),
+        (
+            Corpus::Pretty,
+            "f50c45301e6e9eaa09f8acb1488a6036ad92b79c254a3742a3620d031646dc0c",
+        ),
+    ] {
+        let mut hasher = blake3::Hasher::new();
+        for push in corpus.pushes(1 << 18) {
+            hasher.update(&push);
+        }
+        assert_eq!(hasher.finalize().to_hex().as_str(), digest, "{corpus:?}");
+    }
+}
+
+#[test]
+fn an_array_form_push_is_one_json_array_of_whole_rows() {
+    for corpus in [Corpus::ArrayForm, Corpus::Pretty] {
+        for push in corpus.pushes(1 << 18) {
+            let rows: Vec<serde_json::Value> = serde_json::from_slice(&push).unwrap();
+            assert!(rows.iter().all(serde_json::Value::is_object), "{corpus:?}");
+        }
+    }
+}
+
+#[test]
 fn a_corpus_is_cut_into_pushes_of_whole_lines_once_it_holds_its_bytes() {
     let row = |index: u64| format!(r#"{{"id":{index}}}"#);
     let pushes = corpus(10_000, 1_000, |index, _| row(index));
