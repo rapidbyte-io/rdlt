@@ -19,6 +19,7 @@ const POINTS: [&str; 7] = [
     "engine.commit.before",
     "engine.commit.after",
     "engine.receipt.after",
+    // Once the next commit's chunk records the receipt, after that commit is answered.
     "engine.wal.remove",
 ];
 

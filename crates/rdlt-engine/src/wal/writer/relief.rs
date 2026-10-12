@@ -40,6 +40,7 @@ impl Log {
         }
         self.append(Frame::Relieved.encode()?).await?;
         self.publish().await?;
+        self.remove_unneeded().await?;
         self.tally
             .add(|counters| counters.log.reliefs = counters.log.reliefs.saturating_add(1));
         Ok(true)

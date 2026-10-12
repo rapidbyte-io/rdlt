@@ -71,6 +71,7 @@ const POINTS: [Point; 17] = [
     point("engine.commit.after", Hits::Landing, Passed::Always),
     point("engine.receipt.after", Hits::Commit, Passed::Logged),
     point("engine.complete.after", Hits::Once, Passed::Completing),
+    // Once the next commit's chunk records the receipt, after that commit is answered.
     point("engine.wal.remove", Hits::Commit, Passed::Logged),
     point("engine.ack.before", Hits::Commit, Passed::Always),
     point("engine.ack.after", Hits::Commit, Passed::Always),

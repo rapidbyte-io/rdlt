@@ -1,6 +1,6 @@
 //! The task that owns a load's write-ahead log: it stages frames in the order they are sent,
 //! publishes the chunk they make at each commit before answering, and deletes the chunks nothing
-//! needs any more.
+//! needs any more once it has answered.
 
 mod carry;
 mod chunk;
@@ -153,6 +153,7 @@ impl Log {
             holders: BTreeMap::new(),
             pending: BTreeMap::new(),
             unrecorded: BTreeSet::new(),
+            doomed: Vec::new(),
             settled: Settled::default(),
             sealing: false,
             held_back: VecDeque::new(),
@@ -181,6 +182,8 @@ struct Log {
     pending: BTreeMap<CommitSeq, SegmentSet>,
     /// The commits with receipts that no chunk published since records.
     unrecorded: BTreeSet<CommitSeq>,
+    /// Chunks no replay needs, still to be deleted, and their bytes.
+    doomed: Vec<(u64, u64)>,
     /// The segments of commits with receipts, and those abandoned, still in a chunk.
     settled: Settled,
     /// Whether the chunk staged holds seals, which go with the commit that follows them: it is
@@ -292,6 +295,10 @@ impl Log {
                 let result = self.commit(seq, segments, frame).await;
                 drop(held);
                 self.answer(result, durable);
+                // The commit is durable and answered; what it left unneeded goes before any
+                // later frame.
+                let removed = self.remove_unneeded().await;
+                self.note(&removed);
             }
             Command::Committed { seq } => {
                 let result = self.committed(seq).await;
@@ -383,8 +390,8 @@ impl Log {
         self.shared.failure()
     }
 
-    /// Writes the commit's `frame` and the chunk's end, publishes the chunk, then deletes the
-    /// chunks it leaves unneeded.
+    /// Writes the commit's `frame` and the chunk's end, and publishes the chunk; the chunks it
+    /// leaves unneeded are deleted once the commit is answered.
     async fn commit(
         &mut self,
         seq: CommitSeq,

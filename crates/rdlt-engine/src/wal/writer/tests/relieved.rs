@@ -303,3 +303,55 @@ async fn a_relief_whose_chunk_takes_no_copy_gathers_open_frames_into_the_next() 
     .await
     .expect("the writer ends");
 }
+
+#[tokio::test]
+async fn a_relief_whose_deletion_fails_publishes_the_chunk_staged_and_carries_nothing() {
+    let store = Arc::new(MemoryWal::default());
+    let observed = Arc::clone(&store);
+    drive(Arc::clone(&store), |mut log| async move {
+        log.send(table(0)).await;
+        // Chunk 0 holds a settled segment alone; chunk 1 a batch of segment 1 beside five of
+        // segment 2, more open than settled once 1 settles, so no carry follows its receipt.
+        log.batch(9, 0).await;
+        log.commit(1, &[9]).await.expect("durable");
+        log.batch(1, 0).await;
+        for _ in 0..5 {
+            log.batch(2, 0).await;
+        }
+        log.commit(2, &[1]).await.expect("durable");
+        log.committed(1).await;
+        log.committed(2).await;
+        let sized = |kind: fn(&Frame) -> bool| {
+            let frame = frames(&observed)[1]
+                .1
+                .iter()
+                .find(|frame| kind(frame))
+                .cloned();
+            let frame = frame.expect("a frame").encode().expect("encodes");
+            u64::try_from(frame.len()).expect("a length")
+        };
+        let frame = sized(|frame| matches!(frame, Frame::Batch(_)));
+        let schema = sized(|frame| matches!(frame, Frame::Schema(_)));
+        // A chunk holds the open frames of chunk 1 and a thousand bytes more, but not the chunk
+        // staged filled with segment 5's frames beside them: the relief publishes it first.
+        let most = 5 * frame + schema + 1_000;
+        let shared = Arc::clone(log.writer.shared());
+        shared.limit.store(8 * most, Ordering::SeqCst);
+        let header = sized(|frame| matches!(frame, Frame::Header(_)));
+        let preamble = u64::try_from(super::super::super::frame::PREAMBLE).expect("small");
+        let fits = (most - preamble - header - 2 * schema) / frame;
+        for _ in 0..fits {
+            log.batch(5, 0).await;
+        }
+        *observed.unremovable.lock() = true;
+        let (done, answer) = oneshot::channel();
+        log.send(Command::Relieve { done }).await;
+        let relieved = answer.await.expect("the writer answers");
+        assert!(relieved.is_err(), "deleting chunk 0 failed");
+    })
+    .await
+    .expect("the writer ends");
+    // The chunk staged was published, recording the receipts; chunk 0 stayed, and nothing was
+    // carried after the deletion failed.
+    assert_eq!(numbers(&store), [0, 1, 2]);
+}

@@ -1,5 +1,5 @@
 //! Publishing the chunk staged: its end, naming what of the log a replay still needs, then the
-//! chunk written whole, then the deletion of every chunk it leaves unneeded.
+//! chunk written whole; the chunks it leaves unneeded are deleted before any later frame.
 
 use std::sync::atomic::Ordering;
 
@@ -12,7 +12,7 @@ use crate::error::Error;
 
 impl Log {
     /// Ends the chunk staged with what a replay needs, publishes it, moves on to the next, and
-    /// deletes every earlier chunk the end did not name.
+    /// notes every earlier chunk the end did not name as no longer needed.
     pub(super) async fn publish(&mut self) -> Result<(), Error> {
         let live: Vec<u64> = self
             .written
@@ -40,14 +40,14 @@ impl Log {
         staged.publish().await.map_err(|error| self.lost(error))?;
         crash_point!("engine.wal.publish.after");
         self.chunk += 1;
-        self.forget(&live).await?;
+        self.doom(&live);
         self.note_room();
         Ok(())
     }
 
-    /// Deletes every chunk before the chunk published last that `live` does not name; every
-    /// receipt is recorded now, or its commit's chunk gone.
-    async fn forget(&mut self, live: &[u64]) -> Result<(), Error> {
+    /// Notes every chunk before the chunk published last that `live` does not name as no longer
+    /// needed: its bookkeeping goes now, its bytes and its room once it is deleted.
+    fn doom(&mut self, live: &[u64]) {
         let gone: Vec<u64> = self
             .written
             .keys()
@@ -55,6 +55,18 @@ impl Log {
             .copied()
             .collect();
         for number in gone {
+            if let Some(written) = self.forgotten(number) {
+                self.doomed.push((number, written.len));
+            }
+        }
+        self.unrecorded.clear();
+        self.note_oldest();
+    }
+
+    /// Deletes the chunks no replay needs, each before any later frame is written, releasing
+    /// its room once it is gone.
+    pub(super) async fn remove_unneeded(&mut self) -> Result<(), Error> {
+        for (number, len) in std::mem::take(&mut self.doomed) {
             let chunk = Chunk {
                 load: self.owner.load,
                 number,
@@ -63,13 +75,9 @@ impl Log {
                 .remove(&self.owner.pipeline, chunk)
                 .await
                 .map_err(Error::from_wal)?;
-            if let Some(written) = self.forgotten(number) {
-                self.shared.release(written.len);
-            }
+            self.shared.release(len);
             crash_point!("engine.wal.remove");
         }
-        self.unrecorded.clear();
-        self.note_oldest();
         self.shared.room.notify_waiters();
         Ok(())
     }
@@ -97,6 +105,7 @@ impl Log {
             self.append(Frame::Closed.encode()?).await?;
             crash_point!("engine.wal.close.before");
             self.publish().await?;
+            self.remove_unneeded().await?;
             crash_point!("engine.wal.close.after");
         }
         if !self.pending.is_empty() {

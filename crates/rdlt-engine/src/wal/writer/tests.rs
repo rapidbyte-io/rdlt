@@ -302,8 +302,8 @@ where
 async fn each_chunk_starts_with_its_header_and_the_schemas_its_batches_name() {
     let store = Arc::new(MemoryWal::default());
     let observed = Arc::clone(&store);
+    let commit = |ids: &[u64]| format!("commit of {:?}", segments(ids));
     drive(Arc::clone(&store), |mut log| async move {
-        let commit = |ids: &[u64]| format!("commit of {:?}", segments(ids));
         for command in [table(0), table(1)] {
             log.send(command).await;
         }
@@ -327,19 +327,19 @@ async fn each_chunk_starts_with_its_header_and_the_schemas_its_batches_name() {
         log.committed(1).await;
         log.batch(3, 1).await;
         log.commit(2, &[3]).await.expect("durable");
-        let second = [
-            "header 1",
-            "schema 1",
-            "batch 3 of 1",
-            "seal 3",
-            &commit(&[3]),
-            "end [] []",
-        ];
-        // Chunk 0 is gone once chunk 1, which records its receipt, is published.
-        assert_eq!(chunks(&observed), [(1, second.map(str::to_owned).to_vec())]);
     })
     .await
     .expect("the writer ends");
+    let second = [
+        "header 1",
+        "schema 1",
+        "batch 3 of 1",
+        "seal 3",
+        &commit(&[3]),
+        "end [] []",
+    ];
+    // Chunk 0 is gone once chunk 1, which records its receipt, is published.
+    assert_eq!(chunks(&store), [(1, second.map(str::to_owned).to_vec())]);
 }
 
 #[tokio::test]
@@ -411,16 +411,72 @@ async fn a_chunk_goes_once_a_published_chunk_records_it_settled() {
         assert_eq!(numbers(&observed), [0], "a receipt alone deletes nothing");
         log.batch(3, 0).await;
         log.commit(2, &[2, 3]).await.expect("durable");
-        // Segment 2 was open when commit 1's receipt settled the rest of chunk 0: its frame was
-        // carried into chunk 1, and chunk 0 went once chunk 1 was published.
-        assert_eq!(numbers(&observed), [1], "chunk 1 holds segment 2");
-        log.committed(2).await;
+        // Commit 3 is answered once what commit 2 left unneeded is deleted.
         log.batch(4, 0).await;
         log.commit(3, &[4]).await.expect("durable");
-        assert_eq!(numbers(&observed), [2], "chunks 0 and 1 are settled");
+        // Segment 2 was open when commit 1's receipt settled the rest of chunk 0: its frame was
+        // carried into chunk 1, and chunk 0 went once chunk 1 was published.
+        assert_eq!(numbers(&observed), [1, 2], "chunk 1 holds segment 2");
+        log.committed(2).await;
+        log.committed(3).await;
+        log.batch(5, 0).await;
+        log.commit(4, &[5]).await.expect("durable");
     })
     .await
     .expect("the writer ends");
+    assert_eq!(numbers(&store), [3], "chunks 0 to 2 are settled");
+}
+
+#[tokio::test]
+async fn a_commit_is_answered_before_a_deletion_it_leaves_and_a_failed_one_fails_the_next() {
+    let store = Arc::new(MemoryWal::default());
+    let failing = Arc::clone(&store);
+    drive(Arc::clone(&store), |mut log| async move {
+        log.send(table(0)).await;
+        log.batch(1, 0).await;
+        log.commit(1, &[1]).await.expect("durable");
+        log.committed(1).await;
+        log.batch(2, 0).await;
+        *failing.unremovable.lock() = true;
+        // Commit 2's chunk records commit 1's receipt, so chunk 0 is needed no more; the commit
+        // is durable and answered before chunk 0 is deleted, and that deletion fails.
+        log.commit(2, &[2])
+            .await
+            .expect("durable before what it frees is deleted");
+        assert!(
+            log.commit(3, &[]).await.is_err(),
+            "the failed deletion fails what follows"
+        );
+        // Chunk 0's room is kept while it is on disk.
+        let stored: u64 = failing
+            .stored(&pipeline())
+            .iter()
+            .map(|(_, bytes)| length(bytes))
+            .sum();
+        let held = log
+            .writer
+            .shared()
+            .held
+            .load(std::sync::atomic::Ordering::SeqCst);
+        assert!(held >= stored, "{held} held, {stored} stored");
+    })
+    .await
+    .expect("the writer ends");
+    assert_eq!(
+        numbers(&store),
+        [0, 1],
+        "chunk 0 stayed; a replay never reads it"
+    );
+    // Chunk 1's end names no chunk before it: a replay reads commit 2 alone.
+    let scanned = super::super::scan::scan(store.as_ref(), &pipeline(), load(), 1 << 28)
+        .await
+        .expect("the log reads");
+    let read: Vec<CommitSeq> = scanned
+        .commits
+        .iter()
+        .map(|logged| logged.meta.commit_seq)
+        .collect();
+    assert_eq!(read, [seq(2)]);
 }
 
 #[tokio::test]
