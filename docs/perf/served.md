@@ -834,3 +834,69 @@ The five rounds of `socket/destination/64x80000`, MB/s, and the CPU a GB:
   1.9–2.0 CPUs busy against 1.65–1.8. Its CPU a GB rose 5 %.
 - **Against the rule.** The latency condition fails on its heartbeats and the prototype on its
   ranges, so the codec work stays on the workers and no pool is built.
+
+## Credit a quarter window at a time
+
+A receiver grants back each frame's bytes as it takes it, one credit message a frame: the host
+reading from a spawned source, and a spawned destination answering the host's write. At the
+0.86 MB frames of `512x10000` that is 512 messages a run each way. The question was whether
+granting less often pays on the production placement, connectors spawned over a socket.
+
+The rule set before measuring: build it only if a prototype moves
+`process/socket/destination/512x10000` or `process/socket/source/512x10000` at least 5 % beyond
+noise. Beyond noise means the prototype's median MB/s is at least 1.05 times main's over
+interleaved rounds, and either its range lies wholly above main's or the paired ratios' bootstrap
+95 % interval lies above 1.0. No other `process/socket` case may fall beyond noise.
+
+The prototype kept what a receiver owes, each frame's bytes and whatever the window grows by, and
+granted it in one message once it reached a quarter of the window. Both receivers sent a credit
+only then. At 0.86 MB frames under the 4 MiB window that is a credit every second frame: 0.5
+messages a frame, against 1.0 on main, as a test counting the grants of 512 frames showed. At the
+6.9 MB frames of `64x80000`, whose window grows to 13.8 MB, every frame still carries its own
+credit, 1.0 both ways. A property test held its liveness: a sender out of credit was always
+granted once its receiver had taken every frame it sent.
+
+Intel Core Ultra X7 358H, mains power, 2026-10-13, main at `8daeb40b` against the prototype on
+it, governor `powersave` with energy preference `performance`. `just bench served 0-3
+'process/socket/(destination|source|both)/512x10000' 4-11`: the host on CPUs 0–3, each spawned
+connector on 4–11. Three pairs of rounds, main and the prototype interleaved, the order
+alternating, under the measurement lock. Each round started at a one-minute load average of
+0.86–1.13; the load after each was 1.6–2.7, the bench's own threads.
+
+MB/s, each round, and the prototype's change on its paired main round:
+
+| Case | Pair | Main | Prototype | Change |
+|---|---|---|---|---|
+| `destination` | 1 | 4 155 | 3 062 | −26.3 % |
+| | 2 | 4 050 | 3 768 | −7.0 % |
+| | 3 | 4 275 | 3 933 | −8.0 % |
+| | Median (range) | 4 155 (4 050–4 275) | 3 768 (3 062–3 933) | −9.3 % |
+| `source` | 1 | 3 766 | 3 619 | −3.9 % |
+| | 2 | 3 318 | 3 549 | +7.0 % |
+| | 3 | 3 722 | 3 573 | −4.0 % |
+| | Median (range) | 3 722 (3 318–3 766) | 3 573 (3 549–3 619) | −4.0 % |
+| `both` | 1 | 3 018 | 2 933 | −2.8 % |
+| | 2 | 2 659 | 2 932 | +10.3 % |
+| | 3 | 3 061 | 2 991 | −2.3 % |
+| | Median (range) | 3 018 (2 659–3 061) | 2 933 (2 932–2 991) | −2.8 % |
+
+CPU seconds a GB of each process, and the syscalls of one run in test mode, both processes'
+threads counted, each the median over the three rounds, main → prototype:
+
+| Case | Bench's process | Source | Destination | `writev` | `recvfrom` |
+|---|---|---|---|---|---|
+| `destination` | 0.421 → 0.454 | in the bench's | 0.476 → 0.486 | 3 067 → 2 736 | 2 783 → 2 583 |
+| `source` | 0.514 → 0.505 | 0.429 → 0.424 | in the bench's | 3 450 → 3 101 | 4 302 → 4 168 |
+| `both` | 0.662 → 0.662 | 0.489 → 0.471 | 0.509 → 0.525 | 7 812 → 7 402 | 7 507 → 7 225 |
+
+- **Fewer messages.** A run made 331–410 fewer `writev` calls, for the 256 credit messages each
+  receiver no longer sent (two receivers in `both`), and 134–282 fewer `recvfrom` calls. Each
+  process's CPU a GB moved by −4 to +8 %, the most in the host's when the destination is spawned.
+- **No faster.** The destination ran slower in every pair, its rounds wholly below main's. A
+  likely reason: granted a quarter window late, the host's writer runs up to a frame less ahead
+  of the destination. The source and both connectors served moved either way across pairs, with
+  medians 4.0 and 2.8 % below main's. The three pairs agreed closely enough to stop early: no
+  case's median came near 5 % above main.
+- **Against the rule.** Not built: the rule, at least 5 % more MB/s on the spawned destination or
+  source in small frames, was not met (destination −9.3 %, source −4.0 % at the median). Each
+  frame's credit is still granted as it is taken.
