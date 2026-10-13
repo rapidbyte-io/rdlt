@@ -118,6 +118,33 @@ fn a_chunk_s_scalars_render_into_a_column_of_json_within_its_text() {
     assert_eq!(fitted(&joined, &local, rows), 2 * (2 * 4 + 1));
     let (floats, _) = observed(r#"{"a":1.5}"#);
     assert!(!renders_json(&joined, &floats));
+    // A column already JSON takes nothing to fit, and renders nothing.
+    let json = |name: &str, observed: Observed| {
+        let mut shape = Shape::default();
+        shape.push(name.into(), observed);
+        shape
+    };
+    assert_eq!(
+        fitted(&json("a", Observed::Json), &json("a", Observed::Json), 4),
+        0
+    );
+    assert!(!renders_json(
+        &json("a", Observed::Json),
+        &json("a", Observed::Json)
+    ));
+    // Scalars render however deep in objects and lists they lie.
+    let nested = |inner: Observed| {
+        let object = Observed::Object(json("p", inner));
+        json("o", Observed::Array(Box::new(object), 2))
+    };
+    assert!(renders_json(
+        &nested(Observed::Json),
+        &nested(Observed::Text)
+    ));
+    assert!(!renders_json(
+        &nested(Observed::Json),
+        &nested(Observed::Float)
+    ));
 }
 
 #[test]
