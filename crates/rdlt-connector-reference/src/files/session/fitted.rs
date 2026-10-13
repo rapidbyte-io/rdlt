@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use arrow_array::RecordBatch;
 use parking_lot::Mutex;
+use rdlt_connector::merge;
 use rdlt_connector::prelude::*;
 use rdlt_connector::{ConnectorErrorKind, SegmentId, TableSchema};
 
@@ -14,7 +15,6 @@ use super::{Location, Shared};
 use crate::columns::changed;
 use crate::files::manifest::{self, Listed};
 use crate::files::tables;
-use crate::merge;
 
 /// Refuses the `buffered` batches of `table` where it is a merge table and one of them holds a
 /// row its merge cannot take, under the code the merge would refuse it with, so nothing of a

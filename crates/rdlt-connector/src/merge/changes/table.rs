@@ -3,11 +3,11 @@
 
 use std::collections::BTreeMap;
 
+use crate::ChangeOp;
 use arrow_array::cast::AsArray;
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_row::Rows;
 use arrow_schema::ArrowError;
-use rdlt_connector::ChangeOp;
 
 use super::super::met::before;
 use super::super::sparse::{At, Base, Pick, Sources, assemble};

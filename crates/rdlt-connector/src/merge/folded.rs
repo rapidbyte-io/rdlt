@@ -3,8 +3,9 @@
 //! A merge gives its rows back as one batch for each set of columns rows hold, and makes no
 //! cell. A destination that writes a file for each batch pays for each: rows of many sets, as
 //! writes whose batches each lack other columns leave, would be a file each, rewritten by every
-//! commit. Past [`MAX_SHAPES`] batches the smallest are joined under the columns any of them
-//! holds, in groups that each hold at most [`FOLD_CELLS`] cells without a value.
+//! commit. Past a destination's number of batches the smallest are joined under the columns any
+//! of them holds, in groups that each hold at most a destination's number of cells without a
+//! value.
 //!
 //! A cell without a value is counted whether a join made it or a row was written with it, so
 //! a batch joined by one commit is measured by the next as what it is, and what a table holds
@@ -12,6 +13,7 @@
 //! their order alone: the same rows fold into the same batches.
 
 use std::collections::{BTreeSet, HashMap};
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use arrow_array::{Array as _, ArrayRef, RecordBatch};
@@ -19,21 +21,23 @@ use arrow_schema::{ArrowError, Schema, SchemaRef};
 use rdlt_wire::limits::count;
 
 use super::sparse::{Nulls, every_column};
-use crate::limits::{FOLD_CELLS, MAX_SHAPES};
 
-/// `batches`, each of the columns of `schema` its rows hold, as at most [`MAX_SHAPES`] batches
-/// where the smallest join into one group of at most [`FOLD_CELLS`] cells without a value, and
-/// as few more as that limit asks for where they do not.
-pub(crate) fn folded(
+/// `batches`, each of the columns of `schema` its rows hold, as at most `shapes` batches, where
+/// the smallest join into one group of at most `cells` cells without a value, and as
+/// few more as that limit asks for where they do not.
+pub fn folded(
     schema: &SchemaRef,
     mut batches: Vec<RecordBatch>,
+    shapes: NonZeroUsize,
+    cells: u64,
 ) -> Result<Vec<RecordBatch>, ArrowError> {
-    if batches.len() <= MAX_SHAPES {
+    let shapes = shapes.get();
+    if batches.len() <= shapes {
         return Ok(batches);
     }
     // The largest stay as they are; the others join, the smallest first.
     batches.sort_by_key(|batch| std::cmp::Reverse(batch.num_rows()));
-    let small = batches.split_off(MAX_SHAPES - 1);
+    let small = batches.split_off(shapes - 1);
     let places: HashMap<&str, usize> = schema
         .fields()
         .iter()
@@ -43,7 +47,7 @@ pub(crate) fn folded(
     let mut group = Group::default();
     for batch in small.into_iter().rev() {
         let columns = held(&batch, &places);
-        if !group.batches.is_empty() && group.absent_with(&batch, &columns) > FOLD_CELLS {
+        if !group.batches.is_empty() && group.absent_with(&batch, &columns) > cells {
             batches.push(std::mem::take(&mut group).joined(schema)?);
         }
         group.add(batch, &columns);

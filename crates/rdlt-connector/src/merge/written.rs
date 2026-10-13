@@ -1,10 +1,10 @@
 //! What a written batch of a merge table must hold before any of its rows is staged or merged.
 
+use crate::{ChangeColumns, ChangeOp, Deletion, MergeKey, UnchangedFlags};
 use arrow_array::cast::AsArray;
 use arrow_array::types::Int8Type;
 use arrow_array::{Array, RecordBatch};
 use arrow_schema::{ArrowError, DataType, SchemaRef};
-use rdlt_connector::{ChangeColumns, ChangeOp, Deletion, MergeKey, UnchangedFlags};
 
 use super::refused::{
     DELETION_UNTIMED, FLAG_ON_KEY, FLAG_ON_MISSING_COLUMN, FLAGS_INVALID, MERGE_KEY_INVALID,
@@ -16,7 +16,7 @@ use super::retype::retyped;
 /// they are known, unless every row has a sequence and, for a change stream's, an op, a deletion
 /// time where a history table's deletes are soft, and unchanged flags that name stored columns
 /// other than the key and the sequence.
-pub(crate) fn admitted(
+pub fn admitted(
     batch: &RecordBatch,
     stored: Option<&SchemaRef>,
     key: &MergeKey,

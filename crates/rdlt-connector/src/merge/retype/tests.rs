@@ -24,8 +24,7 @@ use super::retyped;
 fn raw(array: &ArrayRef) -> Vec<Option<i64>> {
     (0..array.len())
         .map(|row| {
-            (!array.is_null(row))
-                .then(|| rdlt_connector::instants::stored(array.as_ref(), row).unwrap())
+            (!array.is_null(row)).then(|| crate::instants::stored(array.as_ref(), row).unwrap())
         })
         .collect()
 }

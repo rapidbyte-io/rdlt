@@ -34,7 +34,7 @@ fn the_limits_are_those_documented() {
     assert_eq!(MAX_SNAPSHOT_KEYS, 1_000_000);
     assert_eq!(MAX_CHANGES, 9_223_372_036_854_775_807);
     assert_eq!(MAX_TRUNCATES, 1_024);
-    assert_eq!(MAX_SHAPES, 16);
+    assert_eq!(MAX_SHAPES.get(), 16);
     assert_eq!(FOLD_CELLS, 1_048_576);
     assert_eq!(RUN_ROWS, 256);
     assert_eq!(RUN_ABSENT_CELLS, 65_536);

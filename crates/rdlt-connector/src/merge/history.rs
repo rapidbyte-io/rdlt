@@ -12,11 +12,11 @@ mod versions;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use crate::{ChangeOp, Deletion, HistoryColumns, MergeKey};
 use arrow_array::cast::AsArray;
 use arrow_array::{Array, ArrayRef, BooleanArray, Int64Array, RecordBatch};
 use arrow_row::Rows;
 use arrow_schema::{ArrowError, DataType, SchemaRef};
-use rdlt_connector::{ChangeOp, Deletion, HistoryColumns, MergeKey};
 
 use super::changes::stored;
 use super::met::before;

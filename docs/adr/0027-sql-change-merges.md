@@ -9,7 +9,7 @@ any SQL one `sqlgen` plans for, refused them, and a destination that did not kno
 `MergeKey::changes` would have upserted change rows as data: nothing in its capabilities told the
 engine otherwise, since the engine took "no delete mode" to mean "cannot merge changes".
 
-The reference merge applies a change only past the sequence of the row its key holds. After a
+The Arrow merge applies a change only past the sequence of the row its key holds. After a
 hard delete or a hard truncate no row holds the key, so a change sequenced before the delete, sent
 again by a source delivering at least once, brought the row back. Soft deletes kept their rows,
 whose sequences guard them.
@@ -32,7 +32,7 @@ the spec's `D-MERGE` names the seq guard, which the clause never exercised.
   delete's sequence, and the latest hard truncate's sequence, the bound. A change sequenced at or
   before its key's tombstone, or before the bound, never applies. A later change of the key lifts
   its tombstone; raising the bound drops the tombstones before it.
-  - Every destination keeps them: the reference merge (memory, files), the simulation's
+  - Every destination keeps them: the Arrow merge (memory, files), the simulation's
     destination, the SQL destinations, and certification's vault. The memory and files
     destinations store them beside the table's rows, the files destination in its manifest, which
     its garbage collection keeps; a SQL destination in the table `_rdlt_tombstones__{name}`, whose
@@ -68,7 +68,7 @@ the spec's `D-MERGE` names the seq guard, which the clause never exercised.
   - A change stream merges into its table, never a generation, and a generation swapped in clears
     the base's tombstones.
   - A differential property test commits the same random written batches to SQLite and to the
-    reference merge, comparing rows and tombstones after each commit, with soft and hard deletes.
+    Arrow merge, comparing rows and tombstones after each commit, with soft and hard deletes.
   - Two rows of one key and one sequence with different values, which no source sends, land as
     either in SQL; the reference takes the first written.
   - A soft delete of a key no row holds marks nothing, and leaves nothing a change sequenced before

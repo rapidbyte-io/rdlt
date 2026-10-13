@@ -100,7 +100,8 @@ fn whole(
         return Ok(batches);
     }
     let doing = format!("reading table {table}");
-    crate::merge::read_back(schema, &batches).map_err(|error| crate::merge::failed(&doing, error))
+    rdlt_connector::merge::read_back(schema, &batches)
+        .map_err(|error| rdlt_connector::merge::failed(&doing, error))
 }
 
 /// Every batch the pipeline whose directory `dir` is publishes of `table`, as the manifest

@@ -6,8 +6,8 @@ Status: accepted, 2026-10-01.
 
 ADR 0037 makes the host a peer a connector does not trust, and one database or one store a place
 several pipelines load into. The SQL planner `sqlgen`, the SQLite and memory destinations, the
-reference merge and the generated sources were written before it, and each took something as
-given:
+SDK's Arrow merge (`rdlt_connector::merge`), which the memory and files destinations use, and the
+generated sources were written before it, and each took something as given:
 
 - `sqlgen` planned a statement for any table name a session sent. The owner record
   (ADR 0025) was read by the connector, in some calls and not in others: a commit's child tables,
@@ -25,7 +25,7 @@ given:
 - SQLite binds a float that is no number as `NULL` and stores negative zero in a `REAL` column
   as the integer 0. A batch was bound column by column, so a refused value left the rows before
   it staged.
-- The reference merge retyped stored rows with Arrow's cast, which nulls a value the wider type
+- The Arrow merge retyped stored rows with Arrow's cast, which nulls a value the wider type
   cannot hold and panics at the edge of the calendar, and it paired every truncate of a commit
   with every row, every flag with every column. The statements `sqlgen` planned for a change
   stream did the same in SQL, and read the table whole in every commit.
@@ -83,7 +83,8 @@ given:
     declares (`SqlDialect::declares`), as the dialect renders it.
   - A merge key is checked against the table where its writer opens: it names at least one
     column, and every column it names, its sequence, its deletion time and its history columns
-    are columns of the table (`merge_key_invalid`). The reference merge refuses the same, where it panicked.
+    are columns of the table (`merge_key_invalid`). The Arrow merge refuses the same, where it
+    panicked.
   - SQLite reads its columns from `sqlite_schema` joined to the table's own columns, never from
     a table-valued function a stream's name could select.
 - **SQLite is opened hardened, private and by file name.**
@@ -145,7 +146,7 @@ given:
   number, or negative zero, is a `Data` error coded `float_unstorable` before its row is bound,
   and nothing of its batch stays. Storing them exactly needs a column without `REAL` affinity,
   which changes what users query; a destination has no way yet to ask the engine to lower them.
-- **The reference merge converts exactly or fails.** A stored column becomes its table's wider
+- **The Arrow merge converts exactly or fails.** A stored column becomes its table's wider
   type by an allow-list: the lattice's widenings and re-encodings, temporal units through
   checked arithmetic, a wall-clock time placed in a zone as the instant it names there. A value
   the wider type cannot hold fails, and a pair outside the list is refused, a struct losing a
@@ -159,7 +160,7 @@ given:
   type it had and goes on merging. A widen accepted and then failed at every merge would stop
   the stream until an operator reset the table.
 - **What a merge table cannot take is refused under a code, where it is staged.** The
-  reference merge, the memory destination at each flush, and `sqlgen`'s staging refuse the
+  Arrow merge, the memory destination at each flush, and `sqlgen`'s staging refuse the
   same conditions under the same codes: a flag on a key or the sequence (`flag_on_key`) or on
   what is no stored column (`flag_on_missing_column`), flags that are no bitmap
   (`flags_invalid`), an op no change stream has (`op_invalid`), a row without a sequence
@@ -170,15 +171,15 @@ given:
   its own, an internal error.
 - **A soft history delete says when.** A history table reads a version as deleted by its
   deletion time. A delete or a truncate without one would open a deleted version that reads as
-  live, and the reference merge and the SQL plans each made something else of it; none is
+  live, and the Arrow merge and the SQL plans each made something else of it; none is
   asked to, since it is refused before a row is staged.
 - **At one sequence a truncate applies first.** A source gives each row a position of its own,
   but where a truncate and a key's row share one, the truncate removes what is before it and
-  the row, which is not, applies: the reference merge orders them so wherever each was written,
+  the row, which is not, applies: the Arrow merge orders them so wherever each was written,
   a row a truncate of the merge marked takes a change at that sequence, and the SQL plans order
   a history key's events and choose a soft row's deletion time the same way.
 - **A merge costs its rows, and a row the cells it holds.**
-  - The reference merge reads each batch as the columns one of its rows holds a value in, and
+  - The Arrow merge reads each batch as the columns one of its rows holds a value in, and
     gives its rows back grouped by the columns they hold: a table is as many batches as its
     rows have shapes. Twenty thousand rows of two columns and one row of a thousand more hold
     their own cells, in the commit the wide row arrives in and after it, for an upsert, a change
@@ -345,8 +346,8 @@ given:
 - A connector that flags its key column is refused at every destination, since the engine
   carries the flag through.
 - Cost tests of a SQL plan count the steps SQLite's virtual machine takes, many operations
-  against one, and depend on no clock. The reference merge's tests of truncates count the
+  against one, and depend on no clock. The Arrow merge's tests of truncates count the
   comparisons its search makes, through the one function that makes them. Those of flags in
-  the reference merge and in staging, which have nothing to count, compare the least of three
+  the Arrow merge and in staging, which have nothing to count, compare the least of three
   timings of many operations with one. Each is sized to tell a linear cost from a product in
   under a second.

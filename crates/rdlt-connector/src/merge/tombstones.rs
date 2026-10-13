@@ -13,11 +13,11 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use crate::MergeKey;
 use arrow_array::cast::AsArray;
 use arrow_array::{Array, ArrayRef, BinaryArray, RecordBatch, new_null_array};
 use arrow_row::RowConverter;
 use arrow_schema::{ArrowError, DataType, Field, Schema, SchemaRef};
-use rdlt_connector::MergeKey;
 
 use super::key_columns;
 use super::retype::{compared, retyped};
@@ -52,7 +52,7 @@ pub(crate) struct Tombstones {
 
 /// The schema of `schema`'s tombstones, for a table merged by `key`: its key columns, nullable
 /// since the bound names no key, then its sequence.
-pub(crate) fn schema(schema: &SchemaRef, key: &MergeKey) -> Result<SchemaRef, ArrowError> {
+pub fn schema(schema: &SchemaRef, key: &MergeKey) -> Result<SchemaRef, ArrowError> {
     let mut fields: Vec<Field> = key
         .columns
         .iter()

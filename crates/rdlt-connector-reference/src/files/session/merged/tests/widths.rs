@@ -236,7 +236,7 @@ fn rows_of_many_sets_of_columns_are_a_merge_table_of_few_files() {
         let files = if format == FileFormat::Jsonl {
             1
         } else {
-            MAX_SHAPES
+            MAX_SHAPES.get()
         };
         assert_eq!(listed(&sessions).len(), files, "{format:?}");
         assert_eq!(
@@ -302,7 +302,7 @@ fn a_table_of_many_shapes_settles_over_many_commits_into_files_of_bounded_absent
     // The list and the bytes it holds stop growing but for the rows added: a batch a commit
     // joined is cut into the batches its file holds, and read back as the columns each holds.
     assert!(
-        counts.iter().all(|count| *count <= MAX_SHAPES + 2),
+        counts.iter().all(|count| *count <= MAX_SHAPES.get() + 2),
         "{counts:?}"
     );
     let most = 8 * 1024 * 1024;

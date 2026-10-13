@@ -29,7 +29,6 @@ arrow-cast.workspace = true
 arrow-data.workspace = true
 arrow-ipc.workspace = true
 arrow-json.workspace = true
-arrow-row.workspace = true
 arrow-schema.workspace = true
 arrow-select.workspace = true
 base64.workspace = true
@@ -37,7 +36,7 @@ bytes.workspace = true
 flatbuffers.workspace = true
 getrandom.workspace = true
 parking_lot.workspace = true
-rdlt-connector = { workspace = true, features = ["serve", "sqlgen"] }
+rdlt-connector = { workspace = true, features = ["serve", "sqlgen", "merge"] }
 rdlt-wire.workspace = true
 rusqlite.workspace = true
 rustix = { workspace = true, features = ["fs", "process"] }

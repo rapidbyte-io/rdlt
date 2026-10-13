@@ -35,13 +35,17 @@ serve = [
   "dep:rdlt-adopt",
 ]
 sqlgen = ["dep:sha2"]
+# The Arrow merge of a merge table's rows, for a destination that keeps its rows as Arrow.
+merge = ["dep:arrow-cast", "dep:arrow-row", "dep:arrow-select"]
 
 [dependencies]
 arrow-array.workspace = true
 arrow-buffer.workspace = true
 arrow-cast = { workspace = true, optional = true }
 arrow-data.workspace = true
+arrow-row = { workspace = true, optional = true }
 arrow-schema.workspace = true
+arrow-select = { workspace = true, optional = true }
 base64.workspace = true
 bytes.workspace = true
 rdlt-connector-macros = { workspace = true, optional = true }

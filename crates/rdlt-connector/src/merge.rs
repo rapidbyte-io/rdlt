@@ -1,4 +1,38 @@
-//! Merging published rows by key, as the memory and files destinations publish a merge table.
+//! Merging a merge table's rows by key, for a destination that keeps them as Arrow batches.
+//!
+//! ```
+//! use std::sync::Arc;
+//! use arrow_array::{ArrayRef, BinaryArray, Int64Array, RecordBatch};
+//! use rdlt_connector::MergeKey;
+//! use rdlt_connector::merge::{merge_sparse, read_back};
+//!
+//! // A sequence is 16 bytes, compared bytewise.
+//! let sequence = |seq: u8| {
+//!     let mut bytes = [0u8; 16];
+//!     bytes[15] = seq;
+//!     bytes.to_vec()
+//! };
+//! let batch = |id: i64, seq: u8| {
+//!     RecordBatch::try_from_iter([
+//!         ("id", Arc::new(Int64Array::from(vec![id])) as ArrayRef),
+//!         ("seq", Arc::new(BinaryArray::from_iter_values([sequence(seq)])) as ArrayRef),
+//!     ])
+//!     .unwrap()
+//! };
+//! let schema = batch(0, 0).schema();
+//! let key = MergeKey {
+//!     columns: vec!["id".into()],
+//!     seq: "seq".into(),
+//!     root: None,
+//!     changes: None,
+//!     history: None,
+//! };
+//! let merged =
+//!     merge_sparse(&schema, &[batch(1, 1)], &[], &[batch(1, 2), batch(2, 1)], &key).unwrap();
+//! let rows: usize =
+//!     read_back(&schema, &merged.rows).unwrap().iter().map(RecordBatch::num_rows).sum();
+//! assert_eq!(rows, 2);
+//! ```
 
 mod changes;
 mod folded;
@@ -8,30 +42,31 @@ mod refused;
 mod retype;
 mod sparse;
 #[cfg(test)]
-pub(crate) mod tests;
+mod tests;
 mod tombstones;
 mod written;
 
-pub(crate) use folded::folded;
-pub(crate) use refused::failed;
-pub(crate) use retype::holds;
-pub(crate) use tombstones::schema as tombstone_schema;
-pub(crate) use written::admitted;
+pub use changes::stored as stored_schema;
+pub use folded::folded;
+pub use refused::failed;
+pub use retype::holds;
+pub use tombstones::schema as tombstone_schema;
+pub use written::admitted;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use crate::{ChangeColumns, ConnectorError, MergeKey, RootKey, TableRef};
 use arrow_array::cast::AsArray;
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_row::{RowConverter, Rows, SortField};
 use arrow_schema::{ArrowError, DataType, Field, Schema, SchemaRef};
-use rdlt_connector::{ChangeColumns, ConnectorError, MergeKey, RootKey, TableRef};
 
 use sparse::{At, Base, Nulls, Pick, Sources, assemble};
 
 /// Refuses a writer of `table` where it is a replace generation of a history table, which merges
 /// into its table only.
-pub(crate) fn refuse_history_generation(table: &TableRef) -> rdlt_connector::Result<()> {
+pub fn refuse_history_generation(table: &TableRef) -> crate::Result<()> {
     let history = table
         .merge
         .as_ref()
@@ -46,7 +81,7 @@ pub(crate) fn refuse_history_generation(table: &TableRef) -> rdlt_connector::Res
 
 /// The schema a change stream's written batches have: `stored`, every column nullable since a
 /// truncate names no key, then the columns `changes` directs the merge with.
-pub(crate) fn written_schema(stored: &SchemaRef, changes: &ChangeColumns) -> SchemaRef {
+pub fn written_schema(stored: &SchemaRef, changes: &ChangeColumns) -> SchemaRef {
     let mut fields: Vec<Field> = stored
         .fields()
         .iter()
@@ -64,14 +99,13 @@ pub(crate) fn written_schema(stored: &SchemaRef, changes: &ChangeColumns) -> Sch
 /// sequence order as its op says; otherwise an incoming row replaces the published row with its
 /// key, and among incoming rows of one key the greatest sequence wins.
 ///
-/// The rows are given back as batches of the columns they hold, as [`sparse`] has them: a
-/// column a row never had costs the row nothing, here or in what a destination keeps of them.
-/// It is one batch for each set of columns rows hold, however many: [`folded`] joins them for a
-/// destination that pays for each.
+/// The rows are given back as batches of the columns they hold: a column a row never had costs
+/// the row nothing, here or in what a destination keeps of them. It is one batch for each set of
+/// columns rows hold, however many: [`folded`] joins them for a destination that pays for each.
 ///
 /// A key `schema` cannot be merged by, one of no column or naming a column it lacks, is an error,
 /// and so is a value a column's type no longer holds: nothing merges then.
-pub(crate) fn merge_sparse(
+pub fn merge_sparse(
     schema: &SchemaRef,
     published: &[RecordBatch],
     buried: &[RecordBatch],
@@ -100,19 +134,18 @@ pub(crate) fn merge_sparse(
 /// `rows`, batches of the columns they hold, as a reader is given them: batches of every column
 /// of `schema`, a column a batch does not hold being nulls its rows share with every other such
 /// column, which costs a reader a reference a column, whatever the rows.
-pub(crate) fn read_back(
-    schema: &SchemaRef,
-    rows: &[RecordBatch],
-) -> Result<Vec<RecordBatch>, ArrowError> {
+pub fn read_back(schema: &SchemaRef, rows: &[RecordBatch]) -> Result<Vec<RecordBatch>, ArrowError> {
     sparse::every_column(schema, rows, &mut Nulls::default())
 }
 
 /// A merge table's rows once merged, and for a change stream's, the tombstones of the rows it
 /// removed outright.
 #[derive(Debug)]
-pub(crate) struct Merged {
-    pub(crate) rows: Vec<RecordBatch>,
-    pub(crate) tombstones: Vec<RecordBatch>,
+pub struct Merged {
+    /// The rows, batches of the columns they hold.
+    pub rows: Vec<RecordBatch>,
+    /// The tombstones of a change stream's table; none for any other.
+    pub tombstones: Vec<RecordBatch>,
 }
 
 /// The batches of `batches` that hold a row.
@@ -228,7 +261,7 @@ fn upsert(
 /// The published rows of a child table once the roots `roots` publish replace their children:
 /// published rows of those roots go, and of `incoming`, the rows of each root's winning row, by
 /// root id and sequence, are added.
-pub(crate) fn merge_children_sparse(
+pub fn merge_children_sparse(
     schema: &SchemaRef,
     published: &[RecordBatch],
     incoming: &[RecordBatch],

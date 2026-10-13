@@ -3,7 +3,7 @@
 //!
 //! Arrow's own casts null a value the wider type cannot hold and multiply times of day without a
 //! check. Here temporal values widen as the engine widens them, through
-//! [`rdlt_connector::instants`], each the instant, time or duration it was, and every other
+//! [`crate::instants`], each the instant, time or duration it was, and every other
 //! conversion is one that loses nothing or fails.
 
 #[cfg(test)]
@@ -12,11 +12,11 @@ mod tests;
 use std::sync::Arc;
 
 use super::refused::{TYPE_UNCONVERTIBLE, VALUE_UNHOLDABLE, caused, refused};
+use crate::instants;
 use arrow_array::cast::AsArray;
 use arrow_array::{Array, ArrayRef, ListArray, StructArray, new_null_array};
 use arrow_cast::CastOptions;
 use arrow_schema::{ArrowError, DataType, FieldRef, Fields};
-use rdlt_connector::instants;
 
 /// `array` as `to`: every value exactly as it is, or an error naming the conversion.
 pub(super) fn retyped(array: &ArrayRef, to: &DataType) -> Result<ArrayRef, ArrowError> {
@@ -53,7 +53,7 @@ pub(super) fn retyped(array: &ArrayRef, to: &DataType) -> Result<ArrayRef, Arrow
 
 /// Refuses `batches` unless every column of theirs that `schema` names converts to its type
 /// there with every value kept: what a table holds must fit a type before a column takes it.
-pub(crate) fn holds<'a>(
+pub fn holds<'a>(
     batches: impl IntoIterator<Item = &'a arrow_array::RecordBatch>,
     schema: &arrow_schema::SchemaRef,
 ) -> Result<(), ArrowError> {

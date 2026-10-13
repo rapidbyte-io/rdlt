@@ -1,4 +1,4 @@
-//! Merging a change stream's staged rows into its table, as the reference merge does: each row
+//! Merging a change stream's staged rows into its table, as the Arrow merge does: each row
 //! applies in sequence order, only past the row its key holds and the table's tombstones, as an
 //! insert, update, delete or truncate.
 //!

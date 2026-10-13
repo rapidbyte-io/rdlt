@@ -2,19 +2,23 @@
 //! own cells, in the commit the wide row arrives in and in every commit after.
 
 use std::collections::BTreeMap;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
+use crate::{ChangeColumns, Deletion, HistoryColumns, MergeKey, RootKey};
 use arrow_array::cast::AsArray;
 use arrow_array::types::Int64Type;
 use arrow_array::{Array, ArrayRef, BinaryArray, BooleanArray, Int8Array, Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
-use rdlt_connector::{ChangeColumns, Deletion, HistoryColumns, MergeKey, RootKey};
 
 use super::super::{Merged, folded, merge_children_sparse, merge_sparse, read_back};
-use crate::limits::{FOLD_CELLS, MAX_SHAPES};
 
 const ROWS: i64 = 5_000;
 const WIDTH: usize = 1_000;
+/// The batches a fold keeps, as the files destination folds.
+const MAX_SHAPES: NonZeroUsize = NonZeroUsize::new(16).expect("sixteen is no zero");
+/// The cells without a value a fold's group holds at most, as the files destination folds.
+const FOLD_CELLS: u64 = 1024 * 1024;
 
 /// How a table of these tests merges.
 #[derive(Clone, Copy, Debug)]
@@ -256,7 +260,7 @@ fn shaped(shapes: i64, each: i64) -> Vec<RecordBatch> {
 fn folding(wide: &SchemaRef, published: &[RecordBatch], incoming: &[RecordBatch]) -> Merged {
     let merged = merge_sparse(wide, published, &[], incoming, &key(Kind::Upsert)).unwrap();
     Merged {
-        rows: folded(wide, merged.rows).unwrap(),
+        rows: folded(wide, merged.rows, MAX_SHAPES, FOLD_CELLS).unwrap(),
         tombstones: merged.tombstones,
     }
 }
@@ -271,17 +275,17 @@ fn a_merge_gives_a_batch_for_each_set_of_columns_and_a_fold_joins_the_smallest()
     assert_eq!(merged.rows.len(), 100);
     assert_eq!(absent_cells(&merged, &wide, shapes, each), vec![0; 100]);
     let merged = folding(&wide, &[], &incoming);
-    assert_eq!(merged.rows.len(), MAX_SHAPES);
+    assert_eq!(merged.rows.len(), MAX_SHAPES.get());
     let absent = absent_cells(&merged, &wide, shapes, each);
     // All but one batch are as they were written; the smallest joined under their columns.
-    let joined = usize::try_from(shapes).unwrap() - (MAX_SHAPES - 1);
+    let joined = usize::try_from(shapes).unwrap() - (MAX_SHAPES.get() - 1);
     assert_eq!(absent.iter().filter(|cells| **cells != 0).count(), 1);
     assert_eq!(absent.iter().sum::<usize>(), joined * 10 * (joined - 1));
     // The same rows fold into the same batches.
     assert_eq!(folding(&wide, &[], &incoming).rows, merged.rows);
     // What was folded merges again as any rows do, and stays as few.
     let merged = folding(&wide, &merged.rows, &[only(0..each, 0)]);
-    assert!(merged.rows.len() <= MAX_SHAPES + 1);
+    assert!(merged.rows.len() <= MAX_SHAPES.get() + 1);
     absent_cells(&merged, &wide, shapes, each);
 }
 
@@ -293,7 +297,7 @@ fn batches_join_apart_where_one_would_hold_more_absent_cells_than_a_fold_makes()
     let wide = schema(Kind::Upsert, 40);
     let incoming = shaped(shapes, each);
     let merged = folding(&wide, &[], &incoming);
-    assert_eq!(merged.rows.len(), MAX_SHAPES + 1);
+    assert_eq!(merged.rows.len(), MAX_SHAPES.get() + 1);
     let absent = absent_cells(&merged, &wide, shapes, each);
     let limit = usize::try_from(FOLD_CELLS).unwrap();
     assert!(absent.iter().all(|cells| *cells <= limit), "{absent:?}");
@@ -310,7 +314,10 @@ fn batches_join_apart_where_one_would_hold_more_absent_cells_than_a_fold_makes()
     let root = child.root.clone().unwrap();
     let rows = merge_children_sparse(&wide, &[], &incoming, &child, &root, &incoming).unwrap();
     assert_eq!(rows.len(), 40);
-    assert_eq!(folded(&wide, rows).unwrap().len(), MAX_SHAPES + 1);
+    assert_eq!(
+        folded(&wide, rows, MAX_SHAPES, FOLD_CELLS).unwrap().len(),
+        MAX_SHAPES.get() + 1
+    );
 }
 
 /// Rows of `ids` that hold 7 in `columns` beside their key and sequence, but for the first
@@ -344,15 +351,15 @@ fn batches_join_while_joined_they_hold_at_most_a_fold_s_absent_cells() {
             .collect();
         batches.push(holding(30_000..31_024, 0..512, gap));
         batches.push(holding(31_024..32_048, 512..1024, false));
-        folded(&wide, batches).unwrap()
+        folded(&wide, batches, MAX_SHAPES, FOLD_CELLS).unwrap()
     };
     let joined = fold(false);
-    assert_eq!(joined.len(), MAX_SHAPES);
+    assert_eq!(joined.len(), MAX_SHAPES.get());
     let last = joined.last().unwrap().columns().iter();
     let absent = last.map(Array::null_count).sum::<usize>();
     assert_eq!(absent, usize::try_from(FOLD_CELLS).unwrap());
     // One more cell without a value, a null written in a column its batch holds, keeps them apart.
-    assert_eq!(fold(true).len(), MAX_SHAPES + 1);
+    assert_eq!(fold(true).len(), MAX_SHAPES.get() + 1);
 }
 
 #[test]
@@ -391,7 +398,7 @@ fn folding_commit_after_commit_keeps_each_batch_within_a_fold_s_absent_cells() {
         "the first commit joins: {counts:?}"
     );
     for (batches, absent) in &counts {
-        assert!(*batches <= MAX_SHAPES + 2, "{counts:?}");
+        assert!(*batches <= MAX_SHAPES.get() + 2, "{counts:?}");
         assert!(*absent <= 2 * limit, "{counts:?}");
     }
     let held: usize = published.iter().map(RecordBatch::num_rows).sum();
@@ -408,7 +415,7 @@ fn a_fold_joins_batches_under_columns_the_table_says_every_row_holds() {
         .collect();
     let strict: SchemaRef = Arc::new(Schema::new(fields));
     let merged = folding(&strict, &[], &shaped(30, 10));
-    assert_eq!(merged.rows.len(), MAX_SHAPES);
+    assert_eq!(merged.rows.len(), MAX_SHAPES.get());
     absent_cells(&merged, &schema(Kind::Upsert, 30), 30, 10);
 }
 

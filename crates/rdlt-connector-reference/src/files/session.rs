@@ -97,7 +97,7 @@ impl Session for FilesSession {
     }
 
     async fn writer(&mut self, table: &TableRef) -> Result<FilesWriter> {
-        crate::merge::refuse_history_generation(table)?;
+        rdlt_connector::merge::refuse_history_generation(table)?;
         let (location, name) = (self.location.clone(), table.name.clone());
         blocking(move || {
             let wait = location.lock_wait;
