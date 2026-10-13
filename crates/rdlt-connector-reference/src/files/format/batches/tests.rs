@@ -5,16 +5,16 @@ use arrow_array::types::Int32Type;
 use arrow_array::{
     Array, ArrayRef, DictionaryArray, FixedSizeListArray, Int8Array, Int32Array, LargeListArray,
     LargeListViewArray, ListArray, ListViewArray, MapArray, NullArray, RecordBatch, RunArray,
-    StringArray, StructArray,
+    StringArray, StructArray, UnionArray,
 };
 use arrow_buffer::{OffsetBuffer, ScalarBuffer};
 use arrow_ipc::writer::FileWriter;
-use arrow_schema::{DataType, Field, Fields};
+use arrow_schema::{DataType, Field, Fields, UnionFields, UnionMode};
 use rdlt_connector::{ConnectorErrorKind, Result};
 use rdlt_wire::Limits;
 use rdlt_wire::limits::{BATCH_ROWS, BATCH_VALUES, FRAME_BYTES};
 
-use super::{chunks, fitted, unfit};
+use super::{UNION_UNWRITABLE, chunks, fitted, unfit};
 use crate::files::FileFormat;
 use crate::files::format::ipc::IpcFile;
 use crate::rooted::Dir;
@@ -499,4 +499,116 @@ fn a_run_end_column_counts_only_the_runs_its_rows_span() {
     };
     let read = fitted_under(&batch, &limits).expect("the rows' runs within a frame's values");
     assert_eq!(read.len(), 1);
+}
+
+/// Six rows of a union of integers and strings.
+fn union(mode: UnionMode) -> ArrayRef {
+    let fields = [
+        Field::new("a", DataType::Int32, true),
+        Field::new("b", DataType::Utf8, true),
+    ];
+    let fields = UnionFields::try_new([0, 1], fields).unwrap();
+    let ids = ScalarBuffer::from(vec![0_i8, 1, 0, 1, 1, 0]);
+    let union = match mode {
+        UnionMode::Sparse => {
+            let numbers = Arc::new(Int32Array::from_iter_values(1..=6));
+            let texts = Arc::new(StringArray::from_iter_values([
+                "a", "b", "c", "d", "e", "f",
+            ]));
+            UnionArray::try_new(fields, ids, None, vec![numbers, texts])
+        }
+        UnionMode::Dense => {
+            let offsets = ScalarBuffer::from(vec![0, 0, 1, 1, 2, 2]);
+            let numbers = Arc::new(Int32Array::from(vec![1, 3, 6]));
+            let texts = Arc::new(StringArray::from_iter_values(["b", "d", "e"]));
+            UnionArray::try_new(fields, ids, Some(offsets), vec![numbers, texts])
+        }
+    };
+    Arc::new(union.unwrap())
+}
+
+fn field(items: &ArrayRef) -> Arc<Field> {
+    Arc::new(Field::new("item", items.data_type().clone(), true))
+}
+
+/// A list of `items` in rows of `lengths` items each.
+fn list(items: ArrayRef, lengths: [usize; 3]) -> ArrayRef {
+    let offsets = OffsetBuffer::from_lengths(lengths);
+    Arc::new(ListArray::new(field(&items), offsets, items, None))
+}
+
+/// Every way a list or a map holds `items`, six of them, in three rows.
+fn holding(items: &ArrayRef) -> Vec<(&'static str, ArrayRef)> {
+    let large = LargeListArray::new(
+        field(items),
+        OffsetBuffer::from_lengths([2, 2, 2]),
+        Arc::clone(items),
+        None,
+    );
+    let fields = Fields::from(vec![
+        Field::new("keys", DataType::Int8, false),
+        Field::new("values", items.data_type().clone(), true),
+    ]);
+    let keys = Arc::new(Int8Array::from_iter_values(0..6));
+    let entries = StructArray::new(fields.clone(), vec![keys, Arc::clone(items)], None);
+    let entry = Arc::new(Field::new("entries", entries.data_type().clone(), false));
+    let lengths = OffsetBuffer::from_lengths([2, 2, 2]);
+    let map = MapArray::new(entry, lengths, entries.clone(), None, false);
+    let pairs = FixedSizeListArray::new(field(items), 2, Arc::clone(items), None);
+    let ends = Int32Array::from(vec![1, 2, 3]);
+    let runs = RunArray::<Int32Type>::try_new(&ends, &list(Arc::clone(items), [2, 2, 2])).unwrap();
+    vec![
+        ("list", list(Arc::clone(items), [2, 2, 2])),
+        ("large list", Arc::new(large)),
+        ("map", Arc::new(map)),
+        ("list of structs", list(Arc::new(entries), [2, 2, 2])),
+        ("list of pairs", list(Arc::new(pairs), [1, 1, 1])),
+        ("runs of lists", Arc::new(runs)),
+    ]
+}
+
+/// Checks that a write of `batch` is refused for a union Arrow's writer writes from other rows
+/// than those it holds, and leaves no file.
+fn unwritable(batch: &RecordBatch) {
+    let root = crate::scratch::tempdir().unwrap();
+    let dir = Dir::ambient(root.path()).unwrap();
+    let error = FileFormat::Arrow
+        .write(&dir, "rows.arrow", std::slice::from_ref(batch))
+        .expect_err("a union written from other rows");
+    assert_eq!(error.kind(), ConnectorErrorKind::Data, "{error}");
+    assert_eq!(error.code(), Some(UNION_UNWRITABLE), "{error}");
+    let left = std::fs::read_dir(root.path()).unwrap().count();
+    assert_eq!(left, 0, "a refused file was left");
+}
+
+#[test]
+fn a_union_a_list_holds_only_some_rows_of_is_refused_unwritten() {
+    for mode in [UnionMode::Sparse, UnionMode::Dense] {
+        let union = union(mode);
+        // A union of a batch's own is written as its rows, however the batch is cut.
+        written(&single(Arc::clone(&union)).slice(1, 2)).expect("a union of the batch's own");
+        for (name, column) in holding(&union) {
+            let batch = single(column);
+            let what = format!("{mode:?} {name}");
+            // A list that holds every item of its child is written as it is.
+            written(&batch).unwrap_or_else(|error| panic!("{what}: {error}"));
+            // Arrow writes the union's type ids from its first item, not the list's.
+            unwritable(&batch.slice(1, 1));
+            unwritable(&batch.slice(1, 2));
+            // From its first item, a dense union reads back; a sparse one is written whole,
+            // where a reader takes its children to be as long as itself.
+            match mode {
+                UnionMode::Dense => {
+                    written(&batch.slice(0, 1)).unwrap_or_else(|error| panic!("{what}: {error}"));
+                }
+                UnionMode::Sparse => unwritable(&batch.slice(0, 1)),
+            }
+        }
+        // A row of no lists cuts their child to no items, from its first.
+        let none = single(list(list(union, [2, 2, 2]), [1, 0, 2])).slice(1, 1);
+        match mode {
+            UnionMode::Dense => drop(written(&none).expect("no items of a dense union")),
+            UnionMode::Sparse => unwritable(&none),
+        }
+    }
 }

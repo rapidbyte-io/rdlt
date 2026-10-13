@@ -26,6 +26,7 @@ required-features = ["test-connectors"]
 [dependencies]
 arrow-array.workspace = true
 arrow-cast.workspace = true
+arrow-data.workspace = true
 arrow-ipc.workspace = true
 arrow-json.workspace = true
 arrow-row.workspace = true
