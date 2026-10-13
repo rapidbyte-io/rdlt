@@ -247,6 +247,38 @@ each process kept busy.
   connection task framing TLS and HTTP/2 for every write would give these figures, but only a
   per-thread profile of the destination's process, which these rounds did not take, can show it.
 
+### The production slice
+
+This change on `90ce76c2`, 2026-10-13, the same layout and cores: both connectors served over the
+socket in processes of their own, the engine within the default 256 MiB. Three rounds of
+`just bench served 0-3 process/socket/both 4-11`, each taking 391 to 412 s, the one-minute load
+average 2.0 to 2.8 at their starts. The table gives the median of the three rounds, the range of
+the throughput in brackets, and the medians of the host's readings, as
+[passthrough.md](passthrough.md) defines them; every case writes through one lane, the served
+sink declaring one writer, and makes one commit, at the end, with no wait for room for lowering.
+
+| Frames | Partitions | MB/s | CPU s a GB, all | Intake | Pool idle | Queue and way back | Signals a frame |
+|---|---|---|---|---|---|---|---|
+| 64×80 000 | 1 | 1 524 [1 497–1 591] | 2.29 | 8.4 % | 99.2 % | 2.3 % | 15.2 |
+| 64×80 000 | 4 | 1 456 [1 424–1 479] | 2.45 | 12.9 % | 99.3 % | 9.8 % | 15.9 |
+| 64×80 000 | 8 | 1 407 [1 333–1 456] | 2.50 | 33.0 % | 99.1 % | 6.6 % | 17.0 |
+| 64×80 000 | 16 | 1 128 [1 108–1 164] | 2.48 | 884 % | 99.4 % | 4.3 % | 30.2 |
+| 512×10 000 | 1 | 3 085 [2 639–3 095] | 1.65 | 1.1 % | 96.2 % | 16.2 % | 14.1 |
+| 512×10 000 | 4 | 2 937 [2 755–2 949] | 1.72 | 4.9 % | 91.2 % | 21.2 % | 14.3 |
+| 512×10 000 | 16 | 2 580 [2 287–2 595] | 1.83 | 3.5 % | 95.6 % | 25.9 % | 14.5 |
+| 5 120×1 000 | 1 | 1 684 [1 292–1 710] | 3.59 | 0.2 % | 91.7 % | 61.9 % | 14.0 |
+| 5 120×1 000 | 4 | 1 502 [1 415–1 524] | 3.74 | 0.3 % | 91.7 % | 81.0 % | 14.0 |
+| 5 120×1 000 | 16 | 1 401 [1 338–1 416] | 3.82 | 0.3 % | 92.0 % | 79.3 % | 14.0 |
+
+- Throughput falls as partitions are added at every size of frame: 1 524 to 1 128 MB/s in large
+  frames, 3 085 to 2 580 in small and 1 684 to 1 401 in frames of 1 000 rows.
+- Large frames from sixteen partitions wait for room as the in-process cell does: their pushes'
+  waits sum to 884 % of the run. Frames of 1 000 rows barely wait.
+- Frames of 1 000 rows take about twice the CPU a GB of small frames, 3.6–3.8 against 1.7–1.8.
+- The rounds ran under other load on the machine: the 1 000-row case from one partition read
+  1 292 MB/s in one round, 23 % below its median, and small frames from sixteen partitions 11 %
+  below.
+
 ## A served write in two stages
 
 A served write ran one pump: it read a frame, decoded it, and waited for the destination's writer
