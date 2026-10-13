@@ -74,7 +74,7 @@ pub struct StoreRequests {
     pub remove_log: u64,
 }
 
-/// Jobs on the compute pool, and how long they waited to start and ran.
+/// Jobs on the compute pool, and how long they waited to start, ran and took to come back.
 ///
 /// A job counts once its caller takes its result, so a job a cancelled caller left is not counted.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
@@ -85,6 +85,10 @@ pub struct PoolCounters {
     pub queued: Duration,
     /// The time each job ran, summed.
     pub running: Duration,
+    /// The time from each job's end to its caller taking its result, summed: the way back to
+    /// the caller, and for a call of several jobs the time a finished job waits for those
+    /// before it.
+    pub returned: Duration,
 }
 
 /// Commits that landed, by what made each due.
