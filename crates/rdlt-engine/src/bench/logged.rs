@@ -4,7 +4,7 @@
 #[cfg(test)]
 mod tests;
 
-use std::num::NonZeroU64;
+use std::num::{NonZeroU16, NonZeroU64};
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
@@ -83,7 +83,7 @@ impl Logged {
     pub fn leave(&self) -> Report {
         let replayed = Replayed::Batches(self.batches.clone());
         let source = self.runner.block_on(replay("logged", replayed));
-        let sink = self.runner.block_on(sink(Sinking::Refuse));
+        let sink = self.runner.block_on(sink(Sinking::Refuse, NonZeroU16::MIN));
         let outcome = self.runner.outcome(source, sink);
         assert!(outcome.error.is_some(), "the refusing sink fails the run");
         outcome.report

@@ -4,12 +4,13 @@
 #[cfg(test)]
 mod tests;
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
 use rdlt_connector::{Destination, SegmentId, Source, TableWriter};
 
-use super::runner::{Runner, stream};
+use super::runner::{Runner, streams};
 use super::{Replayed, SinkWriter, Sinking, ipc_sink, logical_bytes, replay};
 use crate::fixtures::events;
 use crate::{ComputePoolError, Cores, Report};
@@ -60,7 +61,13 @@ impl Passthrough {
         memory: u64,
     ) -> Result<Self, ComputePoolError> {
         Ok(Self {
-            runner: Runner::within(cores, "passthrough", stream(), None, memory)?,
+            runner: Runner::within(
+                cores,
+                "passthrough",
+                streams(NonZeroUsize::MIN),
+                None,
+                memory,
+            )?,
             batches: Self::run_of(batches, rows),
         })
     }

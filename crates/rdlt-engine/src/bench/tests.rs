@@ -1,5 +1,5 @@
 use std::io::Cursor;
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU16, NonZeroUsize};
 use std::sync::Arc;
 
 use arrow_array::cast::AsArray;
@@ -14,11 +14,12 @@ use rdlt_connector::{
 use serde_json::json;
 
 use super::connectors::Replay;
+use super::runner::streams;
 use super::{CHUNK_BYTES, Corpus, PUSH_BYTES};
 use super::{
     Refused, Replayed, SinkWriter, Sinking, check_json, ipc_sink, json_column, normalize,
     null_sink, pruned, register, replay, replay_factory, shred, shred_counted, shred_on,
-    split_replay_config,
+    sink_factory, split_replay_config, stream_name,
 };
 use crate::compute::Cores;
 use crate::env::Env;
@@ -137,7 +138,10 @@ async fn a_split_replay_plans_its_partitions_and_pushes_every_batch_once() {
     register("split", Replayed::Batches(ten_row_batches(8)));
     let four = NonZeroUsize::new(4).unwrap();
     let source = replay_factory()
-        .connect(split_replay_config("split", four), ConnectContext::new())
+        .connect(
+            split_replay_config("split", four, NonZeroUsize::MIN),
+            ConnectContext::new(),
+        )
         .await
         .unwrap();
     let stream = StreamName::new("events").unwrap();
@@ -163,11 +167,65 @@ async fn a_split_replay_resumes_each_partition_after_each_checkpoint() {
 }
 
 #[tokio::test]
+async fn a_replay_of_several_streams_pushes_every_batch_once_across_them() {
+    // Seven batches over three streams of two partitions: shares that do not divide.
+    register("streams", Replayed::Batches(ten_row_batches(7)));
+    let (two, three) = (NonZeroUsize::new(2).unwrap(), NonZeroUsize::new(3).unwrap());
+    let source = replay_factory()
+        .connect(
+            split_replay_config("streams", two, three),
+            ConnectContext::new(),
+        )
+        .await
+        .unwrap();
+    let engine = Engine::new(EngineConfig::default(), Arc::new(SystemEnv::one_core()));
+    let plan = PipelinePlan::new(PipelineId::parse("streams").unwrap(), streams(three)).unwrap();
+    let outcome = engine.run(plan, Arc::from(source), ipc_sink().await).await;
+    assert!(outcome.error.is_none(), "{:?}", outcome.error);
+    assert_eq!(outcome.report.rows, 70);
+    let names: Vec<&str> = outcome.report.streams.keys().map(String::as_str).collect();
+    assert_eq!(names, ["events", "events_1", "events_2"]);
+}
+
+#[tokio::test]
+async fn a_replay_of_several_streams_resumes_each_partition_after_each_checkpoint() {
+    register("certified-streams", Replayed::Batches(ten_row_batches(7)));
+    let config = json!({ "name": "certified-streams", "partitions": 3, "streams": 2 });
+    certify_source::<Replay>(config).await.assert_passed();
+}
+
+#[test]
+fn the_first_stream_is_events_and_the_rest_are_numbered() {
+    assert_eq!(stream_name(0), StreamName::new("events").unwrap());
+    assert_eq!(stream_name(3), StreamName::new("events_3").unwrap());
+}
+
+#[tokio::test]
+async fn a_sink_declares_the_writers_its_configuration_names_and_one_otherwise() {
+    let factory = sink_factory();
+    let one = factory
+        .connect(Sinking::Ipc.config(), ConnectContext::new())
+        .await
+        .unwrap();
+    assert_eq!(one.capabilities().max_parallel_writers, NonZeroU16::MIN);
+    let sixteen = NonZeroU16::new(16).unwrap();
+    let config = Sinking::Ipc.writing(sixteen);
+    let many = factory
+        .connect(config, ConnectContext::new())
+        .await
+        .unwrap();
+    assert_eq!(many.capabilities().max_parallel_writers, sixteen);
+}
+
+#[tokio::test]
 async fn a_split_replay_refuses_a_partition_it_never_planned() {
     register("unplanned", Replayed::Batches(ten_row_batches(4)));
     let two = NonZeroUsize::new(2).unwrap();
     let source = replay_factory()
-        .connect(split_replay_config("unplanned", two), ConnectContext::new())
+        .connect(
+            split_replay_config("unplanned", two, NonZeroUsize::MIN),
+            ConnectContext::new(),
+        )
         .await
         .unwrap();
     for id in ["2", "x"] {
