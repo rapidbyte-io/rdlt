@@ -1,7 +1,8 @@
 # Simulation throughput
 
-How fast the simulation checks seeds, measured at `590f7ff3`. `just sim-rate` checks the
-reference rate every night against the floor below.
+How fast the simulation checks seeds. The local sweep's rows were measured with this change on
+`90ce76c2`, the coverage run's and CI's rows at `590f7ff3`. `just sim-rate` checks the reference
+rate every night against the floor below.
 
 ## Method
 
@@ -24,10 +25,11 @@ reference rate every night against the floor below.
 
 | Measure | Value |
 |---|---|
-| Exactly-once sweep, seeds 0-399, four P-cores | 33.6 seeds/s (11.91 s), at most 343 MiB resident |
-| Exactly-once sweep, seeds 0-399, one P-core | 9.4 seeds/s |
-| Per seed, seeds 0-399, one thread | 106 ms mean, 1 567 ms max |
-| Network seeds, seeds 0-399 | 25 % of seeds, 49 % of wall time |
+| Exactly-once sweep, seeds 0-399, four P-cores | 38.0 seeds/s (10.53 s), at most 328 MiB resident |
+| Exactly-once sweep, seeds 0-399, one P-core | 10.7 seeds/s |
+| Per seed, seeds 0-399, one thread | 94 ms mean, 1 217 ms max |
+| Network seeds, seeds 0-399 | 25 % of seeds, 46 % of wall time |
+| Network seeds' steps in settling's fixed second, seeds 0-999, `90ce76c2` | 36.1 %, all after the last task ended |
 | Coverage run, 1 000 seeds, four P-cores | 7.6 min (456 s) |
 | Exactly-once sweep, a pull request's shard of 5 000 seeds, ubuntu-24.04 | 14.2 seeds/s median of 60 shards (12.5-27.6) |
 | Test job, Linux / macOS | 17.1 min (10.9-17.4) / 18.1 min (17.8-18.6), three runs |
