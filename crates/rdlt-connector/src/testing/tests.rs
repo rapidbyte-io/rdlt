@@ -687,6 +687,10 @@ struct VaultConfig {
     history_clamps_by_starts: bool,
     /// Begins versions no earlier than their key's versions ended, whenever they began.
     history_clamps_by_ends: bool,
+    /// Versions a commit's rows in the order they arrive, whatever their sequences.
+    history_ignores_order: bool,
+    /// Hashes rows its own way: stores, and compares, hashes other than those it is sent.
+    history_hashes_its_own_way: bool,
     /// Swaps in only the first generation a commit finishes.
     finish_one_generation: bool,
     /// Publishes its columns under lower-case names, though it declares it keeps case.
@@ -1635,6 +1639,8 @@ impl VaultConfig {
             clamp_by_starts: self.history_clamps_by_starts,
             clamp_by_ends: self.history_clamps_by_ends,
             skip_unkeyed: self.skip_unkeyed,
+            ignore_order: self.history_ignores_order,
+            own_hash: self.history_hashes_its_own_way,
         }
     }
 
@@ -1909,6 +1915,8 @@ const BROKEN: &[(&str, &[&str])] = &[
     ("history_trusts_times", &["D-HIST"]),
     ("history_clamps_by_starts", &["D-HIST"]),
     ("history_clamps_by_ends", &["D-HIST"]),
+    ("history_ignores_order", &["D-HIST"]),
+    ("history_hashes_its_own_way", &["D-HIST"]),
     ("static_epoch", &["D-EPOCH"]),
     ("fold_names", &["D-NAMES"]),
     ("merge_cased_names", &["D-NAMES"]),

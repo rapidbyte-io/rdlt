@@ -574,6 +574,18 @@ fn a_schema_counts_its_names_and_metadata_at_any_depth() {
     // A type nested deeper than any stack walks is counted to its end.
     let deep = crate::cost::tests::nested(3_000).schema();
     assert_eq!(schema_bytes(&deep), 3_000 * 128 + 6 + 2_999);
+    // A union's members are fields of it, and so are a run-end encoding's ends and values.
+    let members = [named("i", DataType::Int8), named("s", DataType::Utf8)];
+    let members = UnionFields::try_new([0, 1], members).unwrap();
+    let union = DataType::Union(members, arrow_schema::UnionMode::Dense);
+    let ends = Arc::new(Field::new("run_ends", DataType::Int16, false));
+    let runs = DataType::RunEndEncoded(ends, Arc::new(named("values", DataType::Int8)));
+    let encoded = arrow_schema::Schema::new(vec![named("u", union), named("r", runs)]);
+    let texts = 1 + 1 + 1 + 1 + "run_ends".len() + "values".len();
+    assert_eq!(
+        schema_bytes(&encoded),
+        6 * 128 + u64::try_from(texts).unwrap()
+    );
 }
 
 #[test]
@@ -780,4 +792,72 @@ fn the_text_of_a_nested_array_is_measured_as_its_json_text() {
             2 * 8 + 2 + 3 + 3 * (20 + 8)
         );
     }
+}
+
+#[test]
+fn a_list_s_layouts_cost_their_offsets_brackets_and_commas_beside_their_items() {
+    use super::widths::{BRACKETS, OFFSET};
+    let ints: ArrayRef = Arc::new(Int64Array::from(vec![1, 2, 3]));
+    let list: ArrayRef = Arc::new(ListArray::new(
+        item(DataType::Int64),
+        OffsetBuffer::from_lengths([3]),
+        Arc::clone(&ints),
+        None,
+    ));
+    // A list of three: two offsets, its brackets, a comma an item, and the items' text.
+    let listed = expanded(&native(), &list);
+    let items = listed - (2 * OFFSET + BRACKETS + 3);
+    // Of a fixed size: one offset where a list has two.
+    let fixed: ArrayRef = Arc::new(FixedSizeListArray::new(
+        item(DataType::Int64),
+        3,
+        Arc::clone(&ints),
+        None,
+    ));
+    assert_eq!(expanded(&native(), &fixed), listed - OFFSET);
+    // Two views of the same three: each its offset, its size and its brackets, and each item it
+    // names a comma, the place it is taken from, and its text.
+    let views: ArrayRef = Arc::new(ListViewArray::new(
+        item(DataType::Int64),
+        vec![0_i32; 2].into(),
+        vec![3_i32; 2].into(),
+        ints,
+        None,
+    ));
+    let view = 2 * OFFSET + BRACKETS + 3 * (1 + OFFSET) + items;
+    assert_eq!(expanded(&native(), &views), 2 * view);
+}
+
+#[test]
+fn a_union_row_costs_its_type_id_and_offset_beside_its_member_s_json_text() {
+    use super::widths::{BRACKETS, OFFSET};
+    let ints: ArrayRef = Arc::new(Int64Array::from(vec![7, 8]));
+    let list: ArrayRef = Arc::new(ListArray::new(
+        item(DataType::Int64),
+        OffsetBuffer::from_lengths([2]),
+        Arc::clone(&ints),
+        None,
+    ));
+    // The two integers' JSON text: the list's but for its offsets, brackets and commas.
+    let texts = expanded(&native(), &list) - (2 * OFFSET + BRACKETS + 2);
+    let members = UnionFields::try_new([3], [Field::new("i", DataType::Int64, true)]).unwrap();
+    for offsets in [None, Some(ScalarBuffer::from(vec![0_i32, 1]))] {
+        let ids = ScalarBuffer::from(vec![3_i8, 3]);
+        let children = vec![Arc::clone(&ints)];
+        let union: ArrayRef =
+            Arc::new(UnionArray::try_new(members.clone(), ids, offsets, children).unwrap());
+        assert_eq!(expanded(&native(), &union), 2 * (1 + 4) + texts);
+    }
+}
+
+#[test]
+fn a_scalar_stored_as_text_holds_its_value_and_its_text_beside() {
+    let ids: ArrayRef = Arc::new(Int64Array::from(vec![1, 2, 3]));
+    let stored = Stored {
+        column: LogicalType::Int64,
+        text: true,
+        read: false,
+    };
+    // Each row its eight bytes, and its text: twenty bytes at most, and an offset.
+    assert_eq!(lowered(&ids, stored), 3 * (8 + 20 + 8));
 }

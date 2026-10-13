@@ -457,3 +457,6 @@ fn base32(bytes: &[u8]) -> String {
     }
     text
 }
+
+#[cfg(test)]
+mod tests;
