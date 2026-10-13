@@ -612,6 +612,27 @@ async fn a_file_that_is_not_private_regular_text_within_the_limit_is_refused() {
 }
 
 #[tokio::test]
+async fn a_pipe_on_the_way_to_a_secret_is_refused_at_once() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let pipe = directory.path().join("pipe");
+    let made = std::process::Command::new("mkfifo").arg(&pipe).status();
+    assert!(made.expect("mkfifo runs").success());
+    let files = FileSecrets::within([directory.path()]);
+    let beyond = pipe.join("token").to_str().expect("text").to_owned();
+    let read = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        resolve(&files, SecretKind::File, &beyond),
+    )
+    .await;
+    if read.is_err() {
+        // An open that waits for a writer is given one, so the test ends.
+        drop(std::fs::OpenOptions::new().write(true).open(&pipe));
+    }
+    let refused = read.expect("refused at once").expect_err("refused");
+    assert!(matches!(refused, SecretFault::NotRegular), "{refused:?}");
+}
+
+#[tokio::test]
 async fn a_private_file_that_holds_no_text_or_too_much_is_refused_and_no_fault_says_what_is_there()
 {
     let directory = tempfile::tempdir().expect("a temporary directory");
