@@ -1,13 +1,13 @@
 //! What every bench workload loads through: a runtime of the workers its cores suggest, and an
-//! engine within those cores loading one stream.
+//! engine within those cores loading its streams.
 
 #[cfg(test)]
 mod tests;
 
-use std::num::NonZeroU64;
+use std::num::{NonZeroU64, NonZeroUsize};
 use std::sync::Arc;
 
-use rdlt_connector::{Destination, PipelineId, Source, StreamName};
+use rdlt_connector::{Destination, PipelineId, Source};
 use tokio::runtime::Runtime;
 
 use crate::{
@@ -44,7 +44,7 @@ impl Runner {
         stream: StreamPlan,
         commit: Option<NonZeroU64>,
     ) -> Result<Self, ComputePoolError> {
-        Self::build(cores, pipeline, stream, commit, Self::MEMORY, None)
+        Self::build(cores, pipeline, vec![stream], commit, Self::MEMORY, None)
     }
 
     /// A runner as [`Runner::try_new`] makes it whose loads are each logged ahead into `store`,
@@ -58,11 +58,11 @@ impl Runner {
         (store, log_bytes): (Arc<dyn WalStore>, NonZeroU64),
     ) -> Result<Self, ComputePoolError> {
         let log = Some((store, log_bytes));
-        Self::build(cores, pipeline, stream, commit, Self::MEMORY, log)
+        Self::build(cores, pipeline, vec![stream], commit, Self::MEMORY, log)
     }
 
-    /// A runtime and an engine as [`Runner::try_new`] makes them, within a budget of `memory`
-    /// bytes.
+    /// A runtime and an engine as [`Runner::try_new`] makes them that load `streams`, within a
+    /// budget of `memory` bytes.
     ///
     /// # Errors
     ///
@@ -74,17 +74,17 @@ impl Runner {
     pub(super) fn within(
         cores: Cores,
         pipeline: &str,
-        stream: StreamPlan,
+        streams: Vec<StreamPlan>,
         commit: Option<NonZeroU64>,
         memory: u64,
     ) -> Result<Self, ComputePoolError> {
-        Self::build(cores, pipeline, stream, commit, memory, None)
+        Self::build(cores, pipeline, streams, commit, memory, None)
     }
 
     fn build(
         cores: Cores,
         pipeline: &str,
-        stream: StreamPlan,
+        streams: Vec<StreamPlan>,
         commit: Option<NonZeroU64>,
         memory: u64,
         log: Option<(Arc<dyn WalStore>, NonZeroU64)>,
@@ -110,7 +110,7 @@ impl Runner {
         let config = builder.build().expect("a valid configuration");
         let pipeline = PipelineId::parse(pipeline).expect("a valid id");
         let mut env = SystemEnv::try_new(cores)?;
-        let mut plan = PipelinePlan::new(pipeline, [stream]).expect("a valid plan");
+        let mut plan = PipelinePlan::new(pipeline, streams).expect("a valid plan");
         if let Some((store, _)) = log {
             env = env.with_wal(store);
             plan = plan.with_wal(true);
@@ -153,7 +153,14 @@ impl Runner {
     }
 }
 
-/// The stream, `events`, every bench source pushes.
+/// The stream, `events`, every bench source pushes first.
 pub(super) fn stream() -> StreamPlan {
-    StreamPlan::new(StreamName::new("events").expect("a valid name"))
+    StreamPlan::new(super::stream_name(0))
+}
+
+/// The `count` streams a replay of that many streams pushes: `events`, then `events_1` and on.
+pub(super) fn streams(count: NonZeroUsize) -> Vec<StreamPlan> {
+    (0..count.get())
+        .map(|index| StreamPlan::new(super::stream_name(index)))
+        .collect()
 }

@@ -198,7 +198,7 @@ impl Case {
 
     /// The configuration of the replay the case's source pushes.
     fn replay(self) -> serde_json::Value {
-        split_replay_config(self.frames.replay(), self.partitions)
+        split_replay_config(self.frames.replay(), self.partitions, NonZeroUsize::MIN)
     }
 
     /// Where and how its connectors are served: `process/tls`, or `tls` in the bench's process.

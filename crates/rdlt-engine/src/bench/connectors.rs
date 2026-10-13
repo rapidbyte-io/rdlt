@@ -2,7 +2,7 @@
 //! destinations that encode each batch as Arrow IPC into a buffer they reuse, or discard it.
 
 use std::collections::BTreeMap;
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU16, NonZeroUsize};
 use std::sync::{Arc, LazyLock};
 use std::time::UNIX_EPOCH;
 
@@ -52,10 +52,21 @@ pub fn replay_config(name: &str) -> Value {
     json!({ "name": name })
 }
 
+/// The name of a replay's stream numbered `index`: `events` for the first, so a replay of one
+/// stream pushes `events`, then `events_1`, `events_2` and on.
+pub fn stream_name(index: usize) -> StreamName {
+    let name = match index {
+        0 => "events".to_owned(),
+        index => format!("events_{index}"),
+    };
+    StreamName::new(name).expect("a valid stream name")
+}
+
 /// The configuration of a replay source pushing the replay registered as `name` from
-/// `partitions` partitions, each an even share of its pushes in order.
-pub fn split_replay_config(name: &str, partitions: NonZeroUsize) -> Value {
-    json!({ "name": name, "partitions": partitions })
+/// `partitions` partitions of each of `streams` streams, each an even share of its pushes in
+/// order.
+pub fn split_replay_config(name: &str, partitions: NonZeroUsize, streams: NonZeroUsize) -> Value {
+    json!({ "name": name, "partitions": partitions, "streams": streams })
 }
 
 /// The factory of replay sources, to serve.
@@ -67,32 +78,54 @@ pub fn replay_factory() -> Box<dyn SourceFactory> {
 /// checkpoint after each push; registered as `name`.
 pub async fn replay(name: &str, replayed: Replayed) -> Arc<dyn Source> {
     register(name, replayed);
+    connect_replay(replay_config(name)).await
+}
+
+/// A source pushing `replayed` from `partitions` partitions of each of `streams` streams, an
+/// even share each, in order, a checkpoint after each push; registered as `name`.
+pub async fn split_replay(
+    name: &str,
+    replayed: Replayed,
+    partitions: NonZeroUsize,
+    streams: NonZeroUsize,
+) -> Arc<dyn Source> {
+    register(name, replayed);
+    connect_replay(split_replay_config(name, partitions, streams)).await
+}
+
+/// A replay source connected with `config`, whose replay is registered.
+async fn connect_replay(config: Value) -> Arc<dyn Source> {
     let source = replay_factory()
-        .connect(replay_config(name), ConnectContext::new())
+        .connect(config, ConnectContext::new())
         .await
         .expect("the replay is registered");
     Arc::from(source)
 }
 
-/// Names the registered replay a [`Replay`] pushes, and the partitions it pushes from: one
-/// where it names none.
+/// Names the registered replay a [`Replay`] pushes, the partitions it pushes from and the
+/// streams it pushes: one of each where it names none.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(super) struct ReplayConfig {
     name: String,
     partitions: Option<NonZeroUsize>,
+    streams: Option<NonZeroUsize>,
 }
 
-/// The source [`replay`] connects.
+/// The source [`split_replay`] connects.
 pub(super) struct Replay {
     replayed: Replayed,
     partitions: NonZeroUsize,
+    streams: NonZeroUsize,
 }
 
 impl Replay {
-    /// The pushes the partition numbered `index` makes: its even share, in order.
-    fn share(&self, index: usize) -> std::ops::Range<usize> {
-        let (pushes, partitions) = (self.replayed.pushes(), self.partitions.get());
-        index * pushes / partitions..(index + 1) * pushes / partitions
+    /// The pushes the partition numbered `partition` of the stream numbered `stream` makes: its
+    /// even share, in order.
+    fn share(&self, stream: usize, partition: usize) -> std::ops::Range<usize> {
+        let units = self.streams.get() * self.partitions.get();
+        let unit = stream * self.partitions.get() + partition;
+        let pushes = self.replayed.pushes();
+        unit * pushes / units..(unit + 1) * pushes / units
     }
 }
 
@@ -110,6 +143,7 @@ impl SourceConnector for Replay {
         Ok(Self {
             replayed,
             partitions: config.partitions.unwrap_or(NonZeroUsize::MIN),
+            streams: config.streams.unwrap_or(NonZeroUsize::MIN),
         })
     }
 
@@ -118,18 +152,22 @@ impl SourceConnector for Replay {
     }
 
     fn streams(&self) -> Streams<Self> {
-        Streams::new().with(Events)
+        (0..self.streams.get()).fold(Streams::new(), |streams, index| {
+            streams.with(Events { index })
+        })
     }
 }
 
-struct Events;
+/// The stream numbered `index` of a replay, named by [`stream_name`].
+struct Events {
+    index: usize,
+}
 
 impl ReadStream<Replay> for Events {
     type Cursor = usize;
 
     fn spec(&self) -> StreamSpec {
-        let name = StreamName::new("events").expect("a valid stream name");
-        StreamSpec::new(name).with_read_modes([ReadMode::Full])
+        StreamSpec::new(stream_name(self.index)).with_read_modes([ReadMode::Full])
     }
 
     async fn partitions(&self, source: &Replay, _state: &StreamState) -> Result<Vec<Partition>> {
@@ -156,7 +194,7 @@ impl ReadStream<Replay> for Events {
             _ if source.partitions == NonZeroUsize::MIN => 0,
             _ => return Err(ConnectorError::config("no such partition")),
         };
-        let share = source.share(index);
+        let share = source.share(self.index, index);
         for index in next.max(share.start)..share.end {
             match &source.replayed {
                 Replayed::Batches(batches) => out.batch(batches[index].clone()).await?,
@@ -185,6 +223,11 @@ impl Sinking {
     pub fn config(self) -> Value {
         json!({ "sinking": self })
     }
+
+    /// The configuration of a sink that does this through as many as `writers` writers at once.
+    pub fn writing(self, writers: NonZeroU16) -> Value {
+        json!({ "sinking": self, "writers": writers })
+    }
 }
 
 /// The factory of sinks, to serve.
@@ -195,30 +238,43 @@ pub fn sink_factory() -> Box<dyn DestinationFactory> {
 /// A destination encoding every batch it stages as Arrow IPC into a buffer it reuses, keeping
 /// nothing.
 pub async fn ipc_sink() -> Arc<dyn rdlt_connector::Destination> {
-    sink(Sinking::Ipc).await
+    connect_sink(Sinking::Ipc.config()).await
 }
 
 /// A destination counting the rows of every batch it stages and dropping it.
 pub async fn null_sink() -> Arc<dyn rdlt_connector::Destination> {
-    sink(Sinking::Discard).await
+    connect_sink(Sinking::Discard.config()).await
 }
 
-/// A sink doing `sinking` with each batch.
-pub(super) async fn sink(sinking: Sinking) -> Arc<dyn rdlt_connector::Destination> {
+/// A sink doing `sinking` with each batch, declaring it runs as many as `writers` writers at
+/// once.
+pub(super) async fn sink(
+    sinking: Sinking,
+    writers: NonZeroU16,
+) -> Arc<dyn rdlt_connector::Destination> {
+    connect_sink(sinking.writing(writers)).await
+}
+
+/// A sink connected with `config`.
+async fn connect_sink(config: Value) -> Arc<dyn rdlt_connector::Destination> {
     let destination = sink_factory()
-        .connect(sinking.config(), ConnectContext::new())
+        .connect(config, ConnectContext::new())
         .await
         .expect("the sink connects");
     Arc::from(destination)
 }
 
+/// What a [`Sink`] does with each batch, and the writers it declares it can run at once: one
+/// where it names none.
 #[derive(Debug, Deserialize, JsonSchema)]
 struct SinkConfig {
     sinking: Sinking,
+    writers: Option<NonZeroU16>,
 }
 
 struct Sink {
     sinking: Sinking,
+    writers: NonZeroU16,
 }
 
 impl DestinationConnector for Sink {
@@ -232,12 +288,14 @@ impl DestinationConnector for Sink {
         capabilities.types.extend([TypeKind::Uuid, TypeKind::Json]);
         // It keeps no row a merge could replace, so a merge stages as an append does.
         capabilities.write_modes.merge = true;
+        capabilities.max_parallel_writers = self.writers;
         capabilities
     }
 
     async fn connect(config: SinkConfig, _context: &ConnectContext) -> Result<Self> {
         Ok(Self {
             sinking: config.sinking,
+            writers: config.writers.unwrap_or(NonZeroU16::MIN),
         })
     }
 

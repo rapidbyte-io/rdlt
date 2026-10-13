@@ -68,7 +68,7 @@ impl Normalized {
     ) -> Result<Self, ComputePoolError> {
         let stream = stream().schema(SchemaSettings::new().nested(Nested::normalize()));
         Ok(Self {
-            runner: Runner::within(cores, "normalized", stream, None, memory)?,
+            runner: Runner::within(cores, "normalized", vec![stream], None, memory)?,
             pushes: Corpus::Orders.rows(roots, per_push),
             roots,
         })
