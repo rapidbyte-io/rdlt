@@ -67,8 +67,9 @@ when it is read and never written in a form its reader refuses.
   first message starts within the 64 bytes writers align to, behind zeros only.
   The schema and each block are then decoded by `rdlt-wire`'s `Decoder` under its limits, with
   its flatbuffers depth, so a schema nested to the limit reads back. A file is written only with
-  a schema those limits admit and in batches of about 8 MiB, each checked against the frame
-  limit. Compressed files, dictionary deltas and files from before Arrow 0.15 are refused.
+  a schema those limits admit and in batches of about 8 MiB, each checked by the same decoder
+  before it is written. Compressed files, dictionary deltas and files from before Arrow 0.15
+  are refused.
   The reference crate depends on `rdlt-wire` for the decoder, which `cargo xtask deps` allows.
 - **JSON lines are read a bounded line at a time.** The source pushes lines as they are written
   (`max_line_bytes`, 32 MiB, per line; `batch_rows` records and 64 MiB per push), so the engine's
@@ -119,17 +120,17 @@ when it is read and never written in a form its reader refuses.
   directory whose creation could not be made durable is taken as durable when the call is made
   again: after a sync has failed, nothing a caller does makes what came before it certain.
 - **Nothing is written that its reader refuses.** An Arrow file is written as batches of about
-  8 MiB and of at most the rows a reader takes in one, each checked against every limit the
-  reader holds a batch to: its frame, every value it holds, nested ones and the items its list
-  views name included, and the values of each dictionary, which a reader takes as a frame of its
-  own. A batch is first cut by its rows' average size, and each part is encoded and measured
-  before it is written, since padding, buffers' descriptions and the data buffers of views can
-  make what is written several times what is held; one whose encoding no frame holds, as when a
-  few rows are far larger than the rest, is halved by its rows until its parts fit, in as many
-  steps as its rows halve. Only what no halving changes
-  fails the write, and leaves no file: one row that alone is beyond a limit, or a dictionary
-  that is. JSON lines hold a dictionary's rows as the values they stand for, null where the key
-  is null or the value it stands for is.
+  8 MiB and of at most the rows a reader takes in one, each checked against every limit the reader
+  holds a batch to by the checks the wire's decoder makes before it decodes a frame, so writer and
+  reader cannot count apart: its frame, every value it holds, nested ones and the items its list
+  views name included, the bytes its views name, and each dictionary, which a reader takes as a
+  frame of its own. A batch is first cut by its rows' average size, and each part is encoded and
+  measured before it is written, since padding, buffers' descriptions and the data buffers of
+  views can make what is written several times what is held; one beyond a limit, as when a few
+  rows are far larger than the rest, is halved by its rows until its parts fit, in as many steps
+  as its rows halve. Only what no halving changes fails the write, and leaves no file: one row
+  that alone is beyond a limit, or a dictionary that is. JSON lines hold a dictionary's rows as
+  the values they stand for, null where the key is null or the value it stands for is.
 - **Lists stay short.** A table's catalog keeps 8 versions behind the latest, as manifests do. A
   manifest keeps the receipt of every commit the engine may still repeat: a commit repeated
   however far back is answered with its receipt. The engine declares with each commit the oldest

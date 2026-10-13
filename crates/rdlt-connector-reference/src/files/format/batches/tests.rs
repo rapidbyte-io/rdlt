@@ -4,8 +4,8 @@ use arrow_array::builder::StringViewBuilder;
 use arrow_array::types::Int32Type;
 use arrow_array::{
     Array, ArrayRef, DictionaryArray, FixedSizeListArray, Int8Array, Int32Array, LargeListArray,
-    LargeListViewArray, ListArray, ListViewArray, MapArray, NullArray, RecordBatch, StringArray,
-    StructArray,
+    LargeListViewArray, ListArray, ListViewArray, MapArray, NullArray, RecordBatch, RunArray,
+    StringArray, StructArray,
 };
 use arrow_buffer::{OffsetBuffer, ScalarBuffer};
 use arrow_ipc::writer::FileWriter;
@@ -457,4 +457,46 @@ fn a_batch_far_within_a_frame_in_memory_is_measured_as_it_is_written() {
     assert!(held < limits.frame_bytes / 2, "{held}");
     let error = fitted_under(&batch, &limits).expect_err("no frame holds a row of the column");
     assert_eq!(error.limit().map(|limit| limit.name), Some("frame bytes"));
+}
+
+/// `rows` rows of the same 200 bytes, which one data buffer holds once.
+fn repeated(rows: usize) -> ArrayRef {
+    let mut builder = StringViewBuilder::new().with_deduplicate_strings();
+    for _ in 0..rows {
+        builder.append_value("x".repeat(200));
+    }
+    let views = builder.finish();
+    assert_eq!(views.data_buffers().len(), 1);
+    Arc::new(views)
+}
+
+#[test]
+fn the_bytes_a_batch_s_views_name_are_bounded_by_a_frame_however_few_it_holds() {
+    // The views name 200 bytes each, eight times what the frame holds, from one buffer of 200.
+    let limits = Limits {
+        frame_bytes: 24 * 1024,
+        ..Limits::default()
+    };
+    let read = fitted_under(&single(repeated(1000)), &limits).expect("views within a frame");
+    assert!(read.len() >= 8, "{}", read.len());
+    // A dictionary's values are a frame of their own, which no halving of the rows changes.
+    let keys = Int32Array::from(vec![0]);
+    let keyed = DictionaryArray::<Int32Type>::try_new(keys, repeated(1000)).unwrap();
+    let error = fitted_under(&single(Arc::new(keyed)), &limits).expect_err("views beyond a frame");
+    assert_eq!(error.limit().map(|limit| limit.name), Some("view bytes"));
+}
+
+#[test]
+fn a_run_end_column_counts_only_the_runs_its_rows_span() {
+    // A hundred runs of one row each: ten rows are ten runs ends and ten values besides.
+    let ends = Int32Array::from_iter_values(1..=100);
+    let values = Int8Array::from_iter_values(0..100);
+    let runs = RunArray::<Int32Type>::try_new(&ends, &values).unwrap();
+    let batch = single(Arc::new(runs)).slice(10, 10);
+    let limits = Limits {
+        batch_values: 30,
+        ..Limits::default()
+    };
+    let read = fitted_under(&batch, &limits).expect("the rows' runs within a frame's values");
+    assert_eq!(read.len(), 1);
 }
