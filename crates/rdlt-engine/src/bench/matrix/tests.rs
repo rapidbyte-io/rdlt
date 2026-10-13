@@ -63,6 +63,14 @@ fn naming_full_in_any_argument_asks_for_the_full_matrix() {
         Cell::asked(&args(&["bench", "--list", "paired"])).0,
         "matrix"
     );
+    assert_eq!(
+        Cell::asked(&args(&[
+            "/fullstack/target/release/deps/passthrough",
+            "--bench"
+        ]))
+        .0,
+        "matrix"
+    );
 }
 
 #[test]
