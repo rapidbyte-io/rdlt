@@ -77,8 +77,8 @@ pub(super) fn fitted(
 ///
 /// # Errors
 ///
-/// A limit fewer rows would not pass: a dictionary's, which every batch of the file shares; or a
-/// union Arrow's writer would write from other rows than its own.
+/// A limit fewer rows would not pass: a dictionary's, or the dictionaries' together, which every
+/// batch of the file shares; or a union Arrow's writer would write from other rows than its own.
 fn unfit(batch: &RecordBatch, limits: &Limits) -> Result<Option<ConnectorError>> {
     placed(batch)?;
     let (generator, options) = (IpcDataGenerator::default(), IpcWriteOptions::default());
@@ -101,29 +101,27 @@ fn unfit(batch: &RecordBatch, limits: &Limits) -> Result<Option<ConnectorError>>
             &mut IpcWriteContext::default(),
         )
         .map_err(|error| ConnectorError::data(format!("encoding a batch: {error}")))?;
-    // A reader takes each dictionary as a frame of its own.
+    // A reader takes each dictionary as a frame of its own, and holds every one of the file.
+    let mut held: u64 = 0;
     for dictionary in dictionaries {
-        if let Some(limit) = beyond(&decoder, dictionary, limits)? {
-            return Err(limit);
-        }
+        held = held.saturating_add(measured(&decoder, dictionary, limits)??);
     }
-    beyond(&decoder, encoded, limits)
+    limits
+        .admit_dictionaries(held)
+        .map_err(ConnectorError::from)?;
+    Ok(measured(&decoder, encoded, limits)?.err())
 }
 
 /// Bytes: what a frame holds besides its message and its body, their prefix and padding.
 const FRAMING: u64 = 128;
 
-/// The limit a reader under `limits` refuses the frame `encoded` for: by its bytes in the file,
-/// or as `decoder` measures it.
+/// The bytes a reader under `limits` holds the frame `encoded` in, or the limit it refuses it for:
+/// by its bytes in the file, or as `decoder` measures it.
 ///
 /// # Errors
 ///
 /// A frame the decoder does not take as one, which Arrow's writer never writes.
-fn beyond(
-    decoder: &Decoder,
-    encoded: EncodedData,
-    limits: &Limits,
-) -> Result<Option<ConnectorError>> {
+fn measured(decoder: &Decoder, encoded: EncodedData, limits: &Limits) -> Result<Result<u64>> {
     let bytes = encoded
         .ipc_message
         .len()
@@ -132,7 +130,7 @@ fn beyond(
         .unwrap_or(u64::MAX)
         .saturating_add(FRAMING);
     if bytes > limits.frame_bytes {
-        return Ok(Some(exceeds(
+        return Ok(Err(exceeds(
             Limit::FrameBytes.name(),
             limits.frame_bytes,
             bytes,
@@ -143,8 +141,8 @@ fn beyond(
         body: Bytes::from(encoded.arrow_data),
     };
     match decoder.held(&frame) {
-        Ok(_) => Ok(None),
-        Err(WireError::Refused(refusal)) => Ok(Some(ConnectorError::from(refusal))),
+        Ok(held) => Ok(Ok(held)),
+        Err(WireError::Refused(refusal)) => Ok(Err(ConnectorError::from(refusal))),
         Err(error) => Err(refused(error)),
     }
 }

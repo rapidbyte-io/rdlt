@@ -612,3 +612,24 @@ fn a_union_a_list_holds_only_some_rows_of_is_refused_unwritten() {
         }
     }
 }
+
+#[test]
+fn the_dictionaries_of_a_file_are_bounded_together_as_a_reader_holds_them() {
+    let limits = Limits {
+        frame_bytes: 64 * 1024,
+        ..Limits::default()
+    };
+    let keyed = |bytes: usize| -> ArrayRef {
+        let values = StringArray::from(vec!["x".repeat(bytes)]);
+        let keys = Int32Array::from(vec![0]);
+        Arc::new(DictionaryArray::<Int32Type>::try_new(keys, Arc::new(values)).unwrap())
+    };
+    let pair = |bytes| RecordBatch::try_from_iter([("a", keyed(bytes)), ("b", keyed(bytes))]);
+    // Each within a frame, and together within what a reader holds of them, then beyond it.
+    fitted_under(&pair(20_000).unwrap(), &limits).expect("dictionaries a reader holds");
+    let error = fitted_under(&pair(40_000).unwrap(), &limits).expect_err("too much to hold");
+    assert_eq!(
+        error.limit().map(|limit| limit.name),
+        Some("dictionary bytes")
+    );
+}
