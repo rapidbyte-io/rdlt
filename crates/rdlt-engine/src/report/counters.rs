@@ -22,6 +22,9 @@ pub struct Counters {
     pub lanes: Vec<LaneCounters>,
     /// What the run asked of its write-ahead log store, and the bytes it wrote and read.
     pub log: LogCounters,
+    /// Values the run's budget sent to the tasks watching for pressure and for cursors' waits,
+    /// each waking every task waiting on its value.
+    pub signals: u64,
 }
 
 /// What a run asked of its write-ahead log store, and the bytes that moved.
