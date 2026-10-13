@@ -11,19 +11,43 @@ record keeps the method with the figures.
 
 ## Method
 
-- **Batches.** 64 batches of 80 000 rows, 6.9 MB of logical bytes each (the bytes
-  their rows reference, which the throughput counts): three 64-bit integers, two floats, two short
-  strings, a timestamp, a boolean and a 32-bit integer.
-- **Destination.** `ipc_sink` from the `bench` feature, which encodes each staged batch as an
-  Arrow IPC stream into a buffer it reuses: the least a real destination does with a batch.
-- **Bare loop.** The batches written to the sink's writer one after another, on one thread.
-- **Engine.** `Engine::run` with the `Replay` source pushing the same batches, a checkpoint after
-  each, one stream of one partition, a 1 GiB memory budget and one commit, at the end. The bench
-  splits the cores it is pinned to as a process that builds its own runtime does, through
-  `Cores::try_from_host`: half of them, and two at least, its tokio workers, and the rest compute
-  threads, one at least (`SystemEnv::try_new`).
-- **Pairs.** `passthrough/paired/<W>+<C>`, named by its tokio workers and compute threads, runs
-  blocks of bare loop, engine, engine, bare loop in each of its 30 samples, so each
+- **Matrix.** Every cell moves the same 5 120 000 rows of ten columns, about 442 MB of logical
+  bytes (the bytes their rows reference, which the throughput counts): three 64-bit integers, two
+  floats, two short strings, a timestamp, a boolean and a 32-bit integer. A cell takes one value
+  of each axis: batches of 1 000, 8 000 or 80 000 rows (5 120, 640 or 64 batches, 86 kB, 690 kB
+  or 6.9 MB each); 1, 4 or 16 partitions of each stream; 1 or 4 streams; and a commit at the end
+  or every sixteenth of the rows. Its id is
+  `passthrough/matrix/<rows>x<batches>/<P>p/<S>s/<end|16th>`, `/null` after it for the null
+  sink. By default the bench runs the chosen cells: the paired cell, each axis moved alone from
+  it, 8 000 and 1 000 rows at 16 partitions, 1 000 rows at 16 partitions committed every
+  sixteenth, and 1 000 and 8 000 rows into the null sink. With `full` as the filter
+  (`just bench passthrough 0-3 full`) it runs every cell, 36 into the IPC sink and the two null
+  ones, under `passthrough/full/`.
+- **Destination.** `Sinking::Ipc` from the `bench` feature, which encodes each staged batch as an
+  Arrow IPC stream into a buffer it reuses: the least a real destination does with a batch. The
+  engine's sink declares sixteen writers, so a run has a lane a core up to sixteen. The two
+  `/null` cells drop each batch instead.
+- **Bare loop.** The paired cell's batches written to the sink's writer one after another, on one
+  thread.
+- **Engine.** `Engine::run` with the `Replay` source pushing each partition of each stream an even
+  share of the batches in order, a checkpoint after each push, so each push is a flush of its
+  own. The budget is the engine's default, 256 MiB. A cell committed at the `end` sets no
+  threshold, so only the end of the read, or the budget, makes a commit due; one committed every
+  `16th` commits every 320 000 rows. The bench splits the cores it is pinned to as a process
+  that builds its own runtime does, through `Cores::try_from_host`: half of them, and two at
+  least, its tokio workers, and the rest compute threads, one at least (`SystemEnv::try_new`).
+- **Readings.** After each cell, one line from its last run's report: commits by what made each
+  due; the time pushes and requests for lowering waited for room, each summed over the run's
+  tasks, over the run's wall time; the compute pool's idle share, one less its jobs' running
+  time over its threads times the wall time; its jobs' waits to start and ways back to their
+  callers, summed, over the wall time; the lanes that wrote; and the budget's signals a batch.
+  The waits and the queue and way back are summed over every task or job, so where several wait
+  at once they read past 100 %: a reading of 900 % is nine tasks waiting the whole run, on
+  average.
+- **Pairs.** `passthrough/paired/<W>+<C>`, named by its tokio workers and compute threads, moves
+  the paired cell, 64 batches of 80 000 rows from one partition of one stream committed at the
+  end, within a 1 GiB budget and through a sink declaring one writer, as the bound is stated,
+  and runs blocks of bare loop, engine, engine, bare loop in each of its 30 samples, so each
   side runs first as often as last, and takes the ratio of the engine's time to the bare loop's
   in each sample. The overhead is the median of the ratios, less one, with a 95 % percentile
   bootstrap interval: a machine that slows down or speeds up during a run moves both sides of
@@ -33,10 +57,10 @@ record keeps the method with the figures.
   reallocations and bytes requested, a row and a batch. The timed bench keeps the system
   allocator.
 - **Build.** The release profile: fat LTO and one codegen unit.
-- **Running it.** `just bench passthrough <cores>`, which pins the cores with `taskset` and
-  records the commit, the load average, each core's governor and energy preference, the thread
-  counts, the allocations, and `perf stat`'s instructions a cycle and CPUs busy over both sides of
-  the pairs, ten seconds of them.
+- **Running it.** `just bench passthrough <cores> [paired|full]`, which pins the cores with
+  `taskset` and records the commit, the load average, each core's governor and energy
+  preference, the thread counts, the allocations, and for each id `perf stat`'s instructions a
+  cycle and CPUs busy, ten seconds of them. `paired` runs the pairs alone.
 - **Profiles.** `just profiling passthrough` builds the bench with line tables and frame pointers;
   [profiling.md](profiling.md) holds the recipes.
 

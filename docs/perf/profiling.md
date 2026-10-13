@@ -83,7 +83,7 @@ counts them per thread in `/proc/<pid>/task/*/sched`; read them as the process e
 
 ```sh
 bin=$(just profiling passthrough 2>&1 | sed -n 's/.*Executable .*(\(.*\))$/\1/p' | tail -1)
-taskset -c 0-3 "$bin" --bench '^passthrough/' --profile-time 10 > /dev/null &
+taskset -c 0-3 "$bin" --bench '^passthrough/paired/' --profile-time 10 > /dev/null &
 pid=$!
 while kill -0 "$pid" 2> /dev/null; do
     now=$(grep -H -E '^(nr_voluntary_switches|nr_involuntary_switches|se.nr_migrations) ' \
@@ -102,7 +102,7 @@ for a runtime worker, `rdlt-compute-<n>` for a compute thread).
 `strace -c` in criterion's test mode. For every call, or for a run of your own:
 
 ```sh
-strace -f -c -o syscalls.txt -- "$bin" --test '^passthrough/'
+strace -f -c -o syscalls.txt -- "$bin" --test '^passthrough/paired/'
 strace -f -c -o setup.txt -- "$bin" --test '^nothing$'
 ```
 

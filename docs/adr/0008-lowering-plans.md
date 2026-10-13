@@ -39,13 +39,16 @@ child tables and lineage ids. Building M3b surfaced decisions the spec leaves op
   `arrow-json`'s decoder, which also needs the schema up front. The spec allows the fast path only
   where it is faster, so the engine keeps one shredder; the `fast_path` bench group measures both,
   and [docs/perf/shred.md](../perf/shred.md) records the figures.
-- **Passthrough is measured against a bare loop, in pairs.** The `passthrough` bench replays 64
-  batches of about 7 MB into a destination that encodes each as Arrow IPC, through the engine
-  and through a bare loop writing the same batches to the same writer. Each sample runs blocks of
-  bare loop, engine, engine, bare loop and keeps the ratio of their times; the overhead is the
+- **Passthrough is measured as a matrix, its paired cell against a bare loop.** The `passthrough`
+  bench moves the same 5,120,000 rows of ten mixed columns through the engine into a destination
+  that encodes each batch as Arrow IPC: in batches of 1,000, 8,000 and 80,000 rows, from 1, 4 and
+  16 partitions of 1 and 4 streams, committing at the end or every sixteenth of the rows, within
+  the default budget. Its paired cell, 64 batches of 80,000 rows from one partition of one
+  stream within a 1 GiB budget through one writer, runs blocks of bare loop, engine, engine,
+  bare loop through the same writer and keeps the ratio of their times; the overhead is the
   median of the samples' ratios with a bootstrap interval, so a machine that drifts during a run
-  moves both sides of a ratio alike. [docs/perf/passthrough.md](../perf/passthrough.md) records
-  the method and the numbers.
+  moves both sides of a ratio alike.
+  [docs/perf/passthrough.md](../perf/passthrough.md) records the method and the numbers.
 
 ## Consequences
 
