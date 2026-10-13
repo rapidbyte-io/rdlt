@@ -7,16 +7,14 @@
 
 use std::fmt;
 
-use arrow_buffer::i256;
 use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 
 use super::ShredError;
 use super::build::Scalar;
 use super::meter::{KEY, Meter, OBJECT_SHAPE};
 use super::observe::{Observed, Shape};
-use super::visit::{Context, Skip, nest};
+use super::visit::{Context, Fields, Skip, digits, nest, scalar_of_digits, within_depth};
 use crate::limits::QUOTED_BYTES;
-use rdlt_wire::limits::NESTING_DEPTH;
 
 #[cfg(test)]
 mod tests;
@@ -27,56 +25,13 @@ pub(crate) struct Record<'a> {
     pub(crate) context: &'a Context,
 }
 
-impl<'de> DeserializeSeed<'de> for Record<'_> {
-    type Value = ();
-
-    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
-        deserializer.deserialize_any(self)
-    }
-}
-
-impl<'de> Visitor<'de> for Record<'_> {
-    type Value = ();
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a record")
+impl Fields for Record<'_> {
+    fn context(&self) -> &Context {
+        self.context
     }
 
-    fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<(), A::Error> {
+    fn fields<'de, A: MapAccess<'de>>(self, map: A) -> Result<(), A::Error> {
         object(self.shape, map, self.context, 1)
-    }
-
-    fn visit_unit<E: de::Error>(self) -> Result<(), E> {
-        Err(self.context.fail(ShredError::NotObject))
-    }
-
-    fn visit_bool<E: de::Error>(self, _: bool) -> Result<(), E> {
-        Err(self.context.fail(ShredError::NotObject))
-    }
-
-    fn visit_i64<E: de::Error>(self, _: i64) -> Result<(), E> {
-        Err(self.context.fail(ShredError::NotObject))
-    }
-
-    fn visit_u64<E: de::Error>(self, _: u64) -> Result<(), E> {
-        Err(self.context.fail(ShredError::NotObject))
-    }
-
-    fn visit_f64<E: de::Error>(self, _: f64) -> Result<(), E> {
-        Err(self.context.fail(ShredError::NotObject))
-    }
-
-    fn visit_str<E: de::Error>(self, _: &str) -> Result<(), E> {
-        Err(self.context.fail(ShredError::NotObject))
-    }
-
-    /// An integer beyond 38 digits, which the exact parse visits as its digits.
-    fn visit_bytes<E: de::Error>(self, _: &[u8]) -> Result<(), E> {
-        Err(self.context.fail(ShredError::NotObject))
-    }
-
-    fn visit_seq<A: SeqAccess<'de>>(self, _: A) -> Result<(), A::Error> {
-        Err(self.context.fail(ShredError::NotObject))
     }
 }
 
@@ -184,9 +139,7 @@ impl<'de> DeserializeSeed<'de> for Look<'_> {
     type Value = ();
 
     fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
-        if self.depth > NESTING_DEPTH {
-            return Err(self.context.fail(ShredError::TooDeep));
-        }
+        within_depth(self.depth, self.context)?;
         if *self.node == Observed::Json {
             return self.skip().deserialize(deserializer);
         }
@@ -231,16 +184,9 @@ impl<'de> Visitor<'de> for Look<'_> {
         Ok(())
     }
 
-    fn visit_bytes<E: de::Error>(self, digits: &[u8]) -> Result<(), E> {
-        let digits = std::str::from_utf8(digits).map_err(|error| {
-            self.context.fail(ShredError::Internal(format!(
-                "an integer's digits: {error}"
-            )))
-        })?;
-        let vast = (digits.trim_start_matches('-').len() <= 76)
-            .then(|| i256::from_string(digits))
-            .flatten();
-        self.scalar(vast.map_or(Scalar::Beyond, Scalar::Vast));
+    fn visit_bytes<E: de::Error>(self, bytes: &[u8]) -> Result<(), E> {
+        let digits = digits(bytes, self.context)?;
+        self.scalar(scalar_of_digits(digits));
         Ok(())
     }
 

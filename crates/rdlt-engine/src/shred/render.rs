@@ -18,9 +18,8 @@ use arrow_array::{Array, ArrayRef};
 use super::ShredError;
 use super::build::{Scalar, scalar_at};
 use super::keys::OpenKeys;
-use super::visit::{Context, nest};
+use super::visit::{Context, digits, nest, within_depth};
 use crate::limits::QUOTED_BYTES;
-use rdlt_wire::limits::NESTING_DEPTH;
 
 /// What a parse renders its values of JSON into, kept from value to value so that rendering one
 /// allocates only to grow: the value's text and the keys of the objects open in it.
@@ -141,9 +140,7 @@ impl<'de> DeserializeSeed<'de> for Render<'_> {
     type Value = ();
 
     fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
-        if self.depth > NESTING_DEPTH {
-            return Err(self.context.fail(ShredError::TooDeep));
-        }
+        within_depth(self.depth, self.context)?;
         deserializer.deserialize_any(self)
     }
 }
@@ -198,12 +195,8 @@ impl<'de> Visitor<'de> for Render<'_> {
     }
 
     /// An integer beyond 38 digits, as its digits: JSON text holds any integer as they are.
-    fn visit_bytes<E: serde::de::Error>(self, digits: &[u8]) -> Result<(), E> {
-        let digits = std::str::from_utf8(digits).map_err(|error| {
-            self.context.fail(ShredError::Internal(format!(
-                "an integer's digits: {error}"
-            )))
-        })?;
+    fn visit_bytes<E: serde::de::Error>(self, bytes: &[u8]) -> Result<(), E> {
+        let digits = digits(bytes, self.context)?;
         self.rendering.text.push_str(digits);
         Ok(())
     }

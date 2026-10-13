@@ -1,6 +1,7 @@
 //! The parse itself: serde seeds that walk a chunk's records as sonic-rs parses them, appending
 //! each value to its column.
 
+mod shared;
 mod skip;
 #[cfg(test)]
 mod tests;
@@ -8,8 +9,6 @@ mod tests;
 use std::cell::{Cell, RefCell, RefMut};
 use std::fmt;
 
-use arrow_buffer::i256;
-use rdlt_wire::limits::NESTING_DEPTH;
 use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 
 use super::ShredError;
@@ -17,6 +16,7 @@ use super::build::{Column, List, Record, Scalar};
 use super::meter::{Columns, KEY, Meter, Over};
 use super::observe::{Observed, Shape};
 use super::render::{Render, Rendering};
+pub(crate) use shared::{Fields, RecordSeed, digits, scalar_of_digits, within_depth};
 pub(crate) use skip::Skip;
 
 /// Stack a nesting level may use before [`nest`] grows the stack, 128 KiB: more than any one level
@@ -65,9 +65,6 @@ const ROUNDED_FROM: f64 = 9_223_372_036_854_775_808.0;
 
 /// The integers a 38-digit decimal holds are below this in magnitude.
 pub(crate) const DECIMAL_LIMIT: u128 = 100_000_000_000_000_000_000_000_000_000_000_000_000;
-
-/// The most digits of an integer a decimal holds.
-const VAST_DIGITS: usize = 76;
 
 impl Context {
     /// A parse whose builders take what `meter` lets them, of records holding `columns`.
@@ -245,62 +242,19 @@ impl Visitor<'_> for Field<'_> {
     }
 }
 
-/// One record, which is an object.
+/// One record, which is an object, appended as a row of `record`.
 pub(crate) struct Row<'a> {
     pub(crate) record: &'a mut Record,
     pub(crate) context: &'a Context,
 }
 
-impl<'de> DeserializeSeed<'de> for Row<'_> {
-    type Value = ();
-
-    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
-        deserializer.deserialize_any(self)
-    }
-}
-
-impl<'de> Visitor<'de> for Row<'_> {
-    type Value = ();
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a record")
+impl Fields for Row<'_> {
+    fn context(&self) -> &Context {
+        self.context
     }
 
-    fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<(), A::Error> {
+    fn fields<'de, A: MapAccess<'de>>(self, map: A) -> Result<(), A::Error> {
         object(self.record, map, self.context, 1)
-    }
-
-    fn visit_unit<E: de::Error>(self) -> Result<(), E> {
-        Err(self.context.fail(ShredError::NotObject))
-    }
-
-    fn visit_bool<E: de::Error>(self, _: bool) -> Result<(), E> {
-        Err(self.context.fail(ShredError::NotObject))
-    }
-
-    fn visit_i64<E: de::Error>(self, _: i64) -> Result<(), E> {
-        Err(self.context.fail(ShredError::NotObject))
-    }
-
-    fn visit_u64<E: de::Error>(self, _: u64) -> Result<(), E> {
-        Err(self.context.fail(ShredError::NotObject))
-    }
-
-    fn visit_f64<E: de::Error>(self, _: f64) -> Result<(), E> {
-        Err(self.context.fail(ShredError::NotObject))
-    }
-
-    fn visit_str<E: de::Error>(self, _: &str) -> Result<(), E> {
-        Err(self.context.fail(ShredError::NotObject))
-    }
-
-    /// An integer beyond 38 digits, which the exact parse visits as its digits.
-    fn visit_bytes<E: de::Error>(self, _: &[u8]) -> Result<(), E> {
-        Err(self.context.fail(ShredError::NotObject))
-    }
-
-    fn visit_seq<A: SeqAccess<'de>>(self, _: A) -> Result<(), A::Error> {
-        Err(self.context.fail(ShredError::NotObject))
     }
 }
 
@@ -405,9 +359,7 @@ impl<'de> DeserializeSeed<'de> for Value<'_> {
     type Value = ();
 
     fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
-        if self.depth > NESTING_DEPTH {
-            return Err(self.context.fail(ShredError::TooDeep));
-        }
+        within_depth(self.depth, self.context)?;
         if let Column::Json(..) = self.column {
             let mut rendering = self.context.rendering();
             let render = Render {
@@ -470,16 +422,9 @@ impl<'de> Visitor<'de> for Value<'_> {
 
     /// An integer beyond 38 digits, as its digits: the exact parse visits such integers so, since
     /// no other visit holds them and no JSON value visits bytes otherwise.
-    fn visit_bytes<E: de::Error>(self, digits: &[u8]) -> Result<(), E> {
-        let digits = std::str::from_utf8(digits).map_err(|error| {
-            self.context.fail(ShredError::Internal(format!(
-                "an integer's digits: {error}"
-            )))
-        })?;
-        let vast = (digits.trim_start_matches('-').len() <= VAST_DIGITS)
-            .then(|| i256::from_string(digits))
-            .flatten();
-        self.scalar(vast.map_or(Scalar::Beyond, Scalar::Vast))
+    fn visit_bytes<E: de::Error>(self, bytes: &[u8]) -> Result<(), E> {
+        let digits = digits(bytes, self.context)?;
+        self.scalar(scalar_of_digits(digits))
     }
 
     fn visit_str<E: de::Error>(self, value: &str) -> Result<(), E> {
