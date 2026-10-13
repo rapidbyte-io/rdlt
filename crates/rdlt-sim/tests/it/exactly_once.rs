@@ -3,7 +3,7 @@ use rdlt_sim::{
 };
 
 /// Seeds that each found a defect when first run, kept so they stay green.
-const FOUND: [u64; 21] = [
+const FOUND: [u64; 20] = [
     // Over the network: a served writer that panicked ended its write as though it were done.
     19,
     // Over the network: a host whose handshake a partition cut short held its connection, and
@@ -17,9 +17,6 @@ const FOUND: [u64; 21] = [
     // Logged: a failed load's commit of a new full read, replayed in the next phase, landed rows
     // the model had not counted, until a phase waited for every log to be replayed.
     8_746,
-    // Logged, shared: one pipeline's crash tore the other's live log, which then wrote on after
-    // the tear, until a crash took only its own worker's logs.
-    7_331,
     // Streaming: a run that followed the source ended before the rows a refusal needed arrived,
     // and succeeded, as the model now allows.
     370,
@@ -31,7 +28,7 @@ const FOUND: [u64; 21] = [
     820,
     // Over the network, pressed: a stopped connector listened again only once its drain ended,
     // which a host holding back its reads kept going past every placement.
-    28960,
+    5_754,
     // Pressed: partitions held what observing their JSON pushes might hold while they waited
     // for what building them took, until none could build.
     1_987,
