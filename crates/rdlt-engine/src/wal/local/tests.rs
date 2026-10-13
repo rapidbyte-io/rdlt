@@ -964,3 +964,114 @@ async fn a_log_s_directory_the_user_cannot_open_fails_as_it_is() {
         "{failed}"
     );
 }
+
+#[test]
+fn a_staging_token_holds_the_process_s_id_above_its_count() {
+    let count = std::sync::atomic::AtomicU32::new(7);
+    let id = u64::from(std::process::id());
+    // Another process's tokens differ in their id, and this process's in their count.
+    assert_eq!(names::token(&count), (id << 32) + 7);
+    assert_eq!(names::token(&count), (id << 32) + 8);
+}
+
+#[test]
+fn a_directory_s_names_are_its_entries_in_order_without_itself_or_its_parent() {
+    let base = tempfile::tempdir().expect("a temporary directory");
+    let dir = super::dir::Dir::base(&base.path().join("wal")).expect("creates");
+    dir.dir_new("b").expect("creates");
+    drop(dir.create("a").expect("creates"));
+    assert_eq!(dir.names().expect("lists"), ["a", "b"]);
+}
+
+#[test]
+fn a_file_is_created_only_under_a_free_name_and_never_through_a_link() {
+    let base = tempfile::tempdir().expect("a temporary directory");
+    let wal = base.path().join("wal");
+    let dir = super::dir::Dir::base(&wal).expect("creates");
+    drop(dir.create("a").expect("creates"));
+    let taken = dir.create("a").expect_err("its name is taken");
+    assert_eq!(taken.kind(), std::io::ErrorKind::AlreadyExists, "{taken}");
+    // A link to where nothing is yet takes its name all the same, and nothing is made there.
+    let elsewhere = base.path().join("elsewhere");
+    std::os::unix::fs::symlink(&elsewhere, wal.join("b")).expect("links");
+    let linked = dir.create("b").expect_err("a link takes the name");
+    assert_eq!(linked.kind(), std::io::ErrorKind::AlreadyExists, "{linked}");
+    assert!(!elsewhere.exists());
+}
+
+#[tokio::test]
+async fn a_proposal_another_linked_in_first_reads_its_identity_and_any_other_failure_fails() {
+    let base = tempfile::tempdir().expect("a temporary directory");
+    let first = chunk(1, 0).load;
+    LocalWal::new(base.path())
+        .identity(first)
+        .await
+        .expect("named");
+    let dir = super::dir::Dir::base(base.path()).expect("opens");
+    let taken = std::io::Error::from(std::io::ErrorKind::AlreadyExists);
+    assert_eq!(
+        super::identity::unwritten(&dir, taken).expect("read"),
+        first
+    );
+    let full = std::io::Error::from(std::io::ErrorKind::StorageFull);
+    let failed = super::identity::unwritten(&dir, full).expect_err("fails");
+    assert_eq!(failed.kind(), std::io::ErrorKind::StorageFull, "{failed}");
+}
+
+#[tokio::test]
+async fn a_store_s_identity_the_user_cannot_read_fails_as_it_is() {
+    if rustix::process::geteuid().is_root() {
+        return;
+    }
+    let base = tempfile::tempdir().expect("a temporary directory");
+    LocalWal::new(base.path())
+        .identity(chunk(1, 0).load)
+        .await
+        .expect("named");
+    let store = base.path().join("store");
+    set_mode(&store, 0o000);
+    let failed = LocalWal::new(base.path())
+        .identity(chunk(2, 0).load)
+        .await
+        .expect_err("it cannot be read");
+    set_mode(&store, 0o600);
+    // Not a link, nor anything else the open reads as one: the kernel's answer, as it is.
+    assert!(refusal(&failed).is_none(), "{failed}");
+    assert_eq!(
+        failed.kind(),
+        std::io::ErrorKind::PermissionDenied,
+        "{failed}"
+    );
+}
+
+#[tokio::test]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "a pipe's open is bounded on the real clock, which no Env drives here"
+)]
+async fn a_pipe_where_the_store_s_identity_belongs_is_refused_at_once() {
+    let base = tempfile::tempdir().expect("a temporary directory");
+    let store = base.path().join("store");
+    let made = std::process::Command::new("mkfifo").arg(&store).status();
+    assert!(made.expect("mkfifo runs").success());
+    set_mode(&store, 0o600);
+    let wal = LocalWal::new(base.path());
+    let read = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        wal.identity(chunk(1, 0).load),
+    )
+    .await;
+    if read.is_err() {
+        // An open that waits for a writer is given one, so the test ends.
+        drop(std::fs::OpenOptions::new().write(true).open(&store));
+    }
+    let refused = read.expect("refused at once").expect_err("refused");
+    let not_regular = matches!(
+        refusal(&refused),
+        Some(Refusal::NotPrivate {
+            why: "it is not a regular file",
+            ..
+        })
+    );
+    assert!(not_regular, "{refused}");
+}

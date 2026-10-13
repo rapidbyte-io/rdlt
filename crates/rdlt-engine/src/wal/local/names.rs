@@ -1,6 +1,7 @@
 //! The names a local log's directories and files take, and the only names its listings accept.
 
 use std::ffi::OsStr;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use rdlt_connector::{LoadId, PipelineId};
 
@@ -46,6 +47,12 @@ pub(super) fn load(load: LoadId) -> String {
     load.to_string()
 }
 
+/// A token no other file this process or another stages beside it takes: the process's id, and
+/// the next of what `count` counts.
+pub(super) fn token(count: &AtomicU32) -> u64 {
+    u64::from(std::process::id()) << 32 | u64::from(count.fetch_add(1, Ordering::Relaxed))
+}
+
 /// The name of a file staging chunk `number`, `token` telling apart two that stage one number.
 pub(super) fn part(number: u64, token: u64) -> String {
     format!("{number:08}.{token:016x}.part")
@@ -86,10 +93,6 @@ pub(super) fn parse_load(name: &OsStr) -> Option<LoadId> {
 pub(super) fn is_part(name: &OsStr) -> bool {
     let parsed = name.to_str().and_then(|name| {
         let (number, token) = name.strip_suffix(".part")?.split_once('.')?;
-        let digits = |text: &str, radix| text.bytes().all(|byte| char::from(byte).is_digit(radix));
-        if !digits(number, 10) || !digits(token, 16) {
-            return None;
-        }
         let parsed = part(number.parse().ok()?, u64::from_str_radix(token, 16).ok()?);
         Some(parsed == name)
     });

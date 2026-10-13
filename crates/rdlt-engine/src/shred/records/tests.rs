@@ -242,4 +242,18 @@ fn a_span_that_breaks_when_it_is_found_again_is_an_error_not_an_end() {
         matches!(found.as_slice(), [Ok(b"{}"), Err(ShredError::Internal(_))]),
         "{found:?}"
     );
+    // It ends at a comma: the element after it is empty, which no span holds.
+    let chunk = Chunk {
+        parts: vec![Part {
+            push: Bytes::from_static(b"[{},{}]"),
+            form: Form::Elements,
+            span: 1..4,
+            elements: 2,
+        }],
+    };
+    let found: Vec<_> = chunk.records().take(3).collect();
+    assert!(
+        matches!(found.as_slice(), [Ok(b"{}"), Err(ShredError::Internal(_))]),
+        "{found:?}"
+    );
 }
