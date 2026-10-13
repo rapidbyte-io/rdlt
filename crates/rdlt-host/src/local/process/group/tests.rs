@@ -218,3 +218,44 @@ fn a_connector_stopped_by_the_end_of_its_input_is_sent_no_signal_until_it_is_kil
     );
     owned.discarded();
 }
+
+#[test]
+fn a_group_stopped_again_keeps_the_grace_its_first_stop_began() {
+    let (child, member) = leading("exec sleep 1000");
+    let owned = owned(child, Duration::from_secs(1000));
+    let held = owned.held();
+    held.stop();
+    let killing = held.state().killing;
+    assert!(killing.is_some());
+    std::thread::sleep(Duration::from_millis(20));
+    // Its leader, ended and unreaped, is still this process's child: only the sending is done.
+    held.stop();
+    assert_eq!(held.state().killing, killing);
+    kill(member, Signal::SIGKILL).ok();
+    owned.discarded();
+}
+
+#[test]
+fn a_group_is_seen_empty_once_its_last_member_ends_and_not_while_one_lives_on() {
+    let reaped = || {
+        let (mut child, member) = leading("exit 0");
+        child.wait().expect("it is reaped");
+        (rustix::process::Pid::from_child(&child), member)
+    };
+    // A member that ends while the group is asked about.
+    let (group, member) = reaped();
+    let ending = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(200));
+        kill(member, Signal::SIGKILL)
+    });
+    assert!(super::emptied(group));
+    ending
+        .join()
+        .expect("it ends")
+        .expect("the member is killed");
+    // A member that outlives the asking.
+    let (group, member) = reaped();
+    let emptied = super::emptied(group);
+    kill(member, Signal::SIGKILL).expect("the member is killed");
+    assert!(!emptied);
+}

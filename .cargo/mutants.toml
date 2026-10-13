@@ -10,26 +10,29 @@ exclude_globs = [
   "crates/rdlt-connector/src/serve/probes/tests.rs",
 ]
 all_features = true
-# Whether the kernel marks a range of descriptors at once is true on every kernel of 5.11 or
-# later, where the nightly and every machine the project is built on run: a mutant that answers
-# true there is the code as it is.
+# Whether the kernel marks a range of descriptors at once is true on every kernel of 5.11 or later,
+# where the nightly and every machine the project is built on run: a mutant that answers true there
+# is the code as it is. Mutation runs build on Linux alone, so a mutant of code built only elsewhere
+# is the code as it is in every one of them: how a connector's binary is executed, and whether a
+# group has a living member, on other platforms.
 #
 # A mutant that returns what the function already returns is the code as it is: an admission's
 # limits are the wire's defaults, a dialect reserves no table name, a sandbox names no program
 # that confines a connector, and a secret resolver reads from no directory, unless they say
 # otherwise; one that names an empty path for a sandbox is the code as it is too, as the guard on
 # roots passes over a path that is not absolute.
-# So is one that joins open flags, each a bit of its own (read-only is none, on Linux and macOS
-# alike), with `^` for `|`; and one that takes every widen a destination refuses for a column not
-# yet kept from widening: the resolver widens no column kept from it on any path, so a refusal never
-# names one, and the guard only bounds the loop were that to change. So is one that opens a database
-# to write with neither the flag that creates it nor the one that spares SQLite's own lock, by `&`
-# for the second `|`: the database was created, private, before SQLite opens it, in a directory no
-# one else writes, and a connection is used by one thread at a time, so that lock never holds
-# anything up. A JSON lines reader's `Debug` names the type and nothing else, since its decoder has
-# none, and so does that of the function a host is told each spawned connector's process id through;
-# a file writer's names its path only for a failing test's message: what they write is no behaviour
-# a test can hold.
+# So is one that joins open flags, or the options of a wait for a child, each a bit of its own
+# (read-only is none, on Linux and macOS alike), with `^` for `|`; and one that takes every widen a
+# destination refuses for a column not yet kept from widening: the resolver widens no column kept
+# from it on any path, so a refusal never names one, and the guard only bounds the loop were that to
+# change. So is one that opens a database to write with neither the flag that creates it nor the one
+# that spares SQLite's own lock, by `&` for the second `|`: the database was created, private,
+# before SQLite opens it, in a directory no one else writes, and a connection is used by one thread
+# at a time, so that lock never holds anything up. A JSON lines reader's `Debug` names the type and
+# nothing else, since its decoder has none, and so does that of the function a host is told each
+# spawned connector's process id through; a file writer's names its path only for a failing test's
+# message, and a resolver of the environment's secrets its scope only for a person to read: what
+# they write is no behaviour a test can hold.
 # The engine's inline test env has one core, which a mutant answering one also has. A mutant that
 # judges a plain column of 64-bit integers through the rows it names reads what the plain arm reads,
 # which spares only the mapping; and one that has a normalized flush's walk read every column for
@@ -82,9 +85,15 @@ exclude_re = [
   "crates/rdlt-engine/src/table/registry\\.rs:.*replace match guard !resolver\\.unwidened\\.contains\\(&column\\) with true in Tables::fit$",
   "crates/rdlt-engine/src/wal/local/dir\\.rs:.*replace \\| with \\^ in Dir::(dir|create|open)$",
   "crates/rdlt-engine/src/wal/local/names\\.rs:.*replace \\| with \\^ in (base32|token)$",
+  "crates/rdlt-host/src/local/grants/opened\\.rs:.*replace \\| with \\^ in (up|holding)$",
+  "crates/rdlt-host/src/local/process/command\\.rs:256:5: replace trusted -> std::io::Result<\\(Command, Vec<OwnedFd>\\)> with ",
+  "crates/rdlt-host/src/local/process/group/members\\.rs:22:5: replace unended -> Option<bool> with Some\\((true|false)\\)$",
+  "crates/rdlt-host/src/local/process/group\\.rs:.*replace \\| with \\^ in asked$",
   "crates/rdlt-host/src/local/process\\.rs:.*replace <impl fmt::Debug for Told>::fmt -> fmt::Result with Ok\\(Default::default\\(\\)\\)",
   "crates/rdlt-host/src/local/sandbox\\.rs:.*replace Sandbox::programs -> Vec<PathBuf> with vec!\\[(Default::default\\(\\))?\\]",
   "crates/rdlt-host/src/secrets/redact\\.rs:.*replace > with >= in starts$",
+  "crates/rdlt-host/src/secrets/resolve/env\\.rs:.*replace <impl fmt::Debug for EnvSecrets>::fmt -> fmt::Result with Ok\\(Default::default\\(\\)\\)",
+  "crates/rdlt-host/src/secrets/resolve/file\\.rs:.*replace \\| with \\^ in read_private$",
   "crates/rdlt-host/src/secrets/resolve\\.rs:.*replace SecretResolver::directories -> Vec<PathBuf> with vec!\\[\\]$",
 ]
 # A mutant that hangs a test is caught when nextest terminates the test, which it does well within

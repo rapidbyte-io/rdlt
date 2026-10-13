@@ -4,7 +4,7 @@ use std::time::Duration;
 use tokio::io::AsyncWriteExt as _;
 use tokio::sync::watch;
 
-use super::{Draining, Said, Tail, drain, ending};
+use super::{Allowance, Draining, Said, Tail, drain, ending};
 use crate::limits::{
     LAST_WORDS_BYTES, OUTPUT_BYTES_BURST, OUTPUT_BYTES_PER_SECOND, OUTPUT_LINE_BYTES,
     OUTPUT_LINES_BURST, OUTPUT_LINES_PER_SECOND, TAIL_BYTES,
@@ -317,4 +317,36 @@ fn a_connectors_line_reaches_the_log_as_a_field_of_an_event_the_host_words() {
         assert_eq!(event.fields["pid"], "4242");
     }
     assert_eq!(events[2].fields["lines"], "7");
+}
+
+#[test]
+fn only_a_tail_that_lost_its_beginning_is_scrubbed_of_a_secret_s_end_at_its_start() {
+    let redactions = Redactions::new();
+    redactions.add("hunter2");
+    // All a connector wrote: a start like the end of a secret is its own.
+    let whole = Tail::default();
+    whole.push(b"ter2 starts it");
+    assert_eq!(whole.words(&redactions), "ter2 starts it");
+    // A full tail may start within a secret; a long one scrubbed leaves its start in the words.
+    let long = "y".repeat(TAIL_BYTES - 5);
+    redactions.add(&long);
+    let full = Tail::default();
+    full.push(b"hunter2 ");
+    full.push(long.as_bytes());
+    assert_eq!(full.words(&redactions), "*** ***");
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_allowance_waits_as_long_as_its_rate_takes_to_earn_what_it_owes() {
+    let owing = |rate: u64, spent: u64| {
+        let mut allowance = Allowance::new(0, rate);
+        allowance.spend(spent);
+        allowance.owed()
+    };
+    assert_eq!(owing(4, 0), Duration::from_millis(250));
+    assert_eq!(owing(1024, 1023), Duration::from_secs(1));
+    let rate = OUTPUT_BYTES_PER_SECOND;
+    assert_eq!(owing(rate, 2 * rate - 1), Duration::from_secs(2));
+    // No rate earns one a second.
+    assert_eq!(owing(0, 0), Duration::from_secs(1));
 }

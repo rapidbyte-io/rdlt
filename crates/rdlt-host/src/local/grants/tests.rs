@@ -435,3 +435,42 @@ fn a_chain_knows_what_lies_within_what() {
     assert_eq!(inner.parent(), Some(a));
     assert_eq!(chain(Path::new("/")).parent(), None::<Chain>);
 }
+
+#[test]
+fn the_nearest_of_a_path_is_the_directory_above_it_that_is_there_and_never_a_file() {
+    let root = tempfile::tempdir().expect("a temporary directory");
+    let (opened, there) = Opened::nearest(&root.path().join("absent/deeper")).expect("its nearest");
+    assert!(!there);
+    assert_eq!(opened.chain, Opened::at(root.path()).expect("there").chain);
+    // A path beneath a file cannot come to be: it fails as it is, and no file stands for it.
+    let plain = file(&root.path().join("plain"));
+    let failed = Opened::nearest(&plain.join("inside")).expect_err("a file holds nothing");
+    assert_eq!(failed.kind(), std::io::ErrorKind::NotADirectory, "{failed}");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn knowing_a_path_reads_nothing_of_it_nor_of_the_directories_above_it() {
+    use std::os::unix::fs::PermissionsExt as _;
+    if rustix::process::geteuid().is_root() {
+        return;
+    }
+    let root = tempfile::tempdir().expect("a temporary directory");
+    let shut = dir(root.path(), "shut");
+    let (inner, unread) = (dir(&shut, "inner"), file(&shut.join("unread")));
+    let set_mode = |path: &Path, mode: u32| {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).expect("chmods");
+    };
+    // A file no one may read, in a directory no one may list.
+    set_mode(&unread, 0o000);
+    set_mode(&shut, 0o100);
+    let known = [&inner, &unread].map(|path| Opened::at(path).map(|opened| opened.chain));
+    set_mode(&shut, 0o700);
+    set_mode(&unread, 0o600);
+    let [inner, unread] = known.map(|chain| chain.expect("known"));
+    let shut = Opened::at(&shut).expect("there").chain;
+    assert_eq!(
+        (inner.parent(), unread.parent()),
+        (Some(shut.clone()), Some(shut))
+    );
+}

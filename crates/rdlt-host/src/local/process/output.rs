@@ -227,10 +227,14 @@ impl Allowance {
             if self.left >= 1 {
                 return;
             }
-            let owed = u128::try_from(1 - self.left).unwrap_or(u128::MAX);
-            let nanos = owed.saturating_mul(1_000_000_000) / u128::from(self.rate.max(1));
-            let wait = Duration::from_nanos(u64::try_from(nanos).unwrap_or(u64::MAX));
-            tokio::time::sleep(wait.max(Duration::from_millis(1))).await;
+            tokio::time::sleep(self.owed().max(Duration::from_millis(1))).await;
         }
+    }
+
+    /// How long the rate takes to earn what was spent beyond what is left, and one more.
+    fn owed(&self) -> Duration {
+        let owed = u128::try_from(1 - self.left).unwrap_or(u128::MAX);
+        let nanos = owed.saturating_mul(1_000_000_000) / u128::from(self.rate.max(1));
+        Duration::from_nanos(u64::try_from(nanos).unwrap_or(u64::MAX))
     }
 }
