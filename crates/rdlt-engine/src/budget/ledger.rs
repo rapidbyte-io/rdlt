@@ -187,6 +187,8 @@ pub(super) struct Ledger {
     pub(super) cursor_waits: watch::Sender<bool>,
     /// The requests that waited, and for how long, by share.
     pub(super) waited: Waits,
+    /// Values sent to the tasks watching for pressure and for cursors' waits, both counted.
+    pub(super) signals: u64,
 }
 
 /// The classes that wait, in the order their waiters are admitted: cursors, the log's frames,
@@ -220,6 +222,7 @@ impl Ledger {
             pressed: watch::Sender::new(false),
             cursor_waits: watch::Sender::new(false),
             waited: Waits::default(),
+            signals: 0,
         }
     }
 
@@ -374,15 +377,16 @@ impl Ledger {
     /// queued pieces waits for their writes: whoever holds bytes a write releases should write.
     ///
     /// A cursor that waits is signalled apart: only a commit releases what it waits for.
-    pub(super) fn press(&self) {
+    pub(super) fn press(&mut self) {
         let waits = |class: Class| {
             let place = WAITING.iter().position(|waiting| *waiting == class);
             place.is_some_and(|place| !self.waiting[place].is_empty())
         };
         let pressed = self.pressing > 0 || waits(Class::Work) || waits(Class::Intake);
+        let cursor_waits = waits(Class::Cursor) || waits(Class::Tables);
         self.pressed.send_replace(pressed);
-        self.cursor_waits
-            .send_replace(waits(Class::Cursor) || waits(Class::Tables));
+        self.cursor_waits.send_replace(cursor_waits);
+        self.signals = self.signals.saturating_add(2);
     }
 
     /// The next waiting request that is admitted, and its class: the first of each share in

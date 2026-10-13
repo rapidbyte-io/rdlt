@@ -718,3 +718,16 @@ async fn a_read_waiting_for_a_slot_records_the_time_it_waited() {
     };
     assert_eq!(budget.waited().reads, reads);
 }
+
+#[tokio::test(start_paused = true)]
+async fn every_release_and_every_press_sends_both_signals() {
+    let budget = budget(BUDGET);
+    let mut held = budget.acquire(1_000).await.unwrap();
+    assert_eq!(budget.signals(), 0, "a request that fits sends nothing");
+    held.shrink(500);
+    assert_eq!(budget.signals(), 2);
+    drop(held);
+    assert_eq!(budget.signals(), 4);
+    drop(budget.pressing());
+    assert_eq!(budget.signals(), 8, "pressing and its end each send both");
+}
