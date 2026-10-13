@@ -111,7 +111,7 @@ invocation started at a one-minute load average of at most 1.0 with its cores id
 and each round of every engine figure lies within 3 % of the median. A third round ran later under
 other load on the machine and is left out (the owner's ruling of 2026-10-10).
 
-The One core, Cliffs, Columns of JSON and Normalizing tables come from this change on `3c0260b2`,
+The One core, Columns of JSON and Normalizing tables come from the change on `3c0260b2`,
 2026-10-12, on core 0: four rounds of `shred/nested`, `shred/wide_200`, `shred/string_heavy` and
 `normalize/keyless`, and two of every other benchmark, the first two of the four. The rounds started
 at one-minute load averages of 2.81, 2.52, 2.92 and 6.21. Each figure is the median of every run of
@@ -158,17 +158,58 @@ The bound of 0.7·N at N = 4 is 2.8×, which this change does not reach.
 ### Cliffs
 
 Where the shredder parses a chunk again, observes it, or reads its numbers exactly, on one core
-(`0`), `shred_cliffs` with this change on `3c0260b2`, 2026-10-12, rounds as above. The pass counts
-are the same in every round, over 32 MiB in 1 MiB chunks.
+(`0`), `shred_cliffs` with this change on `0ab7edde`, 2026-10-13: two rounds interleaved with
+`0ab7edde` in alternating orders, started at one-minute load averages of 1.28 and 0.43 (`0ab7edde`'s
+1.04 and 0.92), with `int_arrays` in two more pairs. Each figure is the median of the rounds, the
+range in brackets; instructions a cycle come from one `just bench shred 0 shred_cliffs` after them.
+The pass counts are the same in every round, over 32 MiB in 1 MiB chunks.
 
-| Corpus | Throughput | Instructions a cycle | Parsed | Tripped | Observed | Rebuilt | Exact |
-|---|---|---|---|---|---|---|---|
-| `array_form` | 358 MiB/s [356–359] | 5.91 | 32 | 0 | 0 | 0 | 0 |
-| `drift_json` | 167 MiB/s [166–167] | 5.21 | 32 | 0 | 0 | 32 | 32 |
-| `drift_scalar` | 285 MiB/s [285–285] | 6.14 | 32 | 0 | 0 | 32 | 0 |
-| `int_arrays` | 63 MiB/s [62–64] | 5.92 | 32 | 32 | 32 | 32 | 0 |
-| `big_numbers` | 184 MiB/s [184–184] | 4.66 | 64 | 0 | 0 | 0 | 32 |
-| `pretty` | 359 MiB/s [358–360] | 5.47 | 32 | 0 | 0 | 0 | 0 |
+| Corpus | Throughput | `0ab7edde` | Instructions a cycle | Parsed | Tripped | Observed | Rebuilt | Exact |
+|---|---|---|---|---|---|---|---|---|
+| `array_form` | 397 MiB/s [391–404] | 390 MiB/s | 5.87 | 32 | 0 | 0 | 0 | 0 |
+| `drift_json` | 214 MiB/s [211–217] | 178 MiB/s | 5.70 | 32 | 0 | 0 | 32 | 32 |
+| `drift_scalar` | 590 MiB/s [586–593] | 300 MiB/s | 6.02 | 32 | 0 | 0 | 0 | 0 |
+| `int_arrays` | 70 MiB/s [67–73] | 71 MiB/s | 5.94 | 32 | 32 | 32 | 32 | 0 |
+| `big_numbers` | 240 MiB/s [240–241] | 200 MiB/s | 5.05 | 64 | 0 | 0 | 0 | 32 |
+| `pretty` | 392 MiB/s [392–392] | 388 MiB/s | 5.48 | 32 | 0 | 0 | 0 | 0 |
+
+`shred/nested` ran in the same rounds at 639 MiB/s [622–656], `0ab7edde` 620 MiB/s. `int_arrays`
+moved within its rounds' spread (67–73 MiB/s on both sides), and its instructions under `perf
+stat` differ by 0.02 %.
+
+What each row of this change does, and the rule it was held to:
+
+- **The exact parse walks its containers in place.** It walked each object and array through a
+  vector of its entries and copied each number's text into a `String`; it now walks sonic-rs's
+  iterators and borrows the text. Callgrind (`just instructions`): `shred/drift_json` 8.8 % fewer
+  instructions and 57 % fewer allocations, `shred/big_numbers` 10.2 % and 54 %, no case more.
+  Wall time in three rounds of this row alone: `drift_json` 1.19× (178 to 212 MiB/s),
+  `big_numbers` 1.16× (199 to 231 MiB/s); the whole change gives the table's 214 and 240. The
+  roadmap's 1.5× on `drift_json` is not met.
+- **The large tier is not built.** It was to be prototyped if `drift_json` stayed below half of
+  `shred/nested`. This row alone left it at 0.34 of it (212 against 620 MiB/s), and the tier is
+  closed under the complexity rule.
+- **A column of JSON renders into one buffer.** A value took a `String`, each string and key one
+  more and each object a set of keys; the parse now lends one buffer, escapes into it, and keeps
+  an object's keys as ranges of it, sorted at the object's end to find a repeat. `shred/drift_json`
+  allocates 33 % less, `shred/drift_scalar` 98 % less, and no case gains 2 % of instructions.
+- **Scalars render into a column of JSON as they were read.** A column of scalars meeting another
+  kind stopped building, and its chunk was parsed again; a column of scalars but floats now
+  renders what it took and goes on as JSON, and a chunk whose scalars the join made JSON renders
+  them without its text, reckoned at most the chunk's own bytes. `drift_scalar` rebuilds no chunk
+  (32 before), with 48 % fewer instructions, and runs at 1.97× (300 to 590 MiB/s).
+- **Rebuilt text is not presized from each chunk's bytes.** The reservation was its only gain, and
+  only chunks drifting to floats, objects or arrays are rebuilt now. A count of each column's text
+  would thread through every observation, and a rebuilt column of JSON, whose builder doubles as
+  it grows, has no bound of once its source; the safe part, exact counts for strings, saves about
+  a quarter of `drift_json`'s chunk of reservation. Not built.
+- **Re-observation after a wait is kept.** Nested orders at 4 cores under a 64 MiB budget, 200 000
+  rows in pushes of 20 000 (a push of 50 000 is past that budget's push limit), waited 6 times for
+  38 to 59 µs together and observed no chunk: re-observation is 0 % of shredding, below the 5 % that
+  would build it.
+- **The visitor trees share their rules.** One record seed refuses a record that is not an
+  object for the building and the observing parse, and the depth check and an integer's digits
+  are one function each; no case moves by more than 0.35 % of instructions.
 
 ### Columns of JSON
 
@@ -220,7 +261,10 @@ This change on `3c0260b2`, 2026-10-12, rounds as above.
 
 ### Allocations
 
-One run of each one-core group; the counts were the same in every round.
+One run of each one-core group; the counts were the same in every round. This change on
+`0ab7edde` leaves every row the same. Callgrind's counts over one pass of the cliff corpora fall:
+`shred/drift_json` from 74 940 allocations to 21 563, `shred/drift_scalar` from 11 225 to 209 and
+`shred/big_numbers` from 81 404 to 37 046.
 
 | Group | Allocations a row | Reallocations a row | Bytes a row | Allocations a batch | Bytes a batch |
 |---|---|---|---|---|---|
