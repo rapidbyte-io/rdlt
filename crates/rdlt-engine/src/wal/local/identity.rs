@@ -2,11 +2,12 @@
 
 use std::ffi::OsStr;
 use std::io::{self, Read as _, Write as _};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::AtomicU32;
 
 use rdlt_connector::LoadId;
 
 use super::dir::Dir;
+use super::names;
 
 /// The name of the file in a base that names its store.
 const IDENTITY: &str = "store";
@@ -20,8 +21,7 @@ pub(super) fn identity(base: &Dir, proposed: LoadId) -> io::Result<LoadId> {
     if let Some(identity) = read(base)? {
         return Ok(identity);
     }
-    let token =
-        u64::from(std::process::id()) << 32 | u64::from(PROPOSALS.fetch_add(1, Ordering::Relaxed));
+    let token = names::token(&PROPOSALS);
     let part = format!(".{IDENTITY}.{token:016x}.part");
     let mut file = base.create(&part)?;
     let written = file
@@ -31,10 +31,17 @@ pub(super) fn identity(base: &Dir, proposed: LoadId) -> io::Result<LoadId> {
     base.remove_file(OsStr::new(&part))?;
     match written {
         Ok(()) => base.sync().map(|()| proposed),
-        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => read(base)?
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "the store's identity")),
-        Err(error) => Err(error),
+        Err(error) => unwritten(base, error),
     }
+}
+
+/// What a proposal answers whose file could not be written whole and linked in, as `error`
+/// says: the identity another proposal linked in first, or `error`.
+pub(super) fn unwritten(base: &Dir, error: io::Error) -> io::Result<LoadId> {
+    if error.kind() != io::ErrorKind::AlreadyExists {
+        return Err(error);
+    }
+    read(base)?.ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "the store's identity"))
 }
 
 /// What the identity file in `base` says, where there is one.

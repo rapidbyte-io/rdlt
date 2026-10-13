@@ -19,25 +19,26 @@ all_features = true
 # that confines a connector, and a secret resolver reads from no directory, unless they say
 # otherwise; one that names an empty path for a sandbox is the code as it is too, as the guard on
 # roots passes over a path that is not absolute.
-# So is one that joins a directory's or a database's open flags, each a bit of its own (read-only is
-# none, on Linux and macOS alike), with `^` for `|`; and one that takes every widen a destination
-# refuses for a column not yet kept from widening: the resolver widens no column kept from it on any
-# path, so a refusal never names one, and the guard only bounds the loop were that to change. So is
-# one that opens a database to write with neither the flag that creates it nor the one that spares
-# SQLite's own lock, by `&` for the second `|`: the database was created, private, before SQLite
-# opens it, in a directory no one else writes, and a connection is used by one thread at a time, so
-# that lock never holds anything up. A JSON lines reader's `Debug` names the type and nothing else,
-# since its decoder has none, and so does that of the function a host is told each spawned
-# connector's process id through; a file writer's names its path only for a failing test's message:
-# what they write is no behaviour a test can hold.
+# So is one that joins open flags, each a bit of its own (read-only is none, on Linux and macOS
+# alike), with `^` for `|`; and one that takes every widen a destination refuses for a column not
+# yet kept from widening: the resolver widens no column kept from it on any path, so a refusal never
+# names one, and the guard only bounds the loop were that to change. So is one that opens a database
+# to write with neither the flag that creates it nor the one that spares SQLite's own lock, by `&`
+# for the second `|`: the database was created, private, before SQLite opens it, in a directory no
+# one else writes, and a connection is used by one thread at a time, so that lock never holds
+# anything up. A JSON lines reader's `Debug` names the type and nothing else, since its decoder has
+# none, and so does that of the function a host is told each spawned connector's process id through;
+# a file writer's names its path only for a failing test's message: what they write is no behaviour
+# a test can hold.
 # The engine's inline test env has one core, which a mutant answering one also has. A mutant that
 # judges a plain column of 64-bit integers through the rows it names reads what the plain arm reads,
 # which spares only the mapping; and one that has a normalized flush's walk read every column for
 # such integers, not only one whose type holds them, finds none in the others. A history table reads
 # a key's newest version for its sequence alone, so a mutant that takes, of two versions it loads
-# with one sequence, the later as the newer reads the same sequence. A mutant that lets `starts`
-# try a secret's empty start tries it only after every longer start has failed, and it counts no
-# bytes, as finding none does.
+# with one sequence, the later as the newer reads the same sequence. A mutant that lets `starts` try
+# a secret's empty start tries it only after every longer start has failed, and it counts no bytes,
+# as finding none does. One that splices a short length in, as a long one is, writes the byte the
+# short one's arm writes.
 #
 # One mutant is excluded because it never ends rather than because it is the code as it is: one
 # that writes a length in LEB128 while the length is under 0x80 pushes bytes until memory runs out,
@@ -50,9 +51,10 @@ all_features = true
 # same marks forever and what reads them grows until memory runs out. A bound on the loop would
 # cost every byte the shredder scans; the scanner's tests pin every other mutant of the step.
 #
-# A mutant that joins a hex digit to the value before it with `^` for `|` is the code as it is:
-# the value is shifted left four bits first, so its low four bits are clear and both give one
-# result.
+# A mutant that joins a hex digit to the value before it with `^` for `|` is the code as it is: the
+# value is shifted left four bits first, so its low four bits are clear and both give one result. So
+# is one that joins a byte to the bits of base 32 held before it, shifted left eight bits first, or
+# a count to a process's id in a staging's token, shifted above it.
 exclude_re = [
   "crates/rdlt-connector/src/json/structure\\.rs:4[67]:[0-9]+: replace \\+ with [-*] in <impl Iterator for Structure<'_>>::next$",
   "crates/rdlt-connector/src/json/structure\\.rs:.*replace string_end -> usize with [01]$",
@@ -68,10 +70,12 @@ exclude_re = [
   "crates/rdlt-connector/src/sqlgen\\.rs:.*replace SqlDialect::reserves_table -> bool with false",
   "crates/rdlt-engine/src/env/inline\\.rs:.*replace <impl Env for InlineEnv>::cores -> NonZeroUsize with 1\\.try_into\\(\\)\\.unwrap\\(\\)",
   "crates/rdlt-engine/src/normalize/identity\\.rs:.*replace >= with < in leb128$",
+  "crates/rdlt-engine/src/normalize/identity\\.rs:.*replace match guard short < 0x80 with false in length_of$",
   "crates/rdlt-engine/src/normalize/rounding\\.rs:.*replace integers -> bool with true$",
   "crates/rdlt-engine/src/table/exact\\.rs:.*delete match arm DataType::Int64 in rounds$",
   "crates/rdlt-engine/src/table/registry\\.rs:.*replace match guard !resolver\\.unwidened\\.contains\\(&column\\) with true in Tables::fit$",
-  "crates/rdlt-engine/src/wal/local/dir\\.rs:.*replace \\| with \\^ in Dir::dir$",
+  "crates/rdlt-engine/src/wal/local/dir\\.rs:.*replace \\| with \\^ in Dir::(dir|create|open)$",
+  "crates/rdlt-engine/src/wal/local/names\\.rs:.*replace \\| with \\^ in (base32|token)$",
   "crates/rdlt-host/src/local/process\\.rs:.*replace <impl fmt::Debug for Told>::fmt -> fmt::Result with Ok\\(Default::default\\(\\)\\)",
   "crates/rdlt-host/src/local/sandbox\\.rs:.*replace Sandbox::programs -> Vec<PathBuf> with vec!\\[(Default::default\\(\\))?\\]",
   "crates/rdlt-host/src/secrets/redact\\.rs:.*replace > with >= in starts$",

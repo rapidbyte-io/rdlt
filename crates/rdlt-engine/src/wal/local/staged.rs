@@ -4,7 +4,7 @@ use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{self, Write as _};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::AtomicU32;
 
 use bytes::Bytes;
 use parking_lot::Mutex;
@@ -161,9 +161,7 @@ impl Staged {
 pub(super) fn staged(place: Place, chunk: Chunk) -> io::Result<Staged> {
     let dir = place.open_load(chunk.load)?;
     for _ in 0..STAGING_TRIES {
-        let token = u64::from(std::process::id()) << 32
-            | u64::from(STAGINGS.fetch_add(1, Ordering::Relaxed));
-        let part = names::part(chunk.number, token);
+        let part = names::part(chunk.number, names::token(&STAGINGS));
         match dir.create(&part) {
             Ok(file) => {
                 return Ok(Staged {
