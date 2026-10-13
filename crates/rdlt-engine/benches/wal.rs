@@ -14,7 +14,7 @@ use criterion::{
     BenchmarkGroup, BenchmarkId, Criterion, SamplingMode, Throughput, criterion_group,
     criterion_main,
 };
-use rdlt_engine::bench::{Logged, Passthrough, logical_bytes, replay_scan, sample_log};
+use rdlt_engine::bench::{Cell, Logged, Passthrough, logical_bytes, replay_scan, sample_log};
 use rdlt_engine::{Cores, GrowthLimits, LocalWal, Report, WalStore};
 
 /// Commit cadences: a commit each batch, every sixteen, and once.
@@ -45,7 +45,7 @@ fn roots() -> Vec<(&'static str, PathBuf)> {
 
 fn encoding(c: &mut Criterion) {
     let mut group = c.benchmark_group("wal/encode");
-    for (name, rows) in [("1MiB", Logged::ROWS), ("7MiB", Passthrough::ROWS)] {
+    for (name, rows) in [("1MiB", Logged::ROWS), ("7MiB", Cell::PAIRED.rows)] {
         let batch = Passthrough::batch(0, rows);
         group.throughput(Throughput::Bytes(logical_bytes(std::slice::from_ref(
             &batch,

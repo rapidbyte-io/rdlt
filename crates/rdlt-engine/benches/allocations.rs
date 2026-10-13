@@ -25,9 +25,9 @@ use std::process::ExitCode;
 use arrow_array::RecordBatch;
 use rdlt_engine::Cores;
 use rdlt_engine::bench::{
-    CHUNK_BYTES, CORPUS_BYTES, Corpus, Form, Logged, Lowering, Normalized, Passthrough, Replayed,
-    Wide, check_json, counted, json_column, memory_wal, normalize, null_sink, pruned, replay,
-    sample_log, scan_log, shred,
+    CHUNK_BYTES, CORPUS_BYTES, Cell, Corpus, Form, Logged, Lowering, Normalized, Passthrough,
+    Replayed, Wide, check_json, counted, json_column, memory_wal, normalize, null_sink, pruned,
+    replay, sample_log, scan_log, shred,
 };
 use rdlt_wire::{Decoder, Encoder, Limits};
 use stats_alloc::{INSTRUMENTED_SYSTEM, StatsAlloc};
@@ -253,8 +253,7 @@ fn shredding() {
 /// Both sides of the passthrough bench's pairs.
 fn passing_through() {
     let cores = Cores::try_from_host().expect("the host says how many cores the bench may use");
-    let passthrough = Passthrough::try_new(cores, Passthrough::BATCHES, Passthrough::ROWS)
-        .expect("the pool starts");
+    let passthrough = Passthrough::paired(cores, Cell::PAIRED).expect("the pool starts");
     let batches = moved(passthrough.batches());
     report("passthrough bare loop", || {
         black_box(passthrough.bare_loop());
@@ -372,7 +371,12 @@ fn report(id: &str, run: impl FnOnce() -> (usize, usize)) {
 /// The engine moving [`BATCHES`] batches of [`ROWS`] rows from a replaying source to the null
 /// sink, on [`LAYOUT`].
 fn passed_through(times: usize) {
-    let passthrough = Passthrough::try_new(LAYOUT, BATCHES, ROWS).expect("the pool starts");
+    let cell = Cell {
+        rows: ROWS,
+        batches: BATCHES,
+        ..Cell::PAIRED
+    };
+    let passthrough = Passthrough::try_new(LAYOUT, cell).expect("the pool starts");
     for _ in 0..times {
         let replayed = Replayed::Batches(passthrough.batches().to_vec());
         let source = passthrough.block_on(replay("passthrough", replayed));

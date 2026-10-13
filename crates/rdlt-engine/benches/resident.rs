@@ -14,12 +14,10 @@ use std::num::{NonZeroU64, NonZeroUsize};
 use std::process::ExitCode;
 
 use rdlt_engine::Cores;
-use rdlt_engine::bench::{Normalized, Passthrough, Resident, reset_peak, resident_kib};
+use rdlt_engine::bench::{Cell, Normalized, Passthrough, Resident, reset_peak, resident_kib};
 
 /// Bytes: the budget each run is given.
 const MEMORY: u64 = 256 << 20;
-/// Batches the passthrough run moves.
-const BATCHES: u32 = 64;
 /// Roots the normalized run loads.
 const ROOTS: u64 = 200_000;
 /// Rows of a push of the normalized run.
@@ -106,8 +104,11 @@ fn field(name: &str) -> u64 {
 fn run(workload: &str, cores: Cores) -> (u64, u64, u64, u64) {
     let host = "the pool starts";
     if workload == "passthrough" {
-        let bench = Passthrough::within(cores, BATCHES, Passthrough::ROWS, MEMORY).expect(host);
-        let push = Passthrough::bytes(1, Passthrough::ROWS);
+        let bench = Passthrough::try_new(cores, Cell::PAIRED).expect(host);
+        let push = Passthrough::bytes(Cell {
+            batches: 1,
+            ..Cell::PAIRED
+        });
         let base = rebase();
         let report = bench.engine_report();
         (report.peak_memory, base, field("VmHWM"), push)
