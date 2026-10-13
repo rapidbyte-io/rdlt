@@ -3,7 +3,7 @@ use serde::de::Expected;
 use super::{Key, Look, Record};
 use crate::shred::meter::{Columns, Meter};
 use crate::shred::observe::{Observed, Shape};
-use crate::shred::visit::Context;
+use crate::shred::visit::{Context, RecordSeed};
 
 fn expected(visitor: &dyn Expected) -> String {
     visitor.to_string()
@@ -15,10 +15,10 @@ fn every_observing_visitor_says_what_it_expects() {
     let mut shape = Shape::default();
     let mut node = Observed::Null;
     assert_eq!(
-        expected(&Record {
+        expected(&RecordSeed(Record {
             shape: &mut shape,
             context: &context,
-        }),
+        })),
         "a record"
     );
     assert_eq!(

@@ -49,7 +49,7 @@ use error::numbered;
 use meter::{Beyond, Columns, Meter};
 use observe::Shape;
 use records::{Chunk, chunks};
-use visit::{Context, Row};
+use visit::{Context, RecordSeed, Row};
 
 pub(crate) use error::ShredError;
 
@@ -196,7 +196,7 @@ fn parse(chunk: Chunk, limits: ShredLimits, beyond: &Arc<Beyond>) -> Result<Pars
                 record: &mut record,
                 context: &context,
             };
-            visit(bytes, row, exact, &context)
+            visit(bytes, RecordSeed(row), exact, &context)
         })?;
         if appended.tripped {
             drop(record);
@@ -240,7 +240,7 @@ fn observed(
                 shape: &mut shape,
                 context: &context,
             };
-            visit(bytes, row, exact, &context)
+            visit(bytes, RecordSeed(row), exact, &context)
         })?;
         if appended.imprecise && !exact {
             exact = true;
@@ -458,7 +458,7 @@ fn again(
             record: &mut record,
             context: &context,
         };
-        visit(bytes, row, exact, &context)
+        visit(bytes, RecordSeed(row), exact, &context)
     })?;
     if appended.imprecise && !exact {
         return Err(unbuilt("its records"));
