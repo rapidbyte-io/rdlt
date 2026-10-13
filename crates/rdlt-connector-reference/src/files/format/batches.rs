@@ -172,12 +172,6 @@ fn unfit(batch: &RecordBatch, limits: &Limits) -> Result<Option<ConnectorError>>
             values,
         )));
     }
-    // What a batch holds in memory is more than what it is written as: one far within a frame
-    // needs no measuring.
-    let held = u64::try_from(batch.get_array_memory_size()).unwrap_or(u64::MAX);
-    if held.saturating_add(FRAMING) <= limits.frame_bytes / 2 {
-        return Ok(None);
-    }
     let (generator, options) = (IpcDataGenerator::default(), IpcWriteOptions::default());
     // The tracker numbers the schema's dictionaries, as a writer's does when it starts a file.
     let mut tracker = DictionaryTracker::new(false);
