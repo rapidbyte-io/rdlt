@@ -45,6 +45,15 @@ all_features = true
 # allocation starts at, as the buffer holds none. Arrow refuses a dictionary a valid key of which
 # names no value, so a mutant that takes a key as great as the values' count as naming one meets
 # none.
+# The JSON lines reader joins two runs' columns taking a column both hold in its first arm, so a
+# mutant that takes it by `<=` for `<` in the next never meets it. Its pass over a line's keys takes
+# a string for a key only at the record's depth and before a colon; a mutant that takes one by `||`
+# for `&&` takes more only from a string value, whose key the next key replaces before any value
+# reads it, and from a line that is no JSON, which the line's decoder refuses all the same.
+# SQLite cuts no table's derived names, as its identifiers have no limit, and each begins with a
+# prefix no table may take, so no two tables derive one name: a mutant that finds no clash between
+# them finds what the check finds, and so does one that checks again, and creates the generation
+# table where it exists, each time a writer readies a table.
 #
 # One mutant is excluded because it never ends rather than because it is the code as it is: one
 # that writes a length in LEB128 while the length is under 0x80 pushes bytes until memory runs out,
@@ -66,12 +75,16 @@ exclude_re = [
   "crates/rdlt-connector/src/json/structure\\.rs:.*replace string_end -> usize with [01]$",
   "crates/rdlt-engine/src/json/text\\.rs:.*replace \\| with \\^ in hex$",
   "crates/rdlt-adopt/src/exec\\.rs:.*replace marks_at_once -> bool with true",
+  "crates/rdlt-connector-reference/src/files/format/held/keys\\.rs:54:[0-9]+: replace && with \\|\\| in Pass<'l>::step$",
+  "crates/rdlt-connector-reference/src/files/format/held\\.rs:.*replace < with <= in union$",
   "crates/rdlt-connector-reference/src/files/format/json\\.rs:.*replace <impl std::fmt::Debug for Rows>::fmt -> std::fmt::Result with Ok\\(Default::default\\(\\)\\)",
   "crates/rdlt-connector-reference/src/files/format\\.rs:.*replace <impl std::fmt::Debug for Writer<'_>>::fmt -> std::fmt::Result with Ok\\(Default::default\\(\\)\\)",
   "crates/rdlt-connector-reference/src/merge/history\\.rs:.*replace > with >= in History::hold$",
   "crates/rdlt-connector-reference/src/rooted\\.rs:.*replace \\| with \\^ in Dir::(resolved|dir|opened|create)$",
   "crates/rdlt-connector-reference/src/sqlite/database\\.rs:.*replace \\| with \\^ in (connect_waiting|reading)$",
   "crates/rdlt-connector-reference/src/sqlite/database\\.rs:72:9: replace \\| with & in connect_waiting$",
+  "crates/rdlt-connector-reference/src/sqlite/session/owners\\.rs:.*replace distinct -> Result<\\(\\)> with Ok\\(\\(\\)\\)$",
+  "crates/rdlt-connector-reference/src/sqlite/session/writer\\.rs:.*replace && with \\|\\| in ready$",
   "crates/rdlt-connector/src/cost/expanded/named\\.rs:.*replace < with <= in Meter::keyed$",
   "crates/rdlt-connector/src/cost/held\\.rs:.*replace > with >= in Allocations::buffer$",
   "crates/rdlt-connector/src/sink\\.rs:.*replace Admission::limits -> Limits with Default::default\\(\\)",

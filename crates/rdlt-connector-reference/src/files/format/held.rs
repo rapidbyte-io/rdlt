@@ -78,9 +78,6 @@ impl Held {
                 break;
             }
             run.extend_from_slice(&line);
-            if !line.ends_with(b"\n") {
-                run.push(b'\n');
-            }
             (rows, cells, columns) = (rows + 1, held, joined);
             let bytes = u64::try_from(run.len()).unwrap_or(u64::MAX);
             if rows >= READ_BATCH_ROWS || bytes >= CHUNK_BYTES {

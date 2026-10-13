@@ -579,6 +579,13 @@ fn a_refused_conversion_says_whether_the_types_or_a_value_refuse_it() {
         let refused = retyped(&wide, &to).unwrap_err();
         assert_eq!(code(&refused), Some("type_unconvertible"), "{to}");
     }
+    // Bytes of a fixed width become other bytes alone, whatever text they hold.
+    let fixed: ArrayRef =
+        Arc::new(FixedSizeBinaryArray::try_from_iter([b"ab"].into_iter()).unwrap());
+    for to in [DataType::Utf8, DataType::Int16] {
+        let refused = retyped(&fixed, &to).unwrap_err();
+        assert_eq!(code(&refused), Some("type_unconvertible"), "{to}");
+    }
     let coarser = retyped(
         &retyped(&seconds, &seconds.data_type().clone()).unwrap(),
         &nanos,
