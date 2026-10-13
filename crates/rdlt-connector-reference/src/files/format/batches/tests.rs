@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use arrow_array::builder::StringViewBuilder;
 use arrow_array::types::Int32Type;
 use arrow_array::{
     Array, ArrayRef, DictionaryArray, FixedSizeListArray, Int8Array, Int32Array, LargeListArray,
@@ -7,6 +8,7 @@ use arrow_array::{
     StructArray,
 };
 use arrow_buffer::{OffsetBuffer, ScalarBuffer};
+use arrow_ipc::writer::FileWriter;
 use arrow_schema::{DataType, Field, Fields};
 use rdlt_connector::{ConnectorErrorKind, Result};
 use rdlt_wire::Limits;
@@ -14,6 +16,7 @@ use rdlt_wire::limits::{BATCH_ROWS, BATCH_VALUES, FRAME_BYTES};
 
 use super::{chunks, fitted, unfit};
 use crate::files::FileFormat;
+use crate::files::format::ipc::IpcFile;
 use crate::rooted::Dir;
 
 /// The rows one batch holds, as a count.
@@ -59,6 +62,30 @@ fn written(batch: &RecordBatch) -> Result<Vec<RecordBatch>> {
             Err(error)
         }
     }
+}
+
+/// Writes `batch` as an Arrow file of the batches [`fitted`] makes under `limits`, and reads it
+/// back under them: what is written reads back, row for row, and what is refused is refused
+/// before a reader sees it.
+fn fitted_under(batch: &RecordBatch, limits: &Limits) -> Result<Vec<RecordBatch>> {
+    let root = crate::scratch::tempdir().unwrap();
+    let path = root.path().join("rows.arrow");
+    let file = std::fs::File::create(&path).unwrap();
+    let mut writer = FileWriter::try_new(file, batch.schema_ref()).unwrap();
+    fitted(batch.clone(), limits, &mut |part| {
+        writer.write(part).unwrap();
+        Ok(())
+    })?;
+    writer.finish().unwrap();
+    let file = std::fs::File::open(&path).unwrap();
+    let mut read = IpcFile::open(file, *limits).expect("what was written opens");
+    let mut parts = Vec::new();
+    while let Some(part) = read.next().expect("what was written reads back") {
+        parts.push(part);
+    }
+    let joined = arrow_select::concat::concat_batches(batch.schema_ref(), &parts).unwrap();
+    assert_eq!(joined, *batch);
+    Ok(parts)
 }
 
 /// The name of the limit a write of `batch` is refused for.
@@ -404,4 +431,30 @@ fn a_dictionary_whose_frame_is_the_limit_fits_and_one_byte_less_refuses_it() {
         (limit.name, limit.limit, limit.actual),
         ("frame bytes", size - 1, size)
     );
+}
+
+/// `rows` rows of 13 bytes each, every row's bytes in a data buffer of its own.
+fn apart(rows: usize) -> ArrayRef {
+    let mut builder = StringViewBuilder::new().with_fixed_block_size(13);
+    for _ in 0..rows {
+        builder.append_value("x".repeat(13));
+    }
+    let views = builder.finish();
+    assert_eq!(views.data_buffers().len(), rows);
+    Arc::new(views)
+}
+
+#[test]
+fn a_batch_far_within_a_frame_in_memory_is_measured_as_it_is_written() {
+    // Held, the rows take less than half a frame; written, each data buffer is padded and
+    // described, and every part of the column carries all of them.
+    let limits = Limits {
+        frame_bytes: 64 * 1024,
+        ..Limits::default()
+    };
+    let batch = single(apart(1000));
+    let held = u64::try_from(batch.get_array_memory_size()).unwrap();
+    assert!(held < limits.frame_bytes / 2, "{held}");
+    let error = fitted_under(&batch, &limits).expect_err("no frame holds a row of the column");
+    assert_eq!(error.limit().map(|limit| limit.name), Some("frame bytes"));
 }

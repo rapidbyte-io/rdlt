@@ -122,9 +122,11 @@ when it is read and never written in a form its reader refuses.
   8 MiB and of at most the rows a reader takes in one, each checked against every limit the
   reader holds a batch to: its frame, every value it holds, nested ones and the items its list
   views name included, and the values of each dictionary, which a reader takes as a frame of its
-  own. A batch is first cut by its rows' average size; one whose encoding no frame holds, as when
-  a few rows are far larger than the rest, is measured before it is written and halved by its
-  rows until its parts fit, in as many steps as its rows halve. Only what no halving changes
+  own. A batch is first cut by its rows' average size, and each part is encoded and measured
+  before it is written, since padding, buffers' descriptions and the data buffers of views can
+  make what is written several times what is held; one whose encoding no frame holds, as when a
+  few rows are far larger than the rest, is halved by its rows until its parts fit, in as many
+  steps as its rows halve. Only what no halving changes
   fails the write, and leaves no file: one row that alone is beyond a limit, or a dictionary
   that is. JSON lines hold a dictionary's rows as the values they stand for, null where the key
   is null or the value it stands for is.
