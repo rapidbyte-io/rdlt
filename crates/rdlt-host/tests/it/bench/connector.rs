@@ -72,7 +72,7 @@ fn cpu_list(list: &str) -> Vec<usize> {
 struct Generating(Box<dyn SourceFactory>);
 
 /// Each frame size's batches, made once in this process.
-static MADE: [Once; 2] = [Once::new(), Once::new()];
+static MADE: [Once; 3] = [Once::new(), Once::new(), Once::new()];
 
 impl SourceFactory for Generating {
     fn spec(&self) -> &ConnectorSpec {
