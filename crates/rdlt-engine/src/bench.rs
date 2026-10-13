@@ -5,11 +5,13 @@ mod corpora;
 mod loading;
 mod logged;
 mod lowering;
+mod matrix;
 mod measure;
 mod mix;
 mod normalized;
 mod passthrough;
 mod pools;
+mod readings;
 mod resident;
 mod runner;
 #[cfg(test)]
@@ -38,11 +40,13 @@ pub use corpora::{CHUNK_BYTES, CORPUS_BYTES, Corpus, PUSH_BYTES};
 pub use loading::{Load, Loading};
 pub use logged::Logged;
 pub use lowering::Lowering;
+pub use matrix::{Cadence, Cell};
 pub use measure::{Allocations, Paired, counted, logical_bytes};
 pub use mix::Mix;
 pub use normalized::Normalized;
 pub use passthrough::Passthrough;
 pub use pools::pool_cores;
+pub use readings::Readings;
 pub use resident::{Resident, reset_peak, resident_kib};
 pub use wide::{Form, Wide};
 

@@ -33,7 +33,7 @@ use rdlt_connector::serve::{Listening, Served, serve_listener};
 use rdlt_connector::{ConnectContext, Destination, Role, Source};
 use rdlt_engine::Cores;
 use rdlt_engine::bench::{
-    Passthrough, Replayed, Sinking, ipc_sink, register, replay_factory, sink_factory,
+    Cell, Passthrough, Replayed, Sinking, ipc_sink, register, replay_factory, sink_factory,
     split_replay_config,
 };
 use rdlt_host::{
@@ -115,8 +115,8 @@ impl Frames {
     /// Batches and rows a batch.
     fn shape(self) -> (u32, u32) {
         match self {
-            Self::Large => (Passthrough::BATCHES, Passthrough::ROWS),
-            Self::Small => (Passthrough::BATCHES * 8, Passthrough::ROWS / 8),
+            Self::Large => (Cell::PAIRED.batches, Cell::PAIRED.rows),
+            Self::Small => (Cell::PAIRED.batches * 8, Cell::PAIRED.rows / 8),
         }
     }
 
@@ -475,7 +475,12 @@ impl Workload {
     /// replay registered.
     fn new(cores: Cores, frames: Frames) -> Self {
         let (batches, rows) = frames.shape();
-        let passthrough = Passthrough::try_new(cores, batches, rows).expect("the pool starts");
+        let cell = Cell {
+            rows,
+            batches,
+            ..Cell::PAIRED
+        };
+        let passthrough = Passthrough::try_new(cores, cell).expect("the pool starts");
         register(
             frames.replay(),
             Replayed::Batches(passthrough.batches().to_vec()),
@@ -547,7 +552,11 @@ fn served(c: &mut Criterion) {
     group.sample_size(10);
     for case in Case::all() {
         let (batches, rows) = case.frames.shape();
-        let bytes = Passthrough::bytes(batches, rows);
+        let bytes = Passthrough::bytes(Cell {
+            rows,
+            batches,
+            ..Cell::PAIRED
+        });
         group.throughput(Throughput::Bytes(bytes));
         let mut seconds = Vec::new();
         group.bench_function(case.id(), |b| {

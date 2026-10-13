@@ -11,7 +11,7 @@ use criterion::{
     BenchmarkId, Criterion, SamplingMode, Throughput, criterion_group, criterion_main,
 };
 use rdlt_engine::Cores;
-use rdlt_engine::bench::{Paired, Passthrough, logical_bytes};
+use rdlt_engine::bench::{Cell, Paired, Passthrough, logical_bytes};
 
 /// Samples the paired group takes, each the ratio of the blocks it ran.
 const SAMPLES: usize = 30;
@@ -36,8 +36,7 @@ const BLOCK: [Side; 4] = [Side::Bare, Side::Engine, Side::Engine, Side::Bare];
 )]
 fn passthrough(c: &mut Criterion) {
     let cores = Cores::try_from_host().expect("the host says how many cores the bench may use");
-    let bench = Passthrough::try_new(cores, Passthrough::BATCHES, Passthrough::ROWS)
-        .expect("the pool starts");
+    let bench = Passthrough::try_new(cores, Cell::PAIRED).expect("the pool starts");
     let (workers, threads) = (cores.workers(), cores.compute_threads());
     let layout = format!("{workers}+{threads}");
     let mut ratios = Vec::new();
