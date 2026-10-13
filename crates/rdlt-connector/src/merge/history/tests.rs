@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crate::{ChangeColumns, ChangeOp, Deletion, HistoryColumns, MergeKey};
 use arrow_array::cast::AsArray;
 use arrow_array::types::Int64Type;
 use arrow_array::{
@@ -8,7 +9,6 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use proptest::prelude::*;
-use rdlt_connector::{ChangeColumns, ChangeOp, Deletion, HistoryColumns, MergeKey};
 use rdlt_testkit::drawn::{self, Drawn, Encoding, Shape};
 
 use crate::merge::Merged;

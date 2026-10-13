@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
+use crate::{ChangeColumns, ChangeOp, Deletion, MergeKey};
 use arrow_array::cast::AsArray;
 use arrow_array::types::Int64Type;
 use arrow_array::{Array, ArrayRef, BinaryArray, Int8Array, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
-use rdlt_connector::{ChangeColumns, ChangeOp, Deletion, MergeKey};
 
 mod costs;
 mod owners;
@@ -40,7 +40,7 @@ fn merge_children(
     published: &[RecordBatch],
     incoming: &[RecordBatch],
     key: &MergeKey,
-    root: &rdlt_connector::RootKey,
+    root: &crate::RootKey,
     roots: &[RecordBatch],
 ) -> Result<Vec<RecordBatch>, arrow_schema::ArrowError> {
     let rows = merge_children_sparse(schema, published, incoming, key, root, roots)?;

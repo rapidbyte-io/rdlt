@@ -1,4 +1,4 @@
-//! The SQLite destination merges change streams and history tables as the reference merge does:
+//! The SQLite destination merges change streams and history tables as the Arrow merge does:
 //! the same written batches, committed in turn to both, leave the same rows and the same
 //! tombstones.
 
@@ -14,6 +14,7 @@ use arrow_array::{
 use arrow_cast::display::{ArrayFormatter, FormatOptions};
 use arrow_schema::{DataType, Field as ArrowField, Schema, SchemaRef};
 use proptest::prelude::*;
+use rdlt_connector::merge::{Merged, merge_sparse, read_back, stored_schema};
 use rdlt_connector::{
     ChangeColumns, ChangeOp, CommitMeta, CommitSeq, ConnectContext, DELETED_AT_COLUMN, Deletion,
     Destination, HistoryColumns, LoadId, MergeKey, OP_COLUMN, OpenContext, PipelineId, SEQ_COLUMN,
@@ -23,8 +24,6 @@ use rdlt_connector::{
 use serde_json::json;
 
 use super::{SqliteDestination, published};
-use crate::merge::Merged;
-use crate::merge::tests::merge;
 
 /// One change: its op, key and region, values, deletion time, the columns it flags unchanged
 /// (bit 0 `value`, bit 1 `n`, bit 2 the deletion time), its sequence, and for a history table
@@ -313,6 +312,26 @@ async fn commit(
         .expect("the commit lands");
 }
 
+/// The rows and tombstones once `incoming` merges into `published` and `buried` by `key`, the
+/// rows as a reader is given them.
+fn merge(
+    schema: &SchemaRef,
+    published: &[RecordBatch],
+    buried: &[RecordBatch],
+    incoming: &[RecordBatch],
+    key: &MergeKey,
+) -> Result<Merged, arrow_schema::ArrowError> {
+    let merged = merge_sparse(schema, published, buried, incoming, key)?;
+    let whole = match &key.changes {
+        Some(changes) => stored_schema(schema, changes),
+        None => Arc::clone(schema),
+    };
+    Ok(Merged {
+        rows: read_back(&whole, &merged.rows)?,
+        tombstones: merged.tombstones,
+    })
+}
+
 /// Commits `commits` to a SQLite database at `path` and to the reference alike, comparing the
 /// rows and tombstones after each.
 fn differ(path: &Path, commits: &[Vec<Vec<Change>>], shape: Shape) -> Result<(), TestCaseError> {
@@ -337,7 +356,7 @@ fn differ(path: &Path, commits: &[Vec<Vec<Change>>], shape: Shape) -> Result<(),
             .map(|changes| written(changes, shape.mode))
             .collect();
         state = merge(&stored, &state.rows, &state.tombstones, &batches, &key)
-            .expect("the reference merges");
+            .expect("the Arrow merge merges");
         let seq = u64::try_from(index).unwrap_or(0) + 1;
         runtime.block_on(commit(
             destination.as_ref(),

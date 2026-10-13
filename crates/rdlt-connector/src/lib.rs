@@ -85,6 +85,8 @@ mod id;
 pub mod instants;
 pub mod json;
 pub mod limits;
+#[cfg(feature = "merge")]
+pub mod merge;
 mod meta;
 mod schema;
 mod secret;

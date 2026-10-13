@@ -1461,7 +1461,7 @@ fn every_line_the_writer_writes_reads_back_as_the_columns_it_holds() {
     let held = FileFormat::Jsonl
         .read_held(&dir, "rows.jsonl", &schema)
         .unwrap();
-    let held = crate::merge::read_back(&schema, &held).unwrap();
+    let held = rdlt_connector::merge::read_back(&schema, &held).unwrap();
     assert_eq!(whole, [batch]);
     assert_eq!(held, whole);
 }

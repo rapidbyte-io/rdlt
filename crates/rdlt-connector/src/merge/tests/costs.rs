@@ -4,9 +4,9 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::{ChangeOp, Deletion, HistoryColumns, MergeKey, RootKey};
 use arrow_array::{ArrayRef, BinaryArray, Int8Array, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
-use rdlt_connector::{ChangeOp, Deletion, HistoryColumns, MergeKey, RootKey};
 
 use super::super::Merged;
 use super::super::met::counted;
@@ -187,12 +187,10 @@ fn plain_key() -> MergeKey {
 fn history_key(deletion: Option<Deletion>) -> MergeKey {
     let changes = key(deletion.clone().unwrap_or(Deletion::Hard)).changes;
     MergeKey {
-        changes: deletion
-            .and(changes)
-            .map(|changes| rdlt_connector::ChangeColumns {
-                unchanged: None,
-                ..changes
-            }),
+        changes: deletion.and(changes).map(|changes| crate::ChangeColumns {
+            unchanged: None,
+            ..changes
+        }),
         history: Some(HistoryColumns {
             valid_from: "at".into(),
             valid_to: "at".into(),
@@ -311,7 +309,7 @@ fn columns_a_row_never_had_are_one_shared_array_of_nulls() {
     let key = MergeKey {
         changes: key(Deletion::Hard)
             .changes
-            .map(|changes| rdlt_connector::ChangeColumns {
+            .map(|changes| crate::ChangeColumns {
                 unchanged: None,
                 ..changes
             }),

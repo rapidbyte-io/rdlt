@@ -79,7 +79,7 @@ exclude_re = [
   "crates/rdlt-connector-reference/src/files/format/held\\.rs:.*replace < with <= in union$",
   "crates/rdlt-connector-reference/src/files/format/json\\.rs:.*replace <impl std::fmt::Debug for Rows>::fmt -> std::fmt::Result with Ok\\(Default::default\\(\\)\\)",
   "crates/rdlt-connector-reference/src/files/format\\.rs:.*replace <impl std::fmt::Debug for Writer<'_>>::fmt -> std::fmt::Result with Ok\\(Default::default\\(\\)\\)",
-  "crates/rdlt-connector-reference/src/merge/history\\.rs:.*replace > with >= in History::hold$",
+  "crates/rdlt-connector/src/merge/history\\.rs:.*replace > with >= in History::hold$",
   "crates/rdlt-connector-reference/src/rooted\\.rs:.*replace \\| with \\^ in Dir::(resolved|dir|opened|create)$",
   "crates/rdlt-connector-reference/src/sqlite/database\\.rs:.*replace \\| with \\^ in (connect_waiting|reading)$",
   "crates/rdlt-connector-reference/src/sqlite/database\\.rs:72:9: replace \\| with & in connect_waiting$",

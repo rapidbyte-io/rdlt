@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use crate::{MergeKey, RootKey};
 use arrow_array::cast::AsArray;
 use arrow_array::types::Int64Type;
 use arrow_array::{
@@ -10,7 +11,6 @@ use arrow_array::{
     UInt8Array, UInt32Array, UInt64Array,
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
-use rdlt_connector::{MergeKey, RootKey};
 
 use super::super::merge_children_sparse;
 use super::super::refused::code;

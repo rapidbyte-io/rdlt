@@ -9,10 +9,10 @@ mod table;
 
 use std::sync::Arc;
 
+use crate::{ChangeColumns, ChangeOp, Deletion, MergeKey, UnchangedFlags};
 use arrow_array::cast::AsArray;
 use arrow_array::{Array, ArrayRef, RecordBatch};
 use arrow_schema::{ArrowError, DataType, Schema, SchemaRef};
-use rdlt_connector::{ChangeColumns, ChangeOp, Deletion, MergeKey, UnchangedFlags};
 
 use super::refused::{FLAG_ON_KEY, SEQUENCE_MISSING, refused};
 use super::retype::retyped;
@@ -24,7 +24,7 @@ use table::{Applied, Change, Columns, Table};
 
 /// The schema a change stream's table stores: `schema` without the columns `changes` names that
 /// only written batches carry.
-pub(crate) fn stored(schema: &SchemaRef, changes: &ChangeColumns) -> SchemaRef {
+pub fn stored(schema: &SchemaRef, changes: &ChangeColumns) -> SchemaRef {
     let directive = |name: &str| {
         name == &*changes.op
             || changes

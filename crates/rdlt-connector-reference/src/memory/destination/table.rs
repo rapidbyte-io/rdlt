@@ -5,11 +5,11 @@ use std::sync::Arc;
 
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
+use rdlt_connector::merge::{Merged, failed, merge_children_sparse, merge_sparse};
 use rdlt_connector::prelude::*;
 use rdlt_connector::{Deletion, Epoch, GenerationId, MergeKey, PipelineId, RootKey, SegmentId};
 
 use crate::columns::changed;
-use crate::merge::{Merged, failed, merge_children_sparse, merge_sparse};
 
 #[derive(Debug, Default)]
 pub(super) struct Table {
@@ -106,12 +106,12 @@ impl Table {
             .iter()
             .chain(self.generations.values().flatten())
             .chain(staged);
-        crate::merge::holds(rows, &arrow).map_err(conflict)?;
+        rdlt_connector::merge::holds(rows, &arrow).map_err(conflict)?;
         // A tombstone holds its key under the table's types and its sequence as it compares.
         if let Some(key) = self.merge.as_ref().or(change.table().merge.as_ref()) {
-            let kept = crate::merge::tombstone_schema(&arrow, key)
+            let kept = rdlt_connector::merge::tombstone_schema(&arrow, key)
                 .map_err(|error| failed("reading tombstones", error))?;
-            crate::merge::holds(&self.tombstones, &kept).map_err(conflict)?;
+            rdlt_connector::merge::holds(&self.tombstones, &kept).map_err(conflict)?;
         }
         self.schema = Some(next);
         Ok(())
@@ -127,7 +127,7 @@ impl Table {
             .schema
             .as_ref()
             .map(|schema| Arc::new(schema.to_arrow()));
-        crate::merge::admitted(batch, stored.as_ref(), key)
+        rdlt_connector::merge::admitted(batch, stored.as_ref(), key)
             .map_err(|error| failed("staging rows", error))
     }
 
@@ -139,7 +139,7 @@ impl Table {
             return self.published.clone();
         };
         // A schema change is taken only where every held row converts to it, so this converts.
-        crate::merge::read_back(&Arc::new(schema.to_arrow()), &self.published)
+        rdlt_connector::merge::read_back(&Arc::new(schema.to_arrow()), &self.published)
             .unwrap_or_else(|_| self.published.clone())
     }
 

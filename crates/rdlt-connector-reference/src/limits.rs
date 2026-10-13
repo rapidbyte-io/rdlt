@@ -1,6 +1,7 @@
 //! Limits the reference connectors enforce on what they read, write and keep, the waits they
 //! bound, and the defaults of those a configuration sets.
 
+use std::num::NonZeroUsize;
 use std::time::Duration;
 
 use rdlt_connector::ConnectorError;
@@ -110,7 +111,7 @@ pub(crate) fn within(
 
 /// Batches: how many of a merge's batches, each of the columns its rows hold, a destination
 /// that writes a file for each writes as they are before it joins the smallest.
-pub(crate) const MAX_SHAPES: usize = 16;
+pub(crate) const MAX_SHAPES: NonZeroUsize = NonZeroUsize::new(16).expect("sixteen is no zero");
 
 /// Cells: bounds the cells without a value in a batch joined of a merge's smallest batches,
 /// counted as its rows times its columns less the cells that hold a value; batches that would

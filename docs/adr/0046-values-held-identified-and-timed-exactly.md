@@ -110,7 +110,7 @@ trusted them in ways that broke data quietly or failed whole streams on one row:
   latest start or end of the key's versions in the table, and of the versions the commit opened
   before it, in sequence order. A version whose successor said an earlier time spans no time and
   is kept, in sequence; a key opened again as of before its deletion begins where it was
-  deleted. The SQL planner, the reference merge and the simulation follow the rule, and
+  deleted. The SQL planner, the Arrow merge and the simulation follow the rule, and
   `D-HIST` requires it of every history destination. A stream naming no change time begins its
   versions by a load clock read from the engine's environment that never reads earlier than the
   load's start or an earlier reading. Each time the engine stamps on a row (a load's start,

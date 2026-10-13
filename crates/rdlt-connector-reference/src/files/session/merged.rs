@@ -6,6 +6,7 @@ mod tests;
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
+use rdlt_connector::merge::{Merged, merge_children_sparse, merge_sparse};
 use rdlt_connector::prelude::*;
 use rdlt_connector::{ChildTable, CommitMeta, MergeKey, RootKey};
 
@@ -14,7 +15,7 @@ use super::{Location, StagedFile};
 use crate::files::format::{FileFormat, Writer};
 use crate::files::manifest::{self, Listed, Manifest, TableFiles};
 use crate::files::tables;
-use crate::merge::{Merged, merge_children_sparse, merge_sparse};
+use crate::limits::{FOLD_CELLS, MAX_SHAPES};
 
 /// Replaces, in the child table `child` the commit staged nothing for, the children of the roots
 /// its root's staged files publish.
@@ -75,7 +76,7 @@ pub(super) fn merged_rows(
     // A change stream's staged rows carry the columns that direct its merge, and a truncate's
     // names no key.
     let staged = match &key.changes {
-        Some(changes) => crate::merge::written_schema(&schema, changes),
+        Some(changes) => rdlt_connector::merge::written_schema(&schema, changes),
         None => Arc::clone(&schema),
     };
     let read = |files: &mut dyn Iterator<Item = &Listed>, schema: &arrow_schema::SchemaRef| {
@@ -92,7 +93,7 @@ pub(super) fn merged_rows(
     }
     let held = published.iter().map(RecordBatch::num_rows).sum();
     let doing = format!("merging table {name}");
-    let merging = |error: arrow_schema::ArrowError| crate::merge::failed(&doing, error);
+    let merging = |error: arrow_schema::ArrowError| rdlt_connector::merge::failed(&doing, error);
     let incoming = read(&mut files.iter().map(|staged| &staged.file), &staged)?;
     let merged = if let Some((root, root_files)) = root {
         let root_schema = tables::read(&location.rdlt, &root.table)?.ok_or_else(|| {
@@ -110,14 +111,17 @@ pub(super) fn merged_rows(
             tombstones: Vec::new(),
         }
     } else {
-        let buried = crate::merge::tombstone_schema(&schema, key).map_err(merging)?;
+        let buried = rdlt_connector::merge::tombstone_schema(&schema, key).map_err(merging)?;
         let buried = read(&mut table.tombstones.iter(), &buried)?;
         merge_sparse(&schema, &published, &buried, &incoming, key).map_err(merging)?
     };
     // An Arrow file holds one set of columns, so each batch is a file: rows of many sets are
     // joined into a few. Lines name their own columns and share one file as they are.
     let rows = match location.format {
-        FileFormat::Arrow => crate::merge::folded(&schema, merged.rows).map_err(merging)?,
+        FileFormat::Arrow => {
+            rdlt_connector::merge::folded(&schema, merged.rows, MAX_SHAPES, FOLD_CELLS)
+                .map_err(merging)?
+        }
         FileFormat::Jsonl => merged.rows,
     };
     Ok(MergedRows {

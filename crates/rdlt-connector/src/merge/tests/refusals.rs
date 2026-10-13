@@ -2,9 +2,9 @@
 
 use std::sync::Arc;
 
+use crate::{ChangeOp, Deletion, HistoryColumns};
 use arrow_array::{ArrayRef, BinaryArray, Int8Array, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{ArrowError, DataType, Field, Schema};
-use rdlt_connector::{ChangeOp, Deletion, HistoryColumns};
 
 use super::super::admitted;
 use super::super::changes::merge_changes;
@@ -175,7 +175,7 @@ fn rows_without_their_sequence_or_their_key_s_column_are_refused_under_their_cod
         &(Arc::new(BinaryArray::from(vec![None::<&[u8]>])) as ArrayRef),
     );
     // A plain merge table's rows need their sequence too, and a batch its sequence column.
-    let plain = rdlt_connector::MergeKey {
+    let plain = crate::MergeKey {
         changes: None,
         ..key(Deletion::Hard)
     };
@@ -205,7 +205,7 @@ fn rows_without_their_sequence_or_their_key_s_column_are_refused_under_their_cod
 
 #[test]
 fn a_delete_or_a_truncate_of_a_soft_history_table_says_when_or_is_refused() {
-    let history = rdlt_connector::MergeKey {
+    let history = crate::MergeKey {
         history: Some(HistoryColumns {
             valid_from: "from".into(),
             valid_to: "to".into(),
@@ -234,7 +234,7 @@ fn a_delete_or_a_truncate_of_a_soft_history_table_says_when_or_is_refused() {
         // A table that keeps no history takes a deletion that says no time, and so does a
         // history table whose deletes remove.
         admitted(&untimed, None, &key(soft())).expect("no history");
-        let hard = rdlt_connector::MergeKey {
+        let hard = crate::MergeKey {
             history: history.history.clone(),
             ..key(Deletion::Hard)
         };
@@ -252,12 +252,12 @@ fn a_refusal_is_a_data_error_under_its_code_and_any_other_failure_the_merge_s_ow
     }]);
     let refused = admitted(&batch, None, &key(Deletion::Hard)).expect_err("a flag on the key");
     let error = failed("merging rows", refused);
-    assert_eq!(error.kind(), rdlt_connector::ConnectorErrorKind::Data);
+    assert_eq!(error.kind(), crate::ConnectorErrorKind::Data);
     assert_eq!(error.code(), Some("flag_on_key"));
     let own = ArrowError::ComputeError("an index out of bounds".to_owned());
     assert_eq!(code(&own), None);
     let error = failed("merging rows", own);
-    assert_eq!(error.kind(), rdlt_connector::ConnectorErrorKind::Internal);
+    assert_eq!(error.kind(), crate::ConnectorErrorKind::Internal);
     assert_eq!(error.code(), None);
     // Each keeps what was refused, or what failed, as its cause.
     for (error, said) in [

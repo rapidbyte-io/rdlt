@@ -10,14 +10,13 @@ use std::time::SystemTime;
 
 use arrow_array::RecordBatch;
 use parking_lot::Mutex;
+use rdlt_connector::merge::Merged;
 use rdlt_connector::prelude::*;
 use rdlt_connector::{
     CommitSeq, DeleteModes, Epoch, GenerationId, LoadId, PipelineId, SchemaChanges, SegmentId,
     SegmentSet, StateRecord, TablePath, TypeKind,
 };
 use rdlt_wire::limits::count;
-
-use crate::merge::Merged;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use table::{Plan, Staged, Table, holds_key};
@@ -344,7 +343,7 @@ impl Session for MemorySession {
     }
 
     async fn writer(&mut self, table: &TableRef) -> Result<MemoryWriter> {
-        crate::merge::refuse_history_generation(table)?;
+        rdlt_connector::merge::refuse_history_generation(table)?;
         let mut store = self.store.lock();
         if let Some(key) = &table.merge {
             let held = store.tables.get(&*table.name);

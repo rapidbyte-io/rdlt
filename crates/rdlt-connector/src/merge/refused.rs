@@ -4,8 +4,8 @@
 //! Arrow's error, which the merge's own failures are too, and [`failed`] gives it back as a
 //! connector's error with its code.
 
+use crate::ConnectorError;
 use arrow_schema::ArrowError;
-use rdlt_connector::ConnectorError;
 
 /// A change flags its key or its sequence, which every change sets, unchanged.
 pub(crate) const FLAG_ON_KEY: &str = "flag_on_key";
@@ -81,7 +81,7 @@ pub(crate) fn code(error: &ArrowError) -> Option<&'static str> {
 
 /// `error`, met while `doing`, as a connector's, which keeps it as its cause: a refusal is a
 /// `Data` error under its code, and anything else a failure of the merge itself.
-pub(crate) fn failed(doing: &str, error: ArrowError) -> ConnectorError {
+pub fn failed(doing: &str, error: ArrowError) -> ConnectorError {
     let message = format!("{doing}: {error}");
     match code(&error) {
         Some(code) => ConnectorError::data(message).with_code(code),
