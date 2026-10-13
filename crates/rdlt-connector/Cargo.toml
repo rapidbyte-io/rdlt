@@ -48,6 +48,7 @@ arrow-schema.workspace = true
 arrow-select = { workspace = true, optional = true }
 base64.workspace = true
 bytes.workspace = true
+chrono.workspace = true
 rdlt-connector-macros = { workspace = true, optional = true }
 rdlt-wire.workspace = true
 regex-syntax = { workspace = true, optional = true }

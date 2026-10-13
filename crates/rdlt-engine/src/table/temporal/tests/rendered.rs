@@ -17,6 +17,21 @@ use super::super::text;
 use crate::table::convert::json;
 
 const NANOS: i128 = 1_000_000_000;
+
+/// The wall-clock time `value`, of `unit`, where `chrono` can hold it.
+fn naive(value: i64, unit: TimeUnit) -> Option<chrono::NaiveDateTime> {
+    use arrow_array::temporal_conversions::as_datetime;
+    use arrow_array::types::{
+        TimestampMicrosecondType, TimestampMillisecondType, TimestampNanosecondType,
+        TimestampSecondType,
+    };
+    match unit {
+        TimeUnit::Second => as_datetime::<TimestampSecondType>(value),
+        TimeUnit::Millisecond => as_datetime::<TimestampMillisecondType>(value),
+        TimeUnit::Microsecond => as_datetime::<TimestampMicrosecondType>(value),
+        TimeUnit::Nanosecond => as_datetime::<TimestampNanosecondType>(value),
+    }
+}
 const DAY: i128 = 86_400 * NANOS;
 
 /// Nanoseconds in one `unit`.
@@ -365,7 +380,7 @@ fn each_value_arrow_renders_renders_as_arrow_renders_it() {
     ] {
         // A day either side of chrono's ends keeps Arrow's formatter from panicking.
         let held = |value: i64| {
-            super::super::naive(value, unit).is_some_and(|utc| {
+            naive(value, unit).is_some_and(|utc| {
                 utc.checked_add_signed(TimeDelta::days(1)).is_some()
                     && utc.checked_sub_signed(TimeDelta::days(1)).is_some()
             })
@@ -378,7 +393,7 @@ fn each_value_arrow_renders_renders_as_arrow_renders_it() {
                     let tz: Tz = zone.parse().unwrap();
                     let whole = |value: i64| {
                         held(value)
-                            && super::super::naive(value, unit).is_some_and(|utc| {
+                            && naive(value, unit).is_some_and(|utc| {
                                 tz.offset_from_utc_datetime(&utc).fix().local_minus_utc() % 60 == 0
                             })
                     };
@@ -398,14 +413,14 @@ fn each_value_arrow_renders_renders_as_arrow_renders_it() {
         2_932_897,
         i32::MAX,
     ];
-    let dated = |day: i64| super::super::naive(day * 86_400, TimeUnit::Second).is_some();
+    let dated = |day: i64| naive(day * 86_400, TimeUnit::Second).is_some();
     let date32: ArrayRef = Arc::new(Date32Array::from(days.clone()));
     compared += as_arrow_renders(&date32, &dated);
     let millis: Vec<i64> = days
         .iter()
         .map(|day| i64::from(*day) * 86_400_000 - 1)
         .collect();
-    let dated_ms = |ms: i64| super::super::naive(ms.div_euclid(1_000), TimeUnit::Second).is_some();
+    let dated_ms = |ms: i64| naive(ms.div_euclid(1_000), TimeUnit::Second).is_some();
     let date64: ArrayRef = Arc::new(Date64Array::from(millis));
     compared += as_arrow_renders(&date64, &dated_ms);
     assert!(compared > 500, "only {compared} values compared");

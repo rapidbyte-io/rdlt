@@ -4,7 +4,9 @@ use arrow_array::cast::AsArray;
 use arrow_array::{Array, Int64Array};
 use serde::de::Expected;
 
-use super::{Key, Rendering, escape, json_text};
+use rdlt_connector::json::write_string;
+
+use super::{Key, Rendering, json_text};
 
 #[test]
 fn a_key_says_what_it_expects() {
@@ -37,7 +39,7 @@ proptest! {
         text in prop_oneof![any::<String>(), "[\\x00-\\x7f]{0,16}", "[\"\\\\/\\x00-\\x1f]{0,8}"],
     ) {
         let mut escaped = String::from("x");
-        escape(&text, &mut escaped);
+        write_string(&text, &mut escaped);
         prop_assert_eq!(&escaped[1..], sonic_rs::to_string(&text).unwrap());
     }
 }
