@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
 use arrow_array::builder::StringViewBuilder;
-use arrow_array::types::Int32Type;
+use arrow_array::types::{Int16Type, Int32Type, Int64Type};
 use arrow_array::{
-    Array, ArrayRef, DictionaryArray, FixedSizeListArray, Int8Array, Int32Array, LargeListArray,
-    LargeListViewArray, ListArray, ListViewArray, MapArray, NullArray, RecordBatch, RunArray,
-    StringArray, StructArray, UnionArray,
+    Array, ArrayRef, DictionaryArray, FixedSizeListArray, Int8Array, Int16Array, Int32Array,
+    Int64Array, LargeListArray, LargeListViewArray, ListArray, ListViewArray, MapArray, NullArray,
+    RecordBatch, RunArray, StringArray, StructArray, UnionArray,
 };
 use arrow_buffer::{OffsetBuffer, ScalarBuffer};
 use arrow_ipc::writer::FileWriter;
@@ -397,6 +397,8 @@ fn a_batch_whose_frame_is_the_limit_fits_and_one_byte_less_refuses_it() {
         .expect("a limit");
     assert!(size > 4096, "{size}");
     assert!(unfit(&batch, &limits(size)).unwrap().is_none());
+    // The size counts what the file holds of the frame besides its message and body.
+    fitted_under(&batch, &limits(size)).expect("a frame at the limit reads back");
     let refusal = unfit(&batch, &limits(size - 1))
         .unwrap()
         .expect("one byte over");
@@ -555,15 +557,19 @@ fn holding(items: &ArrayRef) -> Vec<(&'static str, ArrayRef)> {
     let lengths = OffsetBuffer::from_lengths([2, 2, 2]);
     let map = MapArray::new(entry, lengths, entries.clone(), None, false);
     let pairs = FixedSizeListArray::new(field(items), 2, Arc::clone(items), None);
-    let ends = Int32Array::from(vec![1, 2, 3]);
-    let runs = RunArray::<Int32Type>::try_new(&ends, &list(Arc::clone(items), [2, 2, 2])).unwrap();
+    let lists = list(Arc::clone(items), [2, 2, 2]);
+    let short = RunArray::<Int16Type>::try_new(&Int16Array::from(vec![1, 2, 3]), &lists);
+    let runs = RunArray::<Int32Type>::try_new(&Int32Array::from(vec![1, 2, 3]), &lists);
+    let long = RunArray::<Int64Type>::try_new(&Int64Array::from(vec![1, 2, 3]), &lists);
     vec![
         ("list", list(Arc::clone(items), [2, 2, 2])),
         ("large list", Arc::new(large)),
         ("map", Arc::new(map)),
         ("list of structs", list(Arc::new(entries), [2, 2, 2])),
         ("list of pairs", list(Arc::new(pairs), [1, 1, 1])),
-        ("runs of lists", Arc::new(runs)),
+        ("runs of lists, by 16-bit ends", Arc::new(short.unwrap())),
+        ("runs of lists", Arc::new(runs.unwrap())),
+        ("runs of lists, by 64-bit ends", Arc::new(long.unwrap())),
     ]
 }
 
