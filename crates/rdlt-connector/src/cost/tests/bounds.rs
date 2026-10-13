@@ -9,8 +9,8 @@ use arrow_array::types::{
     UInt16Type, UInt32Type, UInt64Type,
 };
 use arrow_array::{
-    Array, ArrayRef, DictionaryArray, GenericListViewArray, Int64Array, ListArray, NullArray,
-    OffsetSizeTrait, PrimitiveArray, RunArray, StringArray, StructArray,
+    Array, ArrayRef, BinaryArray, DictionaryArray, GenericListViewArray, Int64Array, ListArray,
+    NullArray, OffsetSizeTrait, PrimitiveArray, RunArray, StringArray, StructArray,
 };
 use arrow_buffer::{ArrowNativeType, NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow_schema::{DataType, Field, Fields};
@@ -168,13 +168,17 @@ fn values_measured_in_a_step_are_not_remembered<K: ArrowDictionaryKeyType>() {
     // Fixed-width values are measured by arithmetic, whatever their keys.
     assert!(kept.steps <= 4, "{kept:?}");
     assert_eq!(kept.remembered, 0);
+    // A string or bytes is measured from its offsets: a step for its key and one for itself.
     let words: ArrayRef = Arc::new(StringArray::from(vec!["word"; 100]));
-    let short = lists(100, 2);
-    for values in [words, short] {
+    let bytes: ArrayRef = Arc::new(BinaryArray::from(vec![b"word".as_slice(); 100]));
+    for values in [words, bytes] {
         let (kept, _) = measured(&keyed::<K>((0..ROWS).map(|row| row % 100), values));
-        assert!(kept.steps <= 8 * steps(ROWS), "{kept:?}");
+        assert!(kept.steps <= 2 * steps(ROWS) + 4, "{kept:?}");
         assert_eq!(kept.remembered, 0);
     }
+    let (kept, _) = measured(&keyed::<K>((0..ROWS).map(|row| row % 100), lists(100, 2)));
+    assert!(kept.steps <= 8 * steps(ROWS), "{kept:?}");
+    assert_eq!(kept.remembered, 0);
 }
 
 #[test]
@@ -513,4 +517,22 @@ fn no_more_values_are_remembered_than_take_an_eighth_of_the_limit() {
     assert_eq!(pieces.last().map(|piece| piece.end), Some(VALUES));
     assert!(pieces.iter().map(|piece| piece.bytes).sum::<u64>() >= expanded);
     assert_eq!(cut.work().1, 2_048);
+}
+
+#[test]
+fn a_value_is_remembered_only_once_measuring_it_took_more_than_sixteen_steps() {
+    // A string inside a list is read for its escapes, a step for each 64 bytes, beside the step
+    // its range takes: fifteen such steps make sixteen, and sixteen seventeen.
+    for (scanned, remembered) in [(15, 0), (16, 1)] {
+        let word: ArrayRef = Arc::new(StringArray::from(vec!["x".repeat(64 * scanned)]));
+        let words = keyed::<Int32Type>(vec![0; 4], word);
+        let column: ArrayRef = Arc::new(ListArray::new(
+            item(words.data_type().clone()),
+            OffsetBuffer::from_lengths([4]),
+            words,
+            None,
+        ));
+        let kept = work(&column, u64::MAX, false).remembered;
+        assert_eq!(kept, remembered, "{scanned}");
+    }
 }

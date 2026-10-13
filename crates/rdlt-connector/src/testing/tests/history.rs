@@ -43,6 +43,10 @@ pub(super) struct Flaws {
     pub(super) clamp_by_ends: bool,
     /// Skips a change whose key is null: a truncate, which names no key, never applies.
     pub(super) skip_unkeyed: bool,
+    /// Applies a commit's rows in the order they arrive, whatever their sequences.
+    pub(super) ignore_order: bool,
+    /// Hashes rows its own way: stores, and compares, hashes other than those it is sent.
+    pub(super) own_hash: bool,
 }
 
 /// One history table's merge: its key and history columns, and the flaws it has.
@@ -72,8 +76,11 @@ pub(super) fn merge_history(
     let mut rows: Vec<RecordBatch> = incoming
         .iter()
         .flat_map(|batch| (0..batch.num_rows()).map(|row| batch.slice(row, 1)))
+        .map(|row| versioning.hashed(row))
         .collect();
-    rows.sort_by_key(|row| versioning.seq(row));
+    if !flaws.ignore_order {
+        rows.sort_by_key(|row| versioning.seq(row));
+    }
     let mut stored: Vec<RecordBatch> = published
         .iter()
         .flat_map(|batch| (0..batch.num_rows()).map(|row| batch.slice(row, 1)))
@@ -85,6 +92,24 @@ pub(super) fn merge_history(
 }
 
 impl Versioning<'_> {
+    /// `row` with the hash it carries, its bits turned over where the destination hashes rows its
+    /// own way.
+    fn hashed(&self, row: RecordBatch) -> RecordBatch {
+        let column = &*self.history.row_hash;
+        let (true, Ok(at), Some(hash)) = (
+            self.flaws.own_hash,
+            row.schema().index_of(column),
+            Self::bytes(&row, column),
+        ) else {
+            return row;
+        };
+        let own: Vec<u8> = hash.iter().map(|byte| !byte).collect();
+        let own = arrow_array::BinaryArray::from_vec(vec![&own[..]]);
+        let mut columns = row.columns().to_vec();
+        columns[at] = arrow_cast::cast(&own, columns[at].data_type()).expect("a hash");
+        RecordBatch::try_new(row.schema(), columns).expect("a row")
+    }
+
     fn bytes(row: &RecordBatch, column: &str) -> Option<Vec<u8>> {
         let values = row.column_by_name(column)?;
         let values = arrow_cast::cast(values, &DataType::Binary).ok()?;
