@@ -9,8 +9,8 @@ process or each in a process of its own.
 ## Method
 
 - **Batches.** The passthrough bench's ten mixed columns, 441 MB a run: 64 batches of 80 000 rows
-  (6.9 MB each, the frames the default coalescing target makes) or 512 of 10 000 (0.86 MB each),
-  a checkpoint after each, so each batch is one frame.
+  (6.9 MB each, the frames the default coalescing target makes), 512 of 10 000 (0.86 MB each) or
+  5 120 of 1 000 (86 kB each), a checkpoint after each, so each batch is one frame.
 - **Connectors.** The replay source and the IPC sink of the `bench` feature, in process or served
   from the bench's own process:
   - `socket`: over a `UnixStream` pair, as `rdlt-host`'s integration tests serve connectors (the
@@ -35,11 +35,17 @@ process or each in a process of its own.
   each connector process to `connectors`, which a connector process sets on itself
   (`sched_setaffinity`) before its runtime starts, so its workers are as many as those CPUs; by
   default `connectors` is every online CPU outside `cores`.
-- **Cases.** Each of `destination`, `source` and `both` served over each transport in both frame
-  sizes, at the credit the protocol grants: a window that opens at 4 MiB and grows to two of the
-  largest frames taken, over HTTP/2 stream windows of 4 MiB and transport frames of 1 MiB.
-- **Engine.** Within the four cores (2 runtime workers and 2 compute threads), a budget of 1 GiB,
-  one commit. Only the run is timed, not its connections; every run checks every row arrives.
+- **Cases.** Each of `destination`, `source` and `both` served over each transport in large and
+  in small frames, at the credit the protocol grants: a window that opens at 4 MiB and grows to
+  two of the largest frames taken, over HTTP/2 stream windows of 4 MiB and transport frames of
+  1 MiB.
+- **Engine.** Within the four cores (2 runtime workers and 2 compute threads), the default budget
+  of 256 MiB, one commit; the results recorded at `90ce76c2` and before ran within 1 GiB. Only
+  the run is timed, not its connections; every run checks every row arrives.
+- **Readings.** Each process case prints its last run's readings from the host's report, as
+  [passthrough.md](passthrough.md) defines them, a batch counted as a frame. The served sink
+  declares one writer, so every case writes through one lane whatever its partitions: its lanes
+  written say nothing of how the engine spreads partitions over lanes.
 - **CPU.** The CPUs `perf stat` counts busy over each case's runs, every thread of the process,
   the served connectors' included, a GB moved; the median and range over the rounds.
 - **CPU of each process.** In the process cases, for each run, the bench's process's user and
@@ -51,11 +57,15 @@ process or each in a process of its own.
   stat`'s figures for these cases are not recorded: a spawned source makes its batches inside
   the window `perf stat` counts, and a listening connector killed as the bench ends takes its
   counts with it.
-- **Partitions.** Most cases read the batches from one partition. Six process cases read the
-  same batches from four and from eight partitions, each an even share in order
-  (`rdlt_engine::bench::split_replay_config`): both connectors served over the socket and over
-  mutual TLS, and the destination served over mutual TLS, in large frames. The engine reads the
-  partitions side by side, and every write goes over the destination's one connection.
+- **Partitions.** Most cases read the batches from one partition. Eleven process cases read the
+  same batches from several partitions, each an even share in order
+  (`rdlt_engine::bench::split_replay_config`): both connectors served over the socket, as
+  production runs them, in large frames from 4, 8 and 16 partitions, in small frames from 4 and
+  16, and in frames of 1 000 rows from 4 and 16, as the passthrough matrix's cells are read,
+  besides one case of those frames from one partition; and over mutual TLS the destination and
+  both, in large frames from 4 and 8. The engine reads the partitions
+  side by side, and every write goes over the destination's one connection, through one lane:
+  the served sink declares one writer.
 - **Syscalls.** One run of each case in each round, in criterion's test mode under
   `strace -f -c`, its connection's setup included, both ends' threads counted; the median over
   the rounds.
