@@ -33,10 +33,10 @@ pub(crate) struct Rendering {
 }
 
 impl Rendering {
-    /// Readies it for the next value.
+    /// Readies it for the next value; a value that stopped before closing its objects left keys
+    /// only before any later object's own, which closing that object never reads.
     pub(crate) fn clear(&mut self) {
         self.text.clear();
-        self.keys.clear();
         self.unwritten = false;
     }
 }

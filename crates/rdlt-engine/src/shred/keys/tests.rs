@@ -37,9 +37,9 @@ fn keys_belong_to_their_own_object_and_close_with_it() {
     assert_eq!(open.close(text), None);
     open.key(1..2);
     assert_eq!(open.close(text), None);
+    // An object left open, as by a value that stopped, holds keys no later object reads.
     open.open();
     open.key(0..1);
-    open.clear();
     open.open();
     open.key(0..1);
     assert_eq!(open.close(text), None);

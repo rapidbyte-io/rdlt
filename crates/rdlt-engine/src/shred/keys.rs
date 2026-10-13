@@ -16,12 +16,6 @@ pub(crate) struct OpenKeys {
 }
 
 impl OpenKeys {
-    /// Forgets every open object, for a value that stopped before closing them.
-    pub(crate) fn clear(&mut self) {
-        self.keys.clear();
-        self.objects.clear();
-    }
-
     /// Opens an object inside the innermost one.
     pub(crate) fn open(&mut self) {
         self.objects.push(self.keys.len());
