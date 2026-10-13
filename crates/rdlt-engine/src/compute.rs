@@ -207,19 +207,22 @@ impl Pool {
                     // The caller may have stopped waiting; its result is then not needed.
                     drop(sender.send((done, ran)));
                 }));
-                receiver
+                (queued, receiver)
             })
             .collect();
         let mut values = Vec::with_capacity(receivers.len());
-        for receiver in receivers {
+        for (queued, receiver) in receivers {
             let (done, ran) = receiver
                 .await
                 .expect("compute pools run every job they accept");
+            let ended = queued + ran.queued + ran.running;
+            let returned = self.env.instant().saturating_duration_since(ended);
             self.tally.add(|counters| {
                 let pool = &mut counters.pool;
                 pool.jobs = pool.jobs.saturating_add(1);
                 pool.queued = pool.queued.saturating_add(ran.queued);
                 pool.running = pool.running.saturating_add(ran.running);
+                pool.returned = pool.returned.saturating_add(returned);
             });
             match done {
                 Ok(value) => values.push(value),

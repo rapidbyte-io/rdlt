@@ -225,7 +225,7 @@ impl Env for Squares {
 }
 
 #[tokio::test]
-async fn each_job_is_timed_from_its_queueing_to_its_start_and_through_its_run() {
+async fn each_job_is_timed_from_its_queueing_to_its_start_through_its_run_and_back() {
     let env = Squares {
         first: InlineEnv.instant(),
         readings: AtomicU32::new(0),
@@ -233,12 +233,13 @@ async fn each_job_is_timed_from_its_queueing_to_its_start_and_through_its_run() 
     let tally = Arc::new(Tally::default());
     let pool = Pool::new(Arc::new(env), Arc::clone(&tally));
     // Each job reads the clock as it is queued, starts and ends: 0, 1 and 4 seconds, then 9,
-    // 16 and 25.
+    // 16 and 25. Its caller reads it as it takes each result: 36, then 49.
     assert_eq!(pool.run_all([|| 1, || 2]).await, [1, 2]);
     let counted = PoolCounters {
         jobs: 2,
         queued: Duration::from_secs(1 + 7),
         running: Duration::from_secs(3 + 9),
+        returned: Duration::from_secs(32 + 24),
     };
     assert_eq!(tally.counters().pool, counted);
 }
