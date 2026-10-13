@@ -13,11 +13,11 @@ mod reports;
 mod reset;
 mod rows;
 mod scenario;
+mod settle;
 mod streaming;
 mod tables;
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use rdlt_connector::{ColumnPath, PartitionId, PipelineId, ReadMode, StreamName};
 use rdlt_engine::{Engine, Env as _, PipelinePlan, Report, StreamPlan, Until, Waits};
@@ -36,6 +36,7 @@ use expected::Discards;
 pub use pressure::Checked;
 use pressure::explained;
 use scenario::{Scenario, execute_all, pick};
+use settle::settle;
 
 /// Runs before this many have faults injected; the rest run clean, so every phase converges.
 const FAULTY_RUNS: usize = 4;
@@ -358,18 +359,6 @@ fn plan(workload: &Workload, relaxed: &[Relaxed], pipeline: usize) -> PipelinePl
         .expect("the simulated plan is valid")
         .schema(workload.pipeline.engine())
         .with_wal(workload.features.wal)
-}
-
-/// Lets aborted tasks finish, then checks that no task outlived its run.
-async fn settle(seed: Seed) {
-    for _ in 0..16 {
-        tokio::task::yield_now().await;
-    }
-    tokio::time::sleep(Duration::from_secs(1)).await;
-    let alive = tokio::runtime::Handle::current()
-        .metrics()
-        .num_alive_tasks();
-    assert_eq!(alive, 0, "seed {seed}: {alive} tasks outlived their runs");
 }
 
 /// Checks that every offset acknowledged to a stream that cannot read again landed: it was
