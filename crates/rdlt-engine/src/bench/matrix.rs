@@ -118,10 +118,10 @@ impl Cell {
     }
 
     /// The cells a bench run with `args` times, and the group they are timed in: every cell, as
-    /// `full`, where an argument names `full`, as an exact benchmark's name does; the chosen
-    /// ones, as `matrix`, otherwise.
+    /// `full`, where an argument after the program's path names `full`, as an exact benchmark's
+    /// name does; the chosen ones, as `matrix`, otherwise.
     pub fn asked(args: &[String]) -> (&'static str, Vec<Self>) {
-        if args.iter().any(|arg| arg.contains("full")) {
+        if args.iter().skip(1).any(|arg| arg.contains("full")) {
             ("full", Self::full())
         } else {
             ("matrix", Self::chosen())
