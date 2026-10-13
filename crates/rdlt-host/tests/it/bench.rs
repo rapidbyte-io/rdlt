@@ -1,11 +1,14 @@
 //! The served path: the passthrough batches through the engine with the destination, the source
 //! or both served over the wire protocol, over a `UnixStream` pair and over mutual TLS on
-//! loopback, in frames as large as the default coalescing target makes and in eighths of that.
+//! loopback, in frames as large as the default coalescing target makes and in eighths of that;
+//! and both over the socket in processes of their own, as production runs them, from up to
+//! sixteen partitions, also in eightieths.
 //!
 //! Served connectors run in the bench's own process, on the engine's runtime, which measures the
 //! wire path's CPU alone; or each in a process of its own, as in production, the bench's binary
 //! serving as the connector, on the cores [`connector::CORES`] names. Each benchmark prints the
-//! CPU time a gigabyte its runs moved: the bench's process's, and each connector process's.
+//! CPU time a gigabyte its runs moved: the bench's process's, and each connector process's; each
+//! in processes of their own also prints its last run's readings.
 //! The bench lives beside the integration tests to serve connectors as they do.
 
 #![forbid(unsafe_code)]
@@ -31,11 +34,11 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group};
 use nix::sys::time::TimeValLike as _;
 use rdlt_connector::serve::{Listening, Served, serve_listener};
 use rdlt_connector::{ConnectContext, Destination, Role, Source};
-use rdlt_engine::Cores;
 use rdlt_engine::bench::{
-    Cell, Passthrough, Replayed, Sinking, ipc_sink, register, replay_factory, sink_factory,
-    split_replay_config,
+    Cell, Passthrough, Readings, Replayed, Sinking, ipc_sink, register, replay_factory,
+    sink_factory, split_replay_config,
 };
+use rdlt_engine::{Cores, Report};
 use rdlt_host::{
     Connection, ConnectorRef, Identity, Options, Provider as _, Remote, RemoteDestination,
     RemoteSource,
@@ -104,19 +107,25 @@ enum Layout {
 }
 
 /// The batches a run moves, each a frame on the wire: as large as the default coalescing target
-/// makes them, or an eighth of that, the same rows in all.
+/// makes them, an eighth of that, or an eightieth, the same rows in all.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Frames {
     Large,
     Small,
+    Tiny,
 }
 
 impl Frames {
+    /// Every size of frame.
+    const ALL: [Self; 3] = [Self::Large, Self::Small, Self::Tiny];
+
     /// Batches and rows a batch.
     fn shape(self) -> (u32, u32) {
+        let (batches, rows) = (Cell::PAIRED.batches, Cell::PAIRED.rows);
         match self {
-            Self::Large => (Cell::PAIRED.batches, Cell::PAIRED.rows),
-            Self::Small => (Cell::PAIRED.batches * 8, Cell::PAIRED.rows / 8),
+            Self::Large => (batches, rows),
+            Self::Small => (batches * 8, rows / 8),
+            Self::Tiny => (batches * 80, rows / 80),
         }
     }
 
@@ -125,19 +134,18 @@ impl Frames {
         match self {
             Self::Large => "large",
             Self::Small => "small",
+            Self::Tiny => "tiny",
         }
     }
 
     /// The frames whose replay is `name`.
     fn named(name: &str) -> Option<Self> {
-        [Self::Large, Self::Small]
-            .into_iter()
-            .find(|frames| frames.replay() == name)
+        Self::ALL.into_iter().find(|frames| frames.replay() == name)
     }
 
-    /// The frames' place in a pair of slots.
+    /// The frames' place in [`Frames::ALL`].
     fn index(self) -> usize {
-        usize::from(self == Self::Small)
+        self as usize
     }
 
     /// The batches, as [`Passthrough`] makes them.
@@ -162,8 +170,10 @@ struct Case {
 
 impl Case {
     /// Every mode over each transport in large and in small frames, in each layout, read from
-    /// one partition; and in processes of their own, a few of them in large frames read from
-    /// four and from eight.
+    /// one partition; and in processes of their own: a few of them in large frames read from
+    /// four and from eight, and both over the socket, as production runs them, also in large
+    /// frames from sixteen, in small frames from four and sixteen, and in tiny frames from one,
+    /// four and sixteen.
     fn all() -> Vec<Self> {
         let mut cases = Vec::new();
         for layout in [Layout::Shared, Layout::Processes] {
@@ -179,17 +189,19 @@ impl Case {
                 }
             }
         }
-        let split = [
-            (Transport::Socket, Mode::Both),
-            (Transport::Tls, Mode::Destination),
-            (Transport::Tls, Mode::Both),
+        let split: [(Transport, Mode, Frames, &[usize]); 5] = [
+            (Transport::Socket, Mode::Both, Frames::Large, &[4, 8, 16]),
+            (Transport::Socket, Mode::Both, Frames::Small, &[4, 16]),
+            (Transport::Socket, Mode::Both, Frames::Tiny, &[1, 4, 16]),
+            (Transport::Tls, Mode::Destination, Frames::Large, &[4, 8]),
+            (Transport::Tls, Mode::Both, Frames::Large, &[4, 8]),
         ];
-        for (transport, mode) in split {
-            cases.extend([4, 8].map(|partitions| Self {
+        for (transport, mode, frames, counts) in split {
+            cases.extend(counts.iter().map(|&partitions| Self {
                 layout: Layout::Processes,
                 transport,
                 mode,
-                frames: Frames::Large,
+                frames,
                 partitions: NonZeroUsize::new(partitions).expect("a count of partitions"),
             }));
         }
@@ -492,9 +504,9 @@ impl Workload {
         }
     }
 
-    /// Runs `case` `runs` times, each with connectors of its own: how long the runs took, and the
-    /// CPU time they took a gigabyte of the `bytes` each moved.
-    fn timed(&mut self, case: Case, runs: u64, bytes: u64) -> (Duration, Seconds) {
+    /// Runs `case` `runs` times, each with connectors of its own: how long the runs took, the
+    /// CPU time they took a gigabyte of the `bytes` each moved, and the last run's report.
+    fn timed(&mut self, case: Case, runs: u64, bytes: u64) -> (Duration, Seconds, Option<Report>) {
         let passthrough = &self.passthrough;
         let listener = match (case.layout, case.transport) {
             (Layout::Shared, Transport::Tls) => Some(
@@ -509,7 +521,7 @@ impl Workload {
             Layout::Shared => None,
         };
         let options = Options::default();
-        let (mut took, mut usage) = (Duration::ZERO, Usage::default());
+        let (mut took, mut usage, mut last) = (Duration::ZERO, Usage::default(), None);
         for _ in 0..runs {
             let connected = connectors(case, listener, processes.as_deref_mut(), &options);
             let (source, destination, pids) = passthrough.block_on(connected);
@@ -518,9 +530,10 @@ impl Workload {
             let apart = pids.source.is_some() || pids.destination.is_some();
             let held = apart.then(|| (Arc::clone(&source), Arc::clone(&destination)));
             let (started, before) = (Instant::now(), Usage::now(pids));
-            black_box(passthrough.run(source, destination));
+            let report = passthrough.run(source, destination);
             took += started.elapsed();
             Usage::now(pids).add_since(before, &mut usage);
+            last = Some(black_box(report));
             drop(held);
         }
         #[expect(clippy::cast_precision_loss, reason = "bytes stay far below 2^52")]
@@ -540,13 +553,13 @@ impl Workload {
                 destination: usage.destination.map(busy),
             },
         };
-        (took, seconds)
+        (took, seconds, last)
     }
 }
 
 fn served(c: &mut Criterion) {
     let cores = Cores::try_from_host().expect("the host says how many cores the bench may use");
-    let mut workloads: [Option<Workload>; 2] = [None, None];
+    let mut workloads: [Option<Workload>; 3] = [None, None, None];
     let mut used = Vec::new();
     let mut group = c.benchmark_group("served");
     group.sample_size(10);
@@ -558,32 +571,34 @@ fn served(c: &mut Criterion) {
             ..Cell::PAIRED
         });
         group.throughput(Throughput::Bytes(bytes));
-        let mut seconds = Vec::new();
+        let (mut seconds, mut last) = (Vec::new(), None);
         group.bench_function(case.id(), |b| {
             let slot = &mut workloads[case.frames.index()];
             let workload = slot.get_or_insert_with(|| Workload::new(cores, case.frames));
             b.iter_custom(|runs| {
-                let (took, a_gigabyte) = workload.timed(case, runs, bytes);
+                let (took, a_gigabyte, report) = workload.timed(case, runs, bytes);
                 seconds.push(a_gigabyte);
+                last = report.or(last.take());
                 took
             });
         });
         // Only a benchmark that ran has timed its runs, so a listing prints nothing.
         if !seconds.is_empty() {
-            used.push((case, seconds));
+            used.push((case, seconds, last));
         }
     }
     group.finish();
     print(cores, &used);
 }
 
-/// Prints the layout, and the CPU time a gigabyte each case that ran took.
+/// Prints the layout, the CPU time a gigabyte each case that ran took, and the readings of each
+/// case in processes of their own.
 #[expect(
     clippy::print_stdout,
     reason = "criterion reports times; the layout and the CPU time a run takes are printed beside \
               them"
 )]
-fn print(cores: Cores, used: &[(Case, Vec<Seconds>)]) {
+fn print(cores: Cores, used: &[(Case, Vec<Seconds>, Option<Report>)]) {
     if !used.is_empty() {
         let (workers, threads) = (cores.workers(), cores.compute_threads());
         let apart = std::env::var(connector::CORES).map_or_else(
@@ -595,7 +610,7 @@ fn print(cores: Cores, used: &[(Case, Vec<Seconds>)]) {
              on {apart}"
         );
     }
-    for (case, seconds) in used {
+    for (case, seconds, report) in used {
         let total = spread(seconds.iter().map(|sample| Some(sample.total)));
         println!(
             "served/{}/{}: {total} CPU seconds a GB, user and system, over {} samples",
@@ -603,8 +618,12 @@ fn print(cores: Cores, used: &[(Case, Vec<Seconds>)]) {
             case.shape(),
             seconds.len(),
         );
-        if case.layout == Layout::Processes {
+        if let (Layout::Processes, Some(report)) = (case.layout, report) {
             print_sides(*case, seconds);
+            let batches = u64::from(case.frames.shape().0);
+            let threads = cores.compute_threads();
+            let readings = Readings::of(report.elapsed, &report.counters, batches, threads);
+            println!("  readings: {readings}");
         }
     }
 }
