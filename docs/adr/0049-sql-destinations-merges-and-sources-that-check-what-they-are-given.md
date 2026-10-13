@@ -154,6 +154,19 @@ generated sources were written before it, and each took something as given:
   the text. A `Date64` that is no whole day is the day it falls in, as the engine reads it.
   - Temporal values widen through `rdlt_connector::instants`, as the engine's do (ADR 0046): a
     date is its midnight in UTC, and a zone never moves an instant.
+  - A column that widens to `Json`, at any depth, holds each stored value as the JSON text the
+    engine writes of a value of its type into a `Json` column: text a JSON string escaped as
+    the engine escapes one, booleans and numbers their JSON text, a decimal its digits as
+    written, a float the shortest text that reads back as it, bytes a string of hex, a UUID its
+    hyphenated string, a temporal value a string of its exact text, a struct an object of every
+    field and a list an array. A value that was `Json` stays as it is. Text the engine rendered
+    a value of a type the destination does not store as, its field naming the type, becomes
+    the JSON of that value, as rows written after the widen hold it: `4450` a number, `true` a
+    boolean. A merged row keeps the type its field names, and rows naming other types are
+    given back, and folded, apart. A test pins the merge's text to the engine's for every type
+    it draws, stored as itself or as text.
+  - A destination of JSON lines refuses a widen to `Json` of a column whose table holds rows,
+    as `schema_conflict`: a line holds no type, so text and JSON text are one there.
 - **A schema change the held rows do not fit is refused where it is applied.** The memory
   destination converts what a table holds, its rows, generations and tombstones, before a
   column takes a type, and refuses the change as `schema_conflict`: the table stays at the
@@ -220,7 +233,8 @@ generated sources were written before it, and each took something as given:
     of the table, its generations, what the session staged, and its tombstones under the
     tombstone schema of the changed table, whose sequence is the bytes it compares by; it is
     refused as `schema_conflict` where a value does not fit, and a change of no column's type
-    reads nothing. The rows are read before the table's lock is taken, and the change is taken
+    reads nothing, but for a widen to `Json` of a table of JSON lines, refused where it holds
+    rows. The rows are read before the table's lock is taken, and the change is taken
     under the lock only where the schema, the manifest and the staged files are those that
     were read; a table that changed meanwhile is read again, three times, then answered as
     transient (`table_changed`).

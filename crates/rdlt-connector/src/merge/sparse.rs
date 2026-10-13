@@ -5,6 +5,10 @@
 //! table's types, and a merged row is found by the rows its cells come from. Rows that hold the
 //! same columns are given back together, so a table is as many batches as its rows have shapes,
 //! and a row of many columns among many rows of few costs its own cells alone.
+//!
+//! A column whose text the engine rendered values of a type the destination does not store as
+//! names that type in its field, and a merged row keeps the name: rows whose columns name other
+//! types are given back apart.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -13,7 +17,8 @@ use arrow_array::{Array, ArrayRef, RecordBatch, RecordBatchOptions, UInt32Array,
 use arrow_schema::{ArrowError, DataType, Schema, SchemaRef};
 
 use super::refused::{VALUE_UNHOLDABLE, refused};
-use super::retype::retyped;
+use super::rendered::is_json;
+use super::retype::{column_as, fitted};
 
 /// A row of a source batch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -37,6 +42,10 @@ impl Nulls {
     }
 }
 
+/// The columns a batch holds, by ascending place in the table's schema, each with the type its
+/// field names its text as rendered from, where it names one.
+type Held = Vec<(usize, Option<String>)>;
+
 /// One batch a merge reads: the columns one of its rows holds a value in, by their place in
 /// the table's schema, each under the table's type.
 #[derive(Debug)]
@@ -44,6 +53,8 @@ struct Source {
     rows: usize,
     /// The held columns, by ascending place in the schema.
     held: Vec<(usize, ArrayRef)>,
+    /// The type each held column's field names its text as rendered from, by place.
+    named: BTreeMap<usize, String>,
 }
 
 impl Source {
@@ -76,18 +87,26 @@ impl Sources {
     /// it. A value the schema's type cannot hold fails.
     pub(super) fn add(&mut self, batch: &RecordBatch) -> Result<(), ArrowError> {
         let mut held = Vec::new();
+        let mut named_columns = BTreeMap::new();
         for (column, field) in self.schema.fields().iter().enumerate() {
-            let Some(values) = batch.column_by_name(field.name()) else {
+            let Some((index, from)) = batch.schema_ref().column_with_name(field.name()) else {
                 continue;
             };
+            let values = batch.column(index);
             if values.null_count() == values.len() {
                 continue;
             }
-            held.push((column, retyped(values, field.data_type())?));
+            // A value that becomes JSON is its value's JSON, which names no other type.
+            let rendered = is_json(field) && !is_json(from);
+            if !rendered && let Some(named) = from.metadata().get(crate::LOGICAL_TYPE_KEY) {
+                named_columns.insert(column, named.clone());
+            }
+            held.push((column, fitted(values, from, field)?));
         }
         self.list.push(Source {
             rows: batch.num_rows(),
             held,
+            named: named_columns,
         });
         Ok(())
     }
@@ -96,7 +115,11 @@ impl Sources {
     /// it is: for values a merge computes of its rows, which no batch carries.
     pub(super) fn add_held(&mut self, rows: usize, mut held: Vec<(usize, ArrayRef)>) -> usize {
         held.sort_by_key(|(column, _)| *column);
-        self.list.push(Source { rows, held });
+        self.list.push(Source {
+            rows,
+            held,
+            named: BTreeMap::new(),
+        });
         self.list.len() - 1
     }
 
@@ -112,6 +135,16 @@ impl Sources {
     /// How many rows the source at `source` has.
     pub(super) fn rows(&self, source: usize) -> usize {
         self.list[source].rows
+    }
+
+    /// The columns the source at `source` holds, each with the type it names.
+    fn held(&self, source: usize) -> Held {
+        let from = &self.list[source];
+        let named = |column: usize| from.named.get(&column).cloned();
+        from.held
+            .iter()
+            .map(|(column, _)| (*column, named(*column)))
+            .collect()
     }
 
     /// The column at `column` of the source at `source`, where it holds one.
@@ -190,7 +223,7 @@ pub(super) fn assemble<'a>(
     // Rows that are one source row whole, by source, in the order given; the others by the
     // columns they hold.
     let mut whole: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
-    let mut composed: BTreeMap<Vec<usize>, Vec<Pick<'a>>> = BTreeMap::new();
+    let mut composed: BTreeMap<Held, Vec<Pick<'a>>> = BTreeMap::new();
     for pick in picks {
         match pick.whole() {
             Some(at) => whole.entry(at.source).or_default().push(at.row),
@@ -200,10 +233,9 @@ pub(super) fn assemble<'a>(
                 .push(pick),
         }
     }
-    let mut shaped: BTreeMap<Vec<usize>, Vec<RecordBatch>> = BTreeMap::new();
+    let mut shaped: BTreeMap<Held, Vec<RecordBatch>> = BTreeMap::new();
     for (source, rows) in whole {
-        let held = &sources.list[source].held;
-        let columns: Vec<usize> = held.iter().map(|(column, _)| *column).collect();
+        let columns = sources.held(source);
         let batch = taken(sources, source, &rows)?;
         shaped.entry(columns).or_default().push(batch);
     }
@@ -221,8 +253,9 @@ pub(super) fn assemble<'a>(
         .collect()
 }
 
-/// The columns `pick`'s row holds: those one of its cells comes from a source that holds it.
-fn shape(sources: &Sources, pick: &Pick<'_>) -> Vec<usize> {
+/// The columns `pick`'s row holds: those one of its cells comes from a source that holds it,
+/// each with the type that source names its text as rendered from.
+fn shape(sources: &Sources, pick: &Pick<'_>) -> Held {
     let held = |column: usize, at: Option<At>| {
         at.is_some_and(|at| sources.column(at.source, column).is_some())
     };
@@ -242,13 +275,30 @@ fn shape(sources: &Sources, pick: &Pick<'_>) -> Vec<usize> {
     columns.extend(apart.map(|(column, _)| *column));
     columns.sort_unstable();
     columns
+        .into_iter()
+        .map(|column| {
+            let source = pick.cell(column).map(|at| at.source);
+            let named = source.and_then(|source| sources.list[source].named.get(&column));
+            (column, named.cloned())
+        })
+        .collect()
 }
 
-/// The schema of a batch holding `columns` of `schema`.
-fn held_schema(schema: &SchemaRef, columns: &[usize]) -> SchemaRef {
+/// The schema of a batch holding `columns` of `schema`, each naming what it names.
+fn held_schema(schema: &SchemaRef, columns: &Held) -> SchemaRef {
     let fields: Vec<_> = columns
         .iter()
-        .map(|column| Arc::clone(&schema.fields()[*column]))
+        .map(|(column, named)| {
+            let field = Arc::clone(&schema.fields()[*column]);
+            match named {
+                Some(named) => {
+                    let mut metadata = field.metadata().clone();
+                    metadata.insert(crate::LOGICAL_TYPE_KEY.to_owned(), named.clone());
+                    Arc::new(field.as_ref().clone().with_metadata(metadata))
+                }
+                None => field,
+            }
+        })
         .collect();
     Arc::new(Schema::new(fields))
 }
@@ -271,8 +321,7 @@ fn index(row: usize) -> Result<u32, ArrowError> {
 /// holds; the source's own arrays where the rows are all of them in order.
 fn taken(sources: &Sources, source: usize, rows: &[usize]) -> Result<RecordBatch, ArrowError> {
     let from = &sources.list[source];
-    let columns: Vec<usize> = from.held.iter().map(|(column, _)| *column).collect();
-    let schema = held_schema(&sources.schema, &columns);
+    let schema = held_schema(&sources.schema, &sources.held(source));
     let all = rows.len() == from.rows && rows.iter().enumerate().all(|(place, row)| place == *row);
     if all {
         let arrays = from.held.iter().map(|(_, values)| Arc::clone(values));
@@ -294,11 +343,11 @@ fn taken(sources: &Sources, source: usize, rows: &[usize]) -> Result<RecordBatch
 /// from the row it comes from.
 fn composed_batch(
     sources: &Sources,
-    columns: &[usize],
+    columns: &Held,
     picks: &[Pick<'_>],
 ) -> Result<RecordBatch, ArrowError> {
     let mut arrays = Vec::with_capacity(columns.len());
-    for column in columns {
+    for (column, _) in columns {
         let null = new_null_array(sources.schema.field(*column).data_type(), 1);
         // The sources the column's cells come from, each once, the null last.
         let mut places: HashMap<usize, usize> = HashMap::new();
@@ -362,10 +411,10 @@ pub(super) fn every_column(
             let columns = schema
                 .fields()
                 .iter()
-                .map(|field| match sparse.column_by_name(field.name()) {
+                .map(|field| {
                     // A batch kept since before its column widened holds the type it had.
-                    Some(column) => retyped(column, field.data_type()),
-                    None => Ok(nulls.of(field.data_type(), rows)),
+                    column_as(sparse, field)
+                        .unwrap_or_else(|| Ok(nulls.of(field.data_type(), rows)))
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             batch(Arc::clone(&read), columns, rows)

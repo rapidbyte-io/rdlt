@@ -20,7 +20,7 @@ use arrow_row::RowConverter;
 use arrow_schema::{ArrowError, DataType, Field, Schema, SchemaRef};
 
 use super::key_columns;
-use super::retype::{compared, retyped};
+use super::retype::{column_as, compared};
 use super::sparse::{At, Nulls, Sources};
 
 /// Where a tombstone's key values come from.
@@ -75,9 +75,9 @@ fn stored_under(batches: &[RecordBatch], schema: &SchemaRef) -> Result<RecordBat
             let columns = schema
                 .fields()
                 .iter()
-                .map(|field| match batch.column_by_name(field.name()) {
-                    Some(column) => retyped(column, field.data_type()),
-                    None => Ok(new_null_array(field.data_type(), batch.num_rows())),
+                .map(|field| {
+                    column_as(batch, field)
+                        .unwrap_or_else(|| Ok(new_null_array(field.data_type(), batch.num_rows())))
                 })
                 .collect::<Result<Vec<ArrayRef>, _>>()?;
             RecordBatch::try_new(Arc::clone(schema), columns)

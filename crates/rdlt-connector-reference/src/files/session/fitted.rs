@@ -9,10 +9,11 @@ use arrow_array::RecordBatch;
 use parking_lot::Mutex;
 use rdlt_connector::merge;
 use rdlt_connector::prelude::*;
-use rdlt_connector::{ConnectorErrorKind, SegmentId, TableSchema};
+use rdlt_connector::{ConnectorErrorKind, LogicalType, SegmentId, TableSchema};
 
 use super::{Location, Shared};
 use crate::columns::changed;
+use crate::files::format::FileFormat;
 use crate::files::manifest::{self, Listed};
 use crate::files::tables;
 
@@ -55,6 +56,31 @@ fn retyped(current: &TableSchema, next: &TableSchema) -> bool {
     })
 }
 
+/// Whether a column of `current`, or a field within one, that is not `Json` is `Json` in `next`.
+fn into_json(current: &TableSchema, next: &TableSchema) -> bool {
+    current.fields().iter().any(|field| {
+        next.field(field.name())
+            .is_some_and(|now| gains_json(field.logical_type(), now.logical_type()))
+    })
+}
+
+/// Whether `to` is `Json` where `from`, or a field or item within it, is not.
+fn gains_json(from: &LogicalType, to: &LogicalType) -> bool {
+    match (from, to) {
+        (LogicalType::Json, _) => false,
+        (_, LogicalType::Json) => true,
+        (LogicalType::Struct(held), LogicalType::Struct(taken)) => held.iter().any(|field| {
+            taken
+                .get(field.name())
+                .is_some_and(|now| gains_json(field.logical_type(), now.logical_type()))
+        }),
+        (LogicalType::List(held), LogicalType::List(taken)) => {
+            gains_json(held.logical_type(), taken.logical_type())
+        }
+        _ => false,
+    }
+}
+
 /// The files of `table` the session staged and has not committed.
 fn staged(shared: &Mutex<Shared>, table: &str) -> Vec<Listed> {
     let shared = shared.lock();
@@ -70,8 +96,9 @@ fn staged(shared: &Mutex<Shared>, table: &str) -> Vec<Listed> {
 /// session staged for it, must fit the type its column would take.
 ///
 /// A change one of them does not fit is a `Data` error coded `schema_conflict`, and leaves the
-/// table as it was: a table that took it would merge no more. A change of no column's type
-/// reads no file.
+/// table as it was: a table that took it would merge no more. So is a change that makes a column
+/// of a table of JSON lines holding rows `Json`: a line holds no type, so its value would be
+/// read as JSON text whatever it was written as. A change of no column's type reads no file.
 ///
 /// The table's lock is not held here, since this reads the whole table: the change is taken
 /// under the lock only where [`Checked::stands`] finds the table as it was checked.
@@ -85,10 +112,13 @@ pub(super) fn fits(
         return Ok(Checked::default());
     };
     // A change the schema refuses is refused where it is taken.
-    let next = match changed(Some(&current), change) {
-        Ok(next) if retyped(&current, &next) => next,
-        _ => return Ok(Checked::default()),
+    let Ok(next) = changed(Some(&current), change) else {
+        return Ok(Checked::default());
     };
+    let lines_into_json = location.format == FileFormat::Jsonl && into_json(&current, &next);
+    if !lines_into_json && !retyped(&current, &next) {
+        return Ok(Checked::default());
+    }
     let (held, taken) = (Arc::new(current.to_arrow()), Arc::new(next.to_arrow()));
     let manifest = manifest::latest(&location.dir)?;
     let version = manifest.as_ref().map(|manifest| manifest.version);
@@ -109,6 +139,18 @@ pub(super) fn fits(
         merge::holds(&rows, &taken).map_err(conflict)?;
     }
     let staged = staged(shared, name);
+    let holding = table
+        .files
+        .iter()
+        .chain(table.generations.values().flatten());
+    let held_rows = holding.chain(&table.tombstones).any(|file| file.rows != 0);
+    if lines_into_json && (held_rows || !staged.is_empty()) {
+        return Err(ConnectorError::data(format!(
+            "table {name} keeps its rows as JSON lines, which hold no type: a column holding \
+             them cannot become Json"
+        ))
+        .with_code("schema_conflict"));
+    }
     for file in &staged {
         let rows = manifest::read(&location.dir, &file.path, &held)?;
         merge::holds(&rows, &taken).map_err(conflict)?;
