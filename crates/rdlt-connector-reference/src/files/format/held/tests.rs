@@ -169,6 +169,8 @@ fn a_line_that_is_no_one_record_or_lacks_a_column_every_row_holds_is_refused() {
     for line in [
         "[1]\n",
         "7\n",
+        "]\n",
+        "}\n",
         "{\"id\":1} {\"id\":2}\n",
         "{\"id\":1}{\"id\":2}\n",
         "{\"id\":1}]\n",
@@ -292,4 +294,61 @@ fn a_column_no_line_of_a_batch_names_costs_the_batch_nothing() {
     assert!(columns == 1_001 && rows <= most, "{widest:?}");
     // Every column of every row would be 160 MB.
     assert!(held < 2 * 1024 * 1024, "the batches hold {held} bytes");
+}
+
+/// The columns and rows of each batch `lines` read as under `schema`.
+fn sizes(lines: &str, schema: &SchemaRef) -> Vec<(usize, usize)> {
+    let mut rows = Held::new(file_of(lines), schema);
+    let mut sizes = Vec::new();
+    while let Some(batch) = rows.next().unwrap() {
+        sizes.push((batch.num_columns(), batch.num_rows()));
+    }
+    sizes
+}
+
+#[test]
+fn a_long_run_ends_at_the_first_line_that_would_leave_it_lacking_more_cells_than_it_holds() {
+    // A run of every column, then of `a` beside the id on `named` lines and of the id alone on
+    // the rest, to the length a run is left to gather; then lines of the id alone.
+    let lines = |named: usize| {
+        let mut lines = String::from("{\"id\":0,\"a\":1,\"b\":\"x\",\"c\":1.5}\n");
+        for id in 1..RUN_ROWS + 10 {
+            if id <= named {
+                writeln!(lines, "{{\"id\":{id},\"a\":1}}").unwrap();
+            } else {
+                writeln!(lines, "{{\"id\":{id}}}").unwrap();
+            }
+        }
+        lines
+    };
+    // The run's 256 rows hold 511 cells and lack 513: another line would hold 512 and lack 516.
+    let (run, rest) = (RUN_ROWS, 10);
+    assert_eq!(
+        sizes(&lines(RUN_ROWS - 4), &schema()),
+        [(4, run), (1, rest)]
+    );
+    // Holding 513, they would hold 514 and lack as many: the line is taken, and the next is not.
+    let taken = [(4, run + 1), (1, rest - 1)];
+    assert_eq!(sizes(&lines(RUN_ROWS - 2), &schema()), taken);
+}
+
+#[test]
+fn a_short_run_ends_only_where_a_line_would_leave_it_lacking_more_than_its_absent_cells() {
+    // A line of 513 columns after 128 of the id alone would leave the run lacking 128 cells of
+    // each of the 512 other columns: exactly the cells a short run may lack.
+    let columns = RUN_ABSENT_CELLS / 128;
+    let wide: Vec<Field> = std::iter::once(Field::new("id", DataType::Int64, false))
+        .chain((0..columns).map(|column| Field::new(format!("c{column}"), DataType::Int64, true)))
+        .collect();
+    let wide: SchemaRef = Arc::new(Schema::new(wide));
+    let mut lines = String::new();
+    for id in 0..128 {
+        writeln!(lines, "{{\"id\":{id}}}").unwrap();
+    }
+    write!(lines, "{{\"id\":128").unwrap();
+    for column in 0..columns {
+        write!(lines, ",\"c{column}\":7").unwrap();
+    }
+    writeln!(lines, "}}\n{{\"id\":129}}").unwrap();
+    assert_eq!(sizes(&lines, &wide), [(columns + 1, 129), (1, 1)]);
 }

@@ -145,6 +145,20 @@ async fn an_owner_record_whose_name_the_database_takes_for_another_table_drops_n
 }
 
 #[tokio::test]
+async fn an_owner_record_under_a_name_no_table_may_take_fails_its_pipeline_s_open() {
+    let shared = Shared::new().await;
+    drop(shared.open("p", 1).await);
+    shared.execute("INSERT INTO _rdlt_owners (name, pipeline) VALUES ('Orders', 'p')");
+    let context = OpenContext {
+        pipeline: PipelineId::parse("p").expect("a valid pipeline id"),
+        load_id: LoadId::from_parts(std::time::UNIX_EPOCH, 2),
+    };
+    // Only a record of a table the database holds under another name is passed over.
+    let opened = shared.destination.open(&context).await.map(drop);
+    assert_eq!(refusal(opened), config("table_name_reserved"));
+}
+
+#[tokio::test]
 async fn a_derived_table_the_database_holds_in_another_case_is_a_clash() {
     let derived = [
         ("_RDLT_STAGING__orders", false),
