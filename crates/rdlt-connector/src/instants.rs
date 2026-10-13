@@ -10,6 +10,9 @@
 
 #[cfg(test)]
 mod tests;
+mod text;
+
+pub use text::Renderer;
 
 use arrow_array::cast::AsArray;
 use arrow_array::types::{

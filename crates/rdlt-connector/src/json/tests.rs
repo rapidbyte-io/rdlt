@@ -1,7 +1,7 @@
 use arrow_array::{Array, Float32Array, Float64Array};
 use proptest::prelude::*;
 
-use super::write_float;
+use super::{write_float, write_string};
 
 fn written(array: &dyn Array, row: usize) -> String {
     let mut out = Vec::new();
@@ -49,5 +49,38 @@ proptest! {
     ) {
         let text = written(&Float32Array::from(vec![value]), 0);
         prop_assert_eq!(text.parse::<f64>().unwrap().to_bits(), f64::from(value).to_bits());
+    }
+}
+
+fn string(text: &str) -> String {
+    let mut out = String::from("x");
+    write_string(text, &mut out);
+    out.split_off(1)
+}
+
+#[test]
+fn a_string_is_written_quoted_with_only_quotes_backslashes_and_control_characters_escaped() {
+    let cases = [
+        ("", r#""""#),
+        ("plain", r#""plain""#),
+        ("\"", r#""\"""#),
+        ("\\", r#""\\""#),
+        ("/", r#""/""#),
+        ("\n\r\t\u{8}\u{c}", r#""\n\r\t\b\f""#),
+        ("\u{0}\u{1}\u{1f}", r#""\u0000\u0001\u001f""#),
+        ("\u{7f}", "\"\u{7f}\""),
+        ("\u{2028}\u{2029}", "\"\u{2028}\u{2029}\""),
+        ("é😀", "\"é😀\""),
+        ("a\"b\\c\u{1b}d", r#""a\"b\\c\u001bd""#),
+    ];
+    for (text, json) in cases {
+        assert_eq!(string(text), json, "{text:?}");
+    }
+}
+
+proptest! {
+    #[test]
+    fn a_string_is_written_as_serde_json_writes_it(text in any::<String>()) {
+        prop_assert_eq!(string(&text), serde_json::to_string(&text).unwrap());
     }
 }

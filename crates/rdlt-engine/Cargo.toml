@@ -29,7 +29,6 @@ arrow-select.workspace = true
 blake3.workspace = true
 bytes.workspace = true
 crc32c.workspace = true
-chrono.workspace = true
 fail = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 getrandom.workspace = true
@@ -57,6 +56,7 @@ nix = { workspace = true, features = ["signal", "user"] }
 rustix = { workspace = true, features = ["process", "thread", "time"] }
 
 [dev-dependencies]
+chrono.workspace = true
 criterion.workspace = true
 object_store.workspace = true
 peak_alloc.workspace = true

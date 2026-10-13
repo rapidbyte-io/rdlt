@@ -14,6 +14,7 @@ use serde::de::{DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 
 use arrow_array::builder::StringBuilder;
 use arrow_array::{Array, ArrayRef};
+use rdlt_connector::json::write_string;
 
 use super::ShredError;
 use super::build::{Scalar, scalar_at};
@@ -41,38 +42,6 @@ impl Rendering {
     }
 }
 
-/// Writes `text` onto `out` as a JSON string, quoted, escaped as sonic-rs escapes one: `"` and `\`
-/// behind a backslash, the control characters JSON names by a letter so, the others as `\u00XX`,
-/// and every other character as it is.
-pub(crate) fn escape(text: &str, out: &mut String) {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    out.push('"');
-    let mut plain = 0;
-    for (at, byte) in text.bytes().enumerate() {
-        let escaped = match byte {
-            b'"' => "\\\"",
-            b'\\' => "\\\\",
-            b'\n' => "\\n",
-            b'\r' => "\\r",
-            b'\t' => "\\t",
-            0x08 => "\\b",
-            0x0c => "\\f",
-            0..0x20 => "\\u00",
-            _ => continue,
-        };
-        // An escaped byte is ASCII, so `at` is a character's boundary.
-        out.push_str(text.get(plain..at).unwrap_or_default());
-        out.push_str(escaped);
-        if escaped == "\\u00" {
-            out.push(char::from(HEX[usize::from(byte >> 4)]));
-            out.push(char::from(HEX[usize::from(byte & 0xf)]));
-        }
-        plain = at + 1;
-    }
-    out.push_str(text.get(plain..).unwrap_or_default());
-    out.push('"');
-}
-
 /// Writes `value` onto `out` as JSON text, as it was read; a float or an integer beyond 76 digits,
 /// whose text JSON text keeps as it was written, writes nothing.
 pub(crate) fn scalar(value: Scalar<'_>, out: &mut String) {
@@ -82,7 +51,7 @@ pub(crate) fn scalar(value: Scalar<'_>, out: &mut String) {
         Scalar::Wide(value) => integer(value, out),
         Scalar::Huge(value) => integer(value, out),
         Scalar::Vast(value) => integer(value, out),
-        Scalar::Text(value) => escape(value, out),
+        Scalar::Text(value) => write_string(value, out),
         Scalar::Float(_) | Scalar::Beyond => {}
     }
 }
@@ -202,7 +171,7 @@ impl<'de> Visitor<'de> for Render<'_> {
     }
 
     fn visit_str<E>(self, value: &str) -> Result<(), E> {
-        escape(value, &mut self.rendering.text);
+        write_string(value, &mut self.rendering.text);
         Ok(())
     }
 
@@ -288,7 +257,7 @@ impl Visitor<'_> for Key<'_> {
             text.push(',');
         }
         let start = text.len();
-        escape(key, text);
+        write_string(key, text);
         self.rendering.keys.key(start..text.len());
         text.push(':');
         Ok(())

@@ -1,4 +1,5 @@
-//! JSON text of the values JSON writers disagree on, and the marks of a JSON text's structure.
+//! JSON text of the values JSON writers disagree on, floats and strings, and the marks of a JSON
+//! text's structure.
 
 use arrow_array::Array;
 use arrow_array::cast::AsArray;
@@ -36,6 +37,40 @@ pub fn write_float(array: &dyn Array, row: usize, out: &mut Vec<u8>) {
         }
     };
     out.extend_from_slice(name);
+}
+
+/// Writes `text` onto `out` as a JSON string, quoted, escaped as sonic-rs and `serde_json` escape
+/// one: `"` and `\` behind a backslash, the control characters JSON names by a letter so, the
+/// others as `\u00XX` in lower-case hex, and every other character as it is, `/`, DEL and
+/// U+2028 among them.
+#[inline]
+pub fn write_string(text: &str, out: &mut String) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    out.push('"');
+    let mut plain = 0;
+    for (at, byte) in text.bytes().enumerate() {
+        let escaped = match byte {
+            b'"' => "\\\"",
+            b'\\' => "\\\\",
+            b'\n' => "\\n",
+            b'\r' => "\\r",
+            b'\t' => "\\t",
+            0x08 => "\\b",
+            0x0c => "\\f",
+            0..0x20 => "\\u00",
+            _ => continue,
+        };
+        // An escaped byte is ASCII, so `at` is a character's boundary.
+        out.push_str(text.get(plain..at).unwrap_or_default());
+        out.push_str(escaped);
+        if escaped == "\\u00" {
+            out.push(char::from(HEX[usize::from(byte >> 4)]));
+            out.push(char::from(HEX[usize::from(byte & 0xf)]));
+        }
+        plain = at + 1;
+    }
+    out.push_str(text.get(plain..).unwrap_or_default());
+    out.push('"');
 }
 
 #[cfg(test)]
