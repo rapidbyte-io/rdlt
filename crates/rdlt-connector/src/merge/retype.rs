@@ -4,7 +4,8 @@
 //! Arrow's own casts null a value the wider type cannot hold and multiply times of day without a
 //! check. Here temporal values widen as the engine widens them, through
 //! [`crate::instants`], each the instant, time or duration it was, and every other
-//! conversion is one that loses nothing or fails.
+//! conversion is one that loses nothing or fails. A column that widened to `Json` holds each
+//! value as its JSON text, as the engine renders it there.
 
 #[cfg(test)]
 mod tests;
@@ -12,13 +13,33 @@ mod tests;
 use std::sync::Arc;
 
 use super::refused::{TYPE_UNCONVERTIBLE, VALUE_UNHOLDABLE, caused, refused};
+use super::rendered::{is_json, rendered};
 use crate::instants;
 use arrow_array::cast::AsArray;
-use arrow_array::{Array, ArrayRef, ListArray, StructArray, new_null_array};
+use arrow_array::{Array, ArrayRef, ListArray, RecordBatch, StructArray, new_null_array};
 use arrow_cast::CastOptions;
-use arrow_schema::{ArrowError, DataType, FieldRef, Fields};
+use arrow_schema::{ArrowError, DataType, Field, FieldRef, Fields};
 
-/// `array` as `to`: every value exactly as it is, or an error naming the conversion.
+/// `array`, whose field is `from`, as the field `to`: a value of a column that widened to `Json`
+/// as its JSON text, and any other exactly as it is, or an error naming the conversion.
+pub(super) fn fitted(array: &ArrayRef, from: &Field, to: &Field) -> Result<ArrayRef, ArrowError> {
+    if is_json(to) && !is_json(from) {
+        return rendered(array, from);
+    }
+    retyped(array, to.data_type())
+}
+
+/// The column of `batch` named as `field`, as `field`, where `batch` holds one.
+pub(super) fn column_as(
+    batch: &RecordBatch,
+    field: &Field,
+) -> Option<Result<ArrayRef, ArrowError>> {
+    let (index, from) = batch.schema_ref().column_with_name(field.name())?;
+    Some(fitted(batch.column(index), from, field))
+}
+
+/// `array` as `to`: every value exactly as it is, or an error naming the conversion; a nested
+/// field that widened to `Json` holds its values' JSON text.
 pub(super) fn retyped(array: &ArrayRef, to: &DataType) -> Result<ArrayRef, ArrowError> {
     let from = array.data_type();
     if from == to {
@@ -38,7 +59,7 @@ pub(super) fn retyped(array: &ArrayRef, to: &DataType) -> Result<ArrayRef, Arrow
             caused(VALUE_UNHOLDABLE, message, error)
         }),
         (DataType::Struct(_), DataType::Struct(fields)) => structs(array.as_struct(), fields),
-        (DataType::List(_), DataType::List(item)) => lists(array.as_list::<i32>(), item),
+        (DataType::List(from), DataType::List(item)) => lists(array.as_list::<i32>(), from, item),
         (
             DataType::LargeList(item)
             | DataType::FixedSizeList(item, _)
@@ -54,14 +75,12 @@ pub(super) fn retyped(array: &ArrayRef, to: &DataType) -> Result<ArrayRef, Arrow
 /// Refuses `batches` unless every column of theirs that `schema` names converts to its type
 /// there with every value kept: what a table holds must fit a type before a column takes it.
 pub fn holds<'a>(
-    batches: impl IntoIterator<Item = &'a arrow_array::RecordBatch>,
+    batches: impl IntoIterator<Item = &'a RecordBatch>,
     schema: &arrow_schema::SchemaRef,
 ) -> Result<(), ArrowError> {
     for batch in batches {
         for field in schema.fields() {
-            if let Some(column) = batch.column_by_name(field.name()) {
-                retyped(column, field.data_type())?;
-            }
+            column_as(batch, field).transpose()?;
         }
     }
     Ok(())
@@ -157,8 +176,8 @@ fn structs(source: &StructArray, fields: &Fields) -> Result<ArrayRef, ArrowError
     }
     let columns = fields
         .iter()
-        .map(|field| match source.column_by_name(field.name()) {
-            Some(column) => retyped(column, field.data_type()),
+        .map(|field| match source.fields().find(field.name()) {
+            Some((index, from)) => fitted(source.column(index), from, field),
             None => Ok(new_null_array(field.data_type(), source.len())),
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -166,9 +185,9 @@ fn structs(source: &StructArray, fields: &Fields) -> Result<ArrayRef, ArrowError
     Ok(Arc::new(converted))
 }
 
-/// `source` as a list of `item`: its items converted, its lists as they are.
-fn lists(source: &ListArray, item: &FieldRef) -> Result<ArrayRef, ArrowError> {
-    let values = retyped(source.values(), item.data_type())?;
+/// `source`, a list of `from`, as a list of `item`: its items converted, its lists as they are.
+fn lists(source: &ListArray, from: &Field, item: &FieldRef) -> Result<ArrayRef, ArrowError> {
+    let values = fitted(source.values(), from, item)?;
     let converted = ListArray::try_new(
         Arc::clone(item),
         source.offsets().clone(),

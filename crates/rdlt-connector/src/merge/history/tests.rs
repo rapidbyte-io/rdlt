@@ -162,9 +162,19 @@ fn batch(
     ]);
     let kept =
         |name: &str| schema.field_with_name(name).is_ok() || (name == "op" && kind != Kind::Plain);
-    let columns: Vec<(String, ArrayRef)> =
-        columns.into_iter().filter(|(name, _)| kept(name)).collect();
-    RecordBatch::try_from_iter(columns).expect("a valid batch")
+    let (fields, columns): (Vec<Field>, Vec<ArrayRef>) = columns
+        .into_iter()
+        .filter(|(name, _)| kept(name))
+        .map(|(name, array)| {
+            // A column carries its extension type, as the engine writes one.
+            let field = schema.field_with_name(&name).map_or_else(
+                |_| Field::new(&name, array.data_type().clone(), true),
+                |field| field.clone().with_nullable(true),
+            );
+            (field, array)
+        })
+        .unzip();
+    RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).expect("a valid batch")
 }
 
 fn written(rows: &[Row], kind: Kind) -> RecordBatch {

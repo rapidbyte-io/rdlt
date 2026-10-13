@@ -39,6 +39,7 @@ mod folded;
 mod history;
 mod met;
 mod refused;
+mod rendered;
 mod retype;
 mod sparse;
 #[cfg(test)]

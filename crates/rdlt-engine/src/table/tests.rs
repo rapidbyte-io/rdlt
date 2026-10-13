@@ -21,6 +21,7 @@ mod decimals;
 mod discards;
 mod keys;
 mod limits;
+mod merged_json;
 mod unwidened;
 mod widenings;
 

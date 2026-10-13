@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 331ac1d0a74910431d42683af252292be7b80e39986379ee9d07794eb8423808 # shrinks to drawn = ([("c0", Shape { logical: Json, encoding: Plain, children: [] })], [[Json(Null)]]), soft = false

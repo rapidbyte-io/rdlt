@@ -12,7 +12,7 @@
 //! of such cells does not grow commit by commit. The fold is a function of its batches and
 //! their order alone: the same rows fold into the same batches.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
@@ -47,10 +47,13 @@ pub fn folded(
     let mut group = Group::default();
     for batch in small.into_iter().rev() {
         let columns = held(&batch, &places);
-        if !group.batches.is_empty() && group.absent_with(&batch, &columns) > cells {
+        let named = named(&batch, &places);
+        let apart =
+            group.absent_with(&batch, &columns) > cells || group.names_apart(&columns, &named);
+        if !group.batches.is_empty() && apart {
             batches.push(std::mem::take(&mut group).joined(schema)?);
         }
-        group.add(batch, &columns);
+        group.add(batch, &columns, named);
     }
     batches.push(group.joined(schema)?);
     Ok(batches)
@@ -65,6 +68,8 @@ struct Group {
     rows: u64,
     /// The cells of the batches that hold a value.
     cells: u64,
+    /// The type each column's field names its text as rendered from, by place.
+    named: BTreeMap<usize, String>,
 }
 
 impl Group {
@@ -80,7 +85,17 @@ impl Group {
         all.saturating_sub(self.cells.saturating_add(cells))
     }
 
-    fn add(&mut self, batch: RecordBatch, columns: &[usize]) {
+    /// Whether a batch holding `columns`, which name `named`, names a column the group holds
+    /// otherwise: rows naming other types are kept apart.
+    fn names_apart(&self, columns: &[usize], named: &BTreeMap<usize, String>) -> bool {
+        let apart = |column: &usize| named.get(column) != self.named.get(column);
+        columns
+            .iter()
+            .any(|column| self.columns.contains(column) && apart(column))
+    }
+
+    fn add(&mut self, batch: RecordBatch, columns: &[usize], named: BTreeMap<usize, String>) {
+        self.named.extend(named);
         let (rows, cells) = sized(&batch);
         self.rows = self.rows.saturating_add(rows);
         self.cells = self.cells.saturating_add(cells);
@@ -98,7 +113,17 @@ impl Group {
         let fields: Vec<_> = self
             .columns
             .iter()
-            .map(|column| schema.field(*column).clone().with_nullable(true))
+            .map(|column| {
+                let field = schema.field(*column).clone().with_nullable(true);
+                match self.named.get(column) {
+                    Some(named) => {
+                        let mut metadata = field.metadata().clone();
+                        metadata.insert(crate::LOGICAL_TYPE_KEY.to_owned(), named.clone());
+                        field.with_metadata(metadata)
+                    }
+                    None => field,
+                }
+            })
             .collect();
         let held = Arc::new(Schema::new(fields));
         let whole = every_column(&held, &self.batches, &mut Nulls::default())?;
@@ -115,6 +140,19 @@ fn held(batch: &RecordBatch, places: &HashMap<&str, usize>) -> Vec<usize> {
     let fields = batch.schema_ref().fields().iter();
     fields
         .filter_map(|field| places.get(field.name().as_str()).copied())
+        .collect()
+}
+
+/// The type each column of `batch` names its text as rendered from, by place in the table's
+/// schema.
+fn named(batch: &RecordBatch, places: &HashMap<&str, usize>) -> BTreeMap<usize, String> {
+    let fields = batch.schema_ref().fields().iter();
+    fields
+        .filter_map(|field| {
+            let place = places.get(field.name().as_str())?;
+            let named = field.metadata().get(crate::LOGICAL_TYPE_KEY)?;
+            Some((*place, named.clone()))
+        })
         .collect()
 }
 

@@ -8,7 +8,7 @@ use rdlt_connector::{
     TableSchema, TimeUnit,
 };
 
-use super::{Checked, TABLE_CHANGED, fits};
+use super::{Checked, TABLE_CHANGED, fits, gains_json};
 use crate::files::session::FilesSession;
 use crate::files::session::tests::Sessions;
 use crate::files::{FileFormat, tables};
@@ -139,4 +139,21 @@ fn a_change_checked_against_a_table_that_changed_since_is_not_taken() {
     let other = ("rows", &next, &current);
     let moved = checked.stands(&sessions.location, &sessions.shared, other);
     assert_eq!(moved.unwrap_err().code(), Some(TABLE_CHANGED));
+}
+
+#[test]
+fn a_type_gains_json_where_it_or_a_field_or_item_within_it_becomes_json() {
+    use LogicalType as T;
+    let one = |name: &str, logical: T| {
+        T::Struct(vec![Field::new(name, logical, true)].try_into().unwrap())
+    };
+    let list = |logical: T| T::List(Box::new(Field::new("item", logical, true)));
+    assert!(gains_json(&T::Bool, &T::Json));
+    assert!(!gains_json(&T::Json, &T::Json));
+    assert!(!gains_json(&T::Int32, &T::Int64));
+    assert!(gains_json(&one("y", T::Bool), &one("y", T::Json)));
+    assert!(!gains_json(&one("y", T::Json), &one("y", T::Json)));
+    assert!(!gains_json(&one("y", T::Bool), &one("z", T::Json)));
+    assert!(gains_json(&list(T::Int64), &list(T::Json)));
+    assert!(!gains_json(&list(T::Int32), &list(T::Int64)));
 }
