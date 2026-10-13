@@ -66,38 +66,81 @@ record keeps the method with the figures.
 
 ## Results
 
-Commit `f64df77f`, 2026-10-11. Intel Core Ultra X7 358H (4 performance, 8 efficient and 4 low-power
-cores) on mains power, platform profile `performance`, governor `powersave`, energy preference
-`performance`, turbo on. Five rounds on the performance cores, interleaved with rounds of the
-merge-base and with the wide, shredding and served benches, in alternating orders; each invocation
-started at a one-minute load average under 1.0 with its cores idle, the load average 0.92 to 0.98
-at their starts. Each figure is the median of the five rounds, their range in brackets, and each
-round lies within 3 % of the median (1.5 points for a percentage) except the fifth round's
-instructions a cycle, 0.63; the interval's ends are the medians of the rounds' ends. Other load on
-the machine raised the one-minute load average to 2.66 by the end of the fifth round's run; the
-round is kept, and its overhead, 16.0 %, is the top of the range.
+This change on `90ce76c2`, 2026-10-13. Intel Core Ultra X7 358H (4 performance, 8 efficient and
+4 low-power cores) on mains power, platform profile `performance`, governor `powersave`, energy
+preference `performance`, turbo on, the bench on the performance cores (`0-3`).
 
-The efficient-cores row is not re-measured at that commit: it is from commit `864cb1f2`,
-2026-10-10, the median of two rounds interleaved with the shredding benches in opposite orders,
-each started at a one-minute load average of 0.21 to 1.00, each within 3 % of the median (1.5
-points for a percentage). A third round ran later under other load on the machine and is left out
-(the owner's ruling of 2026-10-10).
+### The paired cell
 
-| Cores | tokio workers + compute threads | Engine | Overhead | 95 % interval | Instructions a cycle | CPUs busy | Bound |
-|---|---|---|---|---|---|---|---|
-| 4 performance (`0-3`) | 2 + 2 | 28.9 ms | 15.4 % [14.8–16.0] | 14.9–16.1 % | 0.60 | 1.26 | ≤ 17 % at 64 batches, ≤ 13 % a batch |
-| 4 efficient (`4-7`), commit `864cb1f2`, 2026-10-10 | 2 + 2 | 37.7 ms | 8.4 % [8.0–8.8] | 8.0–8.7 % | 0.55 | 1.30 | ≤ 10 % |
+Five rounds of `90ce76c2` and five of this change, interleaved main, change, change, main, the
+one-minute load average 1.2 to 1.7 at their starts. Each figure is the median of a side's five
+rounds, their range in brackets; the interval's ends are the medians of the rounds' ends. Six
+earlier rounds ran while other load held the machine (one-minute load 2.3, `90ce76c2`'s own
+overhead reading 22.8 % in one of them) and are left out.
 
-On both kinds of core the overhead is within its bound.
+The efficient-cores row is not re-measured: it is from commit `864cb1f2`, 2026-10-10, the median
+of two rounds interleaved with the shredding benches in opposite orders, each started at a
+one-minute load average of 0.21 to 1.00, each within 3 % of the median (1.5 points for a
+percentage).
 
-The allocations of one run of each side on the performance cores, at commit `f64df77f`. Each side's
-are the same in all five rounds; the engine's are given as the median of the rounds with their
-range.
+| Cores | Tree | tokio workers + compute threads | Engine | Overhead | 95 % interval | Instructions a cycle | CPUs busy | Bound |
+|---|---|---|---|---|---|---|---|---|
+| 4 performance (`0-3`) | `90ce76c2` | 2 + 2 | 29.6 ms | 15.5 % [14.9–16.0] | 14.9–16.5 % | 0.59 | 1.26 | ≤ 17 % at 64 batches, ≤ 13 % a batch |
+| 4 performance (`0-3`) | this change | 2 + 2 | 29.9 ms | 15.8 % [14.9–16.2] | 14.9–16.5 % | 0.60 | 1.26 | ≤ 17 % at 64 batches, ≤ 13 % a batch |
+| 4 efficient (`4-7`) | `864cb1f2` | 2 + 2 | 37.7 ms | 8.4 % [8.0–8.8] | 8.0–8.7 % | 0.55 | 1.30 | ≤ 10 % |
 
-| Side | Allocations, reallocations and bytes a row | A batch |
-|---|---|---|
-| Bare loop | 0.001, 0.000, 3 B | 62.062, 22.156, 270028 B |
-| Engine | 0.004, 0.000, 4 B | 351.969 [351.969–351.969], 30.484 [30.484–30.484], 318137 B [318137–318137] |
+On both kinds of core the overhead is within its bound, and the change's interval lies within
+`90ce76c2`'s. The paired cell runs within 1 GiB through one writer, as the bound is stated:
+within the default 256 MiB the same cell read 22.6 % and 23.3 % in two rounds through one writer,
+and within 1 GiB through sixteen writers 17.9 % and 18.4 %.
+
+The allocations of one run of each side, the same in every round of each tree:
+
+| Side | Tree | Allocations, reallocations and bytes a row | A batch |
+|---|---|---|---|
+| Bare loop | both | 0.001, 0.000, 3 B | 62.062, 22.156, 270028 B |
+| Engine | `90ce76c2` | 0.004, 0.000, 4 B | 352.188, 30.484, 318174 B |
+| Engine | this change | 0.004, 0.000, 4 B | 354.172, 30.531, 318271 B |
+
+### The chosen cells
+
+Three rounds of `just bench passthrough 0-3`, the one-minute load average 0.9 to 2.1 at their
+starts; each round took 414 to 418 s. Each figure is the median of the three rounds, the range
+of the throughput in brackets; every cell's throughput lies within 3 % of its median but
+`8000x640/1p/1s/end` (one round 8.3 % below) and the 80 000-row cells of four and sixteen
+partitions (one round 11 to 12 % off). The readings are the last run's of each round; their medians:
+commits made due by size and by the end, the work and intake waits and the pool's queue and way
+back as percentages of the run summed over its tasks, the pool idle, the lanes written and the
+budget's signals a batch.
+
+| Cell | MB/s | Engine a run | Commits (size + end) | Work | Intake | Pool idle | Queue and way back | Lanes | Signals |
+|---|---|---|---|---|---|---|---|---|---|
+| `80000x64/1p/1s/end` | 14 768 [14 546–14 791] | 29.9 ms | 0 + 1 | 0 % | 66.7 % | 97.4 % | 20.8 % | 1 | 9.6 |
+| `8000x640/1p/1s/end` | 13 890 [12 743–13 945] | 31.7 ms | 0 + 1 | 0 % | 0.7 % | 91.7 % | 31.5 % | 1 | 8.0 |
+| `1000x5120/1p/1s/end` | 3 172 [3 107–3 183] | 139.0 ms | 0 + 1 | 0 % | 0.1 % | 86.5 % | 32.7 % | 1 | 8.0 |
+| `80000x64/4p/1s/end` | 15 896 [15 857–17 813] | 27.7 ms | 0 + 1 | 0 % | 285 % | 95.0 % | 265 % | 4 | 11.4 |
+| `80000x64/16p/1s/end` | 17 346 [15 419–17 988] | 25.4 ms | 0 + 1 | 0 % | 948 % | 95.2 % | 497 % | 4 | 11.8 |
+| `80000x64/1p/4s/end` | 15 815 [15 796–16 048] | 27.9 ms | 0 + 1 | 0 % | 284 % | 94.3 % | 273 % | 4 | 11.5 |
+| `80000x64/1p/1s/16th` | 14 945 [14 506–14 960] | 29.5 ms | 16 + 1 | 0 % | 62.7 % | 97.2 % | 13.8 % | 1 | 9.4 |
+| `8000x640/16p/1s/end` | 14 844 [14 656–14 895] | 29.7 ms | 0 + 1 | 0 % | 1 137 % | 90.6 % | 1 398 % | 4 | 11.3 |
+| `1000x5120/16p/1s/end` | 4 696 [4 635–4 702] | 93.9 ms | 0 + 1 | 0 % | 6.2 % | 79.2 % | 1 276 % | 4 | 8.0 |
+| `1000x5120/16p/1s/16th` | 4 656 [4 641–4 689] | 94.7 ms | 16 + 1 | 0 % | 0 % | 79.3 % | 1 248 % | 4 | 8.0 |
+| `1000x5120/1p/1s/end/null` | 3 261 [3 256–3 289] | 135.2 ms | 0 + 1 | 0 % | 0 % | 86.9 % | 30.2 % | 1 | 8.0 |
+| `8000x640/1p/1s/end/null` | 13 303 [13 187–13 338] | 33.1 ms | 0 + 1 | 0 % | 0.3 % | 92.5 % | 32.5 % | 1 | 8.0 |
+
+On these four cores a cell of four or sixteen partitions, or of four streams, writes through
+four lanes. No run waited for room for lowering, and no commit was made due by the
+budget's cursors or tables.
+
+**Pushes of 80 000 rows wait for room within the default budget.** Within 256 MiB the paired
+cell's pushes wait for room for 66.7 % [62.8–70.1] of the run, one partition's pushes waiting
+nearly two-thirds of the time: its 442 MB of batches, 6.9 MB each, do not fit the pushes' share
+of the budget at once, so the source waits for writes to release room. With four partitions or
+streams the waits sum to 284–285 % of the run, about three pushes waiting at every moment, and
+with sixteen partitions to 948 %. At 8 000 rows a batch from sixteen partitions they sum to
+1 137 %; at 1 000 rows to 6.2 %, and to under 1 % from one partition at 1 000 or 8 000 rows. The
+same cell within 1 GiB is the paired cell above. This record states the waits; it does not
+change the budget.
 
 ## Where the overhead goes
 
