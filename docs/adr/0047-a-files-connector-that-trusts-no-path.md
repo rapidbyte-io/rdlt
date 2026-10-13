@@ -129,7 +129,9 @@ when it is read and never written in a form its reader refuses.
   views can make what is written several times what is held; one beyond a limit, as when a few
   rows are far larger than the rest, is halved by its rows until its parts fit, in as many steps
   as its rows halve. Only what no halving changes fails the write, and leaves no file: one row
-  that alone is beyond a limit, or a dictionary that is. JSON lines hold a dictionary's rows as
+  that alone is beyond a limit, or a dictionary that is; and so does a union inside a list or a
+  map that holds only some of its rows, which Arrow's writer writes from the union's first row, so
+  that its reader would refuse the file or read other rows. JSON lines hold a dictionary's rows as
   the values they stand for, null where the key is null or the value it stands for is.
 - **Lists stay short.** A table's catalog keeps 8 versions behind the latest, as manifests do. A
   manifest keeps the receipt of every commit the engine may still repeat: a commit repeated

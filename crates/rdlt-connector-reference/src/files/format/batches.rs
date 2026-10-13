@@ -3,15 +3,21 @@
 #[cfg(test)]
 mod tests;
 
-use arrow_array::RecordBatch;
+use arrow_array::types::{Int16Type, Int32Type, Int64Type, RunEndIndexType};
+use arrow_array::{Array as _, OffsetSizeTrait, RecordBatch, RunArray};
+use arrow_data::ArrayData;
 use arrow_ipc::writer::{
     DictionaryTracker, EncodedData, IpcDataGenerator, IpcWriteContext, IpcWriteOptions,
 };
+use arrow_schema::{DataType, UnionMode};
 use bytes::Bytes;
 use rdlt_connector::{ConnectorError, LimitExceeded, Result};
 use rdlt_wire::{Decoder, IpcFrame, Limit, Limits, WireError};
 
 use crate::limits::CHUNK_BYTES;
+
+/// The code of a write refused for a union Arrow's writer writes from other rows than its own.
+const UNION_UNWRITABLE: &str = "union_unwritable";
 
 /// `batch` as batches of about [`CHUNK_BYTES`] each, by its rows' average size, and of at most
 /// the rows a reader under `limits` accepts in one batch; [`fitted`] halves those whose rows
@@ -71,8 +77,10 @@ pub(super) fn fitted(
 ///
 /// # Errors
 ///
-/// A limit fewer rows would not pass: a dictionary's, which every batch of the file shares.
+/// A limit fewer rows would not pass: a dictionary's, which every batch of the file shares; or a
+/// union Arrow's writer would write from other rows than its own.
 fn unfit(batch: &RecordBatch, limits: &Limits) -> Result<Option<ConnectorError>> {
+    placed(batch)?;
     let (generator, options) = (IpcDataGenerator::default(), IpcWriteOptions::default());
     // The tracker numbers the schema's dictionaries, as a writer's does when it starts a file.
     let mut tracker = DictionaryTracker::new(false);
@@ -147,6 +155,87 @@ fn refused(error: WireError) -> ConnectorError {
         WireError::Refused(refusal) => ConnectorError::from(refusal),
         other => ConnectorError::data(format!("encoding a batch: {other}")).with_source(other),
     }
+}
+
+/// Checks that Arrow's writer writes each union `batch` holds as the rows it holds.
+///
+/// It writes a union's type ids and offsets, and a sparse union's children, whole, where its
+/// reader reads as many as the union has rows. A list's items are cut where they are written,
+/// so a union inside a list or a map that holds only some of its rows is written from its first
+/// row: its reader then refuses the file, or reads a dense union's other rows.
+///
+/// # Errors
+///
+/// A data error naming the first column that holds such a union.
+fn placed(batch: &RecordBatch) -> Result<()> {
+    let columns = batch.schema_ref().fields().iter().zip(batch.columns());
+    for (field, column) in columns {
+        if misplaced(&column.to_data()) {
+            let message = format!(
+                "column \"{}\": a union inside a list or a map that holds only some of its rows \
+                 is not written, since Arrow writes it from its first row and its reader then \
+                 refuses the file or reads other rows",
+                field.name()
+            );
+            return Err(ConnectorError::data(message).with_code(UNION_UNWRITABLE));
+        }
+    }
+    Ok(())
+}
+
+/// Whether Arrow's writer writes a union in `data` from other rows than the union's own, as it
+/// reaches each column nested in it.
+fn misplaced(data: &ArrayData) -> bool {
+    match data.data_type() {
+        DataType::Union(_, mode) => {
+            let cut = data
+                .child_data()
+                .iter()
+                .any(|child| child.len() != data.len());
+            data.offset() != 0
+                || (*mode == UnionMode::Sparse && cut)
+                || data.child_data().iter().any(misplaced)
+        }
+        DataType::List(_) | DataType::Map(..) => listed(data, data.buffer::<i32>(0)),
+        DataType::LargeList(_) => listed(data, data.buffer::<i64>(0)),
+        DataType::FixedSizeList(_, size) => {
+            let size = usize::try_from(*size).unwrap_or(usize::MAX);
+            let items = data.offset().saturating_mul(size);
+            misplaced(&data.child_data()[0].slice(items, data.len().saturating_mul(size)))
+        }
+        DataType::RunEndEncoded(ends, _) => match ends.data_type() {
+            DataType::Int16 => spanned::<Int16Type>(data),
+            DataType::Int32 => spanned::<Int32Type>(data),
+            _ => spanned::<Int64Type>(data),
+        },
+        _ => data.child_data().iter().any(misplaced),
+    }
+}
+
+/// Whether the items of the list `data`, of `offsets` from its first row, are written
+/// misplaced: the writer cuts its child to the items its rows hold.
+fn listed<O: OffsetSizeTrait>(data: &ArrayData, offsets: &[O]) -> bool {
+    let child = &data.child_data()[0];
+    if data.is_empty() {
+        return misplaced(&child.slice(0, 0));
+    }
+    let (first, last) = (offsets[0].as_usize(), offsets[data.len()].as_usize());
+    misplaced(&child.slice(first, last - first))
+}
+
+/// Whether the values of the run-end column `data` are written misplaced: unless its rows span
+/// every run, the writer cuts its values, as an array, to the runs they span.
+fn spanned<R: RunEndIndexType>(data: &ArrayData) -> bool {
+    let runs = RunArray::<R>::from(data.clone());
+    let ends = runs.run_ends();
+    if ends.offset() == 0 && ends.max_value() == ends.len() {
+        return data.child_data().iter().any(misplaced);
+    }
+    let (start, end) = (
+        ends.get_start_physical_index(),
+        ends.get_end_physical_index(),
+    );
+    misplaced(&runs.values().slice(start, end - start + 1).to_data())
 }
 
 fn exceeds(name: &'static str, limit: u64, actual: u64) -> ConnectorError {
