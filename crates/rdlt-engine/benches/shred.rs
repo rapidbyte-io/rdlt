@@ -7,8 +7,6 @@
 #![forbid(unsafe_code)]
 
 use std::hint::black_box;
-use std::num::NonZeroUsize;
-
 use std::sync::Arc;
 
 use arrow_schema::{DataType, Field as ArrowField, Schema, SchemaRef};
@@ -119,14 +117,11 @@ fn many_cores(c: &mut Criterion) {
     group.throughput(Throughput::Bytes(u64::try_from(bytes).unwrap_or(u64::MAX)));
     let host = Cores::try_from_host().expect("the host says how many cores the bench may use");
     for count in pool_cores(host.count()) {
-        let cores = Cores::new(count, NonZeroUsize::MIN);
+        let cores = Cores::new(count);
         let mut pool = None;
         group.bench_function(BenchmarkId::from_parameter(count), |b| {
             let pool = pool.get_or_insert_with(|| {
-                println!(
-                    "shred_cores/{count}: 1 runtime worker, {} compute threads",
-                    cores.compute_threads()
-                );
+                println!("shred_cores/{count}: 1 runtime worker, {count} compute threads");
                 let env: Arc<dyn Env> =
                     Arc::new(SystemEnv::try_new(cores).expect("the pool starts"));
                 env

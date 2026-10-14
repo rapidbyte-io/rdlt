@@ -11,7 +11,7 @@ The cases are those of the engine's `allocations` bench whose names hold a `/`.
 
 | Case | One iteration |
 |---|---|
-| `passthrough/null_sink` | `bench::Passthrough::run` moving 8 batches of 8,192 rows from a replaying source to the null sink, on one runtime worker and one compute thread |
+| `passthrough/null_sink` | `bench::Passthrough::run` moving 8 batches of 8,192 rows from a replaying source to the null sink, within two cores: two runtime workers and two compute threads |
 | `shred/nested`, `shred/with_arrays`, `shred/flat_narrow`, `shred/wide_200`, `shred/string_heavy`, `shred/array_form`, `shred/drift_json`, `shred/drift_scalar`, `shred/big_numbers` | shredding 1 MiB of the corpus in 1 MiB chunks on the calling thread |
 | `normalize/keyless/nested`, `normalize/keyless/with_arrays`, `normalize/keyed/with_arrays` | normalizing, to depth 8, keyless or keyed on `id`, the batches 1 MiB of the corpus shreds into |
 | `normalize/dropped/with_arrays` | normalizing the `with_arrays` batches as `normalize/keyless/with_arrays` does, then dropping every tenth root row and pruning each child table of the rows whose parent went |

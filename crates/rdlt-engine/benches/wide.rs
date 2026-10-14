@@ -29,11 +29,11 @@ fn wide(c: &mut Criterion) {
                     let bench =
                         Wide::try_new(cores, form, columns, Wide::PUSHES).expect("the pool starts");
                     println!(
-                        "wide/{name}/{columns}: {} runtime workers, {} compute threads, \
-                         {rows} rows of {} bytes a run",
-                        cores.workers(),
-                        cores.compute_threads(),
+                        "wide/{name}/{columns}: {workers} runtime workers, {threads} compute \
+                         threads, {rows} rows of {} bytes a run",
                         bench.bytes(),
+                        workers = cores.runtime_workers(),
+                        threads = cores.count(),
                     );
                     bench
                 });

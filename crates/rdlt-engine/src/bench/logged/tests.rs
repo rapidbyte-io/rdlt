@@ -6,10 +6,7 @@ use crate::bench::memory_wal;
 use crate::{Cores, LocalWal, WalStore};
 
 fn cores() -> Cores {
-    Cores::new(
-        std::num::NonZeroUsize::new(2).unwrap(),
-        std::num::NonZeroUsize::MIN,
-    )
+    Cores::new(std::num::NonZeroUsize::new(2).unwrap())
 }
 
 #[test]

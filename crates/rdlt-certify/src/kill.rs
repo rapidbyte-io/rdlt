@@ -329,8 +329,7 @@ mod running {
     /// An engine of that configuration.
     fn engine() -> Result<Engine, Violation> {
         let config = config()?;
-        let env = SystemEnv::try_from_runtime(&tokio::runtime::Handle::current())
-            .map_err(Violation::of)?;
+        let env = SystemEnv::try_from_host().map_err(Violation::of)?;
         Ok(Engine::new(config, Arc::new(env)))
     }
 

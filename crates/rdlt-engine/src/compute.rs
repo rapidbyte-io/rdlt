@@ -34,42 +34,26 @@ pub struct RayonPool {
 /// unknown.
 #[derive(Debug, thiserror::Error)]
 #[error("compute pool failed to start")]
-pub struct ComputePoolError(#[source] Box<dyn std::error::Error + Send + Sync>);
+pub struct ComputePoolError(#[source] pub(crate) Box<dyn std::error::Error + Send + Sync>);
 
-/// The cores a run may use, and how many of them the embedder's tokio runtime takes for its
-/// worker threads.
+/// The cores a run may use: the engine gives each a lane and a compute thread, and a process that
+/// builds its own tokio runtime gives it [`runtime_workers`](Self::runtime_workers).
 ///
 /// The runtime's workers run the engine's per-row work and its destination writes, and the
-/// compute pool its CPU-bound jobs; sized apart, the two contend for the same cores.
+/// compute pool its CPU-bound jobs. The pool has a thread a core beside the workers, so CPU-bound
+/// work can take every core the workers leave idle.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Cores {
     count: NonZeroUsize,
-    workers: NonZeroUsize,
 }
 
 impl Cores {
-    /// `count` cores, `workers` of them the runtime's worker threads: the count the runtime was
-    /// built with, which `tokio::runtime::Handle::current().metrics().num_workers()` reads.
-    pub const fn new(count: NonZeroUsize, workers: NonZeroUsize) -> Self {
-        Self { count, workers }
+    /// `count` cores.
+    pub const fn new(count: NonZeroUsize) -> Self {
+        Self { count }
     }
 
-    /// `count` cores, half of them, rounded down, the runtime's workers, and two at least where
-    /// there are two.
-    ///
-    /// One worker runs the engine's per-row work and every lane's writes alone, so two and three
-    /// cores take two workers beside the pool's one thread, two cores a thread more than they
-    /// have.
-    pub fn from_count(count: NonZeroUsize) -> Self {
-        let workers = count.get().min(2).max(count.get() / 2);
-        Self::new(
-            count,
-            NonZeroUsize::new(workers).unwrap_or(NonZeroUsize::MIN),
-        )
-    }
-
-    /// The cores this process may run on, split as [`from_count`](Self::from_count) splits them:
-    /// what a process that builds its own runtime gives it.
+    /// The cores this process may run on.
     ///
     /// The count honours the process's CPU affinity mask and, on Linux, its cgroup's CPU quota.
     ///
@@ -77,7 +61,7 @@ impl Cores {
     ///
     /// When the host does not say how many cores the process may run on.
     pub fn try_from_host() -> std::io::Result<Self> {
-        Ok(Self::from_count(host_cores()?))
+        Ok(Self::new(host_cores()?))
     }
 
     /// The cores a run may use.
@@ -85,26 +69,14 @@ impl Cores {
         self.count
     }
 
-    /// The runtime's worker threads.
-    pub const fn workers(self) -> NonZeroUsize {
-        self.workers
-    }
-
-    /// The compute pool's threads: the cores the runtime's workers leave, and one at least, so
-    /// CPU-bound jobs always have a thread.
-    pub const fn compute_threads(self) -> NonZeroUsize {
-        match NonZeroUsize::new(self.count.get().saturating_sub(self.workers.get())) {
-            Some(threads) => threads,
-            None => NonZeroUsize::MIN,
-        }
-    }
-
-    /// The host's cores, beside `runtime`'s workers.
-    pub(crate) fn try_beside(runtime: &tokio::runtime::Handle) -> Result<Self, ComputePoolError> {
-        let workers =
-            NonZeroUsize::new(runtime.metrics().num_workers()).expect("a runtime has a worker");
-        let count = host_cores().map_err(|error| ComputePoolError(Box::new(error)))?;
-        Ok(Self::new(count, workers))
+    /// The worker threads a process that builds its own tokio runtime gives it: half the cores,
+    /// rounded down, and two at least where there are two.
+    ///
+    /// One worker runs the engine's per-row work and every lane's writes alone, and more workers
+    /// than half the cores slow a run of one partition.
+    pub fn runtime_workers(self) -> NonZeroUsize {
+        let count = self.count.get();
+        NonZeroUsize::new(count.min(2).max(count / 2)).unwrap_or(NonZeroUsize::MIN)
     }
 }
 
@@ -119,14 +91,14 @@ fn host_cores() -> std::io::Result<NonZeroUsize> {
 }
 
 impl RayonPool {
-    /// Starts a pool of [`Cores::compute_threads`] threads named `rdlt-compute-<n>`, each with
-    /// 8 MiB of stack.
+    /// Starts a pool of a thread for each of `cores`, named `rdlt-compute-<n>`, each with 8 MiB
+    /// of stack.
     ///
     /// Shredding a JSON value at the nesting limit walks it once per level; the stack lets every
     /// job run without growing it, in every build.
     pub fn try_new(cores: Cores) -> Result<Self, ComputePoolError> {
         rayon::ThreadPoolBuilder::new()
-            .num_threads(cores.compute_threads().get())
+            .num_threads(cores.count().get())
             .stack_size(8_388_608)
             .thread_name(|index| format!("rdlt-compute-{index}"))
             .build()

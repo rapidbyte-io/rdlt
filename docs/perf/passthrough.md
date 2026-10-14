@@ -36,9 +36,9 @@ machine, so this record keeps the method with the figures.
   share of the batches in order, a checkpoint after each push, so each push is a flush of its
   own. The budget is the engine's default, 256 MiB. A cell committed at the `end` sets no
   threshold, so only the end of the read, or the budget, makes a commit due; one committed every
-  `16th` commits every 320 000 rows. The bench splits the cores it is pinned to as a process
+  `16th` commits every 320 000 rows. The bench takes the cores it is pinned to as a process
   that builds its own runtime does, through `Cores::try_from_host`: half of them, and two at
-  least, its tokio workers, and the rest compute threads, one at least (`SystemEnv::try_new`).
+  least, its tokio workers, and a compute thread for each of them (`SystemEnv::try_new`).
 - **Readings.** After each cell, one line from its last run's report: commits by what made each
   due; the time pushes and requests for lowering waited for room, each summed over the run's
   tasks, over the run's wall time; the compute pool's idle share, one less its jobs' running

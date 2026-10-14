@@ -22,7 +22,7 @@ fn ids(batch: &RecordBatch) -> Vec<i64> {
 
 #[test]
 fn the_bare_loop_and_the_engine_each_move_every_row_on_every_run() {
-    let cores = Cores::from_count(NonZeroUsize::new(2).unwrap());
+    let cores = Cores::new(NonZeroUsize::new(2).unwrap());
     let cell = Cell {
         rows: 10,
         batches: 3,
@@ -42,7 +42,7 @@ fn the_bare_loop_and_the_engine_each_move_every_row_on_every_run() {
 
 #[test]
 fn the_engine_moves_the_batches_from_any_source_into_any_destination() {
-    let cores = Cores::from_count(NonZeroUsize::new(2).unwrap());
+    let cores = Cores::new(NonZeroUsize::new(2).unwrap());
     let cell = Cell {
         rows: 10,
         batches: 2,
@@ -65,7 +65,7 @@ fn the_engine_moves_the_batches_from_any_source_into_any_destination() {
 
 #[test]
 fn a_batch_is_the_workload_s_batch_whose_ids_run_from_the_first() {
-    let cores = Cores::from_count(NonZeroUsize::new(2).unwrap());
+    let cores = Cores::new(NonZeroUsize::new(2).unwrap());
     let cell = Cell {
         rows: 5,
         batches: 2,
@@ -80,7 +80,7 @@ fn a_batch_is_the_workload_s_batch_whose_ids_run_from_the_first() {
 
 #[test]
 fn every_chosen_cell_moves_every_row_through_its_partitions_and_streams() {
-    let cores = Cores::from_count(NonZeroUsize::new(2).unwrap());
+    let cores = Cores::new(NonZeroUsize::new(2).unwrap());
     for cell in Cell::chosen() {
         let passthrough = Passthrough::try_new(cores, cell.tested()).unwrap();
         // The report's rows are checked against the batches' inside.
@@ -94,7 +94,7 @@ fn every_chosen_cell_moves_every_row_through_its_partitions_and_streams() {
 
 #[test]
 fn sixteen_partitions_write_through_more_than_one_lane_of_the_matrix_s_sink() {
-    let cores = Cores::from_count(NonZeroUsize::new(4).unwrap());
+    let cores = Cores::new(NonZeroUsize::new(4).unwrap());
     let cell = Cell {
         partitions: NonZeroUsize::new(16).unwrap(),
         ..Cell::PAIRED
@@ -113,7 +113,7 @@ fn sixteen_partitions_write_through_more_than_one_lane_of_the_matrix_s_sink() {
 
 #[test]
 fn the_paired_cell_writes_through_one_lane_whatever_its_partitions() {
-    let cores = Cores::from_count(NonZeroUsize::new(4).unwrap());
+    let cores = Cores::new(NonZeroUsize::new(4).unwrap());
     let cell = Cell {
         partitions: NonZeroUsize::new(16).unwrap(),
         ..Cell::PAIRED

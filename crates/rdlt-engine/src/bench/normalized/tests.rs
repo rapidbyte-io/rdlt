@@ -5,7 +5,7 @@ use crate::Cores;
 use crate::bench::{Corpus, normalize, shred};
 
 fn normalized(roots: u64, per_push: u64) -> Normalized {
-    let cores = Cores::from_count(NonZeroUsize::new(2).unwrap());
+    let cores = Cores::new(NonZeroUsize::new(2).unwrap());
     Normalized::try_new(cores, roots, NonZeroU64::new(per_push).unwrap()).unwrap()
 }
 

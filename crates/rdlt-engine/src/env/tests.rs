@@ -123,16 +123,13 @@ fn the_system_clock_s_random_values_differ() {
 fn system_env_declares_the_cores_it_was_given_not_the_host_s() {
     for count in [1, 3, 64] {
         let count = NonZeroUsize::new(count).unwrap();
-        let env = SystemEnv::try_new(Cores::new(count, count)).unwrap();
+        let env = SystemEnv::try_new(Cores::new(count)).unwrap();
         assert_eq!(env.cores(), count);
     }
 }
 
 #[test]
-fn a_system_env_from_a_runtime_declares_the_host_s_cores() {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .build()
-        .unwrap();
-    let env = SystemEnv::try_from_runtime(runtime.handle()).unwrap();
-    assert!(env.cores().get() >= 1);
+fn a_system_env_from_the_host_declares_the_host_s_cores() {
+    let env = SystemEnv::try_from_host().unwrap();
+    assert_eq!(env.cores(), Cores::try_from_host().unwrap().count());
 }

@@ -50,7 +50,7 @@ fn main() -> ExitCode {
         }
     };
     let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(cores.workers().get())
+        .worker_threads(cores.runtime_workers().get())
         .enable_all()
         .build()
         .expect("a runtime starts");
@@ -90,7 +90,7 @@ async fn run(dir: &Path, store: &Path) -> Result<(), String> {
         )
         .await
         .map_err(|error| error.to_string())?;
-    let env = SystemEnv::try_from_runtime(&tokio::runtime::Handle::current())
+    let env = SystemEnv::try_from_host()
         .map_err(|e| e.to_string())?
         .with_wal(wal);
     let outcome = Engine::new(engine()?, Arc::new(env))

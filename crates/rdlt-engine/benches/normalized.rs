@@ -29,11 +29,11 @@ fn normalized(c: &mut Criterion) {
                     .expect("the pool starts");
                 let (fewest, most) = bench.units();
                 println!(
-                    "normalized/keyless/{per_push}: {} runtime workers, {} compute threads, \
-                     {fewest} to {most} units a flush, {} bytes of JSON a run",
-                    cores.workers(),
-                    cores.compute_threads(),
+                    "normalized/keyless/{per_push}: {workers} runtime workers, {threads} compute \
+                     threads, {fewest} to {most} units a flush, {} bytes of JSON a run",
                     bench.bytes(),
+                    workers = cores.runtime_workers(),
+                    threads = cores.count(),
                 );
                 bench
             });

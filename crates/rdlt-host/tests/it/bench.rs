@@ -600,7 +600,7 @@ fn served(c: &mut Criterion) {
 )]
 fn print(cores: Cores, used: &[(Case, Vec<Seconds>, Option<Report>)]) {
     if !used.is_empty() {
-        let (workers, threads) = (cores.workers(), cores.compute_threads());
+        let (workers, threads) = (cores.runtime_workers(), cores.count());
         let apart = std::env::var(connector::CORES).map_or_else(
             |_| "the bench's CPUs".to_owned(),
             |cpus| format!("CPUs {cpus}"),
@@ -621,7 +621,7 @@ fn print(cores: Cores, used: &[(Case, Vec<Seconds>, Option<Report>)]) {
         if let (Layout::Processes, Some(report)) = (case.layout, report) {
             print_sides(*case, seconds);
             let batches = u64::from(case.frames.shape().0);
-            let threads = cores.compute_threads();
+            let threads = cores.count();
             let readings = Readings::of(report.elapsed, &report.counters, batches, threads);
             println!("  readings: {readings}");
         }
