@@ -56,13 +56,21 @@ pub(super) fn publish(
         rows += count;
         bytes += size;
     }
+    let written: Vec<String> = staged.iter().map(|staged| staged.name.clone()).collect();
     for staged in planner.publishing(staged, &meta.child_tables) {
-        let table = owned(transaction, planner, pipeline, &staged.name)?;
         let target = match staged.generation {
             Some(generation) => planner.generation_table(&staged.name, generation),
             None => staged.name.clone(),
         };
+        let standing = standing(transaction, planner, &staged.name)?;
         let columns = columns(transaction, planner.dialect(), &target)?;
+        // A child table the commit names that no row has reached is not created yet: it holds
+        // no children to replace.
+        let unreached = columns.is_empty() && standing.unowned();
+        if unreached && !written.contains(&staged.name) {
+            continue;
+        }
+        let table = standing.owned(pipeline)?;
         run_all(
             transaction,
             &planner.publish(&table, &staged, &columns, epoch, &meta.segments)?,

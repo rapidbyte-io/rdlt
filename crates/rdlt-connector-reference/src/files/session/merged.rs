@@ -37,6 +37,10 @@ pub(super) fn follow_root(
     if staged.contains_key(&(name.clone(), None)) {
         return Ok(());
     }
+    // A child table no row has reached is not created yet: it holds no children to replace.
+    if tables::read(&location.rdlt, &name)?.is_none() {
+        return Ok(());
+    }
     let table = manifest.tables.entry(name.clone()).or_default();
     let root = Some((root, root_files.as_slice()));
     let merged = merged_rows(location, &name, table, &[], &child.merge, root)?;
