@@ -596,3 +596,19 @@ async fn a_failed_write_or_flush_counts_its_time() {
         assert_eq!(tally.counters().lanes, [counted], "fail_write {fail_write}");
     }
 }
+
+#[tokio::test]
+async fn a_lane_started_under_pressure_flushes_what_it_holds_at_once() {
+    let log = Log::default();
+    let budget = crate::budget::budget(64);
+    let (lanes, mut tasks) = budgeted(1, 1, &log, [false, false, false], 8, &budget);
+    // Pressure is on before the lane first waits for it.
+    let pressing = budget.pressing();
+    let lane = tokio::spawn(tasks.remove(0).run(CancellationToken::new()));
+    write(&lanes, &budget, 0, 0, 1, 3).await.unwrap();
+    logged(&log, "t0 v0 flush").await;
+    assert_eq!(budget.reserved(), 0, "the write's bytes were released");
+    drop(pressing);
+    drop(lanes);
+    lane.await.unwrap().unwrap();
+}

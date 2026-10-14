@@ -178,14 +178,14 @@ impl Lane {
     /// A lane flushes its writers when the coordinator asks, and whenever a request waits for
     /// bytes while the lane holds writes it has not flushed, which frees them.
     pub(crate) async fn run(mut self, cancel: CancellationToken) -> Result<(), Error> {
+        let mut pressure = self.budget.pressure();
         loop {
-            let pressed = self.budget.pressed();
             let message = tokio::select! {
                 biased;
                 // Cancellation wins: the attempt is ending and its writes will be discarded.
                 () = cancel.cancelled() => return Err(Error::cancelled("the attempt was cancelled")),
                 // Pressure comes before more writes, so the bytes it waits for are freed first.
-                () = pressed, if !self.held.is_empty() => {
+                () = pressure.raised(), if !self.held.is_empty() => {
                     until_cancelled(&cancel, self.flush_written()).await?;
                     continue;
                 }

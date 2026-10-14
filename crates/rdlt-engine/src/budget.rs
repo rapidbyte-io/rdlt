@@ -20,6 +20,7 @@ pub(crate) use self::ledger::{Class, Denied, Exhausted, Shares, TooLarge};
 use self::ledger::{Ledger, admit_waiting};
 use crate::env::Env;
 use crate::report::Waits;
+use crate::watch;
 
 /// Bytes the engine may hold, divided into shares, each its holders' alone.
 ///
@@ -41,6 +42,8 @@ use crate::report::Waits;
 #[derive(Clone)]
 pub(crate) struct MemoryBudget {
     shared: Arc<Mutex<Ledger>>,
+    /// What each share holds at most, fixed with the budget's capacity.
+    shares: Shares,
     /// The clock a wait is measured on.
     env: Arc<dyn Env>,
     /// How long a request waits at most.
@@ -49,6 +52,19 @@ pub(crate) struct MemoryBudget {
     readers: usize,
     /// The limits on what a read sends, where they are fewer than what the budget admits.
     limits: Option<rdlt_wire::Limits>,
+}
+
+/// A value of the budget a task watches across its loop, through one receiver it keeps.
+pub(crate) struct Signal(watch::Receiver<bool>);
+
+impl Signal {
+    /// Completes once the value is raised: at once where it is raised now.
+    pub(crate) async fn raised(&mut self) {
+        // The ledger keeps the sender as long as the budget lives.
+        if self.0.wait_for(|raised| *raised).await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    }
 }
 
 /// A request's place among those waiting, given up when dropped.
@@ -96,6 +112,7 @@ impl MemoryBudget {
     pub(crate) fn new(capacity: u64, env: Arc<dyn Env>, wait: Duration) -> Self {
         Self {
             shared: Arc::new(Mutex::new(Ledger::new(capacity))),
+            shares: Shares::of(capacity),
             env,
             wait,
             readers: 1,
@@ -279,27 +296,16 @@ impl MemoryBudget {
         }
     }
 
-    /// Completes once a request waits for bytes of pushes or of lowering, or a holder of queued
+    /// Raised while a request waits for bytes of pushes or of lowering, or a holder of queued
     /// pieces waits for their writes: whoever holds bytes a write releases should write them.
-    pub(crate) fn pressed(&self) -> impl Future<Output = ()> + Send + 'static {
-        let mut pressed = self.shared.lock().pressed.subscribe();
-        async move {
-            // The ledger keeps the sender as long as the budget lives.
-            if pressed.wait_for(|pressed| *pressed).await.is_err() {
-                std::future::pending::<()>().await;
-            }
-        }
+    pub(crate) fn pressure(&self) -> Signal {
+        Signal(self.shared.lock().pressed.subscribe())
     }
 
-    /// Completes once a cursor waits for room among the cursors of seals waiting for a commit:
-    /// a commit is then due, whatever its policy says.
-    pub(crate) fn cursor_waits(&self) -> impl Future<Output = ()> + Send + 'static {
-        let mut waits = self.shared.lock().cursor_waits.subscribe();
-        async move {
-            if waits.wait_for(|waits| *waits).await.is_err() {
-                std::future::pending::<()>().await;
-            }
-        }
+    /// Raised while a cursor or a table's records wait for room only a commit frees: a commit
+    /// is then due, whatever its policy says.
+    pub(crate) fn cursor_waits(&self) -> Signal {
+        Signal(self.shared.lock().cursor_waits.subscribe())
     }
 
     /// Presses whoever holds queued pieces to write them, for as long as what is returned lives:
@@ -317,7 +323,7 @@ impl MemoryBudget {
 
     /// What each share of the budget holds at most.
     pub(crate) fn shares(&self) -> Shares {
-        self.shared.lock().shares
+        self.shares
     }
 
     /// Bytes reserved now.
