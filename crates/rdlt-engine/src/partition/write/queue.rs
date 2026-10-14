@@ -56,7 +56,7 @@ pub(super) async fn queue(
         )
         .await?;
     }
-    let lane = context.lanes.route(table, job.partition.id());
+    let lane = context.lanes.route(table, job.index);
     context
         .lanes
         .write(
