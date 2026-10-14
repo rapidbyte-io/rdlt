@@ -32,11 +32,6 @@ async fn sealing(bytes: usize) -> (Result<(), crate::error::Error>, usize) {
     setup.budget = 1 << 20;
     let (task, harness) = setup.start().await;
     harness.send(Progress::Started { partition: 0 });
-    harness.send(Progress::Written {
-        partition: 0,
-        rows: 1,
-        bytes: 8,
-    });
     harness.seal(0, 1, 1, PartitionState::Cursor(padded(bytes)), None);
     harness.end(0, false);
     let outcome = ended(task).await;
@@ -67,11 +62,6 @@ async fn state_is_bounded_with_all_the_commits_before_it() {
     let (task, harness) = setup.start().await;
     for partition in 0..2 {
         harness.send(Progress::Started { partition });
-        harness.send(Progress::Written {
-            partition,
-            rows: 1,
-            bytes: 8,
-        });
         harness.seal(
             partition,
             1,

@@ -394,15 +394,14 @@ impl Coordinator {
                 rows,
                 bytes,
             } => {
-                // Rows of a partition that seals on its own count once sealed.
-                if self
-                    .parts
-                    .partitions
-                    .get(partition)
-                    .is_some_and(|run| run.on_demand)
-                {
-                    self.due.written(partition, rows, bytes);
-                }
+                debug_assert!(
+                    self.parts
+                        .partitions
+                        .get(partition)
+                        .is_some_and(|run| run.on_demand),
+                    "only a partition that seals when asked tells its writes"
+                );
+                self.due.written(partition, rows, bytes);
             }
             Progress::Abandoned { partition, segment } => {
                 self.due.abandoned(partition);

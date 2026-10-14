@@ -72,7 +72,17 @@ pub(super) async fn queue(
         .await?;
     open.rows += rows;
     open.bytes += bytes;
-    context.report(Progress::Written {
+    match written(job, rows, bytes) {
+        Some(progress) => context.report(progress),
+        None => Ok(()),
+    }
+}
+
+/// What a batch of `rows` of `bytes` that `job` queued tells the coordinator: the rows of a
+/// partition that seals when a barrier asks count toward a commit from when they are written,
+/// another's only once sealed, so it tells nothing.
+pub(super) fn written(job: &PartitionJob, rows: u64, bytes: u64) -> Option<Progress> {
+    job.on_demand.then_some(Progress::Written {
         partition: job.index,
         rows,
         bytes,
