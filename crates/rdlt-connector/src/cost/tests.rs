@@ -603,6 +603,103 @@ fn a_piece_is_found_in_a_stretch_for_each_doubling_and_halving() {
 }
 
 #[test]
+fn only_views_and_nested_or_encoded_columns_are_measured_by_their_values() {
+    let viewed = |column: &ArrayRef| {
+        matches!(
+            column.data_type(),
+            DataType::Utf8View | DataType::BinaryView
+        )
+    };
+    let columns = flat().into_iter().map(|column| (viewed(&column), column));
+    let columns = columns.chain(nested_types().into_iter().map(|column| (true, column)));
+    for (reads, column) in columns {
+        for rendering in [native(), Rendering::text()] {
+            let measure = rendering.measure(&batch(Arc::clone(&column)), u64::MAX);
+            assert_eq!(measure.reads_values(), reads, "{:?}", column.data_type());
+        }
+    }
+}
+
+#[test]
+fn a_column_converted_to_json_or_read_from_it_is_measured_by_its_values() {
+    let text: ArrayRef = Arc::new(StringArray::from(vec!["1", "[2]", "\"3\""]));
+    let stored = |column: LogicalType, text: bool, read: bool| Stored { column, text, read };
+    for (stored, reads) in [
+        (stored(LogicalType::Utf8, false, false), false),
+        (stored(LogicalType::Utf8, true, false), false),
+        (stored(LogicalType::Int64, false, false), false),
+        (stored(LogicalType::Json, false, false), true),
+        (stored(LogicalType::Int64, false, true), true),
+    ] {
+        let measured = native().lowering(
+            &batch(Arc::clone(&text)),
+            vec![Some(stored.clone())],
+            0,
+            u64::MAX,
+        );
+        assert_eq!(measured.reads_values(), reads, "{stored:?}");
+    }
+}
+
+/// A batch of `rows` rows of a column of each type measured by its offsets alone.
+fn offsets_only(rows: usize) -> RecordBatch {
+    let ids = 0..i64::try_from(rows).unwrap();
+    let columns: [(&str, ArrayRef); 7] = [
+        ("null", Arc::new(NullArray::new(rows))),
+        (
+            "flag",
+            Arc::new(BooleanArray::from_iter(
+                ids.clone().map(|id| Some(id % 2 == 0)),
+            )),
+        ),
+        ("id", Arc::new(Int64Array::from_iter_values(ids.clone()))),
+        (
+            "at",
+            Arc::new(TimestampSecondArray::from_iter_values(ids.clone())),
+        ),
+        (
+            "text",
+            Arc::new(StringArray::from_iter_values(
+                ids.clone().map(|id| id.to_string()),
+            )),
+        ),
+        (
+            "bytes",
+            Arc::new(LargeBinaryArray::from_iter_values(
+                ids.clone().map(i64::to_le_bytes),
+            )),
+        ),
+        (
+            "fixed",
+            Arc::new(FixedSizeBinaryArray::try_from_iter(ids.map(i64::to_le_bytes)).unwrap()),
+        ),
+    ];
+    RecordBatch::try_from_iter(columns).unwrap()
+}
+
+proptest! {
+    /// A measure that reads no value cuts a piece in as many steps however many rows the batch
+    /// has: a stretch a doubling or a halving, each a step a column.
+    #[test]
+    fn a_measure_reading_no_value_cuts_a_piece_in_steps_by_its_stretches(
+        rows in 1_usize..20_000,
+        first in 0.0_f64..1.0,
+        limit in 1_u64..(1 << 24),
+        rendering in prop_oneof![Just(native()), Just(Rendering::text())],
+    ) {
+        let batch = offsets_only(rows);
+        let mut measure = rendering.measure(&batch, limit);
+        prop_assert!(!measure.reads_values());
+        #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss, reason = "a fraction of the rows")]
+        let first = (first * rows as f64) as usize;
+        measure.piece(first);
+        let stretches = 2 * u64::from(usize::BITS - rows.leading_zeros()) + 2;
+        let columns = u64::try_from(batch.num_columns()).unwrap();
+        prop_assert!(measure.work().0 <= stretches * columns, "{:?}", measure.work());
+    }
+}
+
+#[test]
 fn the_widest_item_of_a_list_is_found_within_a_struct_at_any_depth() {
     use super::widths::{item_slot, null_slot};
     let field = |name: &str, kind: DataType| Arc::new(Field::new(name, kind, true));
