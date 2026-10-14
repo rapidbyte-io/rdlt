@@ -230,3 +230,39 @@ async fn replans_naming_new_partitions_take_the_places_of_those_they_dropped() {
     let phases = coordinator.parts.streams[0].phases.as_ref().unwrap();
     assert!(phases.reading.len() <= 2, "{} read", phases.reading.len());
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_partition_read_again_takes_its_place_and_a_new_one_a_retired_place() {
+    let plans = vec![
+        vec!["a".to_owned(), "b".to_owned()],
+        vec!["a".to_owned(), "c".to_owned()],
+    ];
+    let mut coordinator = phased(plans, true).await;
+    let launched = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&launched);
+    coordinator.parts.launcher = Box::new(move |job| {
+        seen.lock()
+            .push((job.partition.id().as_str().to_owned(), job.index));
+        Ok(())
+    });
+    coordinator.replan().await.unwrap();
+    // Both end with nothing sealed, so `b`'s place is free once the plan drops it.
+    for partition in [0, 1] {
+        coordinator.observe(Progress::Ended {
+            partition,
+            stopped: false,
+        });
+    }
+    coordinator.replan().await.unwrap();
+    let launched = launched.lock().clone();
+    assert_eq!(
+        launched,
+        [
+            ("a".to_owned(), 0),
+            ("b".to_owned(), 1),
+            ("a".to_owned(), 0),
+            ("c".to_owned(), 1),
+        ],
+        "`a` read again routes to its lane; `c` takes `b`'s retired place"
+    );
+}
