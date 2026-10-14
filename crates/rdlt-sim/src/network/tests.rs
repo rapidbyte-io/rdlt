@@ -1,6 +1,11 @@
+use std::num::NonZeroUsize;
+use std::sync::Arc;
 use std::time::Duration;
 
-use rdlt_connector::{ConnectorErrorKind, LoadId, OpenContext, PipelineId};
+use rdlt_connector::{
+    ConnectorErrorKind, LoadId, OpenContext, Partition, PartitionId, PipelineId, ReadRequest,
+    StreamName, partition_channel,
+};
 
 use super::{ENGINE, Placing, Side, options, run_networked};
 use crate::rng::SplitMix64;
@@ -82,4 +87,39 @@ fn a_call_the_network_held_lands_before_the_disrupted_work_is_over() {
         (before, after)
     });
     assert_ne!(before, after, "the session the network held was not opened");
+}
+
+#[test]
+fn a_stopped_connector_listens_again_while_a_read_its_host_holds_back_drains() {
+    let served = run_networked(Seed::new(1), |_env, net| async move {
+        let mut rng = SplitMix64::new(7);
+        let name = "network-drained";
+        let registered = World::register(name, &mut rng);
+        let config = serde_json::json!({ "world": name });
+        let options = options(&mut rng, rdlt_wire::Limits::default());
+        let placing = Placing::new(Arc::clone(&net), &options);
+        let source = placing.source(&config).await;
+        // A read that follows its partition, of whose events the host takes one and no more, as
+        // when the engine's budget holds it back: it keeps the stopped source draining for as
+        // long as a drain may last, so only a source started beside the drain is placed.
+        let (sink, mut feed) = partition_channel(NonZeroUsize::MIN);
+        let partition = PartitionId::parse("p0").expect("a valid partition id");
+        let request = ReadRequest::new(
+            StreamName::new("s0").expect("a valid stream name"),
+            Partition::new(partition).unbounded(),
+            None,
+        )
+        .following(true);
+        let reading = tokio::spawn(async move { source.read(request, sink).await });
+        feed.recv().await.expect("the read sends");
+        net.connectors.stop(Side::Source);
+        // Long enough for its host to see it stopping.
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        net.connectors.restart(Side::Source);
+        let served = placing.source(&config).await.check().await;
+        reading.abort();
+        drop((feed, registered));
+        served
+    });
+    served.expect("the source started again serves its check");
 }
