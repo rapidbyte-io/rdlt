@@ -3,7 +3,7 @@ use rdlt_sim::{
 };
 
 /// Seeds that each found a defect when first run, kept so they stay green.
-const FOUND: [u64; 17] = [
+const FOUND: [u64; 20] = [
     // Over the network: a served writer that panicked ended its write as though it were done.
     19,
     // Over the network: a host whose handshake a partition cut short held its connection, and
@@ -44,6 +44,13 @@ const FOUND: [u64; 17] = [
     // Logs in an object store: a mark's and a head's creates given up landed after their log
     // was removed, and the head named a body deleted with it, which no replay could read.
     725_620,
+    // A merge table's column widened to JSON over values written as floats and as plain text,
+    // which the destination then held as JSON, and the check read as values of JSON, not of
+    // the types they were written as.
+    11_754, 77_962,
+    // A child table no row had reached yet was merged by its roots' commit, under no columns,
+    // which the merge refused.
+    85_384,
 ];
 
 #[test]

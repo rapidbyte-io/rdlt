@@ -4,7 +4,7 @@ use rdlt_connector::{Field, LogicalType, TableSchema};
 use rdlt_testkit::canon::Canon;
 use rdlt_testkit::decode;
 
-use crate::destination::Stored;
+use crate::destination::{Stored, WRITTEN};
 
 /// A cell's meaning as text: a number's or a hex id's digits.
 pub(super) fn text(value: &Canon) -> String {
@@ -29,8 +29,11 @@ pub(super) struct Cell<'a> {
     pub(super) value: Canon,
 }
 
-/// The cell of `physical` in `row`, read as the logical type the row was written with, with
-/// JSON in it read as `source` says; `None` where the row lacks the column.
+/// The cell of `physical` in `row`, read as the logical type the row was written with, with JSON
+/// in it read as `source` says; `None` where the row lacks the column.
+///
+/// A value its column widened past since it was written is read at the type it is held at, and
+/// the cell is the type it was written as.
 pub(super) fn read<'a>(
     row: &Stored,
     written: &TableSchema,
@@ -38,12 +41,22 @@ pub(super) fn read<'a>(
     source: Option<&LogicalType>,
 ) -> Option<Cell<'a>> {
     let array = row.row.column_by_name(physical)?;
-    let lowered = field(written, physical)?.logical_type().clone();
+    let held = field(written, physical)?.logical_type().clone();
     let arrow = row.row.schema();
-    let named = Field::lowered_from(arrow.field_with_name(physical).ok()?);
-    let logical = named.unwrap_or_else(|| lowered.clone());
-    let hint = decode::hint(&logical, source);
-    let value = decode::cell(array.as_ref(), 0, &logical, &lowered, &hint);
+    let arrow_field = arrow.field_with_name(physical).ok()?;
+    let as_written = arrow_field.metadata().get(WRITTEN).map(|written| {
+        serde_json::from_str::<LogicalType>(written).expect("a stored row names a logical type")
+    });
+    let lowered = as_written.clone().unwrap_or_else(|| held.clone());
+    let logical = Field::lowered_from(arrow_field).unwrap_or_else(|| lowered.clone());
+    // A value held at the type its column widened to since is read at that type.
+    let value = if as_written.is_some() {
+        let hint = decode::hint(&held, source);
+        decode::cell(array.as_ref(), 0, &held, &held, &hint)
+    } else {
+        let hint = decode::hint(&logical, source);
+        decode::cell(array.as_ref(), 0, &logical, &lowered, &hint)
+    };
     Some(Cell {
         physical,
         logical,

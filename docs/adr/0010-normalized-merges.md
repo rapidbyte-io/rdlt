@@ -58,8 +58,8 @@ minors.
   table too, or where state records its table; after that a new one is a change its column's
   policy decides. An array deeper than the stream normalizes is stored whole and has no table.
 - **Simulation.** Simulated streams normalize under every write mode and policy. The simulated
-  destination merges child tables by their root, and the oracle checks each child table against
-  the rows the model keeps: each key's last kept row for merges.
+  destination merges child tables by their root, through the SDK's Arrow merge, and the oracle
+  checks each child table against the rows the model keeps: each key's last kept row for merges.
 
 ## Consequences
 

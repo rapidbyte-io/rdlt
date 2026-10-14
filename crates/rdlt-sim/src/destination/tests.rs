@@ -1,14 +1,15 @@
 use std::sync::Arc;
 
-use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
+use arrow_array::{ArrayRef, BinaryArray, Int64Array, RecordBatch, StringArray};
 use rdlt_connector::{
-    CommitMeta, CommitSeq, ConnectorErrorKind, DestinationConnector, Epoch, Field, LoadId,
-    LogicalType, MergeKey, OpenContext, PipelineId, RootKey, SchemaVersion, SegmentId, SegmentSet,
-    Session, TableChange, TablePath, TableRef, TableSchema, TableWriter,
+    ChildTable, CommitMeta, CommitSeq, ConnectorErrorKind, DestinationConnector, Epoch, Field,
+    LoadId, LogicalType, MergeKey, OpenContext, PipelineId, RootKey, SchemaVersion, SegmentId,
+    SegmentSet, Session, TableChange, TablePath, TableRef, TableSchema, TableWriter,
 };
 use rdlt_testkit::canon::Canon;
 
-use super::cells::{Cells, Stored, merge_children};
+use super::cells::{self, Stored};
+use super::store::{Staged, Store};
 use super::{SimDestination, SimSession};
 use crate::rng::SplitMix64;
 use crate::seed::{Seed, run};
@@ -182,50 +183,105 @@ fn a_column_widened_along_two_branches_holds_their_join() {
     );
 }
 
+/// The first commit of a load, of segment 1, by a session at the first epoch, with the child
+/// tables `children`.
+fn first_commit(children: Vec<ChildTable>) -> CommitMeta {
+    let mut segments = SegmentSet::new();
+    segments.insert(SegmentId(1));
+    CommitMeta {
+        load_id: LoadId::from_parts(std::time::UNIX_EPOCH, 1),
+        commit_seq: CommitSeq::FIRST,
+        epoch: Epoch::default(),
+        segments,
+        abandoned: SegmentSet::new(),
+        state_delta: Vec::new(),
+        finish_generations: Vec::new(),
+        child_tables: children,
+        drop_tables: Vec::new(),
+        horizon: None,
+    }
+}
+
+/// A store whose tables `tables` each hold the columns named, of text.
+fn texts_store(tables: &[(&str, &[&str])]) -> Store {
+    let mut store = Store::default();
+    for (name, columns) in tables {
+        let table = store.tables.entry((*name).to_owned()).or_default();
+        table.columns = columns
+            .iter()
+            .map(|column| ((*column).to_owned(), LogicalType::Utf8))
+            .collect();
+    }
+    store
+}
+
+/// `rows` staged for the merge table `table`, merged by `key`.
+fn staged(table: &str, key: &MergeKey, rows: Vec<Stored>) -> Staged {
+    Staged {
+        table: table.to_owned(),
+        generation: None,
+        merge: Some(key.clone()),
+        rows,
+    }
+}
+
 #[test]
 fn a_child_table_keeps_only_the_children_of_each_merged_roots_winning_row() {
-    let cells = |pairs: &[(&str, &str)]| -> Stored {
-        let cells: Cells = pairs
-            .iter()
-            .map(|(column, value)| ((*column).to_owned(), Canon::Text((*value).to_owned())))
-            .collect();
-        let empty = RecordBatch::new_empty(Arc::new(arrow_schema::Schema::empty()));
-        Stored { cells, row: empty }
+    let text = |values: &[&str]| Arc::new(StringArray::from(values.to_vec())) as ArrayRef;
+    let stored = |columns: Vec<(&str, ArrayRef)>| cells::rows(&batch(columns)).unwrap();
+    let roots_key = MergeKey {
+        columns: vec!["id".into()],
+        seq: "seq".into(),
+        root: None,
+        changes: None,
+        history: None,
     };
     let key = MergeKey {
         columns: vec!["owner".into()],
-        seq: "seq".into(),
         root: Some(RootKey {
             table: "roots".into(),
             id: "id".into(),
             seq: "seq".into(),
         }),
-        changes: None,
-        history: None,
+        ..roots_key.clone()
     };
-    let root = key.root.clone().unwrap();
-    let mut published = vec![
-        cells(&[("owner", "r1"), ("seq", "1"), ("v", "old")]),
-        cells(&[("owner", "r2"), ("seq", "1"), ("v", "kept")]),
-        cells(&[("owner", "r3"), ("seq", "1"), ("v", "gone")]),
-    ];
-    let incoming = vec![
-        cells(&[("owner", "r1"), ("seq", "5"), ("v", "new")]),
-        cells(&[("owner", "r1"), ("seq", "3"), ("v", "stale")]),
-    ];
-    let roots = [
-        cells(&[("id", "r1"), ("seq", "3")]),
-        cells(&[("id", "r1"), ("seq", "5")]),
-        cells(&[("id", "r3"), ("seq", "2")]),
-    ];
-    merge_children(&mut published, incoming, &key, &root, &roots);
-    let values: Vec<&str> = published
+    let pipeline = PipelineId::parse("sim").unwrap();
+    let mut store = texts_store(&[("roots", &["id", "seq"]), ("kids", &["owner", "seq", "v"])]);
+    store.tables.get_mut("kids").unwrap().published = stored(vec![
+        ("owner", text(&["r1", "r2", "r3"])),
+        ("seq", text(&["1", "1", "1"])),
+        ("v", text(&["old", "kept", "gone"])),
+    ]);
+    let roots = stored(vec![
+        ("id", text(&["r1", "r1", "r3"])),
+        ("seq", text(&["3", "5", "2"])),
+    ]);
+    let kids = stored(vec![
+        ("owner", text(&["r1", "r1"])),
+        ("seq", text(&["5", "3"])),
+        ("v", text(&["new", "stale"])),
+    ]);
+    store.staged.insert(
+        (pipeline.clone(), SegmentId(1)),
+        vec![
+            staged("roots", &roots_key, roots),
+            staged("kids", &key, kids),
+        ],
+    );
+    let meta = first_commit(vec![ChildTable {
+        table: "kids".into(),
+        merge: key,
+    }]);
+    store.publish(&pipeline, &meta).unwrap();
+    let mut values: Vec<&str> = store.tables["kids"]
+        .published
         .iter()
         .map(|row| match &row.cells["v"] {
             Canon::Text(text) => text.as_str(),
             other => panic!("{other:?}"),
         })
         .collect();
+    values.sort_unstable();
     assert_eq!(values, ["kept", "new"]);
 }
 
@@ -336,4 +392,173 @@ fn the_simulated_destination_keeps_history_as_certification_asks() {
         Some(&rdlt_connector::testing::Outcome::Passed),
         "{report}"
     );
+}
+
+/// The merge table `name`, keyed by `key` and sequenced by `seq`.
+fn merged(name: &str, key: &str) -> TableRef {
+    TableRef {
+        path: TablePath::new([name]).unwrap(),
+        name: name.into(),
+        version: SchemaVersion(1),
+        generation: None,
+        merge: Some(MergeKey {
+            columns: vec![key.into()],
+            seq: "seq".into(),
+            root: None,
+            changes: None,
+            history: None,
+        }),
+    }
+}
+
+#[test]
+fn a_commit_whose_merge_is_refused_changes_no_table_and_keeps_what_was_staged() {
+    let registered = World::register("refused-merge", &mut SplitMix64::new(1));
+    let world = Arc::clone(registered.world());
+    let (before, refused) = run(Seed::new(5), {
+        let world = Arc::clone(&world);
+        |_env| async move {
+            let mut session = SimSession {
+                world: Arc::clone(&world),
+                pipeline: PipelineId::parse("sim").unwrap(),
+                epoch: Epoch::default(),
+            };
+            // Table `b` is merged by a key column its rows lack, which the merge refuses.
+            for table in [merged("a", "id"), merged("b", "missing")] {
+                let create = TableChange::Create {
+                    table: table.clone(),
+                    schema: TableSchema::new(vec![
+                        Field::new("id", LogicalType::Int64, false),
+                        Field::new("seq", LogicalType::Binary, false),
+                    ])
+                    .unwrap(),
+                };
+                session.apply_schema(&create).await.unwrap();
+                let mut writer = session.writer(&table).await.unwrap();
+                let rows = batch(vec![
+                    ("id", Arc::new(Int64Array::from(vec![1])) as _),
+                    (
+                        "seq",
+                        Arc::new(BinaryArray::from_iter_values([[0_u8; 16]])) as _,
+                    ),
+                ]);
+                writer.write(SegmentId(1), rows).await.unwrap();
+                writer.flush().await.unwrap();
+            }
+            let before = world.store.lock().digest();
+            (before, session.commit(&first_commit(Vec::new())).await)
+        }
+    });
+    let refused = refused.expect_err("the merge refuses table b");
+    assert_eq!(refused.code(), Some("merge_key_invalid"));
+    let store = world.store.lock();
+    assert_eq!(store.digest(), before, "no table changed");
+    assert!(
+        store
+            .tables
+            .values()
+            .all(|table| table.published.is_empty())
+    );
+    assert_eq!(
+        store.staged.len(),
+        1,
+        "what was staged stays for the commit again"
+    );
+    drop(store);
+    drop(registered);
+}
+
+#[test]
+fn a_row_its_column_widened_past_names_the_type_it_was_written_as() {
+    use arrow_array::Float64Array;
+    let key = MergeKey {
+        columns: vec!["id".into()],
+        seq: "seq".into(),
+        root: None,
+        changes: None,
+        history: None,
+    };
+    let pipeline = PipelineId::parse("sim").unwrap();
+    let mut store = Store::default();
+    let table = store.tables.entry("t".to_owned()).or_default();
+    table.columns = [
+        ("id".to_owned(), LogicalType::Int64),
+        ("n".to_owned(), LogicalType::Float64),
+        ("seq".to_owned(), LogicalType::Binary),
+    ]
+    .into();
+    let row = |id: i64, n: ArrayRef| {
+        let seq = Arc::new(BinaryArray::from_iter_values([[0_u8; 16]])) as ArrayRef;
+        cells::rows(&batch(vec![
+            ("id", Arc::new(Int64Array::from(vec![id])) as _),
+            ("n", n),
+            ("seq", seq),
+        ]))
+        .unwrap()
+    };
+    let float = Arc::new(Float64Array::from(vec![1.5])) as ArrayRef;
+    store.staged.insert(
+        (pipeline.clone(), SegmentId(1)),
+        vec![staged("t", &key, row(1, float))],
+    );
+    store.publish(&pipeline, &first_commit(Vec::new())).unwrap();
+    // The column widens to `Json`; the next commit merges the stored row into it.
+    let table = store.tables.get_mut("t").unwrap();
+    table.columns.insert("n".to_owned(), LogicalType::Json);
+    let text = Arc::new(StringArray::from(vec!["2"])) as ArrayRef;
+    store.staged.insert(
+        (pipeline.clone(), SegmentId(1)),
+        vec![staged("t", &key, row(2, text))],
+    );
+    store.publish(&pipeline, &first_commit(Vec::new())).unwrap();
+    let first = store.tables["t"]
+        .published
+        .iter()
+        .find(|row| row.cells["id"] == Canon::Number("1".to_owned()))
+        .expect("row 1 stays");
+    let schema = first.row.schema();
+    let field = schema.field_with_name("n").unwrap();
+    assert_eq!(Field::extension_type(field), Some(LogicalType::Json));
+    let written = field
+        .metadata()
+        .get(cells::WRITTEN)
+        .expect("the type it was written as");
+    assert_eq!(
+        serde_json::from_str::<LogicalType>(written).unwrap(),
+        LogicalType::Float64
+    );
+}
+
+#[test]
+fn a_child_table_no_row_ever_reached_follows_its_roots_by_staying_absent() {
+    let text = |values: &[&str]| Arc::new(StringArray::from(values.to_vec())) as ArrayRef;
+    let roots_key = MergeKey {
+        columns: vec!["id".into()],
+        seq: "seq".into(),
+        root: None,
+        changes: None,
+        history: None,
+    };
+    let key = MergeKey {
+        columns: vec!["owner".into()],
+        root: Some(RootKey {
+            table: "roots".into(),
+            id: "id".into(),
+            seq: "seq".into(),
+        }),
+        ..roots_key.clone()
+    };
+    let pipeline = PipelineId::parse("sim").unwrap();
+    let mut store = texts_store(&[("roots", &["id", "seq"])]);
+    let roots = cells::rows(&batch(vec![("id", text(&["r1"])), ("seq", text(&["1"]))])).unwrap();
+    store.staged.insert(
+        (pipeline.clone(), SegmentId(1)),
+        vec![staged("roots", &roots_key, roots)],
+    );
+    let meta = first_commit(vec![ChildTable {
+        table: "kids".into(),
+        merge: key,
+    }]);
+    store.publish(&pipeline, &meta).unwrap();
+    assert!(!store.tables.contains_key("kids"));
 }

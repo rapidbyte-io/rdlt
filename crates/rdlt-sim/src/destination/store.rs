@@ -4,6 +4,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 
+use arrow_array::RecordBatch;
+use rdlt_connector::merge::{Merged, failed, merge_children_sparse, merge_sparse};
 use rdlt_connector::{
     CommitMeta, CommitSeq, ConnectorError, Epoch, GenerationId, LoadId, MergeKey, PartitionId,
     PipelineId, Receipt, Result, SegmentId, StateChange, StateEntry, StateRecord, StreamName,
@@ -11,8 +13,7 @@ use rdlt_connector::{
 };
 
 use super::read::{names, next_offset};
-use super::tombstones::Tombstones;
-use super::{Stored, cells, columns, history};
+use super::{Stored, cells, columns, merged};
 use crate::world::World;
 
 /// The destination's contents, kept in its world: tables every pipeline shares, and each
@@ -54,8 +55,16 @@ pub(super) struct Table {
     pub(super) columns: columns::Columns,
     pub(super) published: Vec<Stored>,
     pub(super) generations: BTreeMap<GenerationId, Vec<Stored>>,
-    /// A change stream's tombstones.
-    pub(super) tombstones: Tombstones,
+    /// A change stream's tombstones: the rows its merges removed outright, which no change
+    /// sequenced before their removal brings back.
+    pub(super) tombstones: Vec<RecordBatch>,
+}
+
+/// A merge table's rows once a commit merges into it, and its tombstones.
+struct Plan {
+    table: String,
+    published: Vec<Stored>,
+    tombstones: Vec<RecordBatch>,
 }
 
 /// A digest of everything a destination holds: its tables' columns and rows, and each pipeline's
@@ -160,13 +169,17 @@ impl Store {
 
     /// Publishes the segments of `meta` that `pipeline` staged and swaps in the generations it
     /// finishes; returns the rows published, by table.
+    ///
+    /// Every merge table's merge is planned before any table changes, through the SDK's Arrow
+    /// merge: a merge it refuses fails the commit whole, with every table and what was staged
+    /// as it was.
     pub(super) fn publish(
         &mut self,
         pipeline: &PipelineId,
         meta: &CommitMeta,
-    ) -> Vec<(String, Vec<Stored>)> {
+    ) -> Result<Vec<(String, Vec<Stored>)>> {
+        let plans = self.plan(pipeline, meta)?;
         let mut published = Vec::new();
-        let mut merging: BTreeMap<String, (MergeKey, Vec<Stored>)> = BTreeMap::new();
         // What the session staged in a segment the load abandoned is never published.
         self.staged.retain(|(staged, segment), _| {
             staged != pipeline || !meta.abandoned.contains(*segment)
@@ -175,12 +188,7 @@ impl Store {
             let staged = self.staged.remove(&(pipeline.clone(), segment));
             for staged in staged.unwrap_or_default() {
                 published.push((staged.table.clone(), staged.rows.clone()));
-                if let Some(key) = staged.merge {
-                    merging
-                        .entry(staged.table)
-                        .or_insert_with(|| (key, Vec::new()))
-                        .1
-                        .extend(staged.rows);
+                if staged.merge.is_some() {
                     continue;
                 }
                 let table = self.tables.entry(staged.table).or_default();
@@ -194,38 +202,73 @@ impl Store {
                 }
             }
         }
-        for child in &meta.child_tables {
-            merging
-                .entry(child.table.to_string())
-                .or_insert_with(|| (child.merge.clone(), Vec::new()));
+        for plan in plans {
+            let table = self.tables.entry(plan.table).or_default();
+            table.published = plan.published;
+            table.tombstones = plan.tombstones;
         }
-        let roots: BTreeMap<String, Vec<Stored>> = merging
-            .iter()
-            .filter(|(_, (key, _))| key.root.is_none())
-            .map(|(name, (_, rows))| (name.clone(), rows.clone()))
-            .collect();
-        for (name, (key, rows)) in merging {
-            let table = self.tables.entry(name).or_default();
-            let published = &mut table.published;
-            match (&key.root, &key.changes) {
-                (None, _) if key.history.is_some() => {
-                    let history = key.history.as_ref().expect("a history table's key");
-                    history::merge_history(published, &mut table.tombstones, rows, &key, history);
-                }
-                (None, Some(changes)) => {
-                    cells::merge_changes(published, &mut table.tombstones, rows, &key, changes);
-                }
-                (None, None) => cells::merge(published, rows, &key),
-                (Some(root), _) => {
-                    let roots = roots
-                        .get(root.table.as_ref())
-                        .map_or(&[][..], Vec::as_slice);
-                    cells::merge_children(published, rows, &key, root, roots);
+        self.finish(meta);
+        Ok(published)
+    }
+
+    /// The merges of `meta`'s segments that `pipeline` staged into their merge tables, and of
+    /// the child tables whose roots they publish; changes nothing.
+    fn plan(&self, pipeline: &PipelineId, meta: &CommitMeta) -> Result<Vec<Plan>> {
+        let mut merging: BTreeMap<&str, (&MergeKey, Vec<&Stored>)> = BTreeMap::new();
+        for segment in meta.segments.iter() {
+            let staged = self.staged.get(&(pipeline.clone(), segment));
+            for staged in staged.into_iter().flatten() {
+                if let Some(key) = &staged.merge {
+                    let (_, rows) = merging.entry(&staged.table).or_insert((key, Vec::new()));
+                    rows.extend(&staged.rows);
                 }
             }
         }
-        self.finish(meta);
-        published
+        for child in &meta.child_tables {
+            merging
+                .entry(child.table.as_ref())
+                .or_insert((&child.merge, Vec::new()));
+        }
+        let mut plans = Vec::new();
+        for (&name, (key, incoming)) in &merging {
+            let table = self.tables.get(name);
+            // A child table no row has reached holds no children to replace.
+            if table.is_none() && incoming.is_empty() {
+                continue;
+            }
+            let columns = table.map(|table| table.columns.clone()).unwrap_or_default();
+            let schema = merged::schema(&columns);
+            let mut sources = merged::Sources::default();
+            let published = sources.read(table.into_iter().flat_map(|table| &table.published));
+            let incoming = sources.read(incoming.iter().copied());
+            let merged = match &key.root {
+                None => {
+                    let buried = table.map_or(&[][..], |table| table.tombstones.as_slice());
+                    merge_sparse(&schema, &published, buried, &incoming, key)
+                        .map_err(|error| failed("merging rows", error))?
+                }
+                Some(root) => {
+                    let roots: Vec<RecordBatch> = merging
+                        .get(root.table.as_ref())
+                        .into_iter()
+                        .flat_map(|(_, rows)| rows.iter().map(|row| row.row.clone()))
+                        .collect();
+                    let rows =
+                        merge_children_sparse(&schema, &published, &incoming, key, root, &roots)
+                            .map_err(|error| failed("merging child rows", error))?;
+                    Merged {
+                        rows,
+                        tombstones: Vec::new(),
+                    }
+                }
+            };
+            plans.push(Plan {
+                table: name.to_owned(),
+                published: sources.restored(&merged.rows, &columns)?,
+                tombstones: merged.tombstones,
+            });
+        }
+        Ok(plans)
     }
 
     /// Swaps in the generations `meta` finishes, each table's rows replaced whole, and drops the
@@ -238,7 +281,7 @@ impl Store {
             let table = self.tables.entry(name).or_default();
             table.published = table.generations.remove(generation).unwrap_or_default();
             table.generations.clear();
-            table.tombstones = Tombstones::default();
+            table.tombstones = Vec::new();
         }
         for dropped in &meta.drop_tables {
             self.tables.remove(&*dropped.name);
