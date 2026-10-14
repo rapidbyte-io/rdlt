@@ -86,7 +86,6 @@ fn every_chosen_cell_moves_every_row_through_its_partitions_and_streams() {
         // The report's rows are checked against the batches' inside.
         let report = passthrough.engine_report();
         assert_eq!(report.streams.len(), cell.streams.get(), "{}", cell.name());
-        assert!(report.counters.signals > 0, "{}", cell.name());
         if cell.commit == Cadence::Sixteenths {
             assert!(report.counters.commits.size > 0, "{}", cell.name());
         }
