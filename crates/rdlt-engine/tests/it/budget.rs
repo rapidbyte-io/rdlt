@@ -19,7 +19,7 @@ use rdlt_engine::RunStatus;
 
 use crate::HEAP;
 use crate::support::destinations::{Gate, buffering, gated, null};
-use crate::support::making::{Step, making};
+use crate::support::making::{Step, Steps, making};
 use crate::support::{commit_every, engine, pipeline, stream};
 
 fn batch(column: ArrayRef) -> RecordBatch {
@@ -236,6 +236,15 @@ async fn batches_keeping_large_buffers_alive_load_within_the_budget() {
     );
     assert_eq!(outcome.report.rows, 3 * 48);
     assert!(peak <= bound(BUDGET), "peak {peak} bytes");
+    // Each wait raises a signal and lowers it at most once.
+    let counters = &outcome.report.counters;
+    assert!(counters.waits.intake.count > 0, "pushes waited");
+    assert!(
+        counters.signals <= 2 * waited(&counters.waits),
+        "{} signals for {} waits",
+        counters.signals,
+        waited(&counters.waits)
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -540,4 +549,48 @@ async fn nulls_nested_in_lists_load_within_the_budget_however_wide_their_type() 
         outcome.error
     );
     assert_eq!(outcome.report.rows, NULL_ROWS as u64 + 1);
+}
+
+/// Every request that waited, of any share.
+fn waited(waits: &rdlt_engine::Waits) -> u64 {
+    [
+        waits.intake,
+        waits.work,
+        waits.cursors,
+        waits.log,
+        waits.tables,
+        waits.control,
+        waits.reads,
+    ]
+    .iter()
+    .map(|waited| waited.count)
+    .sum()
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_load_in_which_nothing_waits_signals_nothing() {
+    let steps: Steps = Arc::new(|step: usize| {
+        (step < 400).then(|| {
+            if step.is_multiple_of(2) {
+                Step::Batch(batch(Arc::new(Int64Array::from(vec![7_i64; 100]))))
+            } else {
+                Step::Checkpoint(8)
+            }
+        })
+    });
+    let source = making("budget_quiet", steps).await;
+    let outcome = engine(commit_every(1_000_000))
+        .run(pipeline("quiet", [stream("events")]), source, null().await)
+        .await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    assert_eq!(waited(&outcome.report.counters.waits), 0);
+    assert_eq!(
+        outcome.report.counters.signals, 0,
+        "nothing waited, nothing was signalled"
+    );
 }
