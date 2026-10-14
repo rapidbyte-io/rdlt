@@ -49,6 +49,11 @@ impl Constants {
             ],
         })
     }
+
+    /// Whether the columns are of the load `stamp` names and reach `rows` rows.
+    pub(super) fn fits(&self, stamp: &Stamp, rows: usize) -> bool {
+        self.load_id == stamp.load_id && self.loaded_at == stamp.loaded_at && self.rows >= rows
+    }
 }
 
 /// `time` in microseconds since the epoch: before it negative, and a time between two

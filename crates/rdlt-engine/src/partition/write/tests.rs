@@ -412,13 +412,114 @@ fn eight_pieces_are_lowered_together_at_most() {
 
 /// A piece held in a window: a run that lowers nothing, holding `bytes` of `budget`.
 fn windowed(window: &mut super::Window, budget: &MemoryBudget, bytes: u64) {
+    held_by(
+        window,
+        budget,
+        bytes,
+        Box::new(|| Err(crate::error::Error::internal("not lowered"))),
+        false,
+    );
+}
+
+/// A piece held in a window, lowered by `run`, which `copies` values or not, holding `bytes` of
+/// `budget`.
+fn held_by(
+    window: &mut super::Window,
+    budget: &MemoryBudget,
+    bytes: u64,
+    run: super::Run,
+    copies: bool,
+) {
     let lowering = super::Lowering {
         allocations: Arc::new(parking_lot::Mutex::new(Allocations::default())),
         reserved: budget.try_acquire_working(bytes).unwrap(),
         unit: None,
     };
-    let run: super::Run = Box::new(|| Err(crate::error::Error::internal("not lowered")));
-    window.push(run, lowering);
+    window.push(run, lowering, copies);
+}
+
+/// A pool that runs each job at once, counting them in `tally`.
+fn counted(tally: &Arc<crate::report::Tally>) -> crate::compute::Pool {
+    crate::compute::Pool::new(Arc::new(crate::env::InlineEnv), Arc::clone(tally))
+}
+
+#[test]
+fn a_window_is_lowered_on_the_pool_only_where_a_piece_s_lowering_copies_values() {
+    let budget = crate::budget::budget(64 << 20);
+    for (copies, jobs) in [([false, false], 0), ([false, true], 2), ([true, false], 2)] {
+        let tally = Arc::new(crate::report::Tally::default());
+        let mut window = super::Window::default();
+        for copies in copies {
+            held_by(
+                &mut window,
+                &budget,
+                1,
+                Box::new(|| Err(crate::error::Error::internal("not lowered"))),
+                copies,
+            );
+        }
+        let lowered = crate::compute::ready(window.lowered(&counted(&tally)));
+        assert_eq!(lowered.len(), 2);
+        assert_eq!(tally.counters().pool.jobs, jobs, "{copies:?}");
+        // The window starts again empty, its pieces on the calling task.
+        held_by(
+            &mut window,
+            &budget,
+            1,
+            Box::new(|| Err(crate::error::Error::internal("not lowered"))),
+            false,
+        );
+        crate::compute::ready(window.lowered(&counted(&tally)));
+        assert_eq!(tally.counters().pool.jobs, jobs, "{copies:?}");
+    }
+}
+
+#[test]
+fn a_lowering_that_panics_on_the_calling_task_panics_it() {
+    let budget = crate::budget::budget(64 << 20);
+    let tally = Arc::new(crate::report::Tally::default());
+    let mut window = super::Window::default();
+    held_by(
+        &mut window,
+        &budget,
+        1,
+        Box::new(|| panic!("a lowering bug")),
+        false,
+    );
+    let lowering =
+        std::panic::AssertUnwindSafe(|| crate::compute::ready(window.lowered(&counted(&tally))));
+    let Err(panicked) = std::panic::catch_unwind(lowering) else {
+        panic!("the lowering panics");
+    };
+    assert_eq!(panicked.downcast_ref::<&str>(), Some(&"a lowering bug"));
+    assert_eq!(tally.counters().pool.jobs, 0);
+}
+
+#[test]
+fn a_piece_copies_nothing_only_as_one_batch_of_a_stream_that_is_not_a_change_stream() {
+    use crate::fixtures::lowering::{Case, LoweringCase};
+    let case = Case::new(LoweringCase::AppendNative, 64);
+    case.prepare().unwrap();
+    let stamp = crate::fixtures::lowering::stamp();
+    let piece = |parts: Vec<RecordBatch>| super::Piece {
+        rows: parts.iter().map(RecordBatch::num_rows).sum(),
+        parts,
+        bytes: 0,
+    };
+    let batch = case.batch();
+    let one = piece(vec![batch.slice(0, 32)]);
+    assert!(super::copies_nothing(&one, case.plan(), &stamp, None));
+    // A change stream's batch holds its change columns beside its data, split off first.
+    let mode = Some(crate::partition::ChangeMode {
+        merge: false,
+        deletes: crate::plan::DeleteMode::Ignore,
+        truncates: crate::plan::OnTruncate::Ignore,
+        partial_updates: false,
+    });
+    assert!(!super::copies_nothing(&one, case.plan(), &stamp, mode));
+    // Two batches are concatenated into one, a copy of every value.
+    let two = piece(vec![batch.slice(0, 16), batch.slice(16, 16)]);
+    assert!(!super::copies_nothing(&two, case.plan(), &stamp, None));
 }
 
 #[test]
