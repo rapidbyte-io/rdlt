@@ -301,6 +301,21 @@ binary as each run spawns it (in brackets with them in):
 
 The served sink declares one writer, so the rules about lanes are not read here.
 
+The two changes passthrough.md records as built, on the production slice: `main` at
+`b0f322dd311f`, the host on CPUs 0–3 and the connectors on 4–11, three rounds of
+`5120x1000/16-partitions` with `main`, pressure alone and both changes run in turn, each round
+started at a one-minute load under 1.0, and one profile each of the host's process, classified
+as above:
+
+| Side | MB/s | Signals a frame | Ledger and watch | Coordinator |
+|---|---|---|---|---|
+| `main` | 1 416 [1 410–1 424] | 14.0 | 2.58 % (2.21 %) | 2.19 % (1.87 %) |
+| Pressure | 1 431 [1 418–1 436] | 0.0 | 1.59 % (1.36 %) | 1.50 % (1.28 %) |
+| Both | 1 434 [1 433–1 447] | 0.0 | 1.54 % (1.31 %) | 1.01 % (0.86 %) |
+
+Pressure took the ledger and watch 38 % lower, and progress the coordinator 33 % lower than
+pressure alone: neither halved, as in process, and throughput rose 1.3 % past `main`'s range.
+
 ## A served write in two stages
 
 A served write ran one pump: it read a frame, decoded it, and waited for the destination's writer
