@@ -32,8 +32,8 @@ the spec's `D-MERGE` names the seq guard, which the clause never exercised.
   delete's sequence, and the latest hard truncate's sequence, the bound. A change sequenced at or
   before its key's tombstone, or before the bound, never applies. A later change of the key lifts
   its tombstone; raising the bound drops the tombstones before it.
-  - Every destination keeps them: the Arrow merge (memory, files), the simulation's
-    destination, the SQL destinations, and certification's vault. The memory and files
+  - Every destination keeps them: the Arrow merge (memory, files and the simulation's
+    destination), the SQL destinations, and certification's vault. The memory and files
     destinations store them beside the table's rows, the files destination in its manifest, which
     its garbage collection keeps; a SQL destination in the table `_rdlt_tombstones__{name}`, whose
     bound is a row naming no key.

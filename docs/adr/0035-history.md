@@ -62,8 +62,9 @@ never sees.
 - **Destinations.** `sqlgen` publishes history through window functions over each key's staged
   rows in sequence order, each step decided by the key's last version or upsert before it and
   whether a delete came since: a skipped upsert holds the data of the version it matched, and a
-  deleted version the data of the one it closed. SQLite declares `history`. The reference Arrow merge keeps it for the memory and files destinations, and the
-  simulated destination has its own.
+  deleted version the data of the one it closed. SQLite declares `history`. The SDK's Arrow
+  merge (`rdlt_connector::merge`) keeps it for the memory and files destinations and for the
+  simulated destination.
 - **Certification.** `D-HIST` commits plain and change streams' histories, hard and soft, with
   replays, re-inserts after deletes and truncates, and compares every version with expectations
   worked out by hand; the certification fake fails it for each of six broken behaviors.

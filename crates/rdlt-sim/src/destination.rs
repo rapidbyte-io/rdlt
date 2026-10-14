@@ -3,12 +3,11 @@
 
 mod cells;
 mod columns;
-mod history;
+mod merged;
 mod read;
 mod store;
 #[cfg(test)]
 mod tests;
-mod tombstones;
 
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
@@ -25,6 +24,7 @@ use serde::Deserialize;
 
 use crate::world::{FaultPoint, World};
 
+pub(crate) use cells::WRITTEN;
 pub use cells::{Cells, Stored};
 pub use read::completions;
 pub(crate) use read::{Published, published_table, table_paths};
@@ -169,7 +169,7 @@ impl Session for SimSession {
                 return Ok(receipt.clone());
             }
             store.owned(&self.pipeline, meta)?;
-            let published = store.publish(&self.pipeline, meta);
+            let published = store.publish(&self.pipeline, meta)?;
             store.apply(&self.world, &self.pipeline, meta);
             store.check_cursors(&self.world, &self.pipeline, &published);
             let receipt = Receipt {
