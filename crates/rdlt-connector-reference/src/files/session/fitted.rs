@@ -14,7 +14,7 @@ use rdlt_connector::{ConnectorErrorKind, LogicalType, SegmentId, TableSchema};
 use super::{Location, Shared};
 use crate::columns::changed;
 use crate::files::format::FileFormat;
-use crate::files::manifest::{self, Listed};
+use crate::files::manifest::{self, Listed, TableFiles};
 use crate::files::tables;
 
 /// Refuses the `buffered` batches of `table` where it is a merge table and one of them holds a
@@ -54,6 +54,44 @@ fn retyped(current: &TableSchema, next: &TableSchema) -> bool {
         let now = taken.field_with_name(field.name());
         now.is_ok_and(|now| now.data_type() != field.data_type())
     })
+}
+
+/// Whether a change from `current` to `next` is checked against what its table holds: it changes
+/// a column's type, or a table of JSON lines makes a column `Json`, which its lines are refused.
+fn checks(location: &Location, current: &TableSchema, next: &TableSchema) -> bool {
+    let lines_into_json = location.format == FileFormat::Jsonl && into_json(current, next);
+    lines_into_json || retyped(current, next)
+}
+
+/// Whether `table` publishes a row; with `keyed`, or holds a tombstone.
+///
+/// A tombstone is no row a reader is given, but its line holds the key, which a change of the
+/// key's type would have it meet as JSON text.
+fn holds_rows(table: &TableFiles, keyed: bool) -> bool {
+    let buried = keyed.then_some(&table.tombstones);
+    let mut holding = table
+        .files
+        .iter()
+        .chain(table.generations.values().flatten())
+        .chain(buried.into_iter().flatten());
+    holding.any(|file| file.rows != 0)
+}
+
+/// Whether `change`, of a merge table, makes a column its key or its sequence names `Json` where
+/// it was not.
+fn key_into_json(change: &TableChange, current: &TableSchema, next: &TableSchema) -> bool {
+    let Some(key) = &change.table().merge else {
+        return false;
+    };
+    let gains = |column: &str| {
+        let (held, taken) = (current.field(column), next.field(column));
+        held.zip(taken)
+            .is_some_and(|(held, taken)| gains_json(held.logical_type(), taken.logical_type()))
+    };
+    key.columns
+        .iter()
+        .chain([&key.seq])
+        .any(|column| gains(column))
 }
 
 /// Whether a column of `current`, or a field within one, that is not `Json` is `Json` in `next`.
@@ -115,10 +153,10 @@ pub(super) fn fits(
     let Ok(next) = changed(Some(&current), change) else {
         return Ok(Checked::default());
     };
-    let lines_into_json = location.format == FileFormat::Jsonl && into_json(&current, &next);
-    if !lines_into_json && !retyped(&current, &next) {
+    if !checks(location, &current, &next) {
         return Ok(Checked::default());
     }
+    let lines_into_json = location.format == FileFormat::Jsonl && into_json(&current, &next);
     let (held, taken) = (Arc::new(current.to_arrow()), Arc::new(next.to_arrow()));
     let manifest = manifest::latest(&location.dir)?;
     let version = manifest.as_ref().map(|manifest| manifest.version);
@@ -139,12 +177,8 @@ pub(super) fn fits(
         merge::holds(&rows, &taken).map_err(conflict)?;
     }
     let staged = staged(shared, name);
-    let holding = table
-        .files
-        .iter()
-        .chain(table.generations.values().flatten());
-    let held_rows = holding.chain(&table.tombstones).any(|file| file.rows != 0);
-    if lines_into_json && (held_rows || !staged.is_empty()) {
+    let keyed = key_into_json(change, &current, &next);
+    if lines_into_json && (holds_rows(&table, keyed) || !staged.is_empty()) {
         return Err(ConnectorError::data(format!(
             "table {name} keeps its rows as JSON lines, which hold no type: a column holding \
              them cannot become Json"
@@ -172,7 +206,7 @@ pub(super) fn fits(
 
 impl Checked {
     /// Checks, under the table's lock, that a change taking the table's schema from `current`
-    /// to `next` is one this check covers: it changes no column's type, or the table is as it
+    /// to `next` is one this check covers: it is checked against no row, or the table is as it
     /// was when its rows were read.
     ///
     /// A table that changed since is a `Transient` error coded `table_changed`.
@@ -182,7 +216,7 @@ impl Checked {
         shared: &Mutex<Shared>,
         (name, current, next): (&str, &TableSchema, &TableSchema),
     ) -> Result<()> {
-        if !retyped(current, next) {
+        if !checks(location, current, next) {
             return Ok(());
         }
         let version = manifest::latest(&location.dir)?.map(|manifest| manifest.version);

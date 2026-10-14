@@ -157,3 +157,30 @@ fn a_type_gains_json_where_it_or_a_field_or_item_within_it_becomes_json() {
     assert!(gains_json(&list(T::Int64), &list(T::Json)));
     assert!(!gains_json(&list(T::Int32), &list(T::Int64)));
 }
+
+#[test]
+fn a_widen_to_json_of_a_table_of_lines_checked_empty_is_not_taken_once_it_holds_rows() {
+    let sessions = Sessions::new(FileFormat::Jsonl);
+    sessions.create(&table(), &schema(LogicalType::Utf8));
+    let into_json = TableChange::Widen {
+        table: table(),
+        column: "held".into(),
+        from: LogicalType::Utf8,
+        to: LogicalType::Json,
+    };
+    let checked = fits(&sessions.location, &sessions.shared, &into_json).unwrap();
+    let (current, next) = (schema(LogicalType::Utf8), schema(LogicalType::Json));
+    let asked = ("rows", &current, &next);
+    checked
+        .stands(&sessions.location, &sessions.shared, asked)
+        .unwrap();
+    // Rows published between the check and the lock: lines hold no type, so they are read again.
+    let text: ArrayRef = Arc::new(arrow_array::StringArray::from(vec!["x"]));
+    let ids: ArrayRef = Arc::new(Int64Array::from(vec![1]));
+    let rows = RecordBatch::try_from_iter([("id", Arc::clone(&ids)), ("held", text), ("seq", ids)])
+        .unwrap();
+    sessions.stage(&table(), 1, rows);
+    sessions.commit(&sessions.meta(1, 1, &[1])).unwrap();
+    let moved = checked.stands(&sessions.location, &sessions.shared, asked);
+    assert_eq!(moved.unwrap_err().code(), Some(TABLE_CHANGED));
+}

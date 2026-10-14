@@ -162,11 +162,19 @@ generated sources were written before it, and each took something as given:
     field and a list an array. A value that was `Json` stays as it is. Text the engine rendered
     a value of a type the destination does not store as, its field naming the type, becomes
     the JSON of that value, as rows written after the widen hold it: `4450` a number, `true` a
-    boolean. A merged row keeps the type its field names, and rows naming other types are
-    given back, and folded, apart. A test pins the merge's text to the engine's for every type
-    it draws, stored as itself or as text.
+    boolean. A merged row keeps the type its field names where its column holds text, the only
+    name the merge reads, and rows naming other types are given back apart. A fold joins rows
+    of one set of names a group, and keeps fewer of the largest batches as they are, so it
+    gives back no more batches than its bound unless the sets outnumber it. A test pins the
+    merge's text to the engine's for every type it draws, stored as itself or as text.
+  - A reader is given every stored column at its column's type now, however its batch was
+    written: an append table's batches, never merged again, are converted as they are read,
+    and a value that does not convert is an error, never the batch as it was.
   - A destination of JSON lines refuses a widen to `Json` of a column whose table holds rows,
-    as `schema_conflict`: a line holds no type, so text and JSON text are one there.
+    published or staged, as `schema_conflict`: a line holds no type, so text and JSON text are
+    one there. A tombstone is no row, but it counts as one where the change is to its key or
+    sequence, which its line holds. The change is checked again under the table's lock, as a
+    change of a column's type is.
 - **A schema change the held rows do not fit is refused where it is applied.** The memory
   destination converts what a table holds, its rows, generations and tombstones, before a
   column takes a type, and refuses the change as `schema_conflict`: the table stays at the

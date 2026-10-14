@@ -241,3 +241,71 @@ async fn a_replayed_change_never_brings_back_a_row_the_files_destination_removed
         assert_eq!(files(root.path(), format).await, [3, 4], "{format}");
     }
 }
+
+#[tokio::test]
+async fn a_table_of_lines_holding_only_tombstones_takes_a_widen_to_json() {
+    use ChangeOp::{Delete, Insert};
+    let root = crate::fixtures::tempdir().expect("a root");
+    let config = json!({ "root": root.path(), "format": "jsonl" });
+    let (destination, _reader) = readable_destination_factory::<FilesDestination>()
+        .connect_reading(config, ConnectContext::new())
+        .await
+        .expect("the destination connects");
+    let deleted = changes(&[(Some(1), 1, Insert), (Some(1), 2, Delete)]);
+    commit(destination.as_ref(), 1, deleted).await;
+    let context = OpenContext {
+        pipeline: PipelineId::parse("tombstones").expect("valid pipeline id"),
+        load_id: LoadId::from_parts(UNIX_EPOCH, 2),
+    };
+    let mut opened = destination.open(&context).await.expect("a session opens");
+    let added = TableChange::AddColumn {
+        table: table(),
+        field: Field::new("note", LogicalType::Utf8, true),
+    };
+    opened
+        .session
+        .apply_schema(&added)
+        .await
+        .expect("the column is added");
+    let widen = TableChange::Widen {
+        table: table(),
+        column: "note".into(),
+        from: LogicalType::Utf8,
+        to: LogicalType::Json,
+    };
+    // A tombstone is no row a reader is given: the table holds none.
+    opened
+        .session
+        .apply_schema(&widen)
+        .await
+        .expect("a table of tombstones alone takes the widen");
+}
+
+#[tokio::test]
+async fn a_table_of_lines_holding_only_tombstones_refuses_its_key_s_widen_to_json() {
+    use ChangeOp::{Delete, Insert};
+    let root = crate::fixtures::tempdir().expect("a root");
+    let config = json!({ "root": root.path(), "format": "jsonl" });
+    let (destination, _reader) = readable_destination_factory::<FilesDestination>()
+        .connect_reading(config, ConnectContext::new())
+        .await
+        .expect("the destination connects");
+    let deleted = changes(&[(Some(1), 1, Insert), (Some(1), 2, Delete)]);
+    commit(destination.as_ref(), 1, deleted).await;
+    let context = OpenContext {
+        pipeline: PipelineId::parse("tombstones").expect("valid pipeline id"),
+        load_id: LoadId::from_parts(UNIX_EPOCH, 2),
+    };
+    let mut opened = destination.open(&context).await.expect("a session opens");
+    let widen = TableChange::Widen {
+        table: table(),
+        column: "id".into(),
+        from: LogicalType::Int64,
+        to: LogicalType::Json,
+    };
+    // A tombstone's line holds its key, which a reader would take for JSON text once the key
+    // is Json, so a change before its delete would no longer meet it.
+    let refused = opened.session.apply_schema(&widen).await;
+    let refused = refused.expect_err("a tombstone holds the key");
+    assert_eq!(refused.code(), Some("schema_conflict"));
+}
