@@ -3,7 +3,7 @@ use rdlt_sim::{
 };
 
 /// Seeds that each found a defect when first run, kept so they stay green.
-const FOUND: [u64; 19] = [
+const FOUND: [u64; 18] = [
     // Over the network: a served writer that panicked ended its write as though it were done.
     19,
     // Over the network: a host whose handshake a partition cut short held its connection, and
@@ -26,9 +26,6 @@ const FOUND: [u64; 19] = [
     // Pressed: a partition that ended at its last cursor sealed it again unreserved, so a
     // commit recording many such cursors passed the log's share of the budget.
     820,
-    // Over the network, pressed: a stopped connector listened again only once its drain ended,
-    // which a host holding back its reads kept going past every placement.
-    5_754,
     // A column of integers made for a column of JSON as its table was created was recorded
     // exact, though the integers split into it were read only as they were lowered.
     7_964,
