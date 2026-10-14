@@ -1,20 +1,23 @@
 //! Following runs as the engine keeps their books: read slots, partitions read again, the stop
 //! that precedes a deadline, and a write-ahead log that stays bounded.
 
+use std::io;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
+use bytes::Bytes;
+use parking_lot::Mutex;
 use rdlt_connector::{
-    BoxFuture, Catalog, ConnectContext, Cursor, PartitionId, PartitionPlan, PartitionSink,
-    ReadMode, ReadRequest, Source, SourceEvent, StreamName, StreamState, partition_channel,
-    source_factory,
+    BoxFuture, Catalog, ConnectContext, Cursor, LoadId, PartitionId, PartitionPlan, PartitionSink,
+    PipelineId, ReadMode, ReadRequest, Source, SourceEvent, StreamName, StreamState,
+    partition_channel, source_factory,
 };
 use rdlt_connector_reference::LogSource;
 use rdlt_engine::{
-    BatchPolicy, CommitPolicy, EngineConfig, EngineConfigBuilder, LocalWal, RunStatus, StopMode,
-    Until, WalStore,
+    BatchPolicy, Chunk, CommitPolicy, EngineConfig, EngineConfigBuilder, LocalWal, RunStatus,
+    StagedChunk, StopMode, Until, WalStore,
 };
 use serde_json::{Value, json};
 
@@ -286,6 +289,91 @@ async fn a_following_run_stopped_before_its_deadline_is_stopped() {
     );
 }
 
+/// A local log that notes, each time a chunk is staged, when, and how many chunks its log has
+/// published: what the log holds between two commits, every chunk the last one freed deleted.
+#[derive(Debug)]
+struct Noting {
+    inner: LocalWal,
+    started: tokio::time::Instant,
+    held: Mutex<Vec<(Duration, usize)>>,
+}
+
+impl WalStore for Noting {
+    fn identity(&self, proposed: LoadId) -> BoxFuture<'_, io::Result<LoadId>> {
+        self.inner.identity(proposed)
+    }
+
+    fn open_log<'a>(
+        &'a self,
+        pipeline: &'a PipelineId,
+        load: LoadId,
+    ) -> BoxFuture<'a, io::Result<()>> {
+        self.inner.open_log(pipeline, load)
+    }
+
+    fn stage<'a>(
+        &'a self,
+        pipeline: &'a PipelineId,
+        chunk: Chunk,
+    ) -> BoxFuture<'a, io::Result<Box<dyn StagedChunk>>> {
+        Box::pin(async move {
+            let published = self.inner.chunks(pipeline, chunk.load).await?.len();
+            self.held.lock().push((self.started.elapsed(), published));
+            self.inner.stage(pipeline, chunk).await
+        })
+    }
+
+    fn loads<'a>(&'a self, pipeline: &'a PipelineId) -> BoxFuture<'a, io::Result<Vec<LoadId>>> {
+        self.inner.loads(pipeline)
+    }
+
+    fn leftovers<'a>(&'a self, pipeline: &'a PipelineId) -> BoxFuture<'a, io::Result<Vec<LoadId>>> {
+        self.inner.leftovers(pipeline)
+    }
+
+    fn chunks<'a>(
+        &'a self,
+        pipeline: &'a PipelineId,
+        load: LoadId,
+    ) -> BoxFuture<'a, io::Result<Vec<(u64, u64)>>> {
+        self.inner.chunks(pipeline, load)
+    }
+
+    fn read<'a>(
+        &'a self,
+        pipeline: &'a PipelineId,
+        chunk: Chunk,
+        offset: u64,
+        len: u64,
+    ) -> BoxFuture<'a, io::Result<Bytes>> {
+        self.inner.read(pipeline, chunk, offset, len)
+    }
+
+    fn remove_staged<'a>(
+        &'a self,
+        pipeline: &'a PipelineId,
+        load: LoadId,
+    ) -> BoxFuture<'a, io::Result<()>> {
+        self.inner.remove_staged(pipeline, load)
+    }
+
+    fn remove<'a>(
+        &'a self,
+        pipeline: &'a PipelineId,
+        chunk: Chunk,
+    ) -> BoxFuture<'a, io::Result<()>> {
+        self.inner.remove(pipeline, chunk)
+    }
+
+    fn remove_log<'a>(
+        &'a self,
+        pipeline: &'a PipelineId,
+        load: LoadId,
+    ) -> BoxFuture<'a, io::Result<()>> {
+        self.inner.remove_log(pipeline, load)
+    }
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_partition_dropped_with_rows_it_never_sealed_holds_no_log_chunk_back() {
     // p2 checkpoints nothing, so its rows sit in an open segment until the source retires it.
@@ -299,7 +387,11 @@ async fn a_partition_dropped_with_rows_it_never_sealed_holds_no_log_chunk_back()
         ..Shaped::default()
     });
     let base = tempfile::tempdir().expect("a temporary directory");
-    let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(base.path()));
+    let store = Arc::new(Noting {
+        inner: LocalWal::new(base.path()),
+        started: tokio::time::Instant::now(),
+        held: Mutex::default(),
+    });
     let plan = pipeline("retired_logged", [incremental()])
         .with_until(Until::For(Duration::from_secs(2)))
         .with_wal(true);
@@ -307,35 +399,23 @@ async fn a_partition_dropped_with_rows_it_never_sealed_holds_no_log_chunk_back()
     let batch = BatchPolicy::new(1 << 20, 1, Duration::from_millis(10), 64 << 10)
         .expect("a valid batch policy");
     let config = following(Duration::from_millis(100)).batch(batch);
-    let run = logging_engine(config, Arc::clone(&store)).run(
-        plan,
-        shaped,
-        memory("retired_logged").await,
-    );
-    let pipeline_id = rdlt_connector::PipelineId::parse("retired_logged").expect("a valid id");
-    let watch = async {
-        tokio::time::sleep(Duration::from_millis(1800)).await;
-        let mut chunks = 0;
-        for load in store
-            .loads(&pipeline_id)
-            .await
-            .expect("the store lists loads")
-        {
-            chunks += store
-                .chunks(&pipeline_id, load)
-                .await
-                .expect("the store lists chunks")
-                .len();
-        }
-        chunks
-    };
-    let (outcome, chunks) = tokio::join!(run, watch);
+    let outcome = logging_engine(config, Arc::clone(&store) as Arc<dyn WalStore>)
+        .run(plan, shaped, memory("retired_logged").await)
+        .await;
     assert_eq!(
         outcome.report.status,
         RunStatus::Succeeded,
         "{:?}",
         outcome.error
     );
-    // The chunk it is writing, and at most one whose commit awaits its receipt.
-    assert!(chunks <= 2, "{chunks} chunks held");
+    // Between commits, from half a second after p2 is dropped: the last commit's chunk, and at
+    // most one whose commit awaits its receipt.
+    let held = store.held.lock();
+    let late: Vec<usize> = held
+        .iter()
+        .filter(|(at, _)| *at >= Duration::from_millis(1500))
+        .map(|(_, published)| *published)
+        .collect();
+    assert!(!late.is_empty(), "{held:?}");
+    assert!(late.iter().all(|published| *published <= 2), "{held:?}");
 }
