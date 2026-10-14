@@ -389,12 +389,18 @@ async fn a_served_read_sends_a_frame_only_while_it_has_credit() {
 #[tokio::test(flavor = "multi_thread")]
 async fn slow_commit_within_deadline_succeeds() {
     // Liveness and work deadlines differ: a commit much longer than the heartbeat's patience still
-    // succeeds while the connector answers heartbeats.
-    let source = crate::support::memory_source(rows(30), &quick()).await;
+    // succeeds while the connector answers heartbeats. The patience outlasts a loaded machine's
+    // scheduling delays, and the commit takes five times as long.
+    let patient = Options {
+        heartbeat: Duration::from_millis(50),
+        missed: NonZeroU32::new(6).expect("not zero"),
+        ..Options::default()
+    };
+    let source = crate::support::memory_source(rows(30), &patient).await;
     let io =
-        served(Served::new().with_destination(SlowCommits::factory(Duration::from_millis(400))));
+        served(Served::new().with_destination(SlowCommits::factory(Duration::from_millis(1500))));
     let config = serde_json::json!({ "store": "slow_commit" });
-    let connection = Connection::connect(io, Role::Destination, &config, quick())
+    let connection = Connection::connect(io, Role::Destination, &config, patient)
         .await
         .unwrap();
     let destination = rdlt_host::RemoteDestination::new(connection).unwrap();
@@ -405,13 +411,14 @@ async fn slow_commit_within_deadline_succeeds() {
         )],
     )
     .unwrap();
-    let outcome = crate::support::engine(100)
-        .run(
-            plan,
-            std::sync::Arc::new(source),
-            std::sync::Arc::new(destination),
-        )
-        .await;
+    let run = crate::support::engine(100).run(
+        plan,
+        std::sync::Arc::new(source),
+        std::sync::Arc::new(destination),
+    );
+    let outcome = tokio::time::timeout(Duration::from_secs(60), run)
+        .await
+        .expect("the run ends");
     assert_eq!(
         outcome.report.status,
         rdlt_engine::RunStatus::Succeeded,
