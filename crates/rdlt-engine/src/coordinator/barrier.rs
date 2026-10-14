@@ -15,6 +15,7 @@ impl Coordinator {
         self.owing = (0..self.parts.partitions.len())
             .filter(|index| self.parts.partitions[*index].owes(barrier))
             .collect();
+        let mut commits = self.parts.budget.cursor_waits();
         while !self.owing.is_empty() {
             // A batch waiting for room in the log waits for this commit, its partition with it:
             // once every progress sent is seen, the commit takes whatever is sealed.
@@ -39,7 +40,7 @@ impl Coordinator {
                 // An answer that finds no room for its cursor waits for this commit: the commit
                 // takes whatever is sealed now, and frees the room. Those still owing may be
                 // that answer, so they are asked again.
-                () = self.parts.budget.cursor_waits() => break,
+                () = commits.raised() => break,
                 progress = self.parts.progress.recv() => self.observe(progress.ok_or_else(cancelled)?),
                 // A batch now waiting for room is looked for again above.
                 () = super::log_full(self.parts.wal.as_ref()) => {}

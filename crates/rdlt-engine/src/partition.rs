@@ -368,11 +368,11 @@ async fn ingest(
         schemas: write::Schemas::default(),
     };
     let mut due = Due::default();
+    let mut pressure = context.budget.pressure();
     loop {
         let deadline = ingested.coalescer.deadline();
         let pending = deadline.is_some();
         due.follow(deadline, context.env.as_ref());
-        let pressed = context.budget.pressed();
         let event = tokio::select! {
             biased;
             // A stop request goes to the read first, even while events keep arriving.
@@ -389,7 +389,7 @@ async fn ingest(
             }
             // A request waiting for the budget may be waiting for the gathered pushes' bytes, so
             // they are written at once rather than after their latency.
-            () = pressed, if pending => {
+            () = pressure.raised(), if pending => {
                 ingested.flush(job, context).await?;
                 continue;
             }

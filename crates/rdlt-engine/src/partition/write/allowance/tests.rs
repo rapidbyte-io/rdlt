@@ -138,11 +138,11 @@ async fn a_piece_waits_for_those_before_it_to_be_written_and_presses_for_it() {
     assert_eq!(allowance.permits.available_permits(), 0);
     let third = allowance.take(&budget, &cancel, &pieces[2]);
     tokio::pin!(third);
-    let pressed = budget.pressed();
+    let mut pressure = budget.pressure();
     tokio::select! {
         biased;
         _ = &mut third => panic!("three pieces pass the allowance"),
-        () = pressed => {}
+        () = pressure.raised() => {}
         () = tokio::time::sleep(Duration::from_secs(1)) => panic!("no lane was pressed"),
     }
     // The piece written and its frame logged, the next is taken.
@@ -156,7 +156,7 @@ async fn a_piece_waits_for_those_before_it_to_be_written_and_presses_for_it() {
     let third = third.await.unwrap();
     tokio::select! {
         biased;
-        () = budget.pressed() => panic!("nothing waits any more"),
+        () = pressure.raised() => panic!("nothing waits any more"),
         () = tokio::time::sleep(Duration::from_secs(1)) => {}
     }
     drop((second, third));

@@ -281,6 +281,7 @@ impl Coordinator {
     async fn load(&mut self) -> Result<(), Error> {
         let mut timer = self.timer();
         let mut replan = self.replan_timer();
+        let mut commits = self.parts.budget.cursor_waits();
         while !self.done() {
             tokio::select! {
                 biased;
@@ -303,7 +304,7 @@ impl Coordinator {
                 // A cursor that finds its share full waits for a commit, which is then due:
                 // once, since a commit that frees it nothing is not tried again before more
                 // arrives.
-                () = self.parts.budget.cursor_waits(), if self.cursors_may_free => {
+                () = commits.raised(), if self.cursors_may_free => {
                     timer = self.commit_now(Trigger::Cursors).await?;
                 }
                 progress = self.parts.progress.recv() => {

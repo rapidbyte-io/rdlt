@@ -34,18 +34,20 @@ async fn waits<T>(request: &mut (impl Future<Output = T> + Unpin)) -> bool {
 
 /// Whether `budget` calls for a commit within a second.
 async fn due(budget: &MemoryBudget) -> bool {
+    let mut waits = budget.cursor_waits();
     tokio::select! {
         biased;
-        () = budget.cursor_waits() => true,
+        () = waits.raised() => true,
         () = tokio::time::sleep(Duration::from_secs(1)) => false,
     }
 }
 
 /// Whether `budget` signals pressure within a second.
 async fn felt(budget: &MemoryBudget) -> bool {
+    let mut pressure = budget.pressure();
     tokio::select! {
         biased;
-        () = budget.pressed() => true,
+        () = pressure.raised() => true,
         () = tokio::time::sleep(Duration::from_secs(1)) => false,
     }
 }
