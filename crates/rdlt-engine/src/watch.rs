@@ -67,18 +67,6 @@ impl<T> Sender<T> {
         }
     }
 
-    /// Replaces the value with `value`, waking every receiver waiting for a change; the value
-    /// replaced.
-    pub(crate) fn send_replace(&self, value: T) -> T {
-        let replaced = {
-            let mut state = self.shared.state.lock();
-            state.version += 1;
-            std::mem::replace(&mut state.value, value)
-        };
-        self.shared.changed.notify_waiters();
-        replaced
-    }
-
     /// A receiver that has seen the value held now.
     pub(crate) fn subscribe(&self) -> Receiver<T> {
         let seen = self.shared.state.lock().version;
@@ -86,6 +74,23 @@ impl<T> Sender<T> {
             shared: Arc::clone(&self.shared),
             seen,
         }
+    }
+}
+
+impl<T: PartialEq> Sender<T> {
+    /// Holds `value` from now, waking every receiver waiting for a change where it differs
+    /// from the value held; whether it did.
+    pub(crate) fn send(&self, value: T) -> bool {
+        {
+            let mut state = self.shared.state.lock();
+            if state.value == value {
+                return false;
+            }
+            state.value = value;
+            state.version += 1;
+        }
+        self.shared.changed.notify_waiters();
+        true
     }
 }
 

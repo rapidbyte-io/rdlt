@@ -40,7 +40,7 @@ fn woken() -> Vec<usize> {
         for _ in 0..4 {
             tokio::task::yield_now().await;
         }
-        sender.send_replace(1);
+        sender.send(1);
         for task in tasks {
             task.await.expect("the task completes");
         }
@@ -60,7 +60,7 @@ fn waiters_wake_in_the_same_order_every_time() {
 #[tokio::test(start_paused = true)]
 async fn a_change_sent_before_waiting_is_seen_once() {
     let (sender, mut receiver) = channel(0_u64);
-    sender.send_replace(1);
+    sender.send(1);
     assert!(
         soon(receiver.changed())
             .await
@@ -75,10 +75,10 @@ async fn a_change_sent_before_waiting_is_seen_once() {
 #[tokio::test(start_paused = true)]
 async fn a_new_receiver_waits_for_the_next_change() {
     let (sender, _first) = channel(0_u64);
-    sender.send_replace(1);
+    sender.send(1);
     let mut receiver = sender.subscribe();
     assert!(soon(receiver.changed()).await.is_none());
-    sender.send_replace(2);
+    sender.send(2);
     assert!(
         soon(receiver.changed())
             .await
@@ -89,7 +89,7 @@ async fn a_new_receiver_waits_for_the_next_change() {
 #[tokio::test(start_paused = true)]
 async fn a_receiver_that_took_the_value_waits_for_the_next() {
     let (sender, mut receiver) = channel(0_u64);
-    sender.send_replace(1);
+    sender.send(1);
     let _ = receiver.borrow_and_update();
     assert!(soon(receiver.changed()).await.is_none());
 }
@@ -98,9 +98,9 @@ async fn a_receiver_that_took_the_value_waits_for_the_next() {
 async fn waiting_for_a_value_ends_once_it_holds() {
     let (sender, mut receiver) = channel(true);
     assert!(soon(receiver.wait_for(|value| *value)).await.is_some());
-    sender.send_replace(false);
+    sender.send(false);
     assert!(soon(receiver.wait_for(|value| *value)).await.is_none());
-    sender.send_replace(true);
+    sender.send(true);
     assert!(
         soon(receiver.wait_for(|value| *value))
             .await
@@ -123,4 +123,22 @@ async fn receivers_learn_the_sender_is_gone() {
             .await
             .is_some_and(|held| held.is_err())
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_value_sent_again_wakes_no_one() {
+    let (sender, mut receiver) = channel(0_u64);
+    assert!(!sender.send(0), "the value held is not sent again");
+    assert!(
+        soon(receiver.changed()).await.is_none(),
+        "no change, no wakeup"
+    );
+    assert!(sender.send(1));
+    assert!(
+        soon(receiver.changed())
+            .await
+            .is_some_and(|changed| changed.is_ok())
+    );
+    assert!(!sender.send(1));
+    assert!(soon(receiver.changed()).await.is_none());
 }

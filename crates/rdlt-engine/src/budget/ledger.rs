@@ -384,8 +384,8 @@ impl Ledger {
         };
         let pressed = self.pressing > 0 || waits(Class::Work) || waits(Class::Intake);
         let cursor_waits = waits(Class::Cursor) || waits(Class::Tables);
-        self.pressed.send_replace(pressed);
-        self.cursor_waits.send_replace(cursor_waits);
+        self.pressed.send(pressed);
+        self.cursor_waits.send(cursor_waits);
         self.signals = self.signals.saturating_add(2);
     }
 
