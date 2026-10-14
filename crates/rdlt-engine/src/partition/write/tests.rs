@@ -15,6 +15,8 @@ use crate::partition::PartitionJob;
 use crate::shred::ShredError;
 use crate::table::Prepared;
 
+mod units;
+
 fn job() -> PartitionJob {
     PartitionJob {
         index: 0,
@@ -95,8 +97,12 @@ fn ids(rows: i64) -> RecordBatch {
 
 /// What admitted a JSON push of `bytes` of text under `budget`.
 async fn json(budget: &MemoryBudget, bytes: usize) -> Permit {
+    json_text(budget, bytes::Bytes::from(vec![b' '; bytes])).await
+}
+
+/// What admitted the JSON push `text` under `budget`.
+async fn json_text(budget: &MemoryBudget, text: bytes::Bytes) -> Permit {
     let admission = crate::cost::Charging::new(budget.clone().read_by(1));
-    let text = bytes::Bytes::from(vec![b' '; bytes]);
     let push = rdlt_connector::SourceEvent::Push(rdlt_connector::Push::Json(text));
     let admitted = rdlt_connector::Admission::admit(&admission, &push).await;
     admitted.unwrap().unwrap()
