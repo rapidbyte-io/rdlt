@@ -51,10 +51,17 @@ pub struct MemoryDestination {
 ///
 /// This and the functions beside it read the stores of this process's own host, not those a
 /// listening connector keeps for the hosts named to it.
+///
+/// # Panics
+///
+/// Where a published value does not convert to the type its column holds now, which a schema
+/// change the table took never leaves.
 pub fn published(store: &str, table: &str) -> Vec<RecordBatch> {
     let store = named(None, store);
     let store = store.lock();
-    store.tables.get(table).map(Table::read).unwrap_or_default()
+    let read = store.tables.get(table).map(Table::read).transpose();
+    read.expect("a published value converts to its column's type")
+        .unwrap_or_default()
 }
 
 /// The tables of `store`, by name.
@@ -464,7 +471,11 @@ impl ReadBack for MemoryDestination {
         // A reader is given every column; the lock is not held while sending.
         let published = {
             let store = self.store.lock();
-            store.tables.get(&*table.name).map(Table::read)
+            store
+                .tables
+                .get(&*table.name)
+                .map(Table::read)
+                .transpose()?
         };
         for batch in published.unwrap_or_default() {
             rows.send(batch).await?;

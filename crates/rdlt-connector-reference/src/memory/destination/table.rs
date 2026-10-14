@@ -131,16 +131,15 @@ impl Table {
             .map_err(|error| failed("staging rows", error))
     }
 
-    /// The table's published rows as a reader is given them: a merge table's with every column
-    /// of the table, at the table's types, though it keeps each row under the columns the row
-    /// holds; any other table's as they were written.
-    pub(super) fn read(&self) -> Vec<RecordBatch> {
-        let Some(schema) = self.schema.as_ref().filter(|_| self.merge.is_some()) else {
-            return self.published.clone();
+    /// The table's published rows as a reader is given them: with every column of the table, at
+    /// the table's types, though a merge table keeps each row under the columns the row holds
+    /// and any other table each batch as it was written.
+    pub(super) fn read(&self) -> Result<Vec<RecordBatch>> {
+        let Some(schema) = self.schema.as_ref() else {
+            return Ok(self.published.clone());
         };
-        // A schema change is taken only where every held row converts to it, so this converts.
         rdlt_connector::merge::read_back(&Arc::new(schema.to_arrow()), &self.published)
-            .unwrap_or_else(|_| self.published.clone())
+            .map_err(|error| failed("reading the table", error))
     }
 
     /// The schema rows of the table merge under: its own, or else `staged`'s.

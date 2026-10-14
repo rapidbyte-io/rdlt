@@ -294,3 +294,145 @@ async fn a_table_read_back_in_whole_batches_ends_without_an_empty_one() {
         Vec::<usize>::new()
     );
 }
+
+/// What `C` reads back of the column `held` of a table, merged by `id` where `merged` says so,
+/// that took one row holding `value` as `logical` and then a widen of `held` to `Json`, with no
+/// commit since.
+async fn widened_to_json<C: DestinationConnector + ReadBack>(
+    config: serde_json::Value,
+    merged: bool,
+    (logical, value): (LogicalType, arrow_array::ArrayRef),
+) -> Vec<Option<String>> {
+    let (destination, reader) = readable_destination_factory::<C>()
+        .connect_reading(config, ConnectContext::new())
+        .await
+        .expect("the destination connects");
+    let context = OpenContext {
+        pipeline: PipelineId::parse("widened").expect("valid pipeline id"),
+        load_id: LoadId::from_parts(UNIX_EPOCH, 1),
+    };
+    let mut opened = destination.open(&context).await.expect("a session opens");
+    let mut widened = table("widened");
+    widened.merge = merged.then(|| rdlt_connector::MergeKey {
+        columns: vec!["id".into()],
+        seq: "seq".into(),
+        root: None,
+        changes: None,
+        history: None,
+    });
+    let (schema, batch) = holding(&logical, value);
+    let create = TableChange::Create {
+        table: widened.clone(),
+        schema,
+    };
+    opened.session.apply_schema(&create).await.expect("created");
+    let mut writer = opened
+        .session
+        .writer(&widened)
+        .await
+        .expect("a writer opens");
+    writer.write(SegmentId(1), batch).await.expect("buffers");
+    writer.flush().await.expect("the flush stages");
+    let meta = first_commit(&opened, context.load_id);
+    opened
+        .session
+        .commit(&meta)
+        .await
+        .expect("the commit lands");
+    let widen = TableChange::Widen {
+        table: widened.clone(),
+        column: "held".into(),
+        from: logical,
+        to: LogicalType::Json,
+    };
+    opened
+        .session
+        .apply_schema(&widen)
+        .await
+        .expect("the widen is taken");
+    let batches = PublishedRows::gather(&*reader, &widened)
+        .await
+        .expect("the table reads back");
+    texts(&batches, "held")
+}
+
+/// A table of `id`, `held` as `logical` and `seq`, and its row 1 holding `value`.
+fn holding(logical: &LogicalType, value: arrow_array::ArrayRef) -> (TableSchema, RecordBatch) {
+    let fields = vec![
+        Field::new("id", LogicalType::Int64, false),
+        Field::new("held", logical.clone(), true),
+        Field::new("seq", LogicalType::Int64, false),
+    ];
+    let schema = TableSchema::new(fields).expect("the schema is valid");
+    let ones = || Arc::new(Int64Array::from(vec![1])) as arrow_array::ArrayRef;
+    let batch = RecordBatch::try_new(Arc::new(schema.to_arrow()), vec![ones(), value, ones()])
+        .expect("the batch is valid");
+    (schema, batch)
+}
+
+/// The first commit of the load `load_id`, of segment 1, by `opened`.
+fn first_commit(opened: &OpenedSession, load_id: LoadId) -> CommitMeta {
+    CommitMeta {
+        load_id,
+        commit_seq: CommitSeq::FIRST,
+        epoch: opened.epoch,
+        segments: [SegmentId(1)].into_iter().collect(),
+        abandoned: rdlt_connector::SegmentSet::new(),
+        state_delta: Vec::new(),
+        finish_generations: Vec::new(),
+        child_tables: Vec::new(),
+        drop_tables: Vec::new(),
+        horizon: None,
+    }
+}
+
+/// The text the column `column` of `batches` holds, a row at a time.
+fn texts(batches: &[RecordBatch], column: &str) -> Vec<Option<String>> {
+    use arrow_array::Array as _;
+    batches
+        .iter()
+        .flat_map(|batch| {
+            let held = batch.column_by_name(column).expect("the column");
+            let held = held.as_string_opt::<i32>().expect("JSON is text");
+            (0..held.len())
+                .map(|row| held.is_valid(row).then(|| held.value(row).to_owned()))
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_table_read_back_after_a_widen_to_json_holds_each_stored_value_s_json() {
+    use arrow_array::{ArrayRef, BooleanArray, StringArray};
+    let text = || {
+        (
+            LogicalType::Utf8,
+            Arc::new(StringArray::from(vec!["false"])) as ArrayRef,
+        )
+    };
+    let truth = || {
+        (
+            LogicalType::Bool,
+            Arc::new(BooleanArray::from(vec![true])) as ArrayRef,
+        )
+    };
+    let quoted = || vec![Some(r#""false""#.to_owned())];
+    let bare = || vec![Some("true".to_owned())];
+    for merged in [false, true] {
+        for (case, (held, expected)) in [(text(), quoted()), (truth(), bare())]
+            .into_iter()
+            .enumerate()
+        {
+            let store = format!("widened-read-{merged}-{case}");
+            let config = json!({ "store": store });
+            let memory = widened_to_json::<MemoryDestination>(config, merged, held.clone()).await;
+            assert_eq!(memory, expected, "memory, merged {merged}, case {case}");
+            let root = crate::fixtures::tempdir().expect("a root");
+            let config = json!({ "root": root.path(), "format": "arrow" });
+            let files =
+                widened_to_json::<rdlt_connector_reference::FilesDestination>(config, merged, held)
+                    .await;
+            assert_eq!(files, expected, "files, merged {merged}, case {case}");
+        }
+    }
+}
