@@ -234,11 +234,8 @@ impl Meter {
             let spanned = end.saturating_sub(at);
             let before = self.spent;
             self.add(count(size_of::<R::Native>()));
-            if run < values.len() {
-                self.value(values, run, within);
-            } else {
-                self.add(null_slot(values.data_type()));
-            }
+            // Arrow holds as many values as run ends, so the run has its value.
+            self.value(values, run, within);
             let each = self.spent.saturating_sub(before);
             self.add(each.saturating_mul(count(spanned.saturating_sub(1))));
             if spanned == 0 {

@@ -735,6 +735,16 @@ fn a_string_view_outside_a_nested_value_costs_its_view_and_its_bytes_however_sto
     for rendering in [native(), Rendering::native(), Rendering::text()] {
         assert_eq!(expanded(&rendering, &strings), 2 * (16 + 8) + 5);
     }
+    // Lowered into a column stored as text, each holds its text beside it: an offset and its
+    // bytes again; into one stored as it is, nothing more.
+    for (text, bytes) in [(false, 2 * (16 + 8) + 5), (true, 2 * (16 + 8 + 8) + 2 * 5)] {
+        let stored = Stored {
+            column: LogicalType::Utf8,
+            text,
+            read: false,
+        };
+        assert_eq!(lowered(&strings, stored), bytes, "as text {text}");
+    }
 }
 
 /// What lowering every row of `column` into a table column stored as `stored` says holds at once.
