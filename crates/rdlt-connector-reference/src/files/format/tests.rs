@@ -431,19 +431,21 @@ fn schemas_nested_to_the_limit_read_back_and_deeper_ones_are_refused_unwritten()
     }
 }
 
+/// A one-row batch of `columns` columns of nulls.
+fn wide(columns: u64) -> RecordBatch {
+    let fields: Vec<Field> = (0..columns)
+        .map(|column| Field::new(format!("c{column}"), DataType::Null, true))
+        .collect();
+    let options = RecordBatchOptions::new().with_row_count(Some(1));
+    let arrays = fields
+        .iter()
+        .map(|_| Arc::new(NullArray::new(1)) as ArrayRef)
+        .collect();
+    RecordBatch::try_new_with_options(Arc::new(Schema::new(fields)), arrays, &options).unwrap()
+}
+
 #[test]
 fn a_schema_of_more_columns_than_a_reader_accepts_is_refused_unwritten() {
-    let wide = |columns: u64| {
-        let fields: Vec<Field> = (0..columns)
-            .map(|column| Field::new(format!("c{column}"), DataType::Null, true))
-            .collect();
-        let options = RecordBatchOptions::new().with_row_count(Some(1));
-        let arrays = fields
-            .iter()
-            .map(|_| Arc::new(NullArray::new(1)) as ArrayRef)
-            .collect();
-        RecordBatch::try_new_with_options(Arc::new(Schema::new(fields)), arrays, &options).unwrap()
-    };
     let at = wide(SCHEMA_COLUMNS);
     assert_eq!(round_trip(FileFormat::Arrow, &at), at);
     let (root, dir) = scratch();
@@ -459,6 +461,49 @@ fn a_schema_of_more_columns_than_a_reader_accepts_is_refused_unwritten() {
     FileFormat::Jsonl
         .write(&dir, "rows.jsonl", &[wide(SCHEMA_COLUMNS + 1)])
         .unwrap();
+}
+
+#[test]
+fn a_writer_refuses_at_its_start_every_schema_a_reader_refuses() {
+    let schemas = [
+        wide(SCHEMA_COLUMNS),
+        wide(SCHEMA_COLUMNS + 1),
+        nested(NESTING_DEPTH, true),
+        nested(NESTING_DEPTH + 1, true),
+        nested(NESTING_DEPTH, false),
+        nested(NESTING_DEPTH + 1, false),
+    ]
+    .map(|batch| batch.schema());
+    for schema in schemas {
+        let (root, dir) = scratch();
+        // Another writer's file of the schema and no batch: what a reader makes of the schema.
+        let file = std::fs::File::create(root.path().join("other.arrow")).unwrap();
+        FileWriter::try_new(file, &schema)
+            .unwrap()
+            .finish()
+            .unwrap();
+        let read = FileFormat::Arrow.read(&dir, "other.arrow", &schema);
+        // A writer finished before any batch writes the schema alone, so it refuses the schema
+        // as it starts, or writes a file no reader reads.
+        let created = Writer::create(FileFormat::Arrow, &dir, "rows.arrow", &schema);
+        let fields = schema.fields().len();
+        match (read, created) {
+            (Ok(read), Ok(writer)) => {
+                assert_eq!(writer.finish().unwrap().rows, 0);
+                assert!(read.is_empty());
+                let own = FileFormat::Arrow.read(&dir, "rows.arrow", &schema).unwrap();
+                assert!(own.is_empty(), "{fields}");
+            }
+            (Err(read), Err(created)) => {
+                let limit =
+                    |error: &rdlt_connector::ConnectorError| error.limit().map(|limit| limit.name);
+                assert!(limit(&read).is_some(), "{fields}: {read}");
+                assert_eq!(limit(&created), limit(&read), "{fields}: {created}");
+                assert!(!root.path().join("rows.arrow").exists(), "{fields}");
+            }
+            (read, created) => panic!("{fields}: read {read:?}, created {created:?}"),
+        }
+    }
 }
 
 /// A batch of `rows` rows of one string of `bytes` bytes each.

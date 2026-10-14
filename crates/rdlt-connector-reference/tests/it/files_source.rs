@@ -359,6 +359,25 @@ async fn a_json_lines_push_holds_at_most_the_bytes_one_push_may() {
     ended.expect("the file reads");
     let sizes: Vec<usize> = pushed(&events).iter().map(String::len).collect();
     assert_eq!(sizes, [2 * line.len(), line.len()]);
+    // A last line without its ending is pushed with one, which counts: one that fills the push
+    // only with it starts the next, and one a byte shorter fits.
+    let unended = |bytes: usize| format!("{{\"v\":\"{}\"}}", "x".repeat(bytes - 8));
+    for (bytes, split) in [(line.len(), true), (line.len() - 1, false)] {
+        std::fs::write(
+            root.path().join("wide.jsonl"),
+            format!("{line}{}", unended(bytes)),
+        )
+        .unwrap();
+        let (events, ended) = read(source.as_ref(), "wide", None).await;
+        ended.expect("the file reads");
+        let sizes: Vec<usize> = pushed(&events).iter().map(String::len).collect();
+        let pushes = if split {
+            vec![line.len(), bytes + 1]
+        } else {
+            vec![line.len() + bytes + 1]
+        };
+        assert_eq!(sizes, pushes, "{bytes}");
+    }
 }
 
 /// Writes an Arrow file of `batches` batches of three ids each at `path`.
