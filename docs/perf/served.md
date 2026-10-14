@@ -279,6 +279,28 @@ sink declaring one writer, and makes one commit, at the end, with no wait for ro
   1 292 MB/s in one round, 23 % below its median, and small frames from sixteen partitions 11 %
   below.
 
+### What the production slice decides
+
+The rules [passthrough.md](passthrough.md) applies to the matrix, read beside it on the production
+slice: `main` at `2e49c6bae25b`, 2026-10-14, one round of `served/process/socket/both` on the
+cores above, criterion's pass alone, started at a one-minute load average of 11.5 that was falling
+from a mutation run just ended, the bench alone on the machine. Its readings lie close to the
+medians above: 14.0–16.4 signals a frame (30.1 in large frames from sixteen partitions), intake
+waits summing to 797 % in large frames from sixteen partitions, and in frames of 1 000 rows the
+pool idle 91.3–91.7 % and its queue and way back 60.6 %, 82.2 % and 80.5 % from 1, 4 and 16
+partitions. Its throughput, one round, lies below the medians above, by up to 17 %.
+
+Two profiles of the host's process, `cpu_core/cycles/u` at 999 Hz with frame pointers over 15
+seconds, its samples classified as passthrough.md says, less those hashing the connector's
+binary as each run spawns it (in brackets with them in):
+
+| Case | Host's samples, hashing included | Ledger and watch | Coordinator |
+|---|---|---|---|
+| `5120x1000/16-partitions` | 10 552 | 2.69 % (2.27 %) | 2.05 % (1.73 %) |
+| `512x10000/16-partitions` | 6 633 | 1.40 % (0.96 %) | 1.01 % (0.69 %) |
+
+The served sink declares one writer, so the rules about lanes are not read here.
+
 ## A served write in two stages
 
 A served write ran one pump: it read a frame, decoded it, and waited for the destination's writer
