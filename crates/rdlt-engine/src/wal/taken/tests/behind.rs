@@ -116,7 +116,7 @@ async fn a_fence_below_the_load_s_last_chunk_fences_nothing_and_is_taken_past_it
     let taken = take(&store, &pipeline(), load(), 1 << 20)
         .await
         .expect("takes");
-    assert_eq!(taken, Taken::Finished);
+    assert!(matches!(taken, Taken::Finished), "{taken:?}");
     let chunks: Vec<u64> = store
         .chunks(&pipeline(), load())
         .await

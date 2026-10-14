@@ -38,9 +38,13 @@ What the engine writes to its log while it moves batches, and what a replay read
   directory). The cadences are `each` (a commit each batch, 257 commits), `16` (a commit every
   sixteen batches, 17 commits) and `once` (one commit). `wal/engine/tmpfs/tight` commits each
   batch into a log whose limit is four batch frames, about 4.2 MB, so that a batch finds the log
-  full and a relief makes room in every run. `wal/replay/<root>` scans a log of the same 256
-  batches, left by an `once` run. The engine runs move their batches into the IPC sink,
-  whose encoding is part of each case's time.
+  full and a relief makes room in every run. `wal/replay/<root>/one` reads back a log of the
+  same 256 batches, left in one chunk by an `once` run, as a replay does: it fences the log,
+  scans it and reads each batch frame again, then deletes its fence so the next sample reads the
+  same log. `wal/replay/<root>/chunks` does the same with a log whose bound is twice its frames'
+  bytes, which cuts it into five chunks. Results before the section on a fenced log's last chunk
+  were taken by `wal/replay/<root>`, a scan that did not fence the log. The engine runs move
+  their batches into the IPC sink, whose encoding is part of each case's time.
 - **Running it.** `just bench wal 0-3`, which pins the cases to cores 0 to 3 and records the
   commit, the load average, the governor, `perf stat`'s instructions a cycle and the CPUs kept
   busy, the syscalls of one run, and the allocations. Criterion takes 10 samples a case (100 for
@@ -57,7 +61,7 @@ What the engine writes to its log while it moves batches, and what a replay read
   batches, so 17 commits at `each` and `tight`, 2 at `16` and 1 at `once`, and the calls of its
   setup are in it. It is one run, so the figure is the same every round, but at `tight`, whose
   run fires none to five reliefs, each a publish of its own.
-- **Replay's source.** `wal/replay/disk` reads a log it has just written, so it reads from the
+- **Replay's source.** `wal/replay/disk/*` reads a log it has just written, so it reads from the
   page cache.
 - **Allocations.** `wal/engine/memory/each` is a case of the `allocations` bench, not of the
   timed run: 8 batches of 8,192 rows, a commit each batch, the log kept in memory. Its counts are
@@ -226,3 +230,36 @@ The rule: a cache of the schema message is built only if the share is at least 3
 encoding. The share is above it, and the cache is not built. It needs an encoder that starts a
 fresh dictionary epoch without re-encoding the schema, which is a new `rdlt-wire` API, and a
 message kept for each table version under the budget. Only a batch of 1,000 columns was measured.
+
+### A fenced log's last chunk, read once
+
+A replay fences a log by reading its highest chunk and publishing the next. Its scan took that
+reading only on this change: on `main` it read the chunk again, then each batch frame a third
+time as it replayed. Each case below reads a log of 256 batches of about 1 MiB (256.4 MiB of
+batch frames) by the method above. Three rounds on 2026-10-15, interleaved with `main` at
+`223b7f6a` in alternating order, each holding the timed lock, at one-minute load averages of
+1.3 to 3.6. Each time is the median of the rounds' point estimates for one replay of the whole
+log, their range in brackets.
+
+| Case | Main | This change | Change |
+|---|---|---|---|
+| `wal/replay/tmpfs/one` | 889 ms [877–909] | 542 ms [502–546] | −39 %, ranges apart |
+| `wal/replay/disk/one` | 1022 ms [1004–1036] | 608 ms [602–621] | −41 %, ranges apart |
+| `wal/replay/tmpfs/chunks` | 493 ms [489–518] | 496 ms [483–522] | +1 %, ranges overlap |
+| `wal/replay/disk/chunks` | 598 ms [582–606] | 585 ms [575–598] | −2 %, ranges overlap |
+
+| Case | Main, read ÷ logged | Main, reads | This change, read ÷ logged | This change, reads |
+|---|---|---|---|---|
+| `wal/replay/*/one` | 3.000 | 10523 | 2.000 | 5392 |
+| `wal/replay/*/chunks` | 2.008 | 5845 | 2.000 | 5300–5319 |
+
+A log in one chunk is read twice instead of three times, in half the reads, and replays in about
+40 % less time. A log of several chunks saves the share of it its last chunk holds: in
+`chunks`, whose last chunk holds the batches after the last relief, 0.8 % of the log, which no
+timing shows. A chunk holds about an eighth of the log's bound at most, so a log past its first
+chunk saves at most that much of a read. Per batch, nothing changes: the log is read only by a
+replay.
+
+The deterministic count is `a_replay_reads_each_chunk_once_and_its_batch_frames_once_more`
+(`crates/rdlt-engine/src/wal/scan/tests.rs`): every chunk of a replayed log is read as many bytes
+as one scan of it takes, and each of its batch frames once more.

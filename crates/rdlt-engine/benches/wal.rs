@@ -153,7 +153,11 @@ fn counted(report: &Report, frames: u64) -> String {
     )
 }
 
-/// Each root's log left when its case first runs, so a process that runs one case leaves that
+/// Logs replayed: one in a single chunk, and one under a bound of twice its frames' bytes, which
+/// cuts it into chunks of a quarter of them at most.
+const REPLAYED: [(&str, Option<u64>); 2] = [("one", None), ("chunks", Some(2))];
+
+/// Each root's logs left when their case first runs, so a process that runs one case leaves that
 /// one alone, and its read amplification printed after it.
 #[expect(
     clippy::print_stdout,
@@ -169,26 +173,32 @@ fn replaying(c: &mut Criterion) {
     group.sampling_mode(SamplingMode::Flat).sample_size(10);
     group.throughput(Throughput::Bytes(frame_bytes(batches)));
     for (root, path) in roots() {
-        let mut left = None;
-        let mut last = None;
-        group.bench_function(root, |b| {
-            let dir = left.get_or_insert_with(|| {
-                let cores = Cores::try_from_host().expect("the host says how many cores");
-                let dir = tempfile::tempdir_in(&path).expect("a directory of the bench's own");
-                let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(dir.path()));
-                Logged::try_new(cores, store, batches, Logged::ROWS, None)
-                    .expect("the pool starts")
-                    .leave();
-                dir
+        for (log, bound) in REPLAYED {
+            let mut left = None;
+            let mut last = None;
+            group.bench_function(format!("{root}/{log}"), |b| {
+                let dir = left.get_or_insert_with(|| {
+                    let cores = Cores::try_from_host().expect("the host says how many cores");
+                    let dir = tempfile::tempdir_in(&path).expect("a directory of the bench's own");
+                    let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(dir.path()));
+                    let log_bytes = bound.map_or(GrowthLimits::default().log_bytes(), |times| {
+                        NonZeroU64::new(frame_bytes(batches) * times).expect("a bound")
+                    });
+                    Logged::limited(cores, (store, log_bytes), batches, Logged::ROWS, None)
+                        .expect("the pool starts")
+                        .leave();
+                    dir
+                });
+                b.iter(|| last = Some(replay_scan(dir.path(), "logged").expect("the log reads")));
             });
-            b.iter(|| last = Some(replay_scan(dir.path(), "logged").expect("the log reads")));
-        });
-        if let Some(read) = last {
-            println!(
-                "wal/replay/{root}: read {:.3} of the log, {} reads",
-                read.read as f64 / read.logged as f64,
-                read.reads
-            );
+            if let Some(read) = last {
+                println!(
+                    "wal/replay/{root}/{log}: {} chunks, read {:.3} of the log, {} reads",
+                    read.chunks,
+                    read.read as f64 / read.logged as f64,
+                    read.reads
+                );
+            }
         }
     }
     group.finish();

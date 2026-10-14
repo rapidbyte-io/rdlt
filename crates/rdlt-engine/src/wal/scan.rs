@@ -120,14 +120,22 @@ fn foreign(pipeline: &PipelineId, load: LoadId, of: &PipelineId, found: LoadId) 
     .with_code(WAL_FOREIGN)
 }
 
-/// What the highest chunk of `load`'s log of `pipeline` in `store` says, reading it whole and
-/// refusing frames beyond `frame_bytes`; none where the log has no chunk.
+/// A log's highest chunk as a fence read it: what it says of the log, and what it holds, which
+/// the scan of the log the fence took over takes rather than reading the chunk again.
+#[derive(Debug)]
+pub(crate) struct Last {
+    pub(crate) tail: Tail,
+    opened: Opened,
+}
+
+/// The highest chunk of `load`'s log of `pipeline` in `store`, read whole, refusing frames beyond
+/// `frame_bytes`; none where the log has no chunk.
 pub(crate) async fn tail(
     store: &dyn WalStore,
     pipeline: &PipelineId,
     load: LoadId,
     frame_bytes: u64,
-) -> Result<Option<Tail>, Error> {
+) -> Result<Option<Last>, Error> {
     let reading = Reading {
         store,
         pipeline,
@@ -142,7 +150,10 @@ pub(crate) async fn tail(
         return Ok(None);
     };
     let opened = reading.chunk(number, len).await?;
-    Ok(Some(tail_of(number, &opened)))
+    Ok(Some(Last {
+        tail: tail_of(number, &opened),
+        opened,
+    }))
 }
 
 fn tail_of(number: u64, opened: &Opened) -> Tail {
@@ -156,13 +167,40 @@ fn tail_of(number: u64, opened: &Opened) -> Tail {
     }
 }
 
-/// Reads `load`'s log of `pipeline` in `store`: its highest chunk, then the chunks it names,
-/// each whole, refusing frames beyond `frame_bytes`.
+/// Reads `load`'s log of `pipeline` in `store` once a fence took it over: its highest chunk,
+/// then the chunks it names, each whole, refusing frames beyond `frame_bytes`.
+///
+/// `last`, the chunk the fence read as the log's highest, is taken as read rather than read
+/// again: a published chunk never changes, and the fence was published with no chunk above it,
+/// so `last` is still the load's last chunk, which its load never deletes.
+pub(crate) async fn fenced(
+    store: &dyn WalStore,
+    pipeline: &PipelineId,
+    load: LoadId,
+    frame_bytes: u64,
+    last: Last,
+) -> Result<Scanned, Error> {
+    scan_with(store, pipeline, load, frame_bytes, Some(last)).await
+}
+
+/// Reads `load`'s log as [`fenced`] does, no chunk of it read before.
+#[cfg(any(test, feature = "bench"))]
 pub(crate) async fn scan(
     store: &dyn WalStore,
     pipeline: &PipelineId,
     load: LoadId,
     frame_bytes: u64,
+) -> Result<Scanned, Error> {
+    scan_with(store, pipeline, load, frame_bytes, None).await
+}
+
+/// Reads `load`'s log as [`fenced`] does, `known` taken as read where the log needs it.
+async fn scan_with(
+    store: &dyn WalStore,
+    pipeline: &PipelineId,
+    load: LoadId,
+    frame_bytes: u64,
+    mut known: Option<Last>,
 ) -> Result<Scanned, Error> {
     let reading = Reading {
         store,
@@ -190,6 +228,8 @@ pub(crate) async fn scan(
     for number in needed {
         let opened = if let Some(opened) = tail.take_if(|_| number == last) {
             opened
+        } else if let Some(known) = known.take_if(|known| known.tail.number == number) {
+            known.opened
         } else {
             let missing = || {
                 unreadable(

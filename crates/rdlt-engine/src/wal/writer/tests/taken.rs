@@ -18,13 +18,13 @@ const FRAME_BYTES: u64 = 1 << 28;
 /// Takes the log over as a replay does, then releases and removes it: the commits it found
 /// pending.
 async fn replayed(store: &dyn WalStore) -> usize {
-    let Taken::Fenced { number } = taken::take(store, &pipeline(), load(), FRAME_BYTES)
+    let Taken::Fenced { number, last } = taken::take(store, &pipeline(), load(), FRAME_BYTES)
         .await
         .expect("takes")
     else {
         panic!("the log holds a commit to replay");
     };
-    let scanned = scan::scan(store, &pipeline(), load(), FRAME_BYTES)
+    let scanned = scan::fenced(store, &pipeline(), load(), FRAME_BYTES, *last)
         .await
         .expect("scans");
     let pending = scanned.pending().count();
