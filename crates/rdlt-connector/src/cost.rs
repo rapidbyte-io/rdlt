@@ -181,6 +181,20 @@ impl Measure {
         self.meter.spent()
     }
 
+    /// Whether measuring the batch's rows reads any of their values: not where every column is
+    /// measured by its rows and offsets alone, so a piece takes as many steps however many rows
+    /// it has.
+    pub fn reads_values(&self) -> bool {
+        self.batch
+            .columns()
+            .iter()
+            .enumerate()
+            .any(|(index, column)| {
+                let stored = self.stored.get(index).and_then(Option::as_ref);
+                expanded::reads_values(column.data_type(), stored)
+            })
+    }
+
     /// The next piece of the batch from row `first`: the longest run of rows whose stretches,
     /// as they were measured, expand to no more than the limit together, and one row at least.
     ///

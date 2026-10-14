@@ -432,6 +432,20 @@ impl Meter {
     }
 }
 
+/// Whether measuring a column of `data_type` stored as `stored` reads its values: a scalar, or
+/// strings and bytes, which are measured by their offsets, need none.
+pub(super) fn reads_values(data_type: &DataType, stored: Option<&Stored>) -> bool {
+    let within = Within::column(stored);
+    if within.json() || within.reach == Reach::Read {
+        return true;
+    }
+    let offsets = matches!(
+        data_type,
+        DataType::Utf8 | DataType::LargeUtf8 | DataType::Binary | DataType::LargeBinary
+    );
+    scalar(data_type).is_none() && !offsets
+}
+
 /// The type the items of a list stored as `within` says are converted to.
 pub(super) fn item(within: Within<'_>) -> Option<&LogicalType> {
     match within.target {
