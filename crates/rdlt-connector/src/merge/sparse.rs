@@ -17,7 +17,7 @@ use arrow_array::{Array, ArrayRef, RecordBatch, RecordBatchOptions, UInt32Array,
 use arrow_schema::{ArrowError, DataType, Schema, SchemaRef};
 
 use super::refused::{VALUE_UNHOLDABLE, refused};
-use super::rendered::is_json;
+use super::rendered::{holds_text, rendered_from};
 use super::retype::{column_as, fitted};
 
 /// A row of a source batch.
@@ -96,9 +96,11 @@ impl Sources {
             if values.null_count() == values.len() {
                 continue;
             }
-            // A value that becomes JSON is its value's JSON, which names no other type.
-            let rendered = is_json(field) && !is_json(from);
-            if !rendered && let Some(named) = from.metadata().get(crate::LOGICAL_TYPE_KEY) {
+            // Only a column that stays text keeps the type its text was rendered from: a value
+            // that becomes JSON is its value's JSON.
+            if holds_text(field)
+                && let Some(named) = rendered_from(from)
+            {
                 named_columns.insert(column, named.clone());
             }
             held.push((column, fitted(values, from, field)?));

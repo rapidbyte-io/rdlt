@@ -7,6 +7,12 @@
 //! of them holds, in groups that each hold at most a destination's number of cells without a
 //! value.
 //!
+//! Rows whose text names the types it was rendered from join only rows naming the same: a join
+//! keeps one name a column, which the merge reads where the column widens to `Json`. Each set of
+//! names the joining batches hold takes a group of its own, and fewer of the largest batches stay
+//! as they are, so the fold still gives back at most its number of batches where the sets are no
+//! more than it.
+//!
 //! A cell without a value is counted whether a join made it or a row was written with it, so
 //! a batch joined by one commit is measured by the next as what it is, and what a table holds
 //! of such cells does not grow commit by commit. The fold is a function of its batches and
@@ -20,11 +26,19 @@ use arrow_array::{Array as _, ArrayRef, RecordBatch};
 use arrow_schema::{ArrowError, Schema, SchemaRef};
 use rdlt_wire::limits::count;
 
+use super::rendered::rendered_from;
 use super::sparse::{Nulls, every_column};
 
-/// `batches`, each of the columns of `schema` its rows hold, as at most `shapes` batches, where
-/// the smallest join into one group of at most `cells` cells without a value, and as
-/// few more as that limit asks for where they do not.
+/// The names a batch's text-stored columns give the types their text was rendered from, by
+/// place in the table's schema.
+type Names = BTreeMap<usize, String>;
+
+/// `batches`, each of the columns of `schema` its rows hold, as at most `shapes` batches, the
+/// largest as they are and the others joined, smallest first, into groups of rows of
+/// one set of names that each hold at most `cells` cells without a value.
+///
+/// Where that cell limit splits a group, or the joining batches hold more sets of names than
+/// `shapes`, there are as many more batches as that asks for.
 pub fn folded(
     schema: &SchemaRef,
     mut batches: Vec<RecordBatch>,
@@ -35,27 +49,36 @@ pub fn folded(
     if batches.len() <= shapes {
         return Ok(batches);
     }
-    // The largest stay as they are; the others join, the smallest first.
-    batches.sort_by_key(|batch| std::cmp::Reverse(batch.num_rows()));
-    let small = batches.split_off(shapes - 1);
     let places: HashMap<&str, usize> = schema
         .fields()
         .iter()
         .enumerate()
         .map(|(place, field)| (field.name().as_str(), place))
         .collect();
-    let mut group = Group::default();
-    for batch in small.into_iter().rev() {
-        let columns = held(&batch, &places);
-        let named = named(&batch, &places);
-        let apart =
-            group.absent_with(&batch, &columns) > cells || group.names_apart(&columns, &named);
-        if !group.batches.is_empty() && apart {
-            batches.push(std::mem::take(&mut group).joined(schema)?);
-        }
-        group.add(batch, &columns, named);
+    batches.sort_by_key(|batch| std::cmp::Reverse(batch.num_rows()));
+    let mut names: Vec<Names> = batches.iter().map(|batch| named(batch, &places)).collect();
+    // The largest stay as they are, as many as leave a group to each set of names the others hold.
+    let sets = |from: usize| names[from..].iter().collect::<BTreeSet<_>>().len();
+    let mut kept = shapes;
+    while kept > 0 && sets(kept) > shapes - kept {
+        kept -= 1;
     }
-    batches.push(group.joined(schema)?);
+    let small = batches.split_off(kept);
+    let mut by_names: BTreeMap<Names, Vec<RecordBatch>> = BTreeMap::new();
+    for (batch, names) in small.into_iter().zip(names.split_off(kept)) {
+        by_names.entry(names).or_default().push(batch);
+    }
+    for (names, alike) in by_names {
+        let mut group = Group::default();
+        for batch in alike.into_iter().rev() {
+            let columns = held(&batch, &places);
+            if !group.batches.is_empty() && group.absent_with(&batch, &columns) > cells {
+                batches.push(std::mem::take(&mut group).joined(schema, &names)?);
+            }
+            group.add(batch, &columns);
+        }
+        batches.push(group.joined(schema, &names)?);
+    }
     Ok(batches)
 }
 
@@ -68,8 +91,6 @@ struct Group {
     rows: u64,
     /// The cells of the batches that hold a value.
     cells: u64,
-    /// The type each column's field names its text as rendered from, by place.
-    named: BTreeMap<usize, String>,
 }
 
 impl Group {
@@ -85,17 +106,7 @@ impl Group {
         all.saturating_sub(self.cells.saturating_add(cells))
     }
 
-    /// Whether a batch holding `columns`, which name `named`, names a column the group holds
-    /// otherwise: rows naming other types are kept apart.
-    fn names_apart(&self, columns: &[usize], named: &BTreeMap<usize, String>) -> bool {
-        let apart = |column: &usize| named.get(column) != self.named.get(column);
-        columns
-            .iter()
-            .any(|column| self.columns.contains(column) && apart(column))
-    }
-
-    fn add(&mut self, batch: RecordBatch, columns: &[usize], named: BTreeMap<usize, String>) {
-        self.named.extend(named);
+    fn add(&mut self, batch: RecordBatch, columns: &[usize]) {
         let (rows, cells) = sized(&batch);
         self.rows = self.rows.saturating_add(rows);
         self.cells = self.cells.saturating_add(cells);
@@ -103,9 +114,9 @@ impl Group {
         self.batches.push(batch);
     }
 
-    /// The group's batches as one, of the columns any of them holds, in the schema's order; a
-    /// group of one batch is that batch.
-    fn joined(mut self, schema: &SchemaRef) -> Result<RecordBatch, ArrowError> {
+    /// The group's batches as one, of the columns any of them holds, in the schema's order, each
+    /// naming what `names` gives it; a group of one batch is that batch.
+    fn joined(mut self, schema: &SchemaRef, names: &Names) -> Result<RecordBatch, ArrowError> {
         if let [_] = self.batches[..] {
             return self.batches.pop().ok_or_else(|| unjoined("no batch"));
         }
@@ -115,10 +126,10 @@ impl Group {
             .iter()
             .map(|column| {
                 let field = schema.field(*column).clone().with_nullable(true);
-                match self.named.get(column) {
-                    Some(named) => {
+                match names.get(column) {
+                    Some(rendered) => {
                         let mut metadata = field.metadata().clone();
-                        metadata.insert(crate::LOGICAL_TYPE_KEY.to_owned(), named.clone());
+                        metadata.insert(crate::LOGICAL_TYPE_KEY.to_owned(), rendered.clone());
                         field.with_metadata(metadata)
                     }
                     None => field,
@@ -143,15 +154,13 @@ fn held(batch: &RecordBatch, places: &HashMap<&str, usize>) -> Vec<usize> {
         .collect()
 }
 
-/// The type each column of `batch` names its text as rendered from, by place in the table's
-/// schema.
-fn named(batch: &RecordBatch, places: &HashMap<&str, usize>) -> BTreeMap<usize, String> {
+/// The names `batch`'s text-stored columns give the types their text was rendered from.
+fn named(batch: &RecordBatch, places: &HashMap<&str, usize>) -> Names {
     let fields = batch.schema_ref().fields().iter();
     fields
         .filter_map(|field| {
             let place = places.get(field.name().as_str())?;
-            let named = field.metadata().get(crate::LOGICAL_TYPE_KEY)?;
-            Some((*place, named.clone()))
+            Some((*place, rendered_from(field)?.clone()))
         })
         .collect()
 }
