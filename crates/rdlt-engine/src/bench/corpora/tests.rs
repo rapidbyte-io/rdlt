@@ -113,6 +113,26 @@ fn each_cliff_corpus_reaches_its_cliff() {
 }
 
 #[test]
+fn a_drifting_corpus_drifts_in_one_row_of_four_thousand() {
+    let per_push = NonZeroU64::new(8_000).unwrap();
+    for (corpus, field) in [
+        (Corpus::DriftScalar, "code"),
+        (Corpus::DriftJson, "payload"),
+    ] {
+        let rows = corpus.rows(8_000, per_push).concat();
+        for (index, line) in std::str::from_utf8(&rows).unwrap().lines().enumerate() {
+            let row: serde_json::Value = serde_json::from_str(line).unwrap();
+            let drifted = !row[field].is_u64();
+            assert_eq!(
+                drifted,
+                index % 4_000 == 3_999,
+                "{corpus:?} row {index}: {line}"
+            );
+        }
+    }
+}
+
+#[test]
 fn a_column_of_integers_drifting_to_strings_is_fitted_without_a_second_parse() {
     let pushes = Corpus::DriftScalar.pushes(4 << 20);
     let counts = crate::bench::shred_counted(&pushes, CHUNK_BYTES).unwrap();

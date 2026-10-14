@@ -306,6 +306,49 @@ async fn a_long_load_keeps_only_the_chunks_its_receipts_do_not_cover_empty_segme
 }
 
 #[tokio::test]
+async fn a_log_s_oldest_commit_is_the_first_whose_receipt_no_published_chunk_records() {
+    let store = Arc::new(MemoryWal::default());
+    let (log, task) = start(&store);
+    let budget = crate::budget::budget(1 << 20);
+    let written = async {
+        assert_eq!(log.oldest(), None, "no commit yet");
+        let seqs = [
+            CommitSeq::FIRST,
+            CommitSeq::FIRST.next(),
+            CommitSeq::FIRST.next().next(),
+        ];
+        let commit = |seq| {
+            let mut commit = meta(&[]);
+            commit.commit_seq = seq;
+            commit
+        };
+        log.commit(&budget, Vec::new(), Vec::new(), &commit(seqs[0]), 0)
+            .await
+            .expect("durable");
+        assert_eq!(log.oldest(), Some(seqs[0]));
+        log.commit(&budget, Vec::new(), Vec::new(), &commit(seqs[1]), 0)
+            .await
+            .expect("durable");
+        assert_eq!(
+            log.oldest(),
+            Some(seqs[0]),
+            "the first waits for its receipt"
+        );
+        // A receipt no chunk records yet: a replay may still repeat its commit.
+        log.committed(&receipt(seqs[0])).await.expect("noted");
+        assert_eq!(log.oldest(), Some(seqs[0]));
+        // The next commit's chunk records it.
+        log.commit(&budget, Vec::new(), Vec::new(), &commit(seqs[2]), 0)
+            .await
+            .expect("durable");
+        assert_eq!(log.oldest(), Some(seqs[1]));
+        drop(log);
+    };
+    let (ended, ()) = tokio::join!(task, written);
+    ended.expect("the writer ends");
+}
+
+#[tokio::test]
 async fn seal_and_commit_frames_are_charged_until_they_are_appended() {
     let store = Arc::new(MemoryWal::default());
     let (log, task) = start(&store);
@@ -780,6 +823,8 @@ async fn a_log_makes_a_commit_due_at_half_what_it_may_hold_and_at_each_eighth_af
                 }
             }
         };
+        // A commit made while the log holds little leaves the next due at half what it may hold.
+        log.passed();
         fill(limit / 2 - 1_000).await;
         assert!(!log.due(), "{} bytes", log.held());
         fill(limit / 2).await;
