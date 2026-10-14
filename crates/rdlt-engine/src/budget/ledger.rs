@@ -1,5 +1,8 @@
 //! The budget's ledger: what each share holds, and who waits for it.
 
+#[cfg(test)]
+mod tests;
+
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
@@ -187,7 +190,8 @@ pub(super) struct Ledger {
     pub(super) cursor_waits: watch::Sender<bool>,
     /// The requests that waited, and for how long, by share.
     pub(super) waited: Waits,
-    /// Values sent to the tasks watching for pressure and for cursors' waits, both counted.
+    /// Changes sent to the tasks watching for pressure and for cursors' waits, each waking every
+    /// task waiting on that value.
     pub(super) signals: u64,
 }
 
@@ -376,7 +380,8 @@ impl Ledger {
     /// Signals pressure while a request waits for bytes of pushes or of lowering, or a holder of
     /// queued pieces waits for their writes: whoever holds bytes a write releases should write.
     ///
-    /// A cursor that waits is signalled apart: only a commit releases what it waits for.
+    /// A cursor that waits is signalled apart: only a commit releases what it waits for. A value
+    /// is sent only where it changes, so a release that frees no waiter wakes no one.
     pub(super) fn press(&mut self) {
         let waits = |class: Class| {
             let place = WAITING.iter().position(|waiting| *waiting == class);
@@ -384,9 +389,9 @@ impl Ledger {
         };
         let pressed = self.pressing > 0 || waits(Class::Work) || waits(Class::Intake);
         let cursor_waits = waits(Class::Cursor) || waits(Class::Tables);
-        self.pressed.send(pressed);
-        self.cursor_waits.send(cursor_waits);
-        self.signals = self.signals.saturating_add(2);
+        let sent =
+            u64::from(self.pressed.send(pressed)) + u64::from(self.cursor_waits.send(cursor_waits));
+        self.signals = self.signals.saturating_add(sent);
     }
 
     /// The next waiting request that is admitted, and its class: the first of each share in

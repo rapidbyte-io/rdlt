@@ -331,7 +331,7 @@ impl MemoryBudget {
         self.shared.lock().waited
     }
 
-    /// Values the budget has sent to the tasks watching for pressure and for cursors' waits.
+    /// Changes the budget has sent to the tasks watching for pressure and for cursors' waits.
     pub(crate) fn signals(&self) -> u64 {
         self.shared.lock().signals
     }

@@ -720,14 +720,30 @@ async fn a_read_waiting_for_a_slot_records_the_time_it_waited() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn every_release_and_every_press_sends_both_signals() {
+async fn the_budget_signals_only_as_pressure_or_a_cursors_wait_begins_or_ends() {
     let budget = budget(BUDGET);
     let mut held = budget.acquire(1_000).await.unwrap();
-    assert_eq!(budget.signals(), 0, "a request that fits sends nothing");
     held.shrink(500);
-    assert_eq!(budget.signals(), 2);
     drop(held);
+    assert_eq!(
+        budget.signals(),
+        0,
+        "releases that change nothing signal nothing"
+    );
+    let pressing = budget.pressing();
+    let again = budget.pressing();
+    assert_eq!(budget.signals(), 1, "pressure begins once");
+    drop(again);
+    drop(pressing);
+    assert_eq!(budget.signals(), 2, "and ends once");
+    // The cursors' share is 100 bytes: a second cursor waits until the first is released.
+    let first = budget.acquire_cursor(100).await.unwrap();
+    let mut second = Box::pin(budget.acquire_cursor(1));
+    assert!(waits(&mut second).await);
+    assert_eq!(budget.signals(), 3, "a cursor's wait begins");
+    drop(first);
+    let second = second.await.unwrap();
+    assert_eq!(budget.signals(), 4, "and ends");
+    drop(second);
     assert_eq!(budget.signals(), 4);
-    drop(budget.pressing());
-    assert_eq!(budget.signals(), 8, "pressing and its end each send both");
 }
