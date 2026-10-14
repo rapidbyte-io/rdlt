@@ -1,11 +1,16 @@
+use std::sync::Arc;
+use std::time::UNIX_EPOCH;
+
 use arrow_array::cast::AsArray;
 use arrow_array::types::{Int64Type, TimestampMicrosecondType};
-use arrow_array::{Array, RecordBatch};
+use arrow_array::{Array, ArrayRef, Decimal128Array, Int64Array, RecordBatch};
+use arrow_schema::{DataType, Field as ArrowField, Schema};
 use rdlt_connector::cost::Stored;
-use rdlt_connector::{LogicalType, TimeUnit};
+use rdlt_connector::{DecimalType, LoadId, LogicalType, TimeUnit};
 
-use super::{Case, Kept, LoweringCase, Storage};
+use super::{Case, Kept, LoweringCase, Made, Storage, events, stamp, with_column};
 use crate::cost::CHANGE_ROW;
+use crate::table::Stamp;
 use crate::table::aligned;
 
 const ROWS: u32 = 64;
@@ -250,4 +255,89 @@ fn a_change_flags_only_data_columns_and_never_its_key() {
     }
     // Every data column but the key, column 0, and none of the change columns past them.
     assert_eq!(flagged, (1..200).collect());
+}
+
+/// Whether `prepared` holds each column of `pushed` as the very array it was given.
+fn handed_over(pushed: &RecordBatch, prepared: &RecordBatch) -> bool {
+    let schema = pushed.schema();
+    schema
+        .fields()
+        .iter()
+        .zip(pushed.columns())
+        .all(|(field, column)| {
+            let lowered = prepared.column_by_name(field.name());
+            lowered.is_some_and(|lowered| lowered.to_data().ptr_eq(&column.to_data()))
+        })
+}
+
+/// `batch` with its column `name` of strings held as views.
+fn viewed(batch: &RecordBatch, name: &str) -> RecordBatch {
+    let index = batch.schema().index_of(name).unwrap();
+    let mut columns = batch.columns().to_vec();
+    columns[index] = arrow_cast::cast(&columns[index], &DataType::Utf8View).unwrap();
+    let mut fields: Vec<ArrowField> = batch
+        .schema()
+        .fields()
+        .iter()
+        .map(|field| field.as_ref().clone())
+        .collect();
+    fields[index] = fields[index].clone().with_data_type(DataType::Utf8View);
+    RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap()
+}
+
+/// Every case, and appends whose lowering reads or writes values in other ways: of a table
+/// holding a column the batch lacks, of strings held as views, and of decimals.
+fn cases() -> Vec<(&'static str, Case)> {
+    let native = |made| Case::planned(Storage::Native.capabilities(), made);
+    let mixed = events(0, ROWS, 10);
+    let wide: ArrayRef = Arc::new(Int64Array::from_iter_values(0..i64::from(ROWS)));
+    let lacking = with_column(&mixed, "extra", LogicalType::Int64, wide);
+    let cents = Decimal128Array::from_iter_values(0..i128::from(ROWS));
+    let cents: ArrayRef = Arc::new(cents.with_precision_and_scale(10, 2).unwrap());
+    let decimal = LogicalType::Decimal(DecimalType::new(10, 2).unwrap());
+    let decimals = with_column(&mixed, "price", decimal, cents);
+    let cases = LoweringCase::ALL.map(|case| (case.name(), Case::new(case, ROWS)));
+    cases
+        .into_iter()
+        .chain([
+            ("lacking", native(Made::into_table(lacking, mixed.clone()))),
+            ("views", native(Made::append(viewed(&mixed, "name")))),
+            ("decimals", native(Made::append(decimals))),
+        ])
+        .collect()
+}
+
+#[test]
+fn a_plan_copies_nothing_only_where_it_hands_every_column_over_as_it_arrives() {
+    for (name, case) in cases() {
+        let (plan, pushed) = (case.plan(), case.batch());
+        // Strings held as views are of another type than their column stores.
+        let hands_over = matches!(name, "append_native" | "views");
+        assert_eq!(plan.hands_over(), hands_over, "{name}");
+        // A load's first piece builds the load's constant columns, a byte a row.
+        assert!(!plan.copies_nothing(pushed, &stamp()), "{name}");
+        case.prepare().unwrap();
+        let copies_nothing = plan.copies_nothing(pushed, &stamp());
+        assert_eq!(copies_nothing, name == "append_native", "{name}");
+        if copies_nothing {
+            // Every column is the array it arrived as, beside the load's two constant ones.
+            let prepared = case.prepare().unwrap().batch;
+            assert!(handed_over(pushed, &prepared), "{name}");
+            assert_eq!(prepared.num_columns(), pushed.num_columns() + 2, "{name}");
+        }
+    }
+}
+
+#[test]
+fn a_plan_copies_nothing_for_rows_of_the_load_its_constants_were_built_for() {
+    let case = Case::new(LoweringCase::AppendNative, ROWS);
+    case.prepare().unwrap();
+    let (plan, pushed) = (case.plan(), case.batch());
+    assert!(plan.copies_nothing(&pushed.slice(1, 10), &stamp()));
+    assert!(!plan.copies_nothing(&events(0, ROWS + 1, 10), &stamp()));
+    let next = Stamp {
+        load_id: LoadId::from_parts(UNIX_EPOCH, 2),
+        ..stamp()
+    };
+    assert!(!plan.copies_nothing(pushed, &next));
 }

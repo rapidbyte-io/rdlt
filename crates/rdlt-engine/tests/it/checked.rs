@@ -142,7 +142,7 @@ async fn jobs(name: &str, flushes: u64, batch: RecordBatch) -> u64 {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_push_holding_no_json_is_written_with_two_fewer_compute_jobs() {
+async fn a_push_holding_json_is_checked_cut_and_lowered_on_the_pool() {
     const FLUSHES: u64 = 4;
     let batch = |doc: Field| {
         let ids: ArrayRef = Arc::new(Int32Array::from(vec![1, 2, 3]));
@@ -156,10 +156,13 @@ async fn a_push_holding_no_json_is_written_with_two_fewer_compute_jobs() {
     let json = text.clone().with_metadata(extension.into());
     let with_json = jobs("jobs_with_json", FLUSHES, batch(json)).await;
     let without = jobs("jobs_without_json", FLUSHES, batch(text)).await;
-    // Measuring what the check holds and the check itself: a job each, a flush.
+    // Without JSON, the load's first lowering alone, which builds its constant columns. With it,
+    // a job each a flush: measuring what the check holds, the check, the cut, which measures the
+    // JSON text, and the lowering, which stores it as text where the destination stores no JSON.
+    assert_eq!(without, 1);
     assert_eq!(
         with_json,
-        without + 2 * FLUSHES,
+        4 * FLUSHES,
         "{with_json} compute jobs with a column of JSON, {without} without"
     );
 }

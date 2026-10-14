@@ -1,8 +1,9 @@
 use std::num::{NonZeroU16, NonZeroUsize};
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use rdlt_connector::{Checkpointing, ConnectorErrorKind, ReadMode};
+use rdlt_connector::{Checkpointing, ConnectorErrorKind, Destination, ReadMode, TypeKind};
 use rdlt_engine::{
     CommitPolicy, Cores, EngineConfig, ErrorKind, RetryPolicy, RunStatus, SchemaPolicy,
     SchemaSettings, StopMode, WriteMode,
@@ -950,19 +951,15 @@ async fn a_commit_whose_response_was_lost_still_counts_in_the_report() {
     assert_eq!(outcome.report.streams["events"].rows, 40);
 }
 
-#[tokio::test(start_paused = true)]
-async fn arrow_batches_are_lowered_on_the_compute_pool() {
-    // Five batches of Arrow, each checkpointed on its own, so each is lowered on its own.
+/// The compute jobs a run of five batches of Arrow, each checkpointed on its own, gave its pool
+/// on the way to `destination`.
+async fn lowering_jobs(name: &str, destination: Arc<dyn Destination>) -> usize {
     let (_, source) = Script::new(vec![ScriptStream::new("events", 1, 25, 5)])
-        .connect("lowered_on_the_pool")
+        .connect(name)
         .await;
     let (engine, jobs) = counting_engine(commit_every(1000));
     let outcome = engine
-        .run(
-            pipeline("lowered-on-the-pool", [stream("events")]),
-            source,
-            memory("lowered_on_the_pool").await,
-        )
+        .run(pipeline(name, [stream("events")]), source, destination)
         .await;
     assert_eq!(
         outcome.report.status,
@@ -970,8 +967,24 @@ async fn arrow_batches_are_lowered_on_the_compute_pool() {
         "{:?}",
         outcome.error
     );
-    let jobs = jobs.load(Ordering::SeqCst);
-    assert!(jobs >= 5, "{jobs} compute jobs for five batches");
+    assert_eq!(outcome.report.rows, 25);
+    jobs.load(Ordering::SeqCst)
+}
+
+#[tokio::test(start_paused = true)]
+async fn plain_arrow_batches_are_cut_and_lowered_where_they_are_read() {
+    // The load's first piece builds its constant columns on the pool; the others copy nothing.
+    let destination = memory("lowered_where_read").await;
+    assert_eq!(lowering_jobs("lowered-where-read", destination).await, 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn batches_whose_columns_convert_are_lowered_on_the_pool() {
+    // A destination storing no 64-bit integer as it is stores each as its text.
+    let textual = limited(memory("lowered_on_the_pool").await, |capabilities| {
+        capabilities.types.remove(&TypeKind::Int64);
+    });
+    assert_eq!(lowering_jobs("lowered-on-the-pool", textual).await, 5);
 }
 
 #[tokio::test(start_paused = true)]

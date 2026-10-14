@@ -317,3 +317,19 @@ fn a_piece_its_rows_fill_to_the_byte_takes_what_its_stretches_were_measured_to()
         );
     }
 }
+
+#[test]
+fn cutting_reads_values_only_where_a_unit_s_batches_hold_a_column_measured_by_them() {
+    let plain = || {
+        let ids: ArrayRef = Arc::new(Int64Array::from(vec![1, 2, 3]));
+        RecordBatch::try_from_iter([("id", ids)]).unwrap()
+    };
+    // Integers are measured by their rows alone, a run by the value it names.
+    for (parts, reads) in [(vec![plain(), plain()], false), (vec![encoded(0, 3)], true)] {
+        let mut pieces = Pieces::new(parts, unplanned(u64::MAX, u64::MAX));
+        assert_eq!(pieces.reads_values(), reads);
+        while pieces.next().unwrap().is_some() {}
+        // Once every row is cut, nothing is left to read.
+        assert!(!pieces.reads_values());
+    }
+}

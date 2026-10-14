@@ -28,6 +28,7 @@ pub(super) use self::schemas::Schemas;
 use super::coalesce::{Flushed, Unit};
 use super::{ChangeMode, OpenSegment, PartitionContext, PartitionJob};
 use crate::budget::{Denied, MemoryBudget, Reservation, Shares, TooLarge};
+use crate::compute::Pool;
 use crate::cost::CHANGE_ROW;
 use crate::error::{Error, ErrorKind};
 use crate::limits::{MAX_PIECE_BYTES, ROW_EXCEEDS_BUDGET};
@@ -106,7 +107,10 @@ fn reserved_times(context: &PartitionContext) -> u64 {
 ///   takes more than one request may fails the write.
 /// - Each piece reserves that from the budget before it is lowered. The partition waits for a
 ///   piece only while it holds none it has not handed to its lane; pieces the budget has room
-///   for at once are lowered together on the compute pool, [`LOWERING_WINDOW`] at most.
+///   for at once are lowered together, [`LOWERING_WINDOW`] at most.
+/// - A cut that reads no value, and a window of pieces whose lowering copies none, run on the
+///   partition's task: their steps grow with the columns alone, fewer than a trip to the
+///   compute pool takes. Every other cut and window runs on the pool.
 ///
 /// The units are one flush, which chunks and pieces cut however their sizes fall, so its integers
 /// are judged together: where it was cut decides no column's type.
@@ -167,9 +171,10 @@ async fn write(
                 // written.
                 unit: if pieces.done() { held.take() } else { None },
             };
+            let copies = !copies_nothing(&piece, &plan, &stamp, job.changes);
             let (plan, stream, mode) = (Arc::clone(&plan), job.stream.clone(), job.changes);
             let run = move || lower(&stream, mode, &piece.parts, &plan, &stamp);
-            window.push(Box::new(run), lowering);
+            window.push(Box::new(run), lowering, copies);
             if full(window.len()) {
                 window.lower(job, context, open).await?;
             }
@@ -186,7 +191,23 @@ fn piece_bounds(shares: Shares, times: u64) -> (u64, u64) {
     (bound(shares.piece), bound(shares.request))
 }
 
-/// The next piece of `pieces`, cut on the compute pool.
+/// Whether lowering `piece` as `plan` lowers it for the load `stamp` names copies no value: a
+/// piece of one part, which needs no concatenating, of a stream that is not a change stream,
+/// whose change columns are split off first.
+fn copies_nothing(
+    piece: &Piece,
+    plan: &LoweringPlan,
+    stamp: &Stamp,
+    mode: Option<ChangeMode>,
+) -> bool {
+    match piece.parts.as_slice() {
+        [part] => mode.is_none() && plan.copies_nothing(part, stamp),
+        _ => false,
+    }
+}
+
+/// The next piece of `pieces`, cut on the partition's task where cutting it reads no value, and
+/// on the compute pool otherwise.
 async fn next(
     job: &PartitionJob,
     context: &PartitionContext,
@@ -194,6 +215,9 @@ async fn next(
 ) -> Result<Option<Piece>, Error> {
     if pieces.done() {
         return Ok(None);
+    }
+    if !pieces.reads_values() {
+        return pieces.next().map_err(|row| row_too_large(job, &row));
     }
     let mut cutting = std::mem::replace(pieces, Pieces::none());
     let cut = move || {
@@ -220,7 +244,7 @@ struct Lowering {
     unit: Option<Held>,
 }
 
-/// A piece's lowering, to run on the compute pool.
+/// A piece's lowering.
 type Run = Box<dyn FnOnce() -> Result<Prepared, Error> + Send>;
 
 /// Pieces reserved and not yet lowered, in order.
@@ -228,12 +252,16 @@ type Run = Box<dyn FnOnce() -> Result<Prepared, Error> + Send>;
 struct Window {
     runs: Vec<Run>,
     held: Vec<Lowering>,
+    /// Whether lowering a piece of the window copies values.
+    copies: bool,
 }
 
 impl Window {
-    fn push(&mut self, run: Run, lowering: Lowering) {
+    /// Adds a piece, lowered by `run`, held by `lowering`, whose lowering `copies` values or not.
+    fn push(&mut self, run: Run, lowering: Lowering, copies: bool) {
         self.runs.push(run);
         self.held.push(lowering);
+        self.copies |= copies;
     }
 
     fn len(&self) -> usize {
@@ -267,26 +295,35 @@ impl Window {
         reserve(job, context, bytes).await
     }
 
-    /// Lowers the window's pieces on the compute pool and queues them, in order: each then holds
-    /// what it was lowered to and its unit did not hold already, where that is less than was
-    /// reserved for lowering it, and its frame in the log what the frame takes.
+    /// The window's pieces lowered, in order, each beside what holds it: on the calling task
+    /// where lowering none copies a value, on the compute pool otherwise.
+    async fn lowered(&mut self, pool: &Pool) -> Vec<(Result<Prepared, Error>, Lowering)> {
+        let (runs, held) = (
+            std::mem::take(&mut self.runs),
+            std::mem::take(&mut self.held),
+        );
+        let prepared = if std::mem::take(&mut self.copies) {
+            pool.run_all(runs).await
+        } else {
+            runs.into_iter().map(|run| run()).collect()
+        };
+        prepared.into_iter().zip(held).collect()
+    }
+
+    /// Lowers the window's pieces and queues them, in order: each then holds what it was lowered
+    /// to and its unit did not hold already, where that is less than was reserved for lowering
+    /// it, and its frame in the log what the frame takes.
     async fn lower(
         &mut self,
         job: &PartitionJob,
         context: &PartitionContext,
         open: &mut OpenSegment,
     ) -> Result<(), Error> {
-        let (runs, held) = (
-            std::mem::take(&mut self.runs),
-            std::mem::take(&mut self.held),
-        );
         let times = reserved_times(context);
-        let lowered: Vec<_> = context
-            .pool
-            .run_all(runs)
+        let lowered: Vec<_> = self
+            .lowered(&context.pool)
             .await
             .into_iter()
-            .zip(held)
             .map(|(prepared, mut lowering)| {
                 prepared.map(|prepared| {
                     let frame = frame_part(&mut lowering.reserved, times);

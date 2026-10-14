@@ -374,7 +374,7 @@ impl Case {
 }
 
 /// What every case's batch was received as: segment 1 of a load, its rows the segment's first.
-fn stamp() -> Stamp {
+pub(crate) fn stamp() -> Stamp {
     Stamp {
         load_id: LoadId::from_parts(UNIX_EPOCH, 1),
         loaded_at: UNIX_EPOCH,

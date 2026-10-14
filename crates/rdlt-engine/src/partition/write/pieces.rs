@@ -136,11 +136,19 @@ impl Pieces {
         Ok((piece.rows > 0).then_some(piece))
     }
 
-    /// The next run of the batch being cut, from its row `self.row`.
-    fn run(&mut self) -> Result<Run, RowTooLarge> {
+    /// Whether cutting the batches left reads their values, or measures them by their rows and
+    /// offsets alone: the unit's batches are of one schema, so the batch being cut says.
+    pub(super) fn reads_values(&mut self) -> bool {
+        self.measures()
+            .is_some_and(|(pieces, _)| pieces.reads_values())
+    }
+
+    /// The measures of the batch being cut: against a piece's bytes, and against what a row may
+    /// take; none once every batch is cut.
+    fn measures(&mut self) -> Option<&mut (Measure, Measure)> {
         let lowered = &self.lowered;
-        let batch = &self.parts[self.part];
-        let (pieces, alone) = self.measures.get_or_insert_with(|| {
+        let batch = self.parts.get(self.part)?;
+        Some(self.measures.get_or_insert_with(|| {
             let measure = |limit| {
                 let stored = lowered.stored.clone();
                 let measure = lowered
@@ -149,17 +157,26 @@ impl Pieces {
                 measure.with_items(lowered.item)
             };
             (measure(lowered.max), measure(lowered.limit))
-        });
-        let cut = pieces.piece(self.row);
-        let (rows, mut bytes) = (cut.end - self.row, cut.bytes);
-        if bytes > lowered.max {
+        }))
+    }
+
+    /// The next run of the batch being cut, from its row `self.row`.
+    fn run(&mut self) -> Result<Run, RowTooLarge> {
+        let row = self.row;
+        let (max, limit) = (self.lowered.max, self.lowered.limit);
+        let (pieces, alone) = self
+            .measures()
+            .expect("a run is cut only from a batch left to cut");
+        let cut = pieces.piece(row);
+        let (rows, mut bytes) = (cut.end - row, cut.bytes);
+        if bytes > max {
             // One row beyond a piece: measured against what a row may take, each value it names
             // once.
-            bytes = alone.expanded(self.row..cut.end);
-            if bytes > lowered.limit {
+            bytes = alone.expanded(row..cut.end);
+            if bytes > limit {
                 return Err(RowTooLarge {
                     expanded: bytes,
-                    limit: lowered.limit,
+                    limit,
                 });
             }
         }

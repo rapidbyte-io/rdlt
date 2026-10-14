@@ -7,6 +7,7 @@ mod constants;
 mod costs;
 #[cfg(test)]
 mod differential;
+mod handed;
 mod history;
 mod kept;
 mod keys;
@@ -99,6 +100,8 @@ pub(crate) struct LoweringPlan {
     /// Each incoming column's schema policy, which decides what becomes of a value its column
     /// cannot hold.
     policies: Vec<SchemaPolicy>,
+    /// Whether the plan hands every incoming column over as it arrives.
+    handed: bool,
 }
 
 impl Source {
@@ -149,7 +152,7 @@ impl LoweringPlan {
             .collect();
         let written = changes::written(&sources, incoming.schema.fields().len());
         let change_time = history::change_time(&view, &incoming);
-        Self {
+        let mut plan = Self {
             splits: Splits::of(&routes, &types),
             stream,
             view,
@@ -161,13 +164,17 @@ impl LoweringPlan {
             discarded,
             constants: Mutex::new(None),
             policies: Vec::new(),
-        }
+            handed: false,
+        };
+        plan.handed = plan.hands_over();
+        plan
     }
 
     /// The same plan, its incoming columns following `policies`, in their order; a column with
     /// none refuses a value it cannot hold with its batch.
     pub(crate) fn with_policies(mut self, policies: Vec<SchemaPolicy>) -> Self {
         self.policies = policies;
+        self.handed = self.hands_over();
         self
     }
 
@@ -387,12 +394,10 @@ impl LoweringPlan {
         rows: usize,
     ) -> Result<([ArrayRef; 2], i64), arrow_schema::ArrowError> {
         let mut constants = self.constants.lock();
-        let fits = constants.as_ref().is_some_and(|built| {
-            built.load_id == stamp.load_id
-                && built.loaded_at == stamp.loaded_at
-                && built.rows >= rows
-        });
-        if !fits {
+        if !constants
+            .as_ref()
+            .is_some_and(|built| built.fits(stamp, rows))
+        {
             *constants = Some(Constants::new(&self.view, stamp, rows)?);
         }
         let built = constants.as_ref().expect("the constants were just built");
