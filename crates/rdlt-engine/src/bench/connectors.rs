@@ -93,6 +93,39 @@ pub async fn split_replay(
     connect_replay(split_replay_config(name, partitions, streams)).await
 }
 
+/// A source pushing `replayed` as [`split_replay`] does, the last `unreplayable` of whose
+/// streams it cannot read again, each read incrementally; registered as `name`.
+pub(super) async fn mixed_replay(
+    name: &str,
+    replayed: Replayed,
+    partitions: NonZeroUsize,
+    streams: NonZeroUsize,
+    unreplayable: usize,
+) -> Arc<dyn Source> {
+    register(name, replayed);
+    let config = json!({
+        "name": name,
+        "partitions": partitions,
+        "streams": streams,
+        "unreplayable": unreplayable,
+    });
+    connect_replay(config).await
+}
+
+/// The pushes of `pushes` that the partition numbered `partition` of the stream numbered
+/// `stream` makes, of `partitions` partitions of each of `streams` streams: its even share, in
+/// order.
+pub(super) fn share(
+    pushes: usize,
+    (partitions, streams): (NonZeroUsize, NonZeroUsize),
+    stream: usize,
+    partition: usize,
+) -> std::ops::Range<usize> {
+    let units = streams.get() * partitions.get();
+    let unit = stream * partitions.get() + partition;
+    unit * pushes / units..(unit + 1) * pushes / units
+}
+
 /// A replay source connected with `config`, whose replay is registered.
 async fn connect_replay(config: Value) -> Arc<dyn Source> {
     let source = replay_factory()
@@ -102,13 +135,15 @@ async fn connect_replay(config: Value) -> Arc<dyn Source> {
     Arc::from(source)
 }
 
-/// Names the registered replay a [`Replay`] pushes, the partitions it pushes from and the
-/// streams it pushes: one of each where it names none.
+/// Names the registered replay a [`Replay`] pushes, the partitions it pushes from, the streams
+/// it pushes, one of each where it names none, and how many of them, the last, it cannot read
+/// again, none where it names none.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(super) struct ReplayConfig {
     name: String,
     partitions: Option<NonZeroUsize>,
     streams: Option<NonZeroUsize>,
+    unreplayable: Option<usize>,
 }
 
 /// The source [`split_replay`] connects.
@@ -116,16 +151,15 @@ pub(super) struct Replay {
     replayed: Replayed,
     partitions: NonZeroUsize,
     streams: NonZeroUsize,
+    unreplayable: usize,
 }
 
 impl Replay {
     /// The pushes the partition numbered `partition` of the stream numbered `stream` makes: its
     /// even share, in order.
     fn share(&self, stream: usize, partition: usize) -> std::ops::Range<usize> {
-        let units = self.streams.get() * self.partitions.get();
-        let unit = stream * self.partitions.get() + partition;
         let pushes = self.replayed.pushes();
-        unit * pushes / units..(unit + 1) * pushes / units
+        share(pushes, (self.partitions, self.streams), stream, partition)
     }
 }
 
@@ -144,6 +178,7 @@ impl SourceConnector for Replay {
             replayed,
             partitions: config.partitions.unwrap_or(NonZeroUsize::MIN),
             streams: config.streams.unwrap_or(NonZeroUsize::MIN),
+            unreplayable: config.unreplayable.unwrap_or(0),
         })
     }
 
@@ -152,22 +187,34 @@ impl SourceConnector for Replay {
     }
 
     fn streams(&self) -> Streams<Self> {
+        let replayable = self.streams.get().saturating_sub(self.unreplayable);
         (0..self.streams.get()).fold(Streams::new(), |streams, index| {
-            streams.with(Events { index })
+            streams.with(Events {
+                index,
+                replayable: index < replayable,
+            })
         })
     }
 }
 
-/// The stream numbered `index` of a replay, named by [`stream_name`].
+/// The stream numbered `index` of a replay, named by [`stream_name`]: read in full where its
+/// source can read it again, incrementally otherwise.
 struct Events {
     index: usize,
+    replayable: bool,
 }
 
 impl ReadStream<Replay> for Events {
     type Cursor = usize;
 
     fn spec(&self) -> StreamSpec {
-        StreamSpec::new(stream_name(self.index)).with_read_modes([ReadMode::Full])
+        let spec = StreamSpec::new(stream_name(self.index));
+        if self.replayable {
+            spec.with_read_modes([ReadMode::Full])
+        } else {
+            spec.with_read_modes([ReadMode::Incremental])
+                .with_replayable(false)
+        }
     }
 
     async fn partitions(&self, source: &Replay, _state: &StreamState) -> Result<Vec<Partition>> {

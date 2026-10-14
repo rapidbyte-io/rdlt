@@ -15,6 +15,14 @@ use crate::{
     Report, RetryPolicy, RunOutcome, StreamPlan, SystemEnv, WalStore,
 };
 
+/// Where a runner's loads keep their logs, holding at most `bytes` on disk, and whether every
+/// load keeps one, or only one with a stream whose source cannot read again.
+struct Log {
+    store: Arc<dyn WalStore>,
+    bytes: NonZeroU64,
+    always: bool,
+}
+
 /// A runtime, and an engine on it with the plan it loads.
 #[derive(Debug)]
 pub(super) struct Runner {
@@ -57,8 +65,36 @@ impl Runner {
         commit: Option<NonZeroU64>,
         (store, log_bytes): (Arc<dyn WalStore>, NonZeroU64),
     ) -> Result<Self, ComputePoolError> {
-        let log = Some((store, log_bytes));
-        Self::build(cores, pipeline, vec![stream], commit, Self::MEMORY, log)
+        let log = Log {
+            store,
+            bytes: log_bytes,
+            always: true,
+        };
+        Self::build(
+            cores,
+            pipeline,
+            vec![stream],
+            commit,
+            Self::MEMORY,
+            Some(log),
+        )
+    }
+
+    /// A runner as [`Runner::within`] makes it whose loads are logged as [`Runner::logging`]'s
+    /// are, a load logging ahead only where a stream's source cannot read again.
+    pub(super) fn mixed(
+        cores: Cores,
+        (pipeline, streams): (&str, Vec<StreamPlan>),
+        commit: Option<NonZeroU64>,
+        memory: u64,
+        (store, log_bytes): (Arc<dyn WalStore>, NonZeroU64),
+    ) -> Result<Self, ComputePoolError> {
+        let log = Log {
+            store,
+            bytes: log_bytes,
+            always: false,
+        };
+        Self::build(cores, pipeline, streams, commit, memory, Some(log))
     }
 
     /// A runtime and an engine as [`Runner::try_new`] makes them that load `streams`, within a
@@ -87,7 +123,7 @@ impl Runner {
         streams: Vec<StreamPlan>,
         commit: Option<NonZeroU64>,
         memory: u64,
-        log: Option<(Arc<dyn WalStore>, NonZeroU64)>,
+        log: Option<Log>,
     ) -> Result<Self, ComputePoolError> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(cores.workers().get())
@@ -101,8 +137,8 @@ impl Runner {
         let mut builder = EngineConfig::builder()
             .memory(memory)
             .commit(policy.expect("a valid policy"));
-        if let Some((_, log_bytes)) = &log {
-            let growth = GrowthLimits::default().with_log_bytes(log_bytes.get());
+        if let Some(log) = &log {
+            let growth = GrowthLimits::default().with_log_bytes(log.bytes.get());
             builder = builder
                 .retry(RetryPolicy::default().max_attempts(1))
                 .growth(growth.expect("a limit of more than zero"));
@@ -111,9 +147,9 @@ impl Runner {
         let pipeline = PipelineId::parse(pipeline).expect("a valid id");
         let mut env = SystemEnv::try_new(cores)?;
         let mut plan = PipelinePlan::new(pipeline, streams).expect("a valid plan");
-        if let Some((store, _)) = log {
-            env = env.with_wal(store);
-            plan = plan.with_wal(true);
+        if let Some(log) = log {
+            env = env.with_wal(log.store);
+            plan = plan.with_wal(log.always);
         }
         Ok(Self {
             runtime,
