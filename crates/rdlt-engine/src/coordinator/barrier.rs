@@ -9,7 +9,7 @@ impl Coordinator {
     pub(super) async fn raise_barrier(&mut self) -> Result<(), Error> {
         self.barrier += 1;
         let barrier = self.barrier;
-        self.parts.barrier.send_replace(barrier);
+        self.parts.barrier.send(barrier);
         let mut deadline = self.parts.env.sleep(self.parts.barrier_wait);
         // Kept as partitions start, answer and end, so the wait looks at no partition twice.
         self.owing = (0..self.parts.partitions.len())
