@@ -125,7 +125,9 @@ async fn blobs(config: serde_json::Value, options: &Options) -> RemoteSource {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn backpressured_partitions_do_not_lose_a_live_source() {
-    let source = Arc::new(blobs(serde_json::json!({}), &quick()).await);
+    // Bounds every wait: a connection whose windows the reads fill answers nothing more.
+    let bound = Duration::from_secs(20);
+    let source = Arc::new(blobs(serde_json::json!({}), &Options::default()).await);
     let mut feeds = Vec::new();
     for _ in 0..8 {
         // The engine takes one event of each read and no more, as when its lanes are full.
@@ -139,12 +141,19 @@ async fn backpressured_partitions_do_not_lose_a_live_source() {
             );
             source.read(request, sink).await
         });
-        feed.recv().await.expect("the read sends");
+        let event = tokio::time::timeout(bound, feed.recv()).await;
+        event
+            .expect("the read sends in time")
+            .expect("the read sends");
         feeds.push(feed);
     }
-    // Well past the heartbeat's patience: the source is live, only the engine is behind.
-    tokio::time::sleep(Duration::from_secs(1)).await;
-    source.check().await.expect("the source is still connected");
+    // Each read holds what its credit let the connector send, which the engine has not taken.
+    // The connection still carries the answers of its other calls, the heartbeat's among them:
+    // the source is live, only the engine is behind.
+    tokio::time::timeout(bound, source.check())
+        .await
+        .expect("the check is answered in time")
+        .expect("the source is still connected");
 }
 
 #[tokio::test]
