@@ -273,31 +273,40 @@ fn a_merged_row_keeps_the_type_its_text_was_lowered_from() {
     assert_eq!(held, "4450");
 }
 
+/// The schema of the folding tests' table: an id and a text column.
+fn folding() -> arrow_schema::SchemaRef {
+    Arc::new(arrow_schema::Schema::new(vec![
+        ArrowField::new("id", DataType::Int64, false),
+        ArrowField::new("n", DataType::Utf8, true),
+    ]))
+}
+
+/// Rows of `ids`, each holding its id as text rendered from `logical`.
+fn rows(ids: Vec<i64>, logical: &LogicalType) -> arrow_array::RecordBatch {
+    let texts: Vec<String> = ids.iter().map(ToString::to_string).collect();
+    arrow_array::RecordBatch::try_new(
+        Arc::new(arrow_schema::Schema::new(vec![
+            ArrowField::new("id", DataType::Int64, false),
+            lowered(logical).with_name("n"),
+        ])),
+        vec![
+            Arc::new(Int64Array::from(ids)),
+            Arc::new(StringArray::from(texts)),
+        ],
+    )
+    .unwrap()
+}
+
+/// The type the text of `batch`'s column `n` names.
+fn named(batch: &arrow_array::RecordBatch) -> Option<LogicalType> {
+    let field = batch.schema_ref().field_with_name("n").unwrap().clone();
+    Field::lowered_from(&field)
+}
+
 #[test]
 fn a_fold_joins_rows_naming_one_type_and_keeps_those_naming_others_apart() {
     use super::super::folded;
-    let schema = Arc::new(arrow_schema::Schema::new(vec![
-        ArrowField::new("id", DataType::Int64, false),
-        ArrowField::new("n", DataType::Utf8, true),
-    ]));
-    let rows = |ids: Vec<i64>, logical: &LogicalType| {
-        let texts: Vec<String> = ids.iter().map(ToString::to_string).collect();
-        arrow_array::RecordBatch::try_new(
-            Arc::new(arrow_schema::Schema::new(vec![
-                ArrowField::new("id", DataType::Int64, false),
-                lowered(logical).with_name("n"),
-            ])),
-            vec![
-                Arc::new(Int64Array::from(ids)),
-                Arc::new(StringArray::from(texts)),
-            ],
-        )
-        .unwrap()
-    };
-    let named = |batch: &arrow_array::RecordBatch| {
-        let field = batch.schema_ref().field_with_name("n").unwrap().clone();
-        Field::lowered_from(&field)
-    };
+    let schema = folding();
     let (int, bool) = (LogicalType::Int16, LogicalType::Bool);
     let alike = vec![
         rows(vec![1, 2], &int),
@@ -314,9 +323,12 @@ fn a_fold_joins_rows_naming_one_type_and_keeps_those_naming_others_apart() {
         rows(vec![4], &bool),
     ];
     let kept = folded(&schema, apart, bound(2), 1 << 20).unwrap();
-    assert_eq!(kept.len(), 3);
-    let kinds: Vec<_> = kept.iter().map(named).collect();
-    assert_eq!(kinds, [Some(int.clone()), Some(bool), Some(int)]);
+    let mut kinds: Vec<_> = kept
+        .iter()
+        .map(|batch| (named(batch), batch.num_rows()))
+        .collect();
+    kinds.sort_by_key(|(_, rows)| *rows);
+    assert_eq!(kinds, [(Some(bool.clone()), 1), (Some(int.clone()), 3)]);
 }
 
 #[test]
@@ -343,7 +355,7 @@ fn encoded_text_and_lists_become_the_json_of_their_values() {
 }
 
 #[test]
-fn a_value_that_became_json_names_no_type_and_one_already_json_keeps_its_name() {
+fn a_value_that_became_json_names_no_type_nor_does_one_already_json() {
     use super::super::merge_sparse;
     let key = crate::MergeKey {
         columns: vec!["id".into()],
@@ -390,5 +402,60 @@ fn a_value_that_became_json_names_no_type_and_one_already_json_keeps_its_name() 
         crate::LOGICAL_TYPE_KEY.to_owned(),
         serde_json::to_string(&nested).unwrap(),
     );
-    assert_eq!(named(json.with_metadata(metadata)), Some(nested));
+    assert_eq!(named(json.with_metadata(metadata)), None);
+}
+
+#[test]
+fn batches_alternating_between_two_names_fold_into_a_group_a_name_within_the_bound() {
+    use super::super::folded;
+    let (int, bool) = (LogicalType::Int16, LogicalType::Bool);
+    let alternating: Vec<_> = (0..40)
+        .map(|id| rows(vec![id], if id % 2 == 0 { &int } else { &bool }))
+        .collect();
+    let bounded = folded(&folding(), alternating, bound(4), 1 << 20).unwrap();
+    // Two of the largest stay whole, and a group a name holds the others: the bound exactly.
+    assert_eq!(bounded.len(), 4);
+    let held: usize = bounded.iter().map(arrow_array::RecordBatch::num_rows).sum();
+    assert_eq!(held, 40);
+    for batch in &bounded {
+        let ids = batch
+            .column(0)
+            .as_primitive::<arrow_array::types::Int64Type>();
+        let even = ids.value(0) % 2 == 0;
+        assert!(ids.iter().all(|id| (id.unwrap() % 2 == 0) == even));
+        assert_eq!(
+            named(batch),
+            Some(if even { int.clone() } else { bool.clone() })
+        );
+    }
+}
+
+#[test]
+fn a_fold_keeps_whole_as_many_of_the_largest_batches_as_leave_a_group_a_name() {
+    use super::super::folded;
+    let kinds = [LogicalType::Int16, LogicalType::Bool, LogicalType::Float64];
+    let batches: Vec<_> = (0..60)
+        .map(|id| rows(vec![id], &kinds[usize::try_from(id % 3).unwrap()]))
+        .collect();
+    let folded = folded(&folding(), batches, bound(6), 1 << 20).unwrap();
+    // Three stay whole and three groups, one a name, hold the other fifty-seven rows.
+    assert_eq!(folded.len(), 6);
+    let mut sizes: Vec<usize> = folded
+        .iter()
+        .map(arrow_array::RecordBatch::num_rows)
+        .collect();
+    sizes.sort_unstable();
+    assert_eq!(sizes, [1, 1, 1, 19, 19, 19]);
+}
+
+#[test]
+fn a_fold_of_more_names_than_its_bound_gives_back_a_group_a_name() {
+    use super::super::folded;
+    let kinds = [LogicalType::Int16, LogicalType::Bool, LogicalType::Float64];
+    let batches: Vec<_> = (0..9)
+        .map(|id| rows(vec![id], &kinds[usize::try_from(id % 3).unwrap()]))
+        .collect();
+    let folded = folded(&folding(), batches, bound(2), 1 << 20).unwrap();
+    assert_eq!(folded.len(), 3);
+    assert!(folded.iter().all(|batch| batch.num_rows() == 3));
 }

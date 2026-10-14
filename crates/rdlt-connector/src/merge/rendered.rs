@@ -32,6 +32,22 @@ pub(super) fn is_json(field: &ArrowField) -> bool {
     Field::extension_type(field) == Some(LogicalType::Json)
 }
 
+/// Whether `field` holds text, not JSON.
+pub(super) fn holds_text(field: &ArrowField) -> bool {
+    let text = matches!(
+        field.data_type(),
+        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View
+    );
+    text && !is_json(field)
+}
+
+/// The type `field`'s text was rendered from, which the merge reads where its column widens to
+/// `Json`: where it holds text and names a type.
+pub(super) fn rendered_from(field: &ArrowField) -> Option<&String> {
+    let named = field.metadata().get(crate::LOGICAL_TYPE_KEY);
+    named.filter(|_| holds_text(field))
+}
+
 /// Each value of `array`, whose field is `field`, as its JSON text; nulls stay null.
 pub(super) fn rendered(array: &ArrayRef, field: &ArrowField) -> Result<ArrayRef, ArrowError> {
     Ok(Arc::new(StringArray::from(texts(array, field)?)))
