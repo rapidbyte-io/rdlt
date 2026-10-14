@@ -354,6 +354,68 @@ rows a second: four cores 1.06 and 1.15 times as fast as one, round against roun
 on four cores the two compute threads hold 57.0 % and 41.4 % of the samples, the first's
 shredding and normalizing 54.5 % of them all, and the runtime's workers 1.3 %.
 
+## A pipeline of both stream kinds, logged
+
+A load keeps a write-ahead log where a selected stream's source cannot read again what it
+acknowledged, and then logs every stream's batches, those of streams that can read again
+included (ADR 0029). p4-log-nonreplayable would log only the streams that cannot read again; the
+owner decides it on the share of logged bytes the others take. These cells measure that share
+and what the log costs on one pipeline that mixes the kinds. Bench code only: nothing here changed
+the engine.
+
+### Method
+
+- **Cells.** `passthrough/logged/<root>/8000x640/1p/2s/16th`: the matrix's 640 batches of 8 000
+  rows from one partition of each of two streams, 320 each, committed every sixteenth of the
+  rows, into the IPC sink, within the engine's default budget. The replay source reads the first
+  stream in full and can read it again; it declares the second one it cannot read again
+  (`replayable: false`), read incrementally, so every load logs ahead, under `tmpfs`
+  (`/dev/shm`) or `disk` (the build's target directory), with the default log bound. Beside them,
+  `passthrough/logged/unlogged/...` moves the same pipeline with both streams readable again,
+  which logs nothing. No `PipelinePlan::with_wal` is set: the stream that cannot read again turns
+  the log on.
+- **Readings.** After each cell, from its last run's report: commits, the bytes the log appended a
+  commit, those bytes over the batch frames' bytes, the replayable share (the batch frames of the
+  stream that can read again over the bytes the log appended), and the log phase a commit. A
+  batch frame's bytes are its encoding as a load logs it (`bench::batch_frame`).
+- **Running it.** `just bench passthrough 0-3 logged` runs these cells alone.
+
+### Results
+
+This change on `main` at `223b7f6a`, 2026-10-15, the machine above, CPUs 0–3. Three rounds,
+each under the timed lock, at one-minute load averages of 0.9 to 4.5. Each figure is the median
+of the three rounds' point estimates, their range in brackets; the counts were the same in every
+round.
+
+| Cell | Time a run | Log phase a commit |
+|---|---|---|
+| `logged/tmpfs` | 183.8 ms [183.3–189.2] | 4.01 ms [3.68–4.09] |
+| `logged/disk` | 360.9 ms [350.2–362.9] | 15.13 ms [13.98–15.13] |
+| `logged/unlogged` | 33.1 ms [32.5–33.4] | 0.01 ms |
+
+| Reading, both logged cells | Value |
+|---|---|
+| Commits a run | 17 |
+| Logged a commit | 25.85 MiB |
+| Appended over the batch frames | 1.028 |
+| Replayable share of the logged bytes | 0.487 |
+
+### What it means for p4-log-nonreplayable
+
+- **The share.** With one stream of each kind moving equal batches, the stream that can read
+  again takes 0.487 of the bytes the log appends; the rest is the other stream's frames and the
+  log's own headers, seals, commits and ends. In a production pipeline the share is the bytes of
+  its replayable streams over all its bytes, so it is 0 where every stream is a queue or CDC,
+  which this cell cannot tell.
+- **The cost.** Logging takes the run from 33 ms to 184 ms on tmpfs and to 361 ms on disk: on
+  this cell the log, not the destination, bounds the run, at 151 ms and 328 ms a run.
+- **The gain, *derived*.** Logging only the stream that cannot read again would take its
+  per-byte part, the encode, checksum, write and the budget its frames hold, down by the share.
+  If all of the logging cost were per byte, that is at most 0.487 × 151 ≈ 73 ms a run on tmpfs,
+  40 % of the logged run, and 0.487 × 328 ≈ 160 ms on disk, 44 %. The fsyncs a commit stay, so
+  on disk the gain is less. It is an upper bound until a prototype measures it, and it applies
+  only to pipelines that mix the kinds, in proportion to their replayable share.
+
 ## Where the overhead goes
 
 The question was where the engine's time beyond the bare loop's goes on the performance cores,
