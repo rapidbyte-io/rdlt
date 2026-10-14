@@ -181,11 +181,11 @@ measurement lock. Nothing here changed the engine.
 | Change | Verdict |
 |---|---|
 | Send the budget's pressure only when it changes | Built: the cost fell by a third |
-| Route a partition to a lane by its index | The cost is there: worth a prototype |
+| Route a partition to a lane by its index | Built: below its 5 %, no cell slower |
 | Hash ids in row chunks across the pool | The cost is there: worth building |
 | Shrink a normalized piece's hold after its split | The cost is there: worth building |
 | Keep two flushes in flight a partition | The cost is there: worth a prototype |
-| Release held lane writes at a watermark | The cost is there: worth building |
+| Release held lane writes at a watermark | Prototyped: the waits stay, not built |
 | Count each batch's progress instead of sending it | Built: the cost fell by a quarter |
 | Cut a unit's pieces in one job | The cost is there: worth building |
 | Walk the log's base outside its lock | Not built: the measurement shows no cost |
@@ -202,7 +202,14 @@ leaves out:
 - **Route a partition to a lane by its index.** Rule: on a fast sink, fewer lanes written than
   partitions, 16 partitions on 16 lanes or 4 on 16; then a prototype at least 5 % faster.
   Matrix: 14 lanes written of 16, and 4 of 4. Not read from the production slice, whose sink
-  declares one writer. The prototype is kept only at 5 % faster.
+  declares one writer. The prototype, against `main` at `b0f322dd` on CPUs 0–3, routes to lane
+  `(place + table) mod lanes` and writes through 16 lanes of 16 and 4 of 4, but is not 5 %
+  faster. The driver, sixteen partitions on sixteen lanes, five rounds of ten runs: the rounds'
+  medians 33.8–49.0 ms, their median 42.8, against 33.6–45.6 and 36.5 on `main`, a spread wider
+  than the difference. On the default four lanes, medians of three rounds:
+  `80000x64/16p/1s/end` 26.25 ms against 26.62, `8000x640/16p/1s/end` 30.28 against 30.28,
+  `1000x5120/16p/1s/end` 94.73 against 94.04, each within noise. It is kept because it deletes
+  the hash and is no slower on the default lanes.
 - **Hash ids in row chunks across the pool.** Rule: at 4 cores, one compute thread above 40 % of
   the samples of `normalized/keyless/50000`, whose flushes are cut in 9 units, and normalizing
   less than 2 times faster on 4 cores than on 1. Matrix: one thread 57.0 %, the other 41.4 %;
@@ -220,7 +227,14 @@ leaves out:
   room above 1 % of the run in any cell within 256 MiB. Matrix: 25 of the 38 cells, among them
   every cell of 80 000 rows; the pushes of `80000x64/1p/1s/end`, one task, 66.5 %; requests for
   lowering 11.0 % at `80000x64/16p/4s/end` and 3.9 % committed every sixteenth. Not read from
-  the production slice, through its one lane.
+  the production slice, through its one lane. A prototype flushing a lane once its held writes
+  take `data / (2 × lanes)` of the budget does not halve them, medians of three rounds against
+  the routing above on `b0f322dd`: the pushes of `80000x64/1p/1s/end` wait 62.3 % against
+  65.8 %, though the run is 6.6 % faster (29.11 ms against 31.16); lowering waits 4.2 % against
+  6.3 % at `16p/4s/end` and 5.5 % against 3.9 % every sixteenth, both runs 2 to 4 % slower. The
+  lanes flushed 23 to 64 times a run where the commits flush once, 25 times at
+  `1000x5120/16p/1s/end`. In the production slice the pushes of `64x80000/16-partitions` wait
+  69–901 % of the run against 91–815 %, its time unchanged. Not built.
 - **Count each batch's progress instead of sending it.** Rule: the coordinator at least 2 % of
   the CPU at 1 000 rows from 16 partitions. Matrix: 3.42 % (2.86 %) committed at the end, 3.58 %
   (3.07 %) every sixteenth. Production slice, frames of 1 000 rows from 16 partitions: 2.05 %, or
