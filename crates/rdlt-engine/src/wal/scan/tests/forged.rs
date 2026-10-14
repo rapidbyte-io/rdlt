@@ -1,19 +1,17 @@
 //! Logs no load writes, as damage or a hand that can write the log's directory makes them: each
 //! refused, never replayed in part.
 
-use std::io;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 
-use bytes::Bytes;
 use rdlt_connector::{
-    BoxFuture, DroppedTable, Epoch, LoadId, PartitionId, PartitionState, PipelineId, SchemaVersion,
-    SegmentId, StreamName, TablePath, TableRef, TableSchema,
+    DroppedTable, Epoch, LoadId, PartitionId, PartitionState, SchemaVersion, SegmentId, StreamName,
+    TablePath, TableRef, TableSchema,
 };
 
-use super::{FRAME_BYTES, load, meta, pipeline, published, scan, seq};
+use super::{FRAME_BYTES, Measured, load, meta, pipeline, published, scan, seq};
 use crate::wal::frame::{self, Batch, Committing, End, Fence, Frame, Header, Seal, Table};
 use crate::wal::memory::MemoryWal;
-use crate::wal::store::{Chunk, StagedChunk, WalStore};
+use crate::wal::store::Chunk;
 
 fn header(number: u64, epoch: u64) -> Frame {
     Frame::Header(Header {
@@ -318,85 +316,6 @@ async fn what_a_received_commit_lacks_is_no_matter() {
             .expect("it reads"),
         1
     );
-}
-
-/// A store over a [`MemoryWal`] that notes the most it was asked to read at once.
-#[derive(Debug, Default)]
-struct Measured {
-    inner: MemoryWal,
-    largest: AtomicU64,
-}
-
-impl WalStore for Measured {
-    fn identity(&self, proposed: LoadId) -> BoxFuture<'_, io::Result<LoadId>> {
-        self.inner.identity(proposed)
-    }
-    fn open_log<'a>(
-        &'a self,
-        pipeline: &'a PipelineId,
-        load: LoadId,
-    ) -> BoxFuture<'a, io::Result<()>> {
-        self.inner.open_log(pipeline, load)
-    }
-
-    fn stage<'a>(
-        &'a self,
-        pipeline: &'a PipelineId,
-        chunk: Chunk,
-    ) -> BoxFuture<'a, io::Result<Box<dyn StagedChunk>>> {
-        self.inner.stage(pipeline, chunk)
-    }
-
-    fn loads<'a>(&'a self, pipeline: &'a PipelineId) -> BoxFuture<'a, io::Result<Vec<LoadId>>> {
-        self.inner.loads(pipeline)
-    }
-
-    fn leftovers<'a>(&'a self, pipeline: &'a PipelineId) -> BoxFuture<'a, io::Result<Vec<LoadId>>> {
-        self.inner.leftovers(pipeline)
-    }
-
-    fn chunks<'a>(
-        &'a self,
-        pipeline: &'a PipelineId,
-        load: LoadId,
-    ) -> BoxFuture<'a, io::Result<Vec<(u64, u64)>>> {
-        self.inner.chunks(pipeline, load)
-    }
-
-    fn read<'a>(
-        &'a self,
-        pipeline: &'a PipelineId,
-        chunk: Chunk,
-        offset: u64,
-        len: u64,
-    ) -> BoxFuture<'a, io::Result<Bytes>> {
-        self.largest.fetch_max(len, Ordering::Relaxed);
-        self.inner.read(pipeline, chunk, offset, len)
-    }
-
-    fn remove_staged<'a>(
-        &'a self,
-        pipeline: &'a PipelineId,
-        load: LoadId,
-    ) -> BoxFuture<'a, io::Result<()>> {
-        self.inner.remove_staged(pipeline, load)
-    }
-
-    fn remove<'a>(
-        &'a self,
-        pipeline: &'a PipelineId,
-        chunk: Chunk,
-    ) -> BoxFuture<'a, io::Result<()>> {
-        self.inner.remove(pipeline, chunk)
-    }
-
-    fn remove_log<'a>(
-        &'a self,
-        pipeline: &'a PipelineId,
-        load: LoadId,
-    ) -> BoxFuture<'a, io::Result<()>> {
-        self.inner.remove_log(pipeline, load)
-    }
 }
 
 #[tokio::test]

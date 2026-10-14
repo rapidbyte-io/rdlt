@@ -215,7 +215,7 @@ impl Engine {
         };
         let frame_bytes = crate::wal::frame::limits(self.config.memory().get()).frame_bytes;
         for load in store.loads(pipeline).await.map_err(Error::from_wal)? {
-            match taken::take(store.as_ref(), pipeline, load, frame_bytes).await? {
+            let last = match taken::take(store.as_ref(), pipeline, load, frame_bytes).await? {
                 Taken::Finished => {
                     store
                         .remove_log(pipeline, load)
@@ -223,13 +223,13 @@ impl Engine {
                         .map_err(Error::from_wal)?;
                     continue;
                 }
-                Taken::Fenced { .. } => {}
+                Taken::Fenced { last, .. } => *last,
                 Taken::Running => return Err(Error::wal_running(load)),
                 // Another replay removed the log since it was listed, having replayed it.
                 Taken::Gone => continue,
-            }
+            };
             let scanned =
-                crate::wal::scan::scan(store.as_ref(), pipeline, load, frame_bytes).await?;
+                crate::wal::scan::fenced(store.as_ref(), pipeline, load, frame_bytes, last).await?;
             let unlanded = scanned
                 .pending()
                 .flat_map(|logged| &logged.seals)

@@ -1,13 +1,17 @@
 mod forged;
 
+use std::collections::BTreeMap;
+use std::io;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::UNIX_EPOCH;
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use bytes::Bytes;
+use parking_lot::Mutex;
 use rdlt_connector::{
-    CommitMeta, CommitSeq, Epoch, LoadId, PartitionId, PartitionState, PipelineId, Receipt,
-    SegmentId, StateChange, StateEntry, StreamName,
+    BoxFuture, CommitMeta, CommitSeq, Epoch, LoadId, PartitionId, PartitionState, PipelineId,
+    Receipt, SegmentId, StateChange, StateEntry, StreamName,
 };
 
 use rdlt_connector::cost::Allocations;
@@ -21,7 +25,8 @@ use crate::table::testing::view;
 use crate::wal::frame::{self, BegunPhase};
 use crate::wal::load::{LoadLog, Owner, Sealed};
 use crate::wal::memory::MemoryWal;
-use crate::wal::store::{Chunk, WalStore};
+use crate::wal::store::{Chunk, StagedChunk, WalStore};
+use crate::wal::taken::{self, Taken};
 
 fn pipeline() -> PipelineId {
     PipelineId::parse("orders").expect("a valid pipeline")
@@ -187,6 +192,139 @@ async fn published(store: &MemoryWal, pipeline: &PipelineId, chunk: Chunk, bytes
     let mut staged = store.stage(pipeline, chunk).await.expect("stages");
     staged.append(Bytes::from(bytes)).await.expect("appends");
     staged.publish().await.expect("publishes");
+}
+
+/// A store over a [`MemoryWal`] that notes the most it was asked to read at once, and the bytes
+/// read of each chunk.
+#[derive(Debug, Default)]
+struct Measured {
+    inner: MemoryWal,
+    largest: AtomicU64,
+    read: Mutex<BTreeMap<u64, u64>>,
+}
+
+impl WalStore for Measured {
+    fn identity(&self, proposed: LoadId) -> BoxFuture<'_, io::Result<LoadId>> {
+        self.inner.identity(proposed)
+    }
+    fn open_log<'a>(
+        &'a self,
+        pipeline: &'a PipelineId,
+        load: LoadId,
+    ) -> BoxFuture<'a, io::Result<()>> {
+        self.inner.open_log(pipeline, load)
+    }
+
+    fn stage<'a>(
+        &'a self,
+        pipeline: &'a PipelineId,
+        chunk: Chunk,
+    ) -> BoxFuture<'a, io::Result<Box<dyn StagedChunk>>> {
+        self.inner.stage(pipeline, chunk)
+    }
+
+    fn loads<'a>(&'a self, pipeline: &'a PipelineId) -> BoxFuture<'a, io::Result<Vec<LoadId>>> {
+        self.inner.loads(pipeline)
+    }
+
+    fn leftovers<'a>(&'a self, pipeline: &'a PipelineId) -> BoxFuture<'a, io::Result<Vec<LoadId>>> {
+        self.inner.leftovers(pipeline)
+    }
+
+    fn chunks<'a>(
+        &'a self,
+        pipeline: &'a PipelineId,
+        load: LoadId,
+    ) -> BoxFuture<'a, io::Result<Vec<(u64, u64)>>> {
+        self.inner.chunks(pipeline, load)
+    }
+
+    fn read<'a>(
+        &'a self,
+        pipeline: &'a PipelineId,
+        chunk: Chunk,
+        offset: u64,
+        len: u64,
+    ) -> BoxFuture<'a, io::Result<Bytes>> {
+        self.largest.fetch_max(len, Ordering::Relaxed);
+        *self.read.lock().entry(chunk.number).or_default() += len;
+        self.inner.read(pipeline, chunk, offset, len)
+    }
+
+    fn remove_staged<'a>(
+        &'a self,
+        pipeline: &'a PipelineId,
+        load: LoadId,
+    ) -> BoxFuture<'a, io::Result<()>> {
+        self.inner.remove_staged(pipeline, load)
+    }
+
+    fn remove<'a>(
+        &'a self,
+        pipeline: &'a PipelineId,
+        chunk: Chunk,
+    ) -> BoxFuture<'a, io::Result<()>> {
+        self.inner.remove(pipeline, chunk)
+    }
+
+    fn remove_log<'a>(
+        &'a self,
+        pipeline: &'a PipelineId,
+        load: LoadId,
+    ) -> BoxFuture<'a, io::Result<()>> {
+        self.inner.remove_log(pipeline, load)
+    }
+}
+
+#[tokio::test]
+async fn a_replay_reads_each_chunk_once_and_its_batch_frames_once_more() {
+    let log = logged(false).await;
+    let measured = async || Measured {
+        inner: copied(log.as_ref(), |_, _| {}).await,
+        ..Measured::default()
+    };
+    // What reading each chunk once takes: a scan of a log no fence took reads each once.
+    let once = measured().await;
+    scan(&once, &pipeline(), load(), FRAME_BYTES)
+        .await
+        .expect("the log reads");
+    let once = once.read.lock().clone();
+    let store = measured().await;
+    let written = store.chunks(&pipeline(), load()).await.expect("lists");
+    assert_eq!(written.len(), 2, "a chunk a commit");
+    let Taken::Fenced { last, .. } = taken::take(&store, &pipeline(), load(), FRAME_BYTES)
+        .await
+        .expect("takes")
+    else {
+        panic!("the log holds commits to replay");
+    };
+    let scanned = taken::scanned(&store, &pipeline(), load(), FRAME_BYTES, *last)
+        .await
+        .expect("the log reads")
+        .expect("the log is open");
+    assert_eq!(scanned.pending().count(), 2);
+    let located: Vec<_> = scanned.batches.values().flatten().copied().collect();
+    for located in &located {
+        batch(&store, &pipeline(), *located, limits())
+            .await
+            .expect("the batch reads");
+    }
+    let read = store.read.lock().clone();
+    for (number, _) in written {
+        let batches: u64 = located
+            .iter()
+            .filter(|located| located.chunk.number == number)
+            .map(|located| located.len)
+            .sum();
+        assert!(batches > 0, "chunk {number} holds batches");
+        // The fence's reading of the highest chunk is the scan's: each chunk is read once, then
+        // each of its batch frames again as it is replayed.
+        assert_eq!(
+            read.get(&number),
+            Some(&(once[&number] + batches)),
+            "chunk {number}"
+        );
+    }
 }
 
 #[tokio::test]

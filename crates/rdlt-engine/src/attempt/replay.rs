@@ -97,18 +97,18 @@ async fn replay_into(
     }
     let loads = store.loads(pipeline).await.map_err(Error::from_wal)?;
     for load in loads.into_iter().filter(|load| *load != load_id) {
-        let number = match taken::take(store, pipeline, load, limits.frame_bytes).await? {
+        let fenced = match taken::take(store, pipeline, load, limits.frame_bytes).await? {
             Taken::Finished => None,
-            Taken::Fenced { number } => Some(number),
+            Taken::Fenced { number, last } => Some((number, *last)),
             // A load still running holds the pipeline: the attempt waits for it to end, as its
             // session would fence the load at the destination while its log takes rows on.
             Taken::Running => return Err(Error::wal_running(load)),
             // Another replay removed the log since it was listed, having replayed it.
             Taken::Gone => continue,
         };
-        if let Some(number) = number {
-            let Some(scanned) = taken::scanned(store, pipeline, load, limits.frame_bytes).await?
-            else {
+        if let Some((number, last)) = fenced {
+            let scanned = taken::scanned(store, pipeline, load, limits.frame_bytes, last).await?;
+            let Some(scanned) = scanned else {
                 continue;
             };
             for logged in scanned.pending() {

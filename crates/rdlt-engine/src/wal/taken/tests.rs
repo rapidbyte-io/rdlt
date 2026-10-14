@@ -8,6 +8,7 @@ use rdlt_connector::{BoxFuture, Epoch, LoadId, PipelineId};
 
 use super::super::frame::{self, End, Frame, Header};
 use super::super::memory::MemoryWal;
+use super::super::scan;
 use super::super::store::{Chunk, StagedChunk, WalStore};
 use super::{Taken, take};
 
@@ -128,7 +129,7 @@ async fn a_log_whose_load_keeps_publishing_is_never_taken_as_fenced() {
     let taken = take(&store, &pipeline(), load(), 1 << 20)
         .await
         .expect("reads");
-    assert_eq!(taken, Taken::Running);
+    assert!(matches!(taken, Taken::Running), "{taken:?}");
 }
 
 #[tokio::test]
@@ -141,7 +142,7 @@ async fn a_log_that_needs_nothing_is_fenced_before_it_is_called_finished() {
     let taken = take(&store, &pipeline(), load(), 1 << 20)
         .await
         .expect("reads");
-    assert_eq!(taken, Taken::Finished);
+    assert!(matches!(taken, Taken::Finished), "{taken:?}");
     // The load's next chunk is taken: had the load committed after its close, it finds it so.
     let chunks: Vec<u64> = store
         .chunks(&pipeline(), load())
@@ -170,7 +171,7 @@ async fn a_disk_a_crashed_load_filled_is_freed_before_its_log_is_fenced() {
     let taken = take(&store, &pipeline(), load(), 1 << 20)
         .await
         .expect("the fence finds room");
-    assert_eq!(taken, Taken::Finished);
+    assert!(matches!(taken, Taken::Finished), "{taken:?}");
     assert_eq!(store.disk.staged(), 0);
 }
 
@@ -181,13 +182,20 @@ async fn a_log_removed_as_it_is_read_is_gone_and_one_damaged_is_refused() {
     let mut written = store.stage(&pipeline(), chunk(0)).await.expect("stages");
     written.append(Busy::written(0)).await.expect("appends");
     written.publish().await.expect("publishes");
+    let last = || async {
+        scan::tail(&store, &pipeline(), load(), 1 << 20)
+            .await
+            .expect("reads")
+            .expect("a chunk")
+    };
+    let (first, second) = (last().await, last().await);
     let mut damaged = store.stage(&pipeline(), chunk(1)).await.expect("stages");
     damaged
         .append(Bytes::from_static(b"no chunk"))
         .await
         .expect("appends");
     damaged.publish().await.expect("publishes");
-    let Err(refused) = super::scanned(&store, &pipeline(), load(), 1 << 20).await else {
+    let Err(refused) = super::scanned(&store, &pipeline(), load(), 1 << 20, first).await else {
         panic!("an open log that does not read");
     };
     assert_eq!(refused.code(), Some("wal_unreadable"));
@@ -195,7 +203,7 @@ async fn a_log_removed_as_it_is_read_is_gone_and_one_damaged_is_refused() {
         .remove_log(&pipeline(), load())
         .await
         .expect("removes");
-    let gone = super::scanned(&store, &pipeline(), load(), 1 << 20)
+    let gone = super::scanned(&store, &pipeline(), load(), 1 << 20, second)
         .await
         .expect("a log another replay removed");
     assert!(gone.is_none());
@@ -234,7 +242,7 @@ async fn a_log_another_replay_removed_since_it_was_listed_is_gone_not_a_failure(
     let first = take(&store, &pipeline(), load(), 1 << 20)
         .await
         .expect("takes");
-    assert_eq!(first, Taken::Finished);
+    assert!(matches!(first, Taken::Finished), "{first:?}");
     store
         .remove_log(&pipeline(), load())
         .await
@@ -242,7 +250,7 @@ async fn a_log_another_replay_removed_since_it_was_listed_is_gone_not_a_failure(
     let second = take(&store, &pipeline(), load(), 1 << 20)
         .await
         .expect("no failure");
-    assert_eq!(second, Taken::Gone);
+    assert!(matches!(second, Taken::Gone), "{second:?}");
 }
 
 /// A store in which a rival replay deletes every staging of the log just after it is begun, and
@@ -345,10 +353,9 @@ async fn a_fence_whose_staging_a_rival_deletes_is_tried_again_and_never_fails_un
     let taken = take(&store, &pipeline(), load(), 1 << 20)
         .await
         .expect("no failure");
-    assert_eq!(
-        taken,
-        Taken::Running,
-        "a rival that never stops holds the log"
+    assert!(
+        matches!(taken, Taken::Running),
+        "a rival that never stops holds the log: {taken:?}"
     );
     // A release whose staging a rival deletes leaves the log to the rival.
     let released = super::release(&store, &pipeline(), load(), 3)

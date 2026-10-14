@@ -12,6 +12,7 @@ use crate::wal::store::{Chunk, WalStore};
 const PIECE: u64 = 1 << 16;
 
 /// A frame of a chunk, where it lies and what it holds, a batch's data left unread.
+#[derive(Debug)]
 pub(super) struct Read {
     pub(super) offset: u64,
     pub(super) len: u64,
@@ -19,6 +20,7 @@ pub(super) struct Read {
 }
 
 /// What a chunk is: its first frame and its last, and the frames between.
+#[derive(Debug)]
 pub(super) struct Opened {
     pub(super) first: First,
     /// The frames between its first and its end.
@@ -27,6 +29,7 @@ pub(super) struct Opened {
 }
 
 /// The first frame of a chunk.
+#[derive(Debug)]
 pub(super) enum First {
     /// A chunk its load wrote.
     Header(Header),

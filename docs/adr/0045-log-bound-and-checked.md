@@ -138,6 +138,11 @@ a local directory, and `ObjectStoreWal` in S3 and in stores that answer as S3 do
 - A chunk is published whole, so no visible chunk is ever torn and any damage is refused as
   `wal_unreadable`. A scan reads the highest chunk, then exactly the chunks its `End` names, any
   of them missing refused; chunks a crash left between a publish and its deletions are not read.
+  A replay reads the log's highest chunk once, as it fences the log, and its scan takes that
+  reading rather than reading the chunk again: a published chunk never changes, and a fence
+  published with no chunk above it leaves that chunk the load's last, which the load never
+  deletes. Each other chunk the `End` names is read once, and each batch frame once more as it
+  is replayed, so a replay reads its log twice.
   A header naming another pipeline or load is refused as `wal_foreign`; a chunk number, epoch,
   opened commit or destination that disagrees, a chunk not ending in one `End` after its commit
   or close, and a frame announcing more than a frame may hold, before it is read, as

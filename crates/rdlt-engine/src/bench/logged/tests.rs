@@ -53,32 +53,29 @@ fn a_refused_commit_leaves_a_log_whose_scan_reads_every_batch() {
     assert_eq!(report.commits, 0);
     let read = crate::bench::replay_scan(dir.path(), "logged").unwrap();
     assert_eq!(read.batches, 8);
+    assert_eq!(read.chunks, 1);
     assert!(read.logged >= logged.frame_bytes(), "{read:?}");
-    assert!(read.read >= read.logged, "{read:?}");
+    // The chunk is read whole once, as the fence takes the log, and its batch frames once more.
+    assert!(
+        read.read > read.logged && read.read < 2 * read.logged,
+        "{read:?}"
+    );
+    // The replay deletes its fence, so the log reads the same again.
+    assert_eq!(
+        crate::bench::replay_scan(dir.path(), "logged").unwrap(),
+        read
+    );
 }
 
 #[test]
-#[expect(clippy::cast_precision_loss, reason = "a ratio of two byte counts")]
-fn a_load_committing_each_batch_writes_each_frame_once_and_publishes_once_more_than_it_commits() {
-    let every = NonZeroU64::new(1).unwrap();
-    let logged = Logged::try_new(cores(), memory_wal(), 8, 8_192, Some(every)).unwrap();
-    let report = logged.run();
-    assert_eq!(report.counters.commits.size, 8);
-    assert_eq!(report.counters.commits.end, 1);
-    assert_eq!(report.commits, 9);
-    let log = report.counters.log;
-    // The log's first chunk, then a chunk for each commit.
-    assert_eq!(log.requests.publish, 10);
-    assert_eq!(log.carried, 0);
-    assert_eq!(log.reliefs, 0);
-    // Beside the batches, the writer adds headers, seals, commits and ends.
-    let ratio = log.appended as f64 / logged.frame_bytes() as f64;
-    assert!((1.0..1.04).contains(&ratio), "{ratio}");
-}
-
-#[test]
-fn every_batch_of_a_run_logs_a_frame_of_one_size() {
-    let logged = Logged::try_new(cores(), memory_wal(), 3, 1_000, None).unwrap();
-    assert_eq!(logged.frame_bytes(), 3 * Logged::frame_len(1_000));
-    assert!(Logged::frame_len(1_000) < Logged::frame_len(2_000));
+fn a_log_under_a_bound_of_twice_its_frames_spans_chunks_each_read_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(dir.path()));
+    let bound = NonZeroU64::new(Logged::frame_len(1_000) * 16 * 2).unwrap();
+    let logged = Logged::limited(cores(), (store, bound), 16, 1_000, None).unwrap();
+    assert_eq!(logged.leave().commits, 0);
+    let read = crate::bench::replay_scan(dir.path(), "logged").unwrap();
+    assert_eq!(read.batches, 16, "{read:?}");
+    assert!(read.chunks > 4, "{read:?}");
+    assert!(read.read < 2 * read.logged, "{read:?}");
 }

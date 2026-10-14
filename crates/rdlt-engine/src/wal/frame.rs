@@ -449,6 +449,7 @@ pub(crate) fn batch_header_in(start: &[u8]) -> Result<BatchHeader, Error> {
 }
 
 /// A frame as a scan reads it: a batch's header, without its batch, or any other frame whole.
+#[derive(Debug)]
 pub(crate) enum Skimmed {
     Batch(BatchHeader),
     Other(Box<Frame>),

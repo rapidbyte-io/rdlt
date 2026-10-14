@@ -253,12 +253,14 @@ fn refused_wal(error: std::io::Error) -> Refused {
     refused(&crate::error::Error::from_wal(error))
 }
 
-/// What reading a load's log as a replay does took: the batch frames it read, the bytes the log
-/// holds, the bytes read and the reads made.
+/// What reading a load's log as a replay does took: the batch frames it read, the chunks and
+/// bytes the log holds, the bytes read and the reads made.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReplayRead {
     /// Batch frames read and decoded.
     pub batches: usize,
+    /// Chunks the log holds.
+    pub chunks: usize,
     /// Bytes the log's chunks hold.
     pub logged: u64,
     /// Bytes read from the store.
@@ -267,16 +269,17 @@ pub struct ReplayRead {
     pub reads: u64,
 }
 
-/// Reads the log of pipeline `pipeline`'s only load under `base` as replay does: scans it, then
-/// reads and decodes each batch frame it found.
+/// Reads the log of pipeline `pipeline`'s only load under `base` as replay does: fences it,
+/// scans it, then reads and decodes each batch frame it found.
+///
+/// The fence is deleted after, so the log reads the same again.
 ///
 /// # Errors
 ///
 /// Why the log does not read.
 pub fn replay_scan(base: &std::path::Path, pipeline: &str) -> Result<ReplayRead, Refused> {
     use crate::report::Tally;
-    use crate::wal::CountedStore;
-    use crate::wal::{WalStore, frame, scan};
+    use crate::wal::{CountedStore, WalStore};
     let tally = Arc::new(Tally::default());
     let local: Arc<dyn WalStore> = Arc::new(crate::LocalWal::new(base));
     let store = CountedStore::new(local, Arc::clone(&tally));
@@ -295,31 +298,61 @@ pub fn replay_scan(base: &std::path::Path, pipeline: &str) -> Result<ReplayRead,
             message: format!("{} logs where one was expected", loads.len()),
         });
     };
-    let logged = runtime
-        .block_on(store.chunks(&pipeline, *load))
-        .map_err(refused_wal)?
-        .iter()
-        .map(|(_, len)| len)
-        .sum();
-    let limits = frame::limits(crate::config::EngineConfig::default().memory().get());
-    let scanned = runtime
-        .block_on(scan::scan(&store, &pipeline, *load, limits.frame_bytes))
-        .map_err(|error| refused(&error))?;
-    let mut batches = 0;
-    for located in scanned.batches.values().flatten() {
-        runtime
-            .block_on(scan::batch(&store, &pipeline, *located, limits))
-            .and_then(scan::Read::decode)
-            .map_err(|error| refused(&error))?;
-        batches += 1;
-    }
+    let load = *load;
+    let chunks = runtime
+        .block_on(store.chunks(&pipeline, load))
+        .map_err(refused_wal)?;
+    let logged = chunks.iter().map(|(_, len)| len).sum();
+    let batches = runtime.block_on(replayed(&store, &pipeline, load))?;
     let log = tally.counters().log;
     Ok(ReplayRead {
         batches,
+        chunks: chunks.len(),
         logged,
         read: log.read,
         reads: log.requests.read,
     })
+}
+
+/// Fences `load`'s log of `pipeline` in `store`, scans it and reads and decodes each batch frame
+/// it found, as replay does, then deletes the fence; the batch frames read.
+async fn replayed(
+    store: &dyn crate::WalStore,
+    pipeline: &rdlt_connector::PipelineId,
+    load: rdlt_connector::LoadId,
+) -> Result<usize, Refused> {
+    use crate::wal::taken::{self, Taken};
+    use crate::wal::{Chunk, frame, scan};
+    let limits = frame::limits(crate::config::EngineConfig::default().memory().get());
+    let taken = taken::take(store, pipeline, load, limits.frame_bytes)
+        .await
+        .map_err(|error| refused(&error))?;
+    let Taken::Fenced { number, last } = taken else {
+        return Err(Refused {
+            code: "other",
+            message: format!("the log was taken as {taken:?}, where it holds a commit"),
+        });
+    };
+    let scanned = taken::scanned(store, pipeline, load, limits.frame_bytes, *last)
+        .await
+        .map_err(|error| refused(&error))?
+        .ok_or_else(|| Refused {
+            code: "other",
+            message: "the log is gone".into(),
+        })?;
+    let mut batches = 0;
+    for located in scanned.batches.values().flatten() {
+        scan::batch(store, pipeline, *located, limits)
+            .await
+            .and_then(scan::Read::decode)
+            .map_err(|error| refused(&error))?;
+        batches += 1;
+    }
+    store
+        .remove(pipeline, Chunk { load, number })
+        .await
+        .map_err(refused_wal)?;
+    Ok(batches)
 }
 
 /// The write-ahead log frame of `batch`, as a load logs it.

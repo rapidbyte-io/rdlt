@@ -20,13 +20,14 @@ use crate::wal::{Chunk, WalStore};
 const TRIES: usize = 8;
 
 /// What a replay may do with a log, once it is fenced.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) enum Taken {
     /// The log needs nothing: its load closed it, a replay released it, or it holds no chunk;
     /// it is removed.
     Finished,
-    /// The replay fenced the log with chunk `number`, and replays it.
-    Fenced { number: u64 },
+    /// The replay fenced the log with chunk `number`, and replays it; `last` is the chunk below
+    /// the fence as the take read it, which the replay's scan takes rather than reading again.
+    Fenced { number: u64, last: Box<scan::Last> },
     /// Its load kept publishing, or a rival replay kept deleting the fence before it was
     /// published, so the log is not fenced: another attempt holds it.
     Running,
@@ -130,19 +131,21 @@ pub(crate) async fn take(
     taken
 }
 
-/// What `load`'s log of `pipeline` in `store` holds, read as [`scan::scan`] reads it; none where
-/// another replay removed the log as it was read, which leaves it to that replay.
+/// What `load`'s log of `pipeline` in `store` holds, read as [`scan::fenced`] reads it once a take
+/// fenced it, `last` the chunk the take read; none where another replay removed the log as it
+/// was read, which leaves it to that replay.
 ///
 /// # Errors
 ///
-/// As [`scan::scan`], for a log still open.
+/// As [`scan::fenced`], for a log still open.
 pub(crate) async fn scanned(
     store: &dyn WalStore,
     pipeline: &PipelineId,
     load: LoadId,
     frame_bytes: u64,
+    last: scan::Last,
 ) -> Result<Option<scan::Scanned>, Error> {
-    let scanned = scan::scan(store, pipeline, load, frame_bytes).await;
+    let scanned = scan::fenced(store, pipeline, load, frame_bytes, last).await;
     if !open(store, pipeline, load).await? {
         return Ok(None);
     }
@@ -171,16 +174,16 @@ async fn fenced(
         .await
         .map_err(Error::from_wal)?;
     for _ in 0..TRIES {
-        let tail = scan::tail(store, pipeline, load, frame_bytes).await?;
+        let last = scan::tail(store, pipeline, load, frame_bytes).await?;
         // A log that needs nothing is fenced all the same: its load may still publish a commit
         // after its last chunk, which a removal that went first would drop.
-        let (number, end) = match tail {
-            Some(tail) => {
+        let (number, end) = match &last {
+            Some(last) => {
                 let end = End {
-                    live: tail.needed(),
-                    received: tail.end.received.clone(),
+                    live: last.tail.needed(),
+                    received: last.tail.end.received.clone(),
                 };
-                (tail.number + 1, end)
+                (last.tail.number + 1, end)
             }
             None => (0, End::default()),
         };
@@ -188,10 +191,12 @@ async fn fenced(
         match fence(store, pipeline, Chunk { load, number }, end).await? {
             Fenced::Published => {
                 crash_point!("engine.replay.fenced");
-                return Ok(if finished {
-                    Taken::Finished
-                } else {
-                    Taken::Fenced { number }
+                return Ok(match last {
+                    Some(last) if !finished => Taken::Fenced {
+                        number,
+                        last: Box::new(last),
+                    },
+                    _ => Taken::Finished,
                 });
             }
             Fenced::Lost => {}
