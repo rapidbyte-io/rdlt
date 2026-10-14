@@ -19,7 +19,8 @@ pub(crate) enum Progress {
         /// The partition's index in the attempt.
         partition: usize,
     },
-    /// Rows were queued for staging.
+    /// Rows a partition that seals when a barrier asks queued for staging: they count toward a
+    /// commit before they are sealed.
     Written {
         /// The partition's index in the attempt.
         partition: usize,

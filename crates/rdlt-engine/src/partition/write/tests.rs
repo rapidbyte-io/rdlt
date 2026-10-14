@@ -496,3 +496,22 @@ fn flags_as_text(items: usize, shares: crate::budget::Shares) -> super::pieces::
     let mut pieces = super::pieces::Pieces::new(vec![unit], lowered);
     pieces.next().unwrap_err()
 }
+
+#[test]
+fn only_a_partition_that_seals_when_asked_tells_the_rows_it_writes() {
+    let mut asked = job();
+    asked.on_demand = true;
+    assert_eq!(
+        super::queue::written(&asked, 3, 24),
+        Some(crate::partition::Progress::Written {
+            partition: 0,
+            rows: 3,
+            bytes: 24
+        })
+    );
+    assert_eq!(
+        super::queue::written(&job(), 3, 24),
+        None,
+        "its rows count once sealed"
+    );
+}

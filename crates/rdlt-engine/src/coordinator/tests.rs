@@ -538,11 +538,6 @@ async fn sealed_segments_commit_with_their_positions_and_the_source_hears_afterw
     .start()
     .await;
     harness.send(Progress::Started { partition: 0 });
-    harness.send(Progress::Written {
-        partition: 0,
-        rows: 5,
-        bytes: 40,
-    });
     harness.seal(0, 1, 5, PartitionState::Cursor(cursor(5)), None);
     harness.end(0, false);
     ended(task).await.unwrap();
@@ -639,11 +634,6 @@ async fn commits_follow_the_row_threshold_and_count_their_sequence() {
     setup.policy = CommitPolicy::new(None, Some(10), None).unwrap();
     let (task, harness) = setup.start().await;
     for segment in 1..=3 {
-        harness.send(Progress::Written {
-            partition: 0,
-            rows: 10,
-            bytes: 80,
-        });
         harness.seal(
             0,
             segment,
@@ -682,13 +672,8 @@ async fn a_partition_that_seals_on_its_own_commits_once_its_seals_reach_the_thre
     );
     setup.policy = CommitPolicy::new(None, Some(10), None).unwrap();
     let (task, harness) = setup.start().await;
-    // Batches of four, each sealed: 8 sealed rows and 4 written make no commit due.
+    // Batches of four, each sealed: 8 sealed rows make no commit due.
     for segment in 1..=2 {
-        harness.send(Progress::Written {
-            partition: 0,
-            rows: 4,
-            bytes: 32,
-        });
         harness.seal(
             0,
             segment,
@@ -697,11 +682,6 @@ async fn a_partition_that_seals_on_its_own_commits_once_its_seals_reach_the_thre
             None,
         );
     }
-    harness.send(Progress::Written {
-        partition: 0,
-        rows: 4,
-        bytes: 32,
-    });
     tokio::time::sleep(Duration::from_secs(1)).await;
     assert_eq!(harness.commit_count(), 0, "8 sealed rows are not 10");
     harness.seal(0, 3, 4, PartitionState::Cursor(cursor(12)), None);
@@ -790,11 +770,6 @@ async fn rows_of_a_partition_that_seals_on_its_own_make_no_commit_due_until_seal
     let (task, mut harness) = setup.start().await;
     harness.send(Progress::Started { partition: 0 });
     harness.send(Progress::Started { partition: 1 });
-    harness.send(Progress::Written {
-        partition: 0,
-        rows: 10,
-        bytes: 80,
-    });
     tokio::time::sleep(Duration::from_secs(1)).await;
     assert_eq!(
         harness.barrier.borrow_and_update(),
@@ -805,11 +780,6 @@ async fn rows_of_a_partition_that_seals_on_its_own_make_no_commit_due_until_seal
     // commit only once they reach the threshold.
     for segment in 1..=9 {
         tokio::time::sleep(Duration::from_secs(2)).await;
-        harness.send(Progress::Written {
-            partition: 1,
-            rows: 1,
-            bytes: 8,
-        });
         harness.seal(1, segment, 1, PartitionState::Cursor(cursor(segment)), None);
     }
     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -819,11 +789,6 @@ async fn rows_of_a_partition_that_seals_on_its_own_make_no_commit_due_until_seal
         "nine rows a commit can take are not ten"
     );
     assert_eq!(harness.barrier.borrow_and_update(), 0, "no barrier");
-    harness.send(Progress::Written {
-        partition: 1,
-        rows: 1,
-        bytes: 8,
-    });
     harness.seal(1, 10, 1, PartitionState::Cursor(cursor(10)), None);
     until(|| harness.commit_count() == 1).await;
     // p0's rows, once sealed, make the next commit due.
@@ -1116,11 +1081,6 @@ async fn a_new_table_schema_is_recorded_by_the_first_commit_only() {
     setup.schema = Some(schema());
     let (task, harness) = setup.start().await;
     harness.seal(0, 1, 1, PartitionState::Cursor(cursor(1)), None);
-    harness.send(Progress::Written {
-        partition: 0,
-        rows: 1,
-        bytes: 8,
-    });
     until(|| harness.commit_count() == 1).await;
     harness.seal(0, 2, 1, PartitionState::Cursor(cursor(2)), None);
     harness.end(0, false);
@@ -1199,11 +1159,6 @@ async fn a_full_read_is_recorded_when_it_starts_and_completed_when_every_partiti
     // The interval commits what the partition sealed by then, the read's start with it.
     setup.policy = CommitPolicy::new(Some(Duration::from_secs(10)), None, None).unwrap();
     let (task, harness) = setup.start().await;
-    harness.send(Progress::Written {
-        partition: 0,
-        rows: 1,
-        bytes: 8,
-    });
     harness.seal(0, 1, 1, PartitionState::Cursor(cursor(1)), None);
     until(|| harness.commit_count() == 1).await;
     harness.seal(0, 2, 1, PartitionState::Done, None);
@@ -1565,13 +1520,7 @@ async fn each_logged_seal_names_where_its_partition_stood_before_its_commit() {
     setup.wal = Some(Arc::clone(&store));
     setup.policy = CommitPolicy::new(None, Some(1), None).unwrap();
     let (task, harness) = setup.start().await;
-    let written = || {
-        harness.send(Progress::Written {
-            partition: 0,
-            rows: 1,
-            bytes: 8,
-        });
-    };
+    let written = || {};
     written();
     harness.seal(0, 1, 1, PartitionState::Cursor(cursor(1)), None);
     until(|| harness.commit_count() == 1).await;
@@ -1615,11 +1564,6 @@ async fn a_log_that_fails_to_close_after_every_commit_landed_fails_no_attempt() 
     setup.wal = Some(Arc::clone(&store));
     setup.policy = CommitPolicy::new(None, Some(1), None).unwrap();
     let (task, harness) = setup.start().await;
-    harness.send(Progress::Written {
-        partition: 0,
-        rows: 3,
-        bytes: 24,
-    });
     harness.seal(0, 1, 3, PartitionState::Cursor(cursor(3)), None);
     until(|| harness.commit_count() == 1).await;
     // Every commit landed; the disk fails only as the log closes, which a replay finds received.
