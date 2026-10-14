@@ -10,8 +10,8 @@ use std::time::Duration;
 use arrow_array::{Int64Array, RecordBatch};
 use parking_lot::Mutex;
 use rdlt_connector::{
-    BoxFuture, CommitMeta, ConnectorError, DestinationSession, DestinationWriter, PartitionId,
-    Receipt, Result, SchemaVersion, SegmentId, TableChange, TablePath, TableRef, WriteStats,
+    BoxFuture, CommitMeta, ConnectorError, DestinationSession, DestinationWriter, Receipt, Result,
+    SchemaVersion, SegmentId, TableChange, TablePath, TableRef, WriteStats,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -226,28 +226,48 @@ async fn write_at(
 }
 
 #[test]
-fn routing_is_stable_and_spreads_partitions_across_lanes() {
+fn places_up_to_the_lanes_take_a_lane_each_and_more_wrap_evenly() {
     let log = Log::default();
-    let (lanes, _) = lanes(4, 1, &log, [false, false, false], 1);
-    let partition = |id: usize| PartitionId::parse(format!("p{id}")).unwrap();
-    let routes: Vec<usize> = (0..64).map(|id| lanes.route(0, &partition(id))).collect();
+    let (four, _) = lanes(4, 1, &log, [false, false, false], 1);
+    let routes = |lanes: &Lanes, table: usize, places: usize| {
+        (0..places)
+            .map(|place| lanes.route(table, place))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(routes(&four, 0, 4), [0, 1, 2, 3]);
     assert_eq!(
-        routes,
-        (0..64)
-            .map(|id| lanes.route(0, &partition(id)))
-            .collect::<Vec<_>>()
+        routes(&four, 1, 4),
+        [1, 2, 3, 0],
+        "a table starts a lane further on"
     );
-    assert!(routes.iter().all(|lane| *lane < 4));
-    let used: std::collections::BTreeSet<usize> = routes.iter().copied().collect();
-    assert_eq!(used.len(), 4);
-    assert_ne!(
-        (0..8)
-            .map(|id| lanes.route(0, &partition(id)))
-            .collect::<Vec<_>>(),
-        (0..8)
-            .map(|id| lanes.route(1, &partition(id)))
-            .collect::<Vec<_>>()
-    );
+    let mut taken = [0_usize; 4];
+    for lane in routes(&four, 0, 16) {
+        taken[lane] += 1;
+    }
+    assert_eq!(taken, [4; 4], "sixteen places on four lanes take four each");
+    let (sixteen, _) = lanes(16, 1, &log, [false, false, false], 1);
+    let used: std::collections::BTreeSet<usize> = routes(&sixteen, 0, 16).into_iter().collect();
+    assert_eq!(used.len(), 16);
+}
+
+proptest::proptest! {
+    /// Distinct places of one table take distinct lanes while there are lanes for them, and
+    /// every route names a lane.
+    #[test]
+    fn places_of_a_table_take_distinct_lanes_up_to_the_lanes(
+        count in 1_usize..=64,
+        table in 0_usize..8,
+        first in 0_usize..1_000,
+    ) {
+        let log = Log::default();
+        let (lanes, _) = lanes(count, table + 1, &log, [false, false, false], 1);
+        let routed: Vec<usize> = (first..first + count)
+            .map(|place| lanes.route(table, place))
+            .collect();
+        proptest::prop_assert!(routed.iter().all(|lane| *lane < count));
+        let distinct: std::collections::BTreeSet<_> = routed.iter().collect();
+        proptest::prop_assert_eq!(distinct.len(), count);
+    }
 }
 
 #[tokio::test]

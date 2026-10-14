@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arrow_array::RecordBatch;
-use rdlt_connector::{DestinationWriter, PartitionId, Permit, SchemaVersion, SegmentId, TableRef};
+use rdlt_connector::{DestinationWriter, Permit, SchemaVersion, SegmentId, TableRef};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
@@ -122,12 +122,11 @@ impl Lanes {
         (ends, lanes)
     }
 
-    /// The lane for `partition`'s writes to `table`, so they stay in order on one writer.
-    pub(crate) fn route(&self, table: usize, partition: &PartitionId) -> usize {
-        let mut hash = fnv(0xcbf2_9ce4_8422_2325, &table.to_le_bytes());
-        hash = fnv(hash, partition.as_str().as_bytes());
-        let lanes = u64::try_from(self.senders.len()).unwrap_or(u64::MAX);
-        usize::try_from(hash % lanes).unwrap_or(0)
+    /// The lane for the writes to `table` of the partition at `place` in the attempt: a
+    /// partition keeps its place while it reads, and one read again takes its ended read's, so
+    /// its writes to a table stay in order on one lane; places up to the lanes take a lane each.
+    pub(crate) fn route(&self, table: usize, place: usize) -> usize {
+        place.wrapping_add(table) % self.senders.len()
     }
 
     /// Queues `write` on `lane`, waiting while the lane's queue is full; the wait is counted as
@@ -329,15 +328,6 @@ impl Lane {
             }
         }
     }
-}
-
-/// One step of the 64-bit FNV-1a hash, so routing is the same on every run and platform.
-fn fnv(mut hash: u64, bytes: &[u8]) -> u64 {
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0100_0000_01b3);
-    }
-    hash
 }
 
 /// Runs `work` until it ends or `cancel` fires: a call into a destination that never returns
