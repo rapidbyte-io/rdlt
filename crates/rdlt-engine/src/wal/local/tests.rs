@@ -974,6 +974,62 @@ fn a_staging_token_holds_the_process_s_id_above_its_count() {
     assert_eq!(names::token(&count), (id << 32) + 8);
 }
 
+#[tokio::test]
+async fn a_staging_takes_another_name_only_where_its_own_is_taken() {
+    let base = tempfile::tempdir().expect("a temporary directory");
+    let wal = LocalWal::new(base.path());
+    let orders = pipeline("orders");
+    let load = chunk(1, 0).load;
+    opened(&wal, &orders, load).await;
+    let load_dir = wal.pipeline_dir(&orders).join(names::load(load));
+    let parts = || -> Vec<String> {
+        let mut parts: Vec<String> = std::fs::read_dir(&load_dir)
+            .expect("lists")
+            .map(|entry| entry.expect("an entry").file_name())
+            .filter(|name| names::is_part(name))
+            .map(|name| name.into_string().expect("UTF-8"))
+            .collect();
+        parts.sort();
+        parts
+    };
+    let first = wal.stage(&orders, chunk(1, 0)).await.expect("stages");
+    let [name] = &parts()[..] else {
+        panic!("one staged file: {:?}", parts());
+    };
+    let token = name.split('.').nth(1).expect("a token");
+    let token = u64::from_str_radix(token, 16).expect("a hexadecimal token");
+    // Files an earlier process of the same id left take the names the next stagings try first.
+    let left: Vec<String> = (1..=3).map(|next| names::part(1, token + next)).collect();
+    for name in &left {
+        std::fs::write(load_dir.join(name), b"left").expect("writes");
+    }
+    let second = wal
+        .stage(&orders, chunk(1, 1))
+        .await
+        .expect("stages under a free name");
+    assert_eq!(parts().len(), 5, "{:?}", parts());
+    for name in &left {
+        assert_eq!(std::fs::read(load_dir.join(name)).expect("reads"), b"left");
+    }
+    first.discard().await.expect("discards");
+    second.discard().await.expect("discards");
+    // A staging that fails for any other reason fails as it did, at its first name.
+    if rustix::process::geteuid().is_root() {
+        return;
+    }
+    set_mode(&load_dir, 0o500);
+    let staged = wal.stage(&orders, chunk(1, 2)).await;
+    set_mode(&load_dir, 0o700);
+    let Err(failed) = staged else {
+        panic!("staged in a directory the user may not write");
+    };
+    assert_eq!(
+        failed.kind(),
+        std::io::ErrorKind::PermissionDenied,
+        "{failed}"
+    );
+}
+
 #[test]
 fn a_directory_s_names_are_its_entries_in_order_without_itself_or_its_parent() {
     let base = tempfile::tempdir().expect("a temporary directory");
