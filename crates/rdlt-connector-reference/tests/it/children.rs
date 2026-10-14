@@ -263,3 +263,51 @@ async fn a_sqlite_child_table_follows_a_root_that_merged_where_the_child_staged_
     values.sort();
     assert_eq!(values, ["b"], "root 1 now has no children");
 }
+
+/// Commits roots to `destination` with a commit that names their child table, which no row has
+/// reached and nothing created; the commit's outcome.
+async fn roots_before_any_child(destination: &dyn Destination) -> rdlt_connector::Result<()> {
+    let mut opened = destination.open(&context()).await.expect("a session opens");
+    let (root_table, item_table) = family();
+    write(&mut opened, &root_table, 1, roots(&[(1, 1, 1)])).await;
+    let commit = meta(&opened, CommitSeq::FIRST, 1, &item_table);
+    opened.session.commit(&commit).await.map(|_| ())
+}
+
+#[tokio::test]
+async fn a_commit_naming_a_child_table_no_row_has_reached_lands_in_every_destination() {
+    use rdlt_connector_reference::MemoryDestination;
+    let dir = crate::fixtures::tempdir().expect("a temporary directory");
+    let memory = destination_factory::<MemoryDestination>()
+        .connect(
+            json!({ "store": "children-unreached" }),
+            ConnectContext::new(),
+        )
+        .await
+        .expect("the memory destination connects");
+    roots_before_any_child(memory.as_ref())
+        .await
+        .expect("memory");
+    for format in ["jsonl", "arrow"] {
+        let root = dir.path().join(format);
+        std::fs::create_dir(&root).expect("a root");
+        let files = destination_factory::<FilesDestination>()
+            .connect(
+                json!({ "root": root, "format": format }),
+                ConnectContext::new(),
+            )
+            .await
+            .expect("the files destination connects");
+        roots_before_any_child(files.as_ref()).await.expect(format);
+    }
+    let sqlite = destination_factory::<SqliteDestination>()
+        .connect(
+            json!({ "path": dir.path().join("unreached.db") }),
+            ConnectContext::new(),
+        )
+        .await
+        .expect("the SQLite destination connects");
+    roots_before_any_child(sqlite.as_ref())
+        .await
+        .expect("sqlite");
+}
