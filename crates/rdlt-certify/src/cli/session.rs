@@ -40,7 +40,7 @@ impl Session {
         let cores = rdlt_engine::Cores::try_from_host()
             .map_err(|error| Ended(IO, format!("the host's count of cores is unknown: {error}")))?;
         let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(cores.workers().get())
+            .worker_threads(cores.runtime_workers().get())
             .enable_all()
             .build()
             .map_err(failed)?;

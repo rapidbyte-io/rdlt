@@ -7,8 +7,7 @@ use crate::env::{Clock, Env, Sleep};
 use crate::wal::WalStore;
 
 /// The production [`Env`]: the operating system's clock and random source, tokio's timers, a
-/// rayon compute pool on the cores the runtime leaves and, where given one, a write-ahead log
-/// store.
+/// rayon compute pool of a thread a core and, where given one, a write-ahead log store.
 #[derive(Debug)]
 pub struct SystemEnv {
     compute: RayonPool,
@@ -17,8 +16,8 @@ pub struct SystemEnv {
 }
 
 impl SystemEnv {
-    /// Creates an environment within `cores` that runs CPU-bound work on a pool of the threads
-    /// the runtime's workers leave, and keeps no write-ahead logs.
+    /// Creates an environment within `cores` that runs CPU-bound work on a pool of a thread for
+    /// each core, beside the runtime's workers, and keeps no write-ahead logs.
     pub fn try_new(cores: Cores) -> Result<Self, ComputePoolError> {
         Ok(Self {
             compute: RayonPool::try_new(cores)?,
@@ -27,13 +26,14 @@ impl SystemEnv {
         })
     }
 
-    /// Creates an environment within the cores this process may run on, beside `runtime`'s
-    /// workers, as [`try_new`](Self::try_new) does.
+    /// Creates an environment within the cores this process may run on, as
+    /// [`try_new`](Self::try_new) does.
     ///
     /// The count of cores honours the process's CPU affinity mask and, on Linux, its cgroup's CPU
-    /// quota; the runtime keeps the workers it was built with.
-    pub fn try_from_runtime(runtime: &tokio::runtime::Handle) -> Result<Self, ComputePoolError> {
-        Self::try_new(Cores::try_beside(runtime)?)
+    /// quota.
+    pub fn try_from_host() -> Result<Self, ComputePoolError> {
+        let cores = Cores::try_from_host().map_err(|error| ComputePoolError(Box::new(error)))?;
+        Self::try_new(cores)
     }
 
     /// The environment keeping write-ahead logs in `store`, usually a
@@ -51,8 +51,7 @@ impl SystemEnv {
 impl SystemEnv {
     /// An environment of one core: the pool's one thread beside a runtime's one worker.
     pub(crate) fn one_core() -> Self {
-        let one = NonZeroUsize::MIN;
-        Self::try_new(Cores::new(one, one)).expect("a one-thread pool starts")
+        Self::try_new(Cores::new(NonZeroUsize::MIN)).expect("a one-thread pool starts")
     }
 }
 

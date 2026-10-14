@@ -6,7 +6,7 @@ use crate::bench::PUSH_BYTES;
 
 #[test]
 fn a_wide_table_loads_every_row_of_its_pushes_on_every_run() {
-    let cores = Cores::from_count(NonZeroUsize::new(2).unwrap());
+    let cores = Cores::new(NonZeroUsize::new(2).unwrap());
     for form in [Form::Arrow, Form::Json] {
         let wide = Wide::try_new(cores, form, 100, 2).unwrap();
         let per_push = wide.bytes() / 2;
@@ -27,7 +27,7 @@ fn a_wide_table_loads_every_row_of_its_pushes_on_every_run() {
 fn the_ids_of_a_wide_table_s_batches_run_on_from_one_to_the_next() {
     use arrow_array::cast::AsArray;
     use arrow_array::types::Int64Type;
-    let cores = Cores::from_count(NonZeroUsize::new(2).unwrap());
+    let cores = Cores::new(NonZeroUsize::new(2).unwrap());
     let wide = Wide::try_new(cores, Form::Arrow, 10, 3).unwrap();
     let crate::bench::Replayed::Batches(batches) = &wide.replayed else {
         panic!("Arrow pushes are batches");

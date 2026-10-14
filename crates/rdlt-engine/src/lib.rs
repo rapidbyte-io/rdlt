@@ -7,19 +7,20 @@
 //! deterministic simulation.
 //!
 //! A process gives its tokio runtime the workers [`Cores::try_from_host`] suggests for the cores
-//! it may run on, and the engine's compute pool the rest; an embedder that fixes its own layout
-//! passes a [`Cores`] to [`SystemEnv::try_new`] instead.
+//! it may run on, and the engine's compute pool takes a thread for each of them; an embedder that
+//! fixes its own count passes a [`Cores`] to [`SystemEnv::try_new`] instead.
 //!
 //! ```
 //! use rdlt_engine::{Cores, Env, SystemEnv};
 //!
 //! let cores = Cores::try_from_host()?;
 //! let runtime = tokio::runtime::Builder::new_multi_thread()
-//!     .worker_threads(cores.workers().get())
+//!     .worker_threads(cores.runtime_workers().get())
 //!     .enable_all()
 //!     .build()?;
-//! let env = SystemEnv::try_from_runtime(runtime.handle())?;
+//! let env = SystemEnv::try_new(cores)?;
 //! assert_eq!(env.cores(), cores.count());
+//! # drop(runtime);
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!

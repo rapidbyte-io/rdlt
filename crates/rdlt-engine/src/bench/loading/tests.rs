@@ -9,7 +9,7 @@ use crate::Cores;
 use crate::bench::{Sinking, sink_factory};
 
 fn loading(load: Load, rows: u64, commit: Option<u64>) -> Loading {
-    let cores = Cores::from_count(NonZeroUsize::new(2).unwrap());
+    let cores = Cores::new(NonZeroUsize::new(2).unwrap());
     let per_batch = NonZeroU64::new(10).unwrap();
     Loading::try_new(
         cores,

@@ -63,12 +63,8 @@ pub(crate) async fn each<Run>(
 }
 
 /// The cores an engine whose compute jobs run inline declares, whatever runtime the test runs on:
-/// four, so lanes default to four on every machine, all counted as the runtime's, so the pool no
-/// job reaches keeps one thread.
-const INLINE: Cores = Cores::new(
-    NonZeroUsize::new(4).expect("four is not zero"),
-    NonZeroUsize::new(4).expect("four is not zero"),
-);
+/// four, so lanes default to four on every machine.
+const INLINE: Cores = Cores::new(NonZeroUsize::new(4).expect("four is not zero"));
 
 /// An engine on the system environment with `config`, running compute jobs inline.
 pub(crate) fn engine(config: EngineConfigBuilder) -> TestEngine {
@@ -86,7 +82,7 @@ pub(crate) fn logging_engine(config: EngineConfigBuilder, store: Arc<dyn WalStor
 }
 
 fn inline_system() -> SystemEnv {
-    SystemEnv::try_new(INLINE).expect("a one-thread pool starts")
+    SystemEnv::try_new(INLINE).expect("the pool starts")
 }
 
 /// An engine as [`engine`] makes it, declaring `cores` instead.
@@ -102,9 +98,9 @@ fn engine_on(config: EngineConfigBuilder, system: SystemEnv) -> (TestEngine, Arc
     (TestEngine::new(config, Arc::new(env)), jobs)
 }
 
-/// An engine on the system environment with `config` and a pool of `threads` compute threads
-/// beside the current runtime's workers, for tests on a runtime of several threads whose clock
-/// is not paused.
+/// An engine on the system environment with `config`, within the cores of the current runtime's
+/// workers and `threads` more, for tests on a runtime of several threads whose clock is not
+/// paused.
 pub(crate) fn pooled_engine(config: EngineConfigBuilder, threads: usize) -> TestEngine {
     let config = config.build().expect("the test configuration is valid");
     TestEngine::new(config, Arc::new(beside_runtime(threads)))
@@ -120,8 +116,7 @@ pub(crate) fn pooled_logging_engine(
     TestEngine::new(config, Arc::new(beside_runtime(threads).with_wal(store)))
 }
 
-/// The system environment of `threads` compute threads beside the current runtime's workers,
-/// within the cores the two take together.
+/// The system environment within the cores of the current runtime's workers and `threads` more.
 fn beside_runtime(threads: usize) -> SystemEnv {
     let threads = NonZeroUsize::new(threads).expect("a pool has threads");
     let workers = tokio::runtime::Handle::current().metrics().num_workers();
@@ -129,7 +124,7 @@ fn beside_runtime(threads: usize) -> SystemEnv {
     let count = workers
         .checked_add(threads.get())
         .expect("a count of cores fits");
-    SystemEnv::try_new(Cores::new(count, workers)).expect("the pool starts")
+    SystemEnv::try_new(Cores::new(count)).expect("the pool starts")
 }
 
 /// An engine as [`engine`] makes it, whose clock moves a millisecond on every reading, so no two

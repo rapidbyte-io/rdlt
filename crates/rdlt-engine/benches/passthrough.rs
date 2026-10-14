@@ -58,7 +58,7 @@ fn sized(cell: Cell) -> Cell {
 )]
 fn passthrough(c: &mut Criterion) {
     let cores = Cores::try_from_host().expect("the host says how many cores the bench may use");
-    let (workers, threads) = (cores.workers(), cores.compute_threads());
+    let (workers, threads) = (cores.runtime_workers(), cores.count());
     let layout = format!("{workers}+{threads}");
     let mut group = c.benchmark_group("passthrough");
     let paired = sized(Cell::PAIRED);

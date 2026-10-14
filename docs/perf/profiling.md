@@ -47,8 +47,8 @@ callgrind_annotate --inclusive=yes nested.cg | grep ':rdlt_engine::bench::shred 
 
 `just instructions` counts each hot path's instructions and allocations under callgrind, on
 this tree and on `main` built in the same job: each case at one and at three iterations, its
-count the difference over two, so what a run does once cancels out; the passthrough case runs on
-one runtime worker and one compute thread. [instructions.md](instructions.md) holds the cases.
+count the difference over two, so what a run does once cancels out; the passthrough case runs
+within two cores, on two runtime workers and two compute threads. [instructions.md](instructions.md) holds the cases.
 
 ## Allocations
 

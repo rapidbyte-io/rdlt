@@ -543,7 +543,7 @@ fn a_column_that_changes_type_within_a_chunk_is_built_again_as_their_join() {
 
 #[tokio::test]
 async fn parallel_shredding_keeps_the_pushes_order() {
-    let cores = Cores::new(NonZeroUsize::new(5).unwrap(), NonZeroUsize::MIN);
+    let cores = Cores::new(NonZeroUsize::new(4).unwrap());
     let env = crate::env::SystemEnv::try_new(cores).unwrap();
     let pool = crate::compute::Pool::new(Arc::new(env), Arc::default());
     let pushes: Vec<Bytes> = (0..40)

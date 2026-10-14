@@ -54,11 +54,16 @@ fn a_perturbed_pool_runs_some_jobs_later_but_runs_them_all() {
 }
 
 #[test]
-fn a_threaded_run_s_runtime_has_the_workers_its_pool_was_sized_beside() {
+fn a_threaded_run_s_runtime_has_the_workers_its_cores_suggest() {
     let workers = run_threaded(Seed::new(7), |_env| async {
         tokio::runtime::Handle::current().metrics().num_workers()
     });
-    assert_eq!(workers, super::WORKERS.get());
+    assert_eq!(
+        workers,
+        rdlt_engine::Cores::new(super::CORES)
+            .runtime_workers()
+            .get()
+    );
 }
 
 #[test]

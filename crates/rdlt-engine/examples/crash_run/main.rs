@@ -60,7 +60,7 @@ fn main() -> ExitCode {
         }
     };
     let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(cores.workers().get())
+        .worker_threads(cores.runtime_workers().get())
         .enable_all()
         .build()
         .expect("a runtime starts");
@@ -120,8 +120,7 @@ async fn run(config: &Config) -> Result<(), String> {
     let watch = Arc::new(Watch::new(kill, config.pause));
     let source = watch::source(source, Arc::clone(&watch));
     let destination = watch::destination(destination, watch);
-    let mut env = SystemEnv::try_from_runtime(&tokio::runtime::Handle::current())
-        .map_err(|error| error.to_string())?;
+    let mut env = SystemEnv::try_from_host().map_err(|error| error.to_string())?;
     if let Some(wal) = &config.wal {
         env = env.with_wal(Arc::new(LocalWal::new(wal)));
     }

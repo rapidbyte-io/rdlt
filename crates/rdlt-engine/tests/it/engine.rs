@@ -53,10 +53,7 @@ async fn default_lanes_are_one_per_core_the_env_declares() {
     });
     let (destination, sessions) = counting(unlimited);
     let source = generator(&[("orders", 1000, 32, 37)]).await;
-    let three = Cores::new(
-        NonZeroUsize::new(3).expect("three is not zero"),
-        NonZeroUsize::MIN,
-    );
+    let three = Cores::new(NonZeroUsize::new(3).expect("three is not zero"));
     let outcome = engine_within(EngineConfig::builder(), three)
         .run(
             pipeline("lanes-per-core", [stream("orders")]),

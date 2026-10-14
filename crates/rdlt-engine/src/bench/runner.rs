@@ -126,7 +126,7 @@ impl Runner {
         log: Option<Log>,
     ) -> Result<Self, ComputePoolError> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(cores.workers().get())
+            .worker_threads(cores.runtime_workers().get())
             .enable_all()
             .build()
             .expect("a runtime starts");

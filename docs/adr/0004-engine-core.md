@@ -16,17 +16,18 @@ Building M2a surfaced decisions the spec leaves open or gets wrong.
   destination) -> RunHandle`. The handle is a future; `control()` returns a `RunControl` that stops
   the run after committing or at once, and dropping the handle cancels every task the run started.
   Events and `status()` arrive with the surface in M7.
-- **Cores.** A `Cores` is the cores a run may use and how many of them the embedder's tokio
-  runtime takes for its workers; the compute pool gets the rest, one thread at least, through
-  `RayonPool::try_new`, and nothing else sizes a pool. `SystemEnv::try_from_runtime` takes the
-  cores the process may run on (its affinity mask and cgroup quota honoured) and the workers of the
-  runtime it is given, since the engine does not own the embedder's runtime. A process that builds
-  its own runtime gives it the workers `Cores::try_from_host` suggests: half the cores, rounded
-  down, and two at least where there are two, since one worker runs the engine's per-row work and
-  every lane's writes alone. Two and three cores so run two workers beside a one-thread pool, two
-  cores one thread more than they have. An embedder that fixes a layout passes `Cores::new` to
+- **Cores.** A `Cores` is the count of cores a run may use. The compute pool gets a thread for
+  each, through `RayonPool::try_new`, and nothing else sizes a pool. A process that builds its own
+  tokio runtime gives it `Cores::runtime_workers`: half the cores, rounded down, and two at least
+  where there are two, since one worker runs the engine's per-row work and every lane's writes
+  alone. The pool's threads overlap the workers' cores: the workers run the per-row work and the
+  writes, the pool shreds and lowers, and with a thread a core the pool can take every core the
+  workers leave idle, which JSON workloads need. The runtime does not grow to match: more workers
+  slow a run of one partition (`docs/perf/passthrough.md`). `Cores::try_from_host`
+  and `SystemEnv::try_from_host` take the cores the process may run on (its affinity mask and
+  cgroup quota honoured); an embedder that fixes a count passes `Cores::new` to
   `SystemEnv::try_new`. `Env::cores` returns the count, and lanes default to one per core. The
-  engine reads the host's cores in those two constructors and nowhere else (clippy bans
+  engine reads the host's cores in `Cores::try_from_host` and nowhere else (clippy bans
   `available_parallelism` in the rest of `rdlt-engine`), and the simulation declares a fixed
   count, so a simulated run sizes itself alike on every machine.
 - **One writer per table per lane.** Each attempt creates its writers before any partition reads,

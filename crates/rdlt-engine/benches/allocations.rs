@@ -59,12 +59,9 @@ const TESTED_LOWERING_ROWS: u32 = 8_192;
 const BATCHES: u32 = 8;
 /// Rows of each batch the passthrough, log, codec and lowering cases move.
 const ROWS: u32 = 8192;
-/// One runtime worker and one compute thread, whatever the host has: a case counts the same on
-/// every machine only on a layout it fixes, which is a measuring fixture and no deployment's.
-const LAYOUT: Cores = Cores::new(
-    NonZeroUsize::new(2).expect("two is not zero"),
-    NonZeroUsize::MIN,
-);
+/// Two cores, whatever the host has: a case counts the same on every machine only on a count it
+/// fixes, which is a measuring fixture and no deployment's.
+const LAYOUT: Cores = Cores::new(NonZeroUsize::new(2).expect("two is not zero"));
 
 /// A case's name, and what runs it: its inputs made once, then its work as many times as asked.
 type Case = (&'static str, fn(usize));

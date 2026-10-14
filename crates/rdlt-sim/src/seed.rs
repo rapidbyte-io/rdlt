@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
+use rdlt_engine::Cores;
 use serde_json::{Map, Value, json};
 
 use crate::env::{CORES, SimEnv};
@@ -170,7 +171,7 @@ where
     Fut: Future<Output = T>,
 {
     let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(crate::env::WORKERS.get())
+        .worker_threads(Cores::new(CORES).runtime_workers().get())
         .enable_time()
         .build()
         .expect("a runtime of many threads builds");
@@ -188,7 +189,8 @@ where
 pub enum Weight {
     /// A run on one thread, as [`run`] and a run on the simulated network are.
     One,
-    /// A run of [`run_threaded`]: its runtime's workers and its compute pool's threads.
+    /// A run of [`run_threaded`]: its runtime's workers and its compute pool's threads, which
+    /// share the cores it declares.
     Threaded,
 }
 

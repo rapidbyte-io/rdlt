@@ -10,52 +10,22 @@ use super::{ComputePool, Cores, Inline, Pool, RayonPool};
 use crate::env::{Env, InlineEnv, Sleep, SystemEnv};
 use crate::report::{PoolCounters, Tally};
 
-fn cores(count: usize, workers: usize) -> Cores {
-    Cores::new(
-        NonZeroUsize::new(count).unwrap(),
-        NonZeroUsize::new(workers).unwrap(),
-    )
+fn cores(count: usize) -> Cores {
+    Cores::new(NonZeroUsize::new(count).unwrap())
 }
 
 proptest! {
-    /// The pool gets every core the runtime's workers leave, and one thread however many
-    /// workers there are.
+    /// The runtime takes half the cores, rounded down, and two workers at least where there are
+    /// two.
     #[test]
-    fn the_pool_gets_the_cores_the_workers_leave_and_one_thread_at_least(
-        count in 1usize..=1024,
-        workers in 1usize..=1024,
-    ) {
-        let sized = cores(count, workers);
-        prop_assert_eq!(sized.count().get(), count);
-        prop_assert_eq!(sized.workers().get(), workers);
-        let threads = sized.compute_threads().get();
-        if workers < count {
-            prop_assert_eq!(threads + workers, count);
-        } else {
-            prop_assert_eq!(threads, 1);
-        }
-    }
-
-    /// The suggested split gives the pool a thread and the runtime two workers at least, where
-    /// there are two cores, and every core to one of them from three on; one or two cores take
-    /// one thread more than there are.
-    #[test]
-    fn a_count_of_cores_splits_into_workers_and_compute_threads(count in 1usize..=1024) {
-        let split = Cores::from_count(NonZeroUsize::new(count).unwrap());
-        prop_assert_eq!(split.count().get(), count);
-        prop_assert_eq!(split.workers().get(), count.min(2).max(count / 2));
-        prop_assert!(split.compute_threads().get() >= 1);
-        let threads = split.workers().get() + split.compute_threads().get();
-        if count >= 3 {
-            prop_assert_eq!(threads, count);
-        } else {
-            prop_assert_eq!(threads, count + 1);
-        }
+    fn the_runtime_takes_half_the_cores_and_two_workers_at_least(count in 1usize..=1024) {
+        let workers = cores(count).runtime_workers().get();
+        prop_assert_eq!(workers, count.min(2).max(count / 2));
     }
 }
 
 fn pool() -> Pool {
-    let env = SystemEnv::try_new(cores(3, 1)).unwrap();
+    let env = SystemEnv::try_new(cores(2)).unwrap();
     Pool::new(Arc::new(env), Arc::default())
 }
 
@@ -116,51 +86,10 @@ async fn pool_threads_have_the_stack_a_shredding_job_asks_for() {
 }
 
 #[test]
-fn a_pool_starts_one_thread_for_each_core_the_workers_leave() {
-    for (count, workers, threads) in [(4, 1, 3), (4, 2, 2), (4, 4, 1), (2, 8, 1), (1, 1, 1)] {
-        let pool = RayonPool::try_new(cores(count, workers)).unwrap();
-        assert_eq!(
-            pool.pool.current_num_threads(),
-            threads,
-            "{count} cores, {workers} workers"
-        );
-    }
-}
-
-#[test]
-fn cores_beside_a_runtime_are_the_host_s_and_the_runtime_s_workers() {
-    for workers in [1, 3] {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(workers)
-            .build()
-            .unwrap();
-        let cores = Cores::try_beside(runtime.handle()).unwrap();
-        assert!(cores.count().get() >= 1);
-        assert_eq!(cores.workers().get(), workers);
-    }
-}
-
-#[test]
-fn the_host_s_cores_split_as_their_count_does() {
-    let host = Cores::try_from_host().unwrap();
-    assert_eq!(host, Cores::from_count(host.count()));
-}
-
-#[test]
-fn the_suggested_split_gives_the_runtime_half_the_cores_and_two_workers_at_least() {
-    for (count, workers, threads) in [
-        (1, 1, 1),
-        (2, 2, 1),
-        (3, 2, 1),
-        (4, 2, 2),
-        (5, 2, 3),
-        (8, 4, 4),
-        (9, 4, 5),
-        (32, 16, 16),
-    ] {
-        let split = Cores::from_count(NonZeroUsize::new(count).unwrap());
-        assert_eq!(split.workers().get(), workers, "{count} cores");
-        assert_eq!(split.compute_threads().get(), threads, "{count} cores");
+fn a_pool_starts_a_thread_for_each_core() {
+    for count in (1..=64).chain([256]) {
+        let pool = RayonPool::try_new(cores(count)).unwrap();
+        assert_eq!(pool.pool.current_num_threads(), count, "{count} cores");
     }
 }
 

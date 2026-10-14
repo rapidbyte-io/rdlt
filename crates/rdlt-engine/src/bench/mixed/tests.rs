@@ -5,7 +5,7 @@ use crate::Cores;
 use crate::bench::memory_wal;
 
 fn cores() -> Cores {
-    Cores::from_count(NonZeroUsize::new(2).unwrap())
+    Cores::new(NonZeroUsize::new(2).unwrap())
 }
 
 #[test]

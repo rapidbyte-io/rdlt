@@ -57,9 +57,9 @@ fn main() -> ExitCode {
         eprintln!("resident: this host has no /proc to read and reset the peak through");
         return ExitCode::from(2);
     }
-    let cores = Cores::from_count(cores);
+    let cores = Cores::new(cores);
     let (peak_memory, base, high, push) = run(workload, cores);
-    let threads = cores.workers().get() + cores.compute_threads().get() + 1;
+    let threads = cores.runtime_workers().get() + cores.count().get() + 1;
     let threads = u64::try_from(threads).expect("a count fits in 64 bits");
     let limit = Resident {
         memory: MEMORY,

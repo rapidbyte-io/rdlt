@@ -85,12 +85,9 @@ pub(crate) fn engine(rows: u64) -> Engine {
     Engine::new(config, Arc::new(env))
 }
 
-/// The system environment declaring four cores, two of them a runtime's workers, whatever runtime
-/// the test runs on, so default lanes and the compute pool are alike on every machine.
+/// The system environment declaring four cores whatever runtime the test runs on, so default lanes
+/// and the compute pool are alike on every machine.
 pub(crate) fn system_env() -> SystemEnv {
-    let cores = Cores::new(
-        NonZeroUsize::new(4).expect("four is not zero"),
-        NonZeroUsize::new(2).expect("two is not zero"),
-    );
+    let cores = Cores::new(NonZeroUsize::new(4).expect("four is not zero"));
     SystemEnv::try_new(cores).expect("the compute pool starts")
 }

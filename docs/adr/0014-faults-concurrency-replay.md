@@ -58,12 +58,13 @@ The owner chose to keep all of this in one milestone.
   - Its draws come from a generator of their own, so a perturbed seed still replays exactly, and
     the engine's own random draws are unchanged.
   - A swarm feature turns perturbation on for about half the seeds.
-- **A multi-threaded stress run.** `stress(seed)` runs the same oracle on four worker threads and
-  the real clock, with compute jobs on a pool of four threads.
+- **A multi-threaded stress run.** `stress(seed)` runs the same oracle on the real clock, on the
+  four worker threads the simulation's eight cores suggest, with compute jobs on a pool of a
+  thread for each of the eight.
   - Races the paused single thread never meets can happen there.
   - A failure names its seed but does not replay exactly.
   - `just stress` runs it; the nightly workflow runs 200 seeds, as many at once as the runner's
-    cores hold eight threads each. The contention between them is intended.
+    cores hold, eight cores to a seed. The contention between them is intended.
 - **Same-seed replay.** `check_exactly_once` returns a digest of everything the destination holds
   at the end: its tables' columns and rows, each pipeline's state, and the receipts. A test runs
   twenty fixed seeds twice each, one run after the other, and requires the same digests. It runs

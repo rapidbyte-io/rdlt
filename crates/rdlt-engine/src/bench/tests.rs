@@ -32,7 +32,7 @@ fn shredding_inline_and_on_a_pool_gives_the_same_batches() {
         Bytes::from_static(b"[{\"a\":3}]"),
     ];
     let inline = shred(&pushes, 8).unwrap();
-    let cores = Cores::new(NonZeroUsize::new(3).unwrap(), NonZeroUsize::MIN);
+    let cores = Cores::new(NonZeroUsize::new(2).unwrap());
     let env: Arc<dyn Env> = Arc::new(SystemEnv::try_new(cores).unwrap());
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()

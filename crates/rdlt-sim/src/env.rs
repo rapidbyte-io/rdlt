@@ -17,12 +17,9 @@ use crate::seed::Seed;
 /// Seconds from the Unix epoch to the simulated start of time, 2026-01-01T00:00:00Z.
 const SIM_EPOCH_SECS: u64 = 1_767_225_600;
 
-/// The cores a simulated engine declares, alike on every host: a threaded run's pool gets what
-/// its runtime's workers leave of them.
+/// The cores a simulated engine declares, alike on every host: a threaded run's runtime has the
+/// workers they suggest, and its pool a thread for each.
 pub(crate) const CORES: NonZeroUsize = NonZeroUsize::new(8).expect("eight is not zero");
-
-/// The worker threads of a threaded run's runtime.
-pub(crate) const WORKERS: NonZeroUsize = NonZeroUsize::new(4).expect("four is not zero");
 
 /// An [`Env`] for deterministic simulation.
 ///
@@ -58,15 +55,14 @@ impl SimEnv {
         *self.wal.lock() = Some(store);
     }
 
-    /// Creates an environment seeded by `seed` whose compute jobs run on a pool of the cores a
-    /// threaded run's runtime leaves, for a runtime of many threads on the real clock.
+    /// Creates an environment seeded by `seed` whose compute jobs run on a pool of a thread for
+    /// each of its cores, for a runtime of many threads on the real clock.
     ///
     /// # Panics
     ///
     /// Panics when the pool's threads fail to start.
     pub fn threaded(seed: Seed) -> Self {
-        let pool = RayonPool::try_new(Cores::new(CORES, WORKERS))
-            .expect("the compute pool's threads start");
+        let pool = RayonPool::try_new(Cores::new(CORES)).expect("the compute pool's threads start");
         let mut env = Self::new(seed);
         env.compute.threads = Some(pool);
         env
