@@ -142,6 +142,161 @@ with sixteen partitions to 948 %. At 8 000 rows a batch from sixteen partitions 
 same cell within 1 GiB is the paired cell above. This record states the waits; it does not
 change the budget.
 
+## What the matrix decides
+
+Each change below is built only where its rule finds the cost it would remove on the matrix; where
+the rule fails, it is not built. Measured on `main` at `2e49c6bae25b`, 2026-10-14, the machine
+above, CPUs 0–3 (two runtime workers and two compute threads), each step alone under the
+measurement lock. Nothing here changed the engine.
+
+### Method
+
+- **The matrix.** One round of every cell (`passthrough/full/`), criterion's pass alone, started
+  at a one-minute load average of 4.4 that fell to 2.4 by its end, the bench alone on the machine.
+  The rules' readings of the chosen cells lie close to the medians of the three rounds above: the
+  pool idle within 1.7 points, the signals within 0.3 a batch, and the waits within 6 %, or 0.6
+  points where under 10 %.
+- **The production slice.** One round of `served/process/socket/both`, the host on CPUs 0–3 and
+  the spawned connectors on 4–11, readings as [served.md](served.md) defines them. Its sink
+  declares one writer, so the rules about lanes are not read from it.
+- **Profiles.** `cpu_core/cycles/u` at 999 Hz with frame pointers, 15 seconds of each benchmark,
+  from `just profiling`'s binaries, classified by the frames on each sample's stack. A sample
+  making the batches (`fixtures::events`) or in the destination's own encode is not the engine's.
+  The encode is inlined into the lane's write, so it is the samples holding `arrow_ipc`; a share
+  leaving them in, which only lowers it, is given in brackets. The ledger and watch are the
+  engine's samples holding `rdlt_engine::budget` or `rdlt_engine::watch`; the coordinator those
+  holding `rdlt_engine::coordinator`. In the production slice only the host's process is
+  classified, its encode for the wire left in: the destination encodes in a process of its own.
+  The samples hashing the connector's binary as each run spawns it, before the timed run, are
+  left out; the share with them in is given in brackets.
+- **A driver.** A program outside the repository, built against this tree's `rdlt_engine::bench`,
+  ran what no bench does: the passthrough on sixteen lanes, its pool's jobs a batch, normalized
+  JSON from several partitions within the default budget, the core layouts, and logged loads with
+  a patch timing each wait for the lock `LocalWal` walks its base under. Neither is kept.
+- **Shares past 100 %** are summed over tasks, as the readings above are. Where a verdict rests
+  on such a sum, it also gives a cell of one task, or the share each task has on average.
+
+### Verdicts
+
+| Change | Verdict |
+|---|---|
+| Send the budget's pressure only when it changes | The cost is there: worth building |
+| Route a partition to a lane by its index | The cost is there: worth a prototype |
+| Hash ids in row chunks across the pool | The cost is there: worth building |
+| Shrink a normalized piece's hold after its split | The cost is there: worth building |
+| Keep two flushes in flight a partition | The cost is there: worth a prototype |
+| Release held lane writes at a watermark | The cost is there: worth building |
+| Count each batch's progress instead of sending it | Condition met, barely on production |
+| Cut a unit's pieces in one job | The cost is there: worth building |
+| Walk the log's base outside its lock | Not built: the measurement shows no cost |
+
+Each change's rule and readings; a profile's share in brackets puts back the samples the method
+leaves out:
+
+- **Send the budget's pressure only when it changes.** Rule: at 16 partitions and 1 000–8 000
+  rows a batch, the ledger and watch at least 2 % of the engine's CPU, or the budget's signals a
+  batch above 2 × (lanes + partitions), 40 here. Matrix: 4.80 % (4.00 %) at 1 000 rows, 4.13 %
+  (3.55 %) committed every sixteenth, 2.08 % (1.92 %) at 8 000 rows; 8.0 and 11.3 signals a
+  batch. Production slice, frames of 1 000 rows from 16 partitions: 2.69 % (2.27 %); 14.0
+  signals a frame against 34 at its one lane. The CPU share holds in both.
+- **Route a partition to a lane by its index.** Rule: on a fast sink, fewer lanes written than
+  partitions, 16 partitions on 16 lanes or 4 on 16; then a prototype at least 5 % faster.
+  Matrix: 14 lanes written of 16, and 4 of 4. Not read from the production slice, whose sink
+  declares one writer. The prototype is kept only at 5 % faster.
+- **Hash ids in row chunks across the pool.** Rule: at 4 cores, one compute thread above 40 % of
+  the samples of `normalized/keyless/50000`, whose flushes are cut in 9 units, and normalizing
+  less than 2 times faster on 4 cores than on 1. Matrix: one thread 57.0 %, the other 41.4 %;
+  1.06 and 1.15 times. The workload runs in process only.
+- **Shrink a normalized piece's hold after its split.** Rule: requests for lowering waiting for
+  room at least 5 % of the run with 4 to 16 normalized partitions within 256 MiB; then the
+  piece's bound below what its request leaves, which the change derives. Driver: 204.6 %
+  [198.6–211.4] from 4 partitions, 889.2 % [882.2–901.8] from 16, about half the run for each
+  partition. The workload runs in process only.
+- **Keep two flushes in flight a partition.** Rule: the pool idle at least 30 % of the run, one
+  partition into the null sink, 1 000–8 000 rows; then a prototype at least 10 % faster. Matrix:
+  87.1 % at 1 000 rows, 92.7 % at 8 000. Production slice, frames of 1 000 rows from one
+  partition into the served sink: 91.4 %. The prototype is kept only at 10 % faster.
+- **Release held lane writes at a watermark.** Rule: requests for lowering or pushes waiting for
+  room above 1 % of the run in any cell within 256 MiB. Matrix: 25 of the 38 cells, among them
+  every cell of 80 000 rows; the pushes of `80000x64/1p/1s/end`, one task, 66.5 %; requests for
+  lowering 11.0 % at `80000x64/16p/4s/end` and 3.9 % committed every sixteenth. Not read from
+  the production slice, through its one lane.
+- **Count each batch's progress instead of sending it.** Rule: the coordinator at least 2 % of
+  the CPU at 1 000 rows from 16 partitions. Matrix: 3.42 % (2.86 %) committed at the end, 3.58 %
+  (3.07 %) every sixteenth. Production slice, frames of 1 000 rows from 16 partitions: 2.05 %, or
+  1.73 % with the hashing of the connector's binary in, which comes before the timed run. Both
+  cross the threshold, the production slice barely, so the condition is met; the row's own change
+  must show its gain on the production slice too.
+- **Cut a unit's pieces in one job.** Rule: the pool's queue and way back at least 5 % of the run
+  at 1 000 rows. Matrix: 29.9 % to 1 336 % in the 13 cells of 1 000 rows; 32.1 % from one
+  partition, at least 16 % of the run with two jobs a batch. Production slice, frames of 1 000
+  rows: 60.6 % to 82.2 %.
+- **Walk the log's base outside its lock.** Rule: with 4 or more partitions logging, the waits for
+  that lock at least 2 % of the commits' time. Driver: 0.004 % [0.002–0.027] from 4 partitions,
+  0.002 % [0.001–0.321] from 16.
+
+Notes on the readings:
+
+- **Sixteen lanes.** The engine set to sixteen lanes and a sink declaring sixteen writers,
+  sixteen partitions of `80000x64` wrote through 14 lanes: two lanes wrote nothing while others
+  took more than one partition. Routing is deterministic, so one run decides it.
+- **The pool's jobs a batch.** Every 1 000-row cell runs two jobs a batch. The queue and way back
+  are summed over jobs, and a job's way back includes waiting for the job before it in the same
+  call, so the sum overstates the time a partition waits for the pool by at most the jobs it has
+  in flight: two.
+- **Normalized partitions.** The driver loads the first 200 000 rows of the orders corpus in pushes
+  of 10 000 rows into the null sink within the default 256 MiB, five runs each from 4 and 16
+  partitions: 180–196 ms a run, pushes waiting for room 24.1–26.1 % and 34.9–48.3 % of the run.
+- **The log's base.** The driver logs `8000x640` on the disk from 4 and 16 partitions, committing
+  every 320 000 rows, through one writer, five runs each: 75 calls taking the lock a run, 17
+  commits, the commits' phases summed 301–486 ms a run. The waits are summed over every call, the
+  commits' included, so they never understate.
+- **The core layouts and the normalized scaling** are below.
+- **Not decided here.** Four changes read the log on an object store: a bench of it with request
+  latency, listing the horizon while the lanes flush, staging the next chunk after the answer,
+  and uploading several parts at once. Production keeps the log on local disk, so none is built.
+  Charging a served push frame once needs the resident memory of served placements, which the
+  resident check does not measure (it runs in process only), so its rule cannot be applied.
+
+### Sixteen partitions against one
+
+The full round's throughput, one stream committed at the end, MB/s:
+
+| Rows a batch | 1 partition | 4 partitions | 16 partitions | 16 over 1 |
+|---|---|---|---|---|
+| 1 000 | 3 031 | 4 400 | 4 409 | 1.45 |
+| 8 000 | 12 658 | 14 116 | 14 180 | 1.12 |
+| 80 000 | 14 419 | 17 287 | 17 192 | 1.19 |
+
+In process, sixteen partitions move more than one at every size of batch, and four as much as
+sixteen: on four cores the cell writes through four lanes. The production slice falls instead as
+partitions are added, at every size of frame ([served.md](served.md), "The production slice"),
+through its one writer.
+
+### Core layouts
+
+The four cores split between runtime workers and compute threads, the driver running each cell
+three times and timing 15 runs, the median of those, five rounds; the median of the rounds and
+their range, ms a run:
+
+| Cell | 1 + 3 | 2 + 2 | 3 + 1 |
+|---|---|---|---|
+| `80000x64/1p/1s/end` | 39.5 [38.9–40.1] | 30.4 [29.4–31.1] | 33.9 [32.8–34.3] |
+| `80000x64/16p/1s/end` | 40.2 [39.5–51.1] | 27.1 [25.8–29.2] | 20.1 [19.1–21.0] |
+| `8000x640/16p/1s/end` | 55.5 [54.9–58.8] | 29.1 [28.9–30.9] | 20.2 [19.8–21.1] |
+
+Two workers and two compute threads, `Cores::from_count`'s split, are fastest from one partition.
+From sixteen, three workers and one compute thread are 26 % and 31 % faster, beyond the rounds'
+ranges. This record states it; it does not change the split.
+
+### Normalized from one core to four
+
+`normalized/keyless/50000` (2 runtime workers and 2 compute threads on four cores, 1 and 1 on
+one; 9 units a flush), rounds on one core, four, four and one: 3.77, 3.99, 3.93 and 3.43 million
+rows a second: four cores 1.06 and 1.15 times as fast as one, round against round. In a profile
+on four cores the two compute threads hold 57.0 % and 41.4 % of the samples, the first's
+shredding and normalizing 54.5 % of them all, and the runtime's workers 1.3 %.
+
 ## Where the overhead goes
 
 The question was where the engine's time beyond the bare loop's goes on the performance cores,
