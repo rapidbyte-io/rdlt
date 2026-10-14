@@ -180,13 +180,13 @@ measurement lock. Nothing here changed the engine.
 
 | Change | Verdict |
 |---|---|
-| Send the budget's pressure only when it changes | The cost is there: worth building |
+| Send the budget's pressure only when it changes | Built: the cost fell by a third |
 | Route a partition to a lane by its index | The cost is there: worth a prototype |
 | Hash ids in row chunks across the pool | The cost is there: worth building |
 | Shrink a normalized piece's hold after its split | The cost is there: worth building |
 | Keep two flushes in flight a partition | The cost is there: worth a prototype |
 | Release held lane writes at a watermark | The cost is there: worth building |
-| Count each batch's progress instead of sending it | Condition met, barely on production |
+| Count each batch's progress instead of sending it | Built: the cost fell by a quarter |
 | Cut a unit's pieces in one job | The cost is there: worth building |
 | Walk the log's base outside its lock | Not built: the measurement shows no cost |
 
@@ -257,6 +257,49 @@ Notes on the readings:
   and uploading several parts at once. Production keeps the log on local disk, so none is built.
   Charging a served push frame once needs the resident memory of served placements, which the
   resident check does not measure (it runs in process only), so its rule cannot be applied.
+
+### Pressure and progress, built
+
+Both changes are built. Their acceptance asked each to halve its share of the engine's samples at
+16 partitions; neither did. They are kept because each deletes more than it adds, and together
+they take throughput 1–3 % past `main`'s range at 1 000 and 8 000 rows committed at the end and on
+the production slice.
+
+- **Pressure.** The budget sends its two values only when they change, and each loop watches them
+  through one receiver it keeps, its shares read without the ledger's lock.
+- **Progress.** A partition that seals on its own sends no message for each batch it writes; only
+  one that seals when a barrier asks tells the coordinator its writes.
+- **Measured** on `main` at `b0f322dd311f`, 2026-10-14, CPUs 0–3, two runtime workers and two
+  compute threads, under the measurement lock: `main`, pressure alone, and both changes, run in
+  turn in each round, each round started at a one-minute load under 1.0, its order rotated
+  from one round to the next; criterion's pass alone, the median and range of three rounds,
+  five for the noisier cell committed every sixteenth. One profile each, classified as above.
+
+| Cell, MB/s | `main` | Pressure | Both |
+|---|---|---|---|
+| `1000x5120/16p/1s/end` | 4 786 [4 738–4 792] | 4 859 [4 817–4 865] | 4 873 [4 837–4 924] |
+| `1000x5120/16p/1s/16th` | 4 766 [4 395–4 899] | 4 668 [4 154–4 957] | 4 966 [4 639–4 995] |
+| `8000x640/16p/1s/end` | 14 895 [14 642–14 919] | 15 242 [15 156–15 411] | 15 406 [15 330–15 419] |
+
+| Cell | Ledger and watch: `main` | Pressure | Coordinator: pressure | Both |
+|---|---|---|---|---|
+| `1000x5120/16p/1s/end` | 3.28 % (2.89 %) | 2.32 % (2.03 %) | 2.11 % (1.85 %) | 1.53 % (1.33 %) |
+| `1000x5120/16p/1s/16th` | 3.41 % (3.01 %) | 2.15 % (1.88 %) | 2.61 % (2.29 %) | 2.13 % (1.86 %) |
+| `8000x640/16p/1s/end` | 1.82 % (1.70 %) | 1.30 % (1.21 %) | 1.12 % (1.04 %) | 0.89 % (0.82 %) |
+
+- **Pressure** took the signals from 8.0 a batch at 1 000 rows and 11.3 at 8 000 to none, and
+  the ledger and watch from 3.28 % to 2.32 % at 1 000 rows: 29 %, 37 % and 29 % less in the
+  three cells. What is left is the watch's wait, set up again on each turn of a loop that waits
+  on it, about 1.05 points, and the ledger's lock for each reservation, about 0.8: a wait kept
+  across turns would still take tokio's `Notify` lock on every poll.
+- **Progress**, measured from pressure alone, took the coordinator 27 % and 18 % lower at
+  1 000 rows: each push of the replay is still a seal, a message a batch, so leaving out the
+  other message at most halves them.
+- Throughput rose with both, 1.8 % at 1 000 rows and 3.4 % at 8 000 committed at the end,
+  beyond `main`'s ranges, and stayed within the ranges committed every sixteenth; the
+  production slice is in [served.md](served.md).
+- Each reading here of `main` lies below the verdict's above (3.28 % against 4.80 %) with the same
+  classification, on a quieter machine; the comparisons are within this one set.
 
 ### Sixteen partitions against one
 
