@@ -30,7 +30,10 @@ Building M2a surfaced decisions the spec leaves open or gets wrong.
   `available_parallelism` in the rest of `rdlt-engine`), and the simulation declares a fixed
   count, so a simulated run sizes itself alike on every machine.
 - **One writer per table per lane.** Each attempt creates its writers before any partition reads,
-  and routes a partition's batches for a table to one lane by an FNV hash, so they stay in order.
+  and routes a partition's batches for a table to lane `(place + table) mod lanes`, the place
+  being the partition's index in the attempt. A partition read again takes its ended read's
+  place, and a new one a place whose seals all committed, so a partition's writes to a table stay
+  in order on one lane, and as many partitions as lanes take a lane each.
 - **Barriers wait only for partitions that are reading.** A partition waiting for a read slot, or
   already ended, owes no answer, so many queued partitions never make every commit wait out
   `barrier_wait`.
