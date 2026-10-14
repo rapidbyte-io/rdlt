@@ -93,7 +93,8 @@ The owner chose to keep all of this in one milestone.
     one barrier therefore ran in a random order. The replay test found it, and a sweep of `main`
     showed 3 seeds in 200 replaying differently.
     - The engine now uses a watch of its own (`watch.rs`), a value and version behind a mutex
-      and one `Notify`, which wakes waiters in the order they began to wait.
+      and one `Notify`, which wakes waiters in the order they began to wait, and only when its
+      value changes.
     - The engine's clippy configuration bans awaiting tokio's `watch` receivers.
     - The connector's sink keeps tokio's channel, as it only reads the value.
 

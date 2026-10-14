@@ -1,5 +1,5 @@
 //! A value tasks wait on to change, as with tokio's `watch` channel, but waking its waiters in an
-//! order that depends only on the order they began to wait.
+//! order that depends only on the order they began to wait, and only when its value changes.
 //!
 //! Tokio's channel spreads its waiters over several queues, picked by a generator the runtime
 //! seeds at random, so tasks woken by one change would run in an order a simulated seed does not
