@@ -7,7 +7,9 @@ use http_body::Frame;
 use proptest::prelude::*;
 use tonic::{Code, Status};
 
-use super::{bytes, holds_prost_s_bytes, joined, prefixed, sent, trailers, under_way};
+use super::{
+    bytes, chained, holds_prost_s_bytes, joined, lies_aligned, prefixed, sent, trailers, under_way,
+};
 use crate::bounded::{Bounded, Bounds};
 use crate::limits::{Class, Limits};
 use crate::plane::{Chained, Incoming, Outgoing};
@@ -21,8 +23,36 @@ pub(super) fn read_batch(epoch: u64, header: &[u8], body: &[u8]) -> v1::ReadFram
             schema_epoch: epoch,
             kind: v1::BatchKind::Arrow as i32,
             data_header: Bytes::copy_from_slice(header),
+            padding: Bytes::new(),
             data_body: Bytes::copy_from_slice(body),
         })),
+    }
+}
+
+/// `frame` as its sender built it: the padding its chunks carried, which must be zeros, gone.
+fn unpadded_read(mut frame: v1::ReadFrame) -> v1::ReadFrame {
+    if let Some(v1::read_frame::Frame::Batch(batch)) = &mut frame.frame {
+        assert!(
+            batch.padding.iter().all(|byte| *byte == 0),
+            "padding is zeros"
+        );
+        batch.padding = Bytes::new();
+    }
+    frame
+}
+
+/// Checks that a read's chunks are prost's bytes, that they decode to `frame` but for a batch's
+/// padding, and that a batch's body starts at a multiple of the alignment from the prefix: a
+/// push's JSON is sent as prost encodes it, unpadded.
+fn a_read_holds_prost_s_bytes(frame: &v1::ReadFrame) -> Result<(), TestCaseError> {
+    let decoded = holds_prost_s_bytes(frame)?;
+    if let Some(v1::read_frame::Frame::Batch(_)) = &frame.frame {
+        prop_assert_eq!(&unpadded_read(decoded), frame);
+        lies_aligned(&frame.clone().chunks())
+    } else {
+        prop_assert_eq!(&decoded, frame);
+        prop_assert_eq!(chained(frame.clone().chunks()), prefixed(frame));
+        Ok(())
     }
 }
 
@@ -95,7 +125,9 @@ fn a_read_s_batch_body_and_json_are_slices_of_the_bytes_passed_on() {
 #[test]
 fn a_chained_read_frame_at_its_edges_is_the_bytes_prost_encodes() {
     // prost leaves out an empty field, a zero epoch and an unspecified kind among them, and a
-    // body of 2^21 bytes or more takes a length of four bytes.
+    // body of 2^21 bytes or more takes a length of four bytes; the padding takes the inner and
+    // outer lengths across a byte more.
+    let change = v1::BatchKind::Change as i32;
     for (epoch, kind, header, body) in [
         (0, 0, 0, 0),
         (0, 0, 0, 1),
@@ -106,22 +138,28 @@ fn a_chained_read_frame_at_its_edges_is_the_bytes_prost_encodes() {
         (7, 2, 16_383, 16_384),
         (7, 1, 3, (1 << 21) - 1),
         (7, 1, 3, 1 << 21),
+        (u64::MAX, change, 16_383, 0),
+        (u64::MAX, change, (1 << 14) - 70, 1),
+        (u64::MAX, change, 120, 1 << 21),
+        // A head of 53 bytes before a body of 7 lands aligned only after 127 bytes of padding.
+        (u64::MAX, change, 38, 7),
     ] {
         let frame = v1::ReadFrame {
             frame: Some(v1::read_frame::Frame::Batch(v1::BatchFrame {
                 schema_epoch: epoch,
                 kind,
                 data_header: vec![1; header].into(),
+                padding: Bytes::new(),
                 data_body: vec![2; body].into(),
             })),
         };
-        holds_prost_s_bytes(&frame).unwrap();
+        a_read_holds_prost_s_bytes(&frame).unwrap();
         let sent = frame.chunks().body.map_or(0, |body| body.len());
         assert_eq!(sent, body, "{epoch} {kind} {header} {body}");
     }
     for length in [0, 1, 127, 128, 16_384, (1 << 21) - 1, 1 << 21] {
         let frame = json(&vec![b' '; length]);
-        holds_prost_s_bytes(&frame).unwrap();
+        a_read_holds_prost_s_bytes(&frame).unwrap();
         let sent = frame.chunks().body.map_or(0, |body| body.len());
         assert_eq!(sent, length, "JSON of {length} bytes");
     }
@@ -144,6 +182,7 @@ fn read_frame() -> impl Strategy<Value = v1::ReadFrame> {
                 schema_epoch,
                 kind,
                 data_header,
+                padding: Bytes::new(),
                 data_body,
             })
         ),
@@ -198,7 +237,7 @@ fn read_control() -> impl Strategy<Value = v1::ReadControl> {
 proptest! {
     #[test]
     fn a_chained_read_frame_is_the_bytes_prost_encodes(frame in read_frame()) {
-        holds_prost_s_bytes(&frame)?;
+        a_read_holds_prost_s_bytes(&frame)?;
     }
 
     #[test]
@@ -216,6 +255,7 @@ proptest! {
                 schema_epoch: epoch,
                 kind: v1::BatchKind::Arrow as i32,
                 data_header: header,
+                padding: Bytes::new(),
                 data_body: body.clone(),
             })
         };
@@ -228,14 +268,14 @@ proptest! {
 
     #[test]
     fn a_chained_read_control_is_the_bytes_prost_encodes(control in read_control()) {
-        holds_prost_s_bytes(&control)?;
+        prop_assert_eq!(&holds_prost_s_bytes(&control)?, &control);
         prop_assert!(control.chunks().body.is_none());
     }
 
     #[test]
     fn a_chained_read_back_request_is_the_bytes_prost_encodes(name in ".{0,64}", empty: bool) {
         let request = if empty { v1::ReadPublishedRequest::default() } else { read_back(&name) };
-        holds_prost_s_bytes(&request)?;
+        prop_assert_eq!(&holds_prost_s_bytes(&request)?, &request);
         prop_assert!(request.chunks().body.is_none());
     }
 }
@@ -256,7 +296,10 @@ async fn what_a_read_s_answer_sends_is_read_as_the_frames_it_sent() {
         2 + 2 + 1 + 1 + 1 + 1,
         "a batch's and a push's head and body each, the empty ones whole, then the trailers"
     );
-    let expected: Vec<u8> = frames.iter().flat_map(prefixed).collect();
+    let expected: Vec<u8> = frames
+        .iter()
+        .flat_map(|frame| chained(frame.clone().chunks()))
+        .collect();
     assert_eq!(joined(&sent), expected);
     let (feed, body) = fed();
     for frame in sent {
@@ -265,7 +308,8 @@ async fn what_a_read_s_answer_sends_is_read_as_the_frames_it_sent() {
     drop(feed);
     let mut incoming = Incoming::<v1::ReadFrame>::answer(under_way(read_answer(body))).unwrap();
     for frame in frames {
-        assert_eq!(incoming.message().await.unwrap(), Some(frame));
+        let read = incoming.message().await.unwrap().map(unpadded_read);
+        assert_eq!(read, Some(frame));
     }
     assert_eq!(incoming.message().await.unwrap(), None, "ended well");
 }

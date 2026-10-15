@@ -60,6 +60,7 @@ fn read_frame() -> v1::ReadFrame {
             schema_epoch: 1,
             kind: v1::BatchKind::Arrow as i32,
             data_header: Bytes::from_static(b"h"),
+            padding: Bytes::new(),
             data_body: Bytes::from_static(b"body"),
         })),
     }
@@ -308,10 +309,9 @@ async fn a_read_is_answered_with_its_frames_and_trailers_of_success() {
         .iter()
         .flat_map(|frame| frame.as_ref().unwrap().data_ref().unwrap().to_vec())
         .collect();
-    let mut expected = vec![0];
-    let length = u32::try_from(prost::Message::encoded_len(&read_frame())).unwrap();
-    expected.extend(length.to_be_bytes());
-    expected.extend(prost::Message::encode_to_vec(&read_frame()));
+    let chunks = Chained::chunks(read_frame());
+    let mut expected = chunks.head.to_vec();
+    expected.extend(chunks.body.unwrap());
     assert_eq!(sent, expected);
     let trailers = frames[2].as_ref().unwrap().trailers_ref().unwrap();
     assert_eq!(Status::from_header_map(trailers).unwrap().code(), Code::Ok);

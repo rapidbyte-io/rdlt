@@ -149,8 +149,11 @@ message BatchFrame {
   BatchKind kind = 2;
   // The IPC message: a record batch or dictionary batch flatbuffer.
   bytes data_header = 3;
+  // Zero bytes placing data_body at a multiple of 64 bytes from the message's gRPC prefix, so
+  // its receiver reads the body where it arrived.
+  bytes padding = 4;
   // The message's body buffers.
-  bytes data_body = 4;
+  bytes data_body = 5;
 }
 
 // JSON records: an array of objects, or newline-delimited objects.

@@ -65,21 +65,18 @@ fn ready<F: Future>(future: F) -> F::Output {
     }
 }
 
-/// Checks that `message` is sent as prost encodes it, and decodes from what is sent again.
+/// Checks that `message` is sent as prost encodes what it is sent as, a batch with the padding
+/// its sender lays, and that its sender spends what is sent.
 fn sent_again<M: Chained + Default + Clone + std::fmt::Debug>(message: &M) {
     let chunks = message.clone().chunks();
     let mut sent = chunks.head.to_vec();
     sent.extend(chunks.body.unwrap_or_default());
-    let mut encoded = vec![0];
-    encoded.extend(u32::try_from(message.encoded_len()).unwrap().to_be_bytes());
-    message.encode(&mut encoded).unwrap();
-    assert_eq!(sent, encoded, "{message:?} is sent as prost encodes it");
+    assert_eq!(sent.len(), 5 + message.sent_len(), "{message:?} spends what is sent");
     let again = M::decode(&sent[5..]).unwrap();
-    assert_eq!(
-        again.encode_to_vec(),
-        &sent[5..],
-        "{message:?} decodes as sent"
-    );
+    let mut encoded = vec![0];
+    encoded.extend(u32::try_from(again.encoded_len()).unwrap().to_be_bytes());
+    again.encode(&mut encoded).unwrap();
+    assert_eq!(sent, encoded, "{message:?} is sent as prost encodes it");
 }
 
 /// Reads every message of `incoming` until it ends or fails, each sent again.

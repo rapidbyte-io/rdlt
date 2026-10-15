@@ -168,6 +168,7 @@ async fn a_served_connector_refuses_a_hosts_frame_no_limit_bounds_as_a_whole() {
             Frame::Batch(v1::WriteBatch {
                 segment: 1,
                 data_header: frame.header,
+                padding: Bytes::new(),
                 data_body: frame.body,
             })
         });

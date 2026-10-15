@@ -10,8 +10,7 @@ use bytes::Bytes;
 use rdlt_wire::bounded::{Bounded, Bounds};
 use rdlt_wire::flow::Granting;
 use rdlt_wire::limits::{CREDIT_FLOOR, Class, MIN_FRAME_BYTES};
-use rdlt_wire::plane::{Incoming, Outgoing};
-use rdlt_wire::prost::Message as _;
+use rdlt_wire::plane::{Chained as _, Incoming, Outgoing};
 use rdlt_wire::tonic::body::Body;
 use rdlt_wire::tonic::{Code, Status};
 use rdlt_wire::{Encoder, Limits};
@@ -138,6 +137,7 @@ fn batch(segment: u64, rows: i64) -> v1::WriteFrame {
         frame: Some(Frame::Batch(v1::WriteBatch {
             segment,
             data_header: frame.header,
+            padding: Bytes::new(),
             data_body: frame.body,
         })),
     }
@@ -149,6 +149,7 @@ fn garbage(bytes: usize) -> v1::WriteFrame {
         frame: Some(Frame::Batch(v1::WriteBatch {
             segment: 1,
             data_header: Bytes::from_static(b"not an IPC message"),
+            padding: Bytes::new(),
             data_body: Bytes::from(vec![0; bytes.saturating_sub(18)]),
         })),
     }
@@ -166,7 +167,7 @@ fn credits(limits: &Limits, frames: &[v1::WriteFrame]) -> Vec<Ack> {
     let mut granting = Granting::new(CREDIT_FLOOR, limits);
     let opening = granting.opening();
     let taken = frames.iter().map(|frame| {
-        let bytes = u64::try_from(frame.encoded_len()).expect("a length fits");
+        let bytes = u64::try_from(frame.sent_len()).expect("a length fits");
         granting.taken(bytes)
     });
     std::iter::once(opening)
@@ -227,7 +228,8 @@ async fn answered(
     all
 }
 
-/// A request's body of `frames`, each a gRPC message, which then fails with `status`.
+/// A request's body of `frames`, each a gRPC message as its sender sends it, which then fails
+/// with `status`.
 struct Cut {
     frames: VecDeque<v1::WriteFrame>,
     status: Option<Status>,
@@ -244,11 +246,9 @@ impl http_body::Body for Cut {
         let Some(frame) = self.frames.pop_front() else {
             return Poll::Ready(self.status.take().map(Err));
         };
-        let encoded = frame.encode_to_vec();
-        let length = u32::try_from(encoded.len()).expect("a message's length fits");
-        let mut message = vec![0];
-        message.extend(length.to_be_bytes());
-        message.extend(encoded);
+        let chunks = frame.chunks();
+        let mut message = chunks.head.to_vec();
+        message.extend(chunks.body.unwrap_or_default());
         Poll::Ready(Some(Ok(http_body::Frame::data(Bytes::from(message)))))
     }
 }

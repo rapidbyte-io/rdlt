@@ -151,6 +151,7 @@ fn batch_frames(encoder: &mut Encoder, batch: &RecordBatch, epoch: u64) -> Vec<v
                 schema_epoch: epoch,
                 kind: v1::BatchKind::Arrow as i32,
                 data_header: frame.header,
+                padding: Bytes::new(),
                 data_body: frame.body,
             })),
         })
