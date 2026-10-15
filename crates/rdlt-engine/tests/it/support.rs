@@ -94,8 +94,16 @@ pub(crate) fn engine_within(config: EngineConfigBuilder, cores: Cores) -> TestEn
 fn engine_on(config: EngineConfigBuilder, system: SystemEnv) -> (TestEngine, Arc<AtomicUsize>) {
     let config = config.build().expect("the test configuration is valid");
     let jobs = Arc::new(AtomicUsize::new(0));
-    let env = InlineEnv(system, Inline(Arc::clone(&jobs)), None);
+    let env = InlineEnv(system, Inline(Arc::clone(&jobs), false), None);
     (TestEngine::new(config, Arc::new(env)), jobs)
+}
+
+/// An engine as [`engine`] makes it, whose compute jobs each run on a task of their own: a
+/// partition that hands a job to the pool lets every other task run before it goes on.
+pub(crate) fn yielding_engine(config: EngineConfigBuilder) -> TestEngine {
+    let config = config.build().expect("the test configuration is valid");
+    let env = InlineEnv(inline_system(), Inline(Arc::default(), true), None);
+    TestEngine::new(config, Arc::new(env))
 }
 
 /// An engine on the system environment with `config`, within the cores of the current runtime's
@@ -139,7 +147,7 @@ pub(crate) fn stepping_engine(config: EngineConfigBuilder, step: i64) -> TestEng
     let config = config.build().expect("the test configuration is valid");
     let jobs = Arc::new(AtomicUsize::new(0));
     let ticks = Some((Arc::new(AtomicU64::new(0)), step));
-    let env = InlineEnv(inline_system(), Inline(jobs), ticks);
+    let env = InlineEnv(inline_system(), Inline(jobs, false), ticks);
     TestEngine::new(config, Arc::new(env))
 }
 
@@ -188,13 +196,18 @@ impl Env for InlineEnv {
     }
 }
 
-/// A [`ComputePool`] that runs each job at once, on the calling thread, counting them.
-struct Inline(Arc<AtomicUsize>);
+/// A [`ComputePool`] that runs each job at once, on the calling thread, or on a task of its own
+/// where it yields, counting them.
+struct Inline(Arc<AtomicUsize>, bool);
 
 impl ComputePool for Inline {
     fn execute(&self, job: Job) {
         self.0.fetch_add(1, Ordering::SeqCst);
-        job();
+        if self.1 {
+            tokio::spawn(async move { job() });
+        } else {
+            job();
+        }
     }
 }
 

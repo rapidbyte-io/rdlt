@@ -4,6 +4,7 @@
 mod allowance;
 mod changes;
 mod held;
+mod json;
 mod normalized;
 mod pieces;
 mod queue;
@@ -22,12 +23,13 @@ use rdlt_connector::{ColumnPath, Permit, SchemaError, TableSchema};
 
 use self::changes::{Ignored, split_changes};
 use self::held::Held;
-use self::pieces::{Lowered, Piece, Pieces};
+use self::pieces::{Lowered, Piece, Pieces, RowTooLarge};
 use self::queue::queue;
 pub(super) use self::schemas::Schemas;
+use self::units::Units;
 use super::coalesce::{Flushed, Unit};
 use super::{ChangeMode, OpenSegment, PartitionContext, PartitionJob};
-use crate::budget::{Denied, MemoryBudget, Reservation, Shares, TooLarge};
+use crate::budget::{Denied, Lent, MemoryBudget, Reservation, Shares, TooLarge};
 use crate::compute::Pool;
 use crate::cost::CHANGE_ROW;
 use crate::error::{Error, ErrorKind};
@@ -43,31 +45,91 @@ pub(super) async fn write_flushed(
     schemas: &mut Schemas,
     flushed: Flushed,
 ) -> Result<(), Error> {
-    let kind = match flushed.unit {
-        Unit::Arrow(_) => PushKind::Arrow,
-        Unit::Json(_) => PushKind::Json,
-    };
-    let (units, shred) = units::of(job, context, flushed).await?;
-    open.shred.add(&shred);
-    write(job, context, open, schemas, units, kind).await
+    let Flushed { unit, permits, .. } = flushed;
+    match unit {
+        Unit::Arrow(batches) => {
+            let units = units::arrow(job, context, batches, permits).await?;
+            write(job, context, open, schemas, units, PushKind::Arrow).await
+        }
+        Unit::Json(pushes) => json::write_json(job, context, open, schemas, pushes, permits).await,
+    }
 }
 
-/// Reserves `bytes` for the lowering this partition does next, all of them in one request, so
-/// it waits only for what other lowerings hold; the wait ends when the attempt is cancelled, and
-/// at the budget's deadline.
+/// Where a flush's lowering reserves its bytes: the budget, or, for a JSON flush whose batches
+/// hold bytes of lowering, what was reserved with them and is lent to their lowering, so the
+/// partition never waits on the budget while it holds those batches.
+pub(super) enum Room {
+    Budget,
+    Lent(Lent),
+}
+
+impl Room {
+    /// The shares of `budget` as the flush's lowering takes them: a request is at most what is
+    /// lent, and a piece no more.
+    fn shares(&self, budget: &MemoryBudget) -> Shares {
+        let shares = budget.shares();
+        match self {
+            Self::Budget => shares,
+            Self::Lent(lent) => Shares {
+                request: lent.bytes(),
+                piece: shares.piece.min(lent.bytes()),
+                ..shares
+            },
+        }
+    }
+
+    /// The error for a row that alone takes more to lower than a request of the room may.
+    fn refusal(&self, job: &PartitionJob, budget: &MemoryBudget, row: &RowTooLarge) -> Error {
+        match self {
+            Self::Budget => row_too_large(job, row),
+            Self::Lent(lent) => {
+                let request = budget.shares().request;
+                let built = request.saturating_sub(lent.bytes());
+                json::row_beside_built(job, row, built, request)
+            }
+        }
+    }
+
+    /// Reserves `bytes` where they are free now, of what is lent or else of the budget; nothing
+    /// otherwise.
+    fn try_reserve(&self, budget: &MemoryBudget, bytes: u64) -> Option<Reservation> {
+        match self {
+            Self::Budget => budget.try_acquire_working(bytes),
+            Self::Lent(lent) => lent
+                .try_take(bytes)
+                .or_else(|| budget.try_acquire_working(bytes)),
+        }
+    }
+}
+
+/// Reserves `bytes` from `room` for the lowering this partition does next, all of them in one
+/// request, so it waits only for what other lowerings hold, or for its own pieces to be written
+/// where they are lent; the wait ends when the attempt is cancelled, and on the budget at its
+/// deadline.
 async fn reserve(
     job: &PartitionJob,
     context: &PartitionContext,
+    room: &Room,
     bytes: u64,
 ) -> Result<Reservation, Error> {
     let too_large = |large: TooLarge| {
-        let row = pieces::RowTooLarge {
+        let row = RowTooLarge {
             expanded: large.asked,
             limit: large.limit,
         };
         row_too_large(job, &row)
     };
-    reserving(job, context, bytes, too_large).await
+    let Room::Lent(lent) = room else {
+        return reserving(job, context, bytes, too_large).await;
+    };
+    let taken = tokio::select! {
+        biased;
+        () = context.cancel.cancelled() => {
+            return Err(Error::cancelled("the attempt was cancelled"));
+        }
+        taken = lent.take(bytes) => taken,
+    };
+    taken.map_err(too_large)
 }
 
 /// Reserves `bytes` of what lowering holds, as [`reserve`] does: `too_large` is the error for
@@ -104,9 +166,9 @@ fn reserved_times(context: &PartitionContext) -> u64 {
 /// - The unit is then cut into pieces by what lowering each holds at once as its table stores
 ///   it: its columns converted to the table's types and rendered as the destination stores
 ///   them, the columns it holds nothing in, and the metadata lowering adds. A row that alone
-///   takes more than one request may fails the write.
-/// - Each piece reserves that from the budget before it is lowered. The partition waits for a
-///   piece only while it holds none it has not handed to its lane; pieces the budget has room
+///   takes more than one request of the units' room may fails the write.
+/// - Each piece reserves that from the room before it is lowered. The partition waits for a
+///   piece only while it holds none it has not handed to its lane; pieces the room has space
 ///   for at once are lowered together, [`LOWERING_WINDOW`] at most.
 /// - A cut that reads no value, and a window of pieces whose lowering copies none, run on the
 ///   partition's task: their steps grow with the columns alone, fewer than a trip to the
@@ -119,20 +181,42 @@ async fn write(
     context: &PartitionContext,
     open: &mut OpenSegment,
     schemas: &mut Schemas,
-    units: Vec<(Vec<RecordBatch>, Held)>,
+    units: Units,
     kind: PushKind,
 ) -> Result<(), Error> {
     if let Some(shape) = context.tables.shape(job.table) {
         return normalized::write_normalized(job, context, open, units, &shape, kind).await;
     }
+    let Units { units, room } = units;
+    let shares = room.shares(&context.budget);
+    let planned = planned(job, context, open, schemas, units, shares).await?;
+    lowered(job, context, open, planned, room).await
+}
+
+/// A unit whose plan is found, to be cut into pieces as its table stores it.
+struct Planned {
+    plan: Arc<LoweringPlan>,
+    pieces: Pieces,
+    held: Held,
+}
+
+/// `units` judged and their plans found in order, since finding one may change the table, each to
+/// be cut by what lowering it takes as its table stores it within `shares`.
+async fn planned(
+    job: &PartitionJob,
+    context: &PartitionContext,
+    open: &mut OpenSegment,
+    schemas: &mut Schemas,
+    units: Vec<(Vec<RecordBatch>, Held)>,
+    shares: Shares,
+) -> Result<Vec<Planned>, Error> {
     let judged = judged(job, open, schemas, units)?;
     let rounding: BTreeSet<ColumnPath> = judged
         .iter()
         .flat_map(|unit| unit.incoming.rounding.iter().cloned())
         .collect();
-    let times = reserved_times(context);
-    let shares = context.budget.shares();
-    let mut window = Window::default();
+    let (max, limit) = piece_bounds(shares, reserved_times(context));
+    let mut planned = Vec::with_capacity(judged.len());
     for mut unit in judged {
         unit.incoming.rounding.clone_from(&rounding);
         let plan = context.tables.plan(job.table, unit.incoming).await?;
@@ -140,7 +224,6 @@ async fn write(
             Some(_) => (aligned(&unit.parts[0], &plan.stored()), CHANGE_ROW),
             None => (plan.stored(), 0),
         };
-        let (max, limit) = piece_bounds(shares, times);
         let lowered = Lowered {
             rendering: context.rendering.as_ref().clone(),
             stored,
@@ -149,8 +232,31 @@ async fn write(
             max,
             limit,
         };
-        let mut pieces = Pieces::new(unit.parts, lowered);
-        let mut held = Some(unit.held);
+        let pieces = Pieces::new(unit.parts, lowered);
+        let held = unit.held;
+        planned.push(Planned { plan, pieces, held });
+    }
+    Ok(planned)
+}
+
+/// Lowers the pieces of `planned`, each reserving what it takes from `room`, and queues them on
+/// the partition's lane, in order.
+async fn lowered(
+    job: &PartitionJob,
+    context: &PartitionContext,
+    open: &mut OpenSegment,
+    planned: Vec<Planned>,
+    room: Room,
+) -> Result<(), Error> {
+    let times = reserved_times(context);
+    let mut window = Window::new(room);
+    for Planned {
+        plan,
+        mut pieces,
+        held,
+    } in planned
+    {
+        let mut held = Some(held);
         while let Some(piece) = next(job, context, &mut pieces).await? {
             let bytes = piece.bytes.saturating_mul(times);
             let reserved = window.reserved(job, context, open, bytes).await?;
@@ -206,8 +312,8 @@ fn copies_nothing(
     }
 }
 
-/// The next piece of `pieces`, cut on the partition's task where cutting it reads no value, and
-/// on the compute pool otherwise.
+/// The next piece of `pieces`: one cut ahead, or else cut on the partition's task where cutting
+/// it reads no value, and on the compute pool otherwise.
 async fn next(
     job: &PartitionJob,
     context: &PartitionContext,
@@ -215,6 +321,9 @@ async fn next(
 ) -> Result<Option<Piece>, Error> {
     if pieces.done() {
         return Ok(None);
+    }
+    if let Some(piece) = pieces.ready() {
+        return Ok(Some(piece));
     }
     if !pieces.reads_values() {
         return pieces.next().map_err(|row| row_too_large(job, &row));
@@ -247,9 +356,9 @@ struct Lowering {
 /// A piece's lowering.
 type Run = Box<dyn FnOnce() -> Result<Prepared, Error> + Send>;
 
-/// Pieces reserved and not yet lowered, in order.
-#[derive(Default)]
+/// Pieces reserved from a room and not yet lowered, in order.
 struct Window {
+    room: Room,
     runs: Vec<Run>,
     held: Vec<Lowering>,
     /// Whether lowering a piece of the window copies values.
@@ -257,6 +366,15 @@ struct Window {
 }
 
 impl Window {
+    fn new(room: Room) -> Self {
+        Self {
+            room,
+            runs: Vec::new(),
+            held: Vec::new(),
+            copies: false,
+        }
+    }
+
     /// Adds a piece, lowered by `run`, held by `lowering`, whose lowering `copies` values or not.
     fn push(&mut self, run: Run, lowering: Lowering, copies: bool) {
         self.runs.push(run);
@@ -275,7 +393,7 @@ impl Window {
         if self.held.is_empty() {
             return None;
         }
-        budget.try_acquire_working(bytes)
+        self.room.try_reserve(budget, bytes)
     }
 
     /// Reserves `bytes` for a piece: with those the window holds where the budget has them at
@@ -292,7 +410,7 @@ impl Window {
             return Ok(reserved);
         }
         self.lower(job, context, open).await?;
-        reserve(job, context, bytes).await
+        reserve(job, context, &self.room, bytes).await
     }
 
     /// The window's pieces lowered, in order, each beside what holds it: on the calling task
@@ -444,7 +562,7 @@ fn full(pieces: usize) -> bool {
 
 /// The error for a row that alone takes more to lower than a request may take of the budget:
 /// no piece of it can be reserved.
-fn row_too_large(job: &PartitionJob, row: &pieces::RowTooLarge) -> Error {
+fn row_too_large(job: &PartitionJob, row: &RowTooLarge) -> Error {
     Error::new(
         ErrorKind::Source,
         format!(

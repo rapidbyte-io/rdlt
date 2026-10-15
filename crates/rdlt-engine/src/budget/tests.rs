@@ -749,3 +749,55 @@ async fn the_budget_signals_only_as_pressure_or_a_cursors_wait_begins_or_ends() 
     drop(second);
     assert_eq!(budget.signals(), 4);
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_part_of_a_lent_reservation_goes_back_to_it_and_not_to_the_budget() {
+    let budget = budget(BUDGET);
+    let lent = budget.acquire_working(1_000).await.unwrap().lend();
+    assert_eq!((lent.bytes(), budget.reserved()), (1_000, 1_000));
+    let mut part = lent.try_take(600).expect("the lent bytes have room");
+    assert!(lent.try_take(500).is_none(), "only 400 are left");
+    part.shrink(100);
+    let mut other = lent.try_take(900).expect("the part gave back 500");
+    let split = other.split(400);
+    assert_eq!(budget.reserved(), 1_000, "the budget lent all of it");
+    drop((part, split));
+    assert!(
+        lent.try_take(500).is_some(),
+        "the part and the split went back"
+    );
+    drop((lent, other));
+    assert_eq!(
+        budget.reserved(),
+        0,
+        "the last part gone, the budget has its bytes"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_request_of_lent_bytes_waits_for_a_part_pressing_for_its_write() {
+    let budget = budget(BUDGET);
+    let lent = budget.acquire_working(1_000).await.unwrap().lend();
+    let part = lent.try_take(800).expect("the lent bytes have room");
+    // The rest of the data is free: the request waits for its own part, not for the budget.
+    let waiting = lent.take(500);
+    tokio::pin!(waiting);
+    assert!(waits(&mut waiting).await);
+    assert!(
+        felt(&budget).await,
+        "whoever holds the part is pressed to write it"
+    );
+    drop(part);
+    let taken = waiting.await.expect("the part went back");
+    assert_eq!((taken.bytes(), budget.reserved()), (500, 1_000));
+    assert!(!felt(&budget).await);
+}
+
+#[tokio::test(start_paused = true)]
+async fn more_than_a_lent_reservation_holds_is_refused() {
+    let budget = budget(BUDGET);
+    let lent = budget.acquire_working(1_000).await.unwrap().lend();
+    let refused = lent.take(1_001).await.expect_err("no part could fit");
+    assert_eq!((refused.asked, refused.limit), (1_001, 1_000));
+    assert!(lent.try_take(1_001).is_none());
+}

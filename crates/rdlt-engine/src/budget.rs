@@ -33,7 +33,9 @@ use crate::watch;
 ///   so a request for lowering fits once the pieces before it are written.
 /// - **No hold and wait.** Whoever holds what lowering reserved, a piece on the compute pool, on
 ///   its lane or in the log's writer, needs no budget to release it. A partition waits for
-///   lowering while it holds pushes, and nothing waits for pushes while it holds anything.
+///   lowering while it holds pushes, and nothing waits for pushes while it holds anything; while
+///   it holds lowering's bytes it lowers inside what it reserved with them, a [`Lent`] it waits
+///   on for its own pieces.
 /// - **No wait is for ever.** A wait ends at the budget's deadline with what held the budget, and
 ///   a request nobody waits for any more leaves the queue at once.
 ///
@@ -380,15 +382,35 @@ impl Drop for Pressing {
 /// Reserved bytes, released when dropped.
 #[must_use = "dropping a reservation releases its bytes"]
 pub(crate) struct Reservation {
-    budget: Option<Arc<Mutex<Ledger>>>,
+    home: Option<Home>,
     class: Class,
     bytes: u64,
+}
+
+/// Where a reservation's bytes go back to: the budget, or the reservation they were lent from.
+#[derive(Clone)]
+enum Home {
+    Budget(Arc<Mutex<Ledger>>),
+    Lent(Arc<Lending>),
+}
+
+impl Home {
+    fn release(&self, class: Class, bytes: u64) {
+        match self {
+            Self::Budget(shared) => {
+                let mut ledger = shared.lock();
+                ledger.release(class, bytes);
+                admit_waiting(shared, &mut ledger);
+            }
+            Self::Lent(lending) => lending.give_back(bytes),
+        }
+    }
 }
 
 impl Reservation {
     fn of(shared: &Arc<Mutex<Ledger>>, class: Class, bytes: u64) -> Self {
         Self {
-            budget: Some(Arc::clone(shared)),
+            home: Some(Home::Budget(Arc::clone(shared))),
             class,
             bytes,
         }
@@ -397,7 +419,7 @@ impl Reservation {
     /// Lets go of the ledger without releasing: for a reservation whose bytes its holder
     /// releases itself.
     fn forget(mut self) {
-        self.budget = None;
+        self.home = None;
     }
 
     /// The bytes held.
@@ -408,16 +430,14 @@ impl Reservation {
     /// Holds `bytes` from now where they are fewer, and releases the rest to whoever waits; a
     /// reservation never grows.
     pub(crate) fn shrink(&mut self, bytes: u64) {
-        let Some(shared) = &self.budget else {
+        let Some(home) = &self.home else {
             return;
         };
         if bytes >= self.bytes {
             return;
         }
-        let mut ledger = shared.lock();
-        ledger.release(self.class, self.bytes - bytes);
+        home.release(self.class, self.bytes - bytes);
         self.bytes = bytes;
-        admit_waiting(shared, &mut ledger);
     }
 
     /// Takes `bytes` of what is held, or all of it where it holds fewer, as a reservation of
@@ -426,9 +446,93 @@ impl Reservation {
         let bytes = bytes.min(self.bytes);
         self.bytes -= bytes;
         Self {
-            budget: self.budget.clone(),
+            home: self.home.clone(),
             class: self.class,
             bytes,
+        }
+    }
+
+    /// The reservation lent, a part at a time, to its holder's own requests: a part goes back to
+    /// it, not to the budget, so a holder that needs more waits for its own parts to be released.
+    pub(crate) fn lend(self) -> Lent {
+        let free = self.bytes;
+        Lent(Arc::new(Lending {
+            held: self,
+            free: Mutex::new(free),
+            returned: tokio::sync::Notify::new(),
+        }))
+    }
+}
+
+/// A reservation lent to its holder's requests, a part at a time; the budget has its bytes back
+/// once it and every part are gone.
+#[derive(Clone)]
+pub(crate) struct Lent(Arc<Lending>);
+
+struct Lending {
+    held: Reservation,
+    /// Bytes no part holds.
+    free: Mutex<u64>,
+    /// Notified as a part goes back.
+    returned: tokio::sync::Notify,
+}
+
+impl Lending {
+    fn give_back(&self, bytes: u64) {
+        *self.free.lock() += bytes;
+        self.returned.notify_one();
+    }
+}
+
+impl Lent {
+    /// The bytes lent, the most one request of them may take.
+    pub(crate) fn bytes(&self) -> u64 {
+        self.0.held.bytes
+    }
+
+    /// Takes `bytes` of what is lent where no part holds them; nothing otherwise.
+    pub(crate) fn try_take(&self, bytes: u64) -> Option<Reservation> {
+        let mut free = self.0.free.lock();
+        (bytes <= *free).then(|| {
+            *free -= bytes;
+            Reservation {
+                home: Some(Home::Lent(Arc::clone(&self.0))),
+                class: self.0.held.class,
+                bytes,
+            }
+        })
+    }
+
+    /// Takes `bytes` of what is lent, waiting for parts to go back and pressing their holders to
+    /// write them meanwhile.
+    ///
+    /// # Errors
+    ///
+    /// A [`TooLarge`] for more than is lent, which no wait could take.
+    pub(crate) async fn take(&self, bytes: u64) -> Result<Reservation, TooLarge> {
+        if bytes > self.bytes() {
+            return Err(TooLarge {
+                what: self.0.held.class.what(),
+                asked: bytes,
+                limit: self.bytes(),
+            });
+        }
+        if let Some(taken) = self.try_take(bytes) {
+            return Ok(taken);
+        }
+        let _pressing = match &self.0.held.home {
+            Some(Home::Budget(shared)) => {
+                shared.lock().pressing(true);
+                Some(Pressing(Arc::clone(shared)))
+            }
+            _ => None,
+        };
+        loop {
+            // A part that went back since the last try left its notice.
+            self.0.returned.notified().await;
+            if let Some(taken) = self.try_take(bytes) {
+                return Ok(taken);
+            }
         }
     }
 }
@@ -441,11 +545,8 @@ impl fmt::Debug for Reservation {
 
 impl Drop for Reservation {
     fn drop(&mut self) {
-        let Some(shared) = self.budget.take() else {
-            return;
-        };
-        let mut ledger = shared.lock();
-        ledger.release(self.class, self.bytes);
-        admit_waiting(&shared, &mut ledger);
+        if let Some(home) = self.home.take() {
+            home.release(self.class, self.bytes);
+        }
     }
 }
