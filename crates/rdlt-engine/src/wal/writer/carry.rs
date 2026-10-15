@@ -7,6 +7,7 @@
 //! Replay stages only the segments of commits without receipts, and the old chunk's commits all
 //! have theirs.
 
+use std::cmp::Reverse;
 use std::collections::BTreeSet;
 use std::sync::atomic::Ordering;
 
@@ -17,6 +18,12 @@ use super::super::store::Chunk;
 use super::Log;
 use super::chunk::{Logged, Written};
 use crate::error::Error;
+
+/// An old chunk a relief may carry: its number, and the tables its open frames are of.
+struct Candidate {
+    number: u64,
+    tables: BTreeSet<u32>,
+}
 
 /// The old chunks a relief carries, what it copies of them, and what deleting them frees.
 #[derive(Default)]
@@ -50,15 +57,22 @@ impl Log {
         // ends it, beside the copies.
         let beside = len.saturating_add(ending);
         let described = staged.map(|written| written.schemas.keys().copied().collect());
-        let mut chosen = self.chosen(room, described.unwrap_or_default(), |copied, copy| {
-            copied == 0 && !batched || beside.saturating_add(copied).saturating_add(copy) <= most
-        });
+        let candidates = self.candidates();
+        let mut chosen = self.chosen(
+            &candidates,
+            room,
+            described.unwrap_or_default(),
+            |copied, copy| {
+                copied == 0 && !batched
+                    || beside.saturating_add(copied).saturating_add(copy) <= most
+            },
+        );
         let mut first = false;
         // Where what fits beside the chunk staged's batch frames does not pay, what fits a chunk
         // of its own may.
         if batched && chosen.gained.saturating_add(unneeded) <= chosen.copied.saturating_add(ending)
         {
-            let fresh = self.chosen(room, BTreeSet::new(), |copied, copy| {
+            let fresh = self.chosen(&candidates, room, BTreeSet::new(), |copied, copy| {
                 copied == 0 || next.saturating_add(copied).saturating_add(copy) <= most
             });
             first = !fresh.numbers.is_empty();
@@ -88,63 +102,74 @@ impl Log {
         Ok(true)
     }
 
-    /// The old chunks to carry, those that free the most beside their copy first, the oldest
-    /// first among equals, each whose copy fits `room` beside those before it and `fits` the
-    /// chunk it goes to, given what those before it copied, into a chunk holding the schema
-    /// frames of the tables `described` names.
+    /// The old chunks a relief may carry, in the order it takes them: first those holding
+    /// settled frames, those that free the most beside their copy first, then those holding open
+    /// frames alone, those with the fewest open bytes first, the oldest first among equals.
     ///
     /// A chunk that frees little beside a large copy, as one a relief gathered open frames into,
-    /// comes after the chunks that free more, and takes only the room they leave.
+    /// comes after the chunks that free more, and takes only the room they leave; and where any
+    /// two chunks of open frames alone fit a chunk beside every schema frame, the two with the
+    /// fewest open bytes do, so a gathered chunk taken first leaves none of them apart.
+    fn candidates(&self) -> Vec<Candidate> {
+        let mut candidates: Vec<Candidate> = self
+            .carriable()
+            .into_iter()
+            .map(|number| {
+                let tables = self.written[&number]
+                    .batches
+                    .iter()
+                    .filter(|logged| !self.settled.contains(logged.segment))
+                    .map(|logged| logged.table)
+                    .collect();
+                Candidate { number, tables }
+            })
+            .collect();
+        candidates.sort_by_key(|candidate| {
+            let written = &self.written[&candidate.number];
+            if self.settles(written) {
+                let frees = written.len.saturating_sub(written.copies());
+                (false, Reverse(frees), 0)
+            } else {
+                (true, Reverse(0), written.open)
+            }
+        });
+        candidates
+    }
+
+    /// Of `candidates`, in turn, those to carry: each whose copy fits `room` beside those before
+    /// it and `fits` the chunk it goes to, given what those before it copied, into a chunk
+    /// holding the schema frames of the tables `described` names.
     fn chosen(
         &self,
+        candidates: &[Candidate],
         mut room: u64,
         mut described: BTreeSet<u32>,
         fits: impl Fn(u64, u64) -> bool,
     ) -> Chosen {
         let mut chosen = Chosen::default();
-        let mut carriable = self.carriable();
-        carriable.sort_by_key(|number| {
-            let written = &self.written[number];
-            std::cmp::Reverse(written.len.saturating_sub(written.copies()))
-        });
-        for number in carriable {
-            let written = &self.written[&number];
-            let copy = self.copy_len(written, &described);
+        for candidate in candidates {
+            let written = &self.written[&candidate.number];
+            let copy = copy_len(written, &candidate.tables, &described);
             if copy == 0 || copy > room || !fits(chosen.copied, copy) {
                 continue;
             }
-            described.extend(
-                written
-                    .schemas
-                    .keys()
-                    .filter(|table| self.opens(written, **table)),
-            );
+            described.extend(&candidate.tables);
             room -= copy;
             chosen.copied = chosen.copied.saturating_add(copy);
             chosen.gained = chosen.gained.saturating_add(written.len);
-            chosen.numbers.push(number);
+            chosen.numbers.push(candidate.number);
         }
         chosen
     }
 
-    /// Bytes: what a carry of `written` writes to a chunk holding the schema frames of the
-    /// tables `described` names: its open frames, and the schema frame of each of their tables
-    /// the chunk lacks.
-    fn copy_len(&self, written: &Written, described: &BTreeSet<u32>) -> u64 {
-        written
-            .schemas
-            .iter()
-            .filter(|(table, _)| !described.contains(table) && self.opens(written, **table))
-            .map(|(_, span)| span.len)
-            .fold(written.open, u64::saturating_add)
-    }
-
-    /// Whether `written` holds an open frame of the table at `table`.
-    fn opens(&self, written: &Written, table: u32) -> bool {
-        written
-            .batches
-            .iter()
-            .any(|logged| logged.table == table && !self.settled.contains(logged.segment))
+    /// Whether `written` holds frames a carry frees beside what holds its open frames: a settled
+    /// segment's, or a commit's.
+    fn settles(&self, written: &Written) -> bool {
+        !written.commits.is_empty()
+            || written
+                .segments
+                .iter()
+                .any(|segment| self.settled.contains(*segment))
     }
 
     /// The old chunks not carried yet whose commits all have receipts and whose segments are
@@ -213,4 +238,15 @@ impl Log {
             .add(|counters| counters.log.carried = counters.log.carried.saturating_add(wrote));
         Ok(wrote)
     }
+}
+
+/// Bytes: what a carry of `written`, whose open frames are of `tables`, writes to a chunk
+/// holding the schema frames of the tables `described` names: its open frames, and the schema
+/// frame of each of their tables the chunk lacks.
+fn copy_len(written: &Written, tables: &BTreeSet<u32>, described: &BTreeSet<u32>) -> u64 {
+    tables
+        .difference(described)
+        .filter_map(|table| written.schemas.get(table))
+        .map(|span| span.len)
+        .fold(written.open, u64::saturating_add)
 }
