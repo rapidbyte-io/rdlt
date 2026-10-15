@@ -320,14 +320,14 @@ pressure alone: neither halved, as in process, and throughput rose 1.3 % past `m
 
 A plain Arrow batch's cut and lowering run on the partition's task where they read and write no
 value ([passthrough.md](passthrough.md), "Cutting and lowering where nothing is copied"). On the
-production slice: `main` at `223b7f6a` against this change, 2026-10-14, the host on CPUs 0–3 and
+production slice: `main` at `223b7f6a` against the change, 2026-10-14, the host on CPUs 0–3 and
 the spawned connectors on 4–11 (apart) or on 0–3 beside it (shared), three rounds of
 `process/socket/both` in frames of 80 000 and 1 000 rows from 1 and 16 partitions, each round
 interleaved `main`, change, change, `main` under the measurement lock, started at a one-minute load
 average of 1.1 to 1.5 (2.1 to 2.3 before the shared ones, the connectors' processes among it).
 MB/s, the median of six runs and their range:
 
-| Placement | Frames | Partitions | `223b7f6a` | This change | Change |
+| Placement | Frames | Partitions | `223b7f6a` | The change | Change |
 |---|---|---|---|---|---|
 | Apart | 64×80 000 | 1 | 1 377 [1 306–1 473] | 1 451 [1 234–1 602] | +5 % |
 | Apart | 64×80 000 | 16 | 1 195 [1 151–1 286] | 1 227 [1 160–1 284] | +3 % |
@@ -341,16 +341,37 @@ MB/s, the median of six runs and their range:
 - Frames of 1 000 rows from one partition gain most, 17 % apart and 38 % shared: two pool trips
   a frame of 5 120 are gone, and their wakes with them.
 - One partition's large frames on cores shared with the connectors lose 7 %: in each round both
-  of this change's runs read below both of `main`'s but one (1 313 against 1 317). It is not CPU
+  of the change's runs read below both of `main`'s but one (1 313 against 1 317). It is not CPU
   the change adds: over ten seconds of the case, `perf stat` counts the host and its connectors
   the same instructions and user cycles on both sides (130.5 G and 41.3 G on `main`, 130.4 G and
   41.5 G here), and the two jobs it moves take about 70 µs a frame. Two more rounds of the case
-  alone, MB/s, the median of four runs: `main` 1 404, this change 1 304; with a yield after each
+  alone, MB/s, the median of four runs: `main` 1 404, the change 1 304; with a yield after each
   cut and window on the partition's task 1 300; with the cut on the pool 1 353; with the lowering
   on the pool 1 381, each within the others' ranges. A yield does not bring it back; what the
   pool's trips gave a partition whose read and writes share four cores with its connectors,
   these rounds do not show.
 - Sixteen partitions read within 3 % of `main` in both placements, inside each other's ranges.
+
+### A compute thread per core
+
+The host's compute pool with a thread for each of its four cores beside two runtime workers
+([passthrough.md](passthrough.md), "A compute thread per core"), against two and two with cuts
+and lowerings on the partition's task, in the last two rounds above, each interleaved before,
+change, change, before. MB/s, the median of four runs and their range:
+
+| Placement | Frames | Partitions | Before, 2 + 2 | This change, 2 + 4 |
+|---|---|---|---|---|
+| Apart | 64×80 000 | 1 | 1 382 [1 234–1 469] | 1 405 [1 203–1 533] |
+| Apart | 64×80 000 | 16 | 1 227 [1 160–1 284] | 1 178 [1 159–1 206] |
+| Apart | 5 120×1 000 | 1 | 1 950 [1 935–1 954] | 1 955 [1 940–1 964] |
+| Apart | 5 120×1 000 | 16 | 1 487 [1 474–1 494] | 1 480 [1 463–1 491] |
+| Shared | 64×80 000 | 1 | 1 248 [1 150–1 313] | 1 299 [1 236–1 331] |
+| Shared | 64×80 000 | 16 | 1 064 [1 043–1 070] | 1 047 [1 032–1 054] |
+| Shared | 5 120×1 000 | 1 | 1 498 [1 483–1 531] | 1 514 [1 508–1 531] |
+| Shared | 5 120×1 000 | 16 | 1 139 [1 104–1 159] | 1 148 [1 072–1 166] |
+
+Every case lies within the other side's range: the served Arrow path leaves the pool asleep, its
+two more threads with it.
 
 ## A served write in two stages
 
