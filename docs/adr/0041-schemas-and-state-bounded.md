@@ -43,7 +43,7 @@ one run to the next, broke both:
 - **Persisted forms are versioned and strict.** Every persisted struct refuses a field it does not
   know, and fields that defaulted for records written before them are required. A member that may
   hold nothing is written as `null` and required on read too: a record lacking it is refused, not
-  read as holding nothing. State records are format 2 and the log is of format 5 (ADR 0045); the
+  read as holding nothing. State records are format 2 and the log is of format 6 (ADR 0045); the
   files destination's manifests and catalog versions, and the merge key a SQL destination's staged
   segment records, carry a format, 1, checked on read. What an earlier build wrote is refused, as
   `state_invalid`, `wal_unreadable`, `manifest_invalid`, `catalog_invalid` or an internal error for
