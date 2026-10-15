@@ -5,7 +5,7 @@ Status: accepted, 2026-09-24; the per-value differential it defers is ADR 0011's
 ## Context
 
 M3 of the spec was split three ways: M3a shreds JSON (ADR 0007); M3b makes lowering a plan
-computed once per table view and incoming schema, runs it on the compute pool, dictionary-encodes
+computed once per table view and incoming schema, runs it off the runtime, dictionary-encodes
 the load id, and evaluates `arrow-json` as a fast path for flat JSON; M3c brings `normalize`,
 child tables and lineage ids. Building M3b surfaced decisions the spec leaves open.
 
@@ -21,11 +21,24 @@ child tables and lineage ids. Building M3b surfaced decisions the spec leaves op
   the rows no later row of their key supersedes), and adds the metadata columns for those rows. A
   row's sequence is its position among the rows received, and a change stream's row's is its
   source's position.
-- **Lowering runs on the compute pool.** A partition finds each batch's plan in order, since
-  finding it may change the table, then lowers the flush's batches on the pool eight at a time,
-  Arrow batches concatenated there too. Each window's lowered batches are charged to the memory
-  budget as soon as it returns, then queued on their lane in order: a flush of the default size
-  is one window, and a larger one never holds more than eight lowered batches uncharged.
+- **Lowering that copies values runs on the compute pool.** A partition finds each batch's plan
+  in order, since finding it may change the table, then lowers the flush's batches eight at a
+  time, Arrow batches concatenated there too. Each window's lowered batches are charged to the
+  memory budget as soon as it returns, then queued on their lane in order: a flush of the default
+  size is one window, and a larger one never holds more than eight lowered batches uncharged.
+  - A window runs on the compute pool where lowering any of its batches reads or writes a value,
+    and on the partition's task where none does.
+  - A batch is lowered copying nothing where its plan hands every column to the table's column
+    of its own type, stored in that type, whose values need no check (no decimal, whose
+    precision is checked value by value, no typed null and no nested value); keeps every row;
+    adds only the load's constant columns, already built for as many rows of its load; and the
+    batch is one push's, not several to concatenate, nor a change batch to split. Lowering it
+    clones a handle a column and checks their lengths.
+  - Such a lowering costs in proportion to the batch's columns, which the schema's limit bounds,
+    and less than a trip to the pool, which wakes a thread there and the partition's task on its
+    way back; every other lowering costs in proportion to its rows. The rule follows from the
+    plan and the batch's types, so no threshold is tuned: a load's first piece, which builds the
+    constant columns, goes to the pool, and its next pieces do not.
 - **Constant metadata columns are dictionaries.** `_rdlt_load_id` and `_rdlt_loaded_at` hold one
   value per load, so each is a dictionary of one value with an `Int8` key per row (spec §8.5
   names the load id; the load start is constant alike). A plan builds them once and slices them

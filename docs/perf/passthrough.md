@@ -1,13 +1,16 @@
 # Arrow passthrough
 
 In-process Arrow passthrough is held to a bound on its engine overhead against a bare loop writing
-the same batches to the same destination: on the performance cores at most 17 % at 64 batches a
-run, of which the part each batch pays is at most 13 %, and on the efficient cores at most 10 %.
-Every table stores the `_rdlt_load_id` and `_rdlt_loaded_at` columns, which the lane encodes with
-each batch's own. Each batch crosses from its partition's thread to its lane's, and the runtime's
-workers, parked and woken for it, run at a lower clock than a thread that never waits. These two
-make the part each batch pays inherent. The overhead is a ratio measured on one machine, so this
-record keeps the method with the figures.
+the same batches to the same destination: on the performance cores at most 19 % at 64 batches a run,
+of which the part each batch pays is at most 13 %, and on the efficient cores at most 10 %. The
+bound on the performance cores is what the paired cell reads with its cuts and lowerings on the
+partition's task, which buys sixteen partitions 5–7 % more throughput in batches of 1 000 and 8 000
+rows, and one served partition 17–38 % more in frames of 1 000 rows ("Cutting and lowering where
+nothing is copied"). Every table stores the `_rdlt_load_id` and `_rdlt_loaded_at` columns, which the
+lane encodes with each batch's own. Each batch crosses from its partition's thread to its lane's,
+and the runtime's workers, parked and woken for it, run at a lower clock than a thread that never
+waits. These two make the part each batch pays inherent. The overhead is a ratio measured on one
+machine, so this record keeps the method with the figures.
 
 ## Method
 
@@ -66,52 +69,48 @@ record keeps the method with the figures.
 
 ## Results
 
-This change on `90ce76c2`, 2026-10-13. Intel Core Ultra X7 358H (4 performance, 8 efficient and
-4 low-power cores) on mains power, platform profile `performance`, governor `powersave`, energy
-preference `performance`, turbo on, the bench on the performance cores (`0-3`).
+Intel Core Ultra X7 358H (4 performance, 8 efficient and 4 low-power cores) on mains power,
+platform profile `performance`, governor `powersave`, energy preference `performance`, turbo on.
 
 ### The paired cell
 
-Five rounds of `90ce76c2` and five of this change, interleaved main, change, change, main, the
-one-minute load average 1.2 to 1.7 at their starts. Each figure is the median of a side's five
-rounds, their range in brackets; the interval's ends are the medians of the rounds' ends. Six
-earlier rounds ran while other load held the machine (one-minute load 2.3, `90ce76c2`'s own
-overhead reading 22.8 % in one of them) and are left out.
-
-The efficient-cores row is not re-measured: it is from commit `864cb1f2`, 2026-10-10, the median
-of two rounds interleaved with the shredding benches in opposite orders, each started at a
-one-minute load average of 0.21 to 1.00, each within 3 % of the median (1.5 points for a
-percentage).
+`main` at `223b7f6a` and this change, 2026-10-14: five rounds on each kind of core, each
+interleaved main, change, change, main under the measurement lock and started once the
+one-minute load average fell under 1.5 (1.3 to 1.9 at the rounds' starts). Each figure is the
+median of a side's ten runs, their range in brackets; the interval's ends are the medians of the
+runs' ends. Instructions a cycle and CPUs busy are `perf stat`'s, as `just bench` takes them.
 
 | Cores | Tree | tokio workers + compute threads | Engine | Overhead | 95 % interval | Instructions a cycle | CPUs busy | Bound |
 |---|---|---|---|---|---|---|---|---|
-| 4 performance (`0-3`) | `90ce76c2` | 2 + 2 | 29.6 ms | 15.5 % [14.9–16.0] | 14.9–16.5 % | 0.59 | 1.26 | ≤ 17 % at 64 batches, ≤ 13 % a batch |
-| 4 performance (`0-3`) | this change | 2 + 2 | 29.9 ms | 15.8 % [14.9–16.2] | 14.9–16.5 % | 0.60 | 1.26 | ≤ 17 % at 64 batches, ≤ 13 % a batch |
-| 4 efficient (`4-7`) | `864cb1f2` | 2 + 2 | 37.7 ms | 8.4 % [8.0–8.8] | 8.0–8.7 % | 0.55 | 1.30 | ≤ 10 % |
+| 4 performance (`0-3`) | `223b7f6a` | 2 + 2 | 29.1 ms | 14.8 % [14.1–17.6] | 14.3–15.7 % | 0.59 | 1.26 | ≤ 19 % at 64 batches, ≤ 13 % a batch |
+| 4 performance (`0-3`) | this change | 2 + 2 | 29.6 ms | 17.5 % [16.5–18.7] | 16.8–18.3 % | 0.58 | 1.15 | ≤ 19 % at 64 batches, ≤ 13 % a batch |
+| 4 efficient (`4-7`) | `223b7f6a` | 2 + 2 | 39.2 ms | 8.1 % [7.8–9.8] | 7.9–8.4 % | 0.53 | 1.26 | ≤ 10 % |
+| 4 efficient (`4-7`) | this change | 2 + 2 | 39.4 ms | 8.8 % [8.3–9.9] | 8.6–9.0 % | 0.53 | 1.19 | ≤ 10 % |
 
-On both kinds of core the overhead is within its bound, and the change's interval lies within
-`90ce76c2`'s. The paired cell runs within 1 GiB through one writer, as the bound is stated:
-within the default 256 MiB the same cell read 22.6 % and 23.3 % in two rounds through one writer,
-and within 1 GiB through sixteen writers 17.9 % and 18.4 %.
+On both kinds of core the overhead is within its bound; the part each batch pays is 11.8 %
+("Cutting and lowering where nothing is copied"). The paired cell runs within 1 GiB through one
+writer, as the bound is stated: on `90ce76c2`, within the default 256 MiB the same cell read
+22.6 % and 23.3 % in two rounds through one writer, and within 1 GiB through sixteen writers
+17.9 % and 18.4 %.
 
-The allocations of one run of each side, the same in every round of each tree:
+The allocations of one run of each side:
 
 | Side | Tree | Allocations, reallocations and bytes a row | A batch |
 |---|---|---|---|
 | Bare loop | both | 0.001, 0.000, 3 B | 62.062, 22.156, 270028 B |
-| Engine | `90ce76c2` | 0.004, 0.000, 4 B | 352.188, 30.484, 318174 B |
-| Engine | this change | 0.004, 0.000, 4 B | 354.172, 30.531, 318271 B |
+| Engine | `223b7f6a` | 0.004, 0.000, 4 B | 354.172, 30.531, 318292 B |
+| Engine | this change | 0.004, 0.000, 4 B | 345.203, 31.531, 315970 B |
 
 ### The chosen cells
 
-Three rounds of `just bench passthrough 0-3`, the one-minute load average 0.9 to 2.1 at their
-starts; each round took 414 to 418 s. Each figure is the median of the three rounds, the range
-of the throughput in brackets; every cell's throughput lies within 3 % of its median but
-`8000x640/1p/1s/end` (one round 8.3 % below) and the 80 000-row cells of four and sixteen
+On `90ce76c2`, 2026-10-13: three rounds of `just bench passthrough 0-3`, the one-minute load average
+0.9 to 2.1 at their starts; each round took 414 to 418 s. Each figure is the median of the three
+rounds, the range of the throughput in brackets; every cell's throughput lies within 3 % of its
+median but `8000x640/1p/1s/end` (one round 8.3 % below) and the 80 000-row cells of four and sixteen
 partitions (one round 11 to 12 % off). The readings are the last run's of each round; their medians:
-commits made due by size and by the end, the work and intake waits and the pool's queue and way
-back as percentages of the run summed over its tasks, the pool idle, the lanes written and the
-budget's signals a batch.
+commits made due by size and by the end, the work and intake waits and the pool's queue and way back
+as percentages of the run summed over its tasks, the pool idle, the lanes written and the budget's
+signals a batch.
 
 | Cell | MB/s | Engine a run | Commits (size + end) | Work | Intake | Pool idle | Queue and way back | Lanes | Signals |
 |---|---|---|---|---|---|---|---|---|---|
@@ -187,7 +186,7 @@ measurement lock. Nothing here changed the engine.
 | Keep two flushes in flight a partition | The cost is there: worth a prototype |
 | Release held lane writes at a watermark | Prototyped: the waits stay, not built |
 | Count each batch's progress instead of sending it | Built: the cost fell by a quarter |
-| Cut a unit's pieces in one job | The cost is there: worth building |
+| Cut a unit's pieces in one job | Built as cutting and lowering where nothing is copied |
 | Walk the log's base outside its lock | Not built: the measurement shows no cost |
 
 Each change's rule and readings; a profile's share in brackets puts back the samples the method
@@ -244,7 +243,8 @@ leaves out:
 - **Cut a unit's pieces in one job.** Rule: the pool's queue and way back at least 5 % of the run
   at 1 000 rows. Matrix: 29.9 % to 1 336 % in the 13 cells of 1 000 rows; 32.1 % from one
   partition, at least 16 % of the run with two jobs a batch. Production slice, frames of 1 000
-  rows: 60.6 % to 82.2 %.
+  rows: 60.6 % to 82.2 %. Built in another shape: a plain Arrow batch's cut and lowering read and
+  write no value, so they take no trip at all ("Cutting and lowering where nothing is copied").
 - **Walk the log's base outside its lock.** Rule: with 4 or more partitions logging, the waits for
   that lock at least 2 % of the commits' time. Driver: 0.004 % [0.002–0.027] from 4 partitions,
   0.002 % [0.001–0.321] from 16.
@@ -254,10 +254,10 @@ Notes on the readings:
 - **Sixteen lanes.** The engine set to sixteen lanes and a sink declaring sixteen writers,
   sixteen partitions of `80000x64` wrote through 14 lanes: two lanes wrote nothing while others
   took more than one partition. Routing is deterministic, so one run decides it.
-- **The pool's jobs a batch.** Every 1 000-row cell runs two jobs a batch. The queue and way back
-  are summed over jobs, and a job's way back includes waiting for the job before it in the same
-  call, so the sum overstates the time a partition waits for the pool by at most the jobs it has
-  in flight: two.
+- **The pool's jobs a batch.** On `2e49c6bae25b` every 1 000-row cell ran two jobs a batch; a
+  plain Arrow run now takes one job a load. The queue and way back are summed over jobs, and a
+  job's way back includes waiting for the job before it in the same call, so the sum overstated
+  the time a partition waited for the pool by at most the jobs it had in flight: two.
 - **Normalized partitions.** The driver loads the first 200 000 rows of the orders corpus in pushes
   of 10 000 rows into the null sink within the default 256 MiB, five runs each from 4 and 16
   partitions: 180–196 ms a run, pushes waiting for room 24.1–26.1 % and 34.9–48.3 % of the run.
@@ -415,6 +415,87 @@ round.
   40 % of the logged run, and 0.487 × 328 ≈ 160 ms on disk, 44 %. The fsyncs a commit stay, so
   on disk the gain is less. It is an upper bound until a prototype measures it, and it applies
   only to pipelines that mix the kinds, in proportion to their replayable share.
+
+## Cutting and lowering where nothing is copied
+
+A cut whose measure reads no value (every column a scalar, or strings and bytes measured by their
+offsets) and a window of pieces whose lowering copies none (each column handed to its table as it
+arrives, the load's constant columns already built) run on the partition's task; every other job
+goes to the compute pool (ADR 0008, ADR 0039). A plain Arrow load takes one pool job, its first
+lowering, which builds the constant columns. Measured on `main` at `223b7f6a`, 2026-10-14,
+against this change, CPUs 0–3 (two runtime workers and two compute threads) unless named, in
+holds of the measurement lock, each started once the one-minute load average fell under 1.5,
+every round interleaved `main`, change, change, `main`.
+
+**The paired cell.** `passthrough/paired/2+2`, five rounds on each kind of core, ten runs a side:
+the median, the range in brackets, and the medians of the runs' 95 % interval ends.
+
+| Cores | Tree | Engine | Overhead | 95 % interval |
+|---|---|---|---|---|
+| 4 performance (`0-3`) | `223b7f6a` | 29.1 ms | 14.8 % [14.1–17.6] | 14.3–15.7 % |
+| 4 performance (`0-3`) | this change | 29.6 ms | 17.5 % [16.5–18.7] | 16.8–18.3 % |
+| 4 efficient (`4-7`) | `223b7f6a` | 39.2 ms | 8.1 % [7.8–9.8] | 7.9–8.4 % |
+| 4 efficient (`4-7`) | this change | 39.4 ms | 8.8 % [8.3–9.9] | 8.6–9.0 % |
+
+**What a batch pays.** The paired cell's batches at 8, 16, 32, 64 and 128 a run, blocks of bare
+loop, engine, engine, bare loop, the median of 15 blocks each; a line through each run, four runs
+a side over two rounds:
+
+| Tree | Bare loop a batch | Engine a batch | The part each batch pays | Paid once a run |
+|---|---|---|---|---|
+| `223b7f6a` | 0.371–0.379 ms | 0.409–0.418 ms | 9.9 % [9.1–10.1] | 1.22 ms [1.13–1.48] |
+| this change | 0.378–0.384 ms | 0.420–0.427 ms | 11.8 % [10.5–12.7] | 1.22 ms [1.02–1.46] |
+
+The change costs the paired cell about three points on the performance cores, most of it in what
+each batch pays, which stays within its 13 %; what a run pays once is unchanged. Each batch's cut
+and lowering, which a compute thread ran beside the lane's write, now run on the partition's worker.
+On the efficient cores it costs a point, within their 10 %. The owner restated the bound at the
+measured figure for the gains below.
+
+**Sixteen partitions.** The chosen cells of 16 partitions, two rounds, four runs a side, MB/s:
+
+| Cell | `223b7f6a` | This change | Change |
+|---|---|---|---|
+| `80000x64/16p/1s/end` | 16 536 [15 604–17 356] | 16 586 [15 882–18 131] | +0.3 % |
+| `8000x640/16p/1s/end` | 15 315 [14 983–15 702] | 16 435 [16 334–16 451] | +7.3 % |
+| `1000x5120/16p/1s/end` | 4 789 [4 266–4 888] | 5 112 [5 096–5 144] | +6.7 % |
+| `1000x5120/16p/1s/16th` | 4 808 [4 430–4 835] | 5 072 [4 952–5 094] | +5.5 % |
+
+In batches of 1 000 and 8 000 rows the change's range lies above `main`'s. The pool's queue and
+way back fell from 272–1 428 % of the run to 0.1–16 %, its idle share from 78–96 % to 99–100 %.
+
+**JSON.** A driver outside the repository ran the nested and orders corpora into the null sink
+(nested 128 MiB of pushes, orders 320 000 rows normalized) from 1 and 16 partitions, nine runs a
+side each round, two rounds, ms a run:
+
+| Workload | `223b7f6a` | This change |
+|---|---|---|
+| nested, 1 partition | 199.0 [190.4–204.3] | 191.4 [187.8–192.6] |
+| nested, 16 partitions | 164.6 [158.1–175.2] | 158.4 [158.2–158.4] |
+| orders, 1 partition | 387.8 [372.8–400.1] | 374.6 [368.1–377.7] |
+| orders, 16 partitions | 222.0 [210.4–239.6] | 212.1 [211.8–215.0] |
+
+JSON's jobs all read or write values, so they stay on the pool: no workload is slower. The
+production slice is in [served.md](served.md).
+
+## A lane on its partition's task
+
+A lane is a task of its own, which a partition hands its writes to through a queue of four. A
+prototype on `6714f8ca` staged each write on the partition's own task instead, the lane's state
+behind a lock and its task left answering flushes and pressure; it is not built.
+
+- **It loses the overlap.** The paired cell read 35.6 % against 15.5 % with the lane its own task
+  (two workers, cuts and lowerings on the partition's task), and 38.6 % against 18.0 % at four
+  workers: the partition's per-batch work and the destination's encode no longer ran on two cores
+  at once, and the run became their sum (33.8 ms against 29.3). Sixteen partitions gained
+  nothing (16.1 ms either way at four workers).
+- **Served, it is slower too.** One partition into the spawned destination moved 31 % less in
+  large frames and 53 % less in frames of 1 000 rows; sixteen through one lane read +18 % and
+  −9 %, one round each.
+- **Pressure needs someone not waiting.** The first build deadlocked: the lane's task waited for
+  a message, a write staged directly sent none, so its branch answering pressure was never armed
+  again, and the partition waited for bytes only that flush frees. Any shape that writes outside
+  the lane's task has to keep the budget's pressure answered by a task that is not waiting.
 
 ## Where the overhead goes
 

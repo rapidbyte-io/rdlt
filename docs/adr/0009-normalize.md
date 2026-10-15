@@ -21,8 +21,8 @@ leaves open, and one it words otherwise.
   observes JSON. Normalizing Arrow batches after shredding instead, owner-approved, serves Arrow and
   JSON pushes with one implementation and keeps the shredder's single pass as it is. A partition of
   a normalized stream concatenates and normalizes each unit on the compute pool, finds each part's
-  table and plan in order, then lowers the parts on the pool; plain streams keep their single pool
-  round trip.
+  table and plan in order, then lowers the parts on the pool; a plain stream's batches are cut and
+  lowered on the pool only where that reads or writes values (ADR 0008).
 - **Depth.** Entering an object or an array is one level; a container deeper than `max_depth` stays
   whole and lowers to `Json`, or text where the destination has no JSON type, and an object or
   array held in a dictionary or runs stays a whole column at any depth. Only pipelines and streams
