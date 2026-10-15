@@ -67,11 +67,7 @@ async fn a_spawned_source_killed_as_it_loads_is_spawned_again_and_resumes() {
     // No seed is chosen: the clause loads again until a kill interrupts a load.
     let target = Target::spawned(local, ConnectorRef::new(id).path(example("serve_source")))
         .credit_watch(crate::BRIEF);
-    let config = json!({
-        "seed": 11,
-        "streams": [{ "name": "events", "rows": 20000, "partitions": 2, "batch_rows": 50 }],
-    });
-    let report = certify_source(&target, config).await;
+    let report = certify_source(&target, crate::killed::read_as_killed(11)).await;
     report.assert_passed();
     assert_eq!(
         report.outcome("K-SOURCE"),
