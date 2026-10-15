@@ -8,6 +8,9 @@
 //! the body ends within fail the call before anything decodes them. Each message is passed on
 //! whole, prefix and all, as one `Bytes`, which the data plane's reader decodes in place.
 //!
+//! A message is held from a first byte at a 64-byte address, and what arrives past its end waits
+//! for the message after it, so each message is passed on in an allocation of its own length.
+//!
 //! Where a connection shares a window, a message takes room in it for its whole length as its
 //! prefix arrives, and gives it back once passed on. A body that finds no room reads no further,
 //! so HTTP/2's flow control holds its sender, until a message that has room is passed on: each
@@ -32,6 +35,7 @@ use tokio::sync::{AcquireError, OwnedSemaphorePermit, Semaphore};
 use tonic::Status;
 
 pub use self::charge::{Charge, Charging, Held, charging, current};
+use crate::aligned::{Aligned, Frozen};
 use crate::limits::Class;
 use crate::scan::{Form, decoded};
 
@@ -99,14 +103,26 @@ enum Room {
     Taken { _room: OwnedSemaphorePermit },
 }
 
+/// A message as it arrived whole: its bytes, prefix and all, and the allocation they lie in.
+#[derive(Debug)]
+pub(crate) struct Arrived {
+    /// The message's bytes, its prefix first.
+    pub(crate) bytes: Bytes,
+    /// The allocation they lie in, whole: what a slice of them keeps alive.
+    pub(crate) allocation: Bytes,
+}
+
 /// A body whose messages are held to their bounds before they are passed on.
 pub struct Bounded {
     inner: tonic::body::Body,
     bounds: Bounds,
     window: Option<Window>,
-    /// What has arrived of the message being received, and perhaps of those after it, in no
-    /// more room than four times what arrived, and no more than the message's whole length.
-    arriving: Vec<u8>,
+    /// What has arrived of the message being received, from a first byte at a 64-byte address,
+    /// in no more room than four times what arrived and no more than the message's whole length.
+    arriving: Aligned,
+    /// What arrived past what the message being received is known to lack, waiting for it and
+    /// the messages after it.
+    unread: Bytes,
     room: Room,
     /// Trailers that ended the body, passed on once every message before them has been.
     trailers: Option<tonic::codegen::http::HeaderMap>,
@@ -116,7 +132,7 @@ pub struct Bounded {
     /// The charge of the message passed on last, held until it is decoded.
     held: Option<Held>,
     /// A message whole, waiting for its charge.
-    charging: Option<(Charging, Bytes)>,
+    charging: Option<(Charging, Arrived)>,
 }
 
 impl Bounded {
@@ -127,7 +143,8 @@ impl Bounded {
             inner,
             bounds,
             window,
-            arriving: Vec::new(),
+            arriving: Aligned::default(),
+            unread: Bytes::new(),
             room: Room::Free,
             trailers: None,
             done: false,
@@ -153,10 +170,16 @@ impl Bounded {
     /// The length the arriving message's prefix declares, where it has arrived, within the wire
     /// bound.
     fn declared(&self) -> Result<Option<usize>, Status> {
-        if self.arriving.len() < PREFIX {
+        self.declared_in(self.arriving.as_slice())
+    }
+
+    /// The length the prefix at the start of `bytes` declares, where it is whole, within the
+    /// wire bound.
+    fn declared_in(&self, bytes: &[u8]) -> Result<Option<usize>, Status> {
+        if bytes.len() < PREFIX {
             return Ok(None);
         }
-        let declared = (&self.arriving[1..PREFIX]).get_u32();
+        let declared = (&bytes[1..PREFIX]).get_u32();
         let length = usize::try_from(declared).unwrap_or(usize::MAX);
         if length > self.bounds.wire {
             return Err(Status::out_of_range(format!(
@@ -191,16 +214,16 @@ impl Bounded {
 
     /// The arriving message of `length`, taken whole, checked against what it decodes to: the
     /// message, and what its scan counts it holds decoded, its length where it has no form.
-    fn whole(&mut self, length: usize) -> Result<(Bytes, usize), Status> {
-        let rest = self.arriving.split_off(PREFIX + length);
-        let message = Bytes::from(std::mem::replace(&mut self.arriving, rest));
+    fn whole(&mut self, length: usize) -> Result<(Arrived, usize), Status> {
+        let Frozen { bytes, allocation } = std::mem::take(&mut self.arriving).freeze();
+        let arrived = Arrived { bytes, allocation };
         // Its room is given back as it is passed on.
         self.room = Room::Free;
         let Some(form) = self.bounds.form else {
-            return Ok((message, length));
+            return Ok((arrived, length));
         };
         let bound = self.bounds.decoded;
-        let held = decoded(form, &message[PREFIX..], bound).map_err(|unscanned| {
+        let held = decoded(form, &arrived.bytes[PREFIX..], bound).map_err(|unscanned| {
             Status::invalid_argument(format!("a message of {length} bytes: {unscanned}"))
         })?;
         if held > bound {
@@ -208,17 +231,19 @@ impl Bounded {
                 "a message of {length} bytes would hold over {bound} bytes decoded, too large"
             )));
         }
-        Ok((message, held))
+        Ok((arrived, held))
     }
 
-    /// Passes on `message`, which holds `held` bytes decoded, once they are charged.
-    fn charge(&mut self, message: Bytes, held: usize) -> Option<Bytes> {
+    /// Passes on `arrived`, which holds `held` bytes decoded, once they are charged, and no less
+    /// than the allocation it lies in, which decoding it keeps alive.
+    fn charge(&mut self, arrived: Arrived, held: usize) -> Option<Arrived> {
         let Some(charge) = &self.charge else {
-            return Some(message);
+            return Some(arrived);
         };
         // The message before has been decoded: its charge goes before this one's is taken.
         self.held = None;
-        self.charging = Some((charge.charge(self.bounds.class, held), message));
+        let bytes = held.max(arrived.allocation.len());
+        self.charging = Some((charge.charge(self.bounds.class, bytes), arrived));
         None
     }
 
@@ -226,7 +251,7 @@ impl Bounded {
     fn charged_message(
         &mut self,
         context: &mut Context<'_>,
-    ) -> Poll<Option<Result<Bytes, Status>>> {
+    ) -> Poll<Option<Result<Arrived, Status>>> {
         let Some((charging, _)) = &mut self.charging else {
             return Poll::Ready(None);
         };
@@ -246,22 +271,42 @@ impl Bounded {
     /// nor the room it grew from beside more than half again the message.
     fn arrive(&mut self, data: &[u8]) -> Result<(), Status> {
         let needed = self.arriving.len() + data.len();
-        if needed > self.arriving.capacity() {
+        if needed > self.arriving.room() {
             let end = self.declared()?.map_or(needed, |length| PREFIX + length);
-            let doubled = self.arriving.capacity().saturating_mul(2).max(needed);
+            let doubled = self.arriving.room().saturating_mul(2).max(needed);
             let room = if doubled.saturating_mul(2) >= end {
                 end.max(needed)
             } else {
                 doubled
             };
-            self.arriving.reserve_exact(room - self.arriving.len());
+            self.arriving.grow(room);
         }
-        self.arriving.extend_from_slice(data);
+        self.arriving.extend(data);
         Ok(())
     }
 
-    /// The next frame of the body, or what ends it.
-    fn next(&mut self, context: &mut Context<'_>) -> Poll<Option<Result<Frame<Bytes>, Status>>> {
+    /// Bytes the arriving message lacks of what is known of it: the rest of its prefix, then the
+    /// rest of its length, so what arrives beyond its end waits for the message after it.
+    ///
+    /// A message whose whole prefix waits is known from it, so it is taken in one piece.
+    fn wanted(&self) -> Result<usize, Status> {
+        let held = self.arriving.len();
+        let declared = if held == 0 {
+            self.declared_in(&self.unread)?
+        } else {
+            self.declared()?
+        };
+        Ok(match declared {
+            Some(length) => (PREFIX + length).saturating_sub(held),
+            None => PREFIX.saturating_sub(held),
+        })
+    }
+
+    /// The next message of the body, as it arrived, or what ends it.
+    pub(crate) fn poll_arrived(
+        &mut self,
+        context: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Arrived>, Status>>> {
         loop {
             if let Some(charged) = std::task::ready!(self.charged_message(context)) {
                 return Poll::Ready(Some(charged.map(Frame::data)));
@@ -272,12 +317,18 @@ impl Bounded {
                     return Poll::Pending;
                 }
                 if self.arriving.len() >= PREFIX + length {
-                    let (message, held) = self.whole(length)?;
-                    if let Some(message) = self.charge(message, held) {
-                        return Poll::Ready(Some(Ok(Frame::data(message))));
+                    let (arrived, held) = self.whole(length)?;
+                    if let Some(arrived) = self.charge(arrived, held) {
+                        return Poll::Ready(Some(Ok(Frame::data(arrived))));
                     }
                     continue;
                 }
+            }
+            if !self.unread.is_empty() {
+                let take = self.wanted()?.min(self.unread.len());
+                let data = self.unread.split_to(take);
+                self.arrive(&data)?;
+                continue;
             }
             if self.done {
                 if !self.arriving.is_empty() {
@@ -294,7 +345,7 @@ impl Bounded {
                 Poll::Ready(None) => self.done = true,
                 Poll::Ready(Some(Err(error))) => return Poll::Ready(Some(Err(error))),
                 Poll::Ready(Some(Ok(frame))) => match frame.into_data() {
-                    Ok(data) => self.arrive(&data)?,
+                    Ok(data) => self.unread = data,
                     Err(frame) => {
                         self.trailers = frame.into_trailers().ok();
                         self.done = true;
@@ -323,10 +374,11 @@ impl Body for Bounded {
         mut self: Pin<&mut Self>,
         context: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Bytes>, Status>>> {
-        self.next(context)
+        self.poll_arrived(context)
+            .map_ok(|frame| frame.map_data(|arrived| arrived.bytes))
     }
 
     fn is_end_stream(&self) -> bool {
-        self.done && self.arriving.is_empty() && self.trailers.is_none()
+        self.done && self.arriving.is_empty() && self.unread.is_empty() && self.trailers.is_none()
     }
 }
