@@ -19,16 +19,20 @@ use crate::normalize::PushKind;
 
 /// Writes the JSON `pushes`, admitted with `permits`.
 ///
-/// Batches that take no more than the pushes were admitted for are lowered as Arrow pushes are.
-/// Where they take more, the partition holds that while they are lowered, so it never waits on
-/// the budget until they are written:
+/// Where the batches take more than the pushes were admitted for, the partition holds that while
+/// they are lowered, so it never waits on the budget until they are written:
 ///
-/// - A normalized flush's batches are built inside a whole request, the rest of which is lent to
-///   their splits.
-/// - Any other flush's units are planned and cut before any is lowered, and what lowering the
-///   largest piece holds is reserved beside the batches without a wait, lent to every piece.
-///   Where the budget has no room for it, the batches are let go and built again once the two
-///   fit in one request, which the partition waits for holding only its pushes.
+/// - A normalized flush, whose splits each ask for a request, is observed and built inside a
+///   whole request, asked for first; the rest of it is lent to the splits.
+/// - Any other flush asks, with what its batches take, about what lowering them holds at once,
+///   in one request it waits for holding only its pushes. Its units are planned and cut before
+///   any is lowered, and what lowering the largest piece holds is kept of that, or reserved
+///   beside it without a wait, and lent to every piece. Where the budget has no room for it, the
+///   batches are let go and built again once the two fit in one request.
+/// - Once the last piece or split has its room, what is left goes back to the budget, and each
+///   piece's part as it is written.
+///
+/// Other batches are lowered as Arrow pushes are.
 ///
 /// # Errors
 ///
@@ -46,7 +50,7 @@ pub(super) async fn write_json(
     let mut beside = if normalized {
         Beside::Rest
     } else {
-        Beside::Bytes(0)
+        Beside::Lowering
     };
     loop {
         let Built {

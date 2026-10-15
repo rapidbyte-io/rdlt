@@ -801,3 +801,17 @@ async fn more_than_a_lent_reservation_holds_is_refused() {
     assert_eq!((refused.asked, refused.limit), (1_001, 1_000));
     assert!(lent.try_take(1_001).is_none());
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_closed_lent_reservation_gives_the_budget_back_what_no_part_holds_and_each_part() {
+    let budget = budget(BUDGET);
+    let lent = budget.acquire_working(1_000).await.unwrap().lend();
+    let part = lent.try_take(300).expect("the lent bytes have room");
+    lent.close();
+    assert_eq!(budget.reserved(), 300, "what no part holds went back");
+    assert!(lent.try_take(1).is_none(), "nothing is left to lend");
+    drop(part);
+    assert_eq!(budget.reserved(), 0);
+    drop(lent);
+    assert_eq!(budget.reserved(), 0);
+}

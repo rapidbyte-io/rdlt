@@ -78,6 +78,14 @@ impl Room {
         }
     }
 
+    /// Lends no more: what is lent and no piece holds goes back to the budget, and each piece's
+    /// part as it is written.
+    fn close(&self) {
+        if let Self::Lent(lent) = self {
+            lent.close();
+        }
+    }
+
     /// The error for a row that alone takes more to lower than a request of the room may.
     fn refusal(&self, job: &PartitionJob, budget: &MemoryBudget, row: &RowTooLarge) -> Error {
         match self {
@@ -122,6 +130,9 @@ async fn reserve(
     let Room::Lent(lent) = room else {
         return reserving(job, context, bytes, too_large).await;
     };
+    if let Some(reserved) = room.try_reserve(&context.budget, bytes) {
+        return Ok(reserved);
+    }
     let taken = tokio::select! {
         biased;
         () = context.cancel.cancelled() => {
@@ -286,6 +297,9 @@ async fn lowered(
             }
         }
     }
+    // Every piece has its room: what each keeps once lowered goes back to the budget as it is
+    // written.
+    window.room.close();
     window.lower(job, context, open).await
 }
 

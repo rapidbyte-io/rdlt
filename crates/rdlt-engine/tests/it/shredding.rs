@@ -375,44 +375,57 @@ async fn a_row_a_request_leaves_no_room_for_beside_its_jsons_build_is_refused_na
     assert_eq!(outcome.report.rows, 1_500);
 }
 
-/// Loads 16 partitions under 256 MiB, each pushing twenty-four thousand records of ten keys of
-/// `keys` in pushes of a thousand, into a destination taking 5 ms a write: how long the run took
-/// on the paused clock.
-async fn optional_fields(name: &str, keys: usize) -> Duration {
+/// Loads 16 partitions under 256 MiB, each pushing forty times the same six hundred records of
+/// ten keys of `keys`, in flushes of 256 KiB, into a destination taking 5 ms a write; normalized
+/// where `normalized` says: how long the run took on the paused clock.
+async fn optional_fields(name: &str, keys: usize, normalized: bool) -> Duration {
     const PARTS: usize = 16;
-    let pushes: Vec<bytes::Bytes> = (0..24)
-        .map(|push| {
-            let records: Vec<String> = (push * 1_000..(push + 1) * 1_000)
-                .map(|record| {
-                    let fields: Vec<String> = (0..10)
-                        .map(|key| format!("\"k{}\":{record}", (record + key) % keys))
-                        .collect();
-                    format!("{{{}}}", fields.join(","))
-                })
+    let records: Vec<String> = (0..600)
+        .map(|record| {
+            let fields: Vec<String> = (0..10)
+                .map(|key| format!("\"k{}\":{record}", (record * 10 + key) % keys))
                 .collect();
-            bytes::Bytes::from(records.join("\n"))
+            format!("{{{}}}", fields.join(","))
         })
         .collect();
-    let steps: Steps = Arc::new(move |step| pushes.get(step).map(|push| Step::Json(push.clone())));
+    let pushed = bytes::Bytes::from(records.join("\n"));
+    let steps: Steps = Arc::new(move |step| (step < 40).then(|| Step::Json(pushed.clone())));
     let source = making_parts(name, steps, PARTS).await;
+    let batch = BatchPolicy::new(256 << 10, 1 << 20, Duration::from_secs(1), 1 << 20)
+        .expect("a valid policy");
     let config = commit_every(1_000_000_000)
         .memory(256 << 20)
         .partitions(PARTS)
+        .batch(batch)
         .retry(RetryPolicy::default().max_attempts(1));
+    let plan = if normalized {
+        stream("events").schema(SchemaSettings::new().nested(Nested::normalize()))
+    } else {
+        stream("events")
+    };
     let began = tokio::time::Instant::now();
     let outcome = yielding_engine(config)
-        .run(pipeline(name, [stream("events")]), source, null().await)
+        .run(pipeline(name, [plan]), source, null().await)
         .await;
     assert!(outcome.error.is_none(), "{:?}", outcome.error);
-    assert_eq!(outcome.report.rows, 24_000 * PARTS as u64);
+    assert_eq!(outcome.report.rows, 600 * 40 * PARTS as u64);
     began.elapsed()
 }
 
 #[tokio::test(start_paused = true)]
 async fn records_of_optional_fields_load_about_as_fast_as_records_of_all_of_them() {
-    // Ten keys of sixty: each record's batch holds the other fifty's nulls, more than its text
-    // was admitted for, which its partition holds while it lowers the records.
-    let dense = optional_fields("fields_all", 10).await;
-    let sparse = optional_fields("fields_optional", 60).await;
-    assert!(sparse <= dense * 3 / 2, "{sparse:?} against {dense:?}");
+    // Ten keys of sixty, or of six hundred: each record's batch holds the other keys' nulls,
+    // more than its text was admitted for, which its partition holds while it lowers them.
+    let dense = optional_fields("fields_all", 10, false).await;
+    for (name, keys, normalized) in [
+        ("fields_of_sixty", 60, false),
+        ("fields_of_six_hundred", 600, false),
+        ("fields_of_sixty_normalized", 60, true),
+    ] {
+        let sparse = optional_fields(name, keys, normalized).await;
+        assert!(
+            sparse <= dense * 3 / 2,
+            "{name}: {sparse:?} against {dense:?}"
+        );
+    }
 }
