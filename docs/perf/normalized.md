@@ -42,3 +42,31 @@ median of five rounds and their range.
 The runs whose flushes hold two or nine units take 24–33 % less time than the run whose flushes
 hold one unit, moving the same rows, and allocate 9–10 % fewer times a row for 3 % fewer bytes. A
 run keeps 1.10–1.18 CPUs busy.
+
+## Ids hashed across the compute pool: closed
+
+Hashing a normalized split's ids in chunks of 4 096 rows, each chunk a job joined on the compute
+pool, was built and measured against commit `450ca8493630` (a compute thread for every core), and
+not taken. The rule that called for it, one compute thread holding more than about 40 % of a
+normalized run's samples, no longer holds on that commit: in a 15-second profile of
+`normalized/keyless/50000` on four cores (2 runtime workers, 4 compute threads, 9 units a flush)
+the four compute threads hold 34.5 %, 24.4 %, 22.7 % and 16.9 % of the samples and the runtime's
+workers 1.3 %; BLAKE3's compression is 31 % of them.
+
+Measured 2026-10-15, three interleaved rounds a side under the measurement lock, one-minute load
+average 1.2–1.9 at their starts; each round's criterion median, ms:
+
+| Cores | `450ca8493630` | Ids hashed across the pool | Change |
+|---|---|---|---|
+| 4 (`0-3`) | 109.2, 112.0, 110.1 | 94.4, 96.1, 95.7 | −13 % |
+| 1 (`0`) | 123.7, 127.0, 126.4 | 127.0, 129.6, 130.0 | +2 to +3 % |
+
+Each round's four-core figures lie outside the other side's range. The change kept about 1.79
+cores busy in its profile against 1.25, about 25 % more CPU a run for 13 % less time. Called from
+a thread outside the pool, as `benches/shred.rs` normalizes, hashing on four threads took longer
+than in order: 115.4 ms against 103.0 keyed and 173.7 ms against 160.9 keyless, a join waking
+idle pool threads and blocking its caller.
+
+It closes: it misses the 25 % it was to gain at four cores, costs a single core 2–3 % and every
+run a quarter more CPU, slows callers outside the pool, and adds a pool method and a pool argument
+through normalizing for it.
