@@ -7,7 +7,8 @@ use bytes::Bytes;
 use http_body::{Body, Frame};
 use tonic::Code;
 
-use super::{Bounded, Bounds, Window};
+use super::{Arrived, Bounded, Bounds, Window};
+use crate::aligned::{ALIGNMENT, is_aligned};
 use crate::scan::response;
 pub(super) use crate::testing::{chunks, fed, message};
 
@@ -42,6 +43,15 @@ fn poll(body: &mut Bounded) -> Passed {
         Poll::Ready(Some(Err(status))) => Passed::Failed(status.code()),
         Poll::Ready(None) => Passed::End,
         Poll::Pending => Passed::Waits,
+    }
+}
+
+/// The message `body` passes on when polled once, as it arrived.
+fn poll_arrived(body: &mut Bounded) -> Arrived {
+    let waker = std::task::Waker::noop();
+    match body.poll_arrived(&mut Context::from_waker(waker)) {
+        Poll::Ready(Some(Ok(frame))) => frame.into_data().expect("a message"),
+        other => panic!("a message, not {other:?}"),
     }
 }
 
@@ -256,7 +266,7 @@ fn room_for_an_arriving_message_doubles_then_goes_to_its_end() {
     // message's end is no more than twice as far, and then it is the end.
     for (from, to) in [(0, 3), (3, 5), (5, 15), (15, 35), (35, 45), (45, 105)] {
         body.arrive(&prefix[from..to]).expect("within its bound");
-        rooms.push(body.arriving.capacity());
+        rooms.push(body.arriving.room());
     }
     assert_eq!(rooms, [3, 5, 15, 35, 105, 105]);
     // Room that is full takes nothing more for nothing more.
@@ -264,7 +274,7 @@ fn room_for_an_arriving_message_doubles_then_goes_to_its_end() {
     full.arrive(&prefix[..5]).expect("within its bound");
     full.arrive(&prefix[5..15]).expect("within its bound");
     full.arrive(&[]).expect("nothing");
-    assert_eq!(full.arriving.capacity(), 15);
+    assert_eq!(full.arriving.room(), 15);
 }
 
 #[test]
@@ -276,5 +286,60 @@ fn a_body_shows_its_bounds_and_what_has_arrived() {
     assert!(
         shown.contains("wire: 1024") && shown.contains("arriving: 2"),
         "{shown}"
+    );
+}
+
+/// A message of `pairs` empty catalog entries, which its scan walks.
+fn entries(pairs: usize) -> Vec<u8> {
+    message(&[0x0a, 0x00].repeat(pairs))
+}
+
+#[test]
+fn a_chunk_of_many_messages_gives_each_an_allocation_of_its_own_length() {
+    // One transport chunk: three whole messages of 10, 1000 and 0 bytes, and the start of a
+    // fourth of 200, which ends in a second chunk.
+    let messages: Vec<Vec<u8>> = [5, 500, 0, 100].into_iter().map(entries).collect();
+    let mut joined: Vec<u8> = messages.concat();
+    let second = joined.split_off(joined.len() - 150);
+    let mut body = Bounded::new(chunks(&[&joined, &second]), bounds(4_096, 1 << 20), None);
+    for message in &messages {
+        let arrived = poll_arrived(&mut body);
+        assert_eq!(&arrived.bytes[..], &message[..]);
+        assert!(is_aligned(&arrived.bytes));
+        // Its allocation holds it and the alignment's room, never the message after it.
+        assert!(
+            arrived.allocation.len() < message.len() + ALIGNMENT,
+            "{} for {}",
+            arrived.allocation.len(),
+            message.len()
+        );
+    }
+    assert_eq!(poll(&mut body), Passed::End);
+}
+
+#[test]
+fn a_message_split_at_every_byte_arrives_aligned_and_whole() {
+    let message = entries(128);
+    for at in 0..=message.len() {
+        let (first, second) = message.split_at(at);
+        let mut body = Bounded::new(chunks(&[first, second]), bounds(4_096, 1 << 20), None);
+        let arrived = poll_arrived(&mut body);
+        assert_eq!(&arrived.bytes[..], &message[..], "{at}");
+        assert!(is_aligned(&arrived.bytes), "{at}");
+        assert!(arrived.allocation.len() < message.len() + ALIGNMENT, "{at}");
+        assert_eq!(poll(&mut body), Passed::End, "{at}");
+    }
+}
+
+#[test]
+fn a_message_s_prefix_waiting_whole_is_held_to_its_bound() {
+    // The prefix of the second message waits behind the first, and declares more than the bound.
+    let at = message(&[0x0a, 0x00].repeat(5));
+    let declared = message(&[0; 11]);
+    let joined = [at.clone(), declared[..5].to_vec()].concat();
+    let body = Bounded::new(chunks(&[&joined]), bounds(10, usize::MAX), None);
+    assert_eq!(
+        passed(body),
+        [Passed::Data(at), Passed::Failed(Code::OutOfRange)]
     );
 }

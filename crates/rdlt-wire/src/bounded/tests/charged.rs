@@ -3,8 +3,9 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::Semaphore;
 
-use super::{Bounded, Passed, bounds, fed, message, poll};
-use crate::bounded::{Charge, Charging};
+use super::{Bounded, Passed, bounds, chunks, fed, message, poll};
+use crate::aligned::ALIGNMENT;
+use crate::bounded::{Bounds, Charge, Charging};
 use crate::limits::Class;
 
 /// Charges each message's bytes once one of its permits is given, recording each charge and
@@ -146,5 +147,25 @@ fn a_message_whose_charge_is_refused_fails_the_call() {
     assert_eq!(
         poll(&mut body),
         Passed::Failed(tonic::Code::ResourceExhausted)
+    );
+}
+
+#[test]
+fn a_message_is_charged_no_less_than_the_allocation_it_arrived_in() {
+    let gate = Gate::new(false);
+    gate.permits.add_permits(1);
+    let whole = message(&[0x0a, 0x00]);
+    // Unscanned, a message is counted at its length: its allocation holds more.
+    let unscanned = Bounds {
+        form: None,
+        ..bounds(1024, 1 << 20)
+    };
+    let mut body = Bounded::new(chunks(&[&whole]), unscanned, None)
+        .charged(Some(Arc::clone(&gate) as Arc<dyn Charge>));
+    assert_eq!(poll(&mut body), Passed::Data(whole.clone()));
+    let asked = gate.asked.lock().unwrap().clone();
+    assert_eq!(
+        asked,
+        [(Class::Catalog, whole.len() + ALIGNMENT - 1, false)]
     );
 }
