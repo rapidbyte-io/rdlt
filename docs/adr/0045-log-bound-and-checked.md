@@ -225,11 +225,23 @@ lowering may take, logged under more memory than replays it, is refused as
   partition's checkpoint, and is refused, `log_bytes_exceeded`, before its source hears of it,
   only where even that is too little. A batch that waits takes the room a commit frees before any
   batch that began to wait after it: each later batch keeps room beside it for what those in line
-  count, so no partition starves while others checkpoint. A load whose partitions' batch frames
-  not yet committed with a receipt, beside the frames of one of its commits, take at most three
-  quarters of the bound loads through it, however late its receipts arrive and however its
-  partitions interleave. A wait ends with the attempt's deadlines, and the frame it holds stays
-  reserved from the memory budget.
+  count, so no partition starves while others checkpoint. A wait ends with the attempt's
+  deadlines, and the frame it holds stays reserved from the memory budget.
+- A load loads through its log, however late its receipts arrive and however its partitions
+  interleave, where its open frames, the batch frames its partitions logged that no commit with
+  a receipt took, the frames of one of its commits and what the chunks holding the open frames
+  write beside them take at most three quarters of the bound, `L` bytes:
+  `O + C + n·(w + s) ≤ ¾·L`. `O` is the open frames' bytes, `F` frames; `C` the commit's seal,
+  phase and commit frames; `s` the schema frames of the load's tables; `w` what a chunk writes
+  beside its batch and schema frames, a 14-byte preamble, its header, a 9-byte relief frame and
+  an end naming `n + 2` chunks and as many commits, each number of up to 20 digits; and `n` the
+  chunks holding open frames, of which a chunk holds `c = L/8 − w − s` bytes: the lesser of `F`
+  and `⌈2·O/c⌉ + 1`, or `F` where `c` is nothing. As `w` grows with `n`, `n` is the least that
+  its own `w` gives again: starting from 1, each `n` gives the next until it stays. The smallest
+  log a load fits is the least `L` for which this holds. In the default 4 GiB log, with frames
+  of a MiB and a schema frame of a KiB, `n` is 13 and `n·(w + s)` some 24 KiB; in a log of 24
+  frames of 495 bytes, a chunk holds no two of them beside its framing and a schema frame of
+  some 280 bytes, so each open frame takes a chunk of its own, about twice its size.
 - Nothing passes the bound but a commit's own frames. A commit may take the carry's room; a
   frame of it that still finds no room has the log publish what it can, and is then counted all
   the same. Between a commit's first seal and its commit frame the log publishes nothing and
@@ -344,7 +356,8 @@ draw is then taken again among the reads and commits that run told, so every dra
   and a slow commit's window included, so its open frames fit a carry; a carry copies a frame a
   piece at a time; and a batch waiting for room takes it before later ones. Cost: a batch keeps
   a quarter of the bound and what ends two chunks free, so a load holds three quarters of it
-  unsealed; a full log publishes chunks between commits, a write each, and copies open frames
+  unsealed, the headers, ends and schema frames of the chunks holding its open frames included,
+  which in a log of few frames take about as much as the frames; a full log publishes chunks between commits, a write each, and copies open frames
   out of the chunks it frees; a log writes at least eight chunks for each bound's worth of
   frames; batch frames sent while a commit's frame follows its seals wait in the writer, each
   holding its memory and what ending a chunk writes, until the commit is published; and each
