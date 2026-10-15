@@ -209,7 +209,9 @@ cannot tell an overrun from a read that kept to its credit (ADR 0016).
 A connector's Arrow frames are checked as a whole before they are decoded (ADR 0038): a frame's
 buffers are disjoint and long enough for its values, its values and the bytes its views name are
 within the limits, and a schema is measured before it is built. A frame that is not is refused
-with a typed error, `limit_exceeded` or `malformed_frame`.
+with a typed error, `limit_exceeded` or `malformed_frame`. The message carrying a frame takes at
+most 256 bytes beside it, so a peer cannot make a decoded batch keep alive what its frame does
+not count.
 
 ## What the engine holds
 
