@@ -3,7 +3,7 @@ use rdlt_sim::{
 };
 
 /// Seeds that each found a defect when first run, kept so they stay green.
-const FOUND: [u64; 18] = [
+const FOUND: [u64; 19] = [
     // Over the network: a host whose handshake a partition cut short held its connection, and
     // its connector's stop, forever.
     9_576,
@@ -47,6 +47,8 @@ const FOUND: [u64; 18] = [
     // A child table no row had reached yet was merged by its roots' commit, under no columns,
     // which the merge refused.
     85_384,
+    // A date written into timestamps, whose column then widens to JSON, holds a timestamp's text.
+    642_848,
 ];
 
 #[test]
