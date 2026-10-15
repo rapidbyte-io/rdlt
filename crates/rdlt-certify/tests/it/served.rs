@@ -10,7 +10,7 @@ use rdlt_connector_reference::{
 };
 use serde_json::json;
 
-use crate::killed::SETTLED_LATE;
+use crate::killed::{SETTLED_LATE, read_as_killed};
 
 struct MemoryProbe(&'static str);
 
@@ -78,11 +78,7 @@ async fn a_source_served_in_process_killed_as_it_loads_resumes_where_it_was() {
     let target = Target::served(Served::new().with_source(source_factory::<GeneratorSource>()))
         .credit_watch(crate::BRIEF)
         .kill_seed(SETTLED_LATE);
-    let config = json!({
-        "seed": 5,
-        "streams": [{ "name": "events", "rows": 20000, "partitions": 2, "batch_rows": 50 }],
-    });
-    let report = certify_source(&target, config).await;
+    let report = certify_source(&target, read_as_killed(5)).await;
     // Every clause that applies was seen to be met, the kill clause among them.
     report.assert_passed();
     assert_eq!(

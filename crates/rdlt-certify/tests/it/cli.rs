@@ -85,13 +85,13 @@ const USERS: &str = r#"{"streams": {"users": [{"id": 1}, {"id": 2}]}, "page_size
 async fn a_connector_seen_to_keep_every_clause_exits_zero_and_reports_as_json() {
     let binary = example("serve_source");
     let binary = binary.to_str().expect("a UTF-8 path");
-    // Rows enough that a kill lands as the source still reads.
+    let config = crate::killed::read_as_killed(11).to_string();
     let output = certify(&[
         binary,
         "--role",
         "source",
         "--config",
-        r#"{"seed": 11, "streams": [{"name": "events", "rows": 20000, "partitions": 2, "batch_rows": 50}]}"#,
+        &config,
         "--env",
         "LLVM_PROFILE_FILE",
         "--output",

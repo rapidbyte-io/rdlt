@@ -19,6 +19,19 @@ use serde_json::json;
 /// losing its answer: a source read within a small window of credit is still reading then.
 pub(crate) const SETTLED_LATE: u64 = 1;
 
+/// A generator's stream, drawn from `seed`, that a kill clause's load still reads as each of its
+/// kills lands.
+///
+/// A commit holds about a credit window of each partition's rows, and more on a busy machine,
+/// where the source reads on while a commit waits: one partition and rows for more than three
+/// times the commits the latest kill point needs keep the source reading even then.
+pub(crate) fn read_as_killed(seed: u64) -> serde_json::Value {
+    json!({
+        "seed": seed,
+        "streams": [{ "name": "events", "rows": 40000, "partitions": 1, "batch_rows": 50 }],
+    })
+}
+
 /// A source that reads nothing of a partition it resumes: whatever a checkpoint left unread is
 /// lost.
 struct Forgetful(Box<dyn SourceFactory>);
@@ -267,11 +280,7 @@ async fn a_source_that_loses_what_it_resumes_fails_k_source_at_every_schedule() 
             let target = Target::served(Served::new().with_source(Box::new(forgetful)))
                 .credit_watch(crate::BRIEF)
                 .kill_seed(seed);
-            let config = json!({
-                "seed": 3,
-                "streams": [{ "name": "events", "rows": 20000, "partitions": 2, "batch_rows": 50 }],
-            });
-            (seed, certify_source(&target, config).await)
+            (seed, certify_source(&target, read_as_killed(3)).await)
         });
     }
     while let Some(certified) = certifying.join_next().await {
