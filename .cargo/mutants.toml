@@ -13,8 +13,8 @@ all_features = true
 # Whether the kernel marks a range of descriptors at once is true on every kernel of 5.11 or later,
 # where the nightly and every machine the project is built on run: a mutant that answers true there
 # is the code as it is. Mutation runs build on Linux alone, so a mutant of code built only elsewhere
-# is the code as it is in every one of them: how a connector's binary is executed, and whether a
-# group has a living member, on other platforms.
+# is the code as it is in every one of them: how a connector's binary is executed, whether a
+# group has a living member, and that bubblewrap launches nothing, on other platforms.
 #
 # A mutant that returns what the function already returns is the code as it is: an admission's
 # limits are the wire's defaults, a dialect reserves no table name, a sandbox names no program
@@ -98,6 +98,7 @@ exclude_re = [
   "crates/rdlt-engine/src/table/registry\\.rs:.*replace match guard !resolver\\.unwidened\\.contains\\(&column\\) with true in Tables::fit$",
   "crates/rdlt-engine/src/wal/local/dir\\.rs:.*replace \\| with \\^ in Dir::(dir|create|open)$",
   "crates/rdlt-engine/src/wal/local/names\\.rs:.*replace \\| with \\^ in (base32|token)$",
+  "crates/rdlt-host/src/local/bubblewrap\\.rs:245:5: replace launched -> Result<Launcher, SandboxError> with ",
   "crates/rdlt-host/src/local/grants/opened\\.rs:.*replace \\| with \\^ in (up|holding)$",
   "crates/rdlt-host/src/local/process/command\\.rs:256:5: replace trusted -> std::io::Result<\\(Command, Vec<OwnedFd>\\)> with ",
   "crates/rdlt-host/src/local/process/group/members\\.rs:22:5: replace unended -> Option<bool> with Some\\((true|false)\\)$",
