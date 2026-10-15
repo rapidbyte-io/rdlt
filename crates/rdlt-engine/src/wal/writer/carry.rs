@@ -45,8 +45,11 @@ impl Log {
         let staged = self.written.get(&self.chunk);
         let len = staged.map_or(0, |written| written.len);
         let batched = staged.is_some_and(|written| !written.batches.is_empty());
+        // What the chunk staged holds, with its header where it is not staged yet, and what
+        // ends it, beside the copies.
+        let beside = len.saturating_add(ending);
         let mut chosen = self.chosen(room, |copied, copy| {
-            copied == 0 && !batched || len.saturating_add(copied).saturating_add(copy) <= most
+            copied == 0 && !batched || beside.saturating_add(copied).saturating_add(copy) <= most
         });
         let mut first = false;
         // Where what fits beside the chunk staged's batch frames does not pay, what fits a chunk
