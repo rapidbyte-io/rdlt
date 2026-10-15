@@ -5,7 +5,9 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use super::super::super::frame::{Frame, HEAD, PREAMBLE, end_len};
+use rdlt_wire::limits::count;
+
+use super::super::super::frame::{Frame, HEAD, Header, PREAMBLE, end_len, header_len};
 use super::super::super::memory::MemoryWal;
 use super::relieved::{batches_of, relieve};
 use super::{batch_frame, drive, frames, length, numbers, table};
@@ -173,4 +175,55 @@ async fn a_relief_gathers_open_frames_whose_copies_fit_a_chunk_with_their_table_
     })
     .await
     .expect("the writer ends");
+}
+
+#[tokio::test]
+async fn a_relief_gathers_chunks_of_open_frames_alone_until_no_two_fit_one() {
+    // Chunks of one open frame each, then a chunk may hold `holds` of them: a relief leaves at
+    // most one chunk of open frames alone holding half of that or less.
+    for chunks in [3, 4, 5, 6, 7, 8, 9, 12] {
+        for holds in [3_usize, 4, 5] {
+            let store = Arc::new(MemoryWal::default());
+            let observed = Arc::clone(&store);
+            drive(Arc::clone(&store), |mut log| async move {
+                log.send(table(0)).await;
+                let schema = log.schemas.lock()[&0];
+                let frame = length(&batch_frame(1, 0, 10, 100));
+                let header = Header {
+                    pipeline: super::pipeline(),
+                    load: super::load(),
+                    chunk: 10,
+                    epoch: rdlt_connector::Epoch(1),
+                    opened: None,
+                    origin: super::load(),
+                };
+                let first = u64::try_from(PREAMBLE).expect("small")
+                    + header_len(&header).expect("measures")
+                    + schema;
+                let spare = frame / 2;
+                // A chunk holds one frame.
+                let shared = Arc::clone(log.writer.shared());
+                shared
+                    .limit
+                    .store(8 * (first + frame + spare), Ordering::SeqCst);
+                for _ in 0..=chunks {
+                    log.rows(1, 0, 100).await;
+                }
+                // Answered once the writer wrote them, as chunks of their own.
+                relieve(&log).await;
+                // A chunk holds `holds` frames, beside what ends it.
+                let most = first + count(holds) * frame + spare;
+                shared.limit.store(8 * most, Ordering::SeqCst);
+                relieve(&log).await;
+                let held: Vec<usize> = numbers(&observed)
+                    .into_iter()
+                    .map(|number| batches_of(&observed, number).len())
+                    .collect();
+                let small = held.iter().filter(|frames| 2 * **frames <= holds).count();
+                assert!(small <= 1, "{chunks} chunks, {holds} a chunk: {held:?}");
+            })
+            .await
+            .expect("the writer ends");
+        }
+    }
 }

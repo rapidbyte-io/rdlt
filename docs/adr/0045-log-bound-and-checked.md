@@ -212,16 +212,22 @@ lowering may take, logged under more memory than replays it, is refused as
   commits, each closed by a relief frame where a commit's chunk has its commit, while each frees
   more than it writes: the chunks whose receipts arrived go, and the chunks whose open frames it
   copies, which gathers small chunks into one and frees what others hold of settled segments. A
-  relief takes the old chunks whose copies fit its room by what deleting each frees beside its
-  copy, the most first and the oldest among equals: beside the chunk staged's batch frames while
-  they fit and pay, and otherwise into a chunk of their own, the chunk staged published first,
-  the first of them whatever its size. A batch first finding no room leaves at least the carry's
-  eighth for copies, unless a commit took it; so a round publishes whenever any one chunk whose
-  copy fits that room frees more beside it than ending the chunks the relief writes takes. What
-  reliefs leave is the headers and ends of chunks holding open frames alone, chunks whose settled
-  frames pay for no end, and chunks a commit awaiting its receipt pins, which its receipt frees.
-  The choice is greedy, so not always the most a relief could free. Then, while a commit can
-  free room, as a
+  relief takes the old chunks whose copies fit its room: first those holding settled frames, by
+  what deleting each frees beside its copy, the most first and the oldest among equals, then
+  those holding open frames alone, the fewest open bytes first: beside the chunk staged's batch
+  frames while they fit and pay, and otherwise into a chunk of their own, the chunk staged
+  published first, the first of them whatever its size. A batch first finding no room leaves at
+  least the carry's eighth for copies, unless a commit took it; so a round publishes whenever any
+  one chunk whose copy fits that room frees more beside it than ending the chunks the relief
+  writes takes. It publishes too whenever two chunks of open frames alone fit one chunk together
+  beside every schema frame of the load, which frees a header, an end and a schema frame, as the
+  two with the fewest open bytes then fit: but where a chunk holding settled frames is taken
+  before them, its copy fills the chunk so neither fits beside it, and what it frees pays for no
+  end, the round frees nothing and the relief ends. What reliefs leave is the headers, ends and
+  schema frames of chunks holding open frames alone, no two of which fit one chunk beside every
+  schema frame but beside such a chunk, chunks whose settled frames pay for no end, and chunks a
+  commit awaiting its receipt pins, which its receipt frees. The choice is greedy, so not always
+  the most a relief could free. Then, while a commit can free room, as a
   checkpoint sealed that no commit took or a commit under way can, the batch waits, and a commit
   is due at once. Where none can, the batch takes the carry's room, as it may be what brings its
   partition's checkpoint, and is refused, `log_bytes_exceeded`, before its source hears of it,
@@ -237,8 +243,11 @@ lowering may take, logged under more memory than replays it, is refused as
   phase and commit frames; `s` the schema frames of the load's tables; `w` what a chunk writes
   beside its batch and schema frames, a 14-byte preamble, its header, a 9-byte relief frame and
   an end naming `n + 2` chunks and as many commits, each number of up to 20 digits; and `n` the
-  chunks holding open frames, of which a chunk holds `c = L/8 − w − s` bytes: the lesser of `F`
-  and `⌈2·O/c⌉ + 1`, or `F` where `c` is nothing. As `w` grows with `n`, `n` is the least that
+  chunks holding open frames, of which a chunk holds `c = L/8 − w − s` bytes. Reliefs gather
+  chunks of open frames alone until no two fit one, where no chunk whose settled frames pay for
+  no end stands before them, so every chunk of them but the one staged and one other holds more
+  than half of `c`, or a frame alone: `n` is the lesser of `F` and
+  `⌈2·O/c⌉ + 1`, or `F` where `c` is nothing. As `w` grows with `n`, `n` is the least that
   its own `w` gives again: starting from 1, each `n` gives the next until it stays. The smallest
   log a load fits is the least `L` for which this holds. In the default 4 GiB log, with frames
   of a MiB and a schema frame of a KiB, `n` is 13 and `n·(w + s)` some 24 KiB; in a log of 24
