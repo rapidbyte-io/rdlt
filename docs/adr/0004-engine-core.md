@@ -22,11 +22,13 @@ Building M2a surfaced decisions the spec leaves open or gets wrong.
   where there are two, since one worker runs the engine's per-row work and every lane's writes
   alone. The pool's threads overlap the workers' cores: the workers run the per-row work and the
   writes, the pool shreds and lowers, and with a thread a core the pool can take every core the
-  workers leave idle, which JSON workloads need. The runtime does not grow to match: more workers
-  slow a run of one partition (`docs/perf/passthrough.md`). `Cores::try_from_host`
-  and `SystemEnv::try_from_host` take the cores the process may run on (its affinity mask and
-  cgroup quota honoured); an embedder that fixes a count passes `Cores::new` to
-  `SystemEnv::try_new`. `Env::cores` returns the count, and lanes default to one per core. The
+  workers leave idle, which JSON workloads need. A run of plain Arrow leaves the pool's threads
+  asleep: its cuts and lowerings read and write no value, so they run on the partition's task
+  (ADR 0008), and only a load's first lowering, which builds its constant columns, reaches the
+  pool. The runtime does not grow to match: more workers slow a run of one partition
+  (`docs/perf/passthrough.md`). `Cores::try_from_host` and `SystemEnv::try_from_host` take the
+  cores the process may run on (its affinity mask and cgroup quota honoured); an embedder that
+  fixes a count passes `Cores::new` to `SystemEnv::try_new`. `Env::cores` returns the count, and lanes default to one per core. The
   engine reads the host's cores in `Cores::try_from_host` and nowhere else (clippy bans
   `available_parallelism` in the rest of `rdlt-engine`), and the simulation declares a fixed
   count, so a simulated run sizes itself alike on every machine.
