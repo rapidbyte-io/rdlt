@@ -527,6 +527,28 @@ async fn a_byte_changed_anywhere_in_any_chunk_or_a_chunk_cut_is_refused() {
 }
 
 #[tokio::test]
+async fn a_frame_is_read_up_to_the_bytes_a_frame_may_hold_and_refused_beyond() {
+    let store = logged(false).await;
+    let mut largest = 0;
+    for (_, bytes) in store.stored(&pipeline()) {
+        let mut offset = frame::PREAMBLE;
+        while offset < bytes.len() {
+            let payload = frame::payload_len(&bytes[offset..offset + frame::HEAD]).expect("a head");
+            largest = largest.max(payload);
+            offset += frame::HEAD + usize::try_from(payload).expect("a payload in memory");
+        }
+    }
+    scan(store.as_ref(), &pipeline(), load(), largest)
+        .await
+        .expect("every frame is within the bound");
+    let error = scan(store.as_ref(), &pipeline(), load(), largest - 1)
+        .await
+        .expect_err("the largest frame is beyond the bound");
+    assert_eq!(error.code(), Some("wal_unreadable"));
+    assert!(error.to_string().contains("beyond the"), "{error}");
+}
+
+#[tokio::test]
 async fn a_chunk_of_another_pipeline_or_load_is_refused_as_foreign() {
     let whole = logged(false).await;
     // The log of `orders`, found where `payments`' log, or another load's, is.
