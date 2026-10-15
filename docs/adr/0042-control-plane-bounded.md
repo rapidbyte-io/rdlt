@@ -41,8 +41,13 @@ still taken largely on trust:
     (`DECODED_PER_BYTE`) for a catalog, a schema change and any other control message: 128 MiB
     for a frame and 64 MiB for a catalog by default. State is bounded on what it holds decoded:
     `state_bytes` is that bound, and its bytes on the wire are bounded by the same. A
-    message arriving is held in room that doubles, and goes straight to the message's end once
-    within twice what it holds, so a frame at its limit holds less than twice its bytes.
+    message arriving is held from a first byte at a 64-byte address, in room that doubles and
+    goes straight to the message's end once within twice what it holds, so a frame at its limit
+    holds less than twice its bytes. What arrives past its end waits for the next message,
+    outside its room, so each message is passed on in an allocation of its own length and the
+    alignment's 63 bytes. A message holding a frame may take at most `MESSAGE_ROOM` (256) bytes
+    beside the frame's header and body, or the frame is refused before it is decoded, since what
+    is decoded from it keeps the message alive.
   - The scan walks the encoding by forms `cargo xtask codegen` generates from the `.proto`
     files, each message's size and the kind of each field. It counts each message its size, four
     times for an entry of a repeated field and eight for one of one-byte numbers, as a vector

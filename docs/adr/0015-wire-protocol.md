@@ -63,6 +63,10 @@ hold the whole of M4's code and review it only at the end. M4a is the protocol a
   bytes on the wire, not the typed `StateEntry` §12.3 lists.
 - **Arrow batches travel in Arrow Flight's `FlightData` layout** (§12.3): an IPC message
   flatbuffer and its body buffers.
+  - A batch's message carries `padding` before `data_body`: zero bytes that put the body at a
+    multiple of 64 bytes from the message's gRPC prefix, so a receiver holding the message from
+    a 64-byte address reads the body where it arrived (ADR 0038). Credit counts each message as
+    sent, padding included. A JSON push is not padded.
   - The `Encoder` sends a schema once per schema epoch, then for each batch the dictionaries it
     needs that differ from those sent, then the batch. A new schema epoch sends every dictionary
     again.
