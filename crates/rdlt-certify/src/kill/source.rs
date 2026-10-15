@@ -2,10 +2,12 @@
 //! the load, converges on the tables a load it was never killed in publishes.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use rdlt_connector::{
-    ConnectContext, ConnectorId, Destination, PipelineId, ReadMode, Source, StreamSpec,
-    destination_factory,
+    BoxFuture, Catalog, ConnectContext, ConnectorId, Cursor, Destination, PartitionId,
+    PartitionPlan, PartitionSink, PipelineId, ReadMode, ReadRequest, Source, StreamName,
+    StreamSpec, StreamState, destination_factory,
 };
 use rdlt_connector_reference::{MemoryDestination, published, tables};
 use rdlt_engine::{PipelinePlan, StreamPlan, WriteMode};
@@ -64,7 +66,9 @@ async fn compared(
     }
     loaded.map_err(|Violation(reason)| format!("a load never killed failed: {reason}"))?;
     let kills = Kills::new();
-    let source = placed(target, id, config, &kills).await?;
+    let placed = placed(target, id, config, &kills).await?;
+    let resumed = Arc::new(Resumed::new(placed, &kills));
+    let source: Arc<dyn Source> = Arc::clone(&resumed) as Arc<dyn Source>;
     let (store, beyond) = memory(&killed).await?;
     let killing = Killing::new(store, &kills, Schedule::seeded(seed, false));
     let destination: Arc<dyn Destination> = Arc::new(killing);
@@ -74,6 +78,9 @@ async fn compared(
     }
     if let Some(unproven) = super::unproven(&kills, interrupted?, seed) {
         return Ok(unproven);
+    }
+    if let Some(unresumed) = resumed.unproven(seed) {
+        return Ok(unresumed);
     }
     same(&clean, &killed, Proof::of(&kills)).await
 }
@@ -93,6 +100,77 @@ async fn placed(
         )
     })?;
     Ok(Arc::from(placed.connector))
+}
+
+/// A source a kill clause kills, noting whether a read of it started after a kill: a read that
+/// resumes it.
+///
+/// A kill that lands once the source was read to its end, as a load that commits slowly may
+/// read it, fails an attempt with nothing left to resume, and proves nothing of how the source
+/// resumes.
+pub(super) struct Resumed {
+    source: Arc<dyn Source>,
+    kills: Kills,
+    read_after_kill: AtomicBool,
+}
+
+impl Resumed {
+    /// `source`, killed by `kills`.
+    pub(super) fn new(source: Arc<dyn Source>, kills: &Kills) -> Self {
+        Self {
+            source,
+            kills: kills.clone(),
+            read_after_kill: AtomicBool::new(false),
+        }
+    }
+
+    /// Why a load proves nothing of how the source resumes, drawn from `seed`: no read of it
+    /// started after a kill; `None` once one did.
+    pub(super) fn unproven(&self, seed: u64) -> Option<Loaded> {
+        (!self.read_after_kill.load(Ordering::SeqCst)).then(|| {
+            Loaded::Unseen(format!(
+                "no read resumed after a kill: the source was read to its end first (kill seed \
+                 {seed})"
+            ))
+        })
+    }
+}
+
+impl Source for Resumed {
+    fn check(&self) -> BoxFuture<'_, rdlt_connector::Result<()>> {
+        self.source.check()
+    }
+
+    fn discover(&self) -> BoxFuture<'_, rdlt_connector::Result<Catalog>> {
+        self.source.discover()
+    }
+
+    fn plan<'a>(
+        &'a self,
+        stream: &'a StreamName,
+        state: &'a StreamState,
+    ) -> BoxFuture<'a, rdlt_connector::Result<PartitionPlan>> {
+        self.source.plan(stream, state)
+    }
+
+    fn read(
+        &self,
+        request: ReadRequest,
+        sink: PartitionSink,
+    ) -> BoxFuture<'_, rdlt_connector::Result<()>> {
+        if self.kills.count() > 0 {
+            self.read_after_kill.store(true, Ordering::SeqCst);
+        }
+        self.source.read(request, sink)
+    }
+
+    fn committed<'a>(
+        &'a self,
+        stream: &'a StreamName,
+        cursors: &'a [(PartitionId, Cursor)],
+    ) -> BoxFuture<'a, rdlt_connector::Result<()>> {
+        self.source.committed(stream, cursors)
+    }
 }
 
 /// How a load reads and writes `stream`: incrementally, appending, when it can; else in full,

@@ -6,7 +6,7 @@ use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use super::destination::{Fault, ROWS, every_row_once};
 use super::killing::Schedule;
 use super::rows::{Parted, parted, rendered};
-use super::source::uncompared;
+use super::source::{Resumed, uncompared};
 use super::{DRAWS, Loaded, Proof, drawn, proven, unproven};
 use rdlt_connector::testing::render::{RenderError, Rendering};
 
@@ -381,6 +381,34 @@ fn every_stream_an_engine_reads_is_loaded_as_it_reads_it() {
         assert_eq!((planned.read_mode(), planned.write_mode()), (read, write));
     }
     assert!(planned(&stream(&[], true)).is_none());
+}
+
+#[test]
+fn a_load_proves_a_source_resumes_only_once_a_read_of_it_starts_after_a_kill() {
+    let kills = rdlt_host::Kills::new();
+    let resumed = Resumed::new(Arc::new(Cursors { bytes: 1 }), &kills);
+    let read = || {
+        let (sink, _feed) =
+            rdlt_connector::partition_channel(std::num::NonZeroUsize::new(1).expect("not zero"));
+        let request = rdlt_connector::ReadRequest::new(
+            rdlt_connector::StreamName::new("events").expect("a name"),
+            rdlt_connector::Partition::new(
+                rdlt_connector::PartitionId::parse("p0").expect("an id"),
+            ),
+            None,
+        );
+        drop(rdlt_connector::Source::read(&resumed, request, sink));
+    };
+    // A read started before the kill, as every read of a load the kill then lands in is.
+    read();
+    kills.kill();
+    let Some(Loaded::Unseen(reason)) = resumed.unproven(9) else {
+        panic!("a read before the kill resumed nothing");
+    };
+    assert!(reason.contains("no read resumed"), "{reason}");
+    assert!(reason.contains("kill seed 9"), "{reason}");
+    read();
+    assert!(resumed.unproven(9).is_none());
 }
 
 /// A source of one partition that checkpoints once, with a cursor of the bytes its

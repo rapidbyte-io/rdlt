@@ -55,7 +55,9 @@ through the connector, and a host that can kill what it placed. The owner ruled 
   the group holds it open (`docs/certify/clauses.md`); for one reached at an
   endpoint or served in process, the host's cut of its connection, which lands by itself. The
   pass notes which (`killed`, `cut`). When no kill landed (the load ended first, as a source
-  smaller than about one credit window does), the clause is unobserved, with the seed. A clause
+  smaller than about one credit window does), the clause is unobserved, with the seed. So is
+  `K-SOURCE` when no read of the source started after a kill: one that lands once the source was
+  read to its end, as on a busy machine whose commits come late, leaves nothing to resume. A clause
   takes at most 300 s, or what `--kill-timeout` (`Target::kill_timeout`) gives it: a connector
   slower than about two seconds a commit needs more.
 - **`S-ARROW-JSON` waits for M8.** The engine infers the types of JSON pushes where Arrow pushes
