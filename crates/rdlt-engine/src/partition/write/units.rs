@@ -106,7 +106,11 @@ pub(super) fn not_json(job: &PartitionJob, refused: NotJson) -> Error {
 pub(super) enum Beside {
     /// These bytes.
     Bytes(u64),
-    /// The rest of a request.
+    /// About what lowering the batches holds at once: what they take, the excess and twice the
+    /// pushes' text, within what a request leaves beside the excess.
+    Lowering,
+    /// The rest of a request, asked for before the pushes are observed, whether or not their
+    /// batches take more.
     Rest,
 }
 
@@ -117,7 +121,8 @@ pub(super) struct Built {
     pub(super) excess: u64,
     /// The excess, reserved; nothing where it is none.
     pub(super) beyond: Option<Reservation>,
-    /// What was asked beside the excess, reserved with it; nothing where the excess is none.
+    /// What was asked beside the excess, reserved with it; nothing where the excess is none and
+    /// only bytes were asked.
     pub(super) beside: Option<Reservation>,
     /// The passes over the pushes' records observing and building them took.
     pub(super) counts: ShredCounts,
@@ -127,7 +132,8 @@ pub(super) struct Built {
 ///
 /// The pushes were admitted for their text and twice it for the batches it becomes. What
 /// building the batches takes beyond that, and `beside` with it, is reserved in one request
-/// before they are built; the partition waits for it holding only its pushes.
+/// before they are built; the partition waits for it holding only its pushes. Asked for the rest
+/// of a request, the pushes are observed inside it, which is held whatever they take.
 ///
 /// # Errors
 ///
@@ -148,31 +154,27 @@ pub(super) async fn built(
             .await
             .map_err(failed)
     };
-    // Observing reserves its room first; what building takes is reserved without a wait while
-    // that is held, or else waited for holding only the pushes, which are then observed again.
+    // Observing reserves its room first, or the rest of a request; what building takes is
+    // reserved without a wait while that is held, or else waited for holding only the pushes,
+    // which are then observed again.
     let request = context.budget.shares().request;
-    let (mut asked, mut counts) = (limits.beyond_bytes(), ShredCounts::default());
+    let mut asked = match beside {
+        Beside::Bytes(_) | Beside::Lowering => limits.beyond_bytes(),
+        Beside::Rest => request.max(limits.beyond_bytes()),
+    };
+    let text = pushes.iter().map(Bytes::len).fold(0_u64, |text, len| {
+        text.saturating_add(u64::try_from(len).unwrap_or(u64::MAX))
+    });
+    let mut counts = ShredCounts::default();
     let (reserved, observed) = loop {
         let too_large = |large: TooLarge| beyond_a_request(job, &large);
         let mut observing = reserving(job, context, asked, too_large).await?;
         let observed = observe().await?;
         let excess = observed.excess();
-        if excess == 0 {
+        if excess == 0 && !matches!(beside, Beside::Rest) {
             break (None, observed);
         }
-        let wanted = match beside {
-            Beside::Bytes(bytes) => excess.saturating_add(bytes),
-            Beside::Rest => request.max(excess),
-        };
-        if wanted > request {
-            let (what, limit) = ("lowering", request);
-            let large = TooLarge {
-                what,
-                asked: wanted,
-                limit,
-            };
-            return Err(beyond_a_request(job, &large));
-        }
+        let wanted = wanted(job, beside, (excess, text), request)?;
         if wanted <= observing.bytes() {
             observing.shrink(wanted);
             break (Some(observing), observed);
@@ -198,6 +200,39 @@ pub(super) async fn built(
         beside,
         counts,
     })
+}
+
+/// Bytes: what building batches that take `excess` beyond twice their pushes' `text` asks for
+/// with what is asked `beside`, in one request of at most `request` bytes.
+///
+/// # Errors
+///
+/// [`JSON_EXCEEDS_BUDGET`] where that is more than a request may take.
+fn wanted(
+    job: &PartitionJob,
+    beside: Beside,
+    (excess, text): (u64, u64),
+    request: u64,
+) -> Result<u64, Error> {
+    let wanted = match beside {
+        Beside::Bytes(bytes) => excess.saturating_add(bytes),
+        Beside::Lowering if excess <= request => {
+            let lowering = excess.saturating_add(text.saturating_mul(2));
+            excess.saturating_add(lowering).min(request)
+        }
+        Beside::Lowering => excess,
+        Beside::Rest => request.max(excess),
+    };
+    if wanted > request {
+        let (what, limit) = ("lowering", request);
+        let large = TooLarge {
+            what,
+            asked: wanted,
+            limit,
+        };
+        return Err(beyond_a_request(job, &large));
+    }
+    Ok(wanted)
 }
 
 /// The error for an Arrow push whose columns of JSON take more to check than one request may

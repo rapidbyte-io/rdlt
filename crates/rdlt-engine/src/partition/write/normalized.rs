@@ -56,7 +56,8 @@ pub(super) async fn write_normalized(
     let pieces = sliced(job, context, &room, units).await?;
     let mut flush = Flush::new(context, job.table, judged(job, &pieces, shape)?, kind);
     let request = room.shares(&context.budget).request;
-    for (parts, held) in pieces {
+    let last = pieces.len().saturating_sub(1);
+    for (piece, (parts, held)) in pieces.into_iter().enumerate() {
         let mut reserved = reserve(job, context, &room, request).await?;
         let (shape, stream) = (Arc::clone(shape), job.stream.clone());
         let parts = on_pool(context, move || split(&stream, &parts, &shape)).await?;
@@ -81,6 +82,10 @@ pub(super) async fn write_normalized(
         // The allowance is as much as the pieces lowered at once take: the rest is given back.
         let allowance = cutter.for_pieces(&cut);
         reserved.shrink(made.saturating_add(allowance.bytes));
+        if piece == last {
+            // No piece asks for more: what the room has left goes back to the budget.
+            room.close();
+        }
         let hold = Arc::new(Mutex::new((reserved, held.permits)));
         let mut cut = cut.into_iter().peekable();
         while let Some(piece) = cut.next() {

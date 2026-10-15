@@ -79,6 +79,12 @@ slow-timeout = { period = "30s", terminate-after = 2 }
 filter = "package(rdlt-host) & binary(it) & test(=decoded::a_read_frame_counted_beyond_its_bound_is_refused_within_it)"
 slow-timeout = { period = "30s", terminate-after = 2 }
 
+# Loading sparse JSON as fast as dense runs four loads of sixteen partitions, each pushing a few
+# megabytes, to time them against each other on the paused clock.
+[[profile.mutants.overrides]]
+filter = "package(rdlt-engine) & binary(it) & test(=shredding::records_of_optional_fields_load_about_as_fast_as_records_of_all_of_them)"
+slow-timeout = { period = "30s", terminate-after = 2 }
+
 # The log's tests of partitions loading at once run every load of a matrix through every way
 # receipts may come, one of them on the real clock.
 [[profile.mutants.overrides]]

@@ -213,17 +213,21 @@ budget before it is held, or bounded by a limit with a typed refusal.
     reserved from the data share, holding only its pushes, and held with the batches; beyond
     one request it is refused, `json_exceeds_budget`. The partition then holds it while the
     batches are lowered, so their lowering asks nothing of the budget it might wait for:
-    - Their units are planned and cut before any is lowered, each row within what a request
-      leaves beside the batches, and what lowering the largest piece holds is reserved without
-      a wait. Where the budget has no room for it, the batches are let go, their pieces never
-      lowered, and built again once what they take and that room fit together, which the
-      partition waits for holding only its pushes.
-    - A normalized flush's splits each ask for a request, so its batches are built inside a
-      whole request, which the partition waits for holding only its pushes.
+    - The flush asks, with what its batches take, about what lowering them holds at once, what
+      they take and twice their text, within what a request leaves: one request, which the
+      partition waits for holding only its pushes. Their units are planned and cut before any
+      is lowered, each row within what a request leaves beside the batches, and what lowering
+      the largest piece holds is kept of it, or reserved beside it without a wait. Where the
+      budget has no room for it, the batches are let go, their pieces never lowered, and built
+      again once what they take and that room fit together.
+    - A normalized flush's splits each ask for a request, so it asks for a whole request
+      before its pushes are observed, holding only them, and is observed and built inside it,
+      whatever its batches take.
     - That room is lent to the pieces, or the splits: each is reserved from it and goes back
       to it as it is written, so the partition waits for its own pieces, never for the
-      budget, while it holds the batches. A piece may also take what the budget has free
-      without a wait.
+      budget, while it holds the batches. A piece or a split may also take what the budget
+      has free without a wait. Once the last piece or split has its room, what is left goes
+      back to the budget, and each piece's part as it is written.
   - A null converted to a type of no fixed width is charged that type's null slot, inside
     structs and lists too. A piece and a row take at most `i32::MAX` bytes whatever the budget,
     as far as a text array's offsets reach (ADR 0040).
@@ -442,10 +446,11 @@ admitted, and what a remote connector's calls hold in transport.
 - A normalized piece holds a quarter of the budget from before its split until its parts are
   cut, so a little over two normalize at once while pushes fill their share; and a unit of a
   few rows takes three trips to the compute pool before its parts are lowered in one.
-- A JSON flush whose batches take more than twice its text is planned and cut whole before
-  any of it is lowered, and is built again where the budget lacks room for its lowering beside
-  it. A normalized one holds a quarter of the budget until its last piece is written, so one
-  such flush lowers at a time while pushes fill their share.
+- A JSON flush whose batches take more than twice its text waits for its lowering's room with
+  what building takes, is planned and cut whole before any of it is lowered, and is built
+  again where the budget lacks room for its lowering beside it. A normalized JSON flush holds a
+  quarter of the budget from before it is observed until its last piece is split, as a
+  normalized piece does from before its split.
 - A waiting request of an hour is the last resort: nothing but a destination that stops
   writing, or a commit that never lands, makes one wait.
 - A destination whose calls may take longer than an hour needs `memory_wait` raised with them.

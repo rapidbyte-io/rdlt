@@ -455,10 +455,20 @@ impl Reservation {
     /// The reservation lent, a part at a time, to its holder's own requests: a part goes back to
     /// it, not to the budget, so a holder that needs more waits for its own parts to be released.
     pub(crate) fn lend(self) -> Lent {
-        let free = self.bytes;
+        let (bytes, class, free) = (self.bytes, self.class, self.bytes);
+        let ledger = match &self.home {
+            Some(Home::Budget(shared)) => Some(Arc::clone(shared)),
+            _ => None,
+        };
         Lent(Arc::new(Lending {
-            held: self,
-            free: Mutex::new(free),
+            bytes,
+            class,
+            ledger,
+            state: Mutex::new(Holding {
+                held: self,
+                free,
+                closed: false,
+            }),
             returned: tokio::sync::Notify::new(),
         }))
     }
@@ -470,16 +480,34 @@ impl Reservation {
 pub(crate) struct Lent(Arc<Lending>);
 
 struct Lending {
-    held: Reservation,
-    /// Bytes no part holds.
-    free: Mutex<u64>,
+    /// Bytes: what was lent, the most one request of it may take.
+    bytes: u64,
+    class: Class,
+    /// The ledger of the budget it was reserved of, pressed while a request of it waits.
+    ledger: Option<Arc<Mutex<Ledger>>>,
+    state: Mutex<Holding>,
     /// Notified as a part goes back.
     returned: tokio::sync::Notify,
 }
 
+/// What a lent reservation holds of the budget, and of that what no part holds.
+struct Holding {
+    held: Reservation,
+    /// Bytes no part holds.
+    free: u64,
+    /// Whether it lends no more: a part then goes back to the budget.
+    closed: bool,
+}
+
 impl Lending {
     fn give_back(&self, bytes: u64) {
-        *self.free.lock() += bytes;
+        let mut lend = self.state.lock();
+        if lend.closed {
+            let held = lend.held.bytes().saturating_sub(bytes);
+            lend.held.shrink(held);
+        } else {
+            lend.free += bytes;
+        }
         self.returned.notify_one();
     }
 }
@@ -487,17 +515,28 @@ impl Lending {
 impl Lent {
     /// The bytes lent, the most one request of them may take.
     pub(crate) fn bytes(&self) -> u64 {
-        self.0.held.bytes
+        self.0.bytes
     }
 
-    /// Takes `bytes` of what is lent where no part holds them; nothing otherwise.
+    /// Lends no more: what no part holds goes back to the budget now, and each part as it is
+    /// released.
+    pub(crate) fn close(&self) {
+        let mut lend = self.0.state.lock();
+        lend.closed = true;
+        let held = lend.held.bytes().saturating_sub(lend.free);
+        lend.held.shrink(held);
+        lend.free = 0;
+    }
+
+    /// Takes `bytes` of what is lent where no part holds them; nothing otherwise, or once it is
+    /// closed.
     pub(crate) fn try_take(&self, bytes: u64) -> Option<Reservation> {
-        let mut free = self.0.free.lock();
-        (bytes <= *free).then(|| {
-            *free -= bytes;
+        let mut lend = self.0.state.lock();
+        (bytes <= lend.free).then(|| {
+            lend.free -= bytes;
             Reservation {
                 home: Some(Home::Lent(Arc::clone(&self.0))),
-                class: self.0.held.class,
+                class: self.0.class,
                 bytes,
             }
         })
@@ -512,7 +551,7 @@ impl Lent {
     pub(crate) async fn take(&self, bytes: u64) -> Result<Reservation, TooLarge> {
         if bytes > self.bytes() {
             return Err(TooLarge {
-                what: self.0.held.class.what(),
+                what: self.0.class.what(),
                 asked: bytes,
                 limit: self.bytes(),
             });
@@ -520,13 +559,10 @@ impl Lent {
         if let Some(taken) = self.try_take(bytes) {
             return Ok(taken);
         }
-        let _pressing = match &self.0.held.home {
-            Some(Home::Budget(shared)) => {
-                shared.lock().pressing(true);
-                Some(Pressing(Arc::clone(shared)))
-            }
-            _ => None,
-        };
+        let _pressing = self.0.ledger.as_ref().map(|shared| {
+            shared.lock().pressing(true);
+            Pressing(Arc::clone(shared))
+        });
         loop {
             // A part that went back since the last try left its notice.
             self.0.returned.notified().await;

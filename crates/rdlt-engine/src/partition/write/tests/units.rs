@@ -157,6 +157,48 @@ async fn json_whose_build_and_what_is_asked_beside_take_all_a_request_may_is_bui
     assert_eq!(refused.code(), Some(crate::limits::JSON_EXCEEDS_BUDGET));
 }
 
+#[tokio::test(start_paused = true)]
+async fn json_built_for_the_rest_of_a_request_holds_it_though_its_batches_take_no_more() {
+    let budget = MemoryBudget::new(64 << 20, Arc::new(InlineEnv), Duration::from_secs(60));
+    // Records of one long string, whose batches take no more than their text was admitted for.
+    let record = format!("{{\"a\":\"{}\"}}", "x".repeat(1_000));
+    let push = Bytes::from(vec![record; 100].join("\n"));
+    let _permit = super::json_text(&budget, push.clone()).await;
+    let request = budget.shares().request;
+    let context = context(budget).await;
+    let built = built(&job(), &context, &[push], Beside::Rest)
+        .await
+        .expect("the push is built");
+    let held = |reserved: Option<Reservation>| reserved.map_or(0, |reserved| reserved.bytes());
+    assert_eq!(built.excess, 0);
+    assert_eq!(held(built.beyond), 0);
+    assert_eq!(held(built.beside), request);
+}
+
+#[tokio::test(start_paused = true)]
+async fn json_built_for_its_lowering_asks_what_its_batches_take_again_within_a_request() {
+    let budget = MemoryBudget::new(64 << 20, Arc::new(InlineEnv), Duration::from_secs(60));
+    let records: Vec<String> = (0..600)
+        .map(|record| format!("{{\"k{record}\":{record}}}"))
+        .collect();
+    let push = Bytes::from(records.join("\n"));
+    let text = u64::try_from(push.len()).expect("a push's length fits");
+    let _permit = super::json_text(&budget, push.clone()).await;
+    let request = budget.shares().request;
+    let context = context(budget).await;
+    let built = built(&job(), &context, &[push], Beside::Lowering)
+        .await
+        .expect("the push is built");
+    let excess = built.excess;
+    let beside = built.beside.as_ref().map(Reservation::bytes);
+    let lowering = (excess + 2 * text).min(request - excess);
+    assert!(
+        excess > 0 && lowering < request - excess,
+        "{excess} beside {request}"
+    );
+    assert_eq!(beside, Some(lowering));
+}
+
 /// The error building `pushes` with `beside` ends with.
 async fn built_err(context: &PartitionContext, pushes: &[Bytes], beside: Beside) -> Error {
     match built(&job(), context, pushes, beside).await {
