@@ -98,3 +98,36 @@ async fn a_relief_whose_chunk_staged_takes_only_a_chunk_that_does_not_pay_publis
     .await
     .expect("the writer ends");
 }
+
+#[tokio::test]
+async fn copies_a_relief_gathers_into_the_chunk_staged_fit_an_eighth_beside_its_header_and_end() {
+    let store = Arc::new(MemoryWal::default());
+    let observed = Arc::clone(&store);
+    drive(Arc::clone(&store), |mut log| async move {
+        log.send(table(0)).await;
+        log.send(table(1)).await;
+        // Chunks 0 and 1 each hold an open frame of a table of their own beside a settled one.
+        log.rows(1, 0, 200).await;
+        log.rows(2, 0, 500).await;
+        log.commit(1, &[2]).await.expect("durable");
+        log.committed(1).await;
+        log.rows(3, 1, 200).await;
+        log.rows(4, 1, 500).await;
+        log.commit(2, &[4]).await.expect("durable");
+        log.committed(2).await;
+        let schemas: u64 = log.schemas.lock().values().sum();
+        let open = length(&batch_frame(1, 0, 0, 200)) + length(&batch_frame(3, 1, 2, 200));
+        // Both copies fit an eighth, but not beside the header and end of a chunk.
+        let most = open + schemas + 1;
+        log.writer.shared().limit.store(8 * most, Ordering::SeqCst);
+        relieve(&log).await;
+        assert!(!numbers(&observed).contains(&0), "{:?}", numbers(&observed));
+        assert!(!numbers(&observed).contains(&1), "{:?}", numbers(&observed));
+        for (chunk, bytes) in observed.stored(&super::pipeline()) {
+            let bytes = u64::try_from(bytes.len()).expect("a length");
+            assert!(bytes <= most, "chunk {}: {bytes} of {most}", chunk.number);
+        }
+    })
+    .await
+    .expect("the writer ends");
+}
