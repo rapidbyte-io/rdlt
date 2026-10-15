@@ -5,7 +5,7 @@ use arrow_array::{ArrayRef, DictionaryArray, Int8Array, StringArray};
 use rdlt_connector::LogicalType;
 
 use super::{cell, json_as};
-use crate::canon::Canon;
+use crate::canon::{Canon, DAY};
 
 #[test]
 fn a_dictionary_cell_reads_as_its_value() {
@@ -34,4 +34,18 @@ fn pushed_json_reads_as_its_columns_type() {
         "in a JSON column a number keeps its decimal"
     );
     assert_eq!(json_as("null", &LogicalType::Json), Canon::Null);
+}
+
+#[test]
+fn a_date_reads_from_the_json_of_the_timestamp_it_widened_to() {
+    let midnight = Canon::Instant(18_203 * DAY);
+    assert_eq!(json_as("\"2019-11-03\"", &LogicalType::Date), midnight);
+    assert_eq!(
+        json_as("\"2019-11-03T00:00:00Z\"", &LogicalType::Date),
+        midnight
+    );
+    assert_eq!(
+        json_as("\"2019-11-03T01:00:00+01:00\"", &LogicalType::Date),
+        midnight
+    );
 }

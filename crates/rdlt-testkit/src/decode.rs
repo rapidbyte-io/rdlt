@@ -216,7 +216,7 @@ fn text(text: &str, logical: &LogicalType) -> Canon {
     }
 }
 
-/// JSON, as the JSON writer renders a value of `hint`, read back.
+/// JSON, as the JSON writer renders a value of `hint` or of a type it widened to, read back.
 fn typed(json: &Json, hint: &LogicalType) -> Canon {
     use LogicalType as T;
     match (json, hint) {
@@ -230,6 +230,8 @@ fn typed(json: &Json, hint: &LogicalType) -> Canon {
         }
         (Json::Number(text), _) => Canon::Number(decimal(text)),
         (Json::String(text), T::Binary) => Canon::Bytes(text.clone()),
+        // A date's column may have widened to timestamps before it widened to JSON.
+        (Json::String(text), T::Date) if text.contains('T') => Canon::Instant(instant(text)),
         (Json::String(text), T::Date) => Canon::Instant(i128::from(date(text)) * DAY),
         (Json::String(text), T::Time(_)) => Canon::TimeOfDay(time(text)),
         (Json::String(text), T::Timestamp(..)) => Canon::Instant(instant(text)),
