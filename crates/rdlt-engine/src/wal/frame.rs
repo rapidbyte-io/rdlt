@@ -5,7 +5,9 @@
 //! `[kind u8][len u32 LE][crc32c u32 LE][payload]`, the checksum covering the kind and the length
 //! too. Metadata frames carry their payload as JSON; a batch frame carries its segment, table,
 //! ordinal and rows as a JSON header, then the batch in the wire's Arrow framing, which names its
-//! own schema.
+//! own schema. A batch frame pads each message's header with zeros so its body lies at a multiple
+//! of 64 bytes from the frame's first byte, as Arrow's IPC format pads metadata, so a frame read
+//! into an aligned allocation is read where it lies.
 
 mod arrow;
 mod len;
@@ -27,7 +29,7 @@ pub(crate) use self::arrow::limits;
 pub(crate) use self::len::{end_len, header_len};
 
 /// The format of the chunks this engine writes.
-pub(crate) const VERSION: u16 = 5;
+pub(crate) const VERSION: u16 = 6;
 
 /// What every chunk starts with.
 const MAGIC: [u8; 8] = *b"rdltwal\0";
@@ -281,11 +283,13 @@ impl Framing {
         })
         .map_err(|error| unencoded(&error))?;
         let data = arrow::encode(&batch.batch)?;
-        self.out.reserve(HEAD + 4 + header.len() + data.len());
+        let start = self.out.len();
+        let at = HEAD + 4 + header.len();
+        self.out.reserve(at + data.len(at));
         self.payload(BATCH, |out| {
             out.put_u32_le(arrow::length(header.len())?);
             out.put_slice(&header);
-            data.write(out)
+            data.write(out, start)
         })
     }
 
@@ -491,6 +495,12 @@ pub(crate) struct Pending {
 }
 
 impl Pending {
+    /// The batch's messages, as read.
+    #[cfg(test)]
+    pub(crate) fn messages(&self) -> &[rdlt_wire::IpcFrame] {
+        self.batch.frames()
+    }
+
     /// Bytes: what decoding the batch allocates.
     pub(crate) fn held(&self) -> u64 {
         self.batch.held()

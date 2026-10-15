@@ -766,7 +766,7 @@ async fn a_batch_that_would_take_the_log_past_what_it_may_hold_is_refused() {
         opened: None,
         origin: load(),
     };
-    let limit = 4_000;
+    let limit = 5_000;
     let budget = crate::budget::budget(1 << 20);
     let limit_bytes = std::num::NonZeroU64::new(limit).unwrap();
     let (log, task) = LoadLog::start(wal, owner, limit_bytes, (None, Arc::default()));
@@ -823,9 +823,11 @@ async fn a_log_makes_a_commit_due_at_half_what_it_may_hold_and_at_each_eighth_af
                 }
             }
         };
+        // Short of a mark by more than one batch's frames, a fill stops short of it.
+        let short = 2_000;
         // A commit made while the log holds little leaves the next due at half what it may hold.
         log.passed();
-        fill(limit / 2 - 1_000).await;
+        fill(limit / 2 - short).await;
         assert!(!log.due(), "{} bytes", log.held());
         fill(limit / 2).await;
         assert!(log.due());
@@ -833,7 +835,7 @@ async fn a_log_makes_a_commit_due_at_half_what_it_may_hold_and_at_each_eighth_af
         log.passed();
         assert!(!log.due());
         let held = log.held();
-        fill(held + limit / 8 - 1_000).await;
+        fill(held + limit / 8 - short).await;
         assert!(!log.due());
         fill(held + limit / 8).await;
         assert!(log.due());
