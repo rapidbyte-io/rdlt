@@ -186,8 +186,8 @@ measurement lock. Nothing here changed the engine.
 | Send the budget's pressure only when it changes | Built: the cost fell by a third |
 | Route a partition to a lane by its index | Built: below its 5 %, no cell slower |
 | Hash ids in row chunks across the pool | The cost is there: worth building |
-| Shrink a normalized piece's hold after its split | The cost is there: worth building |
-| Keep two flushes in flight a partition | The cost is there: worth a prototype |
+| Shrink a normalized piece's hold after its split | Prototyped: the waits stay, not built |
+| Keep two flushes in flight a partition | Not built: nothing left to overlap |
 | Release held lane writes at a watermark | Prototyped: the waits stay, not built |
 | Count each batch's progress instead of sending it | Built: the cost fell by a quarter |
 | Cut a unit's pieces in one job | Built as cutting and lowering where nothing is copied |
@@ -217,15 +217,28 @@ leaves out:
   the samples of `normalized/keyless/50000`, whose flushes are cut in 9 units, and normalizing
   less than 2 times faster on 4 cores than on 1. Matrix: one thread 57.0 %, the other 41.4 %;
   1.06 and 1.15 times. The workload runs in process only.
-- **Shrink a normalized piece's hold after its split.** Rule: requests for lowering waiting for
-  room at least 5 % of the run with 4 to 16 normalized partitions within 256 MiB; then the
-  piece's bound below what its request leaves, which the change derives. Driver: 204.6 %
-  [198.6–211.4] from 4 partitions, 889.2 % [882.2–901.8] from 16, about half the run for each
-  partition. The workload runs in process only.
+- **Shrink a normalized piece's hold after its split.** Rule: requests for lowering waiting for room
+  at least 5 % of the run with 4 to 16 normalized partitions within 256 MiB; then the piece's bound
+  below what its request leaves, which the change derives. Driver: 204.6 % [198.6–211.4] from 4
+  partitions, 889.2 % [882.2–901.8] from 16, about half the run for each partition. The workload
+  runs in process only. A prototype on `main` at `933048baf024` gives back all but what the split
+  made and two pieces right after the split, CPUs 0–3, three interleaved rounds of ten runs a side,
+  each started at a one-minute load under 1.5: the waits stay, 225 % [205–233] against 230 %
+  [221–236] from 4 partitions and 978 % [932–1 009] against 984 % [931–1 026] from 16, with each
+  run's time and peak unchanged (167 against 165 ms, 174 against 174 ms, 148 MiB). Timed on `main`,
+  a piece holds its whole request while the pool splits it, about all of the run summed over
+  partitions; the planning window the change shortens takes 4 %, and shredding's own reservations
+  make 35–65 % of the waits. Not built, so the lower refusal threshold it would cost is not asked.
 - **Keep two flushes in flight a partition.** Rule: the pool idle at least 30 % of the run, one
   partition into the null sink, 1 000–8 000 rows; then a prototype at least 10 % faster. Matrix:
-  87.1 % at 1 000 rows, 92.7 % at 8 000. Production slice, frames of 1 000 rows from one
-  partition into the served sink: 91.4 %. The prototype is kept only at 10 % faster.
+  87.1 % at 1 000 rows, 92.7 % at 8 000. Production slice, frames of 1 000 rows from one partition
+  into the served sink: 91.4 %. Re-measured on `main` at `933048baf024`, CPUs 0–3: a plain Arrow cut
+  and lowering now run on the partition's task, and these events have no JSON column to measure or
+  check, so the pool is idle all of the run and its idle share no longer reads anything. The
+  partition's task handles its events 76 % of the run at 1 000 rows and 83 % at 8 000, all of it
+  inline, and waits for its next push 20 % and 14 %; its waits on the pool, its lane's queue and the
+  budget come to under 1 % together. A second flush in flight on the same task could overlap only
+  those, so it is not prototyped.
 - **Release held lane writes at a watermark.** Rule: requests for lowering or pushes waiting for
   room above 1 % of the run in any cell within 256 MiB. Matrix: 25 of the 38 cells, among them
   every cell of 80 000 rows; the pushes of `80000x64/1p/1s/end`, one task, 66.5 %; requests for
