@@ -213,10 +213,10 @@ lowering may take, logged under more memory than replays it, is refused as
   more than it writes: the chunks whose receipts arrived go, and the chunks whose open frames it
   copies, which gathers small chunks into one and frees what others hold of settled segments. A
   relief takes the old chunks whose copies fit its room: first those holding settled frames, by
-  what deleting each frees beside its copy, the most first and the oldest among equals, then
-  those holding open frames alone, the fewest open bytes first: beside the chunk staged's batch
-  frames while they fit and pay, and otherwise into a chunk of their own, the chunk staged
-  published first, the first of them whatever its size. A batch first finding no room leaves at
+  what deleting each frees beside what its copy writes to the chunk it goes to, the most first
+  and the oldest among equals, then those holding open frames alone, the fewest open bytes
+  first: beside the chunk staged's batch frames while they fit and pay, and otherwise into a
+  chunk of their own, the chunk staged published first, the first of them whatever its size. A batch first finding no room leaves at
   least the carry's eighth for copies, unless a commit took it; so a round publishes whenever any
   one chunk whose copy fits that room frees more beside it than ending the chunks the relief
   writes takes. It publishes too whenever two chunks of open frames alone fit one chunk together

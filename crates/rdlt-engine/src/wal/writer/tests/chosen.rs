@@ -295,3 +295,96 @@ async fn a_relief_takes_a_chunk_of_settled_frames_no_commit_holds_by_what_it_fre
     .await
     .expect("the writer ends");
 }
+
+/// Bytes: what the store holds of chunk `number`.
+fn stored(store: &MemoryWal, number: u64) -> u64 {
+    store
+        .stored(&super::pipeline())
+        .into_iter()
+        .find(|(chunk, _)| chunk.number == number)
+        .map(|(_, bytes)| length(&bytes))
+        .expect("the chunk is there")
+}
+
+/// Bytes: what staging and ending the next chunk writes at most, where `pending` commits
+/// without receipts follow two chunks of a commit each: its preamble and header, an end naming
+/// every chunk and commit the log holds, and a relief frame.
+fn ending(pending: u64) -> u64 {
+    let header = Header {
+        pipeline: super::pipeline(),
+        load: super::load(),
+        chunk: pending + 2,
+        epoch: rdlt_connector::Epoch(1),
+        opened: None,
+        origin: super::load(),
+    };
+    u64::try_from(PREAMBLE + HEAD).expect("small")
+        + header_len(&header).expect("measures")
+        + end_len(0..pending + 2, 1..=pending + 2)
+}
+
+#[tokio::test]
+async fn a_relief_takes_first_the_chunk_that_frees_the_most_beside_what_its_copy_writes() {
+    let store = Arc::new(MemoryWal::default());
+    let observed = Arc::clone(&store);
+    drive(Arc::clone(&store), |mut log| async move {
+        let tables = 9_u32;
+        for index in 0..tables {
+            log.send(table(index)).await;
+        }
+        // Chunk 0 holds an open frame of table 0 beside settled frames of eight tables more,
+        // whose schema frames no copy of it writes.
+        log.rows(1, 0, 50).await;
+        for index in 1..tables {
+            log.rows(u64::from(index) + 1, index, 1).await;
+        }
+        let settled: Vec<u64> = (2..=u64::from(tables)).collect();
+        log.commit(1, &settled).await.expect("durable");
+        log.committed(1).await;
+        let schemas = log.schemas.lock().clone();
+        let open = length(&batch_frame(1, 0, 0, 50));
+        let copy = open + schemas[&0];
+        // What deleting chunk 0 frees beside its copy, and beside its copy and every schema
+        // frame it holds.
+        let frees = stored(&observed, 0) - copy;
+        let beside_all = frees - schemas.values().skip(1).sum::<u64>();
+        // Chunk 1 holds an open frame of table 0 beside a settled one that frees about as much
+        // as chunk 0 beside all its schema frames.
+        let ordinal = u64::from(tables) + 1;
+        let target = u64::midpoint(beside_all, frees) - 600;
+        let rows = (1..4_000)
+            .find(|rows| length(&batch_frame(20, 0, ordinal, *rows)) >= target)
+            .expect("rows enough");
+        log.rows(10, 0, 50).await;
+        log.rows(20, 0, rows).await;
+        log.commit(2, &[20]).await.expect("durable");
+        log.committed(2).await;
+        let other = stored(&observed, 1) - copy;
+        assert!(
+            beside_all < other && other < frees,
+            "{beside_all} {other} {frees}"
+        );
+        // Commits waiting for their receipts lengthen the end a relief writes past what chunk 1
+        // frees, but not past what chunk 0 does.
+        let pending = (0..2_000)
+            .find(|pending| ending(*pending) >= other)
+            .expect("an end long enough");
+        assert!(ending(pending) < frees, "{} {frees}", ending(pending));
+        for number in 0..pending {
+            log.commit(number + 3, &[]).await.expect("durable");
+        }
+        // A chunk holds either copy beside what ends it, not both.
+        let shared = Arc::clone(log.writer.shared());
+        shared
+            .limit
+            .store(8 * (ending(pending) + copy), Ordering::SeqCst);
+        // Room enough for either copy, whatever the pending commits' chunks hold.
+        shared.held.store(0, Ordering::SeqCst);
+        relieve(&log).await;
+        // Chunk 0 went, as it frees more beside its copy than ending a chunk takes; chunk 1,
+        // which frees more beside every schema frame it holds, would not have paid alone.
+        assert!(!numbers(&observed).contains(&0), "{:?}", numbers(&observed));
+    })
+    .await
+    .expect("the writer ends");
+}

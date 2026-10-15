@@ -102,17 +102,10 @@ impl Log {
         Ok(true)
     }
 
-    /// The old chunks a relief may carry, in the order it takes them: first those holding
-    /// settled frames, those that free the most beside their copy first, then those holding open
-    /// frames alone, those with the fewest open bytes first, the oldest first among equals.
-    ///
-    /// A chunk that frees little beside a large copy, as one a relief gathered open frames into,
-    /// comes after the chunks that free more, and takes only the room they leave; and where any
-    /// two chunks of open frames alone fit a chunk beside every schema frame, the two with the
-    /// fewest open bytes do, so a gathered chunk taken first leaves none of them apart.
+    /// The old chunks a relief may carry, the oldest first, with the tables their open frames
+    /// are of.
     fn candidates(&self) -> Vec<Candidate> {
-        let mut candidates: Vec<Candidate> = self
-            .carriable()
+        self.carriable()
             .into_iter()
             .map(|number| {
                 let tables = self.written[&number]
@@ -123,22 +116,19 @@ impl Log {
                     .collect();
                 Candidate { number, tables }
             })
-            .collect();
-        candidates.sort_by_key(|candidate| {
-            let written = &self.written[&candidate.number];
-            if self.settles(written) {
-                let frees = written.len.saturating_sub(written.copies());
-                (false, Reverse(frees), 0)
-            } else {
-                (true, Reverse(0), written.open)
-            }
-        });
-        candidates
+            .collect()
     }
 
-    /// Of `candidates`, in turn, those to carry: each whose copy fits `room` beside those before
-    /// it and `fits` the chunk it goes to, given what those before it copied, into a chunk
-    /// holding the schema frames of the tables `described` names.
+    /// Of `candidates`, those to carry into a chunk holding the schema frames of the tables
+    /// `described` names: each whose copy fits `room` beside those before it and `fits` the
+    /// chunk, given what those before it copied, taken first those holding settled frames, those
+    /// that free the most beside what their copy writes to that chunk first, then those holding
+    /// open frames alone, those with the fewest open bytes first, the oldest first among equals.
+    ///
+    /// A chunk that frees little beside a large copy, as one a relief gathered open frames into,
+    /// comes after the chunks that free more, and takes only the room they leave; and where any
+    /// two chunks of open frames alone fit a chunk beside every schema frame, the two with the
+    /// fewest open bytes do, so a gathered chunk taken first leaves none of them apart.
     fn chosen(
         &self,
         candidates: &[Candidate],
@@ -146,8 +136,18 @@ impl Log {
         mut described: BTreeSet<u32>,
         fits: impl Fn(u64, u64) -> bool,
     ) -> Chosen {
+        let mut order: Vec<&Candidate> = candidates.iter().collect();
+        order.sort_by_key(|candidate| {
+            let written = &self.written[&candidate.number];
+            if self.settles(written) {
+                let copy = copy_len(written, &candidate.tables, &described);
+                (false, Reverse(written.len.saturating_sub(copy)), 0)
+            } else {
+                (true, Reverse(0), written.open)
+            }
+        });
         let mut chosen = Chosen::default();
-        for candidate in candidates {
+        for candidate in order {
             let written = &self.written[&candidate.number];
             let copy = copy_len(written, &candidate.tables, &described);
             if copy == 0 || copy > room || !fits(chosen.copied, copy) {

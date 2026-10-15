@@ -51,20 +51,6 @@ pub(super) struct Written {
     pub(super) carried: bool,
 }
 
-impl Written {
-    /// Bytes: what a carry of the chunk copies at most: the batch frames of its open segments
-    /// and every schema frame it holds; none where it holds no open frame.
-    pub(super) fn copies(&self) -> u64 {
-        if self.open == 0 {
-            return 0;
-        }
-        self.schemas
-            .values()
-            .map(|span| span.len)
-            .fold(self.open, u64::saturating_add)
-    }
-}
-
 /// Where a frame lies in its chunk: its offset and its length.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Span {
