@@ -113,10 +113,7 @@ impl IpcFile {
             .map_err(read)?;
         let bytes = Bytes::from(bytes);
         let header = message(&bytes.slice(..block.metadata))?;
-        let frame = IpcFrame {
-            header,
-            body: bytes.slice(block.metadata..),
-        };
+        let frame = IpcFrame::new(header, bytes.slice(block.metadata..));
         self.decoder.frame(&frame).map_err(refused)
     }
 }

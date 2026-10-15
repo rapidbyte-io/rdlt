@@ -26,10 +26,10 @@ fn sharing(columns: usize, offsets: [i64; 2], body: i64) -> IpcFrame {
         parts.nodes.push((1, 0));
         parts.buffers.extend([(0, 0), (offset, body - offset)]);
     }
-    IpcFrame {
-        header: parts.header(),
-        body: Bytes::from(vec![0; usize::try_from(body).unwrap()]),
-    }
+    IpcFrame::new(
+        parts.header(),
+        Bytes::from(vec![0; usize::try_from(body).unwrap()]),
+    )
 }
 
 #[test]
@@ -297,10 +297,7 @@ fn overwritten(frame: &IpcFrame, at: i64, bytes: &[u8]) -> IpcFrame {
     let at = usize::try_from(at).unwrap();
     let mut body = frame.body.to_vec();
     body[at..at + bytes.len()].copy_from_slice(bytes);
-    IpcFrame {
-        header: frame.header.clone(),
-        body: Bytes::from(body),
-    }
+    IpcFrame::new(frame.header.clone(), Bytes::from(body))
 }
 
 #[test]

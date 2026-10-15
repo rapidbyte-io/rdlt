@@ -98,6 +98,11 @@ pub const DECODED_PER_BYTE: usize = 16;
 /// Bytes: what a message holds beside the field a limit bounds.
 const MESSAGE_OVERHEAD: usize = 64 * 1024;
 
+/// Bytes: the most a data-plane message holding a frame takes, in the allocation it arrives in,
+/// beside the frame's header and body: its prefix, the fields around them, the padding before the
+/// body, and the room that starts it at a 64-byte address.
+pub const MESSAGE_ROOM: u64 = 256;
+
 /// Bytes: bounds the text of a panic the decoder contained, as its error carries it.
 pub const PANIC_TEXT_BYTES: u64 = 256;
 

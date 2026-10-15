@@ -65,7 +65,7 @@ pub(super) async fn run(
                 };
                 controls.send(sent).await.ok();
             }
-            frame = frames.message() => {
+            frame = frames.arrived() => {
                 let frame = match frame {
                     Ok(Some(frame)) => frame,
                     Ok(None) => return Err(ConnectorError::new(
@@ -76,8 +76,8 @@ pub(super) async fn run(
                 };
                 // Decoded: its charge goes before its event waits for room in the budget.
                 frames.release();
-                let size = u64::try_from(frame.encoded_len()).unwrap_or(u64::MAX);
-                match reader.event(frame)? {
+                let size = u64::try_from(frame.message.encoded_len()).unwrap_or(u64::MAX);
+                match reader.event(frame.message, frame.allocation)? {
                     Read::Done => return Ok(()),
                     Read::Event(event) => forward(&mut sink, event, forwarded).await?,
                     // A schema and a dictionary wait in the decoder for the batches that use
@@ -238,8 +238,8 @@ impl Reader {
     /// two events of the read's data: schemas and dictionaries, which carry no event, to a schema
     /// and a dictionary for each column it may have; log lines, metrics, lags and replans to
     /// [`MAX_FREE_FRAMES`].
-    fn event(&mut self, frame: v1::ReadFrame) -> rdlt_connector::Result<Read> {
-        let read = self.decoded(frame)?;
+    fn event(&mut self, frame: v1::ReadFrame, allocation: Bytes) -> rdlt_connector::Result<Read> {
+        let read = self.decoded(frame, allocation)?;
         let (count, limit, what) = match &read {
             Read::Nothing => (
                 &mut self.quiet,
@@ -268,7 +268,7 @@ impl Reader {
         Ok(read)
     }
 
-    fn decoded(&mut self, frame: v1::ReadFrame) -> rdlt_connector::Result<Read> {
+    fn decoded(&mut self, frame: v1::ReadFrame, allocation: Bytes) -> rdlt_connector::Result<Read> {
         use v1::read_frame::Frame;
         let refused = |refusal| frame_error(&rdlt_wire::WireError::Refused(refusal));
         Ok(
@@ -277,7 +277,7 @@ impl Reader {
                 .ok_or_else(|| invalid(&Invalid::Missing("read frame")))?
             {
                 Frame::Schema(schema) => self.schema(&schema)?,
-                Frame::Batch(batch) => self.batch(batch)?,
+                Frame::Batch(batch) => self.batch(batch, allocation)?,
                 Frame::Json(json) => {
                     self.limits.admit_json(json.data.len()).map_err(refused)?;
                     // The bytes are a slice of the whole message: copied, the push is charged
@@ -341,7 +341,7 @@ impl Reader {
         Ok(Read::Nothing)
     }
 
-    fn batch(&mut self, batch: v1::BatchFrame) -> rdlt_connector::Result<Read> {
+    fn batch(&mut self, batch: v1::BatchFrame, allocation: Bytes) -> rdlt_connector::Result<Read> {
         if self.epoch != Some(batch.schema_epoch) {
             let message = format!(
                 "a batch of schema epoch {} arrived before its schema",
@@ -350,10 +350,8 @@ impl Reader {
             return Err(ConnectorError::new(ConnectorErrorKind::Internal, message)
                 .with_code(rdlt_connector::wire::MALFORMED_FRAME));
         }
-        let frame = IpcFrame {
-            header: batch.data_header,
-            body: batch.data_body,
-        };
+        let frame = IpcFrame::arrived(batch.data_header, batch.data_body, allocation)
+            .map_err(|error| frame_error(&error))?;
         let Some(decoded) = self
             .decoder
             .frame(&frame)

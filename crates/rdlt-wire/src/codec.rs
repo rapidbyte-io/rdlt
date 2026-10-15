@@ -23,20 +23,73 @@ use arrow_schema::{DataType, Schema};
 use bytes::Bytes;
 
 use self::measure::Columns;
+use crate::aligned::{Aligned, Frozen};
 use crate::error::{Frame, Problem, WireError};
+use crate::limits::{MESSAGE_ROOM, count};
 
 pub use decode::Decoder;
 pub use shape::Shape;
 pub use split::Cut;
 pub use weigh::{Weigher, Weight};
 
-/// One IPC message: its flatbuffer header and its body buffers.
+/// One IPC message: its flatbuffer header and its body buffers, and the allocation the body lies
+/// in.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct IpcFrame {
     /// The IPC message flatbuffer.
     pub header: Bytes,
     /// The message's body buffers.
     pub body: Bytes,
+    /// The allocation `body` lies in, from its first byte to its last: what a batch decoded from
+    /// the frame keeps alive.
+    pub allocation: Bytes,
+}
+
+impl IpcFrame {
+    /// A frame whose body is an allocation of its own.
+    pub fn new(header: Bytes, body: Bytes) -> Self {
+        let allocation = body.clone();
+        Self {
+            header,
+            body,
+            allocation,
+        }
+    }
+
+    /// The frame a peer sent as `header` and `body` in one message lying in `allocation`.
+    ///
+    /// # Errors
+    ///
+    /// [`WireError::Malformed`] where the message takes more beside its header and body than
+    /// [`MESSAGE_ROOM`]: what is decoded from the frame keeps the whole allocation alive, which
+    /// its charge bounds.
+    pub fn arrived(header: Bytes, body: Bytes, allocation: Bytes) -> Result<Self, WireError> {
+        let framed = header.len().saturating_add(body.len());
+        let extra = count(allocation.len().saturating_sub(framed));
+        if extra > MESSAGE_ROOM {
+            return Err(WireError::malformed(
+                Frame::Batch,
+                Problem::MessageRoom { extra },
+            ));
+        }
+        Ok(Self {
+            header,
+            body,
+            allocation,
+        })
+    }
+
+    /// The frame with its body copied into an allocation of its own that starts at a 64-byte
+    /// address, as a receiver holds it.
+    #[must_use]
+    pub fn aligned(&self) -> Self {
+        let Frozen { bytes, allocation } = Aligned::copied(&self.body);
+        Self {
+            header: self.header.clone(),
+            body: bytes,
+            allocation,
+        }
+    }
 }
 
 /// Encodes one sender's batches: a schema, then batches in it.
@@ -140,9 +193,11 @@ impl Encoder {
                 encoding: true,
                 source,
             })?;
-        let frame = |encoded: arrow_ipc::writer::EncodedData| IpcFrame {
-            header: Bytes::from(encoded.ipc_message),
-            body: Bytes::from(encoded.arrow_data),
+        let frame = |encoded: arrow_ipc::writer::EncodedData| {
+            IpcFrame::new(
+                Bytes::from(encoded.ipc_message),
+                Bytes::from(encoded.arrow_data),
+            )
         };
         Ok((
             dictionaries.into_iter().map(frame).collect(),

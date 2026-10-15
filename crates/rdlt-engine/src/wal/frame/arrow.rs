@@ -111,10 +111,7 @@ pub(super) fn measured(mut data: Bytes, limits: Limits) -> Result<Measured, Erro
     let count = count(&mut data)?;
     let (mut frames, mut held) = (Vec::new(), 0_u64);
     for _ in 0..count {
-        let frame = IpcFrame {
-            header: take(&mut data)?,
-            body: take(&mut data)?,
-        };
+        let frame = IpcFrame::new(take(&mut data)?, take(&mut data)?);
         let bytes = decoder.held(&frame).map_err(|error| garbled(&error))?;
         held = held.saturating_add(bytes);
         frames.push(frame);

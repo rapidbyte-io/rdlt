@@ -152,10 +152,7 @@ pub(crate) fn changed(frames: &[IpcFrame], change: impl FnOnce(&mut Parts)) -> I
     let frame = frames.last().unwrap();
     let mut parts = Parts::of(&frame.header);
     change(&mut parts);
-    IpcFrame {
-        header: parts.header(),
-        body: frame.body.clone(),
-    }
+    IpcFrame::new(parts.header(), frame.body.clone())
 }
 
 /// The error `decoded` is; a frame that decoded fails the test without printing its batch.

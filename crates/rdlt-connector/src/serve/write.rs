@@ -9,6 +9,7 @@
 mod tests;
 
 use arrow_array::RecordBatch;
+use bytes::Bytes;
 use rdlt_wire::flow::Granting;
 use rdlt_wire::limits::CREDIT_FLOOR;
 use rdlt_wire::plane::{Answers, Incoming};
@@ -104,7 +105,7 @@ async fn receive(
         let frame = tokio::select! {
             biased;
             () = received.closed() => return,
-            frame = frames.message() => frame,
+            frame = frames.arrived() => frame,
         };
         // A request its host ends ends the write; one refused or failed fails it, answered after
         // the frames before it.
@@ -116,7 +117,7 @@ async fn receive(
         let Ok(slot) = received.reserve().await else {
             return;
         };
-        let staged = frame.and_then(|frame| receiving.received(frame));
+        let staged = frame.and_then(|frame| receiving.received(frame.message, frame.allocation));
         let failed = staged.is_err();
         slot.send(staged);
         if failed {
@@ -137,8 +138,13 @@ struct Receiving {
 }
 
 impl Receiving {
-    /// Applies one frame: a schema to the decoder, a batch decoded, or a flush.
-    fn received(&mut self, frame: v1::WriteFrame) -> Result<Staged, ConnectorError> {
+    /// Applies one frame, which arrived in `allocation`: a schema to the decoder, a batch decoded,
+    /// or a flush.
+    fn received(
+        &mut self,
+        frame: v1::WriteFrame,
+        allocation: Bytes,
+    ) -> Result<Staged, ConnectorError> {
         use v1::write_frame::Frame;
         let bytes = u64::try_from(frame.encoded_len()).unwrap_or(u64::MAX);
         let step = match frame.frame {
@@ -149,10 +155,8 @@ impl Receiving {
                 Step::Kept
             }
             Some(Frame::Batch(batch)) => {
-                let frame = IpcFrame {
-                    header: batch.data_header,
-                    body: batch.data_body,
-                };
+                let frame = IpcFrame::arrived(batch.data_header, batch.data_body, allocation)
+                    .map_err(|error| frame_error(&error))?;
                 let held = frame.header.len().saturating_add(frame.body.len());
                 let staged = self
                     .staged

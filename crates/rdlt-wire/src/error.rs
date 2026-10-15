@@ -153,6 +153,16 @@ pub enum Problem {
     /// A batch arrived before any schema.
     #[error("no schema was received")]
     NoSchema,
+    /// The message carrying the frame takes more beside its header and body than a message may.
+    #[error(
+        "the message holds {extra} bytes beside its frame's header and body, more than the {} a \
+         message may",
+        crate::limits::MESSAGE_ROOM
+    )]
+    MessageRoom {
+        /// Bytes beside the header and body.
+        extra: u64,
+    },
 }
 
 /// A part of a record batch message that its schema's columns consume in order.

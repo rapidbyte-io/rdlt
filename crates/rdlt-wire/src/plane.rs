@@ -22,7 +22,7 @@ use tonic::codegen::http::{self, HeaderValue, Uri};
 use tonic::codegen::tokio_stream::Stream;
 
 pub use self::chained::{Chained, Chunks};
-pub use self::incoming::Incoming;
+pub use self::incoming::{Incoming, Received};
 pub use self::outgoing::Outgoing;
 #[cfg(feature = "serve")]
 pub use self::router::{Answers, Plane, Router, Serving};

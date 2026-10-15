@@ -247,10 +247,7 @@ fn a_schema_where_a_batch_belongs_is_malformed() {
     let (mut encoder, mut decoder) = (Encoder::default(), Decoder::new(Limits::default()));
     let schema = encoder.schema(&batch.schema()).unwrap();
     decoder.schema(&schema).unwrap();
-    let frame = IpcFrame {
-        header: schema,
-        body: Bytes::new(),
-    };
+    let frame = IpcFrame::new(schema, Bytes::new());
     let error = decoder.frame(&frame).unwrap_err();
     assert!(
         matches!(
@@ -870,9 +867,11 @@ fn exchanged_frames() -> [IpcFrame; 3] {
             .encode(batch, &mut tracker, &options, &mut context)
             .unwrap()
     };
-    let frame = |encoded: &arrow_ipc::writer::EncodedData| IpcFrame {
-        header: Bytes::from(encoded.ipc_message.clone()),
-        body: Bytes::from(encoded.arrow_data.clone()),
+    let frame = |encoded: &arrow_ipc::writer::EncodedData| {
+        IpcFrame::new(
+            Bytes::from(encoded.ipc_message.clone()),
+            Bytes::from(encoded.arrow_data.clone()),
+        )
     };
     // Dictionaries are numbered from zero by place: of three columns, the last two are 1 and 2.
     let (dictionaries, _) = encoded(&tagged(&[("x", "x"), ("a", "banana"), ("b", "apple")]));
@@ -1137,4 +1136,46 @@ fn a_type_s_child_fields_are_the_fields_one_level_below_it_whatever_encodes_it()
             .collect();
         assert_eq!(names, expected, "{data_type}");
     }
+}
+
+#[test]
+fn a_frame_s_message_may_take_its_room_beside_it_and_no_more() {
+    let (header, body) = (Bytes::from_static(b"header"), Bytes::from(vec![1; 100]));
+    let room = usize::try_from(crate::limits::MESSAGE_ROOM).unwrap();
+    let allocation = |extra: usize| Bytes::from(vec![0; header.len() + body.len() + extra]);
+    let within = IpcFrame::arrived(header.clone(), body.clone(), allocation(room)).unwrap();
+    assert_eq!(within.allocation.len(), header.len() + body.len() + room);
+    let refused = IpcFrame::arrived(header.clone(), body.clone(), allocation(room + 1))
+        .expect_err("beyond its room");
+    assert!(
+        matches!(
+            refused,
+            WireError::Malformed {
+                frame: Frame::Batch,
+                problem: Problem::MessageRoom { extra },
+            } if extra == crate::limits::MESSAGE_ROOM + 1
+        ),
+        "{refused}"
+    );
+}
+
+#[test]
+fn a_frame_aligned_holds_its_body_from_a_64_byte_address_in_an_allocation_of_its_own() {
+    let frame = IpcFrame::new(
+        Bytes::from_static(b"h"),
+        Bytes::from(vec![3; 1_000]).slice(1..),
+    );
+    assert_eq!(
+        frame.allocation, frame.body,
+        "a new frame's body is its allocation"
+    );
+    let aligned = frame.aligned();
+    assert_eq!(aligned.header, frame.header);
+    assert_eq!(aligned.body, frame.body);
+    assert!(crate::aligned::is_aligned(&aligned.body));
+    let (within, body) = (
+        aligned.allocation.as_ptr_range(),
+        aligned.body.as_ptr_range(),
+    );
+    assert!(within.start <= body.start && body.end <= within.end);
 }

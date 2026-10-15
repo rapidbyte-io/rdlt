@@ -14,10 +14,7 @@ use crate::limits::Limits;
 fn skewed(frame: &IpcFrame, skew: usize) -> IpcFrame {
     let mut bytes = vec![0; skew];
     bytes.extend_from_slice(&frame.body);
-    IpcFrame {
-        header: frame.header.clone(),
-        body: Bytes::from(bytes).slice(skew..),
-    }
+    IpcFrame::new(frame.header.clone(), Bytes::from(bytes).slice(skew..))
 }
 
 #[test]

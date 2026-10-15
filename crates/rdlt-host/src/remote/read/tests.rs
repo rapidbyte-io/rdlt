@@ -39,7 +39,10 @@ fn padded(frame: &v1::ReadFrame) -> Bytes {
 /// The event `message` becomes; the frame decoded from it is dropped with the read's turn.
 fn event(message: &Bytes) -> SourceEvent {
     let frame = v1::ReadFrame::decode(message.clone()).expect("a read frame");
-    match reader().event(frame).expect("an admitted frame") {
+    match reader()
+        .event(frame, message.clone())
+        .expect("an admitted frame")
+    {
         Read::Event(event) => event,
         Read::Done | Read::Nothing => panic!("the frame is an event"),
     }
@@ -166,7 +169,9 @@ fn a_read_s_schema_and_dictionaries_are_charged_while_its_decoder_holds_them() {
     let (mut reader, mut encoder) = (reader(), Encoder::default());
     let mut kept = Kept::default();
     let mut read = |frame: v1::ReadFrame| {
-        let read = reader.event(frame).expect("an admitted frame");
+        let read = reader
+            .event(frame, Bytes::new())
+            .expect("an admitted frame");
         if matches!(read, Read::Nothing) {
             kept.charge(&sink, reader.kept()).expect("within the limit");
         }
@@ -227,7 +232,7 @@ fn a_read_that_would_keep_more_than_it_may_is_refused_and_holds_nothing_more() {
     });
     let wide = RecordBatch::try_from_iter(columns).expect("a valid batch");
     let (mut reader, mut encoder) = (reader(), Encoder::default());
-    let read = reader.event(schema_frame(&mut encoder, &wide, 1));
+    let read = reader.event(schema_frame(&mut encoder, &wide, 1), Bytes::new());
     assert!(matches!(read, Ok(Read::Nothing)));
     assert!(reader.kept() > LIMIT);
     assert!(kept.charge(&sink, reader.kept()).is_err());
@@ -249,10 +254,11 @@ fn batches_of_a_schema_sent_again_before_each_keep_one_schema_alive() {
     let mut kept = Allocations::default();
     let mut pushes = Vec::new();
     for epoch in 1..=200 {
-        let read = reader.event(schema_frame(&mut encoder, &batch, epoch));
+        let read = reader.event(schema_frame(&mut encoder, &batch, epoch), Bytes::new());
         assert!(matches!(read, Ok(Read::Nothing)));
         for frame in batch_frames(&mut encoder, &batch, epoch) {
-            let Ok(Read::Event(SourceEvent::Push(Push::Arrow(decoded)))) = reader.event(frame)
+            let Ok(Read::Event(SourceEvent::Push(Push::Arrow(decoded)))) =
+                reader.event(frame, Bytes::new())
             else {
                 panic!("the frame is a batch");
             };
