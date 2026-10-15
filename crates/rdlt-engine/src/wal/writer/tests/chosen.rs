@@ -227,3 +227,71 @@ async fn a_relief_gathers_chunks_of_open_frames_alone_until_no_two_fit_one() {
         }
     }
 }
+
+#[tokio::test]
+async fn a_relief_counts_only_the_schema_frames_of_the_tables_a_chunk_holds_open_frames_of() {
+    let store = Arc::new(MemoryWal::default());
+    let observed = Arc::clone(&store);
+    drive(Arc::clone(&store), |mut log| async move {
+        log.send(table(0)).await;
+        log.send(table(1)).await;
+        // Chunk 0 holds an open frame of table 0 beside a settled one of table 1; chunk 1 an
+        // open frame of table 0 beside a settled one.
+        log.rows(1, 0, 200).await;
+        log.rows(2, 1, 500).await;
+        log.commit(1, &[2]).await.expect("durable");
+        log.committed(1).await;
+        log.rows(3, 0, 200).await;
+        log.rows(4, 0, 500).await;
+        log.commit(2, &[4]).await.expect("durable");
+        log.committed(2).await;
+        let schema = log.schemas.lock()[&0];
+        let header = frames(&observed)[0]
+            .1
+            .iter()
+            .find(|frame| matches!(frame, Frame::Header(_)))
+            .map(|frame| length(&frame.encode().expect("encodes")))
+            .expect("a header");
+        let ending =
+            u64::try_from(PREAMBLE + HEAD).expect("small") + header + end_len([0, 1], [1, 2]);
+        let open = length(&batch_frame(1, 0, 0, 200)) + length(&batch_frame(3, 0, 2, 200));
+        // Both open frames fit a chunk beside table 0's schema frame alone: no copy takes table
+        // 1's.
+        let most = ending + open + schema;
+        log.writer.shared().limit.store(8 * most, Ordering::SeqCst);
+        relieve(&log).await;
+        assert_eq!(numbers(&observed), [2]);
+        let mut gathered = batches_of(&observed, 2);
+        gathered.sort_unstable();
+        assert_eq!(gathered, [1, 3]);
+    })
+    .await
+    .expect("the writer ends");
+}
+
+#[tokio::test]
+async fn a_relief_takes_a_chunk_of_settled_frames_no_commit_holds_by_what_it_frees() {
+    let store = Arc::new(MemoryWal::default());
+    let observed = Arc::clone(&store);
+    drive(Arc::clone(&store), |mut log| async move {
+        log.send(table(0)).await;
+        // Chunk 0 holds an open frame beside a large one of segment 2, and is published between
+        // commits; chunk 1 an open frame beside segment 2's seal and commit.
+        log.rows(1, 0, 100).await;
+        log.rows(2, 0, 1_000).await;
+        relieve(&log).await;
+        let shared = Arc::clone(log.writer.shared());
+        shared.limit.store(8 * 1_000, Ordering::SeqCst);
+        log.rows(5, 0, 100).await;
+        relieve(&log).await;
+        shared.limit.store(u64::MAX, Ordering::SeqCst);
+        log.commit(1, &[2]).await.expect("durable");
+        log.committed(1).await;
+        relieve(&log).await;
+        // Chunk 0, which frees segment 2's frame, goes first, though no commit is in it.
+        assert_eq!(numbers(&observed), [2]);
+        assert_eq!(batches_of(&observed, 2), [1, 5]);
+    })
+    .await
+    .expect("the writer ends");
+}
