@@ -984,6 +984,33 @@ async fn batches_whose_columns_convert_are_lowered_on_the_pool() {
     assert_eq!(lowering_jobs("lowered-on-the-pool", textual).await, 5);
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_run_of_plain_arrow_wakes_a_pool_of_a_thread_a_core_once_a_load() {
+    // Forty batches, each checkpointed on its own, beside a pool of four threads: the load's
+    // first lowering builds its constant columns there, and nothing else reaches the pool.
+    let (_, source) = Script::new(vec![ScriptStream::new("events", 1, 200, 5)])
+        .connect("pool_asleep")
+        .await;
+    let four = Cores::new(NonZeroUsize::new(4).expect("four is not zero"));
+    let run = engine_within(commit_every(1000), four).run(
+        pipeline("pool-asleep", [stream("events")]),
+        source,
+        memory("pool_asleep").await,
+    );
+    // On the real clock: a run that hangs fails the test rather than holding it.
+    let outcome = tokio::time::timeout(Duration::from_secs(60), run)
+        .await
+        .expect("the run ends");
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    assert_eq!(outcome.report.rows, 200);
+    assert_eq!(outcome.report.counters.pool.jobs, 1);
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_plan_naming_a_partition_twice_fails_its_stream_before_anything_is_read() {
     let mut script = Script::new(vec![ScriptStream::new("events", 1, 30, 7)]);
