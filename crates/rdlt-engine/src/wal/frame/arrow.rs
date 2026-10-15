@@ -2,11 +2,15 @@
 //! message, the count of messages, then each dictionary and record batch message's header and
 //! body, each after its length.
 //!
+//! A header is padded with zeros so the body after it lies at a multiple of 64 bytes from the
+//! frame's first byte, as Arrow's IPC format pads metadata.
+//!
 //! The wire's decoder checks every message's shape against its schema and its body before Arrow
 //! reads it, so data a checksum passes but a crash or a bug garbled is refused, never a panic.
 
 use arrow_array::RecordBatch;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
+use rdlt_wire::aligned::ALIGNMENT;
 use rdlt_wire::{Decoder, Encoder, IpcFrame, Limits};
 
 use crate::error::Error;
@@ -38,24 +42,38 @@ pub(super) struct Encoded {
     frames: Vec<IpcFrame>,
 }
 
+/// Zero bytes after a message's header of `header` bytes, whose first byte lies `at` bytes into
+/// its frame, that put its body, after the body's length, at a multiple of [`ALIGNMENT`] from
+/// the frame's first byte.
+pub(super) fn padding(at: usize, header: usize) -> usize {
+    let body = at + header + 4;
+    (ALIGNMENT - body % ALIGNMENT) % ALIGNMENT
+}
+
 impl Encoded {
-    /// Bytes: what the data takes framed, each message after its length.
-    pub(super) fn len(&self) -> usize {
-        let messages = self
-            .frames
-            .iter()
-            .map(|frame| 8 + frame.header.len() + frame.body.len());
-        4 + self.schema.len() + 4 + messages.sum::<usize>()
+    /// Bytes: what the data takes framed from `at` bytes into its frame: each message after its
+    /// length, each header padded so its body lies at a multiple of [`ALIGNMENT`].
+    pub(super) fn len(&self, at: usize) -> usize {
+        let mut end = at + 4 + self.schema.len() + 4;
+        for frame in &self.frames {
+            let header = frame.header.len() + padding(end + 4, frame.header.len());
+            end += 4 + header + 4 + frame.body.len();
+        }
+        end - at
     }
 
-    /// Writes the data to `out`: the schema message, the count of messages, then each message's
-    /// header and body, each after its length.
-    pub(super) fn write(&self, out: &mut BytesMut) -> Result<(), Error> {
+    /// Writes the data to `out`, whose frame starts at `frame`: the schema message, the count of
+    /// messages, then each message's header, padded with zeros to place its body, and its body,
+    /// each after its length.
+    pub(super) fn write(&self, out: &mut BytesMut, frame: usize) -> Result<(), Error> {
         prefixed(out, &self.schema)?;
         out.put_u32_le(length(self.frames.len())?);
-        for frame in &self.frames {
-            prefixed(out, &frame.header)?;
-            prefixed(out, &frame.body)?;
+        for message in &self.frames {
+            let pad = padding(out.len() + 4 - frame, message.header.len());
+            out.put_u32_le(length(message.header.len() + pad)?);
+            out.put_slice(&message.header);
+            out.put_bytes(0, pad);
+            prefixed(out, &message.body)?;
         }
         Ok(())
     }
@@ -86,6 +104,12 @@ pub(crate) struct Measured {
 }
 
 impl Measured {
+    /// The batch's messages, as read.
+    #[cfg(test)]
+    pub(super) fn frames(&self) -> &[IpcFrame] {
+        &self.frames
+    }
+
     /// Bytes: what decoding the batch allocates, its dictionaries included.
     pub(crate) fn held(&self) -> u64 {
         self.held

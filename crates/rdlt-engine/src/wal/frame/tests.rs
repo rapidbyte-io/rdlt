@@ -174,7 +174,7 @@ fn commit(meta: &CommitMeta, seals: u32, phases: u32) -> Result<Bytes, crate::Er
 /// `batch`'s Arrow data as a batch frame holds it.
 fn arrow_data(batch: &RecordBatch) -> Result<Vec<u8>, crate::Error> {
     let mut out = BytesMut::new();
-    super::arrow::encode(batch)?.write(&mut out)?;
+    super::arrow::encode(batch)?.write(&mut out, 0)?;
     Ok(out.to_vec())
 }
 
@@ -220,12 +220,131 @@ fn a_framing_s_length_grows_by_each_frame_s_head_and_announced_payload() {
     }
 }
 
+/// Checks that each message body of the batch frame `frame` lies at a multiple of the alignment
+/// from the frame's first byte: read into an aligned allocation, the frame's bodies are aligned.
+fn bodies_lie_aligned(frame: &[u8]) {
+    let copied = rdlt_wire::aligned::Aligned::copied(frame);
+    let pending = super::pending(&copied.bytes, limits()).expect("a batch frame");
+    for message in pending.messages() {
+        let body = &message.body;
+        assert!(body.is_empty() || rdlt_wire::aligned::is_aligned(body));
+    }
+}
+
+/// A batch of ids and two dictionary columns, so its frame holds dictionaries before its batch.
+fn keyed() -> RecordBatch {
+    use arrow_array::types::Int32Type;
+    use arrow_array::{DictionaryArray, Int32Array, Int64Array, StringArray};
+    let keyed = |values: &[&str]| {
+        let keys = Int32Array::from_iter_values((0..100).map(|row| row % 3));
+        let values = StringArray::from(values.to_vec());
+        Arc::new(DictionaryArray::<Int32Type>::try_new(keys, Arc::new(values)).expect("keys"))
+    };
+    RecordBatch::try_from_iter([
+        (
+            "id",
+            Arc::new(Int64Array::from_iter_values(0..100)) as arrow_array::ArrayRef,
+        ),
+        ("tag", keyed(&["a", "bb", "ccc"]) as arrow_array::ArrayRef),
+        ("kind", keyed(&["x", "y", "zz"]) as arrow_array::ArrayRef),
+    ])
+    .expect("a batch")
+}
+
+#[test]
+fn a_batch_frame_s_bodies_lie_at_multiples_of_64_from_its_first_byte() {
+    let mut framing = Framing::default();
+    // Frames before them, so each batch frame starts at an offset of the chunk, not its start.
+    for frame in sample_frames() {
+        framing.frame(&frame).expect("the frame encodes");
+    }
+    let mut written = Vec::new();
+    for batch in [ids(), keyed(), ids().slice(0, 0)] {
+        let start = framing.out.len();
+        let frame = Batch {
+            segment: SegmentId(1),
+            table: 0,
+            ordinal: 0,
+            batch,
+        };
+        framing
+            .frame(&Frame::Batch(frame))
+            .expect("the frame encodes");
+        written.push(start..framing.out.len());
+    }
+    let chunk = framing.finish();
+    for frame in written {
+        bodies_lie_aligned(&chunk[frame]);
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(rdlt_testkit::cases(32)))]
+
+    /// Whatever header a batch frame's messages have, each body lies aligned from the frame's
+    /// first byte.
+    #[test]
+    fn a_drawn_batch_frame_s_bodies_lie_aligned(drawn in drawn::neighbors::batches()) {
+        for batch in &drawn {
+            let frame = Frame::Batch(Batch { segment: SegmentId(1), table: 0, ordinal: 0, batch: arrow(batch) });
+            bodies_lie_aligned(&frame.encode().expect("the frame encodes"));
+        }
+    }
+}
+
+#[test]
+fn a_header_is_padded_by_less_than_the_alignment_to_place_its_body() {
+    use rdlt_wire::aligned::ALIGNMENT;
+    for at in 0..2 * ALIGNMENT {
+        for header in 0..2 * ALIGNMENT + 3 {
+            let pad = super::arrow::padding(at, header);
+            assert!(pad < ALIGNMENT, "{at} {header}");
+            assert_eq!((at + header + pad + 4) % ALIGNMENT, 0, "{at} {header}");
+        }
+    }
+}
+
+#[test]
+fn a_batch_s_data_is_as_long_as_it_counts_from_any_offset_in_its_frame() {
+    use bytes::BufMut as _;
+    let data = super::arrow::encode(&keyed()).expect("the batch encodes");
+    for at in 0..2 * rdlt_wire::aligned::ALIGNMENT {
+        let mut out = BytesMut::new();
+        out.put_bytes(0, at);
+        data.write(&mut out, 0).expect("written");
+        assert_eq!(out.len() - at, data.len(at), "{at}");
+    }
+}
+
+#[test]
+fn a_batch_frame_reserves_exactly_what_it_writes_wherever_its_bodies_land() {
+    // A longer column name moves every message after the schema's, so the padding before each
+    // body takes lengths across the whole alignment.
+    for name in 1..=64 {
+        let values = arrow_array::Int64Array::from_iter_values(0..3);
+        let batch = RecordBatch::try_from_iter([("x".repeat(name), Arc::new(values) as _)])
+            .expect("a batch");
+        let mut framing = Framing::default();
+        let frame = Batch {
+            segment: SegmentId(1),
+            table: 0,
+            ordinal: 0,
+            batch,
+        };
+        framing
+            .frame(&Frame::Batch(frame))
+            .expect("the frame encodes");
+        assert_eq!(framing.out.capacity(), framing.out.len(), "{name}");
+        bodies_lie_aligned(&framing.finish());
+    }
+}
+
 #[test]
 fn a_batch_frame_fills_the_buffer_it_reserves_so_it_is_kept_not_copied() {
     let wide = arrow_array::Int64Array::from_iter_values(0..10_000);
     let wide = RecordBatch::try_from_iter([("id", Arc::new(wide) as arrow_array::ArrayRef)])
         .expect("a batch");
-    for batch in [ids(), wide] {
+    for batch in [ids(), wide, keyed()] {
         let mut framing = Framing::default();
         framing
             .frame(&Frame::Batch(Batch {
