@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arrow_array::RecordBatch;
+use bytes::Bytes;
 use rdlt_connector::serve::Served;
 use rdlt_connector::wire::v1;
 use rdlt_connector::{
@@ -72,6 +73,7 @@ async fn raw_write(
             sent.push(Frame::Batch(v1::WriteBatch {
                 segment: 1,
                 data_header: frame.header,
+                padding: Bytes::new(),
                 data_body: frame.body,
             }));
         }

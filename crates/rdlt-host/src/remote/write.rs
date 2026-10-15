@@ -10,8 +10,8 @@ use rdlt_connector::{
     BoxFuture, ConnectorError, DestinationWriter, SegmentId, TableRef, WriteStats,
 };
 use rdlt_wire::flow::Spending;
-use rdlt_wire::plane::{Incoming, WRITE};
-use rdlt_wire::prost::Message as _;
+use rdlt_wire::plane::{Chained as _, Incoming, WRITE};
+use rdlt_wire::prost::bytes::Bytes;
 use rdlt_wire::{Cut, Encoder};
 use tokio::sync::mpsc;
 use tokio::time::Instant;
@@ -123,7 +123,7 @@ impl RemoteWriter {
     /// Sends `frame` once the connector has credit left for it, spending its size.
     async fn send(&mut self, frame: v1::write_frame::Frame) -> rdlt_connector::Result<()> {
         let frame = v1::WriteFrame { frame: Some(frame) };
-        let size = u64::try_from(frame.encoded_len()).unwrap_or(u64::MAX);
+        let size = u64::try_from(frame.sent_len()).unwrap_or(u64::MAX);
         let due = self.due();
         while !self.credit.may_send() {
             match self.ack(due).await? {
@@ -210,6 +210,7 @@ impl RemoteWriter {
                 let batch = Frame::Batch(v1::WriteBatch {
                     segment: segment.0,
                     data_header: frame.header,
+                    padding: Bytes::new(),
                     data_body: frame.body,
                 });
                 if let Err(error) = self.send(batch).await {

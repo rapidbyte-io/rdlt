@@ -71,6 +71,11 @@ pub(crate) static BATCH_FRAME: Form = Form {
             kind: Kind::Bytes,
             repeated: false,
         },
+        Field {
+            number: 5,
+            kind: Kind::Bytes,
+            repeated: false,
+        },
     ],
 };
 
@@ -1873,6 +1878,11 @@ pub(crate) static WRITE_BATCH: Form = Form {
         },
         Field {
             number: 3,
+            kind: Kind::Bytes,
+            repeated: false,
+        },
+        Field {
+            number: 4,
             kind: Kind::Bytes,
             repeated: false,
         },

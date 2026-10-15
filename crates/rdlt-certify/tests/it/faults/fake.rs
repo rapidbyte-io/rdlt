@@ -15,6 +15,7 @@ use rdlt_connector::{ConnectorError, ConnectorErrorKind};
 use rdlt_host::Stream;
 use rdlt_wire::bounded::Window;
 use rdlt_wire::plane::{Incoming, Plane, Router, Serving};
+use rdlt_wire::prost::bytes::Bytes;
 use rdlt_wire::v1::connector_server::{Connector, ConnectorServer};
 use rdlt_wire::{Limits, PROTOCOL_MAJOR, PUBLISHED};
 use tokio::sync::mpsc;
@@ -287,6 +288,7 @@ impl Fake {
             schema_epoch: 1,
             kind: v1::BatchKind::Arrow as i32,
             data_header: data.header,
+            padding: Bytes::new(),
             data_body: data.body,
         });
         let frames: Answer<v1::ReadFrame> = match self.fault {

@@ -127,6 +127,7 @@ pub(crate) fn mebibyte() -> (v1::ReadFrame, v1::ReadFrame) {
         schema_epoch: 1,
         kind: v1::BatchKind::Arrow as i32,
         data_header: frame.header,
+        padding: Bytes::new(),
         data_body: frame.body,
     });
     let message = |frame| v1::ReadFrame { frame: Some(frame) };
@@ -300,6 +301,7 @@ impl Fake {
                     schema_epoch: 1,
                     kind: v1::BatchKind::Arrow as i32,
                     data_header: frame.header,
+                    padding: Bytes::new(),
                     data_body: frame.body,
                 })),
             });

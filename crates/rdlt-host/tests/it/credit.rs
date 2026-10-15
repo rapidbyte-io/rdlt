@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arrow_array::{Int64Array, RecordBatch};
+use bytes::Bytes;
 use rdlt_connector::serve::Served;
 use rdlt_connector::wire::{TRANSPORT, v1};
 use rdlt_connector::{
@@ -34,8 +35,9 @@ fn ids(count: i64) -> RecordBatch {
         .expect("a valid batch")
 }
 
-fn length(frame: &impl rdlt_wire::prost::Message) -> u64 {
-    u64::try_from(frame.encoded_len()).expect("a frame's length fits")
+/// Bytes: what `frame` takes as it is sent, which its receiver grants back.
+fn length(frame: &impl rdlt_wire::plane::Chained) -> u64 {
+    u64::try_from(frame.sent_len()).expect("a frame's length fits")
 }
 
 /// A write's frames after its start: a schema, three frames of [`ROWS`] ids, and a flush.
@@ -53,6 +55,7 @@ fn write_frames() -> Vec<v1::WriteFrame> {
             sent.push(Frame::Batch(v1::WriteBatch {
                 segment: 1,
                 data_header: frame.header,
+                padding: Bytes::new(),
                 data_body: frame.body,
             }));
         }
@@ -165,6 +168,7 @@ fn large_frames() -> Vec<v1::ReadFrame> {
                 schema_epoch: 1,
                 kind: v1::BatchKind::Arrow as i32,
                 data_header: frame.header,
+                padding: Bytes::new(),
                 data_body: frame.body,
             });
             frames.push(v1::ReadFrame { frame: Some(batch) });

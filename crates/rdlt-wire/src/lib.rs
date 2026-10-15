@@ -52,8 +52,8 @@ pub use prost;
 pub use tonic;
 
 /// The protocol's major version: a peer of another major version is refused at the handshake,
-/// since messages are numbered anew whenever a field goes.
-pub const PROTOCOL_MAJOR: u32 = 4;
+/// since messages are numbered anew whenever a field goes or a message's layout changes.
+pub const PROTOCOL_MAJOR: u32 = 5;
 
 /// The handshake's feature a host offers to read back what a destination published, and a
 /// destination that can accepts: then it serves `ReadPublished`.

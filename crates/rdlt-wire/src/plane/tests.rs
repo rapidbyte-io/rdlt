@@ -12,7 +12,8 @@ use prost::Message;
 use tonic::codegen::http::{self, HeaderMap};
 use tonic::{Code, Status};
 
-use super::{Chained, Chunks, Incoming, Outgoing};
+use super::{Chained, Chunks, Incoming, Outgoing, PREFIX};
+use crate::aligned::ALIGNMENT;
 use crate::bounded::{Bounded, Bounds, Charge, Charging, Held};
 use crate::limits::{Class, Limits};
 use crate::testing::{chunks, fed};
@@ -24,9 +25,22 @@ fn batch_frame(segment: u64, header: &[u8], body: &[u8]) -> v1::WriteFrame {
         frame: Some(v1::write_frame::Frame::Batch(v1::WriteBatch {
             segment,
             data_header: Bytes::copy_from_slice(header),
+            padding: Bytes::new(),
             data_body: Bytes::copy_from_slice(body),
         })),
     }
+}
+
+/// `frame` as its sender built it: the padding its chunks carried, which must be zeros, gone.
+pub(super) fn unpadded_write(mut frame: v1::WriteFrame) -> v1::WriteFrame {
+    if let Some(v1::write_frame::Frame::Batch(batch)) = &mut frame.frame {
+        assert!(
+            batch.padding.iter().all(|byte| *byte == 0),
+            "padding is zeros"
+        );
+        batch.padding = Bytes::new();
+    }
+    frame
 }
 
 /// A write's answer granting `bytes`.
@@ -300,7 +314,10 @@ async fn a_request_sends_each_message_s_chunks_and_ends_with_the_last() {
         3,
         "a batch's head and body, then an empty batch whole"
     );
-    let expected: Vec<u8> = frames.iter().flat_map(prefixed).collect();
+    let expected: Vec<u8> = frames
+        .iter()
+        .flat_map(|frame| chained(frame.clone().chunks()))
+        .collect();
     assert_eq!(joined(&sent), expected);
     assert!(
         sent.iter()
@@ -355,7 +372,7 @@ async fn a_message_beyond_the_limit_fails_the_call_it_would_be_sent_on() {
 #[tokio::test]
 async fn a_message_at_the_limit_is_sent_and_a_byte_more_is_not() {
     let frame = batch_frame(1, b"h", &[0; 100]);
-    let at = frame.encoded_len();
+    let at = frame.sent_len();
     let sent_at = |most| {
         let messages = tonic::codegen::tokio_stream::iter([frame.clone()]);
         sent(Outgoing::request(messages, most))
@@ -397,7 +414,8 @@ async fn what_a_request_sends_is_read_as_the_messages_it_sent() {
     drop(feed);
     let mut incoming = Incoming::<v1::WriteFrame>::request(requested(body));
     for frame in frames {
-        assert_eq!(incoming.message().await.unwrap(), Some(frame));
+        let read = incoming.message().await.unwrap().map(unpadded_write);
+        assert_eq!(read, Some(frame));
     }
     assert_eq!(incoming.message().await.unwrap(), None);
 }
@@ -409,18 +427,48 @@ fn chained(chunks: Chunks) -> Vec<u8> {
     chained
 }
 
-/// Checks that `message`'s chunks are the bytes prost encodes it to, behind its prefix.
-fn holds_prost_s_bytes<M: Chained + Clone>(message: &M) -> Result<(), TestCaseError> {
-    let chunks = message.clone().chunks();
-    prop_assert_eq!(chunks.len(), 5 + message.encoded_len());
-    prop_assert_eq!(chained(chunks), prefixed(message));
+/// Checks that `message`'s chunks are the bytes prost encodes what they decode to, behind its
+/// prefix, that the length its sender spends is what was sent, and what its receiver counts of
+/// it decoded, and that what it decodes to, padding and all, is sent again as the same bytes:
+/// what they decode to.
+fn holds_prost_s_bytes<M: Chained + Clone + Default>(message: &M) -> Result<M, TestCaseError> {
+    let sent = message.sent_len();
+    let bytes = chained(message.clone().chunks());
+    prop_assert_eq!(bytes.len(), PREFIX + sent);
+    let decoded = M::decode(&bytes[PREFIX..]).unwrap();
+    prop_assert_eq!(&bytes, &prefixed(&decoded));
+    prop_assert_eq!(decoded.encoded_len(), sent);
+    prop_assert_eq!(decoded.sent_len(), sent);
+    prop_assert_eq!(&chained(decoded.clone().chunks()), &bytes);
+    Ok(decoded)
+}
+
+/// Checks that `chunks`' body, where they have one, starts at a multiple of the alignment from
+/// their prefix.
+fn lies_aligned(chunks: &Chunks) -> Result<(), TestCaseError> {
+    if chunks.body.is_some() {
+        prop_assert!(
+            chunks.head.len().is_multiple_of(ALIGNMENT),
+            "{}",
+            chunks.head.len()
+        );
+    }
     Ok(())
+}
+
+/// Checks that a write's chunks are prost's bytes, that they decode to `frame` but for the
+/// padding, and that a batch's body starts at a multiple of the alignment from the prefix.
+fn a_write_holds_prost_s_bytes(frame: &v1::WriteFrame) -> Result<(), TestCaseError> {
+    let decoded = holds_prost_s_bytes(frame)?;
+    prop_assert_eq!(&unpadded_write(decoded), frame);
+    lies_aligned(&frame.clone().chunks())
 }
 
 #[test]
 fn a_chained_batch_at_its_edges_is_the_bytes_prost_encodes() {
     // prost leaves out an empty field, a zero segment among them, and a body of 2^21 bytes or
-    // more takes a length of four bytes.
+    // more takes a length of four bytes; the padding takes the inner and outer lengths across a
+    // byte more.
     for (segment, header, body) in [
         (0, 0, 0),
         (0, 0, 1),
@@ -431,9 +479,14 @@ fn a_chained_batch_at_its_edges_is_the_bytes_prost_encodes() {
         (7, 16_383, 16_384),
         (7, 3, (1 << 21) - 1),
         (7, 3, 1 << 21),
+        (u64::MAX, 16_383, 0),
+        (u64::MAX, (1 << 14) - 70, 1),
+        (0, 120, 1 << 21),
+        // A head of 53 bytes before a body of 7 lands aligned only after 127 bytes of padding.
+        (u64::MAX, 40, 7),
     ] {
         let frame = batch_frame(segment, &vec![1; header], &vec![2; body]);
-        holds_prost_s_bytes(&frame).unwrap();
+        a_write_holds_prost_s_bytes(&frame).unwrap();
         let chunks = frame.chunks();
         assert_eq!(
             chunks.body.map_or(0, |body| body.len()),
@@ -466,6 +519,7 @@ fn write_frame() -> impl Strategy<Value = v1::WriteFrame> {
             F::Batch(v1::WriteBatch {
                 segment,
                 data_header,
+                padding: Bytes::new(),
                 data_body,
             })
         }),
@@ -492,7 +546,7 @@ fn write_ack() -> impl Strategy<Value = v1::WriteAck> {
 proptest! {
     #[test]
     fn a_chained_write_frame_is_the_bytes_prost_encodes(frame in write_frame()) {
-        holds_prost_s_bytes(&frame)?;
+        a_write_holds_prost_s_bytes(&frame)?;
     }
 
     #[test]
@@ -502,7 +556,7 @@ proptest! {
         body in bytes(65_536),
     ) {
         let frame = v1::WriteFrame { frame: Some(v1::write_frame::Frame::Batch(v1::WriteBatch {
-            segment, data_header: header, data_body: body.clone(),
+            segment, data_header: header, padding: Bytes::new(), data_body: body.clone(),
         })) };
         let chunks = frame.chunks();
         prop_assert_eq!(chunks.body.is_some(), !body.is_empty());
@@ -513,7 +567,7 @@ proptest! {
 
     #[test]
     fn a_chained_write_answer_is_the_bytes_prost_encodes(ack in write_ack()) {
-        holds_prost_s_bytes(&ack)?;
+        prop_assert_eq!(&holds_prost_s_bytes(&ack)?, &ack);
         prop_assert!(ack.chunks().body.is_none());
     }
 }

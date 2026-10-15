@@ -953,8 +953,12 @@ pub struct BatchFrame {
     /// The IPC message: a record batch or dictionary batch flatbuffer.
     #[prost(bytes = "bytes", tag = "3")]
     pub data_header: ::prost::bytes::Bytes,
-    /// The message's body buffers.
+    /// Zero bytes placing data_body at a multiple of 64 bytes from the message's gRPC prefix, so
+    /// its receiver reads the body where it arrived.
     #[prost(bytes = "bytes", tag = "4")]
+    pub padding: ::prost::bytes::Bytes,
+    /// The message's body buffers.
+    #[prost(bytes = "bytes", tag = "5")]
     pub data_body: ::prost::bytes::Bytes,
 }
 /// JSON records: an array of objects, or newline-delimited objects.
@@ -1375,8 +1379,12 @@ pub struct WriteBatch {
     /// The IPC message: a record batch or dictionary batch flatbuffer.
     #[prost(bytes = "bytes", tag = "2")]
     pub data_header: ::prost::bytes::Bytes,
-    /// The message's body buffers.
+    /// Zero bytes placing data_body at a multiple of 64 bytes from the message's gRPC prefix, so
+    /// its receiver reads the body where it arrived.
     #[prost(bytes = "bytes", tag = "3")]
+    pub padding: ::prost::bytes::Bytes,
+    /// The message's body buffers.
+    #[prost(bytes = "bytes", tag = "4")]
     pub data_body: ::prost::bytes::Bytes,
 }
 /// What a destination answers on a write.

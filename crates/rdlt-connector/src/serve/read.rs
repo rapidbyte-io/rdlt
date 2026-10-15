@@ -7,9 +7,9 @@ use std::sync::Arc;
 
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
+use bytes::Bytes;
 use rdlt_wire::flow::Spending;
-use rdlt_wire::plane::{Answers, Incoming};
-use rdlt_wire::prost::Message as _;
+use rdlt_wire::plane::{Answers, Chained as _, Incoming};
 use rdlt_wire::tonic::Status;
 use rdlt_wire::{Cut, Encoder, Limits};
 use tokio::sync::mpsc;
@@ -202,6 +202,7 @@ impl Outbox {
                 schema_epoch: self.epoch,
                 kind: kind as i32,
                 data_header: frame.header,
+                padding: Bytes::new(),
                 data_body: frame.body,
             }));
         }
@@ -256,7 +257,7 @@ async fn pump(
             if !outbox.credit.may_send() {
                 break;
             }
-            let size = u64::try_from(frame.encoded_len()).unwrap_or(u64::MAX);
+            let size = u64::try_from(frame.sent_len()).unwrap_or(u64::MAX);
             outbox.credit.spend(size);
             let frame = outbox.frames.pop_front().expect("a frame is at the front");
             if frames.send(Ok(frame)).await.is_err() {

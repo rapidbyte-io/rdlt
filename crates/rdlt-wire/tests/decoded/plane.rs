@@ -55,6 +55,7 @@ fn message() -> Bytes {
         frame: Some(v1::write_frame::Frame::Batch(v1::WriteBatch {
             segment: 7,
             data_header: Bytes::from_static(b"an IPC message's header"),
+            padding: Bytes::new(),
             data_body: Bytes::from(vec![3; BODY]),
         })),
     })
@@ -144,6 +145,7 @@ fn read_frames() -> [v1::ReadFrame; 2] {
         schema_epoch: 1,
         kind: v1::BatchKind::Arrow as i32,
         data_header: Bytes::from_static(b"an IPC message's header"),
+        padding: Bytes::new(),
         data_body: Bytes::from(vec![5; BODY]),
     });
     let json = Frame::Json(v1::JsonFrame {

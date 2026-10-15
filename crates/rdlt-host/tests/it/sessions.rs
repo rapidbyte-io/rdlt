@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use bytes::Bytes;
 use rdlt_connector::serve::{ServeError, Served, serve_connection};
 use rdlt_connector::wire::{error as carried, v1};
 use rdlt_connector::{
@@ -187,6 +188,7 @@ async fn a_failed_write_answers_with_its_error_and_ends_the_write() {
             .send(frame(Frame::Batch(v1::WriteBatch {
                 segment: 1,
                 data_header: ipc.header,
+                padding: Bytes::new(),
                 data_body: ipc.body,
             })))
             .await
@@ -276,6 +278,7 @@ fn writes_within(window: u64) -> usize {
             size(Frame::Batch(v1::WriteBatch {
                 segment: 1,
                 data_header: ipc.header,
+                padding: Bytes::new(),
                 data_body: ipc.body,
             }))
         })

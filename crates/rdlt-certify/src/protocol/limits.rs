@@ -180,6 +180,7 @@ async fn frame(
     let batch = v1::WriteBatch {
         segment: 1,
         data_header: Bytes::new(),
+        padding: Bytes::new(),
         data_body: Bytes::from(vec![0; over]),
     };
     let refusal = Writing::start(&mut client).await?.refusal(batch).await?;

@@ -40,6 +40,7 @@ pub(super) async fn refused(target: &Target, role: Role, config: &str) -> Found 
                 let garbage = v1::WriteBatch {
                     segment: 1,
                     data_header: Bytes::from_static(b"not an IPC message"),
+                    padding: Bytes::new(),
                     data_body: Bytes::new(),
                 };
                 let refusal = Writing::start(&mut client).await?.refusal(garbage).await?;
