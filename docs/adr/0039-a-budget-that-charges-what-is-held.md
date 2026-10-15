@@ -178,7 +178,7 @@ budget before it is held, or bounded by a limit with a typed refusal.
     beside long dictionary and run-end encoded columns and every column a normalizing plan
     splits.
 - **What is lowered at once is what was reserved.** A unit's plan is found first, and the unit
-  is then cut by that cost, a piece at a time, on the compute pool.
+  is then cut by that cost, a piece at a time.
   - A piece is at most a sixteenth of the budget, or one row where a row takes more, up to the
     quarter a request may take. Where the load keeps a log a piece is half as large, and
     reserves as much again for its frame there.
@@ -242,7 +242,10 @@ budget before it is held, or bounded by a limit with a typed refusal.
     the last while they fit, and half as long once one did not, each no further than what the
     piece has left. A piece costs about one measuring of its rows and of half as many again,
     and what it was measured to take is what it reserves. The cut runs on the compute pool, a
-    piece at a time.
+    piece at a time, where measuring reads values. Where every column is measured by its rows
+    and offsets alone (a scalar, or strings and bytes as they are, converted to no JSON and read
+    from none), a piece takes as many steps however many rows it has, and is cut on the
+    partition's task.
   - No more values are remembered than take an eighth of the limit measured against; a value
     beyond those is measured each time it is named.
   - Tests count the steps and the values remembered for dictionaries of every key type, nested
@@ -423,7 +426,8 @@ admitted, and what a remote connector's calls hold in transport.
   is sent to them. A run's report counts every wait on the budget and its time on the engine's
   clock, by share, a read's wait for a slot among them; every budget has a clock and a deadline.
   The wire's limits gained `dictionary_bytes`, with a least of 256 KiB.
-- A cut costs a trip to the compute pool a piece.
+- A cut that reads values costs a trip to the compute pool a piece; one that reads none takes
+  none.
 - The dictionary and staged limits follow the frame limit: one and four frames' bytes.
 - An array-form JSON push is scanned for its elements twice: once to cut it, which counts each
   chunk's, and once as each chunk is parsed. A chunk of JSON lines is counted by its line ends

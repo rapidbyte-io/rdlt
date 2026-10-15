@@ -12,8 +12,9 @@ simulation oracle in `rdlt-sim`) are in place. The reference connectors in
 `rdlt-connector-reference` are an in-memory source and destination, a data generator, a SQLite
 destination and a source and destination of JSON lines and Arrow IPC files; the engine's
 integration suite runs against every destination. JSON pushes are coalesced and shredded in
-parallel on the compute pool, and every batch is lowered there through a plan made once per table
-schema. Streams can `normalize` nested data into child tables whose rows carry their lineage; a merge
+parallel on the compute pool, and every batch is lowered through a plan made once per table
+schema, on the pool where lowering it copies values. Streams can `normalize` nested data into child
+tables whose rows carry their lineage; a merge
 replaces each root's child rows in the same commit, and a dropped row takes its children with it.
 Differential tests draw every logical type in every Arrow encoding a source may send and check that
 each value lowers, and normalizes, exactly; the simulation drives the same types and encodings
