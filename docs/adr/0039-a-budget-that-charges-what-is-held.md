@@ -40,7 +40,7 @@ budget before it is held, or bounded by a limit with a typed refusal.
 
   - Within the data, one request for lowering takes a quarter of the budget at most, and
     pushes never take the last quarter: a request for lowering always fits once the pieces
-    before it are written.
+    before it are written and the requests holding them are given back.
   - **A request that could never fit is refused, typed.** A push that keeps alive more than
     pushes may take fails its read with `push_exceeds_budget`; one row that takes more to lower
     than a request may fails its write with `row_exceeds_budget`; a cursor beyond the cursors'
@@ -72,6 +72,11 @@ budget before it is held, or bounded by a limit with a typed refusal.
     and nothing waits for pushes while it holds anything; whoever holds what lowering reserved,
     a piece on the compute pool, on its lane or in the log's writer, needs no budget to release
     it. A partition lowers and hands to its lane whatever it reserved before it waits for more.
+    What lowering reserves that a partition holds while it lowers, the batches a JSON flush is
+    built to beyond its pushes and a normalized piece's split, is reserved together with room
+    for all that lowering them holds at once, within one request: the partition then waits for
+    its own pieces to be written, never for the budget, so all that lowering holds is released
+    without the budget, and a request fits once it is.
   - Requests of one share are admitted in arrival order, lowering before pushes.
   - The shares are limits of the engine, with the names above, in `limits.rs`.
 - **What a connector is told it may send is what the budget admits.** The limits a host
@@ -98,7 +103,8 @@ budget before it is held, or bounded by a limit with a typed refusal.
   - **Rows.** A row as long as a frame lowers within half a request for lowering, its nulls a
     column and its metadata beside it, so it lowers with or without a log: a row within the
     frame limit is never `row_exceeds_budget`. That refusal is left to a row its table widens
-    beyond what it arrived as.
+    beyond what it arrived as, and to one of a JSON flush whose batches take more than half a
+    request beyond their text, which leaves the row less of the request beside them.
   - **Tables.** A table as wide as a schema may be records its schema and names within the
     tables' share, at names of up to a hundred and fifty bytes; a schema message carries that
     many columns of short names. What a commit records of the tables is reserved from that
@@ -203,11 +209,24 @@ budget before it is held, or bounded by a limit with a typed refusal.
   - A JSON push reserves three times its text when it is admitted: the text, and twice it for
     the batches it is shredded into, which are paid for before they are built. Once shredded
     the push holds what its batches keep alive, where that is less.
-  - What a JSON push's batches take beyond twice its text is reckoned before they are built and
-    reserved from the data share, held with the batches; beyond one request it is refused,
-    `json_exceeds_budget`. A null converted to a type of no fixed width is charged that type's
-    null slot, inside structs and lists too. A piece and a row take at most `i32::MAX` bytes
-    whatever the budget, as far as a text array's offsets reach (ADR 0040).
+  - What a JSON flush's batches take beyond twice its text is reckoned before they are built,
+    reserved from the data share, holding only its pushes, and held with the batches; beyond
+    one request it is refused, `json_exceeds_budget`. The partition then holds it while the
+    batches are lowered, so their lowering asks nothing of the budget it might wait for:
+    - Their units are planned and cut before any is lowered, each row within what a request
+      leaves beside the batches, and what lowering the largest piece holds is reserved without
+      a wait. Where the budget has no room for it, the batches are let go, their pieces never
+      lowered, and built again once what they take and that room fit together, which the
+      partition waits for holding only its pushes.
+    - A normalized flush's splits each ask for a request, so its batches are built inside a
+      whole request, which the partition waits for holding only its pushes.
+    - That room is lent to the pieces, or the splits: each is reserved from it and goes back
+      to it as it is written, so the partition waits for its own pieces, never for the
+      budget, while it holds the batches. A piece may also take what the budget has free
+      without a wait.
+  - A null converted to a type of no fixed width is charged that type's null slot, inside
+    structs and lists too. A piece and a row take at most `i32::MAX` bytes whatever the budget,
+    as far as a text array's offsets reach (ADR 0040).
 - **No request waits on the budget for ever.**
   - Every wait ends at a deadline on the engine's clock, `memory_wait`, an hour by default,
     longer than any call of a destination may take by default. The attempt then fails with
@@ -220,6 +239,9 @@ budget before it is held, or bounded by a limit with a typed refusal.
     with it, and so does the read, in process and through a host. It may refuse what a read
     keeps too (`Admission::charge`).
   - A request nobody waits for any more leaves the queue at once.
+  - A partition waiting for its own pieces to be written, for room in what it was lent or in a
+    normalized piece's allowance, waits on its lanes, not on the budget: no deadline of the
+    budget's ends it, as none ends a wait for a lane.
   - A read's schema and dictionaries are released before their replacement is charged, and
     however the read ends: returned, failed, stopped or dropped.
 - **A measure bounded by the rows and by what they name once.** What rows expand to is measured
@@ -287,8 +309,10 @@ budget before it is held, or bounded by a limit with a typed refusal.
   allocations it keeps alive that the unit did not hold; the unit's permits hold its source
   until its last piece is flushed. The constant columns of a load count for none.
 - **A row that fits no request is refused.** A row that alone takes more to lower than a request
-  may take of the budget fails the write with `row_exceeds_budget`, naming the limit, before it
-  is lowered. A row within the frame limit fits one, so only a row its table widens meets it.
+  may take of the budget, or than a JSON flush's batches leave of theirs, fails the write with
+  `row_exceeds_budget`, naming the limit, before it is lowered. A row within the frame limit
+  fits half a request, so only a row its table widens, or one beside batches taking more than
+  the other half, meets it.
 - **A refusal names its cause once.** A refusal of the budget that a later admission of the
   same read passes is forgotten: a read that fails later, for its own reasons, is not reported
   as failing for memory.
@@ -418,6 +442,10 @@ admitted, and what a remote connector's calls hold in transport.
 - A normalized piece holds a quarter of the budget from before its split until its parts are
   cut, so a little over two normalize at once while pushes fill their share; and a unit of a
   few rows takes three trips to the compute pool before its parts are lowered in one.
+- A JSON flush whose batches take more than twice its text is planned and cut whole before
+  any of it is lowered, and is built again where the budget lacks room for its lowering beside
+  it. A normalized one holds a quarter of the budget until its last piece is written, so one
+  such flush lowers at a time while pushes fill their share.
 - A waiting request of an hour is the last resort: nothing but a destination that stops
   writing, or a commit that never lands, makes one wait.
 - A destination whose calls may take longer than an hour needs `memory_wait` raised with them.

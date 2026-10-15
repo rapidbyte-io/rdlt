@@ -5,12 +5,15 @@ use std::sync::Arc;
 
 use std::time::Duration;
 
-use rdlt_engine::{BatchPolicy, ErrorKind, RunOutcome, RunStatus, ShredCounts};
+use rdlt_engine::{
+    BatchPolicy, EngineConfig, ErrorKind, Nested, RetryPolicy, RunOutcome, RunStatus,
+    SchemaSettings, ShredCounts,
+};
 
 use crate::HEAP;
 use crate::support::destinations::null;
-use crate::support::making::{Step, Steps, making};
-use crate::support::{commit_every, engine, pipeline, stream};
+use crate::support::making::{Step, Steps, making, making_parts};
+use crate::support::{commit_every, engine, pipeline, stream, yielding_engine};
 
 /// About the least memory an engine runs on.
 const LEAST: u64 = 34 << 20;
@@ -274,4 +277,142 @@ async fn observing_a_push_reserves_what_its_columns_may_hold_beyond_its_text() {
         "the budget held at most {} bytes",
         outcome.report.peak_memory
     );
+}
+
+/// Loads, under `memory`, `parts` partitions each pushing 600 records of a key each, whose nulls
+/// take building more than the push was admitted for, on a compute pool whose jobs let every
+/// other task run first; `normalized` normalizes the stream.
+async fn sparse_partitions(name: &str, parts: usize, memory: u64, normalized: bool) -> RunOutcome {
+    const RECORDS: usize = 600;
+    let records: Vec<String> = (0..RECORDS)
+        .map(|record| format!("{{\"k{record}\":{record}}}"))
+        .collect();
+    let pushed = bytes::Bytes::from(records.join("\n"));
+    let steps: Steps = Arc::new(move |step| (step < 1).then(|| Step::Json(pushed.clone())));
+    let source = making_parts(name, steps, parts).await;
+    let config = commit_every(1_000_000_000)
+        .memory(memory)
+        .partitions(parts)
+        .memory_wait(Duration::from_secs(60))
+        .retry(RetryPolicy::default().max_attempts(1));
+    let plan = if normalized {
+        stream("events").schema(SchemaSettings::new().nested(Nested::normalize()))
+    } else {
+        stream("events")
+    };
+    let outcome = yielding_engine(config)
+        .run(pipeline(name, [plan]), source, null().await)
+        .await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{parts} partitions under {memory} bytes: {:?}",
+        outcome.error
+    );
+    assert_eq!(outcome.report.rows, (parts * RECORDS) as u64);
+    assert!(outcome.report.peak_memory <= memory);
+    outcome
+}
+
+#[tokio::test(start_paused = true)]
+async fn partitions_holding_what_building_their_json_took_lower_it_without_waiting_on_each_other() {
+    // Pressed: partitions held what their JSON's batches took beyond their pushes while they
+    // waited for the budget to lower them, until those holds left no piece room.
+    sparse_partitions("built_held", 32, 64 << 20, false).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn normalizing_partitions_holding_what_building_their_json_took_never_wait_on_each_other() {
+    sparse_partitions("built_held_normalized", 32, 64 << 20, true).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn sparse_json_of_any_number_of_partitions_loads_under_any_budget() {
+    for parts in [1, 4, 16, 32] {
+        let least = EngineConfig::least_memory(parts);
+        for memory in [least, least * 3 / 2, least * 2, least * 4] {
+            for normalized in [false, true] {
+                sparse_partitions("built_held_swept", parts, memory, normalized).await;
+            }
+        }
+    }
+}
+
+/// What building 1,500 records of a key each takes beyond twice their text.
+const BUILT_BEYOND: u64 = 20_318_222;
+
+/// Loads one partition's 1,500 records of a key each under a budget whose request is `beside`
+/// bytes more than building them takes beyond their text.
+async fn beside_a_build(name: &str, beside: u64) -> RunOutcome {
+    let records: Vec<String> = (0..1_500)
+        .map(|record| format!("{{\"k{record}\":{record}}}"))
+        .collect();
+    let pushed = bytes::Bytes::from(records.join("\n"));
+    let steps: Steps = Arc::new(move |step| (step < 1).then(|| Step::Json(pushed.clone())));
+    let source = making(name, steps).await;
+    let config = commit_every(1_000_000_000)
+        .memory((BUILT_BEYOND + beside) * 4)
+        .memory_wait(Duration::from_secs(60))
+        .retry(RetryPolicy::default().max_attempts(1));
+    engine(config)
+        .run(pipeline(name, [stream("events")]), source, null().await)
+        .await
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_row_a_request_leaves_no_room_for_beside_its_jsons_build_is_refused_naming_both() {
+    let outcome = beside_a_build("beside_build_refused", 8_000).await;
+    let error = outcome.error.expect("the row is refused");
+    assert_eq!(error.code(), Some("row_exceeds_budget"), "{error:?}");
+    let shown = error.to_string();
+    assert!(shown.contains(&BUILT_BEYOND.to_string()), "{shown}");
+    assert!(
+        shown.contains(&(BUILT_BEYOND + 8_000).to_string()),
+        "{shown}"
+    );
+    let outcome = beside_a_build("beside_build_loaded", 200_000).await;
+    assert!(outcome.error.is_none(), "{:?}", outcome.error);
+    assert_eq!(outcome.report.rows, 1_500);
+}
+
+/// Loads 16 partitions under 256 MiB, each pushing twenty-four thousand records of ten keys of
+/// `keys` in pushes of a thousand, into a destination taking 5 ms a write: how long the run took
+/// on the paused clock.
+async fn optional_fields(name: &str, keys: usize) -> Duration {
+    const PARTS: usize = 16;
+    let pushes: Vec<bytes::Bytes> = (0..24)
+        .map(|push| {
+            let records: Vec<String> = (push * 1_000..(push + 1) * 1_000)
+                .map(|record| {
+                    let fields: Vec<String> = (0..10)
+                        .map(|key| format!("\"k{}\":{record}", (record + key) % keys))
+                        .collect();
+                    format!("{{{}}}", fields.join(","))
+                })
+                .collect();
+            bytes::Bytes::from(records.join("\n"))
+        })
+        .collect();
+    let steps: Steps = Arc::new(move |step| pushes.get(step).map(|push| Step::Json(push.clone())));
+    let source = making_parts(name, steps, PARTS).await;
+    let config = commit_every(1_000_000_000)
+        .memory(256 << 20)
+        .partitions(PARTS)
+        .retry(RetryPolicy::default().max_attempts(1));
+    let began = tokio::time::Instant::now();
+    let outcome = yielding_engine(config)
+        .run(pipeline(name, [stream("events")]), source, null().await)
+        .await;
+    assert!(outcome.error.is_none(), "{:?}", outcome.error);
+    assert_eq!(outcome.report.rows, 24_000 * PARTS as u64);
+    began.elapsed()
+}
+
+#[tokio::test(start_paused = true)]
+async fn records_of_optional_fields_load_about_as_fast_as_records_of_all_of_them() {
+    // Ten keys of sixty: each record's batch holds the other fifty's nulls, more than its text
+    // was admitted for, which its partition holds while it lowers the records.
+    let dense = optional_fields("fields_all", 10).await;
+    let sparse = optional_fields("fields_optional", 60).await;
+    assert!(sparse <= dense * 3 / 2, "{sparse:?} against {dense:?}");
 }

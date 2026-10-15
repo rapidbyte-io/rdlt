@@ -42,7 +42,7 @@ impl Held {
 }
 
 /// What holds each of `batches`, shredded from the JSON pushes `permits` were admitted for, with
-/// `beyond` reserved for what building them took beyond that.
+/// `beyond` reserved for what building them took beyond that, where it took more.
 ///
 /// A JSON push is admitted for its text and for the batches it becomes, and what the batches take
 /// beyond was reserved before they were built: the permits and the reservation give back what
@@ -50,7 +50,7 @@ impl Held {
 /// the last is written.
 pub(super) fn shredded(
     mut permits: Vec<Permit>,
-    mut beyond: Reservation,
+    beyond: Option<Reservation>,
     batches: &[RecordBatch],
 ) -> Vec<Held> {
     let mut alive = batches
@@ -63,8 +63,10 @@ pub(super) fn shredded(
             alive = alive.saturating_sub(admitted.bytes);
         }
     }
-    beyond.shrink(alive);
-    permits.push(Box::new(beyond));
+    if let Some(mut beyond) = beyond {
+        beyond.shrink(alive);
+        permits.push(Box::new(beyond));
+    }
     let shared = Arc::new(Mutex::new(permits));
     batches
         .iter()

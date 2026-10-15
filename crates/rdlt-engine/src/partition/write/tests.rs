@@ -108,11 +108,6 @@ async fn json_text(budget: &MemoryBudget, text: bytes::Bytes) -> Permit {
     admitted.unwrap().unwrap()
 }
 
-/// A reservation of nothing, for batches whose building took nothing beyond their pushes.
-async fn nothing(budget: &MemoryBudget) -> crate::budget::Reservation {
-    budget.acquire_working(0).await.unwrap()
-}
-
 #[tokio::test]
 async fn shredded_batches_hold_what_they_keep_alive_of_what_their_pushes_were_admitted_for() {
     let budget = crate::budget::budget(1 << 24);
@@ -122,7 +117,7 @@ async fn shredded_batches_hold_what_they_keep_alive_of_what_their_pushes_were_ad
     let batches = [ids(10), ids(1000)];
     let alive = allocated(&batches[0]) + allocated(&batches[1]);
     assert!(alive > 8_000 && alive < 3 * 40_000);
-    let held = shredded(pushed, nothing(&budget).await, &batches);
+    let held = shredded(pushed, None, &batches);
     // The text is gone: the pushes hold what the batches keep alive, and nothing was asked of
     // the budget for them.
     assert_eq!((budget.reserved(), budget.peak()), (alive, 3 * 42_000));
@@ -143,17 +138,13 @@ async fn shredded_batches_keeping_more_alive_than_was_admitted_hold_what_was_adm
     let pushed = vec![json(&budget, 100).await, json(&budget, 100).await];
     let batch = ids(1000);
     assert!(allocated(&batch) > 600);
-    let held = shredded(pushed, nothing(&budget).await, std::slice::from_ref(&batch));
+    let held = shredded(pushed, None, std::slice::from_ref(&batch));
     assert_eq!((budget.reserved(), budget.peak()), (600, 600));
     drop(held);
     assert_eq!(budget.reserved(), 0);
     // Permits of another's making are kept as they are.
     let other: Permit = Box::new(7_u8);
-    let foreign = shredded(
-        vec![other],
-        nothing(&budget).await,
-        std::slice::from_ref(&batch),
-    );
+    let foreign = shredded(vec![other], None, std::slice::from_ref(&batch));
     assert_eq!(foreign.len(), 1);
     assert_eq!(foreign[0].permits.len(), 1);
 }
@@ -166,7 +157,7 @@ async fn shredded_batches_hold_what_was_reserved_beyond_their_pushes_for_what_th
     let alive = allocated(&batch);
     let beyond = budget.acquire_working(alive).await.unwrap();
     assert_eq!(budget.reserved(), 300 + alive);
-    let held = shredded(pushed, beyond, std::slice::from_ref(&batch));
+    let held = shredded(pushed, Some(beyond), std::slice::from_ref(&batch));
     // The pushes hold all they were admitted for, and the reservation the rest of what the
     // batch keeps alive; what it reserved beyond that goes back.
     assert_eq!(budget.reserved(), alive);
@@ -448,7 +439,7 @@ fn a_window_is_lowered_on_the_pool_only_where_a_piece_s_lowering_copies_values()
     let budget = crate::budget::budget(64 << 20);
     for (copies, jobs) in [([false, false], 0), ([false, true], 2), ([true, false], 2)] {
         let tally = Arc::new(crate::report::Tally::default());
-        let mut window = super::Window::default();
+        let mut window = super::Window::new(super::Room::Budget);
         for copies in copies {
             held_by(
                 &mut window,
@@ -478,7 +469,7 @@ fn a_window_is_lowered_on_the_pool_only_where_a_piece_s_lowering_copies_values()
 fn a_lowering_that_panics_on_the_calling_task_panics_it() {
     let budget = crate::budget::budget(64 << 20);
     let tally = Arc::new(crate::report::Tally::default());
-    let mut window = super::Window::default();
+    let mut window = super::Window::new(super::Room::Budget);
     held_by(
         &mut window,
         &budget,
@@ -525,7 +516,7 @@ fn a_piece_copies_nothing_only_as_one_batch_of_a_stream_that_is_not_a_change_str
 #[test]
 fn a_window_reserves_a_piece_beside_those_it_holds_only_where_the_budget_has_room_at_once() {
     let budget = crate::budget::budget(64 << 20);
-    let mut window = super::Window::default();
+    let mut window = super::Window::new(super::Room::Budget);
     // An empty window reserves nothing: its piece waits for the budget like any request.
     assert!(window.reserve(&budget, 1).is_none());
     windowed(&mut window, &budget, 1 << 20);
@@ -621,4 +612,22 @@ fn only_a_partition_that_seals_when_asked_tells_the_rows_it_writes() {
         None,
         "its rows count once sealed"
     );
+}
+
+#[tokio::test]
+async fn lowering_inside_lent_bytes_takes_no_request_or_piece_larger_than_they_are() {
+    let budget = crate::budget::budget(1 << 24);
+    let shares = budget.shares();
+    assert_eq!(super::Room::Budget.shares(&budget), shares);
+    let lend = |bytes| budget.try_acquire_working(bytes).unwrap().lend();
+    let wide = super::Room::Lent(lend(shares.request));
+    let wide = wide.shares(&budget);
+    assert_eq!((wide.request, wide.piece), (shares.request, shares.piece));
+    let narrow = super::Room::Lent(lend(shares.piece / 2));
+    let narrow = narrow.shares(&budget);
+    assert_eq!(
+        (narrow.request, narrow.piece),
+        (shares.piece / 2, shares.piece / 2)
+    );
+    assert_eq!(narrow.data, shares.data);
 }

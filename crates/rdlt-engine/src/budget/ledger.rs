@@ -41,7 +41,7 @@ pub(crate) enum Class {
 
 impl Class {
     /// What a request of the class is for, as its refusal says it.
-    fn what(self) -> &'static str {
+    pub(super) fn what(self) -> &'static str {
         match self {
             Self::Intake => "a push",
             Self::Work => "lowering",

@@ -14,9 +14,10 @@ use rdlt_connector::{Permit, StreamName};
 
 use super::allowance::{Cutter, PartPiece};
 use super::pieces::{self, Lowered};
+use super::units::Units;
 use super::{
-    Held, OpenSegment, PartitionContext, PartitionJob, full, queue, reserve, row_too_large,
-    schema_invalid, schema_of, stamp,
+    Held, OpenSegment, PartitionContext, PartitionJob, Room, full, queue, reserve, schema_invalid,
+    schema_of, stamp,
 };
 use crate::budget::Shares;
 use crate::cost::{LINEAGE_ITEM, LINEAGE_ROW, SPLIT_COPIES};
@@ -33,7 +34,7 @@ use crate::table::{
 ///
 /// - Each unit is cut, before its tables are known, into pieces whose split makes no more than a
 ///   piece may hold.
-/// - Each piece then asks the budget once, for all a request may take: what its split makes and
+/// - Each piece then asks its room once, for all a request may take: what its split makes and
 ///   an allowance for lowering its parts. It is split on the compute pool, its parts' tables and
 ///   plans are found in order, parents first, and each part is cut by what lowering it into its
 ///   own table holds. What the piece asked for beyond what it needs is given back.
@@ -47,15 +48,16 @@ pub(super) async fn write_normalized(
     job: &PartitionJob,
     context: &PartitionContext,
     open: &mut OpenSegment,
-    units: Vec<(Vec<RecordBatch>, Held)>,
+    units: Units,
     shape: &Arc<Shape>,
     kind: PushKind,
 ) -> Result<(), Error> {
-    let pieces = sliced(job, context, units).await?;
+    let Units { units, room } = units;
+    let pieces = sliced(job, context, &room, units).await?;
     let mut flush = Flush::new(context, job.table, judged(job, &pieces, shape)?, kind);
-    let request = context.budget.shares().request;
+    let request = room.shares(&context.budget).request;
     for (parts, held) in pieces {
-        let mut reserved = reserve(job, context, request).await?;
+        let mut reserved = reserve(job, context, &room, request).await?;
         let (shape, stream) = (Arc::clone(shape), job.stream.clone());
         let parts = on_pool(context, move || split(&stream, &parts, &shape)).await?;
         // What the split made beside the unit is held until the last of it is written.
@@ -75,7 +77,7 @@ pub(super) async fn write_normalized(
         let cutter = Cutter::within(context, request.saturating_sub(made));
         let rendering = context.rendering.as_ref().clone();
         let cut = on_pool(context, move || cutter.cut(&rendering, unit)).await;
-        let cut = cut.map_err(|row| row_too_large(job, &row))?;
+        let cut = cut.map_err(|row| room.refusal(job, &context.budget, &row))?;
         // The allowance is as much as the pieces lowered at once take: the rest is given back.
         let allowance = cutter.for_pieces(&cut);
         reserved.shrink(made.saturating_add(allowance.bytes));
@@ -143,9 +145,10 @@ pub(super) fn split_bounds(shares: Shares) -> (u64, u64) {
 async fn sliced(
     job: &PartitionJob,
     context: &PartitionContext,
+    room: &Room,
     units: Vec<(Vec<RecordBatch>, Held)>,
 ) -> Result<Vec<(Vec<RecordBatch>, Held)>, Error> {
-    let (max, limit) = split_bounds(context.budget.shares());
+    let (max, limit) = split_bounds(room.shares(&context.budget));
     let lowered = Lowered {
         rendering: context.rendering.as_ref().clone(),
         stored: Vec::new(),
@@ -159,7 +162,7 @@ async fn sliced(
     for (parts, held) in units {
         let lowered = lowered.clone();
         let pieces = on_pool(context, move || pieces::sliced(parts, held, lowered)).await;
-        cut.extend(pieces.map_err(|row| row_too_large(job, &row))?);
+        cut.extend(pieces.map_err(|row| room.refusal(job, &context.budget, &row))?);
     }
     Ok(cut)
 }

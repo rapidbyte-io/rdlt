@@ -333,3 +333,18 @@ fn cutting_reads_values_only_where_a_unit_s_batches_hold_a_column_measured_by_th
         assert!(!pieces.reads_values());
     }
 }
+
+#[test]
+fn pieces_cut_ahead_are_taken_in_order_and_done_once_the_last_is_taken() {
+    let batch = encoded(0, 30);
+    let row = expanded(&batch.slice(0, 1));
+    let mut pieces = Pieces::new(vec![batch], unplanned(row * 10, u64::MAX));
+    assert_eq!(pieces.cut_ahead(), Ok(row * 10));
+    assert!(pieces.next().unwrap().is_none(), "every row is cut ahead");
+    let mut rows = Vec::new();
+    while !pieces.done() {
+        rows.push(pieces.ready().expect("a piece cut ahead is left").rows);
+    }
+    assert_eq!(rows, [10, 10, 10]);
+    assert!(pieces.ready().is_none());
+}

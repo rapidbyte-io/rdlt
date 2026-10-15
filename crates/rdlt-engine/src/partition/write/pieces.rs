@@ -5,6 +5,8 @@
 #[cfg(test)]
 mod tests;
 
+use std::collections::VecDeque;
+
 use arrow_array::RecordBatch;
 use rdlt_connector::cost::{Measure, Rendering, Stored};
 
@@ -63,6 +65,8 @@ pub(super) struct Pieces {
     measures: Option<(Measure, Measure)>,
     /// The run cut last that the piece before it had no room for.
     cut: Option<Run>,
+    /// Pieces cut ahead, in order, before any of them is lowered.
+    ready: VecDeque<Piece>,
 }
 
 impl Pieces {
@@ -75,6 +79,7 @@ impl Pieces {
             row: 0,
             measures: None,
             cut: None,
+            ready: VecDeque::new(),
         }
     }
 
@@ -93,15 +98,39 @@ impl Pieces {
         )
     }
 
-    /// Whether every row has been cut into a piece.
+    /// Whether every row has been cut into a piece and every piece cut ahead taken.
     pub(super) fn done(&self) -> bool {
+        self.ready.is_empty() && self.cut_all()
+    }
+
+    /// Whether every row has been cut into a piece.
+    fn cut_all(&self) -> bool {
         self.part >= self.parts.len()
+    }
+
+    /// Cuts every piece that is left ahead, to be taken with [`Pieces::ready`], returning the
+    /// bytes the largest of them takes to lower.
+    ///
+    /// # Errors
+    ///
+    /// A [`RowTooLarge`] for a row that alone takes more than the budget.
+    pub(super) fn cut_ahead(&mut self) -> Result<u64, RowTooLarge> {
+        while let Some(piece) = self.next()? {
+            self.ready.push_back(piece);
+        }
+        Ok(self.ready.iter().map(|piece| piece.bytes).fold(0, u64::max))
+    }
+
+    /// The next piece cut ahead, where one is left.
+    pub(super) fn ready(&mut self) -> Option<Piece> {
+        self.ready.pop_front()
     }
 
     /// The next piece: the rows that follow, as many as lowering holds within a piece's bytes,
     /// or one row where a row alone takes more; nothing once every row was cut.
     ///
-    /// Pieces keep the rows' order, and a batch within a piece's bytes is not cut.
+    /// Pieces keep the rows' order, and a batch within a piece's bytes is not cut. Pieces cut
+    /// ahead are not among them.
     ///
     /// # Errors
     ///
@@ -112,7 +141,7 @@ impl Pieces {
             rows: 0,
             bytes: 0,
         };
-        while !self.done() {
+        while !self.cut_all() {
             let rows = self.parts[self.part].num_rows();
             if self.row >= rows {
                 (self.part, self.row, self.measures) = (self.part + 1, 0, None);
