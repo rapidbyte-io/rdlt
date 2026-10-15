@@ -253,15 +253,18 @@ async fn coordinate(
     Ok(seq)
 }
 
-/// The first partition's gap at which `load`'s partitions hold at most three quarters of a log
-/// of `limit` bytes in frames not yet committed and received, each a segment open and one sealed
-/// and waiting for its receipt, beside a commit of a seal of each.
+/// The first partition's gap at which `load`'s partitions' frames not yet committed and
+/// received, each a segment open and one sealed and waiting for its receipt, beside a commit of
+/// a seal of each, fit a log of `limit` bytes; one where none do.
 fn gap(load: &Load, limit: u64) -> u64 {
     let others: u64 = load.gaps[1..].iter().sum();
     let seals = u64::try_from(load.gaps.len()).expect("few");
     let commit = load.committed() + seals * 1_024;
-    let room = (limit * 3 / 4).saturating_sub(commit) / load.frame() / 2;
-    room.saturating_sub(others).max(1)
+    let mut gap = 1;
+    while load.fits(limit, 2 * (gap + 1 + others), commit) {
+        gap += 1;
+    }
+    gap
 }
 
 async fn every_load_completes(landings: &[Landing]) {

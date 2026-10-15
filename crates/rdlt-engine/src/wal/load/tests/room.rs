@@ -4,9 +4,12 @@
 
 use std::num::NonZeroU64;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
-use rdlt_connector::{CommitSeq, SegmentId, StateChange, StateRecord};
+use proptest::strategy::Strategy as _;
+use rdlt_connector::{CommitSeq, Epoch, SegmentId, StateChange, StateRecord};
+use rdlt_wire::limits::count;
 
 use super::{json_value, load, logged, meta, pipeline, receipt, sealed_at};
 use crate::budget::MemoryBudget;
@@ -59,15 +62,24 @@ impl Load {
         RecordBatch::try_from_iter([("id", ids)]).expect("a valid batch")
     }
 
-    /// Bytes: what the frame of one of the load's batches takes.
+    /// Bytes: the most the frame of one of the load's batches takes.
     pub(super) fn frame(&self) -> u64 {
-        let batch = frame::Batch {
-            segment: SegmentId(u64::MAX),
-            table: 0,
-            ordinal: u64::MAX,
-            batch: self.batch(i64::MAX / 2),
+        let framed = |partition| {
+            let batch = frame::Batch {
+                segment: SegmentId(u64::MAX),
+                table: 0,
+                ordinal: u64::MAX,
+                batch: self.batch_of(partition, i64::MAX / 2),
+            };
+            length(Frame::Batch(batch).encode().expect("encodes").len())
         };
-        length(Frame::Batch(batch).encode().expect("encodes").len())
+        framed(0).max(framed(1))
+    }
+
+    /// Whether `frames` of the load's batch frames open at once, beside a commit of `commit`
+    /// bytes, fit a log of `limit` bytes, as [`fits`] counts them.
+    pub(super) fn fits(&self, limit: u64, frames: u64, commit: u64) -> bool {
+        fits(limit, (frames, self.frame()), schema(), commit)
     }
 
     /// The commit of `segments` as `seq`, recording the load's bytes of state.
@@ -92,10 +104,66 @@ impl Load {
         length(frame.len()) + 1_024
     }
 
-    /// Bytes: the most the load's partitions hold of frames they have not sealed.
-    fn open(&self) -> u64 {
-        self.gaps.iter().sum::<u64>() * self.frame()
+    /// The most frames the load's partitions hold that they have not sealed.
+    fn frames(&self) -> u64 {
+        self.gaps.iter().sum()
     }
+}
+
+/// Whether `frames.0` open batch frames of at most `frames.1` bytes each, of a table whose
+/// schema frame takes `schema` bytes, fit a log of `limit` bytes beside a commit of `commit`.
+///
+/// They, the commit's frames and what the chunks holding them write beside them take at most
+/// three quarters of it. A chunk holds an eighth of the log less what it writes beside its batch
+/// frames, and every chunk holding open frames but two holds more than half of that, or a frame
+/// alone.
+pub(super) fn fits(limit: u64, frames: (u64, u64), schema: u64, commit: u64) -> bool {
+    let (number, frame) = frames;
+    let open = number * frame;
+    let mut chunks = 1;
+    let beside = loop {
+        let beside = framing(chunks + 2) + schema;
+        let holds = (limit / 8).saturating_sub(beside);
+        let needed = if holds == 0 {
+            number
+        } else {
+            number.min((2 * open).div_ceil(holds) + 1)
+        };
+        if needed <= chunks {
+            break beside;
+        }
+        chunks = needed;
+    };
+    open + commit + chunks * beside <= limit * 3 / 4
+}
+
+/// Bytes: what a chunk of the tests' log writes beside its batch and schema frames where its
+/// end names `chunks` chunks and as many commits: its preamble, header, relief frame and end.
+fn framing(chunks: u64) -> u64 {
+    let header = frame::Header {
+        pipeline: pipeline(),
+        load: load(),
+        chunk: u64::MAX,
+        epoch: Epoch(1),
+        opened: None,
+        origin: load(),
+    };
+    let named = || (0..chunks).map(|_| u64::MAX);
+    count(frame::PREAMBLE)
+        + frame::header_len(&header).expect("measures")
+        + count(frame::HEAD)
+        + frame::end_len(named(), named())
+}
+
+/// Bytes: the schema frame of the tests' table.
+pub(super) fn schema() -> u64 {
+    let orders = view("orders");
+    let table = frame::Table {
+        index: u32::MAX,
+        table: orders.table.clone(),
+        schema: orders.physical_schema(),
+    };
+    length(Frame::Schema(table).encode().expect("encodes").len())
 }
 
 fn length(bytes: usize) -> u64 {
@@ -141,7 +209,7 @@ pub(super) fn started(
     let owner = Owner {
         pipeline: pipeline(),
         load: load(),
-        epoch: rdlt_connector::Epoch(1),
+        epoch: Epoch(1),
         opened: None,
         origin: load(),
     };
@@ -161,10 +229,29 @@ fn bounded(store: &MemoryWal, log: &LoadLog, most: u64) {
 ///
 /// After every step neither what the log counts nor what its store holds passes `limit`, but by
 /// the frames of a commit larger than a quarter of it, and what ends a chunk.
+///
+/// The load runs twice: its segments and batch frames numbered from zero, then numbered as
+/// widely as they may be, so every frame takes the most its JSON head may.
 async fn interleaved(limit: u64, load: &Load, rounds: u64) -> Result<(), crate::Error> {
+    interleaved_from(limit, load, rounds, 0).await?;
+    interleaved_from(limit, load, rounds, WIDE).await
+}
+
+/// A number as wide as a segment's or a batch frame's may be, from which the wide runs number
+/// theirs.
+const WIDE: u64 = 10_000_000_000_000_000_000;
+
+/// Runs `load` as [`interleaved`] does, its segments and batch frames numbered from `first`.
+async fn interleaved_from(
+    limit: u64,
+    load: &Load,
+    rounds: u64,
+    first: u64,
+) -> Result<(), crate::Error> {
     let store = Arc::new(MemoryWal::default());
     let budget = crate::budget::budget(64 << 20);
     let (log, task) = started(&store, limit);
+    log.batches.store(first, Ordering::Relaxed);
     let orders = view("orders");
     let past = if load.committed() > limit / 4 {
         load.committed() + 2_048
@@ -181,7 +268,7 @@ async fn interleaved(limit: u64, load: &Load, rounds: u64) -> Result<(), crate::
         let (mut next, mut seq, mut sealings, mut from) = (partitions, CommitSeq::FIRST, 0, 0);
         let result = 'load: loop {
             for (index, (slot, gap)) in open.iter_mut().zip(&load.gaps).enumerate() {
-                let segment = SegmentId(slot.0);
+                let segment = SegmentId(first + slot.0);
                 let batch = load.batch(from);
                 from += 1_000;
                 if let Err(error) = logged(&log, &budget, 0, &orders, segment, &batch).await {
@@ -192,7 +279,7 @@ async fn interleaved(limit: u64, load: &Load, rounds: u64) -> Result<(), crate::
                 if slot.1 < *gap {
                     continue;
                 }
-                let commit = load.commit(&[slot.0], seq);
+                let commit = load.commit(&[first + slot.0], seq);
                 if let Err(error) = sealed(&log, &budget, &commit).await {
                     break 'load Err(error);
                 }
@@ -237,20 +324,26 @@ pub(super) fn loads() -> Vec<Load> {
     loads
 }
 
-/// The first partition's gap at which `load`'s partitions hold at most `share` of a log of
-/// `limit` bytes unsealed, beside a commit's frames.
-fn gap(load: &Load, limit: u64, share: (u64, u64)) -> u64 {
+/// The first partition's gap: the most of its frames that, beside a gap of each other
+/// partition's, fit a log of `limit` bytes beside one of the load's commits; one where none do.
+pub(super) fn gap(load: &Load, limit: u64) -> u64 {
     let others: u64 = load.gaps[1..].iter().sum();
-    let room = (limit * share.0 / share.1).saturating_sub(load.committed());
-    (room / load.frame()).saturating_sub(others).max(1)
+    let mut gap = 1;
+    while load.fits(limit, gap + 1 + others, load.committed()) {
+        gap += 1;
+    }
+    gap
 }
 
 #[tokio::test]
 async fn a_load_whose_partitions_hold_three_quarters_of_its_log_unsealed_completes() {
     for mut load in loads() {
         let limit = 60 * load.frame();
-        load.gaps[0] = gap(&load, limit, (3, 4));
-        assert!(load.open() + load.committed() <= limit * 3 / 4, "{load:?}");
+        load.gaps[0] = gap(&load, limit);
+        assert!(
+            load.fits(limit, load.frames(), load.committed()),
+            "{load:?}"
+        );
         let loaded = interleaved(limit, &load, 3).await;
         assert!(loaded.is_ok(), "{load:?} of {limit}: {loaded:?}");
     }
@@ -273,7 +366,7 @@ async fn a_partition_beside_one_committing_every_batch_loads_three_quarters_of_a
     // over as many chunks as it has, which carries gather.
     let mut load = Load::new(&[1, 1]);
     let limit = 1_000 * load.frame();
-    load.gaps[0] = gap(&load, limit, (3, 4));
+    load.gaps[0] = gap(&load, limit);
     let loaded = interleaved(limit, &load, 2).await;
     assert!(loaded.is_ok(), "{load:?} of {limit}: {loaded:?}");
 }
@@ -291,8 +384,8 @@ async fn a_partition_beside_one_committing_every_batch_in_a_small_log_of_large_c
             stagger,
         };
         let limit = 24 * load.frame();
-        load.gaps[0] = gap(&load, limit, (3, 4));
-        assert!(load.gaps[0] > 10, "{load:?}");
+        load.gaps[0] = gap(&load, limit);
+        assert!(load.gaps[0] > 3, "{load:?}");
         let loaded = interleaved(limit, &load, 3).await;
         assert!(loaded.is_ok(), "{load:?} of {limit}: {loaded:?}");
     }
@@ -310,7 +403,7 @@ async fn a_chunk_a_burst_between_commits_fills_with_two_partitions_is_carried_al
         let budget = crate::budget::budget(64 << 20);
         let (log, task) = started(&store, limit);
         let orders = view("orders");
-        let slow = gap(&load, limit, (3, 4));
+        let slow = gap(&load, limit);
         let written = async {
             let mut from = 0;
             let mut next = || {
@@ -393,4 +486,33 @@ async fn a_carry_gathers_open_frames_into_chunks_no_larger_than_an_eighth_of_the
         .filter(|frame| matches!(frame, Frame::Batch(batch) if batch.segment == SegmentId(2)))
         .count();
     assert_eq!(settled, 0);
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(rdlt_testkit::cases(48)))]
+
+    /// A load whose open frames, a commit's and what the chunks holding the open frames write
+    /// beside them take three quarters of its log loads, whatever the sizes of its log, frames,
+    /// commits and partitions.
+    #[test]
+    fn a_load_whose_open_frames_and_their_chunks_hold_three_quarters_of_its_log_completes(
+        others in proptest::collection::vec(1_u64..=3, 0..=3),
+        rows in 1_usize..=200,
+        first_rows in proptest::option::of(1_usize..=200),
+        recorded in (0_usize..=1_500).prop_map(|half| 2 * half),
+        frames in 12_u64..=96,
+        stagger in 0_u64..=3,
+    ) {
+        let mut gaps = vec![1];
+        gaps.extend(others);
+        let mut load = Load { gaps, rows, first_rows, recorded, stagger };
+        let limit = frames * load.frame();
+        load.gaps[0] = gap(&load, limit);
+        proptest::prop_assume!(load.fits(limit, load.frames(), load.committed()));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("a runtime");
+        let loaded = runtime.block_on(interleaved(limit, &load, 3));
+        proptest::prop_assert!(loaded.is_ok(), "{load:?} of {limit}: {loaded:?}");
+    }
 }
