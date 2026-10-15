@@ -42,10 +42,7 @@ pub(super) fn write(fault: Fault, mut frames: Incoming<v1::WriteFrame>) -> Answe
                     continue;
                 }
                 Some(Frame::Batch(batch)) => {
-                    let frame = IpcFrame {
-                        header: batch.data_header,
-                        body: batch.data_body,
-                    };
+                    let frame = IpcFrame::new(batch.data_header, batch.data_body);
                     match (decoder.frame(&frame), fault) {
                         (Ok(_), _) | (Err(_), Fault::LenientFrames) => {
                             v1::write_ack::Ack::Credit(v1::Credit { bytes: 1 << 20 })

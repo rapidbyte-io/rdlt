@@ -306,10 +306,7 @@ async fn a_table_read_back_arrives_whole_a_batch_a_frame_and_then_done() {
                 schemas += 1;
             }
             Some(Frame::Batch(batch)) => {
-                let frame = rdlt_wire::IpcFrame {
-                    header: batch.data_header,
-                    body: batch.data_body,
-                };
+                let frame = rdlt_wire::IpcFrame::new(batch.data_header, batch.data_body);
                 let batch = decoder.frame(&frame).expect("a batch decodes");
                 rows += batch.map_or(0, |batch| batch.num_rows());
             }

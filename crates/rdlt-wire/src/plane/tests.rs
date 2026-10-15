@@ -1,3 +1,4 @@
+mod arrival;
 mod oracle;
 mod reads;
 

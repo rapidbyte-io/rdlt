@@ -136,10 +136,10 @@ fn measured(decoder: &Decoder, encoded: EncodedData, limits: &Limits) -> Result<
             bytes,
         )));
     }
-    let frame = IpcFrame {
-        header: Bytes::from(encoded.ipc_message),
-        body: Bytes::from(encoded.arrow_data),
-    };
+    let frame = IpcFrame::new(
+        Bytes::from(encoded.ipc_message),
+        Bytes::from(encoded.arrow_data),
+    );
     match decoder.held(&frame) {
         Ok(held) => Ok(Ok(held)),
         Err(WireError::Refused(refusal)) => Ok(Err(ConnectorError::from(refusal))),

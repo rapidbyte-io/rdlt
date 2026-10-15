@@ -74,9 +74,9 @@ fuzz_target!(|input: (u8, Vec<u8>, Vec<u8>, Vec<u8>)| {
     let mut decoder = Decoder::new(limits);
     let _ = decoder.schema(&corrupted(schema, &schema_mask));
     for frame in frames {
-        let _ = decoder.frame(&IpcFrame {
-            header: corrupted(&frame.header, &header_mask),
-            body: corrupted(&frame.body, &body_mask),
-        });
+        let _ = decoder.frame(&IpcFrame::new(
+            corrupted(&frame.header, &header_mask),
+            corrupted(&frame.body, &body_mask),
+        ));
     }
 });

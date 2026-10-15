@@ -1,10 +1,8 @@
 //! The messages of a call's body, each decoded from the bytes its [`Bounded`] body passed on.
 
 use std::marker::PhantomData;
-use std::pin::Pin;
 
 use bytes::Bytes;
-use http_body::Body as _;
 use prost::Message;
 use tonic::codegen::http::{self, HeaderMap, StatusCode};
 use tonic::{Code, Status};
@@ -29,6 +27,15 @@ enum State {
     Reading,
     Failed,
     Ended,
+}
+
+/// A message as it arrived: decoded, and the allocation its bytes fields lie in.
+#[derive(Debug)]
+pub struct Received<M> {
+    /// The message.
+    pub message: M,
+    /// The allocation the message arrived in, whole: what a slice of it keeps alive.
+    pub allocation: Bytes,
 }
 
 /// A call's messages of `M`, read from its body.
@@ -93,13 +100,31 @@ impl<M: Message + Default> Incoming<M> {
     /// Where an answer's trailers carry status details that are not base64, as
     /// [`answer`](Self::answer) says of its headers.
     pub async fn message(&mut self) -> Result<Option<M>, Status> {
+        Ok(self.arrived().await?.map(|received| received.message))
+    }
+
+    /// The next message as it arrived, with the allocation it lies in, or `None` once the call
+    /// has ended well; after a failure, `None`.
+    ///
+    /// # Errors
+    ///
+    /// As [`message`](Self::message).
+    ///
+    /// # Panics
+    ///
+    /// As [`message`](Self::message).
+    pub async fn arrived(&mut self) -> Result<Option<Received<M>>, Status> {
         while let State::Reading = self.state {
-            let frame =
-                std::future::poll_fn(|context| Pin::new(&mut self.body).poll_frame(context)).await;
+            let frame = std::future::poll_fn(|context| self.body.poll_arrived(context)).await;
             let failed = match frame {
                 Some(Ok(frame)) => match frame.into_data() {
-                    Ok(message) => match decoded(&message) {
-                        Ok(message) => return Ok(Some(message)),
+                    Ok(arrived) => match decoded(&arrived.bytes) {
+                        Ok(message) => {
+                            return Ok(Some(Received {
+                                message,
+                                allocation: arrived.allocation,
+                            }));
+                        }
                         Err(status) => Some(status),
                     },
                     Err(frame) => {

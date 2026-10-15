@@ -129,8 +129,8 @@ async fn decoded(mut frames: Incoming<v1::ReadFrame>, limits: Limits) -> Result<
     use v1::read_frame::Frame;
     let mut decoder = Decoder::new(limits);
     let (mut batches, mut bytes, mut rows) = (Vec::new(), 0_usize, 0_usize);
-    while let Some(frame) = frames.message().await.map_err(|status| error(&status))? {
-        match frame.frame {
+    while let Some(received) = frames.arrived().await.map_err(|status| error(&status))? {
+        match received.message.frame {
             Some(Frame::Schema(schema)) => {
                 decoder
                     .schema(&schema.ipc_schema)
@@ -149,10 +149,9 @@ async fn decoded(mut frames: Incoming<v1::ReadFrame>, limits: Limits) -> Result<
                     return Err(ConnectorError::data(message).with_code("published_bytes"));
                 };
                 bytes = read;
-                let frame = IpcFrame {
-                    header: batch.data_header,
-                    body: batch.data_body,
-                };
+                let frame =
+                    IpcFrame::arrived(batch.data_header, batch.data_body, received.allocation)
+                        .map_err(|error| frame_error(&error))?;
                 if let Some(batch) = decoder.frame(&frame).map_err(|error| frame_error(&error))? {
                     let Some(read) = within(rows, batch.num_rows(), PUBLISHED_ROWS) else {
                         let message = format!(
