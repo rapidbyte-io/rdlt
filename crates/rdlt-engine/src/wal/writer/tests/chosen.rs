@@ -5,7 +5,7 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use super::super::super::frame::{Frame, PREAMBLE};
+use super::super::super::frame::{Frame, HEAD, PREAMBLE, end_len};
 use super::super::super::memory::MemoryWal;
 use super::relieved::{batches_of, relieve};
 use super::{batch_frame, drive, frames, length, numbers, table};
@@ -126,6 +126,49 @@ async fn copies_a_relief_gathers_into_the_chunk_staged_fit_an_eighth_beside_its_
         for (chunk, bytes) in observed.stored(&super::pipeline()) {
             let bytes = u64::try_from(bytes.len()).expect("a length");
             assert!(bytes <= most, "chunk {}: {bytes} of {most}", chunk.number);
+        }
+    })
+    .await
+    .expect("the writer ends");
+}
+
+#[tokio::test]
+async fn a_relief_gathers_open_frames_whose_copies_fit_a_chunk_with_their_table_s_schema_once() {
+    let store = Arc::new(MemoryWal::default());
+    let observed = Arc::clone(&store);
+    drive(Arc::clone(&store), |mut log| async move {
+        log.send(table(0)).await;
+        // Chunks 0 and 1 each hold an open frame of one table beside a settled one.
+        log.rows(1, 0, 200).await;
+        log.rows(2, 0, 500).await;
+        log.commit(1, &[2]).await.expect("durable");
+        log.committed(1).await;
+        log.rows(3, 0, 200).await;
+        log.rows(4, 0, 500).await;
+        log.commit(2, &[4]).await.expect("durable");
+        log.committed(2).await;
+        let schema = log.schemas.lock()[&0];
+        let header = frames(&observed)[0]
+            .1
+            .iter()
+            .find(|frame| matches!(frame, Frame::Header(_)))
+            .map(|frame| length(&frame.encode().expect("encodes")))
+            .expect("a header");
+        // What staging and ending the chunk they go to writes at most: its preamble and
+        // header, an end naming every chunk and commit the log holds, and a relief frame.
+        let ending =
+            u64::try_from(PREAMBLE + HEAD).expect("small") + header + end_len([0, 1], [1, 2]);
+        let open = length(&batch_frame(1, 0, 0, 200)) + length(&batch_frame(3, 0, 2, 200));
+        // Both open frames fit a chunk beside it, with their table's schema frame written once.
+        let most = ending + open + schema;
+        log.writer.shared().limit.store(8 * most, Ordering::SeqCst);
+        relieve(&log).await;
+        assert_eq!(numbers(&observed), [2]);
+        let mut gathered = batches_of(&observed, 2);
+        gathered.sort_unstable();
+        assert_eq!(gathered, [1, 3]);
+        for (_, bytes) in observed.stored(&super::pipeline()) {
+            assert!(u64::try_from(bytes.len()).expect("a length") <= most);
         }
     })
     .await
