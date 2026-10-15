@@ -418,6 +418,34 @@ async fn a_staging_that_empties_a_removed_log_s_directory_removes_it() {
     }
 }
 
+#[tokio::test]
+async fn a_log_whose_mark_is_gone_or_no_file_is_not_open_to_stage_in() {
+    let base = tempfile::tempdir().expect("a temporary directory");
+    let wal = LocalWal::new(base.path());
+    let orders = pipeline("orders");
+    let load = chunk(1, 0).load;
+    opened(&wal, &orders, load).await;
+    let mark = wal
+        .pipeline_dir(&orders)
+        .join(names::load(load))
+        .join(names::OPEN);
+    // Closed as a removal closes it, its directory still there.
+    std::fs::remove_file(&mark).expect("closes");
+    let refused = wal.stage(&orders, chunk(1, 0)).await.err().expect("closed");
+    assert_eq!(refused.kind(), std::io::ErrorKind::NotFound, "{refused}");
+    // A directory, however private, where the mark belongs.
+    std::fs::create_dir(&mark).expect("creates");
+    set_mode(&mark, 0o700);
+    let refused = wal
+        .stage(&orders, chunk(1, 0))
+        .await
+        .err()
+        .expect("refused");
+    assert!(not_private(&refused), "{refused}");
+    let refused = wal.loads(&orders).await.expect_err("refused");
+    assert!(not_private(&refused), "{refused}");
+}
+
 /// How far a removal running alongside a publish has come when a step of the publish fails.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Removal {

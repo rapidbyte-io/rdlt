@@ -23,6 +23,8 @@ fn a_logged_run_commits_once_every_so_many_batches_and_logs_every_frame() {
     assert_eq!(report.counters.commits.end, 1);
     assert_eq!(report.commits, 5);
     let log = report.counters.log;
+    // Every batch of a run is of one size, so its frame is too.
+    assert_eq!(logged.frame_bytes(), 16 * Logged::frame_len(1_000));
     assert!(log.appended >= logged.frame_bytes(), "{log:?}");
     // The log's first chunk, then a chunk for each commit after.
     assert_eq!(log.requests.publish, 6);
