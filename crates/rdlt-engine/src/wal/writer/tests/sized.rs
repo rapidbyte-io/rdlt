@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use super::super::super::frame::{Frame, PREAMBLE};
+use super::super::super::frame::{Frame, HEAD, PREAMBLE, end_len};
 use super::super::super::memory::MemoryWal;
 use super::super::Command;
 use super::{chunks, drive, frames, segments, table};
@@ -40,13 +40,18 @@ async fn a_chunk_is_published_between_commits_only_once_a_batch_would_take_it_pa
         let header = sized(&observed, 0, |frame| matches!(frame, Frame::Header(_)));
         let schema = sized(&observed, 0, |frame| matches!(frame, Frame::Schema(_)));
         let batch = sized(&observed, 0, |frame| matches!(frame, Frame::Batch(_)));
-        // A second batch, counted with its schema frame, takes the next chunk to an eighth
-        // exactly: it stays.
         let first = u64::try_from(PREAMBLE).expect("small") + header + schema + batch;
+        // What ends a chunk at most: an end naming every chunk and commit the log holds, and a
+        // closing frame.
+        let ending = |chunks: &[u64], commits: &[u64]| {
+            end_len(chunks.iter().copied(), commits.iter().copied())
+                + u64::try_from(HEAD).expect("small")
+        };
+        // A second batch takes the next chunk to an eighth exactly beside what ends it: it
+        // stays, its table's schema frame, which the chunk holds already, not counted again.
         let shared = Arc::clone(log.writer.shared());
-        shared
-            .limit
-            .store(8 * (first + schema + batch), Ordering::SeqCst);
+        let most = first + batch + ending(&[0, 1], &[1]);
+        shared.limit.store(8 * most, Ordering::SeqCst);
         log.batch(2, 0).await;
         log.batch(2, 0).await;
         log.commit(2, &[2]).await.expect("durable");
@@ -58,14 +63,20 @@ async fn a_chunk_is_published_between_commits_only_once_a_batch_would_take_it_pa
         };
         assert_eq!(batches(1), 2, "{:?}", kinds(&observed, 1));
         // A byte past it, the chunk is published before the second.
-        shared
-            .limit
-            .store(8 * (first + schema + batch - 1), Ordering::SeqCst);
+        let most = first + batch + ending(&[0, 1, 2], &[1, 2]);
+        shared.limit.store(8 * (most - 1), Ordering::SeqCst);
         log.batch(3, 0).await;
         log.batch(3, 0).await;
         log.commit(3, &[3]).await.expect("durable");
         assert!(kinds(&observed, 2).contains(&"relieved".to_owned()));
         assert_eq!((batches(2), batches(3)), (1, 1));
+        // The chunk published first holds no more than an eighth.
+        let published = observed
+            .stored(&super::pipeline())
+            .into_iter()
+            .find(|(chunk, _)| chunk.number == 2)
+            .map(|(_, bytes)| u64::try_from(bytes.len()).expect("a length"));
+        assert!(published.is_some_and(|bytes| bytes < most), "{published:?}");
     })
     .await
     .expect("the writer ends");
@@ -89,7 +100,7 @@ async fn a_failed_deletion_as_a_full_chunk_is_published_fails_the_frames_after_i
         let shared = Arc::clone(log.writer.shared());
         shared
             .limit
-            .store(8 * (first + schema + batch - 1), Ordering::SeqCst);
+            .store(8 * (first + batch - 1), Ordering::SeqCst);
         *observed.unremovable.lock() = true;
         log.batch(2, 0).await;
         log.batch(2, 0).await;

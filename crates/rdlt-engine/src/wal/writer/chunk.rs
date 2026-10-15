@@ -252,8 +252,10 @@ impl Log {
     /// `schema` bytes beside it for the table's schema frame, written first where the chunk
     /// staged lacks it and given back otherwise.
     ///
-    /// A chunk holding batch frames is published first where this one would take it past what
-    /// a carry may copy, so a chunk holds more only where it holds a single frame.
+    /// The chunk staged is published first where this frame, with the schema frame the chunk
+    /// lacks and what ends the chunk, would take it past what a carry may copy, so a chunk holds
+    /// more only where it holds a single frame. A chunk is staged by its first batch frame, or
+    /// by seals, which hold every batch frame back until their commit publishes it.
     pub(super) async fn batch(
         &mut self,
         segment: SegmentId,
@@ -263,12 +265,23 @@ impl Log {
     ) -> Result<(), Error> {
         let most = self.most();
         let staged = self.written.get(&self.chunk);
-        let len = staged.map_or(0, |written| written.len);
-        let full = staged.is_some_and(|written| !written.batches.is_empty())
-            && len
-                .saturating_add(schema)
-                .saturating_add(count(frame.len()))
-                > most;
+        let full = match staged {
+            Some(written) => {
+                let described = if written.schemas.contains_key(&table) {
+                    0
+                } else {
+                    schema
+                };
+                let (ending, _) = self.ending()?;
+                written
+                    .len
+                    .saturating_add(described)
+                    .saturating_add(count(frame.len()))
+                    .saturating_add(ending)
+                    > most
+            }
+            None => false,
+        };
         if full {
             self.append(Frame::Relieved.encode()?).await?;
             self.publish().await?;
