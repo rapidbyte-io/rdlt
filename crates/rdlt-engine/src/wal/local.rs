@@ -8,13 +8,14 @@ mod staged;
 mod tests;
 
 use std::ffi::{OsStr, OsString};
-use std::io::{self, Read as _, Seek as _};
+use std::io::{self, Seek as _};
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use bytes::Bytes;
 use parking_lot::Mutex;
 use rdlt_connector::{BoxFuture, LoadId, PipelineId};
+use rdlt_wire::aligned::Aligned;
 
 pub(crate) use self::dir::Refusal;
 use self::dir::{Dir, Kind};
@@ -263,12 +264,13 @@ fn read(place: &Place, chunk: Chunk, offset: u64, len: u64) -> io::Result<Bytes>
         .transpose()?
         .flatten()
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, name))?;
-    // What is read is held: never more than the file holds, whatever was asked.
+    // What is read is held: never more than the file holds, whatever was asked. It is held from
+    // a 64-byte address, where a batch frame's bodies lie aligned.
     let held = file.metadata()?.len().saturating_sub(offset).min(len);
-    let mut bytes = Vec::with_capacity(usize::try_from(held).unwrap_or(0));
+    let mut bytes = Aligned::default();
     file.seek(io::SeekFrom::Start(offset))?;
-    file.take(held).read_to_end(&mut bytes)?;
-    Ok(Bytes::from(bytes))
+    bytes.read_from(&mut file, held)?;
+    Ok(rdlt_wire::aligned::ensure(bytes.freeze().bytes))
 }
 
 /// Removes `load`'s log in `place`, durably: the file that marks it open first, then its staged

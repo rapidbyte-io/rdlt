@@ -130,7 +130,8 @@ a local directory, and `ObjectStoreWal` in S3 and in stores that answer as S3 do
 - A batch frame's Arrow data pads each message's header with zeros so the body after it lies at
   a multiple of 64 bytes from the frame's first byte, as Arrow's IPC format pads metadata, so a
   frame read into an allocation that starts at a 64-byte address holds its bodies at their
-  alignment, wherever its chunk put it.
+  alignment, wherever its chunk put it. The local store reads each range into such an
+  allocation.
 - A phase or commit frame holds each state record's value as the JSON it is, never encoded
   again; a cursor, in a seal or commit frame, is base64 once, and a value that is not JSON text
   alone is never written.

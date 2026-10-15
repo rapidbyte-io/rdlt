@@ -72,3 +72,17 @@ fn bytes_at_any_address_are_ensured_aligned_and_copied_only_where_they_are_not()
         assert_eq!(ensured, off, "{skew}");
     }
 }
+
+#[test]
+fn what_is_read_is_held_aligned_and_no_more_than_the_reader_gives() {
+    let data: Vec<u8> = (0..=255).collect();
+    let mut aligned = Aligned::default();
+    aligned.read_from(&data[..100], 60).expect("reads");
+    assert_eq!(aligned.as_slice(), &data[..60]);
+    // A reader that ends first gives what it has.
+    aligned.read_from(&data[100..120], 500).expect("reads");
+    assert_eq!(aligned.as_slice(), [&data[..60], &data[100..120]].concat());
+    let frozen = aligned.freeze();
+    assert!(is_aligned(&frozen.bytes));
+    assert!(frozen.allocation.len() < 60 + 500 + ALIGNMENT);
+}

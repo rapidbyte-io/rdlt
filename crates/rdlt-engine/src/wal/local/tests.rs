@@ -1159,3 +1159,27 @@ async fn a_pipe_where_the_store_s_identity_belongs_is_refused_at_once() {
     );
     assert!(not_regular, "{refused}");
 }
+
+#[tokio::test]
+async fn a_read_starts_at_a_64_byte_address_whatever_its_offset() {
+    let base = tempfile::tempdir().expect("a temporary directory");
+    let wal = LocalWal::new(base.path());
+    let orders = pipeline("orders");
+    let written: &'static [u8] = (0..1_000_u32)
+        .map(|byte| u8::try_from(byte % 251).expect("a byte"))
+        .collect::<Vec<u8>>()
+        .leak();
+    published(&wal, &orders, chunk(1, 0), written).await;
+    for offset in [0_u64, 1, 13, 64, 999, 1_000] {
+        let read = wal
+            .read(&orders, chunk(1, 0), offset, 500)
+            .await
+            .expect("reads");
+        let from = usize::try_from(offset).expect("small");
+        assert_eq!(read, written[from..(from + 500).min(1_000)], "{offset}");
+        assert!(
+            read.is_empty() || rdlt_wire::aligned::is_aligned(&read),
+            "{offset}"
+        );
+    }
+}

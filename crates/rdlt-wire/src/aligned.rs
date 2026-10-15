@@ -4,6 +4,8 @@
 #[cfg(test)]
 mod tests;
 
+use std::io::Read as _;
+
 use bytes::Bytes;
 
 /// Bytes: the alignment a frame's allocation starts at and its buffers lie at, every Arrow type's
@@ -124,6 +126,20 @@ impl Aligned {
         let len = self.len().saturating_add(data.len());
         self.grow(len);
         self.bytes.extend_from_slice(data);
+    }
+
+    /// Appends at most `len` bytes of `reader`, all of them unless it ends first, growing its
+    /// room to hold them; nothing is written twice, as zeroed room to read into would be.
+    ///
+    /// # Errors
+    ///
+    /// The error reading failed with.
+    pub fn read_from(&mut self, reader: impl std::io::Read, len: u64) -> std::io::Result<()> {
+        let wanted = usize::try_from(len).unwrap_or(usize::MAX);
+        self.grow(self.len().saturating_add(wanted));
+        // Room for all it may read is reserved, so the allocation stays where it is aligned.
+        reader.take(len).read_to_end(&mut self.bytes)?;
+        Ok(())
     }
 
     /// Keeps the first `len` bytes held.
