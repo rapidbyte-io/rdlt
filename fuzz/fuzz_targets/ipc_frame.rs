@@ -3,6 +3,8 @@
 //!
 //! The frames are real encodings of a few batches, corrupted by the fuzzer's bytes, so the
 //! corruption reaches the framing checks and Arrow's readers rather than stopping at the header.
+//! They are placed as a receiver holds them, and at times off their alignment, which is refused
+//! before Arrow reads them.
 
 #![forbid(unsafe_code)]
 #![no_main]
@@ -16,6 +18,7 @@ use arrow_array::{
 use arrow_schema::{DataType, Field, Schema};
 use bytes::Bytes;
 use libfuzzer_sys::fuzz_target;
+use rdlt_wire::aligned::Aligned;
 use rdlt_wire::{Decoder, Encoder, IpcFrame, Limits};
 
 static FIXTURES: OnceLock<Vec<(Bytes, Vec<IpcFrame>)>> = OnceLock::new();
@@ -60,10 +63,37 @@ fn corrupted(bytes: &Bytes, mask: &[u8]) -> Bytes {
     Bytes::from(bytes)
 }
 
-fuzz_target!(|input: (u8, Vec<u8>, Vec<u8>, Vec<u8>)| {
+/// Whether `array`, or an array nested in it, holds a buffer.
+fn buffered(array: &dyn arrow_array::Array) -> bool {
+    let data = array.to_data();
+    !data.buffers().is_empty()
+        || data.nulls().is_some()
+        || data
+            .child_data()
+            .iter()
+            .any(|child| buffered(&arrow_array::make_array(child.clone())))
+}
+
+/// `body` laid `skew` bytes past a 64-byte address of an allocation of its own.
+fn placed(header: Bytes, body: &[u8], skew: usize) -> IpcFrame {
+    let mut aligned = Aligned::with_room(skew + body.len());
+    aligned.extend(&vec![0; skew]);
+    aligned.extend(body);
+    let frozen = aligned.freeze();
+    IpcFrame {
+        header,
+        body: frozen.bytes.slice(skew..),
+        allocation: frozen.allocation,
+    }
+}
+
+fuzz_target!(|input: (u8, u8, Vec<u8>, Vec<u8>, Vec<u8>)| {
     // libfuzzer aborts in its panic hook; a panic the decoder contains skips the hook, so only one
     // that escapes it fails the target.
-    let (which, schema_mask, header_mask, body_mask) = input;
+    let (which, skew, schema_mask, header_mask, body_mask) = input;
+    // Most inputs keep the body where a receiver holds it, so corruption reaches Arrow; the rest
+    // move it off its alignment.
+    let skew = if skew < 192 { 0 } else { usize::from(skew % 64) };
     let fixtures = FIXTURES.get_or_init(fixtures);
     let (schema, frames) = &fixtures[usize::from(which) % fixtures.len()];
     let limits = Limits {
@@ -74,9 +104,20 @@ fuzz_target!(|input: (u8, Vec<u8>, Vec<u8>, Vec<u8>)| {
     let mut decoder = Decoder::new(limits);
     let _ = decoder.schema(&corrupted(schema, &schema_mask));
     for frame in frames {
-        let _ = decoder.frame(&IpcFrame::new(
+        let body = corrupted(&frame.body, &body_mask);
+        let decoded = decoder.frame(&placed(
             corrupted(&frame.header, &header_mask),
-            corrupted(&frame.body, &body_mask),
+            &body,
+            skew,
         ));
+        // A body off eight bytes is refused, but where Arrow reads no buffer of it.
+        let read = matches!(
+            &decoded,
+            Ok(Some(batch)) if batch.columns().iter().any(|column| buffered(column.as_ref()))
+        );
+        assert!(
+            skew % 8 == 0 || body.is_empty() || !read,
+            "a body {skew} bytes off its alignment decoded"
+        );
     }
 });
