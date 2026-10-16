@@ -1,9 +1,10 @@
 //! The fake's writes, as a destination whose batch frames one fault or another breaks.
 
+use arrow_array::RecordBatch;
 use rdlt_connector::wire::{frame_error, v1};
 use rdlt_connector::{ConnectorError, ConnectorErrorKind};
 use rdlt_wire::plane::Incoming;
-use rdlt_wire::{Decoder, IpcFrame, Limits};
+use rdlt_wire::{Decoder, IpcFrame, Limits, Problem, WireError};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -43,19 +44,7 @@ pub(super) fn write(fault: Fault, mut frames: Incoming<v1::WriteFrame>) -> Answe
                 }
                 Some(Frame::Batch(batch)) => {
                     let frame = IpcFrame::new(batch.data_header, batch.data_body);
-                    match (decoder.frame(&frame), fault) {
-                        (Ok(_), _) | (Err(_), Fault::LenientFrames) => {
-                            v1::write_ack::Ack::Credit(v1::Credit { bytes: 1 << 20 })
-                        }
-                        (Err(_), Fault::MiscodedFrames) => {
-                            let refused =
-                                ConnectorError::data("a bad batch").with_code("bad_batch");
-                            v1::write_ack::Ack::Error(v1::Error::from(&refused))
-                        }
-                        (Err(error), _) => {
-                            v1::write_ack::Ack::Error(v1::Error::from(&frame_error(&error)))
-                        }
-                    }
+                    answer_to(decoder.frame(&frame), fault)
                 }
                 Some(Frame::Flush(_)) => v1::write_ack::Ack::Flushed(v1::WriteStats::default()),
                 _ => continue,
@@ -67,4 +56,25 @@ pub(super) fn write(fault: Fault, mut frames: Incoming<v1::WriteFrame>) -> Answe
         }
     });
     Box::pin(ReceiverStream::new(answer))
+}
+
+/// How the fake answers a batch its decoder `decoded`, as `fault` has it: credit for one it
+/// takes, an error for one it refuses.
+fn answer_to(decoded: Result<Option<RecordBatch>, WireError>, fault: Fault) -> v1::write_ack::Ack {
+    match (decoded, fault) {
+        (Ok(_), _)
+        | (Err(_), Fault::LenientFrames)
+        | (
+            Err(WireError::Malformed {
+                problem: Problem::BufferUnaligned { .. },
+                ..
+            }),
+            Fault::MisalignedFrames,
+        ) => v1::write_ack::Ack::Credit(v1::Credit { bytes: 1 << 20 }),
+        (Err(_), Fault::MiscodedFrames) => {
+            let refused = ConnectorError::data("a bad batch").with_code("bad_batch");
+            v1::write_ack::Ack::Error(v1::Error::from(&refused))
+        }
+        (Err(error), _) => v1::write_ack::Ack::Error(v1::Error::from(&frame_error(&error))),
+    }
 }

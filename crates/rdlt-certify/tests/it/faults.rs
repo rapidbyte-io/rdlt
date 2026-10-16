@@ -114,6 +114,22 @@ async fn a_destination_that_takes_or_miscodes_bad_batches_fails_malformed_and_li
 }
 
 #[tokio::test]
+async fn a_destination_that_reads_a_misaligned_batch_fails_malformed() {
+    let target = Target::connected(|| Box::pin(async { served(Fault::MisalignedFrames) }));
+    let report = certify_destination(&target, serde_json::json!({}), &Unprobed).await;
+    assert!(
+        matches!(report.outcome("P-MALFORMED"), Some(Outcome::Failed(_))),
+        "{report}"
+    );
+    // Every other batch it refuses as it should.
+    assert_eq!(
+        report.outcome("P-LIMITS"),
+        Some(&Outcome::Passed),
+        "{report}"
+    );
+}
+
+#[tokio::test]
 async fn a_heartbeat_whose_answers_stay_open_after_the_pings_is_kept() {
     let target = Target::connected(|| Box::pin(async { served(Fault::Lingering) }))
         .credit_watch(crate::BRIEF);
