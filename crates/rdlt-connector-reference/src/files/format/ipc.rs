@@ -1,5 +1,8 @@
 //! Arrow IPC files read block by block, each block checked against the file and the frame limit
 //! before a byte of it is held, and decoded by the wire's decoder under the wire's limits.
+//!
+//! Each block is read into an allocation that starts at a 64-byte address and decoded where it
+//! lies, or, where another writer padded it to eight bytes, laid out again (`relaid`).
 
 use std::fs::File;
 use std::io::{Read as _, Seek as _, SeekFrom};
@@ -8,7 +11,10 @@ use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use bytes::Bytes;
 use rdlt_connector::{ConnectorError, Result};
-use rdlt_wire::{Decoder, IpcFrame, Limit, Limits, WireError};
+use rdlt_wire::aligned::{Aligned, Frozen};
+use rdlt_wire::{Decoder, IpcFrame, Limit, Limits, Problem, WireError};
+
+use super::relaid::relaid;
 
 /// What an Arrow IPC file starts with, padded to eight bytes, and ends with.
 const MAGIC: &[u8; 6] = b"ARROW1";
@@ -34,17 +40,18 @@ pub(super) struct Block {
 pub(super) struct IpcFile {
     file: File,
     decoder: Decoder,
+    limits: Limits,
     schema: SchemaRef,
     batches: std::vec::IntoIter<Block>,
 }
 
 /// A file that is not what an Arrow IPC writer writes.
-fn malformed(what: impl std::fmt::Display) -> ConnectorError {
+pub(super) fn malformed(what: impl std::fmt::Display) -> ConnectorError {
     ConnectorError::data(format!("the Arrow file is malformed: {what}"))
 }
 
 /// A frame the wire's decoder refused, as a data error: a limit's refusal keeps its limit.
-fn refused(error: WireError) -> ConnectorError {
+pub(super) fn refused(error: WireError) -> ConnectorError {
     match error {
         WireError::Refused(refusal) => ConnectorError::from(refusal),
         other => {
@@ -68,6 +75,7 @@ impl IpcFile {
         let mut opened = Self {
             file,
             decoder,
+            limits,
             schema,
             batches: Vec::new().into_iter(),
         };
@@ -104,18 +112,41 @@ impl IpcFile {
         }
     }
 
-    /// Reads and decodes the message at `block`.
+    /// Reads and decodes the message at `block`, where it lies, or laid out again where its
+    /// buffers do not lie at their types' alignment.
     fn decode(&mut self, block: Block) -> Result<Option<RecordBatch>> {
-        let mut bytes = vec![0; block.metadata + block.body];
+        let len = block.metadata + block.body;
+        let mut bytes = Aligned::default();
         self.file
             .seek(SeekFrom::Start(block.offset))
-            .and_then(|_| self.file.read_exact(&mut bytes))
+            .and_then(|_| bytes.read_from(&mut self.file, u64::try_from(len).unwrap_or(u64::MAX)))
             .map_err(read)?;
-        let bytes = Bytes::from(bytes);
+        if bytes.len() < len {
+            return Err(malformed("it ends before what it declares"));
+        }
+        let Frozen { bytes, allocation } = bytes.freeze();
         let header = message(&bytes.slice(..block.metadata))?;
-        let frame = IpcFrame::new(header, bytes.slice(block.metadata..));
-        self.decoder.frame(&frame).map_err(refused)
+        let frame = framed(header, bytes.slice(block.metadata..), allocation);
+        match self.decoder.frame(&frame) {
+            // A block another writer padded to eight bytes, its shape checked: laid out again.
+            Err(WireError::Malformed {
+                problem: Problem::BufferUnaligned { .. },
+                ..
+            }) => {
+                let relaid = relaid(&frame, &self.limits)?;
+                self.decoder.frame(&relaid).map_err(refused)
+            }
+            decoded => decoded.map_err(refused),
+        }
     }
+}
+
+/// The frame of a block whose `header` and `body` lie in `allocation`: read where it lies where
+/// that keeps alive no more than a message may beside them, otherwise with its body copied into
+/// an allocation of its own, as for a block whose metadata a writer padded far.
+pub(super) fn framed(header: Bytes, body: Bytes, allocation: Bytes) -> IpcFrame {
+    IpcFrame::arrived(header.clone(), body.clone(), allocation)
+        .unwrap_or_else(|_| IpcFrame::new(header, body).aligned())
 }
 
 /// The message flatbuffer in `metadata`: a continuation marker, the message's length, the
@@ -210,7 +241,7 @@ pub(super) fn apart(blocks: &[Block]) -> bool {
 
 /// The flatbuffers verifier a schema nested to the limit passes, as the wire's decoder sets it:
 /// a schema deeper than the limit is refused by the limit, not as no footer.
-fn verifier(limits: &Limits) -> flatbuffers::VerifierOptions {
+pub(super) fn verifier(limits: &Limits) -> flatbuffers::VerifierOptions {
     let depth = usize::try_from(limits.nesting_depth).unwrap_or(usize::MAX);
     flatbuffers::VerifierOptions {
         max_depth: depth.saturating_mul(4).saturating_add(64),

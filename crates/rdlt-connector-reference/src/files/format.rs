@@ -9,6 +9,7 @@ pub(super) mod ipc;
 mod json;
 pub(super) mod lines;
 pub(super) mod plain;
+mod relaid;
 #[cfg(test)]
 mod tests;
 
