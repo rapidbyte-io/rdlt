@@ -6,7 +6,7 @@ mod tests;
 
 use rdlt_connector::cost::JSON_CHARGE;
 use rdlt_wire::Limits;
-use rdlt_wire::limits::Class;
+use rdlt_wire::limits::{Class, MESSAGE_ROOM};
 
 use super::Shares;
 use crate::limits::{COLUMN_RECORD, RECORDED, SCHEMA_KEPT};
@@ -18,8 +18,9 @@ use crate::limits::{COLUMN_RECORD, RECORDED, SCHEMA_KEPT};
 ///
 /// - What a read keeps is half its dictionaries and half its schema: the schema's message is a
 ///   fifth of that half, since the schema decoded from it takes up to four times the message.
-/// - A frame's batch keeps alive its own bytes, the dictionaries its keys name and its schema,
-///   so a frame is at most what pushes may take less what a read may keep. And one row of a
+/// - A frame's batch keeps alive the message it arrived in, its own bytes and at most
+///   `MESSAGE_ROOM` beside them, the dictionaries its keys name and its schema, so a frame is at
+///   most what pushes may take less what a read may keep and that room. And one row of a
 ///   frame, lowered as it arrives, with a null in each column of the widest table and the
 ///   metadata lowering adds, fits what one request for lowering a row may take where the load
 ///   keeps a log, half a request.
@@ -56,7 +57,11 @@ pub(crate) fn admitted(shares: Shares, readers: usize) -> Limits {
     let decoded = |class: Class| shares.control / per_byte(class);
     Limits {
         schema_columns: columns,
-        frame_bytes: shares.intake.saturating_sub(kept).min(row),
+        frame_bytes: shares
+            .intake
+            .saturating_sub(kept)
+            .saturating_sub(MESSAGE_ROOM)
+            .min(row),
         catalog_bytes: decoded(Class::Catalog),
         state_bytes: decoded(Class::State),
         control_message_bytes: decoded(Class::Control),
