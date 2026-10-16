@@ -1281,6 +1281,87 @@ fn an_arrow_file_cut_short_or_whose_footer_or_magic_is_damaged_is_refused() {
 }
 
 #[test]
+fn a_dictionary_whose_metadata_a_writer_padded_far_loads_as_it_was_written() {
+    let (bytes, schema) = arrow_bytes(2, IpcWriteOptions::default());
+    let written = read_bytes(&bytes, &schema).unwrap();
+    let end = bytes.len() - 10;
+    let length =
+        usize::try_from(i32::from_le_bytes(bytes[end..end + 4].try_into().unwrap())).unwrap();
+    let footer = arrow_ipc::root_as_footer(&bytes[end - length..end]).unwrap();
+    let dictionary = footer.dictionaries().unwrap().get(0);
+    // Padding after the dictionary's message, its body still at a multiple of 64 bytes.
+    let pad: i32 = 64 << 10;
+    let at = usize::try_from(dictionary.offset()).unwrap()
+        + usize::try_from(dictionary.metaDataLength()).unwrap();
+    let mut padded = bytes[..at].to_vec();
+    padded.extend(std::iter::repeat_n(0, usize::try_from(pad).unwrap()));
+    padded.extend_from_slice(&bytes[at..]);
+    let padded = refooted(&padded, |dictionaries, batches| {
+        let first = dictionaries[0];
+        dictionaries[0] = arrow_ipc::Block::new(
+            first.offset(),
+            first.metaDataLength() + pad,
+            first.bodyLength(),
+        );
+        for block in batches.iter_mut() {
+            *block = arrow_ipc::Block::new(
+                block.offset() + i64::from(pad),
+                block.metaDataLength(),
+                block.bodyLength(),
+            );
+        }
+    });
+    assert_eq!(read_bytes(&padded, &schema).unwrap(), written);
+}
+
+#[test]
+fn a_block_is_read_where_it_lies_only_while_it_keeps_alive_no_more_than_a_message_may() {
+    use rdlt_wire::aligned::{Aligned, is_aligned};
+    use rdlt_wire::limits::MESSAGE_ROOM;
+    let room = usize::try_from(MESSAGE_ROOM).unwrap();
+    for padding in [0, room, room + 1, 64 << 10] {
+        let block = Aligned::copied(&vec![7; 64 + padding + 128]);
+        let header = block.bytes.slice(..64);
+        let body = block.bytes.slice(64 + padding..);
+        let frame = super::ipc::framed(header.clone(), body.clone(), block.allocation.clone());
+        assert_eq!((&frame.header, &frame.body), (&header, &body), "{padding}");
+        assert!(is_aligned(&frame.body), "{padding}");
+        // What the allocation holds beside the message: the alignment's skip and the padding.
+        let beside = block.allocation.len() - header.len() - body.len();
+        let in_place = frame.allocation.as_ptr() == block.allocation.as_ptr();
+        assert_eq!(in_place, beside <= room, "{padding}: {beside} beside");
+        if !in_place {
+            assert!(frame.allocation.len() < body.len() + 64, "{padding}");
+        }
+    }
+}
+
+#[test]
+fn an_arrow_file_cut_short_after_it_is_opened_is_refused_where_a_block_ends_early() {
+    let (bytes, _) = arrow_bytes(1, IpcWriteOptions::default());
+    let end = bytes.len() - 10;
+    let length =
+        usize::try_from(i32::from_le_bytes(bytes[end..end + 4].try_into().unwrap())).unwrap();
+    let footer = arrow_ipc::root_as_footer(&bytes[end - length..end]).unwrap();
+    let block = footer.recordBatches().unwrap().get(0);
+    let (root, _dir) = scratch();
+    let path = root.path().join("rows.arrow");
+    std::fs::write(&path, &bytes).unwrap();
+    let mut read =
+        super::ipc::IpcFile::open(std::fs::File::open(&path).unwrap(), Limits::default()).unwrap();
+    // Cut within the block's message once the footer is checked: what is read ends early.
+    let cut = u64::try_from(block.offset()).unwrap() + 1;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_len(cut)
+        .unwrap();
+    let error = read.next().expect_err("a block cut short");
+    assert_eq!(error.kind(), ConnectorErrorKind::Data, "{error}");
+}
+
+#[test]
 fn an_arrow_file_of_messages_no_reader_frames_is_refused() {
     // Messages without the marker their length follows, as writers before Arrow 0.15 wrote.
     let legacy = IpcWriteOptions::try_new(8, true, arrow_ipc::MetadataVersion::V4).unwrap();
@@ -1464,4 +1545,62 @@ fn every_line_the_writer_writes_reads_back_as_the_columns_it_holds() {
     let held = rdlt_connector::merge::read_back(&schema, &held).unwrap();
     assert_eq!(whole, [batch]);
     assert_eq!(held, whole);
+}
+
+/// A batch of every type of sixteen-byte values, and of views, each column behind one of one-byte
+/// values, so a writer padding to eight bytes puts it eight past a multiple of sixteen.
+fn sixteen_byte_values() -> RecordBatch {
+    use arrow_array::{
+        ArrayRef, BinaryViewArray, Decimal128Array, Decimal256Array, Int8Array,
+        IntervalMonthDayNanoArray, StringViewArray,
+    };
+    use arrow_buffer::{IntervalMonthDayNano, i256};
+    let odd = || Arc::new(Int8Array::from(vec![Some(1), None, Some(3)])) as ArrayRef;
+    let interval = IntervalMonthDayNano::new(1, 2, 3);
+    let columns: Vec<ArrayRef> = vec![
+        Arc::new(Decimal128Array::from(vec![Some(1), None, Some(3)])),
+        Arc::new(Decimal256Array::from(vec![
+            Some(i256::from(1)),
+            None,
+            Some(i256::MAX),
+        ])),
+        Arc::new(StringViewArray::from(vec![
+            Some("a"),
+            None,
+            Some("a longer text than twelve"),
+        ])),
+        Arc::new(BinaryViewArray::from(vec![
+            Some(&b"b"[..]),
+            None,
+            Some(&[7; 40][..]),
+        ])),
+        Arc::new(IntervalMonthDayNanoArray::from(vec![
+            Some(interval),
+            None,
+            Some(interval),
+        ])),
+    ];
+    let named = columns
+        .into_iter()
+        .enumerate()
+        .flat_map(|(at, column)| [(format!("o{at}"), odd()), (format!("c{at}"), column)]);
+    RecordBatch::try_from_iter(named).expect("a batch")
+}
+
+#[test]
+fn a_file_padded_to_eight_bytes_holding_sixteen_byte_values_loads_unchanged() {
+    let batch = sixteen_byte_values();
+    let (root, _dir) = scratch();
+    let path = root.path().join("padded.arrow");
+    let file = std::fs::File::create(&path).expect("a file");
+    let options =
+        IpcWriteOptions::try_new(8, false, arrow_ipc::MetadataVersion::V5).expect("options");
+    let mut writer =
+        FileWriter::try_new_with_options(file, batch.schema_ref(), options).expect("a writer");
+    writer.write(&batch).expect("written");
+    writer.finish().expect("finished");
+    let file = std::fs::File::open(&path).expect("it opens");
+    let mut read = super::ipc::IpcFile::open(file, Limits::default()).expect("it reads");
+    assert_eq!(read.next().expect("a batch"), Some(batch));
+    assert_eq!(read.next().expect("the end"), None);
 }
