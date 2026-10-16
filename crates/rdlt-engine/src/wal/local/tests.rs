@@ -1183,3 +1183,49 @@ async fn a_read_starts_at_a_64_byte_address_whatever_its_offset() {
         );
     }
 }
+
+#[tokio::test]
+async fn a_frame_the_local_store_reads_is_decoded_where_it_lies() {
+    use std::sync::Arc;
+
+    use arrow_array::{Array as _, ArrayRef, Int64Array, RecordBatch, StringArray};
+    use rdlt_connector::SegmentId;
+
+    use crate::wal::frame::{self, Batch, Frame};
+    let ids: ArrayRef = Arc::new(Int64Array::from_iter_values(0..1_000));
+    let names: ArrayRef = Arc::new(StringArray::from_iter_values(
+        (0..1_000).map(|id| format!("name {id}")),
+    ));
+    let batch = RecordBatch::try_from_iter([("id", ids), ("name", names)]).expect("a batch");
+    let encoded = Frame::Batch(Batch {
+        segment: SegmentId(1),
+        table: 0,
+        ordinal: 0,
+        batch: batch.clone(),
+    })
+    .encode()
+    .expect("the frame encodes");
+    let chunk_bytes: &'static [u8] = [&frame::preamble()[..], &encoded[..]].concat().leak();
+    let base = tempfile::tempdir().expect("a temporary directory");
+    let wal = LocalWal::new(base.path());
+    let orders = pipeline("orders");
+    published(&wal, &orders, chunk(1, 0), chunk_bytes).await;
+    let offset = u64::try_from(frame::PREAMBLE).expect("small");
+    let len = u64::try_from(encoded.len()).expect("small");
+    let read = wal
+        .read(&orders, chunk(1, 0), offset, len)
+        .await
+        .expect("reads");
+    let range = read.as_ptr_range();
+    let pending = frame::pending(read, frame::limits(1 << 30)).expect("a batch frame");
+    let decoded = pending.decode().expect("it decodes").batch;
+    assert_eq!(decoded, batch);
+    // Every buffer lies in the bytes the store read: nothing copied them.
+    for column in decoded.columns() {
+        let data = column.to_data();
+        for buffer in data.buffers() {
+            let at = buffer.as_ptr_range();
+            assert!(range.start <= at.start && at.end <= range.end);
+        }
+    }
+}

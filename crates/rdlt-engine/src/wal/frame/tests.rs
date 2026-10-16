@@ -679,6 +679,34 @@ fn a_frame_read_at_any_address_is_copied_once_and_decodes() {
 }
 
 #[test]
+fn a_frame_sharing_what_its_store_keeps_is_copied_so_its_batch_keeps_the_frame_alone() {
+    use rdlt_wire::aligned::{Aligned, is_aligned};
+    let bytes = Frame::Batch(Batch {
+        segment: SegmentId(1),
+        table: 0,
+        ordinal: 0,
+        batch: keyed(),
+    })
+    .encode()
+    .expect("the frame encodes");
+    // In an allocation of its own, as the local store reads it: decoded where it lies.
+    let own = Aligned::copied(&bytes).bytes;
+    let start = own.as_ptr();
+    let pending = super::pending(own, limits()).expect("a batch frame");
+    for message in pending.messages() {
+        assert_eq!(message.allocation.as_ptr(), start);
+    }
+    // At a 64-byte address of a chunk the store keeps, after other frames: copied to its own.
+    let chunk = Aligned::copied(&[&vec![0; 4096][..], &bytes].concat());
+    let shared = chunk.bytes.slice(4096..);
+    assert!(is_aligned(&shared));
+    let pending = super::pending(shared, limits()).expect("a batch frame");
+    for message in pending.messages() {
+        assert!(message.allocation.len() < bytes.len() + 64);
+    }
+}
+
+#[test]
 fn a_logged_batch_holds_the_frame_it_was_read_in_and_its_schema() {
     let bytes = Frame::Batch(Batch {
         segment: SegmentId(1),
