@@ -18,12 +18,13 @@ use crate::world::Pressure;
 /// that: small enough that a source pressing on it, as [`pressed`] draws, fills its shares.
 ///
 /// A run reads at least one partition more at once than the `endless` partitions it follows
-/// without end, which hold their places for as long as it runs, and holds to `growth`.
+/// without end, which hold their places for as long as it runs, and holds to the limits `growth`
+/// gives for the partitions it reads at once.
 pub(super) fn config(
     rng: &mut SplitMix64,
     streaming: bool,
     endless: usize,
-    growth: GrowthLimits,
+    growth: impl FnOnce(usize) -> GrowthLimits,
 ) -> EngineConfig {
     let least = EngineConfig::least_memory(1);
     let every = rng
@@ -42,16 +43,19 @@ pub(super) fn config(
     } else {
         builder
     };
+    let memory = least + rng.below(least);
+    let lane_window = to_usize(1 + rng.below(3));
+    let partitions = to_usize(1 + rng.below(4)).max(endless + 1);
     builder
-        .memory(least + rng.below(least))
+        .memory(memory)
         .lanes(lanes)
-        .lane_window(to_usize(1 + rng.below(3)))
-        .partitions(to_usize(1 + rng.below(4)).max(endless + 1))
+        .lane_window(lane_window)
+        .partitions(partitions)
         .partition_buffer(to_usize(1 + rng.below(4)))
         .barrier_wait(Duration::from_millis(10 + rng.below(2000)))
         .commit(commit)
         .retry(retry)
-        .growth(growth)
+        .growth(growth(partitions))
         .build()
         .expect("the drawn configuration is valid")
 }
@@ -61,10 +65,12 @@ pub(super) fn config(
 /// once, so lanes close the writers they wrote longest ago, and the defaults elsewhere.
 ///
 /// Where `workload` keeps logs and every stream checkpoints as it reads, half its worlds' logs
-/// hold 128 KiB to 1 MiB, less than many of their loads send: batches wait for commits to free
-/// room. Half of those whose streams push plain Arrow keep a log only twice what their partitions
-/// hold unsealed, whose frames are small beside their commits', so chunks gather and are freed.
-pub(super) fn growth(seed: Seed, workload: Option<&Workload>) -> GrowthLimits {
+/// hold 128 KiB to 1 MiB, less than many of their loads send, so batches wait for commits to free
+/// room; none holds less than the least log the engine promises their loads, of runs reading
+/// `partitions` partitions at once, as it may refuse a load a smaller log holds. Half of those
+/// whose streams push plain Arrow keep a log only twice what their partitions hold unsealed,
+/// whose frames are small beside their commits', so chunks gather and are freed.
+pub(super) fn growth(seed: Seed, workload: Option<&Workload>, partitions: usize) -> GrowthLimits {
     let mut rng = SplitMix64::new(seed.value().rotate_left(29));
     let defaults = GrowthLimits::default();
     let growth = if rng.chance(250) {
@@ -82,13 +88,15 @@ pub(super) fn growth(seed: Seed, workload: Option<&Workload>) -> GrowthLimits {
                 .all(|stream| stream.checkpointing == Checkpointing::Natural)
     };
     let mut drawn = SplitMix64::new(seed.value().rotate_left(41));
-    if workload.is_some_and(natural) && drawn.chance(500) {
+    if let Some(workload) = workload.filter(|workload| natural(workload))
+        && drawn.chance(500)
+    {
         let bytes = (128 << 10) << drawn.below(4);
         // Drawn apart, so every other world's log is as it was.
         let mut sized = SplitMix64::new(seed.value().rotate_left(53));
-        let bytes = match workload.and_then(tiny) {
+        let bytes = match tiny(workload) {
             Some(tiny) if sized.chance(500) => tiny,
-            _ => bytes,
+            _ => bytes.max(log::least(workload, partitions)),
         };
         return growth
             .with_log_bytes(bytes)
@@ -165,5 +173,6 @@ fn to_usize(value: u64) -> usize {
     usize::try_from(value).unwrap_or(1)
 }
 
+mod log;
 #[cfg(test)]
 mod tests;

@@ -13,7 +13,8 @@ use rdlt_connector::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use push::{batch, json_push};
+use push::batch;
+pub(crate) use push::json_push;
 
 use crate::destination::committed_next;
 use crate::workload::{Row, SimStream};

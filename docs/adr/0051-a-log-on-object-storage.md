@@ -153,7 +153,9 @@ is what its operator states of it.
   memory whose requests fail, stall, hang, race and lose their answers, whose creates and
   deletions may land after their client gave up on them, with one to four attempts a request,
   on a clock whose waits are drawn longer. Half of the worlds that keep logs and checkpoint
-  give a log 128 KiB to 1 MiB, less than many of their loads send, so batches wait for commits.
+  give a log 128 KiB to 1 MiB, less than many of their loads send, so batches wait for commits,
+  never smaller than the least log ADR 0045 promises their loads, which a smaller one may refuse;
+  some that push plain Arrow keep a log only twice what their partitions hold unsealed instead.
 - Tests reach a store served over TLS by a test authority the client trusts, at the bucket's
   host, and one whose certificate names another host, refused.
 - Tests in containers run the suite on RustFS and MinIO, each image named by its digest, which
