@@ -1,12 +1,12 @@
 use rdlt_engine::GrowthLimits;
 
-use super::{growth, tiny};
+use super::{growth, log, tiny};
 use crate::seed::Seed;
 
 #[test]
 fn some_worlds_hold_few_writers_open_and_the_rest_the_default() {
     let drawn: Vec<GrowthLimits> = (0..1000)
-        .map(|seed| growth(Seed::new(seed), None))
+        .map(|seed| growth(Seed::new(seed), None, 4))
         .collect();
     let few = drawn
         .iter()
@@ -43,13 +43,15 @@ fn half_the_worlds_whose_streams_checkpoint_as_they_read_keep_small_logs() {
             .streams
             .iter()
             .all(|stream| stream.checkpointing == Checkpointing::Natural);
-        let growth = growth(Seed::new(seed), Some(&workload));
+        let growth = growth(Seed::new(seed), Some(&workload), 4);
         natural += usize::from(checkpoints);
         if growth.log_bytes() != defaults {
             assert!(checkpoints, "seed {seed}: a world checkpointing on demand");
             let bytes = growth.log_bytes().get();
             assert!(
-                (128 << 10..=1 << 20).contains(&bytes) || tiny(&workload) == Some(bytes),
+                (128 << 10..=1 << 20).contains(&bytes)
+                    || tiny(&workload) == Some(bytes)
+                    || bytes == log::least(&workload, 4),
                 "seed {seed}: {bytes}"
             );
             small += 1;
@@ -74,7 +76,7 @@ fn half_the_worlds_whose_streams_checkpoint_as_they_read_keep_small_logs() {
 }
 
 fn growth_of(seed: u64, workload: &crate::workload::Workload) -> std::num::NonZeroU64 {
-    growth(Seed::new(seed), Some(workload)).log_bytes()
+    growth(Seed::new(seed), Some(workload), 4).log_bytes()
 }
 
 #[test]
@@ -99,7 +101,11 @@ fn some_worlds_whose_streams_push_plain_arrow_keep_a_log_twice_what_they_hold_un
             .sum();
         let expected = (open * 2 * (4 << 10)).max(16 << 10);
         assert_eq!(tiny(&workload), Some(expected), "seed {seed}");
-        if growth(Seed::new(seed), Some(&workload)).log_bytes().get() == expected {
+        if growth(Seed::new(seed), Some(&workload), 4)
+            .log_bytes()
+            .get()
+            == expected
+        {
             tiny_logs += 1;
         }
     }
@@ -113,4 +119,36 @@ fn some_worlds_whose_streams_push_plain_arrow_keep_a_log_twice_what_they_hold_un
             .all(|stream| !stream.json && stream.drift.is_empty());
         assert_eq!(tiny(&workload).is_some(), plain, "seed {seed}");
     }
+}
+
+#[test]
+fn no_world_keeps_a_log_smaller_than_the_least_the_engine_promises_its_load() {
+    use crate::rng::SplitMix64;
+    use crate::swarm::Features;
+    use crate::workload::Workload;
+
+    let defaults = GrowthLimits::default().log_bytes().get();
+    let mut floored = 0;
+    // Seed 133046 drew a log of 128 KiB, which its four partitions, each holding three pushes of
+    // a table and its child table unsealed, filled.
+    for seed in [133_046].into_iter().chain(0..500) {
+        let mut rng = SplitMix64::new(seed);
+        let features = Features::draw(&mut rng);
+        let workload = Workload::generate(&mut rng, features);
+        for partitions in 1..=4 {
+            let bytes = growth(Seed::new(seed), Some(&workload), partitions)
+                .log_bytes()
+                .get();
+            if bytes == defaults || tiny(&workload) == Some(bytes) {
+                continue;
+            }
+            let least = log::least(&workload, partitions);
+            assert!(
+                bytes >= least,
+                "seed {seed}, {partitions} read at once: {bytes} < {least}"
+            );
+            floored += usize::from(bytes == least);
+        }
+    }
+    assert!(floored > 0, "no world's log is the least its load needs");
 }

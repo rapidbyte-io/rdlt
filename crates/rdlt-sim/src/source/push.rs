@@ -84,7 +84,7 @@ fn whole(stream: &SimStream, rows: &[Row], ballast: usize) -> RecordBatch {
 
 /// `rows` of `stream` as a JSON push with the columns a batch of them has: a JSON array when
 /// `array`, else JSON lines.
-pub(super) fn json_push(stream: &SimStream, rows: &[Row], array: bool) -> Bytes {
+pub(crate) fn json_push(stream: &SimStream, rows: &[Row], array: bool) -> Bytes {
     // Each object is written as text, so an integer beyond 64 bits pushes as the integer it is.
     let objects = rows.iter().map(|row| {
         let mut fields = vec![

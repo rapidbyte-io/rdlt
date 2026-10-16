@@ -80,8 +80,12 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>) -> Checke
     env.perturb(world.workload.features.perturb);
     world.keep_logs(&env, seed).await;
     let streaming = world.workload.features.streaming;
-    let growth = growth(seed, Some(&world.workload));
-    let config = config(&mut rng, streaming, endless(&world.workload), growth);
+    let config = config(
+        &mut rng,
+        streaming,
+        endless(&world.workload),
+        |partitions| growth(seed, Some(&world.workload), partitions),
+    );
     let (limits, budget) = (config.limits(), config.memory().get());
     world.press(pressed(seed, &config, &world.workload, small_log(&config)));
     let engine = Engine::new(config, env);

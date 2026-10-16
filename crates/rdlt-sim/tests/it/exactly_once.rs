@@ -3,7 +3,7 @@ use rdlt_sim::{
 };
 
 /// Seeds that each found a defect when first run, kept so they stay green.
-const FOUND: [u64; 19] = [
+const FOUND: [u64; 20] = [
     // Over the network: a host whose handshake a partition cut short held its connection, and
     // its connector's stop, forever.
     9_576,
@@ -49,6 +49,10 @@ const FOUND: [u64; 19] = [
     85_384,
     // A date written into timestamps, whose column then widens to JSON, holds a timestamp's text.
     642_848,
+    // Logged in a small log: four partitions, each holding three pushes of a table and its child
+    // table unsealed, held more than the whole log the world drew, and the engine refused a
+    // batch, as it may where a log is smaller than the least it promises the load.
+    133_046,
 ];
 
 #[test]
