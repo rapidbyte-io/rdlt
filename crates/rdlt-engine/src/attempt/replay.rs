@@ -32,6 +32,9 @@ use crate::wal::{Positions, WalStore};
 use decide::decide;
 use staged::Staged;
 
+/// Bytes: more than an allocation holds beside a frame to start it at a 64-byte address.
+const ALIGNMENT_ROOM: u64 = rdlt_wire::aligned::ALIGNMENT as u64;
+
 /// The session replay commits through, and where the destination stands as it goes.
 struct Replaying {
     session: Arc<SharedSession>,
@@ -218,17 +221,19 @@ impl Replaying {
                 if created.insert(located.table) {
                     self.create(scanned, located.table).await?;
                 }
-                // The frame is reserved before it is read, and what decoding its batch allocates
-                // for its buffers before it is decoded; the frame's bytes go once it is, and what
-                // else the batch holds, beside its buffers, is reserved then.
-                let frame = staged.reserve(located.len).await?;
+                // The frame its batch keeps alive, and its alignment's room; as much again while
+                // it is read and decoded, for a store whose frame is copied once to align it; the
+                // rest of what the batch keeps once it is decoded (ADR 0045).
+                let frame = staged
+                    .reserve(located.len.saturating_add(ALIGNMENT_ROOM))
+                    .await?;
+                let reading = staged.reserve(located.len).await?;
                 let read = scan::batch(store, pipeline, *located, limits).await?;
-                let buffers = read.held();
-                let decoding = staged.reserve(buffers).await?;
+                let len = read.len();
                 let batch = read.decode()?;
-                drop(frame);
-                let rest = Allocations::of(&batch).bytes().saturating_sub(buffers);
-                let held = [decoding, staged.reserve(rest).await?];
+                drop(reading);
+                let rest = Allocations::of(&batch).bytes().saturating_sub(len);
+                let held = [frame, staged.reserve(rest).await?];
                 let open = || async {
                     self.session
                         .writer(table)

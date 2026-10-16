@@ -16,6 +16,7 @@ use object_store::{
     Attribute, Attributes, GetOptions, GetRange, MultipartId, ObjectMeta, ObjectStoreExt as _,
     PutMode, PutOptions, PutPayload,
 };
+use rdlt_wire::aligned::Aligned;
 
 use super::fault::{self, Answer, Ask, ObjectFault};
 use super::{ObjectStoreOptions, WalObjects};
@@ -422,13 +423,16 @@ pub(super) fn missing() -> io::Error {
     io::Error::from(io::ErrorKind::NotFound)
 }
 
-/// What `got` holds, read as it streams in, and refused where it is more than `most` bytes.
+/// What `got` holds, read as it streams in, and refused where it is more than `most` bytes:
+/// copied once, whole, into an allocation of its own from a 64-byte address, which is all a
+/// batch decoded from it keeps alive.
 pub(super) async fn gathered(
     got: object_store::GetResult,
     most: u64,
 ) -> object_store::Result<io::Result<Bytes>> {
+    let answered = got.range.end.saturating_sub(got.range.start).min(most);
+    let mut gathered = BytesMut::with_capacity(usize::try_from(answered).unwrap_or(usize::MAX));
     let mut stream = got.into_stream();
-    let mut gathered = BytesMut::new();
     while let Some(read) = stream.next().await {
         let read = read?;
         let held = u64::try_from(gathered.len() + read.len()).unwrap_or(u64::MAX);
@@ -440,5 +444,5 @@ pub(super) async fn gathered(
         }
         gathered.extend_from_slice(&read);
     }
-    Ok(Ok(gathered.freeze()))
+    Ok(Ok(Aligned::copied(&gathered).bytes))
 }

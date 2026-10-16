@@ -340,9 +340,9 @@ pub(crate) struct Read {
 }
 
 impl Read {
-    /// Bytes: what decoding the batch allocates, which a caller reserves first.
-    pub(crate) fn held(&self) -> u64 {
-        self.pending.held()
+    /// Bytes: the frame, which its batch, decoded, lies in and keeps alive.
+    pub(crate) fn len(&self) -> u64 {
+        self.pending.len()
     }
 
     /// The batch.
@@ -377,7 +377,7 @@ pub(crate) async fn batch(
         .await
         .map_err(Error::from_wal)?;
     let pending =
-        frame::pending(&bytes, limits).map_err(|error| unreadable(pipeline, load, &error))?;
+        frame::pending(bytes, limits).map_err(|error| unreadable(pipeline, load, &error))?;
     if pending.header.ordinal != located.ordinal || pending.header.table != located.table {
         let detail = "a batch frame read once no longer reads back";
         return Err(unreadable(pipeline, load, &detail));

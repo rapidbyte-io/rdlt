@@ -485,13 +485,15 @@ pub(crate) fn decode(bytes: &Bytes, limits: rdlt_wire::Limits) -> Result<Frame, 
     if kind != BATCH {
         return parsed(kind, payload);
     }
-    pending(bytes, limits)?.decode().map(Frame::Batch)
+    pending(bytes.clone(), limits)?.decode().map(Frame::Batch)
 }
 
 /// A batch frame read and measured, its batch not decoded yet.
 pub(crate) struct Pending {
     pub(crate) header: BatchHeader,
     batch: arrow::Measured,
+    /// Bytes: the frame, which its batch lies in.
+    len: u64,
 }
 
 impl Pending {
@@ -501,9 +503,9 @@ impl Pending {
         self.batch.frames()
     }
 
-    /// Bytes: what decoding the batch allocates.
-    pub(crate) fn held(&self) -> u64 {
-        self.batch.held()
+    /// Bytes: the frame, which its batch, decoded, lies in and keeps alive.
+    pub(crate) fn len(&self) -> u64 {
+        self.len
     }
 
     /// The batch, which must hold the rows its header says.
@@ -531,14 +533,23 @@ impl Pending {
 ///
 /// Where the frame is not whole, its checksum does not match, it is no batch, or its data does
 /// not hold together or passes `limits`.
-pub(crate) fn pending(bytes: &Bytes, limits: rdlt_wire::Limits) -> Result<Pending, Error> {
-    let (kind, payload) = opened(bytes)?;
+pub(crate) fn pending(bytes: Bytes, limits: rdlt_wire::Limits) -> Result<Pending, Error> {
+    // A frame in an allocation of its own is decoded where it lies (`WalStore::read`); one
+    // handed over elsewhere, or sharing what the store keeps, is copied once to where its bodies
+    // lie aligned, so its batch keeps alive the frame alone.
+    let bytes = if bytes.is_unique() {
+        rdlt_wire::aligned::ensure(bytes)
+    } else {
+        rdlt_wire::aligned::Aligned::copied(&bytes).bytes
+    };
+    let (kind, payload) = opened(&bytes)?;
     if kind != BATCH {
         return Err(garbled(&format!("a frame of kind {kind} is no batch")));
     }
     let (header, end) = batch_header(payload)?;
-    let batch = arrow::measured(bytes.slice(HEAD + end..), limits)?;
-    Ok(Pending { header, batch })
+    let batch = arrow::measured(bytes.slice(HEAD + end..), &bytes, limits)?;
+    let len = rdlt_wire::limits::count(bytes.len());
+    Ok(Pending { header, batch, len })
 }
 
 /// The header a batch frame's payload starts with, and where its batch begins.
