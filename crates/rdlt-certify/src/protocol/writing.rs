@@ -139,6 +139,39 @@ async fn created(client: &mut Client) -> Result<(u64, TableRef), Violation> {
     Ok((opened.session, table))
 }
 
+/// A batch of the table's rows whose values buffer starts four bytes into its body, where no
+/// eight-byte value may be read in place: its message otherwise as a sender encodes it.
+///
+/// # Errors
+///
+/// A violation where the batch does not encode, which never happens.
+pub(super) fn misaligned(segment: u64) -> Result<v1::WriteBatch, Violation> {
+    let unencoded = |error: rdlt_wire::WireError| Violation::from(format!("{error}"));
+    let mut encoder = rdlt_wire::Encoder::default();
+    encoder.schema(&rows().schema()).map_err(unencoded)?;
+    let mut frames = encoder.batch(&rows()).map_err(unencoded)?;
+    let frame = frames
+        .pop()
+        .ok_or_else(|| Violation::from("the rows encode to no frame"))?;
+    // The values buffer, of three eight-byte values' bytes, starts four bytes
+    // later, still within the body and after the buffer before it.
+    let mut header = frame.header.to_vec();
+    let length = 24_i64.to_le_bytes();
+    let at = (0..header.len().saturating_sub(15))
+        .find(|&at| header[at + 8..at + 16] == length && header[at..at + 8] != length)
+        .ok_or_else(|| Violation::from("the rows' values buffer is not where it is written"))?;
+    let moved = i64::from_le_bytes(header[at..at + 8].try_into().unwrap_or_default())
+        .checked_add(4)
+        .ok_or_else(|| Violation::from("the rows' values buffer lies at no offset"))?;
+    header[at..at + 8].copy_from_slice(&moved.to_le_bytes());
+    Ok(v1::WriteBatch {
+        segment,
+        data_header: header.into(),
+        padding: rdlt_wire::prost::bytes::Bytes::new(),
+        data_body: frame.body,
+    })
+}
+
 /// A batch of the table's one column.
 pub(super) fn rows() -> RecordBatch {
     let ids: ArrayRef = Arc::new(Int64Array::from(vec![1, 2, 3]));

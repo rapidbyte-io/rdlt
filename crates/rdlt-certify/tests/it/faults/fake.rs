@@ -83,6 +83,9 @@ pub(crate) enum Fault {
     /// As a destination, it refuses a batch it cannot decode, or one beyond its frame limit,
     /// with a code of its own.
     MiscodedFrames,
+    /// As a destination, it takes a batch whose buffers lie off their alignment, and refuses
+    /// any other it cannot decode.
+    MisalignedFrames,
     /// It reads back what it published, as a destination, but each read-back fails.
     ReadBackFails,
     /// It reads back what it published, without end.
@@ -179,7 +182,10 @@ impl Fake {
         self.reads_back()
             || matches!(
                 self.fault,
-                Fault::ShortNames | Fault::LenientFrames | Fault::MiscodedFrames
+                Fault::ShortNames
+                    | Fault::LenientFrames
+                    | Fault::MiscodedFrames
+                    | Fault::MisalignedFrames
             )
     }
 

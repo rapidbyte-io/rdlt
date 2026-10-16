@@ -1,11 +1,13 @@
-//! The malformed calls' clause: a read or a write that does not begin with its start, and a batch
-//! a destination cannot decode, are refused with typed errors, and the connection serves on.
+//! The malformed calls' clause: a read or a write that does not begin with its start, a batch a
+//! destination cannot decode, and one whose buffers lie off their alignment where it arrives, are
+//! refused with typed errors, and the connection serves on.
 
 use rdlt_connector::Role;
 use rdlt_connector::wire::{MALFORMED_FRAME, v1};
+use rdlt_host::remote::Client;
 use rdlt_wire::prost::bytes::Bytes;
 
-use super::writing::Writing;
+use super::writing::{Writing, misaligned};
 use super::{Found, Violation, first_refusal, handshaken, refused_with};
 use crate::target::Target;
 
@@ -30,27 +32,7 @@ pub(super) async fn refused(target: &Target, role: Role, config: &str) -> Found 
                     what,
                 )?;
             }
-            Role::Destination => {
-                let frames = tokio_stream::iter([v1::WriteFrame {
-                    frame: Some(v1::write_frame::Frame::Flush(v1::Unit {})),
-                }]);
-                let what = "a write that begins with a flush";
-                let refusal = first_refusal(client.write(frames).await).await;
-                refused_with(refusal, INVALID_MESSAGE, what)?;
-                let garbage = v1::WriteBatch {
-                    segment: 1,
-                    data_header: Bytes::from_static(b"not an IPC message"),
-                    padding: Bytes::new(),
-                    data_body: Bytes::new(),
-                };
-                let refusal = Writing::start(&mut client).await?.refusal(garbage).await?;
-                if refusal.code() != Some(MALFORMED_FRAME) {
-                    return Err(Violation::from(format!(
-                        "a batch that is no IPC message was refused with `{refusal}`, not with \
-                         `{MALFORMED_FRAME}`"
-                    )));
-                }
-            }
+            Role::Destination => refused_writes(&mut client).await?,
         }
         client
             .rpc
@@ -65,4 +47,40 @@ pub(super) async fn refused(target: &Target, role: Role, config: &str) -> Found 
         Ok(())
     };
     checked.await.into()
+}
+
+/// Checks that a destination refuses a write that does not begin with its start, a batch that
+/// is no IPC message and a batch whose values lie off their alignment, each with its typed
+/// error.
+async fn refused_writes(client: &mut Client) -> Result<(), Violation> {
+    let frames = tokio_stream::iter([v1::WriteFrame {
+        frame: Some(v1::write_frame::Frame::Flush(v1::Unit {})),
+    }]);
+    let what = "a write that begins with a flush";
+    let refusal = first_refusal(client.write(frames).await).await;
+    refused_with(refusal, INVALID_MESSAGE, what)?;
+    let garbage = v1::WriteBatch {
+        segment: 1,
+        data_header: Bytes::from_static(b"not an IPC message"),
+        padding: Bytes::new(),
+        data_body: Bytes::new(),
+    };
+    let refusal = Writing::start(client).await?.refusal(garbage).await?;
+    if refusal.code() != Some(MALFORMED_FRAME) {
+        return Err(Violation::from(format!(
+            "a batch that is no IPC message was refused with `{refusal}`, not with \
+                 `{MALFORMED_FRAME}`"
+        )));
+    }
+    // A batch whose eight-byte values lie four bytes off their alignment where it
+    // arrives: no sender lays one out so, and none may be read in place.
+    let off = misaligned(1)?;
+    let refusal = Writing::start(client).await?.refusal(off).await?;
+    if refusal.code() != Some(MALFORMED_FRAME) {
+        return Err(Violation::from(format!(
+            "a batch whose values lie off their alignment was refused with \
+                 `{refusal}`, not with `{MALFORMED_FRAME}`"
+        )));
+    }
+    Ok(())
 }
