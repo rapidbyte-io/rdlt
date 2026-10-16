@@ -68,11 +68,12 @@ to another machine and replay what the first left.
   at most about the square root of its `log_bytes` in chunks: 65,536 at the default 4 GiB, with
   a body beside each chunk longer than a part. A `log_bytes` far past that can let a log of many
   small chunks pass the limit, as the operator documentation says.
-- A read is a ranged GET whose body is read no further than the length asked
-  (`InvalidData` beyond it); a range ending past `i64::MAX` asks for everything from its offset,
-  which every S3 server takes; one starting at or past the object's end answers empty after a
-  look at the object. A chunk's kind, whole or in parts, is remembered once read, for at most
-  4,096 chunks.
+- A read is a ranged GET whose body is read no further than the length asked (`InvalidData` beyond
+  it), gathered as it streams in and then copied once, whole, into an allocation of its own that
+  starts at a 64-byte address, so a batch decoded from it keeps alive the read and less than 64
+  bytes beside it; a range ending past `i64::MAX` asks for everything from its offset, which every
+  S3 server takes; one starting at or past the object's end answers empty after a look at the
+  object. A chunk's kind, whole or in parts, is remembered once read, for at most 4,096 chunks.
 - The store tells the engine half of what its parts hold, 10,000 parts' worth, as its largest
   chunk (`WalStore::chunk_bytes`), and the engine bounds a load's log by the lower of that and
   `GrowthLimits::log_bytes`. The half left holds the frames the engine's bound does not count,

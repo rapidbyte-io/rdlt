@@ -86,7 +86,7 @@ budget before it is held, or bounded by a limit with a typed refusal.
 
   | Limit | Derived from | Least memory, 16 partitions | Default 256 MiB, 16 partitions | Wire default |
   |---|---|---|---|---|
-  | frame bytes | what pushes may take less what a read keeps, and half a request less what a row of the widest table takes beside its values | 4,194,304 | 33,306,271 | 64 MiB |
+  | frame bytes | what pushes may take less what a read keeps and `MESSAGE_ROOM`, and half a request less what a row of the widest table takes beside its values | 4,194,304 | 33,306,271 | 64 MiB |
   | json push bytes | a third of what pushes may take | 3,698,142 | 29,360,128 | 64 MiB |
   | cursor bytes | the cursors' share over twice one more than the partitions, which a quarter of the log's holds | 15,538 | 123,361 | 4 MiB |
   | dictionary bytes | half of what a read keeps | 264,152 | 2,097,152 | 64 MiB |
@@ -113,10 +113,12 @@ budget before it is held, or bounded by a limit with a typed refusal.
     A table's first frame in the log, its schema, is reserved from the log's share until the
     log appends it. A table wider than a schema may be is refused where the source pushes it,
     and, across pushes, at the schema change that would make it so (ADR 0041).
-  - **Dictionaries.** The sender and the decoder hold dictionaries to the limit by one
-    function of the wire crate, `held_bytes`, what the decoder lays out rounded up to 64
-    bytes; the sender counts what its receiver holds from every batch since the last schema,
-    and a batch whose dictionaries would pass it is refused before it is sent.
+  - **Dictionaries.** The sender and the decoder hold dictionaries to the limit by one count of
+    the wire crate: a dictionary's frame, header and body, and `MESSAGE_ROOM` beside it, at least
+    the allocation a receiver holds it in. The sender counts what its receiver holds from every
+    batch since the last schema, and a batch whose dictionaries would pass it is refused before
+    it is sent. A log frame's dictionaries, which lie in the frame a replay reserves whole, count
+    their frames alone.
 
   Rows, values and nesting are not the budget's: a batch is lowered a piece at a time,
   whatever it holds. Where a wire default is above what the budget admits, the derived value is
@@ -283,8 +285,9 @@ budget before it is held, or bounded by a limit with a typed refusal.
     bytes, a dictionary's values apart. The emitter's admission and the bytes a write reports
     use it.
   - *What does holding this keep alive?* `cost::Allocations`: each allocation once. For a batch
-    decoded from a frame it equals the decoder's `Shape::held_bytes` and the dictionaries its
-    keys name, which a test holds it to.
+    decoded from a frame it equals the decoder's `Shape::held_bytes`, the allocation the frame
+    arrived in, and the allocations of the dictionaries its keys name, which a test holds it to;
+    the decoder's count of those dictionaries is at least that.
   - *What do these rows become?* `Rendering::expanded` and `Rendering::measure` before their
     table is known, and `Rendering::lowering` once it is, whose `Measure::piece` says where a
     piece of that size ends. A cut of this kind bounds what the engine lowers at once; the
