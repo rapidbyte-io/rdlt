@@ -1,5 +1,5 @@
 use rdlt_wire::Limits;
-use rdlt_wire::limits::{Class, MIN_DICTIONARY_BYTES, MIN_FRAME_BYTES};
+use rdlt_wire::limits::{Class, MESSAGE_ROOM, MIN_DICTIONARY_BYTES, MIN_FRAME_BYTES};
 
 use super::{admitted, kept, least, row_overhead};
 use crate::budget::Shares;
@@ -14,7 +14,8 @@ fn the_default_budget_admits_these_limits() {
         limits,
         Limits {
             // Half the 64 MiB a request for lowering takes, less a row's nulls and metadata in
-            // a table of every column it may have.
+            // a table of every column it may have: that binds, not the 80 MiB pushes may take
+            // beside what a read keeps and a message's room.
             frame_bytes: 32 * MIB - 7_489 * 33 - 1_024,
             // A third of the 84 MiB pushes may take.
             json_push_bytes: 84 * MIB / 3,
@@ -39,8 +40,9 @@ fn the_default_budget_admits_these_limits() {
 #[test]
 fn the_least_memory_admits_these_limits() {
     assert_eq!(least(16), 33_811_576);
-    // One read keeps all of the reads' share, and a frame beside it fits what pushes may take.
-    assert_eq!(least(1), 53_687_073);
+    // One read keeps all of the reads' share, and a frame and its message's room beside it fit
+    // what pushes may take.
+    assert_eq!(least(1), 53_690_341);
     let limits = admitted(Shares::of(least(16)), 16);
     assert_eq!(
         (
@@ -91,11 +93,12 @@ fn what_each_limit_admits_all_at_once_fits_the_share_it_draws_on() {
         let what = format!("{capacity} bytes read by {readers}");
         let defaults = Limits::default();
         assert_eq!(limits.lesser(&defaults), limits, "{what}");
-        // A frame's batch, beside what a read keeps, fits what pushes may take; and one row of
-        // it, with a null in every column its table may have and its metadata, fits what a row
-        // may take where the load keeps a log.
+        // A frame's message, at most its frame and MESSAGE_ROOM, beside what a read keeps, fits
+        // what pushes may take; one row of it, with a null in each column and the metadata, fits
+        // what a row may take where the load keeps a log.
+        let message = limits.frame_bytes.saturating_add(MESSAGE_ROOM);
         assert!(
-            limits.frame_bytes.saturating_add(kept) <= shares.intake.max(kept),
+            limits.frame_bytes == 0 || message.saturating_add(kept) <= shares.intake.max(kept),
             "{what}"
         );
         let row = limits
