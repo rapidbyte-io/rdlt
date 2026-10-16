@@ -263,3 +263,42 @@ replay.
 The deterministic count is `a_replay_reads_each_chunk_once_and_its_batch_frames_once_more`
 (`crates/rdlt-engine/src/wal/scan/tests.rs`): every chunk of a replayed log is read as many bytes
 as one scan of it takes, and each of its batch frames once more.
+
+### Frames laid out for reading in place
+
+A replay now decodes each batch frame where the local store read it: the store reads a range into
+an allocation that starts on a 64-byte address, the log's padding lays every buffer at its
+alignment from the frame's first byte, and the decoder reads the buffers there instead of laying
+them out again. The read into an aligned allocation, measured alone, made replay 2–4 % slower; the
+question was whether replay, with relocation gone, recovers it, and whether logging stays as it
+was.
+
+Four rounds on 2026-10-16 by the method above, this change at `3585bc1f` against main at
+`c990b7d1`, each side built beforehand and run under the timed lock, at one-minute load averages of
+1.24 to 1.44 before each side's run. The first two ran every case, main first in the first and this
+change first in the second; the last two ran `wal/engine/tmpfs/*` and `wal/replay/*` alone, this
+change first in each. Each time is the median of the rounds' point estimates, their range in
+brackets.
+
+| Case | Rounds | Main | This change | Change |
+|---|---|---|---|---|
+| `wal/encode/1MiB` | 2 | 0.75 ms [0.74–0.76] | 0.79 ms [0.76–0.82] | +6 %, ranges apart |
+| `wal/encode/7MiB` | 2 | 6.22 ms [6.21–6.23] | 4.33 ms [4.02–4.64] | −30 %, ranges apart |
+| `wal/engine/disk/16` | 2 | 220 ms [219–222] | 217 ms [214–220] | −1 %, ranges overlap |
+| `wal/engine/disk/each` | 2 | 636 ms [632–640] | 644 ms [644–644] | +1 %, ranges apart |
+| `wal/engine/disk/once` | 2 | 177 ms [174–180] | 179 ms [179–179] | +1 %, ranges overlap |
+| `wal/engine/tmpfs/16` | 4 | 104 ms [86–129] | 99 ms [96–125] | −5 %, ranges overlap |
+| `wal/engine/tmpfs/each` | 4 | 122 ms [112–142] | 127 ms [124–137] | +4 %, ranges overlap |
+| `wal/engine/tmpfs/once` | 4 | 96 ms [93–143] | 93 ms [88–99] | −3 %, ranges overlap |
+| `wal/engine/tmpfs/tight` | 4 | 120 ms [110–124] | 114 ms [110–117] | −5 %, ranges overlap |
+| `wal/replay/disk/chunks` | 4 | 575 ms [548–607] | 562 ms [531–649] | −2 %, ranges overlap |
+| `wal/replay/disk/one` | 4 | 614 ms [570–640] | 614 ms [578–650] | 0 %, ranges overlap |
+| `wal/replay/tmpfs/chunks` | 4 | 549 ms [520–612] | 531 ms [504–562] | −3 %, ranges overlap |
+| `wal/replay/tmpfs/one` | 4 | 536 ms [479–617] | 540 ms [531–597] | +1 %, ranges overlap |
+
+Replay is within its spread of main in every case: decoding in place pays back what the read into
+an aligned allocation costs. Logging is within its spread at every root and
+cadence; `wal/engine/disk/each`'s ranges are apart by 4 ms in two rounds of 636 ms, 1 %. The
+encode cases write a frame and read none of it, and this change leaves them as they were: their
+runs fall at a fast or a slow time from run to run, as `wal/encode/7MiB` did on main before it,
+and here this change's runs fell fast at 7 MiB and main's at 1 MiB.

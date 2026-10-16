@@ -724,14 +724,140 @@ those in which the process had at least half the samples of its busiest second.
   connection task holds 0.37 of a core in user mode and at most 0.68 with all system time
   counted, so it is not what limits the destination.
 
-## Relocation and the arriving copy
+## Frames decoded where they arrive
 
-A served destination copies each batch frame twice in user space as it arrives. `Bounded` gathers
-the arriving message into one buffer, the room growing as it arrives, and relocation then lays each
-buffer out at the alignment its column's type needs, so that Arrow copies none to align it (ADR
-0038). The question was whether dropping `Bounded`'s copy would pay, with relocation kept as the one
-copy: `Bounded` would keep a message as the transport's chunks, and relocation would gather from
-them.
+A served destination copies each batch frame once in user space as it arrives: `Bounded` gathers
+the arriving message into one allocation, 64-byte aligned, and the decoder reads every buffer
+where it lies, refusing a frame whose buffer is off the alignment its column's type needs (ADR
+0038). Until this change it copied twice: relocation then laid each buffer out again at its
+alignment, so that Arrow copied none, and the 2026-10-10 profile under "The copies before" found
+relocation a third of the receive stage. The question was whether reading in place, with
+relocation deleted, pays on production's placement, the connectors spawned over a socket.
+
+The rule set before measuring: keep the change only if, with the connectors apart,
+`served/process/socket/both/*` moves at least 10 % more MB/s or the spawned destination takes at
+least 15 % less CPU a GB, and no case is more than 3 % slower than main.
+
+Intel Core Ultra X7 358H, mains power, 2026-10-16, this change at `3585bc1f` against main at
+`c990b7d1`, governor `powersave` with energy preference `performance`, each side built
+beforehand and run under the measurement lock, the host on CPUs 0–3:
+
+- **Apart.** The connectors' processes on CPUs 4–11:
+  `just bench served 0-3 '^served/process/socket/(destination|source|both)/(64x80000|512x10000)$' 4-11`.
+  Two rounds, main first in the first and this change first in the second. They stopped at two:
+  both moved every `both` case the same way by more than their spread.
+- **Sharing cores.** The same with the connectors on CPUs 0–3, three rounds, main first in the
+  first and third.
+
+The one-minute load average was 1.26–1.48 before each side's run and up to 3.04 after it, the
+bench's own threads. Each figure is the median of the rounds and their range, with 1 GiB taken as
+1 073.74 MB.
+
+Apart:
+
+| Case | Main, MB/s | This change, MB/s | Change |
+|---|---|---|---|
+| `source/64x80000` | 2 251 (2 203–2 299) | 2 624 (2 494–2 754) | +16.6 % |
+| `source/512x10000` | 2 678 (2 665–2 691) | 2 811 (2 755–2 866) | +5.0 % |
+| `destination/64x80000` | 1 718 (1 711–1 726) | 2 195 (2 079–2 311) | +27.7 % |
+| `destination/512x10000` | 4 547 (4 482–4 612) | 4 452 (4 261–4 643) | −2.1 % |
+| `both/64x80000` | 1 344 (1 269–1 420) | 1 776 (1 754–1 799) | +32.1 % |
+| `both/512x10000` | 3 109 (2 877–3 341) | 3 372 (3 219–3 525) | +8.5 % |
+
+| CPU s a GB, median (range) | Main | This change | Change |
+|---|---|---|---|
+| `destination/64x80000`, destination | 0.740 (0.739–0.742) | 0.583 (0.569–0.597) | −21.3 % |
+| `destination/64x80000`, host (the bench's process) | 0.398 (0.389–0.408) | 0.377 (0.357–0.397) | −5.4 % |
+| `destination/64x80000`, all | 1.135 (1.130–1.141) | 0.961 (0.929–0.993) | −15.4 % |
+| `destination/512x10000`, destination | 0.464 (0.458–0.470) | 0.403 (0.389–0.418) | −13.0 % |
+| `destination/512x10000`, host (the bench's process) | 0.305 (0.302–0.308) | 0.309 (0.302–0.317) | +1.5 % |
+| `destination/512x10000`, all | 0.768 (0.760–0.777) | 0.712 (0.692–0.733) | −7.3 % |
+| `both/64x80000`, destination | 0.868 (0.827–0.909) | 0.632 (0.613–0.651) | −27.2 % |
+| `both/64x80000`, host (the bench's process) | 1.042 (0.965–1.118) | 0.800 (0.795–0.804) | −23.2 % |
+| `both/64x80000`, source | 0.576 (0.548–0.604) | 0.544 (0.528–0.560) | −5.6 % |
+| `both/64x80000`, all | 2.502 (2.340–2.665) | 1.947 (1.907–1.987) | −22.2 % |
+| `both/512x10000`, destination | 0.479 (0.468–0.490) | 0.407 (0.386–0.428) | −15.0 % |
+| `both/512x10000`, host (the bench's process) | 0.495 (0.486–0.505) | 0.456 (0.431–0.480) | −8.1 % |
+| `both/512x10000`, source | 0.461 (0.452–0.470) | 0.470 (0.451–0.489) | +2.0 % |
+| `both/512x10000`, all | 1.435 (1.399–1.472) | 1.338 (1.275–1.401) | −6.8 % |
+
+Sharing cores:
+
+| Case | Main, MB/s | This change, MB/s | Change |
+|---|---|---|---|
+| `source/64x80000` | 2 020 (1 914–2 022) | 2 255 (1 720–2 292) | +11.7 % |
+| `source/512x10000` | 3 051 (3 023–3 141) | 3 267 (2 758–3 488) | +7.1 % |
+| `destination/64x80000` | 1 774 (1 556–1 777) | 2 137 (1 437–2 158) | +20.4 % |
+| `destination/512x10000` | 3 293 (3 041–3 308) | 3 715 (3 205–3 758) | +12.8 % |
+| `both/64x80000` | 1 171 (1 109–1 238) | 1 338 (855–1 450) | +14.2 % |
+| `both/512x10000` | 2 133 (2 038–2 136) | 2 284 (2 082–2 358) | +7.1 % |
+
+| CPU s a GB, median (range) | Main | This change | Change |
+|---|---|---|---|
+| `destination/64x80000`, destination | 0.658 (0.656–0.663) | 0.523 (0.520–0.771) | −20.5 % |
+| `destination/64x80000`, host (the bench's process) | 0.403 (0.399–0.483) | 0.389 (0.386–0.534) | −3.5 % |
+| `destination/64x80000`, all | 1.057 (1.051–1.142) | 0.926 (0.910–1.305) | −12.4 % |
+| `destination/512x10000`, destination | 0.447 (0.445–0.450) | 0.386 (0.383–0.440) | −13.6 % |
+| `destination/512x10000`, host (the bench's process) | 0.332 (0.329–0.339) | 0.328 (0.326–0.370) | −1.2 % |
+| `destination/512x10000`, all | 0.778 (0.773–0.785) | 0.714 (0.709–0.810) | −8.2 % |
+| `both/64x80000`, destination | 0.658 (0.657–0.671) | 0.495 (0.482–0.747) | −24.8 % |
+| `both/64x80000`, host (the bench's process) | 1.105 (1.029–1.182) | 1.021 (0.919–1.436) | −7.6 % |
+| `both/64x80000`, source | 0.393 (0.388–0.400) | 0.377 (0.375–0.552) | −4.1 % |
+| `both/64x80000`, all | 2.143 (2.077–2.239) | 1.900 (1.788–2.730) | −11.3 % |
+| `both/512x10000`, destination | 0.435 (0.431–0.438) | 0.381 (0.361–0.417) | −12.4 % |
+| `both/512x10000`, host (the bench's process) | 0.606 (0.596–0.609) | 0.557 (0.539–0.621) | −8.1 % |
+| `both/512x10000`, source | 0.324 (0.321–0.326) | 0.318 (0.314–0.349) | −1.9 % |
+| `both/512x10000`, all | 1.359 (1.352–1.368) | 1.261 (1.216–1.390) | −7.2 % |
+
+The first round sharing cores ran this change's side disturbed: every case of it was slower than
+main's and took up to two fifths more CPU a GB, `both/64x80000` at 855 MB/s, while the third
+round, in the same order, and the second agree with each other and with the rounds apart. Its
+figures stay in the medians and ranges above.
+
+One profile on the `just profiling served` build, `$bin`, 15 seconds, the connectors apart:
+
+```
+RDLT_BENCH_CONNECTOR_CORES=4-11 perf record -e task-clock -c 1000000 --call-graph fp -- \
+  taskset -c 0-3 "$bin" --bench '^served/process/socket/both/64x80000$' --profile-time 15
+```
+
+A sample is one millisecond of a thread's user-mode CPU. The decode is every sample whose stack
+holds the decoder's reading of a frame's batch; the destination's processes are those whose
+samples hold it on the served write's side.
+
+| | Host (the bench's process) | Spawned destination | Spawned source |
+|---|---|---|---|
+| Samples | 3 667 | 1 719 | 7 588 |
+| Decode, of the process | 6.9 % | 23.0 % | 0 |
+| Arrow's UTF-8 validation, of the decode | | 84.8 % | |
+| Relocation | 0 | 0 | 0 |
+| `libc` leaf under the decode | 1 | 2 | 0 |
+
+The spawned destination's receive stage, the served write's receiving of frames, is 56.1 % of its
+samples, against 66.7 % in the destination case on 2026-10-10: the decode 41 % of it, Arrow's
+validation most of that, and `Bounded`'s gathering copy the 58 % whose leaf is `libc`. The three
+`libc` leaves under the decode are the allocator's, under Arrow's building of an array's data, not a
+copy of a body.
+
+- **Against the rule.** Apart, `both/64x80000` moves 32.1 % more MB/s and its destination takes
+  27.2 % less CPU a GB; `both/512x10000` 8.5 % more and 15.0 % less. Both pass, by MB/s or by
+  the destination's CPU. The slowest case is `destination/512x10000` apart, 2.1 % slower than
+  main within ranges that overlap, against the 3 % allowed. The change stays.
+- **CPU.** Every spawned destination takes 12–27 % less CPU a GB, apart or sharing cores. The
+  host, which decodes what a served source reads, takes up to 23 % less and at most 1.5 % more;
+  the sources are within 6 % either way.
+- **What is left.** `Bounded`'s gathering copy is the one copy of an arriving frame, and a
+  frame's decode is Arrow's validation of it, its UTF-8 most of all and its dictionary keys'
+  bounds.
+
+### The copies before
+
+Before this change, a served destination copied each batch frame twice in user space as it
+arrived. `Bounded` gathered the arriving message into one buffer, the room growing as it arrived,
+and relocation then laid each buffer out at the alignment its column's type needs, so that Arrow
+copied none to align it. The question then was whether dropping `Bounded`'s copy would pay, with
+relocation kept as the one copy: `Bounded` would keep a message as the transport's chunks, and
+relocation would gather from them.
 
 The rule set before measuring: build it only if, profiled on `served/socket/destination/64x80000`
 on CPUs 4–11, both hold: relocation plus `Bounded`'s copy are at least 15 % of the receive stage's
@@ -793,7 +919,7 @@ The bench round, with 1 GiB taken as 1 073.74 MB: in one process 1 567 MB/s (1.4
 destination's), the destination's process 1.528 CPUs busy (1.422–1.620), 2.03 busy overall at 0.83
 instructions a cycle.
 
-### Kernel time
+#### Kernel time
 
 User-mode samples miss the receive stage's page faults, the only kernel time known for it: it makes
 no system call of its own. The process is 2.01 CPUs busy by `perf stat` against 1.18 user cores
