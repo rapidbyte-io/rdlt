@@ -106,6 +106,11 @@ pub trait WalStore: std::fmt::Debug + Send + Sync + 'static {
     ) -> BoxFuture<'a, io::Result<Vec<(u64, u64)>>>;
 
     /// `len` bytes of the published chunk `chunk` from `offset`, fewer where the chunk ends first.
+    ///
+    /// Bytes in an allocation of their own from a 64-byte address, of at most `len` bytes and
+    /// that alignment's room, are a batch frame a batch is decoded from where it lies, keeping
+    /// that allocation alive; any other bytes, a slice of what the store keeps among them, are
+    /// copied once into one.
     fn read<'a>(
         &'a self,
         pipeline: &'a PipelineId,

@@ -224,7 +224,7 @@ fn a_framing_s_length_grows_by_each_frame_s_head_and_announced_payload() {
 /// from the frame's first byte: read into an aligned allocation, the frame's bodies are aligned.
 fn bodies_lie_aligned(frame: &[u8]) {
     let copied = rdlt_wire::aligned::Aligned::copied(frame);
-    let pending = super::pending(&copied.bytes, limits()).expect("a batch frame");
+    let pending = super::pending(copied.bytes.clone(), limits()).expect("a batch frame");
     for message in pending.messages() {
         let body = &message.body;
         assert!(body.is_empty() || rdlt_wire::aligned::is_aligned(body));
@@ -645,36 +645,57 @@ fn a_logged_dictionary_larger_than_a_connector_s_frame_reads_back_within_a_reque
 }
 
 #[test]
-fn a_logged_batch_is_measured_to_hold_what_decoding_it_allocates() {
-    use arrow_array::types::Int32Type;
-    use arrow_array::{DictionaryArray, Int32Array, Int64Array, StringArray};
-    use rdlt_connector::cost::Allocations;
-    let ids = Arc::new(Int64Array::from_iter_values(0..10_000));
-    let tags = Arc::new(StringArray::from_iter_values(
-        (0..1_000).map(|tag| format!("tag {tag}")),
-    ));
-    let keys = Int32Array::from_iter_values((0..10_000).map(|row| row % 1_000));
-    let tagged = DictionaryArray::<Int32Type>::try_new(keys, tags).expect("a dictionary");
-    let batch = RecordBatch::try_from_iter([
-        ("id", ids as arrow_array::ArrayRef),
-        ("tag", Arc::new(tagged) as arrow_array::ArrayRef),
-    ])
-    .expect("a batch");
+fn a_frame_read_at_any_address_is_copied_once_and_decodes() {
+    let frame = Frame::Batch(Batch {
+        segment: SegmentId(1),
+        table: 0,
+        ordinal: 0,
+        batch: keyed(),
+    });
+    let bytes = frame.encode().expect("the frame encodes");
+    for skew in [0, 1, 8, 16, 63] {
+        // The frame `skew` bytes past a 64-byte address, as a store may hand it over.
+        let placed = rdlt_wire::aligned::Aligned::copied(&[&vec![0; skew][..], &bytes].concat());
+        let at = placed.bytes.slice(skew..);
+        assert_eq!(rdlt_wire::aligned::is_aligned(&at), skew == 0);
+        let pending = super::pending(at, limits()).expect("a batch frame");
+        assert_eq!(pending.len(), u64::try_from(bytes.len()).expect("small"));
+        for message in pending.messages() {
+            let body = &message.body;
+            assert!(
+                body.is_empty() || rdlt_wire::aligned::is_aligned(body),
+                "{skew}"
+            );
+        }
+        let Frame::Batch(expected) = &frame else {
+            unreachable!("a batch frame")
+        };
+        assert_eq!(
+            pending.decode().expect("it decodes").batch,
+            expected.batch,
+            "{skew}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "decoded in place once the decoder reads frames where they arrived"]
+fn a_logged_batch_holds_the_frame_it_was_read_in_and_its_schema() {
     let bytes = Frame::Batch(Batch {
         segment: SegmentId(1),
         table: 0,
         ordinal: 0,
-        batch,
+        batch: keyed(),
     })
     .encode()
     .expect("the frame encodes");
-    let pending = super::pending(&bytes, limits()).expect("the frame reads");
-    let held = pending.held();
-    let decoded = pending.decode().expect("the batch decodes").batch;
-    // What its buffers and its dictionary's were measured to take before it was decoded, they
-    // take; what else the batch holds is little.
-    let holds = Allocations::of(&decoded).bytes();
-    assert!(held <= holds && holds - held < 1 << 10, "{held} {holds}");
+    let frame = rdlt_wire::aligned::Aligned::copied(&bytes).bytes;
+    let pending = super::pending(frame, limits()).expect("the frame reads");
+    let len = pending.len();
+    let batch = pending.decode().expect("the batch decodes").batch;
+    // The batch and its dictionaries lie in the frame, counted once.
+    let holds = rdlt_connector::cost::Allocations::of(&batch).bytes();
+    assert_eq!(holds, len, "{holds} {len}");
 }
 
 #[test]

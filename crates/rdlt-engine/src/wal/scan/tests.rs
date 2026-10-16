@@ -366,16 +366,12 @@ async fn a_log_scans_back_to_what_its_load_wrote() {
             let read_batch = batch(store.as_ref(), &pipeline(), *located, limits())
                 .await
                 .expect("the batch reads");
-            let held = read_batch.held();
+            // The frame read is exactly what the scan found, which its batch is held in.
+            assert_eq!(read_batch.len(), located.len, "{located:?}");
             let decoded = read_batch.decode().expect("the batch decodes");
-            // What its buffers were measured to take before it was decoded, they take, its
-            // values' bytes at least; what else the batch holds is little.
             let values = u64::try_from(decoded.num_rows() * size_of::<i64>()).expect("a few bytes");
             let holds = Allocations::of(&decoded).bytes();
-            assert!(
-                values <= held && held <= holds && holds - held < 1 << 10,
-                "{held} {holds}: {located:?}"
-            );
+            assert!(values <= holds, "{holds}: {located:?}");
             read.push((segment.0, located.table, decoded));
         }
     }

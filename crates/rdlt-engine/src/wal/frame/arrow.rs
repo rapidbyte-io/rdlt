@@ -95,12 +95,10 @@ fn garbled(what: &dyn std::fmt::Display) -> Error {
     Error::internal(format!("a write-ahead log batch does not decode: {what}"))
 }
 
-/// A batch's messages, checked and measured but not decoded: what decoding them holds is known
-/// before it is made.
+/// A batch's messages, checked but not decoded.
 pub(crate) struct Measured {
     decoder: Decoder,
     frames: Vec<IpcFrame>,
-    held: u64,
 }
 
 impl Measured {
@@ -108,11 +106,6 @@ impl Measured {
     #[cfg(test)]
     pub(super) fn frames(&self) -> &[IpcFrame] {
         &self.frames
-    }
-
-    /// Bytes: what decoding the batch allocates, its dictionaries included.
-    pub(crate) fn held(&self) -> u64 {
-        self.held
     }
 
     /// The batch.
@@ -125,35 +118,37 @@ impl Measured {
     }
 }
 
-/// The batch `data` holds, within `limits`, measured: its messages are `data`'s bytes, never a
-/// copy of them.
-pub(super) fn measured(mut data: Bytes, limits: Limits) -> Result<Measured, Error> {
+/// The batch `data` holds, a slice of `frame`, within `limits`, checked: its messages are
+/// `data`'s bytes, never a copy of them, and lie in `frame`.
+pub(super) fn measured(mut data: Bytes, frame: &Bytes, limits: Limits) -> Result<Measured, Error> {
     let mut decoder = Decoder::new(limits);
     decoder
         .schema(&take(&mut data)?)
         .map_err(|error| garbled(&error))?;
     let count = count(&mut data)?;
-    let (mut frames, mut held) = (Vec::new(), 0_u64);
+    let mut frames = Vec::new();
     for _ in 0..count {
-        let frame = IpcFrame::new(take(&mut data)?, take(&mut data)?);
-        let bytes = decoder.held(&frame).map_err(|error| garbled(&error))?;
-        held = held.saturating_add(bytes);
-        frames.push(frame);
+        let (header, body) = (take(&mut data)?, take(&mut data)?);
+        let message = IpcFrame {
+            header,
+            body,
+            allocation: frame.clone(),
+        };
+        // Checked before anything is decoded, as a receiver checks what arrives.
+        decoder.held(&message).map_err(|error| garbled(&error))?;
+        frames.push(message);
     }
     if data.has_remaining() {
         return Err(garbled(&"bytes follow its last message"));
     }
-    Ok(Measured {
-        decoder,
-        frames,
-        held,
-    })
+    Ok(Measured { decoder, frames })
 }
 
 /// The batch `data` holds, within `limits`.
 #[cfg(test)]
 pub(super) fn decode(data: Bytes, limits: Limits) -> Result<RecordBatch, Error> {
-    measured(data, limits)?.decode()
+    let frame = data.clone();
+    measured(data, &frame, limits)?.decode()
 }
 
 pub(super) fn length(len: usize) -> Result<u32, Error> {
