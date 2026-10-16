@@ -679,7 +679,6 @@ fn a_frame_read_at_any_address_is_copied_once_and_decodes() {
 }
 
 #[test]
-#[ignore = "decoded in place once the decoder reads frames where they arrived"]
 fn a_logged_batch_holds_the_frame_it_was_read_in_and_its_schema() {
     let bytes = Frame::Batch(Batch {
         segment: SegmentId(1),
@@ -689,13 +688,19 @@ fn a_logged_batch_holds_the_frame_it_was_read_in_and_its_schema() {
     })
     .encode()
     .expect("the frame encodes");
-    let frame = rdlt_wire::aligned::Aligned::copied(&bytes).bytes;
-    let pending = super::pending(frame, limits()).expect("the frame reads");
-    let len = pending.len();
+    let frozen = rdlt_wire::aligned::Aligned::copied(&bytes);
+    let pending = super::pending(frozen.bytes, limits()).expect("the frame reads");
+    assert_eq!(pending.len(), u64::try_from(bytes.len()).expect("small"));
     let batch = pending.decode().expect("the batch decodes").batch;
-    // The batch and its dictionaries lie in the frame, counted once.
+    // The batch and its dictionaries lie in the frame's allocation, counted once, beside the
+    // schema.
     let holds = rdlt_connector::cost::Allocations::of(&batch).bytes();
-    assert_eq!(holds, len, "{holds} {len}");
+    let schema = rdlt_connector::cost::schema_bytes(&batch.schema());
+    let allocation = u64::try_from(frozen.allocation.len()).expect("small");
+    assert!(
+        allocation <= holds && holds <= allocation + schema,
+        "{holds} {allocation} {schema}"
+    );
 }
 
 #[test]

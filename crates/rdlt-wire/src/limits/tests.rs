@@ -1,4 +1,4 @@
-use super::{CONTROL_STRING_BYTES, FRAME_BYTES, Limit, Limits, Refusal, count};
+use super::{CONTROL_STRING_BYTES, FRAME_BYTES, Limit, Limits, MESSAGE_ROOM, Refusal, count};
 use crate::v1;
 
 #[test]
@@ -100,7 +100,8 @@ fn the_default_limits_are_the_protocols() {
             control_string_bytes: 65_536,
             batch_values: 67_108_864,
             schema_bytes: 4_194_304,
-            dictionary_bytes: 67_108_864,
+            // A frame's bytes and its message's room.
+            dictionary_bytes: 67_109_120,
             catalog_bytes: 4_194_304,
             state_bytes: 16_777_216,
             control_message_bytes: 262_144,
@@ -290,17 +291,18 @@ fn dictionaries_and_staged_frames_are_bounded_in_frames() {
         frame_bytes: 10,
         ..Limits::default()
     };
+    // A frame's worth of dictionaries is its bytes and its message's room.
     assert_eq!(
         (limits.held_dictionary_bytes(), limits.staged_bytes()),
-        (10, 40)
+        (10 + MESSAGE_ROOM, 40)
     );
-    assert_eq!(limits.admit_dictionaries(10), Ok(()));
+    assert_eq!(limits.admit_dictionaries(10 + MESSAGE_ROOM), Ok(()));
     assert_eq!(
-        limits.admit_dictionaries(11),
+        limits.admit_dictionaries(11 + MESSAGE_ROOM),
         Err(Refusal {
             field: Limit::DictionaryBytes,
-            limit: 10,
-            actual: 11,
+            limit: 10 + MESSAGE_ROOM,
+            actual: 11 + MESSAGE_ROOM,
         })
     );
     assert_eq!(limits.admit_staged(40), Ok(()));
@@ -325,7 +327,10 @@ fn dictionaries_and_staged_frames_are_bounded_in_frames() {
     };
     assert_eq!(unlimited.admit_staged(u64::MAX), Ok(()));
     assert_eq!(unlimited.admit_dictionaries(u64::MAX), Ok(()));
-    assert_eq!(Limits::default().held_dictionary_bytes(), 64 << 20);
+    assert_eq!(
+        Limits::default().held_dictionary_bytes(),
+        (64 << 20) + MESSAGE_ROOM
+    );
     assert_eq!(Limits::default().staged_bytes(), 256 << 20);
 }
 

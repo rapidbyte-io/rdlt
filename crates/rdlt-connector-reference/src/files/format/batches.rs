@@ -115,8 +115,8 @@ fn unfit(batch: &RecordBatch, limits: &Limits) -> Result<Option<ConnectorError>>
 /// Bytes: what a frame holds besides its message and its body, their prefix and padding.
 const FRAMING: u64 = 128;
 
-/// The bytes a reader under `limits` holds the frame `encoded` in, or the limit it refuses it for:
-/// by its bytes in the file, or as `decoder` measures it.
+/// The bytes a reader under `limits` counts the frame `encoded` as, or the limit it refuses it
+/// for: by its bytes in the file, or as `decoder` measures it.
 ///
 /// # Errors
 ///
@@ -140,7 +140,7 @@ fn measured(decoder: &Decoder, encoded: EncodedData, limits: &Limits) -> Result<
         Bytes::from(encoded.ipc_message),
         Bytes::from(encoded.arrow_data),
     );
-    match decoder.held(&frame) {
+    match decoder.measure(&frame) {
         Ok(held) => Ok(Ok(held)),
         Err(WireError::Refused(refusal)) => Ok(Err(ConnectorError::from(refusal))),
         Err(error) => Err(refused(error)),

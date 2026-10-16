@@ -6,6 +6,7 @@ use arrow_array::{ArrayRef, DictionaryArray, RecordBatch, StringArray};
 use bytes::{BufMut, Bytes, BytesMut};
 use rdlt_connector::wire::v1;
 use rdlt_connector::{Admission, BoxFuture, Permit, Push, SourceEvent, admitted_partition_channel};
+use rdlt_wire::limits::MESSAGE_ROOM;
 use rdlt_wire::prost::Message as _;
 use rdlt_wire::prost::encoding::{WireType, encode_key, encode_varint};
 use rdlt_wire::{Decoder, Encoder, Limits};
@@ -145,10 +146,12 @@ fn schema_frame(encoder: &mut Encoder, batch: &RecordBatch, epoch: u64) -> v1::R
     }
 }
 
+/// The frames of `batch`, each body held as a receiver holds it.
 fn batch_frames(encoder: &mut Encoder, batch: &RecordBatch, epoch: u64) -> Vec<v1::ReadFrame> {
     let frames = encoder.batch(batch).expect("the batch encodes");
     frames
-        .into_iter()
+        .iter()
+        .map(rdlt_wire::IpcFrame::aligned)
         .map(|frame| v1::ReadFrame {
             frame: Some(v1::read_frame::Frame::Batch(v1::BatchFrame {
                 schema_epoch: epoch,
@@ -252,11 +255,12 @@ fn batches_of_a_schema_sent_again_before_each_keep_one_schema_alive() {
     assert!(schema >= 960_000);
     let (mut reader, mut encoder) = (reader(), Encoder::default());
     let mut kept = Allocations::default();
-    let mut pushes = Vec::new();
+    let (mut pushes, mut framed) = (Vec::new(), 0);
     for epoch in 1..=200 {
         let read = reader.event(schema_frame(&mut encoder, &batch, epoch), Bytes::new());
         assert!(matches!(read, Ok(Read::Nothing)));
         for frame in batch_frames(&mut encoder, &batch, epoch) {
+            framed += frame.encoded_len() + usize::try_from(MESSAGE_ROOM).expect("small");
             let Ok(Read::Event(SourceEvent::Push(Push::Arrow(decoded)))) =
                 reader.event(frame, Bytes::new())
             else {
@@ -273,10 +277,12 @@ fn batches_of_a_schema_sent_again_before_each_keep_one_schema_alive() {
             .iter()
             .all(|push| Arc::ptr_eq(&push.schema(), &first))
     );
-    // Two hundred batches keep one schema alive between them, and a few bytes each.
+    // Two hundred batches keep one schema alive between them, and each the message it arrived
+    // in.
+    let framed = u64::try_from(framed).expect("a size");
     assert!(
-        kept.bytes() < schema + (200 << 10),
-        "{} bytes",
+        kept.bytes() < schema + framed,
+        "{} bytes, {framed} of frames",
         kept.bytes()
     );
     // Each is still charged for the schema it holds, shared or not.

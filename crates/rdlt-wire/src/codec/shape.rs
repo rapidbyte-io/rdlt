@@ -1,6 +1,6 @@
 //! Checks a frame's shape against its schema before Arrow reads it: its buffers are ordered,
-//! disjoint and padded, each long enough for its node, its nodes and buffers are exactly those
-//! its columns need, and its values and the bytes its views name are within the limits.
+//! disjoint and within its body, each long enough for its node, its nodes and buffers are exactly
+//! those its columns need, and its values and the bytes its views name are within the limits.
 
 mod layout;
 #[cfg(test)]
@@ -22,26 +22,32 @@ pub struct Shape {
     pub values: u64,
     /// Bytes: what the frame's views name in their data buffers, counted once a view.
     pub view_bytes: u64,
-    /// Bytes: the allocation holding the frame's buffers, which what is decoded from it shares.
+    /// Bytes: the allocation the frame arrived in, which what is decoded from it keeps alive;
+    /// none for an empty body.
     pub held_bytes: u64,
 }
 
-/// A buffer of a frame's body, and the alignment Arrow needs of it.
+/// A buffer of a frame's body as Arrow reads it, and the alignment its type needs.
 #[derive(Clone, Copy, Debug)]
-pub(super) struct Placed<'a> {
-    /// The buffer's bytes.
-    pub(super) bytes: &'a [u8],
+pub(super) struct Span {
+    /// Bytes: where it starts in the body.
+    pub(super) offset: usize,
+    /// Bytes: how long Arrow reads it; none under a run-end column of no values.
+    pub(super) length: usize,
     /// The alignment its column's type needs: a power of two.
     pub(super) alignment: usize,
 }
 
 /// A frame's nodes and buffers in order, and what it holds.
-pub(super) struct Walked<'a> {
+pub(super) struct Walked {
     /// Every node the frame describes, as Arrow is to read it: those under a run-end column of
     /// no values hold none.
     pub(super) nodes: Vec<FieldNode>,
     /// Every buffer the frame describes; those under a run-end column of no values are empty.
-    pub(super) placed: Vec<Placed<'a>>,
+    pub(super) spans: Vec<Span>,
+    /// Whether the walk emptied a run-end column of no values: Arrow reads its nodes and buffers
+    /// as the walk does, not as the frame describes them.
+    pub(super) emptied: bool,
     /// The values its nodes and list views declare.
     pub(super) values: u64,
     /// The bytes its views name.
@@ -54,13 +60,13 @@ pub(super) struct Walked<'a> {
 ///
 /// A [`WireError`] when the message's shape is not one its columns have, or it holds more than
 /// `limits` allow.
-pub(super) fn walk<'a, 't>(
+pub(super) fn walk<'t>(
     frame: Frame,
     batch: RecordBatch<'_>,
     types: impl IntoIterator<Item = &'t DataType>,
-    body: &'a [u8],
+    body: &[u8],
     limits: &Limits,
-) -> Result<Walked<'a>, WireError> {
+) -> Result<Walked, WireError> {
     let mut walk = Walk {
         frame,
         body,
@@ -71,7 +77,8 @@ pub(super) fn walk<'a, 't>(
         unread: 0,
         end: 0,
         read: Vec::new(),
-        placed: Vec::new(),
+        spans: Vec::new(),
+        emptied: false,
         values: 0,
         view_bytes: 0,
     };
@@ -88,7 +95,8 @@ pub(super) fn walk<'a, 't>(
     }
     Ok(Walked {
         nodes: walk.read,
-        placed: walk.placed,
+        spans: walk.spans,
+        emptied: walk.emptied,
         values: walk.values,
         view_bytes: walk.view_bytes,
     })
@@ -116,7 +124,9 @@ struct Walk<'a, 'm, 'l> {
     end: u64,
     /// The nodes so far, as Arrow is to read them.
     read: Vec<FieldNode>,
-    placed: Vec<Placed<'a>>,
+    spans: Vec<Span>,
+    /// Whether a node under a run-end column of no values was emptied.
+    emptied: bool,
     values: u64,
     view_bytes: u64,
 }
@@ -150,6 +160,7 @@ impl<'a> Walk<'a, '_, '_> {
         } else {
             FieldNode::new(0, 0)
         });
+        self.emptied |= self.unread > 0;
         let (length, nulls) = (node.length(), node.null_count());
         let counted = u64::try_from(length)
             .ok()
@@ -169,10 +180,10 @@ impl<'a> Walk<'a, '_, '_> {
         })
     }
 
-    /// The next buffer's bytes: after the buffer before it, padded, within the body and of at
-    /// least `needed` bytes.
+    /// The next buffer's bytes: after the buffer before it, within the body and of at least
+    /// `needed` bytes.
     fn buffer(&mut self, needed: u64, alignment: usize) -> Result<&'a [u8], WireError> {
-        let index = self.placed.len();
+        let index = self.spans.len();
         let Some(buffer) = self.buffers.next() else {
             return Err(self.malformed(Problem::Missing { part: Part::Buffer }));
         };
@@ -190,13 +201,11 @@ impl<'a> Walk<'a, '_, '_> {
                 body,
             }));
         };
+        let start = usize::try_from(offset).unwrap_or(usize::MAX);
         let (offset, length) = (offset.unsigned_abs(), crate::limits::count(bytes.len()));
         if offset < self.end {
             let end = self.end;
             return Err(self.malformed(Problem::BufferOverlaps { index, offset, end }));
-        }
-        if offset % 8 != 0 {
-            return Err(self.malformed(Problem::BufferUnaligned { index, offset }));
         }
         if length < needed {
             return Err(self.malformed(Problem::BufferTooShort {
@@ -206,9 +215,9 @@ impl<'a> Walk<'a, '_, '_> {
             }));
         }
         self.end = offset.saturating_add(length);
-        let kept = if self.unread == 0 { bytes } else { &[] };
-        self.placed.push(Placed {
-            bytes: kept,
+        self.spans.push(Span {
+            offset: start,
+            length: if self.unread == 0 { bytes.len() } else { 0 },
             alignment,
         });
         Ok(bytes)

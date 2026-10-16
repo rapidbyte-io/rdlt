@@ -1,5 +1,5 @@
 //! Decodes one receiver's frames: a schema, bounded and validated once, then batches in it, each
-//! checked as a whole before Arrow reads it.
+//! checked as a whole before Arrow reads it where it arrived.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -12,11 +12,11 @@ use bytes::Bytes;
 
 use super::IpcFrame;
 use super::contain::contained;
+use super::in_place;
 use super::measure::{Columns, measured, message, unexpected};
-use super::relocate::{held_bytes, relocated};
 use super::shape::Shape;
 use crate::error::{Frame, Problem, WireError};
-use crate::limits::Limits;
+use crate::limits::{Limits, MESSAGE_ROOM, count};
 
 /// Decodes the frames one sender sends, within `limits`.
 #[derive(Debug)]
@@ -26,12 +26,17 @@ pub struct Decoder {
     /// The schema message `columns` came from.
     message: Option<Bytes>,
     dictionaries: HashMap<i64, ArrayRef>,
-    /// The bytes of the allocation each dictionary held was decoded into, by its id.
+    /// The bytes each dictionary held counts, its frame and the room beside it, by its id: at
+    /// least the allocation it keeps alive.
     held: HashMap<i64, u64>,
+    /// Bytes: what a frame's message may take beside its header and body in the allocation it
+    /// arrives in, which a dictionary decoded from it keeps alive.
+    room: u64,
 }
 
 impl Decoder {
-    /// A decoder enforcing `limits`, before any schema.
+    /// A decoder enforcing `limits`, before any schema, of frames each in a message of its own,
+    /// which may take [`MESSAGE_ROOM`] beside it.
     pub fn new(limits: Limits) -> Self {
         Self {
             limits,
@@ -39,11 +44,27 @@ impl Decoder {
             message: None,
             dictionaries: HashMap::new(),
             held: HashMap::new(),
+            room: MESSAGE_ROOM,
         }
     }
 
-    /// Bytes: the allocations of the dictionaries held, which batches decoded from now on share
-    /// and whoever charges a budget charges while the decoder lives.
+    /// A decoder of frames that lie in one allocation their reader reserves whole, as a log
+    /// frame's do: each dictionary counts its frame's bytes alone.
+    pub fn sharing(limits: Limits) -> Self {
+        Self {
+            room: 0,
+            ..Self::new(limits)
+        }
+    }
+
+    /// The limits it decodes within.
+    pub fn limits(&self) -> &Limits {
+        &self.limits
+    }
+
+    /// Bytes: what the dictionaries held count, at least the allocations they keep alive, which
+    /// batches decoded from now on share and whoever charges a budget charges while the decoder
+    /// lives.
     pub fn dictionary_bytes(&self) -> u64 {
         self.held.values().copied().fold(0, u64::saturating_add)
     }
@@ -100,15 +121,17 @@ impl Decoder {
         self.shaped(frame).map(|(batch, _)| batch)
     }
 
-    /// Bytes: the allocation decoding `frame` would make, measured without making it, so a
-    /// receiver can reserve it first.
+    /// Checks `frame` as [`Decoder::frame`] does before decoding it, and returns what it counts
+    /// toward the dictionaries a receiver holds: its header and body, and the room beside them
+    /// in the message it arrives in.
     ///
     /// # Errors
     ///
-    /// As [`Decoder::frame`], for every check made before anything is copied.
-    pub fn held(&self, frame: &IpcFrame) -> Result<u64, WireError> {
-        let measured = measured(self.columns.as_ref(), &self.limits, frame)?;
-        Ok(held_bytes(&measured.walked))
+    /// As [`Decoder::frame`], for every check made before Arrow reads anything but where its
+    /// buffers lie.
+    pub fn measure(&self, frame: &IpcFrame) -> Result<u64, WireError> {
+        measured(self.columns.as_ref(), &self.limits, frame)?;
+        Ok(counted(frame, self.room))
     }
 
     /// Decodes `frame` as [`Decoder::frame`] does, and measures what it holds.
@@ -119,23 +142,34 @@ impl Decoder {
     pub fn shaped(&mut self, frame: &IpcFrame) -> Result<(Option<RecordBatch>, Shape), WireError> {
         let measured = measured(self.columns.as_ref(), &self.limits, frame)?;
         let malformed = |problem| WireError::malformed(measured.frame, problem);
+        let body = in_place::body(frame);
+        // Before Arrow reads anything: a buffer off its alignment is a broken sender's.
+        if let Some(problem) = in_place::misaligned(&body, &measured.walked.spans) {
+            return Err(malformed(problem));
+        }
         let shape = Shape {
             values: measured.walked.values,
             view_bytes: measured.walked.view_bytes,
-            held_bytes: held_bytes(&measured.walked),
+            held_bytes: in_place::held(frame),
         };
+        let counted = counted(frame, self.room);
         if let Some(id) = measured.dictionary {
-            // Counted before anything is copied: a dictionary replaces any of its id.
-            admit_dictionary(&self.limits, &self.held, id, shape.held_bytes)?;
+            // Counted before it is decoded: a dictionary replaces any of its id.
+            admit_dictionary(&self.limits, &self.held, id, counted)?;
         }
-        let relocated = relocated(measured.batch, &measured.walked);
-        let batch = relocated
-            .batch()
-            .ok_or_else(|| malformed(Problem::NotAMessage))?;
+        let rewritten = measured
+            .walked
+            .emptied
+            .then(|| in_place::rewritten(measured.batch, &measured.walked));
+        let batch = match &rewritten {
+            Some(message) => flatbuffers::root::<arrow_ipc::RecordBatch<'_>>(message)
+                .map_err(|_| malformed(Problem::NotAMessage))?,
+            None => measured.batch,
+        };
         let dictionaries = &self.dictionaries;
         let decoded = contained(measured.frame, || {
             RecordBatchDecoder::try_new(
-                &relocated.body,
+                &body,
                 batch,
                 measured.columns,
                 dictionaries,
@@ -149,10 +183,18 @@ impl Decoder {
         };
         if let Some(values) = decoded.columns().first() {
             self.dictionaries.insert(id, Arc::clone(values));
-            self.held.insert(id, shape.held_bytes);
+            self.held.insert(id, counted);
         }
         Ok((None, shape))
     }
+}
+
+/// Bytes: what `frame` counts toward the dictionaries a receiver holds, its header and body and
+/// `room` beside them, at least the allocation a receiver holds it in.
+pub(crate) fn counted(frame: &IpcFrame, room: u64) -> u64 {
+    count(frame.header.len())
+        .saturating_add(count(frame.body.len()))
+        .saturating_add(room)
 }
 
 /// Admits a dictionary of id `id` that takes `bytes` beside `held`, the dictionaries a receiver

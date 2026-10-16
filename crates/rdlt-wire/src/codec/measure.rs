@@ -47,7 +47,7 @@ pub(super) struct Measured<'a> {
     /// The schema of its columns: the batch's, or a dictionary's values as one column.
     pub(super) columns: SchemaRef,
     /// Its buffers, and what it holds.
-    pub(super) walked: Walked<'a>,
+    pub(super) walked: Walked,
 }
 
 /// Measures `frame`, a batch or dictionary frame in the schema of `columns`.

@@ -59,13 +59,19 @@ pub enum Problem {
         /// Where the buffer before it ends.
         end: u64,
     },
-    /// A buffer's offset is not a multiple of eight, the padding of the IPC format.
-    #[error("buffer {index} at offset {offset} is not padded to eight bytes")]
+    /// A buffer does not lie at the alignment its type needs, or at the format's eight bytes,
+    /// where its frame arrived.
+    #[error(
+        "buffer {index} at offset {offset} of the body does not lie at a multiple of {alignment} \
+         bytes, where it must be read in place"
+    )]
     BufferUnaligned {
         /// The buffer's position among the message's buffers.
         index: usize,
-        /// Its offset.
+        /// Its offset in the body.
         offset: u64,
+        /// The alignment it needs: its type's, and eight at least.
+        alignment: usize,
     },
     /// A buffer is shorter than the values its node declares need.
     #[error("buffer {index} of {length} bytes is shorter than the {needed} its node needs")]

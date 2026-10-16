@@ -61,6 +61,12 @@ fn a_block_padded_to_eight_is_relaid_with_every_buffer_at_a_multiple_of_64_and_d
         .map(arrow_ipc::Buffer::offset)
         .collect::<Vec<_>>();
     assert!(offsets.iter().any(|offset| offset % 16 == 8), "{offsets:?}");
+    let mut decoder = Decoder::new(Limits::default());
+    decoder.schema(&schema).expect("the schema");
+    assert!(
+        decoder.frame(frame).is_err(),
+        "the decoder refuses it in place"
+    );
     let relaid = relaid(frame, &Limits::default()).expect("relaid");
     assert!(is_aligned(&relaid.body));
     let message = arrow_ipc::root_as_message(&relaid.header).expect("a message");
@@ -75,8 +81,6 @@ fn a_block_padded_to_eight_is_relaid_with_every_buffer_at_a_multiple_of_64_and_d
             0
         );
     }
-    let mut decoder = Decoder::new(Limits::default());
-    decoder.schema(&schema).expect("the schema");
     assert_eq!(decoder.frame(&relaid).expect("it decodes"), Some(batch));
 }
 

@@ -283,3 +283,31 @@ pub(crate) fn without_runs() -> Vec<ArrayRef> {
         parent.slice(2, 0),
     ]
 }
+
+/// A one-byte column ahead of a sixteen-byte one: padded to eight bytes, the sixteen-byte values
+/// lie eight past a multiple of sixteen.
+pub(crate) fn odd_decimals() -> RecordBatch {
+    let small: ArrayRef = Arc::new(Int8Array::from(vec![Some(1), None, Some(3)]));
+    let large: ArrayRef = Arc::new(arrow_array::Decimal128Array::from(vec![
+        Some(1),
+        None,
+        Some(3),
+    ]));
+    RecordBatch::try_from_iter([("a", small), ("b", large)]).unwrap()
+}
+
+/// Lists of no items of a run-end encoded column: Arrow's writer describes a run ending at zero
+/// for the unused items, which its own reader refuses.
+pub(crate) fn empty_runs() -> RecordBatch {
+    use arrow_array::{Int32Array, ListArray, RunArray};
+    let runs =
+        RunArray::<Int32Type>::try_new(&vec![2, 5].into(), &Int32Array::from(vec![7, 8])).unwrap();
+    let item = Arc::new(Field::new("item", runs.data_type().clone(), true));
+    let lists = ListArray::new(
+        item,
+        OffsetBuffer::from_lengths([0, 0, 0]),
+        Arc::new(runs),
+        None,
+    );
+    RecordBatch::try_from_iter([("l", Arc::new(lists) as ArrayRef)]).unwrap()
+}

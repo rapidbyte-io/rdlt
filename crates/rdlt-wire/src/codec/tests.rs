@@ -17,9 +17,10 @@ use proptest::prelude::*;
 use rdlt_testkit::drawn::values;
 use rdlt_testkit::drawn::{Drawn, Scalar, array, field};
 
+use super::decode::counted;
 use super::{Decoder, Encoder, IpcFrame, Shape};
 use crate::error::{Frame, Problem, WireError};
-use crate::limits::{Limit, Limits};
+use crate::limits::{Limit, Limits, MESSAGE_ROOM, count};
 
 /// The batch `drawn` describes.
 pub(crate) fn batch((columns, rows): &Drawn) -> RecordBatch {
@@ -55,17 +56,20 @@ fn crossed(batch: &RecordBatch) -> (RecordBatch, Shape) {
 }
 
 proptest! {
-    /// What a frame is measured to hold decoded, before anything is copied, is what decoding it
-    /// holds, a dictionary's frame among them.
+    /// What a frame counts toward the dictionaries is its header, body and room, measured or
+    /// decoded alike; what decoding it holds is the allocation it arrived in.
     #[test]
-    fn a_frame_is_measured_as_its_decoding_holds_it(drawn in values::drawn()) {
+    fn a_frame_is_measured_as_its_decoding_counts_it(drawn in values::drawn()) {
         let batch = batch(&drawn);
         let (mut encoder, mut decoder) = (Encoder::default(), Decoder::new(Limits::default()));
         decoder.schema(&encoder.schema(&batch.schema()).unwrap()).unwrap();
         for frame in encoder.batch(&batch).unwrap() {
-            let measured = decoder.held(&frame).unwrap();
+            let frame = frame.aligned();
+            let measured = decoder.measure(&frame).unwrap();
+            prop_assert_eq!(measured, counted(&frame, MESSAGE_ROOM));
             let (_, shape) = decoder.shaped(&frame).unwrap();
-            prop_assert_eq!(measured, shape.held_bytes);
+            let held = if frame.body.is_empty() { 0 } else { count(frame.allocation.len()) };
+            prop_assert_eq!(shape.held_bytes, held);
         }
     }
 }
@@ -200,6 +204,17 @@ fn a_dictionary_is_sent_once_per_schema_epoch_and_later_batches_use_it() {
         .unwrap();
     let frames = encoder.batch(&second).unwrap();
     assert_eq!(frames.len(), 2);
+}
+
+#[test]
+fn a_decoder_tells_the_limits_it_decodes_within() {
+    let limits = Limits {
+        frame_bytes: 4096,
+        batch_rows: 7,
+        ..Limits::default()
+    };
+    assert_eq!(Decoder::new(limits).limits(), &limits);
+    assert_eq!(Decoder::sharing(limits).limits(), &limits);
 }
 
 #[test]
@@ -671,8 +686,12 @@ fn dictionary_held(schema: &Bytes, frames: &[IpcFrame]) -> u64 {
     measuring.schema(schema).unwrap();
     assert_eq!(measuring.dictionary_bytes(), 0);
     let (_, shape) = measuring.shaped(&frames[0]).unwrap();
-    assert_eq!(measuring.dictionary_bytes(), shape.held_bytes);
-    shape.held_bytes
+    // A dictionary counts its frame and its message's room: at least the allocation it keeps
+    // alive.
+    let held = measuring.dictionary_bytes();
+    assert_eq!(held, counted(&frames[0], MESSAGE_ROOM));
+    assert!(held >= shape.held_bytes, "{held} {}", shape.held_bytes);
+    held
 }
 
 #[test]
@@ -682,11 +701,15 @@ fn the_dictionaries_a_decoder_holds_are_bounded_together() {
     let schema = encoder.schema(&batch.schema()).unwrap();
     let frames = encoder.batch(&batch).unwrap();
     assert_eq!(frames.len(), 4, "three dictionaries, then the batch");
-    let each = dictionary_held(&schema, &frames);
-    assert!(each >= 1_000);
-    // A frame limit, and so a dictionary limit, of two such dictionaries and of a byte less
-    // than three.
-    for limit in [2 * each, 3 * each - 1] {
+    assert!(dictionary_held(&schema, &frames) >= 1_000);
+    let each: Vec<u64> = frames[..3]
+        .iter()
+        .map(|frame| counted(frame, MESSAGE_ROOM))
+        .collect();
+    let (two, three) = (each[0] + each[1], each[0] + each[1] + each[2]);
+    // A frame limit, and so a dictionary limit of a frame and its message's room, of two such
+    // dictionaries and of a byte less than three.
+    for limit in [two - MESSAGE_ROOM, three - MESSAGE_ROOM - 1] {
         let limits = Limits {
             frame_bytes: limit,
             ..Limits::default()
@@ -695,19 +718,19 @@ fn the_dictionaries_a_decoder_holds_are_bounded_together() {
         decoder.schema(&schema).unwrap();
         assert_eq!(decoder.frame(&frames[0]).unwrap(), None);
         assert_eq!(decoder.frame(&frames[1]).unwrap(), None);
-        assert_eq!(decoder.dictionary_bytes(), 2 * each);
+        assert_eq!(decoder.dictionary_bytes(), two);
         let WireError::Refused(refusal) = decoder.frame(&frames[2]).unwrap_err() else {
             panic!("a third dictionary beyond the limit was no refusal");
         };
         assert_eq!(
             (refusal.field, refusal.limit, refusal.actual),
-            (Limit::DictionaryBytes, limit, 3 * each)
+            (Limit::DictionaryBytes, limit + MESSAGE_ROOM, three)
         );
         // The dictionary refused is not held.
-        assert_eq!(decoder.dictionary_bytes(), 2 * each);
+        assert_eq!(decoder.dictionary_bytes(), two);
     }
     let limits = Limits {
-        frame_bytes: 3 * each,
+        frame_bytes: three - MESSAGE_ROOM,
         ..Limits::default()
     };
     let mut decoder = Decoder::new(limits);
@@ -1141,7 +1164,7 @@ fn a_type_s_child_fields_are_the_fields_one_level_below_it_whatever_encodes_it()
 #[test]
 fn a_frame_s_message_may_take_its_room_beside_it_and_no_more() {
     let (header, body) = (Bytes::from_static(b"header"), Bytes::from(vec![1; 100]));
-    let room = usize::try_from(crate::limits::MESSAGE_ROOM).unwrap();
+    let room = usize::try_from(MESSAGE_ROOM).unwrap();
     let allocation = |extra: usize| Bytes::from(vec![0; header.len() + body.len() + extra]);
     let within = IpcFrame::arrived(header.clone(), body.clone(), allocation(room)).unwrap();
     assert_eq!(within.allocation.len(), header.len() + body.len() + room);
@@ -1153,7 +1176,7 @@ fn a_frame_s_message_may_take_its_room_beside_it_and_no_more() {
             WireError::Malformed {
                 frame: Frame::Batch,
                 problem: Problem::MessageRoom { extra },
-            } if extra == crate::limits::MESSAGE_ROOM + 1
+            } if extra == MESSAGE_ROOM + 1
         ),
         "{refused}"
     );
@@ -1178,4 +1201,27 @@ fn a_frame_aligned_holds_its_body_from_a_64_byte_address_in_an_allocation_of_its
         aligned.body.as_ptr_range(),
     );
     assert!(within.start <= body.start && body.end <= within.end);
+}
+
+proptest! {
+    /// A sender counts the dictionaries its receiver holds as the receiver counts them, and its
+    /// receiver admits every dictionary it sends.
+    #[test]
+    fn a_sender_and_its_receiver_count_dictionaries_alike(
+        columns in 1_usize..6, bytes in 1_usize..2_000, kib in 1_u64..16,
+    ) {
+        let batch = keyed(columns, bytes, "x");
+        let limits = Limits { dictionary_bytes: kib * 1_024, ..Limits::default() };
+        let mut encoder = Encoder::default();
+        let mut decoder = Decoder::new(limits);
+        decoder.schema(&encoder.schema(&batch.schema()).unwrap()).unwrap();
+        let mut cut = super::Cut::new(batch, limits);
+        while let Ok(Some(frames)) = encoder.piece(&mut cut) {
+            for frame in &frames {
+                decoder.frame(&frame.aligned()).unwrap();
+            }
+            let sent: u64 = encoder.held.values().sum();
+            prop_assert_eq!(decoder.dictionary_bytes(), sent);
+        }
+    }
 }

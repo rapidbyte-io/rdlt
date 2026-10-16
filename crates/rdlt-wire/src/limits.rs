@@ -51,7 +51,7 @@ pub const NESTING_DEPTH: u64 = 64;
 pub const SCHEMA_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Frames: the dictionaries one read or write holds at once take at most this many frames'
-/// bytes, each dictionary counted by the allocation its frame decoded into.
+/// bytes and their messages' room, each dictionary counted by its frame and the room beside it.
 pub const DICTIONARY_FRAMES: u64 = 1;
 
 /// Frames: one write stages at most this many frames' bytes between two flushes, which a
@@ -368,7 +368,7 @@ impl Default for Limits {
             control_string_bytes: CONTROL_STRING_BYTES,
             batch_values: BATCH_VALUES,
             schema_bytes: SCHEMA_BYTES,
-            dictionary_bytes: FRAME_BYTES * DICTIONARY_FRAMES,
+            dictionary_bytes: (FRAME_BYTES + MESSAGE_ROOM) * DICTIONARY_FRAMES,
             catalog_bytes: CATALOG_BYTES,
             state_bytes: STATE_BYTES,
             control_message_bytes: CONTROL_MESSAGE_BYTES,
@@ -440,9 +440,13 @@ impl Limits {
     }
 
     /// Bytes: bounds the dictionaries one read or write holds at once: [`DICTIONARY_FRAMES`]
-    /// frames' worth, or [`Limits::dictionary_bytes`] where that is less.
+    /// frames' worth with their messages' room, or [`Limits::dictionary_bytes`] where that is
+    /// less.
     pub fn held_dictionary_bytes(&self) -> u64 {
-        let frames = self.frame_bytes.saturating_mul(DICTIONARY_FRAMES);
+        let frames = self
+            .frame_bytes
+            .saturating_add(MESSAGE_ROOM)
+            .saturating_mul(DICTIONARY_FRAMES);
         frames.min(self.dictionary_bytes)
     }
 
