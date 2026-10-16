@@ -85,6 +85,12 @@ slow-timeout = { period = "30s", terminate-after = 2 }
 filter = "package(rdlt-engine) & binary(it) & test(=shredding::records_of_optional_fields_load_about_as_fast_as_records_of_all_of_them)"
 slow-timeout = { period = "30s", terminate-after = 2 }
 
+# Loading sparse JSON under any budget runs thirty-two loads of up to thirty-two partitions, each
+# pushing 600 records of a key each: some fifteen seconds alone, more on a shared runner.
+[[profile.mutants.overrides]]
+filter = "package(rdlt-engine) & binary(it) & test(=shredding::sparse_json_of_any_number_of_partitions_loads_under_any_budget)"
+slow-timeout = { period = "30s", terminate-after = 2 }
+
 # The log's tests of partitions loading at once run every load of a matrix through every way
 # receipts may come, one of them on the real clock.
 [[profile.mutants.overrides]]
