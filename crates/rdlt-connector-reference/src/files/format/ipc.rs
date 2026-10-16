@@ -40,7 +40,6 @@ pub(super) struct Block {
 pub(super) struct IpcFile {
     file: File,
     decoder: Decoder,
-    limits: Limits,
     schema: SchemaRef,
     batches: std::vec::IntoIter<Block>,
 }
@@ -75,7 +74,6 @@ impl IpcFile {
         let mut opened = Self {
             file,
             decoder,
-            limits,
             schema,
             batches: Vec::new().into_iter(),
         };
@@ -133,7 +131,7 @@ impl IpcFile {
                 problem: Problem::BufferUnaligned { .. },
                 ..
             }) => {
-                let relaid = relaid(&frame, &self.limits)?;
+                let relaid = relaid(&frame, self.decoder.limits())?;
                 self.decoder.frame(&relaid).map_err(refused)
             }
             decoded => decoded.map_err(refused),

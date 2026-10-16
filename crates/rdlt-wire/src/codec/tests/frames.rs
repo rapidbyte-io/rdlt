@@ -137,14 +137,32 @@ pub(crate) fn decoder(schema: &Schema, limits: Limits) -> Decoder {
     decoder
 }
 
-/// A decoder within `limits` that received `batch`'s schema, and the frames of `batch`.
+/// A decoder within `limits` that received `batch`'s schema, and the frames of `batch` as a
+/// receiver holds them.
 pub(crate) fn sent(batch: &RecordBatch, limits: Limits) -> (Decoder, Vec<IpcFrame>) {
-    let mut encoder = Encoder::default();
+    encoded(Encoder::default(), batch, limits)
+}
+
+/// As [`sent`], from an encoder padding buffers to eight bytes, as Arrow C++ and pyarrow do.
+pub(crate) fn padded_to_eight(batch: &RecordBatch) -> (Decoder, Vec<IpcFrame>) {
+    let options =
+        arrow_ipc::writer::IpcWriteOptions::try_new(8, false, MetadataVersion::V5).unwrap();
+    let encoder = Encoder {
+        options,
+        ..Encoder::default()
+    };
+    encoded(encoder, batch, Limits::default())
+}
+
+/// A decoder within `limits` that received `batch`'s schema from `encoder`, and the frames of
+/// `batch` as `encoder` makes them, each held as a receiver holds it.
+fn encoded(mut encoder: Encoder, batch: &RecordBatch, limits: Limits) -> (Decoder, Vec<IpcFrame>) {
     let mut decoder = Decoder::new(limits);
     decoder
         .schema(&encoder.schema(&batch.schema()).unwrap())
         .unwrap();
-    (decoder, encoder.batch(batch).unwrap())
+    let frames = encoder.batch(batch).unwrap();
+    (decoder, frames.iter().map(IpcFrame::aligned).collect())
 }
 
 /// The last of `frames` with its header's parts changed by `change`.

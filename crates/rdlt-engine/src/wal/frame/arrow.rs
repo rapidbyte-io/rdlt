@@ -121,7 +121,8 @@ impl Measured {
 /// The batch `data` holds, a slice of `frame`, within `limits`, checked: its messages are
 /// `data`'s bytes, never a copy of them, and lie in `frame`.
 pub(super) fn measured(mut data: Bytes, frame: &Bytes, limits: Limits) -> Result<Measured, Error> {
-    let mut decoder = Decoder::new(limits);
+    // Its messages lie in a frame a replay reserves whole: a dictionary counts its own bytes.
+    let mut decoder = Decoder::sharing(limits);
     decoder
         .schema(&take(&mut data)?)
         .map_err(|error| garbled(&error))?;
@@ -135,7 +136,7 @@ pub(super) fn measured(mut data: Bytes, frame: &Bytes, limits: Limits) -> Result
             allocation: frame.clone(),
         };
         // Checked before anything is decoded, as a receiver checks what arrives.
-        decoder.held(&message).map_err(|error| garbled(&error))?;
+        decoder.measure(&message).map_err(|error| garbled(&error))?;
         frames.push(message);
     }
     if data.has_remaining() {

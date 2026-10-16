@@ -8,13 +8,12 @@ mod tests;
 use arrow_array::RecordBatch;
 
 use super::compact::Narrower;
-use super::decode::admit_dictionary;
+use super::decode::{admit_dictionary, counted};
 use super::measure::measured;
-use super::relocate::held_bytes;
 use super::weigh::{Weigher, Weight};
 use super::{Encoder, IpcFrame};
 use crate::error::{Frame, WireError};
-use crate::limits::{Limit, Limits, Refusal};
+use crate::limits::{Limit, Limits, MESSAGE_ROOM, Refusal};
 
 /// A batch on its way to a receiver, and how far it has got.
 #[derive(Debug)]
@@ -231,7 +230,7 @@ impl Encoder {
             let measured = measured(self.columns.as_ref(), limits, &dictionary)?;
             // What the receiver holds of it, beside every other it holds until the next schema.
             if let Some(id) = measured.dictionary {
-                let bytes = held_bytes(&measured.walked);
+                let bytes = counted(&dictionary, MESSAGE_ROOM);
                 admit_dictionary(limits, &self.held, id, bytes)?;
                 self.held.insert(id, bytes);
             }

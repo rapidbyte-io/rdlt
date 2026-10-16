@@ -39,14 +39,6 @@ fn columns_sharing_one_buffer_are_refused() {
         .map(|column| Field::new(format!("c{column}"), DataType::Int64, false))
         .collect();
     let mut decoder = decoder(&Schema::new(fields), Limits::default());
-    // Misaligned for the column's type wherever the transport put the body.
-    assert_eq!(
-        problem(decoder.frame(&sharing(columns, [1, 2], 1 << 20))),
-        Problem::BufferUnaligned {
-            index: 1,
-            offset: 1
-        }
-    );
     assert_eq!(
         problem(decoder.frame(&sharing(columns, [8, 8], 1 << 20))),
         Problem::BufferOverlaps {
@@ -733,6 +725,7 @@ fn a_buffer_out_of_order_unpadded_or_outside_the_body_is_refused() {
             Problem::BufferUnaligned {
                 index: 1,
                 offset: 4,
+                alignment: 8,
             },
         ),
         (
@@ -740,6 +733,7 @@ fn a_buffer_out_of_order_unpadded_or_outside_the_body_is_refused() {
             Problem::BufferUnaligned {
                 index: 1,
                 offset: 65,
+                alignment: 8,
             },
         ),
     ];
