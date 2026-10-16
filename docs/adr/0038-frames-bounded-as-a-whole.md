@@ -56,19 +56,38 @@ log.
   frame's view columns, once a view. Views may share bytes, as a well-behaved sender's do after a
   take or a cast from a dictionary, but together no more than a frame may hold, so Arrow
   validates no more text than that. A list view names items within its child.
-- **The decoder copies a frame's buffers once, into one allocation of its own**, each at the
-  alignment its column's type needs, and Arrow reads them there with alignment required, so it
-  never copies a buffer to align it.
-  - The format pads to eight bytes; decimals of 128 and 256 bits and views need sixteen. A
-    sender padding to eight puts such a buffer where no copy of the body as it is aligns it, so
-    the buffers are laid out anew, and Arrow is handed a message describing them there.
-  - A transport hands a body over at any address. One path that always copies costs the same
-    whatever the address, and what is decoded holds that one allocation, of at most the body's
-    size, not the transport's message.
-  - `Decoder::shaped` returns a frame's `Shape` beside its batch: its values, the bytes its
-    views name, and the bytes of that allocation, for whoever charges the batch to a budget.
-    `held_bytes` is the batch's own allocation only: the dictionaries its keys name were decoded
-    from frames of their own and are held by the decoder, and by each batch that names them.
+- **The decoder reads a frame's buffers where they arrived, and refuses a frame whose buffers do
+  not lie at the alignment their types need.**
+  - Every sender lays a frame's body at a 64-byte offset of the allocation it arrives in, each
+    buffer padded to 64 within it, as Arrow's writer pads them: a batch's message carries `padding`
+    before `data_body` (ADR 0015), and the log pads each message's header in its frame (ADR 0045).
+    Every receiver holds what arrives from a first byte at a 64-byte address: `Bounded`'s room (ADR
+    0042), the files reader's blocks, and the log's reads, each in an allocation of its own: the
+    local log reads into one, and the object-store log copies each read once into one. A log frame a
+    store hands over elsewhere, or as a slice of what it keeps, as the in-memory log does, is copied
+    once into one of its own.
+  - Each buffer must lie, in memory, at a multiple of its type's alignment and of eight bytes. One
+    that does not is refused as `BufferUnaligned`, `malformed_frame`, before Arrow reads anything:
+    every sender rdlt ships aligns, so a peer that does not is broken. The decoder copies no buffer
+    to align it, and Arrow reads with alignment required, so it copies none either.
+  - The reference files reader alone lays buffers out again: a block another writer padded to eight
+    bytes, as Arrow C++ and pyarrow do, whose sixteen-byte values the decoder refused, is laid out
+    again with every buffer at a multiple of 64 bytes and decoded once more (ADR 0047).
+  - What is decoded keeps the allocation its frame arrived in alive, whole, and no path lets
+    that allocation hold more than the frame's charge counts:
+    - A data-plane message may take at most `MESSAGE_ROOM`, 256 bytes, beside its frame's header
+      and body, or the frame is refused (`MessageRoom`), so a batch keeps alive at most its frame
+      and that room.
+    - A files block is read where it lies only where its allocation holds no more than that room
+      beside the block's message and body. A block that holds more, as one whose metadata a
+      writer padded far does, has its body copied into an allocation of its own, and a block laid
+      out again is the frame it is decoded as.
+    - A log batch keeps alive the log frame it was read in, every message of it, and less than
+      64 bytes beside it, which replay reserves whole (ADR 0045).
+  - `Decoder::shaped` returns a frame's `Shape` beside its batch: its values, the bytes its views
+    name, and `held_bytes`, the allocation's bytes, for whoever charges the batch to a budget.
+    `held_bytes` leaves out the dictionaries its keys name: they arrived in frames of their own
+    and are held by the decoder, and by each batch that names them.
 - **A sender cuts a batch a frame at a time, to the lesser of its receiver's limits and its
   own.** A served connector does so for what its source pushes, and the host for what the engine
   writes; the write-ahead log, whose limits are lifted, encodes a batch whole.
@@ -221,12 +240,16 @@ log.
     reach before the frame limit: booleans, nulls and the parents of nested columns, over many
     columns and rows;
   - views that name more than a frame's bytes between them;
-  - buffers out of order or padded to less than eight bytes, and messages of metadata version 4.
+  - buffers out of order, or not at their type's alignment where they arrived, and messages of
+    metadata version 4.
 - rdlt's senders never send the first two: they cut a batch to its receiver's limits (above).
 - A cut batch crosses at its logical size: bytes its rows share are sent for each piece that
   names them.
-- Each frame costs one copy of its buffers. The body is not kept: a decoded batch holds its own
-  allocation, of at most the body's size.
+- A frame on the wire or in the local log costs no copy beyond its transport's: a decoded batch
+  holds the allocation its message arrived in, header and room included. A sender padding to eight
+  bytes is refused; a files block so padded is copied once, as is one whose metadata is padded
+  beyond a message's room. The object-store log copies each read once, and the in-memory log each
+  batch frame read.
 - The wire does not bound what a dictionary or a run-end encoding multiplies: keys or runs that
   each name a large value. What a batch expands to is the cost model's to charge.
 - Left for the cost model, which charges what is held:

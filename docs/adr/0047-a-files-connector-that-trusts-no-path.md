@@ -65,12 +65,19 @@ when it is read and never written in a form its reader refuses.
   between the end of the schema message and the footer, each after the block listed before it,
   no block of either list sharing a byte with another, and each within the frame limit. The
   first message starts within the 64 bytes writers align to, behind zeros only.
-  The schema and each block are then decoded by `rdlt-wire`'s `Decoder` under its limits, with
-  its flatbuffers depth, so a schema nested to the limit reads back. A file is written only with
-  a schema those limits admit and in batches of about 8 MiB, each checked by the same decoder
-  before it is written. Compressed files, dictionary deltas and files from before Arrow 0.15
-  are refused.
-  The reference crate depends on `rdlt-wire` for the decoder, which `cargo xtask deps` allows.
+  The schema and each block are then decoded by `rdlt-wire`'s `Decoder` under its limits, with its
+  flatbuffers depth, so a schema nested to the limit reads back. Each block is read into an
+  allocation that starts at a 64-byte address and decoded where it lies, where that allocation holds
+  no more than a message's room beside the block's message and body; a block whose metadata a writer
+  padded further has its body copied into an allocation of its own first, so a dictionary keeps
+  alive no more than it is counted for. A block whose buffers do not lie at their types' alignment,
+  as in files Arrow C++ and pyarrow pad to eight bytes when they hold sixteen-byte values, is laid
+  out again with every buffer at a multiple of 64 bytes and decoded once more; those two are the
+  only copies the reader makes of a block, and the decoder checks its layout again. A buffer off the
+  format's eight bytes is refused as before. A file is written only with a schema those limits admit
+  and in batches of about 8 MiB, each checked by the same decoder before it is written. Compressed
+  files, dictionary deltas and files from before Arrow 0.15 are refused. The reference crate depends
+  on `rdlt-wire` for the decoder, which `cargo xtask deps` allows.
 - **JSON lines are read a bounded line at a time.** The source pushes lines as they are written
   (`max_line_bytes`, 32 MiB, per line; `batch_rows` records and 64 MiB per push), so the engine's
   shredder types them and no integer becomes a float; the source infers no schema. The

@@ -175,12 +175,14 @@ a local directory, and `ObjectStoreWal` in S3 and in stores that answer as S3 do
 
 ### Replay is charged
 
-Replay reserves each frame's bytes before it reads the frame, and before it decodes the frame's
-batch what the decoder will allocate for its buffers, which the wire's decoder measures without
-making it (`Decoder::held`); what else the batch holds is reserved once it is decoded. What a
-batch holds stays charged until the writer it went to flushes, and every writer flushes once the
-budget has no room for the next batch, as a lane does. A batch beyond what one request for
-lowering may take, logged under more memory than replays it, is refused as
+Replay reserves each frame's bytes and the alignment's room before it reads the frame, held with its
+batch: a replayed batch is decoded where its frame lies and keeps the frame alive. As much again is
+reserved while the frame is read and decoded, for a store that copies a frame once as it reads it,
+as the object-store log does, or hands it over at another address or as a slice of what it keeps, as
+the in-memory log does, where it is copied once; what else the batch holds is reserved once it is
+decoded. What a batch holds stays charged until the writer it went to flushes, and every writer
+flushes once the budget has no room for the next batch, as a lane does. A batch beyond what one
+request for lowering may take, logged under more memory than replays it, is refused as
 `replay_exceeds_budget`.
 
 ### Disk is bounded, and a full disk is retried

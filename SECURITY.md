@@ -211,7 +211,8 @@ buffers are disjoint and long enough for its values, its values and the bytes it
 within the limits, and a schema is measured before it is built. A frame that is not is refused
 with a typed error, `limit_exceeded` or `malformed_frame`. The message carrying a frame takes at
 most 256 bytes beside it, so a peer cannot make a decoded batch keep alive what its frame does
-not count.
+not count. Every buffer lies at its type's alignment where the frame arrived: a frame that does
+not is refused before Arrow reads it, and nothing is copied to align one.
 
 ## What the engine holds
 
