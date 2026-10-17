@@ -32,10 +32,15 @@ pub(super) fn is_json(field: &ArrowField) -> bool {
     Field::extension_type(field) == Some(LogicalType::Json)
 }
 
-/// Whether `field` holds text, not JSON.
+/// Whether `field` holds text, not JSON, as it is or under a dictionary or a run-end encoding.
 pub(super) fn holds_text(field: &ArrowField) -> bool {
+    let storage = match field.data_type() {
+        DataType::Dictionary(_, values) => values.as_ref(),
+        DataType::RunEndEncoded(_, values) => values.data_type(),
+        other => other,
+    };
     let text = matches!(
-        field.data_type(),
+        storage,
         DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View
     );
     text && !is_json(field)

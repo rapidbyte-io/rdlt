@@ -194,6 +194,39 @@ fn lowered(logical: &LogicalType) -> ArrowField {
         .with_metadata([(crate::LOGICAL_TYPE_KEY.to_owned(), named)].into())
 }
 
+/// How many encodings of text [`encodings`] gives.
+const ENCODINGS: usize = 5;
+
+/// `texts` in each encoding of text (plain; under a dictionary of `Int8` keys, of `Utf8` and of
+/// `LargeUtf8` values; and run-end encoded, over `Utf8` and `Utf8View` values), each with a field
+/// naming `logical`, the type its text was lowered from.
+fn encodings(texts: &[&str], logical: &LogicalType) -> [(ArrowField, ArrayRef); ENCODINGS] {
+    let count = texts.len();
+    let keys = || Int8Array::from_iter_values(0..i8::try_from(count).unwrap());
+    let runs = |values: &dyn Array| -> ArrayRef {
+        let ends = arrow_array::Int32Array::from_iter_values(1..=i32::try_from(count).unwrap());
+        Arc::new(arrow_array::RunArray::try_new(&ends, values).unwrap())
+    };
+    let plain = || StringArray::from(texts.to_vec());
+    let arrays: [ArrayRef; ENCODINGS] = [
+        Arc::new(plain()),
+        Arc::new(arrow_array::DictionaryArray::try_new(keys(), Arc::new(plain())).unwrap()),
+        Arc::new(
+            arrow_array::DictionaryArray::try_new(
+                keys(),
+                Arc::new(arrow_array::LargeStringArray::from(texts.to_vec())),
+            )
+            .unwrap(),
+        ),
+        runs(&plain()),
+        runs(&arrow_array::StringViewArray::from(texts.to_vec())),
+    ];
+    arrays.map(|array| {
+        let field = lowered(logical).with_data_type(array.data_type().clone());
+        (field, array)
+    })
+}
+
 #[test]
 fn text_lowered_from_a_type_becomes_the_json_of_a_value_of_that_type() {
     use crate::TimeUnit;
@@ -229,7 +262,7 @@ fn text_lowered_from_a_type_becomes_the_json_of_a_value_of_that_type() {
 }
 
 #[test]
-fn a_merged_row_keeps_the_type_its_text_was_lowered_from() {
+fn a_merged_row_keeps_the_type_its_text_was_lowered_from_whatever_encodes_the_text() {
     use super::super::{merge_sparse, read_back};
     let key = crate::MergeKey {
         columns: vec!["id".into()],
@@ -238,39 +271,60 @@ fn a_merged_row_keeps_the_type_its_text_was_lowered_from() {
         changes: None,
         history: None,
     };
-    let field = lowered(&LogicalType::Int16).with_name("n");
     let schema = Arc::new(arrow_schema::Schema::new(vec![
         ArrowField::new("id", DataType::Int64, false),
         ArrowField::new("n", DataType::Utf8, true),
         ArrowField::new("seq", DataType::Binary, false),
     ]));
-    let written = arrow_array::RecordBatch::try_new(
-        Arc::new(arrow_schema::Schema::new(vec![
-            ArrowField::new("id", DataType::Int64, false),
-            field,
-            ArrowField::new("seq", DataType::Binary, false),
-        ])),
-        vec![
-            Arc::new(Int64Array::from(vec![1])),
-            Arc::new(StringArray::from(vec!["4450"])),
-            Arc::new(BinaryArray::from_iter_values([[0_u8; 16]])),
-        ],
-    )
-    .unwrap();
-    let merged = merge_sparse(&schema, &[], &[], &[written], &key).unwrap();
     let widened = Arc::new(arrow_schema::Schema::new(vec![
         ArrowField::new("id", DataType::Int64, false),
         Field::new("n", LogicalType::Json, true).to_arrow(),
         ArrowField::new("seq", DataType::Binary, false),
     ]));
-    let read = read_back(&widened, &merged.rows).unwrap();
-    let held = read[0]
-        .column_by_name("n")
-        .unwrap()
-        .as_string::<i32>()
-        .value(0)
-        .to_owned();
-    assert_eq!(held, "4450");
+    for (field, texts) in encodings(&["4450"], &LogicalType::Int16) {
+        let kind = field.data_type().clone();
+        let written = arrow_array::RecordBatch::try_new(
+            Arc::new(arrow_schema::Schema::new(vec![
+                ArrowField::new("id", DataType::Int64, false),
+                field.with_name("n"),
+                ArrowField::new("seq", DataType::Binary, false),
+            ])),
+            vec![
+                Arc::new(Int64Array::from(vec![1])),
+                texts,
+                Arc::new(BinaryArray::from_iter_values([[0_u8; 16]])),
+            ],
+        )
+        .unwrap();
+        let merged = merge_sparse(&schema, &[], &[], &[written], &key).unwrap();
+        let read = read_back(&widened, &merged.rows).unwrap();
+        let held = read[0]
+            .column_by_name("n")
+            .unwrap()
+            .as_string::<i32>()
+            .value(0)
+            .to_owned();
+        assert_eq!(held, "4450", "the JSON number, from {kind}");
+    }
+}
+
+#[test]
+fn only_text_names_the_type_it_was_lowered_from_whatever_encodes_it() {
+    use super::{holds_text, rendered_from};
+    for (field, _) in encodings(&["1"], &LogicalType::Int16) {
+        assert!(holds_text(&field), "{field:?}");
+        assert!(rendered_from(&field).is_some(), "{field:?}");
+        // JSON is no text, however it is stored.
+        let json = Field::carrying_extension(field, &LogicalType::Json);
+        assert!(!holds_text(&json), "{json:?}");
+        assert!(rendered_from(&json).is_none(), "{json:?}");
+    }
+    let numbers = lowered(&LogicalType::Int16).with_data_type(DataType::Dictionary(
+        Box::new(DataType::Int8),
+        Box::new(DataType::Int64),
+    ));
+    assert!(!holds_text(&numbers));
+    assert!(rendered_from(&numbers).is_none());
 }
 
 /// The schema of the folding tests' table: an id and a text column.
@@ -301,6 +355,91 @@ fn rows(ids: Vec<i64>, logical: &LogicalType) -> arrow_array::RecordBatch {
 fn named(batch: &arrow_array::RecordBatch) -> Option<LogicalType> {
     let field = batch.schema_ref().field_with_name("n").unwrap().clone();
     Field::lowered_from(&field)
+}
+
+/// A row of `id` whose column `n` holds its id as text lowered from `logical`, in the
+/// `encoding`th of [`encodings`].
+fn encoded_row(id: i64, logical: &LogicalType, encoding: usize) -> arrow_array::RecordBatch {
+    let text = id.to_string();
+    let (field, texts) = encodings(&[text.as_str()], logical)
+        .into_iter()
+        .nth(encoding)
+        .expect("an encoding of that number");
+    arrow_array::RecordBatch::try_new(
+        Arc::new(arrow_schema::Schema::new(vec![
+            ArrowField::new("id", DataType::Int64, false),
+            field.with_name("n"),
+        ])),
+        vec![Arc::new(Int64Array::from(vec![id])), texts],
+    )
+    .unwrap()
+}
+
+/// Every row of `batches`, read back under the folding tests' table with `n` widened to `Json`:
+/// its id and the JSON text of its `n`, by id.
+fn read_as_json(batches: &[arrow_array::RecordBatch]) -> Vec<(i64, String)> {
+    let widened = Arc::new(arrow_schema::Schema::new(vec![
+        ArrowField::new("id", DataType::Int64, false),
+        Field::new("n", LogicalType::Json, true).to_arrow(),
+    ]));
+    let read = super::super::read_back(&widened, batches).unwrap();
+    let mut rows = Vec::new();
+    for batch in &read {
+        let ids = batch
+            .column(0)
+            .as_primitive::<arrow_array::types::Int64Type>();
+        let texts = batch.column(1).as_string::<i32>();
+        for row in 0..batch.num_rows() {
+            rows.push((ids.value(row), texts.value(row).to_owned()));
+        }
+    }
+    rows.sort_unstable();
+    rows
+}
+
+#[test]
+fn a_fold_keeps_the_type_encoded_text_was_lowered_from() {
+    use super::super::folded;
+    let int = LogicalType::Int16;
+    for encoding in 0..ENCODINGS {
+        let batches: Vec<_> = (1..=3).map(|id| encoded_row(id, &int, encoding)).collect();
+        // One batch stays whole, and the other two join.
+        let joined = folded(&folding(), batches, bound(2), 1 << 20).unwrap();
+        assert_eq!(joined.len(), 2, "encoding {encoding}");
+        assert!(
+            joined.iter().all(|batch| named(batch) == Some(int.clone())),
+            "encoding {encoding}"
+        );
+        let expected: Vec<_> = (1..=3).map(|id| (id, id.to_string())).collect();
+        assert_eq!(read_as_json(&joined), expected, "encoding {encoding}");
+    }
+}
+
+#[test]
+fn a_fold_joins_encodings_of_one_name_and_keeps_names_apart() {
+    use super::super::folded;
+    let (int, bool) = (LogicalType::Int16, LogicalType::Bool);
+    let batches: Vec<_> = (0..10_i64)
+        .map(|id| {
+            let logical = if id % 2 == 0 { &int } else { &bool };
+            encoded_row(id, logical, usize::try_from(id).unwrap() % ENCODINGS)
+        })
+        .collect();
+    let folded = folded(&folding(), batches, bound(4), 1 << 20).unwrap();
+    assert_eq!(folded.len(), 4);
+    let held: usize = folded.iter().map(arrow_array::RecordBatch::num_rows).sum();
+    assert_eq!(held, 10);
+    for batch in &folded {
+        let ids = batch
+            .column(0)
+            .as_primitive::<arrow_array::types::Int64Type>();
+        let even = ids.value(0) % 2 == 0;
+        assert!(ids.iter().all(|id| (id.unwrap() % 2 == 0) == even));
+        assert_eq!(
+            named(batch),
+            Some(if even { int.clone() } else { bool.clone() })
+        );
+    }
 }
 
 #[test]
