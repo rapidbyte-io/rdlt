@@ -125,9 +125,18 @@ Arrow columns and the rows normalizing makes of both escaped that in several way
   reads the batch as it arrived, and history hashes the columns as the table stores them. The
   values are read as a shredding job is, sure of its stack. A column of integers that JSON text is read
   into is not recorded exact (ADR 0026): its integers are read only as the plan lowers
-  them. Each value is observed once to fit it, and the join of the values that fit is kept to read
-  them; where the policy drops rows, the kept values are observed again and joined alone, since
-  a dropped string would turn a field of numbers into JSON, which keeps their text as sent. The
+  them. Each value is observed once to fit it, a token at a time with no document built, as the
+  column's type guides: a part the type holds as JSON is observed as JSON with nothing below it,
+  and a value no further than a key its struct lacks, or an object or array where its type holds
+  neither, since it then fits no column. An object repeating a key is refused as the value is
+  observed, and in a part held as JSON by a check that notes where each key of the objects open
+  starts in the text, four bytes a key, and reads the keys again to compare them. A part held as
+  JSON is read as the shredder reads a column of JSON: its text as written, an object with its
+  own keys and a number with its digits. The join of the values that fit is kept to read them;
+  where the policy drops rows, the kept values are observed again and joined alone, since a
+  dropped value can change the type the others are read into. Fitting a value holds no more than
+  twice its text and a hundred bytes for its nesting, beside an entry for each field of the
+  column's type the value names, no more than reading the value builds for that field. The
   cost model charges what reading takes: two null slots of the column's type a row, its null
   text where stored as text, and for each byte of text one more and two slots of the widest list
   item the type holds.
@@ -175,6 +184,9 @@ Arrow columns and the rows normalizing makes of both escaped that in several way
   its batch, what rendering a value of objects with one-byte keys could hold. A flush of
   records of megabytes whose column drifts to JSON takes that much more of a request, and may
   be refused, `json_exceeds_budget`, where it loaded before.
+- A struct's field of JSON in a split column stores its text as written, as a column of JSON
+  does: an object keeps its own keys, without nulls for the fields other values gave it, and a
+  number its digits, `1.50` as `1.50`.
 - Every JSON flush reserves the room its observations may hold beyond its text while it is
   observed, 5.6 MB at the default budget.
 - JSON records that held up to 10,000 columns in an object are refused past the derived limit.
