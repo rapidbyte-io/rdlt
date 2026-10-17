@@ -174,19 +174,20 @@ impl RemoteWriter {
         batch: RecordBatch,
     ) -> rdlt_connector::Result<()> {
         use v1::write_frame::Frame;
-        if self.schema.as_ref() != Some(&batch.schema()) {
-            self.schema = None;
+        let schema = batch.schema();
+        // Kept once every frame of the batch is sent: a write that fails or is dropped part way
+        // leaves the next to send its schema, and every dictionary after it, again.
+        let kept = self.schema.take();
+        if kept.as_ref() != Some(&schema) {
             let ipc_schema = self
                 .encoder
-                .schema(&batch.schema())
+                .schema(&schema)
                 .map_err(|error| frame_error(&error))?;
-            let schema = Frame::Schema(v1::WriteSchema {
+            let message = Frame::Schema(v1::WriteSchema {
                 version: self.version,
                 ipc_schema,
             });
-            // A schema that could not be sent is sent again with what is written next.
-            self.send(schema).await?;
-            self.schema = Some(batch.schema());
+            self.send(message).await?;
         }
         // A batch beyond what the connector takes or this end sends goes as several, each of the
         // same segment and encoded only once the piece before it was sent; a row beyond them is
@@ -194,14 +195,13 @@ impl RemoteWriter {
         let limits = self.connection.peer.lesser(&self.connection.options.limits);
         let mut cut = Cut::new(batch, limits);
         loop {
-            let frames = match self.encoder.piece(&mut cut) {
-                Ok(Some(frames)) => frames,
-                Ok(None) => return Ok(()),
-                Err(error) => {
-                    // What is written next starts a schema epoch of its own.
-                    self.schema = None;
-                    return Err(frame_error(&error));
-                }
+            let pieced = self
+                .encoder
+                .piece(&mut cut)
+                .map_err(|error| frame_error(&error))?;
+            let Some(frames) = pieced else {
+                self.schema = Some(schema);
+                return Ok(());
             };
             for frame in frames {
                 // The connector refuses more than it may stage between two flushes, so a frame
@@ -211,8 +211,7 @@ impl RemoteWriter {
                 let bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
                 let staged = self.staged.saturating_add(bytes);
                 if self.connection.peer.admit_staged(staged).is_err() {
-                    let flushed = self.flush_staged().await;
-                    let stats = flushed.inspect_err(|_| self.schema = None)?;
+                    let stats = self.flush_staged().await?;
                     self.flushed.rows = self.flushed.rows.saturating_add(stats.rows);
                     self.flushed.bytes = self.flushed.bytes.saturating_add(stats.bytes);
                 }
@@ -223,11 +222,7 @@ impl RemoteWriter {
                     padding: Bytes::new(),
                     data_body: frame.body,
                 });
-                if let Err(error) = self.send(batch).await {
-                    // The connector may not have the frames before this one either.
-                    self.schema = None;
-                    return Err(error);
-                }
+                self.send(batch).await?;
             }
             // Encoding a piece is work of its own: other tasks run before the next.
             tokio::task::yield_now().await;
