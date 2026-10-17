@@ -129,6 +129,13 @@ slow-timeout = { period = "30s", terminate-after = 2 }
 [profile.mutants-rdlt-engine]
 inherits = "mutants"
 
+# A mutant that grows a JSON value's text or keys while they have room doubles them on every
+# write. The tests that charge them to a small meter fail at once, so they run first: a test that
+# renders under a build's unbounded meter would run the machine out of memory before it failed.
+[[profile.mutants-rdlt-engine.overrides]]
+filter = "package(rdlt-engine) & test(/^shred::(keys|render)::tests::/)"
+priority = 2
+
 [[profile.mutants-rdlt-engine.overrides]]
 filter = "package(rdlt-engine)"
 priority = 1

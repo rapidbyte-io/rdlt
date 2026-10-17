@@ -55,12 +55,13 @@ fn keys_and_objects_charge_what_they_grow_by_before_they_grow() {
     let mut open = OpenKeys::default();
     open.open(&meter).unwrap();
     assert_eq!(meter.spent(), super::OBJECT_BYTES);
-    // Room for one key, then two, then four: each growth charged as it is made.
-    for start in 0..3 {
+    // Room for one key, then two, then four: each growth charged as it is made, and the fourth
+    // key takes the room the third made.
+    for start in 0..4 {
         open.key(start..start + 1, &meter).unwrap();
     }
     assert_eq!(meter.spent(), super::OBJECT_BYTES + 4 * super::KEY_BYTES);
-    assert_eq!(open.close("abc"), None);
+    assert_eq!(open.close("abcd"), None);
     // An object the meter has no room for is not opened.
     let tight = Meter::new(0);
     let mut refused = OpenKeys::default();
