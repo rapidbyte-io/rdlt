@@ -50,8 +50,6 @@ pub(super) struct Service {
     pub(super) connected: OnceCell<Configured>,
     /// The host served, where a listening connector accepted it by name.
     pub(super) host_name: Option<Arc<str>>,
-    /// The host's limits, which what this end sends must keep within.
-    pub(super) host: OnceCell<Limits>,
     pub(super) sessions: Sessions,
     /// Cancelled once the connection is stopping, which ends every heartbeat stream.
     pub(super) stopping: CancellationToken,
@@ -71,10 +69,19 @@ impl Service {
             host_name,
             agreed: OnceCell::new(),
             connected: OnceCell::new(),
-            host: OnceCell::new(),
             sessions: Sessions::holding(sessions),
             stopping,
         }
+    }
+
+    /// The limits what this end sends keeps within, once the handshake agreed them; the
+    /// protocol's defaults before.
+    pub(super) fn host(&self) -> Limits {
+        self.agreed
+            .get()
+            .copied()
+            .map(Agreed::host)
+            .unwrap_or_default()
     }
 
     fn connected(&self) -> Result<&Connected, Status> {
@@ -357,7 +364,7 @@ impl Plane for Service {
 
     fn read(&self, controls: Incoming<v1::ReadControl>) -> Serving<'_, v1::ReadFrame> {
         Box::pin(async move {
-            let host = self.host.get().copied().unwrap_or_default();
+            let host = self.host();
             let (frames, read) = read::serve(self.source()?, self.limits, host, controls).await?;
             // Where the read starts, and each checkpoint it sends, the host may report committed.
             let served = Arc::clone(&self.served);
@@ -367,10 +374,7 @@ impl Plane for Service {
     }
 
     fn read_published(&self, request: v1::ReadPublishedRequest) -> Serving<'_, v1::ReadFrame> {
-        Box::pin(async move {
-            let host = self.host.get().copied().unwrap_or_default();
-            self.probes().read_published(request, host)
-        })
+        Box::pin(async move { self.probes().read_published(request, self.host()) })
     }
 }
 

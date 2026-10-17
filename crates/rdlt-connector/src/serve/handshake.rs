@@ -14,13 +14,15 @@ use crate::error::{ConnectorError, ConnectorErrorKind};
 use crate::spec::ConnectContext;
 use crate::wire::v1;
 
-/// What a handshake agreed: the role to configure, and whether it accepted the role's probe for
+/// What a handshake agreed: the role to configure, whether it accepted the role's probe for
 /// certification (a destination reading back what it published, a source telling where it
-/// stands).
+/// stands), and the limits what this end sends keeps within.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Agreed {
     role: v1::Role,
     probed: bool,
+    /// The lesser of the host's limits and this end's own.
+    host: Limits,
 }
 
 impl Agreed {
@@ -31,6 +33,11 @@ impl Agreed {
             (true, v1::Role::Destination) => Some(rdlt_wire::PUBLISHED),
             _ => None,
         }
+    }
+
+    /// The limits what this end sends keeps within: the lesser of the host's and its own.
+    pub(super) fn host(self) -> Limits {
+        self.host
     }
 }
 
@@ -79,12 +86,16 @@ impl Service {
         host.admit_peer()
             .map_err(|shortfall| crate::wire::shortfall_error(&shortfall))?;
         let spec = self.spec(spec, None);
+        // What this end sends keeps within the host's limits and its own, agreed with the role.
+        let agreed = Agreed {
+            role,
+            probed,
+            host: host.lesser(&self.limits),
+        };
         // A handshake that ran beside this one agreed first.
-        if self.agreed.set(Agreed { role, probed }).is_err() {
+        if self.agreed.set(agreed).is_err() {
             return Err(repeated());
         }
-        // What this end sends keeps within the host's limits and its own.
-        let _ = self.host.set(host.lesser(&self.limits));
         Ok(spec)
     }
 
