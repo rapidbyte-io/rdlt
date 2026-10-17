@@ -199,6 +199,19 @@ fn a_value_the_shredder_refuses_or_that_repeats_a_key_fits_no_column() {
 }
 
 #[test]
+fn a_number_the_shredder_refuses_inside_a_part_held_as_json_fits_nothing() {
+    let column = struct_of(vec![Field::new("j", LogicalType::Json, true)]);
+    let far = format!("{{\"j\":1e{}}}", "9".repeat(19));
+    let values = [
+        Some(r#"{"j":1e400}"#),
+        Some(r#"{"j":[-1e400]}"#),
+        Some(far.as_str()),
+        Some(r#"{"j":1e300}"#),
+    ];
+    assert_eq!(fit(&values, &column), [false, false, false, true]);
+}
+
+#[test]
 fn values_nested_to_the_limit_are_fitted_and_read_on_a_small_stack() {
     let fitted = std::thread::Builder::new()
         .stack_size(256 << 10)
