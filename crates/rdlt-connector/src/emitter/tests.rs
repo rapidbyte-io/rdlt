@@ -1,5 +1,6 @@
 use std::num::NonZeroUsize;
 use std::sync::Arc;
+use std::time::Duration;
 
 use arrow_array::{ArrayRef, Int64Array, ListArray, NullArray, RecordBatch, StructArray};
 use arrow_buffer::OffsetBuffer;
@@ -285,7 +286,7 @@ async fn rows_that_fail_to_serialize_are_a_data_error() {
 
 #[tokio::test(start_paused = true)]
 async fn stopped_resolves_once_the_engine_asks_the_read_to_stop_or_goes() {
-    let within = std::time::Duration::from_secs(1);
+    let within = Duration::from_secs(1);
     let (out, feed) = emitter();
     let waiting = tokio::time::timeout(within, out.stopped()).await;
     assert!(waiting.is_err(), "nothing asked the read to stop yet");
@@ -387,4 +388,43 @@ async fn a_batch_too_wide_is_refused_as_schema_columns_in_process_and_on_the_wir
         Some("schema columns")
     );
     assert!(drain(out, feed).await.is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_checkpoint_retried_after_its_send_was_cancelled_answers_the_pending_barrier() {
+    const WAIT: Duration = Duration::from_secs(60);
+    let (sink, mut feed) = partition_channel(NonZeroUsize::MIN);
+    let mut out = Emitter::<u64>::new(sink, 7, false);
+    out.json(Bytes::from_static(b"[1]"))
+        .await
+        .expect("the push goes");
+    feed.request_checkpoint(1);
+    let waited = tokio::time::timeout(Duration::from_secs(1), out.checkpoint(&6)).await;
+    assert!(waited.is_err(), "the channel is full: the checkpoint waits");
+    assert!(out.checkpoint_due(), "the barrier is still pending");
+    let pushed = tokio::time::timeout(WAIT, feed.recv())
+        .await
+        .expect("the push arrives");
+    assert!(
+        matches!(pushed, Some(SourceEvent::Push(Push::Json(_)))),
+        "{pushed:?}"
+    );
+    tokio::time::timeout(WAIT, out.checkpoint(&6))
+        .await
+        .expect("the checkpoint is sent")
+        .expect("the checkpoint goes");
+    let sent = tokio::time::timeout(WAIT, feed.recv())
+        .await
+        .expect("the checkpoint arrives");
+    assert!(
+        matches!(
+            sent,
+            Some(SourceEvent::Checkpoint {
+                answers: Some(1),
+                ..
+            })
+        ),
+        "{sent:?}"
+    );
+    assert!(!out.checkpoint_due());
 }
