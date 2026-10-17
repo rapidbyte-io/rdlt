@@ -49,7 +49,7 @@ const OPEN: OFlags = OFlags::RDONLY
     .union(OFlags::NONBLOCK)
     .union(OFlags::NOCTTY);
 
-/// The most links a path is followed through, as many as the kernel follows.
+/// The most links a path is followed through, as many as Linux follows.
 const LINKS: usize = 40;
 
 impl Binary {
