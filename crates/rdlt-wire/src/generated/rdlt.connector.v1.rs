@@ -432,16 +432,17 @@ pub struct IdentifierRules {
     /// How it folds case.
     #[prost(enumeration = "IdentifierCase", tag = "1")]
     pub case: i32,
-    /// The longest identifier, in bytes; at least 1.
+    /// The longest identifier, in bytes, from 16 to 65535: 16 holds an identifier's hash, the `_`
+    /// before it and a character of its name.
     #[prost(uint32, tag = "2")]
     pub max_len: u32,
     /// The characters it allows.
     #[prost(enumeration = "IdentifierChars", tag = "3")]
     pub chars: i32,
-    /// Words it reserves.
+    /// Words it reserves: at most 4096, each of 1 to 256 bytes.
     #[prost(string, repeated, tag = "4")]
     pub reserved: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
-    /// Table prefixes it reserves.
+    /// Table prefixes it reserves: at most 64, each of 1 to 256 bytes.
     #[prost(string, repeated, tag = "5")]
     pub reserved_table_prefixes: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
@@ -469,7 +470,7 @@ pub struct Capabilities {
     /// Its identifier rules.
     #[prost(message, optional, tag = "7")]
     pub identifiers: ::core::option::Option<IdentifierRules>,
-    /// How many writers may stage at once; at least 1.
+    /// How many writers may stage at once: from 1 to 65535.
     #[prost(uint32, tag = "8")]
     pub max_parallel_writers: u32,
     /// Whether it merges change streams: each row in sequence order, only past the row it holds.

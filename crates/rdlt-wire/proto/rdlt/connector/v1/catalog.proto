@@ -129,13 +129,14 @@ enum IdentifierChars {
 message IdentifierRules {
   // How it folds case.
   IdentifierCase case = 1;
-  // The longest identifier, in bytes; at least 1.
+  // The longest identifier, in bytes, from 16 to 65535: 16 holds an identifier's hash, the `_`
+  // before it and a character of its name.
   uint32 max_len = 2;
   // The characters it allows.
   IdentifierChars chars = 3;
-  // Words it reserves.
+  // Words it reserves: at most 4096, each of 1 to 256 bytes.
   repeated string reserved = 4;
-  // Table prefixes it reserves.
+  // Table prefixes it reserves: at most 64, each of 1 to 256 bytes.
   repeated string reserved_table_prefixes = 5;
 }
 
@@ -155,7 +156,7 @@ message Capabilities {
   SchemaChanges schema_changes = 6;
   // Its identifier rules.
   IdentifierRules identifiers = 7;
-  // How many writers may stage at once; at least 1.
+  // How many writers may stage at once: from 1 to 65535.
   uint32 max_parallel_writers = 8;
   // Whether it merges change streams: each row in sequence order, only past the row it holds.
   bool merge_changes = 9;
