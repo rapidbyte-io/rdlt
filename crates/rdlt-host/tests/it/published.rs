@@ -154,6 +154,15 @@ impl Large {
     }
 }
 
+/// Counts a reader leaving, whether it returns or is dropped.
+struct Leaves(Arc<AtomicUsize>);
+
+impl Drop for Leaves {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
 struct LargeReader {
     batches: usize,
     fails: bool,
@@ -169,6 +178,7 @@ impl PublishedReader for LargeReader {
         rows: PublishedRows,
     ) -> BoxFuture<'a, rdlt_connector::Result<()>> {
         Box::pin(async move {
+            let _leaves = Leaves(Arc::clone(&self.ended));
             let batch = if self.blobs {
                 let blob = arrow_array::StringArray::from(vec!["b".repeat(5 << 20)]);
                 RecordBatch::try_from_iter([("blob", Arc::new(blob) as _)])
@@ -178,10 +188,7 @@ impl PublishedReader for LargeReader {
             };
             let batch = batch.expect("a valid batch");
             for _ in 0..self.batches {
-                if let Err(left) = rows.send(batch.clone()).await {
-                    self.ended.fetch_add(1, Ordering::SeqCst);
-                    return Err(left);
-                }
+                rows.send(batch.clone()).await?;
                 self.sent.fetch_add(1, Ordering::SeqCst);
             }
             if self.fails {
