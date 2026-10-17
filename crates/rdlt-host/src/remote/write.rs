@@ -39,6 +39,9 @@ pub(super) struct RemoteWriter {
     staged: u64,
     /// The stats of the flushes the writer made itself since the last one it was asked for.
     flushed: WriteStats,
+    /// Whether a flush was sent whose stats have not arrived: they would be taken for a later
+    /// flush's, so the writer refuses every call.
+    unanswered: bool,
 }
 
 impl RemoteWriter {
@@ -80,6 +83,7 @@ impl RemoteWriter {
             version: table.version.0,
             staged: 0,
             flushed: WriteStats::default(),
+            unanswered: false,
         })
     }
 
@@ -121,6 +125,18 @@ impl RemoteWriter {
         self.credit
             .grant(credit.bytes)
             .map_err(|_| out_of_turn("a credit of no bytes"))
+    }
+
+    /// Refuses every call once a flush went unanswered.
+    fn usable(&self) -> rdlt_connector::Result<()> {
+        if !self.unanswered {
+            return Ok(());
+        }
+        Err(ConnectorError::new(
+            rdlt_connector::ConnectorErrorKind::Transient,
+            "a flush of the writer went unanswered, so the writer takes no more",
+        )
+        .with_code(super::DEADLINE_EXCEEDED))
     }
 
     /// Sends `frame` once the connector has credit left for it and the writer's queue has room,
@@ -174,6 +190,7 @@ impl RemoteWriter {
         batch: RecordBatch,
     ) -> rdlt_connector::Result<()> {
         use v1::write_frame::Frame;
+        self.usable()?;
         let schema = batch.schema();
         // Kept once every frame of the batch is queued: a write that fails or is dropped part way
         // leaves the next to send its schema, and every dictionary after it, again.
@@ -232,6 +249,7 @@ impl RemoteWriter {
     /// Flushes what the connector has staged, and returns the stats of everything flushed since
     /// the last flush asked for.
     async fn flush_all(&mut self) -> rdlt_connector::Result<WriteStats> {
+        self.usable()?;
         let stats = self.flush_staged().await?;
         let before = std::mem::take(&mut self.flushed);
         Ok(WriteStats {
@@ -245,11 +263,17 @@ impl RemoteWriter {
         self.send(v1::write_frame::Frame::Flush(v1::Unit {}))
             .await?;
         self.staged = 0;
+        // Cleared once its stats arrive: a flush that fails or is dropped before then would have
+        // its stats taken for the next.
+        self.unanswered = true;
         let due = self.due();
         loop {
             match self.ack(due).await? {
                 v1::write_ack::Ack::Credit(credit) => self.grant(credit)?,
-                v1::write_ack::Ack::Flushed(stats) => return Ok(WriteStats::from(stats)),
+                v1::write_ack::Ack::Flushed(stats) => {
+                    self.unanswered = false;
+                    return Ok(WriteStats::from(stats));
+                }
                 v1::write_ack::Ack::Error(_) => return Err(out_of_turn("an error")),
             }
         }
