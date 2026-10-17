@@ -72,8 +72,8 @@ anything runs; none is ignored.
     connector lives, until reaped, unless both state their grants are shared; no grant may
     write a program a placement runs, and no placement runs a program a held grant may write.
     A program with a second name counts as written by every write grant on its file system,
-    since a directory grant does not list what it holds; a binary given a second name after it
-    was placed is not spawned again.
+    since a directory grant does not list what it holds; one given a second name after it was
+    placed is not spawned again.
   - **The network grant** shares the host's network namespace: every interface and route, the
     host's loopback services, and the abstract Unix sockets of that namespace, such as a
     session's buses. Grant it only to a connector you would let reach those.

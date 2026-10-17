@@ -85,10 +85,11 @@ pub(crate) fn command(
         }
     }
     let names = launch.binary.names()?;
-    if names > 1 && !launch.binary.linked() {
+    let binary = launch.binary.path();
+    let exposed = (names > 1 && !launch.binary.linked()).then(|| binary.to_owned());
+    if let Some(path) = exposed.or_else(|| launch.lease.exposed(binary)) {
         // Its placement was held as though it had one name; another may lie where a grant
         // held now writes.
-        let path = launch.binary.path().to_owned();
         return Err(SandboxError::Exposed { path }.into());
     }
     let args = arguments(launch);
