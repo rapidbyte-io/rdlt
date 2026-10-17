@@ -47,7 +47,12 @@ impl<'de> Deserializer<'de> for Exact<'_> {
         match value.get_type() {
             JsonType::Null => visitor.visit_unit(),
             JsonType::Boolean => visitor.visit_bool(value.as_bool().unwrap_or_default()),
-            JsonType::Number => number(value, context, visitor),
+            JsonType::Number => {
+                // A number of up to 30 bytes, as most are, is held inline, not allocated.
+                let raw = value.as_raw_number();
+                let text = raw.as_ref().map(RawNumber::as_str).unwrap_or_default();
+                number(text, context, visitor)
+            }
             JsonType::String => visitor.visit_str(value.as_str().unwrap_or_default()),
             JsonType::Object => visitor.visit_map(Entries {
                 fields: value.as_object().map(|object| object.iter()),
@@ -68,16 +73,13 @@ impl<'de> Deserializer<'de> for Exact<'_> {
     }
 }
 
-/// Visits the number `value` as the narrowest of a 64-bit integer, a 38-digit integer and a
-/// float that holds its text exactly, or else, an integer, as its digits.
-fn number<'de, V: Visitor<'de>>(
-    value: &Value,
+/// Visits the number written `text` as the narrowest of a 64-bit integer, a 38-digit integer and
+/// a float that holds it exactly, or else, an integer, as its digits.
+pub(super) fn number<'de, V: Visitor<'de>, E: de::Error>(
+    text: &str,
     context: &Context,
     visitor: V,
-) -> Result<V::Value, sonic_rs::Error> {
-    // A number of up to 30 bytes, as most are, is held inline, not allocated.
-    let raw = value.as_raw_number();
-    let text = raw.as_ref().map(RawNumber::as_str).unwrap_or_default();
+) -> Result<V::Value, E> {
     // The fast parse reads `-0` as a float, and refuses floats beyond the finite ones.
     if text.contains(['.', 'e', 'E']) || text == "-0" {
         if !crate::json::exponent_within(text) {

@@ -1628,9 +1628,9 @@ fn a_build_refuses_arrays_nested_past_the_limit_as_it_parses_them() {
 /// A JSON value as it is written, and the text a column of JSON holds for it: `None` where an
 /// object in it repeats a key, which refuses its record.
 #[derive(Clone, Debug)]
-struct Written {
-    text: String,
-    rendered: Option<String>,
+pub(super) struct Written {
+    pub(super) text: String,
+    pub(super) rendered: Option<String>,
 }
 
 /// `text` with every character written as its unicode escape.
@@ -1726,7 +1726,7 @@ fn written_object(
 }
 
 /// A value nesting up to four levels deep: scalars of every kind, and arrays and objects.
-fn written() -> impl proptest::strategy::Strategy<Value = Written> {
+pub(super) fn written() -> impl proptest::strategy::Strategy<Value = Written> {
     use proptest::prelude::*;
     let scalar = prop_oneof![
         Just(Written {

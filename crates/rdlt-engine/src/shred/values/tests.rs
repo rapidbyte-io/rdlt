@@ -1,6 +1,9 @@
+use std::sync::Arc;
+
 use arrow_array::cast::AsArray;
 use arrow_array::types::{Decimal128Type, Float64Type, Int64Type};
-use arrow_array::{Array, StringArray};
+use arrow_array::{Array, ArrayRef, RecordBatch, StringArray};
+use rdlt_connector::cost::{Rendering, Stored};
 use rdlt_connector::{DecimalType, Field, Fields, LogicalType};
 
 use super::{fitting, read};
@@ -364,5 +367,102 @@ fn a_value_observed_no_further_than_it_fits_adds_nothing_to_the_join() {
     assert_eq!(
         built_as,
         struct_of(vec![Field::new("a", LogicalType::Int64, true)])
+    );
+}
+
+/// Bytes: what a lowering piece reserves for the rows of `texts`, JSON text whose own column is
+/// of `column`, nothing beside, as the cost model measures it.
+fn reserved(texts: &StringArray, column: &LogicalType) -> u64 {
+    let values: ArrayRef = Arc::new(texts.clone());
+    let batch = RecordBatch::try_from_iter([("c", values)]).unwrap();
+    let stored = Stored {
+        column: column.clone(),
+        text: false,
+        read: true,
+    };
+    let mut measure = Rendering::native().lowering(&batch, vec![Some(stored)], 0, u64::MAX);
+    measure.expanded(0..batch.num_rows())
+}
+
+/// What fitting `texts` to `column` allocates at its peak, and which of them fit.
+fn fitted_peak(texts: &StringArray, column: &LogicalType) -> (u64, Vec<bool>) {
+    let heap = &crate::cost::tests::HEAP;
+    heap.reset_peak_usage();
+    let before = heap.current_usage();
+    let (fits, joined) = fitting(texts, column);
+    let peak = u64::try_from(heap.peak_usage().saturating_sub(before)).unwrap();
+    drop(joined);
+    let fits = fits
+        .iter()
+        .take(texts.len())
+        .map(|fit| fit.unwrap_or(false));
+    (peak, fits.collect())
+}
+
+/// An object of `keys` keys, each `prefix` and its number, each holding 0.
+fn wide(prefix: &str, keys: usize) -> String {
+    let fields: Vec<String> = (0..keys)
+        .map(|key| format!("\"{prefix}{key}\":0"))
+        .collect();
+    format!("{{{}}}", fields.join(","))
+}
+
+/// Asserts that fitting a single value `text` to `column` fits as `fit` says, and allocates no
+/// more than its piece reserves for reading it.
+fn fitted_within_reservation(text: &str, column: &LogicalType, fit: bool) {
+    let texts = texts(&[Some(text)]);
+    let reserved = reserved(&texts, column);
+    let (peak, fits) = fitted_peak(&texts, column);
+    assert_eq!(fits, [fit], "{text:.32}");
+    assert!(
+        peak <= reserved,
+        "{text:.32}: fitted at a peak of {peak}, reserved {reserved}"
+    );
+}
+
+#[test]
+fn a_value_that_cannot_fit_its_column_is_fitted_within_what_its_piece_reserves() {
+    let a = struct_of(vec![Field::new("a", LogicalType::Int64, true)]);
+    let object = wide("z", 100_000);
+    // Keys the struct lacks before the key it holds, and an object where an integer is due.
+    let lacking = format!("{},\"a\":1}}", object.trim_end_matches('}'));
+    fitted_within_reservation(&lacking, &a, false);
+    fitted_within_reservation(&object, &LogicalType::Int64, false);
+}
+
+#[test]
+fn a_part_held_as_json_nested_to_the_limit_is_fitted_on_a_small_stack() {
+    let fitted = std::thread::Builder::new()
+        .stack_size(256 << 10)
+        .spawn(|| {
+            let mut fits = Vec::new();
+            for depth in [63_usize, 64, 65] {
+                let text = format!("{}1{}", "[".repeat(depth), "]".repeat(depth));
+                // Lists around a part held as JSON, the innermost array.
+                let mut column = LogicalType::Json;
+                for _ in 1..depth {
+                    column = LogicalType::List(Box::new(Field::new("item", column, true)));
+                }
+                let values = texts(&[Some(text.as_str())]);
+                let fit = fitting(&values, &column);
+                if fit.0.value(0) {
+                    read(&values, &fit.0, &fit.1).unwrap();
+                }
+                fits.push(fit.0.value(0));
+            }
+            fits
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+    assert_eq!(fitted, [true, false, false]);
+}
+
+#[test]
+fn a_key_written_escaped_repeats_the_same_key_written_plain() {
+    let a = struct_of(vec![Field::new("a", LogicalType::Int64, true)]);
+    assert_eq!(
+        fit(&[Some(r#"{"\u0061":1,"a":2}"#), Some(r#"{"a":2}"#)], &a),
+        [false, true]
     );
 }

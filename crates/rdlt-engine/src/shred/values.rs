@@ -3,8 +3,8 @@
 //!
 //! A column of JSON whose table holds the column as another type sends there each value that
 //! type holds; this is how it finds them, and reads them. Each value is observed once, to fit
-//! it, and the join of those that fit is kept to read them; where rows are dropped between, the
-//! kept ones are observed again to join them alone.
+//! it, a token at a time and as the type guides, and the join of those that fit is kept to read
+//! them; where rows are dropped between, the kept ones are observed again to join them alone.
 
 #[cfg(test)]
 mod tests;
@@ -62,7 +62,7 @@ fn observed(text: &str, column: &LogicalType, context: &Context) -> Result<Obser
         depth: 1,
         target: Some(column),
     };
-    super::exact::visit(text.as_bytes(), look, context).map_err(|error| {
+    super::tokens::visit(text, look, context).map_err(|error| {
         context
             .fault()
             .unwrap_or_else(|| ShredError::Invalid(format!("a value of JSON text: {error}")))
