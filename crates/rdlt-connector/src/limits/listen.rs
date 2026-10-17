@@ -133,7 +133,8 @@ impl ListenLimits {
     ///
     /// Every unauthenticated connection, a connection just accepted that closes one of them, every
     /// waiting connection, each session's share, and the connector's own. Unauthenticated peers
-    /// hold the first two terms at most, so they cannot take a descriptor a session needs.
+    /// hold the first two terms at most, so they cannot take a descriptor a session needs. A
+    /// write's writer is not counted: it lives no longer than its call.
     pub fn descriptors(&self) -> u64 {
         count(self.unauthenticated)
             .saturating_add(1)
@@ -145,7 +146,8 @@ impl ListenLimits {
     /// Sessions: how many destination sessions one connection holds open at once, which is as
     /// many as its descriptors allow beside its socket, and one at least.
     ///
-    /// A further session opened on the connection closes its oldest.
+    /// A further session opened on the connection closes its oldest, once the calls in flight on
+    /// it end.
     pub fn connection_sessions(&self) -> usize {
         self.session_descriptors.saturating_sub(1).max(1)
     }

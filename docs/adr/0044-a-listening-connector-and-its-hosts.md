@@ -69,11 +69,19 @@ than the model ADR 0037 now sets:
     Beyond the sessions served a connection waits, among 64 at most and for 10 s at most; beyond
     those it is closed. A session that ends, however it ends, gives its host its place back.
   - A connection holds three destination sessions open at once, as many as its descriptors
-    allow beside its socket. A further session opened closes the connection's oldest.
+    allow beside its socket. A session counts from before its destination opens it until its
+    close ends, so Opens and Closes in flight count too. A further session opened closes the
+    connection's oldest once the calls in flight on it end: the Open waits for them.
   - At start the connector works out the file descriptors its limits need: the unauthenticated
     and one more, the waiting, four for each session, and 64 of its own. It raises its soft limit
     that far where the hard limit allows, and refuses to listen where it does not;
     `--max-sessions` serves fewer.
+  - A write's writer is not counted there. It lives no longer than its call, and a connection
+    holds 200 calls at most, HTTP/2's limit of concurrent streams. A destination whose writer
+    opens a descriptor of its own beside its session's can take up to 200 more for each
+    connection: it keeps its writers' files among its sessions', or is served with fewer
+    sessions. A write holds its session only to take its writer, so eviction does not wait for
+    a write in flight.
   - Refused connections are counted by reason and reported in one line every 10 s in which any
     was refused. No line is written for a peer that has not authenticated.
 - **Certification's probes are a feature and a choice.**
@@ -167,6 +175,12 @@ Rejected:
   a list goes stale: the summary says so once it has.
 - **Refusing a session opened beyond those a connection holds.** A host that leaves the sessions
   of failed attempts open would stop loading; closing its oldest costs it nothing it still uses.
+- **Closing the oldest session under a call in flight.** The call holds the session, so
+  forgetting it closes nothing, and a host that starts a call on each session it opens keeps
+  more of them than its share.
+- **Counting a write's writers in the descriptor estimate.** At 200 calls a connection, the
+  estimate would ask every listening connector for tens of thousands of descriptors, for
+  writers most destinations give none of their own.
 
 ## Consequences
 
@@ -199,6 +213,8 @@ Rejected:
   check it.
 - A session used after three newer ones were opened on its connection is gone, and answers
   `no_session`.
+- An Open beyond three on a connection waits for the calls in flight on its oldest session, for
+  as long as they take; the host's deadline on the Open bounds the wait.
 - Certifying a connector over the wire needs a binary built for it, whose `main` names the
   probing factory. A connector's own binary cannot be certified in the clauses that read back.
 - A compromised host named to a connector can open the pipelines of the other hosts named to it.
