@@ -7,27 +7,12 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
-[[bin]]
-name = "rdlt-certify"
-path = "src/main.rs"
-required-features = ["kill"]
-
-# The suite certifies the kill clauses, and runs the binary.
-[[test]]
-name = "it"
-path = "tests/it/main.rs"
-required-features = ["kill"]
-
-[features]
-# The kill clauses, which load through an engine, killing the connector as it does.
-kill = ["dep:rdlt-connector-reference", "dep:rdlt-engine"]
-
 [dependencies]
 arrow-array.workspace = true
 clap.workspace = true
 rdlt-connector = { workspace = true, features = ["serve", "testing", "wire"] }
-rdlt-connector-reference = { workspace = true, optional = true }
-rdlt-engine = { workspace = true, optional = true }
+rdlt-connector-reference.workspace = true
+rdlt-engine.workspace = true
 rdlt-host.workspace = true
 rdlt-wire.workspace = true
 serde_json.workspace = true

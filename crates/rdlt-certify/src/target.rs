@@ -16,6 +16,9 @@ use rdlt_wire::tonic::{Response, Status};
 /// How long a failed connection waits for a spawned connector's standard error to close.
 const LAST_WORDS: Duration = Duration::from_secs(1);
 
+/// Bytes: the floor of the credit a source placed for a kill clause reads within.
+const KILL_FLOOR: u64 = 65_536;
+
 /// A connector to certify, and how to reach it.
 #[derive(Debug)]
 pub struct Target {
@@ -146,13 +149,11 @@ impl Target {
     }
 
     /// How long each kill clause may take, when that is chosen.
-    #[cfg(feature = "kill")]
     pub(crate) fn chosen_timeout(&self) -> Option<Duration> {
         self.kill_timeout
     }
 
     /// The seed the kill clauses draw their points from, when one is chosen.
-    #[cfg(feature = "kill")]
     pub(crate) fn chosen_seed(&self) -> Option<u64> {
         self.kill_seed
     }
@@ -257,14 +258,7 @@ impl Target {
             }
         }
     }
-}
 
-/// Bytes: the floor of the credit a source placed for a kill clause reads within.
-#[cfg(feature = "kill")]
-const KILL_FLOOR: u64 = 65_536;
-
-#[cfg(feature = "kill")]
-impl Target {
     /// A provider placing the connector as an engine's placement does, supervised, so a lost one
     /// is started or reached again, killed by `kills`; and the reference to it, as `id`, which
     /// its handshake answered.

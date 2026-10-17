@@ -21,8 +21,8 @@ ADR 0020 left the `K` kill clauses to M4g. Certifying a connector over the wire 
 - **M4g is split.**
   - M4g (this record) completes certification for the features that exist.
   - M4h is the `K` kill clauses and `S-ARROW-JSON`: both run an engine, the latter its
-    shredder. The owner ruled that `rdlt-certify` gains an optional `kill` cargo feature, on in
-    its binary, that depends on `rdlt-engine`; ADR 0022 records the crate map that follows.
+    shredder, so `rdlt-certify` depends on `rdlt-engine`; ADR 0022 records the crate map that
+    follows.
   - `S-PARTITION` ("planned partitions cover the stream exactly once") waits for M5: a plan takes
     no partition count, so nothing gives the clause a truth to compare the partitions with. M5
     re-plans partitions for streaming, and settles it.
