@@ -130,12 +130,19 @@ pub(crate) fn fitting(texts: &StringArray, column: &LogicalType) -> (BooleanArra
 /// Whether an object in the JSON value `text`, at any depth, repeats a key.
 fn repeats_a_key(text: &str) -> bool {
     let mut reader = Reader::new(text);
+    let meter = Meter::reserved();
     let mut open = OpenKeys::default();
     // Each key as its escapes read, one after another.
     let mut keys = String::new();
     while let Ok(Some(token)) = reader.next() {
         match token {
-            Token::BeginObject => open.open(),
+            // A key or an object the meter has no room for counts as a repeat: the value stays
+            // JSON text.
+            Token::BeginObject => {
+                if open.open(&meter).is_err() {
+                    return true;
+                }
+            }
             Token::EndObject => {
                 if open.close(&keys).is_some() {
                     return true;
@@ -144,7 +151,9 @@ fn repeats_a_key(text: &str) -> bool {
             Token::Key(key) => {
                 let start = keys.len();
                 keys.push_str(&key.unescaped());
-                open.key(start..keys.len());
+                if open.key(start..keys.len(), &meter).is_err() {
+                    return true;
+                }
             }
             _ => {}
         }
