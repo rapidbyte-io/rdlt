@@ -144,15 +144,16 @@ impl Steps {
 
 impl Process {
     /// Spawns `launch`'s binary serving the other end of `socket` at file descriptor 3, its
-    /// output scrubbed of `redactions`, taking `steps`: a connector that started and a step
-    /// then fails is killed and reaped before the failure is returned.
+    /// output scrubbed of `redactions`, taking `steps`: its group's place is taken before
+    /// anything is launched, and a connector that started and a step then fails is killed and
+    /// reaped before the failure is returned.
     fn spawn_by(
         launch: &Launch,
         socket: OwnedFd,
         redactions: Redactions,
         steps: &Steps,
     ) -> Result<Self, Unspawned> {
-        group::has_room()?;
+        let slot = group::reserve()?;
         let Commanded {
             command,
             stops,
@@ -169,6 +170,7 @@ impl Process {
             killed: killed.clone(),
             exit: exit_sender,
             lease: Arc::clone(&launch.lease),
+            slot,
         };
         // Owned from here on by its thread: whatever fails next, the connector does not
         // outlive it.

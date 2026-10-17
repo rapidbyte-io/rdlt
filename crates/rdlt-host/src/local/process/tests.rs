@@ -119,11 +119,15 @@ async fn a_connector_whose_owning_fails_at_any_step_is_killed_reaped_and_forgott
         assert_eq!(super::spawned(), Vec::<u32>::new(), "step {step}");
         assert_eq!(super::stop_spawned(Duration::ZERO), Ok(()), "step {step}");
         assert_eq!(super::group::threads(), 0, "step {step}");
+        // Its place among the groups this process may own is free again.
+        assert_eq!(super::group::reserved(), 0, "step {step}");
     }
     // With every step taken the connector is owned, and ends when it is dropped.
     let process =
         Process::spawn_by(&launch, socket(), Redactions::new(), &Steps::TAKEN).expect("it starts");
     assert_eq!(super::spawned().len(), 1);
+    // Listed, its group holds its place: no start holds one besides.
+    assert_eq!(super::group::reserved(), 0);
     drop(process);
     assert_eq!(super::group::threads(), 1);
     assert_eq!(super::stop_spawned(Duration::from_secs(20)), Ok(()));
@@ -163,6 +167,30 @@ fn a_sandboxed_connector_is_not_spawned_where_descriptors_cannot_be_marked_at_on
     };
     assert_eq!(refused, SandboxError::Descriptors);
     assert_eq!(refused.code(), "sandbox_descriptors");
+    // Refused before anything was launched, it gave back the place it took.
+    assert_eq!(super::group::reserved(), 0);
+}
+
+#[test]
+fn a_connector_whose_process_cannot_start_gives_back_its_place() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let mut launch = sleeper(directory.path());
+    // Its interpreter does not exist: the kernel refuses to execute it, in the owning thread.
+    let unstartable = directory.path().join("unstartable");
+    std::fs::write(&unstartable, "#!/nonexistent/interpreter\n").expect("the script writes");
+    std::fs::set_permissions(
+        &unstartable,
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .expect("the script is executable");
+    launch.binary = Arc::new(Binary::at(&unstartable).expect("the script opens"));
+    let refused = Process::spawn_by(&launch, socket(), Redactions::new(), &Steps::TAKEN);
+    let Err(Unspawned::Io(_)) = refused else {
+        panic!("it was not refused as a process that did not start");
+    };
+    assert_eq!(super::group::reserved(), 0);
+    assert_eq!(super::spawned(), Vec::<u32>::new());
+    assert_eq!(super::group::threads(), 0);
 }
 
 /// A sandbox whose launcher cannot make one: a spawn that asks it has passed every check

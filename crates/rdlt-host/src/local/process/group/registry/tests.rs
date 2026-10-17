@@ -2,7 +2,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use super::super::{Held, State};
-use super::{Lingering, OWNED, REMAINING, StopsSpawned, groups, has_room, leave, remember, room};
+use super::{
+    Lingering, OWNED, REMAINING, StopsSpawned, enter, groups, join, leave, remember, reserve, room,
+};
 use crate::local::sandbox::Stops;
 
 #[test]
@@ -41,14 +43,78 @@ fn idle() -> Arc<Held> {
 }
 
 #[test]
-fn a_process_owning_as_many_groups_as_it_may_has_room_for_no_more() {
+fn a_process_owning_as_many_groups_as_it_may_reserves_no_more() {
     let most = u32::try_from(OWNED).expect("it fits");
     let live = (1..=most).map(|id| (id, idle()));
     groups().get_or_insert_default().live.extend(live);
-    assert!(has_room().is_err());
+    assert!(reserve().is_err());
     groups().get_or_insert_default().live.remove(&1);
-    assert!(has_room().is_ok());
+    assert!(reserve().is_ok());
     groups().get_or_insert_default().live.clear();
+}
+
+/// The live groups and the places held by starts, read under one lock.
+fn counted() -> (usize, usize) {
+    let mut guard = groups();
+    let groups = guard.get_or_insert_default();
+    (groups.live.len(), groups.reserved)
+}
+
+#[test]
+fn a_start_holds_its_place_until_its_group_is_entered_or_the_place_is_given_back() {
+    let most = u32::try_from(OWNED).expect("it fits");
+    let live = (1..most).map(|id| (id, idle()));
+    groups().get_or_insert_default().live.extend(live);
+    let first = reserve().expect("one place is left");
+    // While the first start launches, the place it holds is no other start's.
+    assert!(reserve().is_err());
+    drop(first);
+    let second = reserve().expect("the first start gave its place back");
+    enter(second, most, idle(), std::thread::spawn(|| {}));
+    assert_eq!(counted(), (OWNED, 0));
+    assert!(reserve().is_err());
+    groups().get_or_insert_default().live.clear();
+    join(groups());
+}
+
+#[test]
+fn of_starts_racing_for_the_last_place_one_alone_takes_it() {
+    let most = u32::try_from(OWNED).expect("it fits");
+    let live = (1..most).map(|id| (id, idle()));
+    groups().get_or_insert_default().live.extend(live);
+    let (tell, told) = std::sync::mpsc::channel();
+    let starts: Vec<_> = (0..8)
+        .map(|_| {
+            let tell = tell.clone();
+            std::thread::spawn(move || tell.send(reserve()).expect("the test listens"))
+        })
+        .collect();
+    // Every place taken is kept until all are counted, so none is given back to another.
+    let places: Vec<_> = (0..8)
+        .map(|_| {
+            told.recv_timeout(Duration::from_secs(10))
+                .expect("each start answers")
+        })
+        .collect();
+    for start in starts {
+        start.join().expect("it ends");
+    }
+    assert_eq!(places.iter().filter(|place| place.is_ok()).count(), 1);
+    drop(places);
+    assert_eq!(counted(), (OWNED - 1, 0));
+    groups().get_or_insert_default().live.clear();
+}
+
+#[test]
+fn a_start_that_panics_holding_its_place_gives_it_back() {
+    let panicked = std::thread::spawn(|| {
+        let _place = reserve().expect("a place is free");
+        panic!("the launch panics");
+    })
+    .join();
+    assert!(panicked.is_err());
+    assert_eq!(counted(), (0, 0));
+    assert!(reserve().is_ok());
 }
 
 #[test]
