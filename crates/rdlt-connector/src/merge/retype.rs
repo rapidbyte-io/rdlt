@@ -21,10 +21,13 @@ use arrow_cast::CastOptions;
 use arrow_schema::{ArrowError, DataType, Field, FieldRef, Fields};
 
 /// `array`, whose field is `from`, as the field `to`: a value of a column that widened to `Json`
-/// as its JSON text, and any other exactly as it is, or an error naming the conversion.
+/// as its JSON text, in the text type `to` stores it as, and any other exactly as it is, or an
+/// error naming the conversion.
 pub(super) fn fitted(array: &ArrayRef, from: &Field, to: &Field) -> Result<ArrayRef, ArrowError> {
     if is_json(to) && !is_json(from) {
-        return rendered(array, from);
+        // JSON stored encoded is refused here as every encoded target is, so a schema check
+        // and a read of the same rows agree.
+        return retyped(&rendered(array, from)?, to.data_type());
     }
     retyped(array, to.data_type())
 }

@@ -437,6 +437,123 @@ fn field(name: &str, kind: DataType) -> Field {
     Field::new(name, kind, true)
 }
 
+/// A field holding `Json`, named `name`, which stores it as `storage`.
+fn json_as(name: &str, storage: DataType) -> Field {
+    crate::Field::new(name, crate::LogicalType::Json, true)
+        .to_arrow()
+        .with_data_type(storage)
+}
+
+#[test]
+fn a_column_widened_to_json_takes_the_text_type_its_field_stores_json_as() {
+    use super::super::read_back;
+    let booleans: ArrayRef = Arc::new(BooleanArray::from(vec![Some(true), Some(false), None]));
+    let batch = arrow_array::RecordBatch::try_from_iter([("v", booleans)]).unwrap();
+    for storage in [DataType::Utf8, DataType::LargeUtf8, DataType::Utf8View] {
+        let schema = Arc::new(arrow_schema::Schema::new(vec![json_as(
+            "v",
+            storage.clone(),
+        )]));
+        super::holds([&batch], &schema).unwrap();
+        let read = read_back(&schema, std::slice::from_ref(&batch)).unwrap();
+        let column = read[0].column(0);
+        assert_eq!(column.data_type(), &storage);
+        let texts = arrow_cast::cast(column, &DataType::Utf8).unwrap();
+        let texts: Vec<_> = texts.as_string::<i32>().iter().collect();
+        assert_eq!(texts, [Some("true"), Some("false"), None], "{storage}");
+    }
+}
+
+#[test]
+fn a_struct_field_or_a_list_item_widened_to_json_takes_its_text_type() {
+    for storage in [DataType::LargeUtf8, DataType::Utf8View] {
+        let from = Fields::from(vec![field("y", DataType::Boolean)]);
+        let structs: ArrayRef = Arc::new(StructArray::new(
+            from.clone(),
+            vec![Arc::new(BooleanArray::from(vec![true])) as ArrayRef],
+            None,
+        ));
+        let to = DataType::Struct(Fields::from(vec![json_as("y", storage.clone())]));
+        let widened = super::fitted(
+            &structs,
+            &field("s", DataType::Struct(from)),
+            &field("s", to.clone()),
+        )
+        .unwrap();
+        assert_eq!(widened.data_type(), &to, "{storage}");
+        let held = arrow_cast::cast(widened.as_struct().column(0), &DataType::Utf8).unwrap();
+        assert_eq!(held.as_string::<i32>().value(0), "true");
+        let item = Arc::new(field("item", DataType::Boolean));
+        let lists: ArrayRef = Arc::new(ListArray::new(
+            Arc::clone(&item),
+            arrow_buffer::OffsetBuffer::from_lengths([2]),
+            Arc::new(BooleanArray::from(vec![true, false])),
+            None,
+        ));
+        let to = DataType::List(Arc::new(json_as("item", storage.clone())));
+        let widened = super::fitted(
+            &lists,
+            &field("l", DataType::List(item)),
+            &field("l", to.clone()),
+        )
+        .unwrap();
+        assert_eq!(widened.data_type(), &to, "{storage}");
+        let items = arrow_cast::cast(widened.as_list::<i32>().values(), &DataType::Utf8).unwrap();
+        let items: Vec<_> = items.as_string::<i32>().iter().collect();
+        assert_eq!(items, [Some("true"), Some("false")], "{storage}");
+    }
+}
+
+#[test]
+fn a_column_widened_to_json_stored_encoded_is_refused_alike_by_holds_and_read_back() {
+    use super::super::read_back;
+    let booleans: ArrayRef = Arc::new(BooleanArray::from(vec![true]));
+    let batch = arrow_array::RecordBatch::try_from_iter([("v", booleans)]).unwrap();
+    let dictionary = DataType::Dictionary(Box::new(DataType::Int8), Box::new(DataType::Utf8));
+    let runs = DataType::RunEndEncoded(
+        Arc::new(Field::new("run_ends", DataType::Int32, false)),
+        Arc::new(field("values", DataType::Utf8)),
+    );
+    for storage in [dictionary, runs] {
+        let schema = Arc::new(arrow_schema::Schema::new(vec![json_as(
+            "v",
+            storage.clone(),
+        )]));
+        // The field holds JSON all the same.
+        let held = crate::Field::extension_type(schema.field(0));
+        assert_eq!(held, Some(crate::LogicalType::Json), "{storage}");
+        let refused = super::holds([&batch], &schema).unwrap_err();
+        assert_eq!(code(&refused), Some("type_unconvertible"), "{storage}");
+        let refused = read_back(&schema, std::slice::from_ref(&batch)).unwrap_err();
+        assert_eq!(code(&refused), Some("type_unconvertible"), "{storage}");
+    }
+}
+
+#[test]
+fn nulls_and_values_already_json_take_the_text_type_their_json_field_stores() {
+    use super::super::read_back;
+    let nulls: ArrayRef = Arc::new(NullArray::new(2));
+    let json: ArrayRef = Arc::new(StringArray::from(vec![r#"{"a":1}"#, "[2]"]));
+    let written = Arc::new(arrow_schema::Schema::new(vec![
+        Field::new("n", DataType::Null, true),
+        json_as("j", DataType::Utf8),
+    ]));
+    let batch = arrow_array::RecordBatch::try_new(written, vec![nulls, json]).unwrap();
+    for storage in [DataType::LargeUtf8, DataType::Utf8View] {
+        let schema = Arc::new(arrow_schema::Schema::new(vec![
+            json_as("n", storage.clone()),
+            json_as("j", storage.clone()),
+        ]));
+        super::holds([&batch], &schema).unwrap();
+        let read = read_back(&schema, std::slice::from_ref(&batch)).unwrap();
+        assert_eq!(read[0].column(0).data_type(), &storage);
+        assert_eq!(read[0].column(0).null_count(), 2, "{storage}");
+        let texts = arrow_cast::cast(read[0].column(1), &DataType::Utf8).unwrap();
+        let texts: Vec<_> = texts.as_string::<i32>().iter().collect();
+        assert_eq!(texts, [Some(r#"{"a":1}"#), Some("[2]")], "{storage}");
+    }
+}
+
 #[test]
 fn a_struct_converts_field_by_field() {
     let seconds = DataType::Timestamp(TimeUnit::Second, None);
