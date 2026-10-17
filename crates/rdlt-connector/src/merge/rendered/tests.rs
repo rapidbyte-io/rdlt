@@ -391,33 +391,6 @@ fn a_fold_keeps_the_type_encoded_text_was_lowered_from() {
 }
 
 #[test]
-fn a_fold_joins_encodings_of_one_name_and_keeps_names_apart() {
-    use super::super::folded;
-    let (int, bool) = (LogicalType::Int16, LogicalType::Bool);
-    let batches: Vec<_> = (0..10_i64)
-        .map(|id| {
-            let logical = if id % 2 == 0 { &int } else { &bool };
-            encoded_row(id, logical, usize::try_from(id).unwrap() % ENCODINGS)
-        })
-        .collect();
-    let folded = folded(&folding(), batches, bound(4), 1 << 20).unwrap();
-    assert_eq!(folded.len(), 4);
-    let held: usize = folded.iter().map(arrow_array::RecordBatch::num_rows).sum();
-    assert_eq!(held, 10);
-    for batch in &folded {
-        let ids = batch
-            .column(0)
-            .as_primitive::<arrow_array::types::Int64Type>();
-        let even = ids.value(0) % 2 == 0;
-        assert!(ids.iter().all(|id| (id.unwrap() % 2 == 0) == even));
-        assert_eq!(
-            named(batch),
-            Some(if even { int.clone() } else { bool.clone() })
-        );
-    }
-}
-
-#[test]
 fn a_fold_joins_rows_naming_one_type_and_keeps_those_naming_others_apart() {
     use super::super::folded;
     let schema = folding();
@@ -524,7 +497,10 @@ fn batches_alternating_between_two_names_fold_into_a_group_a_name_within_the_bou
     use super::super::folded;
     let (int, bool) = (LogicalType::Int16, LogicalType::Bool);
     let alternating: Vec<_> = (0..40)
-        .map(|id| rows(vec![id], if id % 2 == 0 { &int } else { &bool }))
+        .map(|id| {
+            let logical = if id % 2 == 0 { &int } else { &bool };
+            encoded_row(id, logical, usize::try_from(id).unwrap() % ENCODINGS)
+        })
         .collect();
     let bounded = folded(&folding(), alternating, bound(4), 1 << 20).unwrap();
     // Two of the largest stay whole, and a group a name holds the others: the bound exactly.
