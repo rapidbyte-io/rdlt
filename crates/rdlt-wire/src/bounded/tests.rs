@@ -1,13 +1,15 @@
 mod charged;
 
 use std::pin::Pin;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Poll};
 
 use bytes::Bytes;
 use http_body::{Body, Frame};
 use tonic::Code;
 
-use super::{Arrived, Bounded, Bounds, Window};
+use super::{Arrived, Bounded, Bounds, PREFIX, Window};
 use crate::aligned::{ALIGNMENT, is_aligned};
 use crate::scan::response;
 pub(super) use crate::testing::{chunks, fed, message};
@@ -420,4 +422,104 @@ fn a_message_s_prefix_waiting_whole_is_held_to_its_bound() {
         passed(body),
         [Passed::Data(at), Passed::Failed(Code::OutOfRange)]
     );
+}
+
+#[test]
+fn a_body_waiting_for_room_holds_no_more_than_a_prefix_split_across_frames() {
+    let held = message(&[0x0a, 0x00].repeat(64));
+    let waiting = message(&[0x0a, 0x00].repeat(8));
+    let window = Window::new(held.len());
+    let bounds = bounds(held.len(), usize::MAX);
+    let (holding_feed, mut holder) = holding(&window, bounds, &held);
+    let (feed, body) = fed();
+    let mut body = Bounded::new(body, bounds, Some(window.clone()));
+    for (from, to) in [(0, 3), (3, waiting.len())] {
+        feed.send(Frame::data(Bytes::copy_from_slice(&waiting[from..to])))
+            .unwrap();
+        assert_eq!(poll(&mut body), Passed::Waits, "{from}..{to}");
+        assert!(body.arriving.len() <= PREFIX, "{}", body.arriving.len());
+        assert_eq!(window.taken(), held.len());
+    }
+    assert_eq!(
+        body.arriving.len(),
+        PREFIX,
+        "the prefix, and nothing past it"
+    );
+    holding_feed
+        .send(Frame::data(Bytes::copy_from_slice(&held[10..])))
+        .unwrap();
+    assert_eq!(poll(&mut holder), Passed::Data(held));
+    assert_eq!(poll(&mut body), Passed::Data(waiting));
+}
+
+#[test]
+fn a_body_dropped_while_waiting_for_room_leaves_the_window_to_the_others() {
+    let held = message(&[0x0a, 0x00].repeat(64));
+    let waiting = message(&[0x0a, 0x00].repeat(8));
+    let window = Window::new(held.len());
+    let bounds = bounds(held.len(), usize::MAX);
+    let (holding_feed, mut holder) = holding(&window, bounds, &held);
+    let (feed, body) = fed();
+    let mut dropped = Bounded::new(body, bounds, Some(window.clone()));
+    feed.send(Frame::data(waiting.clone().into())).unwrap();
+    assert_eq!(poll(&mut dropped), Passed::Waits);
+    drop(dropped);
+    assert_eq!(window.taken(), held.len(), "its wait took nothing");
+    holding_feed
+        .send(Frame::data(Bytes::copy_from_slice(&held[10..])))
+        .unwrap();
+    assert_eq!(poll(&mut holder), Passed::Data(held));
+    assert_eq!(window.taken(), 0);
+    let later = Bounded::new(chunks(&[&waiting]), bounds, Some(window.clone()));
+    assert_eq!(passed(later), [Passed::Data(waiting), Passed::End]);
+    assert_eq!(window.taken(), 0);
+}
+
+/// A waker that records that it was woken.
+#[derive(Default)]
+struct Woken(AtomicBool);
+
+impl std::task::Wake for Woken {
+    fn wake(self: Arc<Self>) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+#[test]
+fn a_body_waiting_for_room_is_woken_once_room_comes_back() {
+    let held = message(&[0x0a, 0x00].repeat(64));
+    let waiting = message(&[0x0a, 0x00].repeat(8));
+    let window = Window::new(held.len());
+    let bounds = bounds(held.len(), usize::MAX);
+    let (holding_feed, mut holder) = holding(&window, bounds, &held);
+    let (feed, body) = fed();
+    let mut body = Bounded::new(body, bounds, Some(window.clone()));
+    feed.send(Frame::data(waiting.clone().into())).unwrap();
+    let woken = Arc::new(Woken::default());
+    let waker = std::task::Waker::from(Arc::clone(&woken));
+    let polled = Pin::new(&mut body).poll_frame(&mut Context::from_waker(&waker));
+    assert!(polled.is_pending());
+    assert!(!woken.0.load(Ordering::SeqCst), "no room has come back");
+    holding_feed
+        .send(Frame::data(Bytes::copy_from_slice(&held[10..])))
+        .unwrap();
+    assert_eq!(poll(&mut holder), Passed::Data(held));
+    assert!(
+        woken.0.load(Ordering::SeqCst),
+        "the room it waits for came back"
+    );
+    assert_eq!(poll(&mut body), Passed::Data(waiting));
+}
+
+#[test]
+fn a_prefix_beyond_its_bound_behind_a_full_window_is_refused_at_once() {
+    let held = message(&[0x0a, 0x00].repeat(64));
+    let window = Window::new(held.len());
+    let bounds = bounds(held.len(), usize::MAX);
+    let (_holding_feed, _holder) = holding(&window, bounds, &held);
+    // A prefix declaring a byte more than the wire bound, its message never sent.
+    let declared = message(&vec![0; held.len() + 1]);
+    let refused = Bounded::new(chunks(&[&declared[..PREFIX]]), bounds, Some(window.clone()));
+    assert_eq!(passed(refused), [Passed::Failed(Code::OutOfRange)]);
+    assert_eq!(window.taken(), held.len());
 }
