@@ -1553,9 +1553,10 @@ pub struct ReadPublishedRequest {
     #[prost(message, optional, tag = "1")]
     pub table: ::core::option::Option<TableRef>,
 }
-/// The limits each end enforces on what it receives. A limit left 0, as a peer from before that
-/// limit existed leaves it, is the protocol's default, but for dictionary_bytes, which has no
-/// default and is taken as sent. A handshake that sends no limits at all has every default.
+/// The limits each end enforces on what it receives.
+///
+/// A limit left 0 is the protocol's default, but for dictionary_bytes, which has no default and
+/// is taken as sent. A handshake that sends no limits at all has every default.
 ///
 /// A sender cuts a batch to its receiver's frame_bytes, batch_rows and batch_values, so a peer
 /// may not set them below the protocol's minimums: 4194304 bytes, 1024 rows and 1048576 values.
