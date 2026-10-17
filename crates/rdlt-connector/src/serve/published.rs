@@ -4,6 +4,9 @@
 //! The table is read a batch at a time, each sent before the next is read, so the connector
 //! holds a few batches however large the table is, and reads no further than its host takes.
 
+#[cfg(test)]
+mod tests;
+
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
@@ -42,7 +45,12 @@ async fn pump(
     let (rows, batches) = PublishedRows::channel();
     // Dropping the batches' receiver, as a failed or left send does, ends the read-back.
     let reading = reader.published(&table, rows);
-    let (read, sent) = tokio::join!(reading, send(batches, host, &frames));
+    let (read, sent) = tokio::select! {
+        biased;
+        // A host that leaves ends the read-back, whatever its reader waits for.
+        () = frames.closed() => return,
+        both = async { tokio::join!(reading, send(batches, host, &frames)) } => both,
+    };
     let ended = match (sent, read) {
         (Err(Left::Host), _) => return,
         (Err(Left::Refused(refused)), _) => Err(refused),
