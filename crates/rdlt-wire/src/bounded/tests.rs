@@ -257,6 +257,84 @@ fn a_message_behind_messages_holding_the_window_is_passed_on_once_they_are() {
     assert_eq!(window.taken(), 0);
 }
 
+/// A body still receiving a message of `held`, holding its room in `window`, and what feeds it.
+fn holding(window: &Window, bounds: Bounds, held: &[u8]) -> (crate::testing::Feed, Bounded) {
+    let (feed, body) = fed();
+    let mut body = Bounded::new(body, bounds, Some(window.clone()));
+    feed.send(Frame::data(Bytes::copy_from_slice(&held[..10])))
+        .unwrap();
+    assert_eq!(poll(&mut body), Passed::Waits);
+    (feed, body)
+}
+
+#[test]
+fn a_body_waiting_for_room_holds_none_of_its_message() {
+    let held = message(&[0x0a, 0x00].repeat(64));
+    let waiting = message(&[0x0a, 0x00].repeat(8));
+    // Room for one message, which a body still receiving holds.
+    let window = Window::new(held.len());
+    let bounds = bounds(held.len(), usize::MAX);
+    let (holding_feed, mut holder) = holding(&window, bounds, &held);
+    assert_eq!(window.taken(), held.len());
+    // One transport frame brings the second body's whole message.
+    let (feed, body) = fed();
+    let mut body = Bounded::new(body, bounds, Some(window.clone()));
+    feed.send(Frame::data(waiting.clone().into())).unwrap();
+    assert_eq!(poll(&mut body), Passed::Waits, "no room");
+    assert_eq!(
+        body.arriving.len(),
+        0,
+        "nothing of the message is copied before its room"
+    );
+    assert_eq!(body.arriving.room(), 0, "nor is room for it allocated");
+    assert_eq!(
+        body.unread.len(),
+        waiting.len(),
+        "the frame waits as it came"
+    );
+    assert_eq!(window.taken(), held.len());
+    holding_feed
+        .send(Frame::data(Bytes::copy_from_slice(&held[10..])))
+        .unwrap();
+    assert_eq!(poll(&mut holder), Passed::Data(held));
+    assert_eq!(poll(&mut body), Passed::Data(waiting));
+    drop((holder, body));
+    assert_eq!(window.taken(), 0);
+}
+
+#[test]
+fn a_message_behind_one_passed_on_from_its_chunk_takes_room_before_it_is_copied() {
+    let held = message(&[0x0a, 0x00].repeat(64));
+    let (first, second) = (message(&[0x0a, 0x00]), message(&[0x0a, 0x00, 0x0a, 0x00]));
+    // Room for two of the largest messages: one held by a body still receiving, one free.
+    let window = Window::new(2 * held.len());
+    let bounds = bounds(held.len(), usize::MAX);
+    let (holding_feed, mut holder) = holding(&window, bounds, &held);
+    // One transport frame brings two whole messages; the first has room and is passed on.
+    let (feed, body) = fed();
+    let mut body = Bounded::new(body, bounds, Some(window.clone()));
+    feed.send(Frame::data([first.clone(), second.clone()].concat().into()))
+        .unwrap();
+    assert_eq!(poll(&mut body), Passed::Data(first));
+    // Another body takes the room the first gave back.
+    let (other_feed, mut other) = holding(&window, bounds, &held);
+    assert_eq!(window.taken(), 2 * held.len());
+    assert_eq!(poll(&mut body), Passed::Waits, "no room for the second");
+    assert_eq!(body.arriving.len(), 0, "the second is not copied");
+    assert_eq!(body.unread.len(), second.len());
+    holding_feed
+        .send(Frame::data(Bytes::copy_from_slice(&held[10..])))
+        .unwrap();
+    assert_eq!(poll(&mut holder), Passed::Data(held.clone()));
+    assert_eq!(poll(&mut body), Passed::Data(second));
+    other_feed
+        .send(Frame::data(Bytes::copy_from_slice(&held[10..])))
+        .unwrap();
+    assert_eq!(poll(&mut other), Passed::Data(held));
+    drop((holder, body, other));
+    assert_eq!(window.taken(), 0);
+}
+
 #[test]
 fn room_for_an_arriving_message_doubles_then_goes_to_its_end() {
     let mut body = Bounded::new(chunks(&[]), bounds(1024, 1 << 20), None);
