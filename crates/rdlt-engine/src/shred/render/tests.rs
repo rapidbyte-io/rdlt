@@ -59,6 +59,13 @@ fn rendering_charges_what_its_text_grows_by_before_it_grows() {
     // What it must hold, where that is more than twice.
     rendering.push(&"e".repeat(20), &meter).unwrap();
     assert_eq!((rendering.text.capacity(), meter.spent()), (24, 24));
+    // Exactly the capacity it holds is no growth.
+    rendering.room(0, &meter).unwrap();
+    rendering.room(0, &meter).unwrap();
+    assert_eq!((rendering.text.capacity(), meter.spent()), (24, 24));
+    rendering.clear();
+    rendering.room(24, &meter).unwrap();
+    assert_eq!((rendering.text.capacity(), meter.spent()), (24, 24));
     rendering.clear();
     rendering.integer(-7_i64, &meter).unwrap();
     assert_eq!(rendering.text, "-7");

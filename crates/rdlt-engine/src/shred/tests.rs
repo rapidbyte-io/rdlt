@@ -1313,14 +1313,20 @@ fn a_chunk_whose_rendering_finds_no_room_is_built_again_to_the_same_batch() {
         admitted: 1 << 20,
         ..limits()
     };
-    let pushes = [Bytes::from(text)];
-    let built = crate::compute::ready(shred(
-        &crate::compute::Pool::inline(),
-        &pushes,
+    let pool = crate::compute::Pool::inline();
+    let observed = crate::compute::ready(super::observe(
+        &pool,
+        vec![Bytes::from(text)],
         1 << 20,
         roomy,
     ))
     .unwrap();
+    assert_eq!(
+        observed.counts().rebuilt,
+        0,
+        "the roomy chunk built as parsed"
+    );
+    let built = crate::compute::ready(observed.build(&pool)).unwrap();
     assert_eq!(built, [batch]);
 }
 
