@@ -9,6 +9,8 @@ mod binary;
 mod classes;
 mod handshake;
 mod listen;
+#[cfg(test)]
+mod live;
 mod noted;
 mod probes;
 #[cfg(feature = "certify")]

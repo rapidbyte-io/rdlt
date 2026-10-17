@@ -192,13 +192,30 @@ impl Receiving {
     }
 }
 
+/// Has the writer take each frame received, as [`taking`] does, until the write ends or its
+/// answers are dropped: a host that goes ends the write at once, whatever the writer waits for,
+/// and the writer is dropped with what it staged, which no commit published.
+async fn write(
+    writer: Box<dyn DestinationWriter>,
+    taken: mpsc::Receiver<Result<Staged, ConnectorError>>,
+    acks: mpsc::Sender<Result<v1::WriteAck, Status>>,
+    limits: Limits,
+) {
+    tokio::select! {
+        biased;
+        // The host's leaving wins over a writer that could still finish.
+        () = acks.closed() => {}
+        () = taking(writer, taken, &acks, limits) => {}
+    }
+}
+
 /// Has the writer take each frame received, in order: answers its credit, then stages its batch
 /// or flushes and answers the stats; a failure, the receiver's or the writer's, is answered with
 /// its error, after which the write ends.
-async fn write(
+async fn taking(
     mut writer: Box<dyn DestinationWriter>,
     mut taken: mpsc::Receiver<Result<Staged, ConnectorError>>,
-    acks: mpsc::Sender<Result<v1::WriteAck, Status>>,
+    acks: &mpsc::Sender<Result<v1::WriteAck, Status>>,
     limits: Limits,
 ) {
     use v1::write_ack::Ack;
