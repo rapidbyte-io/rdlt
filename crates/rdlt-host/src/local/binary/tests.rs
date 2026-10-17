@@ -426,15 +426,31 @@ fn a_path_is_followed_through_as_many_links_as_linux_follows_and_no_more() {
 }
 
 #[test]
-fn a_file_renamed_over_or_removed_is_no_longer_linked() {
+fn a_file_renamed_over_or_removed_has_no_name_left() {
     let root = tempfile::tempdir().expect("a temporary directory");
     let path = root.path().join("binary");
     file(&path, b"x", 0o755);
     let binary = Binary::at(&path).expect("it opens");
-    assert!(binary.linked().expect("it is asked"));
+    assert_eq!(binary.names().expect("they are counted"), 1);
     file(&root.path().join("other"), b"y", 0o755);
     std::fs::rename(root.path().join("other"), &path).expect("it is renamed over");
-    assert!(!binary.linked().expect("it is asked"));
+    assert_eq!(binary.names().expect("they are counted"), 0);
+}
+
+#[test]
+fn a_binary_knows_whether_it_had_a_second_name_when_it_was_opened() {
+    let root = tempfile::tempdir().expect("a temporary directory");
+    let path = root.path().join("binary");
+    file(&path, b"x", 0o755);
+    let binary = Binary::at(&path).expect("it opens");
+    assert!(!binary.linked());
+    std::fs::hard_link(&path, root.path().join("alias")).expect("a second name");
+    // What it had when opened stands; what it has now is counted.
+    assert!(!binary.linked());
+    assert_eq!(binary.names().expect("they are counted"), 2);
+    assert!(Binary::at(&path).expect("it opens").linked());
+    let named = Binary::named(&[root.path().to_owned()], "binary").expect("it is found");
+    assert!(named.linked());
 }
 
 #[test]

@@ -94,7 +94,7 @@ pub(crate) fn command(
         if !marks_at_once() {
             return Err(SandboxError::Descriptors.into());
         }
-        if !launch.binary.linked()? {
+        if launch.binary.names()? == 0 {
             return Err(Unspawned::Replaced);
         }
         given.push((launch.binary.file().try_clone()?.into(), PROGRAM_FD));
