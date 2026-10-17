@@ -252,9 +252,10 @@ impl std::error::Error for OsError {
 /// ships.
 ///
 /// The sandbox must give the connector no file, network, process or variable of the host's
-/// but what [`Confined`] names, pass on no descriptor but its standard streams and the
-/// socket, put no value of the connector's environment where another user may read it, as a
-/// command line, and end everything it started when the process the host spawned is killed.
+/// but what [`Confined`] names, pass on no descriptor but its standard streams and
+/// [`Confined::socket`], which the connector finds at that number, put no value of the
+/// connector's environment where another user may read it, as a command line, and end
+/// everything it started when the process the host spawned is killed.
 pub trait Sandbox: fmt::Debug + Send + Sync {
     /// The command that runs `confined`.
     ///
