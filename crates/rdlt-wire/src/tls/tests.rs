@@ -587,6 +587,33 @@ fn a_revoked_host_is_refused_and_another_accepted() {
 }
 
 #[test]
+fn revoking_one_host_spares_another_whatever_was_issued_again_before_it() {
+    let pki = Pki::new("ca");
+    let _replaced = pki.client("kept");
+    let kept = pki.client("kept");
+    let stolen = pki.client("stolen");
+    let server = identity(&pki.server("server", &["localhost"]));
+    let handshakes = |host: &Files, crl: &std::path::Path| {
+        let accepted = Accepted {
+            crl: Some(crl.to_owned()),
+            ..accepted(&pki, &["stolen", "kept"])
+        };
+        let server = server_config(&server, &accepted).expect("the server builds");
+        let client = client_config(&identity(host), &pki.ca()).expect("the client builds");
+        handshake(client, server, "localhost").map(|_| ())
+    };
+    let revoked = Err(rustls::Error::InvalidCertificate(
+        rustls::CertificateError::Revoked,
+    ));
+    let naming_stolen = pki.revoking("stolen", &[&stolen]);
+    assert_eq!(handshakes(&stolen, &naming_stolen), revoked);
+    assert_eq!(handshakes(&kept, &naming_stolen), Ok(()));
+    let naming_kept = pki.revoking("kept", &[&kept]);
+    assert_eq!(handshakes(&kept, &naming_kept), revoked);
+    assert_eq!(handshakes(&stolen, &naming_kept), Ok(()));
+}
+
+#[test]
 fn a_revocation_list_file_without_a_list_is_refused_by_name() {
     let pki = Pki::new("ca");
     let server = identity(&pki.server("server", &["localhost"]));

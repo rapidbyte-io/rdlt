@@ -27,8 +27,16 @@ pub struct Pki {
     dir: tempfile::TempDir,
     ca: CertifiedIssuer<'static, KeyPair>,
     name: String,
-    /// The serial number of each certificate issued, by its file.
-    issued: Mutex<BTreeMap<PathBuf, u64>>,
+    issued: Mutex<Issued>,
+}
+
+/// The certificates a [`Pki`] issued.
+#[derive(Default)]
+struct Issued {
+    /// How many it issued, a file issued again counted again: the latest one's serial number.
+    count: u64,
+    /// The serial number of the certificate each file holds, by the file.
+    serials: BTreeMap<PathBuf, u64>,
 }
 
 impl std::fmt::Debug for Pki {
@@ -61,7 +69,7 @@ impl Pki {
             dir,
             ca,
             name: name.to_owned(),
-            issued: Mutex::new(BTreeMap::new()),
+            issued: Mutex::new(Issued::default()),
         }
     }
 
@@ -130,7 +138,7 @@ impl Pki {
         let revoked_certs = revoked
             .iter()
             .map(|files| RevokedCertParams {
-                serial_number: SerialNumber::from(issued[&files.cert]),
+                serial_number: SerialNumber::from(issued.serials[&files.cert]),
                 revocation_time: date_time_ymd(2000, 6, 1),
                 reason_code: None,
                 invalidity_date: None,
@@ -166,8 +174,9 @@ impl Pki {
         };
         let serial = {
             let mut issued = self.issued.lock().expect("no test panicked issuing");
-            let serial = u64::try_from(issued.len()).expect("few certificates") + 1;
-            issued.insert(files.cert.clone(), serial);
+            issued.count += 1;
+            let serial = issued.count;
+            issued.serials.insert(files.cert.clone(), serial);
             serial
         };
         params.serial_number = Some(SerialNumber::from(serial));
