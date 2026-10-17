@@ -1,11 +1,13 @@
 //! A connector's binary: found only where its operator said, opened once, and from then on
 //! known by that open file, which is what is hashed and what is executed.
 
+use std::collections::VecDeque;
+use std::ffi::OsString;
 use std::fs::File;
 use std::io;
 use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::{FileExt as _, MetadataExt as _};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use rustix::fs::{CWD, Mode, OFlags};
 use sha2::Digest as _;
@@ -47,30 +49,19 @@ const OPEN: OFlags = OFlags::RDONLY
     .union(OFlags::NONBLOCK)
     .union(OFlags::NOCTTY);
 
+/// The most links a path is followed through, as many as the kernel follows.
+const LINKS: usize = 40;
+
 impl Binary {
-    /// Opens the binary at `path`, as its operator wrote the path, links included: the
-    /// directories on the way, as written and as the file was reached, must be no other
-    /// user's to change.
+    /// Opens the binary at `path`, as its operator wrote the path, links included: every
+    /// directory a name on the way is looked up in must be no other user's to change.
     pub(crate) fn at(path: &Path) -> Result<Self, Unfit> {
         let absolute = std::path::absolute(path).map_err(|error| Unfit::Absent(Some(error)))?;
         let fd = rustix::fs::open(&absolute, OPEN, Mode::empty())
             .map_err(|error| Unfit::Absent(Some(error.into())))?;
         let binary = Self::checked(File::from(fd), absolute)?;
-        directories_private(&binary.path)?;
-        directories_private(&binary.real()?)?;
+        reached_private(&binary.path)?;
         Ok(binary)
-    }
-
-    /// Where the open file is, every link resolved.
-    fn real(&self) -> Result<PathBuf, Unfit> {
-        #[cfg(target_os = "linux")]
-        let real = {
-            use std::os::fd::AsRawFd as _;
-            std::fs::read_link(format!("/proc/self/fd/{}", self.file.as_raw_fd()))
-        };
-        #[cfg(not(target_os = "linux"))]
-        let real = std::fs::canonicalize(&self.path);
-        real.map_err(|error| Unfit::Absent(Some(error)))
     }
 
     /// Whether a name still leads to the open file: one renamed over, or removed, has none.
@@ -79,7 +70,8 @@ impl Binary {
     }
 
     /// Opens the binary `name` in the first of `dirs` that holds it: each an absolute path to
-    /// a directory no other user may write, searched by that name alone, following no link.
+    /// a directory no other user may write, nor any a name on the way to it is looked up in,
+    /// searched by that name alone, following no link.
     pub(crate) fn named(dirs: &[PathBuf], name: &str) -> Result<Self, Unfit> {
         for dir in dirs {
             if !dir.is_absolute() {
@@ -97,7 +89,7 @@ impl Binary {
             };
             let opened = File::from(opened);
             private(&opened, dir)?;
-            directories_private(dir)?;
+            reached_private(dir)?;
             // What is absent is looked for in the next directory, and so is a link, which is
             // not followed.
             let unfollowed = OPEN.union(OFlags::NOFOLLOW);
@@ -177,34 +169,73 @@ impl Binary {
     }
 }
 
-/// Checks that every directory above `path` belongs to this process's user or to the
-/// superuser, and that another user may write none of them, or, where one may, as in `/tmp`,
-/// that the directory is sticky and the entry within it this user's or the superuser's: in a
-/// sticky directory another user can neither remove nor rename an entry they do not own.
-pub(crate) fn directories_private(path: &Path) -> Result<(), Unfit> {
-    let ours = rustix::process::geteuid().as_raw();
-    let trusted = |owner: u32| owner == 0 || owner == ours;
-    let entries = path.ancestors().skip(1).zip(path.ancestors());
-    for (directory, entry) in entries {
-        let metadata = std::fs::metadata(directory).map_err(|error| Unfit::Absent(Some(error)))?;
-        let (owner, mode) = (metadata.uid(), metadata.mode() & 0o7777);
-        let shared = Unfit::Shared {
-            path: directory.to_owned(),
-            owner,
-            mode,
-        };
-        if !trusted(owner) {
-            return Err(shared);
+/// Checks every directory a name is looked up in as the absolute `path` is resolved, links
+/// followed as the kernel follows them: each the path passes through as it is reached, and each
+/// a link on the way is read from.
+fn reached_private(path: &Path) -> Result<(), Unfit> {
+    let absent = |error: io::Error| Unfit::Absent(Some(error));
+    let mut ahead = names(path);
+    let (mut at, mut links) = (PathBuf::from("/"), 0);
+    while let Some(name) = ahead.pop_front() {
+        // `at` holds no link, so its parent is the directory `..` names.
+        if name == ".." {
+            at.pop();
+            continue;
         }
-        if mode & 0o022 != 0 {
-            let held = std::fs::symlink_metadata(entry);
-            let entry_ours = held.is_ok_and(|held| trusted(held.uid()));
-            if mode & 0o1000 == 0 || !entry_ours {
-                return Err(shared);
-            }
+        let entry = at.join(&name);
+        entry_private(&at, &entry)?;
+        if !std::fs::symlink_metadata(&entry)
+            .map_err(absent)?
+            .is_symlink()
+        {
+            at = entry;
+            continue;
+        }
+        links += 1;
+        if links > LINKS {
+            let looped = rustix::io::Errno::LOOP.raw_os_error();
+            return Err(absent(io::Error::from_raw_os_error(looped)));
+        }
+        let target = std::fs::read_link(&entry).map_err(absent)?;
+        if target.is_absolute() {
+            at = PathBuf::from("/");
+        }
+        for name in names(&target).into_iter().rev() {
+            ahead.push_front(name);
         }
     }
     Ok(())
+}
+
+/// Checks that `directory` belongs to this process's user or to the superuser, and that another
+/// user may write it only where it is sticky, as `/tmp` is, and `entry` in it, a link included,
+/// is this user's or the superuser's: in a sticky directory another user can neither remove nor
+/// rename an entry they do not own.
+fn entry_private(directory: &Path, entry: &Path) -> Result<(), Unfit> {
+    let ours = rustix::process::geteuid().as_raw();
+    let trusted = |owner: u32| owner == 0 || owner == ours;
+    let metadata = std::fs::metadata(directory).map_err(|error| Unfit::Absent(Some(error)))?;
+    let (owner, mode) = (metadata.uid(), metadata.mode() & 0o7777);
+    let held = || std::fs::symlink_metadata(entry).is_ok_and(|held| trusted(held.uid()));
+    if trusted(owner) && (mode & 0o022 == 0 || (mode & 0o1000 != 0 && held())) {
+        return Ok(());
+    }
+    Err(Unfit::Shared {
+        path: directory.to_owned(),
+        owner,
+        mode,
+    })
+}
+
+/// The names of `path`'s components, `..` among them, in order.
+fn names(path: &Path) -> VecDeque<OsString> {
+    path.components()
+        .filter_map(|component| match component {
+            Component::Normal(name) => Some(name.to_owned()),
+            Component::ParentDir => Some(OsString::from("..")),
+            Component::RootDir | Component::CurDir | Component::Prefix(_) => None,
+        })
+        .collect()
 }
 
 /// Checks that the open `file`, found at `path`, belongs to this process's user or to the
