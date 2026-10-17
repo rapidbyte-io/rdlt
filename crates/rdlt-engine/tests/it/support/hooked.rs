@@ -19,6 +19,8 @@ pub(crate) enum At {
     Landed,
     /// At every close of a session, which then fails.
     Close,
+    /// Before the first schema change a session applies.
+    Schema,
 }
 
 pub(crate) type Hook = Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>;
@@ -83,7 +85,12 @@ async fn once(called: &AtomicBool, hook: &Hook) {
 
 impl DestinationSession for HookedSession {
     fn apply_schema<'a>(&'a mut self, change: &'a TableChange) -> BoxFuture<'a, Result<()>> {
-        self.inner.apply_schema(change)
+        Box::pin(async move {
+            if self.at == At::Schema {
+                once(&self.called, &self.hook).await;
+            }
+            self.inner.apply_schema(change).await
+        })
     }
 
     fn writer<'a>(

@@ -1,6 +1,7 @@
 //! JSON pushes end to end, and pushes coalesced into batches: shredding, nesting and coalescing.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use arrow_array::StringArray;
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
@@ -9,10 +10,13 @@ use rdlt_connector::Push;
 use rdlt_connector_reference::published;
 use std::time::Duration;
 
+use rdlt_engine::StreamPlan;
 use rdlt_engine::{BatchPolicy, ErrorKind, Nested, RunStatus, SchemaSettings, WriteMode};
 use serde_json::{Value, json};
 
 use crate::support::batches::{BatchStream, batches};
+use crate::support::hooked::{At, Hook, hooked};
+use crate::support::making::{Step, Steps, making};
 use crate::support::{
     commit_every, engine, memory, pipeline, published_json, published_rows, stream,
 };
@@ -433,4 +437,94 @@ async fn a_merge_key_mixing_kinds_merges_by_its_json_text_where_the_stream_does_
             json!({"id": "\"x\"", "v": "b"})
         ]
     );
+}
+
+/// Text whose owner a test counts: it lives while any of its bytes do.
+struct Marked {
+    text: Vec<u8>,
+    _alive: Arc<()>,
+}
+
+impl AsRef<[u8]> for Marked {
+    fn as_ref(&self) -> &[u8] {
+        &self.text
+    }
+}
+
+/// How many hold the text of `records` when the destination first applies a schema.
+///
+/// The text is one JSON push from a source that keeps none of it, loaded as `plan` under `name`.
+/// The test is one holder, and the text's owner another while any of its bytes are alive.
+async fn holding_the_text_at_the_first_schema(
+    name: &str,
+    plan: StreamPlan,
+    records: String,
+) -> usize {
+    let alive = Arc::new(());
+    let marked = Marked {
+        text: records.into_bytes(),
+        _alive: Arc::clone(&alive),
+    };
+    let push = parking_lot::Mutex::new(Some(Bytes::from_owner(marked)));
+    let steps: Steps = Arc::new(move |step| match step {
+        0 => push.lock().take().map(Step::Json),
+        1 => Some(Step::Checkpoint(8)),
+        _ => None,
+    });
+    let holding = Arc::new(AtomicUsize::new(0));
+    let (seen, watched) = (Arc::clone(&holding), Arc::downgrade(&alive));
+    let hook: Hook = Arc::new(move || {
+        seen.store(watched.strong_count(), Ordering::SeqCst);
+        Box::pin(async {})
+    });
+    let destination = hooked(memory(name).await, At::Schema, hook);
+    let outcome = engine(commit_every(1_000))
+        .run(
+            pipeline(name, [plan]),
+            making(name, steps).await,
+            destination,
+        )
+        .await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{name}: {:?}",
+        outcome.error
+    );
+    holding.load(Ordering::SeqCst)
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_json_flush_lets_its_text_go_before_its_table_is_changed() {
+    // Records of one long string, whose batches take no more than their text was admitted for.
+    let record = format!("{{\"a\":\"{}\"}}", "x".repeat(1_000));
+    let records = vec![record; 100].join("\n");
+    let normalized = stream("events").schema(SchemaSettings::new().nested(Nested::normalize()));
+    let held = [
+        holding_the_text_at_the_first_schema("text_gone_plain", stream("events"), records.clone())
+            .await,
+        holding_the_text_at_the_first_schema("text_gone_normalized", normalized, records).await,
+    ];
+    assert_eq!(
+        held,
+        [1, 1],
+        "only the test holds the text once its charge is given back"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_json_flush_whose_batches_take_more_keeps_its_text_while_it_plans_them() {
+    // Records of a key each, whose nulls take more to build than their text was admitted for:
+    // the flush plans its pieces before it holds what lowering them takes, and builds again
+    // from its text where the budget has no room, so it keeps its text, still charged.
+    let records: Vec<String> = (0..600)
+        .map(|record| format!("{{\"k{record}\":{record}}}"))
+        .collect();
+    let held = holding_the_text_at_the_first_schema(
+        "text_kept_planning",
+        stream("events"),
+        records.join("\n"),
+    )
+    .await;
+    assert_eq!(held, 2);
 }
