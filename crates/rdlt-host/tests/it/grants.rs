@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use rdlt_host::{ConnectorRef, FileSecrets, Local, Provider as _, Secrets};
 
-use crate::process::{example, local, scripted};
+use crate::process::{example, local, scripted, scripted_in};
 
 /// A directory `name` within `root`.
 fn dir(root: &Path, name: &str) -> PathBuf {
@@ -27,6 +27,14 @@ async fn refused(local: &Local, reference: &ConnectorRef) -> &'static str {
     placed.err().expect("refused").code()
 }
 
+/// An executable script at `path` that runs under `interpreter`.
+fn executable_script(path: &Path, interpreter: &Path) {
+    let line = format!("#!{} -e\nexit 3\n", interpreter.display());
+    std::fs::write(path, line).expect("the script writes");
+    let mode = std::os::unix::fs::PermissionsExt::from_mode(0o755);
+    std::fs::set_permissions(path, mode).expect("the script is executable");
+}
+
 #[tokio::test]
 async fn no_placement_is_made_while_a_root_that_may_be_written_holds_what_the_host_runs_or_keeps() {
     let root = tempfile::tempdir().expect("a temporary directory");
@@ -36,34 +44,33 @@ async fn no_placement_is_made_while_a_root_that_may_be_written_holds_what_the_ho
     let interpreter = held.join("sh");
     std::fs::copy("/bin/sh", &interpreter).expect("the shell copies");
     let script = root.path().join("rdlt-connector-script");
-    let line = format!("#!{} -e\nexit 3\n", interpreter.display());
-    std::fs::write(&script, line).expect("the script writes");
-    let mode = std::os::unix::fs::PermissionsExt::from_mode(0o755);
-    std::fs::set_permissions(&script, mode).expect("the script is executable");
+    executable_script(&script, &interpreter);
     let executable = std::env::current_exe().expect("the test binary has a path");
     let host = executable.parent().expect("it is in a directory");
+    let elsewhere = tempfile::tempdir().expect("a temporary directory");
+    let alone = scripted_in(elsewhere.path());
     let secrets = FileSecrets::within([held.join("secrets")]);
     for (local, reference, what) in [
         (
             under().connector_dir(held.join("bin")),
-            scripted(),
+            alone.clone(),
             "a connector directory",
         ),
         (
             under().guarded_dir(held.join("wal")),
-            scripted(),
+            alone.clone(),
             "the host's state",
         ),
         (
             under().secrets(Secrets::new().files(secrets)),
-            scripted(),
+            alone.clone(),
             "secrets",
         ),
         (under(), scripted().path(&binary), "a binary placed by path"),
         (under(), scripted().path(&script), "a script's interpreter"),
         (
             local().grantable_write(host),
-            scripted(),
+            alone.clone(),
             "the host's executable",
         ),
     ] {
@@ -86,7 +93,7 @@ async fn no_placement_is_made_while_a_root_that_may_be_written_holds_what_the_ho
         .guarded_dir(held.join("wal"));
     drop(
         beside
-            .source(&scripted(), &serde_json::json!({}))
+            .source(&alone, &serde_json::json!({}))
             .await
             .expect("placed"),
     );
@@ -108,6 +115,8 @@ mod confined {
     #[tokio::test]
     async fn a_grant_outside_every_root_the_operator_named_is_refused() {
         let root = tempfile::tempdir().expect("a temporary directory");
+        let elsewhere = tempfile::tempdir().expect("a temporary directory");
+        let alone = scripted_in(elsewhere.path());
         let (readable, writable) = (dir(root.path(), "readable"), dir(root.path(), "writable"));
         let rooted = || {
             unlaunched()
@@ -116,16 +125,16 @@ mod confined {
         };
         for (local, reference) in [
             // None named, none granted.
-            (unlaunched(), scripted().grant_read(&readable)),
-            (rooted(), scripted().grant_write(&readable)),
-            (rooted(), scripted().grant_read(root.path())),
+            (unlaunched(), alone.clone().grant_read(&readable)),
+            (rooted(), alone.clone().grant_write(&readable)),
+            (rooted(), alone.clone().grant_read(root.path())),
         ] {
             assert_eq!(refused(&local, &reference).await, "grant_outside");
         }
         // Within its roots, the grant is held, and only the missing launcher refuses it.
         for reference in [
-            scripted().grant_read(&readable),
-            scripted().grant_write(&writable),
+            alone.clone().grant_read(&readable),
+            alone.clone().grant_write(&writable),
         ] {
             assert_eq!(refused(&rooted(), &reference).await, "sandbox_missing");
         }
@@ -135,23 +144,29 @@ mod confined {
     async fn a_grant_to_write_what_every_connector_reads_is_refused() {
         let root = tempfile::tempdir().expect("a temporary directory");
         let read = dir(root.path(), "read");
+        let elsewhere = tempfile::tempdir().expect("a temporary directory");
+        let alone = scripted_in(elsewhere.path());
         let local = unlaunched().grant_read(&read).grantable_write(root.path());
-        let reference = scripted().grant_write(dir(&read, "inner"));
+        let reference = alone.grant_write(dir(&read, "inner"));
         assert_eq!(refused(&local, &reference).await, "grant_overlap");
     }
 
     #[tokio::test]
     async fn a_root_may_not_hold_the_sandboxs_launcher() {
         let root = tempfile::tempdir().expect("a temporary directory");
+        let elsewhere = tempfile::tempdir().expect("a temporary directory");
+        let alone = scripted_in(elsewhere.path());
         let local = Local::sandboxed(Bubblewrap::at(root.path().join("bwrap")))
             .grantable_write(root.path());
-        assert_eq!(refused(&local, &scripted()).await, "grant_root_guarded");
+        assert_eq!(refused(&local, &alone).await, "grant_root_guarded");
     }
 
     #[tokio::test]
     async fn every_provider_of_the_process_holds_what_its_placements_run() {
         let root = tempfile::tempdir().expect("a temporary directory");
         let bin = dir(root.path(), "bin");
+        let elsewhere = tempfile::tempdir().expect("a temporary directory");
+        let alone = scripted_in(elsewhere.path());
         let binary = copied(&bin.join("rdlt-connector-scripted"));
         let running = local()
             .source(&scripted().path(&binary), &serde_json::json!({}))
@@ -159,7 +174,7 @@ mod confined {
             .expect("it runs");
         // Another provider's grant over the program it runs is refused.
         let other = unlaunched().grantable_write(root.path());
-        let refusal = refused(&other, &scripted().grant_write(&bin)).await;
+        let refusal = refused(&other, &alone.grant_write(&bin)).await;
         assert_eq!(refusal, "grant_covers");
         drop(running);
     }
@@ -171,9 +186,11 @@ mod confined {
         };
         let root = tempfile::tempdir().expect("a temporary directory");
         let data = dir(root.path(), "data");
+        let elsewhere = tempfile::tempdir().expect("a temporary directory");
+        let alone = scripted_in(elsewhere.path());
         let writing = local
             .grantable_write(&data)
-            .source(&scripted().grant_write(&data), &serde_json::json!({}))
+            .source(&alone.grant_write(&data), &serde_json::json!({}))
             .await
             .expect("it runs");
         let planted = copied(&data.join("rdlt-connector-scripted"));
@@ -188,17 +205,19 @@ mod confined {
             return;
         };
         let data = tempfile::tempdir().expect("a temporary directory");
+        let elsewhere = tempfile::tempdir().expect("a temporary directory");
+        let alone = scripted_in(elsewhere.path());
         let local = local.grantable_write(data.path());
         let (a, b) = (dir(data.path(), "a"), dir(data.path(), "b"));
         std::fs::write(b.join("table"), "b's rows").expect("it writes");
         // Pipeline B's connector runs, granted its own directory.
-        let b_ref = scripted().grant_write(&b);
+        let b_ref = alone.clone().grant_write(&b);
         let b_source = local
             .source(&b_ref, &serde_json::json!({}))
             .await
             .expect("b starts");
         // Pipeline A's, through the same provider, is granted its own, and reaches none of b's.
-        let a_ref = scripted().grant_write(&a);
+        let a_ref = alone.clone().grant_write(&a);
         let reaching_b = serde_json::json!({
             "writes": a.join("own"),
             "absent": [b.clone(), b.join("table")],
@@ -211,7 +230,7 @@ mod confined {
             .expect("a sees only its own grant");
         let writing_b = serde_json::json!({ "writes": b.join("table") });
         let a_writer = local
-            .source(&scripted().grant_write(&a).share_grants(), &writing_b)
+            .source(&alone.grant_write(&a).share_grants(), &writing_b)
             .await;
         // A's own grant is held by A's connector: a second, unshared, is refused.
         assert_eq!(a_writer.err().expect("refused").code(), "grant_overlap");
@@ -239,15 +258,17 @@ mod confined {
             return;
         };
         let data = tempfile::tempdir().expect("a temporary directory");
+        let elsewhere = tempfile::tempdir().expect("a temporary directory");
+        let alone = scripted_in(elsewhere.path());
         let local = local.grantable_write(data.path());
-        let shared = scripted().grant_write(data.path()).share_grants();
+        let shared = alone.clone().grant_write(data.path()).share_grants();
         let config = serde_json::json!({});
         let _one = local.source(&shared, &config).await.expect("one starts");
         let _two = local
             .source(&shared, &config)
             .await
             .expect("both are shared");
-        let unshared = scripted().grant_read(data.path());
+        let unshared = alone.grant_read(data.path());
         assert_eq!(refused(&local, &unshared).await, "grant_overlap");
     }
 
@@ -257,7 +278,9 @@ mod confined {
             return;
         };
         let root = tempfile::tempdir().expect("a temporary directory");
-        let mut reference = scripted();
+        let elsewhere = tempfile::tempdir().expect("a temporary directory");
+        let alone = scripted_in(elsewhere.path());
+        let mut reference = alone;
         let mut readable = Vec::new();
         for index in 0..5 {
             let read = dir(root.path(), &format!("read-{index}"));
@@ -283,6 +306,8 @@ mod confined {
             return;
         };
         let root = tempfile::tempdir().expect("a temporary directory");
+        let elsewhere = tempfile::tempdir().expect("a temporary directory");
+        let alone = scripted_in(elsewhere.path());
         let (a, b, c) = (
             dir(root.path(), "a"),
             dir(root.path(), "b"),
@@ -295,7 +320,7 @@ mod confined {
         let source = local
             .grantable_write(root.path())
             .kills(&kills)
-            .source(&scripted().grant_write(&link), &writing)
+            .source(&alone.grant_write(&link), &writing)
             .await
             .expect("it starts")
             .connector;

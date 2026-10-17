@@ -57,7 +57,7 @@ pub(crate) mod bubblewrap {
     use rdlt_host::{Kills, LastWords, Options};
 
     use super::*;
-    use crate::process::{example, local, wait_gone};
+    use crate::process::{example, local, scripted_in, wait_gone};
     use crate::support::{engine, memory_destination};
 
     /// How long what a sandbox held may take to be gone once its launcher is.
@@ -201,13 +201,15 @@ pub(crate) mod bubblewrap {
             return;
         };
         let (_listener, address) = listener();
+        let elsewhere = tempfile::tempdir().expect("a temporary directory");
+        let alone = scripted_in(elsewhere.path());
         let granted = tempfile::tempdir().expect("a temporary directory");
         let (read, write) = (granted.path().join("read"), granted.path().join("write"));
         std::fs::create_dir(&read).expect("a directory");
         std::fs::create_dir(&write).expect("a directory");
         std::fs::write(read.join("given"), "given").expect("it writes");
         let granting = local.clone().grant_read(&read).grantable_write(&write);
-        let granted_ref = scripted().grant_write(&write).grant_network();
+        let granted_ref = alone.clone().grant_write(&write).grant_network();
         let reaching = serde_json::json!({
             "readable": [read.join("given")],
             "writes": write.join("made"),
@@ -231,7 +233,7 @@ pub(crate) mod bubblewrap {
         // What is granted to be read is not written.
         let overreaching = serde_json::json!({ "writes": read.join("made") });
         let source = granting
-            .source(&scripted(), &overreaching)
+            .source(&alone, &overreaching)
             .await
             .expect("it starts");
         source
@@ -307,6 +309,8 @@ pub(crate) mod bubblewrap {
             return;
         };
         let kept = tempfile::tempdir().expect("a temporary directory");
+        let elsewhere = tempfile::tempdir().expect("a temporary directory");
+        let alone = scripted_in(elsewhere.path());
         // It crashes once, mid-read, and says so in a file it was granted to write.
         let script = serde_json::json!({
             "rows": 400,
@@ -316,7 +320,7 @@ pub(crate) mod bubblewrap {
         });
         let source = local
             .grantable_write(kept.path())
-            .source(&scripted().grant_write(kept.path()), &script)
+            .source(&alone.grant_write(kept.path()), &script)
             .await
             .expect("the connector starts")
             .connector;
