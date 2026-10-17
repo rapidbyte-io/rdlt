@@ -16,8 +16,10 @@ pub(crate) const DROPPED: &str = "[cut] ";
 /// each is replaced wherever the connector says it back.
 ///
 /// A value is found as it is, and as JSON, Rust's `Debug` and [`shown`] write it; where a
-/// text was cut, the part of a value left at the cut is replaced too. A connector that
-/// transforms a secret before it says it, by an encoding or a split, is beyond this.
+/// text was cut, the part of a value left at the cut is replaced too. Each line of a value
+/// that holds line ends is found on its own as well, since output is logged a line at a time.
+/// A connector that transforms a secret before it says it, by an encoding or a split
+/// elsewhere, is beyond this.
 #[derive(Clone, Default)]
 pub struct Redactions {
     /// The values' forms, the longest first, so that one holding another is replaced whole.
@@ -37,20 +39,20 @@ impl Redactions {
         Self::default()
     }
 
-    /// Adds `secret`, and the forms a connector's text may hold it in; an empty one is
-    /// nothing to find.
+    /// Adds `secret`, each of its lines that is not blank, and the forms a connector's text
+    /// may hold them in; an empty one is nothing to find.
     pub fn add(&self, secret: &str) {
-        if secret.is_empty() {
-            return;
-        }
-        let json = serde_json::to_string(secret).unwrap_or_default();
-        let json = json.trim_matches('"').to_owned();
-        let debug: String = secret.escape_debug().collect();
-        let forms = [secret.to_owned(), json, debug, shown(secret, usize::MAX)];
+        let lines = secret.lines().filter(|line| !line.trim().is_empty());
         let mut secrets = self.secrets.lock().unwrap_or_else(PoisonError::into_inner);
-        for form in forms.map(Zeroizing::new) {
-            if !form.is_empty() && !secrets.contains(&form) {
-                secrets.push(form);
+        for value in std::iter::once(secret).chain(lines) {
+            let json = serde_json::to_string(value).unwrap_or_default();
+            let json = json.trim_matches('"').to_owned();
+            let debug: String = value.escape_debug().collect();
+            let forms = [value.to_owned(), json, debug, shown(value, usize::MAX)];
+            for form in forms.map(Zeroizing::new) {
+                if !form.is_empty() && !secrets.contains(&form) {
+                    secrets.push(form);
+                }
             }
         }
         secrets.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
