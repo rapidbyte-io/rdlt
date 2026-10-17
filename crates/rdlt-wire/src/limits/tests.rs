@@ -141,6 +141,66 @@ fn a_limit_the_peer_leaves_unset_is_the_protocols_default() {
     );
 }
 
+/// The words of the comment above the line of `text` that is `declaration`, past its attributes,
+/// as one line.
+fn documented(text: &str, declaration: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let at = lines
+        .iter()
+        .position(|line| line.trim() == declaration)
+        .unwrap_or_else(|| panic!("`{declaration}` is declared"));
+    let mut comment: Vec<&str> = lines[..at]
+        .iter()
+        .rev()
+        .skip_while(|line| line.trim_start().starts_with("#["))
+        .take_while(|line| line.trim_start().starts_with("//"))
+        .copied()
+        .collect();
+    comment.reverse();
+    comment
+        .iter()
+        .flat_map(|line| line.split_whitespace())
+        .filter(|word| !word.chars().all(|c| c == '/'))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+#[test]
+fn the_protocol_names_each_least_a_peer_may_set_and_the_limit_without_a_default() {
+    use super::{MIN_BATCH_ROWS, MIN_BATCH_VALUES, MIN_DICTIONARY_BYTES, MIN_FRAME_BYTES};
+    // The generated code is what a Rust peer reads: it must say what the protocol file says.
+    let proto = include_str!("../../proto/rdlt/connector/v1/connector.proto");
+    let generated = include_str!("../generated/rdlt.connector.v1.rs");
+    let sources = [
+        (proto, "message Limits {", "uint64 dictionary_bytes = 11;"),
+        (
+            generated,
+            "pub struct Limits {",
+            "pub dictionary_bytes: u64,",
+        ),
+    ];
+    for (text, message, field) in sources {
+        let limits = documented(text, message);
+        for least in [
+            format!("{MIN_FRAME_BYTES} bytes"),
+            format!("{MIN_BATCH_ROWS} rows"),
+            format!("{MIN_BATCH_VALUES} values"),
+            format!("dictionary_bytes below {MIN_DICTIONARY_BYTES}"),
+        ] {
+            assert!(limits.contains(&least), "{least:?} is not in {limits:?}");
+        }
+        assert!(
+            limits.contains("dictionary_bytes, which has no default"),
+            "{limits:?}"
+        );
+        let dictionary = documented(text, field);
+        assert!(
+            dictionary.contains(&format!("at least {MIN_DICTIONARY_BYTES}")),
+            "{dictionary:?}"
+        );
+    }
+}
+
 #[test]
 fn the_credit_floor_the_calls_and_a_messages_overhead_are_the_protocols() {
     assert_eq!(super::CREDIT_FLOOR, super::MIN_FRAME_BYTES);
