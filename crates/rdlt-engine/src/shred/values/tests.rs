@@ -4,6 +4,7 @@ use arrow_array::{Array, StringArray};
 use rdlt_connector::{DecimalType, Field, Fields, LogicalType};
 
 use super::{fitting, read};
+use crate::shred::observe::{Observed, Shape};
 
 fn texts(values: &[Option<&str>]) -> StringArray {
     StringArray::from(values.to_vec())
@@ -248,4 +249,107 @@ fn each_value_is_observed_once_from_fitting_to_reading() {
     let fit = fitting(&values, &LogicalType::Int64);
     read(&values, &fit.0, &fit.1).unwrap();
     assert_eq!(super::OBSERVED.with(std::cell::Cell::get), 4);
+}
+
+fn struct_of(fields: Vec<Field>) -> LogicalType {
+    LogicalType::Struct(Fields::new(fields).unwrap())
+}
+
+/// An object whose fields `fields` names, each observed as it says.
+fn object(fields: Vec<(&str, Observed)>) -> Observed {
+    let mut shape = Shape::default();
+    for (name, observed) in fields {
+        shape.push(name.into(), observed);
+    }
+    Observed::Object(shape)
+}
+
+#[test]
+fn a_part_its_column_holds_as_json_is_observed_as_json_with_nothing_below_it() {
+    let column = struct_of(vec![Field::new("j", LogicalType::Json, true)]);
+    let digits = "1".repeat(40);
+    let values = [
+        r#"{"x":1,"y":[2]}"#,
+        "[1]",
+        "true",
+        "1",
+        "-1.5",
+        r#""s""#,
+        "18446744073709551615",
+        "-170141183460469231731687303715884105728",
+        digits.as_str(),
+    ];
+    for value in values {
+        let text = format!("{{\"j\":{value}}}");
+        let observed = super::observed(&text, &column, &super::context()).unwrap();
+        assert_eq!(observed, object(vec![("j", Observed::Json)]), "{value}");
+    }
+    // A null stays null, which a field of JSON that may not be null still refuses.
+    let observed = super::observed(r#"{"j":null}"#, &column, &super::context()).unwrap();
+    assert_eq!(observed, object(vec![("j", Observed::Null)]));
+    let strict = struct_of(vec![Field::new("j", LogicalType::Json, false)]);
+    assert_eq!(
+        fit(&[Some(r#"{"j":null}"#), Some(r#"{"j":{}}"#)], &strict),
+        [false, true]
+    );
+}
+
+#[test]
+fn a_value_is_observed_no_further_than_a_key_its_struct_lacks_or_a_container_its_type_holds_none_of()
+ {
+    let a = struct_of(vec![Field::new("a", LogicalType::Int64, true)]);
+    let of_ints = LogicalType::List(Box::new(Field::new("item", LogicalType::Int64, true)));
+    let cases = [
+        (r#"{"z":1,"a":1}"#, &a),
+        (r#"{"a":1,"z":{"b":1}}"#, &a),
+        (r#"{"a":[1]}"#, &a),
+        (r#"{"a":1}"#, &LogicalType::Int64),
+        ("[1]", &LogicalType::Int64),
+        (r#"[1,{"a":1}]"#, &of_ints),
+        ("[[1]]", &of_ints),
+    ];
+    for (text, column) in cases {
+        let observed = super::observed(text, column, &super::context());
+        assert!(observed.is_err(), "{text}: {observed:?}");
+    }
+    // What the type holds is observed whole.
+    assert!(super::observed(r#"{"a":1}"#, &a, &super::context()).is_ok());
+    assert!(super::observed("[1,2]", &of_ints, &super::context()).is_ok());
+}
+
+#[test]
+fn a_part_its_column_holds_as_json_is_read_as_its_text_was_written() {
+    let column = struct_of(vec![Field::new("a", LogicalType::Json, true)]);
+    let cases = [
+        (
+            [r#"{"a":{"y":1}}"#, r#"{"a":{"x":2,"y":3}}"#],
+            [r#"{"y":1}"#, r#"{"x":2,"y":3}"#],
+        ),
+        ([r#"{"a":1.50}"#, r#"{"a":1e2}"#], ["1.50", "1e2"]),
+    ];
+    for (values, written) in cases {
+        let values = texts(&values.map(Some));
+        let (fits, joined) = fitting(&values, &column);
+        let (built, built_as) = read(&values, &fits, &joined).unwrap();
+        let own = crate::table::convert::convert(&built, &built_as, &column).unwrap();
+        let a = own.as_struct().column_by_name("a").unwrap();
+        let a = a.as_string::<i32>();
+        assert_eq!([a.value(0), a.value(1)], written);
+    }
+}
+
+#[test]
+fn a_value_observed_no_further_than_it_fits_adds_nothing_to_the_join() {
+    let column = struct_of(vec![Field::new("a", LogicalType::Float64, true)]);
+    let values = texts(&[Some(r#"{"a":1.5,"z":1}"#), Some(r#"{"a":1}"#)]);
+    let (fits, joined) = fitting(&values, &column);
+    assert_eq!(
+        fits.iter().take(2).collect::<Vec<_>>(),
+        [Some(false), Some(true)]
+    );
+    let (_, built_as) = read(&values, &fits, &joined).unwrap();
+    assert_eq!(
+        built_as,
+        struct_of(vec![Field::new("a", LogicalType::Int64, true)])
+    );
 }

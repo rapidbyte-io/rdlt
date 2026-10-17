@@ -27,14 +27,20 @@ thread_local! {
     pub(crate) static OBSERVED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// The join of what the values a column of JSON sends its own column were observed as: the type
-/// they are read into.
+/// The join of what the values a column of JSON sends its own column were observed as, the type
+/// they are read into, and that column's type, which guided observing them.
 #[derive(Clone, Debug)]
-pub(crate) struct Joined(Observed);
+pub(crate) struct Joined {
+    observed: Observed,
+    column: LogicalType,
+}
 
 impl Default for Joined {
     fn default() -> Self {
-        Self(Observed::Null)
+        Self {
+            observed: Observed::Null,
+            column: LogicalType::Null,
+        }
     }
 }
 
@@ -43,8 +49,10 @@ fn context() -> Context {
     Context::new(Meter::reserved(), Columns::new(u64::MAX))
 }
 
-/// What the JSON value `text` is observed as, its numbers exact.
-fn observed(text: &str, context: &Context) -> Result<Observed, ShredError> {
+/// What the JSON value `text` is observed as, its numbers exact, as `column`, the type it is
+/// fitted to, guides: a part `column` holds as JSON as JSON, nothing below it, and the value no
+/// further than a key its struct lacks or a container its type holds none of.
+fn observed(text: &str, column: &LogicalType, context: &Context) -> Result<Observed, ShredError> {
     #[cfg(test)]
     OBSERVED.with(|observed| observed.set(observed.get() + 1));
     let mut node = Observed::Null;
@@ -52,6 +60,7 @@ fn observed(text: &str, context: &Context) -> Result<Observed, ShredError> {
         node: &mut node,
         context,
         depth: 1,
+        target: Some(column),
     };
     super::exact::visit(text.as_bytes(), look, context).map_err(|error| {
         context
@@ -111,7 +120,7 @@ pub(crate) fn fitting(texts: &StringArray, column: &LogicalType) -> (BooleanArra
             .iter()
             .map(|text| {
                 let text = text?;
-                let held = match observed(text, &context()) {
+                let held = match observed(text, column, &context()) {
                     Ok(observed)
                         if fits(column, &observed, true) && !(nested && repeats_a_key(text)) =>
                     {
@@ -123,7 +132,11 @@ pub(crate) fn fitting(texts: &StringArray, column: &LogicalType) -> (BooleanArra
                 Some(held)
             })
             .collect();
-        (held, Joined(joined))
+        let joined = Joined {
+            observed: joined,
+            column: column.clone(),
+        };
+        (held, joined)
     })
 }
 
@@ -161,21 +174,29 @@ fn repeats_a_key(text: &str) -> bool {
     false
 }
 
-/// The join of what the values of `texts` that `taken` names are observed as, for values some
-/// rows of which were dropped since `fitting` joined them.
+/// The join of what the values of `texts` that `taken` names are observed as, guided by the
+/// column `joined` was fitted to, for values some rows of which were dropped since `fitting`
+/// joined them.
 ///
 /// # Errors
 ///
 /// Where a value is not JSON or nests past the limit.
-pub(crate) fn rejoined(texts: &StringArray, taken: &BooleanArray) -> Result<Joined, ShredError> {
+pub(crate) fn rejoined(
+    texts: &StringArray,
+    taken: &BooleanArray,
+    joined: &Joined,
+) -> Result<Joined, ShredError> {
     super::job(|| {
         let context = context();
         let named = |row: &usize| texts.is_valid(*row) && taken.is_valid(*row) && taken.value(*row);
-        let mut joined = Observed::Null;
+        let mut observed_join = Observed::Null;
         for row in (0..texts.len()).filter(named) {
-            joined.join(&observed(texts.value(row), &context)?);
+            observed_join.join(&observed(texts.value(row), &joined.column, &context)?);
         }
-        Ok(Joined(joined))
+        Ok(Joined {
+            observed: observed_join,
+            column: joined.column.clone(),
+        })
     })
 }
 
@@ -191,7 +212,7 @@ pub(crate) fn read(
     taken: &BooleanArray,
     joined: &Joined,
 ) -> Result<(ArrayRef, LogicalType), ShredError> {
-    super::job(|| read_values(texts, taken, &joined.0))
+    super::job(|| read_values(texts, taken, &joined.observed))
 }
 
 /// The values of `texts` that `taken` names, read as [`read`] reads them.
