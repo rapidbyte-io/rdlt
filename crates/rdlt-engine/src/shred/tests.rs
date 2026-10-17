@@ -1892,34 +1892,59 @@ fn a_chunk_built_again_renders_its_values_of_json_within_what_its_build_was_reck
     }
 }
 
-/// Asserts that what observing `text` keeps alive until its batches are built is within what its
-/// push was admitted for beside its text and the excess reserved beyond: what a partition still
-/// holds once its observing reservation shrinks to what building wants.
-fn kept_within_admission_and_excess(text: &str) {
+/// Asserts that what observing `texts`, one push each, keeps alive until their batches are built
+/// is within what the pushes were admitted for beside their texts and the excess reserved beyond.
+///
+/// That is what a partition still holds once its observing reservation shrinks to what building
+/// wants. The pushes are cut into chunks of `chunk_bytes`. Returns whether each chunk is to be
+/// built again.
+fn kept_within_admission_and_excess(texts: &[&str], chunk_bytes: usize) -> Vec<bool> {
     let heap = &crate::cost::tests::HEAP;
     let pool = crate::compute::Pool::inline();
-    let pushes = vec![Bytes::from(text.to_owned())];
+    let pushes: Vec<Bytes> = texts
+        .iter()
+        .map(|text| Bytes::from((*text).to_owned()))
+        .collect();
     let before = heap.current_usage();
-    let observed = crate::compute::ready(super::observe(&pool, pushes, 1 << 20, limits())).unwrap();
+    let observed =
+        crate::compute::ready(super::observe(&pool, pushes, chunk_bytes, limits())).unwrap();
     let kept = u64::try_from(heap.current_usage().saturating_sub(before)).unwrap();
-    let allowed = count(text.len()) * limits().admitted + observed.excess();
-    assert!(
-        kept <= allowed,
-        "{text:.32}: kept {kept}, allowed {allowed}"
-    );
+    let total: usize = texts.iter().map(|text| text.len()).sum();
+    let allowed = count(total) * limits().admitted + observed.excess();
+    assert!(kept <= allowed, "kept {kept}, allowed {allowed}");
+    observed.plans.iter().map(|plan| plan.again).collect()
 }
 
 #[test]
 fn what_an_observation_keeps_until_its_build_is_within_its_admission_and_its_excess() {
-    // Records of a key each, observed past the chunk's allowance.
     let keyed: Vec<String> = (0..600)
         .map(|record| format!("{{\"k{record}\":{record}}}"))
         .collect();
-    kept_within_admission_and_excess(&keyed.join("\n"));
-    // A chunk that keeps the columns it built.
-    kept_within_admission_and_excess(&hundreds("1", "2"));
-    // A chunk whose rendering tripped its meter.
-    kept_within_admission_and_excess(&drifting(&wide_object(0, 10_000)));
-    // One record of three thousand columns, built as it is parsed.
-    kept_within_admission_and_excess(&wide_object(0, 3_000));
+    let keyed = keyed.join("\n");
+    let hundreds = hundreds("1", "2");
+    let tripped = drifting(&wide_object(0, 10_000));
+    let wide = wide_object(0, 3_000);
+    let cases: [(&str, Vec<&str>, Vec<bool>); 4] = [
+        // Records of a key each, observed past the chunk's allowance.
+        ("keyed", vec![&keyed], vec![true]),
+        // A chunk that keeps the columns it built.
+        ("hundreds", vec![&hundreds], vec![false]),
+        // A chunk whose rendering tripped its meter.
+        ("tripped", vec![&tripped], vec![true]),
+        // One record of three thousand columns, built again.
+        ("wide", vec![&wide], vec![true]),
+    ];
+    for (name, texts, expected) in cases {
+        let again = kept_within_admission_and_excess(&texts, 1 << 20);
+        assert_eq!(again, expected, "{name}");
+    }
+    // Chunks of unlike shapes, one's surplus beside another's deficit.
+    let pushes = [
+        hundreds.as_str(),
+        keyed.as_str(),
+        hundreds.as_str(),
+        wide.as_str(),
+    ];
+    let again = kept_within_admission_and_excess(&pushes, 1 << 14);
+    assert!(again.len() > 1, "several: {again:?}");
 }
