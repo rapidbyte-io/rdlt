@@ -181,7 +181,7 @@ mod confined {
 
     #[tokio::test]
     async fn a_program_where_a_running_connector_may_write_is_not_run() {
-        let Some(local) = sandboxed().await else {
+        let Some(local) = sandboxed() else {
             return;
         };
         let root = tempfile::tempdir().expect("a temporary directory");
@@ -201,7 +201,7 @@ mod confined {
 
     #[tokio::test]
     async fn one_pipelines_connector_reaches_none_of_what_another_pipeline_was_granted() {
-        let Some(local) = sandboxed().await else {
+        let Some(local) = sandboxed() else {
             return;
         };
         let data = tempfile::tempdir().expect("a temporary directory");
@@ -254,7 +254,7 @@ mod confined {
 
     #[tokio::test]
     async fn grants_both_stated_to_be_shared_may_overlap() {
-        let Some(local) = sandboxed().await else {
+        let Some(local) = sandboxed() else {
             return;
         };
         let data = tempfile::tempdir().expect("a temporary directory");
@@ -274,7 +274,7 @@ mod confined {
 
     #[tokio::test]
     async fn a_connector_reaches_each_of_many_paths_it_is_granted() {
-        let Some(local) = sandboxed().await else {
+        let Some(local) = sandboxed() else {
             return;
         };
         let root = tempfile::tempdir().expect("a temporary directory");
@@ -302,7 +302,7 @@ mod confined {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn a_grant_through_a_link_binds_what_it_led_to_when_placed_at_every_spawn() {
-        let Some(local) = sandboxed().await else {
+        let Some(local) = sandboxed() else {
             return;
         };
         let root = tempfile::tempdir().expect("a temporary directory");
