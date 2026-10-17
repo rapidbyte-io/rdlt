@@ -207,7 +207,7 @@ impl Context {
 }
 
 /// The error that stops a parse whose builders would take more than its meter has room for.
-fn over<E: de::Error>(_: Over) -> E {
+pub(crate) fn over<E: de::Error>(_: Over) -> E {
     E::custom("the chunk's builders would take more than it was admitted for")
 }
 
@@ -308,7 +308,7 @@ impl<'a> Value<'a> {
                 let meter = &self.context.meter;
                 self.column.render(self.capacity, meter).map_err(over)?;
                 let mut rendering = self.context.rendering();
-                super::render::scalar(value, &mut rendering.text);
+                rendering.scalar(value, meter).map_err(over)?;
                 self.column.json(&rendering.text, meter).map_err(over)
             }
             Ok(false) => {

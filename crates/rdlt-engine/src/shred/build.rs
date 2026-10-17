@@ -34,6 +34,7 @@ use rdlt_wire::limits::count;
 use super::ShredError;
 use super::meter::{BUILDER, Meter, Over, RECORD};
 use super::observe::{Observed, exact_in_float};
+use super::render::Rendering;
 pub(crate) use list::List;
 pub(crate) use record::Record;
 
@@ -331,13 +332,13 @@ impl Column {
             _ => return Ok(()),
         };
         let mut json = Self::new(&Observed::Json, 0, capacity.max(built.len()), meter)?;
-        let mut text = String::new();
+        let mut rendering = Rendering::default();
         for row in 0..built.len() {
-            text.clear();
+            rendering.clear();
             match scalar_at(&built, row) {
                 Some(value) => {
-                    super::render::scalar(value, &mut text);
-                    json.json(&text, meter)?;
+                    rendering.scalar(value, meter)?;
+                    json.json(&rendering.text, meter)?;
                 }
                 None => json.null(meter)?,
             }

@@ -6,7 +6,7 @@ use arrow_array::types::{Decimal128Type, Decimal256Type, Float64Type, Int64Type}
 use arrow_array::{Array, RecordBatch};
 use bytes::Bytes;
 use rdlt_connector::{DecimalType, Field, LogicalType, TableSchema};
-use rdlt_wire::limits::{NESTING_DEPTH, SCHEMA_COLUMNS};
+use rdlt_wire::limits::{NESTING_DEPTH, SCHEMA_COLUMNS, count};
 
 use super::differential::shredded;
 use super::meter::{KEY, OBJECT_SHAPE};
@@ -1224,6 +1224,109 @@ fn a_batch_holds_its_columns_at_their_count_not_the_builders_capacity() {
     let extra = held.saturating_sub(arrays + schema);
     let vector = keys * size_of::<arrow_array::ArrayRef>();
     assert!(extra <= vector + 128 * 1024, "held {held}, extra {extra}");
+}
+
+/// Records `{"v":1}`, `{"v":true}` and `{"v":value}`: a column of integers that drifts to JSON
+/// at the second record, so the third is rendered as it is parsed.
+fn drifting(value: &str) -> String {
+    format!("{{\"v\":1}}\n{{\"v\":true}}\n{{\"v\":{value}}}")
+}
+
+/// An object of `keys` keys, each holding 0.
+fn flat_object(keys: usize) -> String {
+    let fields: Vec<String> = (0..keys).map(|key| format!("\"k{key}\":0")).collect();
+    format!("{{{}}}", fields.join(","))
+}
+
+/// What parsing the chunk of `records` under a limit of `columns` columns allocates at its
+/// peak, the chunk parsed, and what its meter allows: its allowance and the flush's room beyond.
+fn parse_peak(records: &str, columns: u64) -> (u64, Parsed, u64) {
+    let heap = &crate::cost::tests::HEAP;
+    let limits = ShredLimits::new(columns);
+    let records = Bytes::from(records.to_owned());
+    let chunk = chunks(std::slice::from_ref(&records), 1 << 20)
+        .unwrap()
+        .remove(0);
+    let allowed = count(chunk.bytes()) * limits.admitted + limits.beyond_bytes();
+    heap.reset_peak_usage();
+    let before = heap.current_usage();
+    let parsed = parse(chunk, limits, &limits.beyond()).unwrap();
+    let peak = u64::try_from(heap.peak_usage().saturating_sub(before)).unwrap();
+    (peak, parsed, allowed)
+}
+
+#[test]
+fn rendering_a_wide_object_into_a_column_that_drifted_to_json_stays_within_its_meter() {
+    let records = drifting(&flat_object(262_145));
+    for columns in [10_000, 1] {
+        let (peak, parsed, allowed) = parse_peak(&records, columns);
+        assert!(
+            parsed.record.is_none(),
+            "{columns} columns: the rendering found no room, so the chunk is observed"
+        );
+        assert!(
+            peak <= allowed,
+            "{columns} columns: peaked at {peak}, allowed {allowed}"
+        );
+    }
+}
+
+/// What parsing a long note, then `{"v":1}`, `{"v":true}` and `{"v":value}`, allocates at its
+/// peak and what the parse charged, the chunk built as it was parsed.
+fn rendered(value: &str) -> (u64, u64) {
+    let note = "x".repeat(64 << 10);
+    let records = format!("{{\"n\":\"{note}\"}}\n{}", drifting(value));
+    let (peak, parsed, _) = parse_peak(&records, 10_000);
+    assert!(
+        parsed.record.is_some(),
+        "{value:.32}: the chunk had room to build"
+    );
+    (peak, parsed.spent)
+}
+
+/// Asserts that rendering `value` into a column that drifted to JSON holds no more than it
+/// charged: what the parse takes beside its builders and renderings, as a value of `1` shows,
+/// is not the rendering's.
+fn rendered_as_charged(value: &str) {
+    let (base_peak, base_spent) = rendered("1");
+    let (peak, spent) = rendered(value);
+    assert!(
+        peak.saturating_sub(base_peak) <= spent.saturating_sub(base_spent),
+        "{value:.32}: held {peak}, charged {spent}, where a scalar held {base_peak}, charged {base_spent}"
+    );
+}
+
+#[test]
+fn rendering_values_into_a_column_that_drifted_to_json_holds_no_more_than_it_charged() {
+    rendered_as_charged(&flat_object(1_000));
+    // Objects nested to sixty levels below the column, within the limit.
+    rendered_as_charged(&format!("{}0{}", "{\"a\":".repeat(60), "}".repeat(60)));
+    rendered_as_charged(&format!("[{}]", vec![r#""\u0001\u0002""#; 2_000].join(",")));
+}
+
+#[test]
+fn a_chunk_whose_rendering_finds_no_room_is_built_again_to_the_same_batch() {
+    let text = drifting(&flat_object(10_000));
+    let (rebuilt, batch) = built_again(&text);
+    assert_eq!(rebuilt, 1, "the rendering tripped the chunk's meter");
+    let roomy = ShredLimits {
+        admitted: 1 << 20,
+        ..limits()
+    };
+    let pushes = [Bytes::from(text)];
+    let built = crate::compute::ready(shred(
+        &crate::compute::Pool::inline(),
+        &pushes,
+        1 << 20,
+        roomy,
+    ))
+    .unwrap();
+    assert_eq!(built, [batch]);
+}
+
+#[test]
+fn an_object_repeating_a_key_in_a_drifted_column_is_refused_as_before() {
+    assert_eq!(refused(&drifting(r#"{"a":1,"a":2}"#)), "json_duplicate_key");
 }
 
 /// How many chunks shredding `push` in one chunk builds again, and the batch.
