@@ -1,6 +1,9 @@
 //! A remote writer: batches for one table go to the connector as frames, within the credit it
 //! grants, and a flush waits for its stats.
 
+#[cfg(test)]
+mod tests;
+
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
@@ -120,7 +123,8 @@ impl RemoteWriter {
             .map_err(|_| out_of_turn("a credit of no bytes"))
     }
 
-    /// Sends `frame` once the connector has credit left for it, spending its size.
+    /// Sends `frame` once the connector has credit left for it and the writer's queue has room,
+    /// spending its size as the queue takes it.
     async fn send(&mut self, frame: v1::write_frame::Frame) -> rdlt_connector::Result<()> {
         let frame = v1::WriteFrame { frame: Some(frame) };
         let size = u64::try_from(frame.sent_len()).unwrap_or(u64::MAX);
@@ -133,19 +137,25 @@ impl RemoteWriter {
                 }
             }
         }
-        self.credit.spend(size);
-        // The transport's windows may fill before the credit is spent: the send has a deadline.
+        // The transport's windows may fill before the credit is spent: the wait for room has a
+        // deadline. A frame spends its credit only as the queue takes it, so a wait that ends
+        // early, at its deadline or dropped, spends none.
         let deadline = self.connection.options.deadlines.write_ack;
-        let sent = tokio::select! {
+        tokio::select! {
             biased;
             () = self.connection.lost.cancelled() => return Err(lost_error()),
-            sent = tokio::time::timeout(deadline, self.frames.send(frame)) => sent,
-        };
-        match sent {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(_)) => Err(self.ended().await),
-            Err(_) => Err(late(deadline)),
+            reserved = tokio::time::timeout(deadline, self.frames.reserve()) => match reserved {
+                Ok(Ok(permit)) => {
+                    self.credit.spend(size);
+                    permit.send(frame);
+                    return Ok(());
+                }
+                Err(_) => return Err(late(deadline)),
+                Ok(Err(_)) => {}
+            },
         }
+        // The connector ended the write: its answers say why.
+        Err(self.ended().await)
     }
 
     /// Why the connector ended the write: the error its answers end with.
