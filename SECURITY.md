@@ -64,12 +64,16 @@ anything runs; none is ignored.
   - A root that may be written may hold nothing that decides what the host runs or keeps: no
     connector directory or binary, no script's interpreter, no launcher, not the host's
     executable's directory, a directory the host keeps its log, state or secrets in, or one a
-    secret resolver reads. The placement is refused otherwise.
+    secret resolver reads. The placement is refused otherwise. Where a binary or interpreter
+    has a second name, a hard link, no root on its file system may be written.
   - Each path granted is opened once, checked by what was opened, and bound by its descriptor
     at every spawn of the placement, so a link changed after the check changes nothing. No
     other connector of the process may hold a path within, above or equal to it while its
     connector lives, until reaped, unless both state their grants are shared; no grant may
     write a program a placement runs, and no placement runs a program a held grant may write.
+    A program with a second name counts as written by every write grant on its file system,
+    since a directory grant does not list what it holds; one given a second name after it was
+    placed is not spawned again.
   - **The network grant** shares the host's network namespace: every interface and route, the
     host's loopback services, and the abstract Unix sockets of that namespace, such as a
     session's buses. Grant it only to a connector you would let reach those.
@@ -125,6 +129,9 @@ Not guaranteed:
 - **What a read grant reaches beyond reading**: a connector may connect to a Unix socket
   beneath a path it may only read, such as a session bus or an agent's socket under
   `/run/user`. Grant no such directory to a connector you would not let reach those.
+- **Programs mounted into a grant**: a bind mount of a program within a granted path, or a
+  mount beneath one, is not seen. Mounts need privilege in the host's mount namespace and are
+  the operator's.
 - **A secret a connector transforms** before it prints it, or that trusted in-process code
   panics with; and the memory of the transport a configuration crosses.
 - **macOS local placement**, beyond the checks on the binary: no sandbox and no digest.

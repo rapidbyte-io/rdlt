@@ -57,7 +57,8 @@ given. The host did not enforce it:
     executable, a directory the host keeps its own files in (`Local::guarded_dir`: its
     write-ahead log, its state, secrets it reads itself), or a directory a secret resolver
     reads from (`SecretResolver::directories`); and it may not hold a binary a placement runs,
-    the directory that binary is in, a script's interpreter, or the sandbox's launcher
+    the directory that binary is in, a script's interpreter, or the sandbox's launcher, nor
+    lie on the file system of a binary or interpreter with a second name
     (`grant_root_guarded`). A directory not there yet is guarded by the nearest one above it
     that is. `Local` has no step at which it is built, and a binary placed by path is known
     only at its placement, so the roots are checked at every placement, before anything is
@@ -78,8 +79,14 @@ given. The host did not enforce it:
     (`share_grants`); so is a write grant over a path the provider lets every connector read.
     A write grant over a program another placement runs is refused (`grant_covers`), and so is
     a placement whose program lies where a held grant may write (`program_exposed`), whichever
-    came first, shared or not. Each sandbox has a `/tmp` of its own, in memory, as its
-    private scratch directory.
+    came first, shared or not. A program with more than one name, a hard link, counts as
+    lying within every path on its file system, since a directory grant does not list what it
+    holds and a second name may lie anywhere there. A count of one, read from the descriptor
+    opened, proves there is no other. Another user cannot add a name later where the kernel
+    protects hard links (Linux's `fs.protected_hardlinks`, on by default), since the program
+    is no other user's to write. A sandboxed connector cannot add one either: its program and
+    each grant are mounts of their own, and a link does not cross mounts. Each sandbox has a
+    `/tmp` of its own, in memory, as its private scratch directory.
   - `Bubblewrap` is the sandbox rdlt ships, for Linux. The connector sees the host's system
     directories read only, a `/tmp`, `/proc` and `/dev` of its own, and what it was granted;
     no home directory, no network unless granted, its own user, process, IPC, host-name and
@@ -121,11 +128,13 @@ given. The host did not enforce it:
     `/tmp` is, and the entry in it, a link included, is the user's or the superuser's.
   - The open file is what is hashed, at placement and before every spawn, and what is
     executed: through `/proc/self/fd`, or handed to the sandbox, which binds it. A file that
-    takes the binary's name later is never run; one whose bytes change is refused. A
-    sandboxed connector whose binary was renamed over or removed is refused
-    (`binary_replaced`) rather than spawned again: bubblewrap binds a program by a name,
-    which the file placed no longer has, and copying the binary into every sandbox would cost
-    its size in memory for each. A trusted binary is spawned again from the file placed.
+    takes the binary's name later is never run; one whose bytes change is refused; and one
+    given a second name since it was placed is refused (`program_exposed`), since its
+    placement was held as having none. A sandboxed connector whose binary was renamed over or
+    removed is refused (`binary_replaced`) rather than spawned again: bubblewrap binds a
+    program by a name, which the file placed no longer has, and copying the binary into every
+    sandbox would cost its size in memory for each. A trusted binary is spawned again from the
+    file placed.
   - A script's interpreter opens the script by the name it was executed by, so a trusted
     script is also given at descriptor 4, which its interpreter holds.
   - macOS cannot execute an open file without `unsafe` code: there a digest is refused as
@@ -225,6 +234,10 @@ Rejected:
   its own files in, and gives its resolvers.
 - A grant through a link binds what the link led to at placement for the placement's life;
   placing it again follows the link again.
+- A binary or interpreter with a second name is placed beside no write grant or write root
+  on its file system. Cargo gives what it builds two names, one under `deps`, and
+  hard-linked deployment copies have more: copy such a binary, as `install` does, to place
+  it beside one.
 - A connector that writes more than a megabyte a second to its standard streams is slowed to
   that, and one slowed past a call's deadline fails that call.
 - A sandboxed connector that does not end at the end of its input is killed after its grace.
@@ -236,6 +249,10 @@ Rejected:
     abstract sockets included;
   - what a read grant reaches beyond reading: a read-only bind still lets a connector connect
     to a Unix socket beneath it, as a session bus or an agent's under `/run/user`;
+  - a program mounted into a grant: the link rule compares file systems, so a bind mount of
+    a program within a granted path, or a mount beneath a grant of the file system a program
+    with a second name lies on, is not seen. Mounts need privilege in the host's mount
+    namespace and are the operator's, as ADR 0047 rules for its own mount points;
   - a secret a connector transforms before it says it, or one an in-process connector
     panics with: an in-process connector is trusted code;
   - the buffers of the transport a configuration is sent through, which are not wiped.
