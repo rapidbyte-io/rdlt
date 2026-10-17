@@ -158,10 +158,19 @@ fn measuring_the_room_a_log_keeps_allocates_nothing() {
         Arc::default(),
     );
     let heap = &crate::cost::tests::HEAP;
-    heap.reset_peak_usage();
-    let before = heap.current_usage();
-    let measured = log.ending();
-    let peak = heap.peak_usage().saturating_sub(before);
-    assert!(measured.is_ok());
+    // The heap's peak is the process's, so a thread that is not this one lands in a window now and
+    // then. An allocation by `ending` is in every window; a disturbance is not, so the least peak
+    // over the windows is the call's own.
+    let mut peak = usize::MAX;
+    for _ in 0..64 {
+        heap.reset_peak_usage();
+        let before = heap.current_usage();
+        let measured = log.ending();
+        peak = peak.min(heap.peak_usage().saturating_sub(before));
+        assert!(measured.is_ok());
+        if peak == 0 {
+            break;
+        }
+    }
     assert_eq!(peak, 0);
 }
