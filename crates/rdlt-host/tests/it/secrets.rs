@@ -4,14 +4,21 @@
 use std::fmt::Write as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
-use rdlt_connector::{BoxFuture, ConnectorId, Secret};
+use rdlt_connector::serve::Served;
+use rdlt_connector::{
+    BoxFuture, ConnectContext, ConnectorErrorKind, ConnectorId, ConnectorSpec, Destination,
+    DestinationFactory, Secret, destination_factory, source_factory,
+};
+use rdlt_connector_reference::{MemoryDestination, MemorySource};
 use rdlt_host::{
-    ConnectorRef, LastWords, Provider as _, ProviderError, SecretFault, SecretKind,
+    Connect, ConnectorRef, Kills, LastWords, Provider as _, ProviderError, SecretFault, SecretKind,
     SecretReference, SecretResolver,
 };
 
 use crate::process::{example, local, scripted};
+use crate::redial::posing;
 
 /// What no error, log or report may hold.
 const CANARY: &str = "hunter2-canary-secret";
@@ -136,7 +143,7 @@ async fn a_connector_error_that_says_a_secret_back_is_scrubbed_of_it() {
 async fn a_secret_is_resolved_again_each_time_the_connector_is_started() {
     let vault = Vault::default();
     let asked = Arc::clone(&vault.asked);
-    let kills = rdlt_host::Kills::new();
+    let kills = Kills::new();
     let script = serde_json::json!({ "env": { "RDLT_TEST_ABSENT": "${secret:canary}" } });
     let source = local()
         .kills(&kills)
@@ -153,7 +160,7 @@ async fn a_secret_is_resolved_again_each_time_the_connector_is_started() {
         if asked.load(Ordering::SeqCst) == 2 && error.to_string().contains("RDLT_TEST_ABSENT") {
             return;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
     panic!("the connector was not started again with its secret");
 }
@@ -178,7 +185,7 @@ impl SecretResolver for Rotating {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_secret_an_earlier_start_was_sent_is_scrubbed_from_what_a_later_one_says() {
     let dir = tempfile::tempdir().expect("a temporary directory");
-    let kills = rdlt_host::Kills::new();
+    let kills = Kills::new();
     let script = serde_json::json!({
         "said": "${secret:rotating}",
         "remembers": dir.path().join("kept"),
@@ -201,7 +208,142 @@ async fn a_secret_an_earlier_start_was_sent_is_scrubbed_from_what_a_later_one_sa
         if std::fs::read_to_string(dir.path().join("kept")).is_ok_and(|kept| kept.contains('2')) {
             return;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
     panic!("the connector was not started again");
+}
+
+/// Reaches, through a function, the connector `serving` serves at each opening, numbered from
+/// 0; `kills` cuts every connection it opened.
+fn reaching(serving: impl Fn(usize) -> Served + Send + Sync + 'static, kills: &Kills) -> Connect {
+    let opened = AtomicUsize::new(0);
+    Connect::new(move || {
+        let stream = crate::support::served(serving(opened.fetch_add(1, Ordering::SeqCst)));
+        Box::pin(async move { Ok(Box::new(stream) as Box<dyn rdlt_host::Stream>) })
+    })
+    .kills(kills)
+}
+
+/// The first answer of `check` that is not a transient failure, as an engine's retries would
+/// reach it: the first calls may still meet the lost connection.
+async fn after_transients<F, Fut>(check: F) -> rdlt_connector::Result<()>
+where
+    F: Fn() -> Fut,
+    Fut: Future<Output = rdlt_connector::Result<()>>,
+{
+    loop {
+        match check().await {
+            Err(error) if error.kind() == ConnectorErrorKind::Transient => {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            answer => return answer,
+        }
+    }
+}
+
+/// A destination factory that declares another spec than it serves.
+struct Declaring {
+    spec: ConnectorSpec,
+    inner: Box<dyn DestinationFactory>,
+}
+
+impl DestinationFactory for Declaring {
+    fn spec(&self) -> &ConnectorSpec {
+        &self.spec
+    }
+
+    fn connect(
+        &self,
+        config: serde_json::Value,
+        context: ConnectContext,
+    ) -> BoxFuture<'_, rdlt_connector::Result<Box<dyn Destination>>> {
+        self.inner.connect(config, context)
+    }
+}
+
+/// The memory destination, declaring itself at `version`.
+fn destination_at(version: &str) -> Served {
+    let inner = destination_factory::<MemoryDestination>();
+    let spec = ConnectorSpec {
+        version: version.to_owned(),
+        ..inner.spec().clone()
+    };
+    Served::new().with_destination(Box::new(Declaring { spec, inner }))
+}
+
+#[tokio::test]
+async fn a_secret_a_source_started_again_gives_as_its_version_is_scrubbed_from_its_refusal() {
+    let vault = Vault::default();
+    let asked = Arc::clone(&vault.asked);
+    let kills = Kills::new();
+    let spec = source_factory::<MemorySource>().spec().clone();
+    let reference = ConnectorRef::new(spec.id.clone());
+    let connect = reaching(
+        move |opened| {
+            let version = match opened {
+                0 => spec.version.clone(),
+                _ => format!("9.9.9-{CANARY}"),
+            };
+            posing(spec.id.as_str(), &version)
+        },
+        &kills,
+    )
+    .secrets(vault);
+    let config = serde_json::json!({ "streams": { "rows": [{ "id": "${secret:canary}" }] } });
+    let refused = tokio::time::timeout(Duration::from_secs(3), async {
+        let source = connect
+            .source(&reference, &config)
+            .await
+            .expect("the connector starts")
+            .connector;
+        kills.kill();
+        after_transients(|| source.check()).await
+    })
+    .await
+    .expect("the connector started again is refused within 3 s");
+    let error = refused.expect_err("a connector of another version is refused");
+    assert_eq!(error.code(), Some("connector_changed"), "{error}");
+    assert!(!texts(&error).contains("hunter2"), "{}", texts(&error));
+    assert_eq!(
+        asked.load(Ordering::SeqCst),
+        1,
+        "the refused connector was sent a secret"
+    );
+}
+
+#[tokio::test]
+async fn a_secret_a_destination_started_again_gives_as_its_version_is_scrubbed_from_its_refusal() {
+    let vault = Vault::default();
+    let asked = Arc::clone(&vault.asked);
+    let kills = Kills::new();
+    let spec = destination_factory::<MemoryDestination>().spec().clone();
+    let reference = ConnectorRef::new(spec.id.clone());
+    let connect = reaching(
+        move |opened| match opened {
+            0 => destination_at(&spec.version),
+            _ => destination_at(&format!("9.9.9-{CANARY}")),
+        },
+        &kills,
+    )
+    .secrets(vault);
+    let config = serde_json::json!({ "store": "${secret:canary}" });
+    let refused = tokio::time::timeout(Duration::from_secs(3), async {
+        let destination = connect
+            .destination(&reference, &config)
+            .await
+            .expect("the connector starts")
+            .connector;
+        kills.kill();
+        after_transients(|| destination.check()).await
+    })
+    .await
+    .expect("the connector started again is refused within 3 s");
+    let error = refused.expect_err("a connector of another version is refused");
+    assert_eq!(error.code(), Some("connector_changed"), "{error}");
+    assert!(!texts(&error).contains("hunter2"), "{}", texts(&error));
+    assert_eq!(
+        asked.load(Ordering::SeqCst),
+        1,
+        "the refused connector was sent a secret"
+    );
 }
