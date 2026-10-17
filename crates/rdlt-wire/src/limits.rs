@@ -608,7 +608,7 @@ impl From<Limits> for v1::Limits {
 
 impl From<v1::Limits> for Limits {
     /// The limits a peer sent; a limit it left unset, as a peer from before that limit existed
-    /// does, is the protocol's default.
+    /// does, is the protocol's default, but for the dictionary limit, which is taken as sent.
     fn from(limits: v1::Limits) -> Self {
         let defaults = Self::default();
         let or = |sent: u64, default: u64| if sent == 0 { default } else { sent };
