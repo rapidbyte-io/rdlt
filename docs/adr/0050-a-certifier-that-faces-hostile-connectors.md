@@ -102,7 +102,9 @@ things did not hold to that:
     answers.
   - A connector that started and could not be owned, its output not taken or its thread not
     started, is killed and reaped before the failure is returned. A process owns 1024 groups
-    at most, and joins each thread once its group has ended.
+    at most, those still starting among them: a connector takes its group's place before
+    anything of it is launched, and a launch that fails gives the place back. A process joins
+    each thread once its group has ended.
   - `rdlt_host::stop_spawned` stops every group, kills what is still stopping when its
     patience ends, and waits to see it end. A host calls it before it exits, or holds
     `rdlt_host::StopsSpawned`, which does so when dropped, a panic's unwinding included.
