@@ -15,7 +15,7 @@ pub(crate) struct Text<'a> {
 impl<'a> Text<'a> {
     /// The string whose opening quote is just before `start` in `text`, and the place past its
     /// closing quote: its escapes and control characters checked, nothing copied.
-    pub(super) fn read(text: &'a str, start: usize) -> Result<(Self, usize), JsonError> {
+    pub(crate) fn read(text: &'a str, start: usize) -> Result<(Self, usize), JsonError> {
         let bytes = text.as_bytes();
         let mut at = start;
         let mut escaped = false;
@@ -32,6 +32,15 @@ impl<'a> Text<'a> {
             escaped = true;
             at += escape(bytes, at)?.1;
         }
+    }
+
+    /// Where the string's text starts in `whole`, the text its reader read, just past its
+    /// opening quote: where [`Text::read`] reads it again from.
+    pub(crate) fn start_in(&self, whole: &str) -> usize {
+        self.raw
+            .as_ptr()
+            .addr()
+            .saturating_sub(whole.as_ptr().addr())
     }
 
     /// The string, its escapes read: borrowed where it holds none.

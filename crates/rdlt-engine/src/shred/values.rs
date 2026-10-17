@@ -9,22 +9,27 @@
 #[cfg(test)]
 mod tests;
 
+use std::borrow::Cow;
+
 use arrow_array::{Array, ArrayRef, BooleanArray, StringArray};
 use rdlt_connector::LogicalType;
+use rdlt_wire::limits::NESTING_DEPTH;
 
 use super::ShredError;
 use super::build::Column;
-use super::keys::OpenKeys;
 use super::meter::{Columns, Meter};
 use super::observe::Observed;
 use super::observing::Look;
 use super::visit::{Context, Value};
-use crate::json::{Reader, Token};
+use crate::json::{Reader, Text, Token};
 
 #[cfg(test)]
 thread_local! {
     /// How many values of JSON text this thread observed, which tests read.
     pub(crate) static OBSERVED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// How many values of JSON text this thread checked apart for a key an object repeats,
+    /// which tests read.
+    pub(crate) static CHECKED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// The join of what the values a column of JSON sends its own column were observed as, the type
@@ -114,7 +119,9 @@ fn fits(column: &LogicalType, observed: &Observed, nullable: bool) -> bool {
 pub(crate) fn fitting(texts: &StringArray, column: &LogicalType) -> (BooleanArray, Joined) {
     // Each value is parsed as a shredding job is, sure of its stack at the nesting limit.
     super::job(|| {
-        let nested = matches!(column, LogicalType::Struct(_) | LogicalType::List(_));
+        // A key an object repeats is refused as the value is observed, but in a part held as
+        // JSON, which is checked apart.
+        let checked = holds_json(column);
         let mut joined = Observed::Null;
         let held: BooleanArray = texts
             .iter()
@@ -122,7 +129,7 @@ pub(crate) fn fitting(texts: &StringArray, column: &LogicalType) -> (BooleanArra
                 let text = text?;
                 let held = match observed(text, column, &context()) {
                     Ok(observed)
-                        if fits(column, &observed, true) && !(nested && repeats_a_key(text)) =>
+                        if fits(column, &observed, true) && !(checked && repeats_a_key(text)) =>
                     {
                         joined.join(&observed);
                         true
@@ -140,38 +147,79 @@ pub(crate) fn fitting(texts: &StringArray, column: &LogicalType) -> (BooleanArra
     })
 }
 
-/// Whether an object in the JSON value `text`, at any depth, repeats a key.
+/// Whether `column` holds a part as JSON at any depth.
+fn holds_json(column: &LogicalType) -> bool {
+    match column {
+        LogicalType::Json => true,
+        LogicalType::Struct(fields) => fields.iter().any(|field| holds_json(field.logical_type())),
+        LogicalType::List(item) => holds_json(item.logical_type()),
+        _ => false,
+    }
+}
+
+/// Objects a value may hold open at once: no more than its containers may nest.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the nesting limit is a few dozen levels"
+)]
+const OPEN: usize = NESTING_DEPTH as usize;
+
+/// Whether an object in the JSON value `text`, at any depth, repeats a key, however escaped.
+///
+/// The keys of the objects open are noted by where each starts in `text`, four bytes a key, with
+/// room made once for as many as `text` may hold, and read again to be compared when their
+/// object closes: only an escaped key is copied, two at a time.
 fn repeats_a_key(text: &str) -> bool {
+    #[cfg(test)]
+    CHECKED.with(|checked| checked.set(checked.get() + 1));
+    // Each key is followed by a colon, and takes four bytes at the least: `"":0`.
+    let most = memchr::memchr_iter(b':', text.as_bytes())
+        .count()
+        .min(text.len() / 4);
+    let mut starts: Vec<u32> = Vec::with_capacity(most);
+    // Where each open object's keys start among `starts`, the innermost last.
+    let mut objects = [0_usize; OPEN];
+    let mut open = 0;
     let mut reader = Reader::new(text);
-    let meter = Meter::reserved();
-    let mut open = OpenKeys::default();
-    // Each key as its escapes read, one after another.
-    let mut keys = String::new();
     while let Ok(Some(token)) = reader.next() {
         match token {
-            // A key or an object the meter has no room for counts as a repeat: the value stays
-            // JSON text.
             Token::BeginObject => {
-                if open.open(&meter).is_err() {
+                let Some(first) = objects.get_mut(open) else {
                     return true;
-                }
+                };
+                *first = starts.len();
+                open += 1;
             }
             Token::EndObject => {
-                if open.close(&keys).is_some() {
+                open = open.saturating_sub(1);
+                let first = objects.get(open).copied().unwrap_or_default();
+                if repeated(text, starts.get_mut(first..).unwrap_or_default()) {
                     return true;
                 }
+                starts.truncate(first);
             }
             Token::Key(key) => {
-                let start = keys.len();
-                keys.push_str(&key.unescaped());
-                if open.key(start..keys.len(), &meter).is_err() {
+                // A value of a column of text is shorter than 2 GiB.
+                let Ok(start) = u32::try_from(key.start_in(text)) else {
                     return true;
-                }
+                };
+                starts.push(start);
             }
             _ => {}
         }
     }
     false
+}
+
+/// Whether two of `starts`, where the keys of one object start in `text`, start keys that read
+/// alike, their escapes read.
+fn repeated(text: &str, starts: &mut [u32]) -> bool {
+    let key = |start: &u32| {
+        let start = usize::try_from(*start).unwrap_or_default();
+        Text::read(text, start).map_or(Cow::Borrowed(""), |(key, _)| key.unescaped())
+    };
+    starts.sort_unstable_by(|one, other| key(one).cmp(&key(other)));
+    starts.windows(2).any(|pair| key(&pair[0]) == key(&pair[1]))
 }
 
 /// The join of what the values of `texts` that `taken` names are observed as, guided by the
