@@ -1,14 +1,16 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use arrow_array::types::Int8Type;
+use arrow_array::{Array as _, ArrayRef, DictionaryArray, RecordBatch, StringArray};
 use rdlt_connector::wire::v1;
 use rdlt_connector::wire::v1::write_frame::Frame;
-use rdlt_connector::{ConnectorErrorKind, WriteStats};
-use rdlt_wire::Encoder;
+use rdlt_connector::{ConnectorErrorKind, DestinationWriter as _, SegmentId, WriteStats};
 use rdlt_wire::bounded::{Bounded, Bounds};
 use rdlt_wire::flow::Spending;
 use rdlt_wire::limits::Class;
 use rdlt_wire::plane::{Incoming, Outgoing};
+use rdlt_wire::{Decoder, Encoder, IpcFrame, Limits};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
@@ -263,4 +265,125 @@ async fn a_send_dropped_while_it_waits_for_credit_goes_on_the_credit_granted_mea
         queued(&mut frames, 1).await[..],
         [Frame::Flush(_)]
     ));
+}
+
+/// A batch of one dictionary column whose first value is `first`.
+fn keyed(first: &str) -> RecordBatch {
+    let values: DictionaryArray<Int8Type> = [first, "beta"].into_iter().collect();
+    RecordBatch::try_from_iter([("value", Arc::new(values) as ArrayRef)]).expect("a batch")
+}
+
+/// The first value of `batch`'s dictionary column.
+fn first_value(batch: &RecordBatch) -> String {
+    let column = batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<DictionaryArray<Int8Type>>()
+        .expect("a dictionary column");
+    let values = column
+        .values()
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("text values");
+    let key = usize::try_from(column.keys().value(0)).expect("a key of zero or more");
+    values.value(key).to_owned()
+}
+
+/// The batch `frames` decode to with `decoder`, as the connector would decode them.
+fn decoded(decoder: &mut Decoder, frames: &[Frame]) -> RecordBatch {
+    let mut last = None;
+    for frame in frames {
+        match frame {
+            Frame::Schema(schema) => {
+                decoder
+                    .schema(&schema.ipc_schema)
+                    .expect("the schema decodes");
+            }
+            Frame::Batch(batch) => {
+                let frame = IpcFrame::new(batch.data_header.clone(), batch.data_body.clone());
+                last = decoder.frame(&frame).expect("the frame decodes").or(last);
+            }
+            other => panic!("not a frame of a batch: {other:?}"),
+        }
+    }
+    last.expect("a batch is decoded")
+}
+
+/// Writes `batch` while taking its three frames from `frames`, all within two seconds.
+async fn written(
+    writer: &mut RemoteWriter,
+    frames: &mut mpsc::Receiver<v1::WriteFrame>,
+    batch: RecordBatch,
+) -> Vec<Frame> {
+    let writing = async { tokio::join!(writer.write(SegmentId(1), batch), queued(frames, 3)) };
+    let (written, sent) = tokio::time::timeout(Duration::from_secs(2), writing)
+        .await
+        .expect("the write ends");
+    written.expect("the write is written");
+    sent
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_dictionary_write_dropped_at_any_frame_sends_its_schema_and_dictionary_again() {
+    // The frames the queue gives up before the write waits: none, so it waits at its schema;
+    // one, so at its dictionary; two, so at its batch.
+    for taken in 0..3 {
+        let Fixture {
+            mut writer,
+            mut frames,
+            acks: _acks,
+        } = fixture(1 << 20);
+        // A frame already queued: the write's frames wait behind it.
+        writer.frames.try_send(flush()).expect("room for one frame");
+        let writing = async {
+            tokio::join!(
+                writer.write(SegmentId(1), keyed("alpha")),
+                queued(&mut frames, taken)
+            )
+        };
+        let dropped = tokio::time::timeout(Duration::from_millis(20), writing).await;
+        assert!(dropped.is_err(), "the write waits after {taken} frames");
+        queued(&mut frames, 1).await;
+        let sent = written(&mut writer, &mut frames, keyed("alpha")).await;
+        assert!(
+            matches!(sent[0], Frame::Schema(_)),
+            "after {taken}: {sent:?}"
+        );
+        let batch = decoded(&mut Decoder::new(Limits::default()), &sent);
+        assert_eq!(first_value(&batch), "alpha", "after {taken}");
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_dictionary_write_dropped_after_an_older_dictionary_sends_the_new_one_again() {
+    let Fixture {
+        mut writer,
+        mut frames,
+        acks: _acks,
+    } = fixture(1 << 20);
+    // The connector holds an older dictionary of the same id, as an earlier write sent it.
+    let older = keyed("old-alpha");
+    let mut decoder = Decoder::new(Limits::default());
+    let schema = writer
+        .encoder
+        .schema(&older.schema())
+        .expect("the schema encodes");
+    decoder.schema(&schema).expect("the schema decodes");
+    for frame in writer.encoder.batch(&older).expect("the batch encodes") {
+        decoder.frame(&frame).expect("the frame decodes");
+    }
+    writer.schema = Some(older.schema());
+    writer.frames.try_send(flush()).expect("room for one frame");
+    let dropped = tokio::time::timeout(
+        Duration::from_millis(20),
+        writer.write(SegmentId(1), keyed("alpha")),
+    );
+    assert!(
+        dropped.await.is_err(),
+        "the new dictionary waits behind the queued frame"
+    );
+    queued(&mut frames, 1).await;
+    let sent = written(&mut writer, &mut frames, keyed("alpha")).await;
+    assert!(matches!(sent[0], Frame::Schema(_)), "{sent:?}");
+    assert_eq!(first_value(&decoded(&mut decoder, &sent)), "alpha");
 }
