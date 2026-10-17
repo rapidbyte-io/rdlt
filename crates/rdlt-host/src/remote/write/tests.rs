@@ -398,9 +398,10 @@ fn stats(rows: u64) -> v1::WriteAck {
     }
 }
 
-/// Fails the test unless `refused` is the refusal of a writer whose flush went unanswered.
-fn refused_unanswered(refused: rdlt_connector::Result<()>) {
-    let error = refused.expect_err("the writer is refused");
+/// Fails the test unless `ended` failed as a call past its deadline, which is also how a writer
+/// whose flush went unanswered refuses.
+fn deadline_exceeded<T: std::fmt::Debug>(ended: rdlt_connector::Result<T>) {
+    let error = ended.expect_err("the call fails");
     assert_eq!(
         (error.kind(), error.code()),
         (ConnectorErrorKind::Transient, Some(DEADLINE_EXCEEDED))
@@ -410,34 +411,41 @@ fn refused_unanswered(refused: rdlt_connector::Result<()>) {
 #[tokio::test(start_paused = true)]
 async fn a_writer_whose_flush_went_unanswered_refuses_every_later_call() {
     // The flush dropped by its caller, then one that passed its own deadline.
-    for bound in [Duration::from_millis(20), Duration::from_secs(2)] {
+    for passes_deadline in [false, true] {
         let Fixture {
             mut writer,
             mut frames,
             acks,
         } = fixture(1 << 20);
-        let ended = tokio::time::timeout(bound, writer.flush()).await;
-        assert!(
-            !matches!(ended, Ok(Ok(_))),
-            "no stats came within {bound:?}"
-        );
+        if passes_deadline {
+            let ended = tokio::time::timeout(Duration::from_secs(2), writer.flush())
+                .await
+                .expect("the flush ends at its own deadline");
+            deadline_exceeded(ended);
+        } else {
+            let dropped = tokio::time::timeout(Duration::from_millis(20), writer.flush()).await;
+            assert!(dropped.is_err(), "the flush waits for its stats");
+        }
         assert!(matches!(
             queued(&mut frames, 1).await[..],
             [Frame::Flush(_)]
         ));
         // Its stats arrive late: taken by a later flush, they would be counted as that flush's.
-        acks.send(stats(7)).await.expect("the answers are read");
-        let flushed = tokio::time::timeout(Duration::from_secs(2), writer.flush())
+        tokio::time::timeout(Duration::from_millis(20), acks.send(stats(7)))
+            .await
+            .expect("the answers have room")
+            .expect("the answers are read");
+        let flushed = tokio::time::timeout(Duration::from_millis(20), writer.flush())
             .await
             .expect("the writer refuses at once");
-        refused_unanswered(flushed.map(drop));
+        deadline_exceeded(flushed);
         let written = tokio::time::timeout(
-            Duration::from_secs(2),
+            Duration::from_millis(20),
             writer.write(SegmentId(1), keyed("alpha")),
         )
         .await
         .expect("the writer refuses at once");
-        refused_unanswered(written);
+        deadline_exceeded(written);
         assert!(frames.try_recv().is_err(), "a refused writer sends nothing");
     }
 }
@@ -460,11 +468,11 @@ async fn a_write_dropped_while_its_own_flush_waits_refuses_the_writer() {
     let dropped = tokio::time::timeout(Duration::from_millis(20), writing).await;
     assert!(dropped.is_err(), "the write's flush waits for its stats");
     let written = tokio::time::timeout(
-        Duration::from_secs(2),
+        Duration::from_millis(20),
         writer.write(SegmentId(1), keyed("alpha")),
     )
     .await
     .expect("the writer refuses at once");
-    refused_unanswered(written);
+    deadline_exceeded(written);
     assert!(frames.try_recv().is_err(), "a refused writer sends nothing");
 }
