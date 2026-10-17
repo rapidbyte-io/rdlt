@@ -114,10 +114,11 @@ given. The host did not enforce it:
     absolute path, by name, following no link. `PATH` and the working directory are never
     searched.
   - The file must be a regular, executable file that belongs to the host's user or the
-    superuser and that no other user may write (`binary_shared`). So must every directory
-    above it, on the path as written and as the open file was reached, and above a connector
-    directory; a directory others may write passes only where it is sticky, as `/tmp` is,
-    and the entry in it is the user's or the superuser's.
+    superuser and that no other user may write (`binary_shared`). So must every directory a
+    name is looked up in on the way to it or to a connector directory, the path resolved as
+    the kernel resolves it: each directory it passes through as reached, and each a link on
+    the way is read from. A directory others may write passes only where it is sticky, as
+    `/tmp` is, and the entry in it, a link included, is the user's or the superuser's.
   - The open file is what is hashed, at placement and before every spawn, and what is
     executed: through `/proc/self/fd`, or handed to the sandbox, which binds it. A file that
     takes the binary's name later is never run; one whose bytes change is refused. A
