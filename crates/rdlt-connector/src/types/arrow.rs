@@ -35,18 +35,23 @@ impl Field {
         serde_json::from_str(named).ok()
     }
 
+    /// The type of the values `data_type` holds under a dictionary or a run-end encoding, or
+    /// `data_type` itself where it encodes none.
+    pub(crate) fn storage(data_type: &DataType) -> &DataType {
+        match data_type {
+            DataType::Dictionary(_, values) => values.as_ref(),
+            DataType::RunEndEncoded(_, values) => values.data_type(),
+            other => other,
+        }
+    }
+
     /// The canonical Arrow extension type `field` names, where its storage type holds it as it is
     /// or under a dictionary or run-end encoding: `Uuid` over 16-byte fixed binary, `Json` over
     /// text; `None` for any other field.
     pub fn extension_type(field: &ArrowField) -> Option<LogicalType> {
-        let storage = match field.data_type() {
-            DataType::Dictionary(_, values) => values.as_ref(),
-            DataType::RunEndEncoded(_, values) => values.data_type(),
-            other => other,
-        };
         match (
             field.metadata().get(EXTENSION_NAME).map(String::as_str),
-            storage,
+            Self::storage(field.data_type()),
         ) {
             (Some(UUID_EXTENSION), DataType::FixedSizeBinary(16)) => Some(LogicalType::Uuid),
             (Some(JSON_EXTENSION), DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View) => {
