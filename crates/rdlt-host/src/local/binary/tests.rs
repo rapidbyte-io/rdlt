@@ -398,7 +398,7 @@ fn a_binary_reached_through_a_link_read_out_of_a_directory_another_user_may_writ
 }
 
 #[test]
-fn a_path_is_followed_through_as_many_links_as_the_kernel_follows_and_no_more() {
+fn a_path_is_followed_through_as_many_links_as_linux_follows_and_no_more() {
     let temporary = tempfile::tempdir().expect("a temporary directory");
     // Resolved, so the chain holds the only links the walk follows.
     let root = std::fs::canonicalize(temporary.path()).expect("it resolves");
