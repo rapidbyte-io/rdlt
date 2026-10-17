@@ -165,6 +165,70 @@ fn a_sandboxed_connector_is_not_spawned_where_descriptors_cannot_be_marked_at_on
     assert_eq!(refused.code(), "sandbox_descriptors");
 }
 
+/// A sandbox whose launcher cannot make one: a spawn that asks it has passed every check
+/// before it.
+#[derive(Debug)]
+struct Unavailable;
+
+impl Sandbox for Unavailable {
+    fn launcher(&self, _confined: &Confined<'_>) -> Result<Launcher, SandboxError> {
+        Err(SandboxError::Unavailable {
+            path: "/nowhere".into(),
+            said: String::new(),
+        })
+    }
+}
+
+#[test]
+fn a_sandboxed_connector_is_not_spawned_once_its_launcher_has_a_second_name() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let (bin, data) = (directory.path().join("bin"), directory.path().join("data"));
+    std::fs::create_dir(&bin).expect("a directory");
+    std::fs::create_dir(&data).expect("a directory");
+    let launcher = bin.join("bwrap");
+    std::fs::write(&launcher, "x").expect("the launcher writes");
+    let mut launch = sleeper(&bin);
+    let grants = Grants {
+        write: vec![data.clone()],
+        ..Grants::default()
+    };
+    let roots = Roots {
+        read: Vec::new(),
+        write: vec![data.clone()],
+    };
+    let guarded = Guarded {
+        directories: Vec::new(),
+        files: vec![launcher.clone()],
+    };
+    let lease = Leases::default().take(&Claim {
+        grants: &grants,
+        shared_reads: &[],
+        roots: &roots,
+        guarded: &guarded,
+        programs: &[],
+    });
+    launch.lease = Arc::new(lease.expect("one name, beside"));
+    launch.confinement = Some(Confinement {
+        sandbox: Arc::new(Unavailable),
+        network: NetworkGrant::Denied,
+    });
+    let marking = Steps {
+        marks_at_once: || true,
+        ..Steps::TAKEN
+    };
+    let refused = || {
+        let spawned = Process::spawn_by(&launch, socket(), Redactions::new(), &marking);
+        let Err(Unspawned::Sandbox(refused)) = spawned else {
+            panic!("it was not refused");
+        };
+        refused
+    };
+    assert_eq!(refused().code(), "sandbox_unavailable");
+    std::fs::hard_link(&launcher, data.join("alias")).expect("a second name");
+    assert_eq!(refused(), SandboxError::Exposed { path: launcher });
+    assert_eq!(super::spawned(), Vec::<u32>::new());
+}
+
 #[tokio::test]
 async fn a_binary_given_a_second_name_since_it_was_placed_is_not_spawned() {
     let directory = tempfile::tempdir().expect("a temporary directory");

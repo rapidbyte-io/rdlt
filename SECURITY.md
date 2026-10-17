@@ -70,10 +70,11 @@ anything runs; none is ignored.
     at every spawn of the placement, so a link changed after the check changes nothing. No
     other connector of the process may hold a path within, above or equal to it while its
     connector lives, until reaped, unless both state their grants are shared; no grant may
-    write a program a placement runs, and no placement runs a program a held grant may write.
-    A program with a second name counts as written by every write grant on its file system,
-    since a directory grant does not list what it holds; one given a second name after it was
-    placed is not spawned again.
+    write a program a placement runs, its launcher among them, and no placement runs a program
+    a held grant may write. A program with a second name counts as written by every write grant
+    on its file system, since a directory grant does not list what it holds; no connector is
+    spawned again whose binary, interpreter or launcher was given a second name after it was
+    placed.
   - **The network grant** shares the host's network namespace: every interface and route, the
     host's loopback services, and the abstract Unix sockets of that namespace, such as a
     session's buses. Grant it only to a connector you would let reach those.
