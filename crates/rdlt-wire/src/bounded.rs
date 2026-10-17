@@ -13,10 +13,10 @@
 //!
 //! Where a connection shares a window, a message takes room in it for its whole length once its
 //! prefix is whole, before any more of it is held, and gives it back once passed on. A body that
-//! finds no room reads no further, holding only the transport frame it read last, so HTTP/2's
-//! flow control holds its sender, until a message that has room is passed on: each message with
-//! room is read to its end, so room always comes back, and every sender is held rather than
-//! refused.
+//! finds no room reads no further, holding no more than its prefix and the transport frame it
+//! read last, so HTTP/2's flow control holds its sender, until a message that has room is passed
+//! on: each message with room is read to its end, so room always comes back, and every sender is
+//! held rather than refused.
 //!
 //! Where the body is [charged](charging), a message is passed on once what its scan counts is
 //! charged, and the charge is held until it is decoded.
@@ -318,7 +318,7 @@ impl Bounded {
                 return Poll::Ready(Some(charged.map(Frame::data)));
             }
             // Room is taken before anything past the prefix is copied, so a body waiting for it
-            // holds only the transport frame it read.
+            // holds no more than the prefix and the transport frame it read.
             if let Some(length) = self.known()? {
                 if self.roomed(length, context)?.is_pending() {
                     // No room: nothing more is read, and flow control holds the sender.
