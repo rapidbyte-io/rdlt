@@ -231,6 +231,34 @@ async fn a_secret_ending_in_whitespace_at_a_lines_limit_is_scrubbed_before_the_l
     assert_eq!(drained.lines(), [format!("{before}***").as_str()]);
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_secret_that_holds_line_ends_is_scrubbed_from_each_line_it_is_logged_on() {
+    let cases: [(&str, &str, &[&str]); 4] = [
+        ("hunter\n2-canary", "key: hunter\n2-canary\n", &["key: ***", "***"]),
+        ("hunter\r\n2-canary", "key: hunter\r\n2-canary\r\n", &["key: ***", "***"]),
+        // A blank line within the secret is no line of the log.
+        ("hunter\n\n2-canary", "key: hunter\n\n2-canary\n", &["key: ***", "***"]),
+        (
+            "-----BEGIN KEY-----\nMIIEvhunter\n-----END KEY-----",
+            "pem=-----BEGIN KEY-----\nMIIEvhunter\n-----END KEY----- refused\n",
+            &["pem=***", "***", "*** refused"],
+        ),
+    ];
+    for (secret, output, expected) in cases {
+        let redactions = Redactions::new();
+        redactions.add(secret);
+        let drained = tokio::time::timeout(
+            Duration::from_secs(2),
+            drained(output.as_bytes(), &redactions),
+        )
+        .await
+        .expect("a drain of a few lines ends");
+        assert_eq!(drained.lines(), expected, "{secret:?}");
+        let words = drained.tail.words(&redactions);
+        assert!(!words.contains("hunter"), "{words}");
+    }
+}
+
 /// The whitespace a property's secrets and lines end with.
 const WHITESPACE: [char; 8] = [
     ' ', '\t', '\r', '\u{b}', '\u{c}', '\u{a0}', '\u{2003}', '\u{3000}',
