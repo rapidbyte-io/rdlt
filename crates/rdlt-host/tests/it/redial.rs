@@ -176,7 +176,7 @@ impl SourceFactory for Posing {
 }
 
 /// The memory source, posing as `id` at `version`.
-fn posing(id: &str, version: &str) -> Served {
+pub(crate) fn posing(id: &str, version: &str) -> Served {
     posing_noted(id, version, &Arc::default())
 }
 

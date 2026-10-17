@@ -195,18 +195,30 @@ impl Supervisor {
         if spec.id == checked.id.as_str() && spec.version == checked.version {
             return Ok(());
         }
-        Err(Spawned::Connect(changed(&spec.id, &spec.version, checked)))
+        Err(Spawned::Connect(self.changed(&spec.id, &spec.version)))
     }
 
     /// Whether `connection`'s connector serves the spec the first was checked to serve, with what
     /// its configuration declares.
     fn same(&self, connection: &Connection) -> Result<(), ConnectorError> {
-        let checked = &self.checked;
         let spec = crate::remote::contract_spec(connection.spec())?;
-        if spec == *checked {
+        if spec == self.checked {
             return Ok(());
         }
-        Err(changed(spec.id.as_str(), &spec.version, checked))
+        Err(self.changed(spec.id.as_str(), &spec.version))
+    }
+
+    /// The error of a connector started again that serves `id` `version`, not the connector
+    /// checked as it was placed, scrubbed of every secret any start was sent and coded
+    /// `connector_changed`.
+    fn changed(&self, id: &str, version: &str) -> ConnectorError {
+        let checked = &self.checked;
+        let changed = ConnectorError::config(format!(
+            "the connector started again serves `{id}` {version}, not `{}` {} as it was placed",
+            checked.id, checked.version
+        ))
+        .with_code("connector_changed");
+        crate::guard::received(&changed, &self.redactions)
     }
 
     /// The capabilities the live destination declares.
@@ -214,16 +226,6 @@ impl Supervisor {
         let destination = RemoteDestination::new(self.live().await)?;
         Ok(destination.capabilities().clone())
     }
-}
-
-/// The error of a connector started again that serves `id` `version`, not the connector
-/// `checked` as it was placed; coded `connector_changed`.
-fn changed(id: &str, version: &str, checked: &ConnectorSpec) -> ConnectorError {
-    ConnectorError::config(format!(
-        "the connector started again serves `{id}` {version}, not `{}` {} as it was placed",
-        checked.id, checked.version
-    ))
-    .with_code("connector_changed")
 }
 
 /// Why a connector did not start.
