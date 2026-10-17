@@ -14,6 +14,7 @@ use rdlt_wire::plane::{Chained as _, Incoming, Outgoing};
 use rdlt_wire::tonic::body::Body;
 use rdlt_wire::tonic::{Code, Status};
 use rdlt_wire::{Encoder, Limits};
+use tokio::sync::oneshot;
 use tokio::time::Instant;
 use tokio_stream::{Stream, StreamExt as _};
 
@@ -21,6 +22,7 @@ use super::writing;
 use crate::destination::{DestinationWriter, WriteStats};
 use crate::error::{ConnectorError, Result};
 use crate::id::SegmentId;
+use crate::serve::live::{Live, gone};
 use crate::spec::BoxFuture;
 use crate::wire::v1;
 use crate::wire::v1::write_ack::Ack;
@@ -28,6 +30,9 @@ use crate::wire::v1::write_frame::Frame;
 
 /// Bounds every wait of a test: a write that hangs fails its test.
 const WAIT: Duration = Duration::from_secs(60);
+
+/// How long a test lets a task that should end at once go on before it fails.
+const HOUR: Duration = Duration::from_mins(60);
 
 /// What a recording writer does when it is called.
 #[derive(Clone, Copy, Debug)]
@@ -253,6 +258,51 @@ impl http_body::Body for Cut {
     }
 }
 
+/// A request whose frames never end, counted in its `Live` until it is dropped.
+struct Open {
+    _live: Live,
+}
+
+impl Stream for Open {
+    type Item = v1::WriteFrame;
+
+    fn poll_next(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<v1::WriteFrame>> {
+        Poll::Pending
+    }
+}
+
+/// A writer whose writes and flushes wait for ever once begun, telling `begun` of the first, and
+/// counted in its `Live` while it lives.
+struct Stuck {
+    begun: Option<oneshot::Sender<()>>,
+    _live: Live,
+}
+
+impl Stuck {
+    async fn waits(&mut self) {
+        if let Some(begun) = self.begun.take() {
+            begun.send(()).ok();
+        }
+        std::future::pending::<()>().await;
+    }
+}
+
+impl DestinationWriter for Stuck {
+    fn write(&mut self, _: SegmentId, _: RecordBatch) -> BoxFuture<'_, Result<()>> {
+        Box::pin(async move {
+            self.waits().await;
+            Ok(())
+        })
+    }
+
+    fn flush(&mut self) -> BoxFuture<'_, Result<WriteStats>> {
+        Box::pin(async move {
+            self.waits().await;
+            Ok(WriteStats { rows: 0, bytes: 0 })
+        })
+    }
+}
+
 /// Waits of up to 30 milliseconds, the same for the same `seed`.
 fn waits(seed: u64, count: usize) -> Vec<Duration> {
     let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
@@ -465,4 +515,72 @@ async fn a_request_its_host_cancels_ends_the_write_after_the_frames_before_it() 
     assert_eq!(log.events(), ["write 1:10"]);
     let answers: Vec<_> = answers.into_iter().map(Result::unwrap).collect();
     assert_eq!(answers, credits(&limits, &[schema(), batch(1, 10)]));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_writer_waiting_in_a_write_or_a_flush_is_dropped_once_its_answers_are() {
+    let limits = Limits::default();
+    for sent in [vec![flush()], vec![schema(), batch(1, 10)]] {
+        let writer_live = Arc::new(AtomicUsize::new(0));
+        let request_live = Arc::new(AtomicUsize::new(0));
+        let (begun, beginning) = oneshot::channel();
+        let writer = Stuck {
+            begun: Some(begun),
+            _live: Live::new(&writer_live),
+        };
+        // The engine's request stays open: only its answers go.
+        let frames = tokio_stream::iter(sent).chain(Open {
+            _live: Live::new(&request_live),
+        });
+        let body = Body::new(Outgoing::request(frames, limits.largest()));
+        let incoming = Incoming::request(Bounded::new(body, bounds(&limits), None));
+        let answers = writing(Box::new(writer), incoming, limits);
+        tokio::time::timeout(WAIT, beginning)
+            .await
+            .expect("the writer begins")
+            .expect("the writer says so");
+        drop(answers);
+        tokio::time::timeout(HOUR, gone(&writer_live))
+            .await
+            .expect("the writer is dropped once its answers are");
+        tokio::time::timeout(WAIT, gone(&request_live))
+            .await
+            .expect("the request is dropped with the writer");
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_write_waiting_for_its_next_frame_ends_once_its_answers_are_dropped() {
+    let limits = Limits::default();
+    let writer_live = Arc::new(AtomicUsize::new(0));
+    let request_live = Arc::new(AtomicUsize::new(0));
+    let (begun, _beginning) = oneshot::channel();
+    let writer = Stuck {
+        begun: Some(begun),
+        _live: Live::new(&writer_live),
+    };
+    let frames = tokio_stream::iter([schema()]).chain(Open {
+        _live: Live::new(&request_live),
+    });
+    let body = Body::new(Outgoing::request(frames, limits.largest()));
+    let incoming = Incoming::request(Bounded::new(body, bounds(&limits), None));
+    let mut answers = writing(Box::new(writer), incoming, limits);
+    // The opening credit, then the schema's: the writer took it and waits for the next frame.
+    for _ in 0..2 {
+        let answer = tokio::time::timeout(WAIT, answers.next())
+            .await
+            .expect("the write answers")
+            .expect("the write goes on");
+        assert!(
+            matches!(answer.map(|answer| answer.ack), Ok(Some(Ack::Credit(_)))),
+            "credit comes first"
+        );
+    }
+    drop(answers);
+    tokio::time::timeout(HOUR, gone(&writer_live))
+        .await
+        .expect("the writer is dropped once its answers are");
+    tokio::time::timeout(WAIT, gone(&request_live))
+        .await
+        .expect("the request is dropped with the writer");
 }
