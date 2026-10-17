@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use sha2::Digest as _;
 
-use super::{Binary, Unfit};
+use super::{Binary, Unfit, reached_private};
 
 /// A file at `path` holding `bytes`, with `mode`.
 fn file(path: &Path, bytes: &[u8], mode: u32) {
@@ -141,8 +141,9 @@ fn a_binary_or_a_directory_another_user_may_write_is_refused() {
         // the directory, which is sticky, and may change none they do not own.
         let at = Binary::at(&shared.join("binary"));
         if mode & 0o1000 == 0 {
+            let reached = std::fs::canonicalize(&shared).expect("it resolves");
             assert!(
-                matches!(&at, Err(Unfit::Shared { path, .. }) if *path == shared),
+                matches!(&at, Err(Unfit::Shared { path, .. }) if *path == reached),
                 "{mode:o}"
             );
         } else {
@@ -247,8 +248,9 @@ fn a_binary_by_path_is_refused_where_a_directory_above_it_or_on_its_link_is_anot
     // A directory two levels up that another user may write.
     std::fs::set_permissions(&outer, PermissionsExt::from_mode(0o777)).expect("its mode is set");
     let refused = Binary::at(&inner.join("binary"));
+    let reached = std::fs::canonicalize(&outer).expect("it resolves");
     assert!(
-        matches!(&refused, Err(Unfit::Shared { path, .. }) if *path == outer),
+        matches!(&refused, Err(Unfit::Shared { path, .. }) if *path == reached),
         "{refused:?}"
     );
     std::fs::set_permissions(&outer, PermissionsExt::from_mode(0o755)).expect("its mode is set");
@@ -257,8 +259,9 @@ fn a_binary_by_path_is_refused_where_a_directory_above_it_or_on_its_link_is_anot
     std::os::unix::fs::symlink(inner.join("binary"), open.join("link")).expect("a link");
     std::fs::set_permissions(&open, PermissionsExt::from_mode(0o777)).expect("its mode is set");
     let refused = Binary::at(&open.join("link"));
+    let reached = std::fs::canonicalize(&open).expect("it resolves");
     assert!(
-        matches!(&refused, Err(Unfit::Shared { path, .. }) if *path == open),
+        matches!(&refused, Err(Unfit::Shared { path, .. }) if *path == reached),
         "{refused:?}"
     );
     // A link in a private directory, to a binary in one another user may write: the
@@ -286,8 +289,136 @@ fn a_connector_directory_below_one_another_user_may_write_is_refused() {
     file(&bin.join("rdlt-connector-x"), b"x", 0o755);
     std::fs::set_permissions(&outer, PermissionsExt::from_mode(0o777)).expect("its mode is set");
     let refused = Binary::named(std::slice::from_ref(&bin), "rdlt-connector-x");
+    let reached = std::fs::canonicalize(&outer).expect("it resolves");
     assert!(
-        matches!(&refused, Err(Unfit::Shared { path, .. }) if *path == outer),
+        matches!(&refused, Err(Unfit::Shared { path, .. }) if *path == reached),
+        "{refused:?}"
+    );
+}
+
+#[test]
+fn a_connector_directory_reached_through_a_link_below_one_another_user_may_write_is_refused() {
+    let root = tempfile::tempdir().expect("a temporary directory");
+    let shared = dir(root.path(), "shared");
+    let slot = dir(&shared, "slot");
+    let bin = dir(&slot, "bin");
+    let fit = dir(root.path(), "fit");
+    for found in [&slot, &bin, &fit] {
+        file(&found.join("rdlt-connector-x"), b"x", 0o755);
+    }
+    std::os::unix::fs::symlink(&slot, root.path().join("via")).expect("a link");
+    // The listed directory as a link at its leaf, written three ways, and through a link above it.
+    let mut listed = Vec::new();
+    for (name, target) in [
+        ("absolute", slot.clone()),
+        ("relative", PathBuf::from("shared/slot")),
+        ("through-a-parent", PathBuf::from("shared/../shared/slot")),
+    ] {
+        std::os::unix::fs::symlink(target, root.path().join(name)).expect("a link");
+        listed.push(root.path().join(name));
+    }
+    listed.push(root.path().join("via").join("bin"));
+    for listed in &listed {
+        let found = Binary::named(std::slice::from_ref(listed), "rdlt-connector-x");
+        assert!(found.is_ok(), "{listed:?}: {found:?}");
+    }
+    std::fs::set_permissions(&shared, PermissionsExt::from_mode(0o777)).expect("its mode is set");
+    // Named as the directory was reached, every link resolved.
+    let reached = std::fs::canonicalize(&shared).expect("it resolves");
+    for listed in &listed {
+        // Refused alone, listed twice, and before a directory that would be fit: a refused
+        // directory ends the search.
+        for dirs in [
+            vec![listed.clone()],
+            vec![listed.clone(), listed.clone()],
+            vec![listed.clone(), fit.clone()],
+        ] {
+            let refused = Binary::named(&dirs, "rdlt-connector-x");
+            assert!(
+                matches!(&refused, Err(Unfit::Shared { path, .. }) if *path == reached),
+                "{dirs:?}: {refused:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_connector_directory_reached_through_a_link_into_a_sticky_directory_is_searched() {
+    let root = tempfile::tempdir().expect("a temporary directory");
+    let sticky = dir(root.path(), "sticky");
+    let slot = dir(&sticky, "slot");
+    file(&slot.join("rdlt-connector-x"), b"x", 0o755);
+    std::fs::set_permissions(&sticky, PermissionsExt::from_mode(0o1777)).expect("its mode is set");
+    let listed = root.path().join("listed");
+    std::os::unix::fs::symlink(&slot, &listed).expect("a link");
+    // Others may add entries to the sticky directory, and may change none this user owns.
+    let found =
+        Binary::named(std::slice::from_ref(&listed), "rdlt-connector-x").expect("it is found");
+    assert_eq!(found.path(), listed.join("rdlt-connector-x"));
+}
+
+#[test]
+fn a_binary_reached_through_a_link_read_out_of_a_directory_another_user_may_write_is_refused() {
+    let root = tempfile::tempdir().expect("a temporary directory");
+    let (held, open, slot) = (
+        dir(root.path(), "held"),
+        dir(root.path(), "open"),
+        dir(root.path(), "slot"),
+    );
+    file(&slot.join("rdlt-connector-x"), b"x", 0o755);
+    // Each chain's second link is read out of `open`, which lies on neither the path written
+    // nor the path reached.
+    std::os::unix::fs::symlink(&slot, open.join("hop")).expect("a link");
+    std::os::unix::fs::symlink(open.join("hop"), held.join("listed")).expect("a link");
+    let to_binary = slot.join("rdlt-connector-x");
+    std::os::unix::fs::symlink(&to_binary, open.join("hop-binary")).expect("a link");
+    std::os::unix::fs::symlink(open.join("hop-binary"), held.join("link")).expect("a link");
+    let listed = [held.join("listed")];
+    let found = |what: &str| match what {
+        "at" => Binary::at(&held.join("link")),
+        _ => Binary::named(&listed, "rdlt-connector-x"),
+    };
+    for what in ["at", "named"] {
+        assert!(found(what).is_ok(), "{what}: {:?}", found(what));
+    }
+    // A sticky directory others may write passes for a link this user owns.
+    std::fs::set_permissions(&open, PermissionsExt::from_mode(0o1777)).expect("its mode is set");
+    for what in ["at", "named"] {
+        assert!(found(what).is_ok(), "{what}: {:?}", found(what));
+    }
+    std::fs::set_permissions(&open, PermissionsExt::from_mode(0o777)).expect("its mode is set");
+    let reached = std::fs::canonicalize(&open).expect("it resolves");
+    for what in ["at", "named"] {
+        let refused = found(what);
+        assert!(
+            matches!(&refused, Err(Unfit::Shared { path, .. }) if *path == reached),
+            "{what}: {refused:?}"
+        );
+    }
+}
+
+#[test]
+fn a_path_is_followed_through_as_many_links_as_the_kernel_follows_and_no_more() {
+    let root = tempfile::tempdir().expect("a temporary directory");
+    let slot = dir(root.path(), "slot");
+    // `link-0` leads to `slot` through `count` links: `link-0` → `link-1` → … → `slot`.
+    let chain = |count: usize| {
+        let links = dir(root.path(), &format!("chain-{count}"));
+        for at in 0..count {
+            let target = if at + 1 == count {
+                slot.clone()
+            } else {
+                PathBuf::from(format!("link-{}", at + 1))
+            };
+            std::os::unix::fs::symlink(target, links.join(format!("link-{at}"))).expect("a link");
+        }
+        links.join("link-0")
+    };
+    assert!(reached_private(&chain(40)).is_ok());
+    let refused = reached_private(&chain(41));
+    let looped = rustix::io::Errno::LOOP.raw_os_error();
+    assert!(
+        matches!(&refused, Err(Unfit::Absent(Some(error))) if error.raw_os_error() == Some(looped)),
         "{refused:?}"
     );
 }
