@@ -17,12 +17,10 @@ pub(crate) const PUBLISHED_ROWS: usize = 100_000;
 
 /// Rows a kill clause loads of a source, all the writes of a load together: a source that holds
 /// more leaves the clause unobserved, rather than fill this process's memory twice over.
-#[cfg(feature = "kill")]
 pub(crate) const LOADED_ROWS: usize = 100_000;
 
 /// Bytes a kill clause loads of a source, all the writes of a load together: what each batch
 /// written keeps alive, as the cost model counts it, an allocation once a batch.
-#[cfg(feature = "kill")]
 pub(crate) const LOADED_BYTES: usize = 64 << 20;
 
 /// How long the `rdlt-certify` binary lets a whole certification take, every role together,

@@ -6,16 +6,14 @@ Status: accepted, 2026-09-28.
 
 ADR 0021 split M4g, leaving M4h the `K` clauses (§20.8: "connector killed at random points;
 engine converges exactly-once") and `S-ARROW-JSON`. A kill clause needs an engine to load
-through the connector, and a host that can kill what it placed. The owner ruled that
-`rdlt-certify` depends on the engine only behind an optional `kill` feature, on in its binary.
+through the connector, and a host that can kill what it placed.
 
 ## Decision
 
 - **The crate map differs from spec §4.2 and §4.3.** `rdlt-certify` depends on `rdlt-connector`,
-  `rdlt-host` and `rdlt-wire`, and, with its `kill` feature, on `rdlt-engine` and
-  `rdlt-connector-reference` too. The binary requires the feature. A library build without it
-  still lists the `K` clauses in its reports and registry, each unobserved as unbuilt, so a report
-  has the same clauses whatever the build.
+  `rdlt-host`, `rdlt-wire`, `rdlt-engine` and `rdlt-connector-reference`, in every build: the
+  kill clauses load through an engine, into a reference memory destination or from a reference
+  generator source, so the library and the binary certify the same clauses.
 - **A host kills what it placed.** `rdlt_host::Kills` is a shared handle. `Local::kills`
   sends `SIGKILL` to the process group of each connector the provider spawned, which the host
   owns (ADR 0050); `Remote::kills` and the new `Connect::kills` cut
