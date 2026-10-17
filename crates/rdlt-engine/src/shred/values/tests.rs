@@ -545,3 +545,24 @@ fn a_part_held_as_json_still_refuses_a_key_its_objects_repeat_at_any_depth() {
         [false, true]
     );
 }
+
+#[test]
+fn fitting_a_part_held_as_json_holds_no_more_than_twice_its_text_and_a_hundred_bytes() {
+    let column = LogicalType::Json;
+    let object = wide("k", 100_000);
+    // Keys written escaped, each of which is copied to be compared.
+    let escaped = format!(
+        "{{{}}}",
+        (0..20_000)
+            .map(|key| format!("\"\\u006b{key}\":0"))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    let repeating = format!("{},\"k0\":1}}", object.trim_end_matches('}'));
+    let deep = format!("{}1{}", "[".repeat(60), "]".repeat(60));
+    for text in [&object, &escaped, &repeating, &deep] {
+        let (peak, _) = fitted_peak(&texts(&[Some(text.as_str())]), &column);
+        let bound = 2 * u64::try_from(text.len()).unwrap() + 100;
+        assert!(peak <= bound, "{text:.32}: peak {peak}, bound {bound}");
+    }
+}
