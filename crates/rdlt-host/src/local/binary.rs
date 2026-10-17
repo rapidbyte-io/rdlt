@@ -41,6 +41,8 @@ pub(crate) struct Binary {
     file: File,
     /// Where it was found, for messages and reports; never resolved again.
     path: PathBuf,
+    /// Whether another name led to the file when it was opened.
+    linked: bool,
 }
 
 /// The flags of every open: nothing outlives an exec, no pipe is waited on, no terminal taken.
@@ -64,9 +66,14 @@ impl Binary {
         Ok(binary)
     }
 
-    /// Whether a name still leads to the open file: one renamed over, or removed, has none.
-    pub(crate) fn linked(&self) -> io::Result<bool> {
-        Ok(self.file.metadata()?.nlink() > 0)
+    /// The names that lead to the open file now: none once it is renamed over or removed.
+    pub(crate) fn names(&self) -> io::Result<u64> {
+        Ok(self.file.metadata()?.nlink())
+    }
+
+    /// Whether another name led to the open file when it was opened, as a hard link does.
+    pub(crate) fn linked(&self) -> bool {
+        self.linked
     }
 
     /// Opens the binary `name` in the first of `dirs` that holds it: each an absolute path to
@@ -118,7 +125,8 @@ impl Binary {
             return Err(Unfit::Absent(Some(error)));
         }
         private(&file, &path)?;
-        Ok(Self { file, path })
+        let linked = metadata.nlink() > 1;
+        Ok(Self { file, path, linked })
     }
 
     /// Where the binary was found.
