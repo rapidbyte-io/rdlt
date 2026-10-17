@@ -58,7 +58,7 @@ given. The host did not enforce it:
     write-ahead log, its state, secrets it reads itself), or a directory a secret resolver
     reads from (`SecretResolver::directories`); and it may not hold a binary a placement runs,
     the directory that binary is in, a script's interpreter, or the sandbox's launcher, nor
-    lie on the file system of a binary or interpreter with a second name
+    lie on the file system of a binary, interpreter or launcher with a second name
     (`grant_root_guarded`). A directory not there yet is guarded by the nearest one above it
     that is. `Local` has no step at which it is built, and a binary placed by path is known
     only at its placement, so the roots are checked at every placement, before anything is

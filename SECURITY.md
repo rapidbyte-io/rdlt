@@ -64,8 +64,8 @@ anything runs; none is ignored.
   - A root that may be written may hold nothing that decides what the host runs or keeps: no
     connector directory or binary, no script's interpreter, no launcher, not the host's
     executable's directory, a directory the host keeps its log, state or secrets in, or one a
-    secret resolver reads. The placement is refused otherwise. Where a binary or interpreter
-    has a second name, a hard link, no root on its file system may be written.
+    secret resolver reads. The placement is refused otherwise. Where a binary, interpreter or
+    launcher has a second name, a hard link, no root on its file system may be written.
   - Each path granted is opened once, checked by what was opened, and bound by its descriptor
     at every spawn of the placement, so a link changed after the check changes nothing. No
     other connector of the process may hold a path within, above or equal to it while its

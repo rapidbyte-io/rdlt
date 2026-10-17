@@ -441,6 +441,39 @@ fn no_root_on_its_file_system_may_be_written_where_a_program_has_a_second_name()
 }
 
 #[test]
+fn no_root_on_its_file_system_may_be_written_where_the_launcher_has_a_second_name() {
+    let root = tempfile::tempdir().expect("a temporary directory");
+    let (bin, data) = (dir(root.path(), "bin"), dir(root.path(), "data"));
+    let launcher = file(&bin.join("bwrap"));
+    let leases = Leases::default();
+    let launching = |root: &Path, launcher: &Path| Asked {
+        guarded: Guarded {
+            directories: Vec::new(),
+            files: vec![launcher.to_owned()],
+        },
+        ..Asked::under(root)
+    };
+    drop(
+        launching(&data, &launcher)
+            .taken(&leases)
+            .expect("one name, beside"),
+    );
+    // A directory above a launcher not there yet has names of its own, and is no launcher.
+    dir(&bin, "inner");
+    let absent = launching(&data, &bin.join("absent")).taken(&leases);
+    drop(absent.expect("an absent launcher"));
+    std::fs::hard_link(&launcher, data.join("alias")).expect("a second name");
+    let refused = launching(&data, &launcher)
+        .taken(&leases)
+        .expect_err("a second name");
+    assert_eq!(refused, SandboxError::Guarded { path: data.clone() });
+    assert_eq!(refused.code(), "grant_root_guarded");
+    // `/dev` is a file system of its own wherever these tests run.
+    let other = launching(Path::new("/dev"), &launcher).taken(&leases);
+    drop(other.expect("another file system"));
+}
+
+#[test]
 fn a_program_with_a_second_name_is_not_written_through_another_file_system() {
     use std::os::unix::fs::MetadataExt as _;
     let root = tempfile::tempdir().expect("a temporary directory");
