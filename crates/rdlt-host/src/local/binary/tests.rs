@@ -399,11 +399,13 @@ fn a_binary_reached_through_a_link_read_out_of_a_directory_another_user_may_writ
 
 #[test]
 fn a_path_is_followed_through_as_many_links_as_the_kernel_follows_and_no_more() {
-    let root = tempfile::tempdir().expect("a temporary directory");
-    let slot = dir(root.path(), "slot");
+    let temporary = tempfile::tempdir().expect("a temporary directory");
+    // Resolved, so the chain holds the only links the walk follows.
+    let root = std::fs::canonicalize(temporary.path()).expect("it resolves");
+    let slot = dir(&root, "slot");
     // `link-0` leads to `slot` through `count` links: `link-0` → `link-1` → … → `slot`.
     let chain = |count: usize| {
-        let links = dir(root.path(), &format!("chain-{count}"));
+        let links = dir(&root, &format!("chain-{count}"));
         for at in 0..count {
             let target = if at + 1 == count {
                 slot.clone()
