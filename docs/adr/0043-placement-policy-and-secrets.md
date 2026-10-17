@@ -129,12 +129,12 @@ given. The host did not enforce it:
   - The open file is what is hashed, at placement and before every spawn, and what is
     executed: through `/proc/self/fd`, or handed to the sandbox, which binds it. A file that
     takes the binary's name later is never run; one whose bytes change is refused; and one
-    given a second name since it was placed is refused (`program_exposed`), since its
-    placement was held as having none. A sandboxed connector whose binary was renamed over or
-    removed is refused (`binary_replaced`) rather than spawned again: bubblewrap binds a
-    program by a name, which the file placed no longer has, and copying the binary into every
-    sandbox would cost its size in memory for each. A trusted binary is spawned again from the
-    file placed.
+    given a second name since it was placed, or whose interpreter was, is refused
+    (`program_exposed`), since its placement was held as having none. A sandboxed connector
+    whose binary was renamed over or removed is refused (`binary_replaced`) rather than
+    spawned again: bubblewrap binds a program by a name, which the file placed no longer has,
+    and copying the binary into every sandbox would cost its size in memory for each. A trusted
+    binary is spawned again from the file placed.
   - A script's interpreter opens the script by the name it was executed by, so a trusted
     script is also given at descriptor 4, which its interpreter holds.
   - macOS cannot execute an open file without `unsafe` code: there a digest is refused as

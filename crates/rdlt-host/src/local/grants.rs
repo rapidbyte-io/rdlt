@@ -61,6 +61,26 @@ pub(crate) struct Lease {
     pub(crate) bound: Vec<Bound>,
 }
 
+impl Lease {
+    /// A program its placement runs that was held as having one name and has another now, by
+    /// the name it is run by; not `binary`, which is run from the file placed, whatever its
+    /// name leads to now.
+    pub(crate) fn exposed(&self, binary: &Path) -> Option<PathBuf> {
+        let held = self
+            .leases
+            .held
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let held = held.iter().find(|held| held.id == self.id)?;
+        let named = |path: &Path| std::fs::metadata(path).is_ok_and(|now| now.nlink() > 1);
+        held.programs
+            .iter()
+            .filter(|program| program.path != binary)
+            .find(|program| !program.linked && named(&program.path))
+            .map(|program| program.path.clone())
+    }
+}
+
 impl Drop for Lease {
     fn drop(&mut self) {
         let mut held = self

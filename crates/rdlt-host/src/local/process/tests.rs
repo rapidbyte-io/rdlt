@@ -190,6 +190,53 @@ async fn a_binary_given_a_second_name_since_it_was_placed_is_not_spawned() {
     assert_eq!(super::stop_spawned(Duration::from_secs(20)), Ok(()));
 }
 
+#[tokio::test]
+async fn a_scripts_interpreter_given_a_second_name_since_it_was_placed_is_not_spawned() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let interpreter = directory.path().join("sh");
+    std::fs::copy("/bin/sh", &interpreter).expect("the shell copies");
+    let mut launch = sleeper(directory.path());
+    let path = directory.path().join("sleeper");
+    let line = format!("#!{}\nexec sleep 300\n", interpreter.display());
+    std::fs::write(&path, line).expect("the script writes");
+    let leases = Leases::default();
+    let placed = || {
+        let binary = Binary::at(&path).expect("the script opens");
+        let programs = crate::local::programs(&binary).expect("its programs");
+        let lease = leases.take(&Claim {
+            grants: &Grants::default(),
+            shared_reads: &[],
+            roots: &Roots::default(),
+            guarded: &Guarded::default(),
+            programs: &programs,
+        });
+        (Arc::new(binary), Arc::new(lease.expect("held")))
+    };
+    (launch.binary, launch.lease) = placed();
+    // A file with two names that takes the binary's name is not the file placed, which is run.
+    let replacement = directory.path().join("replacement");
+    std::fs::copy(&path, &replacement).expect("the script copies");
+    std::fs::hard_link(&replacement, directory.path().join("alias")).expect("a second name");
+    std::fs::rename(&replacement, &path).expect("it takes the binary's name");
+    let process =
+        Process::spawn_by(&launch, socket(), Redactions::new(), &Steps::TAKEN).expect("it starts");
+    drop(process);
+    assert_eq!(super::stop_spawned(Duration::from_secs(20)), Ok(()));
+    std::fs::hard_link(&interpreter, directory.path().join("another-sh")).expect("a second name");
+    let refused = Process::spawn_by(&launch, socket(), Redactions::new(), &Steps::TAKEN);
+    let Err(Unspawned::Sandbox(refused)) = refused else {
+        panic!("it was not refused");
+    };
+    assert_eq!(refused, SandboxError::Exposed { path: interpreter });
+    assert_eq!(super::spawned(), Vec::<u32>::new());
+    // Placed with both names, as its placement was then held, it is spawned.
+    (launch.binary, launch.lease) = placed();
+    let process =
+        Process::spawn_by(&launch, socket(), Redactions::new(), &Steps::TAKEN).expect("it starts");
+    drop(process);
+    assert_eq!(super::stop_spawned(Duration::from_secs(20)), Ok(()));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn what_a_placement_holds_is_held_until_its_last_connector_is_reaped() {
     let directory = tempfile::tempdir().expect("a temporary directory");
