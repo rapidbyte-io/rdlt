@@ -33,17 +33,23 @@ pub(super) enum Connected {
     Destination(Arc<dyn Destination>),
 }
 
+/// What a configuration connected: the connector for its role, and the probes it serves, set
+/// together.
+pub(super) struct Configured {
+    pub(super) connected: Connected,
+    pub(super) probes: Probes,
+}
+
 /// The protocol served on one connection.
 pub(super) struct Service {
     pub(super) served: Arc<Served>,
     pub(super) limits: Limits,
     /// What the handshake agreed.
     pub(super) agreed: OnceCell<Agreed>,
-    pub(super) connected: OnceCell<Connected>,
+    /// What the configuration connected.
+    pub(super) connected: OnceCell<Configured>,
     /// The host served, where a listening connector accepted it by name.
     pub(super) host_name: Option<Arc<str>>,
-    /// Certification's probes, where the handshake accepted them.
-    pub(super) probes: Probes,
     /// The host's limits, which what this end sends must keep within.
     pub(super) host: OnceCell<Limits>,
     pub(super) sessions: Sessions,
@@ -65,7 +71,6 @@ impl Service {
             host_name,
             agreed: OnceCell::new(),
             connected: OnceCell::new(),
-            probes: Probes::default(),
             host: OnceCell::new(),
             sessions: Sessions::holding(sessions),
             stopping,
@@ -73,14 +78,22 @@ impl Service {
     }
 
     fn connected(&self) -> Result<&Connected, Status> {
-        self.connected.get().ok_or_else(|| {
+        let Some(configured) = self.connected.get() else {
             let error = if self.agreed.initialized() {
                 not_configured()
             } else {
                 no_handshake()
             };
-            status(&error)
-        })
+            return Err(status(&error));
+        };
+        Ok(&configured.connected)
+    }
+
+    /// The probes the configuration connected; none before it.
+    fn probes(&self) -> &Probes {
+        self.connected
+            .get()
+            .map_or(&super::probes::NONE, |configured| &configured.probes)
     }
 
     fn source(&self) -> Result<Arc<dyn Source>, Status> {
@@ -204,7 +217,10 @@ impl Connector for Service {
         &self,
         request: Request<v1::ReadAcknowledgedRequest>,
     ) -> Result<Response<v1::ReadAcknowledgedResponse>, Status> {
-        let answer = self.probes.read_acknowledged(request.into_inner()).await?;
+        let answer = self
+            .probes()
+            .read_acknowledged(request.into_inner())
+            .await?;
         Ok(Response::new(answer))
     }
 
@@ -353,7 +369,7 @@ impl Plane for Service {
     fn read_published(&self, request: v1::ReadPublishedRequest) -> Serving<'_, v1::ReadFrame> {
         Box::pin(async move {
             let host = self.host.get().copied().unwrap_or_default();
-            self.probes.read_published(request, host)
+            self.probes().read_published(request, host)
         })
     }
 }
