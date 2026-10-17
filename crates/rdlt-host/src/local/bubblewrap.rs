@@ -223,7 +223,9 @@ fn launched(launcher: &Binary, confined: &Confined<'_>) -> Result<Launcher, Sand
     let arguments = arguments(&Bubblewrap::confinement(confined)).map_err(failed)?;
     // Executed from a descriptor above every one the launcher is given.
     let given = confined.binds.iter().map(|bind| bind.fd);
-    let highest = given.chain([ARGS_FD]).max().unwrap_or(ARGS_FD);
+    let highest = given
+        .chain([confined.socket, confined.program])
+        .fold(ARGS_FD, RawFd::max);
     let (mut command, executed) =
         super::process::executed_from(launcher.file(), highest).map_err(failed)?;
     command

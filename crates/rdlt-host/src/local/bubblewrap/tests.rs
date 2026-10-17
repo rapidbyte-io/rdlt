@@ -264,19 +264,28 @@ fn the_launcher_runs_from_a_descriptor_above_every_one_it_is_given() {
             write: false,
         })
         .collect();
-    let launcher = sandbox
-        .launcher(&confined(&binds, NetworkGrant::Denied, &[], &[]))
-        .expect("a launcher");
-    let program = launcher
-        .command
-        .get_program()
-        .to_string_lossy()
-        .into_owned();
-    let executed: i32 = program
-        .strip_prefix("/proc/self/fd/")
-        .and_then(|fd| fd.parse().ok())
-        .expect("a descriptor");
-    assert!(executed > GRANTS_FD + 5, "{executed}");
+    let above = GRANTS_FD + 20;
+    // The highest descriptor given: a bind, the socket, then the program.
+    for (socket, program, highest) in [
+        (SOCKET_FD, PROGRAM_FD, GRANTS_FD + 5),
+        (above, PROGRAM_FD, above),
+        (SOCKET_FD, above, above),
+    ] {
+        let confined = Confined {
+            program,
+            socket,
+            ..confined(&binds, NetworkGrant::Denied, &[], &[])
+        };
+        let launcher = sandbox.launcher(&confined).expect("a launcher");
+        let executed: i32 = launcher
+            .command
+            .get_program()
+            .to_string_lossy()
+            .strip_prefix("/proc/self/fd/")
+            .and_then(|fd| fd.parse().ok())
+            .expect("a descriptor");
+        assert!(executed > highest, "{executed} at or below {highest}");
+    }
 }
 
 #[cfg(target_os = "linux")]
