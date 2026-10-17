@@ -27,10 +27,10 @@ use tokio_util::sync::CancellationToken;
 use crate::local::grants::Lease;
 use crate::local::sandbox::Stops;
 pub use interrupts::Interrupts;
-pub(super) use registry::has_room;
-#[cfg(test)]
-pub(super) use registry::threads;
+pub(super) use registry::reserve;
 pub use registry::{Lingering, StopsSpawned, spawned, stop_spawned};
+#[cfg(test)]
+pub(super) use registry::{reserved, threads};
 
 /// How often the thread that owns a group asks whether its leader has exited, a kill was
 /// asked, or a stop's grace has passed.
@@ -117,6 +117,8 @@ pub(super) struct Starting {
     pub(super) exit: watch::Sender<Option<ExitStatus>>,
     /// What its placement holds, released by this connector once it is reaped.
     pub(super) lease: Arc<Lease>,
+    /// Its place among the groups this process may own, which its group takes once listed.
+    pub(super) slot: registry::Slot,
 }
 
 /// A connector that started, on the thread that owns its group, which waits to be told
@@ -155,15 +157,17 @@ pub(super) fn start(starting: Starting, threaded: Threaded) -> std::io::Result<S
     type Told = (Arc<Held>, u32, Option<ChildStdout>, Option<ChildStderr>);
     let (tell, told) = sync_channel::<std::io::Result<Told>>(1);
     let (keep, kept) = sync_channel::<bool>(1);
+    let Starting {
+        mut command,
+        terms,
+        killed,
+        exit,
+        lease,
+        slot,
+    } = starting;
     let owning = move || {
         // Held until the connector is reaped, whichever way this ends.
-        let Starting {
-            mut command,
-            terms,
-            killed,
-            exit,
-            lease: _held,
-        } = starting;
+        let _held = lease;
         let spawned = command.spawn();
         // The command holds this process's copies of the connector's descriptors: dropped,
         // the connector's exit closes its socket.
@@ -197,7 +201,7 @@ pub(super) fn start(starting: Starting, threaded: Threaded) -> std::io::Result<S
         }
     };
     // Listed before its thread is told to keep it, so the thread's removal comes after.
-    registry::enter(id, Arc::clone(&held), thread);
+    registry::enter(slot, id, Arc::clone(&held), thread);
     Ok(Started {
         held,
         id,

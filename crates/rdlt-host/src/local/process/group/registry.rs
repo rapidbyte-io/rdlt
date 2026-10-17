@@ -11,10 +11,13 @@ use std::time::{Duration, Instant};
 use super::{EMPTYING, Held, WATCH};
 
 /// Every group this process spawned and has not seen end, by its leader's process id, with
-/// what stops it; and the groups that ended with members remaining.
+/// what stops it; the places held by groups still starting; and the groups that ended with
+/// members remaining.
 #[derive(Default)]
 struct Groups {
     live: BTreeMap<u32, Arc<Held>>,
+    /// The places held by connectors being launched, each a [`Slot`] not yet entered.
+    reserved: usize,
     /// The thread that owns each group, until it is joined once the group has ended.
     threads: BTreeMap<u32, JoinHandle<()>>,
     remaining: Vec<u32>,
@@ -27,13 +30,13 @@ pub(super) const OWNED: usize = 1024;
 /// The groups that ended with members remaining a process keeps to report, at most.
 const REMAINING: usize = 1024;
 
-/// Refuses a group more than a process owns, of the `owned` it does.
+/// Refuses a group more than a process owns or is starting, of the `owned` it does.
 fn room(owned: usize) -> std::io::Result<()> {
     if owned < OWNED {
         return Ok(());
     }
     Err(std::io::Error::other(format!(
-        "this process owns {owned} connectors, as many as it may at once"
+        "this process owns or is starting {owned} connectors, as many as it may at once"
     )))
 }
 
@@ -45,13 +48,29 @@ fn remember(remaining: &mut Vec<u32>, id: u32) {
     remaining.push(id);
 }
 
-/// Whether this process may own a group more.
+/// A place among the [`OWNED`] groups a process may own, held from before a connector is
+/// launched until its group is entered, and given back when dropped.
+#[derive(Debug)]
+#[must_use = "the place is given back when this is dropped"]
+pub(in crate::local::process) struct Slot(());
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        groups().get_or_insert_default().reserved -= 1;
+    }
+}
+
+/// Takes a place for a group, before anything of its connector is launched.
 ///
 /// # Errors
 ///
-/// It owns as many as it may: [`OWNED`].
-pub(in crate::local::process) fn has_room() -> std::io::Result<()> {
-    room(groups().get_or_insert_default().live.len())
+/// This process owns or is starting as many groups as it may: [`OWNED`].
+pub(in crate::local::process) fn reserve() -> std::io::Result<Slot> {
+    let mut guard = groups();
+    let groups = guard.get_or_insert_default();
+    room(groups.live.len() + groups.reserved)?;
+    groups.reserved += 1;
+    Ok(Slot(()))
 }
 
 /// Joins the threads of the groups that have ended, each of which is past its last use of
@@ -80,6 +99,12 @@ pub(in crate::local::process) fn threads() -> usize {
     groups().get_or_insert_default().threads.len()
 }
 
+/// How many places starts hold.
+#[cfg(test)]
+pub(in crate::local::process) fn reserved() -> usize {
+    groups().get_or_insert_default().reserved
+}
+
 static GROUPS: Mutex<Option<Groups>> = Mutex::new(None);
 
 /// Signalled when a group ends.
@@ -90,10 +115,13 @@ fn groups() -> MutexGuard<'static, Option<Groups>> {
 }
 
 /// Lists the group `id` names, which `held` stops and `thread` owns, as one this process
-/// spawned; the threads of groups that have ended are joined.
-pub(super) fn enter(id: u32, held: Arc<Held>, thread: JoinHandle<()>) {
+/// spawned, in the place `slot` held; the threads of groups that have ended are joined.
+pub(super) fn enter(slot: Slot, id: u32, held: Arc<Held>, thread: JoinHandle<()>) {
     let mut guard = groups();
     let groups = guard.get_or_insert_default();
+    // The place moves to the live group under one lock: no start sees it free between.
+    std::mem::forget(slot);
+    groups.reserved -= 1;
     groups.live.insert(id, held);
     groups.threads.insert(id, thread);
     join(guard);
