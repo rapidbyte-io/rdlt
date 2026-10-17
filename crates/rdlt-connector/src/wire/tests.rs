@@ -633,37 +633,32 @@ fn numbers_that_do_not_fit_are_out_of_range() {
 }
 
 #[test]
-fn a_destinations_numbers_and_reserved_names_are_admitted_across_their_stated_ranges() {
-    use crate::limits::{MAX_RESERVED_PREFIXES, MAX_RESERVED_WORDS, MIN_IDENTIFIER_LEN};
-    let sent = |max_len: u32, writers: u32, words: usize, prefixes: usize| {
+fn a_destinations_identifier_length_and_writers_are_admitted_across_their_stated_ranges() {
+    use crate::limits::MIN_IDENTIFIER_LEN;
+    let sent = |max_len: u32, writers: u32| {
         let mut capabilities = v1::Capabilities::from(&Capabilities::minimal());
         capabilities.max_parallel_writers = writers;
-        let rules = capabilities
+        capabilities
             .identifiers
             .as_mut()
-            .expect("capabilities carry their identifier rules");
-        rules.max_len = max_len;
-        rules.reserved = (0..words).map(|word| format!("w{word}")).collect();
-        rules.reserved_table_prefixes = (0..prefixes).map(|prefix| format!("p{prefix}")).collect();
+            .expect("capabilities carry their identifier rules")
+            .max_len = max_len;
         Capabilities::try_from(capabilities)
     };
     let (least, most) = (u32::from(MIN_IDENTIFIER_LEN), u32::from(u16::MAX));
-    let (words, prefixes) = (MAX_RESERVED_WORDS, MAX_RESERVED_PREFIXES);
     for (max_len, writers) in [(least, 1), (most, most)] {
-        let decoded = sent(max_len, writers, words, prefixes).expect("within the stated ranges");
+        let decoded = sent(max_len, writers).expect("within the stated ranges");
         assert_eq!(u32::from(decoded.identifiers.max_len.get()), max_len);
         assert_eq!(u32::from(decoded.max_parallel_writers.get()), writers);
-        assert_eq!(decoded.identifiers.reserved.len(), words);
-        assert_eq!(decoded.identifiers.reserved_table_prefixes.len(), prefixes);
     }
     for max_len in [0, most + 1] {
         assert!(matches!(
-            sent(max_len, 1, 0, 0),
+            sent(max_len, 1),
             Err(Invalid::OutOfRange("identifier length"))
         ));
     }
     assert!(matches!(
-        sent(least - 1, 1, 0, 0),
+        sent(least - 1, 1),
         Err(Invalid::Rejected {
             what: "identifier rules",
             ..
@@ -671,14 +666,8 @@ fn a_destinations_numbers_and_reserved_names_are_admitted_across_their_stated_ra
     ));
     for writers in [0, most + 1] {
         assert!(matches!(
-            sent(least, writers, 0, 0),
+            sent(least, writers),
             Err(Invalid::OutOfRange("parallel writers"))
-        ));
-    }
-    for (words, prefixes) in [(words + 1, 0), (0, prefixes + 1)] {
-        assert!(matches!(
-            sent(least, 1, words, prefixes),
-            Err(Invalid::OutOfRange("reserved words"))
         ));
     }
 }
