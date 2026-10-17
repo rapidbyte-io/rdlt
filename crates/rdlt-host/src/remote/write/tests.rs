@@ -70,6 +70,7 @@ fn fixture(credit: u64) -> Fixture {
         version: 1,
         staged: 0,
         flushed: WriteStats::default(),
+        unanswered: false,
     };
     Fixture {
         writer,
@@ -386,4 +387,84 @@ async fn a_dictionary_write_dropped_after_an_older_dictionary_sends_the_new_one_
     let sent = written(&mut writer, &mut frames, keyed("alpha")).await;
     assert!(matches!(sent[0], Frame::Schema(_)), "{sent:?}");
     assert_eq!(first_value(&decoded(&mut decoder, &sent)), "alpha");
+}
+
+fn stats(rows: u64) -> v1::WriteAck {
+    v1::WriteAck {
+        ack: Some(v1::write_ack::Ack::Flushed(v1::WriteStats {
+            rows,
+            bytes: rows,
+        })),
+    }
+}
+
+/// Fails the test unless `refused` is the refusal of a writer whose flush went unanswered.
+fn refused_unanswered(refused: rdlt_connector::Result<()>) {
+    let error = refused.expect_err("the writer is refused");
+    assert_eq!(
+        (error.kind(), error.code()),
+        (ConnectorErrorKind::Transient, Some(DEADLINE_EXCEEDED))
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_writer_whose_flush_went_unanswered_refuses_every_later_call() {
+    // The flush dropped by its caller, then one that passed its own deadline.
+    for bound in [Duration::from_millis(20), Duration::from_secs(2)] {
+        let Fixture {
+            mut writer,
+            mut frames,
+            acks,
+        } = fixture(1 << 20);
+        let ended = tokio::time::timeout(bound, writer.flush()).await;
+        assert!(
+            !matches!(ended, Ok(Ok(_))),
+            "no stats came within {bound:?}"
+        );
+        assert!(matches!(
+            queued(&mut frames, 1).await[..],
+            [Frame::Flush(_)]
+        ));
+        // Its stats arrive late: taken by a later flush, they would be counted as that flush's.
+        acks.send(stats(7)).await.expect("the answers are read");
+        let flushed = tokio::time::timeout(Duration::from_secs(2), writer.flush())
+            .await
+            .expect("the writer refuses at once");
+        refused_unanswered(flushed.map(drop));
+        let written = tokio::time::timeout(
+            Duration::from_secs(2),
+            writer.write(SegmentId(1), keyed("alpha")),
+        )
+        .await
+        .expect("the writer refuses at once");
+        refused_unanswered(written);
+        assert!(frames.try_recv().is_err(), "a refused writer sends nothing");
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_write_dropped_while_its_own_flush_waits_refuses_the_writer() {
+    let Fixture {
+        mut writer,
+        mut frames,
+        acks: _acks,
+    } = fixture(1 << 20);
+    // What the connector has staged is at its limit: the write's first frame flushes first.
+    writer.staged = writer.connection.peer.staged_bytes();
+    let writing = async {
+        tokio::join!(
+            writer.write(SegmentId(1), keyed("alpha")),
+            queued(&mut frames, 2)
+        )
+    };
+    let dropped = tokio::time::timeout(Duration::from_millis(20), writing).await;
+    assert!(dropped.is_err(), "the write's flush waits for its stats");
+    let written = tokio::time::timeout(
+        Duration::from_secs(2),
+        writer.write(SegmentId(1), keyed("alpha")),
+    )
+    .await
+    .expect("the writer refuses at once");
+    refused_unanswered(written);
+    assert!(frames.try_recv().is_err(), "a refused writer sends nothing");
 }
