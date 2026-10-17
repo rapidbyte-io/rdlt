@@ -11,7 +11,6 @@ use arrow_array::{
 use arrow_schema::{DataType, Field as ArrowField, Fields};
 
 use super::super::refused::code;
-use super::super::retype::fitted;
 use super::rendered;
 use crate::{Field, LogicalType};
 
@@ -148,30 +147,6 @@ fn structs_become_objects_of_every_field_and_lists_arrays() {
         json(&lists, None),
         [Some("[1,null]".to_owned()), None, Some("[]".to_owned())]
     );
-}
-
-#[test]
-fn a_struct_s_field_that_widened_to_json_holds_its_values_json_text() {
-    let from = Fields::from(vec![ArrowField::new("y", DataType::Boolean, true)]);
-    let to = Fields::from(vec![Field::new("y", LogicalType::Json, true).to_arrow()]);
-    let structs: ArrayRef = Arc::new(StructArray::new(
-        from.clone(),
-        vec![Arc::new(BooleanArray::from(vec![true])) as ArrayRef],
-        None,
-    ));
-    let widened = fitted(
-        &structs,
-        &ArrowField::new("s", DataType::Struct(from), true),
-        &ArrowField::new("s", DataType::Struct(to), true),
-    )
-    .unwrap();
-    let held = widened
-        .as_struct()
-        .column(0)
-        .as_string::<i32>()
-        .value(0)
-        .to_owned();
-    assert_eq!(held, "true");
 }
 
 #[test]

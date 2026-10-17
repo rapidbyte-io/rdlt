@@ -466,7 +466,7 @@ fn a_column_widened_to_json_takes_the_text_type_its_field_stores_json_as() {
 
 #[test]
 fn a_struct_field_or_a_list_item_widened_to_json_takes_its_text_type() {
-    for storage in [DataType::LargeUtf8, DataType::Utf8View] {
+    for storage in [DataType::Utf8, DataType::LargeUtf8, DataType::Utf8View] {
         let from = Fields::from(vec![field("y", DataType::Boolean)]);
         let structs: ArrayRef = Arc::new(StructArray::new(
             from.clone(),
@@ -482,7 +482,7 @@ fn a_struct_field_or_a_list_item_widened_to_json_takes_its_text_type() {
         .unwrap();
         assert_eq!(widened.data_type(), &to, "{storage}");
         let held = arrow_cast::cast(widened.as_struct().column(0), &DataType::Utf8).unwrap();
-        assert_eq!(held.as_string::<i32>().value(0), "true");
+        assert_eq!(held.as_string::<i32>().value(0), "true", "{storage}");
         let item = Arc::new(field("item", DataType::Boolean));
         let lists: ArrayRef = Arc::new(ListArray::new(
             Arc::clone(&item),
