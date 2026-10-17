@@ -61,9 +61,9 @@ impl Asked {
         let programs: Vec<Program> = self
             .programs
             .iter()
-            .map(|path| Program {
-                path: path.clone(),
-                chain: Opened::at(path).expect("the program is there").chain,
+            .map(|path| {
+                let opened = Opened::at(path).expect("the program is there");
+                Program::opened(path.clone(), opened).expect("its names are counted")
             })
             .collect();
         leases.take(&Claim {
@@ -356,6 +356,110 @@ fn no_grant_may_write_a_program_another_placement_runs_nor_a_placement_run_one_w
             .expect("elsewhere"),
     );
     drop(writing);
+}
+
+#[test]
+fn a_program_with_a_second_name_is_written_by_any_write_grant_on_its_file_system() {
+    let root = tempfile::tempdir().expect("a temporary directory");
+    let (bin, data) = (dir(root.path(), "bin"), dir(root.path(), "data"));
+    let program = file(&bin.join("rdlt-connector-x"));
+    let leases = Leases::default();
+    let under = || Asked::under(root.path());
+    // With one name, a write grant beside it reaches nothing it runs, whichever came first.
+    let running = Asked::default()
+        .running(&program)
+        .taken(&leases)
+        .expect("runs");
+    drop(under().writing(&data).taken(&leases).expect("beside"));
+    drop(running);
+    let writing = under().writing(&data).taken(&leases).expect("beside");
+    drop(
+        Asked::default()
+            .running(&program)
+            .taken(&leases)
+            .expect("runs"),
+    );
+    drop(writing);
+    // Given a second name in `data`, it is written through a grant to write there.
+    std::fs::hard_link(&program, data.join("alias")).expect("a second name");
+    let running = Asked::default()
+        .running(&program)
+        .taken(&leases)
+        .expect("runs");
+    for asked in [under().writing(&data), under().writing(&data).shared()] {
+        let refused = asked.taken(&leases).expect_err("it covers");
+        assert_eq!(refused, SandboxError::Covers { path: data.clone() });
+        assert_eq!(refused.code(), "grant_covers");
+    }
+    // A read of where the second name lies writes nothing.
+    drop(under().reading(&data).taken(&leases).expect("a read"));
+    drop(running);
+    // In the other order, the placement that runs it is refused.
+    let writing = under().writing(&data).taken(&leases).expect("held");
+    let refused = Asked::default()
+        .running(&program)
+        .taken(&leases)
+        .expect_err("exposed");
+    assert_eq!(
+        refused,
+        SandboxError::Exposed {
+            path: program.clone()
+        }
+    );
+    assert_eq!(refused.code(), "program_exposed");
+    drop(writing);
+}
+
+#[test]
+fn no_root_on_its_file_system_may_be_written_where_a_program_has_a_second_name() {
+    let root = tempfile::tempdir().expect("a temporary directory");
+    let (bin, data) = (dir(root.path(), "bin"), dir(root.path(), "data"));
+    let program = file(&bin.join("rdlt-connector-x"));
+    let leases = Leases::default();
+    drop(
+        Asked::under(&data)
+            .running(&program)
+            .taken(&leases)
+            .expect("one name, beside"),
+    );
+    std::fs::hard_link(&program, data.join("alias")).expect("a second name");
+    let refused = Asked::under(&data)
+        .running(&program)
+        .taken(&leases)
+        .expect_err("a second name");
+    assert_eq!(refused, SandboxError::Guarded { path: data.clone() });
+    assert_eq!(refused.code(), "grant_root_guarded");
+    // A root that may only be read writes nothing.
+    let reading = Asked {
+        roots: Roots {
+            read: vec![data.clone()],
+            write: Vec::new(),
+        },
+        ..Asked::default()
+    };
+    drop(reading.running(&program).taken(&leases).expect("read only"));
+}
+
+#[test]
+fn a_program_with_a_second_name_is_not_written_through_another_file_system() {
+    use std::os::unix::fs::MetadataExt as _;
+    let root = tempfile::tempdir().expect("a temporary directory");
+    let program = file(&dir(root.path(), "bin").join("rdlt-connector-x"));
+    std::fs::hard_link(&program, root.path().join("alias")).expect("a second name");
+    // `/dev` is a file system of its own wherever these tests run.
+    let other = Path::new("/dev");
+    let device = |path: &Path| std::fs::metadata(path).expect("it is there").dev();
+    assert_ne!(device(other), device(root.path()));
+    let leases = Leases::default();
+    let running = Asked::default()
+        .running(&program)
+        .taken(&leases)
+        .expect("runs");
+    let writing = Asked::under(other).writing(other).taken(&leases);
+    drop(writing.expect("another file system"));
+    drop(running);
+    let rooted = Asked::under(other).running(&program).taken(&leases);
+    drop(rooted.expect("another file system"));
 }
 
 #[cfg(target_os = "linux")]

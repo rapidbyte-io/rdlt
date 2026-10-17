@@ -64,6 +64,14 @@ impl Chain {
         self.within(other) || other.within(self)
     }
 
+    /// Whether this object lies on the file system `other` lies on.
+    pub(crate) fn shares_device(&self, other: &Self) -> bool {
+        matches!(
+            (self.0.first(), other.0.first()),
+            (Some(ours), Some(theirs)) if ours.0 == theirs.0
+        )
+    }
+
     /// The chain of the directory this object lies in; none for the root.
     pub(crate) fn parent(&self) -> Option<Self> {
         (self.0.len() > 1).then(|| Self(self.0[1..].to_vec()))
