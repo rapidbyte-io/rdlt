@@ -33,36 +33,39 @@ Arrow columns and the rows normalizing makes of both escaped that in several way
 
 ## Decision
 
-- **The shredder is metered.** It keeps its one pass (ADR 0007), and every builder it makes is
-  paid for first. A JSON push is admitted for three times its text (ADR 0039): the text, and twice
-  it for its batches. Each chunk may build within twice its own text: its builders charge a meter
-  their presized capacity as they are made and what they grow by as they grow (values, offsets,
-  validity bits, text and list items), and each column the fixed parts it takes a chunk, whatever
-  its rows: its entry in the chunk's record (368 bytes and its name, and in a shape the mark of the
-  object that last named it, enough for the vectors holding the entries just as they double, when
-  they hold the old buffer and the new), and its builder (256 bytes, a struct's 1,536), its buffers'
-  rounding included. A chunk that would pass its allowance stops building and is read again
-  observing: kinds, counts of rows, items and text, no cells, nothing that grows with its rows. An
-  observation charges each column's entry in its shape the same way, and an object its own shape
-  (384 bytes). A chunk smaller than its records' columns, the last of a flush, may observe them past
-  its allowance: what a flush's observations hold so is limited to one shape of every column a
-  schema may hold, objects all (752 bytes a column, 5.6 MB at the default budget), reserved before
-  the pushes are observed and refused past it, `limit_exceeded`.
-  What building then takes is reserved without a wait while that is held, from it where it is
-  enough; where it must wait, the observation and its reservation are let go first, so the
-  partition waits holding nothing but its pushes, and the pushes are observed again once it is
-  reserved.
-- **What building takes beyond the admission is reserved before it is built.** Once every chunk
-  is parsed or observed and the shapes joined, the bytes each chunk's batch takes against the
-  joined shape are reckoned from the counts, with its columns' fixed parts (640 bytes an array, a
-  struct's 1,536) and what its parse holds until then. A chunk that fits keeps its columns, and
-  renders its scalars in a column the join made `Json` as JSON text, reckoned at most the chunk's
-  own text: compact JSON text is never longer than the valid JSON it was read from. One built
-  again is built presized. What all of it and the joined shape take beyond the pushes'
-  admission, reckoned over the flush, is reserved from the data
-  share (`acquire_working`) before any of it is built and held with the batches; more than one
-  request may take is refused, `json_exceeds_budget` (`ErrorKind::Source`). `shred` is now
-  `observe` and `build`, and the partition reserves between them.
+- **The shredder is metered.** It keeps its one pass (ADR 0007), and every builder it makes is paid
+  for first. A JSON push is admitted for three times its text (ADR 0039): the text, and twice it for
+  its batches. Each chunk may build within twice its own text: its builders charge a meter their
+  presized capacity as they are made and what they grow by as they grow (values, offsets, validity
+  bits, text and list items), and so does what a value of JSON is rendered into before its column
+  takes it (its text, a 16-byte range a key of the objects open in it and an 8-byte mark an object),
+  and each column the fixed parts it takes a chunk, whatever its rows: its entry in the chunk's
+  record (368 bytes and its name, and in a shape the mark of the object that last named it, enough
+  for the vectors holding the entries just as they double, when they hold the old buffer and the
+  new), and its builder (256 bytes, a struct's 1,536), its buffers' rounding included. A chunk that
+  would pass its allowance stops building and is read again observing: kinds, counts of rows, items
+  and text, no cells, nothing that grows with its rows. An observation charges each column's entry
+  in its shape the same way, and an object its own shape (384 bytes). A chunk smaller than its
+  records' columns, the last of a flush, may observe them past its allowance: what a flush's
+  observations hold so is limited to one shape of every column a schema may hold, objects all (752
+  bytes a column, 5.6 MB at the default budget), reserved before the pushes are observed and refused
+  past it, `limit_exceeded`. What building then takes is reserved without a wait while that is held,
+  from it where it is enough; where it must wait, the observation and its reservation are let go
+  first, so the partition waits holding nothing but its pushes, and the pushes are observed again
+  once it is reserved.
+- **What building takes beyond the admission is reserved before it is built.** Once every chunk is
+  parsed or observed and the shapes joined, the bytes each chunk's batch takes against the joined
+  shape are reckoned from the counts, with its columns' fixed parts (640 bytes an array, a struct's
+  1,536) and what its parse holds until then. A chunk that fits keeps its columns, and renders its
+  scalars in a column the join made `Json` as JSON text, reckoned at most the chunk's own text:
+  compact JSON text is never longer than the valid JSON it was read from. One built again is built
+  presized, beside what rendering its values of JSON holds: twice what its longest record's text, a
+  16-byte range for every four bytes of it and an 8-byte mark for each level an object may nest to
+  take. What all of it and the joined shape take beyond the pushes' admission, reckoned over the
+  flush, is reserved from the data share (`acquire_working`) before any of it is built and held with
+  the batches; more than one request may take is refused, `json_exceeds_budget`
+  (`ErrorKind::Source`). `shred` is now `observe` and `build`, and the partition reserves between
+  them.
 - **Columns and cells are counted where they are built.** The shredder's column limit is the
   engine's derived `schema_columns` (7,489 at the default budget, 943 at the least), counted as
   the emitter counts a schema: every field at any depth, and every list's items. It holds while a
@@ -168,6 +171,10 @@ Arrow columns and the rows normalizing makes of both escaped that in several way
   Arrow column of JSON holds what was not, so ADR 0039's bound holds for JSON without exception;
   a JSON flush whose batches take more than a quarter of the budget beyond twice its text is
   refused. Thirteen records of 7,480 keys, each in a chunk of 2 MiB, are refused so; four load.
+- A chunk built again with a column of JSON reckons about ten times its longest record beside
+  its batch, what rendering a value of objects with one-byte keys could hold. A flush of
+  records of megabytes whose column drifts to JSON takes that much more of a request, and may
+  be refused, `json_exceeds_budget`, where it loaded before.
 - Every JSON flush reserves the room its observations may hold beyond its text while it is
   observed, 5.6 MB at the default budget.
 - JSON records that held up to 10,000 columns in an object are refused past the derived limit.
