@@ -1,9 +1,9 @@
 use serde::de::Expected;
 
-use super::{Key, Look, Record};
+use super::{Key, Look, Part, Record};
 use crate::shred::meter::{Columns, Meter};
 use crate::shred::observe::{Observed, Shape};
-use crate::shred::visit::{Context, RecordSeed};
+use crate::shred::visit::{Context, RecordSeed, Skip};
 
 fn expected(visitor: &dyn Expected) -> String {
     visitor.to_string()
@@ -26,6 +26,7 @@ fn every_observing_visitor_says_what_it_expects() {
             shape: &mut shape,
             context: &context,
             object: 1,
+            fields: None,
         }),
         "an object key"
     );
@@ -34,6 +35,17 @@ fn every_observing_visitor_says_what_it_expects() {
             node: &mut node,
             context: &context,
             depth: 1,
+            target: None,
+        }),
+        "a JSON value"
+    );
+    assert_eq!(
+        expected(&Part {
+            node: &mut node,
+            skip: Skip {
+                context: &context,
+                depth: 1,
+            },
         }),
         "a JSON value"
     );

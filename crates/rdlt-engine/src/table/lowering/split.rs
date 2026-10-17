@@ -131,7 +131,7 @@ impl Fitted {
             let fits = arrow_select::filter::filter(&fits, kept)?;
             let fits = fits.as_boolean().clone();
             let joined = if texts.len() < rows {
-                values::rejoined(&texts, &fits)
+                values::rejoined(&texts, &fits, &joined)
                     .map_err(|error| ArrowError::ExternalError(Box::new(error)))?
             } else {
                 joined
