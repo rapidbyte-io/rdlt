@@ -175,7 +175,7 @@ impl RemoteWriter {
     ) -> rdlt_connector::Result<()> {
         use v1::write_frame::Frame;
         let schema = batch.schema();
-        // Kept once every frame of the batch is sent: a write that fails or is dropped part way
+        // Kept once every frame of the batch is queued: a write that fails or is dropped part way
         // leaves the next to send its schema, and every dictionary after it, again.
         let kept = self.schema.take();
         if kept.as_ref() != Some(&schema) {
