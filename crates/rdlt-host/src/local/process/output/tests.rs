@@ -235,19 +235,19 @@ async fn a_secret_ending_in_whitespace_at_a_lines_limit_is_scrubbed_before_the_l
 async fn a_secret_that_holds_line_ends_is_scrubbed_from_each_line_it_is_logged_on() {
     let cases: [(&str, &str, &[&str]); 4] = [
         (
-            "hunter\n2-canary",
-            "key: hunter\n2-canary\n",
+            "hunter-one\n2-canary",
+            "key: hunter-one\n2-canary\n",
             &["key: ***", "***"],
         ),
         (
-            "hunter\r\n2-canary",
-            "key: hunter\r\n2-canary\r\n",
+            "hunter-one\r\n2-canary",
+            "key: hunter-one\r\n2-canary\r\n",
             &["key: ***", "***"],
         ),
         // A blank line within the secret is no line of the log.
         (
-            "hunter\n\n2-canary",
-            "key: hunter\n\n2-canary\n",
+            "hunter-one\n\n2-canary",
+            "key: hunter-one\n\n2-canary\n",
             &["key: ***", "***"],
         ),
         (
@@ -293,6 +293,22 @@ async fn a_secret_that_runs_past_what_one_read_holds_is_scrubbed_from_the_line_i
             [format!("{key}*** [cut]").as_str(), "next"]
         );
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_short_line_of_a_secret_is_not_found_on_its_own_and_a_long_one_is() {
+    let secret = "{\n  \"private_key\": \"hunter-canary\"\n}";
+    let redactions = Redactions::new();
+    redactions.add(secret);
+    let output = "}\n{\"a\":1}\ngot   \"private_key\": \"hunter-canary\"\nwhole {\n  \"private_key\": \"hunter-canary\"\n}\n";
+    let drained = tokio::time::timeout(
+        Duration::from_secs(2),
+        drained(output.as_bytes(), &redactions),
+    )
+    .await
+    .expect("a drain of a few lines ends");
+    let expected = ["}", r#"{"a":1}"#, "got ***", "whole {", "***", "}"];
+    assert_eq!(drained.lines(), expected);
 }
 
 /// The whitespace a property's secrets and lines end with.

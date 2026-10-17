@@ -275,6 +275,19 @@ fn a_configuration_shows_nothing_of_itself_and_is_copied_only_on_purpose() {
 }
 
 #[test]
+fn a_line_of_a_secret_is_found_on_its_own_from_eight_characters_other_than_whitespace() {
+    let whole = "seven-7\n  eight-88  \n   seven-7 \nshort";
+    let redactions = Redactions::new();
+    redactions.add(whole);
+    assert_eq!(
+        redactions.scrubbed("seven-7|  eight-88  |   seven-7 |short".to_owned()),
+        "seven-7|***|   seven-7 |short"
+    );
+    // The whole secret is found wherever it is.
+    assert_eq!(redactions.scrubbed(format!("<{whole}>")), "<***>");
+}
+
+#[test]
 fn redactions_replace_every_secret_the_longest_first_and_show_none() {
     let redactions = Redactions::new();
     assert_eq!(redactions.scrubbed("nothing yet".to_owned()), "nothing yet");
