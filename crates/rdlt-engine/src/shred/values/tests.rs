@@ -515,9 +515,14 @@ fn a_part_held_as_json_still_refuses_a_key_its_objects_repeat_at_any_depth() {
         Some(r#"{"j":[{"a":1},{"a":2}]}"#),
         Some(r#"{"j":{"b":{"a":1},"c":{"a":2}}}"#),
         Some(r#"{"j":{"b":{"a":1},"a":{"a":2},"b":3}}"#),
+        Some(r#"{"j":{"a":1,"\u0061":2}}"#),
+        Some(r#"{"j":{"b":1,"a":2}}"#),
     ];
     // Each value is checked afresh, whatever the value before it found.
-    assert_eq!(fit(&values, &j), [false, true, true, true, false]);
+    assert_eq!(
+        fit(&values, &j),
+        [false, true, true, true, false, false, true]
+    );
     let items = LogicalType::List(Box::new(Field::new("item", j, true)));
     assert_eq!(
         fit(
