@@ -76,13 +76,13 @@ anything runs; none is ignored.
   - On macOS there is no sandbox: a local connector runs only as a trusted binary, with the
     host's access. Run untrusted connectors remotely there.
   - A binary named without a path is found only in the directories configured, never on
-    `PATH` or in the working directory. The binary, every directory above it and above a
-    connector directory must be writable by no other user, a sticky directory such as `/tmp`
-    excepted for entries the user owns. It is opened once, and the open file is what is
-    hashed and what is executed, so no file can be swapped in between. A sandboxed connector
-    whose binary was replaced since it was placed is refused until it is placed again. On
-    macOS an open file cannot be executed: a digest is refused there rather than checked
-    against a path.
+    `PATH` or in the working directory. The binary must be writable by no other user, and so
+    must every directory a name on the way to it or to a connector directory is looked up in,
+    through every link, a sticky directory such as `/tmp` excepted for entries the user owns.
+    It is opened once, and the open file is what is hashed and what is executed, so no file
+    can be swapped in between. A sandboxed connector whose binary was replaced since it was
+    placed is refused until it is placed again. On macOS an open file cannot be executed: a
+    digest is refused there rather than checked against a path.
   - A connector is given its standard streams and its socket, and no other descriptor of the
     host's: after the descriptors it is given are in place, the child marks every other
     close-on-exec, whatever another thread of the host opened meanwhile. A sandboxed connector
