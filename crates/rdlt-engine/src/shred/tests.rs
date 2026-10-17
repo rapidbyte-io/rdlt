@@ -1948,3 +1948,32 @@ fn what_an_observation_keeps_until_its_build_is_within_its_admission_and_its_exc
     let again = kept_within_admission_and_excess(&pushes, 1 << 14);
     assert!(again.len() > 1, "several: {again:?}");
 }
+
+#[test]
+fn a_chunks_parse_is_held_until_its_build_whether_it_is_built_again_or_fitted() {
+    let fitted = hundreds("1", "2");
+    let again = r#"{"a":"x","n":1}"#.to_owned();
+    let limits = ShredLimits {
+        admitted: 0,
+        ..limits()
+    };
+    let chunks = |extra: [u64; 2]| {
+        let mut chunks = [parsed(&fitted), parsed(&again)];
+        chunks[1].record = None;
+        for (chunk, extra) in chunks.iter_mut().zip(extra) {
+            chunk.spent += extra;
+        }
+        chunks
+    };
+    let (_, plans, base) = super::join(&chunks([0, 0]), limits).unwrap();
+    let paths: Vec<bool> = plans.iter().map(|plan| plan.again).collect();
+    assert_eq!(paths, [false, true]);
+    for (spent, held) in [
+        ([1_000, 0], 1_000),
+        ([0, 7_000], 7_000),
+        ([1_000, 7_000], 8_000),
+    ] {
+        let (_, _, excess) = super::join(&chunks(spent), limits).unwrap();
+        assert_eq!(excess, base + held, "{spent:?}");
+    }
+}
