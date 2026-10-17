@@ -9,6 +9,9 @@ use zeroize::Zeroizing;
 /// What replaces a secret in a text.
 const REDACTED: &str = "***";
 
+/// The fewest characters other than whitespace a line of a secret needs to be found on its own.
+const LEAST_LINE: usize = 8;
+
 /// What starts a text whose beginning was dropped.
 pub(crate) const DROPPED: &str = "[cut] ";
 
@@ -17,7 +20,9 @@ pub(crate) const DROPPED: &str = "[cut] ";
 ///
 /// A value is found as it is, and as JSON, Rust's `Debug` and [`shown`] write it; where a
 /// text was cut, the part of a value left at the cut is replaced too. Each line of a value
-/// that holds line ends is found on its own as well, since output is logged a line at a time.
+/// that holds line ends and at least eight characters other than whitespace is found on its
+/// own as well, since output is logged a line at a time; a shorter line, such as a lone
+/// brace, would garble every text it is in.
 /// A connector that transforms a secret before it says it, by an encoding or a split
 /// elsewhere, is beyond this.
 #[derive(Clone, Default)]
@@ -39,10 +44,11 @@ impl Redactions {
         Self::default()
     }
 
-    /// Adds `secret`, each of its lines that is not blank, and the forms a connector's text
-    /// may hold them in; an empty one is nothing to find.
+    /// Adds `secret`, each of its lines that is long enough to be found on its own, and the
+    /// forms a connector's text may hold them in; an empty one is nothing to find.
     pub fn add(&self, secret: &str) {
-        let lines = secret.lines().filter(|line| !line.trim().is_empty());
+        let long = |line: &&str| line.chars().filter(|c| !c.is_whitespace()).count() >= LEAST_LINE;
+        let lines = secret.lines().filter(long);
         let mut secrets = self.secrets.lock().unwrap_or_else(PoisonError::into_inner);
         for value in std::iter::once(secret).chain(lines) {
             let json = serde_json::to_string(value).unwrap_or_default();
