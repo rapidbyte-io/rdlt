@@ -1,7 +1,7 @@
 //! Connectors spawned in processes of their own: found, started with their socket on file
 //! descriptor 3, their output drained, stopped, respawned when lost, and never orphaned.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -39,6 +39,15 @@ pub(crate) fn guarded(child: &tokio::process::Child) {
 pub(crate) fn scripted() -> ConnectorRef {
     let id = ConnectorId::parse("test.scripted").expect("a valid id");
     ConnectorRef::new(id).path(example("scripted_connector"))
+}
+
+/// The scripted connector, copied into `directory` with no other name: cargo gives each example
+/// it builds two, and a program with two is held as written by every write grant and root on
+/// its file system.
+pub(crate) fn scripted_in(directory: &Path) -> ConnectorRef {
+    let copy = directory.join("rdlt-connector-scripted");
+    std::fs::copy(example("scripted_connector"), &copy).expect("the binary copies");
+    scripted().path(copy)
 }
 
 /// The scripted connector, spawned with `script`.
@@ -577,4 +586,41 @@ fn a_connector_outlives_the_thread_that_asked_for_it() {
         .block_on(source.check())
         .expect("the connector answers");
     assert_eq!(spawned.load(Ordering::SeqCst), 1, "it was spawned again");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_connector_whose_binary_was_given_a_second_name_is_not_spawned_again() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let reference = scripted_in(directory.path());
+    let kills = rdlt_host::Kills::new();
+    let spawns = Arc::new(AtomicUsize::new(0));
+    let counting = Arc::clone(&spawns);
+    let source = local()
+        .kills(&kills)
+        .on_spawn(move |_| {
+            counting.fetch_add(1, Ordering::SeqCst);
+        })
+        .source(&reference, &serde_json::json!({}))
+        .await
+        .expect("the connector starts")
+        .connector;
+    let binary = directory.path().join("rdlt-connector-scripted");
+    std::fs::hard_link(&binary, directory.path().join("alias")).expect("a second name");
+    kills.kill();
+    for _ in 0..250 {
+        let checked = source.check().await;
+        assert_eq!(spawns.load(Ordering::SeqCst), 1, "it was spawned again");
+        if let Err(error) = checked
+            && error.code() == Some("connector_changed")
+        {
+            let refused = std::error::Error::source(&error)
+                .and_then(|source| source.downcast_ref::<ProviderError>())
+                .map(ProviderError::code);
+            assert_eq!(refused, Some("program_exposed"), "{error}");
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("the binary given a second name was never refused");
 }

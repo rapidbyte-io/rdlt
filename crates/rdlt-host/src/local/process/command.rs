@@ -84,6 +84,13 @@ pub(crate) fn command(
             return Err(Unspawned::Changed { expected, found });
         }
     }
+    let names = launch.binary.names()?;
+    if names > 1 && !launch.binary.linked() {
+        // Its placement was held as though it had one name; another may lie where a grant
+        // held now writes.
+        let path = launch.binary.path().to_owned();
+        return Err(SandboxError::Exposed { path }.into());
+    }
     let args = arguments(launch);
     let kept = |name: &String| Some((OsString::from(name), std::env::var_os(name)?));
     let mut env: Vec<(OsString, OsString)> =
@@ -94,7 +101,7 @@ pub(crate) fn command(
         if !marks_at_once() {
             return Err(SandboxError::Descriptors.into());
         }
-        if launch.binary.names()? == 0 {
+        if names == 0 {
             return Err(Unspawned::Replaced);
         }
         given.push((launch.binary.file().try_clone()?.into(), PROGRAM_FD));
