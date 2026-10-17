@@ -1891,3 +1891,35 @@ fn a_chunk_built_again_renders_its_values_of_json_within_what_its_build_was_reck
         built_within_reckoning(&text, columns);
     }
 }
+
+/// Asserts that what observing `text` keeps alive until its batches are built is within what its
+/// push was admitted for beside its text and the excess reserved beyond: what a partition still
+/// holds once its observing reservation shrinks to what building wants.
+fn kept_within_admission_and_excess(text: &str) {
+    let heap = &crate::cost::tests::HEAP;
+    let pool = crate::compute::Pool::inline();
+    let pushes = vec![Bytes::from(text.to_owned())];
+    let before = heap.current_usage();
+    let observed = crate::compute::ready(super::observe(&pool, pushes, 1 << 20, limits())).unwrap();
+    let kept = u64::try_from(heap.current_usage().saturating_sub(before)).unwrap();
+    let allowed = count(text.len()) * limits().admitted + observed.excess();
+    assert!(
+        kept <= allowed,
+        "{text:.32}: kept {kept}, allowed {allowed}"
+    );
+}
+
+#[test]
+fn what_an_observation_keeps_until_its_build_is_within_its_admission_and_its_excess() {
+    // Records of a key each, observed past the chunk's allowance.
+    let keyed: Vec<String> = (0..600)
+        .map(|record| format!("{{\"k{record}\":{record}}}"))
+        .collect();
+    kept_within_admission_and_excess(&keyed.join("\n"));
+    // A chunk that keeps the columns it built.
+    kept_within_admission_and_excess(&hundreds("1", "2"));
+    // A chunk whose rendering tripped its meter.
+    kept_within_admission_and_excess(&drifting(&wide_object(0, 10_000)));
+    // One record of three thousand columns, built as it is parsed.
+    kept_within_admission_and_excess(&wide_object(0, 3_000));
+}
