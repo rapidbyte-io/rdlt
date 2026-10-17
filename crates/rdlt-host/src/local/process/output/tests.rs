@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use proptest::prelude::*;
 use tokio::io::AsyncWriteExt as _;
 use tokio::sync::watch;
 
@@ -184,6 +185,95 @@ async fn a_secret_a_connector_was_sent_is_scrubbed_from_what_it_writes() {
     // A secret resolved after the line was written is scrubbed from the words all the same.
     redactions.add("postgres");
     assert!(!drained.tail.words(&redactions).contains("postgres"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_secret_ending_in_whitespace_is_scrubbed_whole_from_the_line_it_ends() {
+    let cases = [
+        ("credential-with-trailing-space ", "\n"),
+        ("credential-with-trailing-tab\t", "\n"),
+        ("credential-with-trailing-space ", "\r\n"),
+        // The output ends with the secret, and no line end.
+        ("credential-with-trailing-tab\t", ""),
+        ("credential-with-trailing-ideographic-space\u{3000}", "\n"),
+    ];
+    for (secret, ending) in cases {
+        let redactions = Redactions::new();
+        redactions.add(secret);
+        let output = format!("using {secret}{ending}");
+        let drained = tokio::time::timeout(
+            Duration::from_secs(2),
+            drained(output.as_bytes(), &redactions),
+        )
+        .await
+        .expect("a drain of one line ends");
+        assert_eq!(drained.lines(), ["using ***"], "{secret:?} then {ending:?}");
+        let words = drained.tail.words(&redactions);
+        assert!(!words.contains("credential"), "{words}");
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_secret_ending_in_whitespace_at_a_lines_limit_is_scrubbed_before_the_line_is_cut() {
+    let secret = "credential-with-trailing-tab-and-more\t";
+    let redactions = Redactions::new();
+    redactions.add(secret);
+    // Trimmed first, the secret would run past the limit and be cut with its start kept.
+    let before = "x".repeat(1000);
+    assert!(before.len() + secret.len() > OUTPUT_LINE_BYTES);
+    let output = format!("{before}{secret}\n");
+    let drained = tokio::time::timeout(
+        Duration::from_secs(2),
+        drained(output.as_bytes(), &redactions),
+    )
+    .await
+    .expect("a drain of one line ends");
+    assert_eq!(drained.lines(), [format!("{before}***").as_str()]);
+}
+
+/// The whitespace a property ends a secret, and its line, with.
+const WHITESPACE: [char; 8] = [
+    ' ', '\t', '\r', '\u{b}', '\u{c}', '\u{a0}', '\u{2003}', '\u{3000}',
+];
+
+/// A runtime on the paused clock, for a property's cases.
+fn paused() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .start_paused(true)
+        .build()
+        .expect("a runtime")
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    /// However whitespace ends a secret and the line it is said on, no line the log is given
+    /// holds what the secret holds before its whitespace.
+    #[test]
+    fn no_line_holds_a_secret_that_ends_in_whitespace(
+        before in "[A-Z,:= ]{0,24}",
+        core in "[a-z0-9]{4,16}",
+        trailing in prop::collection::vec(prop::sample::select(WHITESPACE.to_vec()), 1..4),
+        after in prop::collection::vec(prop::sample::select(WHITESPACE.to_vec()), 0..3),
+        ending in prop::sample::select(vec!["\n", "\r\n", ""]),
+    ) {
+        let secret = format!("{core}{}", trailing.iter().collect::<String>());
+        let output = format!("{before}{secret}{}{ending}", after.iter().collect::<String>());
+        let redactions = Redactions::new();
+        redactions.add(&secret);
+        let drained = paused().block_on(async {
+            tokio::time::timeout(
+                Duration::from_secs(2),
+                drained(output.as_bytes(), &redactions),
+            )
+            .await
+        });
+        let drained = drained.expect("a drain of one line ends");
+        for line in drained.lines() {
+            prop_assert!(!line.contains(core.as_str()), "{line:?} of {output:?}");
+        }
+    }
 }
 
 #[test]

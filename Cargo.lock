@@ -3192,6 +3192,7 @@ dependencies = [
  "hyper-util",
  "nix",
  "peak_alloc",
+ "proptest",
  "rdlt-adopt",
  "rdlt-connector",
  "rdlt-connector-reference",

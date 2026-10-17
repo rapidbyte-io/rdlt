@@ -127,13 +127,13 @@ pub(crate) async fn drain<F: FnMut(Said)>(
         let continued = within_line;
         within_line = !piece.ends_with(b"\n");
         let text = String::from_utf8_lossy(&piece);
-        let text = text.trim_end();
-        if continued || text.is_empty() {
+        if continued || text.trim_end().is_empty() {
             continue;
         }
         if lines.take() {
-            let text = draining.redactions.scrubbed(text.to_owned());
-            (draining.log)(Said::Line(shown(text, OUTPUT_LINE_BYTES)));
+            // Scrubbed before it is trimmed: a secret may end in whitespace.
+            let text = draining.redactions.scrubbed(text.into_owned());
+            (draining.log)(Said::Line(shown(text.trim_end(), OUTPUT_LINE_BYTES)));
         } else {
             if suppressed == 0 {
                 (draining.log)(Said::Suppressing);
