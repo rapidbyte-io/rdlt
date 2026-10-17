@@ -411,14 +411,19 @@ impl Local {
 fn programs(binary: &Binary) -> std::io::Result<Vec<Program>> {
     let path = binary.path().to_owned();
     let chain = Chain::of(binary.file(), &path)?;
-    let mut programs = vec![Program { path, chain }];
+    let linked = binary.linked();
+    let mut programs = vec![Program {
+        path,
+        chain,
+        linked,
+    }];
     if let Some(interpreter) = binary.interpreter()?
         && let Ok(opened) = Opened::at(&interpreter)
     {
-        programs.push(Program {
-            path: interpreter,
-            chain: opened.chain,
-        });
+        programs.push(Program::opened(interpreter, opened)?);
     }
     Ok(programs)
 }
+
+#[cfg(test)]
+mod tests;

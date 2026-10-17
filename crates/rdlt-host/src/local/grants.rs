@@ -12,6 +12,8 @@ mod opened;
 mod tests;
 
 use std::fs::File;
+use std::io;
+use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
@@ -26,7 +28,7 @@ struct Held {
     id: u64,
     read: Vec<Chain>,
     write: Vec<Chain>,
-    programs: Vec<Chain>,
+    programs: Vec<Program>,
     shared: bool,
 }
 
@@ -94,6 +96,9 @@ pub(crate) struct Guarded {
 pub(crate) struct Program {
     pub(crate) path: PathBuf,
     pub(crate) chain: Chain,
+    /// Whether another name led to it when it was opened: a hard link, which may lie
+    /// anywhere on its file system, where no chain shows it.
+    pub(crate) linked: bool,
 }
 
 /// What a placement asks to hold.
@@ -196,11 +201,7 @@ impl Leases {
                 .iter()
                 .map(|(_, write)| write.chain.clone())
                 .collect(),
-            programs: claim
-                .programs
-                .iter()
-                .map(|program| program.chain.clone())
-                .collect(),
+            programs: claim.programs.to_vec(),
             shared: claim.grants.shared,
         });
         let bound = |write: bool| {
@@ -223,9 +224,31 @@ impl Leases {
     }
 }
 
+impl Program {
+    /// The program `opened` at `path`.
+    pub(crate) fn opened(path: PathBuf, opened: Opened) -> io::Result<Self> {
+        let linked = opened.file.metadata()?.nlink() > 1;
+        Ok(Self {
+            path,
+            chain: opened.chain,
+            linked,
+        })
+    }
+
+    /// Whether whoever may write `written` may write this program.
+    ///
+    /// It lies within `written`, or has a second name, which may lie within anything on its
+    /// file system.
+    fn written_through(&self, written: &Chain) -> bool {
+        self.chain.within(written) || (self.linked && self.chain.shares_device(written))
+    }
+}
+
 /// Refuses `claim`, whose paths are `reads` and `writes`, where `other` holds what they overlap,
 /// unless both are shared; where they may write a program `other` runs; and where `other` may
 /// write a program `claim` runs.
+///
+/// A program with a second name may be written through any path on its file system.
 fn refused_by(
     other: &Held,
     claim: &Claim<'_>,
@@ -252,7 +275,7 @@ fn refused_by(
         other
             .programs
             .iter()
-            .any(|program| program.within(&ours.chain))
+            .any(|program| program.written_through(&ours.chain))
     });
     if let Some((covering, _)) = covering {
         return Err(SandboxError::Covers {
@@ -263,7 +286,7 @@ fn refused_by(
         other
             .write
             .iter()
-            .any(|theirs| program.chain.within(theirs))
+            .any(|theirs| program.written_through(theirs))
     });
     if let Some(exposed) = exposed {
         return Err(SandboxError::Exposed {
@@ -275,7 +298,8 @@ fn refused_by(
 
 /// Refuses a root of `roots`, each one that may be written, that holds or lies within one of
 /// `guarded`'s directories, or holds the directory of one of `programs`, one of `programs`, or
-/// one of `guarded`'s files: whoever may write there decides what a host runs, or keeps.
+/// one of `guarded`'s files, or lies on the file system of one of `programs` that has a second
+/// name: whoever may write there decides what a host runs, or keeps.
 fn guarding(
     roots: &[(&Path, Opened)],
     guarded: &Guarded,
@@ -298,10 +322,7 @@ fn guarding(
     }
     let directories_of = programs.iter().filter_map(|program| program.chain.parent());
     directories.extend(directories_of.map(|directory| (directory, false)));
-    let mut files: Vec<Chain> = programs
-        .iter()
-        .map(|program| program.chain.clone())
-        .collect();
+    let mut files: Vec<Chain> = Vec::new();
     for file in &guarded.files {
         if let Ok((opened, _)) = Opened::nearest(file) {
             files.push(opened.chain);
@@ -311,7 +332,11 @@ fn guarding(
         let touches = directories.iter().any(|(directory, both_ways)| {
             directory.within(&root.chain) || (*both_ways && root.chain.within(directory))
         });
-        if touches || files.iter().any(|file| file.within(&root.chain)) {
+        let holds = files.iter().any(|file| file.within(&root.chain));
+        let writes = programs
+            .iter()
+            .any(|program| program.written_through(&root.chain));
+        if touches || holds || writes {
             return Err(refused(path));
         }
     }
