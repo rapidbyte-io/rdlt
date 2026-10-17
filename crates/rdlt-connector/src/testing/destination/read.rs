@@ -11,6 +11,7 @@ use arrow_schema::DataType;
 use rdlt_wire::limits::count;
 
 use super::Bench;
+use crate::Field;
 use crate::cost::Rendering;
 use crate::destination::TableRef;
 use crate::testing::limits::{PUBLISHED_BYTES, PUBLISHED_ROWS};
@@ -189,11 +190,7 @@ fn whole(name: &str, cast: ArrayRef, rows: usize) -> Result<ArrayRef, Violation>
 /// instants. Those casts copy, narrow with a check or change an instant's unit with a check;
 /// none renders through a calendar or multiplies unchecked, as casts between kinds do.
 fn reads(from: &DataType, to: &DataType) -> bool {
-    let from = match from {
-        DataType::Dictionary(_, values) => values.as_ref(),
-        DataType::RunEndEncoded(_, values) => values.data_type(),
-        plain => plain,
-    };
+    let from = Field::storage(from);
     let bytes = matches!(
         from,
         DataType::Binary
