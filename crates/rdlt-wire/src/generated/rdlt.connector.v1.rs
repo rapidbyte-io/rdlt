@@ -432,16 +432,17 @@ pub struct IdentifierRules {
     /// How it folds case.
     #[prost(enumeration = "IdentifierCase", tag = "1")]
     pub case: i32,
-    /// The longest identifier, in bytes; at least 1.
+    /// The longest identifier, in bytes, from 16 to 65535: 16 holds an identifier's hash, the `_`
+    /// before it and a character of its name.
     #[prost(uint32, tag = "2")]
     pub max_len: u32,
     /// The characters it allows.
     #[prost(enumeration = "IdentifierChars", tag = "3")]
     pub chars: i32,
-    /// Words it reserves.
+    /// Words it reserves: at most 4096, each of 1 to 256 bytes.
     #[prost(string, repeated, tag = "4")]
     pub reserved: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
-    /// Table prefixes it reserves.
+    /// Table prefixes it reserves: at most 64, each of 1 to 256 bytes.
     #[prost(string, repeated, tag = "5")]
     pub reserved_table_prefixes: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
@@ -469,7 +470,7 @@ pub struct Capabilities {
     /// Its identifier rules.
     #[prost(message, optional, tag = "7")]
     pub identifiers: ::core::option::Option<IdentifierRules>,
-    /// How many writers may stage at once; at least 1.
+    /// How many writers may stage at once: from 1 to 65535.
     #[prost(uint32, tag = "8")]
     pub max_parallel_writers: u32,
     /// Whether it merges change streams: each row in sequence order, only past the row it holds.
@@ -1552,12 +1553,16 @@ pub struct ReadPublishedRequest {
     #[prost(message, optional, tag = "1")]
     pub table: ::core::option::Option<TableRef>,
 }
-/// The limits each end enforces on what it receives. A limit left 0, as a peer from before that
-/// limit existed leaves it, is the protocol's default.
+/// The limits each end enforces on what it receives.
 ///
-/// A sender cuts a batch to its receiver's frame_bytes, batch_rows and batch_values, so a peer may
-/// not set them below the protocol's minimums: 4194304 bytes, 1024 rows and 1048576 values. A
-/// handshake naming a lower one is refused with `limit_below_minimum`.
+/// A limit left 0 is the protocol's default, but for dictionary_bytes, which has no default and
+/// is taken as sent. A handshake that sends no limits at all has every default.
+///
+/// A sender cuts a batch to its receiver's frame_bytes, batch_rows and batch_values, so a peer
+/// may not set them below the protocol's minimums: 4194304 bytes, 1024 rows and 1048576 values.
+/// Nor may it set dictionary_bytes below 262144, a dictionary of some thousands of short values.
+/// A handshake naming a lower one, a dictionary_bytes left 0 included, is refused with
+/// `limit_below_minimum`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Limits {
     /// Bytes in one frame.
@@ -1590,7 +1595,8 @@ pub struct Limits {
     /// Bytes in one schema message.
     #[prost(uint64, tag = "10")]
     pub schema_bytes: u64,
-    /// Bytes the dictionaries one read or write holds at once take, where less than a frame's.
+    /// Bytes the dictionaries one read or write holds at once take, where less than a frame's: at
+    /// least 262144, and never left 0.
     #[prost(uint64, tag = "11")]
     pub dictionary_bytes: u64,
     /// Bytes in one catalog: a discovery's answer.
