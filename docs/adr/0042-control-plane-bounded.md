@@ -136,7 +136,8 @@ still taken largely on trust:
     `EngineConfig::connector_wait` (30 minutes), in every placement.
   - A read asked to stop is dropped after `EngineConfig::stop_wait` (60 s).
   - A remote write's whole wait for credit, a flush's stats or an ending write's error is bounded
-    by the write-ack deadline, however many answers arrive; a credit of no bytes is refused.
+    by the write-ack deadline, however many answers arrive; a credit of no bytes is refused, and
+    a writer whose flush went unanswered takes no more calls.
   - A served connection whose writes make no progress for its send wait (60 s) is closed, and a
     stopping connector's drain ends at its drain wait (30 minutes), both `ListenLimits` fields.
   - A failed attempt, and a failed replay, close the session they opened, waiting for the close
