@@ -34,9 +34,11 @@ hold the whole of M4's code and review it only at the end. M4a is the protocol a
     as deep as the nesting limit (64) then crosses the wire. As a recursive message, two levels of
     protobuf per level of nesting, it stopped at 48, beyond prost's recursion limit of 100. The
     receiver bounds the depth itself, and refuses a deeper type by name.
-  - A limit left 0 means the protocol's default, as a peer from before that limit existed leaves
-    it. The handshake's response carries the connector's limits, as its request carries the
-    host's, and the protocol version the connector speaks (ADR 0042).
+  - A limit left 0 means the protocol's default, but for the dictionary limit, which has no
+    default: a peer sets it, at least 256 KiB, and one left 0 is refused (ADR 0039). A handshake
+    that sends no limits keeps every default. The handshake's response carries the connector's
+    limits, as its request carries the host's, and the protocol version the connector speaks
+    (ADR 0042).
   - A value that may be absent as a whole, such as a primary key, is a message of its own, so
     absent and empty differ.
 - **The code is generated and committed.** `cargo xtask codegen` compiles the `.proto` files with
