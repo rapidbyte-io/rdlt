@@ -318,8 +318,8 @@ fn refused_by(
 
 /// Refuses a root of `roots`, each one that may be written, that holds or lies within one of
 /// `guarded`'s directories, or holds the directory of one of `programs`, one of `programs`, or
-/// one of `guarded`'s files, or lies on the file system of one of `programs` that has a second
-/// name: whoever may write there decides what a host runs, or keeps.
+/// one of `guarded`'s files, or lies on the file system of one of these that has a second name:
+/// whoever may write there decides what a host runs, or keeps.
 fn guarding(
     roots: &[(&Path, Opened)],
     guarded: &Guarded,
@@ -342,21 +342,25 @@ fn guarding(
     }
     let directories_of = programs.iter().filter_map(|program| program.chain.parent());
     directories.extend(directories_of.map(|directory| (directory, false)));
-    let mut files: Vec<Chain> = Vec::new();
+    let mut files = Vec::new();
     for file in &guarded.files {
-        if let Ok((opened, _)) = Opened::nearest(file) {
-            files.push(opened.chain);
+        if let Ok((opened, there)) = Opened::nearest(file) {
+            let mut launcher = Program::opened(file.clone(), opened)
+                .map_err(|_| SandboxError::Grant { path: file.clone() })?;
+            // A directory above a file not there yet has names of its own.
+            launcher.linked &= there;
+            files.push(launcher);
         }
     }
     for (path, root) in roots {
         let touches = directories.iter().any(|(directory, both_ways)| {
             directory.within(&root.chain) || (*both_ways && root.chain.within(directory))
         });
-        let holds = files.iter().any(|file| file.within(&root.chain));
-        let writes = programs
+        let writes = files
             .iter()
+            .chain(programs)
             .any(|program| program.written_through(&root.chain));
-        if touches || holds || writes {
+        if touches || writes {
             return Err(refused(path));
         }
     }
