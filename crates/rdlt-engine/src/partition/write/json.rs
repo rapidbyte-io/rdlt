@@ -65,6 +65,7 @@ pub(super) async fn write_json(
             Some(reserved) if !normalized => reserved,
             reserved => {
                 let room = reserved.map_or(Room::Budget, |reserved| Room::Lent(reserved.lend()));
+                drop(pushes);
                 let held = held::shredded(permits, beyond, &batches);
                 let units = batches.into_iter().map(|batch| vec![batch]).zip(held);
                 let units = Units {
