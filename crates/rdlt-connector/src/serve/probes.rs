@@ -38,10 +38,18 @@ fn no_standing() -> Status {
 #[derive(Default)]
 pub(super) struct Probes {
     #[cfg(feature = "certify")]
-    reader: tokio::sync::OnceCell<Arc<dyn crate::destination::PublishedReader>>,
+    reader: Option<Arc<dyn crate::destination::PublishedReader>>,
     #[cfg(feature = "certify")]
-    acknowledger: tokio::sync::OnceCell<Arc<dyn crate::source::AcknowledgedReader>>,
+    acknowledger: Option<Arc<dyn crate::source::AcknowledgedReader>>,
 }
+
+/// The probes of a connection not yet configured: none.
+pub(super) static NONE: Probes = Probes {
+    #[cfg(feature = "certify")]
+    reader: None,
+    #[cfg(feature = "certify")]
+    acknowledger: None,
+};
 
 /// Whether this build serves the probes.
 const PROBED: bool = cfg!(feature = "certify");
@@ -65,50 +73,54 @@ impl Probes {
         PROBED && offers(request, rdlt_wire::PUBLISHED) && factory.reads_back()
     }
 
-    /// Connects `factory`'s source with `config`, telling where it stands when the handshake
-    /// `accepted` that.
+    /// Connects `factory`'s source with `config`, and the probes that tell where it stands when
+    /// the handshake `accepted` that.
     #[cfg_attr(
         not(feature = "certify"),
         expect(unused_variables, reason = "a build without the probes serves none")
     )]
     pub(super) async fn connect_source(
-        &self,
         factory: &dyn SourceFactory,
         accepted: bool,
         config: serde_json::Value,
         context: ConnectContext,
-    ) -> Result<Arc<dyn Source>, ConnectorError> {
+    ) -> Result<(Arc<dyn Source>, Self), ConnectorError> {
         #[cfg(feature = "certify")]
         if accepted {
             let (source, acknowledger) = factory.connect_acknowledging(config, context).await?;
-            // Set once: a configuration that ran beside this one is refused once connected.
-            self.acknowledger.set(acknowledger).ok();
-            return Ok(source);
+            let probes = Self {
+                acknowledger: Some(acknowledger),
+                ..Self::default()
+            };
+            return Ok((source, probes));
         }
-        Ok(Arc::from(factory.connect(config, context).await?))
+        let source = Arc::from(factory.connect(config, context).await?);
+        Ok((source, Self::default()))
     }
 
-    /// Connects `factory`'s destination with `config`, reading back what it published when the
-    /// handshake `accepted` that.
+    /// Connects `factory`'s destination with `config`, and the probes that read back what it
+    /// published when the handshake `accepted` that.
     #[cfg_attr(
         not(feature = "certify"),
         expect(unused_variables, reason = "a build without the probes serves none")
     )]
     pub(super) async fn connect_destination(
-        &self,
         factory: &dyn DestinationFactory,
         accepted: bool,
         config: serde_json::Value,
         context: ConnectContext,
-    ) -> Result<Arc<dyn Destination>, ConnectorError> {
+    ) -> Result<(Arc<dyn Destination>, Self), ConnectorError> {
         #[cfg(feature = "certify")]
         if accepted {
             let (destination, reader) = factory.connect_reading(config, context).await?;
-            // Set once: a configuration that ran beside this one is refused once connected.
-            self.reader.set(reader).ok();
-            return Ok(destination);
+            let probes = Self {
+                reader: Some(reader),
+                ..Self::default()
+            };
+            return Ok((destination, probes));
         }
-        Ok(Arc::from(factory.connect(config, context).await?))
+        let destination = Arc::from(factory.connect(config, context).await?);
+        Ok((destination, Self::default()))
     }
 
     /// The rows of `request`'s table, read back as frames within `host`'s limits.
@@ -127,7 +139,7 @@ impl Probes {
         host: Limits,
     ) -> Result<Answers<v1::ReadFrame>, Status> {
         #[cfg(feature = "certify")]
-        if let Some(reader) = self.reader.get().cloned() {
+        if let Some(reader) = self.reader.clone() {
             use crate::wire::Invalid;
             let table = request
                 .table
@@ -153,7 +165,7 @@ impl Probes {
         request: v1::ReadAcknowledgedRequest,
     ) -> Result<v1::ReadAcknowledgedResponse, Status> {
         #[cfg(feature = "certify")]
-        if let Some(acknowledger) = self.acknowledger.get().cloned() {
+        if let Some(acknowledger) = self.acknowledger.clone() {
             use super::service::invalid;
             use crate::id::{PartitionId, StreamName};
             use crate::wire::Invalid;

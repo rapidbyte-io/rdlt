@@ -1,12 +1,15 @@
 //! The handshake and the configuration: the handshake agrees the role and answers who the
 //! connector is, and only then, once the host has checked that, does the configuration connect it.
 
+#[cfg(test)]
+mod tests;
+
 use rdlt_wire::{Limits, PROTOCOL_MAJOR};
 
 use std::sync::Arc;
 
 use super::probes::Probes;
-use super::service::{Connected, Service};
+use super::service::{Configured, Connected, Service};
 use crate::error::{ConnectorError, ConnectorErrorKind};
 use crate::spec::ConnectContext;
 use crate::wire::v1;
@@ -94,10 +97,23 @@ impl Service {
         let Some(agreed) = self.agreed.get().copied() else {
             return Err(no_handshake());
         };
-        // A repeated configuration is refused before it connects again.
-        if self.connected.initialized() {
-            return Err(configured());
-        }
+        // Configurations connect one at a time, and the connector and its probes are set as one:
+        // a configuration beside or after one that connected runs nothing and is refused.
+        let mut answer = None;
+        self.connected
+            .get_or_try_init(|| self.connecting(agreed, request, &mut answer))
+            .await?;
+        answer.ok_or_else(configured)
+    }
+
+    /// Connects the role `agreed` names with `request`'s configuration, and its probes;
+    /// `answer` is set to the spec the configuration answers with.
+    async fn connecting(
+        &self,
+        agreed: Agreed,
+        request: v1::ConfigureRequest,
+        answer: &mut Option<v1::ConnectorSpec>,
+    ) -> Result<Configured, ConnectorError> {
         self.limits.admit_config(request.config_json.len())?;
         let config: serde_json::Value =
             serde_json::from_str(&request.config_json).map_err(|error| {
@@ -107,29 +123,26 @@ impl Service {
             Some(host) => ConnectContext::serving(Arc::clone(host)),
             None => ConnectContext::new(),
         };
-        let (spec, connected) = match (agreed.role, &self.served.source, &self.served.destination) {
+        let (spec, configured) = match (agreed.role, &self.served.source, &self.served.destination)
+        {
             (v1::Role::Source, Some(factory), _) => {
-                let source = self
-                    .probes
-                    .connect_source(factory.as_ref(), agreed.probed, config, context)
-                    .await?;
-                (factory.spec(), Connected::Source(source))
+                let (source, probes) =
+                    Probes::connect_source(factory.as_ref(), agreed.probed, config, context)
+                        .await?;
+                let connected = Connected::Source(source);
+                (factory.spec(), Configured { connected, probes })
             }
             (v1::Role::Destination, _, Some(factory)) => {
-                let destination = self
-                    .probes
-                    .connect_destination(factory.as_ref(), agreed.probed, config, context)
-                    .await?;
-                (factory.spec(), Connected::Destination(destination))
+                let (destination, probes) =
+                    Probes::connect_destination(factory.as_ref(), agreed.probed, config, context)
+                        .await?;
+                let connected = Connected::Destination(destination);
+                (factory.spec(), Configured { connected, probes })
             }
             _ => return Err(no_handshake()),
         };
-        let spec = self.spec(spec, Some(&connected));
-        // A configuration that ran beside this one connected first.
-        if self.connected.set(connected).is_err() {
-            return Err(configured());
-        }
-        Ok(spec)
+        *answer = Some(self.spec(spec, Some(&configured.connected)));
+        Ok(configured)
     }
 
     /// The spec the handshake and the configuration answer with: the connector's, the roles the
