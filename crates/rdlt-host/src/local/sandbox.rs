@@ -151,7 +151,11 @@ pub enum SandboxError {
     /// keeps: a connector directory or binary, the sandbox's launcher, the host's executable,
     /// its state, or a directory secrets are read from; or it lies on the file system of a
     /// program with a second name.
-    #[error("grants may write within {}, which holds what the host runs or keeps", path.display())]
+    #[error(
+        "grants may write within {}, which holds what the host runs or keeps, or shares a file \
+         system with a program that has a second name",
+        path.display()
+    )]
     Guarded {
         /// The root.
         path: PathBuf,
@@ -166,14 +170,21 @@ pub enum SandboxError {
     },
     /// A path granted to be written holds a program another placement runs, or lies on the
     /// file system of one with a second name.
-    #[error("the path {} granted to be written holds a program the host runs", path.display())]
+    #[error(
+        "the path {} granted to be written holds a program the host runs, or shares a file \
+         system with one that has a second name",
+        path.display()
+    )]
     Covers {
         /// The path.
         path: PathBuf,
     },
     /// A program the placement runs lies within a path a connector running now may write, or
     /// has a second name, on that path's file system or given since it was placed.
-    #[error("the program {} lies where a connector may write", path.display())]
+    #[error(
+        "the program {} lies where a connector may write, or has a second name",
+        path.display()
+    )]
     Exposed {
         /// The program.
         path: PathBuf,
