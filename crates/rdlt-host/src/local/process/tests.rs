@@ -165,6 +165,31 @@ fn a_sandboxed_connector_is_not_spawned_where_descriptors_cannot_be_marked_at_on
     assert_eq!(refused.code(), "sandbox_descriptors");
 }
 
+#[tokio::test]
+async fn a_binary_given_a_second_name_since_it_was_placed_is_not_spawned() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let launch = sleeper(directory.path());
+    let path = directory.path().join("sleeper");
+    std::fs::hard_link(&path, directory.path().join("alias")).expect("a second name");
+    let refused = Process::spawn_by(&launch, socket(), Redactions::new(), &Steps::TAKEN);
+    let Err(Unspawned::Sandbox(refused)) = refused else {
+        panic!("it was not refused");
+    };
+    assert_eq!(refused, SandboxError::Exposed { path: path.clone() });
+    assert_eq!(refused.code(), "program_exposed");
+    assert_eq!(super::spawned(), Vec::<u32>::new());
+    // Placed with both names, as its placement was then held, it is spawned, with no digest.
+    let placed = Launch {
+        binary: Arc::new(Binary::at(&path).expect("the script opens")),
+        ..launch
+    };
+    assert_eq!(placed.digest, None);
+    let process =
+        Process::spawn_by(&placed, socket(), Redactions::new(), &Steps::TAKEN).expect("it starts");
+    drop(process);
+    assert_eq!(super::stop_spawned(Duration::from_secs(20)), Ok(()));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn what_a_placement_holds_is_held_until_its_last_connector_is_reaped() {
     let directory = tempfile::tempdir().expect("a temporary directory");
