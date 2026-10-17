@@ -466,3 +466,77 @@ fn a_key_written_escaped_repeats_the_same_key_written_plain() {
         [false, true]
     );
 }
+
+#[test]
+fn a_wide_object_in_a_part_held_as_json_is_fitted_within_what_its_piece_reserves() {
+    let j = struct_of(vec![Field::new("j", LogicalType::Json, true)]);
+    let object = wide("k", 100_000);
+    let repeating = format!("{},\"k0\":1}}", object.trim_end_matches('}'));
+    // A string of colons, each of which might follow a key.
+    let colons = format!("\"{}\"", ":".repeat(10_000));
+    // The shortest keys, one more than a power of two of them, where a list grown by doubling
+    // would hold twice what the object needs.
+    let shortest = format!("{{{}}}", vec!["\"\":0"; 65_537].join(","));
+    for (part, fit) in [
+        (&object, true),
+        (&repeating, false),
+        (&colons, true),
+        (&shortest, false),
+    ] {
+        fitted_within_reservation(&format!("{{\"j\":{part}}}"), &j, fit);
+    }
+}
+
+#[test]
+fn a_value_is_checked_apart_for_a_repeated_key_only_where_its_column_holds_a_part_as_json() {
+    let checked = |values: &[Option<&str>], column: &LogicalType| {
+        super::CHECKED.with(|checked| checked.set(0));
+        fitting(&texts(values), column);
+        super::CHECKED.with(std::cell::Cell::get)
+    };
+    let objects = [Some(r#"{"a":1}"#), Some(r#"{"a":2}"#)];
+    let a = struct_of(vec![Field::new("a", LogicalType::Int64, true)]);
+    assert_eq!(checked(&objects, &a), 0);
+    let json_a = struct_of(vec![Field::new("a", LogicalType::Json, true)]);
+    assert_eq!(checked(&objects, &json_a), 2);
+    let of_json = LogicalType::List(Box::new(Field::new("item", LogicalType::Json, true)));
+    assert_eq!(checked(&[Some("[1]")], &of_json), 1);
+    let items = LogicalType::List(Box::new(Field::new("item", json_a, true)));
+    let deep = struct_of(vec![Field::new("l", items, true)]);
+    assert_eq!(checked(&[Some(r#"{"l":[{"a":1}]}"#)], &deep), 1);
+}
+
+#[test]
+fn a_part_held_as_json_still_refuses_a_key_its_objects_repeat_at_any_depth() {
+    let j = struct_of(vec![Field::new("j", LogicalType::Json, true)]);
+    let values = [
+        Some(r#"{"j":{"a":1,"a":2}}"#),
+        Some(r#"{"j":{"a":1}}"#),
+        Some(r#"{"j":[{"a":1},{"a":2}]}"#),
+        Some(r#"{"j":{"b":{"a":1},"c":{"a":2}}}"#),
+        Some(r#"{"j":{"b":{"a":1},"a":{"a":2},"b":3}}"#),
+    ];
+    // Each value is checked afresh, whatever the value before it found.
+    assert_eq!(fit(&values, &j), [false, true, true, true, false]);
+    let items = LogicalType::List(Box::new(Field::new("item", j, true)));
+    assert_eq!(
+        fit(
+            &[Some(r#"[{"j":{"b":1,"b":2}}]"#), Some(r#"[{"j":{"b":1}}]"#)],
+            &items
+        ),
+        [false, true]
+    );
+    let json = Field::new("item", LogicalType::Json, true);
+    let lists = LogicalType::List(Box::new(Field::new(
+        "item",
+        LogicalType::List(Box::new(json)),
+        true,
+    )));
+    assert_eq!(
+        fit(
+            &[Some(r#"[[{"c":1,"c":2}]]"#), Some(r#"[[{"c":1}]]"#)],
+            &lists
+        ),
+        [false, true]
+    );
+}

@@ -559,3 +559,22 @@ proptest! {
         }
     }
 }
+
+#[test]
+fn a_key_is_read_again_from_where_it_starts_in_its_text() {
+    let text = r#" {"ab": 1, "cd": [2]}"#;
+    let keys: Vec<Text<'_>> = tokens(text)
+        .unwrap()
+        .into_iter()
+        .take(8)
+        .filter_map(|token| match token {
+            Token::Key(key) => Some(key),
+            _ => None,
+        })
+        .collect();
+    let starts: Vec<usize> = keys.iter().map(|key| key.start_in(text)).collect();
+    assert_eq!(starts, [3, 12]);
+    for (key, start) in keys.iter().zip(starts) {
+        assert_eq!(Text::read(text, start).unwrap().0, *key);
+    }
+}
