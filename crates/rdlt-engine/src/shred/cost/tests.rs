@@ -1,6 +1,8 @@
 use bytes::Bytes;
 
-use super::{built, fitted, floats_in_json, holds_text, renders_json, sized};
+use super::{
+    built, fitted, floats_in_json, holds_json, holds_text, rendering, renders_json, sized,
+};
 use crate::shred::observe::{Observed, Shape};
 use crate::shred::records::chunks;
 use crate::shred::tests::limits;
@@ -320,4 +322,27 @@ fn fitting_a_list_reckons_its_items_for_what_they_lack_or_cast() {
     // Items built as they are take nothing beside them.
     let int = Observed::Int { exact: true };
     assert_eq!(fitted(&list(int.clone(), 0), &list(int, 5), 2), 0);
+}
+
+#[test]
+fn only_a_column_of_json_at_some_depth_holds_json() {
+    let mut object = Shape::default();
+    object.push("j".into(), Observed::Json);
+    let mut shape = Shape::default();
+    shape.push(
+        "l".into(),
+        Observed::Array(Box::new(Observed::Object(object)), 1),
+    );
+    assert!(holds_json(&shape));
+    let mut text = Shape::default();
+    text.push("t".into(), Observed::Text);
+    text.push("o".into(), Observed::Object(Shape::default()));
+    assert!(!holds_json(&text));
+}
+
+#[test]
+fn rendering_a_record_s_values_is_reckoned_its_text_a_range_every_four_bytes_and_its_objects() {
+    // Each grown to twice what it must hold: the text, a key every four bytes, a mark a level.
+    assert_eq!(rendering(0), 2 * 64 * 8);
+    assert_eq!(rendering(400), 2 * (400 + 100 * 16 + 64 * 8));
 }
