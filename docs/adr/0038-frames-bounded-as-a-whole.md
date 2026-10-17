@@ -171,10 +171,10 @@ log.
   - One row beyond a limit, or a dictionary beyond one, cannot be cut: its sender refuses it with
     `limit_exceeded` naming the limit, where the cut reaches it, after the pieces before it went.
     - A refused write leaves the rows of the pieces before it staged under the batch's segment.
-      The writer itself stays usable, in a schema epoch of its own, but its caller must not
-      commit that segment: the engine ends the attempt, and the next discards its staging.
-      A schema or a frame that could not be sent ends the epoch too: the schema is sent again
-      with what is written next.
+      The writer itself stays usable, but its caller must not commit that segment: the engine
+      ends the attempt, and the next discards its staging. A write that fails or is dropped
+      before its last frame is queued leaves the next write to send its schema, and every
+      dictionary after it, again (ADR 0016).
     - A read ends there: the rows already pushed are in a segment no checkpoint closes, and go
       with the attempt.
     - A batch the sender itself cannot narrow or encode fails with `unencodable_batch`, which
