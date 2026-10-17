@@ -1,6 +1,9 @@
 //! The protocol's calls, served for one connection: the handshake agrees a role, the
 //! configuration connects the connector for it, and every later call works on it.
 
+#[cfg(test)]
+mod tests;
+
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -276,12 +279,15 @@ impl Connector for Service {
             .map_err(|error| invalid(&Invalid::rejected("pipeline id", error)))?;
         let load_id = crate::wire::load_id(&request.load_id).map_err(|e| invalid(&e))?;
         let context = OpenContext { pipeline, load_id };
-        let opened = self
-            .destination()?
+        let destination = self.destination()?;
+        // Room is taken before the destination opens the session, so Opens in flight count too;
+        // one that fails, or whose call is cancelled, drops its room.
+        let opening = self.sessions.open().await;
+        let opened = destination
             .open(&context)
             .await
             .map_err(|error| status(&error))?;
-        let id = self.sessions.open(opened.session).await;
+        let id = opening.hold(opened.session);
         Ok(Response::new(v1::OpenResponse {
             session: id,
             epoch: opened.epoch.0,
@@ -338,8 +344,7 @@ impl Connector for Service {
         request: Request<v1::CloseRequest>,
     ) -> Result<Response<v1::CloseResponse>, Status> {
         let id = request.into_inner().session;
-        let session = self.sessions.take(id).await?;
-        session.close().await.map_err(|error| status(&error))?;
+        self.sessions.close(id).await?;
         Ok(Response::new(v1::CloseResponse {}))
     }
 

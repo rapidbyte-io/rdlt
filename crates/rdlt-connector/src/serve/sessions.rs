@@ -2,26 +2,45 @@
 //!
 //! A session holds what its destination opened for it, files among them, and a connection's
 //! share of the process's file descriptors is fixed. A host that opens a session beyond those a
-//! connection holds closes its oldest: a host that leaves sessions of failed attempts open keeps
-//! loading, and one that opens them without end takes no more than its share.
+//! connection holds closes its oldest, once the calls in flight on it end: a host that leaves
+//! sessions of failed attempts open keeps loading, and one that opens them without end takes no
+//! more than its share. A session counts from before its destination opens it until its close
+//! ends, so Opens and Closes in flight count too.
+
+#[cfg(test)]
+mod tests;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use rdlt_wire::tonic::Status;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OwnedMutexGuard};
 
 use crate::destination::DestinationSession;
 use crate::error::{ConnectorError, ConnectorErrorKind};
 use crate::wire::status;
 
-/// A destination session, until its close takes it.
+/// A destination session, until its close takes it; empty once closed, or where its open failed.
 pub(super) type SessionSlot = Arc<Mutex<Option<Box<dyn DestinationSession>>>>;
 
 /// The sessions a connection holds open, by their ids, `limit` at most.
 pub(super) struct Sessions {
     open: Mutex<(u64, BTreeMap<u64, SessionSlot>)>,
     limit: usize,
+}
+
+/// Room for a session its destination is opening, held until the session is, or dropped.
+pub(super) struct Opening {
+    id: u64,
+    slot: OwnedMutexGuard<Option<Box<dyn DestinationSession>>>,
+}
+
+impl Opening {
+    /// Holds `session` open in this room, and answers its id.
+    pub(super) fn hold(mut self, session: Box<dyn DestinationSession>) -> u64 {
+        *self.slot = Some(session);
+        self.id
+    }
 }
 
 impl Sessions {
@@ -33,17 +52,42 @@ impl Sessions {
         }
     }
 
-    /// Holds `session` open and answers its id; where the connection held as many as it may,
-    /// its oldest is dropped first, which closes what it held.
-    pub(super) async fn open(&self, session: Box<dyn DestinationSession>) -> u64 {
-        let mut held = self.open.lock().await;
-        let (last, open) = &mut *held;
-        while open.len() >= self.limit {
-            open.pop_first();
+    /// Room for one more session; where the connection holds as many as it may, its oldest is
+    /// closed first, once the calls in flight on it end.
+    pub(super) async fn open(&self) -> Opening {
+        loop {
+            let (id, oldest) = {
+                let mut held = self.open.lock().await;
+                let (last, open) = &mut *held;
+                // A slot left empty, by a close or by an open that failed, holds no room; a
+                // locked one is in use.
+                open.retain(|_, slot| !slot.try_lock().is_ok_and(|session| session.is_none()));
+                if open.len() < self.limit {
+                    *last += 1;
+                    let slot = SessionSlot::default();
+                    let room = Arc::clone(&slot)
+                        .try_lock_owned()
+                        .expect("a slot no one else holds is free");
+                    open.insert(*last, slot);
+                    return Opening {
+                        id: *last,
+                        slot: room,
+                    };
+                }
+                let (id, oldest) = open
+                    .iter()
+                    .next()
+                    .expect("a connection holding its limit holds a session");
+                (*id, Arc::clone(oldest))
+            };
+            // Waits for the calls in flight on the oldest; dropping its session closes what it
+            // held. The slot leaves the map under its own lock: waiters passing the lock to one
+            // another would otherwise each find it locked, and never see it empty.
+            let mut slot = oldest.lock().await;
+            drop(slot.take());
+            self.open.lock().await.1.remove(&id);
+            drop(slot);
         }
-        *last += 1;
-        open.insert(*last, Arc::new(Mutex::new(Some(session))));
-        *last
     }
 
     /// The open session `id`.
@@ -52,12 +96,13 @@ impl Sessions {
         held.1.get(&id).cloned().ok_or_else(|| closed(id))
     }
 
-    /// Takes the session `id`, which is open no more.
-    pub(super) async fn take(&self, id: u64) -> Result<Box<dyn DestinationSession>, Status> {
-        let slot = self.open.lock().await.1.remove(&id);
-        let slot = slot.ok_or_else(|| closed(id))?;
-        let session = slot.lock().await.take();
-        session.ok_or_else(|| closed(id))
+    /// Closes the session `id`, which holds its room until its close ends.
+    pub(super) async fn close(&self, id: u64) -> Result<(), Status> {
+        let slot = self.session(id).await?;
+        // The slot stays locked until the close ends, so the session still counts meanwhile.
+        let mut held = slot.lock().await;
+        let session = held.take().ok_or_else(|| closed(id))?;
+        session.close().await.map_err(|error| status(&error))
     }
 }
 
