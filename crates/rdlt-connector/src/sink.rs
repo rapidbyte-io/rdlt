@@ -208,6 +208,9 @@ impl PartitionSink {
     /// Sends `event`, waiting while the channel is full; a read that runs elsewhere and forwards
     /// its events sends them here.
     ///
+    /// A checkpoint answers its barrier once it is queued: a send cancelled or refused before
+    /// then leaves the barrier pending, so the next checkpoint answers it.
+    ///
     /// # Errors
     ///
     /// A [`Stopped`](crate::ConnectorErrorKind::Stopped) error once the engine has asked the read
@@ -215,21 +218,23 @@ impl PartitionSink {
     /// checkpoint answering a barrier the engine never asked for. Where the channel's events are
     /// admitted, the error its admission refused the event with.
     pub async fn send(&mut self, event: SourceEvent) -> Result<()> {
-        if let SourceEvent::Checkpoint {
-            answers: Some(barrier),
-            ..
-        } = &event
-        {
-            let requested = *self.barrier.borrow();
-            if *barrier > requested {
-                return Err(ConnectorError::internal(format!(
-                    "a checkpoint answers barrier {barrier}, past the newest the engine asked for, \
-                     {requested}"
-                ))
-                .with_code("barrier_unrequested"));
+        let answering = match &event {
+            SourceEvent::Checkpoint {
+                answers: Some(barrier),
+                ..
+            } => {
+                let requested = *self.barrier.borrow();
+                if *barrier > requested {
+                    return Err(ConnectorError::internal(format!(
+                        "a checkpoint answers barrier {barrier}, past the newest the engine asked \
+                         for, {requested}"
+                    ))
+                    .with_code("barrier_unrequested"));
+                }
+                Some(*barrier)
             }
-            self.answered = self.answered.max(*barrier);
-        }
+            _ => None,
+        };
         let permit = match &self.admission {
             Some(admission) => tokio::select! {
                 biased;
@@ -239,12 +244,17 @@ impl PartitionSink {
             },
             None => None,
         };
-        tokio::select! {
+        let sent = tokio::select! {
             biased;
             // A stop request wins over a send that could still complete.
             () = self.stop.cancelled() => Err(ConnectorError::stopped()),
             sent = self.events.send((event, permit)) => sent.map_err(|_| ConnectorError::stopped()),
+        };
+        sent?;
+        if let Some(barrier) = answering {
+            self.answered = self.answered.max(barrier);
         }
+        Ok(())
     }
 
     /// The engine's next request of the read: a checkpoint answering a barrier newer than
