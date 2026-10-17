@@ -84,7 +84,12 @@ socket will be.
     when a connector grants credit and reads nothing: such a write fails with `deadline_exceeded`
     rather than hanging. The deadline bounds the whole wait for credit too, however many answers
     arrive, so a destination whose writer never returns fails the write as well, and a credit of
-    no bytes is refused (ADR 0042).
+    no bytes is refused (ADR 0042). A frame spends its credit only as the writer's queue takes
+    it, so a send its deadline or its caller ends spends none. A write that ends before its last
+    frame is queued, failed or dropped, leaves the next to send its schema, and every dictionary
+    after it, again. A flush whose stats did not arrive leaves its writer refusing every later
+    call with `deadline_exceeded`: the protocol has no flush id, and its stats would be taken
+    for the next flush's.
   - After this end stalls, the next heartbeat waits its interval rather than catching up, so a
     stalled host does not lose a live connector. An echo of a heartbeat never sent answers
     nothing.
