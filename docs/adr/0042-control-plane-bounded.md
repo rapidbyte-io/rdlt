@@ -76,9 +76,10 @@ still taken largely on trust:
     taken for a message's whole length once its prefix is whole, before more of it is held, and
     given back as the whole message is passed on, and the window serves bodies in turn, so a
     commit behind writes holding the window gets room as soon as their messages arrive. A body
-    waiting holds none of the window and nothing of its message past the prefix, only the
-    transport frame it read last, at most `TRANSPORT_FRAME_BYTES` (1 MiB), and none waits on
-    another body to finish its message.
+    waiting holds nothing of its message past the prefix, only the transport frame it read last,
+    at most `TRANSPORT_FRAME_BYTES` (1 MiB), and none waits on another body to finish its
+    message. The room it has gathered toward its message counts in the window and comes back if
+    it is dropped.
   - A served connection holds at most 200 open calls (`MAX_CALLS`), set explicitly.
   - A served connector takes the state one request may carry from `--max-state-bytes`, spawned or
     listening; a host spawning a connector passes its own `state_bytes` where it raises the
