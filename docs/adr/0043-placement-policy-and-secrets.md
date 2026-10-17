@@ -73,10 +73,11 @@ given. The host did not enforce it:
     lies, changes nothing.
   - **What placements hold is one registry for the process**, whichever provider placed them.
     A placement holds its grants, the provider's reads among them, and the programs it runs,
-    from its placement until it is dropped and its last connector reaped, not only until a
-    handle drops. A grant that overlaps, contains or lies within a path another placement
-    holds is refused (`grant_overlap`), unless both references state their grants are shared
-    (`share_grants`); so is a write grant over a path the provider lets every connector read.
+    the sandbox's launcher among them, from its placement until it is dropped and its last
+    connector reaped, not only until a handle drops. A grant that overlaps, contains or lies
+    within a path another placement holds is refused (`grant_overlap`), unless both
+    references state their grants are shared (`share_grants`); so is a write grant over a path
+    the provider lets every connector read.
     A write grant over a program another placement runs is refused (`grant_covers`), and so is
     a placement whose program lies where a held grant may write (`program_exposed`), whichever
     came first, shared or not. A program with more than one name, a hard link, counts as
@@ -129,7 +130,7 @@ given. The host did not enforce it:
   - The open file is what is hashed, at placement and before every spawn, and what is
     executed: through `/proc/self/fd`, or handed to the sandbox, which binds it. A file that
     takes the binary's name later is never run; one whose bytes change is refused; and one
-    given a second name since it was placed, or whose interpreter was, is refused
+    given a second name since it was placed, or whose interpreter or launcher was, is refused
     (`program_exposed`), since its placement was held as having none. A sandboxed connector
     whose binary was renamed over or removed is refused (`binary_replaced`) rather than
     spawned again: bubblewrap binds a program by a name, which the file placed no longer has,

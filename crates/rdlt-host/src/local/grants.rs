@@ -28,6 +28,7 @@ struct Held {
     id: u64,
     read: Vec<Chain>,
     write: Vec<Chain>,
+    /// What it runs: its binary, a script's interpreter, and the sandbox's launcher.
     programs: Vec<Program>,
     shared: bool,
 }
@@ -166,7 +167,9 @@ impl Leases {
     pub(crate) fn take(&self, claim: &Claim<'_>) -> Result<Lease, SandboxError> {
         let read_roots = all_opened(&claim.roots.read)?;
         let write_roots = all_opened(&claim.roots.write)?;
-        guarding(&write_roots, claim.guarded, claim.programs)?;
+        let mut programs = claim.programs.to_vec();
+        programs.extend(launchers(&claim.guarded.files)?);
+        guarding(&write_roots, &claim.guarded.directories, &programs)?;
         let writable: Vec<&Chain> = write_roots.iter().map(|(_, root)| &root.chain).collect();
         let readable: Vec<&Chain> = read_roots.iter().map(|(_, root)| &root.chain).collect();
         let within = |granted: &Opened, roots: &[&Chain]| {
@@ -198,20 +201,21 @@ impl Leases {
             });
         }
         let reads: Vec<_> = shared.into_iter().chain(reads).collect();
-        self.held(claim, reads, writes)
+        self.held(claim, programs, reads, writes)
     }
 
-    /// Holds `reads` and `writes`, and `claim`'s programs, unless what another placement holds
-    /// now refuses them.
+    /// Holds `reads` and `writes`, and `programs`, those `claim` runs, unless what another
+    /// placement holds now refuses them.
     fn held(
         &self,
         claim: &Claim<'_>,
+        programs: Vec<Program>,
         reads: Vec<(&Path, Opened)>,
         writes: Vec<(&Path, Opened)>,
     ) -> Result<Lease, SandboxError> {
         let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
         for other in held.iter() {
-            refused_by(other, claim, &reads, &writes)?;
+            refused_by(other, claim, &programs, &reads, &writes)?;
         }
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         held.push(Held {
@@ -221,7 +225,7 @@ impl Leases {
                 .iter()
                 .map(|(_, write)| write.chain.clone())
                 .collect(),
-            programs: claim.programs.to_vec(),
+            programs,
             shared: claim.grants.shared,
         });
         let bound = |write: bool| {
@@ -266,12 +270,13 @@ impl Program {
 
 /// Refuses `claim`, whose paths are `reads` and `writes`, where `other` holds what they overlap,
 /// unless both are shared; where they may write a program `other` runs; and where `other` may
-/// write a program `claim` runs.
+/// write one of `programs`, those `claim` runs.
 ///
 /// A program with a second name may be written through any path on its file system.
 fn refused_by(
     other: &Held,
     claim: &Claim<'_>,
+    programs: &[Program],
     reads: &[(&Path, Opened)],
     writes: &[(&Path, Opened)],
 ) -> Result<(), SandboxError> {
@@ -302,7 +307,7 @@ fn refused_by(
             path: path(covering),
         });
     }
-    let exposed = claim.programs.iter().find(|program| {
+    let exposed = programs.iter().find(|program| {
         other
             .write
             .iter()
@@ -316,13 +321,29 @@ fn refused_by(
     Ok(())
 }
 
+/// The launchers among `files`, what confines a connector, each as a program a placement
+/// runs: one not there yet lies where the nearest directory above it is.
+fn launchers(files: &[PathBuf]) -> Result<Vec<Program>, SandboxError> {
+    let mut launchers = Vec::new();
+    for file in files {
+        if let Ok((opened, there)) = Opened::nearest(file) {
+            let mut launcher = Program::opened(file.clone(), opened)
+                .map_err(|_| SandboxError::Grant { path: file.clone() })?;
+            // A directory above a file not there yet has names of its own.
+            launcher.linked &= there;
+            launchers.push(launcher);
+        }
+    }
+    Ok(launchers)
+}
+
 /// Refuses a root of `roots`, each one that may be written, that holds or lies within one of
-/// `guarded`'s directories, or holds the directory of one of `programs`, one of `programs`, or
-/// one of `guarded`'s files, or lies on the file system of one of these that has a second name:
-/// whoever may write there decides what a host runs, or keeps.
+/// `guarded`, or holds one of `programs` or its directory, or lies on the file system of one
+/// of `programs` that has a second name: whoever may write there decides what a host runs, or
+/// keeps.
 fn guarding(
     roots: &[(&Path, Opened)],
-    guarded: &Guarded,
+    guarded: &[PathBuf],
     programs: &[Program],
 ) -> Result<(), SandboxError> {
     if roots.is_empty() {
@@ -333,7 +354,7 @@ fn guarding(
     };
     // Each with whether a root may not lie within it either.
     let mut directories = Vec::new();
-    for directory in &guarded.directories {
+    for directory in guarded {
         // One that is not there yet is guarded by the nearest directory above it that is.
         let (opened, there) = Opened::nearest(directory).map_err(|_| SandboxError::Grant {
             path: directory.clone(),
@@ -342,23 +363,12 @@ fn guarding(
     }
     let directories_of = programs.iter().filter_map(|program| program.chain.parent());
     directories.extend(directories_of.map(|directory| (directory, false)));
-    let mut files = Vec::new();
-    for file in &guarded.files {
-        if let Ok((opened, there)) = Opened::nearest(file) {
-            let mut launcher = Program::opened(file.clone(), opened)
-                .map_err(|_| SandboxError::Grant { path: file.clone() })?;
-            // A directory above a file not there yet has names of its own.
-            launcher.linked &= there;
-            files.push(launcher);
-        }
-    }
     for (path, root) in roots {
         let touches = directories.iter().any(|(directory, both_ways)| {
             directory.within(&root.chain) || (*both_ways && root.chain.within(directory))
         });
-        let writes = files
+        let writes = programs
             .iter()
-            .chain(programs)
             .any(|program| program.written_through(&root.chain));
         if touches || writes {
             return Err(refused(path));
