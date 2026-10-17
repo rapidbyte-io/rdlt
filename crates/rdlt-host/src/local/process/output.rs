@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rdlt_connector::ConnectorId;
-use rdlt_connector::text::shown;
+use rdlt_connector::text::{CUT, shown};
 use tokio::io::{AsyncBufReadExt as _, AsyncRead, AsyncReadExt as _, BufReader};
 use tokio::sync::watch;
 use tokio::time::Instant;
@@ -131,8 +131,14 @@ pub(crate) async fn drain<F: FnMut(Said)>(
             continue;
         }
         if lines.take() {
+            // Marked where the read stopped within the line, so a secret it cut is scrubbed.
+            let text = if within_line && piece.len() == TAIL_BYTES {
+                stopped(&piece)
+            } else {
+                text.into_owned()
+            };
             // Scrubbed before it is trimmed: a secret may end in whitespace.
-            let text = draining.redactions.scrubbed(text.into_owned());
+            let text = draining.redactions.scrubbed(text);
             (draining.log)(Said::Line(shown(text.trim_end(), OUTPUT_LINE_BYTES)));
         } else {
             if suppressed == 0 {
@@ -147,6 +153,18 @@ pub(crate) async fn drain<F: FnMut(Said)>(
     if let Some((_, closed)) = draining.kept {
         closed.send_replace(true);
     }
+}
+
+/// The text of a read that stopped within a line, marked as cut, without a character the read
+/// tore in two: that is no part of what a secret starts with.
+fn stopped(piece: &[u8]) -> String {
+    let torn = piece
+        .utf8_chunks()
+        .last()
+        .map_or(0, |chunk| chunk.invalid().len());
+    let mut text = String::from_utf8_lossy(&piece[..piece.len() - torn]).into_owned();
+    text.push_str(CUT);
+    text
 }
 
 /// What gives the log what a connector with `id`, of process `pid`, said on `stream`.

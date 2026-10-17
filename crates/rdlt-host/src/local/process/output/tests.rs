@@ -234,10 +234,22 @@ async fn a_secret_ending_in_whitespace_at_a_lines_limit_is_scrubbed_before_the_l
 #[tokio::test(start_paused = true)]
 async fn a_secret_that_holds_line_ends_is_scrubbed_from_each_line_it_is_logged_on() {
     let cases: [(&str, &str, &[&str]); 4] = [
-        ("hunter\n2-canary", "key: hunter\n2-canary\n", &["key: ***", "***"]),
-        ("hunter\r\n2-canary", "key: hunter\r\n2-canary\r\n", &["key: ***", "***"]),
+        (
+            "hunter\n2-canary",
+            "key: hunter\n2-canary\n",
+            &["key: ***", "***"],
+        ),
+        (
+            "hunter\r\n2-canary",
+            "key: hunter\r\n2-canary\r\n",
+            &["key: ***", "***"],
+        ),
         // A blank line within the secret is no line of the log.
-        ("hunter\n\n2-canary", "key: hunter\n\n2-canary\n", &["key: ***", "***"]),
+        (
+            "hunter\n\n2-canary",
+            "key: hunter\n\n2-canary\n",
+            &["key: ***", "***"],
+        ),
         (
             "-----BEGIN KEY-----\nMIIEvhunter\n-----END KEY-----",
             "pem=-----BEGIN KEY-----\nMIIEvhunter\n-----END KEY----- refused\n",
@@ -256,6 +268,30 @@ async fn a_secret_that_holds_line_ends_is_scrubbed_from_each_line_it_is_logged_o
         assert_eq!(drained.lines(), expected, "{secret:?}");
         let words = drained.tail.words(&redactions);
         assert!(!words.contains("hunter"), "{words}");
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_secret_that_runs_past_what_one_read_holds_is_scrubbed_from_the_line_it_starts() {
+    let cases = [
+        ("k=", "s".repeat(TAIL_BYTES + 808)),
+        // The read ends within a character of the secret.
+        ("kk=", "é".repeat(TAIL_BYTES)),
+    ];
+    for (key, secret) in cases {
+        let redactions = Redactions::new();
+        redactions.add(&secret);
+        let output = format!("{key}{secret}\nnext\n");
+        let drained = tokio::time::timeout(
+            Duration::from_secs(2),
+            drained(output.as_bytes(), &redactions),
+        )
+        .await
+        .expect("a drain of two lines ends");
+        assert_eq!(
+            drained.lines(),
+            [format!("{key}*** [cut]").as_str(), "next"]
+        );
     }
 }
 
