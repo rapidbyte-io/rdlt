@@ -231,7 +231,7 @@ async fn a_secret_ending_in_whitespace_at_a_lines_limit_is_scrubbed_before_the_l
     assert_eq!(drained.lines(), [format!("{before}***").as_str()]);
 }
 
-/// The whitespace a property ends a secret, and its line, with.
+/// The whitespace a property's secrets and lines end with.
 const WHITESPACE: [char; 8] = [
     ' ', '\t', '\r', '\u{b}', '\u{c}', '\u{a0}', '\u{2003}', '\u{3000}',
 ];
@@ -246,7 +246,7 @@ fn paused() -> tokio::runtime::Runtime {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(64))]
+    #![proptest_config(ProptestConfig::with_cases(rdlt_testkit::cases(64)))]
 
     /// However whitespace ends a secret and the line it is said on, no line the log is given
     /// holds what the secret holds before its whitespace.
