@@ -456,15 +456,21 @@ fn a_body_waiting_for_room_holds_no_more_than_a_prefix_split_across_frames() {
 fn a_body_dropped_while_waiting_for_room_leaves_the_window_to_the_others() {
     let held = message(&[0x0a, 0x00].repeat(64));
     let waiting = message(&[0x0a, 0x00].repeat(8));
-    let window = Window::new(held.len());
+    let left = 3;
+    let window = Window::new(held.len() + left);
     let bounds = bounds(held.len(), usize::MAX);
     let (holding_feed, mut holder) = holding(&window, bounds, &held);
     let (feed, body) = fed();
     let mut dropped = Bounded::new(body, bounds, Some(window.clone()));
     feed.send(Frame::data(waiting.clone().into())).unwrap();
     assert_eq!(poll(&mut dropped), Passed::Waits);
+    assert_eq!(
+        window.taken(),
+        held.len() + left,
+        "its wait gathers the room left"
+    );
     drop(dropped);
-    assert_eq!(window.taken(), held.len(), "its wait took nothing");
+    assert_eq!(window.taken(), held.len(), "the room it gathered came back");
     holding_feed
         .send(Frame::data(Bytes::copy_from_slice(&held[10..])))
         .unwrap();
