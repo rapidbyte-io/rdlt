@@ -251,8 +251,8 @@ Rejected:
     to a Unix socket beneath it, as a session bus or an agent's under `/run/user`;
   - a program mounted into a grant: the link rule compares file systems, so a bind mount of
     a program within a granted path, or a mount beneath a grant of the file system a program
-    with a second name lies on, is not seen. Mounts need privilege in the host's mount
-    namespace and are the operator's, as ADR 0047 rules for its own mount points;
+    with a second name lies on, is not seen, as ADR 0047's mount-point rule does not see a
+    bind mount of the same file system; what is mounted within a grant is the operator's;
   - a secret a connector transforms before it says it, or one an in-process connector
     panics with: an in-process connector is trusted code;
   - the buffers of the transport a configuration is sent through, which are not wiped.

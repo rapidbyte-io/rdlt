@@ -130,8 +130,7 @@ Not guaranteed:
   beneath a path it may only read, such as a session bus or an agent's socket under
   `/run/user`. Grant no such directory to a connector you would not let reach those.
 - **Programs mounted into a grant**: a bind mount of a program within a granted path, or a
-  mount beneath one, is not seen. Mounts need privilege in the host's mount namespace and are
-  the operator's.
+  mount beneath one, is not seen; what is mounted within a grant is the operator's.
 - **A secret a connector transforms** before it prints it, or that trusted in-process code
   panics with; and the memory of the transport a configuration crosses.
 - **macOS local placement**, beyond the checks on the binary: no sandbox and no digest.
