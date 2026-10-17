@@ -65,16 +65,17 @@ pub(crate) mod bubblewrap {
 
     /// A provider that spawns into bubblewrap; none, with the reason said, where bubblewrap
     /// makes no sandbox.
-    pub(crate) async fn sandboxed() -> Option<Local> {
-        let local = Local::sandboxed(Bubblewrap::new());
-        match local.wire(&scripted()).await {
-            Ok(_) => Some(local),
-            Err(ProviderError::Sandbox { source, .. }) => {
-                rdlt_testkit::process::without_sandbox(&source);
-                None
-            }
-            Err(other) => panic!("the sandboxed connector did not spawn: {other}"),
+    ///
+    /// Bubblewrap is tried by confining itself, not a connector: a connector placed to try it
+    /// would hold its placement until it was reaped, after the test had begun, and cargo's
+    /// example, with its two names, counts as written by every write grant on its file system.
+    pub(crate) fn sandboxed() -> Option<Local> {
+        let sandbox = Bubblewrap::new();
+        if let Err(unusable) = sandbox.usable() {
+            rdlt_testkit::process::without_sandbox(&unusable);
+            return None;
         }
+        Some(Local::sandboxed(sandbox))
     }
 
     /// What the scripted connector's own binary puts in its environment when started with
@@ -147,7 +148,7 @@ pub(crate) mod bubblewrap {
 
     #[tokio::test]
     async fn a_sandboxed_connector_sees_nothing_of_its_host_but_what_it_is_given() {
-        let Some(local) = sandboxed().await else {
+        let Some(local) = sandboxed() else {
             return;
         };
         let (_listener, address) = listener();
@@ -197,7 +198,7 @@ pub(crate) mod bubblewrap {
 
     #[tokio::test]
     async fn a_sandboxed_connector_reaches_what_it_is_granted_and_no_more() {
-        let Some(local) = sandboxed().await else {
+        let Some(local) = sandboxed() else {
             return;
         };
         let (_listener, address) = listener();
@@ -263,7 +264,7 @@ pub(crate) mod bubblewrap {
 
     #[tokio::test]
     async fn a_sandbox_gives_the_isolation_a_reference_requires_of_it() {
-        let Some(local) = sandboxed().await else {
+        let Some(local) = sandboxed() else {
             return;
         };
         let config = serde_json::json!({});
@@ -281,7 +282,7 @@ pub(crate) mod bubblewrap {
 
     #[tokio::test]
     async fn a_script_is_run_in_a_sandbox_from_its_open_file_too() {
-        let Some(local) = sandboxed().await else {
+        let Some(local) = sandboxed() else {
             return;
         };
         let dir = tempfile::tempdir().expect("a temporary directory");
@@ -305,7 +306,7 @@ pub(crate) mod bubblewrap {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn a_sandboxed_source_that_crashes_is_spawned_again_and_loads_every_row_once() {
-        let Some(local) = sandboxed().await else {
+        let Some(local) = sandboxed() else {
             return;
         };
         let kept = tempfile::tempdir().expect("a temporary directory");
@@ -379,7 +380,7 @@ pub(crate) mod bubblewrap {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn a_sandboxed_connector_that_is_dropped_ends_with_everything_it_started() {
-        let Some(local) = sandboxed().await else {
+        let Some(local) = sandboxed() else {
             return;
         };
         let (source, _kills, marker) = forking(&local, "dropped", serde_json::json!({})).await;
@@ -408,7 +409,7 @@ pub(crate) mod bubblewrap {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn a_sandboxed_connector_that_ignores_its_stop_is_killed_with_everything_it_started() {
-        let Some(local) = sandboxed().await else {
+        let Some(local) = sandboxed() else {
             return;
         };
         let lingering = serde_json::json!({ "linger": "forever" });
@@ -436,7 +437,7 @@ pub(crate) mod bubblewrap {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn a_kill_of_sandboxed_connectors_lands_on_each_and_lets_none_stop_as_if_asked() {
-        let Some(local) = sandboxed().await else {
+        let Some(local) = sandboxed() else {
             return;
         };
         // A connector outlives its launcher for a moment: were its input closed then, it would
@@ -461,7 +462,7 @@ pub(crate) mod bubblewrap {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn a_sandboxed_connector_that_is_killed_ends_at_once_with_everything_it_started() {
-        let Some(local) = sandboxed().await else {
+        let Some(local) = sandboxed() else {
             return;
         };
         let lingering = serde_json::json!({ "linger": "forever" });
@@ -476,7 +477,7 @@ pub(crate) mod bubblewrap {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn a_host_out_of_patience_kills_its_sandboxed_connectors_before_it_returns() {
-        let Some(local) = sandboxed().await else {
+        let Some(local) = sandboxed() else {
             return;
         };
         let lingering = serde_json::json!({ "linger": "forever" });
@@ -522,7 +523,7 @@ pub(crate) mod bubblewrap {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn sandboxed_connectors_end_with_a_host_that_is_killed_outright() {
-        if sandboxed().await.is_none() {
+        if sandboxed().is_none() {
             return;
         }
         let directory = tempfile::tempdir().expect("a temporary directory");
@@ -541,7 +542,7 @@ pub(crate) mod bubblewrap {
 
     #[tokio::test]
     async fn each_sandboxed_connector_has_a_private_scratch_directory_of_its_own() {
-        let Some(local) = sandboxed().await else {
+        let Some(local) = sandboxed() else {
             return;
         };
         let writing = serde_json::json!({ "writes": "/tmp/scratch" });
@@ -569,7 +570,7 @@ pub(crate) mod bubblewrap {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn a_sandboxed_connector_whose_binary_was_replaced_is_refused_rather_than_spawned() {
-        let Some(local) = sandboxed().await else {
+        let Some(local) = sandboxed() else {
             return;
         };
         let dir = tempfile::tempdir().expect("a temporary directory");
@@ -648,7 +649,7 @@ pub(crate) mod bubblewrap {
     #[tokio::test]
     async fn a_secret_passed_to_a_sandboxed_connector_is_on_no_command_line_and_in_no_other_environment()
      {
-        let Some(local) = sandboxed().await else {
+        let Some(local) = sandboxed() else {
             return;
         };
         // An environment variable the host passes the connector, as a credential is passed.
