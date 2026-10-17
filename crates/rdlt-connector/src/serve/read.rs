@@ -1,6 +1,9 @@
 //! A served read: the source reads a partition into a channel, and each event it sends becomes
 //! frames sent to the host within the credit the host grants.
 
+#[cfg(test)]
+mod tests;
+
 use std::collections::VecDeque;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
@@ -250,27 +253,17 @@ async fn pump(
         async move { source.read(request, sink).await },
     ));
     let mut outbox = Outbox::new(host);
-    let mut done = false;
+    let (mut done, mut exhausted) = (false, false);
     loop {
-        while let Some(frame) = outbox.frames.front() {
-            // A frame goes while credit remains, and spends its size, even below zero.
-            if !outbox.credit.may_send() {
-                break;
-            }
-            let size = u64::try_from(frame.sent_len()).unwrap_or(u64::MAX);
-            outbox.credit.spend(size);
-            let frame = outbox.frames.pop_front().expect("a frame is at the front");
-            if frames.send(Ok(frame)).await.is_err() {
-                feed.stop();
-                return;
-            }
+        if !send_queued(&mut outbox, &frames).await {
+            feed.stop();
+            return;
         }
         // The next piece of a batch being cut is encoded once the last was sent, and before
         // anything else the source sends is taken. The host's controls wait meanwhile, for no
         // longer than the credit lasts or the batch has pieces.
         if outbox.frames.is_empty() && outbox.cutting() {
-            if let Err(error) = outbox.refill() {
-                frames.send(Err(error)).await.ok();
+            if !refill(&mut outbox, &frames).await {
                 feed.stop();
                 return;
             }
@@ -280,30 +273,71 @@ async fn pump(
         if done && outbox.frames.is_empty() {
             return;
         }
-        tokio::select! {
+        let queued = tokio::select! {
             biased;
+            // A host that dropped its answers takes nothing more: it wins over everything else.
+            () = frames.closed() => {
+                feed.stop();
+                return;
+            }
             control = controls.message() => {
                 if !control_read(control, &mut outbox, &feed) {
                     feed.stop();
                     return;
                 }
+                Ok(())
             }
-            event = feed.recv(), if outbox.frames.is_empty() && !done => {
-                let queued = if let Some(event) = event {
+            event = feed.recv(), if outbox.frames.is_empty() && !exhausted => {
+                if let Some(event) = event {
                     outbox.event(event)
                 } else {
-                    done = true;
-                    finish(&mut outbox, (&mut reading.0).await)
-                };
-                if let Err(error) = queued {
-                    // The host may have gone; the read ends either way.
-                    frames.send(Err(error)).await.ok();
-                    feed.stop();
-                    return;
+                    exhausted = true;
+                    Ok(())
                 }
             }
+            // A source may clean up after its sink is gone, while the host's controls are read.
+            ended = &mut reading.0, if exhausted && !done => {
+                done = true;
+                finish(&mut outbox, ended)
+            }
+        };
+        if let Err(error) = queued {
+            // The host may have gone; the read ends either way.
+            frames.send(Err(error)).await.ok();
+            feed.stop();
+            return;
         }
     }
+}
+
+/// Sends the frames queued while credit lasts; whether the host is still there to take them.
+async fn send_queued(
+    outbox: &mut Outbox,
+    frames: &mpsc::Sender<Result<v1::ReadFrame, Status>>,
+) -> bool {
+    while let Some(frame) = outbox.frames.front() {
+        // A frame goes while credit remains, and spends its size, even below zero.
+        if !outbox.credit.may_send() {
+            break;
+        }
+        let size = u64::try_from(frame.sent_len()).unwrap_or(u64::MAX);
+        outbox.credit.spend(size);
+        let frame = outbox.frames.pop_front().expect("a frame is at the front");
+        if frames.send(Ok(frame)).await.is_err() {
+            return false;
+        }
+    }
+    true
+}
+
+/// Encodes the next piece of the batch being cut; whether the read goes on, which it does not
+/// where the piece cannot be encoded and the host is told so.
+async fn refill(outbox: &mut Outbox, frames: &mpsc::Sender<Result<v1::ReadFrame, Status>>) -> bool {
+    if let Err(error) = outbox.refill() {
+        frames.send(Err(error)).await.ok();
+        return false;
+    }
+    true
 }
 
 /// Applies the host's `control`; whether the host is still there.
