@@ -88,6 +88,7 @@ pub(super) async fn write_json(
             beside = Beside::Bytes(needed);
             continue;
         };
+        drop(pushes);
         let held = held::shredded(permits, beyond, &batches);
         if held.len() != planned.len() {
             return Err(Error::internal("a JSON flush's units and batches differ"));
@@ -95,7 +96,6 @@ pub(super) async fn write_json(
         for (unit, held) in planned.iter_mut().zip(held) {
             unit.held = held;
         }
-        drop(pushes);
         return lowered(job, context, open, planned, Room::Lent(lent.lend())).await;
     }
 }
