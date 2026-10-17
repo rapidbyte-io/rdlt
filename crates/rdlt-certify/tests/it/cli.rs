@@ -985,7 +985,11 @@ async fn a_sandboxed_destination_writes_only_where_it_is_granted() {
         rdlt_testkit::process::without_sandbox(&unusable);
         return;
     }
-    let binary = example("serve_reference");
+    // Cargo gives each example it builds two names, and a program with two is held as
+    // written by every write grant on its file system.
+    let elsewhere = tempfile::tempdir().expect("a temporary directory");
+    let binary = elsewhere.path().join("serve_reference");
+    std::fs::copy(example("serve_reference"), &binary).expect("the binary copies");
     let binary = binary.to_str().expect("a UTF-8 path");
     let directory = tempfile::tempdir().expect("a temporary directory");
     let store = directory.path().to_str().expect("a UTF-8 path");
