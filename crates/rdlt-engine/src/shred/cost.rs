@@ -14,6 +14,9 @@ mod tests;
 
 use std::sync::Arc;
 
+use rdlt_wire::limits::NESTING_DEPTH;
+
+use super::keys::{KEY_BYTES, OBJECT_BYTES};
 use super::meter::{ARRAY, KEY, Meter, OBJECT_SHAPE, RECORD};
 use super::observe::{Observed, Shape};
 
@@ -133,6 +136,27 @@ pub(crate) fn holds_text(joined: &Shape) -> bool {
         .any(|(_, observed)| node_holds_text(observed))
 }
 
+/// Whether `joined` holds a column of JSON at any depth.
+pub(crate) fn holds_json(joined: &Shape) -> bool {
+    joined
+        .fields()
+        .iter()
+        .any(|(_, observed)| node_holds_json(observed))
+}
+
+/// Bytes rendering one value of JSON from a record of `longest` bytes holds at most: its text,
+/// no longer than the record, a range for each key of the objects open in it, at most one every
+/// four bytes, and a mark for each level an object may nest to, each grown to twice what it
+/// must hold.
+pub(crate) fn rendering(longest: u64) -> u64 {
+    let keys = (longest / 4).saturating_mul(KEY_BYTES);
+    let objects = NESTING_DEPTH.saturating_mul(OBJECT_BYTES);
+    longest
+        .saturating_add(keys)
+        .saturating_add(objects)
+        .saturating_mul(2)
+}
+
 /// `joined`, its lists sized for the items `local` held: the shape a chunk observed as `local`
 /// is built again against.
 pub(crate) fn sized(joined: &Shape, local: &Shape) -> Shape {
@@ -234,6 +258,15 @@ fn node_renders_json(joined: &Observed, local: &Observed) -> bool {
         (Observed::Json, local) => local.renders_as_read(),
         (Observed::Object(joined), Observed::Object(local)) => renders_json(joined, local),
         (Observed::Array(joined, _), Observed::Array(local, _)) => node_renders_json(joined, local),
+        _ => false,
+    }
+}
+
+fn node_holds_json(joined: &Observed) -> bool {
+    match joined {
+        Observed::Json => true,
+        Observed::Object(shape) => holds_json(shape),
+        Observed::Array(item, _) => node_holds_json(item),
         _ => false,
     }
 }

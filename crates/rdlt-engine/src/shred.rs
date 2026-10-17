@@ -100,6 +100,8 @@ struct Parsed {
     chunk: Chunk,
     /// The records the parse read.
     rows: usize,
+    /// Bytes: its longest record, which a value of JSON rendered from it is no longer than.
+    longest: usize,
     /// `None` where the builders would have taken more than the chunk was admitted for.
     record: Option<Record>,
     shape: Shape,
@@ -209,6 +211,7 @@ fn parse(chunk: Chunk, limits: ShredLimits, beyond: &Arc<Beyond>) -> Result<Pars
         }
         return Ok(Parsed {
             rows: appended.rows,
+            longest: appended.longest,
             shape: record.shape(),
             record: Some(record),
             spoiled: context.spoiled(),
@@ -249,6 +252,7 @@ fn observed(
         return Ok(Parsed {
             chunk,
             rows: appended.rows,
+            longest: appended.longest,
             record: None,
             shape,
             spoiled: true,
@@ -282,6 +286,8 @@ struct Appended {
     imprecise: bool,
     /// The records it read.
     rows: usize,
+    /// Bytes: the longest record it read.
+    longest: usize,
 }
 
 /// Parses each record of `chunk` with `record`, its numbers exact where `exact` says.
@@ -297,10 +303,11 @@ fn each(
     context: &Context,
     mut record: impl FnMut(&[u8]) -> Result<(), sonic_rs::Error>,
 ) -> Result<Appended, ShredError> {
-    let mut rows = 0;
+    let (mut rows, mut longest) = (0, 0);
     for bytes in chunk.records() {
         let (bytes, index) = (bytes?, rows);
         rows += 1;
+        longest = longest.max(bytes.len());
         let parsed = record(bytes);
         if !exact {
             context.confirm(bytes);
@@ -315,6 +322,7 @@ fn each(
                     tripped: true,
                     imprecise: false,
                     rows,
+                    longest,
                 });
             }
             // The fast parse refuses an integer beyond a float's range as it refuses invalid JSON;
@@ -332,6 +340,7 @@ fn each(
         tripped: false,
         imprecise: exact || context.imprecise(),
         rows,
+        longest,
     })
 }
 
@@ -364,7 +373,7 @@ fn join(parsed: &[Parsed], limits: ShredLimits) -> Result<(Shape, Vec<Plan>, u64
     if columns > limits.columns {
         return Err(ShredError::TooManyColumns(columns, limits.columns));
     }
-    let text = cost::holds_text(&joined);
+    let (text, json) = (cost::holds_text(&joined), cost::holds_json(&joined));
     // What the chunks hold together, the joined shape beside them, against what the pushes
     // were admitted for together.
     let (mut cells, mut takes, mut admitted) = (0_u64, cost::shape(&joined), 0_u64);
@@ -380,11 +389,18 @@ fn join(parsed: &[Parsed], limits: ShredLimits) -> Result<(Shape, Vec<Plan>, u64
         // What the chunk's parse holds until the build, and its batch's columns' fixed parts:
         // all of them built again, or those it lacks fitted.
         let held = if again {
-            // Text grows as it is written, to twice the chunk's at most.
+            // Text grows as it is written, to twice the chunk's at most, and each value of JSON
+            // is rendered on its own before its column takes it.
             let text = if text { bytes.saturating_mul(2) } else { 0 };
+            let rendering = if json {
+                cost::rendering(count(chunk.longest))
+            } else {
+                0
+            };
             let arrays = cost::arrays(&joined, None);
             (chunk.spent.saturating_add(size.bytes))
                 .saturating_add(text)
+                .saturating_add(rendering)
                 .saturating_add(arrays)
         } else {
             let fitted = cost::fitted(&joined, &chunk.shape, rows);

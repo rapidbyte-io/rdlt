@@ -1862,3 +1862,32 @@ proptest::proptest! {
         proptest::prop_assert_eq!(texts(&batch, 0), expected);
     }
 }
+
+/// Asserts that building `text`, once observed under a limit of `columns` columns, allocates at
+/// its peak no more than its observation reckoned: what its push was admitted for beside its
+/// text, and the excess beyond.
+fn built_within_reckoning(text: &str, columns: u64) {
+    let heap = &crate::cost::tests::HEAP;
+    let pool = crate::compute::Pool::inline();
+    let limits = ShredLimits::new(columns);
+    let pushes = vec![Bytes::from(text.to_owned())];
+    let observed = crate::compute::ready(super::observe(&pool, pushes, 1 << 20, limits)).unwrap();
+    let reckoned = count(text.len()) * limits.admitted + observed.excess();
+    heap.reset_peak_usage();
+    let before = heap.current_usage();
+    let batches = crate::compute::ready(observed.build(&pool)).unwrap();
+    let peak = u64::try_from(heap.peak_usage().saturating_sub(before)).unwrap();
+    drop(batches);
+    assert!(
+        peak <= reckoned,
+        "{columns} columns: built at a peak of {peak}, reckoned {reckoned}"
+    );
+}
+
+#[test]
+fn a_chunk_built_again_renders_its_values_of_json_within_what_its_build_was_reckoned() {
+    let text = drifting(&flat_object(262_145));
+    for columns in [10_000, 1] {
+        built_within_reckoning(&text, columns);
+    }
+}
