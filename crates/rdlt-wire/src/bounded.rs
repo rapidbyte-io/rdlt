@@ -11,11 +11,12 @@
 //! A message is held from a first byte at a 64-byte address, and what arrives past its end waits
 //! for the message after it, so each message is passed on in an allocation of its own length.
 //!
-//! Where a connection shares a window, a message takes room in it for its whole length as its
-//! prefix arrives, and gives it back once passed on. A body that finds no room reads no further,
-//! so HTTP/2's flow control holds its sender, until a message that has room is passed on: each
-//! message with room is read to its end, so room always comes back, and every sender is held
-//! rather than refused.
+//! Where a connection shares a window, a message takes room in it for its whole length once its
+//! prefix is whole, before any more of it is held, and gives it back once passed on. A body that
+//! finds no room reads no further, holding only the transport frame it read last, so HTTP/2's
+//! flow control holds its sender, until a message that has room is passed on: each message with
+//! room is read to its end, so room always comes back, and every sender is held rather than
+//! refused.
 //!
 //! Where the body is [charged](charging), a message is passed on once what its scan counts is
 //! charged, and the charge is held until it is decoded.
@@ -285,18 +286,23 @@ impl Bounded {
         Ok(())
     }
 
+    /// The length the arriving message declares, where its prefix is whole: in what has arrived
+    /// of it, or, before anything has, at the start of what waits unread; within the wire bound.
+    fn known(&self) -> Result<Option<usize>, Status> {
+        if self.arriving.is_empty() {
+            self.declared_in(&self.unread)
+        } else {
+            self.declared()
+        }
+    }
+
     /// Bytes the arriving message lacks of what is known of it: the rest of its prefix, then the
     /// rest of its length, so what arrives beyond its end waits for the message after it.
     ///
     /// A message whose whole prefix waits is known from it, so it is taken in one piece.
     fn wanted(&self) -> Result<usize, Status> {
         let held = self.arriving.len();
-        let declared = if held == 0 {
-            self.declared_in(&self.unread)?
-        } else {
-            self.declared()?
-        };
-        Ok(match declared {
+        Ok(match self.known()? {
             Some(length) => (PREFIX + length).saturating_sub(held),
             None => PREFIX.saturating_sub(held),
         })
@@ -311,7 +317,9 @@ impl Bounded {
             if let Some(charged) = std::task::ready!(self.charged_message(context)) {
                 return Poll::Ready(Some(charged.map(Frame::data)));
             }
-            if let Some(length) = self.declared()? {
+            // Room is taken before anything past the prefix is copied, so a body waiting for it
+            // holds only the transport frame it read.
+            if let Some(length) = self.known()? {
                 if self.roomed(length, context)?.is_pending() {
                     // No room: nothing more is read, and flow control holds the sender.
                     return Poll::Pending;
