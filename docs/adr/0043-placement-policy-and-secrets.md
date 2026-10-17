@@ -235,9 +235,9 @@ Rejected:
 - A grant through a link binds what the link led to at placement for the placement's life;
   placing it again follows the link again.
 - A binary or interpreter with a second name is placed beside no write grant or write root
-  on its file system. Cargo gives what it builds two names, one under `deps`, and
-  hard-linked deployment copies have more: copy such a binary, as `install` does, to place
-  it beside one.
+  on its file system. Cargo gives each binary and example it builds a second name with a hash
+  in it, beside it or under `deps`, and hard-linked deployment copies have more: copy such a
+  binary, as `install` does, to place it beside one.
 - A connector that writes more than a megabyte a second to its standard streams is slowed to
   that, and one slowed past a call's deadline fails that call.
 - A sandboxed connector that does not end at the end of its input is killed after its grace.
