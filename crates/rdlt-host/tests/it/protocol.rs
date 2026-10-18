@@ -302,6 +302,26 @@ async fn a_connector_that_stops_answering_heartbeats_is_lost() {
 }
 
 #[tokio::test]
+async fn a_connector_whose_heartbeat_does_not_open_is_lost() {
+    for fault in [Fault::Unopened, Fault::RefusesHeartbeat] {
+        let io = serve_fake(Fake(fault));
+        let connection = Connection::connect(io, Role::Source, &serde_json::json!({}), quick())
+            .await
+            .unwrap();
+        let check = RemoteSource::new(connection);
+        let error = tokio::time::timeout(Duration::from_secs(5), check.check())
+            .await
+            .expect("the heartbeat's patience ends the check")
+            .unwrap_err();
+        assert_eq!(
+            (error.kind(), error.code()),
+            (ConnectorErrorKind::Transient, Some(CONNECTOR_LOST)),
+            "{fault:?}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn a_call_beyond_its_deadline_fails_with_deadline_exceeded() {
     let options = Options {
         deadlines: Deadlines {
