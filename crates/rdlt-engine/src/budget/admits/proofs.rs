@@ -67,8 +67,8 @@ fn what_each_admitted_limit_admits_fits_the_share_it_draws_on() {
     );
 }
 
-/// Every budget from the least up admits a peer, read by as many reads: a memory the
-/// configuration accepts is one whose limits the protocol accepts.
+/// Every budget from the least for a count of reads up admits a peer, read by that many reads: a
+/// memory the configuration accepts is one whose limits the protocol accepts.
 ///
 /// Bound: every capacity, read by 1 to `READERS` reads at once.
 #[kani::proof]

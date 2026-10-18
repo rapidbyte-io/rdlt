@@ -35,7 +35,7 @@ impl EngineConfig {
     }
 
     /// Bytes: the least memory a configuration reading `partitions` partitions at once may have,
-    /// below which its budget admits less than the protocol lets a peer go.
+    /// from which every memory up admits what the protocol lets no peer go below.
     pub fn least_memory(partitions: usize) -> u64 {
         least(partitions)
     }
