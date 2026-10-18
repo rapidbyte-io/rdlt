@@ -322,6 +322,30 @@ async fn a_connector_whose_heartbeat_does_not_open_is_lost() {
 }
 
 #[tokio::test]
+async fn a_connector_that_never_reads_its_heartbeats_is_lost() {
+    // More beats may be missed than the heartbeat's queue and the call's window hold, so the
+    // queue fills before the beats unanswered are too many.
+    let options = Options {
+        heartbeat: Duration::from_millis(20),
+        missed: NonZeroU32::new(16).expect("not zero"),
+        ..Options::default()
+    };
+    let io = serve_fake(Fake(Fault::Unread));
+    let connection = Connection::connect(io, Role::Source, &serde_json::json!({}), options)
+        .await
+        .unwrap();
+    let check = RemoteSource::new(connection);
+    let error = tokio::time::timeout(Duration::from_secs(5), check.check())
+        .await
+        .expect("the heartbeat's patience ends the check")
+        .unwrap_err();
+    assert_eq!(
+        (error.kind(), error.code()),
+        (ConnectorErrorKind::Transient, Some(CONNECTOR_LOST))
+    );
+}
+
+#[tokio::test]
 async fn a_call_beyond_its_deadline_fails_with_deadline_exceeded() {
     let options = Options {
         deadlines: Deadlines {

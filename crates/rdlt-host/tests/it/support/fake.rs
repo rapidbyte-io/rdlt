@@ -36,6 +36,9 @@ pub(crate) enum Fault {
     Unopened,
     /// Its heartbeat call is refused, and its checks never end.
     RefusesHeartbeat,
+    /// Its heartbeat call opens and it never reads a ping, its transport taking 16 bytes of
+    /// any call before it reads them; its checks never end.
+    Unread,
     /// Its reads send the same schema epoch twice.
     StaleEpoch,
     /// Its handshake says its limits, but no dictionary limit among them.
@@ -177,6 +180,7 @@ type Answer<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + Send>>;
 pub(crate) fn serve_fake(fake: Fake) -> UnixStream {
     let (host, connector) = UnixStream::pair().expect("a socket pair");
     let garbles = matches!(fake.0, Fault::GarbledDetails);
+    let unread = matches!(fake.0, Fault::Unread);
     let service = routed(fake)
         .map_request(|request: http::Request<hyper::body::Incoming>| {
             request.map(tonic::body::Body::new)
@@ -191,10 +195,13 @@ pub(crate) fn serve_fake(fake: Fake) -> UnixStream {
             }
             response
         });
+    let mut builder = hyper::server::conn::http2::Builder::new(TokioExecutor::new());
+    builder.timer(TokioTimer::new());
+    if unread {
+        builder.initial_stream_window_size(16);
+    }
     tokio::spawn(
-        hyper::server::conn::http2::Builder::new(TokioExecutor::new())
-            .timer(TokioTimer::new())
-            .serve_connection(TokioIo::new(connector), TowerToHyperService::new(service)),
+        builder.serve_connection(TokioIo::new(connector), TowerToHyperService::new(service)),
     );
     host
 }
@@ -377,7 +384,7 @@ impl Connector for Fake {
     ) -> Result<Response<v1::CheckResponse>, Status> {
         if matches!(
             self.0,
-            Fault::Silent | Fault::Unopened | Fault::RefusesHeartbeat
+            Fault::Silent | Fault::Unopened | Fault::RefusesHeartbeat | Fault::Unread
         ) {
             std::future::pending::<()>().await;
         }
@@ -471,6 +478,15 @@ impl Connector for Fake {
         match self.0 {
             Fault::Unopened => std::future::pending::<()>().await,
             Fault::RefusesHeartbeat => return Err(Status::unavailable("no heartbeat")),
+            Fault::Unread => {
+                // The pings stay unread for as long as the call is open.
+                let pending = tokio_stream::pending::<Result<v1::Pong, Status>>();
+                let pongs = pending.map(move |pong| {
+                    let _ = &request;
+                    pong
+                });
+                return Ok(Response::new(Box::pin(pongs)));
+            }
             _ => {}
         }
         if matches!(self.0, Fault::Silent) {
