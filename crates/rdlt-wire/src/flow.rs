@@ -5,6 +5,8 @@
 //! transport refuses a frame beyond a call's window, so what a peer sends that its receiver has
 //! not taken is at most a stream window for each open call.
 
+#[cfg(kani)]
+mod proofs;
 #[cfg(test)]
 mod tests;
 

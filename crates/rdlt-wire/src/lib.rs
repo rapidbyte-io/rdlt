@@ -4,7 +4,8 @@
 
 #![forbid(unsafe_code)]
 
-#[cfg(panic = "abort")]
+// Kani compiles every crate aborting, and runs nothing it compiles.
+#[cfg(all(panic = "abort", not(kani)))]
 compile_error!(
     "rdlt-wire refuses a frame Arrow panics on by unwinding: build with panic = \"unwind\""
 );
