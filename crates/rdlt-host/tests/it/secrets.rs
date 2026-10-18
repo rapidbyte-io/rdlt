@@ -6,15 +6,15 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use rdlt_connector::serve::Served;
+use rdlt_connector::serve::{Served, serve_connection};
 use rdlt_connector::{
     BoxFuture, ConnectContext, ConnectorErrorKind, ConnectorId, ConnectorSpec, Destination,
     DestinationFactory, Secret, destination_factory, source_factory,
 };
 use rdlt_connector_reference::{MemoryDestination, MemorySource};
 use rdlt_host::{
-    Connect, ConnectorRef, Kills, LastWords, Provider as _, ProviderError, SecretFault, SecretKind,
-    SecretReference, SecretResolver,
+    Connect, ConnectorRef, DEADLINE_EXCEEDED, Deadlines, Kills, LastWords, Options, Provider as _,
+    ProviderError, SecretFault, SecretKind, SecretReference, SecretResolver,
 };
 
 use crate::process::{example, local, scripted};
@@ -346,4 +346,114 @@ async fn a_secret_a_destination_started_again_gives_as_its_version_is_scrubbed_f
         1,
         "the refused connector was sent a secret"
     );
+}
+
+/// Resolves `${secret:canary}` for the first `answered` asks and never answers another, as a
+/// secret store that stopped answering; counts the asks.
+#[derive(Debug, Default)]
+struct Stalls {
+    answered: usize,
+    asked: Arc<AtomicUsize>,
+}
+
+impl SecretResolver for Stalls {
+    fn resolve<'a>(
+        &'a self,
+        _reference: &'a SecretReference,
+    ) -> BoxFuture<'a, Result<Secret<String>, SecretFault>> {
+        let answers = self.asked.fetch_add(1, Ordering::SeqCst) < self.answered;
+        Box::pin(async move {
+            if !answers {
+                std::future::pending::<()>().await;
+            }
+            Ok(Secret::new(CANARY.to_owned()))
+        })
+    }
+}
+
+/// The memory source, reached over a pipe whose other end serves it, its secrets resolved by
+/// `secrets`, within a connect deadline of 50 ms.
+fn piped(secrets: Stalls) -> Connect {
+    let options = Options {
+        deadlines: Deadlines {
+            connect: Duration::from_millis(50),
+            ..Deadlines::default()
+        },
+        ..Options::default()
+    };
+    Connect::new(|| {
+        let (host, connector) = tokio::io::duplex(1 << 16);
+        let served = Arc::new(Served::new().with_source(source_factory::<MemorySource>()));
+        tokio::spawn(serve_connection(
+            served,
+            connector,
+            rdlt_wire::Limits::default(),
+        ));
+        Box::pin(async move { Ok(Box::new(host) as Box<dyn rdlt_host::Stream>) })
+    })
+    .secrets(secrets)
+    .options(options)
+}
+
+fn memory() -> ConnectorRef {
+    ConnectorRef::new(ConnectorId::parse("io.rapidbyte.memory").expect("a valid id"))
+}
+
+fn canary_rows() -> serde_json::Value {
+    serde_json::json!({ "streams": { "rows": [{ "id": "${secret:canary}" }] } })
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_secret_store_that_never_answers_fails_the_placement_by_the_connect_deadline() {
+    let store = Stalls::default();
+    let asked = Arc::clone(&store.asked);
+    let (connect, connector, rows) = (piped(store), memory(), canary_rows());
+    let placing = connect.source(&connector, &rows);
+    let error = tokio::time::timeout(Duration::from_secs(1), placing)
+        .await
+        .expect("the connect deadline ends the placement")
+        .err()
+        .expect("no secret resolves");
+    let ProviderError::HandshakeFailed { source, .. } = &error else {
+        panic!("{error}");
+    };
+    assert_eq!(
+        (source.kind(), source.code()),
+        (ConnectorErrorKind::Transient, Some(DEADLINE_EXCEEDED))
+    );
+    // The handshake passed: it was the resolution that ran out of time.
+    assert_eq!(asked.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_secret_store_that_stops_answering_fails_a_later_start_as_retryable() {
+    let kills = Kills::new();
+    let store = Stalls {
+        answered: 1,
+        ..Stalls::default()
+    };
+    let asked = Arc::clone(&store.asked);
+    let placed = piped(store)
+        .kills(&kills)
+        .source(&memory(), &canary_rows())
+        .await
+        .expect("the first start resolves its secret");
+    kills.kill();
+    // The first calls may meet the cut connection before it is started again.
+    let mut codes = Vec::new();
+    for _ in 0..50 {
+        let checked = tokio::time::timeout(Duration::from_secs(1), placed.connector.check());
+        let error = checked
+            .await
+            .expect("each call ends")
+            .expect_err("no start resolves its secret again");
+        if error.code() == Some(DEADLINE_EXCEEDED) {
+            assert_eq!(error.kind(), ConnectorErrorKind::Transient);
+            assert_eq!(asked.load(Ordering::SeqCst), 2);
+            return;
+        }
+        codes.push(error.code().map(str::to_owned));
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("no start ran out of time: {codes:?}");
 }

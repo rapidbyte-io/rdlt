@@ -23,7 +23,9 @@ use crate::local::Witness;
 use crate::local::process::{Launch, Process, Unspawned};
 use crate::network::Dial;
 use crate::provider::{ConnectorRef, ProviderError, accepts};
-use crate::remote::{CONNECTOR_LOST, Connection, Options, RemoteDestination, RemoteSource};
+use crate::remote::{
+    CONNECTOR_LOST, Connection, Options, RemoteDestination, RemoteSource, exceeded,
+};
 use crate::secrets::{Config, Redactions, SecretError, SecretResolver};
 use rdlt_connector::wire::v1;
 
@@ -326,8 +328,8 @@ async fn begin(
 }
 
 /// Handshakes over `io`, and once `admit` accepts the connector's spec resolves the secrets
-/// of its configuration and configures it: a connector other than was placed is sent no
-/// configuration, and no secret is resolved for it.
+/// of its configuration within the connect deadline and configures it: a connector other than
+/// was placed is sent no configuration, and no secret is resolved for it.
 async fn configured<IO>(
     io: IO,
     role: Role,
@@ -345,8 +347,14 @@ where
         .await
         .map_err(scrubbed)?;
     admit(handshaken.spec())?;
+    // A secret store that does not answer may answer the next start: the start fails
+    // retryably at the connect deadline.
+    let deadline = options.deadlines.connect;
     let resolving = configured.config.resolved(&*configured.secrets, redactions);
-    let config_json = resolving.await.map_err(Spawned::Secret)?;
+    let config_json = tokio::time::timeout(deadline, resolving)
+        .await
+        .map_err(|_| Spawned::Connect(exceeded("resolving the configuration's secrets", deadline)))?
+        .map_err(Spawned::Secret)?;
     // The request owns its text, and the transport its bytes: neither is wiped.
     let sent = handshaken.configure_json(config_json.as_str().to_owned());
     sent.await.map_err(scrubbed)

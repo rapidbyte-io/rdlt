@@ -87,9 +87,8 @@ impl Config {
     ) -> Result<Zeroizing<String>, SecretError> {
         let mut document: serde_json::Value =
             serde_json::from_str(&self.json).map_err(|_| SecretError::NotJson)?;
-        let outcome = self.resolve(&mut document, secrets, redactions).await;
-        wipe(&mut document);
-        outcome
+        let wiping = Wiping(&mut document);
+        self.resolve(&mut *wiping.0, secrets, redactions).await
     }
 
     async fn resolve(
@@ -154,6 +153,16 @@ fn wipe(document: &mut serde_json::Value) {
         serde_json::Value::Array(items) => items.iter_mut().for_each(wipe),
         serde_json::Value::Object(fields) => fields.values_mut().for_each(wipe),
         serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {}
+    }
+}
+
+/// A document under resolution, wiped once its resolution ends, however it ends: one dropped
+/// at its deadline holds the secrets resolved before it.
+struct Wiping<'a>(&'a mut serde_json::Value);
+
+impl Drop for Wiping<'_> {
+    fn drop(&mut self) {
+        wipe(self.0);
     }
 }
 
