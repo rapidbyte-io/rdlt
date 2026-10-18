@@ -3,9 +3,9 @@
 //! of its host's ([`inheriting_only`]).
 //!
 //! Rust cannot know that a file descriptor number names an open file nothing else owns, so
-//! turning it into an owned socket is `unsafe`. [`adopt`] establishes both before it owns the
-//! descriptor: it is an open socket; it is not close-on-exec, so this process did not open it, as
-//! the standard library opens everything close-on-exec; and it is taken once per process.
+//! turning it into an owned socket is `unsafe`. [`adopt`] checks what it can before it owns the
+//! descriptor: it is an open socket; it is not close-on-exec, so the standard library, which
+//! opens everything close-on-exec, did not open it here; and it is taken once per process.
 //!
 //! Every other crate of the workspace forbids `unsafe` code. This one holds nothing else, and
 //! allows it only at the places that need it.
@@ -13,9 +13,9 @@
 //! [`adopt`] is a safe function, so that a crate forbidding `unsafe` code can call it, and what
 //! it cannot check is left to its caller: that nothing else in the process owns the descriptor.
 //! A process that made a socket, cleared its close-on-exec flag and kept its owner would have it
-//! owned twice. `rdlt-connector` calls it first thing in a connector's `main`, on the descriptor
-//! its host passed, and is the only crate the workspace's dependency rule lets use it;
-//! `rdlt-host` alone uses [`inheriting_only`].
+//! owned twice. `rdlt-connector` calls it on the descriptor its host passed before any connector
+//! code runs, its factories' construction included, and is the only crate the workspace's
+//! dependency rule lets use it; `rdlt-host` alone uses [`inheriting_only`].
 //!
 //! ```no_run
 //! let socket = rdlt_adopt::adopt(3)?;
@@ -40,16 +40,16 @@ static ADOPTED: AtomicBool = AtomicBool::new(false);
 
 /// Takes ownership of the socket the host passed this process at `fd`.
 ///
-/// Call it first thing in `main`, before anything opens a file: a descriptor the host did not
-/// pass is then closed, and no part of the process can own one it did. Nothing else in the
-/// process may own `fd`: the checks below refuse what this process opened in the usual way, and
-/// cannot see an owner of a descriptor whose close-on-exec flag the process cleared itself.
+/// Call it before any code that could own `fd` runs, as `rdlt-connector`'s `serve` does once
+/// its arguments name the descriptor. Nothing else in the process may own `fd`: the checks below
+/// refuse what this process opened in the usual way, and cannot see an owner of a descriptor
+/// this process holds without close-on-exec, made or duplicated without the flag or cleared of
+/// it.
 ///
 /// # Errors
 ///
-/// When `fd` is a standard stream, is not open, is not a Unix socket, was opened by this process
-/// (it is close-on-exec, as everything the standard library opens is), or a socket was adopted
-/// already.
+/// When `fd` is a standard stream, is not open, is not a Unix socket, is close-on-exec (as
+/// everything the standard library opens is), or a socket was adopted already.
 /// The socket returned is a close-on-exec duplicate: `fd` itself is closed.
 pub fn adopt(fd: RawFd) -> io::Result<UnixStream> {
     if fd <= 2 {
@@ -136,7 +136,7 @@ fn close_on_exec(fd: RawFd) -> io::Result<bool> {
 )]
 fn own(fd: RawFd) -> OwnedFd {
     // SAFETY: `adopt` checked that `fd` is open and not a standard stream, which the standard
-    // library owns; it adopts once per process, and is called before the process opens anything,
-    // so nothing else in the process owns `fd`.
+    // library owns; it adopts once per process, and its caller holds no other owner of `fd`
+    // (ADR 0048's ruling), so nothing else in the process owns it.
     unsafe { OwnedFd::from_raw_fd(fd) }
 }

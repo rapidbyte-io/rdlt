@@ -36,10 +36,12 @@ only at its end. The owner also asked for the host to be simulated over a networ
     two end the connector, and nothing ends what the connector started and left in its group.
   - The `#[source]` and `#[destination]` attributes implement `Serve` for the connector, so the
     binary names only its type. A binary serving two types, or a type with both roles, uses
-    `serve::Served::serve()`.
+    `serve::Served::serve`, given a closure that builds the roles it serves.
 - **The workspace's `unsafe` code is one audited crate, `rdlt-adopt`** (§20.14; ADR 0048).
-  - `serve::<C>()` turns file descriptor 3 into an owned socket through `rdlt_adopt::adopt`,
-    which needs `OwnedFd::from_raw_fd` and makes it sound:
+  - `serve::<C>()`, before it builds the connector's factory, turns file descriptor 3 into an
+    owned socket through `rdlt_adopt::adopt`, which needs `OwnedFd::from_raw_fd` and checks what
+    it can, leaving to its caller that nothing else in the process owns the descriptor (ADR
+    0048's ruling):
     - it refuses the standard streams, which the standard library owns;
     - it checks that the descriptor is an open socket;
     - it refuses a close-on-exec descriptor. The standard library opens everything
