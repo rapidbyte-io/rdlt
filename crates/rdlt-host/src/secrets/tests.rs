@@ -321,12 +321,50 @@ fn redactions_replace_every_secret_the_longest_first_and_show_none() {
 
 #[test]
 fn a_secret_that_holds_the_mask_is_not_made_again_by_its_own_replacement() {
+    use super::redact::{STEPS, WITHHELD};
     let redactions = Redactions::new();
     redactions.add("a***b");
-    for depth in 1..=5 {
+    // Each step takes one depth away, and the last finds nothing.
+    for depth in 1..=STEPS + 1 {
         let said = format!("<{}***{}>", "a".repeat(depth), "b".repeat(depth));
-        assert_eq!(redactions.scrubbed(said.clone()), "<***>", "{said}");
+        let scrubbed = if depth < STEPS { "<***>" } else { WITHHELD };
+        assert_eq!(redactions.scrubbed(said.clone()), scrubbed, "{said}");
     }
+}
+
+#[test]
+fn a_replacement_at_a_cut_that_leaves_the_start_of_another_secret_is_replaced_in_turn() {
+    use rdlt_connector::text::CUT;
+    let redactions = Redactions::new();
+    for secret in ["xfoo", "ab***c"] {
+        redactions.add(secret);
+    }
+    // `x` is the start of `xfoo`, and its `***` makes `ab***`, the start of `ab***c`.
+    assert_eq!(
+        redactions.scrubbed(format!("<abx{CUT}")),
+        format!("<***{CUT}")
+    );
+    // `o` is the end of `xfoo`, and its `***` makes `***c`, the end of `ab***c`.
+    let dropped = redactions.scrubbed_end("oc>".to_owned(), true);
+    assert_eq!(dropped, "***>");
+}
+
+#[test]
+fn a_text_that_a_few_steps_do_not_scrub_is_withheld_whole() {
+    use super::redact::{STEPS, WITHHELD};
+    let redactions = Redactions::new();
+    for secret in ["a*", "b"] {
+        redactions.add(secret);
+    }
+    // `b` becomes `***`, and then each step makes one more `a*` of the `a` before it.
+    let said = |many: usize| format!("{}b", "a".repeat(many));
+    let all = "*".repeat(2 * STEPS - 1);
+    assert_eq!(redactions.scrubbed(said(STEPS - 2)), all);
+    assert_eq!(redactions.scrubbed(said(STEPS - 1)), WITHHELD);
+    assert_eq!(redactions.scrubbed(said(10_000)), WITHHELD);
+    // What a cut was made to keep is withheld too.
+    let marked = redactions.scrubbed_end(said(10_000), true);
+    assert_eq!(marked, WITHHELD);
 }
 
 #[test]
@@ -385,7 +423,8 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(rdlt_testkit::cases(256)))]
 
     /// However a text is made of the pieces of secrets that hold the mask's `*`, the mask
-    /// and the marks of a cut, no secret is left in it once it is scrubbed.
+    /// and the marks of a cut, no secret, and no part of one at a mark of a cut, is left in it
+    /// once it is scrubbed, or it is withheld whole.
     #[test]
     fn a_scrubbed_text_holds_no_secret(
         secrets in prop::collection::vec(
@@ -394,9 +433,10 @@ proptest! {
             }),
             1..4,
         ),
-        picks in prop::collection::vec(any::<prop::sample::Index>(), 0..12),
+        picks in prop::collection::vec((any::<prop::sample::Index>(), 0..4_u8), 0..12),
         dropped in any::<bool>(),
     ) {
+        use super::redact::maskable;
         use rdlt_connector::text::CUT;
         let mut pieces: Vec<&str> = vec!["***", "*", "a", "b", "x", CUT, super::DROPPED];
         for secret in &secrets {
@@ -404,17 +444,36 @@ proptest! {
                 pieces.extend([&secret[..at], &secret[at..]]);
             }
         }
-        let text: String = picks.iter().map(|pick| *pick.get(&pieces)).collect();
+        // A piece is followed by a mark of a cut half the time.
+        let marks = [CUT, super::DROPPED, "", ""];
+        let text: String = picks
+            .iter()
+            .flat_map(|(pick, mark)| [*pick.get(&pieces), marks[usize::from(*mark)]])
+            .collect();
         let redactions = Redactions::new();
         for secret in &secrets {
             redactions.add(secret);
         }
         let scrubbed = redactions.scrubbed_end(text.clone(), dropped);
-        for secret in &secrets {
-            prop_assert!(
-                !scrubbed.contains(secret.as_str()),
-                "{secret:?} in {scrubbed:?} from {text:?}"
-            );
+        if scrubbed != super::redact::WITHHELD {
+            let marked = if dropped { format!("{}{scrubbed}", super::DROPPED) } else { scrubbed };
+            for secret in &secrets {
+                prop_assert!(
+                    !marked.contains(secret.as_str()),
+                    "{secret:?} in {marked:?} from {text:?}"
+                );
+                for at in 1..secret.len() {
+                    let (start, end) = secret.split_at(at);
+                    let cut = format!("{start}{CUT}");
+                    let begun = format!("{}{end}", super::DROPPED);
+                    for part in [(start, &cut), (end, &begun)] {
+                        prop_assert!(
+                            !maskable(part.0) || !marked.contains(part.1.as_str()),
+                            "{:?} at a cut in {marked:?} from {text:?}", part.0
+                        );
+                    }
+                }
+            }
         }
     }
 }
