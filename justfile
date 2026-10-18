@@ -198,6 +198,34 @@ fuzz target seconds="60":
     rustup toolchain install {{ nightly }} --profile minimal
     cargo +{{ nightly }} fuzz run {{ target }} --target "$(rustc -vV | sed -n 's/host: //p')" -- -max_total_time={{ seconds }}
 
+# Prove the Kani harnesses of `crate`, or of every crate that holds any, with Kani's release
+# bundle as mise.lock holds it: rustup installs the nightly the bundle was built with, a link in
+# the bundle names it, and its driver runs as `cargo kani` would run it; Linux x64 and macOS arm64
+kani crate="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bundle=$(mise where github:model-checking/kani)
+    toolchain=$(cat "$bundle/rust-toolchain-version")
+    rustup toolchain install "$toolchain" --profile minimal
+    ln -sfn "$(rustc +"$toolchain" --print sysroot)" "$bundle/toolchain"
+    if [[ "$("$bundle/toolchain/bin/rustc" --version)" != "$(cat "$bundle/rustc-version")" ]]; then
+        echo "$toolchain is not the rustc Kani was built with: $(cat "$bundle/rustc-version")" >&2
+        exit 2
+    fi
+    crates="{{ crate }}"
+    [[ -n $crates ]] || crates=$(just --quiet proving)
+    [[ -n $crates ]] || { echo "no crate holds a Kani harness" >&2; exit 2; }
+    for crate in $crates; do
+        RUSTUP_TOOLCHAIN="$toolchain" PATH="$bundle/bin:$PATH" bash -c 'exec -a cargo-kani "$0" "$@"' "$bundle/bin/kani-driver" --package "$crate" --output-format terse
+    done
+
+# The crates that hold Kani harnesses: those with a module only Kani compiles
+[private]
+proving:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    grep -rlE --include='*.rs' '^[[:space:]]*#\[cfg\(kani\)\]$' crates | cut -d/ -f2 | sort -u
+
 # Build a bench for profiling, for example `just profiling shred`: release's code with line
 # tables and frame pointers, in a target directory of its own so the flags never rebuild the
 # shared one; cargo prints the binary's path last

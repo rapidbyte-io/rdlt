@@ -1,13 +1,15 @@
 test_tool = "nextest"
 profile = "mutants"
 # The stores' shared contract tests are tests, run against each store, not code under test; so
-# are the probes' tests, built only without the `certify` feature, which a mutant's never lacks.
+# are the probes' tests, built only without the `certify` feature, which a mutant's never lacks;
+# and Kani's proofs, which only Kani compiles, never a mutant's tests.
 exclude_globs = [
   "xtask/**",
   "crates/rdlt-sim/**",
   "crates/rdlt-wire/src/generated/**",
   "crates/rdlt-engine/src/conformance.rs",
   "crates/rdlt-connector/src/serve/probes/tests.rs",
+  "crates/*/src/**/proofs.rs",
 ]
 all_features = true
 # Whether the kernel marks a range of descriptors at once is true on every kernel of 5.11 or later,
