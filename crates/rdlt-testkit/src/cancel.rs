@@ -32,7 +32,7 @@ pub const POINTS: usize = 256;
 const RUN: Duration = Duration::from_mins(60);
 
 /// How a run of an operation ended.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Ended<T> {
     /// It returned this.
     Returned(T),
