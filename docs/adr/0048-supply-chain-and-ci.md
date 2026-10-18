@@ -102,6 +102,11 @@ This record decides what holds each statement, and says where a check ends.
     under callgrind, not from gungraun: gungraun counts only the benchmark function's thread
     unless the code calls valgrind's client requests, through a crate built with bindgen and
     libclang, and its runner would be one more locked tool held to the library's version.
+  - Kani's frontend is the other exception. Kani's release bundle is locked like any tool and
+    holds its driver, compiler and solvers; `cargo-kani`, which installs a bundle, is built from
+    crates.io alone. `just kani` does its setup instead: rustup installs the nightly the bundle
+    names, as it installs the repository's own toolchains, held to the bundle's `rustc-version`,
+    and a link in the bundle's install names that toolchain (ADR 0052).
 - **AWS-LC is built from its locked source, with the C compiler alone.**
   - aws-lc-rs, rustls's provider (ADR 0018), links AWS-LC, which `aws-lc-sys` compiles from the
     C and assembly its crate ships, with `cc`, against bindings it ships for Linux and macOS. Off

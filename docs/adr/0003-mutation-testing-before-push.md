@@ -11,9 +11,9 @@ redundant run of the same check on a CI runner.
 
 ## Decision
 
-- Contributors run `just ready` before pushing: lint, tests and `just mutants-diff`, which tests
-  the mutants in the branch's changes against `origin/main`, uncommitted changes included. No
-  mutant may survive.
+- Contributors run `just ready` before pushing: lint, tests, the formal checks of the change
+  (`just formal-diff`, ADR 0052) and `just mutants-diff`, which tests the mutants in the branch's
+  changes against `origin/main`, uncommitted changes included. No mutant may survive.
 - `just mutants-diff` tests each changed crate's mutants against the packages whose tests can
   catch them: the crate's own and those that drive it, as the recipe's `catching` lists them.
 - The pull-request workflow has no `mutants` job, and `mutants` is not a required check on
