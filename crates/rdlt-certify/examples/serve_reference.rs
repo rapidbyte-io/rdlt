@@ -11,8 +11,9 @@ use rdlt_connector::{readable_destination_factory, source_factory};
 use rdlt_connector_reference::{MemorySource, SqliteDestination};
 
 fn main() -> ExitCode {
-    Served::new()
-        .with_source(source_factory::<MemorySource>())
-        .with_destination(readable_destination_factory::<SqliteDestination>())
-        .serve()
+    Served::serve(|| {
+        Served::new()
+            .with_source(source_factory::<MemorySource>())
+            .with_destination(readable_destination_factory::<SqliteDestination>())
+    })
 }

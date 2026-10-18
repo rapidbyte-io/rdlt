@@ -28,10 +28,11 @@ pub(crate) fn asked() -> bool {
 pub(crate) fn serve() -> ExitCode {
     // Before the runtime starts, so its workers are as many as the connectors' cores.
     pin();
-    Served::new()
-        .with_source(Box::new(Generating(replay_factory())))
-        .with_destination(sink_factory())
-        .serve()
+    Served::serve(|| {
+        Served::new()
+            .with_source(Box::new(Generating(replay_factory())))
+            .with_destination(sink_factory())
+    })
 }
 
 /// Holds this process to the CPUs [`CORES`] names, where it names any.

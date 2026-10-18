@@ -7,5 +7,5 @@ use std::process::ExitCode;
 use rdlt_connector::serve::Served;
 
 fn main() -> ExitCode {
-    Served::new().serve()
+    Served::serve(Served::new)
 }

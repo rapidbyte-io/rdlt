@@ -28,6 +28,8 @@ impl DestinationFactory for Hang {
 }
 
 fn main() -> ExitCode {
-    let hang = Hang(destination_factory::<MemoryDestination>());
-    Served::new().with_destination(Box::new(hang)).serve()
+    Served::serve(|| {
+        let hang = Hang(destination_factory::<MemoryDestination>());
+        Served::new().with_destination(Box::new(hang))
+    })
 }

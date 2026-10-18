@@ -48,6 +48,10 @@ struct Script {
     /// 3 open, and no other descriptor.
     #[serde(default)]
     only_its_descriptors: bool,
+    /// Whether its check fails unless its host's socket, passed at descriptor 3, was taken
+    /// before its factory was built.
+    #[serde(default)]
+    adopted_first: bool,
     /// Its whole environment, when its check requires it to be exactly this.
     whole_env: Option<BTreeMap<String, String>>,
     /// Paths its check requires not to exist for it.
@@ -100,6 +104,13 @@ fn saying(said: &serde_json::Value) -> ConnectorError {
 /// The descriptors that were open as the connector started, before it opened any.
 static STARTED_WITH: std::sync::OnceLock<Vec<i32>> = std::sync::OnceLock::new();
 
+/// Whether descriptor 3, where its host passes its socket, was open as its factory was built.
+static BUILT_WITH_FD_3_OPEN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// The variable naming a file the connector creates as its factory is built, for a test that
+/// it is built only once its socket is taken.
+const FACTORY_MARKER: &str = "RDLT_SCRIPTED_FACTORY_MARKER";
+
 /// The descriptors open now, but what lists them.
 fn open_descriptors() -> Vec<i32> {
     // The listing names any number, however high; each, and every low number besides, is asked
@@ -127,6 +138,9 @@ impl Script {
     /// Checks what the connector can see and reach of its host, as the script requires.
     fn confined(&self) -> std::result::Result<(), String> {
         let started_with = STARTED_WITH.get().cloned().unwrap_or_default();
+        if self.adopted_first && BUILT_WITH_FD_3_OPEN.get() != Some(&false) {
+            return Err("its factory was built before its socket was taken".to_owned());
+        }
         if self.only_its_descriptors && started_with != [0, 1, 2, 3] {
             return Err(format!("started with descriptors {started_with:?}"));
         }
@@ -350,6 +364,20 @@ fn exit_on_sigterm() {
     ready.recv().ok();
 }
 
+/// The scripted connector, served by its type, noting what its process holds as its factory is
+/// built.
+struct Probed;
+
+impl rdlt_connector::Serve for Probed {
+    fn factory() -> rdlt_connector::RoleFactory {
+        BUILT_WITH_FD_3_OPEN.set(rdlt_adopt::is_open(3)).ok();
+        if let Some(marker) = std::env::var_os(FACTORY_MARKER) {
+            std::fs::write(marker, "built").ok();
+        }
+        <Scripted as rdlt_connector::Serve>::factory()
+    }
+}
+
 /// The argument that has the connector print its environment, one `NAME=value` a line, and
 /// exit: what it holds when started with none, beyond what was given it, is its own doing.
 const OWN_ENV: &str = "--own-env";
@@ -364,7 +392,7 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     STARTED_WITH.set(open_descriptors()).ok();
-    let served = rdlt_connector::serve::<Scripted>();
+    let served = rdlt_connector::serve::<Probed>();
     if LINGER.get().is_some() {
         loop {
             std::thread::sleep(std::time::Duration::from_secs(3600));

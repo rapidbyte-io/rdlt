@@ -10,8 +10,9 @@ use rdlt_connector::{destination_factory, source_factory};
 use rdlt_connector_reference::{MemoryDestination, MemorySource};
 
 fn main() -> ExitCode {
-    Served::new()
-        .with_source(source_factory::<MemorySource>())
-        .with_destination(destination_factory::<MemoryDestination>())
-        .serve()
+    Served::serve(|| {
+        Served::new()
+            .with_source(source_factory::<MemorySource>())
+            .with_destination(destination_factory::<MemoryDestination>())
+    })
 }
