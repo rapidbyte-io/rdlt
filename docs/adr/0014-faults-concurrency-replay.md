@@ -75,10 +75,13 @@ The owner chose to keep all of this in one milestone.
   also tested by `rdlt_testkit::cancel::at_every_point`: the partition sink and the emitter, the
   remote writer, and the data plane's reader with its bounded body. The harness runs an operation
   to its end, then once for each time it waits, dropping it there. Each run builds afresh on a
-  current-thread runtime of its own, its clock paused, so run *n* waits as the first did up to its
-  *n*th wait. After each run a check calls the object again and asserts its model. An operation
-  that never waits, waits more than 256 times or waits otherwise when run again fails its test,
-  and so does a run longer than an hour of the paused clock. The project writes the harness
+  current-thread runtime of its own, its clock paused, so where the operation and its peers wait
+  alike on every run (every `select!` biased, no tokio `watch` with several waiters), run *n*
+  waits as the first did up to its *n*th wait. After each run a check calls the object again and
+  asserts its model. An operation that never waits, waits more than 256 times or returns before
+  the wait it is cut at when run again fails its test, and so does a run longer than an hour of
+  the paused clock. A run that waits elsewhere as often, and a panic in a task the operation
+  spawns, go unseen: a spawned fake reports its own failures. The project writes the harness
   rather than taking a crate: `tokio-test` polls a future by hand with no runtime to run the
   object's peers between polls, and `futures-test` adds spurious waits but never drops a future.
 - **Seeds side by side.** Every simulation test runs its seeds through `for_each_seed`: each seed
