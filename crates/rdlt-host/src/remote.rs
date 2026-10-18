@@ -497,9 +497,9 @@ async fn heartbeat(
                     break;
                 }
                 sent += 1;
-                if beats.send(v1::Ping { seq: sent }).await.is_err() {
-                    break;
-                }
+                // A beat its queue has no room for is missed: the heartbeat never waits on its
+                // transport. A call that ended is seen as its echoes end.
+                beats.try_send(v1::Ping { seq: sent }).ok();
             }
         }
     }
