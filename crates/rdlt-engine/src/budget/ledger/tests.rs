@@ -4,7 +4,7 @@ use parking_lot::Mutex;
 use proptest::prelude::*;
 use tokio::sync::oneshot;
 
-use super::super::Reservation;
+use super::super::{Lent, Reservation};
 use super::{Class, Ledger, Shares, WAITING, admit_waiting};
 
 /// A budget whose shares are round, as `budget/tests.rs` describes it.
@@ -15,7 +15,7 @@ const ASKED: [Class; 4] = [Class::Intake, Class::Work, Class::Cursor, Class::Tab
 
 #[derive(Clone, Debug)]
 enum Step {
-    /// A request of `ASKED[class]` for `percent` of what one of its class may take.
+    /// A request of the class at `class` for `percent` of what one of its class may take.
     Ask(usize, u64),
     /// A held reservation released, or a queued request given up, at `place` modulo their count.
     Let(usize),
@@ -23,9 +23,10 @@ enum Step {
     Press(bool),
 }
 
-fn step() -> impl Strategy<Value = Step> {
+/// Steps that ask in one of `classes` classes.
+fn step(classes: usize) -> impl Strategy<Value = Step> {
     prop_oneof![
-        (0..ASKED.len(), 1_u64..=100).prop_map(|(class, percent)| Step::Ask(class, percent)),
+        (0..classes, 1_u64..=100).prop_map(|(class, percent)| Step::Ask(class, percent)),
         (0_usize..64).prop_map(Step::Let),
         any::<bool>().prop_map(Step::Press),
     ]
@@ -48,7 +49,7 @@ proptest! {
     /// Each change of what the ledger says is sent once, and every receiver holds what it says.
     #[test]
     fn the_ledger_sends_each_change_of_what_it_says_once(
-        steps in proptest::collection::vec(step(), 1..64),
+        steps in proptest::collection::vec(step(ASKED.len()), 1..64),
     ) {
         let shared = Arc::new(Mutex::new(Ledger::new(BUDGET)));
         let mut held: Vec<Reservation> = Vec::new();
@@ -198,7 +199,7 @@ proptest! {
     /// the budget, and leave nothing reserved once every reservation is dropped.
     #[test]
     fn every_share_stays_within_it_and_letting_all_go_returns_to_none(
-        steps in proptest::collection::vec(step(), 1..64),
+        steps in proptest::collection::vec(step(CLASSES.len()), 1..64),
     ) {
         let shared = Arc::new(Mutex::new(Ledger::new(BUDGET)));
         let mut held: Vec<Reservation> = Vec::new();
@@ -206,7 +207,7 @@ proptest! {
         for step in steps {
             match step {
                 Step::Ask(class, percent) => {
-                    let class = ASKED[class];
+                    let class = CLASSES[class];
                     let mut ledger = shared.lock();
                     let limit = ledger
                         .too_large(class, u64::MAX)
@@ -224,6 +225,9 @@ proptest! {
                     let mut reservation = held.swap_remove(place % held.len());
                     if place % 3 == 0 {
                         held.push(reservation.split(reservation.bytes() / 2));
+                    }
+                    if place % 5 == 0 {
+                        reservation.shrink(reservation.bytes() / 3);
                     }
                     drop(reservation);
                 }
@@ -328,5 +332,99 @@ proptest! {
                 prop_assert!(!admitted[later] || !alive || !same || admitted[earlier]);
             }
         }
+    }
+}
+
+/// One change to a lent reservation and the parts taken from it.
+#[derive(Clone, Debug)]
+enum Lend {
+    /// A part of `permille` thousandths of what is lent.
+    Take(u64),
+    /// The part at `place` modulo their count shrinks to `permille` thousandths of its bytes.
+    Shrink(usize, u64),
+    /// The part at `place` modulo their count is split at `permille` thousandths of its bytes.
+    Split(usize, u64),
+    /// The part at `place` modulo their count goes back.
+    Drop(usize),
+    /// The lent reservation lends no more.
+    Close,
+}
+
+fn lend() -> impl Strategy<Value = Lend> {
+    prop_oneof![
+        (0_u64..=1000).prop_map(Lend::Take),
+        (0_usize..8, 0_u64..=1000).prop_map(|(place, permille)| Lend::Shrink(place, permille)),
+        (0_usize..8, 0_u64..=1000).prop_map(|(place, permille)| Lend::Split(place, permille)),
+        (0_usize..8).prop_map(Lend::Drop),
+        Just(Lend::Close),
+    ]
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(rdlt_testkit::cases(256)))]
+
+    /// A lent reservation keeps all its bytes reserved until it is closed, then only what its
+    /// parts hold, whichever order parts are taken, shrunk, split, released and the lending
+    /// closed in; once all are gone nothing is reserved.
+    #[test]
+    fn a_lent_reservation_gives_back_all_it_held_whichever_order(
+        class in 0..CLASSES.len(),
+        permille in 1_u64..=1000,
+        steps in proptest::collection::vec(lend(), 0..24),
+    ) {
+        let shared = Arc::new(Mutex::new(Ledger::new(BUDGET)));
+        let class = CLASSES[class];
+        let lent: Lent = {
+            let mut ledger = shared.lock();
+            let limit = ledger
+                .too_large(class, u64::MAX)
+                .map_or(u64::MAX, |refused| refused.limit);
+            let bytes = part(limit, permille).max(1);
+            prop_assert!(ledger.open(class, bytes));
+            ledger.reserve(class, bytes);
+            drop(ledger);
+            Reservation::of(&shared, class, bytes).lend()
+        };
+        let mut parts: Vec<Reservation> = Vec::new();
+        let mut closed = false;
+        for step in steps {
+            match step {
+                Lend::Take(permille) => {
+                    if let Some(taken) = lent.try_take(part(lent.bytes(), permille)) {
+                        parts.push(taken);
+                    }
+                }
+                Lend::Shrink(place, permille) if !parts.is_empty() => {
+                    let place = place % parts.len();
+                    let bytes = part(parts[place].bytes(), permille);
+                    parts[place].shrink(bytes);
+                }
+                Lend::Split(place, permille) if !parts.is_empty() => {
+                    let place = place % parts.len();
+                    let bytes = part(parts[place].bytes(), permille);
+                    let split = parts[place].split(bytes);
+                    parts.push(split);
+                }
+                Lend::Drop(place) if !parts.is_empty() => {
+                    let place = place % parts.len();
+                    drop(parts.swap_remove(place));
+                }
+                Lend::Close => {
+                    lent.close();
+                    closed = true;
+                }
+                Lend::Shrink(..) | Lend::Split(..) | Lend::Drop(_) => {}
+            }
+            let holding: u128 = parts.iter().map(|part| u128::from(part.bytes())).sum();
+            let reserved = u128::from(shared.lock().reserved());
+            if closed {
+                prop_assert_eq!(reserved, holding);
+            } else {
+                prop_assert_eq!(reserved, u128::from(lent.bytes()));
+            }
+        }
+        drop(parts);
+        drop(lent);
+        prop_assert_eq!(shared.lock().reserved(), 0);
     }
 }
