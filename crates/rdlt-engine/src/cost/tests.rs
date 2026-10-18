@@ -5,6 +5,8 @@ mod lowering;
 mod prepared;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::time::Duration;
 
 use arrow_array::builder::BinaryViewBuilder;
 use arrow_array::types::{
@@ -33,23 +35,27 @@ use crate::table::convert::{convert, decoded, json, normalize, text};
 #[global_allocator]
 pub(crate) static HEAP: peak_alloc::PeakAlloc = peak_alloc::PeakAlloc;
 
-/// What `run` allocates at its peak beyond what the heap held as it began, in a window no other
-/// thread allocated in: the test harness's thread allocates beside a test as the test starts.
+/// What `run` allocates at its peak beyond what the heap held as it began, the least over
+/// eight windows: the heap's peak is the process's, and another thread's allocations land in
+/// some windows, while `run`'s own are in every one.
 ///
 /// `run` leaves the heap as it found it, what it returns included, so a window that ends with
-/// the heap holding more or less than it began with is one another allocation reached, and `run`
-/// is measured again.
+/// the heap holding more or less than it began with is one another allocation reached, and is
+/// not counted.
 pub(crate) fn peak_alone<T>(mut run: impl FnMut() -> T) -> (u64, T) {
+    let mut least: Option<(usize, T)> = None;
     for _ in 0..8 {
         HEAP.reset_peak_usage();
         let before = HEAP.current_usage();
         let out = run();
         let peak = HEAP.peak_usage() - before;
-        if HEAP.current_usage() == before {
-            return (u64::try_from(peak).unwrap(), out);
+        let alone = HEAP.current_usage() == before;
+        if alone && least.as_ref().is_none_or(|(low, _)| peak < *low) {
+            least = Some((peak, out));
         }
     }
-    panic!("every window ended with the heap holding other than it began with");
+    let (peak, out) = least.expect("a window ended with the heap holding what it began with");
+    (u64::try_from(peak).unwrap(), out)
 }
 
 #[test]
@@ -63,6 +69,58 @@ fn a_peak_is_measured_in_a_window_that_ends_with_the_heap_as_it_began() {
         }
         drop(std::hint::black_box(vec![0_u8; 1_000]));
     });
+    assert_eq!(peak, 1_000);
+}
+
+/// Parks the calling thread until `flag` holds `state`, for ten seconds at most.
+fn parked_until(flag: &AtomicU8, state: u8) {
+    for _ in 0..1_000 {
+        if flag.load(Ordering::SeqCst) == state {
+            return;
+        }
+        std::thread::park_timeout(Duration::from_millis(10));
+    }
+    panic!("the other thread reached state {state} within ten seconds");
+}
+
+#[test]
+fn a_block_another_thread_allocates_and_frees_in_one_window_is_not_measured() {
+    let flag = Arc::new(AtomicU8::new(0));
+    let measuring = std::thread::current();
+    let beside = {
+        let flag = Arc::clone(&flag);
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the disturbance comes from a thread that is not the measured one"
+        )]
+        std::thread::spawn(move || {
+            // A thread frees what it was started with as it starts and as it ends, so this one
+            // starts before the windows and ends after them.
+            flag.store(1, Ordering::SeqCst);
+            measuring.unpark();
+            parked_until(&flag, 2);
+            drop(std::hint::black_box(vec![0_u8; 1 << 16]));
+            flag.store(3, Ordering::SeqCst);
+            measuring.unpark();
+            parked_until(&flag, 4);
+        })
+    };
+    let other = beside.thread().clone();
+    parked_until(&flag, 1);
+    let mut first = true;
+    let (peak, ()) = peak_alone(|| {
+        // The other thread allocates and frees its block in the first window only.
+        if first {
+            first = false;
+            flag.store(2, Ordering::SeqCst);
+            other.unpark();
+            parked_until(&flag, 3);
+        }
+        drop(std::hint::black_box(vec![0_u8; 1_000]));
+    });
+    flag.store(4, Ordering::SeqCst);
+    other.unpark();
+    beside.join().unwrap();
     assert_eq!(peak, 1_000);
 }
 
@@ -462,7 +520,7 @@ fn charging(capacity: u64, reads: usize) -> (MemoryBudget, Charging) {
     (budget, admission)
 }
 
-const WAIT: std::time::Duration = std::time::Duration::from_secs(3600);
+const WAIT: Duration = Duration::from_secs(3600);
 
 fn pushed_json(bytes: usize) -> SourceEvent {
     SourceEvent::Push(Push::Json(bytes::Bytes::from(vec![b' '; bytes])))
@@ -628,10 +686,7 @@ async fn sixteen_reads_keeping_all_they_may_leave_pushes_and_checkpoints_flowing
         admitted.push(read.admit(&checkpoint(256 << 10)).await.unwrap());
         admitted.push(read.admit(&pushed_json(1 << 20)).await.unwrap());
     }
-    assert_eq!(
-        clock().instant().duration_since(started),
-        std::time::Duration::ZERO
-    );
+    assert_eq!(clock().instant().duration_since(started), Duration::ZERO);
     assert!(budget.peak() <= 256 << 20);
     drop((admitted, kept));
     assert_eq!(budget.reserved(), 0);
