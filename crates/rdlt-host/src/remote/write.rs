@@ -21,7 +21,7 @@ use tokio::time::Instant;
 use tokio_stream::wrappers::ReceiverStream;
 
 use super::destination::out_of_turn;
-use super::{Connection, lost_error};
+use super::{Connection, exceeded, lost_error};
 
 /// A writer for one table of a session on a destination served on the other end of a connection.
 pub(super) struct RemoteWriter {
@@ -106,7 +106,12 @@ impl RemoteWriter {
             Ok(Ok(Some(ack))) => ack.ack,
             Ok(Ok(None)) => return Err(out_of_turn("the end of the write")),
             Ok(Err(status)) => return Err(rdlt_connector::wire::error(&status)),
-            Err(_) => return Err(late(self.connection.options.deadlines.write_ack)),
+            Err(_) => {
+                return Err(exceeded(
+                    "an answer to a write",
+                    self.connection.options.deadlines.write_ack,
+                ));
+            }
         };
         match message {
             Some(v1::write_ack::Ack::Error(error)) => Err(ConnectorError::try_from(error)
@@ -166,7 +171,7 @@ impl RemoteWriter {
                     permit.send(frame);
                     return Ok(());
                 }
-                Err(_) => return Err(late(deadline)),
+                Err(_) => return Err(exceeded("an answer to a write", deadline)),
                 Ok(Err(_)) => {}
             },
         }
@@ -292,13 +297,4 @@ impl DestinationWriter for RemoteWriter {
     fn flush(&mut self) -> BoxFuture<'_, rdlt_connector::Result<WriteStats>> {
         Box::pin(self.flush_all())
     }
-}
-
-/// The error of an answer to a write that took longer than `deadline`.
-fn late(deadline: std::time::Duration) -> ConnectorError {
-    ConnectorError::new(
-        rdlt_connector::ConnectorErrorKind::Transient,
-        format!("an answer to a write took longer than its deadline of {deadline:?}"),
-    )
-    .with_code(super::DEADLINE_EXCEEDED)
 }
