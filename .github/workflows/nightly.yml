@@ -226,6 +226,52 @@ jobs:
           cache_key_prefix: mise-v2-fuzz
       - run: just fuzz ${{ matrix.target }} 1200
 
+  # Every Kani proof of every crate that holds any.
+  kani:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        timeout-minutes: 5
+        with:
+          version: ${{ env.SETUP_MISE_VERSION }}
+          sha256: ${{ runner.os == 'macOS' && env.SETUP_MISE_SHA256_MACOS || env.SETUP_MISE_SHA256_LINUX }}
+          github_token: ""
+          install_args: --locked just github:model-checking/kani
+          cache_key_prefix: mise-v2-kani
+      - run: just kani
+
+  # Every spec's invariants by Apalache over every run of up to ten steps, and its invariants and
+  # temporal properties by TLC over every state it reaches.
+  quint-verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        timeout-minutes: 5
+        with:
+          version: ${{ env.SETUP_MISE_VERSION }}
+          sha256: ${{ runner.os == 'macOS' && env.SETUP_MISE_SHA256_MACOS || env.SETUP_MISE_SHA256_LINUX }}
+          github_token: ""
+          install_args: --locked just java github:quint-co/quint github:apalache-mc/apalache
+          cache_key_prefix: mise-v2-quint
+      # Everything is installed: from here Quint can fetch nothing, so a distribution of its own
+      # cannot be what it ran.
+      - name: Block GitHub's release hosts
+        run: |
+          printf '0.0.0.0 %s\n' github.com api.github.com objects.githubusercontent.com release-assets.githubusercontent.com | sudo tee -a /etc/hosts
+          if curl -sS --max-time 10 -o /dev/null https://github.com; then
+            echo "github.com is still reachable" >&2
+            exit 1
+          fi
+      - run: just quint-verify
+
   # The full mutation pass: every crate's mutants against the tests of every package that links
   # the crate, its own first. On CI's runners a mutant takes about half a minute, so the whole
   # pass, some sixty runner-hours, runs over four nights: each crate's mutants are cut into
