@@ -16,7 +16,8 @@ use crate::factory::{RoleFactory, Serve};
 /// Serves `C` as a whole binary's `main` does: `fn main() -> ExitCode { serve::<C>() }`.
 ///
 /// Spawned by its host, with `--rdlt-fd`, it takes the socket the host passed before it builds
-/// `C`'s factory, so no connector code runs first, and serves it until the host closes it. It
+/// `C`'s factory, and serves it until the host closes it. Code a binary runs before it calls
+/// `serve` stays responsible for owning no descriptor that socket's number names. It
 /// shuts down gracefully once its standard input ends or it receives `SIGTERM`. The host manages
 /// it, so it ignores `SIGINT`: a terminal's Ctrl-C reaches the host, which stops its connectors
 /// itself.
