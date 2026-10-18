@@ -92,9 +92,9 @@ The owner chose to keep all of this in one milestone.
   panics. The simulation's tests therefore run under nextest, one process a test; `cargo test`,
   which runs a binary's tests on threads of one process, would put two tests that check one seed
   side by side.
-- **The simulation's own coverage.** `just sim-coverage` measures the engine, connector and host
-  code the simulation alone reaches over 1 000 seeds, leaving out test code and what the
-  simulation never runs, and the nightly workflow holds it to the floor ADR 0019 states.
+- **The simulation's own coverage.** `just sim-coverage` measures the engine, connector, host and
+  data-plane code the simulation alone reaches over 1 000 seeds, leaving out test code and what
+  the simulation never runs, and the nightly workflow holds it to the floor ADR 0019 states.
 - **Found and fixed in the engine.**
   - A connector that panicked while an attempt opened or planned panicked the caller awaiting the
     run: its `open`, its listing of partitions, or its applying of a declared schema all run on
