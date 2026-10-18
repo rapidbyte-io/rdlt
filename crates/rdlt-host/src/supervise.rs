@@ -370,7 +370,8 @@ async fn spawn(
     admit: &Admit<'_>,
     redactions: &Redactions,
 ) -> Result<Running, Spawned> {
-    let launched = Process::launching(launch.clone(), redactions.clone()).await;
+    let deadline = options.deadlines.connect;
+    let launched = Process::launching(launch.clone(), redactions.clone(), deadline).await;
     let (io, process) = launched.map_err(|unspawned| match *unspawned {
         (_, Unspawned::Io(error)) => Spawned::Io(error),
         (launch, refused) => Spawned::Refused(crate::local::refused(&launch, refused)),

@@ -199,19 +199,40 @@ impl Process {
         })
     }
 
-    /// Spawns `launch`'s binary as [`launched`](Self::launched) does, on a thread that may
-    /// block: the binary is hashed, and a sandbox may be tried, before it is spawned.
+    /// Spawns `launch`'s binary as [`launched`](Self::launched) does, on a thread that may block.
+    ///
+    /// The binary is hashed, and a sandbox may be tried, before it is spawned. A launch not done
+    /// by `deadline` is refused; what it starts later is stopped as it ends.
     pub(crate) async fn launching(
         launch: Launch,
         redactions: Redactions,
+        deadline: Duration,
+    ) -> Result<Launched, Box<(Launch, Unspawned)>> {
+        Self::launching_by(launch, redactions, deadline, &Steps::TAKEN).await
+    }
+
+    /// Launches as [`launching`](Self::launching) does, taking `steps`.
+    async fn launching_by(
+        launch: Launch,
+        redactions: Redactions,
+        deadline: Duration,
+        steps: &'static Steps,
     ) -> Result<Launched, Box<(Launch, Unspawned)>> {
         let asked = launch.clone();
         let launching =
-            tokio::task::spawn_blocking(move || match Self::launched(&launch, redactions) {
+            tokio::task::spawn_blocking(move || match Self::launched(&launch, redactions, steps) {
                 Ok(launched) => Ok(launched),
                 Err(unspawned) => Err(Box::new((launch, unspawned))),
             });
-        match launching.await {
+        // Past the deadline the task goes on, and what it returns is dropped, which stops it.
+        let Ok(joined) = tokio::time::timeout(deadline, launching).await else {
+            let late = std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("the connector's process did not start within {deadline:?}"),
+            );
+            return Err(Box::new((asked, late.into())));
+        };
+        match joined {
             Ok(launched) => launched,
             Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
             // The runtime is shutting down: nothing was spawned, or what was is dropped.
@@ -219,14 +240,18 @@ impl Process {
         }
     }
 
-    /// Spawns `launch`'s binary serving one end of a new socket pair; the other end, and the
-    /// process.
+    /// Spawns `launch`'s binary serving one end of a new socket pair, taking `steps`; the other
+    /// end, and the process.
     ///
     /// Where a kill may kill the process, the other end counts it as landed once it ends after
     /// the kill: a socket ends when no process holds its other end.
-    pub(crate) fn launched(launch: &Launch, redactions: Redactions) -> Result<Launched, Unspawned> {
+    pub(crate) fn launched(
+        launch: &Launch,
+        redactions: Redactions,
+        steps: &Steps,
+    ) -> Result<Launched, Unspawned> {
         let (host, connector) = std::os::unix::net::UnixStream::pair()?;
-        let process = Self::spawn_by(launch, connector.into(), redactions, &Steps::TAKEN)?;
+        let process = Self::spawn_by(launch, connector.into(), redactions, steps)?;
         host.set_nonblocking(true)?;
         let host = tokio::net::UnixStream::from_std(host)?;
         let host = match (&launch.kills, &process.killed) {

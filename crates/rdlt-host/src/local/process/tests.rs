@@ -372,7 +372,7 @@ async fn a_panic_while_a_connector_is_launched_is_raised_where_it_was_asked_for(
     let mut launch = sleeper(directory.path());
     launch.told = Some(super::Told::new(|_| panic!("the host's own code panics")));
     let launching = tokio::spawn(async move {
-        Process::launching(launch, Redactions::new())
+        Process::launching(launch, Redactions::new(), Duration::from_secs(60))
             .await
             .map(drop)
             .map_err(drop)
@@ -384,17 +384,67 @@ async fn a_panic_while_a_connector_is_launched_is_raised_where_it_was_asked_for(
     assert_eq!(stopping.await.expect("it returns"), Ok(()));
 }
 
+/// Steps whose owning thread starts a second late: a launch slower than its deadline.
+static SLOW: Steps = Steps {
+    thread: |thread, owning| {
+        std::thread::sleep(Duration::from_secs(1));
+        thread.spawn(owning)
+    },
+    ..Steps::TAKEN
+};
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_launch_past_its_deadline_is_refused_and_what_it_starts_is_stopped() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let mut launch = sleeper(directory.path());
+    let (told, started) = std::sync::mpsc::channel();
+    launch.told = Some(super::Told::new(move |pid| {
+        told.send(pid).ok();
+    }));
+    let launching =
+        Process::launching_by(launch, Redactions::new(), Duration::from_millis(50), &SLOW);
+    let launched = tokio::time::timeout(Duration::from_millis(500), launching)
+        .await
+        .expect("the deadline ends the launch");
+    let Err(refused) = launched else {
+        panic!("it was launched");
+    };
+    let (_, unspawned) = *refused;
+    let Unspawned::Io(error) = unspawned else {
+        panic!("{unspawned}");
+    };
+    assert_eq!(error.kind(), std::io::ErrorKind::TimedOut, "{error}");
+    // The launch goes on past its deadline; what it starts is dropped as it ends.
+    let waiting =
+        tokio::task::spawn_blocking(move || started.recv_timeout(Duration::from_secs(20)));
+    waiting
+        .await
+        .expect("it returns")
+        .expect("the late launch starts its connector");
+    let stopping = tokio::task::spawn_blocking(|| super::stop_spawned(Duration::from_secs(20)));
+    assert_eq!(stopping.await.expect("it returns"), Ok(()));
+    assert_eq!(super::spawned(), Vec::<u32>::new());
+    // Its place among the groups this process may own was taken inside the late launch and is
+    // given back with the group.
+    assert_eq!(super::group::reserved(), 0);
+}
+
 #[test]
 fn a_launch_whose_runtime_has_shut_down_is_refused_not_raised() {
     let directory = tempfile::tempdir().expect("a temporary directory");
     let launch = sleeper(directory.path());
     let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
         .build()
         .expect("a runtime");
     let handle = runtime.handle().clone();
     runtime.shutdown_background();
     // The blocking task it is launched on is cancelled before it starts.
-    let launched = handle.block_on(Process::launching(launch, Redactions::new()));
+    let launched = handle.block_on(Process::launching(
+        launch,
+        Redactions::new(),
+        Duration::from_secs(60),
+    ));
     let Err(refused) = launched else {
         panic!("it was launched");
     };
