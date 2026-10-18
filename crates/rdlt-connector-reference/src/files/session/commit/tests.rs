@@ -395,6 +395,49 @@ mod steps {
         assert!(died > 6, "only {died} steps");
     }
 
+    fn dropping(table: &TableRef) -> DroppedTable {
+        DroppedTable {
+            path: table.path.clone(),
+            name: table.name.clone(),
+        }
+    }
+
+    #[test]
+    fn a_table_created_again_stays_live_when_its_commit_drops_another() {
+        let sessions = pending(FileFormat::Jsonl, false);
+        let rows = table(false);
+        let other = TableRef {
+            path: TablePath::new(["other"]).unwrap(),
+            name: "other".into(),
+            ..table(false)
+        };
+        let catalog = |name: &str| sessions.root.path().join("tables").join(name);
+        let mut meta = sessions.meta(1, 2, &[]);
+        meta.drop_tables = vec![dropping(&rows)];
+        sessions.commit(&meta).unwrap();
+        assert!(!catalog("rows").exists());
+        sessions.create(&rows, &schema());
+        sessions.create(&other, &schema());
+        let mut meta = sessions.meta(1, 3, &[]);
+        meta.drop_tables = vec![dropping(&other)];
+        sessions.commit(&meta).unwrap();
+        let manifest = manifest::latest(&sessions.location.dir).unwrap().unwrap();
+        assert_eq!(manifest.dropped.iter().collect::<Vec<_>>(), ["other"]);
+        assert!(catalog("rows").exists(), "the table created again is gone");
+        assert!(!catalog("other").exists());
+    }
+
+    #[test]
+    fn a_table_the_session_created_stays_dropped_by_the_commit_that_drops_it() {
+        let sessions = pending(FileFormat::Jsonl, false);
+        let mut meta = sessions.meta(1, 2, &[]);
+        meta.drop_tables = vec![dropping(&table(false))];
+        sessions.commit(&meta).unwrap();
+        let manifest = manifest::latest(&sessions.location.dir).unwrap().unwrap();
+        assert_eq!(manifest.dropped.iter().collect::<Vec<_>>(), ["rows"]);
+        assert!(!sessions.root.path().join("tables").join("rows").exists());
+    }
+
     #[test]
     fn a_release_moves_the_catalog_away_durably_before_it_removes_it() {
         let sessions = pending(FileFormat::Jsonl, false);
