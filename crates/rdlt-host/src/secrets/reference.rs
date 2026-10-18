@@ -5,7 +5,8 @@ use std::fmt::Write as _;
 use rdlt_connector::text::shown;
 use zeroize::Zeroizing;
 
-use super::{Redactions, SecretFault, SecretKind, SecretReference, SecretResolver};
+use super::redact::maskable;
+use super::{Redactions, SecretError, SecretFault, SecretKind, SecretReference, SecretResolver};
 use crate::limits::SECRET_NAME_BYTES;
 
 /// Bytes: bounds the field path an error names.
@@ -97,14 +98,16 @@ pub(super) fn count(pieces: &[Piece]) -> usize {
     pieces.iter().filter(reference).count()
 }
 
-/// The text `pieces` of `original` make once `secrets` has resolved each reference, every
-/// resolved value added to `redactions`; `None` for a text that stays as it is.
+/// The text `pieces` of `original`, in `field`, make once `secrets` has resolved each
+/// reference, every resolved value added to `redactions`; `None` for a text that stays as it
+/// is.
 pub(super) async fn resolved(
     pieces: &[Piece],
     original: &str,
+    field: &str,
     secrets: &dyn SecretResolver,
     redactions: &Redactions,
-) -> Option<Result<Zeroizing<String>, (SecretKind, SecretFault)>> {
+) -> Option<Result<Zeroizing<String>, SecretError>> {
     if count(pieces) == 0 {
         return match pieces {
             [Piece::Text(text)] if text != original => Some(Ok(Zeroizing::new(text.clone()))),
@@ -115,13 +118,19 @@ pub(super) async fn resolved(
     for piece in pieces {
         match piece {
             Piece::Text(text) => values.push(Zeroizing::new(text.clone())),
-            Piece::Reference(reference) => match secrets.resolve(reference).await {
-                Ok(secret) => {
-                    redactions.add(secret.expose());
-                    values.push(Zeroizing::new(secret.expose().clone()));
+            Piece::Reference(reference) => {
+                let secret = match secrets.resolve(reference).await {
+                    Ok(secret) => secret,
+                    Err(fault) => return Some(Err(unresolved(field, reference.kind, fault))),
+                };
+                let value = secret.expose();
+                if !value.is_empty() && !maskable(value) {
+                    let (field, kind) = (field.to_owned(), reference.kind);
+                    return Some(Err(SecretError::Unredactable { field, kind }));
                 }
-                Err(fault) => return Some(Err((reference.kind, fault))),
-            },
+                redactions.add(value);
+                values.push(Zeroizing::new(value.clone()));
+            }
         }
     }
     let length = values.iter().map(|value| value.len()).sum();
@@ -130,6 +139,19 @@ pub(super) async fn resolved(
         text.push_str(value);
     }
     Some(Ok(text))
+}
+
+/// The error of a reference of `kind`, in `field`, that did not resolve for `fault`.
+fn unresolved(field: &str, kind: SecretKind, fault: SecretFault) -> SecretError {
+    let field = field.to_owned();
+    match fault {
+        SecretFault::Refused => SecretError::Refused { field, kind },
+        source => SecretError::Unresolved {
+            field,
+            kind,
+            source,
+        },
+    }
 }
 
 /// Every text value of `document`, with the path of keys and indexes that leads to it, shown

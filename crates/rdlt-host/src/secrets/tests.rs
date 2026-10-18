@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::os::unix::fs::PermissionsExt;
 
+use proptest::prelude::*;
 use rdlt_connector::{BoxFuture, Secret};
 use serde_json::json;
 
@@ -131,7 +132,7 @@ async fn a_text_is_rewritten_only_where_a_reference_or_a_doubled_literal_changes
         ("key ${secret:api-key}, $${", Some("key k-12345, ${")),
     ] {
         let pieces = pieces(text).expect("well formed");
-        let resolved = super::reference::resolved(&pieces, text, &vault, &redactions).await;
+        let resolved = super::reference::resolved(&pieces, text, ".", &vault, &redactions).await;
         let resolved = resolved.map(|resolved| resolved.expect("it resolves").as_str().to_owned());
         assert_eq!(resolved.as_deref(), sent, "{text}");
     }
@@ -316,6 +317,106 @@ fn redactions_replace_every_secret_the_longest_first_and_show_none() {
     let shared = redactions.clone();
     redactions.add("later");
     assert_eq!(shared.scrubbed("later".to_owned()), "***");
+}
+
+#[test]
+fn a_secret_that_holds_the_mask_is_not_made_again_by_its_own_replacement() {
+    let redactions = Redactions::new();
+    redactions.add("a***b");
+    for depth in 1..=5 {
+        let said = format!("<{}***{}>", "a".repeat(depth), "b".repeat(depth));
+        assert_eq!(redactions.scrubbed(said.clone()), "<***>", "{said}");
+    }
+}
+
+#[test]
+fn a_replacement_that_completes_another_secret_is_replaced_in_turn() {
+    use rdlt_connector::text::CUT;
+    let redactions = Redactions::new();
+    for secret in ["hunter2", "a*", "x"] {
+        redactions.add(secret);
+    }
+    assert_eq!(redactions.scrubbed("<ax>".to_owned()), "<*****>");
+    // What replaces the part of a secret left at a cut may complete one too.
+    assert_eq!(
+        redactions.scrubbed(format!("<ahun{CUT}")),
+        format!("<*****{CUT}")
+    );
+}
+
+#[test]
+fn a_secret_or_a_line_of_nothing_but_the_mask_and_whitespace_is_never_found() {
+    let redactions = Redactions::new();
+    redactions.add("hunter-canary\n********\n ** ** ** ** ");
+    for said in ["<********>", "< ** ** ** ** >", "<***>"] {
+        assert_eq!(redactions.scrubbed(said.to_owned()), said);
+    }
+    assert_eq!(redactions.scrubbed("<hunter-canary>".to_owned()), "<***>");
+    let alone = Redactions::new();
+    for secret in ["*", "***", " * * ", "  "] {
+        alone.add(secret);
+    }
+    assert_eq!(format!("{alone:?}"), "Redactions(0)");
+}
+
+#[tokio::test]
+async fn a_secret_of_nothing_but_the_mask_and_whitespace_is_refused_as_it_resolves() {
+    let document = json!({ "a": { "b": "${secret:it}" } });
+    for secret in ["*", "***", "* *\n**", " \t "] {
+        let vault = Vault(BTreeMap::from([(("secret", "it"), secret)]));
+        let redactions = Redactions::new();
+        let sent = Config::from(&document).resolved(&vault, &redactions).await;
+        let error = sent.expect_err("refused");
+        assert_eq!(error.code(), "secret_unredactable", "{secret:?}");
+        let refused = matches!(&error, SecretError::Unredactable { field, kind }
+            if field == "a.b" && *kind == SecretKind::Named);
+        assert!(refused, "{error:?}");
+        assert_eq!(format!("{redactions:?}"), "Redactions(0)", "{secret:?}");
+    }
+    // One with a character besides is sent, and scrubbed.
+    let vault = Vault(BTreeMap::from([(("secret", "it"), "p**s *")]));
+    let redactions = Redactions::new();
+    let sent = Config::from(&document).resolved(&vault, &redactions).await;
+    assert_eq!(sent.expect("sent").as_str(), r#"{"a":{"b":"p**s *"}}"#);
+    assert_eq!(redactions.scrubbed("<p**s *>".to_owned()), "<***>");
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(rdlt_testkit::cases(256)))]
+
+    /// However a text is made of the pieces of secrets that hold the mask's `*`, the mask
+    /// and the marks of a cut, no secret is left in it once it is scrubbed.
+    #[test]
+    fn a_scrubbed_text_holds_no_secret(
+        secrets in prop::collection::vec(
+            "[ab*]{1,5}".prop_filter("a character besides the mask's", |secret| {
+                secret.contains(['a', 'b'])
+            }),
+            1..4,
+        ),
+        picks in prop::collection::vec(any::<prop::sample::Index>(), 0..12),
+        dropped in any::<bool>(),
+    ) {
+        use rdlt_connector::text::CUT;
+        let mut pieces: Vec<&str> = vec!["***", "*", "a", "b", "x", CUT, super::DROPPED];
+        for secret in &secrets {
+            for at in 0..=secret.len() {
+                pieces.extend([&secret[..at], &secret[at..]]);
+            }
+        }
+        let text: String = picks.iter().map(|pick| *pick.get(&pieces)).collect();
+        let redactions = Redactions::new();
+        for secret in &secrets {
+            redactions.add(secret);
+        }
+        let scrubbed = redactions.scrubbed_end(text.clone(), dropped);
+        for secret in &secrets {
+            prop_assert!(
+                !scrubbed.contains(secret.as_str()),
+                "{secret:?} in {scrubbed:?} from {text:?}"
+            );
+        }
+    }
 }
 
 fn variables(name: &OsStr) -> Option<OsString> {

@@ -111,21 +111,11 @@ impl Config {
                     limit: SECRET_REFERENCES,
                 });
             }
-            let resolving = reference::resolved(&pieces, text, secrets, redactions);
+            let resolving = reference::resolved(&pieces, text, &field, secrets, redactions);
             let Some(resolved) = resolving.await else {
                 continue;
             };
-            let resolved = resolved.map_err(|(kind, source)| match source {
-                SecretFault::Refused => SecretError::Refused {
-                    field: field.clone(),
-                    kind,
-                },
-                source => SecretError::Unresolved {
-                    field: field.clone(),
-                    kind,
-                    source,
-                },
-            })?;
+            let resolved = resolved?;
             grown = grown.saturating_add(resolved.len());
             text.zeroize();
             text.push_str(&resolved);
@@ -202,6 +192,15 @@ pub enum SecretError {
         /// The reference's kind.
         kind: SecretKind,
     },
+    /// A reference resolved to a secret of nothing but `*` and whitespace, which the `***` that
+    /// replaces a secret in a text would hold.
+    #[error("config field {field}: its {kind} reference is to a secret `***` cannot hide")]
+    Unredactable {
+        /// The field, as a path of keys and indexes.
+        field: String,
+        /// The reference's kind.
+        kind: SecretKind,
+    },
     /// A reference did not resolve.
     #[error("config field {field}: its {kind} reference did not resolve")]
     Unresolved {
@@ -218,12 +217,14 @@ pub enum SecretError {
 impl SecretError {
     /// The error's stable code: `config_invalid` for a document that cannot be held,
     /// `secret_reference` for a malformed reference, `secret_refused` for one the operator lets
-    /// no configuration reach, and `secret_unresolved` for one that did not resolve.
+    /// no configuration reach, `secret_unredactable` for one whose secret `***` cannot hide,
+    /// and `secret_unresolved` for one that did not resolve.
     pub fn code(&self) -> &'static str {
         match self {
             Self::NotJson | Self::TooLarge { .. } | Self::TooMany { .. } => "config_invalid",
             Self::Reference { .. } => "secret_reference",
             Self::Refused { .. } => "secret_refused",
+            Self::Unredactable { .. } => "secret_unredactable",
             Self::Unresolved { .. } => "secret_unresolved",
         }
     }
