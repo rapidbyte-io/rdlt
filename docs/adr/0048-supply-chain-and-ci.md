@@ -47,10 +47,11 @@ This record decides what holds each statement, and says where a check ends.
     close-on-exec, and taken once. Each is asked of the descriptor through `fcntl` and
     `fstat`, never of `/dev/fd`, which on macOS at times answers that a descriptor the process
     holds is not there; `is_open` asks the same of any number, for a connector's own check of
-    what it was started with. That nothing else in the process owns the descriptor is left
-    to its caller, which calls it first thing in a connector's `main`. The dependency rule
-    (`cargo xtask deps`) lets `rdlt-connector` and `rdlt-host` alone use the crate, and none as a
-    dev-dependency.
+    what it was started with. That nothing else in the process owns the descriptor is its
+    caller's to hold (Rulings). `serve` calls it once its arguments name the descriptor, before
+    its runtime starts and before any connector code runs, the construction of the connector's
+    factories and its configuration's schema included. The dependency rule (`cargo xtask deps`)
+    lets `rdlt-connector` and `rdlt-host` alone use the crate, and none as a dev-dependency.
   - **What the compiler holds.** Every other target's root file carries
     `#![forbid(unsafe_code)]`: libraries, binaries, examples, integration tests, benches and
     fuzz targets, `rdlt-connector`'s library included. The compiler then refuses `unsafe` code
@@ -141,6 +142,21 @@ This record decides what holds each statement, and says where a check ends.
     upload each seed's timing lines the same way.
   - Workflows run on `pull_request`, `push`, a schedule and by hand. None references a secret,
     and none runs a fork's code with more than a read-only token.
+
+## Rulings
+
+- **Adopting stays a safe function, and its caller owns the descriptor.** `rdlt_adopt::adopt`
+  cannot know that nothing else in the process owns the number it is given, and its checks do
+  not prove it: a process that makes a socket, clears its close-on-exec flag and passes its
+  number would have it owned twice. That precondition is the caller's, as it is in socket
+  activation, where `listenfd` takes a descriptor systemd passed by number through a safe call.
+  Only code that owns a socket without close-on-exec can break it: one it made or duplicated
+  without the flag, whose flag it cleared, or that it took by number itself. `serve` adopts
+  before any connector code runs, its factories' construction included, so only a binary's own
+  `main`, before it calls `serve`, could. An `unsafe` `adopt` would put an `unsafe` block in
+  every connector binary, where the workspace forbids it, and no owned handle exists for a
+  descriptor a parent passed by number. Cost if wrong: such a binary closes a socket its other
+  owner still uses, whose next read or write fails or reaches whatever later takes the number.
 
 ## Consequences
 
