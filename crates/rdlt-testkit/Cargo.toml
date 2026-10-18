@@ -1,6 +1,6 @@
 [package]
 name = "rdlt-testkit"
-description = "Drawn Arrow data and an exact value model shared by rdlt's property tests and simulation."
+description = "Drawn Arrow data and an exact value model shared by rdlt's property tests and simulation, and a harness that cancels a call at each point it waits."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -23,7 +23,7 @@ rdlt-connector.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
-tokio = { workspace = true, features = ["rt"] }
+tokio = { workspace = true, features = ["rt", "test-util", "time"] }
 
 [lints]
 workspace = true
