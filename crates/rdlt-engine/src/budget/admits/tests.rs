@@ -158,6 +158,21 @@ fn what_each_limit_admits_all_at_once_fits_the_share_it_draws_on() {
 }
 
 #[test]
+fn every_budget_from_the_least_up_admits_a_peer_for_thousands_of_reads() {
+    for readers in (1..=4_000).step_by(7) {
+        let least = least(readers);
+        for capacity in least..least + 3_000 {
+            let limits = admitted(Shares::of(capacity), readers);
+            assert_eq!(
+                limits.admit_peer(),
+                Ok(()),
+                "{capacity} bytes, {readers} reads"
+            );
+        }
+    }
+}
+
+#[test]
 fn the_least_budget_admits_the_protocol_s_least_limits_and_a_byte_less_does_not() {
     for readers in [1, 2, 4, 16, 64, 1_000] {
         let least = least(readers);
