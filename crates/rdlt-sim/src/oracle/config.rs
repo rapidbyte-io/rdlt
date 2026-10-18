@@ -19,12 +19,14 @@ use crate::world::Pressure;
 ///
 /// A run reads at least one partition more at once than the `endless` partitions it follows
 /// without end, which hold their places for as long as it runs, and holds to the limits `growth`
-/// gives for the partitions it reads at once.
+/// gives for the partitions it reads at once. Where `wait` is drawn, the engine waits that long
+/// for each connector call.
 pub(super) fn config(
     rng: &mut SplitMix64,
     streaming: bool,
     endless: usize,
     growth: impl FnOnce(usize) -> GrowthLimits,
+    wait: Option<Duration>,
 ) -> EngineConfig {
     let least = EngineConfig::least_memory(1);
     let every = rng
@@ -43,6 +45,10 @@ pub(super) fn config(
     } else {
         builder
     };
+    let builder = match wait {
+        Some(wait) => builder.connector_wait(wait),
+        None => builder,
+    };
     let memory = least + rng.below(least);
     let lane_window = to_usize(1 + rng.below(3));
     let partitions = to_usize(1 + rng.below(4)).max(endless + 1);
@@ -58,6 +64,15 @@ pub(super) fn config(
         .growth(growth(partitions))
         .build()
         .expect("the drawn configuration is valid")
+}
+
+/// The engine's wait for each connector call in the world `seed` where its calls may hang,
+/// drawn apart from the world, so every other draw of the seed is as it was: 5 to 20 s, longer
+/// than any call a clean run makes, and short enough that a run meeting several hangs ends well
+/// within the oracle's limit; none elsewhere, so the engine's default holds.
+pub(super) fn waited(seed: Seed, hangs: bool) -> Option<Duration> {
+    let mut rng = SplitMix64::new(seed.value().rotate_left(37));
+    hangs.then(|| Duration::from_secs(5 + rng.below(16)))
 }
 
 /// The growth limits of an engine of the world `seed`, drawn apart from the world, so every other

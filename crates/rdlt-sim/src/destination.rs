@@ -88,6 +88,7 @@ impl DestinationConnector for SimDestination {
             ));
         }
         self.world.latency().await;
+        self.world.hang(FaultPoint::Open).await;
         if let Some(fault) = self.world.fault(FaultPoint::Open) {
             return Err(fault);
         }
@@ -128,6 +129,7 @@ impl Session for SimSession {
     type Writer = SimWriter;
 
     async fn apply_schema(&mut self, change: &TableChange) -> Result<()> {
+        self.world.hang(FaultPoint::ApplyBefore).await;
         if let Some(fault) = self.world.fault(FaultPoint::ApplyBefore) {
             return Err(fault);
         }
@@ -137,6 +139,7 @@ impl Session for SimSession {
             let entry = store.claim(&self.pipeline, self.epoch, table)?;
             columns::apply(&mut entry.columns, change)?;
         }
+        self.world.hang(FaultPoint::ApplyAfter).await;
         match self.world.fault(FaultPoint::ApplyAfter) {
             Some(fault) => Err(fault),
             None => Ok(()),
@@ -144,6 +147,7 @@ impl Session for SimSession {
     }
 
     async fn writer(&mut self, table: &TableRef) -> Result<SimWriter> {
+        self.world.hang(FaultPoint::Writer).await;
         if let Some(fault) = self.world.fault(FaultPoint::Writer) {
             return Err(fault);
         }
@@ -177,6 +181,7 @@ impl Session for SimSession {
 
     async fn commit(&mut self, meta: &CommitMeta) -> Result<Receipt> {
         self.world.latency().await;
+        self.world.hang(FaultPoint::CommitBefore).await;
         if let Some(fault) = self.world.fault(FaultPoint::CommitBefore) {
             return Err(fault);
         }
@@ -215,6 +220,7 @@ impl Session for SimSession {
             store.receipts.insert(key, receipt.clone());
             receipt
         };
+        self.world.hang(FaultPoint::CommitAfter).await;
         match self.world.fault(FaultPoint::CommitAfter) {
             Some(fault) => Err(fault),
             None => Ok(receipt),
@@ -222,6 +228,7 @@ impl Session for SimSession {
     }
 
     async fn close(self) -> Result<()> {
+        self.world.hang(FaultPoint::Close).await;
         match self.world.fault(FaultPoint::Close) {
             Some(fault) => Err(fault),
             None => Ok(()),
@@ -250,6 +257,7 @@ pub struct SimWriter {
 
 impl TableWriter for SimWriter {
     async fn write(&mut self, segment: SegmentId, batch: RecordBatch) -> Result<()> {
+        self.world.hang(FaultPoint::Write).await;
         if let Some(fault) = self.world.fault(FaultPoint::Write) {
             return Err(fault);
         }
@@ -293,6 +301,7 @@ impl TableWriter for SimWriter {
 
     async fn flush(&mut self) -> Result<WriteStats> {
         self.world.latency().await;
+        self.world.hang(FaultPoint::Flush).await;
         if let Some(fault) = self.world.fault(FaultPoint::Flush) {
             return Err(fault);
         }
