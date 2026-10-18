@@ -1239,29 +1239,32 @@ fn flat_object(keys: usize) -> String {
 }
 
 /// What parsing the chunk of `records` under a limit of `columns` columns allocates at its
-/// peak, the chunk parsed, and what its meter allows: its allowance and the flush's room beyond.
-fn parse_peak(records: &str, columns: u64) -> (u64, Parsed, u64) {
-    let heap = &crate::cost::tests::HEAP;
+/// peak, whether the chunk built as it was parsed, what the parse charged, and what its meter
+/// allows: its allowance and the flush's room beyond.
+fn parse_peak(records: &str, columns: u64) -> (u64, bool, u64, u64) {
     let limits = ShredLimits::new(columns);
     let records = Bytes::from(records.to_owned());
     let chunk = chunks(std::slice::from_ref(&records), 1 << 20)
         .unwrap()
         .remove(0);
     let allowed = count(chunk.bytes()) * limits.admitted + limits.beyond_bytes();
-    heap.reset_peak_usage();
-    let before = heap.current_usage();
-    let parsed = parse(chunk, limits, &limits.beyond()).unwrap();
-    let peak = u64::try_from(heap.peak_usage().saturating_sub(before)).unwrap();
-    (peak, parsed, allowed)
+    let mut chunk = Some(chunk);
+    let (peak, (built, spent)) = crate::cost::tests::peak_alone(|| {
+        let parsed = parse(chunk.take().unwrap(), limits, &limits.beyond()).unwrap();
+        let parse = (parsed.record.is_some(), parsed.spent);
+        chunk = Some(parsed.chunk);
+        parse
+    });
+    (peak, built, spent, allowed)
 }
 
 #[test]
 fn rendering_a_wide_object_into_a_column_that_drifted_to_json_stays_within_its_meter() {
     let records = drifting(&flat_object(262_145));
     for columns in [10_000, 1] {
-        let (peak, parsed, allowed) = parse_peak(&records, columns);
+        let (peak, built, _, allowed) = parse_peak(&records, columns);
         assert!(
-            parsed.record.is_none(),
+            !built,
             "{columns} columns: the rendering found no room, so the chunk is observed"
         );
         assert!(
@@ -1276,12 +1279,9 @@ fn rendering_a_wide_object_into_a_column_that_drifted_to_json_stays_within_its_m
 fn rendered(value: &str) -> (u64, u64) {
     let note = "x".repeat(64 << 10);
     let records = format!("{{\"n\":\"{note}\"}}\n{}", drifting(value));
-    let (peak, parsed, _) = parse_peak(&records, 10_000);
-    assert!(
-        parsed.record.is_some(),
-        "{value:.32}: the chunk had room to build"
-    );
-    (peak, parsed.spent)
+    let (peak, built, spent, _) = parse_peak(&records, 10_000);
+    assert!(built, "{value:.32}: the chunk had room to build");
+    (peak, spent)
 }
 
 /// Asserts that rendering `value` into a column that drifted to JSON holds no more than it
