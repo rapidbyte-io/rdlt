@@ -144,6 +144,7 @@ impl ReadStream<SimSource> for SimStreamReader {
     }
 
     async fn partitions(&self, source: &SimSource, _state: &StreamState) -> Result<Vec<Partition>> {
+        source.world.hang(FaultPoint::Partitions).await;
         if let Some(fault) = source.world.fault(FaultPoint::Partitions) {
             return Err(fault);
         }
@@ -225,7 +226,10 @@ impl ReadStream<SimSource> for SimStreamReader {
         source: &SimSource,
         cursors: &[(PartitionId, SimCursor)],
     ) -> Result<()> {
-        committed(self.stream(source), &source.world, cursors)
+        let heard = committed(self.stream(source), &source.world, cursors);
+        // Heard, and then its answer may never come.
+        source.world.hang(FaultPoint::Acknowledge).await;
+        heard
     }
 }
 

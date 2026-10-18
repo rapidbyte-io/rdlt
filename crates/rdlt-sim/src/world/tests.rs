@@ -1,11 +1,13 @@
 use std::collections::BTreeSet;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
+use std::time::Duration;
 
 use rdlt_connector::{ConnectorErrorKind, IdentifierChars};
 
 use super::{FaultPoint, World, capabilities};
 use crate::rng::SplitMix64;
+use crate::seed::{Seed, run};
 use crate::swarm::Features;
 
 #[test]
@@ -133,4 +135,59 @@ fn a_name_registered_twice_at_once_is_refused_and_keeps_its_first_world() {
     assert!(Arc::ptr_eq(&named, first.world()));
     drop(first);
     assert!(World::named(name).is_none());
+}
+
+/// How many of `calls` calls at `point` hang, with faults `faulty`.
+fn hung(world: &Arc<World>, point: FaultPoint, faulty: bool, calls: usize) -> usize {
+    let world = Arc::clone(world);
+    run(Seed::new(3), move |_| async move {
+        world.set_faulty(faulty);
+        let mut hung = 0;
+        for _ in 0..calls {
+            let call = tokio::time::timeout(Duration::from_millis(1), world.hang(point)).await;
+            hung += usize::from(call.is_err());
+        }
+        hung
+    })
+}
+
+#[test]
+fn a_bounded_call_now_and_then_hangs_where_faults_are_on_and_a_read_never_does() {
+    let registered = World::register("hangs", &mut SplitMix64::new(3));
+    let world = Arc::clone(registered.world());
+    let commits = hung(&world, FaultPoint::CommitBefore, true, 20_000);
+    assert!(
+        (10..=100).contains(&commits),
+        "{commits} of 20000 commits hung"
+    );
+    assert_eq!(hung(&world, FaultPoint::Read, true, 20_000), 0);
+    assert_eq!(hung(&world, FaultPoint::CommitBefore, false, 20_000), 0);
+    world.without_hangs();
+    assert_eq!(hung(&world, FaultPoint::CommitBefore, true, 20_000), 0);
+    drop(registered);
+}
+
+#[test]
+fn a_point_a_test_names_hangs_every_call_there_faults_on_or_off() {
+    let registered = World::register("hang-at", &mut SplitMix64::new(3));
+    let world = Arc::clone(registered.world());
+    world.hang_at(FaultPoint::Write);
+    assert_eq!(hung(&world, FaultPoint::Write, false, 10), 10);
+    assert_eq!(hung(&world, FaultPoint::Flush, false, 10), 0);
+    drop(registered);
+}
+
+#[test]
+fn some_placements_stall_where_faults_are_on_and_none_elsewhere() {
+    let registered = World::register("stalls", &mut SplitMix64::new(3));
+    let world = Arc::clone(registered.world());
+    world.set_faulty(true);
+    let stalled = (0..2_000).filter(|_| world.stalls()).count();
+    assert!(
+        (40..=200).contains(&stalled),
+        "{stalled} of 2000 placements stalled"
+    );
+    world.set_faulty(false);
+    assert_eq!((0..2_000).filter(|_| world.stalls()).count(), 0);
+    drop(registered);
 }

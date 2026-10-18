@@ -130,6 +130,7 @@ impl ReadStream<SimChangeSource> for Reader {
     }
 
     async fn plan(&self, source: &SimChangeSource, state: &StreamState) -> Result<PartitionPlan> {
+        source.world.hang(FaultPoint::Partitions).await;
         if let Some(fault) = source.world.fault(FaultPoint::Partitions) {
             return Err(fault);
         }
@@ -231,6 +232,7 @@ impl ReadStream<SimChangeSource> for Reader {
                 ));
             }
         }
+        world.hang(FaultPoint::Acknowledge).await;
         match world.fault(FaultPoint::Acknowledge) {
             Some(fault) => Err(fault),
             None => Ok(()),

@@ -1,6 +1,6 @@
 use rdlt_engine::GrowthLimits;
 
-use super::{growth, log, tiny};
+use super::{growth, log, tiny, waited};
 use crate::seed::Seed;
 
 #[test]
@@ -151,4 +151,25 @@ fn no_world_keeps_a_log_smaller_than_the_least_the_engine_promises_its_load() {
         }
     }
     assert!(floored > 0, "no world's log is the least its load needs");
+}
+
+#[test]
+fn a_world_whose_calls_may_hang_waits_five_to_twenty_seconds_for_each() {
+    use std::time::Duration;
+
+    let drawn: Vec<Duration> = (0..200)
+        .filter_map(|seed| waited(Seed::new(seed), true))
+        .collect();
+    assert_eq!(drawn.len(), 200);
+    assert!(
+        drawn
+            .iter()
+            .all(|wait| (Duration::from_secs(5)..=Duration::from_secs(20)).contains(wait)),
+        "{drawn:?}"
+    );
+    assert!(
+        drawn.iter().any(|wait| *wait != drawn[0]),
+        "the waits differ by seed"
+    );
+    assert_eq!(waited(Seed::new(1), false), None);
 }

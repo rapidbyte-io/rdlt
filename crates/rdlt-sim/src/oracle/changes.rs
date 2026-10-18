@@ -9,7 +9,7 @@ use rdlt_connector::{PartitionState, PipelineId, ReadMode, StateEntry, StreamNam
 use rdlt_engine::{DeleteMode, Engine, PipelinePlan, StreamPlan, WriteMode};
 use rdlt_testkit::canon::Canon;
 
-use super::config::{config, growth};
+use super::config::{config, growth, waited};
 use super::reports::Reported;
 use super::scenario::{Scenario, execute_all, pick};
 use super::{FAULTY_RUNS, settled};
@@ -54,9 +54,13 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>) -> Digest {
     env.perturb(features.perturb);
     world.keep_logs(&env, seed).await;
     let engine = Engine::new(
-        config(&mut rng, false, 0, |partitions| {
-            growth(seed, None, partitions)
-        }),
+        config(
+            &mut rng,
+            false,
+            0,
+            |partitions| growth(seed, None, partitions),
+            waited(seed, features.faults),
+        ),
         env,
     );
     let plan = plan(&world.changes.streams).with_wal(features.wal);

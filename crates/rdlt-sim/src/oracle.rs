@@ -31,7 +31,7 @@ use crate::swarm::Features;
 use crate::workload::{Level, PHASES, Relaxed, Row, Workload};
 use crate::world::World;
 pub use changes::check_changes;
-use config::{config, endless, growth, pressed, small_log};
+use config::{config, endless, growth, pressed, small_log, waited};
 use expected::Discards;
 pub use pressure::Checked;
 use pressure::explained;
@@ -51,10 +51,13 @@ const FAULTY_RUNS: usize = 4;
 pub fn check_exactly_once(seed: Seed) -> Checked {
     if Features::draw(&mut SplitMix64::new(seed.value())).network {
         run_networked(seed, move |env, net| async move {
-            simulate(seed, env, Some(net)).await
+            simulate(seed, env, Some(net), true).await
         })
     } else {
-        run(seed, |env| async move { simulate(seed, env, None).await })
+        run(
+            seed,
+            |env| async move { simulate(seed, env, None, true).await },
+        )
     }
 }
 
@@ -65,18 +68,25 @@ pub fn check_exactly_once(seed: Seed) -> Checked {
 ///
 /// Panics, naming the seed, as [`check_exactly_once`] does.
 pub fn stress(seed: Seed) {
-    run_threaded(seed, |env| async move { simulate(seed, env, None).await });
+    run_threaded(
+        seed,
+        |env| async move { simulate(seed, env, None, false).await },
+    );
 }
 
 /// Checks the exactly-once guarantee for the workload `seed` generates, with the connectors on
-/// `net` when there is one, and in this process otherwise.
-async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>) -> Checked {
+/// `net` when there is one, and in this process otherwise, its connectors' calls hanging now and
+/// then where `hangs`, which only a simulated clock waits out at once.
+async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>, hangs: bool) -> Checked {
     let clock = Arc::clone(&env);
     let started = clock.instant();
     let mut rng = SplitMix64::new(seed.value());
     let name = format!("oracle-{seed}");
     let registered = World::register(&name, &mut rng);
     let world = Arc::clone(registered.world());
+    if !hangs {
+        world.without_hangs();
+    }
     env.perturb(world.workload.features.perturb);
     world.keep_logs(&env, seed).await;
     let streaming = world.workload.features.streaming;
@@ -85,6 +95,7 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>) -> Checke
         streaming,
         endless(&world.workload),
         |partitions| growth(seed, Some(&world.workload), partitions),
+        waited(seed, hangs && world.workload.features.faults),
     );
     let (limits, budget) = (config.limits(), config.memory().get());
     world.press(pressed(seed, &config, &world.workload, small_log(&config)));

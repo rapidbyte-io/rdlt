@@ -1,5 +1,6 @@
 //! The world one simulation shares: its workload, faults, destination store and findings.
 
+mod hangs;
 mod reports;
 #[cfg(test)]
 mod tests;
@@ -26,6 +27,7 @@ use crate::seed::Seed;
 use crate::swarm::Features;
 use crate::wal::SimWal;
 use crate::workload::Workload;
+use hangs::Hangs;
 pub(crate) use reports::Reports;
 
 /// Where a connector can fail, and how often, in failures per thousand calls.
@@ -79,6 +81,8 @@ pub struct World {
     phase: AtomicUsize,
     faulty: AtomicBool,
     rng: Mutex<SplitMix64>,
+    /// Which calls hang and which placements stall, drawn apart from `rng`.
+    hangs: Mutex<Hangs>,
     pub(crate) store: Mutex<Store>,
     violations: Mutex<Vec<String>>,
     /// Where the engine keeps its write-ahead logs, which outlive runs as a disk does.
@@ -158,6 +162,9 @@ impl Pressure {
 /// What the object store's draws mix into the disk's and the seed: "objects" in ASCII.
 const OBJECTS: u64 = 0x006f_626a_6563_7473;
 
+/// What the draws of hangs mix into the fault draws' seed: "hangs" in ASCII.
+const HANGS: u64 = 0x0068_616e_6773;
+
 static WORLDS: LazyLock<Mutex<BTreeMap<String, Arc<World>>>> = LazyLock::new(Mutex::default);
 
 /// A world's entry in the registry, under its name, which it leaves when this drops: when its
@@ -219,6 +226,7 @@ impl World {
             granted: AtomicBool::new(false),
             phase: AtomicUsize::new(0),
             faulty: AtomicBool::new(false),
+            hangs: Mutex::new(Hangs::new(rng.clone().next_u64() ^ HANGS)),
             rng: Mutex::new(SplitMix64::new(rng.next_u64())),
             store: Mutex::new(Store::default()),
             violations: Mutex::new(Vec::new()),
@@ -279,6 +287,7 @@ impl World {
             granted: AtomicBool::new(false),
             phase: AtomicUsize::new(0),
             faulty: AtomicBool::new(false),
+            hangs: Mutex::new(Hangs::new(rng.clone().next_u64() ^ HANGS)),
             rng: Mutex::new(SplitMix64::new(rng.next_u64())),
             store: Mutex::new(Store::default()),
             violations: Mutex::new(Vec::new()),
@@ -435,6 +444,43 @@ impl World {
         if let Some(pause) = pause {
             tokio::time::sleep(pause).await;
         }
+    }
+
+    /// Waits for ever where the draw says the call at `point` hangs: a connector call that never
+    /// returns until its caller gives up on it, as the engine does at its wait for every call but
+    /// a read.
+    pub(crate) async fn hang(&self, point: FaultPoint) {
+        let faulty = self.faulty.load(Ordering::SeqCst);
+        let hangs = self.hangs.lock().hangs(point, faulty);
+        if hangs {
+            std::future::pending::<()>().await;
+        }
+    }
+
+    /// Whether the connector placed next goes to the peer that stalls, as the draw says where
+    /// faults are on.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "only tests place connectors on a peer that stalls"
+        )
+    )]
+    pub(crate) fn stalls(&self) -> bool {
+        let faulty = self.faulty.load(Ordering::SeqCst);
+        self.hangs.lock().stalls(faulty)
+    }
+
+    /// Lets no call hang from now on: on the real clock a hang lasts as long as the engine's wait
+    /// really is.
+    pub(crate) fn without_hangs(&self) {
+        self.hangs.lock().drawn = false;
+    }
+
+    /// Has every call at `point` hang from now on, faults on or off.
+    #[cfg(test)]
+    pub(crate) fn hang_at(&self, point: FaultPoint) {
+        self.hangs.lock().at = Some(point);
     }
 
     /// Records a broken invariant.
