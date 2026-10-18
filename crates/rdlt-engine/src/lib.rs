@@ -34,7 +34,8 @@
 
 #![forbid(unsafe_code)]
 
-#[cfg(panic = "abort")]
+// Kani compiles every crate aborting, and runs nothing it compiles.
+#[cfg(all(panic = "abort", not(kani)))]
 compile_error!(
     "rdlt-engine fails a run whose task or job panics by unwinding: build with panic = \"unwind\""
 );
