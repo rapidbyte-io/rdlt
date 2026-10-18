@@ -72,11 +72,15 @@ socket will be.
     Neither end lets HTTP/2 size its windows itself, which would override both.
 - **Liveness and deadlines** (§12.6).
   - The host sends a heartbeat every interval (5 s by default). Once as many as it allows (6) are
-    unanswered when the next is due, the connector is lost, and every call on the connection
-    fails with a transient `connector_lost` error. That lets the engine retry the attempt, and
-    M4c's supervision respawn the connector.
+    unanswered when the next is due, or the heartbeat's stream has not opened within as many
+    intervals, the connector is lost, and every call on the connection fails with a transient
+    `connector_lost` error. A heartbeat its queue has no room for counts as unanswered: the
+    heartbeat never waits on its transport. That lets the engine retry the attempt, and M4c's
+    supervision respawn the connector.
   - Each call has its deadline from §12.6, and fails past it with a transient
-    `deadline_exceeded` error. Reporting committed cursors, which §12.6 does not list, takes the
+    `deadline_exceeded` error. The connect deadline bounds a connection's setup, HTTP/2's
+    preface and settings, and the handshake's answer together; the configuration has a connect
+    deadline of its own. Reporting committed cursors, which §12.6 does not list, takes the
     commit's deadline.
   - A started read has no deadline: silence on a data stream is never fatal. A read asked to
     stop is dropped once the engine's stop wait passes (ADR 0042).
