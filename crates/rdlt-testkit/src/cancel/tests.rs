@@ -123,7 +123,7 @@ fn an_operation_that_waits_more_than_the_harness_cuts_at_fails() {
 
 #[test]
 #[should_panic(expected = "ran otherwise")]
-fn an_operation_that_waits_otherwise_when_run_again_fails() {
+fn an_operation_that_returns_before_its_cut_when_run_again_fails() {
     let runs = AtomicUsize::new(0);
     at_every_point(
         async || runs.fetch_add(1, Ordering::SeqCst),
