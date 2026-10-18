@@ -159,9 +159,9 @@ impl Connection {
     /// # Errors
     ///
     /// A `Config` error coded `options_invalid` for a zero heartbeat interval, the connector's
-    /// error when the handshake fails, or a transient error when the transport does, coded
-    /// `deadline_exceeded` when the connection is not set up and handshaken within the connect
-    /// deadline.
+    /// error when the handshake fails, a transient error when the transport does, or a transient
+    /// error coded `deadline_exceeded` when the connection is not set up and handshaken within
+    /// the connect deadline.
     pub async fn handshake<IO>(
         io: IO,
         role: Role,
