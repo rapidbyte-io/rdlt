@@ -190,13 +190,16 @@ given. The host did not enforce it:
   - Every resolved value is kept in the `Redactions` of the placement, every start's
     together, and replaced by `***` in its errors, its last words and its output, as it is
     written and as JSON, `Debug` and `shown` write it, and where a text was cut within it: a
-    connector may say a value it was sent at an earlier start. A text is scrubbed until no
-    value is left in it, since a `***` may complete a value with what is around it; that ends,
-    because every value kept holds a character other than `*`, which each replacement takes
-    away. A value of nothing but `*` and whitespace, which `***` would hold, is refused as it
-    resolves (`secret_unredactable`). A call's error carries the last words of the process
-    the call went to. An in-process connector's errors are flattened to text and scrubbed the
-    same way.
+    connector may say a value it was sent at an earlier start. A `***` may complete a value,
+    or the part of one at a cut, with what is around it, so a text is scrubbed in steps, each
+    replacing every value in it and then every part at a cut, until a step finds nothing. A
+    text needs another step only for each `***` that completes a value, and a chain of them is
+    made, not said by chance; at most 4 steps are taken, so scrubbing is bounded by 4 passes
+    over the text, and a text the fourth step still changes is replaced whole by
+    `[withheld: it could not be scrubbed]` rather than said with part of a value in it. A value
+    of nothing but `*` and whitespace, which `***` would hold, is refused as it resolves
+    (`secret_unredactable`). A call's error carries the last words of the process the call
+    went to. An in-process connector's errors are flattened to text and scrubbed the same way.
   - `rdlt-certify` reads a configuration from a file or standard input, never the command
     line, resolves the references `--secret-env` and `--secret-dir` allow, scrubs what it
     prints, and certifies a binary inside the sandbox, with the grants its command line gives,

@@ -12,6 +12,15 @@ const REDACTED: &str = "***";
 /// The fewest characters other than whitespace a line of a secret needs to be found on its own.
 const LEAST_LINE: usize = 8;
 
+/// How many steps a text is scrubbed in at most, the last finding nothing. One step replaces
+/// every secret said or cut in it; a text needs another only for each `***` that completes a
+/// secret with what is around it, and a chain of more than two of those is made, not said by
+/// chance.
+pub(super) const STEPS: usize = 4;
+
+/// What a text is said as when [`STEPS`] steps leave something of a secret in it.
+pub(super) const WITHHELD: &str = "[withheld: it could not be scrubbed]";
+
 /// What starts a text whose beginning was dropped.
 pub(crate) const DROPPED: &str = "[cut] ";
 
@@ -22,14 +31,15 @@ pub(crate) const DROPPED: &str = "[cut] ";
 /// text was cut, the part of a value left at the cut is replaced too. Each line of a value
 /// that holds line ends and at least eight characters other than whitespace is found on its
 /// own as well, since output is logged a line at a time; a shorter line, such as a lone
-/// brace, would garble every text it is in. A form of nothing but `*` and whitespace is not
-/// found, since the mask would hold it.
+/// brace, would garble every text it is in. A form, or a part of one at a cut, of nothing but
+/// `*` and whitespace is not found, since the mask would hold it.
 /// A connector that transforms a secret before it says it, by an encoding or a split
 /// elsewhere, is beyond this.
 #[derive(Clone, Default)]
 pub struct Redactions {
-    /// The values' forms, the longest first, so that one holding another is replaced whole.
-    secrets: Arc<Mutex<Vec<Zeroizing<String>>>>,
+    /// The values' forms, the longest first, so that one holding another is replaced whole;
+    /// a text is scrubbed with the forms there were as it began.
+    secrets: Arc<Mutex<Arc<Vec<Zeroizing<String>>>>>,
 }
 
 impl fmt::Debug for Redactions {
@@ -51,7 +61,8 @@ impl Redactions {
     pub fn add(&self, secret: &str) {
         let long = |line: &&str| line.chars().filter(|c| !c.is_whitespace()).count() >= LEAST_LINE;
         let lines = secret.lines().filter(long);
-        let mut secrets = self.secrets.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut shared = self.secrets.lock().unwrap_or_else(PoisonError::into_inner);
+        let secrets = Arc::make_mut(&mut shared);
         for value in std::iter::once(secret).chain(lines) {
             let json = serde_json::to_string(value).unwrap_or_default();
             let json = json.trim_matches('"').to_owned();
@@ -68,15 +79,20 @@ impl Redactions {
 
     /// `text` with every secret in it replaced by `***`, and with it the start of a secret
     /// that ends where the text was cut, and the end of one that starts where its beginning
-    /// was dropped, until no secret is left in it.
-    pub fn scrubbed(&self, text: String) -> String {
-        let secrets = self.secrets.lock().unwrap_or_else(PoisonError::into_inner);
-        let mut text = replaced(text, &secrets);
-        if text.contains(CUT) || text.contains(DROPPED) {
-            let held = Zeroizing::new(text);
-            text = replaced(at_cuts(&held, &secrets), &secrets);
+    /// was dropped, until nothing of a secret is left in it; a text that says it was withheld
+    /// if the few steps scrubbing is given leave something.
+    pub fn scrubbed(&self, mut text: String) -> String {
+        let secrets = Arc::clone(&self.secrets.lock().unwrap_or_else(PoisonError::into_inner));
+        let cut = text.contains(CUT) || text.contains(DROPPED);
+        for _ in 0..STEPS {
+            let found;
+            (text, found) = step(text, &secrets, cut);
+            if !found {
+                return text;
+            }
         }
-        text
+        drop(Zeroizing::new(text));
+        WITHHELD.to_owned()
     }
 
     /// `text`, whose beginning was dropped when `dropped`, scrubbed as [`scrubbed`]
@@ -103,27 +119,24 @@ pub(super) fn maskable(text: &str) -> bool {
         .any(|c| !REDACTED.contains(c) && !c.is_whitespace())
 }
 
-/// `text` with every secret in it replaced, and replaced again where a replacement completes
-/// a secret with what is around it, until none is left.
-fn replaced(mut text: String, secrets: &[Zeroizing<String>]) -> String {
-    // A pass that finds a secret replaces a character other than `*` with `*`s, as every
-    // secret holds one, so no more passes find one than the text holds such characters.
-    let passes = text.chars().filter(|c| !REDACTED.contains(*c)).count();
-    for _ in 0..=passes {
-        let mut found = false;
-        for secret in secrets {
-            if text.contains(secret.as_str()) {
-                found = true;
-                // What held the secret is wiped, not only freed.
-                let held = Zeroizing::new(text);
-                text = held.replace(secret.as_str(), REDACTED);
-            }
-        }
-        if !found {
-            break;
+/// `text` with every secret in it replaced, and then, where it holds the `cut` marks, the
+/// part of one at each, and whether anything was.
+fn step(mut text: String, secrets: &[Zeroizing<String>], cut: bool) -> (String, bool) {
+    let mut found = false;
+    for secret in secrets {
+        if text.contains(secret.as_str()) {
+            found = true;
+            // What held the secret is wiped, not only freed.
+            let held = Zeroizing::new(text);
+            text = held.replace(secret.as_str(), REDACTED);
         }
     }
-    text
+    if cut {
+        let held = Zeroizing::new(text);
+        text = at_cuts(&held, secrets);
+        found |= text != *held;
+    }
+    (text, found)
 }
 
 /// `text` with the part of a secret left before each mark of a cut, and after each mark of a
@@ -156,23 +169,26 @@ fn at_cuts(text: &str, secrets: &[Zeroizing<String>]) -> String {
     ended
 }
 
-/// How many bytes at the end of `text` are the start of a secret, at most.
+/// How many bytes at the end of `text` are the start of a secret, at most, one the mask would
+/// hold not counted.
 fn starts(text: &str, secrets: &[Zeroizing<String>]) -> usize {
     let longest = |secret: &Zeroizing<String>| {
-        let starts = secret.char_indices().rev().map(|(at, _)| at);
+        let starts = secret.char_indices().rev().map(|(at, _)| &secret[..at]);
         starts
-            .filter(|length| *length > 0)
-            .find(|length| text.ends_with(&secret[..*length]))
+            .take_while(|start| maskable(start))
+            .find(|start| text.ends_with(start))
+            .map(str::len)
     };
     secrets.iter().filter_map(longest).max().unwrap_or(0)
 }
 
-/// How many bytes at the start of `text` are the end of a secret, at most.
+/// How many bytes at the start of `text` are the end of a secret, at most, one the mask would
+/// hold not counted.
 fn ends(text: &str, secrets: &[Zeroizing<String>]) -> usize {
     let longest = |secret: &Zeroizing<String>| {
-        let ends = secret.char_indices().map(|(at, _)| at).skip(1);
+        let ends = secret.char_indices().skip(1).map(|(at, _)| &secret[at..]);
         let ended = ends
-            .map(|at| &secret[at..])
+            .take_while(|end| maskable(end))
             .find(|end| text.starts_with(end));
         ended.map(str::len)
     };
