@@ -361,7 +361,9 @@ impl Local {
     /// made, and [`ProviderError::SpawnFailed`] when it cannot be spawned.
     pub async fn wire(&self, reference: &ConnectorRef) -> Result<Wire, ProviderError> {
         let launch = self.launch(reference).await?;
-        let launched = Process::launching(launch, crate::secrets::Redactions::new()).await;
+        let deadline = self.options.deadlines.connect;
+        let launched =
+            Process::launching(launch, crate::secrets::Redactions::new(), deadline).await;
         let (stream, process) = launched.map_err(|unspawned| {
             let (launch, unspawned) = *unspawned;
             refused(&launch, unspawned)
