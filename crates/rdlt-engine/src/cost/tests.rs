@@ -33,6 +33,39 @@ use crate::table::convert::{convert, decoded, json, normalize, text};
 #[global_allocator]
 pub(crate) static HEAP: peak_alloc::PeakAlloc = peak_alloc::PeakAlloc;
 
+/// What `run` allocates at its peak beyond what the heap held as it began, in a window no other
+/// thread allocated in: the test harness's thread allocates beside a test as the test starts.
+///
+/// `run` leaves the heap as it found it, what it returns included, so a window that ends with
+/// the heap holding more or less than it began with is one another allocation reached, and `run`
+/// is measured again.
+pub(crate) fn peak_alone<T>(mut run: impl FnMut() -> T) -> (u64, T) {
+    for _ in 0..8 {
+        HEAP.reset_peak_usage();
+        let before = HEAP.current_usage();
+        let out = run();
+        let peak = HEAP.peak_usage() - before;
+        if HEAP.current_usage() == before {
+            return (u64::try_from(peak).unwrap(), out);
+        }
+    }
+    panic!("every window ended with the heap holding other than it began with");
+}
+
+#[test]
+fn a_peak_is_measured_in_a_window_that_ends_with_the_heap_as_it_began() {
+    let mut beside = Vec::new();
+    let (peak, ()) = peak_alone(|| {
+        // Kept the first time only, as the test harness's thread keeps what it allocates as a
+        // test starts.
+        if beside.is_empty() {
+            beside.push(std::hint::black_box(vec![0_u8; 900]));
+        }
+        drop(std::hint::black_box(vec![0_u8; 1_000]));
+    });
+    assert_eq!(peak, 1_000);
+}
+
 /// What `column` expands to, as the engine charges it for a destination storing `native` kinds.
 fn expanded(column: &ArrayRef, native: &[TypeKind]) -> u64 {
     let batch = RecordBatch::try_from_iter([("column", Arc::clone(column))]).unwrap();
