@@ -4,8 +4,9 @@
 //!
 //! Rust cannot know that a file descriptor number names an open file nothing else owns, so
 //! turning it into an owned socket is `unsafe`. [`adopt`] checks what it can before it owns the
-//! descriptor: it is an open socket; it is not close-on-exec, so the standard library, which
-//! opens everything close-on-exec, did not open it here; and it is taken once per process.
+//! descriptor: it is an open socket; it is not close-on-exec, which refuses a descriptor the
+//! standard library opened and left as it opened it, though not one whose flag was cleared; and
+//! it is taken once per process.
 //!
 //! Every other crate of the workspace forbids `unsafe` code. This one holds nothing else, and
 //! allows it only at the places that need it.
@@ -13,8 +14,8 @@
 //! [`adopt`] is a safe function, so that a crate forbidding `unsafe` code can call it, and what
 //! it cannot check is left to its caller: that nothing else in the process owns the descriptor.
 //! A process that made a socket, cleared its close-on-exec flag and kept its owner would have it
-//! owned twice. `rdlt-connector` calls it on the descriptor its host passed before any connector
-//! code runs, its factories' construction included, and is the only crate the workspace's
+//! owned twice. `rdlt-connector`'s `serve` calls it on the descriptor its host passed before it
+//! builds the connector's factories, and that crate is the only crate the workspace's
 //! dependency rule lets use it; `rdlt-host` alone uses [`inheriting_only`].
 //!
 //! ```no_run

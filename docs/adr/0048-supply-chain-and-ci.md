@@ -49,8 +49,7 @@ This record decides what holds each statement, and says where a check ends.
     holds is not there; `is_open` asks the same of any number, for a connector's own check of
     what it was started with. That nothing else in the process owns the descriptor is its
     caller's to hold (Rulings). `serve` calls it once its arguments name the descriptor, before
-    its runtime starts and before any connector code runs, the construction of the connector's
-    factories and its configuration's schema included. The dependency rule (`cargo xtask deps`)
+    its runtime starts and before it builds the connector's factories. The dependency rule (`cargo xtask deps`)
     lets `rdlt-connector` and `rdlt-host` alone use the crate, and none as a dev-dependency.
   - **What the compiler holds.** Every other target's root file carries
     `#![forbid(unsafe_code)]`: libraries, binaries, examples, integration tests, benches and
@@ -152,8 +151,8 @@ This record decides what holds each statement, and says where a check ends.
   activation, where `listenfd` takes a descriptor systemd passed by number through a safe call.
   Only code that owns a socket without close-on-exec can break it: one it made or duplicated
   without the flag, whose flag it cleared, or that it took by number itself. `serve` adopts
-  before any connector code runs, its factories' construction included, so only a binary's own
-  `main`, before it calls `serve`, could. An `unsafe` `adopt` would put an `unsafe` block in
+  before it builds the connector's factories, so only a binary's own code that runs before it
+  calls `serve` could. An `unsafe` `adopt` would put an `unsafe` block in
   every connector binary, where the workspace forbids it, and no owned handle exists for a
   descriptor a parent passed by number. Cost if wrong: such a binary closes a socket its other
   owner still uses, whose next read or write fails or reaches whatever later takes the number.
