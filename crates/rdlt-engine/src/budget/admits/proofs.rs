@@ -1,0 +1,80 @@
+//! Proofs that what a budget admits a connector to send fits the shares it draws on, for
+//! every budget and count of reads within each proof's bound.
+
+use rdlt_connector::cost::JSON_CHARGE;
+use rdlt_wire::Limits;
+use rdlt_wire::limits::{Class, MESSAGE_ROOM};
+
+use super::{admitted, kept, least, row_overhead};
+use crate::budget::Shares;
+use crate::limits::{COLUMN_RECORD, RECORDED, SCHEMA_KEPT};
+
+/// The most reads at once the proofs take a budget to be read by.
+const READERS: usize = 64;
+
+/// Any count of reads at once, from one to `READERS`.
+fn any_readers() -> usize {
+    kani::any_where(|readers: &usize| (1..=READERS).contains(readers))
+}
+
+/// Each limit a budget admits, all at once, fits the share it draws on: a frame beside what a
+/// read keeps and its message's room within what pushes take, and one row of it within half a
+/// request; JSON text and the batches it becomes within what pushes take; a frame decoded
+/// within what pushes take, and any other answer decoded within the answers' share; every
+/// read's cursor and answer within the cursors' share, and a seal's within the log's; a
+/// schema, its decoding and the dictionaries within what a read keeps; and a table's records
+/// within the tables' share.
+///
+/// Bound: every capacity, read by 1 to `READERS` reads at once.
+#[kani::proof]
+#[kani::unwind(9)]
+fn what_each_admitted_limit_admits_fits_the_share_it_draws_on() {
+    let (capacity, readers) = (kani::any::<u64>(), any_readers());
+    let shares = Shares::of(capacity);
+    let limits = admitted(shares, readers);
+    let kept = kept(shares, readers);
+    let defaults = Limits::default();
+    assert_eq!(limits.lesser(&defaults), limits);
+    let message = limits.frame_bytes.saturating_add(MESSAGE_ROOM);
+    assert!(limits.frame_bytes == 0 || message.saturating_add(kept) <= shares.intake.max(kept));
+    let row = limits
+        .frame_bytes
+        .saturating_add(row_overhead(limits.schema_columns));
+    assert!(limits.frame_bytes == 0 || row <= shares.request / 2);
+    assert!(limits.json_push_bytes.saturating_mul(JSON_CHARGE) <= shares.intake);
+    let decoded = |class| u64::try_from(limits.decoded(class)).unwrap_or(u64::MAX);
+    assert!(limits.admit_peer().is_err() || decoded(Class::Data) <= shares.intake);
+    for class in [Class::Catalog, Class::State, Class::Control] {
+        assert!(decoded(class) <= shares.control);
+    }
+    let reads = u64::try_from(readers).unwrap_or(u64::MAX);
+    assert!(limits.cursor_bytes.saturating_mul(2 * (reads + 1)) <= shares.cursors);
+    assert!(limits.cursor_bytes.saturating_mul(4) <= shares.log);
+    assert!(shares.cursors.saturating_mul(3) <= shares.log);
+    let schema = limits.schema_bytes.saturating_mul(SCHEMA_KEPT);
+    assert!(schema.saturating_add(limits.dictionary_bytes) <= kept);
+    let records = limits
+        .schema_columns
+        .saturating_mul(RECORDED * COLUMN_RECORD);
+    assert!(records <= shares.tables);
+    assert_eq!(
+        (limits.batch_rows, limits.batch_values, limits.nesting_depth),
+        (
+            defaults.batch_rows,
+            defaults.batch_values,
+            defaults.nesting_depth
+        )
+    );
+}
+
+/// Every budget from the least up admits a peer, read by as many reads: a memory the
+/// configuration accepts is one whose limits the protocol accepts.
+///
+/// Bound: every capacity, read by 1 to `READERS` reads at once.
+#[kani::proof]
+#[kani::unwind(42)]
+fn every_budget_from_the_least_up_admits_a_peer() {
+    let (capacity, readers) = (kani::any::<u64>(), any_readers());
+    kani::assume(capacity >= least(readers));
+    assert_eq!(admitted(Shares::of(capacity), readers).admit_peer(), Ok(()));
+}

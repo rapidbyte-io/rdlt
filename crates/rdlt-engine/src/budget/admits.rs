@@ -1,6 +1,8 @@
 //! The limits a budget admits within: what a connector told them never sends beyond what the
 //! budget's shares hold.
 
+#[cfg(kani)]
+mod proofs;
 #[cfg(test)]
 mod tests;
 
@@ -107,11 +109,13 @@ pub(crate) fn kept(shares: Shares, readers: usize) -> u64 {
     shares.reads / u64::try_from(readers).unwrap_or(u64::MAX).max(1)
 }
 
-/// Bytes: the least budget whose shares admit what the protocol lets no peer go below, a frame
-/// of [`rdlt_wire::limits::MIN_FRAME_BYTES`] among them, read by `readers` reads at once.
+/// Bytes: the least budget from which every budget up admits what the protocol lets no peer go
+/// below, a frame of [`rdlt_wire::limits::MIN_FRAME_BYTES`] among them, read by `readers` reads
+/// at once.
 pub(crate) fn least(readers: usize) -> u64 {
     let admits = |capacity: u64| admitted(Shares::of(capacity), readers).admit_peer().is_ok();
-    // What a budget admits grows with it: found by halving.
+    // What a budget admits grows with it but for the few bytes its shares' rounding moves a
+    // frame by: halving ends at a budget that admits beside one a byte less that does not.
     let (mut low, mut high) = (0_u64, 1_u64 << 40);
     while low < high {
         let middle = low + (high - low) / 2;
