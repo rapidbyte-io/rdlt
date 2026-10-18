@@ -7,14 +7,16 @@ decisions and their reasons are in `docs/adr/`. Read those before changing code.
 
 - Check the latest nightly run (`gh run list --workflow nightly.yml --limit 1`). A failing nightly
   is fixed before other work: its gates (the simulation's seeds and coverage, fuzzing, stress,
-  mutation testing and the resident-memory check) run nowhere else.
+  mutation testing, every Kani proof, the specs' model checking and the resident-memory check)
+  run nowhere else.
 
 ## Before you push
 
-- Run `just ready`: lint, tests, and mutation testing of your change. CI runs the rest of the
-  pull-request gate (coverage, Miri, the simulation, macOS, instruction and allocation counts
-  against main) but not mutation testing (ADR 0003), so a missed mutant is caught here or by the
-  nightly pass.
+- Run `just ready`: lint, tests, Kani's proofs and the specs where your change touches them,
+  and mutation testing of your change. CI runs the rest of the pull-request gate (coverage,
+  Miri, the simulation, macOS, instruction and allocation counts against main, and the proofs
+  and specs again) but not mutation testing (ADR 0003), so a missed mutant is caught here or by
+  the nightly pass.
 - A change that makes a case of `just instructions` take more than 2% more instructions or
   allocations than `main` names the case in an `Instructions-Accepted: <case>` trailer of the
   commit that does it, with the reason in the body; CI fails it otherwise. The counts need

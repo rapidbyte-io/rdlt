@@ -123,8 +123,8 @@ to change one.
 ```sh
 mise install --locked # install the tools as `mise.lock` holds them
 just --list         # see every recipe
-just ci             # what the gate runs (Linux): lint, test, coverage, Miri, counts, simulation
-just ready          # before pushing: lint, tests, and mutation testing of your change
+just ci             # what the gate runs (Linux): lint, test, formal checks, coverage, Miri, counts, simulation
+just ready          # before pushing: lint, tests, formal checks, and mutation testing of your change
 just sim 42         # replay simulation seed 42
 just stress 20      # the simulation on many threads and the real clock
 just sim-coverage   # how much of the engine the simulation alone reaches
