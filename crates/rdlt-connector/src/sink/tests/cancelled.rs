@@ -124,7 +124,7 @@ fn a_checkpoint_cut_wherever_it_waits_leaves_its_barrier_pending_and_goes_once_r
         },
     );
     // The admission, then room in the channel.
-    assert!(points >= 2, "{points}");
+    assert_eq!(points, 2);
 }
 
 /// An emitter whose one-event channel holds a push the engine takes `SLOW` from now, and whose
@@ -176,7 +176,7 @@ fn an_emitter_s_checkpoint_cut_wherever_it_waits_answers_its_barrier_when_retrie
         },
     );
     // Room in the channel.
-    assert!(points >= 1, "{points}");
+    assert_eq!(points, 1);
 }
 
 /// A sink whose engine asks for barrier 1 `PACE` from now, and keeps its end.
@@ -198,14 +198,21 @@ fn a_request_cut_wherever_it_waits_is_seen_when_asked_for_again() {
         async |sink: &mut PartitionSink, ended: Ended<Requested>| {
             let requested = match ended {
                 Ended::Returned(requested) => requested,
-                Ended::Cancelled { .. } => tokio::time::timeout(WAIT, sink.requested(0))
-                    .await
-                    .expect("the barrier is seen again"),
+                Ended::Cancelled { at } => {
+                    assert_eq!(
+                        sink.pending_barrier(),
+                        None,
+                        "a request cut at wait {at} answers and asks for no barrier"
+                    );
+                    tokio::time::timeout(WAIT, sink.requested(0))
+                        .await
+                        .expect("the barrier is seen again")
+                }
             };
             assert_eq!(requested, Requested::Checkpoint(1));
             assert_eq!(sink.pending_barrier(), Some(1));
         },
     );
     // The wait for the engine's barrier.
-    assert!(points >= 1, "{points}");
+    assert_eq!(points, 1);
 }
