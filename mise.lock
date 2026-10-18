@@ -76,6 +76,24 @@ checksum = "sha256:fe67d82a10d8597a3549364cb733a3f9cc1bfff9031b7ae46384a9f2a7209
 url = "https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-aarch64-apple-darwin.tar.gz"
 url_api = "https://api.github.com/repos/EmbarkStudios/cargo-deny/releases/assets/471597689"
 
+[[tools."github:apalache-mc/apalache"]]
+version = "0.62.4"
+backend = "github:apalache-mc/apalache"
+specifiers = ["0.62.4"]
+
+[tools."github:apalache-mc/apalache".options]
+asset_pattern = "apalache-*.tgz"
+
+[tools."github:apalache-mc/apalache"."platforms.linux-x64"]
+checksum = "sha256:b781b53bba32fac14ac2e02b0332e1dc2edc64cb7b850c0608d8142cc7aa2ef4"
+url = "https://github.com/apalache-mc/apalache/releases/download/v0.62.4/apalache-0.62.4.tgz"
+url_api = "https://api.github.com/repos/apalache-mc/apalache/releases/assets/633378248"
+
+[tools."github:apalache-mc/apalache"."platforms.macos-arm64"]
+checksum = "sha256:b781b53bba32fac14ac2e02b0332e1dc2edc64cb7b850c0608d8142cc7aa2ef4"
+url = "https://github.com/apalache-mc/apalache/releases/download/v0.62.4/apalache-0.62.4.tgz"
+url_api = "https://api.github.com/repos/apalache-mc/apalache/releases/assets/633378248"
+
 [[tools."github:bnjbvr/cargo-machete"]]
 version = "0.9.2"
 backend = "github:bnjbvr/cargo-machete"
@@ -105,6 +123,39 @@ url_api = "https://api.github.com/repos/crate-ci/committed/releases/assets/36154
 checksum = "sha256:98eae08e1b0715ef6446c4bd08352f21f3a3ce21535a35687a1e132bcb4fcac1"
 url = "https://github.com/crate-ci/committed/releases/download/v1.1.11/committed-v1.1.11-aarch64-apple-darwin.tar.gz"
 url_api = "https://api.github.com/repos/crate-ci/committed/releases/assets/362199688"
+
+[[tools."github:model-checking/kani"]]
+version = "0.68.0"
+backend = "github:model-checking/kani"
+specifiers = ["0.68.0"]
+
+[tools."github:model-checking/kani".options]
+version_prefix = "kani-"
+
+[tools."github:model-checking/kani"."platforms.linux-x64"]
+checksum = "sha256:32e2b484d73ede0bbf64a2cf0879c4259422497d8aec4ee67d448de9ae7843d3"
+url = "https://github.com/model-checking/kani/releases/download/kani-0.68.0/kani-0.68.0-x86_64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/model-checking/kani/releases/assets/566906903"
+
+[tools."github:model-checking/kani"."platforms.macos-arm64"]
+checksum = "sha256:a5d39a5d5e748253a553aa62f295c6c397287927a28e5e32691d7ff2eda0c398"
+url = "https://github.com/model-checking/kani/releases/download/kani-0.68.0/kani-0.68.0-aarch64-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/model-checking/kani/releases/assets/566907326"
+
+[[tools."github:quint-co/quint"]]
+version = "0.33.0"
+backend = "github:quint-co/quint"
+specifiers = ["0.33.0"]
+
+[tools."github:quint-co/quint"."platforms.linux-x64"]
+checksum = "sha256:79eaa33aeb28a72681122656974557db553f4d01b792e22727075b41806db4d3"
+url = "https://github.com/quint-co/quint/releases/download/v0.33.0/quint-linux-amd64"
+url_api = "https://api.github.com/repos/quint-co/quint/releases/assets/596579771"
+
+[tools."github:quint-co/quint"."platforms.macos-arm64"]
+checksum = "sha256:e65d0cb2054c9823e3f035656f7f9ddaebd11b7e270fcf2f773008287b95eef7"
+url = "https://github.com/quint-co/quint/releases/download/v0.33.0/quint-macos-arm64"
+url_api = "https://api.github.com/repos/quint-co/quint/releases/assets/596580835"
 
 [[tools."github:rust-fuzz/cargo-fuzz"]]
 version = "0.13.2"
@@ -142,6 +193,19 @@ checksum = "sha256:af0ab90e56aa716ae9f545a93e4338d4f36525e187d367b6519da71b60249
 url = "https://github.com/taiki-e/cargo-hack/releases/download/v0.6.45/cargo-hack-aarch64-apple-darwin.tar.gz"
 url_api = "https://api.github.com/repos/taiki-e/cargo-hack/releases/assets/433843066"
 provenance = "github-attestations"
+
+[[tools.java]]
+version = "temurin-21.0.12+101.0.LTS"
+backend = "core:java"
+specifiers = ["temurin-21.0.12+101.0.LTS"]
+
+[tools.java."platforms.linux-x64"]
+checksum = "sha256:ce79869e1307ed8ee1e2baa86a412b1eb5b75d10a01006d788a6f968bcfaee94"
+url = "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12.1%2B1/OpenJDK21U-jdk_x64_linux_hotspot_21.0.12.1_1.tar.gz"
+
+[tools.java."platforms.macos-arm64"]
+checksum = "sha256:3623232f33a9c3baadf304480b2535f9a3cba8a58d42ecbb438ba267315d9998"
+url = "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12.1%2B1/OpenJDK21U-jdk_aarch64_mac_hotspot_21.0.12.1_1.tar.gz"
 
 [[tools.just]]
 version = "1.58.0"

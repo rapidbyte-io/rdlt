@@ -8,14 +8,18 @@ lockfile = true
 [tools]
 actionlint = "1.7.12"
 "aqua:nextest-rs/nextest/cargo-nextest" = "0.9.146"
-"aqua:rui314/mold" = { version = "2.42.1", os = ["linux"] }                # no macOS build
+"aqua:rui314/mold" = { version = "2.42.1", os = ["linux"] }                                                    # no macOS build
 "aqua:taiki-e/cargo-llvm-cov" = "0.9.1"
 cargo-deny = "0.20.2"
+"github:apalache-mc/apalache" = { version = "0.62.4", asset_pattern = "apalache-*.tgz", strip_components = 1 } # one archive for every platform: the JVM runs it
 "github:bnjbvr/cargo-machete" = "0.9.2"
 "github:crate-ci/committed" = "1.1.11"
-"github:rust-fuzz/cargo-fuzz" = { version = "0.13.2", os = ["linux"] }     # no macOS arm64 build
-"github:sourcefrog/cargo-mutants" = { version = "27.1.0", os = ["linux"] } # no macOS arm64 build
+"github:model-checking/kani" = { version = "0.68.0", version_prefix = "kani-", strip_components = 1 }          # the release bundle; `just kani` installs its nightly
+"github:quint-co/quint" = "0.33.0"
+"github:rust-fuzz/cargo-fuzz" = { version = "0.13.2", os = ["linux"] }                                         # no macOS arm64 build
+"github:sourcefrog/cargo-mutants" = { version = "27.1.0", os = ["linux"] }                                     # no macOS arm64 build
 "github:taiki-e/cargo-hack" = "0.6.45"
+java = "temurin-21.0.12+101.0.LTS"                                                                             # the runtime of Apalache and TLC
 just = "1.58.0"
 pinact = "5.0.0"
 shellcheck = "0.11.0"
