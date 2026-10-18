@@ -158,5 +158,5 @@ fn a_reader_cut_wherever_it_waits_reads_each_message_once_and_gives_its_room_bac
         },
     );
     // The first message's two pieces, its room, and its charge.
-    assert!(points >= 4, "{points}");
+    assert_eq!(points, 4);
 }
