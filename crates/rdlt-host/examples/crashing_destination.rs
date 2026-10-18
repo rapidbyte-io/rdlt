@@ -83,9 +83,9 @@ impl DestinationSession for Session {
 }
 
 fn main() -> ExitCode {
-    Served::new()
-        .with_destination(Box::new(Crashing(
+    Served::serve(|| {
+        Served::new().with_destination(Box::new(Crashing(
             destination_factory::<MemoryDestination>(),
         )))
-        .serve()
+    })
 }

@@ -3,10 +3,11 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use rdlt_host::Provider as _;
 
-use crate::process::{local, scripted};
+use crate::process::{example, guarded, local, scripted};
 
 /// The script of a connector whose check fails unless it started with descriptors 0 to 3 alone.
 fn only_its_descriptors() -> serde_json::Value {
@@ -21,6 +22,52 @@ async fn a_spawned_connector_starts_with_its_streams_and_its_socket_alone() {
         .expect("the connector starts")
         .connector;
     source.check().await.expect("it holds no other descriptor");
+}
+
+#[tokio::test]
+async fn a_spawned_connector_takes_its_socket_before_it_builds_its_factory() {
+    let script = serde_json::json!({ "adopted_first": true });
+    let checked = tokio::time::timeout(Duration::from_secs(20), async {
+        let source = local()
+            .source(&scripted(), &script)
+            .await
+            .expect("the connector starts")
+            .connector;
+        source.check().await
+    })
+    .await
+    .expect("the connector starts and answers within the bound");
+    checked.expect("its socket was taken before its factory was built");
+}
+
+/// Names the file the scripted connector creates as its factory is built.
+const FACTORY_MARKER: &str = "RDLT_SCRIPTED_FACTORY_MARKER";
+
+#[tokio::test]
+async fn a_connector_whose_socket_cannot_be_taken_fails_without_building_its_factory() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let marker = dir.path().join("built");
+    let refused = tokio::process::Command::new(example("scripted_connector"))
+        .args(["--rdlt-fd", "2"])
+        .env(FACTORY_MARKER, &marker)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .process_group(0)
+        .spawn()
+        .expect("the connector starts");
+    guarded(&refused);
+    let output = tokio::time::timeout(Duration::from_secs(20), refused.wait_with_output())
+        .await
+        .expect("the connector ends within the bound")
+        .expect("the connector runs");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("taking the host's socket failed: file descriptor 2 is a standard stream"),
+        "{stderr}"
+    );
+    assert!(!marker.exists(), "its factory was built before its socket");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -70,7 +117,7 @@ async fn a_descriptor_the_host_holds_to_be_inherited_reaches_no_connector() {
     );
     let script = serde_json::json!({ "starts": copy });
     let source = local()
-        .grace(std::time::Duration::from_millis(200))
+        .grace(Duration::from_millis(200))
         .source(&scripted(), &script)
         .await
         .expect("the connector starts")
@@ -80,7 +127,7 @@ async fn a_descriptor_the_host_holds_to_be_inherited_reaches_no_connector() {
         if done.exists() {
             break;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
     assert!(done.exists(), "the shell never ran");
     // Nothing of the host's: the number leads to nothing, so the copy fails before it starts.
@@ -105,7 +152,7 @@ fn opening(stop: Arc<AtomicBool>) -> std::thread::JoinHandle<u64> {
             let flags = rustix::fs::OFlags::RDONLY;
             if let Ok(file) = rustix::fs::open("/dev/null", flags, rustix::fs::Mode::empty()) {
                 opened += 1;
-                std::thread::sleep(std::time::Duration::from_micros(200));
+                std::thread::sleep(Duration::from_micros(200));
                 drop(file);
             }
         }

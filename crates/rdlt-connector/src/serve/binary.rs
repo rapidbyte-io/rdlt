@@ -15,10 +15,11 @@ use crate::factory::{RoleFactory, Serve};
 
 /// Serves `C` as a whole binary's `main` does: `fn main() -> ExitCode { serve::<C>() }`.
 ///
-/// Spawned by its host, with `--rdlt-fd`, it serves the socket the host passed until the host
-/// closes it, and shuts down gracefully once its standard input ends or it receives `SIGTERM`. The
-/// host manages it, so it ignores `SIGINT`: a terminal's Ctrl-C reaches the host, which stops its
-/// connectors itself.
+/// Spawned by its host, with `--rdlt-fd`, it takes the socket the host passed before it builds
+/// `C`'s factory, so no connector code runs first, and serves it until the host closes it. It
+/// shuts down gracefully once its standard input ends or it receives `SIGTERM`. The host manages
+/// it, so it ignores `SIGINT`: a terminal's Ctrl-C reaches the host, which stops its connectors
+/// itself.
 ///
 /// Run on its own, with `--listen <address> --tls-cert <path> --tls-key <path> --tls-client-ca
 /// <path>` and a `--tls-allow-host <name>` for each host it accepts, it serves those hosts over
@@ -36,7 +37,7 @@ use crate::factory::{RoleFactory, Serve};
 /// [`STATE_BYTES`](rdlt_wire::limits::STATE_BYTES)). A host spawning the connector passes its
 /// own limit.
 pub fn serve<C: Serve>() -> ExitCode {
-    Served::from(C::factory()).serve()
+    Served::serve(|| C::factory().into())
 }
 
 impl From<RoleFactory> for Served {
@@ -49,9 +50,12 @@ impl From<RoleFactory> for Served {
 }
 
 impl Served {
-    /// Serves these roles as a whole binary's `main` does; see [`serve`].
-    pub fn serve(self) -> ExitCode {
-        match run(self) {
+    /// Serves the roles `build` makes as a whole binary's `main` does; see [`serve`].
+    ///
+    /// A spawned connector calls `build` once it has taken its host's socket, so nothing `build`
+    /// runs comes before.
+    pub fn serve(build: impl FnOnce() -> Self) -> ExitCode {
+        match run(build) {
             Ok(()) => ExitCode::SUCCESS,
             Err(message) => {
                 #[expect(
@@ -68,11 +72,13 @@ impl Served {
     }
 }
 
-fn run(served: Served) -> Result<(), Failure> {
+fn run(build: impl FnOnce() -> Served) -> Result<(), Failure> {
+    // The arguments name the descriptor to take, and reading them runs no connector code.
     let (args, limits) = parse(std::env::args().skip(1))?;
     match args {
-        Args::Inherited { fd } => inherited_socket(served, fd, limits),
+        Args::Inherited { fd } => inherited_socket(build, fd, limits),
         Args::Listen(listening) => {
+            let served = build();
             let runtime = runtime()?;
             let served = runtime.block_on(async move {
                 let (stop, now) =
@@ -89,14 +95,21 @@ fn run(served: Served) -> Result<(), Failure> {
     }
 }
 
-/// Serves the socket the host passed at `fd`, enforcing `limits` on what it receives.
-fn inherited_socket(served: Served, fd: i32, limits: Limits) -> Result<(), Failure> {
-    // First, before anything in this process opens a file: see `rdlt_adopt::adopt`.
+/// Serves the socket the host passed at `fd` with the roles `build` makes, enforcing `limits` on
+/// what it receives.
+fn inherited_socket(
+    build: impl FnOnce() -> Served,
+    fd: i32,
+    limits: Limits,
+) -> Result<(), Failure> {
+    // Before any connector code runs, its factories' construction included: see
+    // `rdlt_adopt::adopt`.
     let socket = rdlt_adopt::adopt(fd)
         .map_err(|error| format!("taking the host's socket failed: {error}"))?;
     #[cfg(target_os = "linux")]
     nix::sys::prctl::set_pdeathsig(nix::sys::signal::Signal::SIGTERM)
         .map_err(|error| format!("asking to end with the host failed: {error}"))?;
+    let served = build();
     let runtime = runtime()?;
     let served = runtime.block_on(async move {
         socket

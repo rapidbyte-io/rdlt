@@ -9,7 +9,5 @@ use rdlt_connector::source_factory;
 use rdlt_connector_reference::GeneratorSource;
 
 fn main() -> ExitCode {
-    Served::new()
-        .with_source(source_factory::<GeneratorSource>())
-        .serve()
+    Served::serve(|| Served::new().with_source(source_factory::<GeneratorSource>()))
 }
