@@ -9,6 +9,11 @@
 //! Each run builds afresh on a runtime of its own whose clock is paused, so runs are alike up to
 //! where one is cut, and a run that never ends fails at the paused clock's bound rather than
 //! hanging.
+//!
+//! Two things are not checked. A run that waits at other points than the first, with as many
+//! waits, is cut somewhere else unseen, so an operation must wait alike on every run: no unbiased
+//! `select!`, no watch with several waiters. A panic in a task the operation spawns is held by
+//! its handle and never reaches the harness, so a spawned fake reports its own failures.
 
 #[cfg(test)]
 mod tests;
@@ -78,7 +83,7 @@ pub enum Ended<T> {
 /// # Panics
 ///
 /// Where it is called within a tokio runtime; where the operation never waits, waits more than
-/// [`POINTS`] times, or waits otherwise when run again; where a run and its check take more than
+/// [`POINTS`] times, or returns before the wait it is cut at when run again; where a run and its check take more than
 /// an hour of the paused clock; and where `check` panics. Each message names the run it failed in.
 pub fn at_every_point<S, T>(
     mut make: impl AsyncFnMut() -> S,
