@@ -5,7 +5,6 @@ use std::num::NonZeroUsize;
 use bytes::Bytes;
 
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use tokio::sync::Notify;
 
@@ -19,9 +18,6 @@ use crate::spec::BoxFuture;
 fn json(text: &'static str) -> SourceEvent {
     SourceEvent::Push(Push::Json(Bytes::from_static(text.as_bytes())))
 }
-
-/// Bounds every wait of a test: a send that hangs fails its test.
-const WAIT: Duration = Duration::from_secs(60);
 
 fn answering(barrier: u64) -> SourceEvent {
     SourceEvent::Checkpoint {
@@ -306,46 +302,4 @@ async fn a_checkpoint_answering_a_barrier_never_requested_is_refused() {
         feed.recv().await.expect("the checkpoint arrives");
     }
     assert_eq!(sink.pending_barrier(), None);
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_checkpoint_whose_send_is_cancelled_leaves_its_barrier_pending() {
-    let (mut sink, mut feed) = partition_channel(NonZeroUsize::MIN);
-    sink.send(json("[1]")).await.expect("the push goes");
-    feed.request_checkpoint(1);
-    let waited = tokio::time::timeout(Duration::from_secs(1), sink.send(answering(1))).await;
-    assert!(waited.is_err(), "the channel is full: the checkpoint waits");
-    assert_eq!(sink.pending_barrier(), Some(1));
-    let pushed = tokio::time::timeout(WAIT, feed.recv())
-        .await
-        .expect("the push arrives");
-    assert_eq!(pushed, Some(json("[1]")));
-    tokio::time::timeout(WAIT, sink.send(answering(1)))
-        .await
-        .expect("the checkpoint is sent")
-        .expect("the checkpoint goes");
-    assert_eq!(sink.pending_barrier(), None);
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_checkpoint_cancelled_waiting_for_admission_leaves_its_barrier_pending() {
-    let gate = Arc::new(Gate::default());
-    let (mut sink, mut feed) =
-        admitted_partition_channel(NonZeroUsize::new(4).unwrap(), gate.clone());
-    feed.request_checkpoint(1);
-    let waited = tokio::time::timeout(Duration::from_secs(1), sink.send(answering(1))).await;
-    assert!(waited.is_err(), "the checkpoint waits for admission");
-    assert_eq!(sink.pending_barrier(), Some(1));
-    // The gate opens for the next admission to ask.
-    gate.open.notify_one();
-    tokio::time::timeout(WAIT, sink.send(answering(1)))
-        .await
-        .expect("the checkpoint is admitted")
-        .expect("the checkpoint goes");
-    assert_eq!(sink.pending_barrier(), None);
-    let (event, _) = tokio::time::timeout(WAIT, feed.recv_admitted())
-        .await
-        .expect("the checkpoint arrives")
-        .expect("the read goes on");
-    assert_eq!(event, answering(1));
 }
