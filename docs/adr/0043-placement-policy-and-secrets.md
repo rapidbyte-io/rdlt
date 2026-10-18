@@ -173,7 +173,9 @@ given. The host did not enforce it:
   - A text value may hold `${env:NAME}`, `${file:/absolute/path}` and `${secret:name}`;
     `$${` is a literal `${`. A `SecretResolver` resolves them when the configuration is sent:
     after the handshake showed the connector to be the one the reference names, and again at
-    each respawn or redial.
+    each respawn or redial, within the connect deadline. A resolver that has not answered by
+    then fails the start with a transient `deadline_exceeded` error, which a later attempt may
+    mend; the document under resolution is wiped however its resolution ends.
   - **A configuration's author is not trusted with the host's secrets.** Whoever writes a
     pipeline's configuration may not be the operator, as in a service whose tenants write
     their pipelines, and a reference sends what it names to a connector the author may

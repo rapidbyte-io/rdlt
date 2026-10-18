@@ -132,6 +132,9 @@ still taken largely on trust:
   appended, never falls under a prefix the destination reserves: one that would is passed over
   and the name escaped once more, the same way every time.
 - **Every wait on a connector has a deadline.**
+  - A connector's start is bounded step by step by the connect deadline: its spawn or its
+    stream's opening or dial; its connection's setup with its handshake; the resolution of its
+    configuration's secrets; and its configuration.
   - The engine ends every call into a source or a destination but a read at
     `EngineConfig::connector_wait` (30 minutes), in every placement.
   - A read asked to stop is dropped after `EngineConfig::stop_wait` (60 s).
