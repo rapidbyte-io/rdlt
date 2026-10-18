@@ -98,10 +98,11 @@ sim-rate floor="7" cores="": sim-archive
     RDLT_SIM_SEED="" RDLT_SIM_SEEDS=1000 RDLT_SIM_SEEDS_FROM=0 RDLT_SIM_CORES="{{ cores }}" cargo nextest run --archive-file target/sim.tar.zst --workspace-remap . -E 'test(=exactly_once::every_row_lands_exactly_once_through_faults_crashes_and_concurrent_runs)'
     cargo xtask sim-rate target/sim-timings/exactly_once.jsonl --floor {{ floor }}
 
-# Measure how much of the engine, connector and host code the simulation alone reaches, and hold
-# it above its floor: left out are test code, the connector's test kit and SQL planner, generated
-# code, and what the simulation never runs (process placement, a served binary's entry, and the
-# write-ahead log's local-directory and in-memory stores: the simulation keeps logs in its own).
+# Measure how much of the engine, connector, host and data-plane code the simulation alone
+# reaches, and hold it above its floor: left out are test code, the connector's test kit and SQL
+# planner, generated code, and what the simulation never runs (process placement, a served
+# binary's entry, and the write-ahead log's local-directory and in-memory stores: the simulation
+# keeps logs in its own).
 # Each sweep's seeds run side by side on the host's cores, or on `cores` when given
 sim-coverage seeds="1000" cores="":
     rustup toolchain install {{ nightly }} --profile minimal --component llvm-tools-preview
