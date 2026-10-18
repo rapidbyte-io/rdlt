@@ -8,7 +8,7 @@ use serde_json::json;
 use super::reference::{Piece, pieces};
 use super::{
     Config, EnvSecrets, FileSecrets, Redactions, ReferenceFault, SecretError, SecretFault,
-    SecretKind, SecretReference, SecretResolver, Secrets, wipe,
+    SecretKind, SecretReference, SecretResolver, Secrets, Wiping, wipe,
 };
 use crate::limits::{SECRET_BYTES, SECRET_NAME_BYTES, SECRET_REFERENCES};
 use rdlt_wire::limits::CONFIG_BYTES;
@@ -824,5 +824,15 @@ fn wiping_a_document_empties_every_text_it_holds_at_every_depth() {
             "flag": true,
             "none": null,
         })
+    );
+}
+
+#[test]
+fn a_document_under_resolution_is_wiped_however_its_resolution_ends() {
+    let mut document = json!({ "token": "s3cret", "nested": ["one", {"deeper": "two"}] });
+    drop(Wiping(&mut document));
+    assert_eq!(
+        document,
+        json!({ "token": "", "nested": ["", {"deeper": ""}] })
     );
 }
