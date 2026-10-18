@@ -90,8 +90,8 @@ fn requires_unwinding(scan: &Scan, source: &str) -> bool {
 }
 
 /// Whether the `cfg` condition `text` holds in a build whose panics abort, or unwind, as
-/// `aborts` says, where every condition that is not of the panic strategy holds; `None` where
-/// it is no condition.
+/// `aborts` says, where every condition that is not of the panic strategy holds but `kani`, which
+/// only Kani's builds set and which run nothing they build; `None` where it is no condition.
 fn holds(text: &str, aborts: bool) -> Option<bool> {
     let mut tokens = Vec::new();
     let mut rest = text;
@@ -144,7 +144,7 @@ fn predicate<'a, 'b>(tokens: &'b [Token<'a>], aborts: bool) -> Option<(bool, &'b
             };
             Some((holds, rest))
         }
-        rest => Some((true, rest)),
+        rest => Some((name != "kani", rest)),
     }
 }
 

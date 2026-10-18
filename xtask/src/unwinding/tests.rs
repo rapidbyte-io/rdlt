@@ -74,6 +74,7 @@ fn only_a_condition_that_holds_in_a_build_that_aborts_is_a_guard() {
         "not(not(panic = \"abort\"))",
         "all(any(panic = \"abort\"), not(panic = \"unwind\"))",
         "not(panic = \"unwind\")",
+        "all(panic = \"abort\", not(kani))",
     ];
     let others = [
         "not(panic = \"abort\")",
@@ -84,6 +85,8 @@ fn only_a_condition_that_holds_in_a_build_that_aborts_is_a_guard() {
         "all(panic = \"abort\", not(any(panic = \"abort\")))",
         "not(any(unix, panic = \"abort\"))",
         "all(panic = \"abort\"",
+        "all(panic = \"abort\", kani)",
+        "not(kani)",
     ];
     let cases = guards.iter().map(|guard| (guard, 0));
     for (condition, expected) in cases.chain(others.iter().map(|other| (other, 1))) {
