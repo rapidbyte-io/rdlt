@@ -226,6 +226,45 @@ proving:
     set -euo pipefail
     grep -rlE --include='*.rs' '^[[:space:]]*#\[cfg\(kani\)\]$' crates | cut -d/ -f2 | sort -u
 
+# Check every spec under `specs/`: typecheck it, run its tests, and simulate 10,000 runs of it
+# against its invariants, each a `val` whose name begins with a capital letter
+quint:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export QUINT_HOME="$PWD/target/quint-home"
+    rm -rf "$QUINT_HOME"
+    mkdir -p "$QUINT_HOME"
+    for spec in specs/*.qnt; do
+        quint typecheck "$spec"
+        quint test --backend typescript "$spec"
+        invariants=$(just --quiet properties val "$spec")
+        if [[ -z $invariants ]]; then
+            echo "$spec names no invariant" >&2
+            exit 1
+        fi
+        quint run --backend typescript "$spec" --max-samples 10000 --invariants $invariants
+    done
+    fetched=$(find "$QUINT_HOME" -mindepth 1)
+    if [ -n "$fetched" ]; then
+        echo "quint fetched into $QUINT_HOME: $fetched" >&2
+        exit 1
+    fi
+
+# The names of `spec`'s invariants (`kind` val) or temporal properties (`kind` temporal): each
+# definition of that kind whose name begins with a capital letter, its type given or not; fails
+# on such a definition whose name it cannot read
+[private]
+properties kind spec:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    names=$(sed -nE 's/^[[:space:]]*{{ kind }}[[:space:]]+([A-Z][A-Za-z0-9_]*)[[:space:]]*(:[^=]*)?=.*/\1/p' "{{ spec }}")
+    defined=$(grep -cE '^[[:space:]]*{{ kind }}[[:space:]]+[A-Z]' "{{ spec }}" || true)
+    if [[ $(grep -c . <<< "$names" || true) != "$defined" ]]; then
+        echo "{{ spec }} defines $defined capitalised {{ kind }}s, of which only these are read: $names" >&2
+        exit 1
+    fi
+    echo $names
+
 # Build a bench for profiling, for example `just profiling shred`: release's code with line
 # tables and frame pointers, in a target directory of its own so the flags never rebuild the
 # shared one; cargo prints the binary's path last
