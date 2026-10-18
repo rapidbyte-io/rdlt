@@ -379,7 +379,8 @@ pub enum ProviderError {
         /// Where the binary was found.
         path: PathBuf,
     },
-    /// The connector started, but did not connect: its handshake, or its own connect, failed.
+    /// The connector started, but did not connect: its handshake or its own connect failed, or
+    /// its configuration's secrets were not resolved within the connect deadline.
     #[error("connector `{id}` did not connect")]
     HandshakeFailed {
         /// The connector's id.

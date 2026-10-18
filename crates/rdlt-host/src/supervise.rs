@@ -238,7 +238,8 @@ pub(crate) enum Spawned {
     Unreachable(std::io::Error),
     /// Its TLS handshake failed.
     Tls(std::io::Error),
-    /// It did not connect: its handshake, or its own connect, failed.
+    /// It did not connect: its handshake or its own connect failed, or its configuration's
+    /// secrets were not resolved within the connect deadline.
     Connect(ConnectorError),
     /// It is not the connector placed: another binary, id or version, refused before it saw its
     /// configuration.
