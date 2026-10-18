@@ -75,6 +75,13 @@ only at its end. The owner also asked for the host to be simulated over a networ
     runs the same file. macOS cannot execute an open file: there a digest is refused and a
     trusted binary is executed by its path. A sandboxed connector whose binary was renamed over or
     removed is refused (`binary_replaced`) (ADR 0043).
+  - A spawn, the binary's hash and any sandbox's attempt included, ends within the connect
+    deadline. Past it the placement fails as a spawn that failed (`SpawnFailed`), and a
+    respawn as a lost connector; what the spawn starts afterwards is stopped as it ends.
+  - Each step of a start has a connect deadline of its own: the hash at placement, the spawn,
+    the connection's setup with its handshake, the resolution of its configuration's secrets,
+    and its configuration. A start whose every step is slow takes up to that many connect
+    deadlines in all.
   - The connector starts with its socket on file descriptor 3 (`--rdlt-fd=3`) and a piped standard
     input. Its environment is cleared, keeping only the variables `env_passthrough` names. The host
     sets no `RDLT_*` variables; it sets glibc's malloc tunables,
