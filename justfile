@@ -265,6 +265,79 @@ properties kind spec:
     fi
     echo $names
 
+# Model-check every spec under `specs/`: its invariants by Apalache over every run of up to
+# `steps` steps, then its invariants and temporal properties, each a `temporal` whose name begins
+# with a capital letter, by TLC over every state it reaches; Apalache and the JDK as mise.lock
+# holds them, never one Quint would fetch: Quint runs with a fresh `QUINT_HOME` holding only the
+# link to the locked distribution, the recipe refuses an `apalache-mc` that does not report the
+# locked version, fails if anything else appears in the directory, and fails a check that ran on
+# an Apalache server it did not start, which Quint would use unchecked; the servers write their
+# output under `target/apalache`
+quint-verify steps="10":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export QUINT_HOME="$PWD/target/quint"
+    apalache=$(mise where github:apalache-mc/apalache)
+    version=$(basename "$apalache")
+    reported=$("$apalache/bin/apalache-mc" version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
+    if [[ $reported != "$version" ]]; then
+        echo "apalache-mc reports $reported, mise.lock holds $version" >&2
+        exit 2
+    fi
+    rm -rf "$QUINT_HOME"
+    mkdir -p "$QUINT_HOME/apalache-dist-$version"
+    ln -sfn "$apalache" "$QUINT_HOME/apalache-dist-$version/apalache"
+    printf '{"maxHeap": "-Xmx4G", "workers": 4}\n' > "$QUINT_HOME/tlc.json"
+    unfetched() {
+        local extra
+        extra=$(find "$QUINT_HOME" -mindepth 1 -maxdepth 1 ! -name "apalache-dist-$version" ! -name tlc.json
+                find "$QUINT_HOME/apalache-dist-$version" -mindepth 1 -maxdepth 1 ! -name apalache)
+        if [[ -n $extra || ! -L "$QUINT_HOME/apalache-dist-$version/apalache" ]]; then
+            echo "quint fetched into $QUINT_HOME: $extra" >&2
+            exit 1
+        fi
+    }
+    started() {
+        if ! grep -qF "APALACHE version: $version " "$out/quint.log"; then
+            echo "quint used an Apalache server it did not start" >&2
+            exit 1
+        fi
+    }
+    specs=("$PWD"/specs/*.qnt)
+    out="$PWD/target/apalache"
+    rm -rf "$out"
+    mkdir -p "$out"
+    cd "$out"
+    for spec in "${specs[@]}"; do
+        invariants=$(just --quiet properties val "$spec" | tr ' ' ,)
+        if [[ -z $invariants ]]; then
+            echo "$spec names no invariant" >&2
+            exit 1
+        fi
+        temporal=$(just --quiet properties temporal "$spec" | tr ' ' ,)
+        quint verify "$spec" --apalache-version "$version" --max-steps {{ steps }} --invariant "$invariants" 2>&1 | tee "$out/quint.log"
+        started
+        unfetched
+        quint verify "$spec" --apalache-version "$version" --backend tlc --tlc-config "$QUINT_HOME/tlc.json" --invariant "$invariants" ${temporal:+--temporal "$temporal"} 2>&1 | tee "$out/quint.log"
+        started
+        unfetched
+    done
+
+# The formal checks of this branch's changes against `base`, uncommitted ones included: Kani's
+# proofs of each changed crate that holds any, and the specs where `specs/` changed; all of both
+# where the tools, the recipes or the pull-request workflow changed
+formal-diff base="origin/main":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    changed=$(git diff --name-only "$(git merge-base {{ base }} HEAD)")
+    everything=$(grep -xE 'mise\.(toml|lock)|justfile|\.github/workflows/ci\.yml' <<< "$changed" || true)
+    proving=$(just --quiet proving)
+    [[ -n $proving ]] || { echo "no crate holds a Kani harness" >&2; exit 2; }
+    for crate in $proving; do
+        if [[ -n $everything ]] || grep -q "^crates/$crate/" <<< "$changed"; then just kani "$crate"; fi
+    done
+    if [[ -n $everything ]] || grep -q '^specs/' <<< "$changed"; then just quint; fi
+
 # Build a bench for profiling, for example `just profiling shred`: release's code with line
 # tables and frame pointers, in a target directory of its own so the flags never rebuild the
 # shared one; cargo prints the binary's path last
@@ -369,9 +442,9 @@ bench $name $cores="" $filter="" $connectors="":
 
 # Everything the pull-request gate runs, instruction and allocation counts against main among it.
 # Linux only: the counts need valgrind
-ci: lint test coverage miri instructions (sim "" "10000")
+ci: lint test (formal-diff "origin/main") coverage miri instructions (sim "" "10000")
 
-# Everything to run before pushing: the quick checks of the pull-request gate and mutation testing
-# of the change; CI runs the rest of the gate (coverage, Miri, the simulation, macOS, instruction
-# and allocation counts against main)
-ready base="origin/main": lint test (mutants-diff base)
+# Everything to run before pushing: the quick checks of the pull-request gate, and the formal
+# checks and mutation testing of the change; CI runs the rest of the gate (coverage, Miri, the
+# simulation, macOS, instruction and allocation counts against main) and the formal checks again
+ready base="origin/main": lint test (formal-diff base) (mutants-diff base)
