@@ -113,7 +113,7 @@ sim-coverage seeds="1000" cores="":
 coverage:
     rustup toolchain install {{ nightly }} --profile minimal --component llvm-tools-preview
     cargo +{{ nightly }} llvm-cov nextest --failure-mode all --branch --package rdlt-engine --package rdlt-connector --package rdlt-adopt --package rdlt-wire --package rdlt-host --package rdlt-certify --all-features --json --summary-only --output-path target/coverage.json --ignore-filename-regex '/generated/' -E 'not (package(rdlt-engine) & binary(crashes))'
-    cargo xtask coverage-gate target/coverage.json --lines 90 --branches 85
+    cargo xtask coverage-gate target/coverage.json --lines 96 --branches 93
 
 # Run the audited crate's test of its `unsafe` code under Miri: the workspace's only
 # `unsafe` code
