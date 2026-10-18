@@ -292,7 +292,8 @@ fn a_part_its_column_holds_as_json_is_observed_as_json_with_nothing_below_it() {
         "-1.5",
         r#""s""#,
         "18446744073709551615",
-        "-170141183460469231731687303715884105728",
+        "-9223372036854775809",
+        "12345678901234567890123",
         digits.as_str(),
     ];
     for value in values {
@@ -336,21 +337,29 @@ fn a_value_is_observed_no_further_than_a_key_its_struct_lacks_or_a_container_its
 #[test]
 fn a_part_its_column_holds_as_json_is_read_as_its_text_was_written() {
     let column = struct_of(vec![Field::new("a", LogicalType::Json, true)]);
-    let cases = [
+    let cases: [(&[&str], &[&str]); 3] = [
         (
-            [r#"{"a":{"y":1}}"#, r#"{"a":{"x":2,"y":3}}"#],
-            [r#"{"y":1}"#, r#"{"x":2,"y":3}"#],
+            &[r#"{"a":{"y":1}}"#, r#"{"a":{"x":2,"y":3}}"#],
+            &[r#"{"y":1}"#, r#"{"x":2,"y":3}"#],
         ),
-        ([r#"{"a":1.50}"#, r#"{"a":1e2}"#], ["1.50", "1e2"]),
+        (&[r#"{"a":1.50}"#, r#"{"a":1e2}"#], &["1.50", "1e2"]),
+        // Alone, so nothing else it is joined with makes the field JSON.
+        (
+            &[r#"{"a":12345678901234567890123}"#],
+            &["12345678901234567890123"],
+        ),
     ];
     for (values, written) in cases {
-        let values = texts(&values.map(Some));
+        let values: Vec<_> = values.iter().copied().map(Some).collect();
+        let values = texts(&values);
         let (fits, joined) = fitting(&values, &column);
         let (built, built_as) = read(&values, &fits, &joined).unwrap();
         let own = crate::table::convert::convert(&built, &built_as, &column).unwrap();
         let a = own.as_struct().column_by_name("a").unwrap();
         let a = a.as_string::<i32>();
-        assert_eq!([a.value(0), a.value(1)], written);
+        assert_eq!(a.null_count(), 0, "{values:?}");
+        let held: Vec<_> = (0..a.len()).map(|row| a.value(row)).collect();
+        assert_eq!(held, written);
     }
 }
 
