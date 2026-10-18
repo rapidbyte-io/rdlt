@@ -421,12 +421,17 @@ async fn a_launch_past_its_deadline_is_refused_and_what_it_starts_is_stopped() {
         .await
         .expect("it returns")
         .expect("the late launch starts its connector");
+    for _ in 0..400 {
+        if super::spawned().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(super::spawned(), Vec::<u32>::new(), "it was left running");
+    // Its place among the groups this process may own moved to the group as it was entered.
+    assert_eq!(super::group::reserved(), 0);
     let stopping = tokio::task::spawn_blocking(|| super::stop_spawned(Duration::from_secs(20)));
     assert_eq!(stopping.await.expect("it returns"), Ok(()));
-    assert_eq!(super::spawned(), Vec::<u32>::new());
-    // Its place among the groups this process may own was taken inside the late launch and is
-    // given back with the group.
-    assert_eq!(super::group::reserved(), 0);
 }
 
 #[test]
