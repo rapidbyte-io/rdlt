@@ -111,6 +111,10 @@ anything runs; none is ignored.
   `rdlt-certify`'s reports, and so is each line of a secret that holds line ends and at least 8
   characters other than whitespace, wherever it is found. It is not written to the write-ahead log or to state by the engine. A literal
   value in a configuration is not a secret and is not scrubbed.
+- A text is scrubbed until no secret is left in it: where a `***` completes a secret with what
+  is around it, that is replaced too. A resolved secret of nothing but `*` and whitespace,
+  which `***` would hold, is refused as it resolves (`secret_unredactable`), and no line of a
+  secret of nothing but those is found on its own.
 - A configuration error names the field and what is wrong with it, never the value.
   `Secret<T>` redacts `Debug`, `Display` and `Serialize`, is wiped when dropped and is not
   `Clone`.
