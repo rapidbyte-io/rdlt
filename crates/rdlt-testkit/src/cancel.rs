@@ -83,8 +83,9 @@ pub enum Ended<T> {
 /// # Panics
 ///
 /// Where it is called within a tokio runtime; where the operation never waits, waits more than
-/// [`POINTS`] times, or returns before the wait it is cut at when run again; where a run and its check take more than
-/// an hour of the paused clock; and where `check` panics. Each message names the run it failed in.
+/// [`POINTS`] times, or returns before the wait it is cut at when run again; where a run and its
+/// check take more than an hour of the paused clock; and where `check` panics. Each message names
+/// the run it failed in.
 pub fn at_every_point<S, T>(
     mut make: impl AsyncFnMut() -> S,
     mut operation: impl AsyncFnMut(&mut S) -> T,
