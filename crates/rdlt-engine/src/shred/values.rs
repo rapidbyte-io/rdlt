@@ -127,7 +127,9 @@ pub(crate) fn fitting(texts: &StringArray, column: &LogicalType) -> (BooleanArra
             .iter()
             .map(|text| {
                 let text = text?;
-                let held = match observed(text, column, &context()) {
+                // Bound apart, so the observation's context is freed before the keys are checked.
+                let observation = observed(text, column, &context());
+                let held = match observation {
                     Ok(observed)
                         if fits(column, &observed, true) && !(checked && repeats_a_key(text)) =>
                     {
