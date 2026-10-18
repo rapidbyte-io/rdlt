@@ -248,7 +248,14 @@ impl Local {
         let digest = if cfg!(target_os = "linux") {
             let hashed = Arc::clone(&binary);
             let hashing = tokio::task::spawn_blocking(move || hashed.digest());
-            let hashed = hashing.await.map_err(std::io::Error::other).flatten();
+            let deadline = self.options.deadlines.connect;
+            let hashed = match tokio::time::timeout(deadline, hashing).await {
+                Ok(joined) => joined.map_err(std::io::Error::other).flatten(),
+                Err(_) => Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!("the connector's binary was not read within {deadline:?}"),
+                )),
+            };
             Some(hashed.map_err(|source| spawn_failed(reference, binary.path(), source))?)
         } else {
             None
