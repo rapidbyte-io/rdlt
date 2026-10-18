@@ -32,6 +32,10 @@ pub(crate) enum Fault {
     Sends(fn() -> (Bytes, Vec<rdlt_wire::IpcFrame>)),
     /// It never answers a heartbeat, and its checks never end.
     Silent,
+    /// Its heartbeat call never opens, and its checks never end.
+    Unopened,
+    /// Its heartbeat call is refused, and its checks never end.
+    RefusesHeartbeat,
     /// Its reads send the same schema epoch twice.
     StaleEpoch,
     /// Its handshake says its limits, but no dictionary limit among them.
@@ -371,7 +375,10 @@ impl Connector for Fake {
         &self,
         _: Request<v1::CheckRequest>,
     ) -> Result<Response<v1::CheckResponse>, Status> {
-        if matches!(self.0, Fault::Silent) {
+        if matches!(
+            self.0,
+            Fault::Silent | Fault::Unopened | Fault::RefusesHeartbeat
+        ) {
             std::future::pending::<()>().await;
         }
         Ok(Response::new(v1::CheckResponse {}))
@@ -461,6 +468,11 @@ impl Connector for Fake {
         &self,
         request: Request<Streaming<v1::Ping>>,
     ) -> Result<Response<Self::HeartbeatStream>, Status> {
+        match self.0 {
+            Fault::Unopened => std::future::pending::<()>().await,
+            Fault::RefusesHeartbeat => return Err(Status::unavailable("no heartbeat")),
+            _ => {}
+        }
         if matches!(self.0, Fault::Silent) {
             return Ok(Response::new(Box::pin(tokio_stream::pending())));
         }

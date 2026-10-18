@@ -450,7 +450,7 @@ pub(crate) fn exceeded(what: &str, deadline: Duration) -> ConnectorError {
 }
 
 /// Sends a heartbeat `every` interval, and cancels `lost` once `missed` sent are unanswered when the
-/// next is due, or the heartbeat stream fails.
+/// next is due, the heartbeat stream does not open within as many intervals, or it fails.
 ///
 /// A connector that ends the stream is stopping: it finishes the calls in flight, and `retired` is
 /// cancelled.
@@ -461,12 +461,15 @@ async fn heartbeat(
     retired: CancellationToken,
 ) {
     let (beats, receiver) = mpsc::channel(4);
+    // A stream that never opens is given the patience of one that stops answering.
+    let patience = every.saturating_mul(missed.get());
+    let opening = tokio::time::timeout(patience, client.heartbeat(ReceiverStream::new(receiver)));
     let echoes = tokio::select! {
         biased;
         () = lost.cancelled() => return,
-        echoes = client.heartbeat(ReceiverStream::new(receiver)) => echoes,
+        echoes = opening => echoes,
     };
-    let Ok(echoes) = echoes else {
+    let Ok(Ok(echoes)) = echoes else {
         lost.cancel();
         return;
     };
