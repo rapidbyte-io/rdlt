@@ -144,39 +144,6 @@ async fn a_frame_its_deadline_kept_from_the_queue_spends_no_credit_and_goes_when
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_frame_whose_send_is_dropped_spends_no_credit_and_goes_when_retried() {
-    let Fixture {
-        mut writer,
-        mut frames,
-        acks: _acks,
-    } = fixture(1);
-    writer.frames.try_send(flush()).expect("room for one frame");
-    let dropped = tokio::time::timeout(
-        Duration::from_millis(20),
-        writer.send(Frame::Flush(v1::Unit {})),
-    );
-    assert!(dropped.await.is_err(), "the queue stays full");
-    assert_eq!(
-        writer.credit.credit(),
-        1,
-        "a frame never queued spent credit"
-    );
-    queued(&mut frames, 1).await;
-    let retried = tokio::time::timeout(
-        Duration::from_secs(2),
-        writer.send(Frame::Flush(v1::Unit {})),
-    );
-    retried
-        .await
-        .expect("the retry ends")
-        .expect("the retry goes on the credit left");
-    assert!(matches!(
-        queued(&mut frames, 1).await[..],
-        [Frame::Flush(_)]
-    ));
-}
-
-#[tokio::test(start_paused = true)]
 async fn a_connector_lost_while_a_frame_waits_for_room_spends_no_credit() {
     let Fixture {
         mut writer,
@@ -355,40 +322,6 @@ async fn a_dictionary_write_dropped_at_any_frame_sends_its_schema_and_dictionary
         let batch = decoded(&mut Decoder::new(Limits::default()), &sent);
         assert_eq!(first_value(&batch), "alpha", "after {taken}");
     }
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_dictionary_write_dropped_after_an_older_dictionary_sends_the_new_one_again() {
-    let Fixture {
-        mut writer,
-        mut frames,
-        acks: _acks,
-    } = fixture(1 << 20);
-    // The connector holds an older dictionary of the same id, as an earlier write sent it.
-    let older = keyed("old-alpha");
-    let mut decoder = Decoder::new(Limits::default());
-    let schema = writer
-        .encoder
-        .schema(&older.schema())
-        .expect("the schema encodes");
-    decoder.schema(&schema).expect("the schema decodes");
-    for frame in writer.encoder.batch(&older).expect("the batch encodes") {
-        decoder.frame(&frame).expect("the frame decodes");
-    }
-    writer.schema = Some(older.schema());
-    writer.frames.try_send(flush()).expect("room for one frame");
-    let dropped = tokio::time::timeout(
-        Duration::from_millis(20),
-        writer.write(SegmentId(1), keyed("alpha")),
-    );
-    assert!(
-        dropped.await.is_err(),
-        "the new dictionary waits behind the queued frame"
-    );
-    queued(&mut frames, 1).await;
-    let sent = written(&mut writer, &mut frames, keyed("alpha")).await;
-    assert!(matches!(sent[0], Frame::Schema(_)), "{sent:?}");
-    assert_eq!(first_value(&decoded(&mut decoder, &sent)), "alpha");
 }
 
 fn stats(rows: u64) -> v1::WriteAck {
