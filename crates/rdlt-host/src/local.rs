@@ -365,7 +365,8 @@ impl Local {
     /// not honour, [`ProviderError::NotFound`] or [`ProviderError::Shared`] for a binary that
     /// is not there or not its operator's alone, [`ProviderError::DigestMismatch`] for one of
     /// another digest than required, [`ProviderError::Sandbox`] where its sandbox cannot be
-    /// made, and [`ProviderError::SpawnFailed`] when it cannot be spawned.
+    /// made, and [`ProviderError::SpawnFailed`] when it cannot be spawned or does not start
+    /// within the connect deadline.
     pub async fn wire(&self, reference: &ConnectorRef) -> Result<Wire, ProviderError> {
         let launch = self.launch(reference).await?;
         let deadline = self.options.deadlines.connect;

@@ -43,7 +43,10 @@ pub use rdlt_connector::DEADLINE_EXCEEDED;
 /// How long each kind of call may take.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Deadlines {
-    /// The handshake.
+    /// Each step of a connector's start, each with the whole deadline: the hash of its binary
+    /// at placement, its spawn with the binary's hash and any sandbox, its stream's opening or
+    /// its dial, its connection's setup with its handshake, the resolution of its
+    /// configuration's secrets, and its configuration.
     pub connect: Duration,
     /// A check.
     pub check: Duration,
