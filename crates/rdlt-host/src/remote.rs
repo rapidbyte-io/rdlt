@@ -10,6 +10,9 @@ pub(crate) mod severed;
 mod source;
 mod write;
 
+#[cfg(test)]
+mod tests;
+
 use std::future::Future;
 use std::num::NonZeroU32;
 use std::sync::{Arc, Mutex};
@@ -156,7 +159,9 @@ impl Connection {
     /// # Errors
     ///
     /// A `Config` error coded `options_invalid` for a zero heartbeat interval, the connector's
-    /// error when the handshake fails, or a transient error when the transport does.
+    /// error when the handshake fails, or a transient error when the transport does, coded
+    /// `deadline_exceeded` when the connection is not set up and handshaken within the connect
+    /// deadline.
     pub async fn handshake<IO>(
         io: IO,
         role: Role,
@@ -174,8 +179,6 @@ impl Connection {
             let spent = lost.child_token();
             (lost, spent)
         };
-        let channel = channel(io, &options, lost.clone(), spent.clone()).await?;
-        let client = Clients::new(&channel, &options.limits);
         let request = v1::HandshakeRequest {
             protocol_major: PROTOCOL_MAJOR,
             // A host offers no feature: certification's read-back is the only one.
@@ -187,9 +190,18 @@ impl Connection {
             limits: Some(options.limits.into()),
         };
         let deadline = options.deadlines.connect;
-        let mut handshaking = client.handshake.clone();
-        let handshaken = handshaking.handshake(request);
-        let response = within(deadline, "the handshake", handshaken).await?;
+        // One deadline bounds the connection's setup and the handshake's answer together.
+        let handshaking = async {
+            let channel = channel(io, &options, lost.clone(), spent.clone()).await?;
+            let client = Clients::new(&channel, &options.limits);
+            let mut rpc = client.handshake.clone();
+            let answer = rpc.handshake(request).await;
+            let response = answer.map_err(|status| status_error(&status))?.into_inner();
+            Ok::<_, ConnectorError>((client, response))
+        };
+        let (client, response) = tokio::time::timeout(deadline, handshaking)
+            .await
+            .map_err(|_| exceeded("the handshake", deadline))??;
         agreed::agreed(&response, &[])?;
         // A connector may not make this host send frames smaller than the protocol's least.
         let peer = response.limits.map(Limits::from).unwrap_or_default();
@@ -333,13 +345,18 @@ impl Handshaken {
 ///
 /// # Errors
 ///
-/// A transient error when the transport fails.
+/// A transient error when the transport fails, coded `deadline_exceeded` when the connection
+/// is not set up within the connect deadline.
 pub async fn client<IO>(io: IO, options: Options) -> Result<Client, ConnectorError>
 where
     IO: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 {
     let (cut, spent) = (CancellationToken::new(), CancellationToken::new());
-    let channel = channel(io, &options, cut, spent).await?;
+    let deadline = options.deadlines.connect;
+    let setup = channel(io, &options, cut, spent);
+    let channel = tokio::time::timeout(deadline, setup)
+        .await
+        .map_err(|_| exceeded("setting up the connection", deadline))??;
     Ok(Client::new(&channel, &options.limits))
 }
 
@@ -419,12 +436,17 @@ async fn within<T>(
     match tokio::time::timeout(deadline, call).await {
         Ok(Ok(response)) => Ok(response.into_inner()),
         Ok(Err(status)) => Err(status_error(&status)),
-        Err(_) => Err(ConnectorError::new(
-            ConnectorErrorKind::Transient,
-            format!("{what} took longer than its deadline of {deadline:?}"),
-        )
-        .with_code(DEADLINE_EXCEEDED)),
+        Err(_) => Err(exceeded(what, deadline)),
     }
+}
+
+/// The error of `what`, which took longer than its `deadline`.
+pub(crate) fn exceeded(what: &str, deadline: Duration) -> ConnectorError {
+    ConnectorError::new(
+        ConnectorErrorKind::Transient,
+        format!("{what} took longer than its deadline of {deadline:?}"),
+    )
+    .with_code(DEADLINE_EXCEEDED)
 }
 
 /// Sends a heartbeat `every` interval, and cancels `lost` once `missed` sent are unanswered when the
