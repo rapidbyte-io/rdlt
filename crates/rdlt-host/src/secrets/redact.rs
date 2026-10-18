@@ -12,10 +12,11 @@ const REDACTED: &str = "***";
 /// The fewest characters other than whitespace a line of a secret needs to be found on its own.
 const LEAST_LINE: usize = 8;
 
-/// How many steps a text is scrubbed in at most, the last finding nothing. One step replaces
-/// every secret said or cut in it; a text needs another only for each `***` that completes a
-/// secret with what is around it, and a chain of more than two of those is made, not said by
-/// chance.
+/// How many steps a text is scrubbed in at most, the last finding nothing.
+///
+/// One step replaces every secret said or cut in it; a text needs another only for each `***`
+/// that completes a secret with what is around it, and a chain of more than two of those is
+/// made, not said by chance.
 pub(super) const STEPS: usize = 4;
 
 /// What a text is said as when [`STEPS`] steps leave something of a secret in it.
