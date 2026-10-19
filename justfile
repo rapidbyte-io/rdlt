@@ -288,16 +288,23 @@ quint mode="check":
     fi
 
 # Find the seed of a run of `specs/<spec>.qnt` that reaches `goal`, a `val` of it, for a
-# `// quint trace:` line: up to `samples` runs, as the spec's `// quint steps:` line says
+# `// quint trace:` line: up to `samples` runs, as the spec's `// quint steps:` line says; fails
+# if Quint fetched anything
 quint-seed spec goal samples="20000":
     #!/usr/bin/env bash
     set -euo pipefail
     export QUINT_HOME="$PWD/target/quint-home"
+    rm -rf "$QUINT_HOME"
     mkdir -p "$QUINT_HOME"
     file="specs/{{ spec }}.qnt"
     steps=$(sed -n 's|^// quint steps: ||p' "$file")
     # shellcheck disable=SC2086
     found=$(quint run --backend typescript "$file" $steps --max-samples {{ samples }} --invariant "not({{ goal }})" --verbosity 2 2>&1 || true)
+    fetched=$(find "$QUINT_HOME" -mindepth 1 -maxdepth 1)
+    if [ -n "$fetched" ]; then
+        echo "quint fetched a tool into $QUINT_HOME: $fetched" >&2
+        exit 1
+    fi
     if ! grep -q '\[violation\]' <<< "$found"; then
         echo "no run of {{ samples }} reaches {{ goal }}" >&2
         exit 1
