@@ -83,13 +83,13 @@ A formal layer is added to the layers of its class, never in place of one.
   the budget admits fits the share it draws on (82 seconds), and that every budget from the least
   up admits a peer (121 seconds); `least` itself returns a budget that admits a peer while the one
   a byte below does not. 24 reads hold both of what sets the least budget, a frame up to
-  16 reads and the dictionaries from 20, and keep the two proofs within the `formal` job's 15
-  minutes beside the wire's proofs. Above 24 reads admission is not proved to be monotone, and a
-  known counterexample lies past 524,288 reads. What a budget admits does not grow with it
-  byte by byte, since its shares' rounding moves a frame by a few bytes: with one read, a budget
-  of 53,690,302 bytes admits a peer and one of 53,690,314 does not. The ledger's own properties
-  are property tests in `budget/ledger/tests.rs`, since each of its paths takes its
-  `parking_lot` lock: every share stays within it through any asks, lets and presses, and none
+  16 reads and the dictionaries from 20, and keep the two proofs within the 15 minutes of
+  `rdlt-engine`'s part of the `formal` check. Above 24 reads admission is not proved to be
+  monotone, and a known counterexample lies past 524,288 reads. What a budget admits does not
+  grow with it byte by byte, since its shares' rounding moves a frame by a few bytes: with one
+  read, a budget of 53,690,302 bytes admits a peer and one of 53,690,314 does not. The ledger's
+  own properties are property tests in `budget/ledger/tests.rs`, since each of its paths takes
+  its `parking_lot` lock: every share stays within it through any asks, lets and presses, and none
   is held once all is let go; waiting requests are admitted in turn only where they fit, with
   abandoned ones given back; and a lent reservation gives back all it held, in any order.
 - Kani's further targets: acknowledgements against the committed cursor, and the horizon; a log
@@ -157,9 +157,16 @@ A formal layer is added to the layers of its class, never in place of one.
 - `just ready` runs `just formal-diff`: Kani's proofs of each crate the change touches that
   holds any, and `just quint` when it touches `specs/`; both in full when it touches `mise.toml`,
   `mise.lock`, the justfile or the pull-request workflow.
-- The pull-request workflow's `formal` job runs `just formal-diff` against the change's base, on
-  Linux, within 15 minutes. It runs on every change and does nothing where the change touches
-  none of what it checks, so it always reports.
+- The pull-request workflow runs the parts of `just formal-diff` side by side, on Linux. Its
+  `formal-plan` job asks `just formal-parts` which parts the change needs against its base: a
+  `kani:<crate>` part for each crate to prove, and a `quint` part for the specs. A `formal-part`
+  job for each runs it with `just formal-part`, within 15 minutes of its own; the `formal` job,
+  the check the ruleset requires, passes once every part has, or where the change needs none, so
+  it always reports. On GitHub's runners `rdlt-wire`'s part took 276 to 481 seconds over four
+  runs, nearly all of it its credit harness (271 to 450 seconds), `rdlt-engine`'s 261 to 459
+  over four, and `quint` 16 seconds, each beside a setup of about 25 seconds: each part is within
+  its limit with six minutes to spare, where the three in turn exceed 15 minutes on a slow
+  runner.
 - The nightly workflow's `kani` job proves every harness, and its `quint-verify` job model-checks
   every specification.
 
@@ -179,9 +186,10 @@ what no bound names.
   shows.
 - **Kani is exempted by each guard.** Kani has no unwinding build. Cost: a build that sets
   `--cfg kani` by hand and aborts compiles where it should not; nothing does.
-- **The formal job filters inside itself.** A check that a workflow's path filter skips never
-  reports, so it could not be required; a filtering action would be one more pinned dependency.
-  Cost: the job installs Quint and Kani on every change, from mise's cache after the first.
+- **The formal checks filter inside the workflow.** A check that a workflow's path filter skips
+  never reports, so it could not be required; a filtering action would be one more pinned
+  dependency. Cost: `formal-plan` checks out the whole history on every change, and each part's
+  job installs Quint and Kani, from mise's cache after the first, and restores its own build.
 - **Quint is `quint-co/quint`,** the repository's name; `informalsystems/quint` redirects there.
 - **`itf` comes with the first trace driver,** with a ban that lets `rdlt-sim` alone depend on
   it. `deny.toml` keeps no list of admitted crates, so nothing stands in the way until then.
@@ -190,10 +198,10 @@ what no bound names.
 
 - A crate that adds proofs adds `#[cfg(kani)] mod proofs;`. If it catches panics, its guard
   against aborting builds exempts `kani`, as `rdlt-wire`'s does.
-- `just ready` and the `formal` job cost Kani's build and proofs of each crate under proof
-  whenever the change touches it: on a laptop, about 300 seconds for `rdlt-wire` and 225 for
-  `rdlt-engine`, warm, so a change that touches the tools, the justfile or the workflow, which
-  runs both, spends about 525 seconds proving before the job's setup.
+- `just ready` costs Kani's build and proofs of each crate under proof whenever the change
+  touches it: on a laptop, about 300 seconds for `rdlt-wire` and 225 for `rdlt-engine`, warm, so
+  a change that touches the tools, the justfile or the workflow, which runs both, spends about
+  525 seconds proving. The `formal` check waits for its longest part alone.
 - A contributor's `mise install` installs about 1.1 GB more on disk, and the first `just kani`
   fetches a nightly toolchain.
 - Updating Kani is its version and `mise lock`; its nightly comes with its bundle. Updating

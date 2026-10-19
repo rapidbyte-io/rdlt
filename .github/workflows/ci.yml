@@ -257,14 +257,16 @@ jobs:
         if: always()
         run: if [[ -f target/instructions/report.md ]]; then cat target/instructions/report.md >> "$GITHUB_STEP_SUMMARY"; fi
 
-  # Kani's proofs of each crate the change touches that holds any, and the specs under `specs/`
-  # where it touches them; all of both where it touches the tools, the recipes or this workflow.
-  # It runs on every change, so it always reports. A pull request's checkout is the change merged
-  # into its base, so the base is that merge's first parent; on main each push is compared with
-  # the one before.
-  formal:
+  # The formal checks' parts this change needs: Kani's proofs of each crate it touches that holds
+  # any, and the specs under `specs/` where it touches them; all of both where it touches the
+  # tools, the recipes or this workflow. A pull request's checkout is the change merged into its
+  # base, so the base is that merge's first parent; on main each push is compared with the one
+  # before.
+  formal-plan:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 5
+    outputs:
+      parts: ${{ steps.plan.outputs.parts }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -276,14 +278,62 @@ jobs:
           version: ${{ env.SETUP_MISE_VERSION }}
           sha256: ${{ runner.os == 'macOS' && env.SETUP_MISE_SHA256_MACOS || env.SETUP_MISE_SHA256_LINUX }}
           github_token: ""
+          install_args: --locked just
+          cache_key_prefix: mise-v2-formal-plan
+      - id: plan
+        run: |
+          parts=$(just --quiet formal-parts "${BASE}")
+          echo "parts=${parts}" >> "$GITHUB_OUTPUT"
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && 'HEAD^1' || github.event.before }}
+
+  # Each part on a runner of its own, side by side, so that each, not their sum, is within its
+  # limit.
+  formal-part:
+    needs: formal-plan
+    if: needs.formal-plan.outputs.parts != '[]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        part: ${{ fromJSON(needs.formal-plan.outputs.parts) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        timeout-minutes: 5
+        with:
+          version: ${{ env.SETUP_MISE_VERSION }}
+          sha256: ${{ runner.os == 'macOS' && env.SETUP_MISE_SHA256_MACOS || env.SETUP_MISE_SHA256_LINUX }}
+          github_token: ""
           install_args: --locked just github:quint-co/quint github:model-checking/kani
           cache_key_prefix: mise-v2-formal
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: matrix.part != 'quint'
         with:
+          key: ${{ matrix.part }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: just formal-diff "${BASE}"
+      - run: just formal-part "${PART}"
         env:
-          BASE: ${{ github.event_name == 'pull_request' && 'HEAD^1' || github.event.before }}
+          PART: ${{ matrix.part }}
+
+  # The required check: it passes once every part has, or where the change needs none, so it
+  # always reports.
+  formal:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    needs: [formal-plan, formal-part]
+    if: always()
+    steps:
+      - run: |
+          test "${PLAN}" = success
+          test "${PARTS}" = success || { test "${PARTS}" = skipped && test "${NEEDED}" = '[]'; }
+        env:
+          PLAN: ${{ needs.formal-plan.result }}
+          PARTS: ${{ needs.formal-part.result }}
+          NEEDED: ${{ needs.formal-plan.outputs.parts }}
 
   commits:
     if: github.event_name == 'pull_request'
