@@ -415,16 +415,18 @@ admitted, and what a remote connector's calls hold in transport.
   every call's and one more, so no connection holds more than 804 MiB (ADR 0016). A read's
   frames beyond it wait in the connector.
 - What a JSON push's records become beyond three times their text is reserved before it is
-  built, and a push whose records could not fit is refused unbuilt (ADR 0040).
+  built, and a push whose records could not fit is refused unbuilt (ADR 0040), but for the two
+  documents "Not bounded here" names.
 - The fifth and the 32 MiB are measured, not derived: what the runtime, the channels and the
   builders' spare capacity take. The loads above peak far below them: 5 MB of heap where 300 KB
   pushed fill a table of two hundred 256-bit columns, 9 MB where sixteen million small integers
   widen to 256 bits, and 22 MB with sixteen partitions doing so at once, under 16 MiB.
 - What the budget does not bound: what the allocator keeps after it is freed, its arenas and
-  its thresholds, and each thread's stack. A nightly check runs the passthrough and the
-  normalized workloads, each in a process of its own, with glibc's defaults and with the
-  tunables a spawned connector gets, and holds the process's resident peak to the budget's
-  bound, one push, and 2 MiB of stack a thread.
+  its thresholds, each thread's stack, and what sonic-rs keeps a thread that parsed a record
+  exactly, 3 MiB at most. A nightly check runs the passthrough and the normalized workloads,
+  each in a process of its own, with glibc's defaults and with the tunables a spawned
+  connector gets, and holds the process's resident peak to the budget's bound, one push, and
+  2 MiB of stack a thread.
 
 ## Consequences
 
@@ -512,4 +514,7 @@ admitted, and what a remote connector's calls hold in transport.
 - Not bounded here: how much one push may expand to in total, which costs CPU and destination
   storage in proportion. What replay stages is reserved (ADR 0045), and so are the nulls of a
   nested column's fields the shredder builds and what a JSON push of sparse records becomes
-  beyond three times its text, before they are built (ADR 0040).
+  beyond three times its text, before they are built (ADR 0040). Nor are two things a JSON
+  push builds beyond what it was admitted or reserved for: the document the exact parse builds
+  of a record, up to twelve times its text, and what reading a part held as JSON renders, up
+  to ten times its text beyond its piece's reservation.
