@@ -76,7 +76,9 @@ Arrow columns and the rows normalizing makes of both escaped that in several way
   iteratively, without recursion and without building a document; nesting past
   `NESTING_DEPTH` is refused, `limit_exceeded`. Numbers stay text. Row identity reads JSON
   text through it: text that is not JSON fails the write, `json_invalid` (`ErrorKind::Source`),
-  never hashed as a string.
+  never hashed as a string. The shredder's exact parse walks a record through it a token at a
+  time, into what the record builds, as the fast parse streams one: neither holds a document
+  of the record, and each refuses what a record holds in the order it holds it.
 - **Numbers are hashed by their value.** A number's canonical text is its exact value in plain
   notation (`-12.5`, `0.001`, `1000`) while that is at most 400 bytes, which every value a 64-bit
   float or a decimal holds is, and in scientific notation beyond. It is a function of the value,

@@ -2,7 +2,8 @@
 //! nests, nesting bounded, and numbers as they are written, so none is read through a float.
 //!
 //! Columns of JSON hold such text, from a connector's Arrow batches or rendered by the shredder;
-//! row identity reads it, and so does the check every such column of a push meets first.
+//! row identity reads it, and so does the check every such column of a push meets first. The
+//! shredder's exact parse reads records through it too.
 
 mod check;
 mod number;
@@ -10,7 +11,6 @@ mod number;
 mod tests;
 mod text;
 
-use rdlt_connector::json::{Mark, Structure};
 use rdlt_wire::limits::{LIMIT_EXCEEDED, NESTING_DEPTH, count};
 
 #[cfg(feature = "bench")]
@@ -18,9 +18,7 @@ pub(crate) use check::bench_field;
 pub(crate) use check::{NotJson, check_batch, held as held_by_check, schema_holds_json};
 #[cfg(test)]
 pub(crate) use number::{canonical_float, canonical_number};
-pub(crate) use number::{
-    exponent_within, long_numbers, may_hold_exponent, write_float, write_number,
-};
+pub(crate) use number::{long_numbers, may_hold_exponent, write_float, write_number};
 pub(crate) use text::Text;
 
 /// Digits: the most a JSON number's exponent may have, beside its leading zeros, so its value's
@@ -110,6 +108,11 @@ impl<'a> Reader<'a> {
         self.at = 0;
         self.open.clear();
         self.next = Next::Value;
+    }
+
+    /// The text from the reader's place on: where a token it refused starts.
+    pub(crate) fn rest(&self) -> &'a str {
+        self.text.get(self.at..).unwrap_or_default()
     }
 
     /// The next token; `None` once the value has ended and nothing but whitespace follows.
@@ -276,23 +279,4 @@ impl<'a> Reader<'a> {
         self.at = at;
         Ok(&self.text[start..at])
     }
-}
-
-/// Whether the containers of JSON `text` nest deeper than the limit: a linear scan of its
-/// brackets outside its strings, for whoever parses it recursively after.
-pub(crate) fn too_deep(text: &[u8]) -> bool {
-    let mut depth = 0_u64;
-    for mark in Structure::new(text, 0) {
-        match mark {
-            Mark::Open(_) => {
-                depth += 1;
-                if depth > NESTING_DEPTH {
-                    return true;
-                }
-            }
-            Mark::Close(..) => depth = depth.saturating_sub(1),
-            Mark::Comma(_) | Mark::Text(_) => {}
-        }
-    }
-    false
 }

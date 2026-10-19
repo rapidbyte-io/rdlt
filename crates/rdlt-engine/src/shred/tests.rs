@@ -228,7 +228,6 @@ fn a_value_nested_past_the_limit_is_refused_even_where_the_chunk_is_parsed_exact
     // Each prefix sends the record, or its chunk, through the exact parse.
     let prefixes = [
         format!("{{\"n\":{},\"a\":", "9".repeat(400)),
-        "{\"n\":1e400,\"a\":".to_owned(),
         "{\"n\":18446744073709551616}\n{\"a\":".to_owned(),
     ];
     for prefix in &prefixes {
@@ -236,6 +235,22 @@ fn a_value_nested_past_the_limit_is_refused_even_where_the_chunk_is_parsed_exact
             let deep = format!("{prefix}{}{}}}", "[".repeat(levels), "]".repeat(levels));
             assert_eq!(refused(&deep), "limit_exceeded", "{prefix:?} at {levels}");
         }
+    }
+    // A record is refused for what it holds first: here a number beyond a float's range.
+    for levels in [depth + 1, 1_000_000] {
+        let invalid = format!(
+            "{{\"n\":1e400,\"a\":{}{}}}",
+            "[".repeat(levels),
+            "]".repeat(levels)
+        );
+        assert_eq!(refused(&invalid), "json_invalid", "at {levels}");
+        let pushes = [Bytes::from(invalid)];
+        let reference = super::reference::shred(&pushes).unwrap_err();
+        assert_eq!(
+            reference,
+            Code("json_invalid"),
+            "the reference, at {levels}"
+        );
     }
     let beside = format!(
         "{{\"n\":18446744073709551616}}\n{{\"a\":{}{}}}",
@@ -264,6 +279,18 @@ fn a_value_nested_past_the_limit_is_refused_even_where_the_chunk_is_parsed_exact
         1 << 20,
     );
     assert_eq!(texts.num_rows(), 1);
+}
+
+#[test]
+fn a_number_whose_exponent_is_too_long_is_refused_naming_it_where_the_chunk_is_parsed_exactly() {
+    let number = "1e-1234567890123456789";
+    let records = Bytes::from(format!("{{\"n\":18446744073709551616,\"x\":[{number}]}}"));
+    let chunk = chunks(&[records], 1 << 20).unwrap().remove(0);
+    let refused = parse(chunk, limits(), &limits().beyond()).err();
+    assert_eq!(
+        refused,
+        Some(super::ShredError::Exponent(number.to_owned()))
+    );
 }
 
 #[test]
@@ -1226,10 +1253,18 @@ fn a_batch_holds_its_columns_at_their_count_not_the_builders_capacity() {
     assert!(extra <= vector + 128 * 1024, "held {held}, extra {extra}");
 }
 
+/// An integer beyond 64 bits, which sends the chunk holding it through the exact parse.
+const BEYOND_64_BITS: &str = "18446744073709551616";
+
 /// Records `{"v":1}`, `{"v":true}` and `{"v":value}`: a column of integers that drifts to JSON
 /// at the second record, so the third is rendered as it is parsed.
 fn drifting(value: &str) -> String {
-    format!("{{\"v\":1}}\n{{\"v\":true}}\n{{\"v\":{value}}}")
+    drifting_from("1", value)
+}
+
+/// Records `{"v":first}`, `{"v":true}` and `{"v":value}`, `first` an integer.
+fn drifting_from(first: &str, value: &str) -> String {
+    format!("{{\"v\":{first}}}\n{{\"v\":true}}\n{{\"v\":{value}}}")
 }
 
 /// An object of `keys` keys, each holding 0.
@@ -1238,58 +1273,106 @@ fn flat_object(keys: usize) -> String {
     format!("{{{}}}", fields.join(","))
 }
 
-/// What parsing the chunk of `records` under a limit of `columns` columns allocates at its
-/// peak, whether the chunk built as it was parsed, what the parse charged, and what its meter
-/// allows: its allowance and the flush's room beyond.
-fn parse_peak(records: &str, columns: u64) -> (u64, bool, u64, u64) {
+/// How parsing a chunk went, and what it held.
+struct ParsePeak {
+    /// Bytes allocated at the peak.
+    peak: u64,
+    /// Whether the chunk built as it was parsed.
+    built: bool,
+    /// Whether it was parsed exactly.
+    exact: bool,
+    /// Bytes the parse charged.
+    spent: u64,
+    /// Bytes its meter allows: its allowance and the flush's room beyond.
+    allowed: u64,
+}
+
+/// How parsing `records`, one chunk, under a limit of `columns` columns went.
+fn parse_peak(records: &str, columns: u64) -> ParsePeak {
     let limits = ShredLimits::new(columns);
     let records = Bytes::from(records.to_owned());
-    let chunk = chunks(std::slice::from_ref(&records), 1 << 20)
+    let chunk = chunks(std::slice::from_ref(&records), records.len())
         .unwrap()
         .remove(0);
     let allowed = count(chunk.bytes()) * limits.admitted + limits.beyond_bytes();
     let mut chunk = Some(chunk);
-    let (peak, (built, spent)) = crate::cost::tests::peak_alone(|| {
+    let (peak, (built, exact, spent)) = crate::cost::tests::peak_alone(|| {
         let parsed = parse(chunk.take().unwrap(), limits, &limits.beyond()).unwrap();
-        let parse = (parsed.record.is_some(), parsed.spent);
+        let parse = (parsed.record.is_some(), parsed.exact, parsed.spent);
         chunk = Some(parsed.chunk);
         parse
     });
-    (peak, built, spent, allowed)
+    ParsePeak {
+        peak,
+        built,
+        exact,
+        spent,
+        allowed,
+    }
 }
 
 #[test]
 fn rendering_a_wide_object_into_a_column_that_drifted_to_json_stays_within_its_meter() {
-    let records = drifting(&flat_object(262_145));
-    for columns in [10_000, 1] {
-        let (peak, built, _, allowed) = parse_peak(&records, columns);
-        assert!(
-            !built,
-            "{columns} columns: the rendering found no room, so the chunk is observed"
-        );
-        assert!(
-            peak <= allowed,
-            "{columns} columns: peaked at {peak}, allowed {allowed}"
-        );
+    // Parsed fast, and exactly.
+    for first in ["1", BEYOND_64_BITS] {
+        let records = drifting_from(first, &flat_object(262_145));
+        for columns in [10_000, 1] {
+            let parse = parse_peak(&records, columns);
+            assert_eq!(parse.exact, first == BEYOND_64_BITS, "{first}");
+            assert!(
+                !parse.built,
+                "{first}, {columns} columns: the rendering found no room, so the chunk is observed"
+            );
+            assert!(
+                parse.peak <= parse.allowed,
+                "{first}, {columns} columns: peaked at {}, allowed {}",
+                parse.peak,
+                parse.allowed
+            );
+        }
     }
 }
 
-/// What parsing a long note, then `{"v":1}`, `{"v":true}` and `{"v":value}`, allocates at its
-/// peak and what the parse charged, the chunk built as it was parsed.
-fn rendered(value: &str) -> (u64, u64) {
-    let note = "x".repeat(64 << 10);
-    let records = format!("{{\"n\":\"{note}\"}}\n{}", drifting(value));
-    let (peak, built, spent, _) = parse_peak(&records, 10_000);
-    assert!(built, "{value:.32}: the chunk had room to build");
-    (peak, spent)
+#[test]
+fn a_record_parsed_exactly_past_the_column_limit_is_refused_within_its_allowance() {
+    let records = Bytes::from(format!(
+        "{{\"n\":{BEYOND_64_BITS}}}\n{}",
+        flat_object(262_145)
+    ));
+    let limits = ShredLimits::new(1_000);
+    let chunk = || {
+        chunks(std::slice::from_ref(&records), 1 << 20)
+            .unwrap()
+            .remove(0)
+    };
+    let allowed = count(chunk().bytes()) * limits.admitted + limits.beyond_bytes();
+    let (peak, refused) =
+        crate::cost::tests::peak_alone(|| parse(chunk(), limits, &limits.beyond()).err());
+    assert_eq!(
+        refused,
+        Some(super::ShredError::TooManyColumns(1_001, 1_000))
+    );
+    assert!(peak <= allowed, "peaked at {peak}, allowed {allowed}");
 }
 
-/// Asserts that rendering `value` into a column that drifted to JSON holds no more than it
-/// charged: what the parse takes beside its builders and renderings, as a value of `1` shows,
-/// is not the rendering's.
-fn rendered_as_charged(value: &str) {
-    let (base_peak, base_spent) = rendered("1");
-    let (peak, spent) = rendered(value);
+/// What parsing four mebibytes of short notes, then `{"v":first}`, `{"v":true}` and `{"v":value}`,
+/// allocates at its peak and what the parse charged, the chunk built as it was parsed, exactly
+/// where `first` is beyond 64 bits.
+fn rendered(first: &str, value: &str) -> (u64, u64) {
+    let notes = format!("{{\"n\":\"{}\"}}\n", "x".repeat(1 << 10)).repeat(1 << 12);
+    let records = format!("{notes}{}", drifting_from(first, value));
+    let parse = parse_peak(&records, 10_000);
+    assert!(parse.built, "{value:.32}: the chunk had room to build");
+    assert_eq!(parse.exact, first == BEYOND_64_BITS, "{value:.32}");
+    (parse.peak, parse.spent)
+}
+
+/// Asserts that rendering `value` into a column that drifted to JSON from `first` holds no more
+/// than it charged: what the parse takes beside its builders and renderings, as a value of `1`
+/// shows, is not the rendering's.
+fn rendered_as_charged(first: &str, value: &str) {
+    let (base_peak, base_spent) = rendered(first, "1");
+    let (peak, spent) = rendered(first, value);
     assert!(
         peak.saturating_sub(base_peak) <= spent.saturating_sub(base_spent),
         "{value:.32}: held {peak}, charged {spent}, where a scalar held {base_peak}, charged {base_spent}"
@@ -1298,10 +1381,23 @@ fn rendered_as_charged(value: &str) {
 
 #[test]
 fn rendering_values_into_a_column_that_drifted_to_json_holds_no_more_than_it_charged() {
-    rendered_as_charged(&flat_object(1_000));
+    rendered_as_charged("1", &flat_object(1_000));
     // Objects nested to sixty levels below the column, within the limit.
-    rendered_as_charged(&format!("{}0{}", "{\"a\":".repeat(60), "}".repeat(60)));
-    rendered_as_charged(&format!("[{}]", vec![r#""\u0001\u0002""#; 2_000].join(",")));
+    rendered_as_charged("1", &format!("{}0{}", "{\"a\":".repeat(60), "}".repeat(60)));
+    rendered_as_charged(
+        "1",
+        &format!("[{}]", vec![r#""\u0001\u0002""#; 2_000].join(",")),
+    );
+}
+
+#[test]
+fn parsing_a_record_exactly_holds_no_more_than_it_charged() {
+    // Parsed exactly, a value is walked as its text is read, never held whole beside it.
+    rendered_as_charged(BEYOND_64_BITS, &flat_object(100_000));
+    rendered_as_charged(
+        BEYOND_64_BITS,
+        &format!("[{}]", vec!["0.5"; 100_000].join(",")),
+    );
 }
 
 #[test]
