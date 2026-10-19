@@ -27,7 +27,7 @@ or the protocol's design.
 | Trust in the file system | regression tests; the simulation, where process placement enters it |
 | Conversion fidelity | the simulation's encodings; differential tests |
 | A contract's documentation, fixtures, or an API's precondition | Kani over the limits a handshake accepts; tests |
-| Arithmetic of credit, budgets, positions and frame lengths | Kani; property tests where the code takes a lock (below) |
+| Arithmetic of credit, budgets, positions and frame lengths | Kani; property tests where a proof does not fit (below) |
 | A protocol across processes and a store: the log on object storage, exactly-once, re-planning | Quint |
 
 A formal layer is added to the layers of its class, never in place of one.
@@ -51,8 +51,8 @@ A formal layer is added to the layers of its class, never in place of one.
 - Kani's compiler builds `rdlt-wire` and `rdlt-engine` with their default features, Arrow,
   tonic, sonic-rs and stacker among them. `rdlt-wire`'s four harnesses take about five minutes,
   288 seconds from a build that had compiled its dependencies and 299 warm, so verification and
-  not compilation is the time, and at most 0.7 GB for the largest process. `rdlt-engine`'s three
-  harnesses take about 285 seconds warm, nearly all of it verification. A crate's proofs check
+  not compilation is the time, and at most 0.7 GB for the largest process. `rdlt-engine`'s five
+  harnesses take 493 to 620 seconds warm, nearly all of it verification. A crate's proofs check
   its own code, in the crate. Kani's output is not clean: its toolchain warns of the
   `register_tool` feature it forces and of deprecated methods in the engine, and it drops the
   arguments of an `unreachable!`, which warns of an unused variable; none comes from a proof.
@@ -121,10 +121,20 @@ A formal layer is added to the layers of its class, never in place of one.
   budget, a thread-local whose value has a destructor, and Kani 0.68 stops with an internal
   error on any such thread-local, at the `catch_unwind` intrinsic. A harness that takes and
   gives back room without waiting compiles, and took past 10 GB in about 7 minutes.
-- Kani's further targets: acknowledgements against the committed cursor, and the horizon; a log
-  frame's length arithmetic and the parse of its preamble and head; the limits a handshake
-  accepts and the identifier rules. Each is proved, or held by a property test with the reason
-  here.
+- A commit's horizon is proved (`rdlt-engine/src/coordinator/horizon/proofs.rs`). With up to
+  three loads listed, any of them the load itself, and the load's oldest commit among its first
+  four, the horizon is the earlier of that oldest commit and another listed load's first, and no
+  later than any of them (190 to 270 seconds). A later commit's horizon is never earlier, where
+  the later listing holds only loads listed before or loads newer than the load itself
+  (15 to 23 seconds). The ids are drawn at any of the first 256 milliseconds: ids order by their
+  time first, so these order, tie and differ as any ids do. Acknowledgement and positions are
+  property tests, not proofs, because Kani does not run the one and does not usefully bound the
+  other. That a source is told only cursors a landed commit covers is an order of the async
+  coordinator's calls (`coordinator/tests/acks.rs`), and that a log's positions are exactly what
+  commits record is a property of maps of JSON-keyed records (`wal/positions/tests.rs`).
+- Kani's further targets: a log frame's length arithmetic and the parse of its preamble and
+  head; the limits a handshake accepts and the identifier rules. Each is proved, or held by a
+  property test with the reason here.
 
 ### Specifications: Quint over the design
 
@@ -218,10 +228,13 @@ A formal layer is added to the layers of its class, never in place of one.
   job for each runs it with `just formal-part`, within 15 minutes of its own; the `formal` job,
   the check the ruleset requires, passes once every part has, or where the change needs none, so
   it always reports. On GitHub's runners `rdlt-wire`'s part took 276 to 481 seconds over four
-  runs, nearly all of it its credit harness (271 to 450 seconds), `rdlt-engine`'s 261 to 459
-  over four, and `quint` 16 seconds, each beside a setup of about 25 seconds: each part is within
-  its limit with six minutes to spare, where the three in turn exceed 15 minutes on a slow
-  runner.
+  runs, nearly all of it its credit harness (271 to 450 seconds), and `quint` 16 seconds, each
+  beside a setup of about 25 seconds. `rdlt-engine`'s part took 300 to 481 seconds over nine
+  runs with its budget's three harnesses, 234 to 369 seconds of them proving, and the horizon's
+  two take another 210 to 360 on the same runners, scaled as the budget's are from a developer's
+  machine, so the part takes about 9 to 14 minutes. Each part is within its limit, the engine's
+  with one minute to spare on the slowest runner, where the three in turn exceed 15 minutes on a
+  slow runner.
 - The nightly workflow's `kani` job proves every harness, and its `quint-verify` job model-checks
   every specification.
 
@@ -259,9 +272,9 @@ what no bound names.
 - A crate that adds proofs adds `#[cfg(kani)] mod proofs;`. If it catches panics, its guard
   against aborting builds exempts `kani`, as `rdlt-wire`'s does.
 - `just ready` costs Kani's build and proofs of each crate under proof whenever the change
-  touches it: on a laptop, about 300 seconds for `rdlt-wire` and 285 for `rdlt-engine`, warm, so
+  touches it: on a laptop, about 300 seconds for `rdlt-wire` and 500 for `rdlt-engine`, warm, so
   a change that touches the tools, the justfile or the workflow, which runs both, spends about
-  585 seconds proving. The `formal` check waits for its longest part alone.
+  800 seconds proving. The `formal` check waits for its longest part alone.
 - A contributor's `mise install` installs about 1.1 GB more on disk, and the first `just kani`
   fetches a nightly toolchain.
 - Updating Kani is its version and `mise lock`; its nightly comes with its bundle. Updating
