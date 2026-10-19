@@ -6,6 +6,14 @@ mod changes;
 mod config;
 mod expected;
 mod intruder;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "no attempt opens a window until the oracle measures them"
+    )
+)]
+mod memory;
 mod names;
 mod pressure;
 mod refusals;

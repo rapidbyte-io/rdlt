@@ -9,6 +9,7 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+alloc_tracker.workspace = true
 arrow-array.workspace = true
 arrow-buffer.workspace = true
 arrow-cast.workspace = true

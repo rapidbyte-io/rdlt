@@ -26,6 +26,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "alloc_tracker"
+version = "0.7.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d7cb8bd914c4463865c3dfcd236f406bf386f5e20efada15feddcd92df5853d2"
+dependencies = [
+ "folo_utils",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "alloca"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1294,6 +1305,16 @@ name = "foldhash"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
+
+[[package]]
+name = "folo_utils"
+version = "0.1.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d07fd0e0768640461cb4dd84bcfb7340fca66c686b8d9a9beaeee7e5e37fc170"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "form_urlencoded"
@@ -3301,6 +3322,7 @@ dependencies = [
 name = "rdlt-sim"
 version = "0.0.0"
 dependencies = [
+ "alloc_tracker",
  "arrow-array",
  "arrow-buffer",
  "arrow-cast",

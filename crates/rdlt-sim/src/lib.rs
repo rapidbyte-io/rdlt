@@ -25,6 +25,11 @@ compile_error!(
     "rdlt-sim reports a seed whose run panics by unwinding: build with panic = \"unwind\""
 );
 
+/// Counts each thread's heap, for the unit tests that measure one.
+#[cfg(test)]
+#[global_allocator]
+static HEAP: alloc_tracker::Allocator<std::alloc::System> = alloc_tracker::Allocator::system();
+
 mod changes;
 mod destination;
 mod env;
