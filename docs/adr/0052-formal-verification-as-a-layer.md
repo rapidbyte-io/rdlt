@@ -107,10 +107,12 @@ A formal layer is added to the layers of its class, never in place of one.
   because TLC reads the translation and rejects the clash.
 - `just quint` typechecks each, runs its tests (its `run` definitions whose names end in `Test`),
   and simulates runs against its invariants, as many and as long as its header says.
-  `just quint-verify` checks each invariant with Apalache over every run of up to ten steps, or
-  as many as a `// quint verify: --max-steps <n>` line in the specification says, then each
-  invariant and temporal property with TLC over every state the specification reaches, which
-  needs every domain finite.
+  `just quint-verify` checks each specification with the checker that fits it, named by a
+  `// quint verify:` line in its header. `tlc` checks each invariant and temporal property over
+  every state a finite specification reaches, which covers every run a bounded check could
+  explore. `apalache [--max-steps <n>]` checks each invariant symbolically over every run of up
+  to ten steps, or `<n>`, for a specification whose states are too many to enumerate. A
+  specification that names neither is checked by both.
 - Quint runs Apalache from the distribution mise installs: `QUINT_HOME` is `target/quint`, where
   a link names it under its version, which `--apalache-version` passes, so Quint never fetches
   one. The recipe starts from an empty `QUINT_HOME`, refuses an `apalache-mc` that does not
@@ -140,8 +142,9 @@ A formal layer is added to the layers of its class, never in place of one.
   faults a behavior: three faults take it past 13 minutes there, its states still growing. Its
   time on the nightly runner is not measured, and the job's limit is 120 minutes. At two faults
   TLC does not reach a fence read back from an earlier start's object; a test covers that
-  alone. Apalache cannot hold its state: its bounded run runs out of memory at the first step,
-  so `just quint-verify` fails there, before TLC. `just quint` simulates 500 runs of 80 steps.
+  alone. Its header names `tlc`: its model is finite and TLC enumerates it whole, while
+  Apalache's bounded run cannot hold its state and runs out of memory at the first step. `just
+  quint` simulates 500 runs of 80 steps.
   The specification has no temporal property: the log's guarantees are safety, that it is never
   reopened, has one holder, is read by its own tokens, refuses strays and replays exactly, and a
   liveness claim needs fairness assumptions on a store that may answer nothing forever. A
