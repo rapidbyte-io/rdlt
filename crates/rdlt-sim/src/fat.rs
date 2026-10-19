@@ -43,10 +43,23 @@ pub(crate) fn least_columns() -> u64 {
     LEAST.schema_columns
 }
 
-/// Keys of the widest fat value: within half the least push at twelve bytes a key, and within
-/// half the least columns, which a fat value's keys count against beside the rest of its record.
+/// Keys of the widest fat value: a thirty-second of the least columns, which its keys count
+/// against beside the rest of its record, its bytes coming from long strings instead.
 pub(crate) fn widest() -> u64 {
-    (least_push() / 2 / 12).min(least_columns() / 2)
+    least_columns() / 32
+}
+
+/// Bytes of the key and punctuation around each digit string of a fat value, with room to spare.
+const FRAME: u64 = 16;
+
+/// What share of the least push the widest fat value takes: the most that every budget a world
+/// draws still builds the batches of, as wider ones were refused at the smallest.
+const SHARE: u64 = 16;
+
+/// Digits each key of a fat value holds: as many as bring the widest fat value to a sixteenth of
+/// the least push, so the text of a fat value is data, not keys.
+fn span() -> u64 {
+    (least_push() / SHARE / widest()).saturating_sub(FRAME)
 }
 
 /// Keys of each fat value of stream `index` of a workload salted `salt`: the widest, or a half
@@ -60,22 +73,26 @@ pub(crate) fn carried(row: &Row) -> bool {
     row.offset.rem_euclid(EVERY) == 0
 }
 
-/// The digit key `key` of a fat value whose first digit is `first` holds.
-fn digit(first: i64, key: u64) -> i64 {
-    (first + i64::try_from(key % 10).unwrap_or(0)) % 10
-}
-
 /// Writes key `key` of a fat value whose first digit is `first` onto `text`, after a comma
-/// where it is not the first key.
+/// where it is not the first key: a string of `span` digits, each one more than the last, modulo
+/// ten.
 fn entry(text: &mut String, first: i64, key: u64) {
     if key > 0 {
         text.push(',');
     }
-    write!(text, "\"f{key}\":{}", digit(first, key)).expect("a string takes what is written");
+    write!(text, "\"f{key}\":\"").expect("a string takes what is written");
+    let start = (first + i64::try_from(key % 10).unwrap_or(0)) % 10;
+    let mut digit = start;
+    for _ in 0..span() {
+        text.push(char::from(b'0' + u8::try_from(digit).unwrap_or(0)));
+        digit = (digit + 1) % 10;
+    }
+    text.push('"');
 }
 
 /// The fat value of `row` as JSON text: an object of `keys` keys `f0`, `f1` and on, each holding
-/// a digit, the first the last digit of `row`'s id and each next one more, modulo ten.
+/// a string of digits, the first digit of the first key the last digit of `row`'s id and each
+/// next key's one more, modulo ten.
 pub(crate) fn value(row: &Row, keys: u64) -> String {
     let first = row.id.rem_euclid(10);
     let mut text = String::from("{");
@@ -96,7 +113,7 @@ pub(crate) fn condensed(first: i64, keys: u64) -> String {
 /// it is anything else, which the destination keeps as it is.
 pub(crate) fn condense(text: &str) -> Option<String> {
     let first = text
-        .strip_prefix("{\"f0\":")?
+        .strip_prefix("{\"f0\":\"")?
         .bytes()
         .next()?
         .checked_sub(b'0')?;
