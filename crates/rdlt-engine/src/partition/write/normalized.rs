@@ -57,9 +57,9 @@ pub(super) async fn write_normalized(
     let mut flush = Flush::new(context, job.table, judged(job, &pieces, shape)?, kind);
     let request = room.shares(&context.budget).request;
     let last = pieces.len().saturating_sub(1);
-    for (piece, (parts, held)) in pieces.into_iter().enumerate() {
+    for (piece, held) in pieces.into_iter().enumerate() {
         let mut reserved = reserve(job, context, &room, request).await?;
-        let (shape, stream) = (Arc::clone(shape), job.stream.clone());
+        let (shape, stream, parts) = (Arc::clone(shape), job.stream.clone(), held.batches.clone());
         let parts = on_pool(context, move || split(&stream, &parts, &shape)).await?;
         // What the split made beside the unit is held until the last of it is written.
         let made = {
@@ -86,7 +86,10 @@ pub(super) async fn write_normalized(
             // No piece asks for more: what the room has left goes back to the budget.
             room.close();
         }
-        let hold = Arc::new(Mutex::new((reserved, held.permits)));
+        // The piece's parts, on their lanes and in the log, share what holds its batches and what
+        // it reserved until the last of them is written: its rows go first, and with them its
+        // share of the unit.
+        let hold = Arc::new(Mutex::new((held, reserved)));
         let mut cut = cut.into_iter().peekable();
         while let Some(piece) = cut.next() {
             // The partition waits for its allowance only while it holds no piece it has not
@@ -151,8 +154,8 @@ async fn sliced(
     job: &PartitionJob,
     context: &PartitionContext,
     room: &Room,
-    units: Vec<(Vec<RecordBatch>, Held)>,
-) -> Result<Vec<(Vec<RecordBatch>, Held)>, Error> {
+    units: Vec<Held>,
+) -> Result<Vec<Held>, Error> {
     let (max, limit) = split_bounds(room.shares(&context.budget));
     let lowered = Lowered {
         rendering: context.rendering.as_ref().clone(),
@@ -164,9 +167,9 @@ async fn sliced(
         limit,
     };
     let mut cut = Vec::with_capacity(units.len());
-    for (parts, held) in units {
+    for unit in units {
         let lowered = lowered.clone();
-        let pieces = on_pool(context, move || pieces::sliced(parts, held, lowered)).await;
+        let pieces = on_pool(context, move || pieces::sliced(unit, lowered)).await;
         cut.extend(pieces.map_err(|row| room.refusal(job, &context.budget, &row))?);
     }
     Ok(cut)
@@ -378,14 +381,10 @@ fn admit(
 
 /// The columns of each table holding, in any of `pieces`' rows, a value a 64-bit float would
 /// round, judged where the rows lie, inline, before any piece is split.
-fn judged(
-    job: &PartitionJob,
-    pieces: &[(Vec<RecordBatch>, Held)],
-    shape: &Shape,
-) -> Result<Rounding, Error> {
+fn judged(job: &PartitionJob, pieces: &[Held], shape: &Shape) -> Result<Rounding, Error> {
     let mut rounding = Rounding::new();
-    for (parts, _) in pieces {
-        normalize::rounding::judge(parts, shape, &mut rounding)
+    for held in pieces {
+        normalize::rounding::judge(&held.batches, shape, &mut rounding)
             .map_err(|error| schema_invalid(job, &error))?;
     }
     Ok(rounding)

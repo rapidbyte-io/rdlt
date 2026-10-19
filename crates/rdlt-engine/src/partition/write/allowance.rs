@@ -14,6 +14,7 @@ use rdlt_connector::cost::Rendering;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 
+use super::held::Held;
 use super::normalized::PlannedParts;
 use super::pieces::{Lowered, Pieces, RowTooLarge};
 use super::reserved_times;
@@ -116,7 +117,7 @@ impl Cutter {
                 max: self.piece.min(self.row),
                 limit: self.row,
             };
-            let mut pieces = Pieces::new(vec![part.batch.clone()], lowered);
+            let mut pieces = Pieces::new(Held::of(vec![part.batch.clone()], Vec::new()), lowered);
             let mut first = 0;
             while let Some(piece) = pieces.next()? {
                 let batch = part.batch.slice(first, piece.rows);

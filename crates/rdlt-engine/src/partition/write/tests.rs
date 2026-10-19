@@ -15,6 +15,7 @@ use crate::partition::PartitionJob;
 use crate::shred::ShredError;
 use crate::table::Prepared;
 
+mod given_up;
 mod units;
 
 fn job() -> PartitionJob {
@@ -117,7 +118,7 @@ async fn shredded_batches_hold_what_they_keep_alive_of_what_their_pushes_were_ad
     let batches = [ids(10), ids(1000)];
     let alive = allocated(&batches[0]) + allocated(&batches[1]);
     assert!(alive > 8_000 && alive < 3 * 40_000);
-    let held = shredded(pushed, None, &batches);
+    let held = shredded(pushed, None, batches.to_vec());
     // The text is gone: the pushes hold what the batches keep alive, and nothing was asked of
     // the budget for them.
     assert_eq!((budget.reserved(), budget.peak()), (alive, 3 * 42_000));
@@ -138,13 +139,13 @@ async fn shredded_batches_keeping_more_alive_than_was_admitted_hold_what_was_adm
     let pushed = vec![json(&budget, 100).await, json(&budget, 100).await];
     let batch = ids(1000);
     assert!(allocated(&batch) > 600);
-    let held = shredded(pushed, None, std::slice::from_ref(&batch));
+    let held = shredded(pushed, None, vec![batch.clone()]);
     assert_eq!((budget.reserved(), budget.peak()), (600, 600));
     drop(held);
     assert_eq!(budget.reserved(), 0);
     // Permits of another's making are kept as they are.
     let other: Permit = Box::new(7_u8);
-    let foreign = shredded(vec![other], None, std::slice::from_ref(&batch));
+    let foreign = shredded(vec![other], None, vec![batch]);
     assert_eq!(foreign.len(), 1);
     assert_eq!(foreign[0].permits.len(), 1);
 }
@@ -157,7 +158,7 @@ async fn shredded_batches_hold_what_was_reserved_beyond_their_pushes_for_what_th
     let alive = allocated(&batch);
     let beyond = budget.acquire_working(alive).await.unwrap();
     assert_eq!(budget.reserved(), 300 + alive);
-    let held = shredded(pushed, Some(beyond), std::slice::from_ref(&batch));
+    let held = shredded(pushed, Some(beyond), vec![batch]);
     // The pushes hold all they were admitted for, and the reservation the rest of what the
     // batch keeps alive; what it reserved beyond that goes back.
     assert_eq!(budget.reserved(), alive);
@@ -209,7 +210,7 @@ fn the_loads_constant_columns_count_for_no_growth() {
 #[test]
 fn a_units_parts_grow_it_by_their_lineage_and_their_schemas() {
     let unit = ids(1000);
-    let held = Held::of(Vec::new(), std::slice::from_ref(&unit));
+    let held = Held::of(vec![unit.clone()], Vec::new());
     let shape = crate::normalize::Shape {
         max_depth: 8,
         whole: std::collections::BTreeSet::new(),
@@ -313,7 +314,7 @@ fn a_change_stream_s_unit_is_judged_and_cut_where_it_lies() {
         partial_updates: false,
     };
     let unit = changes(1_000, 10);
-    let held = Held::of(Vec::new(), std::slice::from_ref(&unit));
+    let held = Held::of(vec![unit.clone()], Vec::new());
     // Its data columns are judged as they lie: nothing of the unit is copied for them, and
     // they keep alive only a schema of their own.
     let judged = data(&unit).unwrap();
@@ -371,14 +372,9 @@ fn a_unit_whose_every_row_its_stream_ignores_is_counted_and_dropped() {
     let mut columns = deletes.columns().to_vec();
     columns[1] = Arc::new(arrow_array::Int8Array::from_iter_values(ops));
     let unit = RecordBatch::try_new(deletes.schema(), columns).unwrap();
-    let held = Held::of(Vec::new(), std::slice::from_ref(&unit));
-    let judged = super::judged(
-        &job,
-        &mut open,
-        &mut super::Schemas::default(),
-        vec![(vec![unit], held)],
-    )
-    .unwrap();
+    let held = Held::of(vec![unit], Vec::new());
+    let judged =
+        super::judged(&job, &mut open, &mut super::Schemas::default(), vec![held]).unwrap();
     assert!(judged.is_empty());
     assert_eq!((open.deletes_ignored, open.truncates_ignored), (7, 5));
 }
@@ -424,7 +420,7 @@ fn held_by(
     let lowering = super::Lowering {
         allocations: Arc::new(parking_lot::Mutex::new(Allocations::default())),
         reserved: budget.try_acquire_working(bytes).unwrap(),
-        unit: None,
+        unit: Arc::default(),
     };
     window.push(run, lowering, copies);
 }
@@ -591,7 +587,7 @@ fn flags_as_text(items: usize, shares: crate::budget::Shares) -> super::pieces::
         max,
         limit,
     };
-    let mut pieces = super::pieces::Pieces::new(vec![unit], lowered);
+    let mut pieces = super::pieces::Pieces::new(Held::of(vec![unit], Vec::new()), lowered);
     pieces.next().unwrap_err()
 }
 

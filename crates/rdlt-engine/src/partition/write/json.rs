@@ -17,7 +17,17 @@ use crate::error::{Error, ErrorKind};
 use crate::limits::ROW_EXCEEDS_BUDGET;
 use crate::normalize::PushKind;
 
-/// Writes the JSON `pushes`, admitted with `permits`.
+/// A flush's JSON pushes held with the permits they were admitted with, until their text is let
+/// go.
+///
+/// The fields are dropped in the order they are declared: the text is freed before the permits
+/// release what was charged for it.
+pub(super) struct Pushes {
+    pub(super) text: Vec<Bytes>,
+    pub(super) permits: Vec<Permit>,
+}
+
+/// Writes the JSON `pushes`.
 ///
 /// Where the batches take more than the pushes were admitted for, the partition holds that while
 /// they are lowered, so it never waits on the budget until they are written:
@@ -43,8 +53,7 @@ pub(super) async fn write_json(
     context: &PartitionContext,
     open: &mut OpenSegment,
     schemas: &mut Schemas,
-    pushes: Vec<Bytes>,
-    permits: Vec<Permit>,
+    pushes: Pushes,
 ) -> Result<(), Error> {
     let normalized = context.tables.shape(job.table).is_some();
     let mut beside = if normalized {
@@ -53,29 +62,22 @@ pub(super) async fn write_json(
         Beside::Lowering
     };
     loop {
-        let Built {
-            batches,
-            excess,
-            beyond,
-            beside: reserved,
-            counts,
-        } = units::built(job, context, &pushes, beside).await?;
-        open.shred.add(&counts);
-        let reserved = match reserved {
+        // The batches stay with what was reserved for them until they are held as units.
+        let mut built = units::built(job, context, &pushes.text, beside).await?;
+        open.shred.add(&built.counts);
+        let reserved = match built.beside.take() {
             Some(reserved) if !normalized => reserved,
             reserved => {
                 let room = reserved.map_or(Room::Budget, |reserved| Room::Lent(reserved.lend()));
-                drop(pushes);
-                let held = held::shredded(permits, beyond, &batches);
-                let units = batches.into_iter().map(|batch| vec![batch]).zip(held);
                 let units = Units {
-                    units: units.collect(),
+                    units: shredded(pushes, built),
                     room,
                 };
                 return write(job, context, open, schemas, units, PushKind::Json).await;
             }
         };
-        let (mut planned, needed) = measured(job, context, open, schemas, &batches, excess).await?;
+        let (batches, excess) = (&built.batches, built.excess);
+        let (mut planned, needed) = measured(job, context, open, schemas, batches, excess).await?;
         let lent = if reserved.bytes() >= needed {
             let mut reserved = reserved;
             reserved.shrink(needed);
@@ -88,16 +90,23 @@ pub(super) async fn write_json(
             beside = Beside::Bytes(needed);
             continue;
         };
-        drop(pushes);
-        let held = held::shredded(permits, beyond, &batches);
-        if held.len() != planned.len() {
+        if built.batches.len() != planned.len() {
             return Err(Error::internal("a JSON flush's units and batches differ"));
         }
+        let held = shredded(pushes, built);
         for (unit, held) in planned.iter_mut().zip(held) {
-            unit.held = held;
+            unit.pieces.held_by(held);
         }
         return lowered(job, context, open, planned, Room::Lent(lent.lend())).await;
     }
+}
+
+/// What holds each of the batches `built` from `pushes`: the text goes first, and then what was
+/// charged for it beyond what the batches keep alive.
+fn shredded(pushes: Pushes, built: Built) -> Vec<Held> {
+    let Pushes { text, permits } = pushes;
+    drop(text);
+    held::shredded(permits, built.beyond, built.batches)
 }
 
 /// `batches`, whose building took `excess` beyond their pushes, planned and cut into pieces, and
@@ -112,10 +121,9 @@ async fn measured(
 ) -> Result<(Vec<Planned>, u64), Error> {
     let request = context.budget.shares().request;
     let shares = beside_built(context.budget.shares(), excess);
-    let unheld = batches.iter().map(|batch| {
-        let held = Held::of(Vec::new(), std::slice::from_ref(batch));
-        (vec![batch.clone()], held)
-    });
+    let unheld = batches
+        .iter()
+        .map(|batch| Held::of(vec![batch.clone()], Vec::new()));
     let mut planned = planned(job, context, open, schemas, unheld.collect(), shares).await?;
     let refused = |row: RowTooLarge| row_beside_built(job, &row, excess, request);
     let largest = cut(context, &mut planned, refused).await?;

@@ -6,11 +6,14 @@
 mod tests;
 
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 use arrow_array::RecordBatch;
-use rdlt_connector::cost::{Measure, Rendering, Stored};
+use parking_lot::Mutex;
+use rdlt_connector::cost::{Allocations, Measure, Rendering, Stored};
 
 use super::Held;
+use super::held::Share;
 
 /// A row that alone takes more to lower than what is asked of the budget for it may.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,7 +60,6 @@ struct Run {
 /// A unit's batches being cut into pieces, in order.
 pub(super) struct Pieces {
     lowered: Lowered,
-    parts: Vec<RecordBatch>,
     /// The batch being cut, the row its next run starts at, and its measures: against a piece's
     /// bytes, and against the budget for a row beyond a piece.
     part: usize,
@@ -67,26 +69,33 @@ pub(super) struct Pieces {
     cut: Option<Run>,
     /// Pieces cut ahead, in order, before any of them is lowered.
     ready: VecDeque<Piece>,
+    /// The unit's batches, taken from what holds them: each piece's slices keep alive what they
+    /// cut, so a batch is freed once its last piece is.
+    parts: Vec<RecordBatch>,
+    /// What holds the unit, which each of its pieces shares: last, so the batches and the pieces
+    /// cut ahead of them go before it.
+    unit: Share,
 }
 
 impl Pieces {
-    /// `parts`, a unit's batches of one schema, to be cut as `lowered` measures them.
-    pub(super) fn new(parts: Vec<RecordBatch>, lowered: Lowered) -> Self {
+    /// `unit`, batches of one schema, to be cut as `lowered` measures them.
+    pub(super) fn new(mut unit: Held, lowered: Lowered) -> Self {
         Self {
             lowered,
-            parts,
             part: 0,
             row: 0,
             measures: None,
             cut: None,
             ready: VecDeque::new(),
+            parts: std::mem::take(&mut unit.batches),
+            unit: Arc::new(Mutex::new(unit)),
         }
     }
 
     /// No batches: what stands in for a unit's while they are cut elsewhere.
     pub(super) fn none() -> Self {
         Self::new(
-            Vec::new(),
+            Held::default(),
             Lowered {
                 rendering: Rendering::text(),
                 stored: Vec::new(),
@@ -106,6 +115,23 @@ impl Pieces {
     /// Whether every row has been cut into a piece.
     fn cut_all(&self) -> bool {
         self.part >= self.parts.len()
+    }
+
+    /// The allocations the unit keeps alive, which its pieces share.
+    pub(super) fn allocations(&self) -> Arc<Mutex<Allocations>> {
+        Arc::clone(&self.unit.lock().allocations)
+    }
+
+    /// Holds `unit`, the same batches, in place of what held them.
+    pub(super) fn held_by(&mut self, mut unit: Held) {
+        self.parts = std::mem::take(&mut unit.batches);
+        self.unit = Arc::new(Mutex::new(unit));
+    }
+
+    /// A share of what holds the unit, for one of its pieces: the unit goes once the last share
+    /// does.
+    pub(super) fn share(&self) -> Share {
+        Arc::clone(&self.unit)
     }
 
     /// Cuts every piece that is left ahead, to be taken with [`Pieces::ready`], returning the
@@ -213,26 +239,20 @@ impl Pieces {
     }
 }
 
-/// `parts`, a unit `held` holds, cut into pieces as `lowered` measures them, before its tables
-/// are known: each piece's batches, in order, and what holds it.
-///
-/// The unit's permits stay with its last piece, so they hold until all of it is written.
+/// `unit` cut into pieces as `lowered` measures them, before its tables are known: what holds
+/// each piece's batches, in order, each with a share of what holds the unit, so its permits hold
+/// until all of it is written.
 ///
 /// # Errors
 ///
 /// A [`RowTooLarge`] for a row that alone takes more than a row may.
-pub(super) fn sliced(
-    parts: Vec<RecordBatch>,
-    held: Held,
-    lowered: Lowered,
-) -> Result<Vec<(Vec<RecordBatch>, Held)>, RowTooLarge> {
-    let mut pieces = Pieces::new(parts, lowered);
+pub(super) fn sliced(unit: Held, lowered: Lowered) -> Result<Vec<Held>, RowTooLarge> {
+    let mut pieces = Pieces::new(unit, lowered);
     let mut cut = Vec::new();
     while let Some(piece) = pieces.next()? {
-        cut.push((piece.parts, held.piece()));
-    }
-    if let Some((_, last)) = cut.last_mut() {
-        *last = held;
+        let mut held = pieces.unit.lock().piece(piece.parts);
+        held.permits.push(Box::new(pieces.share()));
+        cut.push(held);
     }
     Ok(cut)
 }

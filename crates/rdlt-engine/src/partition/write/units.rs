@@ -3,7 +3,6 @@
 
 use arrow_array::RecordBatch;
 use bytes::Bytes;
-use rdlt_connector::Permit;
 
 use super::held::Held;
 use super::{Room, reserving};
@@ -18,14 +17,15 @@ use crate::shred::{self, ShredError, ShredLimits};
 /// Bytes: the most of a column's name an error quotes.
 const NAME_SHOWN: usize = 256;
 
-/// A flush's units, each some batches of one schema and the memory they hold, and where their
-/// lowering reserves its bytes.
+/// A flush's units, each some batches of one schema held with what was charged for them, and
+/// where their lowering reserves its bytes.
 pub(super) struct Units {
-    pub(super) units: Vec<(Vec<RecordBatch>, Held)>,
+    pub(super) units: Vec<Held>,
     pub(super) room: Room,
 }
 
-/// The unit Arrow `batches`, admitted with `permits`, are written as.
+/// The unit Arrow batches, held by `unit` with the permits they were admitted with, are written
+/// as.
 ///
 /// # Errors
 ///
@@ -33,12 +33,10 @@ pub(super) struct Units {
 pub(super) async fn arrow(
     job: &PartitionJob,
     context: &PartitionContext,
-    batches: Vec<RecordBatch>,
-    permits: Vec<Permit>,
+    unit: Held,
 ) -> Result<Units, Error> {
-    checked(job, context, &batches).await?;
-    let held = Held::of(permits, &batches);
-    let units = vec![(batches, held)];
+    checked(job, context, &unit.batches).await?;
+    let units = vec![unit];
     let room = Room::Budget;
     Ok(Units { units, room })
 }
@@ -115,6 +113,9 @@ pub(super) enum Beside {
 }
 
 /// A JSON flush's batches, a batch a chunk, and what building them took.
+///
+/// The batches are declared first: dropped, they are freed before what was reserved for them is
+/// released.
 pub(super) struct Built {
     pub(super) batches: Vec<RecordBatch>,
     /// Bytes: what the batches take beyond twice their pushes' text.

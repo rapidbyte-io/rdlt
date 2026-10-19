@@ -23,6 +23,9 @@ use crate::table::Tables;
 
 /// A batch for one table, tagged with its segment and the schema version it was lowered for; the
 /// reservation drops once its writer has flushed it, since a writer may buffer what it stages.
+///
+/// The batch is declared before its reservation: dropped, it is freed before what was charged for
+/// it is released.
 pub(crate) struct Write {
     pub(crate) table: usize,
     pub(crate) version: SchemaVersion,
