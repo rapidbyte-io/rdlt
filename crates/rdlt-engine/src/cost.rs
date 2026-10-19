@@ -113,29 +113,24 @@ fn too_large(name: &'static str, large: TooLarge) -> ConnectorError {
 }
 
 impl Admission for Charging {
-    fn admit<'a>(
-        &'a self,
-        event: &'a SourceEvent,
-    ) -> BoxFuture<'a, rdlt_connector::Result<Option<Permit>>> {
+    fn admit(&self, event: &SourceEvent) -> BoxFuture<'_, rdlt_connector::Result<Option<Permit>>> {
+        let (bytes, cursor) = match event {
+            SourceEvent::Push(push) => (push_charge(push), false),
+            // A cursor waits with its seal for a commit, which alone releases it.
+            SourceEvent::Checkpoint { cursor, .. } => (count(cursor.bytes().len()), true),
+            SourceEvent::Log { .. }
+            | SourceEvent::Metric { .. }
+            | SourceEvent::Replan
+            | SourceEvent::Behind { .. } => return Box::pin(async { Ok(None) }),
+        };
         Box::pin(async move {
-            let (bytes, admitted) = match event {
-                SourceEvent::Push(push) => {
-                    let bytes = push_charge(push);
-                    (bytes, self.budget.acquire(bytes).await)
-                }
-                // A cursor waits with its seal for a commit, which alone releases it.
-                SourceEvent::Checkpoint { cursor, .. } => {
-                    let bytes = count(cursor.bytes().len());
-                    let admitted = self.budget.acquire_cursor(bytes).await;
-                    let admitted = admitted.map_err(|denied| self.refused("cursor bytes", denied));
-                    let admitted = self.admitted(admitted?);
-                    return Ok(Some(Box::new(Admitted::new(bytes, admitted)) as Permit));
-                }
-                SourceEvent::Log { .. }
-                | SourceEvent::Metric { .. }
-                | SourceEvent::Replan
-                | SourceEvent::Behind { .. } => return Ok(None),
-            };
+            if cursor {
+                let admitted = self.budget.acquire_cursor(bytes).await;
+                let admitted = admitted.map_err(|denied| self.refused("cursor bytes", denied));
+                let admitted = self.admitted(admitted?);
+                return Ok(Some(Box::new(Admitted::new(bytes, admitted)) as Permit));
+            }
+            let admitted = self.budget.acquire(bytes).await;
             let reservation = admitted.map_err(|denied| self.refused(PUSH, denied))?;
             let reservation = self.admitted(reservation);
             Ok(Some(Box::new(Admitted::new(bytes, reservation)) as Permit))

@@ -31,7 +31,7 @@ const WAIT: Duration = Duration::from_secs(60);
 struct Paced;
 
 impl Admission for Paced {
-    fn admit<'a>(&'a self, _: &'a SourceEvent) -> BoxFuture<'a, crate::Result<Option<Permit>>> {
+    fn admit(&self, _: &SourceEvent) -> BoxFuture<'_, crate::Result<Option<Permit>>> {
         Box::pin(async {
             tokio::time::sleep(PACE).await;
             Ok(None)

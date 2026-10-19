@@ -122,10 +122,7 @@ impl Charge for Charging {
 struct Watching(Arc<Tally>);
 
 impl Admission for Watching {
-    fn admit<'a>(
-        &'a self,
-        _: &'a SourceEvent,
-    ) -> BoxFuture<'a, rdlt_connector::Result<Option<Permit>>> {
+    fn admit(&self, _: &SourceEvent) -> BoxFuture<'_, rdlt_connector::Result<Option<Permit>>> {
         let held = self.0.held.load(Ordering::SeqCst);
         self.0.seen.lock().expect("not poisoned").push(held);
         Box::pin(async { Ok(None) })
