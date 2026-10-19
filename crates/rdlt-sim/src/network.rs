@@ -298,6 +298,11 @@ impl Placing {
         }
     }
 
+    /// Bytes: the least credit the engine's host grants a read of a connector it placed.
+    pub(crate) fn read_floor(&self) -> u64 {
+        self.remote_options.read_floor
+    }
+
     /// Runs `work` while the network is disrupted as `rng` draws, then heals the network, however
     /// `work` ends.
     pub(crate) async fn disrupting<T>(&self, rng: SplitMix64, work: impl Future<Output = T>) -> T {

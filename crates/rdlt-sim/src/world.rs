@@ -1,6 +1,7 @@
 //! The world one simulation shares: its workload, faults, destination store and findings.
 
 mod hangs;
+mod pushes;
 mod reports;
 #[cfg(test)]
 mod tests;
@@ -28,6 +29,7 @@ use crate::swarm::Features;
 use crate::wal::SimWal;
 use crate::workload::Workload;
 use hangs::Hangs;
+use pushes::Pushes;
 pub(crate) use reports::Reports;
 
 /// Where a connector can fail, and how often, in failures per thousand calls.
@@ -104,8 +106,8 @@ pub struct World {
     pub(crate) arrived: Notify,
     /// How hard the source presses on the engine's memory budget.
     pressure: Mutex<Pressure>,
-    /// Bytes: the largest push the source has made.
-    largest_push: AtomicUsize,
+    /// What the source holds of the pushes it made and has not yet sent on.
+    pub(crate) pushes: Pushes,
     /// The sessions, writers and reads its connectors hold now.
     pub(crate) owners: Owners,
 }
@@ -245,7 +247,7 @@ impl World {
             produced: Mutex::new(None),
             arrived: Notify::new(),
             pressure: Mutex::default(),
-            largest_push: AtomicUsize::new(0),
+            pushes: Pushes::default(),
             owners: Owners::default(),
         });
         Registered::enter(name, world)
@@ -259,17 +261,6 @@ impl World {
     /// How hard the source presses on the engine's memory budget.
     pub(crate) fn pressure(&self) -> Pressure {
         *self.pressure.lock()
-    }
-
-    /// Notes a push of `bytes` the source made.
-    pub(crate) fn pushed(&self, bytes: usize) {
-        self.largest_push.fetch_max(bytes, Ordering::SeqCst);
-    }
-
-    /// Bytes: the largest push the source has made, which each of a run's partitions may hold
-    /// before it is admitted.
-    pub(crate) fn largest_push(&self) -> u64 {
-        u64::try_from(self.largest_push.load(Ordering::SeqCst)).unwrap_or(u64::MAX)
     }
 
     /// A world whose change workload and faults derive from `rng`, and which of its merge streams
@@ -318,7 +309,7 @@ impl World {
             produced: Mutex::new(None),
             arrived: Notify::new(),
             pressure: Mutex::default(),
-            largest_push: AtomicUsize::new(0),
+            pushes: Pushes::default(),
             owners: Owners::default(),
         });
         Registered::enter(name, world)

@@ -105,16 +105,24 @@ fn a_seed_whose_rows_only_the_log_held_passes() {
 }
 
 /// A seed's attempts are measured, so the check cannot switch itself off: its timing line records
-/// what the worst held and what its runs account for, in process and over the network.
+/// what the worst held and what its runs account for, term by term, in process and over the
+/// network, where the reads hold what their connectors queue.
 #[test]
 fn attempts_are_measured_in_process_and_over_the_network() {
-    let (in_process, network) = (Seed::new(1), Seed::new(508));
-    assert!(!Features::draw(&mut SplitMix64::new(1)).network);
-    assert!(Features::draw(&mut SplitMix64::new(508)).network);
-    for seed in [in_process, network] {
-        let recorded = check_exactly_once(seed).recorded();
-        let held = recorded["held_bytes"].as_u64().expect("held is recorded");
-        let bound = recorded["bound_bytes"].as_u64().expect("bound is recorded");
-        assert!(held > 0 && bound > 0, "{recorded:?}");
+    for (seed, network) in [(1, false), (508, true)] {
+        assert_eq!(Features::draw(&mut SplitMix64::new(seed)).network, network);
+        let recorded = check_exactly_once(Seed::new(seed)).recorded();
+        let bytes = |name: &str| recorded[name].as_u64().expect("every term is recorded");
+        assert!(bytes("held_bytes") > 0, "{recorded:?}");
+        assert!(bytes("reserved_bytes") > 0, "{recorded:?}");
+        assert_eq!(bytes("queued_bytes") > 0, network, "{recorded:?}");
+        let terms = [
+            "reserved_bytes",
+            "dropped_bytes",
+            "pushes_bytes",
+            "queued_bytes",
+        ];
+        let bound: u64 = terms.into_iter().map(bytes).sum();
+        assert_eq!(bytes("bound_bytes"), bound, "{recorded:?}");
     }
 }

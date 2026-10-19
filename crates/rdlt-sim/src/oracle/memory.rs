@@ -15,28 +15,28 @@ use crate::seed::Seed;
 /// of what it stores and builders' spare room; ADR 0039 says how it was found.
 ///
 /// Fat values do not raise it: the data they add is smaller than this fixed overhead.
-const IN_PROCESS: u64 = 11 << 20;
+const IN_PROCESS: u64 = 13 << 20;
 
 /// Bytes: as [`IN_PROCESS`], for a seed that keeps a write-ahead log, whose world holds copies of
 /// the log's frames as well.
-const IN_PROCESS_LOGGED: u64 = 20 << 20;
+const IN_PROCESS_LOGGED: u64 = 22 << 20;
 
 /// Bytes: as [`IN_PROCESS`], where the connectors listen on the simulated network and their
-/// hosts share the thread; the pushes they queue are in the bound, by [`QUEUED`].
-const NETWORK: u64 = 16 << 20;
+/// hosts share the thread; what their reads hold between the source and the engine is in the
+/// bound, by [`QUEUED`] and the credit floor.
+const NETWORK: u64 = 11 << 20;
 
 /// Bytes: as [`NETWORK`], for a seed that keeps a write-ahead log.
-const NETWORK_LOGGED: u64 = 19 << 20;
+const NETWORK_LOGGED: u64 = 17 << 20;
 
-/// Pushes a connector serving a read over the network may hold for each partition, beyond what
-/// the engine admits, each place holding at most one.
+/// Pushes a read over the network may hold beyond the push its source is sending, each place
+/// holding at most one: the host's push waiting for the engine to admit it, the sixteen events
+/// the connector may send ahead, the batch being cut and its piece waiting for credit, and the
+/// frame sent past the credit left.
 ///
-/// They are the sixteen events its source may send ahead, a push the source waits to send, the
-/// batch being cut and its piece waiting for credit, and the frames that credit lets go before
-/// the host takes them: a window of two of the largest frames and one sent past it. Where the
-/// pushes are smaller than half the credit floor, the window is the floor's, and the allowance
-/// holds it.
-const QUEUED: u64 = 16 + 1 + 2 + 3;
+/// The frames credit lets go before the host takes them are counted apart: a window of two of
+/// the largest frames, or the credit floor where it is larger.
+const QUEUED: u64 = 1 + 16 + 2 + 1;
 
 /// Bytes: the allowance of `seed`'s attempts, where its work is `inline` on one thread, its
 /// connectors listen on the network where `network`, and it keeps a write-ahead log where
@@ -62,21 +62,42 @@ pub(super) fn allowance(seed: Seed, inline: bool, network: bool, logged: bool) -
     })
 }
 
+/// Bytes: what `reads` reads over the network hold beyond the pushes their source is sending,
+/// where the largest push is `push` and each read is granted credit of at least `floor`.
+fn queued(reads: u64, push: u64, floor: u64) -> u64 {
+    let window = push.saturating_mul(2).max(floor);
+    reads.saturating_mul(QUEUED.saturating_mul(push).saturating_add(window))
+}
+
 /// The heap a seed's thread held over its worst attempt beyond where the attempt began, and
 /// what that attempt's runs account for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Held {
     /// Bytes: the most the thread held beyond where the attempt began.
     pub held: u64,
-    /// Bytes: the runs' reserved peaks, a budget for each run dropped, and the pushes each
-    /// partition each run reads holds beyond them, one in process and more over the network.
-    pub bound: u64,
+    /// Bytes: the peaks the runs' reports tell of.
+    pub reserved: u64,
+    /// Bytes: a budget for each run dropped as if its worker crashed, leaving no report.
+    pub dropped: u64,
+    /// Bytes: the most the source held at once of pushes it made and had not yet sent on.
+    pub pushes: u64,
+    /// Bytes: over the network, what the reads hold between the source and the engine; none in
+    /// process.
+    pub queued: u64,
 }
 
 impl Held {
-    /// Bytes: how far `held` passed `bound`, below zero where it stayed within it.
+    /// Bytes: what the runs account for.
+    pub fn bound(self) -> u64 {
+        self.reserved
+            .saturating_add(self.dropped)
+            .saturating_add(self.pushes)
+            .saturating_add(self.queued)
+    }
+
+    /// Bytes: how far `held` passed the bound, below zero where it stayed within it.
     fn over(self) -> i128 {
-        i128::from(self.held) - i128::from(self.bound)
+        i128::from(self.held) - i128::from(self.bound())
     }
 
     /// The worse of the worst attempt so far, if any, and `attempt`: whichever
@@ -88,10 +109,20 @@ impl Held {
         }
     }
 
-    /// Adds what the worst attempt held, and what its runs account for, to a timing line.
+    /// Adds what the worst attempt held, and what its runs account for term by term, to a timing
+    /// line.
     pub(super) fn record(self, fields: &mut Map<String, Value>) {
-        fields.insert("held_bytes".to_owned(), json!(self.held));
-        fields.insert("bound_bytes".to_owned(), json!(self.bound));
+        let terms = [
+            ("held_bytes", self.held),
+            ("bound_bytes", self.bound()),
+            ("reserved_bytes", self.reserved),
+            ("dropped_bytes", self.dropped),
+            ("pushes_bytes", self.pushes),
+            ("queued_bytes", self.queued),
+        ];
+        for (name, bytes) in terms {
+            fields.insert(name.to_owned(), json!(bytes));
+        }
     }
 
     /// Checks that over `phase` of `seed` the thread held no more than its runs account for and
@@ -101,46 +132,13 @@ impl Held {
     ///
     /// Panics, naming the seed and phase, where it held more.
     fn within(self, seed: Seed, phase: usize, allowance: u64) {
-        let Self { held, bound } = self;
+        let (held, bound) = (self.held, self.bound());
         assert!(
             held <= bound.saturating_add(allowance),
             "seed {seed}: phase {phase}: an attempt's thread held {held} bytes of heap beyond \
              where it began, past the {bound} its runs account for and an allowance of \
-             {allowance}"
+             {allowance}: {self:?}"
         );
-    }
-}
-
-/// What the runs of an attempt reserve and hold beyond what they reserve.
-#[derive(Clone, Copy, Debug)]
-struct Account {
-    /// Bytes: the peaks the runs' reports tell of.
-    reserved: u64,
-    /// How many runs were dropped as if their worker crashed, leaving no report.
-    crashed: u64,
-    /// How many runs were started.
-    started: u64,
-    /// Bytes: the memory budget of a run.
-    budget: u64,
-    /// Partitions each run reads at once.
-    partitions: u64,
-    /// Pushes each partition holds at once: one, and over the network those a connector queues.
-    pushes: u64,
-    /// Bytes: the largest push any source made.
-    push: u64,
-}
-
-impl Account {
-    /// Bytes: what the runs account for.
-    fn bound(self) -> u64 {
-        let held = self
-            .started
-            .saturating_mul(self.partitions)
-            .saturating_mul(self.pushes)
-            .saturating_mul(self.push);
-        self.reserved
-            .saturating_add(self.crashed.saturating_mul(self.budget))
-            .saturating_add(held)
     }
 }
 
@@ -157,22 +155,20 @@ impl super::Simulation {
             .map(|report| report.peak_memory)
             .sum();
         let crashed = executed.iter().filter(|run| run.crashed).count();
-        let account = Account {
-            reserved,
-            crashed: u64::try_from(crashed).unwrap_or(u64::MAX),
-            started: executed.iter().map(|run| run.started).sum(),
-            budget: self.budget,
-            partitions: self.partitions,
-            pushes: if self.placing.is_some() {
-                1 + QUEUED
-            } else {
-                1
-            },
-            push: self.world.largest_push(),
-        };
+        let started: u64 = executed.iter().map(|run| run.started).sum();
+        let pushes = &self.world.pushes;
+        let queued = self.placing.as_ref().map_or(0, |placing| {
+            let reads = started.saturating_mul(self.partitions);
+            queued(reads, pushes.largest(), placing.read_floor())
+        });
         let attempt = Held {
             held,
-            bound: account.bound(),
+            reserved,
+            dropped: u64::try_from(crashed)
+                .unwrap_or(u64::MAX)
+                .saturating_mul(self.budget),
+            pushes: pushes.most(),
+            queued,
         };
         self.held = Some(Held::worse(self.held, attempt));
         attempt.within(self.seed, phase, allowance);
