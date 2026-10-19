@@ -34,8 +34,11 @@ impl EngineConfig {
         self.growth.child_tables().get().min(held.max(1))
     }
 
-    /// Bytes: the least memory a configuration reading `partitions` partitions at once may have,
-    /// from which every memory up admits what the protocol lets no peer go below.
+    /// Bytes: a memory that admits what the protocol lets no peer go below, for a configuration
+    /// reading `partitions` partitions at once, while the memory a byte below does not.
+    ///
+    /// Every memory from it upward admits that for 1 to 24 partitions; above that count
+    /// admission is not monotone in the memory.
     pub fn least_memory(partitions: usize) -> u64 {
         least(partitions)
     }

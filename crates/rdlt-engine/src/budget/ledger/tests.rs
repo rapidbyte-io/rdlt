@@ -168,6 +168,7 @@ proptest! {
         let shared = Arc::new(Mutex::new(Ledger::new(BUDGET)));
         let mut held: Vec<Reservation> = Vec::new();
         let mut queued: Vec<(u64, oneshot::Receiver<Reservation>)> = Vec::new();
+        let mut pressing = 0_usize;
         for step in steps {
             match step {
                 Step::Ask(class, percent) => {
@@ -203,6 +204,13 @@ proptest! {
                         admit_waiting(&shared, &mut ledger);
                     }
                     drop(receiver);
+                }
+                Step::Press(start) if start || pressing > 0 => {
+                    let mut ledger = shared.lock();
+                    ledger.pressing(start);
+                    admit_waiting(&shared, &mut ledger);
+                    drop(ledger);
+                    pressing = if start { pressing + 1 } else { pressing - 1 };
                 }
                 Step::Press(_) | Step::Let(_) => {}
             }

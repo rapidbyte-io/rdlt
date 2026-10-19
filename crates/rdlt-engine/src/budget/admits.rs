@@ -109,9 +109,13 @@ pub(crate) fn kept(shares: Shares, readers: usize) -> u64 {
     shares.reads / u64::try_from(readers).unwrap_or(u64::MAX).max(1)
 }
 
-/// Bytes: the least budget from which every budget up admits what the protocol lets no peer go
-/// below, a frame of [`rdlt_wire::limits::MIN_FRAME_BYTES`] among them, read by `readers` reads
-/// at once.
+/// Bytes: a budget that admits what the protocol lets no peer go below, a frame of
+/// [`rdlt_wire::limits::MIN_FRAME_BYTES`] among them, read by `readers` reads at once, while the
+/// budget a byte below does not.
+///
+/// Every budget from it upward admits that for 1 to 24 reads at once, the bound Kani proves.
+/// Above that count admission is not monotone in the budget, and past 524,288 reads a larger
+/// budget is known to fail where this one admits.
 pub(crate) fn least(readers: usize) -> u64 {
     let admits = |capacity: u64| admitted(Shares::of(capacity), readers).admit_peer().is_ok();
     // What a budget admits grows with it but for the few bytes its shares' rounding moves a
