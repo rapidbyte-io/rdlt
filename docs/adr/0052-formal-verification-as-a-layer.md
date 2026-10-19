@@ -60,8 +60,13 @@ A formal layer is added to the layers of its class, never in place of one.
   states its property becomes a property test, with the reason here; no target is left with part
   of its property proved.
 - Kani 0.68.0 stops with an internal compiler error (`kani-compiler/src/intrinsics.rs:243`) on
-  any harness that reaches a `parking_lot` lock, in the lock's slow path. Code that takes such a
-  lock is held by property tests until Kani builds it.
+  any harness that reaches a `parking_lot` lock, in the lock's slow path. Stubbing the lock's
+  waits out (`#[kani::stub]` under `-Z stubbing`; sound, as a proof runs on one thread and never
+  finds the lock taken) gets past the error but not to a proof: dropping a reservation takes the
+  lock and admits waiters, and CBMC unrolls that through the drops of the waiters' channels and
+  of what they hold. The ledger's harness that only reserves and releases ran 10 minutes without
+  an answer; bounded to 8 unwindings it, and the lent reservation's harness at 3, filled 10 GB
+  within three minutes. Code that takes such a lock is held by property tests.
 - Mutation testing leaves out `proofs.rs` (`.cargo/mutants.toml`): no mutant's tests compile it.
   Coverage needs no rule: no build it measures sets `kani`.
 - Wire credit is proved (`rdlt-wire/src/flow/proofs.rs`): a receiver opens within its bounds and
