@@ -19,6 +19,13 @@
 // quint trace: random1 0x1 -
 // quint trace: random2 0x2 -
 // quint trace: random3 0x3 -
+// quint trace: random4 0xb6 -
+// quint trace: random5 0x12a -
+// quint trace: random6 0x131 -
+// quint trace: random7 0x70 -
+// quint trace: random8 0x185 -
+// quint trace: random9 0x121 -
+// quint trace: random10 0xa2 -
 module wal_objects {
   // ---- Bounds
 
