@@ -644,8 +644,14 @@ fn a_session_and_its_writer_count_until_they_end() {
                 schema: TableSchema::new(vec![Field::new("id", LogicalType::Int64, false)])
                     .unwrap(),
             };
-            opened.session.apply_schema(&create).await.unwrap();
-            let writer = opened.session.writer(&table()).await.unwrap();
+            tokio::time::timeout(WAIT, opened.session.apply_schema(&create))
+                .await
+                .expect("the schema change ends")
+                .expect("the schema change applies");
+            let writer = tokio::time::timeout(WAIT, opened.session.writer(&table()))
+                .await
+                .expect("the writer's open ends")
+                .expect("the writer opens");
             let open = world.owners.held();
             drop(writer);
             let written = world.owners.held();
