@@ -21,13 +21,13 @@ or the protocol's design.
 |---|---|
 | Cancellation safety: state changed before an `.await` | a harness cancelling at every await point; the simulation's leak oracle |
 | Check-then-act, or state initialised in parts | the simulation's hostile peers; Kani where the state is pure |
-| Resources held but not charged | the simulation's real-memory and bounds oracles; Kani over the budget's ledger |
+| Resources held but not charged | the simulation's real-memory and bounds oracles; property tests of the budget's ledger |
 | A wait with no deadline | the simulation's hung and stalled faults |
 | Redaction out of order or bypassed | the simulation's secret canary; a property test of `Redactions::scrubbed` |
 | Trust in the file system | regression tests; the simulation, where process placement enters it |
 | Conversion fidelity | the simulation's encodings; differential tests |
 | A contract's documentation, fixtures, or an API's precondition | Kani over the limits a handshake accepts; tests |
-| Arithmetic of credit, budgets, positions and frame lengths | Kani |
+| Arithmetic of credit, budgets, positions and frame lengths | Kani; property tests where the code takes a lock (below) |
 | A protocol across processes and a store: the log on object storage, exactly-once, re-planning | Quint |
 
 A formal layer is added to the layers of its class, never in place of one.
@@ -51,14 +51,17 @@ A formal layer is added to the layers of its class, never in place of one.
 - Kani's compiler builds `rdlt-wire` and `rdlt-engine` with their default features, Arrow,
   tonic, sonic-rs and stacker among them. `rdlt-wire`'s four harnesses take about five minutes,
   288 seconds from a build that had compiled its dependencies and 299 warm, so verification and
-  not compilation is the time, and at most 0.7 GB for the largest process. A single `rdlt-engine`
-  harness took 21 seconds from nothing and at most 2 GB for the whole run. A crate's proofs
-  check its own code, in the crate. Kani's output is not clean: its toolchain warns of the
+  not compilation is the time, and at most 0.7 GB for the largest process. `rdlt-engine`'s three
+  harnesses take about 225 seconds warm, nearly all of it verification. A crate's proofs check
+  its own code, in the crate. Kani's output is not clean: its toolchain warns of the
   `register_tool` feature it forces and of deprecated methods in the engine, and it drops the
   arguments of an `unreachable!`, which warns of an unused variable; none comes from a proof.
 - A target whose proof does not finish within its job's limit at the least bound that still
   states its property becomes a property test, with the reason here; no target is left with part
   of its property proved.
+- Kani 0.68.0 stops with an internal compiler error (`kani-compiler/src/intrinsics.rs:243`) on
+  any harness that reaches a `parking_lot` lock, in the lock's slow path. Code that takes such a
+  lock is held by property tests until Kani builds it.
 - Mutation testing leaves out `proofs.rs` (`.cargo/mutants.toml`): no mutant's tests compile it.
   Coverage needs no rule: no build it measures sets `kani`.
 - Wire credit is proved (`rdlt-wire/src/flow/proofs.rs`): a receiver opens within its bounds and
@@ -67,10 +70,25 @@ A formal layer is added to the layers of its class, never in place of one.
   every call of up to 6 steps a sender's credit is what was granted
   less what was spent, above minus its largest frame, and the window once every frame sent is
   taken.
-- Kani's further targets: the budget's ledger and admissions; acknowledgements against the
-  committed cursor, and the horizon; a log frame's length arithmetic and the parse of its
-  preamble and head; the limits a handshake accepts and the identifier rules; a bounded body's
-  length prefix and its window. Each is proved, or held by a property test with the reason here.
+- The memory budget is proved where it takes no lock and held by property tests where it does.
+  `rdlt-engine/src/budget/ledger/proofs.rs` proves, for every capacity, that a budget's shares
+  add up to it, its data is what pushes and one request take, a piece is within a request, and a
+  share's bytes beside one request of its class never wrap (18 seconds).
+  `budget/admits/proofs.rs` proves, for every capacity and 1 to 24 reads at once, that each limit
+  the budget admits fits the share it draws on (82 seconds), and that every budget from the least
+  up admits a peer (121 seconds). 24 reads hold both of what sets the least budget, a frame up to
+  16 reads and the dictionaries from 20; at 64 reads the two took 490 seconds, too much of the
+  `formal` job's 15 minutes beside the wire's proofs. What a budget admits does not grow with it
+  byte by byte, since its shares' rounding moves a frame by a few bytes: with one read, a budget
+  of 53,690,302 bytes admits a peer and one of 53,690,314 does not. The ledger's own properties
+  are property tests in `budget/ledger/tests.rs`, since each of its paths takes its
+  `parking_lot` lock: every share stays within it through any asks, lets and presses, and none
+  is held once all is let go; waiting requests are admitted in turn only where they fit, with
+  abandoned ones given back; and a lent reservation gives back all it held, in any order.
+- Kani's further targets: acknowledgements against the committed cursor, and the horizon; a log
+  frame's length arithmetic and the parse of its preamble and head; the limits a handshake
+  accepts and the identifier rules; a bounded body's length prefix and its window. Each is
+  proved, or held by a property test with the reason here.
 
 ### Specifications: Quint over the design
 
@@ -165,8 +183,10 @@ what no bound names.
 
 - A crate that adds proofs adds `#[cfg(kani)] mod proofs;`. If it catches panics, its guard
   against aborting builds exempts `kani`, as `rdlt-wire`'s does.
-- `just ready` and the `formal` job cost Kani's build of each crate under proof whenever the
-  change touches it.
+- `just ready` and the `formal` job cost Kani's build and proofs of each crate under proof
+  whenever the change touches it: on a laptop, about 300 seconds for `rdlt-wire` and 225 for
+  `rdlt-engine`, warm, so a change that touches the tools, the justfile or the workflow, which
+  runs both, spends about 525 seconds proving before the job's setup.
 - A contributor's `mise install` installs about 1.1 GB more on disk, and the first `just kani`
   fetches a nightly toolchain.
 - Updating Kani is its version and `mise lock`; its nightly comes with its bundle. Updating
