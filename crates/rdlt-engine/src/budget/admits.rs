@@ -8,10 +8,10 @@ mod tests;
 
 use rdlt_connector::cost::JSON_CHARGE;
 use rdlt_wire::Limits;
-use rdlt_wire::limits::{Class, MESSAGE_ROOM};
+use rdlt_wire::limits::{Class, MESSAGE_ROOM, MIN_DICTIONARY_BYTES};
 
 use super::Shares;
-use crate::limits::{COLUMN_RECORD, RECORDED, SCHEMA_KEPT};
+use crate::limits::{COLUMN_RECORD, READ_SHARE, RECORDED, SCHEMA_KEPT};
 
 /// The limits on what a read sends that a budget of `shares`, read by `readers` reads at once at
 /// most, admits: a connector that keeps to them is refused nothing for the budget's sake.
@@ -109,17 +109,30 @@ pub(crate) fn kept(shares: Shares, readers: usize) -> u64 {
     shares.reads / u64::try_from(readers).unwrap_or(u64::MAX).max(1)
 }
 
-/// Bytes: a budget that admits what the protocol lets no peer go below, a frame of
-/// [`rdlt_wire::limits::MIN_FRAME_BYTES`] among them, read by `readers` reads at once, while the
-/// budget a byte below does not.
+/// Reads at once up to which the least budget is found by halving: a frame sets it for up to 16
+/// reads, and the dictionaries do from 17.
+pub(crate) const HALVED: usize = 24;
+
+/// Bytes: the least budget from which every budget upward admits what the protocol lets no peer
+/// go below, a frame of [`rdlt_wire::limits::MIN_FRAME_BYTES`] among them, read by `readers`
+/// reads at once, while the budget a byte below does not; none where no budget does: from 2^43
+/// reads, the reads' quarter of the largest budget holds less than twice the least dictionary for
+/// each.
 ///
-/// Every budget from it upward admits that for 1 to 24 reads at once, the bound Kani proves.
-/// Above that count admission is not monotone in the budget, and past 524,288 reads a larger
-/// budget is known to fail where this one admits.
-pub(crate) fn least(readers: usize) -> u64 {
-    let admits = |capacity: u64| admitted(Shares::of(capacity), readers).admit_peer().is_ok();
-    // What a budget admits grows with it but for the few bytes its shares' rounding moves a
-    // frame by: halving ends at a budget that admits beside one a byte less that does not.
+/// It is the larger of two. A read's dictionaries may take half what it keeps, which grows with
+/// the budget, so the least budget whose reads' share holds twice the least dictionary for each
+/// read is exact.
+/// What a frame may take does not grow with the budget byte by byte: it is what pushes may take
+/// less what a read keeps, or half a request less a row's nulls, and each falls by a few bytes
+/// where the share it subtracts, or the columns a schema may have, grows by its rounding. So a
+/// budget may admit a peer where one a few bytes larger does not, and halving ends beside
+/// whichever of those changes its steps meet: up to [`HALVED`] reads at once it meets the last.
+/// More reads each keep less, which leaves a frame no less, and their dictionaries alone need
+/// more.
+pub(crate) fn least(readers: usize) -> Option<u64> {
+    let readers = readers.max(1);
+    let halved = readers.min(HALVED);
+    let admits = |capacity: u64| admitted(Shares::of(capacity), halved).admit_peer().is_ok();
     let (mut low, mut high) = (0_u64, 1_u64 << 40);
     while low < high {
         let middle = low + (high - low) / 2;
@@ -129,5 +142,8 @@ pub(crate) fn least(readers: usize) -> u64 {
             low = middle + 1;
         }
     }
-    low
+    let dictionaries = u64::try_from(readers)
+        .ok()?
+        .checked_mul(READ_SHARE * 2 * MIN_DICTIONARY_BYTES)?;
+    Some(low.max(dictionaries))
 }

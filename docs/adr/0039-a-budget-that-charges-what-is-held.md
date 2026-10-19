@@ -130,11 +130,14 @@ budget before it is held, or bounded by a limit with a typed refusal.
 - **The least memory.** A budget whose derived frame limit is below the protocol's least frame
   (`MIN_FRAME_BYTES`, 4 MiB), or whose dictionary limit is below the protocol's least
   (`MIN_DICTIONARY_BYTES`, 256 KiB), is refused when the engine's configuration is built, with
-  `memory_below_minimum` naming the least memory that admits it: 33,811,576 bytes at the
-  default sixteen partitions and 53,687,073 at one (`EngineConfig::least_memory`). Half a
-  request for lowering must hold a frame and the row beside it, so the least is about eight
-  frames at sixteen partitions; a read of one partition keeps up to the whole reads' share,
-  and a frame beside it must fit what pushes may take, which sets its least.
+  `memory_below_minimum` naming the least memory from which every memory up admits it:
+  33,811,576 bytes at the default sixteen partitions and 53,690,341 at one
+  (`EngineConfig::least_memory`). Half a request for lowering must hold a frame and the row
+  beside it, so the least is about eight frames at sixteen partitions; a read of one partition
+  keeps up to the whole reads' share, and a frame beside it must fit what pushes may take, which
+  sets its least. From 17 partitions their dictionaries set it, 2 MiB for each, twice the least
+  dictionary in a quarter of the memory; from 2^43 partitions no memory admits a peer, and the
+  configuration is refused saying so.
 - **A peer's dictionary limit has a least.** A handshake whose limits set a dictionary limit
   below `MIN_DICTIONARY_BYTES`, none included, is refused at either end with
   `limit_below_minimum`, as any limit below its least is; a handshake that sets no limits at

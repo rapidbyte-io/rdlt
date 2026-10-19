@@ -329,7 +329,7 @@ async fn normalizing_partitions_holding_what_building_their_json_took_never_wait
 #[tokio::test(start_paused = true)]
 async fn sparse_json_of_any_number_of_partitions_loads_under_any_budget() {
     for parts in [1, 4, 16, 32] {
-        let least = EngineConfig::least_memory(parts);
+        let least = EngineConfig::least_memory(parts).expect("a memory admits these partitions");
         for memory in [least, least * 3 / 2, least * 2, least * 4] {
             for normalized in [false, true] {
                 sparse_partitions("built_held_swept", parts, memory, normalized).await;

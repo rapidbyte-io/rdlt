@@ -1,7 +1,8 @@
+use proptest::prelude::*;
 use rdlt_wire::Limits;
 use rdlt_wire::limits::{Class, MESSAGE_ROOM, MIN_DICTIONARY_BYTES, MIN_FRAME_BYTES};
 
-use super::{admitted, kept, least, row_overhead};
+use super::{HALVED, admitted, kept, least, row_overhead};
 use crate::budget::Shares;
 use crate::limits::{COLUMN_RECORD, RECORDED};
 
@@ -39,11 +40,11 @@ fn the_default_budget_admits_these_limits() {
 
 #[test]
 fn the_least_memory_admits_these_limits() {
-    assert_eq!(least(16), 33_811_576);
+    assert_eq!(least(16), Some(33_811_576));
     // One read keeps all of the reads' share, and a frame and its message's room beside it fit
     // what pushes may take.
-    assert_eq!(least(1), 53_690_341);
-    let limits = admitted(Shares::of(least(16)), 16);
+    assert_eq!(least(1), Some(53_690_341));
+    let limits = admitted(Shares::of(least(16).unwrap()), 16);
     assert_eq!(
         (
             limits.frame_bytes,
@@ -72,8 +73,8 @@ fn budgets() -> impl Iterator<Item = (u64, usize)> {
         64 * 1024,
         MIB,
         16 * MIB,
-        least(16),
-        least(16) + 1,
+        least(16).unwrap(),
+        least(16).unwrap() + 1,
         64 * MIB,
         256 * MIB,
         4_096 * MIB,
@@ -164,7 +165,7 @@ fn every_budget_from_the_least_up_admits_a_peer() {
     let band = (1..=4_000).step_by(7).map(|readers| (readers, 3_000, 1));
     let stride = [1, 2, 4, 16, 64, 1_000].map(|readers| (readers, 1_000_000, 997));
     for (readers, above, step) in band.chain(stride) {
-        let least = least(readers);
+        let least = least(readers).unwrap();
         for capacity in (least..least + above).step_by(step) {
             let limits = admitted(Shares::of(capacity), readers);
             assert_eq!(
@@ -176,10 +177,35 @@ fn every_budget_from_the_least_up_admits_a_peer() {
     }
 }
 
+/// Counts of reads at once from one to the most a budget admits a peer for, those whose least is
+/// found by halving drawn most often.
+fn any_readers() -> impl Strategy<Value = usize> {
+    prop_oneof![1..=HALVED + 1, 1..=1_usize << 20, 1..1_usize << 43]
+}
+
+proptest! {
+    // Kani proves this only up to `HALVED` reads, and a case takes microseconds: many are drawn.
+    #![proptest_config(ProptestConfig::with_cases(rdlt_testkit::cases(4_096)))]
+
+    /// For any count of reads a budget admits a peer for, every budget from the least up does,
+    /// near it or far above, and the budget a byte below does not.
+    #[test]
+    fn every_budget_from_the_least_up_admits_a_peer_for_any_count_of_reads(
+        readers in any_readers(),
+        above in prop_oneof![0..1_u64 << 12, any::<u64>()],
+    ) {
+        let least = least(readers).unwrap();
+        let admits = |capacity: u64| admitted(Shares::of(capacity), readers).admit_peer();
+        prop_assert_eq!(admits(least.saturating_add(above)), Ok(()));
+        prop_assert!(admits(least - 1).is_err());
+    }
+}
+
 #[test]
 fn the_least_budget_admits_the_protocol_s_least_limits_and_a_byte_less_does_not() {
-    for readers in [1, 2, 4, 16, 64, 1_000] {
-        let least = least(readers);
+    let many = [524_289, 600_000, 1 << 30, (1 << 43) - 1];
+    for readers in [1, 2, 4, 16, 64, 1_000].into_iter().chain(many) {
+        let least = least(readers).unwrap();
         let admits = |capacity: u64| admitted(Shares::of(capacity), readers);
         assert!(
             admits(least).frame_bytes >= MIN_FRAME_BYTES,
@@ -192,6 +218,14 @@ fn the_least_budget_admits_the_protocol_s_least_limits_and_a_byte_less_does_not(
         assert_eq!(admits(least).admit_peer(), Ok(()), "{readers} readers");
         assert!(admits(least - 1).admit_peer().is_err(), "{readers} readers");
     }
-    // Many reads each keep little: their dictionaries' least then sets the budget's.
-    assert!(least(1_000) > least(16));
+    // Many reads each keep little: their dictionaries' least then sets the budget's, two least
+    // dictionaries for each read in a quarter of it.
+    assert_eq!(least(17), Some(17 * 8 * MIN_DICTIONARY_BYTES));
+    assert_eq!(least(600_000), Some(600_000 * 8 * MIN_DICTIONARY_BYTES));
+    // From 2^43 reads not even the largest budget does.
+    for readers in [1 << 43, usize::MAX] {
+        assert_eq!(least(readers), None, "{readers} readers");
+        let limits = admitted(Shares::of(u64::MAX), readers);
+        assert!(limits.admit_peer().is_err(), "{readers} readers");
+    }
 }
