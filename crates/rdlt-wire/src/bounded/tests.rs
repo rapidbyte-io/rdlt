@@ -665,3 +665,72 @@ proptest! {
         prop_assert!(grown(&body.arriving, declared(&all)));
     }
 }
+
+/// The bytes of a transport frame: a prefix of `flag` declaring `length`, then `payload`, cut
+/// to `cut` bytes.
+fn transport_frame(flag: u8, length: u32, payload: &[u8], cut: usize) -> Vec<u8> {
+    let mut frame = vec![flag];
+    frame.extend(length.to_be_bytes());
+    frame.extend(payload);
+    frame.truncate(cut);
+    frame
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(rdlt_testkit::cases(512)))]
+
+    /// A message whose whole prefix waits takes room in its connection's window before anything
+    /// past its prefix is copied, holds none of its bytes while it waits for room, goes on once
+    /// room comes back, and gives its room back once it is passed on, or once its body is dropped.
+    ///
+    /// A waiting message is queued for the whole of its room and holds what is free of it so far,
+    /// so the window counts that as taken, and gives it back with the body.
+    #[test]
+    fn room_is_taken_before_a_message_is_copied_and_given_back_in_balance(
+        size in 0_usize..=96,
+        held in 0_usize..=96,
+        wire in prop_oneof![0_usize..96, Just(usize::MAX)],
+        flag in any::<u8>(),
+        length in prop_oneof![0_u32..96, Just(u32::MAX), any::<u32>()],
+        payload in proptest::collection::vec(any::<u8>(), 0..96),
+        cut in 0_usize..=101,
+    ) {
+        let window = Window::new(size);
+        let held = u32::try_from(held.min(size)).expect("a small window");
+        let mut other = Some(
+            Arc::clone(&window.room)
+                .try_acquire_many_owned(held)
+                .expect("within the window"),
+        );
+        let others = window.taken();
+        let bounds = Bounds { form: None, ..bounds(wire, usize::MAX) };
+        let mut body = Bounded::new(chunks(&[]), bounds, Some(window.clone()));
+        let frame = transport_frame(flag, length, &payload, cut);
+        body.unread = Bytes::from(frame.clone());
+        let declared = declared(&frame);
+        let mut context = Context::from_waker(std::task::Waker::noop());
+        let mut passed = body.poll_arrived(&mut context);
+        if passed.is_pending() {
+            let length = declared.expect("only a whole prefix waits for room");
+            prop_assert!(length <= wire);
+            prop_assert!(body.arriving.is_empty());
+            prop_assert_eq!(body.arriving.room(), 0);
+            prop_assert_eq!(&body.unread[..], &frame[..]);
+            prop_assert!((others..=size).contains(&window.taken()));
+            drop(other.take());
+            passed = body.poll_arrived(&mut context);
+            prop_assert!(passed.is_ready());
+        }
+        let others = if other.is_some() { others } else { 0 };
+        if let Poll::Ready(Some(Ok(message))) = passed {
+            let arrived = message.into_data().expect("a message");
+            let length = declared.expect("a message passed on had its prefix");
+            prop_assert_eq!(&arrived.bytes[..], &frame[..PREFIX + length]);
+            prop_assert_eq!(window.taken(), others);
+        }
+        drop(body);
+        prop_assert_eq!(window.taken(), others);
+        drop(other);
+        prop_assert_eq!(window.taken(), 0);
+    }
+}
