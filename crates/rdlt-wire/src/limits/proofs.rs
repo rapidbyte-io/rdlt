@@ -3,7 +3,7 @@
 
 use super::{
     Class, LIMIT_BELOW_MINIMUM, Limit, Limits, MESSAGE_ROOM, MIN_BATCH_ROWS, MIN_BATCH_VALUES,
-    MIN_DICTIONARY_BYTES, MIN_FRAME_BYTES, Refusal, count,
+    MIN_DICTIONARY_BYTES, MIN_FRAME_BYTES, Refusal, Shortfall, count,
 };
 use crate::v1;
 
@@ -143,7 +143,7 @@ fn a_peer_s_limits_read_as_sent_or_as_the_protocol_s_defaults() {
         read.control_message_bytes,
         or(sent.control_message_bytes, defaults.control_message_bytes)
     );
-    assert!(Limits::from(v1::Limits::from(read)) == read);
+    assert_eq!(Limits::from(v1::Limits::from(read)), read);
 }
 
 /// A limit set a handshake admits, from any limits a peer sends or none, meets every
@@ -216,10 +216,15 @@ fn every_limit_set_a_handshake_admits_meets_every_minimum_and_rule() {
                 .into_iter()
                 .find(|(_, minimum, actual)| actual < minimum)
                 .expect("a refusal names a limit below its minimum");
-            assert!(refused.code == LIMIT_BELOW_MINIMUM);
-            assert!(refused.field == field);
-            assert_eq!(refused.minimum, minimum);
-            assert_eq!(refused.actual, actual);
+            assert_eq!(
+                refused,
+                Shortfall {
+                    code: LIMIT_BELOW_MINIMUM,
+                    field,
+                    minimum,
+                    actual
+                }
+            );
         }
     }
     assert!(sent.is_some() || limits.admit_peer().is_ok());
@@ -230,11 +235,11 @@ fn every_limit_set_a_handshake_admits_meets_every_minimum_and_rule() {
 ///
 /// Bound: none; every value of every limit at both ends.
 #[kani::proof]
-#[kani::unwind(18)]
+#[kani::unwind(15)]
 fn what_two_ends_agree_meets_every_minimum_both_meet() {
     let (one, other) = (any_limits(), any_limits());
     let agreed = one.lesser(&other);
-    assert!(agreed == other.lesser(&one));
+    assert_eq!(agreed, other.lesser(&one));
     let limits = each(&one).into_iter().zip(each(&other));
     for ((mine, theirs), lesser) in limits.zip(each(&agreed)) {
         assert!(lesser <= mine && lesser <= theirs);
@@ -246,7 +251,8 @@ fn what_two_ends_agree_meets_every_minimum_both_meet() {
 }
 
 /// A value is admitted exactly when it is within its limit, refused naming the limit, its value
-/// and the value otherwise, and each admission measures against its own limit.
+/// and the value otherwise, and the admissions of a frame, a schema, a JSON push, a cursor, a
+/// configuration, dictionaries and what a write stages each measure against their own limit.
 ///
 /// Bound: none; every limit set, every value, every limit named.
 #[kani::proof]
@@ -256,50 +262,51 @@ fn a_value_is_admitted_exactly_within_its_own_limit() {
     let (field, limit, actual) = (Limit::ALL[at], kani::any::<u64>(), kani::any::<u64>());
     let admitted = Limits::admit(field, limit, actual);
     if actual <= limit {
-        assert!(admitted == Ok(()));
+        assert_eq!(admitted, Ok(()));
     } else {
-        assert!(
-            admitted
-                == Err(Refusal {
-                    field,
-                    limit,
-                    actual
-                })
+        assert_eq!(
+            admitted,
+            Err(Refusal {
+                field,
+                limit,
+                actual
+            })
         );
     }
     let limits = any_limits();
     let bytes: usize = kani::any();
     let measured = count(bytes);
-    assert!(
-        limits.admit_frame(bytes) == Limits::admit(Limit::FrameBytes, limits.frame_bytes, measured)
+    assert_eq!(
+        limits.admit_frame(bytes),
+        Limits::admit(Limit::FrameBytes, limits.frame_bytes, measured)
     );
-    assert!(
-        limits.admit_schema(bytes)
-            == Limits::admit(Limit::SchemaBytes, limits.schema_bytes, measured)
+    assert_eq!(
+        limits.admit_schema(bytes),
+        Limits::admit(Limit::SchemaBytes, limits.schema_bytes, measured)
     );
-    assert!(
-        limits.admit_json(bytes)
-            == Limits::admit(Limit::JsonPushBytes, limits.json_push_bytes, measured)
+    assert_eq!(
+        limits.admit_json(bytes),
+        Limits::admit(Limit::JsonPushBytes, limits.json_push_bytes, measured)
     );
-    assert!(
-        limits.admit_cursor(bytes)
-            == Limits::admit(Limit::CursorBytes, limits.cursor_bytes, measured)
+    assert_eq!(
+        limits.admit_cursor(bytes),
+        Limits::admit(Limit::CursorBytes, limits.cursor_bytes, measured)
     );
-    assert!(
-        limits.admit_config(bytes)
-            == Limits::admit(Limit::ConfigBytes, limits.config_bytes, measured)
+    assert_eq!(
+        limits.admit_config(bytes),
+        Limits::admit(Limit::ConfigBytes, limits.config_bytes, measured)
     );
     let total: u64 = kani::any();
-    assert!(
-        limits.admit_dictionaries(total)
-            == Limits::admit(
-                Limit::DictionaryBytes,
-                limits.held_dictionary_bytes(),
-                total
-            )
+    assert_eq!(
+        limits.admit_dictionaries(total),
+        Limits::admit(
+            Limit::DictionaryBytes,
+            limits.held_dictionary_bytes(),
+            total
+        )
     );
-    assert!(
-        limits.admit_staged(total)
-            == Limits::admit(Limit::StagedBytes, limits.staged_bytes(), total)
+    assert_eq!(
+        limits.admit_staged(total),
+        Limits::admit(Limit::StagedBytes, limits.staged_bytes(), total)
     );
 }
