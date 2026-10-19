@@ -11,7 +11,7 @@ use proptest::prelude::*;
 use tonic::Code;
 
 use super::{Arrived, Bounded, Bounds, PREFIX, Window};
-use crate::aligned::{ALIGNMENT, is_aligned};
+use crate::aligned::{ALIGNMENT, Aligned, is_aligned};
 use crate::scan::response;
 pub(super) use crate::testing::{chunks, fed, message};
 
@@ -566,6 +566,18 @@ fn any_bytes() -> impl Strategy<Value = Vec<u8>> {
     ]
 }
 
+/// Whether `arriving`'s room keeps the growth rule: what arrived while the prefix is not whole,
+/// and once it is, within the message's whole length and four times what arrived.
+fn grown(arriving: &Aligned, declared: Option<usize>) -> bool {
+    match declared {
+        None => arriving.room() == arriving.len(),
+        Some(length) => {
+            arriving.room() <= PREFIX.saturating_add(length)
+                && arriving.room() <= arriving.len().saturating_mul(4)
+        }
+    }
+}
+
 proptest! {
     /// A prefix read from the start of any bytes is nothing until it is whole, then the length it
     /// declares where that is within the wire bound, and a refusal beyond it.
@@ -612,5 +624,44 @@ proptest! {
                 prop_assert_eq!(status.code(), Code::OutOfRange);
             }
         }
+    }
+
+    /// One arrival of what a body lacks keeps its room within the growth rule and room enough
+    /// for what arrived, and is refused only for a prefix beyond the wire bound.
+    #[test]
+    fn an_arriving_message_s_room_never_passes_its_length_or_four_times_what_arrived(
+        wire in any_wire(),
+        held in any_bytes(),
+        slack in 0..96_usize,
+        mut data in any_bytes(),
+    ) {
+        let length = declared(&held);
+        // Any room the rule admits for what is held: from what is held up to its cap.
+        let cap = match length {
+            None => held.len(),
+            Some(length) => PREFIX.saturating_add(length).min(held.len().saturating_mul(4)),
+        };
+        prop_assume!(cap >= held.len());
+        let mut body = idle(wire);
+        body.arriving = Aligned::with_room(held.len() + slack % (cap - held.len() + 1));
+        body.arriving.extend(&held);
+        prop_assert!(grown(&body.arriving, length));
+        // What arrives is split from what waits unread, as a poll splits it.
+        body.unread = Bytes::from(data.clone());
+        let known = declared(if held.is_empty() { &data } else { &held });
+        let wanted = match body.wanted() {
+            Ok(wanted) => wanted,
+            Err(status) => {
+                prop_assert!(known.is_some_and(|length| length > wire));
+                prop_assert_eq!(status.code(), Code::OutOfRange);
+                return Ok(());
+            }
+        };
+        data.truncate(wanted);
+        prop_assert!(body.arrive(&data).is_ok());
+        let all = [held.as_slice(), data.as_slice()].concat();
+        prop_assert_eq!(body.arriving.as_slice(), all.as_slice());
+        prop_assert!(body.arriving.room() >= body.arriving.len());
+        prop_assert!(grown(&body.arriving, declared(&all)));
     }
 }
