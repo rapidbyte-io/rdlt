@@ -8,6 +8,9 @@ use serde_json::Value;
 
 use crate::drawn::Scalar;
 
+#[cfg(test)]
+mod tests;
+
 /// What a value means, comparable across the types and texts that hold it.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Canon {
@@ -147,10 +150,11 @@ pub fn json(value: &Value) -> Canon {
     }
 }
 
-/// `value` as its shortest decimal text that reads back as it; non-finite values by name.
+/// `value` as its shortest decimal text that reads back as it, of two such the nearer and, where
+/// it lies halfway, the even one, as JSON writers write it; non-finite values by name.
 pub fn float(value: f64) -> String {
     if value.is_finite() {
-        decimal(&format!("{value:?}"))
+        decimal(ryu::Buffer::new().format_finite(value))
     } else {
         value.to_string()
     }

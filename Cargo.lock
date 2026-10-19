@@ -3341,6 +3341,7 @@ dependencies = [
  "proptest",
  "rcgen",
  "rdlt-connector",
+ "ryu",
  "serde",
  "serde_json",
  "tempfile",
