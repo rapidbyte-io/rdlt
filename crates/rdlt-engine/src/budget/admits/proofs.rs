@@ -19,11 +19,11 @@ fn any_readers() -> usize {
 
 /// Each limit a budget admits, all at once, fits the share it draws on: a frame beside what a
 /// read keeps and its message's room within what pushes take, and one row of it within half a
-/// request; JSON text and the batches it becomes within what pushes take; a frame decoded
-/// within what pushes take, and any other answer decoded within the answers' share; every
-/// read's cursor and answer within the cursors' share, and a seal's within the log's; a
-/// schema, its decoding and the dictionaries within what a read keeps; and a table's records
-/// within the tables' share.
+/// request; JSON text and the batches it becomes within what pushes take; where the budget
+/// admits a peer, a frame decoded within what pushes take; any other answer decoded within the
+/// answers' share; every read's cursor and answer within the cursors' share, and a seal's
+/// within the log's; a schema, its decoding and the dictionaries within what a read keeps; and a
+/// table's records within the tables' share.
 ///
 /// Bound: every capacity, read by 1 to `READERS` reads at once.
 #[kani::proof]
