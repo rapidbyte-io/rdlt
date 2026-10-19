@@ -210,7 +210,9 @@ budget before it is held, or bounded by a limit with a typed refusal.
     change columns, and loses the rows its stream ignores, only as each piece is lowered.
   - A JSON push reserves three times its text when it is admitted: the text, and twice it for
     the batches it is shredded into, which are paid for before they are built. Once shredded
-    the push holds what its batches keep alive, where that is less.
+    the push holds what its batches keep alive, where that is less. Parsing a record holds no
+    document of it: the fast parse streams it and the exact parse walks its tokens, each
+    holding of it no more than a string whose escapes it reads.
   - What a JSON flush's batches take beyond twice its text is reckoned before they are built,
     reserved from the data share, holding only its pushes, and held with the batches; beyond
     one request it is refused, `json_exceeds_budget`. The partition then holds it while the

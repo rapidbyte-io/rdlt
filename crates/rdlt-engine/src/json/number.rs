@@ -91,16 +91,6 @@ pub(crate) fn write_number(written: &str, out: &mut Vec<u8>) -> Result<(), JsonE
     write!(out, "e{power}").map_err(|_| JsonError::Exponent)
 }
 
-/// Whether the exponent of `written`, a JSON number, has no more than [`EXPONENT_DIGITS`]
-/// digits beside its leading zeros: whether its value has a canonical text.
-pub(crate) fn exponent_within(written: &str) -> bool {
-    let Some(at) = written.find(['e', 'E']) else {
-        return true;
-    };
-    let exponent = written[at + 1..].trim_start_matches(['+', '-']);
-    exponent.trim_start_matches('0').len() <= EXPONENT_DIGITS
-}
-
 /// Whether `bytes`, JSON text, may hold a number written with an exponent: an `e` after a digit,
 /// which a string may hold too.
 pub(crate) fn may_hold_exponent(bytes: &[u8]) -> bool {

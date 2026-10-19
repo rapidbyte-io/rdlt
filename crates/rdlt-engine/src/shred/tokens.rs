@@ -1,6 +1,7 @@
 //! JSON text walked into a seed a token at a time, its numbers exact, as the exact parse walks a
-//! parsed document: nothing of the text is built but a string whose escapes are read, so walking
-//! a value holds no more than its containers' nesting beside what the seed keeps.
+//! record and a value of JSON text is read alone: nothing of the text is built but a string whose
+//! escapes are read, so walking a value holds no more than its containers' nesting beside what
+//! the seed keeps.
 //!
 //! Every seed walked here walks each container it is handed to its end, or fails.
 
@@ -14,8 +15,10 @@ use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visit
 // The fast parse's error, so a seed's visits are built once for both parses.
 use sonic_rs::Error;
 
+use super::ShredError;
 use super::visit::Context;
-use crate::json::{Reader, Text, Token};
+use crate::json::{JsonError, Reader, Text, Token};
+use crate::limits::QUOTED_BYTES;
 
 /// Walks the JSON value `text` into `seed`.
 ///
@@ -28,7 +31,7 @@ pub(super) fn visit<'de, S: DeserializeSeed<'de, Value = ()>>(
     context: &Context,
 ) -> Result<(), Error> {
     let mut reader = Reader::new(text);
-    let token = next(&mut reader)?;
+    let token = next(&mut reader, context)?;
     seed.deserialize(Walked {
         token,
         reader: &mut reader,
@@ -40,11 +43,22 @@ pub(super) fn visit<'de, S: DeserializeSeed<'de, Value = ()>>(
     }
 }
 
-/// The next token `reader` reads, where one is due.
-fn next<'de>(reader: &mut Reader<'de>) -> Result<Token<'de>, Error> {
+/// The next token `reader` reads, where one is due: a value nesting past the limit, and a number
+/// whose exponent has too many digits, are refused as the shredder refuses them.
+fn next<'de>(reader: &mut Reader<'de>, context: &Context) -> Result<Token<'de>, Error> {
     match reader.next() {
         Ok(Some(token)) => Ok(token),
         Ok(None) => Err(de::Error::custom("the text ends where a token is due")),
+        Err(JsonError::TooDeep) => Err(context.fail(ShredError::TooDeep)),
+        Err(JsonError::Exponent) => {
+            // The reader stopped where the number starts.
+            let rest = reader.rest();
+            let number = rest
+                .find(|byte: char| !matches!(byte, '0'..='9' | '-' | '+' | '.' | 'e' | 'E'))
+                .map_or(rest, |end| &rest[..end]);
+            let shown = rdlt_connector::text::shown(number, QUOTED_BYTES);
+            Err(context.fail(ShredError::Exponent(shown)))
+        }
         Err(error) => Err(de::Error::custom(error)),
     }
 }
@@ -101,7 +115,7 @@ impl<'de> MapAccess<'de> for Members<'_, 'de> {
         &mut self,
         seed: K,
     ) -> Result<Option<K::Value>, Error> {
-        match next(self.reader)? {
+        match next(self.reader, self.context)? {
             Token::EndObject => Ok(None),
             Token::Key(key) => key_into(key, seed).map(Some),
             _ => Err(de::Error::custom("a key is due")),
@@ -109,7 +123,7 @@ impl<'de> MapAccess<'de> for Members<'_, 'de> {
     }
 
     fn next_value_seed<V: DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value, Error> {
-        let token = next(self.reader)?;
+        let token = next(self.reader, self.context)?;
         seed.deserialize(Walked {
             token,
             reader: &mut *self.reader,
@@ -139,7 +153,7 @@ impl<'de> SeqAccess<'de> for Items<'_, 'de> {
         &mut self,
         seed: T,
     ) -> Result<Option<T::Value>, Error> {
-        match next(self.reader)? {
+        match next(self.reader, self.context)? {
             Token::EndArray => Ok(None),
             token => seed
                 .deserialize(Walked {

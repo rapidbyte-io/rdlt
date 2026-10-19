@@ -387,7 +387,7 @@ fn exact(written: &str) -> (bool, String, i64) {
 
 #[test]
 fn an_exponent_is_within_the_limit_by_its_digits_beside_its_leading_zeros() {
-    use super::exponent_within;
+    let read = |written: &str| Reader::new(written).next().is_ok();
     let may_hold_long_exponent = |bytes: &[u8]| super::long_numbers(bytes).exponent;
     let digits = "9".repeat(EXPONENT_DIGITS);
     for (written, within) in [
@@ -398,7 +398,7 @@ fn an_exponent_is_within_the_limit_by_its_digits_beside_its_leading_zeros() {
         (format!("0e-1{digits}"), false),
         ("12.5".to_owned(), true),
     ] {
-        assert_eq!(exponent_within(&written), within, "{written}");
+        assert_eq!(read(&written), within, "{written}");
         assert_eq!(
             may_hold_long_exponent(written.as_bytes()),
             !within,
