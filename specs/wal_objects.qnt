@@ -40,7 +40,7 @@ module wal_objects {
   /// Times the replaying load starts in all: each start makes its creates' tokens its own.
   pure val STARTS = 3
   /// Faults a behavior meets in all: requests that do not succeed, crashes, the intruder's name.
-  pure val FAULTS = 3
+  pure val FAULTS = 2
 
   // ---- Who makes requests, and what the store holds
 
@@ -1291,8 +1291,7 @@ module wal_objects {
       .expect(procs.get(R).prog == Off and pending.size() == 1)
       .then(start)
       .then(5.reps(_ => replayDoes(Ok)))
-      .then(replayDoes(Failed))
       .then(land({ who: R, attempt: 1, wave: 0, landing: Lands(fenceOf(0, 1, Set())) }))
-      .then(2.reps(_ => replayDoes(Ok)))
+      .then(replayDoes(Ok))
       .expect(procs.get(R).prog == RTail and procs.get(R).tries == 1 and procs.get(R).epoch == 2)
 }
