@@ -12,7 +12,7 @@ fn every_feature_is_drawn_on_and_off_and_now_and_then_all_at_once() {
     let drawn: Vec<Features> = (0..16000)
         .map(|seed| Features::draw(&mut SplitMix64::new(seed)))
         .collect();
-    let flags: [(&str, Flag); 18] = [
+    let flags: [(&str, Flag); 19] = [
         ("drift", |features| features.drift),
         ("encodings", |features| features.encodings),
         ("json", |features| features.json),
@@ -31,6 +31,7 @@ fn every_feature_is_drawn_on_and_off_and_now_and_then_all_at_once() {
         ("objects", |features| features.objects),
         ("streaming", |features| features.streaming),
         ("reset", |features| features.reset),
+        ("fat", |features| features.fat),
     ];
     for (name, flag) in flags {
         assert!(drawn.iter().any(flag), "{name} is never on");
@@ -49,4 +50,29 @@ fn every_feature_is_drawn_on_and_off_and_now_and_then_all_at_once() {
             .any(|features| features.reports_complete() && features.drift),
         "some seed drifts with complete reports, so its discards are counted"
     );
+}
+
+#[test]
+fn fat_values_keep_no_log_and_change_nothing_else_a_workload_draws() {
+    let mut any = false;
+    for seed in 0..1000 {
+        let mut rng = SplitMix64::new(seed);
+        let features = Features::draw(&mut rng);
+        assert!(!(features.fat && features.wal), "seed {seed}");
+        let lean = Features {
+            fat: false,
+            ..features
+        };
+        let mut fat = crate::workload::Workload::generate(&mut rng.clone(), features);
+        let plain = crate::workload::Workload::generate(&mut rng, lean);
+        any |= fat.streams.iter().any(|stream| stream.fat > 0);
+        for stream in &mut fat.streams {
+            stream.fat = 0;
+        }
+        fat.features = lean;
+        // Drawn floats include NaN, which is not equal to itself, so the workloads are compared
+        // by what they print.
+        assert_eq!(format!("{fat:?}"), format!("{plain:?}"), "seed {seed}");
+    }
+    assert!(any, "some stream has fat values");
 }

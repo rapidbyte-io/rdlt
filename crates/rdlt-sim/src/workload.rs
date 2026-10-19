@@ -101,6 +101,9 @@ pub struct SimStream {
     pub pipeline: Level,
     /// Whether the source pushes its rows as JSON rather than Arrow.
     pub json: bool,
+    /// Keys of the wide object of JSON each eighth record carries in its `fat` column, in a
+    /// world of fat values and a stream that pushes JSON and does not normalize; 0 otherwise.
+    pub fat: u64,
     /// Whether the source sends each batch as a slice of a larger one.
     pub sliced: bool,
     /// Whether a JSON stream pushes floats JSON cannot hold, by name; otherwise its floats are
@@ -253,6 +256,7 @@ impl SimStream {
             schema,
             pipeline,
             json,
+            fat: 0,
             sliced: features.sliced && rng.chance(500),
             named_floats: json && rng.chance(250),
             replayable: !(features.wal && read == ReadMode::Incremental && index.is_multiple_of(2)),
@@ -269,6 +273,9 @@ impl SimStream {
         }
         if write == WriteMode::Merge && features.keys {
             stream.draw_keys(rng);
+        }
+        if features.fat && stream.json && !stream.normalized() {
+            stream.fat = crate::fat::keys(salt, index);
         }
         stream.rows = (0..stream.partitions.len())
             .map(|partition| stream.draw_rows(salt, partition))

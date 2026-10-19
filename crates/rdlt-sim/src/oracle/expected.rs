@@ -91,6 +91,12 @@ fn base(stream: &SimStream, row: &Row, pending: &mut Pending) {
             Sent::Typed(Scalar::Utf8(tag.clone()), LogicalType::Utf8),
         );
     }
+    if stream.fat > 0 && crate::fat::carried(row) {
+        pending.column(
+            &[crate::fat::COLUMN.into()],
+            Sent::Json(crate::fat::expected(row, stream.fat)),
+        );
+    }
 }
 
 /// Records the values of `row`'s drift columns its policies keep in `pending`; returns where each

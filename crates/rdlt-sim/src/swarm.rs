@@ -21,6 +21,9 @@ pub(crate) const RESET: u64 = 0x0072_6573_6574;
 /// What the object store's draw mixes into the seed's generator: "objstore" in ASCII.
 const OBJECT_STORE: u64 = 0x6f62_6a73_746f_7265;
 
+/// What fat values' draw mixes into the seed's generator: "fat" in ASCII.
+const FAT: u64 = 0x0066_6174;
+
 /// Which of the simulation's features one seed exercises.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[expect(
@@ -80,6 +83,10 @@ pub struct Features {
     /// Once every phase converged, a stream the source can read again is reset, from its
     /// beginning or with its tables, while runs of every pipeline load, and they converge again.
     pub reset: bool,
+    /// Streams pushing JSON whose every eighth record carries a wide object of JSON, declared
+    /// as JSON, so most of what a run holds is data; never with a log, whose store in memory
+    /// would hold the data too.
+    pub fat: bool,
 }
 
 impl Features {
@@ -104,16 +111,18 @@ impl Features {
         objects: true,
         streaming: true,
         reset: true,
+        fat: false,
     };
 
     /// The features one seed exercises: every feature one time in eight, else each on or off by
     /// a coin, drift more often than not, the network, the write-ahead log, streaming and
-    /// resetting one time in four each, and the log's object store one time in two.
+    /// resetting one time in four each, the log's object store one time in two, and fat values
+    /// one time in four where no log is kept.
     ///
-    /// The network, the log and its store, streaming and resetting are drawn apart from the rest,
-    /// from the value the next draw takes but without taking it, so a seed's workload is the
-    /// same over either transport, logged or not and in either store, streamed or not, reset or
-    /// not.
+    /// The network, the log and its store, streaming, resetting and fat values are drawn apart
+    /// from the rest, from the value the next draw takes but without taking it, so a seed's
+    /// workload is the same over either transport, logged or not and in either store, streamed or not,
+    /// reset or not.
     pub fn draw(rng: &mut SplitMix64) -> Self {
         let next = rng.clone().next_u64();
         let network = SplitMix64::new(next ^ NETWORK).chance(250);
@@ -121,6 +130,7 @@ impl Features {
         let streaming = SplitMix64::new(next ^ STREAMING).chance(250);
         let reset = SplitMix64::new(next ^ RESET).chance(250);
         let objects = SplitMix64::new(next ^ OBJECT_STORE).chance(500);
+        let fat = !wal && SplitMix64::new(next ^ FAT).chance(250);
         if rng.chance(125) {
             return Self {
                 network,
@@ -128,6 +138,7 @@ impl Features {
                 objects,
                 streaming,
                 reset,
+                fat,
                 ..Self::ALL
             };
         }
@@ -151,6 +162,7 @@ impl Features {
             objects,
             streaming,
             reset,
+            fat,
         }
     }
 

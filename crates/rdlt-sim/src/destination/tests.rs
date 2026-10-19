@@ -715,3 +715,40 @@ fn a_session_and_its_writer_count_until_they_end() {
     assert_eq!((written.sessions, written.writers), (1, 0));
     assert!(closed.is_empty(), "{closed}");
 }
+
+#[test]
+fn a_fat_value_is_stored_in_its_short_form_and_other_json_as_it_is() {
+    let row = crate::workload::Row {
+        id: 13,
+        partition: 0,
+        offset: 8,
+        value: 0,
+        key: None,
+        tag: None,
+        extras: Vec::new(),
+        delivered: 0,
+    };
+    let shape = rdlt_testkit::drawn::Shape {
+        logical: LogicalType::Json,
+        encoding: rdlt_testkit::drawn::Encoding::Plain,
+        children: Vec::new(),
+    };
+    let values: ArrayRef = Arc::new(StringArray::from(vec![
+        Some(crate::fat::value(&row, 1_000)),
+        Some("{\"a\":1}".to_owned()),
+        None,
+    ]));
+    let field = rdlt_testkit::drawn::field(crate::fat::COLUMN, &shape, &values, true);
+    let batch = RecordBatch::try_new(
+        Arc::new(arrow_schema::Schema::new(vec![field])),
+        vec![values],
+    )
+    .unwrap();
+    let stored = cells::rows(&batch).unwrap();
+    let json = |text: &str| rdlt_testkit::decode::json_as(text, &LogicalType::Json);
+    assert_eq!(
+        stored[0].cells[crate::fat::COLUMN],
+        json(&crate::fat::expected(&row, 1_000))
+    );
+    assert_eq!(stored[1].cells[crate::fat::COLUMN], json("{\"a\":1}"));
+}

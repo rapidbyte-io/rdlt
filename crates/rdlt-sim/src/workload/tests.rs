@@ -501,6 +501,7 @@ const NONE: Features = Features {
     objects: false,
     streaming: false,
     reset: false,
+    fat: false,
 };
 
 #[test]
