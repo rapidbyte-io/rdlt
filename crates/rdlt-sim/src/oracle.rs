@@ -34,8 +34,9 @@ use crate::world::World;
 pub use changes::check_changes;
 use config::{config, endless, growth, pressed, small_log, waited};
 use expected::Discards;
-pub use memory::Held;
-use memory::Window;
+use memory::{Counterweight, Tracing, Window};
+pub use memory::{Held, TRACE_VAR};
+pub(crate) use memory::{account, aside};
 pub use pressure::Checked;
 use pressure::explained;
 use scenario::{Executed, Scenario, execute_all, pick};
@@ -102,12 +103,7 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>, hangs: bo
     );
     let (limits, budget) = (config.limits(), config.memory().get());
     let partitions = u64::try_from(config.partitions().get()).unwrap_or(u64::MAX);
-    let allowance = memory::allowance(
-        seed,
-        env.inline(),
-        net.is_some(),
-        world.workload.features.wal,
-    );
+    let allowance = memory::allowance(seed, env.inline(), net.is_some());
     world.press(pressed(seed, &config, &world.workload, small_log(&config)));
     let engine = Engine::new(config, env);
     let placing = net.map(|net| Placing::new(net, &network::options(&mut rng, limits)));
@@ -122,6 +118,7 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>, hangs: bo
         waits: Waits::default(),
         partitions,
         allowance,
+        origin: memory::charged(),
         held: None,
     };
     let stopped = simulation.load(&mut rng).await;
@@ -159,10 +156,12 @@ struct Simulation {
     waits: Waits,
     /// Partitions each run reads at once.
     partitions: u64,
-    /// Bytes: the allowance an attempt's heap is held to beside what its runs account for;
+    /// Bytes: the allowance an attempt's heap is held to beyond what is charged for it;
     /// `None` where the seed's work is on more than one thread.
     allowance: Option<u64>,
-    /// What the worst attempt held beyond where it began, where any was measured.
+    /// Bytes: what was charged on the seed's thread as it began.
+    origin: i64,
+    /// What the worst attempt held beyond what was charged for it, where any was measured.
     held: Option<Held>,
 }
 
@@ -271,7 +270,7 @@ impl Simulation {
             .await
     }
 
-    /// Runs `scenario` for `plans`, the thread's heap over it held to what the runs account for.
+    /// Runs `scenario` for `plans`, the thread's heap over it held to what is charged for it.
     async fn measured(
         &mut self,
         plans: &[PipelinePlan],
@@ -279,17 +278,26 @@ impl Simulation {
         network: Option<SplitMix64>,
         phase: usize,
     ) -> Vec<Executed> {
-        // What the source holds of its pushes is counted afresh for each attempt.
+        // The largest push is counted afresh for each attempt.
         self.world.pushes.restart();
+        let room = self.room(plans.len());
+        // The window opens before the counterweight hangs, so it measures from where the thread
+        // would stand had nothing been charged since the seed began.
+        let tracing = self.allowance.and_then(|_| Tracing::ready());
+        let measuring = self.allowance.map(|_| {
+            let window = Window::open();
+            (window, Counterweight::hang(self.origin, room, tracing))
+        });
         let placing = self.placing.as_ref();
-        let window = self.allowance.map(|_| Window::open());
         let executing = execute_all(&self.engine, plans, &self.name, placing, scenario);
         let executed = match (placing, network) {
             (Some(placing), Some(rng)) => placing.disrupting(rng, executing).await,
             _ => executing.await,
         };
-        if let Some(window) = window {
-            self.within_memory(window.close(), &executed, phase);
+        if let Some((window, weight)) = measuring {
+            let lifted = weight.lift();
+            let held = window.close().saturating_sub(room);
+            self.within_memory(held, &lifted, &executed, phase);
         }
         executed
     }

@@ -17,6 +17,7 @@ use push::batch;
 pub(crate) use push::json_push;
 
 use crate::destination::committed_next;
+use crate::oracle::aside;
 use crate::owners::Live;
 use crate::workload::{Row, SimStream};
 use crate::world::{FaultPoint, World};
@@ -279,15 +280,22 @@ impl SimStreamReader {
                 return Err(fault);
             }
             let end = (*next + usize::try_from(stream.batch_rows).unwrap_or(1)).min(available);
+            let rows = &rows[*next..end];
             if stream.json {
                 let spaces = world.pressure().spaces;
-                let push = json_push(stream, &rows[*next..end], *batches % 2 == 1, spaces);
-                let _held = world.pushes.hold(push.len());
+                let (push, _held) = aside(|| {
+                    let push = json_push(stream, rows, *batches % 2 == 1, spaces);
+                    let held = world.pushes.hold(push.len());
+                    (push, held)
+                });
                 out.json(push).await?;
             } else {
                 let ballast = world.pressure().ballast;
-                let batch = batch(stream, &rows[*next..end], ballast);
-                let _held = world.pushes.hold(batch.get_array_memory_size());
+                let (batch, _held) = aside(|| {
+                    let batch = batch(stream, rows, ballast);
+                    let held = world.pushes.hold(batch.get_array_memory_size());
+                    (batch, held)
+                });
                 out.batch(batch).await?;
             }
             *next = end;

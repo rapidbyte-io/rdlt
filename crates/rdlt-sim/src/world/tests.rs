@@ -194,26 +194,13 @@ fn some_placements_stall_where_faults_are_on_and_none_elsewhere() {
 }
 
 #[test]
-fn pushes_count_the_most_held_at_once_and_the_largest() {
+fn pushes_count_the_largest_since_they_restarted() {
     let pushes = Pushes::default();
-    let first = pushes.hold(10);
-    let second = pushes.hold(4);
-    drop(first);
-    let third = pushes.hold(3);
-    assert_eq!(pushes.most(), 14);
+    drop(pushes.hold(10));
+    let held = pushes.hold(4);
     assert_eq!(pushes.largest(), 10);
-    drop((second, third));
-    assert_eq!(pushes.most(), 14);
-}
-
-#[test]
-fn pushes_restart_counting_from_what_is_held_now() {
-    let pushes = Pushes::default();
-    let kept = pushes.hold(10);
-    drop(pushes.hold(20));
     pushes.restart();
-    assert_eq!((pushes.most(), pushes.largest()), (10, 0));
-    let more = pushes.hold(5);
-    assert_eq!((pushes.most(), pushes.largest()), (15, 5));
-    drop((kept, more));
+    assert_eq!(pushes.largest(), 0);
+    drop((held, pushes.hold(3)));
+    assert_eq!(pushes.largest(), 3);
 }

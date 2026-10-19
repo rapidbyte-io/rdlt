@@ -1,8 +1,11 @@
+use std::backtrace::Backtrace;
 use std::hint::black_box;
 
+use alloc_tracker::Session;
+
 use super::{
-    Held, IN_PROCESS, IN_PROCESS_LOGGED, NETWORK, NETWORK_LOGGED, QUEUED, Window, allowance,
-    installed, queued,
+    Counterweight, Held, IN_PROCESS, NETWORK, QUEUED, Rise, Tracing, Window, account, allowance,
+    charged, installed, queued,
 };
 use crate::seed::Seed;
 
@@ -42,36 +45,238 @@ fn the_unit_tests_count_their_threads_allocations() {
     assert!(installed());
 }
 
-fn held(held: u64, bound: u64) -> Held {
+#[test]
+fn a_window_under_a_counterweight_measures_what_its_thread_holds_beyond_its_charge() {
+    let weight = Counterweight::hang(charged(), 64 << 20, None);
+    let window = Window::open();
+    // Charged before it is held, and given back once it is freed: never beyond its charge.
+    account(1 << 20);
+    let charged = black_box(vec![0_u8; 1 << 20]);
+    drop(charged);
+    account(-(1 << 20));
+    assert!(window.close() < 1 << 10);
+    assert!(!weight.lift().short);
+}
+
+#[test]
+fn a_charge_given_back_before_what_it_held_is_freed_shows_in_the_window() {
+    let weight = Counterweight::hang(charged(), 64 << 20, None);
+    let window = Window::open();
+    account(1 << 20);
+    let charged = black_box(vec![0_u8; 1 << 20]);
+    account(-(1 << 20));
+    drop(charged);
+    let held = window.close();
+    assert!(
+        (1 << 20..(1 << 20) + (1 << 10)).contains(&held),
+        "held {held}"
+    );
+    assert!(!weight.lift().short);
+}
+
+#[test]
+fn what_is_held_before_it_is_charged_shows_in_the_window() {
+    let weight = Counterweight::hang(charged(), 64 << 20, None);
+    let window = Window::open();
+    let uncharged = black_box(vec![0_u8; 1 << 20]);
+    account(1 << 20);
+    drop(uncharged);
+    account(-(1 << 20));
+    let held = window.close();
+    assert!(
+        (1 << 20..(1 << 20) + (1 << 10)).contains(&held),
+        "held {held}"
+    );
+    assert!(!weight.lift().short);
+}
+
+#[test]
+fn a_counterweight_charged_past_its_room_says_so_and_another_hangs_after_it() {
+    let weight = Counterweight::hang(charged(), 1 << 10, None);
+    account(2 << 10);
+    assert!(weight.lift().short);
+    account(-(2 << 10));
+    let weight = Counterweight::hang(charged(), 1 << 10, None);
+    assert!(!weight.lift().short);
+}
+
+#[test]
+fn the_worst_attempt_is_the_one_that_passed_what_its_reads_hold_by_most() {
+    let within = Held {
+        held: 10,
+        queued: 100,
+    };
+    let past = Held {
+        held: 150,
+        queued: 100,
+    };
+    let further = Held {
+        held: 300,
+        queued: 200,
+    };
+    assert_eq!(Held::worse(None, within), within);
+    assert_eq!(Held::worse(Some(within), past), past);
+    assert_eq!(Held::worse(Some(past), within), past);
+    // A tie keeps the earlier attempt.
+    let tied = Held {
+        held: 101,
+        queued: 1,
+    };
+    assert_eq!(Held::worse(Some(further), tied), further);
+}
+
+#[test]
+fn a_timing_line_records_what_was_held_and_what_reads_hold() {
+    let mut fields = serde_json::Map::new();
+    Held { held: 9, queued: 4 }.record(&mut fields);
+    assert_eq!(fields["held_bytes"].as_u64(), Some(9));
+    assert_eq!(fields["queued_bytes"].as_u64(), Some(4));
+}
+
+#[test]
+fn an_attempt_within_what_its_reads_hold_and_the_allowance_passes() {
     Held {
-        held,
-        reserved: bound,
-        dropped: 0,
-        pushes: 0,
-        queued: 0,
+        held: 150,
+        queued: 100,
+    }
+    .within(Seed::new(7), 2, 50, &[]);
+    Held {
+        held: 10,
+        queued: 100,
+    }
+    .within(Seed::new(7), 2, 0, &[]);
+}
+
+#[test]
+#[should_panic(expected = "seed 7: phase 2: an attempt's thread held 151 bytes")]
+fn an_attempt_past_what_its_reads_hold_and_the_allowance_fails_naming_its_seed_and_phase() {
+    Held {
+        held: 151,
+        queued: 100,
+    }
+    .within(Seed::new(7), 2, 50, &[]);
+}
+
+#[test]
+#[should_panic(expected = "replay it with RDLT_SIM_TRACE=1")]
+fn an_attempt_not_traced_says_how_to_name_the_change_after_which_it_held_too_much() {
+    Held {
+        held: 151,
+        queued: 100,
+    }
+    .within(Seed::new(7), 2, 50, &[]);
+}
+
+fn rise(change: u64, most: u64) -> Rise {
+    Rise {
+        change,
+        by: Some(-9),
+        most,
+        before: Backtrace::disabled(),
+        at: Backtrace::disabled(),
     }
 }
 
 #[test]
-fn the_bound_is_every_term_the_runs_account_for() {
-    let held = Held {
-        held: 0,
-        reserved: 1000,
-        dropped: 500,
-        pushes: 30,
-        queued: 7,
-    };
-    assert_eq!(held.bound(), 1000 + 500 + 30 + 7);
+#[should_panic(expected = "it held 160 bytes beyond its charge once change 4 of the charge, by -9")]
+fn a_traced_attempt_names_the_first_change_after_which_it_held_too_much() {
+    let rises = [rise(2, 120), rise(4, 160), rise(6, 200)];
+    Held {
+        held: 200,
+        queued: 100,
+    }
+    .within(Seed::new(7), 2, 50, &rises);
+}
+
+fn tracing(spans: usize) -> Tracing {
+    let sessions = (0..spans)
+        .map(|_| {
+            let session = Session::new().no_stdout().no_file();
+            let operation = session.operation("change");
+            (session, operation)
+        })
+        .collect();
+    Tracing {
+        sessions,
+        read: Vec::with_capacity(spans),
+    }
 }
 
 #[test]
-fn the_bound_saturates_rather_than_wrapping() {
-    let held = Held {
-        pushes: u64::MAX,
-        ..held(0, 1000)
+fn a_trace_keeps_the_change_after_which_the_thread_held_beyond_its_charge() {
+    let tracing = tracing(8);
+    let window = Window::open();
+    let weight = Counterweight::hang(charged(), 64 << 20, Some(tracing));
+    account(2 << 20);
+    let charged = black_box(vec![0_u8; 2 << 20]);
+    account(-(2 << 20));
+    drop(charged);
+    account(1);
+    account(-1);
+    let lifted = weight.lift();
+    drop(window);
+    let [rise] = lifted.rises.as_slice() else {
+        panic!("{:?}", lifted.rises);
     };
-    assert_eq!(held.bound(), u64::MAX);
-    assert_eq!(queued(u64::MAX, u64::MAX, 1), u64::MAX);
+    assert_eq!((rise.change, rise.by), (2, Some(-(2 << 20))));
+    assert!(
+        (2 << 20..(2 << 20) + (64 << 10)).contains(&rise.most),
+        "{}",
+        rise.most
+    );
+}
+
+#[test]
+fn a_trace_keeps_the_change_after_which_small_holds_crossed_a_mebibyte() {
+    let window = Window::open();
+    let weight = Counterweight::hang(charged(), 64 << 20, Some(tracing(8)));
+    let first = black_box(vec![0_u8; 600 << 10]);
+    account(1);
+    let second = black_box(vec![0_u8; 600 << 10]);
+    account(1);
+    account(-2);
+    drop((first, second));
+    let lifted = weight.lift();
+    drop(window);
+    let changes: Vec<u64> = lifted.rises.iter().map(|rise| rise.change).collect();
+    assert_eq!(changes, [2]);
+}
+
+#[test]
+fn a_trace_reads_what_is_held_as_the_attempt_ends() {
+    let window = Window::open();
+    let weight = Counterweight::hang(charged(), 64 << 20, Some(tracing(8)));
+    account(1);
+    let held = black_box(vec![0_u8; 2 << 20]);
+    let lifted = weight.lift();
+    drop((window, held));
+    let [rise] = lifted.rises.as_slice() else {
+        panic!("{:?}", lifted.rises);
+    };
+    assert_eq!(rise.by, None);
+    assert!(
+        rise.named().contains("by the attempt's end"),
+        "{}",
+        rise.named()
+    );
+}
+
+#[test]
+fn a_trace_reads_no_change_past_its_spans() {
+    let weight = Counterweight::hang(charged(), 64 << 20, Some(tracing(1)));
+    account(2 << 20);
+    let charged = black_box(vec![0_u8; 2 << 20]);
+    account(-(2 << 20));
+    drop(charged);
+    assert!(weight.lift().rises.is_empty());
+}
+
+#[test]
+fn an_allowance_is_found_by_placement_where_work_is_on_one_thread() {
+    let seed = Seed::new(7);
+    assert_eq!(allowance(seed, true, false), Some(IN_PROCESS));
+    assert_eq!(allowance(seed, true, true), Some(NETWORK));
+    assert_eq!(allowance(seed, false, false), None);
 }
 
 #[test]
@@ -88,57 +293,6 @@ fn a_read_of_small_pushes_holds_the_credit_floor_in_transport() {
 }
 
 #[test]
-fn a_timing_line_records_the_bound_term_by_term() {
-    let mut fields = serde_json::Map::new();
-    Held {
-        held: 9,
-        reserved: 1,
-        dropped: 2,
-        pushes: 3,
-        queued: 4,
-    }
-    .record(&mut fields);
-    let recorded = |name: &str| fields[name].as_u64();
-    assert_eq!(recorded("held_bytes"), Some(9));
-    assert_eq!(recorded("bound_bytes"), Some(10));
-    assert_eq!(recorded("reserved_bytes"), Some(1));
-    assert_eq!(recorded("dropped_bytes"), Some(2));
-    assert_eq!(recorded("pushes_bytes"), Some(3));
-    assert_eq!(recorded("queued_bytes"), Some(4));
-}
-
-#[test]
-fn the_worst_attempt_is_the_one_that_passed_its_bound_by_most() {
-    let within = held(10, 100);
-    let past = held(150, 100);
-    let further = held(300, 200);
-    assert_eq!(Held::worse(None, within), within);
-    assert_eq!(Held::worse(Some(within), past), past);
-    assert_eq!(Held::worse(Some(past), within), past);
-    // A tie keeps the earlier attempt.
-    assert_eq!(Held::worse(Some(further), held(51, 1)), further);
-    // A smaller bound does not make an attempt worse.
-    assert_eq!(Held::worse(Some(past), held(140, 10)), held(140, 10));
-}
-
-#[test]
-fn an_attempt_within_its_bound_and_the_allowance_passes() {
-    held(150, 100).within(Seed::new(7), 2, 50);
-    held(10, 100).within(Seed::new(7), 2, 0);
-}
-
-#[test]
-#[should_panic(expected = "seed 7: phase 2: an attempt's thread held 151 bytes")]
-fn an_attempt_past_its_bound_and_the_allowance_fails_naming_its_seed_and_phase() {
-    held(151, 100).within(Seed::new(7), 2, 50);
-}
-
-#[test]
-fn an_allowance_is_found_apart_by_placement_and_log_where_work_is_on_one_thread() {
-    let seed = Seed::new(7);
-    assert_eq!(allowance(seed, true, false, false), Some(IN_PROCESS));
-    assert_eq!(allowance(seed, true, false, true), Some(IN_PROCESS_LOGGED));
-    assert_eq!(allowance(seed, true, true, false), Some(NETWORK));
-    assert_eq!(allowance(seed, true, true, true), Some(NETWORK_LOGGED));
-    assert_eq!(allowance(seed, false, false, false), None);
+fn what_reads_hold_saturates_rather_than_wrapping() {
+    assert_eq!(queued(u64::MAX, u64::MAX, 1), u64::MAX);
 }

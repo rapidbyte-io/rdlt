@@ -20,7 +20,7 @@ futures-util.workspace = true
 object_store.workspace = true
 parking_lot.workspace = true
 rdlt-connector = { workspace = true, features = ["serve", "merge"] }
-rdlt-engine = { workspace = true, features = ["object-store"] }
+rdlt-engine = { workspace = true, features = ["object-store", "sim"] }
 rdlt-host.workspace = true
 rdlt-testkit.workspace = true
 rdlt-wire = { workspace = true, features = ["tls"] }

@@ -24,8 +24,8 @@ pub struct Checked {
     pub simulated: Duration,
     /// The features its seed turned on.
     pub features: Features,
-    /// What the thread held over the worst attempt, beyond where it began, and what its runs
-    /// account for; `None` where the runs' work was on more than one thread.
+    /// What the thread held over the worst attempt beyond what was charged for it, and what its
+    /// reads hold over the network; `None` where the runs' work was on more than one thread.
     pub held: Option<Held>,
 }
 
