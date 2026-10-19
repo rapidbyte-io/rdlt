@@ -68,6 +68,14 @@ pub(crate) fn keys(salt: u64, index: u64) -> u64 {
     widest() >> SplitMix64::new(salt ^ FAT ^ index).below(3)
 }
 
+/// Rows apart that a push holds one of for it to carry spaces: every fourth carrier.
+const SPACED: i64 = 32;
+
+/// Whether a push holding `row` carries spaces.
+pub(crate) fn spaced(row: &Row) -> bool {
+    row.offset.rem_euclid(SPACED) == 0
+}
+
 /// Whether `row` carries a fat value.
 pub(crate) fn carried(row: &Row) -> bool {
     row.offset.rem_euclid(EVERY) == 0

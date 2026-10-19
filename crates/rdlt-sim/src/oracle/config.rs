@@ -167,11 +167,21 @@ pub(super) fn pressed(
         .iter()
         .map(|stream| stream.partitions.len());
     let partitions = u64::try_from(partitions.sum::<usize>()).unwrap_or(u64::MAX);
-    let pressure = Pressure::draw(&mut rng, &config.limits(), cursors, partitions);
+    let mut pressure = Pressure::draw(&mut rng, &config.limits(), cursors, partitions);
     // A cursor is recorded twice over in its seal's frame, and a small log holds no more than a
     // few seals of cursors as long as a budget allows: there cursors carry their offsets alone.
     if config.growth().log_bytes().get() < 128 << 10 {
         return Pressure::default();
+    }
+    // Spaces fill a spaced push up to its limit, or the frame a transport carries it in, beside the widest fat value it may carry.
+    if workload.features.fat {
+        let limits = config.limits();
+        let room = limits
+            .json_push_bytes
+            .min(limits.frame_bytes)
+            .saturating_sub(crate::fat::least_push() / 16 + (64 << 10));
+        let mut drawn = SplitMix64::new(seed.value().rotate_left(59));
+        pressure.spaces = usize::try_from(room / 2 + drawn.below((room / 2).max(1))).unwrap_or(0);
     }
     if small_log {
         return Pressure { pad: 0, ..pressure };

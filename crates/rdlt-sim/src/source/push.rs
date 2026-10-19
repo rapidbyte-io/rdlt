@@ -84,8 +84,9 @@ fn whole(stream: &SimStream, rows: &[Row], ballast: usize) -> RecordBatch {
 }
 
 /// `rows` of `stream` as a JSON push with the columns a batch of them has: a JSON array when
-/// `array`, else JSON lines.
-pub(crate) fn json_push(stream: &SimStream, rows: &[Row], array: bool) -> Bytes {
+/// `array`, else JSON lines; where the stream has fat values and a row is spaced, `spaces` spaces
+/// after them.
+pub(crate) fn json_push(stream: &SimStream, rows: &[Row], array: bool, spaces: usize) -> Bytes {
     // Each object is written as text, so an integer beyond 64 bits pushes as the integer it is.
     let objects = rows.iter().map(|row| {
         let mut fields = vec![
@@ -117,9 +118,13 @@ pub(crate) fn json_push(stream: &SimStream, rows: &[Row], array: bool) -> Bytes 
         format!("{{{}}}", fields.join(","))
     });
     let objects: Vec<String> = objects.collect();
-    Bytes::from(if array {
+    let mut text = if array {
         format!("[{}]", objects.join(","))
     } else {
         objects.join("\n")
-    })
+    };
+    if stream.fat > 0 && rows.iter().any(fat::spaced) {
+        text.extend(std::iter::repeat_n(' ', spaces));
+    }
+    Bytes::from(text)
 }
