@@ -158,10 +158,14 @@ fn what_each_limit_admits_all_at_once_fits_the_share_it_draws_on() {
 }
 
 #[test]
-fn every_budget_from_the_least_up_admits_a_peer_for_thousands_of_reads() {
-    for readers in (1..=4_000).step_by(7) {
+fn every_budget_from_the_least_up_admits_a_peer() {
+    // Each byte of a band above the least for thousands of counts of reads, and a stride a
+    // million bytes up for a few.
+    let band = (1..=4_000).step_by(7).map(|readers| (readers, 3_000, 1));
+    let stride = [1, 2, 4, 16, 64, 1_000].map(|readers| (readers, 1_000_000, 997));
+    for (readers, above, step) in band.chain(stride) {
         let least = least(readers);
-        for capacity in least..least + 3_000 {
+        for capacity in (least..least + above).step_by(step) {
             let limits = admitted(Shares::of(capacity), readers);
             assert_eq!(
                 limits.admit_peer(),
@@ -187,10 +191,6 @@ fn the_least_budget_admits_the_protocol_s_least_limits_and_a_byte_less_does_not(
         );
         assert_eq!(admits(least).admit_peer(), Ok(()), "{readers} readers");
         assert!(admits(least - 1).admit_peer().is_err(), "{readers} readers");
-        // Every budget above the least admits a peer too.
-        for capacity in (least..least + 1_000_000).step_by(997) {
-            assert_eq!(admits(capacity).admit_peer(), Ok(()), "{capacity}");
-        }
     }
     // Many reads each keep little: their dictionaries' least then sets the budget's.
     assert!(least(1_000) > least(16));
