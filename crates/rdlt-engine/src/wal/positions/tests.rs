@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use std::time::{Duration, UNIX_EPOCH};
 
+use proptest::prelude::*;
 use rdlt_connector::{
     Cursor, LoadId, PartitionId, PartitionState, PipelineState, StateChange, StateEntry, StateKey,
     StreamName, StreamState,
@@ -177,4 +178,127 @@ fn done_partitions_are_listed_the_earliest_recorded_first_as_commits_move_them()
             (load(9), "newest".to_owned())
         ]
     );
+}
+
+/// The streams and partitions a property's changes name.
+const STREAMS: [&str; 2] = ["orders", "users"];
+const PARTITIONS: [&str; 3] = ["p0", "p1", "p2"];
+
+/// One change a commit records.
+#[derive(Clone, Debug)]
+enum Change {
+    /// A partition's position, a cursor or done, by the load of `.3` seconds.
+    Position(usize, usize, Option<u64>, u64),
+    /// A partition's position deleted.
+    Unplaced(usize, usize),
+    /// A stream's phase.
+    Phase(usize, u16),
+    /// A stream's phase deleted.
+    Unphased(usize),
+    /// A record of no position or phase: the load whose commit first reached the destination.
+    Other(u64),
+}
+
+fn change() -> impl Strategy<Value = Change> {
+    let (streams, partitions) = (0..STREAMS.len(), 0..PARTITIONS.len());
+    prop_oneof![
+        4 => (streams.clone(), partitions.clone(), proptest::option::of(0_u64..9), 1_u64..4)
+            .prop_map(|(name, id, next, seconds)| Change::Position(name, id, next, seconds)),
+        2 => (streams.clone(), partitions).prop_map(|(name, id)| Change::Unplaced(name, id)),
+        1 => (streams.clone(), any::<u16>()).prop_map(|(name, phase)| Change::Phase(name, phase)),
+        1 => streams.prop_map(Change::Unphased),
+        1 => (1_u64..4).prop_map(Change::Other),
+    ]
+}
+
+/// The state change `change` is.
+fn written(change: &Change) -> StateChange {
+    match *change {
+        Change::Position(name, id, next, seconds) => {
+            let state = next.map_or(PartitionState::Done, at);
+            recorded(STREAMS[name], PARTITIONS[id], state, seconds)
+        }
+        Change::Unplaced(name, id) => StateChange::Delete(
+            StateKey::Partition(stream(STREAMS[name]), partition(PARTITIONS[id])).encode(),
+        ),
+        Change::Phase(name, phase) => StateChange::Put(
+            StateEntry::Phase {
+                stream: stream(STREAMS[name]),
+                phase,
+            }
+            .to_record(),
+        ),
+        Change::Unphased(name) => {
+            StateChange::Delete(StateKey::Phase(stream(STREAMS[name])).encode())
+        }
+        Change::Other(seconds) => StateChange::Put(StateEntry::Origin(load(seconds)).to_record()),
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(rdlt_testkit::cases(64)))]
+
+    /// After any commits' changes, each partition stands where the last change naming it put
+    /// it, by that change's load, each stream at the last phase recorded or phase 0, done
+    /// partitions are listed the earliest recorded first, and applying commits one at a time is
+    /// applying them together.
+    #[test]
+    fn positions_are_what_the_commits_record_in_order(
+        commits in proptest::collection::vec(proptest::collection::vec(change(), 0..6), 0..6),
+    ) {
+        let mut positions = Positions::of(&PipelineState::default());
+        let mut placed: BTreeMap<(usize, usize), (PartitionState, LoadId)> = BTreeMap::new();
+        let mut phases: BTreeMap<usize, u16> = BTreeMap::new();
+        let mut all = Vec::new();
+        for commit in &commits {
+            let changes: Vec<StateChange> = commit.iter().map(written).collect();
+            positions.apply(&changes);
+            all.extend(changes);
+            for change in commit {
+                match *change {
+                    Change::Position(name, id, next, seconds) => {
+                        let state = next.map_or(PartitionState::Done, at);
+                        placed.insert((name, id), (state, load(seconds)));
+                    }
+                    Change::Unplaced(name, id) => {
+                        placed.remove(&(name, id));
+                    }
+                    Change::Phase(name, phase) => {
+                        phases.insert(name, phase);
+                    }
+                    Change::Unphased(name) => {
+                        phases.remove(&name);
+                    }
+                    Change::Other(_) => {}
+                }
+            }
+        }
+        for (name, stream_name) in STREAMS.iter().enumerate() {
+            for (id, partition_id) in PARTITIONS.iter().enumerate() {
+                prop_assert_eq!(
+                    positions.get(&stream(stream_name), &partition(partition_id)),
+                    placed.get(&(name, id)).map(|(state, _)| state)
+                );
+            }
+            prop_assert_eq!(
+                positions.phase(&stream(stream_name)),
+                phases.get(&name).copied().unwrap_or(0)
+            );
+        }
+        let mut done: Vec<(LoadId, StreamName, PartitionId)> = placed
+            .iter()
+            .filter(|(_, (state, _))| *state == PartitionState::Done)
+            .map(|((name, id), (_, load))| (*load, stream(STREAMS[*name]), partition(PARTITIONS[*id])))
+            .collect();
+        done.sort();
+        let listed: Vec<(LoadId, StreamName, PartitionId)> = positions
+            .done()
+            .into_iter()
+            .map(|(load, name, id)| (load, name.clone(), id.clone()))
+            .collect();
+        prop_assert_eq!(listed, done);
+        let mut together = Positions::of(&PipelineState::default());
+        together.apply(&all);
+        prop_assert_eq!(together, positions);
+    }
 }
