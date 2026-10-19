@@ -56,8 +56,10 @@ pub(super) async fn start(
 ) -> RunHandle {
     let config = json!({ "world": world });
     if let Some(placing) = placing {
-        let source = placing.source(&config).await;
-        let destination = placing.destination(&config).await;
+        // Where faults are on, a connector is now and then placed on the peer that stalls.
+        let stalls = || World::named(world).is_some_and(|world| world.stalls());
+        let source = placing.source(&config, stalls()).await;
+        let destination = placing.destination(&config, stalls()).await;
         return engine.run(plan.clone(), source, destination);
     }
     // A world serving changes has the change source serve them.

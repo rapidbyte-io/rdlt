@@ -9,7 +9,6 @@ use crate::rng::SplitMix64;
 const HANG_PER_MILLE: u64 = 2;
 
 /// Placements in a thousand, while faults are on, made on the peer that stalls.
-#[cfg_attr(not(test), expect(dead_code, reason = "only tests draw the stalls"))]
 const STALL_PER_MILLE: u64 = 50;
 
 /// The draws of which calls hang and which placements stall.
@@ -43,7 +42,6 @@ impl Hangs {
 
     /// Whether the connector placed next goes to the peer that stalls: one placement in twenty,
     /// where `faulty`.
-    #[cfg_attr(not(test), expect(dead_code, reason = "only tests draw the stalls"))]
     pub(super) fn stalls(&mut self, faulty: bool) -> bool {
         faulty && self.rng.chance(STALL_PER_MILLE)
     }

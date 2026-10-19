@@ -118,7 +118,13 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>, hangs: bo
     if !stopped {
         simulation.check_reports(seed).await;
     }
-    let violations = simulation.world.violations();
+    let mut violations = simulation.world.violations();
+    violations.extend(
+        simulation
+            .placing
+            .iter()
+            .flat_map(Placing::stall_violations),
+    );
     drop(registered);
     assert!(violations.is_empty(), "seed {seed}: {violations:#?}");
     Checked {

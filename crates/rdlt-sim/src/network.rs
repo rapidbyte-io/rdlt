@@ -4,6 +4,7 @@
 
 mod connectors;
 mod faults;
+mod stalled;
 #[cfg(test)]
 mod tests;
 
@@ -35,6 +36,7 @@ use crate::seed::{Seed, Weight, report_failure};
 use crate::source::SimSource;
 use connectors::Connectors;
 use faults::{Healing, disrupt};
+use stalled::Stalls;
 
 /// The engine's host.
 const ENGINE: &str = "engine";
@@ -59,6 +61,9 @@ const DRAIN: Duration = Duration::from_millis(80);
 
 /// How long placing a connector waits before trying again.
 const REPLACE: Duration = Duration::from_millis(100);
+
+/// The host of the peer that stalls, which the fault driver never disrupts.
+const STALLED: &str = "stalled";
 
 /// A connector's side of a pipeline, each on a host of its own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -87,12 +92,17 @@ pub(crate) struct Net {
     connectors: Connectors,
     /// The runtime of each connector's host, recorded when it starts listening.
     served: Mutex<Vec<Handle>>,
+    /// What the stalled peer's connections share.
+    stalls: Arc<Stalls>,
 }
 
 impl Net {
     fn new() -> Self {
         let pki = Pki::new("ca");
-        let server = pki.server("server", &[Side::Source.host(), Side::Destination.host()]);
+        let server = pki.server(
+            "server",
+            &[Side::Source.host(), Side::Destination.host(), STALLED],
+        );
         let client = pki.client(ENGINE);
         Self {
             pki,
@@ -100,12 +110,14 @@ impl Net {
             client,
             connectors: Connectors::default(),
             served: Mutex::default(),
+            stalls: Arc::default(),
         }
     }
 }
 
 /// Runs `scenario` as the engine's host of a simulated network, on which the source and the
-/// destination listen, with a [`SimEnv`] seeded by `seed`, and turmoil's network seeded by it too.
+/// destination listen, and the peer that stalls, on a host of its own, with a [`SimEnv`] seeded by
+/// `seed`, and turmoil's network seeded by it too.
 ///
 /// # Panics
 ///
@@ -129,6 +141,8 @@ where
         let net = Arc::clone(&net);
         sim.host(side.host(), move || listen(Arc::clone(&net), side));
     }
+    let peer = Arc::clone(&net);
+    sim.host(STALLED, move || stalled::stall(Arc::clone(&peer)));
     let outcome = Rc::new(RefCell::new(None));
     let slot = Rc::clone(&outcome);
     sim.client(ENGINE, async move {
@@ -273,6 +287,7 @@ pub(crate) struct Placing {
 impl Placing {
     /// Places connectors on `net`, running their connections with `options`.
     pub(crate) fn new(net: Arc<Net>, options: &Options) -> Self {
+        net.stalls.judge_by(patience(options));
         let remote = Remote::new(identity(&net.client), net.pki.ca())
             .network(Turmoil)
             .options(*options);
@@ -287,9 +302,8 @@ impl Placing {
     /// `work` ends.
     pub(crate) async fn disrupting<T>(&self, rng: SplitMix64, work: impl Future<Output = T>) -> T {
         let healing = Healing(&self.net);
-        let options = self.remote_options;
         // Faults last up to twice the host's patience, so it notices some and not others.
-        let patience = options.heartbeat.saturating_mul(options.missed.get());
+        let patience = patience(&self.remote_options);
         let done = tokio::select! {
             biased;
             done = work => done,
@@ -316,10 +330,15 @@ impl Placing {
         self.net.served.lock().clone()
     }
 
-    /// The source, placed with `config`, trying again until it is reachable.
-    pub(crate) async fn source(&self, config: &serde_json::Value) -> Arc<dyn Source> {
+    /// The source, placed with `config` on its host, or on the peer that stalls where `stalled`,
+    /// trying again until it is reachable.
+    pub(crate) async fn source(
+        &self,
+        config: &serde_json::Value,
+        stalled: bool,
+    ) -> Arc<dyn Source> {
         let id = source_factory::<SimSource>().spec().id.clone();
-        let reference = reference(Side::Source, id);
+        let reference = reference(host(Side::Source, stalled), id);
         Arc::from(
             placed("source", async || {
                 self.remote.source(&reference, config).await
@@ -328,12 +347,29 @@ impl Placing {
         )
     }
 
-    /// The destination, placed with `config`, trying again until it is reachable.
-    pub(crate) async fn destination(&self, config: &serde_json::Value) -> Arc<dyn Destination> {
+    /// The destination, placed with `config` on its host, or on the peer that stalls where
+    /// `stalled`, trying again until it is reachable.
+    pub(crate) async fn destination(
+        &self,
+        config: &serde_json::Value,
+        stalled: bool,
+    ) -> Arc<dyn Destination> {
         let id = destination_factory::<SimDestination>().spec().id.clone();
-        let reference = reference(Side::Destination, id);
+        let reference = reference(host(Side::Destination, stalled), id);
         let place = async || self.remote.destination(&reference, config).await;
         Arc::from(placed("destination", place).await)
+    }
+
+    /// How many connections to the stalled peer that stalled have been judged.
+    #[cfg(test)]
+    pub(crate) fn stalls_judged(&self) -> usize {
+        self.net.stalls.judged()
+    }
+
+    /// Every connection to the stalled peer the engine kept open beyond its heartbeat's patience
+    /// once it stalled.
+    pub(crate) fn stall_violations(&self) -> Vec<String> {
+        self.net.stalls.violations()
     }
 }
 
@@ -350,9 +386,20 @@ async fn placed<C>(what: &str, place: impl AsyncFn() -> Result<Placed<C>, Provid
     panic!("the {what} was never placed: {last:?}");
 }
 
-/// The reference to connector `id`, listening on `side`'s host.
-fn reference(side: Side, id: rdlt_connector::ConnectorId) -> ConnectorRef {
-    ConnectorRef::new(id).endpoint(format!("grpcs://{}:{PORT}", side.host()))
+/// The reference to connector `id`, listening on `host`.
+fn reference(host: &str, id: rdlt_connector::ConnectorId) -> ConnectorRef {
+    ConnectorRef::new(id).endpoint(format!("grpcs://{host}:{PORT}"))
+}
+
+/// The host `side`'s connector is placed on: its own, or the stalled peer where `stalled`.
+fn host(side: Side, stalled: bool) -> &'static str {
+    if stalled { STALLED } else { side.host() }
+}
+
+/// How long the engine's heartbeat waits before it counts a connector lost: its interval, times
+/// the beats it may miss.
+fn patience(options: &Options) -> Duration {
+    options.heartbeat.saturating_mul(options.missed.get())
 }
 
 /// The options the engine's connections run with, drawn from `rng`: heartbeats between 50 ms and

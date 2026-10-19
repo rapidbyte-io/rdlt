@@ -209,7 +209,7 @@ fn a_served_writer_whose_write_hangs_ends_once_its_host_lets_it_go() {
         world.hang_at(FaultPoint::Write);
         let config = serde_json::json!({ "world": name });
         let placing = Placing::new(net, &options(&mut rng, rdlt_wire::Limits::default()));
-        let destination = placing.destination(&config).await;
+        let destination = placing.destination(&config, false).await;
         let context = OpenContext {
             pipeline: PipelineId::parse("released").expect("a valid pipeline id"),
             load_id: LoadId::from_parts(std::time::UNIX_EPOCH, 1),
