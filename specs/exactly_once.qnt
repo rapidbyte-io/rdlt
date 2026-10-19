@@ -151,6 +151,11 @@ module exactly_once_protocol {
       logs.get(k).commits.fold(best, (b, c) =>
         c.segs.filter(s => s.part == part).fold(b, (bb, s) => if (s.to > bb) s.to else bb)))
 
+  /// Whether a log still open holds a commit of `part` ending at `pos`.
+  def heldAt(part: Part, pos: int): bool =
+    logs.keys().exists(k => logs.get(k).open and logs.get(k).commits.exists(c =>
+      c.segs.exists(s => s.part == part and s.to == pos)))
+
   /// The runs running.
   val live: Set[(Pipe, int)] = runs.keys()
 
@@ -508,7 +513,7 @@ module exactly_once_protocol {
   /// A source's position moves only as it is told a committed position, and then to that one: a
   /// position a commit landed with, or one a log holds.
   val PositionOnlyInCommitted = PARTS.forall(part =>
-    kept.get(part) == 0 or landed.contains((part, kept.get(part))) or kept.get(part) <= logged(part))
+    kept.get(part) == 0 or landed.contains((part, kept.get(part))) or heldAt(part, kept.get(part)))
 
   /// Every pipeline holds every row of each of its partitions, and no log is left.
   val converged = PIPES.forall(pipe => partsOf(pipe).forall(part => dest.get(pipe).cursor.get(part) == rowsOf(part)))
@@ -597,6 +602,10 @@ module exactly_once {
               runs.set(k, { ...job, read: job.read.set(part, job.read.get(part) + 1) }), started, faults, landed, fencedLanded),
     }
   }
+
+  /// A source that stands at `pos` of `part` with no commit having given it that position.
+  action movedTo(part: Part, pos: int): bool =
+    keepAll(dest, logs, kept.set(part, pos), runs, started, faults, landed, fencedLanded)
 
   /// A run reads each partition to its end and commits it a row at a time, then ends with its log
   /// removed.
@@ -743,5 +752,19 @@ module exactly_once {
       .then(start("p"))
       .then(replay(p(1), Ok))
       .then(readMoving(p(1), "u"))
+      .expect(not(PositionOnlyInCommitted))
+
+  /// A position below the end of a commit a log holds is still one no commit gave: the invariant
+  /// refuses it.
+  run aSourceBetweenTheEndsOfALoggedCommitWouldStandWhereNoCommitPutItTest =
+    init
+      .then(start("p"))
+      .then(replay(p(1), Ok))
+      .then(read(p(1), "u"))
+      .then(read(p(1), "u"))
+      .then(checkpoint(p(1), "u"))
+      .then(log(p(1), Ok))
+      .expect(PositionOnlyInCommitted)
+      .then(movedTo("u", 1))
       .expect(not(PositionOnlyInCommitted))
 }
