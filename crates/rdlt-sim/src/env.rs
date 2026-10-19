@@ -110,6 +110,10 @@ impl Env for SimEnv {
     fn wal(&self) -> Option<Arc<dyn WalStore>> {
         self.wal.lock().clone()
     }
+
+    fn charged(&self, change: i64) {
+        crate::oracle::account(change);
+    }
 }
 
 /// The simulation's [`ComputePool`]: jobs run on the calling thread, or when perturbed, one in four

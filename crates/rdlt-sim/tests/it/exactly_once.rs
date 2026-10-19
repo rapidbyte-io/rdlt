@@ -105,8 +105,7 @@ fn a_seed_whose_rows_only_the_log_held_passes() {
 }
 
 /// A seed's attempts are measured, so the check cannot switch itself off: its timing line records
-/// what the worst held and what its runs account for, term by term, in process and over the
-/// network, where the reads hold what their connectors queue.
+/// what the worst held beyond its charge and, over the network, what its reads hold.
 #[test]
 fn attempts_are_measured_in_process_and_over_the_network() {
     for (seed, network) in [(1, false), (508, true)] {
@@ -114,15 +113,6 @@ fn attempts_are_measured_in_process_and_over_the_network() {
         let recorded = check_exactly_once(Seed::new(seed)).recorded();
         let bytes = |name: &str| recorded[name].as_u64().expect("every term is recorded");
         assert!(bytes("held_bytes") > 0, "{recorded:?}");
-        assert!(bytes("reserved_bytes") > 0, "{recorded:?}");
         assert_eq!(bytes("queued_bytes") > 0, network, "{recorded:?}");
-        let terms = [
-            "reserved_bytes",
-            "dropped_bytes",
-            "pushes_bytes",
-            "queued_bytes",
-        ];
-        let bound: u64 = terms.into_iter().map(bytes).sum();
-        assert_eq!(bytes("bound_bytes"), bound, "{recorded:?}");
     }
 }

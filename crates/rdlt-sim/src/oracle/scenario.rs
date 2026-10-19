@@ -90,8 +90,6 @@ pub(super) struct Executed {
     pub(super) reports: Vec<Report>,
     /// How many runs it started.
     pub(super) started: u64,
-    /// Whether a run was dropped as if its worker crashed, leaving no report.
-    pub(super) crashed: bool,
 }
 
 /// Runs `scenario` for each of `plans`, the pipelines sharing the destination, at once.
@@ -173,7 +171,6 @@ async fn execute(
         failures: failures.into_iter().flatten().collect(),
         reports,
         started,
-        crashed: dropped,
     }
 }
 
