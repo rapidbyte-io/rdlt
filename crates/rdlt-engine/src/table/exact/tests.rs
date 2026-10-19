@@ -253,12 +253,8 @@ fn an_empty_column_never_rounds() {
 
 /// What judging `array` allocates at its peak, beside what was allocated before.
 fn judging_peak(array: &ArrayRef) -> (bool, u64) {
-    let heap = &crate::cost::tests::HEAP;
-    heap.reset_peak_usage();
-    let before = heap.current_usage();
-    let judged = rounds(array.as_ref());
-    let peak = heap.peak_usage().saturating_sub(before);
-    (judged, u64::try_from(peak).unwrap())
+    let (peak, judged) = crate::cost::tests::peak_alone(|| rounds(array.as_ref()));
+    (judged, peak)
 }
 
 #[test]

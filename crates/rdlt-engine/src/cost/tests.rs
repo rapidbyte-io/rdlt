@@ -36,26 +36,43 @@ use crate::table::convert::{convert, decoded, json, normalize, text};
 pub(crate) static HEAP: peak_alloc::PeakAlloc = peak_alloc::PeakAlloc;
 
 /// What `run` allocates at its peak beyond what the heap held as it began, the least over
-/// eight windows: the heap's peak is the process's, and another thread's allocations land in
-/// some windows, while `run`'s own are in every one.
+/// eight windows, and what a ninth run returns.
 ///
-/// `run` leaves the heap as it found it, what it returns included, so a window that ends with
-/// the heap holding more or less than it began with is one another allocation reached, and is
-/// not counted.
+/// The heap's peak is the process's: another thread's allocations land in some windows, while
+/// `run`'s own are in every one. A window counts only where dropping what `run` returned leaves
+/// the heap as it began, so a window another allocation reached is not counted.
 pub(crate) fn peak_alone<T>(mut run: impl FnMut() -> T) -> (u64, T) {
-    let mut least: Option<(usize, T)> = None;
+    let mut least: Option<usize> = None;
     for _ in 0..8 {
         HEAP.reset_peak_usage();
         let before = HEAP.current_usage();
         let out = run();
-        let peak = HEAP.peak_usage() - before;
-        let alone = HEAP.current_usage() == before;
-        if alone && least.as_ref().is_none_or(|(low, _)| peak < *low) {
-            least = Some((peak, out));
+        let peak = HEAP.peak_usage().saturating_sub(before);
+        drop(out);
+        if HEAP.current_usage() == before && least.is_none_or(|low| peak < low) {
+            least = Some(peak);
         }
     }
-    let (peak, out) = least.expect("a window ended with the heap holding what it began with");
-    (u64::try_from(peak).unwrap(), out)
+    let peak = least.expect("a window ended with the heap holding what it began with");
+    (u64::try_from(peak).unwrap(), run())
+}
+
+/// What `make` keeps on the heap while what it made is alive, beyond what the heap held as it
+/// began, the least over eight windows that leave the heap as it began once that is dropped;
+/// and what a ninth makes.
+pub(crate) fn held_alone<T>(mut make: impl FnMut() -> T) -> (u64, T) {
+    let mut least: Option<usize> = None;
+    for _ in 0..8 {
+        let before = HEAP.current_usage();
+        let alive = make();
+        let held = HEAP.current_usage().saturating_sub(before);
+        drop(alive);
+        if HEAP.current_usage() == before && least.is_none_or(|low| held < low) {
+            least = Some(held);
+        }
+    }
+    let held = least.expect("a window ended with the heap holding what it began with");
+    (u64::try_from(held).unwrap(), make())
 }
 
 #[test]
@@ -122,6 +139,16 @@ fn a_block_another_thread_allocates_and_frees_in_one_window_is_not_measured() {
     other.unpark();
     beside.join().unwrap();
     assert_eq!(peak, 1_000);
+}
+
+#[test]
+fn what_a_window_returns_is_measured_and_dropped_before_the_heap_is_compared() {
+    let (peak, kept) = peak_alone(|| std::hint::black_box(vec![0_u8; 1_000]));
+    assert_eq!(peak, 1_000);
+    assert_eq!(kept.len(), 1_000);
+    let (held, made) = held_alone(|| std::hint::black_box(vec![0_u8; 2_000]));
+    assert_eq!(held, 2_000);
+    assert_eq!(made.len(), 2_000);
 }
 
 /// What `column` expands to, as the engine charges it for a destination storing `native` kinds.

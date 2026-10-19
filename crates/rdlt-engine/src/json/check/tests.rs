@@ -317,12 +317,8 @@ fn json_nested_past_the_limit_is_refused() {
 
 /// What checking `batch` allocates at its peak, beside what was allocated before.
 fn check_peak(batch: &RecordBatch) -> (Result<(), NotJson>, u64) {
-    let heap = &crate::cost::tests::HEAP;
-    heap.reset_peak_usage();
-    let before = heap.current_usage();
-    let checked = check_batch(batch);
-    let peak = heap.peak_usage().saturating_sub(before);
-    (checked, u64::try_from(peak).unwrap())
+    let (peak, checked) = crate::cost::tests::peak_alone(|| check_batch(batch));
+    (checked, peak)
 }
 
 /// One row of a list of `items` items, `values` naming them, a column of JSON.
