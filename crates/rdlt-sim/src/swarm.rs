@@ -121,8 +121,8 @@ impl Features {
     ///
     /// The network, the log and its store, streaming, resetting and fat values are drawn apart
     /// from the rest, from the value the next draw takes but without taking it, so a seed's
-    /// workload is the same over either transport, logged or not and in either store, streamed or not,
-    /// reset or not.
+    /// workload is the same over either transport, logged or not and in either store, streamed
+    /// or not, reset or not, and with fat values or without but for those values.
     pub fn draw(rng: &mut SplitMix64) -> Self {
         let next = rng.clone().next_u64();
         let network = SplitMix64::new(next ^ NETWORK).chance(250);

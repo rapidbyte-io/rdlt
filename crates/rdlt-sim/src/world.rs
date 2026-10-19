@@ -111,9 +111,10 @@ pub struct World {
 }
 
 /// How hard a source presses on the engine's memory budget: the bytes each Arrow batch it pushes
-/// keeps alive beside its rows, and the bytes each cursor carries beside its offset.
+/// keeps alive beside its rows, the bytes each cursor carries beside its offset, and the spaces a
+/// JSON push carries beside its records in a world of fat values.
 ///
-/// Both are drawn against the limits the engine admits within, so a push or a cursor is never
+/// Each is drawn against the limits the engine admits within, so a push or a cursor is never
 /// refused, and several of them fill their share of the budget: pushes then wait for room as
 /// lowering releases it, and cursors for a commit.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -148,7 +149,6 @@ impl Pressure {
         let frame = limits.frame_bytes.saturating_mul(9) / 10;
         let state = limits.state_bytes / 4 / partitions.saturating_add(1);
         Self {
-            spaces: 0,
             ballast: within(frame, 5, 1, 750, rng),
             // A cursor carries its offset and its field names beside its padding.
             pad: within(
@@ -161,6 +161,7 @@ impl Pressure {
                 750,
                 rng,
             ),
+            spaces: 0,
         }
     }
 }
