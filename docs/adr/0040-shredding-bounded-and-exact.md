@@ -181,10 +181,9 @@ Arrow columns and the rows normalizing makes of both escaped that in several way
 
 ## Consequences
 
-- No JSON push builds or observes what it was not admitted or reserved for, but for the
-  document an exact parse builds of a record and what reading a part held as JSON renders
-  (ADR 0039, Not bounded here), and no check of an Arrow column of JSON holds what was not; a
-  JSON flush whose batches take more than a quarter of the budget beyond twice its text is
+- No JSON push builds or observes what it was not admitted or reserved for, and no check of an
+  Arrow column of JSON holds what was not, so ADR 0039's bound holds for JSON without exception;
+  a JSON flush whose batches take more than a quarter of the budget beyond twice its text is
   refused. Thirteen records of 7,480 keys, each in a chunk of 2 MiB, are refused so; four load.
 - A chunk built again with a column of JSON reckons about ten times its longest record beside
   its batch, what rendering a value of objects with one-byte keys could hold. A flush of
