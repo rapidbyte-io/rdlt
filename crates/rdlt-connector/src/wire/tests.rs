@@ -1376,13 +1376,20 @@ fn sent_word() -> impl Strategy<Value = String> {
     ]
 }
 
-/// Words as a destination may send them: a few, repeats among them, or as many as `cap` or one
-/// more.
+/// Words as a destination may send them: mostly sized words, some repeated, some not sized, or
+/// as many as `cap` or one more, the last also with one word repeated.
 fn sent_words(cap: usize) -> impl Strategy<Value = Vec<String>> {
+    let counted = |count: usize, repeat: bool| -> Vec<String> {
+        (0..count)
+            .map(|word| format!("w{}", if repeat { word % cap } else { word }))
+            .collect()
+    };
     prop_oneof![
-        4 => proptest::collection::vec(sent_word(), 0..4),
-        1 => proptest::sample::select(vec![cap, cap + 1])
-            .prop_map(|count| (0..count).map(|word| format!("w{word}")).collect()),
+        4 => proptest::collection::vec("[a-c]{1,2}", 0..4),
+        1 => proptest::collection::vec(sent_word(), 0..4),
+        1 => Just(counted(cap, false)),
+        1 => Just(counted(cap + 1, false)),
+        1 => Just(counted(cap + 1, true)),
     ]
 }
 
@@ -1393,16 +1400,19 @@ fn sent_rules() -> impl Strategy<Value = v1::IdentifierRules> {
     let least = u32::from(MIN_IDENTIFIER_LEN);
     let most = u32::from(u16::MAX);
     let max_len = prop_oneof![
-        Just(0_u32),
-        1_u32..least + 4,
-        Just(most),
-        Just(most + 1),
-        any::<u32>(),
+        4 => least..=most,
+        1 => Just(0_u32),
+        1 => 1_u32..least,
+        1 => Just(least - 1),
+        1 => Just(least),
+        1 => Just(most),
+        1 => Just(most + 1),
+        1 => any::<u32>(),
     ];
     (
-        prop_oneof![-1_i32..5, any::<i32>()],
+        prop_oneof![4 => 1_i32..=3, 1 => -1_i32..5, 1 => any::<i32>()],
         max_len,
-        prop_oneof![-1_i32..4, any::<i32>()],
+        prop_oneof![4 => 1_i32..=2, 1 => -1_i32..4, 1 => any::<i32>()],
         sent_words(MAX_RESERVED_WORDS),
         sent_words(MAX_RESERVED_PREFIXES),
     )
