@@ -63,9 +63,9 @@ Arrow columns and the rows normalizing makes of both escaped that in several way
   16-byte range for every four bytes of it and an 8-byte mark for each level an object may nest to
   take. What all of it and the joined shape take beyond the pushes' admission, reckoned over the
   flush, is reserved from the data share (`acquire_working`) before any of it is built and held with
-  the batches; more than one request may take is refused, `json_exceeds_budget`
-  (`ErrorKind::Source`). `shred` is now `observe` and `build`, and the partition reserves between
-  them.
+  the batches, which are freed before it is released; more than one request may take is refused,
+  `json_exceeds_budget` (`ErrorKind::Source`). Shredding is two steps, `observe` and `build`, and
+  the partition reserves between them.
 - **Columns and cells are counted where they are built.** The shredder's column limit is the
   engine's derived `schema_columns` (7,489 at the default budget, 943 at the least), counted as
   the emitter counts a schema: every field at any depth, and every list's items. It holds while a
