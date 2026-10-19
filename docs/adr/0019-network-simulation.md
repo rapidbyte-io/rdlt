@@ -63,8 +63,8 @@ the whole engine on a paused clock from a seed, with connectors in the engine's 
   connections, kills and raw wires it uses), the local and in-memory log stores (the simulation
   keeps logs in a store of its own), the stores' shared contract tests, and test and bench code.
   The data plane (`rdlt_wire::plane`) is hand-written, not generated, and every simulated served
-  read and write runs it, so it counts. Its floor is what 1 000 seeds reach, 79 % of lines and
-  69 % of branches. The simulation's worlds are honest peers, and reach little of the code that
+  read and write runs it, so it counts. Its floor is what 1 000 seeds reach, 80 % of lines and
+  70 % of branches. The simulation's worlds are honest peers, and reach little of the code that
   refuses a dishonest one: a served connector's refusals of a host that breaks the protocol,
   certification's probes, the scan's refusals of messages it cannot walk or that pass their
   bounds, secrets read from files and the environment, and refusals of a log a store garbled. The
