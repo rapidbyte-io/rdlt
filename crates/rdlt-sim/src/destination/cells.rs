@@ -58,9 +58,10 @@ pub(crate) fn rows(batch: &RecordBatch) -> Result<Vec<Stored>> {
 /// Row `row` of `batch` as a batch of one row, copied into buffers of its own.
 ///
 /// A slice keeps every buffer of the batch it was cut from, and the world keeps its rows for as
-/// long as it lives. The destination stores only plain types, which a take copies whole: a column
-/// of any other type is refused when its cells are read. The take is of the whole batch, not of a
-/// slice of it, since a list's take sizes its copy by the proportion of the column it takes.
+/// long as it lives. A take copies the row's values, a list's and a struct's children among them,
+/// but of a dictionary only its key: the row keeps the dictionary's values whole. The take is of
+/// the whole batch, not of a slice of it, since a list's take sizes its copy by the proportion of
+/// the column it takes.
 fn apart(batch: &RecordBatch, row: usize) -> Result<RecordBatch> {
     let index = UInt32Array::from(vec![u32::try_from(row).map_err(|_| {
         ConnectorError::internal("a batch of more rows than a row index holds")
@@ -90,18 +91,16 @@ fn condensed(batch: &RecordBatch) -> Result<RecordBatch> {
     let Some(index) = fat else {
         return Ok(batch.clone());
     };
-    let column = batch.column(index);
-    let Ok(texts) = arrow_cast::cast(column, &DataType::Utf8) else {
-        return Ok(batch.clone());
+    let failed = |error: arrow_schema::ArrowError| {
+        ConnectorError::data(format!("keeping a fat value: {error}"))
     };
+    let column = batch.column(index);
+    let texts = arrow_cast::cast(column, &DataType::Utf8).map_err(failed)?;
     let short: StringArray = texts
         .as_string::<i32>()
         .iter()
         .map(|text| text.map(|text| crate::fat::condense(text).unwrap_or_else(|| text.to_owned())))
         .collect();
-    let failed = |error: arrow_schema::ArrowError| {
-        ConnectorError::data(format!("keeping a fat value: {error}"))
-    };
     let mut columns = batch.columns().to_vec();
     columns[index] = arrow_cast::cast(&short, column.data_type()).map_err(failed)?;
     let options = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));

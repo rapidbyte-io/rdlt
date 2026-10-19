@@ -4,7 +4,7 @@ use std::time::Duration;
 use arrow_array::types::Int8Type;
 use arrow_array::{
     ArrayRef, BinaryArray, DictionaryArray, Int8Array, Int64Array, ListArray, RecordBatch,
-    StringArray,
+    StringArray, StructArray,
 };
 use arrow_buffer::OffsetBuffer;
 use arrow_schema::{DataType, Field as ArrowField};
@@ -751,4 +751,15 @@ fn a_fat_value_is_stored_in_its_short_form_and_other_json_as_it_is() {
         json(&crate::fat::expected(&row, 1_000))
     );
     assert_eq!(stored[1].cells[crate::fat::COLUMN], json("{\"a\":1}"));
+}
+
+#[test]
+fn a_fat_column_that_does_not_read_as_text_is_refused() {
+    let field = Arc::new(ArrowField::new("a", DataType::Int64, false));
+    let values: ArrayRef = Arc::new(StructArray::from(vec![(
+        field,
+        Arc::new(Int64Array::from(vec![1])) as ArrayRef,
+    )]));
+    let refused = cells::rows(&batch(vec![(crate::fat::COLUMN, values)])).unwrap_err();
+    assert_eq!(refused.kind(), ConnectorErrorKind::Data, "{refused}");
 }
