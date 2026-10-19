@@ -1365,7 +1365,7 @@ fn a_struct_claiming_more_fields_than_follow_is_refused_on_the_wire() {
     ));
 }
 
-/// Words as a destination may send them: empty, short, at their longest, one byte longer.
+/// A word as a destination may send it: empty, short, at its longest, or one byte longer.
 fn sent_word() -> impl Strategy<Value = String> {
     use crate::limits::MAX_RESERVED_BYTES;
     prop_oneof![
@@ -1428,9 +1428,8 @@ fn sent_rules() -> impl Strategy<Value = v1::IdentifierRules> {
 }
 
 /// Which refusal the protocol's documented bounds give `sent`, in the order a receiver checks
-/// them, or none: a known case, known characters, a length from 16 to 65,535, at most four
-/// thousand and ninety-six reserved words and 64 reserved prefixes as sent, each of 1 to 256
-/// bytes.
+/// them, or none: a known case, known characters, a length from 16 to 65,535, at most 4096
+/// reserved words and 64 reserved prefixes as sent, each of 1 to 256 bytes.
 fn documented(sent: &v1::IdentifierRules) -> Option<&'static str> {
     use crate::limits::{
         MAX_RESERVED_BYTES, MAX_RESERVED_PREFIXES, MAX_RESERVED_WORDS, MIN_IDENTIFIER_LEN,
@@ -1470,6 +1469,8 @@ proptest! {
         match (IdentifierRules::try_from(sent.clone()), expected) {
             (Ok(rules), None) => {
                 prop_assert_eq!(rules.validate(), Ok(()));
+                let back = v1::IdentifierRules::from(&rules);
+                prop_assert_eq!((back.case, back.chars), (sent.case, sent.chars));
                 prop_assert_eq!(u32::from(rules.max_len.get()), sent.max_len);
                 prop_assert_eq!(&rules.reserved, &sent.reserved.iter().cloned().collect::<BTreeSet<_>>());
                 prop_assert_eq!(
