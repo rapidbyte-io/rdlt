@@ -531,6 +531,24 @@ fn a_prefix_beyond_its_bound_behind_a_full_window_is_refused_at_once() {
     assert_eq!(window.taken(), held.len());
 }
 
+#[test]
+fn a_message_longer_than_a_full_window_waits_for_the_whole_of_it() {
+    let window = Window::new(10);
+    let other = Arc::clone(&window.room)
+        .try_acquire_many_owned(10)
+        .expect("the whole window");
+    // Thirteen bytes with its prefix: it takes the whole window, none of which is free.
+    let waiting = message(&[0x0a, 0x00].repeat(4));
+    let bounds = bounds(waiting.len(), usize::MAX);
+    let mut body = Bounded::new(chunks(&[&waiting]), bounds, Some(window.clone()));
+    assert_eq!(poll(&mut body), Passed::Waits);
+    assert!(body.arriving.is_empty(), "nothing of it is copied");
+    drop(other);
+    assert_eq!(poll(&mut body), Passed::Data(waiting));
+    assert_eq!(window.taken(), 0);
+    assert_eq!(poll(&mut body), Passed::End);
+}
+
 /// A body over a call that sends nothing more, its messages held to `wire` bytes on the wire.
 fn idle(wire: usize) -> Bounded {
     Bounded::new(tonic::body::Body::empty(), bounds(wire, usize::MAX), None)
@@ -708,24 +726,32 @@ proptest! {
         let frame = transport_frame(flag, length, &payload, cut);
         body.unread = Bytes::from(frame.clone());
         let declared = declared(&frame);
-        let mut context = Context::from_waker(std::task::Waker::noop());
-        let mut passed = body.poll_arrived(&mut context);
-        if passed.is_pending() {
-            let length = declared.expect("only a whole prefix waits for room");
-            prop_assert!(length <= wire);
+        // A message within its bound waits while the room it takes, its whole length or the
+        // whole window where it is longer, is more than the window has free.
+        let free = size - held as usize;
+        let waits = declared.is_some_and(|length| {
+            length <= wire && PREFIX.saturating_add(length).min(size) > free
+        });
+        let expected = match declared {
+            None if frame.is_empty() => Passed::End,
+            Some(length) if length > wire => Passed::Failed(Code::OutOfRange),
+            Some(length) if frame.len() >= PREFIX + length => {
+                Passed::Data(frame[..PREFIX + length].to_vec())
+            }
+            _ => Passed::Failed(Code::Internal),
+        };
+        if waits {
+            prop_assert_eq!(poll(&mut body), Passed::Waits);
             prop_assert!(body.arriving.is_empty());
             prop_assert_eq!(body.arriving.room(), 0);
             prop_assert_eq!(&body.unread[..], &frame[..]);
             prop_assert!((others..=size).contains(&window.taken()));
             drop(other.take());
-            passed = body.poll_arrived(&mut context);
-            prop_assert!(passed.is_ready());
         }
+        let delivered = matches!(expected, Passed::Data(_));
+        prop_assert_eq!(poll(&mut body), expected);
         let others = if other.is_some() { others } else { 0 };
-        if let Poll::Ready(Some(Ok(message))) = passed {
-            let arrived = message.into_data().expect("a message");
-            let length = declared.expect("a message passed on had its prefix");
-            prop_assert_eq!(&arrived.bytes[..], &frame[..PREFIX + length]);
+        if delivered {
             prop_assert_eq!(window.taken(), others);
         }
         drop(body);
