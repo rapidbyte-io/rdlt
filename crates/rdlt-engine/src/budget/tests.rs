@@ -86,6 +86,19 @@ fn the_shares_of_a_budget_never_pass_it() {
         assert_eq!(all, u128::from(capacity), "of {capacity}");
         assert_eq!(shares.intake + shares.request, shares.data, "of {capacity}");
         assert!(shares.piece <= shares.request, "of {capacity}");
+        // A share's bytes beside one request of its class never wrap.
+        for (held, asked) in [
+            (shares.intake, shares.intake),
+            (shares.data, shares.intake),
+            (shares.data, shares.request),
+            (shares.cursors, shares.cursors),
+            (shares.log, shares.log),
+            (shares.tables, shares.tables),
+            (shares.reads, shares.reads),
+            (shares.control, shares.control),
+        ] {
+            assert!(held.checked_add(asked).is_some(), "of {capacity}");
+        }
     }
 }
 
