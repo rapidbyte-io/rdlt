@@ -195,6 +195,9 @@ pub(super) struct Ledger {
     /// Changes sent to the tasks watching for pressure and for cursors' waits, each waking every
     /// task waiting on that value.
     pub(super) signals: u64,
+    /// Where each change of what is reserved is told.
+    #[cfg(feature = "sim")]
+    observer: Option<Arc<dyn crate::env::Env>>,
 }
 
 /// The classes that wait, in the order their waiters are admitted: cursors, the log's frames,
@@ -229,6 +232,17 @@ impl Ledger {
             cursor_waits: watch::Sender::new(false),
             waited: Waits::default(),
             signals: 0,
+            #[cfg(feature = "sim")]
+            observer: None,
+        }
+    }
+
+    /// The ledger, each change of what it holds reserved told to `observer`.
+    #[cfg(feature = "sim")]
+    pub(super) fn observed(self, observer: Arc<dyn crate::env::Env>) -> Self {
+        Self {
+            observer: Some(observer),
+            ..self
         }
     }
 
@@ -309,11 +323,29 @@ impl Ledger {
         debug_assert!(self.fits(class, bytes), "{bytes} bytes pass their share");
         *self.held(class) += bytes;
         self.peak = self.peak.max(self.reserved());
+        #[cfg(feature = "sim")]
+        self.tell(bytes, true);
     }
 
     pub(super) fn release(&mut self, class: Class, bytes: u64) {
         let held = self.held(class);
-        *held = held.saturating_sub(bytes);
+        let released = bytes.min(*held);
+        *held -= released;
+        #[cfg(feature = "sim")]
+        self.tell(released, false);
+    }
+
+    /// Tells the observer that `bytes` more are reserved, or fewer where not `more`, where that
+    /// changes anything.
+    #[cfg(feature = "sim")]
+    fn tell(&self, bytes: u64, more: bool) {
+        if bytes == 0 {
+            return;
+        }
+        if let Some(observer) = &self.observer {
+            let bytes = i64::try_from(bytes).unwrap_or(i64::MAX);
+            observer.charged(if more { bytes } else { -bytes });
+        }
     }
 
     /// Queues a request of `bytes` of `class` and returns its place and where its reservation

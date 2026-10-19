@@ -7,6 +7,9 @@ use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
 
+#[cfg(feature = "sim")]
+mod observed;
+
 use super::{Denied, Exhausted, MemoryBudget, Reservation, Shares, TooLarge, budget};
 use crate::env::InlineEnv;
 use crate::report::{Waited, Waits};
