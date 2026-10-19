@@ -191,3 +191,13 @@ fn some_placements_stall_where_faults_are_on_and_none_elsewhere() {
     assert_eq!((0..2_000).filter(|_| world.stalls()).count(), 0);
     drop(registered);
 }
+
+#[test]
+fn a_world_notes_the_largest_push_its_source_made() {
+    let registered = World::register("largest-push", &mut SplitMix64::new(3));
+    let world = registered.world();
+    assert_eq!(world.largest_push(), 0);
+    world.pushed(10);
+    world.pushed(4);
+    assert_eq!(world.largest_push(), 10);
+}

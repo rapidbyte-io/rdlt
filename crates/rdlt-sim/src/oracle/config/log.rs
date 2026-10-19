@@ -123,7 +123,7 @@ fn pushes(stream: &SimStream) -> Pushes {
                     push.bytes += tables.tables * FRAME + tables.leaves * COLUMN;
                     most.leaves = most.leaves.max(tables.leaves);
                 }
-                let text = count(json_push(stream, rows, false).len());
+                let text = count(json_push(stream, rows, false, 0).len());
                 most.bytes = most.bytes.max(push.bytes + 2 * text);
                 most.tables = most.tables.max(push.frames);
             }
