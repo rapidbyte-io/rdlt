@@ -440,6 +440,26 @@ fn a_value_that_cannot_fit_its_column_is_fitted_within_what_its_piece_reserves()
 }
 
 #[test]
+fn reading_a_part_held_as_json_holds_no_more_than_its_piece_reserves() {
+    let column = struct_of(vec![Field::new("a", LogicalType::Json, true)]);
+    let floats = format!("[{}]", vec!["0.5"; 100_000].join(","));
+    for part in [wide("k", 100_000), floats] {
+        let text = format!("{{\"a\":{part}}}");
+        let texts = texts(&[Some(text.as_str())]);
+        let reserved = reserved(&texts, &column);
+        let (fits, joined) = fitting(&texts, &column);
+        let (peak, read) = crate::cost::tests::peak_alone(|| read(&texts, &fits, &joined).is_ok());
+        assert!(read, "{text:.32}");
+        // Beside what the cost model measures, its builders take their fixed parts.
+        let bound = reserved + crate::cost::tests::lowering::SLACK;
+        assert!(
+            peak <= bound,
+            "{text:.32}: read at a peak of {peak}, reserved {reserved}"
+        );
+    }
+}
+
+#[test]
 fn a_part_held_as_json_nested_to_the_limit_is_fitted_on_a_small_stack() {
     let fitted = std::thread::Builder::new()
         .stack_size(256 << 10)

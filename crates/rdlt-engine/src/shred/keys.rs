@@ -23,9 +23,19 @@ pub(crate) struct OpenKeys {
     keys: Vec<Range<usize>>,
     /// Where each open object's keys start among `keys`, the innermost last.
     objects: Vec<usize>,
+    /// Whether the values' keys were checked before: none is noted, and no object repeats one.
+    checked: bool,
 }
 
 impl OpenKeys {
+    /// The keys of values checked before for a key an object repeats, which notes none.
+    pub(crate) fn checked() -> Self {
+        Self {
+            checked: true,
+            ..Self::default()
+        }
+    }
+
     /// Opens an object inside the innermost one, charging `meter` first for what that grows
     /// the objects by.
     ///
@@ -33,6 +43,9 @@ impl OpenKeys {
     ///
     /// [`Over`] where the meter has no room for that; no object is opened.
     pub(crate) fn open(&mut self, meter: &Meter) -> Result<(), Over> {
+        if self.checked {
+            return Ok(());
+        }
         grow(&mut self.objects, OBJECT_BYTES, meter)?;
         self.objects.push(self.keys.len());
         Ok(())
@@ -45,6 +58,9 @@ impl OpenKeys {
     ///
     /// [`Over`] where the meter has no room for that; the key is not noted.
     pub(crate) fn key(&mut self, key: Range<usize>, meter: &Meter) -> Result<(), Over> {
+        if self.checked {
+            return Ok(());
+        }
         grow(&mut self.keys, KEY_BYTES, meter)?;
         self.keys.push(key);
         Ok(())

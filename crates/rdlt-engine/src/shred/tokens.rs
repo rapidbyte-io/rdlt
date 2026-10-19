@@ -9,8 +9,10 @@ mod tests;
 
 use std::borrow::Cow;
 
-use serde::de::value::{BorrowedStrDeserializer, Error, StringDeserializer};
+use serde::de::value::{BorrowedStrDeserializer, StringDeserializer};
 use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
+// The fast parse's error, so a seed's visits are built once for both parses.
+use sonic_rs::Error;
 
 use super::visit::Context;
 use crate::json::{Reader, Text, Token};
