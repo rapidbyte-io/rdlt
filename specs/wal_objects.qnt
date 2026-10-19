@@ -9,6 +9,7 @@
 // trace of this module drives the store request by request.
 //
 // quint steps: --step simulated --max-steps 80
+// quint verify: tlc
 // quint run: --max-samples 500
 // quint trace: replayed 0x728 replayedLog
 // quint trace: fenced 0x150f fencedWriter

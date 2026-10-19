@@ -376,13 +376,20 @@ quint-verify steps="10":
             exit 1
         fi
         temporal=$(just --quiet properties temporal "$spec" | tr ' ' ,)
-        bound=$(sed -n 's|^// quint verify: --max-steps \([0-9]*\)$|\1|p' "$spec")
-        quint verify "$spec" --apalache-version "$version" --max-steps "${bound:-{{ steps }}}" --invariant "$invariants" 2>&1 | tee "$out/quint.log"
-        started
-        unfetched
-        quint verify "$spec" --apalache-version "$version" --backend tlc --tlc-config "$QUINT_HOME/tlc.json" --invariant "$invariants" ${temporal:+--temporal "$temporal"} 2>&1 | tee "$out/quint.log"
-        started
-        unfetched
+        # A spec names the checker that fits it: `tlc` for a finite model TLC explores whole,
+        # `apalache` for one too large to enumerate, both when it names none (ADR 0052).
+        checker=$(sed -n 's#^// quint verify: \(tlc\|apalache\).*$#\1#p' "$spec")
+        bound=$(sed -n 's|^// quint verify: apalache --max-steps \([0-9]*\)$|\1|p' "$spec")
+        if [[ $checker != tlc ]]; then
+            quint verify "$spec" --apalache-version "$version" --max-steps "${bound:-{{ steps }}}" --invariant "$invariants" 2>&1 | tee "$out/quint.log"
+            started
+            unfetched
+        fi
+        if [[ $checker != apalache ]]; then
+            quint verify "$spec" --apalache-version "$version" --backend tlc --tlc-config "$QUINT_HOME/tlc.json" --invariant "$invariants" ${temporal:+--temporal "$temporal"} 2>&1 | tee "$out/quint.log"
+            started
+            unfetched
+        fi
     done
 
 # The formal checks of this branch's changes against `base`, uncommitted ones included: each part
