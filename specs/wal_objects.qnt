@@ -12,7 +12,7 @@
 // quint run: --max-samples 500
 // quint trace: replayed 0x728 replayedLog
 // quint trace: fenced 0x150f fencedWriter
-// quint trace: latemark 0x8e07 lateMarkRemoved
+// quint trace: latemark 0x67dbfe054e495 lateMarkRemoved
 // quint trace: strayed 0x29 strayRefused
 // quint trace: removed 0x150f removedAll
 // quint trace: leftover 0x19bf leftoverRemoved
@@ -30,6 +30,8 @@ module wal_objects {
   pure val CHUNKS = 2
   /// The writer's chunks longer than a part: uploaded in parts, with a head naming the body.
   pure val LONG = Set(1)
+  /// Times the replaying load starts in all: each start makes its creates' tokens its own.
+  pure val STARTS = 3
   /// Faults a behavior meets in all: requests that do not succeed, crashes, the intruder's name.
   pure val FAULTS = 3
 
@@ -49,9 +51,10 @@ module wal_objects {
   /// What a head is: the chunk itself, or a reference to the body its uploader made.
   type Kind = | Whole | InParts(Who)
 
-  /// An object: its name, who created it, the chunks its end names as still needed (a body holds
-  /// its chunk's), and its kind.
-  type Obj = { name: Name, by: Who, live: Set[int], kind: Kind }
+  /// An object: its name, who created it and under which token (each of the replaying load's
+  /// starts makes its own), the chunks its end names as still needed (a body holds its chunk's),
+  /// and its kind.
+  type Obj = { name: Name, by: Who, tok: int, live: Set[int], kind: Kind }
 
   /// The directories a listing reads: the log's, the open logs' marks, and the logs' parent.
   type Dir = | LogDir | MarksDir | LogsDir
@@ -144,8 +147,10 @@ module wal_objects {
     | RRemove
 
   /// A load: its program, the operation it is in, the request that makes next and how it is
-  /// tried, what the operation holds so far, what the load keeps between operations, the answer
-  /// of its last operation that ended, and whether its last request ended one.
+  /// tried, what the operation holds so far, what the load keeps between operations (its starts
+  /// among them), whether an operation of it ended with no refusal where a request answered a
+  /// name the store never writes, the answer of its last operation that ended, and whether its
+  /// last request ended one.
   type Proc = {
     prog: Prog,
     doing: Doing,
@@ -163,6 +168,8 @@ module wal_objects {
     listed: Set[Obj],
     found: bool,
     kinds: int -> Kind,
+    epoch: int,
+    slipped: bool,
     kept: Set[int],
     tries: int,
     tail: int,
@@ -201,10 +208,10 @@ module wal_objects {
 
   // ---- Helpers
 
-  pure val NOBODY: Obj = { name: Stray, by: X, live: Set(), kind: Whole }
+  pure val NOBODY: Obj = { name: Stray, by: X, tok: 0, live: Set(), kind: Whole }
   pure val NOREQ: Req = { op: Gets, at: Under(LogDir), obj: NOBODY }
 
-  pure def markOf(p: Who): Obj = { name: Mark, by: p, live: Set(), kind: Whole }
+  pure def markOf(p: Who): Obj = { name: Mark, by: p, tok: 0, live: Set(), kind: Whole }
 
   /// The chunks the writer's chunk `n` may need: itself, or itself and the chunk before; its last
   /// may need none, as a load that closed its log leaves it; past its last, there is no chunk.
@@ -216,11 +223,11 @@ module wal_objects {
 
   /// The writer's chunk `n`, needing `live`.
   pure def chunkOf(n: int, live: Set[int]): Obj =
-    { name: ChunkHead(n), by: W, live: live, kind: if (LONG.contains(n)) InParts(W) else Whole }
+    { name: ChunkHead(n), by: W, tok: 0, live: live, kind: if (LONG.contains(n)) InParts(W) else Whole }
 
-  /// A replay's fence `n`, needing `live`.
-  pure def fenceOf(n: int, live: Set[int]): Obj =
-    { name: ChunkHead(n), by: R, live: live, kind: Whole }
+  /// A replay's fence `n` of its start `epoch`, needing `live`.
+  pure def fenceOf(n: int, epoch: int, live: Set[int]): Obj =
+    { name: ChunkHead(n), by: R, tok: epoch, live: live, kind: Whole }
 
   pure def numberOf(name: Name): int = match name {
     | ChunkHead(n) => n
@@ -411,8 +418,10 @@ module wal_objects {
       | Readish =>
           // A read that fails looks at the object, which leaves its answer as it was, unless the
           // look goes unanswered too.
+          // A read left unanswered ends its attempt: the look is part of the attempt.
           if (not(pr.peek)) {
             if (isPresent(res)) Ends(res)
+            else if (o == Late) retry
             else Again({ ...pr, peek: true, missed: isAnswered(res) })
           }
           else if (pr.missed and o != Late) Ends(Final(Missing))
@@ -442,7 +451,7 @@ module wal_objects {
         }
       | ReadingBack =>
           if (isPresent(res)) {
-            if (objOf(res).by == pr.req.obj.by) Ends(Answered(Created)) else Ends(Final(pr.orig))
+            if (objOf(res).by == pr.req.obj.by and objOf(res).tok == pr.req.obj.tok) Ends(Answered(Created)) else Ends(Final(pr.orig))
           }
           else if (isAnswered(res)) {
             // Found missing: a create racing it left the name empty, and it creates again.
@@ -515,7 +524,7 @@ module wal_objects {
             val c = go(pr, 1, creates(markOf(p)), Creating)
             { ...c, pr: { ...c.pr, once: true } }
           }
-          else finish({ ...pr, sawStray: holds(objsOf(r), Stray) }, Refused(NameTaken))
+          else finish(pr, Refused(NameTaken))
         }
         else if (isAnswered(r)) finish(pr, Done)
         else finish(pr, refusal(r))
@@ -537,7 +546,7 @@ module wal_objects {
         // for; 4: the head deleted, the mark gone; 6: the body deleted; 7: the upload given up.
         val inParts = pr.staged.kind != Whole
         val body = bodyName(n, pr.staged.kind)
-        val bodyObj = { name: body, by: p, live: pr.staged.live, kind: Whole }
+        val bodyObj = { name: body, by: p, tok: 0, live: pr.staged.live, kind: Whole }
         if (pr.at == 0) {
           if (isAnswered(r)) go(pr, 1, { op: Completes, at: Object(body), obj: bodyObj }, Completing)
           else go(pr, 7, plain(Aborts, body), Plain)
@@ -590,7 +599,7 @@ module wal_objects {
         }
         else if (pr.at == 1) {
           if (not(isListed(r))) finish(pr, refusal(r))
-          else if (holds(objsOf(r), Stray)) finish({ ...pr, sawStray: true }, Refused(Strays))
+          else if (holds(objsOf(r), Stray)) finish(pr, Refused(Strays))
           else removingOn({ ...pr, listed: objsOf(r), kinds: Map() })
         }
         else if (isAnswered(r)) removingOn(pr)
@@ -599,7 +608,7 @@ module wal_objects {
         // 0: the log listed; 1: a head in parts read for its kind.
         if (pr.at == 0) {
           if (not(isListed(r))) finish(pr, refusal(r))
-          else if (holds(objsOf(r), Stray)) finish({ ...pr, sawStray: true }, Refused(Strays))
+          else if (holds(objsOf(r), Stray)) finish(pr, Refused(Strays))
           else listingOn({ ...pr, listed: objsOf(r) })
         }
         else if (isPresent(r)) listingOn({ ...pr, kinds: pr.kinds.put(numberOf(objOf(r).name), objOf(r).kind) })
@@ -707,13 +716,13 @@ module wal_objects {
       | RTail =>
           if (not(isNumbers(a))) gone
           else if (numbersOf(a) == Set())
-            goTo({ ...pr, tail: -1, need: Set(), fence: 0, staged: fenceOf(0, Set()) }, RFenceStage, Staging(0))
+            goTo({ ...pr, tail: -1, need: Set(), fence: 0, staged: fenceOf(0, pr.epoch, Set()) }, RFenceStage, Staging(0))
           else goTo({ ...pr, tail: greatest(numbersOf(a)) }, RReadTail, Reading(greatest(numbersOf(a))))
       | RReadTail =>
           if (not(isContent(a))) gone
           else {
             val o = contentOf(a)
-            goTo({ ...pr, tailBy: o.by, need: o.live, fence: pr.tail + 1, staged: fenceOf(pr.tail + 1, o.live) },
+            goTo({ ...pr, tailBy: o.by, need: o.live, fence: pr.tail + 1, staged: fenceOf(pr.tail + 1, pr.epoch, o.live) },
                RFenceStage, Staging(pr.tail + 1))
           }
       | RFenceStage => if (a == Done) goTo(pr, RFencePublish, Publishing(pr.fence)) else gone
@@ -736,7 +745,7 @@ module wal_objects {
           if (isContent(a)) scanOn({ ...pr, reading: pr.reading.union(Set((numberOf(contentOf(a).name), contentOf(a).by))) })
           else gone
       | RScanOpen =>
-          if (a == Listed(true)) goTo({ ...pr, staged: fenceOf(pr.fence + 1, Set()) }, RReleaseStage, Staging(pr.fence + 1))
+          if (a == Listed(true)) goTo({ ...pr, staged: fenceOf(pr.fence + 1, pr.epoch, Set()) }, RReleaseStage, Staging(pr.fence + 1))
           else over(pr)
       | RReleaseStage => if (a == Done) goTo(pr, RReleasePublish, Publishing(pr.fence + 1)) else over(pr)
       | RReleasePublish =>
@@ -756,7 +765,7 @@ module wal_objects {
   pure val IDLE: Proc = {
     prog: Off, doing: Idle, at: 0, req: NOREQ, mode: Plain, attempt: 1, wave: 0, unsure: false,
     peek: false, missed: false, once: false, orig: Unavailable, staged: NOBODY, listed: Set(),
-    found: false, kinds: Map(), kept: Set(), tries: 0, tail: -1, tailBy: X, need: Set(),
+    found: false, kinds: Map(), epoch: 0, slipped: false, kept: Set(), tries: 0, tail: -1, tailBy: X, need: Set(),
     fence: -1, reading: Set(), sawStray: false, answer: Nil, ended: false,
   }
 
@@ -785,15 +794,27 @@ module wal_objects {
 
   /// The load `p` makes its next request, which meets `o`; `live` is what the writer's next
   /// chunk needs, where it stages one.
-  action request(p: Who, o: Outcome, live: Set[int]): bool = {
+  action request(p: Who, o: Outcome, live: Set[int]): bool = requesting(p, o, live, true)
+
+  /// The request of `request`, its listing of the log's directory heeded or not: a load that does
+  /// not heed it goes on as if the name the store never writes were not there, which no load does.
+  action requesting(p: Who, o: Outcome, live: Set[int], heed: bool): bool = {
     val pr = procs.get(p)
     val req = pr.req
-    val res = answered(store, req, o)
-    val after: After = match attempted(pr, res, o) {
+    val seen = answered(store, req, o)
+    val strayAnswered = req.op == Lists and dirOf(req.at) == LogDir and holds(objsOf(seen), Stray)
+    val res =
+      if (heed or not(strayAnswered)) seen
+      else Answered(Objects(objsOf(seen).filter(x => x.name != Stray)))
+    val after0: After = match attempted(pr, res, o) {
       | Again(q) => { pr: q, ended: false }
       | Ends(r) => operated(pr, r, p)
     }
+    // A request that answered the name marks its operation, whatever the operation goes on to do.
+    val sawStray = pr.sawStray or strayAnswered
+    val after: After = { pr: { ...after0.pr, sawStray: sawStray }, ended: after0.ended }
     val a = after.pr.answer
+    val slipped = after.ended and sawStray and not(Set(Refused(Strays), Refused(NameTaken)).contains(a))
     val moved: Proc =
       if (not(after.ended)) after.pr
       else if (p == W) writes(after.pr, pr.doing, a, live).pr
@@ -811,7 +832,7 @@ module wal_objects {
       pending' =
         if (leaves(req, o)) pending.union(Set({ who: p, attempt: pr.attempt, wave: pr.wave, landing: landingOf(req) }))
         else pending,
-      procs' = procs.set(p, { ...moved, ended: after.ended, answer: if (after.ended) a else Nil }),
+      procs' = procs.set(p, { ...moved, slipped: moved.slipped or slipped, ended: after.ended, answer: if (after.ended) a else Nil }),
       faults' = if (o == Ok) faults else faults - 1,
       removed' = (removed or (pr.doing == RemovingLog and pr.at == 1 and (a == Done or (not(after.ended) and after.pr.at == 2)))),
       wPublished' = if (published) wPublished.union(Set(numberOf(pr.staged.name))) else wPublished,
@@ -845,7 +866,7 @@ module wal_objects {
   action crash(p: Who): bool = all {
     faults > 0,
     not(Set(Off, Dead, Stopped).contains(procs.get(p).prog)),
-    procs' = procs.set(p, { ...IDLE, prog: if (p == W) Dead else Off }),
+    procs' = procs.set(p, { ...IDLE, prog: if (p == W) Dead else Off, epoch: procs.get(p).epoch, slipped: procs.get(p).slipped }),
     faults' = faults - 1,
     store' = store,
     pending' = pending,
@@ -861,7 +882,8 @@ module wal_objects {
   /// read before: it lists what removals left first.
   action start: bool = all {
     procs.get(R).prog == Off,
-    procs' = procs.set(R, goTo({ ...IDLE, kinds: procs.get(R).kinds }, RLeftovers, Leftovers).pr),
+    procs.get(R).epoch < STARTS,
+    procs' = procs.set(R, goTo({ ...IDLE, kinds: procs.get(R).kinds, epoch: procs.get(R).epoch + 1, slipped: procs.get(R).slipped }, RLeftovers, Leftovers).pr),
     store' = store,
     pending' = pending,
     faults' = faults,
@@ -973,11 +995,9 @@ module wal_objects {
   /// A replay reads a chunk's bytes from its head, or from the body its head names by its token.
   val OwnTokenReplay = ownTokens
 
-  /// An operation whose listing held a name the store never writes is refused.
-  val StraysRefused = Set(W, R).forall(p => {
-    val pr = procs.get(p)
-    (pr.doing == Idle and pr.sawStray) implies Set(Refused(Strays), Refused(NameTaken)).contains(pr.answer)
-  })
+  /// An operation of which a request listed the log's directory with a name the store never
+  /// writes in it ends refused, whatever it did between.
+  val StraysRefused = Set(W, R).forall(p => not(procs.get(p).slipped))
 
   /// A replay that read a crashed load's log through read exactly the chunks its tail needs, each
   /// from the load that wrote it; one that could not is refused with a typed error and replays
@@ -1042,6 +1062,25 @@ module wal_objects {
     all {
       pr.prog == RScan,
       procs' = procs.set(R, goTo(pr, RScanOpen, Loads).pr),
+      store' = store,
+      pending' = pending,
+      faults' = faults,
+      removed' = removed,
+      wPublished' = wPublished,
+      held' = held,
+      ownTokens' = ownTokens,
+      exact' = exact,
+      replayed' = replayed,
+    }
+  }
+
+  /// A replay whose note of a head's kind is stale: it believes the head of chunk 1 is the chunk
+  /// itself, which a replay never does.
+  action kindsStale: bool = {
+    val pr = procs.get(R)
+    all {
+      pr.prog == RTail,
+      procs' = procs.set(R, { ...pr, kinds: pr.kinds.put(1, Whole) }),
       store' = store,
       pending' = pending,
       faults' = faults,
@@ -1196,4 +1235,57 @@ module wal_objects {
       .then(scanSkipped)
       .then(replayDoes(Ok))
       .expect(not(CrashExactOrRefused))
+
+  /// A replay that goes on past a listing that held the intruder's name, as if it were not there,
+  /// ends its operation unrefused: the invariant refuses it.
+  run aReplayIgnoringAStrayWouldNotRefuseItTest =
+    init
+      .then(intrude)
+      .then(start)
+      .then(3.reps(_ => replayDoes(Ok)))
+      .expect(StraysRefused)
+      .then(requesting(R, Ok, Set(), false))
+      .expect(not(StraysRefused))
+
+  /// A replay that read a head as the chunk itself where it names a body would read the wrong
+  /// bytes: the invariant refuses it.
+  run aReplayWithAStaleKindWouldReadAHeadAsItsChunkTest =
+    init
+      .then(13.reps(_ => writerDoes(Ok)))
+      .then(start)
+      .then(3.reps(_ => replayDoes(Ok)))
+      .expect(procs.get(R).prog == RTail)
+      .then(kindsStale)
+      .then(2.reps(_ => replayDoes(Ok)))
+      .expect(not(OwnTokenReplay))
+
+  /// A read left unanswered ends its attempt without a look at the object: the next request is
+  /// the read of the next attempt.
+  run aReadLeftUnansweredIsTriedAgainWithoutALookTest =
+    init
+      .then(13.reps(_ => writerDoes(Ok)))
+      .then(start)
+      .then(3.reps(_ => replayDoes(Ok)))
+      .then(replayDoes(Ok))
+      .then(replayDoes(Late))
+      .expect(procs.get(R).req.op == Gets and procs.get(R).attempt == 2 and not(procs.get(R).peek))
+
+  /// A fence of an earlier start of the replay that landed late is not the replay's own head: the
+  /// create of a later start reads a token that is not its own back, finds its name taken, and
+  /// fences again.
+  run aFenceOfAnEarlierStartIsNotTheReplaysOwnTest =
+    init
+      .then(2.reps(_ => writerDoes(Ok)))
+      .then(start)
+      .then(5.reps(_ => replayDoes(Ok)))
+      .then(replayDoes(Late))
+      .then(replayDoes(Failed))
+      .then(replayDoes(Ok))
+      .expect(procs.get(R).prog == Off and pending.size() == 1)
+      .then(start)
+      .then(5.reps(_ => replayDoes(Ok)))
+      .then(replayDoes(Failed))
+      .then(land({ who: R, attempt: 1, wave: 0, landing: Lands(fenceOf(0, 1, Set())) }))
+      .then(2.reps(_ => replayDoes(Ok)))
+      .expect(procs.get(R).prog == RTail and procs.get(R).tries == 1 and procs.get(R).epoch == 2)
 }
