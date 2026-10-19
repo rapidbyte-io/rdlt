@@ -226,29 +226,83 @@ proving:
     set -euo pipefail
     grep -rlE --include='*.rs' '^[[:space:]]*#\[cfg\(kani\)\]$' crates | cut -d/ -f2 | sort -u
 
-# Check every spec under `specs/`: typecheck it, run its tests, and simulate 10,000 runs of it
-# against its invariants, each a `val` whose name begins with a capital letter
-quint:
+# Check every spec under `specs/`: typecheck it, run its tests, simulate it against its
+# invariants (each a `val` whose name begins with a capital letter) as its `// quint steps:` and
+# `// quint run:` lines say, and write the traces its `// quint trace:` lines name, each from its
+# seed, which must be those `specs/traces/<spec>/` holds; `just quint write` writes them there. It
+# runs Quint's TypeScript simulator, and fails if Quint fetched anything
+quint mode="check":
     #!/usr/bin/env bash
     set -euo pipefail
     export QUINT_HOME="$PWD/target/quint-home"
     rm -rf "$QUINT_HOME"
-    mkdir -p "$QUINT_HOME"
+    mkdir -p "$QUINT_HOME/traces"
     for spec in specs/*.qnt; do
-        quint typecheck "$spec"
-        quint test --backend typescript "$spec"
+        name=$(basename "$spec" .qnt)
+        steps=$(sed -n 's|^// quint steps: ||p' "$spec")
+        samples=$(sed -n 's|^// quint run: ||p' "$spec")
         invariants=$(just --quiet properties val "$spec")
         if [[ -z $invariants ]]; then
             echo "$spec names no invariant" >&2
             exit 1
         fi
-        quint run --backend typescript "$spec" --max-samples 10000 --invariants $invariants
+        quint typecheck "$spec"
+        quint test --backend typescript "$spec"
+        # shellcheck disable=SC2086
+        quint run --backend typescript "$spec" $steps ${samples:---max-samples 10000} --invariants $invariants
+        written="$QUINT_HOME/traces/$name"
+        mkdir -p "$written"
+        sed -n 's|^// quint trace: ||p' "$spec" | while read -r trace seed goal; do
+            invariant=true
+            [[ $goal == - ]] || invariant="not($goal)"
+            log="$QUINT_HOME/traces/$name-$trace.log"
+            status=0
+            # shellcheck disable=SC2086
+            quint run --backend typescript "$spec" $steps --max-samples 1 --seed "$seed" --mbt \
+                --invariant "$invariant" --out-itf "$written/$trace.raw.json" > "$log" 2>&1 || status=$?
+            if [[ $goal == - ]]; then reached=$(( status == 0 )); else reached=$(grep -c '\[violation\]' "$log" || true); fi
+            if [[ $reached -eq 0 ]]; then
+                echo "$spec: the run from seed $seed does not reach $goal; just quint-seed $name $goal finds one that does" >&2
+                exit 1
+            fi
+            # The trace's header holds the moment it was written, and nothing else that varies.
+            sed -E 's/^\{"#meta":\{[^}]*\}/{"#meta":{}/' "$written/$trace.raw.json" > "$written/$trace.itf.json"
+            rm "$written/$trace.raw.json"
+        done
+        kept="specs/traces/$name"
+        if [[ {{ mode }} == write ]]; then
+            rm -rf "$kept"
+            if compgen -G "$written/*.itf.json" > /dev/null; then
+                mkdir -p "$kept"
+                cp "$written"/*.itf.json "$kept"/
+            fi
+        elif { [[ -d $kept ]] || compgen -G "$written/*.itf.json" > /dev/null; } && ! diff -r "$written" "$kept" > /dev/null 2>&1; then
+            echo "$spec: specs/traces/$name differs from the traces its seeds give; just quint write writes them" >&2
+            exit 1
+        fi
     done
-    fetched=$(find "$QUINT_HOME" -mindepth 1)
+    fetched=$(find "$QUINT_HOME" -mindepth 1 -maxdepth 1 ! -name traces)
     if [ -n "$fetched" ]; then
-        echo "quint fetched into $QUINT_HOME: $fetched" >&2
+        echo "quint fetched a tool into $QUINT_HOME: $fetched" >&2
         exit 1
     fi
+
+# Find the seed of a run of `specs/<spec>.qnt` that reaches `goal`, a `val` of it, for a
+# `// quint trace:` line: up to `samples` runs, as the spec's `// quint steps:` line says
+quint-seed spec goal samples="20000":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export QUINT_HOME="$PWD/target/quint-home"
+    mkdir -p "$QUINT_HOME"
+    file="specs/{{ spec }}.qnt"
+    steps=$(sed -n 's|^// quint steps: ||p' "$file")
+    # shellcheck disable=SC2086
+    found=$(quint run --backend typescript "$file" $steps --max-samples {{ samples }} --invariant "not({{ goal }})" --verbosity 2 2>&1 || true)
+    if ! grep -q '\[violation\]' <<< "$found"; then
+        echo "no run of {{ samples }} reaches {{ goal }}" >&2
+        exit 1
+    fi
+    grep -oE -- '--seed=0x[0-9a-f]+' <<< "$found"
 
 # The names of `spec`'s invariants (`kind` val) or temporal properties (`kind` temporal): each
 # definition of that kind whose name begins with a capital letter, its type given or not; fails
@@ -315,7 +369,8 @@ quint-verify steps="10":
             exit 1
         fi
         temporal=$(just --quiet properties temporal "$spec" | tr ' ' ,)
-        quint verify "$spec" --apalache-version "$version" --max-steps {{ steps }} --invariant "$invariants" 2>&1 | tee "$out/quint.log"
+        bound=$(sed -n 's|^// quint verify: --max-steps \([0-9]*\)$|\1|p' "$spec")
+        quint verify "$spec" --apalache-version "$version" --max-steps "${bound:-{{ steps }}}" --invariant "$invariants" 2>&1 | tee "$out/quint.log"
         started
         unfetched
         quint verify "$spec" --apalache-version "$version" --backend tlc --tlc-config "$QUINT_HOME/tlc.json" --invariant "$invariants" ${temporal:+--temporal "$temporal"} 2>&1 | tee "$out/quint.log"
