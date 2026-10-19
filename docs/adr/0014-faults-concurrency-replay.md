@@ -33,8 +33,22 @@ The owner chose to keep all of this in one milestone.
   - Besides transient and rate-limited failures, one fault in ten is permanent and one in twenty
     is a panic.
   - A run may be stopped at once (`StopMode::Now`).
+  - Now and then a call the engine bounds never returns until its caller gives up on it: two
+    calls in a thousand at every fault point but a read, while faults are on. The hangs are drawn
+    from a generator of their own, so the faults a seed met before fall as they did. The engine
+    then waits 5 to 20 s for each connector call, drawn apart too, so a run meeting several hangs
+    ends within the oracle's limit. A read never hangs: a source may be silent as long as it has
+    nothing to send. The stress run on the real clock draws no hang.
   - A run with neither faults nor disruptions may fail only with a refusal the model predicts, so
     a failure only faults explain is a finding once they are off.
+- **Nothing a run began outlives it.** The simulated connectors count the sessions, writers and
+  reads they hold. Once a phase's runs and the engine's tasks have ended, every count must fall
+  to zero, and, over the network, every connector's host must run no task, within the longest a
+  served connection whose host left behind a partition lives: its pings go unanswered for the
+  connector's keep-alive interval and patience, then the writes that close it take none of their
+  bytes for the connector's send limit; a margin is added. A destination that holds more sessions
+  at once than one connection may (`ListenLimits::connection_sessions`), counted from before each
+  opens until its close ends, is a violation.
 - **A destination two pipelines share.** Where a seed turns it on, the workload's streams split
   between two pipelines that run at once against one store.
   - The simulated destination keeps each pipeline's epoch, state, staging and completed reads

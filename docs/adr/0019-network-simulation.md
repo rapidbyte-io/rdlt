@@ -38,8 +38,14 @@ the whole engine on a paused clock from a seed, with connectors in the engine's 
     would end them too, needs the simulation to step turmoil itself. Each fault lasts up to twice the host's
     patience, so the host notices some and not others. The network heals before the runs that
     must succeed.
-  - The oracle is unchanged: the destination holds exactly what the model says, whatever the
-    network did.
+  - With faults, one placement in twenty goes to a peer that stalls, on a host of its own the
+    fault driver never disrupts. It serves both connectors through `serve_connection`, behind a
+    transport that drops every frame answering a call after the configuration, and passes pings
+    and settings. HTTP/2's keep-alive therefore never notices it; only the host's heartbeat can.
+    Once the first answer is withheld, a stalled connection the engine keeps open longer than its
+    heartbeat's patience plus the time a close takes to arrive is a violation.
+  - The exactly-once oracle is the same over either transport: the destination holds exactly what
+    the model says, whatever the network did.
 - **What the simulation found**, each fixed with a regression test:
   - A served writer that panicked ended its write as though it were done, so the host reported a
     protocol violation. The panic now fails the write as an internal error, as a read's does.
@@ -71,3 +77,8 @@ the whole engine on a paused clock from a seed, with connectors in the engine's 
   from short partitions, so the simulation is the harsher.
 - turmoil steps every host 1 ms at a time: long idle stretches cost steps, where the paused clock
   alone would jump.
+- turmoil's sockets take 64 segments before a write waits, so no simulated peer can stop a host
+  writing HTTP/2's preface: the bound on a connection's setup is held by the host's own tests,
+  over a pipe of one byte. The simulation's engine closes each failed attempt's session before
+  the next attempt opens one, and drops each call it gives up on before its next, so a
+  connection's session bound is never reached here; the served connector's own tests hold it.
