@@ -30,6 +30,12 @@ use crate::watch;
 /// A partition's context over `budget`, its pool running jobs on the calling thread, its
 /// connectors never called.
 async fn context(budget: MemoryBudget) -> PartitionContext {
+    on_pool(budget, Pool::inline()).await
+}
+
+/// A partition's context over `budget` whose jobs run on `pool`, its source never called and its
+/// lanes ended.
+pub(super) async fn on_pool(budget: MemoryBudget, pool: Pool) -> PartitionContext {
     let env: Arc<dyn Env> = Arc::new(InlineEnv);
     let source = source_factory::<GeneratorSource>()
         .connect(json!({ "seed": 1, "streams": [] }), ConnectContext::new())
@@ -73,7 +79,7 @@ async fn context(budget: MemoryBudget) -> PartitionContext {
         load_id,
         clock: Arc::new(LoadClock::new(UNIX_EPOCH)),
         env: Arc::clone(&env),
-        pool: Pool::inline(),
+        pool,
         batch: BatchPolicy::default(),
         stop_wait: Duration::from_secs(60),
         wal: None,

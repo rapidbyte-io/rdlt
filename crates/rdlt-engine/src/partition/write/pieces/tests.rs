@@ -26,10 +26,15 @@ fn encoded(first: i64, rows: i32) -> RecordBatch {
     .unwrap()
 }
 
-/// What holds a unit of no batches of its own under one permit of `bytes`.
-fn held(budget: &MemoryBudget, bytes: u64) -> Held {
+/// What holds `parts`, a unit, under one permit of `bytes`.
+fn held(budget: &MemoryBudget, parts: Vec<RecordBatch>, bytes: u64) -> Held {
     let permit: Permit = Box::new(budget.try_acquire_working(bytes).unwrap());
-    Held::of(vec![permit], &[])
+    Held::of(parts, vec![permit])
+}
+
+/// What holds `parts`, a unit, charged nothing.
+fn uncharged(parts: Vec<RecordBatch>) -> Held {
+    Held::of(parts, Vec::new())
 }
 
 /// A destination storing every value as it is.
@@ -51,8 +56,8 @@ fn unplanned(max: u64, limit: u64) -> Lowered {
 }
 
 /// `units` cut into pieces of at most `max` bytes, under a budget no row exceeds.
-fn sliced(units: Vec<(Vec<RecordBatch>, Held)>, max: u64) -> Vec<(Vec<RecordBatch>, Held)> {
-    let cut = |(parts, held)| super::sliced(parts, held, unplanned(max, u64::MAX)).unwrap();
+fn sliced(units: Vec<Held>, max: u64) -> Vec<Held> {
+    let cut = |unit| super::sliced(unit, unplanned(max, u64::MAX)).unwrap();
     units.into_iter().flat_map(cut).collect()
 }
 
@@ -61,10 +66,10 @@ fn expanded(batch: &RecordBatch) -> u64 {
     native().expanded(batch, 0..batch.num_rows(), u64::MAX)
 }
 
-fn ids(pieces: &[(Vec<RecordBatch>, Held)]) -> Vec<i64> {
+fn ids(pieces: &[Held]) -> Vec<i64> {
     pieces
         .iter()
-        .flat_map(|(parts, _)| parts)
+        .flat_map(|held| &held.batches)
         .flat_map(|batch| {
             batch
                 .column(0)
@@ -76,21 +81,21 @@ fn ids(pieces: &[(Vec<RecordBatch>, Held)]) -> Vec<i64> {
 }
 
 #[test]
-fn a_unit_larger_than_a_slice_is_cut_in_order_and_holds_its_permits_to_the_last_piece() {
+fn a_unit_larger_than_a_slice_is_cut_in_order_and_holds_its_permits_until_its_last_piece_goes() {
     let budget = crate::budget::budget(1 << 30);
     let parts = vec![encoded(0, 5_000), encoded(5_000, 3_000)];
-    let unit = (parts, held(&budget, 64));
+    let unit = held(&budget, parts, 64);
     let max = 200_000;
-    let pieces = sliced(vec![unit], max);
+    let mut pieces = sliced(vec![unit], max);
     assert!(pieces.len() > 1);
-    for (parts, _) in &pieces {
-        let bytes: u64 = parts.iter().map(expanded).sum();
+    for piece in &pieces {
+        let bytes: u64 = piece.batches.iter().map(expanded).sum();
         assert!(bytes <= max, "{bytes}");
     }
     assert_eq!(ids(&pieces), (0..8_000).collect::<Vec<_>>());
-    let (last, others) = pieces.split_last().unwrap();
-    assert_eq!(last.1.permits.len(), 1);
-    assert!(others.iter().all(|(_, held)| held.permits.is_empty()));
+    // Each piece shares what holds the unit, whichever goes last.
+    assert!(pieces.iter().all(|held| held.permits.len() == 1));
+    drop(pieces.pop());
     assert_eq!(budget.reserved(), 64);
     drop(pieces);
     assert_eq!(budget.reserved(), 0);
@@ -100,10 +105,10 @@ fn a_unit_larger_than_a_slice_is_cut_in_order_and_holds_its_permits_to_the_last_
 fn a_unit_within_a_slice_stays_whole_and_a_row_larger_than_one_is_its_own_piece() {
     let budget = crate::budget::budget(1 << 30);
     let small = vec![encoded(0, 10), encoded(10, 10)];
-    let pieces = sliced(vec![(small, held(&budget, 64))], 1 << 20);
+    let pieces = sliced(vec![held(&budget, small, 64)], 1 << 20);
     assert_eq!(pieces.len(), 1);
-    assert_eq!(pieces[0].0.len(), 2);
-    let rows = sliced(vec![(vec![encoded(0, 3)], held(&budget, 64))], 10);
+    assert_eq!(pieces[0].batches.len(), 2);
+    let rows = sliced(vec![held(&budget, vec![encoded(0, 3)], 64)], 10);
     assert_eq!(rows.len(), 3);
     assert_eq!(ids(&rows), [0, 1, 2]);
 }
@@ -116,14 +121,14 @@ fn pieces_fill_a_slice_to_its_last_byte() {
         let ids: Vec<i64> = (first..first + 10).collect();
         RecordBatch::try_from_iter([("id", Arc::new(Int64Array::from(ids)) as ArrayRef)]).unwrap()
     };
-    let unit = (vec![plain(0), plain(10)], held(&budget, 8));
+    let unit = held(&budget, vec![plain(0), plain(10)], 8);
     let pieces = sliced(vec![unit], 160);
     assert_eq!(pieces.len(), 1);
     assert_eq!(ids(&pieces), (0..20).collect::<Vec<_>>());
     let empty = plain(0).slice(0, 0);
     drop(pieces);
     // A unit of no rows has no piece, and what held it is released.
-    let pieces = sliced(vec![(vec![empty], held(&budget, 8))], 160);
+    let pieces = sliced(vec![held(&budget, vec![empty], 8)], 160);
     assert!(pieces.is_empty());
     assert_eq!(budget.reserved(), 0);
 }
@@ -144,10 +149,11 @@ fn a_skewed_run_is_cut_by_each_row_s_own_value() {
     .unwrap();
     let budget = crate::budget::budget(1 << 30);
     let max = 64 << 10;
-    let pieces = sliced(vec![(vec![skewed], held(&budget, 64))], max);
+    let pieces = sliced(vec![held(&budget, vec![skewed], 64)], max);
     assert_eq!(ids(&pieces), (0..3_000).collect::<Vec<_>>());
-    for (parts, _) in &pieces {
-        let decoded: u64 = parts
+    for piece in &pieces {
+        let decoded: u64 = piece
+            .batches
             .iter()
             .map(|part| {
                 let text = arrow_cast::cast(part.column(1), &DataType::Utf8).unwrap();
@@ -167,10 +173,10 @@ fn rows_fill_each_slice_to_its_last_byte() {
     let plain =
         RecordBatch::try_from_iter([("id", Arc::new(Int64Array::from(numbers)) as ArrayRef)])
             .unwrap();
-    let pieces = sliced(vec![(vec![plain], held(&budget, 8))], 80);
+    let pieces = sliced(vec![held(&budget, vec![plain], 8)], 80);
     let rows: Vec<usize> = pieces
         .iter()
-        .map(|(parts, _)| parts.iter().map(RecordBatch::num_rows).sum())
+        .map(|piece| piece.batches.iter().map(RecordBatch::num_rows).sum())
         .collect();
     assert_eq!(rows, [10, 10]);
 }
@@ -181,8 +187,7 @@ fn a_row_expanding_beyond_what_a_row_may_take_is_refused_and_one_within_it_is_it
     // Three rows of a 1 KB value, in slices of 100 bytes.
     let cut = |limit: u64| {
         super::sliced(
-            vec![encoded(0, 3)],
-            held(&budget, 64),
+            held(&budget, vec![encoded(0, 3)], 64),
             unplanned(100, limit),
         )
     };
@@ -212,7 +217,7 @@ fn small() -> RecordBatch {
 
 /// The rows and bytes of each piece of `batch`, cut as `lowered` measures it.
 fn pieces(batch: RecordBatch, lowered: Lowered) -> Vec<(usize, u64)> {
-    let mut pieces = Pieces::new(vec![batch], lowered);
+    let mut pieces = Pieces::new(uncharged(vec![batch]), lowered);
     let mut cut = Vec::new();
     while let Some(piece) = pieces.next().unwrap() {
         cut.push((piece.rows, piece.bytes));
@@ -267,12 +272,11 @@ fn a_unit_is_cut_by_what_lowering_it_into_its_table_holds() {
 fn a_piece_of_a_unit_shares_the_allocations_the_unit_holds() {
     let budget = crate::budget::budget(1 << 30);
     let parts = vec![encoded(0, 100)];
-    let unit = Held::of(held(&budget, 64).permits, &parts);
-    let pieces = sliced(vec![(parts, unit)], 2_000);
+    let pieces = sliced(vec![held(&budget, parts, 64)], 2_000);
     assert!(pieces.len() > 1);
     let (last, others) = pieces.split_last().unwrap();
-    for (_, held) in others {
-        assert!(Arc::ptr_eq(&held.allocations, &last.1.allocations));
+    for held in others {
+        assert!(Arc::ptr_eq(&held.allocations, &last.allocations));
     }
 }
 
@@ -326,7 +330,7 @@ fn cutting_reads_values_only_where_a_unit_s_batches_hold_a_column_measured_by_th
     };
     // Integers are measured by their rows alone, a run by the value it names.
     for (parts, reads) in [(vec![plain(), plain()], false), (vec![encoded(0, 3)], true)] {
-        let mut pieces = Pieces::new(parts, unplanned(u64::MAX, u64::MAX));
+        let mut pieces = Pieces::new(uncharged(parts), unplanned(u64::MAX, u64::MAX));
         assert_eq!(pieces.reads_values(), reads);
         while pieces.next().unwrap().is_some() {}
         // Once every row is cut, nothing is left to read.
@@ -338,7 +342,7 @@ fn cutting_reads_values_only_where_a_unit_s_batches_hold_a_column_measured_by_th
 fn pieces_cut_ahead_are_taken_in_order_and_done_once_the_last_is_taken() {
     let batch = encoded(0, 30);
     let row = expanded(&batch.slice(0, 1));
-    let mut pieces = Pieces::new(vec![batch], unplanned(row * 10, u64::MAX));
+    let mut pieces = Pieces::new(uncharged(vec![batch]), unplanned(row * 10, u64::MAX));
     assert_eq!(pieces.cut_ahead(), Ok(row * 10));
     assert!(pieces.next().unwrap().is_none(), "every row is cut ahead");
     let mut rows = Vec::new();
@@ -347,4 +351,23 @@ fn pieces_cut_ahead_are_taken_in_order_and_done_once_the_last_is_taken() {
     }
     assert_eq!(rows, [10, 10, 10]);
     assert!(pieces.ready().is_none());
+}
+
+#[test]
+fn pieces_held_anew_share_their_new_hold_and_its_permits() {
+    let budget = crate::budget::budget(1 << 30);
+    let batch = encoded(0, 3);
+    let mut pieces = Pieces::new(
+        uncharged(vec![batch.clone()]),
+        unplanned(u64::MAX, u64::MAX),
+    );
+    pieces.held_by(held(&budget, vec![batch], 64));
+    let share = pieces.share();
+    assert_eq!(share.lock().permits.len(), 1);
+    assert_eq!(pieces.next().unwrap().map(|piece| piece.rows), Some(3));
+    // A piece's share holds the unit's permits once the pieces are gone.
+    drop(pieces);
+    assert_eq!(budget.reserved(), 64);
+    drop(share);
+    assert_eq!(budget.reserved(), 0);
 }

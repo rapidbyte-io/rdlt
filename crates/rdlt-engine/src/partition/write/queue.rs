@@ -38,38 +38,28 @@ pub(super) async fn queue(
     open.discarded_rows += prepared.discarded_rows;
     open.discarded_values += prepared.discarded_values;
     let rows = u64::try_from(prepared.batch.num_rows()).unwrap_or(u64::MAX);
+    let bytes = written_bytes(&prepared.batch);
+    // The batch is held with what holds it from here on, however the queueing ends.
+    let write = Write {
+        table,
+        version: prepared.view.table.version,
+        segment: open.id,
+        batch: prepared.batch,
+        reservation,
+    };
     if rows == 0 {
         return Ok(());
     }
-    let bytes = written_bytes(&prepared.batch);
     if let (Some(log), Some(frame)) = (&context.wal, frame) {
         // Queued for the log before the partition can seal the segment, so the frame of the
         // commit that takes the segment, queued after the seal, follows this batch's.
-        let (view, batch) = (&prepared.view, &prepared.batch);
-        log.batch(
-            &context.pool,
-            &context.budget,
-            frame,
-            (table, view),
-            open.id,
-            batch,
-        )
-        .await?;
+        let (pool, budget) = (&context.pool, &context.budget);
+        let viewed = (table, &prepared.view);
+        log.batch(pool, budget, frame, viewed, open.id, &write.batch)
+            .await?;
     }
     let lane = context.lanes.route(table, job.index);
-    context
-        .lanes
-        .write(
-            lane,
-            Write {
-                table,
-                version: prepared.view.table.version,
-                segment: open.id,
-                batch: prepared.batch,
-                reservation,
-            },
-        )
-        .await?;
+    context.lanes.write(lane, write).await?;
     open.rows += rows;
     open.bytes += bytes;
     match written(job, rows, bytes) {

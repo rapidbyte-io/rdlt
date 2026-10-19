@@ -404,17 +404,19 @@ async fn ingest(
             ingested.flush(job, context).await?;
             return Ok(ingested);
         };
-        ingested.handle(job, context, event, permit).await?;
+        ingested.handle(job, context, permit, event).await?;
     }
 }
 
 impl Ingested {
+    /// Takes `event`, admitted with `permit`: the event comes after its permit, so an event
+    /// refused here is dropped before what was charged for it is released.
     async fn handle(
         &mut self,
         job: &PartitionJob,
         context: &PartitionContext,
-        event: SourceEvent,
         permit: Option<Permit>,
+        event: SourceEvent,
     ) -> Result<(), Error> {
         let pushed = match event {
             SourceEvent::Push(Push::Arrow(_) | Push::Json(_)) if job.changes.is_some() => {

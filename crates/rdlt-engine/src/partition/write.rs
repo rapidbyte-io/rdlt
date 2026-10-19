@@ -22,7 +22,7 @@ use rdlt_connector::cost::Allocations;
 use rdlt_connector::{ColumnPath, Permit, SchemaError, TableSchema};
 
 use self::changes::{Ignored, split_changes};
-use self::held::Held;
+use self::held::{Held, Share};
 use self::pieces::{Lowered, Piece, Pieces, RowTooLarge};
 use self::queue::queue;
 pub(super) use self::schemas::Schemas;
@@ -46,12 +46,16 @@ pub(super) async fn write_flushed(
     flushed: Flushed,
 ) -> Result<(), Error> {
     let Flushed { unit, permits, .. } = flushed;
+    // The pushes are held with their permits again before anything waits.
     match unit {
         Unit::Arrow(batches) => {
-            let units = units::arrow(job, context, batches, permits).await?;
+            let units = units::arrow(job, context, Held::of(batches, permits)).await?;
             write(job, context, open, schemas, units, PushKind::Arrow).await
         }
-        Unit::Json(pushes) => json::write_json(job, context, open, schemas, pushes, permits).await,
+        Unit::Json(text) => {
+            let pushes = json::Pushes { text, permits };
+            json::write_json(job, context, open, schemas, pushes).await
+        }
     }
 }
 
@@ -208,7 +212,6 @@ async fn write(
 struct Planned {
     plan: Arc<LoweringPlan>,
     pieces: Pieces,
-    held: Held,
 }
 
 /// `units` judged and their plans found in order, since finding one may change the table, each to
@@ -218,7 +221,7 @@ async fn planned(
     context: &PartitionContext,
     open: &mut OpenSegment,
     schemas: &mut Schemas,
-    units: Vec<(Vec<RecordBatch>, Held)>,
+    units: Vec<Held>,
     shares: Shares,
 ) -> Result<Vec<Planned>, Error> {
     let judged = judged(job, open, schemas, units)?;
@@ -232,7 +235,7 @@ async fn planned(
         unit.incoming.rounding.clone_from(&rounding);
         let plan = context.tables.plan(job.table, unit.incoming).await?;
         let (stored, changes) = match job.changes {
-            Some(_) => (aligned(&unit.parts[0], &plan.stored()), CHANGE_ROW),
+            Some(_) => (aligned(&unit.held.batches[0], &plan.stored()), CHANGE_ROW),
             None => (plan.stored(), 0),
         };
         let lowered = Lowered {
@@ -243,9 +246,8 @@ async fn planned(
             max,
             limit,
         };
-        let pieces = Pieces::new(unit.parts, lowered);
-        let held = unit.held;
-        planned.push(Planned { plan, pieces, held });
+        let pieces = Pieces::new(unit.held, lowered);
+        planned.push(Planned { plan, pieces });
     }
     Ok(planned)
 }
@@ -261,13 +263,7 @@ async fn lowered(
 ) -> Result<(), Error> {
     let times = reserved_times(context);
     let mut window = Window::new(room);
-    for Planned {
-        plan,
-        mut pieces,
-        held,
-    } in planned
-    {
-        let mut held = Some(held);
+    for Planned { plan, mut pieces } in planned {
         while let Some(piece) = next(job, context, &mut pieces).await? {
             let bytes = piece.bytes.saturating_mul(times);
             let reserved = window.reserved(job, context, open, bytes).await?;
@@ -278,15 +274,10 @@ async fn lowered(
             open.truncates_ignored += ignored.truncates;
             let rows = u64::try_from(piece.rows).unwrap_or(u64::MAX);
             let stamp = stamp(context, open, rows.saturating_sub(ignored.rows()));
-            let Some(unit_held) = &held else {
-                return Err(Error::internal("a unit was cut after its last piece"));
-            };
             let lowering = Lowering {
-                allocations: Arc::clone(&unit_held.allocations),
+                allocations: pieces.allocations(),
                 reserved,
-                // The unit's permits stay with its last piece, so they hold until all of it is
-                // written.
-                unit: if pieces.done() { held.take() } else { None },
+                unit: pieces.share(),
             };
             let copies = !copies_nothing(&piece, &plan, &stamp, job.changes);
             let (plan, stream, mode) = (Arc::clone(&plan), job.stream.clone(), job.changes);
@@ -343,11 +334,13 @@ async fn next(
         return pieces.next().map_err(|row| row_too_large(job, &row));
     }
     let mut cutting = std::mem::replace(pieces, Pieces::none());
+    // The piece is returned first: where the caller stopped waiting, its slices of the unit go
+    // before what holds the unit.
     let cut = move || {
         let piece = cutting.next();
-        (cutting, piece)
+        (piece, cutting)
     };
-    let (cutting, piece) = context
+    let (piece, cutting) = context
         .pool
         .run_all([cut])
         .await
@@ -357,20 +350,22 @@ async fn next(
     piece.map_err(|row| row_too_large(job, &row))
 }
 
-/// What holds a piece while it is lowered and until it is written.
+/// What holds a piece while it is lowered and until it is written: dropped, what it reserved is
+/// released before its unit, whose batches go before their permits.
 struct Lowering {
     /// The allocations its unit holds, which what it is lowered to may share.
     allocations: Arc<Mutex<Allocations>>,
     /// What lowering the piece holds, reserved before it is lowered.
     reserved: Reservation,
-    /// For a unit's last piece, what holds the unit.
-    unit: Option<Held>,
+    /// A share of what holds its unit, so the unit's permits hold until all of it is written.
+    unit: Share,
 }
 
 /// A piece's lowering.
 type Run = Box<dyn FnOnce() -> Result<Prepared, Error> + Send>;
 
-/// Pieces reserved from a room and not yet lowered, in order.
+/// Pieces reserved from a room and not yet lowered, in order: the runs are declared before what
+/// holds their pieces, so they go first.
 struct Window {
     room: Room,
     runs: Vec<Run>,
@@ -468,8 +463,7 @@ impl Window {
             .collect();
         for lowered in lowered {
             let (prepared, lowering, frame) = lowered?;
-            let unit = lowering.unit.map(|unit| unit.permits);
-            let reservation: Permit = Box::new((lowering.reserved, unit));
+            let reservation: Permit = Box::new((lowering.reserved, lowering.unit));
             queue(
                 job,
                 context,
@@ -493,9 +487,8 @@ fn frame_part(reserved: &mut Reservation, times: u64) -> Option<Reservation> {
 
 /// A unit with rows and its columns as they arrive.
 struct Judged {
-    /// The unit's batches as they were pushed, a change stream's with their change columns.
-    parts: Vec<RecordBatch>,
     incoming: Incoming,
+    /// The unit's batches as they were pushed, a change stream's with their change columns.
     held: Held,
 }
 
@@ -506,14 +499,15 @@ fn judged(
     job: &PartitionJob,
     open: &mut OpenSegment,
     schemas: &mut Schemas,
-    units: Vec<(Vec<RecordBatch>, Held)>,
+    units: Vec<Held>,
 ) -> Result<Vec<Judged>, Error> {
     let mut judged = Vec::with_capacity(units.len());
-    for (parts, held) in units {
+    for held in units {
+        let parts = &held.batches;
         let rows: usize = parts.iter().map(RecordBatch::num_rows).sum();
         let ignored = job
             .changes
-            .map_or_else(Ignored::default, |mode| changes::ignored(mode, &parts));
+            .map_or_else(Ignored::default, |mode| changes::ignored(mode, parts));
         if u64::try_from(rows).unwrap_or(u64::MAX) == ignored.rows() {
             open.deletes_ignored += ignored.deletes;
             open.truncates_ignored += ignored.truncates;
@@ -528,11 +522,7 @@ fn judged(
             .of(data[0].schema_ref())
             .map_err(|error| schema_invalid(job, &error))?;
         let incoming = Incoming::of(schema, paths, &data);
-        judged.push(Judged {
-            parts,
-            incoming,
-            held,
-        });
+        judged.push(Judged { incoming, held });
     }
     Ok(judged)
 }

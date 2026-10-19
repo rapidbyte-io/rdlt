@@ -29,6 +29,9 @@ pub(crate) enum Unit {
 }
 
 /// Pushes gathered, with the permits that hold their bytes.
+///
+/// The pushes are declared first: dropped, they are freed before the permits release what was
+/// charged for them.
 pub(crate) struct Flushed {
     pub(crate) unit: Unit,
     pub(crate) permits: Vec<Permit>,
