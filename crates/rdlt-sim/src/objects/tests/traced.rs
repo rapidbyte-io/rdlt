@@ -912,7 +912,8 @@ struct Driver<'a> {
     start: Instant,
     landings: BTreeMap<usize, Option<usize>>,
     tokens: Tokens,
-    /// The start of the replaying load, counted from the first.
+    /// The replaying load's starts so far: each start, after a crash or not, makes its creates'
+    /// tokens its own.
     epoch: u64,
     bodies: Bodies,
 }
@@ -934,7 +935,7 @@ impl<'a> Driver<'a> {
             start: Instant::now(),
             landings: landings(states),
             tokens: Tokens::new(),
-            epoch: 1,
+            epoch: 0,
             bodies: Bodies::new(),
         }
     }
@@ -959,6 +960,7 @@ impl<'a> Driver<'a> {
                 "land" => self.land(step).await,
                 "crash" => self.crash(step).await,
                 "start" => {
+                    self.epoch += 1;
                     let proc = &state.procs[&Who::R];
                     self.loads[&Who::R]
                         .commands
@@ -1074,7 +1076,6 @@ impl<'a> Driver<'a> {
             self.loads
                 .insert(Who::R, Load::open(&self.objects, self.seed).await);
             self.seed += 1;
-            self.epoch += 1;
         }
     }
 }
