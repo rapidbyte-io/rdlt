@@ -1,6 +1,8 @@
 //! Limits each end of a connection enforces on what it receives, and the typed refusal a value
 //! beyond one gets.
 
+#[cfg(kani)]
+mod proofs;
 #[cfg(test)]
 mod tests;
 
