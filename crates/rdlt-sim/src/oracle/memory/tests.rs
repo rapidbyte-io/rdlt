@@ -1,8 +1,8 @@
 use std::hint::black_box;
 
 use super::{
-    Account, Held, IN_PROCESS, IN_PROCESS_LOGGED, NETWORK, NETWORK_LOGGED, Window, allowance,
-    installed,
+    Held, IN_PROCESS, IN_PROCESS_LOGGED, NETWORK, NETWORK_LOGGED, QUEUED, Window, allowance,
+    installed, queued,
 };
 use crate::seed::Seed;
 
@@ -42,111 +42,95 @@ fn the_unit_tests_count_their_threads_allocations() {
     assert!(installed());
 }
 
-fn account() -> Account {
-    Account {
-        reserved: 1000,
-        crashed: 0,
-        started: 2,
-        budget: 500,
-        partitions: 3,
-        pushes: 1,
-        push: 10,
+fn held(held: u64, bound: u64) -> Held {
+    Held {
+        held,
+        reserved: bound,
+        dropped: 0,
+        pushes: 0,
+        queued: 0,
     }
 }
 
 #[test]
-fn the_bound_is_the_reserved_peaks_and_a_push_a_partition_a_run() {
-    assert_eq!(account().bound(), 1000 + 2 * 3 * 10);
-}
-
-#[test]
-fn the_bound_gains_a_budget_for_each_run_dropped() {
-    let account = Account {
-        crashed: 2,
-        ..account()
+fn the_bound_is_every_term_the_runs_account_for() {
+    let held = Held {
+        held: 0,
+        reserved: 1000,
+        dropped: 500,
+        pushes: 30,
+        queued: 7,
     };
-    assert_eq!(account.bound(), 1000 + 2 * 500 + 2 * 3 * 10);
-}
-
-#[test]
-fn the_bound_gains_the_pushes_a_connector_queues_over_the_network() {
-    let account = Account {
-        pushes: 1 + super::QUEUED,
-        ..account()
-    };
-    assert_eq!(account.bound(), 1000 + 2 * 3 * 23 * 10);
+    assert_eq!(held.bound(), 1000 + 500 + 30 + 7);
 }
 
 #[test]
 fn the_bound_saturates_rather_than_wrapping() {
-    let account = Account {
-        started: u64::MAX,
-        push: u64::MAX,
-        ..account()
+    let held = Held {
+        pushes: u64::MAX,
+        ..held(0, 1000)
     };
-    assert_eq!(account.bound(), u64::MAX);
+    assert_eq!(held.bound(), u64::MAX);
+    assert_eq!(queued(u64::MAX, u64::MAX, 1), u64::MAX);
+}
+
+#[test]
+fn a_read_over_the_network_holds_its_queued_pushes_and_two_frames_of_credit() {
+    let push = 10 << 20;
+    assert_eq!(queued(3, push, 4 << 20), 3 * (QUEUED * push + 2 * push));
+}
+
+#[test]
+fn a_read_of_small_pushes_holds_the_credit_floor_in_transport() {
+    let (push, floor) = (500, 4 << 20);
+    assert_eq!(queued(3, push, floor), 3 * (QUEUED * push + floor));
+    assert_eq!(queued(0, push, floor), 0);
+}
+
+#[test]
+fn a_timing_line_records_the_bound_term_by_term() {
+    let mut fields = serde_json::Map::new();
+    Held {
+        held: 9,
+        reserved: 1,
+        dropped: 2,
+        pushes: 3,
+        queued: 4,
+    }
+    .record(&mut fields);
+    let recorded = |name: &str| fields[name].as_u64();
+    assert_eq!(recorded("held_bytes"), Some(9));
+    assert_eq!(recorded("bound_bytes"), Some(10));
+    assert_eq!(recorded("reserved_bytes"), Some(1));
+    assert_eq!(recorded("dropped_bytes"), Some(2));
+    assert_eq!(recorded("pushes_bytes"), Some(3));
+    assert_eq!(recorded("queued_bytes"), Some(4));
 }
 
 #[test]
 fn the_worst_attempt_is_the_one_that_passed_its_bound_by_most() {
-    let within = Held {
-        held: 10,
-        bound: 100,
-    };
-    let past = Held {
-        held: 150,
-        bound: 100,
-    };
-    let further = Held {
-        held: 300,
-        bound: 200,
-    };
+    let within = held(10, 100);
+    let past = held(150, 100);
+    let further = held(300, 200);
     assert_eq!(Held::worse(None, within), within);
     assert_eq!(Held::worse(Some(within), past), past);
     assert_eq!(Held::worse(Some(past), within), past);
     // A tie keeps the earlier attempt.
-    assert_eq!(
-        Held::worse(Some(further), Held { held: 51, bound: 1 }),
-        further
-    );
+    assert_eq!(Held::worse(Some(further), held(51, 1)), further);
     // A smaller bound does not make an attempt worse.
-    assert_eq!(
-        Held::worse(
-            Some(past),
-            Held {
-                held: 140,
-                bound: 10
-            }
-        ),
-        Held {
-            held: 140,
-            bound: 10
-        }
-    );
+    assert_eq!(Held::worse(Some(past), held(140, 10)), held(140, 10));
 }
 
 #[test]
 fn an_attempt_within_its_bound_and_the_allowance_passes() {
-    Held {
-        held: 150,
-        bound: 100,
-    }
-    .within(Seed::new(7), 2, 50);
-    Held {
-        held: 10,
-        bound: 100,
-    }
-    .within(Seed::new(7), 2, 0);
+    held(150, 100).within(Seed::new(7), 2, 50);
+    held(10, 100).within(Seed::new(7), 2, 0);
 }
 
 #[test]
 #[should_panic(expected = "seed 7: phase 2: an attempt's thread held 151 bytes")]
 fn an_attempt_past_its_bound_and_the_allowance_fails_naming_its_seed_and_phase() {
-    Held {
-        held: 151,
-        bound: 100,
-    }
-    .within(Seed::new(7), 2, 50);
+    held(151, 100).within(Seed::new(7), 2, 50);
 }
 
 #[test]

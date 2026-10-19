@@ -282,12 +282,12 @@ impl SimStreamReader {
             if stream.json {
                 let spaces = world.pressure().spaces;
                 let push = json_push(stream, &rows[*next..end], *batches % 2 == 1, spaces);
-                world.pushed(push.len());
+                let _held = world.pushes.hold(push.len());
                 out.json(push).await?;
             } else {
                 let ballast = world.pressure().ballast;
                 let batch = batch(stream, &rows[*next..end], ballast);
-                world.pushed(batch.get_array_memory_size());
+                let _held = world.pushes.hold(batch.get_array_memory_size());
                 out.batch(batch).await?;
             }
             *next = end;

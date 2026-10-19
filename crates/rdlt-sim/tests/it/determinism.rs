@@ -95,10 +95,10 @@ fn a_failing_scenario_panics_with_its_payload() {
 
 /// What a run of a seed checked, but for what its thread held, which work the thread did
 /// earlier changes.
-fn alike(checked: rdlt_sim::Checked) -> rdlt_sim::Checked {
+fn alike(checked: &rdlt_sim::Checked) -> rdlt_sim::Checked {
     rdlt_sim::Checked {
         held: None,
-        ..checked
+        ..*checked
     }
 }
 
@@ -111,7 +111,11 @@ fn the_same_seed_leaves_the_destination_alike() {
         Weight::One,
         |seed| {
             let first = check_exactly_once(seed);
-            assert_eq!(alike(check_exactly_once(seed)), alike(first), "seed {seed}");
+            assert_eq!(
+                alike(&check_exactly_once(seed)),
+                alike(&first),
+                "seed {seed}"
+            );
             first
         },
     );
@@ -137,8 +141,8 @@ fn a_seed_over_a_faulty_network_replays_alike() {
         .map(Seed::new);
     for_each_seed("network_replays", networked, Weight::One, |seed| {
         assert_eq!(
-            alike(check_exactly_once(seed)),
-            alike(check_exactly_once(seed)),
+            alike(&check_exactly_once(seed)),
+            alike(&check_exactly_once(seed)),
             "seed {seed}"
         );
     });

@@ -279,6 +279,8 @@ impl Simulation {
         network: Option<SplitMix64>,
         phase: usize,
     ) -> Vec<Executed> {
+        // What the source holds of its pushes is counted afresh for each attempt.
+        self.world.pushes.restart();
         let placing = self.placing.as_ref();
         let window = self.allowance.map(|_| Window::open());
         let executing = execute_all(&self.engine, plans, &self.name, placing, scenario);
