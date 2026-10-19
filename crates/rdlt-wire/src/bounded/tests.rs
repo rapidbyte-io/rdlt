@@ -7,6 +7,7 @@ use std::task::{Context, Poll};
 
 use bytes::Bytes;
 use http_body::{Body, Frame};
+use proptest::prelude::*;
 use tonic::Code;
 
 use super::{Arrived, Bounded, Bounds, PREFIX, Window};
@@ -528,4 +529,88 @@ fn a_prefix_beyond_its_bound_behind_a_full_window_is_refused_at_once() {
     let refused = Bounded::new(chunks(&[&declared[..PREFIX]]), bounds, Some(window.clone()));
     assert_eq!(passed(refused), [Passed::Failed(Code::OutOfRange)]);
     assert_eq!(window.taken(), held.len());
+}
+
+/// A body over a call that sends nothing more, its messages held to `wire` bytes on the wire.
+fn idle(wire: usize) -> Bounded {
+    Bounded::new(tonic::body::Body::empty(), bounds(wire, usize::MAX), None)
+}
+
+/// The length the prefix at the start of `bytes` declares, where it is whole.
+fn declared(bytes: &[u8]) -> Option<usize> {
+    let prefix = bytes.get(..PREFIX)?;
+    let length = u32::from_be_bytes([prefix[1], prefix[2], prefix[3], prefix[4]]);
+    Some(usize::try_from(length).unwrap())
+}
+
+/// Wire bounds from nothing to the most there is, with those near the lengths below.
+fn any_wire() -> impl Strategy<Value = usize> {
+    prop_oneof![Just(0), Just(usize::MAX), 0..24_usize, any::<usize>()]
+}
+
+/// Up to sixteen bytes: any, or a prefix of a small or any length and some of its message.
+fn any_bytes() -> impl Strategy<Value = Vec<u8>> {
+    prop_oneof![
+        proptest::collection::vec(any::<u8>(), 0..=16),
+        (
+            any::<u8>(),
+            prop_oneof![0..24_u32, any::<u32>()],
+            proptest::collection::vec(any::<u8>(), 0..=11),
+        )
+            .prop_map(|(flag, length, rest)| {
+                let mut bytes = vec![flag];
+                bytes.extend(length.to_be_bytes());
+                bytes.extend(rest);
+                bytes
+            }),
+    ]
+}
+
+proptest! {
+    /// A prefix read from the start of any bytes is nothing until it is whole, then the length it
+    /// declares where that is within the wire bound, and a refusal beyond it.
+    #[test]
+    fn a_prefix_is_read_from_any_bytes_within_its_bound(
+        wire in any_wire(),
+        bytes in any_bytes(),
+    ) {
+        match (idle(wire).declared_in(&bytes), declared(&bytes)) {
+            (Ok(None), None) => {}
+            (Ok(Some(length)), Some(declared)) => {
+                prop_assert_eq!(length, declared);
+                prop_assert!(length <= wire);
+            }
+            (Err(status), Some(declared)) => {
+                prop_assert!(declared > wire);
+                prop_assert_eq!(status.code(), Code::OutOfRange);
+            }
+            _ => prop_assert!(false, "a prefix is read as nothing exactly while it is not whole"),
+        }
+    }
+
+    /// What a body lacks of its arriving message never reaches past the message's end: the rest
+    /// of its prefix, then the rest of the length the prefix declares, read from what has arrived
+    /// or, before anything has, from what waits unread.
+    #[test]
+    fn what_an_arriving_message_lacks_ends_where_it_does(
+        wire in any_wire(),
+        arrived in any_bytes(),
+        unread in any_bytes(),
+    ) {
+        let mut body = idle(wire);
+        body.arriving.extend(&arrived);
+        body.unread = Bytes::from(unread.clone());
+        let known = declared(if arrived.is_empty() { &unread } else { &arrived });
+        match body.wanted() {
+            Ok(wanted) => {
+                let end = known.map_or(PREFIX, |length| PREFIX + length);
+                prop_assert_eq!(wanted, end.saturating_sub(arrived.len()));
+                prop_assert!(known.is_none_or(|length| length <= wire));
+            }
+            Err(status) => {
+                prop_assert!(known.is_some_and(|length| length > wire));
+                prop_assert_eq!(status.code(), Code::OutOfRange);
+            }
+        }
+    }
 }
