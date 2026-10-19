@@ -105,6 +105,14 @@ A formal layer is added to the layers of its class, never in place of one.
   up to 63 bytes into its allocation, by the allocation's address, which Kani takes as any
   value, and moving what is held by any such amount as the buffer grows took the harness past
   10 GB in about 70 seconds, with up to 8 bytes held and arriving and with up to 6.
+- A bounded body's window is a property test (`rdlt-wire/src/bounded/tests.rs`): a message whose
+  whole prefix waits takes room in its connection's window before anything past its prefix is
+  copied, holds none of its bytes while it waits, though the room it has gathered stays taken
+  (ADR 0042), goes on once room comes back, and gives its room back once passed on or once its
+  body is dropped. Its proof does not compile: waiting for room reads tokio's cooperative
+  budget, a thread-local whose value has a destructor, and Kani 0.68 stops with an internal
+  error on any such thread-local, at the `catch_unwind` intrinsic. A harness that takes and
+  gives back room without waiting compiles, and took past 10 GB in about 7 minutes.
 - Kani's further targets: acknowledgements against the committed cursor, and the horizon; a log
   frame's length arithmetic and the parse of its preamble and head; the limits a handshake
   accepts and the identifier rules. Each is proved, or held by a property test with the reason
