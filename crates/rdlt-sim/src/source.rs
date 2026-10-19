@@ -108,6 +108,9 @@ pub fn schema(stream: &SimStream) -> TableSchema {
             columns.push(Field::new(drift.name.as_str(), declared.clone(), true));
         }
     }
+    if stream.fat > 0 {
+        columns.push(Field::new(crate::fat::COLUMN, LogicalType::Json, true));
+    }
     TableSchema::new(columns).expect("the simulated schema has distinct names")
 }
 

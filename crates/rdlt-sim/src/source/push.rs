@@ -10,6 +10,7 @@ use rdlt_testkit::drawn::json::text;
 use rdlt_testkit::drawn::{Encoding, Scalar, Shape, array, field};
 use serde_json::{Value, json};
 
+use crate::fat;
 use crate::workload::{Row, SimStream};
 
 /// `rows` of `stream` as one batch: the base columns, the key of a merge stream, and every drift
@@ -105,6 +106,9 @@ pub(crate) fn json_push(stream: &SimStream, rows: &[Row], array: bool) -> Bytes 
             if let (Some(extra), Some(shape)) = (extra, shape) {
                 fields.push((drift.name.as_str(), text(extra, &shape.logical)));
             }
+        }
+        if stream.fat > 0 && fat::carried(row) {
+            fields.push((fat::COLUMN, fat::value(row, stream.fat)));
         }
         let fields: Vec<String> = fields
             .iter()

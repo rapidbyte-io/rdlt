@@ -4,7 +4,9 @@
 
 use std::collections::BTreeMap;
 
-use arrow_array::{RecordBatch, UInt32Array};
+use arrow_array::cast::AsArray;
+use arrow_array::{RecordBatch, RecordBatchOptions, StringArray, UInt32Array};
+use arrow_schema::DataType;
 use arrow_select::take::take_record_batch;
 use rdlt_connector::{ColumnKey, ColumnPath, ConnectorError, NameMap, Result, TableSchema};
 use rdlt_testkit::canon::Canon;
@@ -30,6 +32,7 @@ pub struct Stored {
 
 /// The rows of `batch`, each holding buffers of its own rather than the batch's.
 pub(crate) fn rows(batch: &RecordBatch) -> Result<Vec<Stored>> {
+    let batch = &condensed(batch)?;
     let schema = TableSchema::from_arrow(&batch.schema())
         .map_err(|error| ConnectorError::data(format!("reading a batch: {error}")))?;
     (0..batch.num_rows())
@@ -74,4 +77,33 @@ pub(crate) fn number(row: &Stored, names: &NameMap, column: &str) -> Option<u64>
         Canon::Number(text) | Canon::Text(text) => text.parse().ok(),
         _ => None,
     }
+}
+
+/// `batch` with each fat value of its column of them in the short form the destination keeps,
+/// and every other value as it is: the world keeps every row it stores for as long as it lives.
+fn condensed(batch: &RecordBatch) -> Result<RecordBatch> {
+    let schema = batch.schema();
+    let fat = schema
+        .fields()
+        .iter()
+        .position(|field| field.name().eq_ignore_ascii_case(crate::fat::COLUMN));
+    let Some(index) = fat else {
+        return Ok(batch.clone());
+    };
+    let column = batch.column(index);
+    let Ok(texts) = arrow_cast::cast(column, &DataType::Utf8) else {
+        return Ok(batch.clone());
+    };
+    let short: StringArray = texts
+        .as_string::<i32>()
+        .iter()
+        .map(|text| text.map(|text| crate::fat::condense(text).unwrap_or_else(|| text.to_owned())))
+        .collect();
+    let failed = |error: arrow_schema::ArrowError| {
+        ConnectorError::data(format!("keeping a fat value: {error}"))
+    };
+    let mut columns = batch.columns().to_vec();
+    columns[index] = arrow_cast::cast(&short, column.data_type()).map_err(failed)?;
+    let options = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
+    RecordBatch::try_new_with_options(schema, columns, &options).map_err(failed)
 }

@@ -33,6 +33,7 @@ static HEAP: alloc_tracker::Allocator<std::alloc::System> = alloc_tracker::Alloc
 mod changes;
 mod destination;
 mod env;
+mod fat;
 mod network;
 mod objects;
 mod oracle;
