@@ -39,6 +39,8 @@ tokio = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
+async-trait.workspace = true
+itf.workspace = true
 rdlt-connector = { workspace = true, features = ["serve", "merge", "testing"] }
 tempfile.workspace = true
 

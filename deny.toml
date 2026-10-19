@@ -34,6 +34,8 @@ exceptions = [
 multiple-versions = "warn"
 wildcards = "deny"
 allow-wildcard-paths = true
+# The traces of the specs are read by rdlt-sim's tests alone.
+deny = [{ crate = "itf", wrappers = ["rdlt-sim"], reason = "the specs' trace driver alone" }]
 
 [sources]
 unknown-registry = "deny"
