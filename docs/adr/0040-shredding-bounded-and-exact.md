@@ -132,7 +132,10 @@ Arrow columns and the rows normalizing makes of both escaped that in several way
   observed, and in a part held as JSON by a check that notes where each key of the objects open
   starts in the text, four bytes a key, and reads the keys again to compare them. A part held as
   JSON is read as the shredder reads a column of JSON: its text as written, an object with its
-  own keys and a number with its digits. The join of the values that fit is kept to read them;
+  own keys and a number with its digits. Reading walks each value a token at a time too, with no
+  document built, and renders a part held as JSON noting no key, since fitting checked them,
+  into room taken once for the longest value, which no part renders longer than: reading holds
+  no more than its piece reserves. The join of the values that fit is kept to read them;
   where the policy drops rows, the kept values are observed again and joined alone, since a
   dropped value can change the type the others are read into. Fitting a value holds no more than
   twice its text and a hundred bytes for its nesting, beside an entry for each field of the

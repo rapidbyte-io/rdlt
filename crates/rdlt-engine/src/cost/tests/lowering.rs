@@ -24,7 +24,7 @@ use crate::table::convert::{convert, text};
 const ROWS: usize = 2_048;
 
 /// Bytes: what a conversion allocates beside its arrays' values, whatever their rows.
-pub(super) const SLACK: u64 = 8 << 10;
+pub(crate) const SLACK: u64 = 8 << 10;
 
 fn int64s(value: i64) -> ArrayRef {
     Arc::new(Int64Array::from(vec![value; ROWS]))

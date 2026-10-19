@@ -4,7 +4,8 @@
 //! A column of JSON whose table holds the column as another type sends there each value that
 //! type holds; this is how it finds them, and reads them. Each value is observed once, to fit
 //! it, a token at a time and as the type guides, and the join of those that fit is kept to read
-//! them; where rows are dropped between, the kept ones are observed again to join them alone.
+//! them, a token at a time too; where rows are dropped between, the kept ones are observed again
+//! to join them alone.
 
 #[cfg(test)]
 mod tests;
@@ -17,6 +18,7 @@ use rdlt_wire::limits::NESTING_DEPTH;
 
 use super::ShredError;
 use super::build::Column;
+use super::keys::OpenKeys;
 use super::meter::{Columns, Meter};
 use super::observe::Observed;
 use super::observing::Look;
@@ -262,18 +264,33 @@ pub(crate) fn read(
     taken: &BooleanArray,
     joined: &Joined,
 ) -> Result<(ArrayRef, LogicalType), ShredError> {
-    super::job(|| read_values(texts, taken, &joined.observed))
+    super::job(|| read_values(texts, taken, joined))
 }
 
 /// The values of `texts` that `taken` names, read as [`read`] reads them.
 fn read_values(
     texts: &StringArray,
     taken: &BooleanArray,
-    joined: &Observed,
+    joined: &Joined,
 ) -> Result<(ArrayRef, LogicalType), ShredError> {
     let context = context();
     let named = |row: usize| texts.is_valid(row) && taken.is_valid(row) && taken.value(row);
     let unbuilt = |_| ShredError::Internal("a reserved build ran out of room".to_owned());
+    if holds_json(&joined.column) {
+        // Each value's keys were checked as it was fitted, and a part of it renders no longer
+        // than its text: rendering notes no key, and takes its room once, for the longest.
+        let longest = (0..texts.len())
+            .filter(|row| named(*row))
+            .map(|row| texts.value(row).len())
+            .max()
+            .unwrap_or_default();
+        let mut rendering = context.rendering();
+        rendering.keys = OpenKeys::checked();
+        rendering
+            .room_for(longest, &context.meter)
+            .map_err(unbuilt)?;
+    }
+    let joined = &joined.observed;
     let mut column = Column::new(joined, 0, texts.len(), &context.meter).map_err(unbuilt)?;
     for row in 0..texts.len() {
         if !named(row) {
@@ -286,7 +303,7 @@ fn read_values(
             depth: 1,
             capacity: texts.len(),
         };
-        super::exact::visit(texts.value(row).as_bytes(), value, &context).map_err(|error| {
+        super::tokens::visit(texts.value(row), value, &context).map_err(|error| {
             context
                 .fault()
                 .unwrap_or_else(|| ShredError::Invalid(format!("a value of JSON text: {error}")))

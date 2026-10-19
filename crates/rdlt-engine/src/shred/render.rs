@@ -62,6 +62,17 @@ impl Rendering {
         Ok(())
     }
 
+    /// Makes room once, charged as [`Rendering::room`] charges, for values whose text is at most
+    /// `longest` bytes: rendering one, never longer than its text, grows nothing after.
+    ///
+    /// # Errors
+    ///
+    /// [`Over`] where the meter has no room for that.
+    pub(crate) fn room_for(&mut self, longest: usize, meter: &Meter) -> Result<(), Over> {
+        // A scalar asks for room for the longest integer's digits whatever it writes.
+        self.room(longest.saturating_add(DIGITS), meter)
+    }
+
     /// Writes `text` onto the text, charged as [`Rendering::room`] charges.
     ///
     /// # Errors
