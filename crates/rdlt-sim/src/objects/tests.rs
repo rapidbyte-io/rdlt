@@ -1,3 +1,5 @@
+mod traced;
+
 use std::sync::Arc;
 
 use rdlt_connector::{LoadId, PipelineId};
