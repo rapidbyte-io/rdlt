@@ -378,8 +378,8 @@ quint-verify steps="10":
         temporal=$(just --quiet properties temporal "$spec" | tr ' ' ,)
         # A spec names the checker that fits it: `tlc` for a finite model TLC explores whole,
         # `apalache` for one too large to enumerate, both when it names none (ADR 0052).
-        checker=$(sed -n 's#^// quint verify: \(tlc\|apalache\).*$#\1#p' "$spec")
-        bound=$(sed -n 's|^// quint verify: apalache --max-steps \([0-9]*\)$|\1|p' "$spec")
+        checker=$(sed -nE 's#^// quint verify: (tlc|apalache).*$#\1#p' "$spec")
+        bound=$(sed -nE 's|^// quint verify: apalache --max-steps ([0-9]+)$|\1|p' "$spec")
         if [[ $checker != tlc ]]; then
             quint verify "$spec" --apalache-version "$version" --max-steps "${bound:-{{ steps }}}" --invariant "$invariants" 2>&1 | tee "$out/quint.log"
             started
