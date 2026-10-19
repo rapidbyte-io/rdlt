@@ -3,11 +3,9 @@
 //! merge of a merge table's rows is the SDK's.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
-use arrow_array::cast::AsArray as _;
-use arrow_array::{ArrayRef, RecordBatch, RecordBatchOptions, UInt32Array};
-use arrow_schema::DataType;
+use arrow_array::{RecordBatch, UInt32Array};
+use arrow_select::take::take_record_batch;
 use rdlt_connector::{ColumnKey, ColumnPath, ConnectorError, NameMap, Result, TableSchema};
 use rdlt_testkit::canon::Canon;
 use rdlt_testkit::decode;
@@ -34,7 +32,7 @@ pub struct Stored {
 pub(crate) fn rows(batch: &RecordBatch) -> Result<Vec<Stored>> {
     let schema = TableSchema::from_arrow(&batch.schema())
         .map_err(|error| ConnectorError::data(format!("reading a batch: {error}")))?;
-    Ok((0..batch.num_rows())
+    (0..batch.num_rows())
         .map(|row| {
             let cells = schema
                 .fields()
@@ -46,34 +44,26 @@ pub(crate) fn rows(batch: &RecordBatch) -> Result<Vec<Stored>> {
                     (field.name().to_owned(), value)
                 })
                 .collect();
-            Stored {
+            Ok(Stored {
                 cells,
-                row: apart(&batch.slice(row, 1)),
-            }
+                row: apart(batch, row)?,
+            })
         })
-        .collect())
+        .collect()
 }
 
-/// `row`, a batch of one row, copied into buffers of its own.
+/// Row `row` of `batch` as a batch of one row, copied into buffers of its own.
 ///
 /// A slice keeps every buffer of the batch it was cut from, and the world keeps its rows for as
-/// long as it lives. A row of a type that cannot be taken stays the slice it is.
-fn apart(row: &RecordBatch) -> RecordBatch {
-    let Ok(taken) = arrow_select::take::take_record_batch(row, &UInt32Array::from(vec![0_u32]))
-    else {
-        return row.clone();
-    };
-    let columns: Vec<ArrayRef> = taken
-        .columns()
-        .iter()
-        .map(|column| match column.data_type() {
-            DataType::Utf8View => Arc::new(column.as_string_view().gc()) as ArrayRef,
-            DataType::BinaryView => Arc::new(column.as_binary_view().gc()) as ArrayRef,
-            _ => Arc::clone(column),
-        })
-        .collect();
-    let options = RecordBatchOptions::new().with_row_count(Some(1));
-    RecordBatch::try_new_with_options(taken.schema(), columns, &options).unwrap_or(taken)
+/// long as it lives. The destination stores only plain types, which a take copies whole: a column
+/// of any other type is refused when its cells are read. The take is of the whole batch, not of a
+/// slice of it, since a list's take sizes its copy by the proportion of the column it takes.
+fn apart(batch: &RecordBatch, row: usize) -> Result<RecordBatch> {
+    let index = UInt32Array::from(vec![u32::try_from(row).map_err(|_| {
+        ConnectorError::internal("a batch of more rows than a row index holds")
+    })?]);
+    take_record_batch(batch, &index)
+        .map_err(|error| ConnectorError::internal(format!("storing a row: {error}")))
 }
 
 /// The whole number `row` holds in the column `names` gives the source column `column`, stored

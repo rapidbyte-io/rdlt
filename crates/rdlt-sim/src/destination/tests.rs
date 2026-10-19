@@ -1,7 +1,13 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use arrow_array::{ArrayRef, BinaryArray, Int64Array, RecordBatch, StringArray};
+use arrow_array::types::Int8Type;
+use arrow_array::{
+    ArrayRef, BinaryArray, DictionaryArray, Int8Array, Int64Array, ListArray, RecordBatch,
+    StringArray,
+};
+use arrow_buffer::OffsetBuffer;
+use arrow_schema::{DataType, Field as ArrowField};
 use rdlt_connector::limits::ListenLimits;
 use rdlt_connector::{
     ChildTable, CommitMeta, CommitSeq, ConnectorErrorKind, DestinationConnector, Epoch, Field,
@@ -51,6 +57,34 @@ fn a_stored_row_keeps_alive_its_own_values_not_its_batch() {
     assert!(kept < 1 << 10, "a row kept {kept} bytes alive");
     assert_eq!(stored[7].cells["id"], Canon::Number("7".into()));
     assert_eq!(stored[7].cells["text"], Canon::Text("value 7".into()));
+}
+
+#[test]
+fn a_stored_row_keeps_nested_and_dictionary_values_apart_too() {
+    let items = StringArray::from_iter_values((0..4096 * 2).map(|row| format!("item {row}")));
+    let lists: ArrayRef = Arc::new(
+        ListArray::try_new(
+            Arc::new(ArrowField::new("item", DataType::Utf8, true)),
+            OffsetBuffer::from_lengths(vec![2; 4096]),
+            Arc::new(items),
+            None,
+        )
+        .unwrap(),
+    );
+    let one: ArrayRef = Arc::new(StringArray::from(vec!["load"]));
+    let load: ArrayRef = Arc::new(
+        DictionaryArray::<Int8Type>::try_new(Int8Array::from(vec![0_i8; 4096]), one).unwrap(),
+    );
+    let stored = cells::rows(&batch(vec![("l", lists), ("load", load)])).unwrap();
+    let kept = stored[4000].row.get_array_memory_size();
+    assert!(kept < 1 << 10, "a row kept {kept} bytes alive");
+    assert_eq!(
+        stored[4000].cells["l"],
+        Canon::List(vec![
+            Canon::Text("item 8000".into()),
+            Canon::Text("item 8001".into())
+        ])
+    );
 }
 
 /// The violations and results of writing `batches` to a table created with `id: Int64`, then of
