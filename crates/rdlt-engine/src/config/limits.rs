@@ -41,7 +41,8 @@ impl EngineConfig {
         least(partitions)
     }
 
-    /// Checks that the memory budget admits the protocol's least frame.
+    /// Checks that the memory budget admits the least limits the protocol lets a peer set, its
+    /// frame and dictionary limits among them.
     ///
     /// # Errors
     ///
@@ -55,8 +56,8 @@ impl EngineConfig {
             None => "no memory does".to_owned(),
         };
         Err(Error::config(format!(
-            "memory of {memory} bytes admits less than the protocol's least frame with \
-             {partitions} partitions read at once: {least}"
+            "memory of {memory} bytes admits less than the least limits the protocol lets a peer \
+             set with {partitions} partitions read at once: {least}"
         ))
         .with_code(MEMORY_BELOW_MINIMUM))
     }
