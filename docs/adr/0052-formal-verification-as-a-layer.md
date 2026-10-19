@@ -50,9 +50,9 @@ A formal layer is added to the layers of its class, never in place of one.
   Kani's build runs nothing it compiles, so no caught panic is at stake in it, and every other
   aborting build is still refused. `cargo xtask lint`'s unwinding rule reads `kani` as false.
 - Kani's compiler builds `rdlt-wire` and `rdlt-engine` with their default features, Arrow,
-  tonic, sonic-rs and stacker among them. `rdlt-wire`'s four harnesses take about five minutes,
-  288 seconds from a build that had compiled its dependencies and 299 warm, so verification and
-  not compilation is the time, and at most 0.7 GB for the largest process. `rdlt-engine`'s five
+  tonic, sonic-rs and stacker among them. `rdlt-wire`'s eight harnesses take about six minutes,
+  341 seconds warm, 319 of them `flow`'s credit harness, so verification and not compilation is
+  the time, and at most 0.7 GB for the largest process. `rdlt-engine`'s five
   harnesses take 493 to 620 seconds warm, nearly all of it verification. A crate's proofs check
   its own code, in the crate. Kani's output is not clean: its toolchain warns of the
   `register_tool` feature it forces and of deprecated methods in the engine, and it drops the
@@ -77,6 +77,17 @@ A formal layer is added to the layers of its class, never in place of one.
   every call of up to 6 steps a sender's credit is what was granted
   less what was spent, above minus its largest frame, and the window once every frame sent is
   taken.
+- The limits a handshake accepts are proved (`rdlt-wire/src/limits/proofs.rs`) for every value
+  of every limit: a peer's limits are read as sent, or as the protocol's defaults where it left
+  them unset, but the dictionary limit, taken as sent; a limit set a handshake admits, sent or
+  not, meets every minimum and every rule between its limits, and one it refuses names the first
+  limit below its minimum; what two ends agree is, limit by limit, the lesser of the two ends',
+  and meets every minimum both meet; and a value is admitted exactly within its own limit. They
+  take about 15 seconds together: 0.3, 5.5, 4.5 and 4.8. The identifier rules are a property
+  test (`rdlt-connector/src/wire/tests.rs`): rules from the wire are accepted exactly within the
+  bounds the protocol documents, refused as the first they break, and those accepted keep what
+  was sent. Their bounds are on thousands of strings, up to 4096 reserved words of up to 256
+  bytes each, past any useful Kani bound.
 - The memory budget is proved where it takes no lock and held by property tests where it does.
   `rdlt-engine/src/budget/ledger/proofs.rs` proves, for every capacity, that a budget's shares
   add up to it, its data is what pushes and one request take, a piece is within a request, and a
@@ -135,8 +146,7 @@ A formal layer is added to the layers of its class, never in place of one.
   coordinator's calls (`coordinator/tests/acks.rs`), and that a log's positions are exactly what
   commits record is a property of maps of JSON-keyed records (`wal/positions/tests.rs`).
 - Kani's further targets: a log frame's length arithmetic and the parse of its preamble and
-  head; the limits a handshake accepts and the identifier rules. Each is proved, or held by a
-  property test with the reason here.
+  head. Each is proved, or held by a property test with the reason here.
 
 ### Specifications: Quint over the design
 
@@ -280,9 +290,9 @@ what no bound names.
 - A crate that adds proofs adds `#[cfg(kani)] mod proofs;`. If it catches panics, its guard
   against aborting builds exempts `kani`, as `rdlt-wire`'s does.
 - `just ready` costs Kani's build and proofs of each crate under proof whenever the change
-  touches it: on a laptop, about 300 seconds for `rdlt-wire` and 500 for `rdlt-engine`, warm, so
+  touches it: on a laptop, about 340 seconds for `rdlt-wire` and 500 for `rdlt-engine`, warm, so
   a change that touches the tools, the justfile or the workflow, which runs both, spends about
-  800 seconds proving. The `formal` check waits for its longest part alone.
+  840 seconds proving. The `formal` check waits for its longest part alone.
 - A contributor's `mise install` installs about 1.1 GB more on disk, and the first `just kani`
   fetches a nightly toolchain.
 - Updating Kani is its version and `mise lock`; its nightly comes with its bundle. Updating
