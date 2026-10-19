@@ -323,20 +323,45 @@ quint-verify steps="10":
         unfetched
     done
 
-# The formal checks of this branch's changes against `base`, uncommitted ones included: Kani's
-# proofs of each changed crate that holds any, and the specs where `specs/` changed; all of both
-# where the tools, the recipes, the pull-request workflow or any input of every crate's build changed
+# The formal checks of this branch's changes against `base`, uncommitted ones included: each part
+# `formal-parts` names, in turn
 formal-diff base="origin/main":
     #!/usr/bin/env bash
     set -euo pipefail
-    changed=$(git diff --name-only "$(git merge-base {{ base }} HEAD)")
+    parts=$(just --quiet formal-parts "{{ base }}")
+    for part in $(tr -d '[]"' <<< "$parts" | tr , ' '); do just formal-part "$part"; done
+
+# The parts of the formal checks that this branch's changes against `base`, uncommitted ones
+# included, need, as a JSON list: `kani:<crate>` for each changed crate that holds Kani harnesses,
+# and `quint` where `specs/` changed; every part where the tools, the recipes, the pull-request
+# workflow or any input of every crate's build changed
+[private]
+formal-parts base="origin/main":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    changed=$(git diff --name-only "$(git merge-base "{{ base }}" HEAD)")
     everything=$(grep -xE 'mise\.(toml|lock)|justfile|\.github/workflows/ci\.yml|Cargo\.(toml|lock)|rust-toolchain\.toml|\.cargo/.*' <<< "$changed" || true)
     proving=$(just --quiet proving)
     [[ -n $proving ]] || { echo "no crate holds a Kani harness" >&2; exit 2; }
+    parts=()
     for crate in $proving; do
-        if [[ -n $everything ]] || grep -q "^crates/$crate/" <<< "$changed"; then just kani "$crate"; fi
+        if [[ -n $everything ]] || grep -q "^crates/$crate/" <<< "$changed"; then parts+=("\"kani:$crate\""); fi
     done
-    if [[ -n $everything ]] || grep -q '^specs/' <<< "$changed"; then just quint; fi
+    if [[ -n $everything ]] || grep -q '^specs/' <<< "$changed"; then parts+=('"quint"'); fi
+    (IFS=,; echo "[${parts[*]}]")
+
+# Run one part that `formal-parts` names: `kani:<crate>` proves the crate's harnesses, `quint`
+# checks the specs
+[private]
+formal-part part:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    part="{{ part }}"
+    case $part in
+        kani:*) just kani "${part#kani:}" ;;
+        quint) just quint ;;
+        *) echo "no formal part is named $part" >&2; exit 2 ;;
+    esac
 
 # Build a bench for profiling, for example `just profiling shred`: release's code with line
 # tables and frame pointers, in a target directory of its own so the flags never rebuild the
