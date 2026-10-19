@@ -21,7 +21,7 @@
 // quint trace: random3 0x3 -
 // quint trace: random4 0xb6 -
 // quint trace: random5 0x12a -
-// quint trace: random6 0x131 -
+// quint trace: random6 0x139 -
 // quint trace: random7 0x70 -
 // quint trace: random8 0x185 -
 // quint trace: random9 0x121 -
@@ -1100,6 +1100,21 @@ module wal_objects {
     }
   }
 
+  /// A third fault in a test whose scenario takes more than the bound allows, which a behavior
+  /// never has.
+  action faultGranted: bool = all {
+    faults' = faults + 1,
+    store' = store,
+    pending' = pending,
+    procs' = procs,
+    removed' = removed,
+    wPublished' = wPublished,
+    held' = held,
+    ownTokens' = ownTokens,
+    exact' = exact,
+    replayed' = replayed,
+  }
+
   /// The writer opens its log and publishes its two chunks, the second in parts, then deletes the
   /// first, which the second no longer needs.
   run aWriterPublishesItsChunksAndDeletesWhatItNoLongerNeedsTest =
@@ -1291,7 +1306,9 @@ module wal_objects {
       .expect(procs.get(R).prog == Off and pending.size() == 1)
       .then(start)
       .then(5.reps(_ => replayDoes(Ok)))
+      .then(faultGranted)
+      .then(replayDoes(Failed))
       .then(land({ who: R, attempt: 1, wave: 0, landing: Lands(fenceOf(0, 1, Set())) }))
-      .then(replayDoes(Ok))
+      .then(2.reps(_ => replayDoes(Ok)))
       .expect(procs.get(R).prog == RTail and procs.get(R).tries == 1 and procs.get(R).epoch == 2)
 }
