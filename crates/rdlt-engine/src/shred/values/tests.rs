@@ -395,12 +395,7 @@ fn reserved(texts: &StringArray, column: &LogicalType) -> u64 {
 
 /// What fitting `texts` to `column` allocates at its peak, and which of them fit.
 fn fitted_peak(texts: &StringArray, column: &LogicalType) -> (u64, Vec<bool>) {
-    let heap = &crate::cost::tests::HEAP;
-    heap.reset_peak_usage();
-    let before = heap.current_usage();
-    let (fits, joined) = fitting(texts, column);
-    let peak = u64::try_from(heap.peak_usage().saturating_sub(before)).unwrap();
-    drop(joined);
+    let (peak, (fits, _)) = crate::cost::tests::peak_alone(|| fitting(texts, column));
     let fits = fits
         .iter()
         .take(texts.len())

@@ -1167,7 +1167,6 @@ fn held_within_charges(values: &[&str]) {
 /// Asserts what a chunk of one record of `keys` columns each holding `value` holds built,
 /// observed and as a batch is no more than it is charged.
 fn held_within_charge(keys: usize, value: &str) {
-    let heap = &crate::cost::tests::HEAP;
     let fields: Vec<String> = (0..keys).map(|key| format!("\"c{key}\":{value}")).collect();
     let records = Bytes::from(format!("{{{}}}", fields.join(",")));
     let chunk = || {
@@ -1181,32 +1180,29 @@ fn held_within_charge(keys: usize, value: &str) {
             admitted,
             ..limits()
         };
-        heap.reset_peak_usage();
-        let before = heap.current_usage();
-        let parsed = parse(chunk(), limits, &limits.beyond()).unwrap();
-        let held = u64::try_from(heap.peak_usage() - before).unwrap();
-        assert_eq!(parsed.record.is_some(), admitted > 0, "{keys} {value}");
+        let (held, (record, spent)) = crate::cost::tests::peak_alone(|| {
+            let parsed = parse(chunk(), limits, &limits.beyond()).unwrap();
+            (parsed.record.is_some(), parsed.spent)
+        });
+        assert_eq!(record, admitted > 0, "{keys} {value}");
         assert!(
-            held <= parsed.spent,
-            "{keys} {value}: held {held}, charged {}",
-            parsed.spent
+            held <= spent,
+            "{keys} {value}: held {held}, charged {spent}"
         );
     }
     // The batch: its columns' arrays, beside the values they hold.
     let parsed = parse(chunk(), limits(), &limits().beyond()).unwrap();
     let shape = parsed.shape.clone();
     drop(parsed);
-    heap.reset_peak_usage();
-    let before = heap.current_usage();
-    let batches = crate::compute::ready(shred(
-        &crate::compute::Pool::inline(),
-        std::slice::from_ref(&records),
-        1 << 20,
-        limits(),
-    ))
-    .unwrap();
-    let held = u64::try_from(heap.current_usage() - before).unwrap();
-    drop(batches);
+    let (held, _) = crate::cost::tests::held_alone(|| {
+        crate::compute::ready(shred(
+            &crate::compute::Pool::inline(),
+            std::slice::from_ref(&records),
+            1 << 20,
+            limits(),
+        ))
+        .unwrap()
+    });
     let charged = super::cost::arrays(&shape, None)
         + super::cost::built(&shape, &shape, 1).bytes
         + 2 * records.len() as u64;
@@ -1218,19 +1214,19 @@ fn held_within_charge(keys: usize, value: &str) {
 
 #[test]
 fn a_batch_holds_its_columns_at_their_count_not_the_builders_capacity() {
-    let heap = &crate::cost::tests::HEAP;
     let keys = 1_025;
     let fields: Vec<String> = (0..keys).map(|key| format!("\"c{key}\":1")).collect();
     let records = Bytes::from(format!("{{{}}}", fields.join(",")));
-    let before = heap.current_usage();
-    let batches = crate::compute::ready(shred(
-        &crate::compute::Pool::inline(),
-        std::slice::from_ref(&records),
-        1 << 20,
-        limits(),
-    ))
-    .unwrap();
-    let held = heap.current_usage() - before;
+    let (held, batches) = crate::cost::tests::held_alone(|| {
+        crate::compute::ready(shred(
+            &crate::compute::Pool::inline(),
+            std::slice::from_ref(&records),
+            1 << 20,
+            limits(),
+        ))
+        .unwrap()
+    });
+    let held = usize::try_from(held).unwrap();
     let batch = batches.first().unwrap();
     assert_eq!(batch.num_columns(), keys);
     let arrays: usize = batch
@@ -1995,16 +1991,14 @@ fn a_chunk_built_again_renders_its_values_of_json_within_what_its_build_was_reck
 /// wants. The pushes are cut into chunks of `chunk_bytes`. Returns whether each chunk is to be
 /// built again.
 fn kept_within_admission_and_excess(texts: &[&str], chunk_bytes: usize) -> Vec<bool> {
-    let heap = &crate::cost::tests::HEAP;
     let pool = crate::compute::Pool::inline();
     let pushes: Vec<Bytes> = texts
         .iter()
         .map(|text| Bytes::from((*text).to_owned()))
         .collect();
-    let before = heap.current_usage();
-    let observed =
-        crate::compute::ready(super::observe(&pool, pushes, chunk_bytes, limits())).unwrap();
-    let kept = u64::try_from(heap.current_usage().saturating_sub(before)).unwrap();
+    let (kept, observed) = crate::cost::tests::held_alone(|| {
+        crate::compute::ready(super::observe(&pool, pushes.clone(), chunk_bytes, limits())).unwrap()
+    });
     let total: usize = texts.iter().map(|text| text.len()).sum();
     let allowed = count(total) * limits().admitted + observed.excess();
     assert!(kept <= allowed, "kept {kept}, allowed {allowed}");
