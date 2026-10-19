@@ -325,12 +325,12 @@ quint-verify steps="10":
 
 # The formal checks of this branch's changes against `base`, uncommitted ones included: Kani's
 # proofs of each changed crate that holds any, and the specs where `specs/` changed; all of both
-# where the tools, the recipes or the pull-request workflow changed
+# where the tools, the recipes, the pull-request workflow or any input of every crate's build changed
 formal-diff base="origin/main":
     #!/usr/bin/env bash
     set -euo pipefail
     changed=$(git diff --name-only "$(git merge-base {{ base }} HEAD)")
-    everything=$(grep -xE 'mise\.(toml|lock)|justfile|\.github/workflows/ci\.yml' <<< "$changed" || true)
+    everything=$(grep -xE 'mise\.(toml|lock)|justfile|\.github/workflows/ci\.yml|Cargo\.(toml|lock)|rust-toolchain\.toml|\.cargo/.*' <<< "$changed" || true)
     proving=$(just --quiet proving)
     [[ -n $proving ]] || { echo "no crate holds a Kani harness" >&2; exit 2; }
     for crate in $proving; do
