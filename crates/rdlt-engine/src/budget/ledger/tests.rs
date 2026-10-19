@@ -5,7 +5,7 @@ use proptest::prelude::*;
 use tokio::sync::oneshot;
 
 use super::super::{Lent, Reservation};
-use super::{Class, Ledger, Shares, WAITING, admit_waiting};
+use super::{Class, Ledger, WAITING, admit_waiting};
 
 /// A budget whose shares are round, as `budget/tests.rs` describes it.
 const BUDGET: u64 = 6_400;
@@ -158,42 +158,6 @@ fn capacity() -> impl Strategy<Value = u64> {
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(rdlt_testkit::cases(256)))]
-
-    /// A budget's shares add up to it, its data is what pushes and one request take, a piece is
-    /// within a request, and a share's bytes beside one request of its class never wrap.
-    #[test]
-    fn a_budget_s_shares_add_up_to_it(capacity in capacity()) {
-        let shares = Shares::of(capacity);
-        let parts = [
-            shares.cursors,
-            shares.log,
-            shares.tables,
-            shares.reads,
-            shares.control,
-            shares.data,
-        ];
-        prop_assert_eq!(
-            parts.iter().map(|part| u128::from(*part)).sum::<u128>(),
-            u128::from(capacity)
-        );
-        prop_assert_eq!(
-            u128::from(shares.intake) + u128::from(shares.request),
-            u128::from(shares.data)
-        );
-        prop_assert!(shares.piece <= shares.request);
-        for (held, asked) in [
-            (shares.intake, shares.intake),
-            (shares.data, shares.intake),
-            (shares.data, shares.request),
-            (shares.cursors, shares.cursors),
-            (shares.log, shares.log),
-            (shares.tables, shares.tables),
-            (shares.reads, shares.reads),
-            (shares.control, shares.control),
-        ] {
-            prop_assert!(held.checked_add(asked).is_some());
-        }
-    }
 
     /// Asks, lets and presses in any order keep every share within it, never reserve beyond
     /// the budget, and leave nothing reserved once every reservation is dropped.

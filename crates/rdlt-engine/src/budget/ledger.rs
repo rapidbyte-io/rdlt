@@ -1,5 +1,7 @@
 //! The budget's ledger: what each share holds, and who waits for it.
 
+#[cfg(kani)]
+mod proofs;
 #[cfg(test)]
 mod tests;
 
