@@ -34,9 +34,11 @@ use crate::world::World;
 pub use changes::check_changes;
 use config::{config, endless, growth, pressed, small_log, waited};
 use expected::Discards;
+#[cfg(test)]
+pub(crate) use memory::beyond_charge;
 use memory::{Counterweight, Tracing, Window};
 pub use memory::{Held, TRACE_VAR};
-pub(crate) use memory::{account, aside};
+pub(crate) use memory::{Kept, account, aside, charged, freed};
 pub use pressure::Checked;
 use pressure::explained;
 use scenario::{Executed, Scenario, execute_all, pick};
@@ -118,7 +120,7 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>, hangs: bo
         waits: Waits::default(),
         partitions,
         allowance,
-        origin: memory::charged(),
+        origin: charged(),
         held: None,
     };
     let stopped = simulation.load(&mut rng).await;

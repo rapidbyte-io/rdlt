@@ -10,6 +10,7 @@ publish = false
 
 [dependencies]
 alloc_tracker.workspace = true
+async-trait.workspace = true
 arrow-array.workspace = true
 arrow-buffer.workspace = true
 arrow-cast.workspace = true
@@ -41,7 +42,6 @@ tokio = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
-async-trait.workspace = true
 itf.workspace = true
 rdlt-connector = { workspace = true, features = ["serve", "merge", "testing"] }
 tempfile.workspace = true

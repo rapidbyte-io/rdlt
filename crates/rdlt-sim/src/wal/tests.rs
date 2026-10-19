@@ -5,6 +5,7 @@ use rdlt_connector::{LoadId, PipelineId};
 use rdlt_engine::{Chunk, WalStore};
 
 use super::SimWal;
+use crate::oracle::charged;
 use crate::rng::SplitMix64;
 
 fn pipeline() -> PipelineId {
@@ -146,4 +147,33 @@ async fn a_faulty_disk_fails_a_publish_or_a_removal_now_and_then_and_keeps_the_c
         "{unpublished} of 1000 failed"
     );
     assert!((1..100).contains(&unremoved), "{unremoved} of 1000 failed");
+}
+
+#[tokio::test]
+async fn a_published_chunk_counts_as_the_worlds_until_it_is_removed() {
+    let wal = SimWal::default();
+    let before = charged();
+    published(&wal, &pipeline(), chunk(0), b"durable").await;
+    assert!(charged() - before >= 7, "{}", charged() - before);
+    wal.remove(&pipeline(), chunk(0)).await.expect("removes");
+    assert_eq!(charged(), before);
+}
+
+#[tokio::test]
+async fn a_staged_chunk_counts_as_the_worlds_until_it_is_dropped() {
+    let wal = SimWal::default();
+    let before = charged();
+    opened(&wal, &pipeline(), chunk(0).load).await;
+    let mut staged = wal.stage(&pipeline(), chunk(0)).await.expect("stages");
+    staged
+        .append(Bytes::from(vec![1_u8; 1_000]))
+        .await
+        .expect("appends");
+    staged
+        .append(Bytes::from(vec![2_u8; 10]))
+        .await
+        .expect("appends");
+    assert_eq!(charged() - before, 2_000);
+    drop(staged);
+    assert_eq!(charged(), before);
 }

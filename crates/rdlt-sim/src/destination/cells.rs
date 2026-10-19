@@ -3,6 +3,7 @@
 //! merge of a merge table's rows is the SDK's.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use arrow_array::cast::AsArray;
 use arrow_array::{RecordBatch, RecordBatchOptions, StringArray, UInt32Array};
@@ -11,6 +12,8 @@ use arrow_select::take::take_record_batch;
 use rdlt_connector::{ColumnKey, ColumnPath, ConnectorError, NameMap, Result, TableSchema};
 use rdlt_testkit::canon::Canon;
 use rdlt_testkit::decode;
+
+use crate::oracle::{Kept, aside, freed};
 
 /// The field metadata naming the type a stored value was written as, where the merge holds it at
 /// a type its column widened to since: the value is read at the type it is held at, and judged
@@ -28,10 +31,34 @@ pub struct Stored {
     /// The row itself: a batch of one row, with the types it was stored as, each naming the
     /// logical type it holds where that differs.
     pub row: RecordBatch,
+    /// What its cells hold, the world's and not the engine's, dropped after them; a copy's
+    /// cells are made where it is copied, which counts them.
+    cells_kept: Kept,
+    /// What the row holds, the world's: copies share it, so it goes with the last of them.
+    row_kept: Arc<Kept>,
 }
 
 /// The rows of `batch`, each holding buffers of its own rather than the batch's.
+///
+/// Making them is the world's work, and what they hold is the world's: each counts as kept for
+/// as long as it lives, as much as freeing a first making of it gave back.
 pub(crate) fn rows(batch: &RecordBatch) -> Result<Vec<Stored>> {
+    aside(|| {
+        let gauge = made(batch)?;
+        let mut rows = made(batch)?;
+        for (row, gauged) in rows.iter_mut().zip(gauge) {
+            let Stored {
+                cells, row: shared, ..
+            } = gauged;
+            row.cells_kept = Kept::held(freed(cells));
+            row.row_kept = Arc::new(Kept::held(freed(shared)));
+        }
+        Ok(rows)
+    })
+}
+
+/// The rows of `batch`, none yet carrying what it holds.
+fn made(batch: &RecordBatch) -> Result<Vec<Stored>> {
     let batch = &condensed(batch)?;
     let schema = TableSchema::from_arrow(&batch.schema())
         .map_err(|error| ConnectorError::data(format!("reading a batch: {error}")))?;
@@ -50,6 +77,8 @@ pub(crate) fn rows(batch: &RecordBatch) -> Result<Vec<Stored>> {
             Ok(Stored {
                 cells,
                 row: apart(batch, row)?,
+                cells_kept: Kept::held(0),
+                row_kept: Arc::new(Kept::held(0)),
             })
         })
         .collect()

@@ -2,6 +2,7 @@
 //! [`ObjectStoreWal`], whose requests fail, stall, race, lose their answers and land late as the
 //! seed draws.
 
+mod disk;
 #[cfg(test)]
 mod tests;
 
@@ -18,6 +19,7 @@ use rdlt_engine::{Clock, ObjectStoreOptions, ObjectStoreWal, Sleep};
 use rdlt_testkit::objects::{Call, Fault, Faulty, Op, Plan};
 
 use crate::rng::SplitMix64;
+use disk::Disk;
 
 /// Failures per thousand requests, while faulty.
 const FAULTS: u64 = 40;
@@ -29,7 +31,7 @@ const PREFIX: &str = "logs";
 #[derive(Debug)]
 pub(crate) struct ObjectLogs {
     pub(crate) wal: Arc<ObjectStoreWal>,
-    objects: Arc<Faulty<InMemory>>,
+    objects: Arc<Faulty<Disk<InMemory>>>,
     /// The draws deciding which requests fail, while faulty.
     faults: Arc<Mutex<Option<SplitMix64>>>,
 }
@@ -74,7 +76,8 @@ impl ObjectLogs {
             .with_backoff(Duration::from_millis(10), Duration::from_millis(200))
             .with_deadline(Duration::from_secs(1 + rng.below(4)), Duration::ZERO);
         let faults = Arc::new(Mutex::new(None));
-        let objects = Arc::new(Faulty::new(InMemory::new(), plan(Arc::clone(&faults))));
+        let bucket = Disk::new(InMemory::new());
+        let objects = Arc::new(Faulty::new(bucket, plan(Arc::clone(&faults))));
         let clock = Arc::new(SimClock {
             rng: Mutex::new(SplitMix64::new(rng.next_u64())),
         });
