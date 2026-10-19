@@ -1364,3 +1364,135 @@ fn a_struct_claiming_more_fields_than_follow_is_refused_on_the_wire() {
         Err(Invalid::Missing("type node"))
     ));
 }
+
+/// Words as a destination may send them: empty, short, at their longest, one byte longer.
+fn sent_word() -> impl Strategy<Value = String> {
+    use crate::limits::MAX_RESERVED_BYTES;
+    prop_oneof![
+        Just(String::new()),
+        "[a-z_]{1,8}",
+        Just("w".repeat(MAX_RESERVED_BYTES)),
+        Just("w".repeat(MAX_RESERVED_BYTES + 1)),
+    ]
+}
+
+/// Words as a destination may send them: a few, repeats among them, or as many as `cap` or one
+/// more.
+fn sent_words(cap: usize) -> impl Strategy<Value = Vec<String>> {
+    prop_oneof![
+        4 => proptest::collection::vec(sent_word(), 0..4),
+        1 => proptest::sample::select(vec![cap, cap + 1])
+            .prop_map(|count| (0..count).map(|word| format!("w{word}")).collect()),
+    ]
+}
+
+/// Identifier rules as a destination may send them: any case and characters, known or not,
+/// lengths around their range, and words and prefixes around their caps.
+fn sent_rules() -> impl Strategy<Value = v1::IdentifierRules> {
+    use crate::limits::{MAX_RESERVED_PREFIXES, MAX_RESERVED_WORDS, MIN_IDENTIFIER_LEN};
+    let least = u32::from(MIN_IDENTIFIER_LEN);
+    let most = u32::from(u16::MAX);
+    let max_len = prop_oneof![
+        Just(0_u32),
+        1_u32..least + 4,
+        Just(most),
+        Just(most + 1),
+        any::<u32>(),
+    ];
+    (
+        prop_oneof![-1_i32..5, any::<i32>()],
+        max_len,
+        prop_oneof![-1_i32..4, any::<i32>()],
+        sent_words(MAX_RESERVED_WORDS),
+        sent_words(MAX_RESERVED_PREFIXES),
+    )
+        .prop_map(
+            |(case, max_len, chars, reserved, reserved_table_prefixes)| v1::IdentifierRules {
+                case,
+                max_len,
+                chars,
+                reserved,
+                reserved_table_prefixes,
+            },
+        )
+}
+
+/// Which refusal the protocol's documented bounds give `sent`, in the order a receiver checks
+/// them, or none: a known case, known characters, a length from 16 to 65,535, at most four
+/// thousand and ninety-six reserved words and 64 reserved prefixes as sent, each of 1 to 256
+/// bytes.
+fn documented(sent: &v1::IdentifierRules) -> Option<&'static str> {
+    use crate::limits::{
+        MAX_RESERVED_BYTES, MAX_RESERVED_PREFIXES, MAX_RESERVED_WORDS, MIN_IDENTIFIER_LEN,
+    };
+    let sized = |text: &String| (1..=MAX_RESERVED_BYTES).contains(&text.len());
+    if !(1..=3).contains(&sent.case) {
+        Some("case")
+    } else if !(1..=2).contains(&sent.chars) {
+        Some("characters")
+    } else if sent.max_len > u32::from(u16::MAX) {
+        Some("length")
+    } else if sent.reserved.len() > MAX_RESERVED_WORDS
+        || sent.reserved_table_prefixes.len() > MAX_RESERVED_PREFIXES
+    {
+        Some("counts")
+    } else if sent.max_len == 0 {
+        Some("length")
+    } else if sent.max_len < u32::from(MIN_IDENTIFIER_LEN)
+        || !sent.reserved.iter().all(sized)
+        || !sent.reserved_table_prefixes.iter().all(sized)
+    {
+        Some("rules")
+    } else {
+        None
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(rdlt_testkit::cases(512)))]
+
+    /// Identifier rules are accepted from the wire exactly when they keep the bounds the protocol
+    /// documents, refused as the first they break, and those accepted are valid, keep what was
+    /// sent, and cross the wire back unchanged.
+    #[test]
+    fn identifier_rules_are_accepted_exactly_within_their_documented_bounds(sent in sent_rules()) {
+        let expected = documented(&sent);
+        match (IdentifierRules::try_from(sent.clone()), expected) {
+            (Ok(rules), None) => {
+                prop_assert_eq!(rules.validate(), Ok(()));
+                prop_assert_eq!(u32::from(rules.max_len.get()), sent.max_len);
+                prop_assert_eq!(&rules.reserved, &sent.reserved.iter().cloned().collect::<BTreeSet<_>>());
+                prop_assert_eq!(
+                    &rules.reserved_table_prefixes,
+                    &sent.reserved_table_prefixes.iter().cloned().collect::<BTreeSet<_>>()
+                );
+                prop_assert_eq!(IdentifierRules::try_from(v1::IdentifierRules::from(&rules)).ok(), Some(rules));
+            }
+            (Err(Invalid::Unknown("identifier case")), Some("case"))
+            | (Err(Invalid::Unknown("identifier characters")), Some("characters"))
+            | (Err(Invalid::OutOfRange("identifier length")), Some("length"))
+            | (Err(Invalid::OutOfRange("reserved words")), Some("counts"))
+            | (Err(Invalid::Rejected { what: "identifier rules", .. }), Some("rules")) => {}
+            (got, expected) => prop_assert!(false, "{got:?} where the bounds give {expected:?}"),
+        }
+    }
+
+    /// A destination's parallel writers are accepted exactly from one to the largest `u16`.
+    #[test]
+    fn parallel_writers_are_accepted_exactly_from_one_to_the_largest_u16(
+        writers in prop_oneof![Just(0_u32), 1_u32..4, Just(u32::from(u16::MAX)), Just(u32::from(u16::MAX) + 1), any::<u32>()],
+    ) {
+        let mut sent = v1::Capabilities::from(&Capabilities::minimal());
+        sent.max_parallel_writers = writers;
+        match Capabilities::try_from(sent) {
+            Ok(capabilities) => {
+                prop_assert!((1..=u32::from(u16::MAX)).contains(&writers));
+                prop_assert_eq!(u32::from(capabilities.max_parallel_writers.get()), writers);
+            }
+            Err(Invalid::OutOfRange("parallel writers")) => {
+                prop_assert!(!(1..=u32::from(u16::MAX)).contains(&writers));
+            }
+            Err(other) => prop_assert!(false, "{other}"),
+        }
+    }
+}
