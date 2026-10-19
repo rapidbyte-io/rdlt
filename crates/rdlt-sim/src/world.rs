@@ -446,36 +446,6 @@ impl World {
         }
     }
 
-    /// Waits for ever where the draw says the call at `point` hangs: a connector call that never
-    /// returns until its caller gives up on it, as the engine does at its wait for every call but
-    /// a read.
-    pub(crate) async fn hang(&self, point: FaultPoint) {
-        let faulty = self.faulty.load(Ordering::SeqCst);
-        let hangs = self.hangs.lock().hangs(point, faulty);
-        if hangs {
-            std::future::pending::<()>().await;
-        }
-    }
-
-    /// Whether the connector placed next goes to the peer that stalls, as the draw says where
-    /// faults are on.
-    pub(crate) fn stalls(&self) -> bool {
-        let faulty = self.faulty.load(Ordering::SeqCst);
-        self.hangs.lock().stalls(faulty)
-    }
-
-    /// Lets no call hang from now on: on the real clock a hang lasts as long as the engine's wait
-    /// really is.
-    pub(crate) fn without_hangs(&self) {
-        self.hangs.lock().drawn = false;
-    }
-
-    /// Has every call at `point` hang from now on, faults on or off.
-    #[cfg(test)]
-    pub(crate) fn hang_at(&self, point: FaultPoint) {
-        self.hangs.lock().at = Some(point);
-    }
-
     /// Records a broken invariant.
     pub(crate) fn violation(&self, finding: String) {
         self.violations.lock().push(finding);
