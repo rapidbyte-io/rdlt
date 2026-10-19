@@ -67,6 +67,11 @@ pub trait Env: Send + Sync + 'static {
         None
     }
 
+    /// Told each change of what a memory budget holds reserved: `change` bytes more, or fewer
+    /// where it is negative.
+    #[cfg(feature = "sim")]
+    fn charged(&self, _change: i64) {}
+
     /// A new load id from the current wall-clock time and 128 random bits.
     fn load_id(&self) -> LoadId {
         let random = (u128::from(self.random()) << 64) + u128::from(self.random());

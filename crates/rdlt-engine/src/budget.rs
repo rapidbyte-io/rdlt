@@ -112,8 +112,11 @@ impl MemoryBudget {
     /// A budget of `capacity` bytes, each of its requests waiting `wait` at most on `env`'s
     /// clock.
     pub(crate) fn new(capacity: u64, env: Arc<dyn Env>, wait: Duration) -> Self {
+        let ledger = Ledger::new(capacity);
+        #[cfg(feature = "sim")]
+        let ledger = ledger.observed(Arc::clone(&env));
         Self {
-            shared: Arc::new(Mutex::new(Ledger::new(capacity))),
+            shared: Arc::new(Mutex::new(ledger)),
             shares: Shares::of(capacity),
             env,
             wait,
