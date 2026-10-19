@@ -3,6 +3,7 @@
     reason = "tests drive tokio's paused clock and tasks directly"
 )]
 
+mod acks;
 mod lag;
 // Linear time is measured as a thread's CPU time, which only Unix offers.
 #[cfg(unix)]
@@ -43,6 +44,8 @@ use crate::watch;
 
 type Commits = Arc<Mutex<Vec<CommitMeta>>>;
 type Acks = Arc<Mutex<Vec<(StreamName, Vec<(PartitionId, Cursor)>)>>>;
+/// How many commits had landed when each acknowledgement was made, in order.
+type Heard = Arc<Mutex<Vec<usize>>>;
 
 struct Recorder {
     commits: Commits,
@@ -101,6 +104,8 @@ impl DestinationSession for Recorder {
 struct Listener {
     acks: Acks,
     commits: Commits,
+    /// How many commits had landed as each acknowledgement was made.
+    heard: Heard,
     /// Streams that cannot read again, which hear before their commit lands.
     early: Vec<StreamName>,
     /// How long hearing of a commit takes.
@@ -140,6 +145,7 @@ impl Source for Listener {
                 "acknowledged before any commit landed"
             );
             self.acks.lock().push((stream.clone(), cursors.to_vec()));
+            self.heard.lock().push(self.commits.lock().len());
             Ok(())
         })
     }
@@ -154,6 +160,7 @@ struct Harness {
     cancel: CancellationToken,
     commits: Commits,
     acks: Acks,
+    heard: Heard,
     log: Arc<Mutex<AttemptLog>>,
     closed: Arc<AtomicBool>,
     latest: Arc<Latest>,
@@ -249,7 +256,6 @@ impl Setup {
     /// The coordinator, not yet running, and the handles a test drives it through.
     async fn coordinator(self) -> (Coordinator, Harness) {
         let (commits, acks) = (Commits::default(), Acks::default());
-        let closed = Arc::new(AtomicBool::new(false));
         let (progress, progress_feed) = mpsc::unbounded_channel();
         let (barrier_sender, barrier) = watch::channel(0);
         let harness = Harness {
@@ -260,21 +266,22 @@ impl Setup {
             cancel: CancellationToken::new(),
             commits: Arc::clone(&commits),
             acks: Arc::clone(&acks),
+            heard: Heard::default(),
             log: Arc::default(),
-            closed: Arc::clone(&closed),
+            closed: Arc::default(),
             latest: Arc::default(),
             budget: crate::budget::budget(self.budget),
             tally: Arc::default(),
         };
         let session = SharedSession::new(Box::new(Recorder {
             commits: Arc::clone(&commits),
-            closed,
+            closed: Arc::clone(&harness.closed),
             fail: self.fail_commit,
             skewed: self.skew_receipts,
             pace: self.pace,
         }));
         let tables = self.tables(session).await;
-        let source = Arc::new(self.listener(acks, commits));
+        let source = Arc::new(self.listener(acks, commits, Arc::clone(&harness.heard)));
         let wal = self.wal.as_ref().map(|store| started(Arc::clone(store)));
         let coordinator = Coordinator::new(CoordinatorParts {
             env: Arc::new(SystemEnv::one_core()),
@@ -312,7 +319,7 @@ impl Setup {
 impl Setup {
     /// The source hearing of commits, into `acks`, which checks they follow `commits` but for
     /// streams that cannot read again.
-    fn listener(&self, acks: Acks, commits: Commits) -> Listener {
+    fn listener(&self, acks: Acks, commits: Commits, heard: Heard) -> Listener {
         let early = self
             .streams
             .iter()
@@ -322,6 +329,7 @@ impl Setup {
         Listener {
             acks,
             commits,
+            heard,
             early,
             pace: self.pace * 2,
         }
