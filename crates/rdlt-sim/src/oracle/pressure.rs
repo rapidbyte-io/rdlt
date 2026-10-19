@@ -6,6 +6,7 @@ use std::time::Duration;
 use rdlt_engine::{Report, Waited, Waits};
 use serde_json::{Map, Value, json};
 
+use super::Held;
 use super::refusals::{Failure, Prediction, unexplained};
 use crate::destination::Digest;
 use crate::seed::{Recorded, Seed};
@@ -23,6 +24,9 @@ pub struct Checked {
     pub simulated: Duration,
     /// The features its seed turned on.
     pub features: Features,
+    /// What the thread held over the worst attempt, beyond where it began, and what its runs
+    /// account for; `None` where the runs' work was on more than one thread.
+    pub held: Option<Held>,
 }
 
 impl Recorded for Checked {
@@ -34,6 +38,9 @@ impl Recorded for Checked {
         );
         fields.insert("features".to_owned(), json!(self.features));
         fields.insert("waits".to_owned(), json!(self.waits));
+        if let Some(held) = self.held {
+            held.record(&mut fields);
+        }
         fields
     }
 }

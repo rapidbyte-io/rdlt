@@ -267,10 +267,6 @@ impl World {
 
     /// Bytes: the largest push the source has made, which each of a run's partitions may hold
     /// before it is admitted.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the memory check of a run reads it")
-    )]
     pub(crate) fn largest_push(&self) -> u64 {
         u64::try_from(self.largest_push.load(Ordering::SeqCst)).unwrap_or(u64::MAX)
     }

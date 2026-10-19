@@ -74,6 +74,11 @@ impl SimEnv {
     pub fn perturb(&self, on: bool) {
         self.compute.perturbed.store(on, Ordering::SeqCst);
     }
+
+    /// Whether compute jobs run on the calling thread, so all of a seed's work is on one.
+    pub(crate) fn inline(&self) -> bool {
+        self.compute.threads.is_none()
+    }
 }
 
 impl Env for SimEnv {

@@ -6,13 +6,6 @@ mod changes;
 mod config;
 mod expected;
 mod intruder;
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "no attempt opens a window until the oracle measures them"
-    )
-)]
 mod memory;
 mod names;
 mod pressure;
@@ -41,9 +34,11 @@ use crate::world::World;
 pub use changes::check_changes;
 use config::{config, endless, growth, pressed, small_log, waited};
 use expected::Discards;
+pub use memory::Held;
+use memory::Window;
 pub use pressure::Checked;
 use pressure::explained;
-use scenario::{Scenario, execute_all, pick};
+use scenario::{Executed, Scenario, execute_all, pick};
 use settle::settled;
 
 /// Runs before this many have faults injected; the rest run clean, so every phase converges.
@@ -106,6 +101,8 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>, hangs: bo
         waited(seed, hangs && world.workload.features.faults),
     );
     let (limits, budget) = (config.limits(), config.memory().get());
+    let partitions = u64::try_from(config.partitions().get()).unwrap_or(u64::MAX);
+    let allowance = memory::allowance(seed, env.inline(), net.is_some());
     world.press(pressed(seed, &config, &world.workload, small_log(&config)));
     let engine = Engine::new(config, env);
     let placing = net.map(|net| Placing::new(net, &network::options(&mut rng, limits)));
@@ -118,6 +115,9 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>, hangs: bo
         name,
         budget,
         waits: Waits::default(),
+        partitions,
+        allowance,
+        held: None,
     };
     let stopped = simulation.load(&mut rng).await;
     // What the destination holds once the workload is loaded; the checks that follow load
@@ -126,13 +126,7 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>, hangs: bo
     if !stopped {
         simulation.check_reports(seed).await;
     }
-    let mut violations = simulation.world.violations();
-    violations.extend(
-        simulation
-            .placing
-            .iter()
-            .flat_map(Placing::stall_violations),
-    );
+    let violations = simulation.violations();
     drop(registered);
     assert!(violations.is_empty(), "seed {seed}: {violations:#?}");
     Checked {
@@ -140,6 +134,7 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>, hangs: bo
         waits: simulation.waits,
         simulated: clock.instant() - started,
         features: simulation.world.workload.features,
+        held: simulation.held,
     }
 }
 
@@ -157,9 +152,23 @@ struct Simulation {
     budget: u64,
     /// How often and how long its runs waited on the budget, by share.
     waits: Waits,
+    /// Partitions each run reads at once.
+    partitions: u64,
+    /// Bytes: the allowance an attempt's heap is held to beside what its runs account for;
+    /// `None` where the seed's work is on more than one thread.
+    allowance: Option<u64>,
+    /// What the worst attempt held beyond where it began, where any was measured.
+    held: Option<Held>,
 }
 
 impl Simulation {
+    /// What the world and the network found wrong.
+    fn violations(&self) -> Vec<String> {
+        let mut violations = self.world.violations();
+        violations.extend(self.placing.iter().flat_map(Placing::stall_violations));
+        violations
+    }
+
     /// Runs every phase, checking the destination after each and intruding before the next,
     /// then resets the last and runs it again; whether a refusal no operator can relax stopped
     /// it short.
@@ -257,6 +266,27 @@ impl Simulation {
             .await
     }
 
+    /// Runs `scenario` for `plans`, the thread's heap over it held to what the runs account for.
+    async fn measured(
+        &mut self,
+        plans: &[PipelinePlan],
+        scenario: Scenario,
+        network: Option<SplitMix64>,
+        phase: usize,
+    ) -> Vec<Executed> {
+        let placing = self.placing.as_ref();
+        let window = self.allowance.map(|_| Window::open());
+        let executing = execute_all(&self.engine, plans, &self.name, placing, scenario);
+        let executed = match (placing, network) {
+            (Some(placing), Some(rng)) => placing.disrupting(rng, executing).await,
+            _ => executing.await,
+        };
+        if let Some(window) = window {
+            self.within_memory(window.close(), &executed, phase);
+        }
+        executed
+    }
+
     /// Runs `scenario` as [`attempt`](Self::attempt) does, each run reading as `until` says.
     async fn attempt_until(
         &mut self,
@@ -280,12 +310,7 @@ impl Simulation {
         let plans: Vec<PipelinePlan> = (0..workload.pipelines)
             .map(|pipeline| plan(workload, &self.relaxed, pipeline).with_until(until))
             .collect();
-        let placing = self.placing.as_ref();
-        let executing = execute_all(&self.engine, &plans, &self.name, placing, scenario);
-        let executed = match (placing, network) {
-            (Some(placing), Some(rng)) => placing.disrupting(rng, executing).await,
-            _ => executing.await,
-        };
+        let executed = self.measured(&plans, scenario, network, phase).await;
         let mut failures = Vec::new();
         for (plan, executed) in plans.iter().zip(&executed) {
             let refused = plan

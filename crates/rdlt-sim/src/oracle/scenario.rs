@@ -88,6 +88,10 @@ pub(super) struct Executed {
     pub(super) failures: Vec<Failure>,
     /// The reports of those that ended.
     pub(super) reports: Vec<Report>,
+    /// How many runs it started.
+    pub(super) started: u64,
+    /// Whether a run was dropped as if its worker crashed, leaving no report.
+    pub(super) crashed: bool,
 }
 
 /// Runs `scenario` for each of `plans`, the pipelines sharing the destination, at once.
@@ -117,22 +121,23 @@ async fn execute(
     placing: Option<&Placing>,
     scenario: Scenario,
 ) -> Executed {
-    let (ended, dropped) = match scenario {
+    let (ended, dropped, started) = match scenario {
         Scenario::Plain => (
             vec![bounded(start(engine, plan, world, placing).await).await],
             false,
+            1,
         ),
         Scenario::Crash(after) => {
             let run = bounded(start(engine, plan, world, placing).await);
             tokio::select! {
                 biased;
-                ended = run => (vec![ended], false),
+                ended = run => (vec![ended], false, 1),
                 // Dropping the run is the crash, which takes what its disk had not made durable.
                 () = tokio::time::sleep(after) => {
                     if let Some(world) = World::named(world) {
                         world.crash_logs(plan.pipeline());
                     }
-                    (Vec::new(), true)
+                    (Vec::new(), true, 1)
                 }
             }
         }
@@ -147,7 +152,7 @@ async fn execute(
                 });
             };
             let (ended, ()) = tokio::join!(bounded(handle), stop);
-            (vec![ended], false)
+            (vec![ended], false, 1)
         }
         Scenario::Concurrent(delay) => {
             let first = bounded(start(engine, plan, world, placing).await);
@@ -156,7 +161,7 @@ async fn execute(
                 bounded(start(engine, plan, world, placing).await).await
             };
             let (first, second) = tokio::join!(first, second);
-            (vec![first, second], false)
+            (vec![first, second], false, 2)
         }
     };
     let succeeded = ended
@@ -167,6 +172,8 @@ async fn execute(
         succeeded: succeeded && !dropped,
         failures: failures.into_iter().flatten().collect(),
         reports,
+        started,
+        crashed: dropped,
     }
 }
 
