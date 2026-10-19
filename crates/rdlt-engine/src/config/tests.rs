@@ -110,8 +110,8 @@ fn the_builder_applies_defaults_and_settings() {
 
 #[test]
 fn memory_below_what_the_protocol_s_least_frame_needs_is_refused_naming_the_least() {
-    for partitions in [1, 4, 16] {
-        let least = EngineConfig::least_memory(partitions);
+    for partitions in [1, 4, 16, 600_000] {
+        let least = EngineConfig::least_memory(partitions).unwrap();
         let build = |memory| {
             EngineConfig::builder()
                 .memory(memory)
@@ -131,7 +131,7 @@ fn memory_below_what_the_protocol_s_least_frame_needs_is_refused_naming_the_leas
     }
     // About thirty-two mebibytes at the default sixteen partitions, and the default is far
     // above it.
-    assert_eq!(EngineConfig::least_memory(16), 33_811_576);
+    assert_eq!(EngineConfig::least_memory(16), Some(33_811_576));
     assert!(EngineConfig::builder().build().is_ok());
 }
 
@@ -212,7 +212,7 @@ fn reading_more_partitions_at_once_lowers_what_each_read_may_send() {
     assert!((17..4_096).contains(&partitions), "{partitions}");
     let refused = build(partitions).unwrap_err();
     assert_eq!(refused.code(), Some("memory_below_minimum"));
-    let least = EngineConfig::least_memory(partitions);
+    let least = EngineConfig::least_memory(partitions).unwrap();
     assert!(least > memory, "{least}");
     assert!(
         refused.to_string().contains(&format!("is {least} bytes")),

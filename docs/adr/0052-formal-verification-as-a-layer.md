@@ -52,7 +52,7 @@ A formal layer is added to the layers of its class, never in place of one.
   tonic, sonic-rs and stacker among them. `rdlt-wire`'s four harnesses take about five minutes,
   288 seconds from a build that had compiled its dependencies and 299 warm, so verification and
   not compilation is the time, and at most 0.7 GB for the largest process. `rdlt-engine`'s three
-  harnesses take about 225 seconds warm, nearly all of it verification. A crate's proofs check
+  harnesses take about 285 seconds warm, nearly all of it verification. A crate's proofs check
   its own code, in the crate. Kani's output is not clean: its toolchain warns of the
   `register_tool` feature it forces and of deprecated methods in the engine, and it drops the
   arguments of an `unreachable!`, which warns of an unused variable; none comes from a proof.
@@ -80,16 +80,24 @@ A formal layer is added to the layers of its class, never in place of one.
   add up to it, its data is what pushes and one request take, a piece is within a request, and a
   share's bytes beside one request of its class never wrap (18 seconds).
   `budget/admits/proofs.rs` proves, for every capacity and 1 to 24 reads at once, that each limit
-  the budget admits fits the share it draws on (82 seconds), and that every budget from the least
-  up admits a peer (121 seconds); `least` itself returns a budget that admits a peer while the one
-  a byte below does not. 24 reads hold both of what sets the least budget, a frame up to
-  16 reads and the dictionaries from 20, and keep the two proofs within the 15 minutes of
-  `rdlt-engine`'s part of the `formal` check. Above 24 reads admission is not proved to be
-  monotone, and a known counterexample lies past 524,288 reads. What a budget admits does not
-  grow with it byte by byte, since its shares' rounding moves a frame by a few bytes: with one
-  read, a budget of 53,690,302 bytes admits a peer and one of 53,690,314 does not. The ledger's
-  own properties are property tests in `budget/ledger/tests.rs`, since each of its paths takes
-  its `parking_lot` lock: every share stays within it through any asks, lets and presses, and none
+  the budget admits fits the share it draws on (94 seconds), and that every budget from the least
+  up admits a peer while the one a byte below does not (165 seconds). What a budget admits does
+  not grow with it byte by byte, since its shares' rounding moves a frame by a few bytes: with
+  one read, a budget of 53,690,302 bytes admits a peer and one of 53,690,314 does not. So halving
+  for the least ends beside whichever change its steps meet: over budgets up to 2^40 it meets the
+  last for up to 24 reads, which the proof holds, and over every `u64` it would end at 53,690,299
+  for one read. 24 reads hold both of what sets the least budget, a frame up to 16 reads and the
+  dictionaries from 17, and keep the proofs within the 15 minutes of `rdlt-engine`'s part of the
+  `formal` check; past them each read keeps less, which leaves a frame no less, so `least`
+  halves for at most 24 and takes the larger of that and what the reads' dictionaries need, twice
+  the least dictionary for each in a quarter of the budget, exact as what a read keeps grows with
+  the budget; from 2^43 reads no budget holds that, and there is no least. The proof of the same
+  for any count of reads above 24 ran 20 minutes without an answer, since what a read keeps is
+  the reads' share divided by a count the proof leaves free, a product the solver must undo; a
+  property test in `budget/admits/tests.rs` holds it instead, drawing counts up to 2^43 and
+  budgets from the least to far above it. The ledger's own properties
+  are property tests in `budget/ledger/tests.rs`, since each of its paths takes its
+  `parking_lot` lock: every share stays within it through any asks, lets and presses, and none
   is held once all is let go; waiting requests are admitted in turn only where they fit, with
   abandoned ones given back; and a lent reservation gives back all it held, in any order.
 - A bounded body's length prefix and what it lacks are property tests
@@ -251,9 +259,9 @@ what no bound names.
 - A crate that adds proofs adds `#[cfg(kani)] mod proofs;`. If it catches panics, its guard
   against aborting builds exempts `kani`, as `rdlt-wire`'s does.
 - `just ready` costs Kani's build and proofs of each crate under proof whenever the change
-  touches it: on a laptop, about 300 seconds for `rdlt-wire` and 225 for `rdlt-engine`, warm, so
+  touches it: on a laptop, about 300 seconds for `rdlt-wire` and 285 for `rdlt-engine`, warm, so
   a change that touches the tools, the justfile or the workflow, which runs both, spends about
-  525 seconds proving. The `formal` check waits for its longest part alone.
+  585 seconds proving. The `formal` check waits for its longest part alone.
 - A contributor's `mise install` installs about 1.1 GB more on disk, and the first `just kani`
   fetches a nightly toolchain.
 - Updating Kani is its version and `mise lock`; its nightly comes with its bundle. Updating

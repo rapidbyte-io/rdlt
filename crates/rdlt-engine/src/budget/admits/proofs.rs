@@ -5,19 +5,14 @@ use rdlt_connector::cost::JSON_CHARGE;
 use rdlt_wire::Limits;
 use rdlt_wire::limits::{Class, MESSAGE_ROOM};
 
-use super::{admitted, kept, least, row_overhead};
+use super::{HALVED, admitted, kept, least, row_overhead};
 use crate::budget::Shares;
 use crate::limits::{COLUMN_RECORD, RECORDED, SCHEMA_KEPT};
 
-/// The most reads at once the proofs take a budget to be read by.
-///
-/// A frame sets the least budget for up to 16 reads and the dictionaries do from 20, so the
-/// bound holds both.
-const READERS: usize = 24;
-
-/// Any count of reads at once, from one to `READERS`.
+/// Any count of reads at once, from one to `HALVED`, the most whose least budget is found by
+/// halving.
 fn any_readers() -> usize {
-    kani::any_where(|readers: &usize| (1..=READERS).contains(readers))
+    kani::any_where(|readers: &usize| (1..=HALVED).contains(readers))
 }
 
 /// Each limit a budget admits, all at once, fits the share it draws on: a frame beside what a
@@ -28,7 +23,7 @@ fn any_readers() -> usize {
 /// within the log's; a schema, its decoding and the dictionaries within what a read keeps; and a
 /// table's records within the tables' share.
 ///
-/// Bound: every capacity, read by 1 to `READERS` reads at once.
+/// Bound: every capacity, read by 1 to `HALVED` reads at once.
 #[kani::proof]
 #[kani::unwind(9)]
 fn what_each_admitted_limit_admits_fits_the_share_it_draws_on() {
@@ -70,14 +65,18 @@ fn what_each_admitted_limit_admits_fits_the_share_it_draws_on() {
     );
 }
 
-/// Every budget from the least for a count of reads up admits a peer, read by that many reads: a
-/// memory the configuration accepts is one whose limits the protocol accepts.
+/// Every budget from the least for a count of reads up admits a peer, read by that many reads,
+/// and the budget a byte below does not: a memory the configuration accepts is one whose limits
+/// the protocol accepts.
 ///
-/// Bound: every capacity, read by 1 to `READERS` reads at once.
+/// Bound: every capacity, read by 1 to `HALVED` reads at once.
 #[kani::proof]
 #[kani::unwind(42)]
 fn every_budget_from_the_least_up_admits_a_peer() {
     let (capacity, readers) = (kani::any::<u64>(), any_readers());
-    kani::assume(capacity >= least(readers));
-    assert_eq!(admitted(Shares::of(capacity), readers).admit_peer(), Ok(()));
+    let admits = |capacity| admitted(Shares::of(capacity), readers).admit_peer();
+    let least = least(readers).expect("a budget admits a peer");
+    kani::assume(capacity >= least);
+    assert_eq!(admits(capacity), Ok(()));
+    assert!(admits(least - 1).is_err());
 }
