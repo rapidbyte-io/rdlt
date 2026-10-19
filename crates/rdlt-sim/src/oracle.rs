@@ -36,7 +36,7 @@ use expected::Discards;
 pub use pressure::Checked;
 use pressure::explained;
 use scenario::{Scenario, execute_all, pick};
-use settle::settle;
+use settle::settled;
 
 /// Runs before this many have faults injected; the rest run clean, so every phase converges.
 const FAULTY_RUNS: usize = 4;
@@ -144,7 +144,7 @@ impl Simulation {
         for phase in 0..PHASES {
             let (reports, stopped_short) = self.converge(phase, rng).await;
             stopped = stopped_short;
-            settle(seed).await;
+            settled(seed, &self.world, self.placing.as_ref()).await;
             check_contents(&self.world, phase, stopped, seed);
             check_acknowledged(&self.world, stopped, seed);
             check_discards(&self.world, phase, &reports, stopped, seed);
@@ -152,13 +152,13 @@ impl Simulation {
                 break;
             }
             self.intrude(seed, phase).await;
-            settle(seed).await;
+            settled(seed, &self.world, self.placing.as_ref()).await;
         }
         let last = PHASES - 1;
         if !stopped && self.reset(seed, last).await {
             let (_, short) = self.converge(last, rng).await;
             stopped = short;
-            settle(seed).await;
+            settled(seed, &self.world, self.placing.as_ref()).await;
             check_contents(&self.world, last, stopped, seed);
             check_acknowledged(&self.world, stopped, seed);
         }

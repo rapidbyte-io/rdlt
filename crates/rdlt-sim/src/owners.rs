@@ -18,7 +18,6 @@ pub(crate) struct Owners {
 
 impl Owners {
     /// How many of each live now.
-    #[cfg_attr(not(test), expect(dead_code, reason = "only tests read the counts"))]
     pub(crate) fn held(&self) -> Held {
         let count = |count: &AtomicUsize| count.load(Ordering::SeqCst);
         Held {
@@ -31,7 +30,6 @@ impl Owners {
 
 /// How many sessions, writers and reads live at a moment.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[cfg_attr(not(test), expect(dead_code, reason = "only tests read the counts"))]
 pub(crate) struct Held {
     pub(crate) sessions: usize,
     pub(crate) writers: usize,
@@ -40,7 +38,6 @@ pub(crate) struct Held {
 
 impl Held {
     /// Whether nothing lives.
-    #[cfg_attr(not(test), expect(dead_code, reason = "only tests read the counts"))]
     pub(crate) fn is_empty(self) -> bool {
         self == Self::default()
     }

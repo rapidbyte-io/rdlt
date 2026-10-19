@@ -16,6 +16,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
+use parking_lot::Mutex;
 use rdlt_connector::serve::{Listener, Listening, Log, Served, serve_listener};
 use rdlt_connector::{BoxFuture, Destination, Source, destination_factory, source_factory};
 use rdlt_host::{
@@ -25,6 +26,7 @@ use rdlt_host::{
 use rdlt_testkit::tls::{Files, Pki};
 use rdlt_wire::Limits;
 use rdlt_wire::tls::{Accepted, Hosts};
+use tokio::runtime::Handle;
 
 use crate::destination::SimDestination;
 use crate::env::SimEnv;
@@ -83,6 +85,8 @@ pub(crate) struct Net {
     server: Files,
     client: Files,
     connectors: Connectors,
+    /// The runtime of each connector's host, recorded when it starts listening.
+    served: Mutex<Vec<Handle>>,
 }
 
 impl Net {
@@ -95,6 +99,7 @@ impl Net {
             server,
             client,
             connectors: Connectors::default(),
+            served: Mutex::default(),
         }
     }
 }
@@ -163,6 +168,7 @@ const LATENCY: u64 = 0x006c_6174_656e_6379;
 /// started after it listens at once, as a process restarted beside a draining process does; the
 /// drain goes on apart, until its connections end.
 async fn listen(net: Arc<Net>, side: Side) -> turmoil::Result {
+    net.served.lock().push(Handle::current());
     // The connectors accept the engine's host alone, by the name in its certificate.
     let accepted = Accepted {
         ca: net.pki.ca(),
@@ -303,6 +309,11 @@ impl Placing {
         // Long enough for its host to see it down.
         tokio::time::sleep(DRAIN).await;
         self.net.connectors.restart(Side::Source);
+    }
+
+    /// The runtime of each connector's host, so a check sees what they still run.
+    pub(crate) fn hosts(&self) -> Vec<Handle> {
+        self.net.served.lock().clone()
     }
 
     /// The source, placed with `config`, trying again until it is reachable.

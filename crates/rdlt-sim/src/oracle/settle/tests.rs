@@ -1,8 +1,14 @@
 use std::panic::{self, AssertUnwindSafe};
+use std::sync::Arc;
 use std::time::Duration;
 
-use super::{OUTLIVED, settle};
+use tokio::runtime::Handle;
+
+use super::{OUTLIVED, released, settle};
+use crate::owners::Live;
+use crate::rng::SplitMix64;
 use crate::seed::{Seed, run};
+use crate::world::World;
 
 /// How long `settle` took on the simulated clock, with a task that ends after `lives`.
 fn settling_with_a_task_that_lives(seed: u64, lives: Duration) -> Duration {
@@ -55,5 +61,114 @@ fn a_task_alive_at_the_bound_outlived_its_run_and_fails_naming_the_seed() {
     assert!(
         message.contains("seed 4: 1 tasks outlived their runs"),
         "{message}"
+    );
+}
+
+#[test]
+fn connectors_that_hold_nothing_are_released_at_once() {
+    let registered = World::register("released", &mut SplitMix64::new(5));
+    let world = Arc::clone(registered.world());
+    let waited = run(Seed::new(5), move |_| async move {
+        let started = tokio::time::Instant::now();
+        released(Seed::new(5), &world, &[]).await;
+        started.elapsed()
+    });
+    drop(registered);
+    assert_eq!(waited, Duration::ZERO);
+}
+
+#[test]
+fn a_writer_let_go_within_the_bound_is_released_when_it_is() {
+    let registered = World::register("released-late", &mut SplitMix64::new(6));
+    let world = Arc::clone(registered.world());
+    let waited = run(Seed::new(6), move |_| async move {
+        let held = Live::of(&[&world.owners.writers]);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            drop(held);
+        });
+        let started = tokio::time::Instant::now();
+        released(Seed::new(6), &world, &[]).await;
+        started.elapsed()
+    });
+    drop(registered);
+    assert!(
+        waited >= Duration::from_secs(10) && waited <= Duration::from_millis(10_002),
+        "{waited:?}"
+    );
+}
+
+#[test]
+fn a_session_held_past_the_bound_fails_naming_the_seed() {
+    let registered = World::register("released-never", &mut SplitMix64::new(7));
+    let world = Arc::clone(registered.world());
+    let outcome = panic::catch_unwind(AssertUnwindSafe(|| {
+        run(Seed::new(7), move |_| async move {
+            let _held = Live::of(&[&world.owners.sessions]);
+            released(Seed::new(7), &world, &[]).await;
+        });
+    }));
+    drop(registered);
+    let payload = outcome.expect_err("the session outlived its run");
+    let message = payload
+        .downcast_ref::<String>()
+        .expect("a formatted panic message");
+    assert!(
+        message.contains(
+            "seed 7: 0 tasks on the connectors' hosts, and 1 sessions, 0 writers and 0 reads, \
+             outlived their runs"
+        ),
+        "{message}"
+    );
+}
+
+/// Runs `released` over a connector host that spawns a task living `task`, and returns the
+/// panic message, if it panicked.
+fn released_over_a_host_that_runs(seed: u64, task: Duration) -> Option<String> {
+    let registered = World::register("released-host", &mut SplitMix64::new(seed));
+    let world = Arc::clone(registered.world());
+    let handle = Arc::new(std::sync::Mutex::new(None::<Handle>));
+    let mut sim = turmoil::Builder::new()
+        .simulation_duration(Duration::from_secs(150))
+        .build();
+    let host = Arc::clone(&handle);
+    sim.host("connector", move || {
+        let host = Arc::clone(&host);
+        async move {
+            *host.lock().unwrap() = Some(Handle::current());
+            tokio::spawn(tokio::time::sleep(task));
+            tokio::time::sleep(Duration::from_secs(130)).await;
+            Ok(())
+        }
+    });
+    sim.client("engine", async move {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let hosts = [handle.lock().unwrap().clone().expect("the host began")];
+        released(Seed::new(seed), &world, &hosts).await;
+        Ok(())
+    });
+    let outcome = sim.run();
+    drop(registered);
+    outcome.err().map(|error| error.to_string())
+}
+
+#[test]
+fn a_task_a_connector_host_still_runs_past_the_bound_fails_naming_the_seed() {
+    let message = released_over_a_host_that_runs(8, Duration::from_secs(120))
+        .expect("the task outlived its run");
+    assert!(
+        message.contains(
+            "seed 8: 1 tasks on the connectors' hosts, and 0 sessions, 0 writers and 0 reads, \
+             outlived their runs"
+        ),
+        "{message}"
+    );
+}
+
+#[test]
+fn a_task_a_connector_host_ends_within_the_bound_is_released_when_it_ends() {
+    assert_eq!(
+        released_over_a_host_that_runs(9, Duration::from_secs(5)),
+        None
     );
 }
