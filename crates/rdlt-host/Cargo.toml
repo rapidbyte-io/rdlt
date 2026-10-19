@@ -47,7 +47,7 @@ bytes.workspace = true
 criterion.workspace = true
 http.workspace = true
 http-body.workspace = true
-hyper = { workspace = true, features = ["http2", "server"] }
+hyper = { workspace = true, features = ["client", "http2", "server"] }
 hyper-util = { workspace = true, features = ["service", "tokio"] }
 nix = { workspace = true, features = ["process", "resource", "sched", "signal", "time"] }
 peak_alloc.workspace = true

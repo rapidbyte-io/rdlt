@@ -37,6 +37,7 @@ mod sessions;
 mod staging;
 mod started;
 mod support;
+mod transport;
 mod wires;
 
 /// Tracks the heap's peak, for what a message holds before it is refused.
