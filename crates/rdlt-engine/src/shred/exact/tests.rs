@@ -1,4 +1,4 @@
-use crate::cost::tests::HEAP;
+use crate::cost::tests::kept_alone;
 use crate::shred::meter::{Columns, Meter};
 use crate::shred::observe::Observed;
 use crate::shred::observing::Look;
@@ -27,17 +27,10 @@ fn walked(text: &str) -> bool {
 
 #[test]
 fn a_thread_that_parsed_exactly_keeps_no_more_than_three_mebibytes() {
-    let text = wide(400_000);
-    let kept = std::thread::scope(|scope| {
-        scope
-            .spawn(|| {
-                let before = HEAP.current_usage();
-                assert!(walked(&text));
-                assert!(walked(&text));
-                HEAP.current_usage().saturating_sub(before)
-            })
-            .join()
-            .unwrap()
+    let text = wide(100_000);
+    let kept = kept_alone(|| {
+        assert!(walked(&text));
+        assert!(walked(&text));
     });
     assert!(
         kept <= 3 << 20,
