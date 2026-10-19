@@ -81,9 +81,11 @@ A formal layer is added to the layers of its class, never in place of one.
   share's bytes beside one request of its class never wrap (18 seconds).
   `budget/admits/proofs.rs` proves, for every capacity and 1 to 24 reads at once, that each limit
   the budget admits fits the share it draws on (82 seconds), and that every budget from the least
-  up admits a peer (121 seconds). 24 reads hold both of what sets the least budget, a frame up to
-  16 reads and the dictionaries from 20; at 64 reads the two took 490 seconds, too much of the
-  `formal` job's 15 minutes beside the wire's proofs. What a budget admits does not grow with it
+  up admits a peer (121 seconds); `least` itself returns a budget that admits a peer while the one
+  a byte below does not. 24 reads hold both of what sets the least budget, a frame up to
+  16 reads and the dictionaries from 20, and keep the two proofs within the `formal` job's 15
+  minutes beside the wire's proofs. Above 24 reads admission is not proved to be monotone, and a
+  known counterexample lies past 524,288 reads. What a budget admits does not grow with it
   byte by byte, since its shares' rounding moves a frame by a few bytes: with one read, a budget
   of 53,690,302 bytes admits a peer and one of 53,690,314 does not. The ledger's own properties
   are property tests in `budget/ledger/tests.rs`, since each of its paths takes its
