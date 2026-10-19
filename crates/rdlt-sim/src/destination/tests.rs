@@ -763,3 +763,29 @@ fn a_fat_column_that_does_not_read_as_text_is_refused() {
     let refused = cells::rows(&batch(vec![(crate::fat::COLUMN, values)])).unwrap_err();
     assert_eq!(refused.kind(), ConnectorErrorKind::Data, "{refused}");
 }
+
+#[test]
+fn stored_rows_are_the_worlds_and_count_beyond_no_charge() {
+    let value = vec![7_u8; 1 << 20];
+    let wide: ArrayRef = Arc::new(BinaryArray::from_vec(vec![value.as_slice(); 4]));
+    // Kept to the end, since the rows share its schema.
+    let written = batch(vec![("wide", wide)]);
+    let (rows, held) = crate::oracle::beyond_charge(|| cells::rows(&written).unwrap());
+    // What the rows hold is the world's: only the vector holding them is not.
+    let vector = u64::try_from(rows.capacity() * size_of::<Stored>()).unwrap();
+    assert!(held < vector + (64 << 10), "{held} beside {vector}");
+    // Freed here, they are given back, so they hide nothing held after them but the vector made
+    // here and the count each row shares with its copies.
+    let counts = rows.len() * (2 * size_of::<usize>() + size_of::<crate::oracle::Kept>());
+    let counts = u64::try_from(counts).unwrap();
+    let ((), held) = crate::oracle::beyond_charge(|| {
+        drop(rows);
+        drop(std::hint::black_box(vec![0_u8; 1 << 20]));
+    });
+    assert_eq!(
+        held + vector + counts,
+        1 << 20,
+        "held {held} beside {vector}"
+    );
+    drop(written);
+}

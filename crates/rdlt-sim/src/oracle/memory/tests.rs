@@ -4,8 +4,8 @@ use std::hint::black_box;
 use alloc_tracker::Session;
 
 use super::{
-    Counterweight, Held, IN_PROCESS, NETWORK, QUEUED, Rise, Tracing, Window, account, allowance,
-    charged, installed, queued,
+    Counterweight, Held, IN_PROCESS, Kept, NETWORK, QUEUED, Rise, Tracing, Window, account,
+    allowance, charged, freed, installed, queued,
 };
 use crate::seed::Seed;
 
@@ -295,4 +295,53 @@ fn a_read_of_small_pushes_holds_the_credit_floor_in_transport() {
 #[test]
 fn what_reads_hold_saturates_rather_than_wrapping() {
     assert_eq!(queued(u64::MAX, u64::MAX, 1), u64::MAX);
+}
+
+#[test]
+fn freed_measures_what_dropping_a_value_gives_back() {
+    let value = (black_box(vec![0_u8; 3_000]), black_box(vec![0_u8; 500]));
+    assert_eq!(freed(value), 3_500);
+    assert_eq!(freed(()), 0);
+}
+
+#[test]
+fn what_the_world_keeps_counts_with_the_charge_while_it_is_kept() {
+    let before = charged();
+    let window = Window::open();
+    let weight = Counterweight::hang(before, 64 << 20, None);
+    // Staged under the engine's charge, kept by the world once published, then let go.
+    account(1 << 20);
+    let stored = black_box(vec![0_u8; 1 << 20]);
+    let kept = Kept::held(1 << 20);
+    account(-(1 << 20));
+    assert_eq!(charged() - before, 1 << 20);
+    // The bytes go before what kept them, as a store's entry drops them.
+    drop((stored, kept));
+    assert!(!weight.lift().short);
+    let held = window.close().saturating_sub(64 << 20);
+    assert!(held < 64 << 10, "held {held}");
+    assert_eq!(charged(), before);
+}
+
+#[test]
+fn what_dropping_a_value_gives_back_is_measured_unseen_by_a_window() {
+    let value = black_box(vec![0_u8; 1 << 20]);
+    let window = Window::open();
+    let weight = Counterweight::hang(charged(), 512 << 20, None);
+    let bytes = freed(value);
+    assert!(!weight.lift().short);
+    let held = window.close().saturating_sub(512 << 20);
+    assert_eq!(bytes, 1 << 20);
+    assert!(held < 64 << 10, "held {held}");
+}
+
+#[test]
+fn a_copy_of_what_is_kept_is_counted_as_made_here() {
+    let before = charged();
+    let kept = Kept::held(100);
+    let copy = kept.clone();
+    drop(kept);
+    assert_eq!(charged(), before);
+    drop(copy);
+    assert_eq!(charged(), before);
 }

@@ -159,7 +159,8 @@ impl super::Simulation {
     }
 
     /// Bytes: room enough for what an attempt of `plans` may charge beyond what was charged as it
-    /// began: every run's budget, as each pipeline starts a few runs, and what the source holds.
+    /// began: every run's budget, as each pipeline starts a few runs, what the source holds, and
+    /// the room the world's work and its measures take.
     pub(super) fn room(&self, plans: usize) -> u64 {
         let runs = u64::try_from(plans)
             .unwrap_or(u64::MAX)
@@ -168,6 +169,7 @@ impl super::Simulation {
             .saturating_mul(runs)
             .saturating_add(PUSHES)
             .saturating_add(ASIDE)
+            .saturating_add(u64::try_from(PAST).unwrap_or(u64::MAX))
     }
 }
 
@@ -181,6 +183,79 @@ pub(crate) fn aside<T>(work: impl FnOnce() -> T) -> T {
     account(room);
     let _given = Aside(room);
     work()
+}
+
+/// Bytes the simulated world keeps beside the engine, as its stores keep what they were handed,
+/// counted with the charge while this lives: they are the world's, not what the engine holds.
+#[derive(Debug)]
+#[must_use = "the bytes count as kept only while this lives"]
+pub(crate) struct Kept(i64);
+
+impl Kept {
+    /// Keeps `bytes` this thread allocated, which count with the charge from now on.
+    pub(crate) fn held(bytes: usize) -> Self {
+        let bytes = i64::try_from(bytes).unwrap_or(i64::MAX);
+        account(bytes);
+        Self(bytes)
+    }
+}
+
+impl Clone for Kept {
+    /// A copy of what is kept is made on this thread, which counts it as it is made.
+    fn clone(&self) -> Self {
+        Self(0)
+    }
+}
+
+impl Drop for Kept {
+    fn drop(&mut self) {
+        account(-self.0);
+    }
+}
+
+/// What `run` makes, and the most the calling thread held beyond its charge while it ran.
+#[cfg(test)]
+pub(crate) fn beyond_charge<T>(run: impl FnOnce() -> T) -> (T, u64) {
+    let room = 1 << 30;
+    let window = Window::open();
+    let weight = Counterweight::hang(charged(), room, None);
+    let made = run();
+    assert!(!weight.lift().short, "the counterweight had room");
+    (made, window.close().saturating_sub(room))
+}
+
+/// Bytes: an allocation larger than what freeing any one kept value gives back.
+const PAST: usize = 256 << 20;
+
+/// Bytes: what dropping `value` gives back to the calling thread's count.
+///
+/// An allocation of [`PAST`] made and freed after the drop peaks at that, less what was given
+/// back. It is accounted for first, so a window around it sees nothing.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "a peak is a whole, non-negative number of bytes far below 2^53"
+)]
+pub(crate) fn freed<T>(value: T) -> usize {
+    let session = Session::new().no_stdout().no_file();
+    let operation = session.operation("freed");
+    let past = i64::try_from(PAST).unwrap_or(i64::MAX);
+    account(past);
+    let span = operation.measure_thread().iterations(1);
+    drop(value);
+    drop(std::hint::black_box(Vec::<u8>::with_capacity(PAST)));
+    drop(span);
+    account(-past);
+    let peak = session
+        .to_report()
+        .operations()
+        .find_map(|(_, operation)| operation.peak_outstanding_bytes())
+        .map_or(0, |peak| peak as usize);
+    assert!(
+        peak > 0,
+        "freeing a kept value gave back {PAST} bytes or more"
+    );
+    PAST - peak
 }
 
 /// Room accounted for the world's own work, given back when dropped.
@@ -236,7 +311,7 @@ impl Weight {
 }
 
 /// Bytes: what is charged on this thread now.
-pub(super) fn charged() -> i64 {
+pub(crate) fn charged() -> i64 {
     CHARGED.get()
 }
 

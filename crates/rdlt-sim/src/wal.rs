@@ -13,10 +13,20 @@ use parking_lot::Mutex;
 use rdlt_connector::{BoxFuture, LoadId, PipelineId};
 use rdlt_engine::{Chunk, StagedChunk, WalStore};
 
+use crate::oracle::Kept;
 use crate::rng::SplitMix64;
 
 /// Published chunks by pipeline and chunk.
-type Chunks = Arc<Mutex<BTreeMap<(PipelineId, Chunk), Bytes>>>;
+type Chunks = Arc<Mutex<BTreeMap<(PipelineId, Chunk), Published>>>;
+
+/// A chunk the store keeps once it is published: the simulated disk's, not the engine's, so what
+/// it holds counts as kept by the world until it is removed.
+#[derive(Debug)]
+struct Published {
+    bytes: Bytes,
+    /// Dropped after the bytes, so they are freed before they count again.
+    _kept: Kept,
+}
 
 /// Each log ever opened, by pipeline and load, and whether it is open still.
 type Logs = Arc<Mutex<BTreeMap<(PipelineId, LoadId), bool>>>;
@@ -54,10 +64,22 @@ struct Staged {
     key: (PipelineId, Chunk),
     crashed: u64,
     bytes: Vec<u8>,
+    /// What its bytes hold, the simulated disk's, as the store says it stages nothing the engine
+    /// charges; dropped after the bytes.
+    kept: Kept,
 }
 
 impl StagedChunk for Staged {
     fn append(&mut self, bytes: Bytes) -> BoxFuture<'_, io::Result<()>> {
+        let (len, capacity) = (self.bytes.len(), self.bytes.capacity());
+        let needed = len.saturating_add(bytes.len());
+        if needed > capacity {
+            // What the buffer grows to counts as kept before it grows.
+            let grown = needed.max(capacity.saturating_mul(2));
+            let kept = Kept::held(grown);
+            self.bytes.reserve_exact(grown - len);
+            self.kept = kept;
+        }
         self.bytes.extend_from_slice(&bytes);
         Box::pin(async { Ok(()) })
     }
@@ -73,11 +95,16 @@ impl StagedChunk for Staged {
             if self.logs.lock().get(&log) != Some(&true) || cleared != self.generation {
                 return Err(io::Error::from(io::ErrorKind::NotFound));
             }
-            let mut chunks = self.chunks.lock();
+            let store = Arc::clone(&self.chunks);
+            let mut chunks = store.lock();
             if chunks.contains_key(&self.key) {
                 return Err(io::Error::from(io::ErrorKind::AlreadyExists));
             }
-            chunks.insert(self.key.clone(), Bytes::from(self.bytes));
+            let Staged {
+                key, bytes, kept, ..
+            } = *self;
+            let bytes = Bytes::from(bytes);
+            chunks.insert(key, Published { bytes, _kept: kept });
             Ok(())
         });
         Box::pin(async move { published })
@@ -169,6 +196,7 @@ impl WalStore for SimWal {
             key: (pipeline.clone(), chunk),
             crashed,
             bytes: Vec::new(),
+            kept: Kept::held(0),
         };
         ready(Box::new(staged) as Box<dyn StagedChunk>)
     }
@@ -208,7 +236,7 @@ impl WalStore for SimWal {
             .lock()
             .iter()
             .filter(|((owner, chunk), _)| owner == pipeline && chunk.load == load)
-            .map(|((_, chunk), bytes)| (chunk.number, bytes.len() as u64))
+            .map(|((_, chunk), published)| (chunk.number, published.bytes.len() as u64))
             .collect();
         ready(chunks)
     }
@@ -221,7 +249,7 @@ impl WalStore for SimWal {
         len: u64,
     ) -> BoxFuture<'a, io::Result<Bytes>> {
         let chunks = self.chunks.lock();
-        let Some(bytes) = chunks.get(&(pipeline.clone(), chunk)) else {
+        let Some(Published { bytes, .. }) = chunks.get(&(pipeline.clone(), chunk)) else {
             return Box::pin(async { Err(io::Error::from(io::ErrorKind::NotFound)) });
         };
         let start = usize::try_from(offset)
