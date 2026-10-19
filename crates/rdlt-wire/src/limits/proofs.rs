@@ -47,6 +47,42 @@ fn any_limits() -> Limits {
     }
 }
 
+/// Each limit of a set, every field named so that none is missed.
+fn each(limits: &Limits) -> [u64; 14] {
+    let Limits {
+        frame_bytes,
+        batch_rows,
+        schema_columns,
+        nesting_depth,
+        json_push_bytes,
+        cursor_bytes,
+        config_bytes,
+        control_string_bytes,
+        batch_values,
+        schema_bytes,
+        dictionary_bytes,
+        catalog_bytes,
+        state_bytes,
+        control_message_bytes,
+    } = *limits;
+    [
+        frame_bytes,
+        batch_rows,
+        schema_columns,
+        nesting_depth,
+        json_push_bytes,
+        cursor_bytes,
+        config_bytes,
+        control_string_bytes,
+        batch_values,
+        schema_bytes,
+        dictionary_bytes,
+        catalog_bytes,
+        state_bytes,
+        control_message_bytes,
+    ]
+}
+
 /// The limits a handshake reads from what a peer sent: as sent, or the defaults where it sent
 /// none.
 fn read(sent: Option<v1::Limits>) -> Limits {
@@ -194,14 +230,16 @@ fn every_limit_set_a_handshake_admits_meets_every_minimum_and_rule() {
 ///
 /// Bound: none; every value of every limit at both ends.
 #[kani::proof]
-#[kani::unwind(6)]
+#[kani::unwind(18)]
 fn what_two_ends_agree_meets_every_minimum_both_meet() {
     let (one, other) = (any_limits(), any_limits());
     let agreed = one.lesser(&other);
     assert!(agreed == other.lesser(&one));
-    assert!(one.lesser(&one) == one);
-    assert!(agreed.lesser(&one) == agreed);
-    assert!(agreed.lesser(&other) == agreed);
+    let limits = each(&one).into_iter().zip(each(&other));
+    for ((mine, theirs), lesser) in limits.zip(each(&agreed)) {
+        assert!(lesser <= mine && lesser <= theirs);
+        assert!(lesser == mine || lesser == theirs);
+    }
     if one.admit_peer().is_ok() && other.admit_peer().is_ok() {
         assert!(agreed.admit_peer().is_ok());
     }
