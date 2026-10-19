@@ -1,5 +1,5 @@
 use std::num::NonZeroUsize;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -171,4 +171,134 @@ async fn each_job_is_timed_from_its_queueing_to_its_start_through_its_run_and_ba
         returned: Duration::from_secs(32 + 24),
     };
     assert_eq!(tally.counters().pool, counted);
+}
+
+/// An environment whose compute jobs run on its pool.
+struct On<P>(P);
+
+impl<P: ComputePool + 'static> Env for On<P> {
+    fn now(&self) -> SystemTime {
+        InlineEnv.now()
+    }
+
+    fn instant(&self) -> Instant {
+        InlineEnv.instant()
+    }
+
+    fn sleep(&self, duration: Duration) -> Sleep {
+        InlineEnv.sleep(duration)
+    }
+
+    fn random(&self) -> u64 {
+        InlineEnv.random()
+    }
+
+    fn compute(&self) -> &dyn ComputePool {
+        &self.0
+    }
+
+    fn cores(&self) -> NonZeroUsize {
+        NonZeroUsize::MIN
+    }
+}
+
+/// Jobs kept until they are run, as a pool whose threads are all busy keeps them.
+#[derive(Default)]
+struct Kept(Mutex<Vec<super::Job>>);
+
+impl ComputePool for Kept {
+    fn execute(&self, job: super::Job) {
+        self.0.lock().unwrap().push(job);
+    }
+}
+
+/// Runs each job on a thread of its own.
+struct Threads;
+
+impl ComputePool for Threads {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the job must run while the test's thread lets its caller go"
+    )]
+    fn execute(&self, job: super::Job) {
+        std::thread::spawn(job);
+    }
+}
+
+/// Notes in its order when it is dropped.
+struct Noted(&'static str, Arc<Mutex<Vec<&'static str>>>);
+
+impl Drop for Noted {
+    fn drop(&mut self) {
+        self.1.lock().unwrap().push(self.0);
+    }
+}
+
+/// Bounds every wait of a check.
+const WAIT: Duration = Duration::from_secs(60);
+
+/// Polls `call` once, which leaves it waiting for its jobs.
+fn waiting<F: Future>(call: std::pin::Pin<&mut F>) {
+    let waker = std::task::Waker::noop();
+    let polled = call.poll(&mut std::task::Context::from_waker(waker));
+    assert!(polled.is_pending(), "the jobs ended");
+}
+
+#[test]
+fn a_job_its_caller_stops_waiting_for_is_dropped_unrun_as_the_caller_lets_go() {
+    let kept = Arc::new(On(Kept::default()));
+    let pool = Pool::new(Arc::clone(&kept) as Arc<dyn Env>, Arc::default());
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let held = Noted("the job's", Arc::clone(&order));
+    let ran = Arc::new(AtomicBool::new(false));
+    let running = Arc::clone(&ran);
+    let job = move || {
+        running.store(true, Ordering::SeqCst);
+        drop(held);
+    };
+    let mut call = Box::pin(pool.run_all([job]));
+    waiting(call.as_mut());
+    drop(call);
+    order.lock().unwrap().push("let go");
+    for job in std::mem::take(&mut *kept.0.0.lock().unwrap()) {
+        job();
+    }
+    assert_eq!(*order.lock().unwrap(), ["the job's", "let go"]);
+    assert!(!ran.load(Ordering::SeqCst), "the job ran once let go");
+}
+
+#[test]
+fn a_caller_that_stops_waiting_waits_for_its_running_job_to_end() {
+    let pool = Pool::new(Arc::new(On(Threads)), Arc::default());
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let (started, has_started) = mpsc::channel();
+    let (go, goes) = mpsc::channel::<()>();
+    let ended = Noted("ended", Arc::clone(&order));
+    let job = move || {
+        started.send(()).unwrap();
+        goes.recv_timeout(WAIT).unwrap();
+        drop(ended);
+    };
+    let mut call = Box::pin(pool.run_all([job]));
+    waiting(call.as_mut());
+    has_started.recv_timeout(WAIT).unwrap();
+    let (gone, has_gone) = mpsc::channel();
+    let let_go = Noted("let go", Arc::clone(&order));
+    std::thread::scope(|scope| {
+        // The caller is let go on a thread of its own, which waits for the job.
+        scope.spawn(move || {
+            drop(call);
+            drop(let_go);
+            gone.send(()).unwrap();
+        });
+        let early = has_gone.recv_timeout(Duration::from_millis(100));
+        assert_eq!(
+            early,
+            Err(mpsc::RecvTimeoutError::Timeout),
+            "the caller did not wait"
+        );
+        go.send(()).unwrap();
+        has_gone.recv_timeout(WAIT).unwrap();
+    });
+    assert_eq!(*order.lock().unwrap(), ["ended", "let go"]);
 }

@@ -1,4 +1,8 @@
 //! The pool that runs CPU-bound work off the async runtime.
+//!
+//! The runtime's thread waits on the pool in one place: a caller let go while one of its jobs runs
+//! waits for that job, bounded CPU work, as it is dropped, so no job outlives what its caller
+//! charged for it.
 
 #[cfg(test)]
 mod tests;
@@ -6,11 +10,8 @@ mod tests;
 use std::num::NonZeroUsize;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::Arc;
-#[cfg(any(test, feature = "bench"))]
 use std::task::{Context, Poll, Waker};
-use std::time::Duration;
-
-use tokio::sync::oneshot;
+use std::time::{Duration, Instant};
 
 use crate::env::Env;
 use crate::report::Tally;
@@ -157,36 +158,47 @@ impl Pool {
     /// Runs every job of `work` on the pool, all at once, and returns their results in `work`'s
     /// order.
     ///
-    /// A panic inside a job resumes in the caller once the jobs before it have finished.
+    /// A panic inside a job resumes in the caller once the jobs before it have finished. No job
+    /// outlives its caller holding what the caller's charges cover: a caller that stops waiting
+    /// drops its jobs not yet started, and its drop waits, on the thread dropping it, for those
+    /// running to end, bounded CPU work that never waits on the runtime.
     pub(crate) async fn run_all<T, F>(&self, work: impl IntoIterator<Item = F>) -> Vec<T>
     where
         T: Send + 'static,
         F: FnOnce() -> T + Send + 'static,
     {
-        let receivers: Vec<_> = work
+        let slots = work
             .into_iter()
             .map(|job| {
-                let (sender, receiver) = oneshot::channel();
                 let env = Arc::clone(&self.env);
                 let queued = env.instant();
+                let slot = Arc::new(Slot::new(job));
+                let running = Arc::clone(&slot);
                 self.env.compute().execute(Box::new(move || {
+                    let Some(job) = running.start() else {
+                        return;
+                    };
+                    // Ends the slot however the run ends, handing the result back.
+                    let mut ending = Ending(&running, None);
                     let started = env.instant();
                     let done = panic::catch_unwind(AssertUnwindSafe(job));
                     let ran = Ran {
                         queued: started.saturating_duration_since(queued),
                         running: env.instant().saturating_duration_since(started),
                     };
-                    // The caller may have stopped waiting; its result is then not needed.
-                    drop(sender.send((done, ran)));
+                    ending.1 = Some((done, ran));
                 }));
-                (queued, receiver)
+                (queued, slot)
             })
             .collect();
-        let mut values = Vec::with_capacity(receivers.len());
-        for (queued, receiver) in receivers {
-            let (done, ran) = receiver
+        let mut waited = Waited { slots, taken: 0 };
+        let mut values = Vec::with_capacity(waited.slots.len());
+        while let Some((queued, slot)) = waited.slots.get(waited.taken) {
+            let (queued, slot) = (*queued, Arc::clone(slot));
+            let (done, ran) = std::future::poll_fn(|cx| slot.poll(cx))
                 .await
                 .expect("compute pools run every job they accept");
+            waited.taken += 1;
             let ended = queued + ran.queued + ran.running;
             let returned = self.env.instant().saturating_duration_since(ended);
             self.tally.add(|counters| {
@@ -202,6 +214,124 @@ impl Pool {
             }
         }
         values
+    }
+}
+
+/// What a job ran to, and how long it waited and ran.
+type Done<T> = (std::thread::Result<T>, Ran);
+
+/// A job handed to the pool and, once it ran, its result: the pool takes the job to run it, and
+/// a caller that stops waiting takes it to drop it unrun, or waits for it to end where it runs and
+/// drops what it made.
+struct Slot<F, T> {
+    state: parking_lot::Mutex<State<F, T>>,
+    ended: parking_lot::Condvar,
+}
+
+struct State<F, T> {
+    stage: Stage<F, T>,
+    /// The caller waiting for the result.
+    waker: Option<Waker>,
+}
+
+/// Where a job handed to the pool is.
+enum Stage<F, T> {
+    Waiting(F),
+    Running,
+    /// Ended, with its result until the caller takes it.
+    Ended(Option<Done<T>>),
+}
+
+impl<F, T> Slot<F, T> {
+    fn new(job: F) -> Self {
+        let state = State {
+            stage: Stage::Waiting(job),
+            waker: None,
+        };
+        Self {
+            state: parking_lot::Mutex::new(state),
+            ended: parking_lot::Condvar::new(),
+        }
+    }
+
+    /// The job, to run now; none where its caller let it go.
+    fn start(&self) -> Option<F> {
+        let mut state = self.state.lock();
+        match std::mem::replace(&mut state.stage, Stage::Running) {
+            Stage::Waiting(job) => Some(job),
+            other => {
+                state.stage = other;
+                None
+            }
+        }
+    }
+
+    /// Ends the job with `done`, what it ran to, for its caller.
+    fn end(&self, done: Option<Done<T>>) {
+        let waker = {
+            let mut state = self.state.lock();
+            state.stage = Stage::Ended(done);
+            state.waker.take()
+        };
+        self.ended.notify_all();
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+    }
+
+    /// The job's result once it ended; none where it ended without one.
+    fn poll(&self, cx: &mut Context<'_>) -> Poll<Option<Done<T>>> {
+        let mut state = self.state.lock();
+        if let Stage::Ended(done) = &mut state.stage {
+            return Poll::Ready(done.take());
+        }
+        state.waker = Some(cx.waker().clone());
+        Poll::Pending
+    }
+
+    /// Lets the job go: dropped unrun where it has not started, and where it runs, waited for and
+    /// what it made dropped.
+    fn abandon(&self) {
+        let mut state = self.state.lock();
+        if let Stage::Waiting(_) = &state.stage {
+            let unrun = std::mem::replace(&mut state.stage, Stage::Ended(None));
+            drop(state);
+            drop(unrun);
+            return;
+        }
+        while let Stage::Running = &state.stage {
+            self.ended.wait(&mut state);
+        }
+        let made = match &mut state.stage {
+            Stage::Ended(done) => done.take(),
+            _ => None,
+        };
+        drop(state);
+        drop(made);
+    }
+}
+
+/// Ends a running job's slot when dropped, with the result it holds, however the run ends.
+struct Ending<'a, F, T>(&'a Slot<F, T>, Option<Done<T>>);
+
+impl<F, T> Drop for Ending<'_, F, T> {
+    fn drop(&mut self) {
+        self.0.end(self.1.take());
+    }
+}
+
+/// The jobs of a call, the first `taken` of whose results its caller took; dropped, it lets the
+/// rest go.
+struct Waited<F, T> {
+    slots: Vec<(Instant, Arc<Slot<F, T>>)>,
+    taken: usize,
+}
+
+impl<F, T> Drop for Waited<F, T> {
+    fn drop(&mut self) {
+        for (_, slot) in self.slots.iter().skip(self.taken) {
+            slot.abandon();
+        }
     }
 }
 
