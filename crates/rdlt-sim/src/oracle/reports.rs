@@ -5,7 +5,7 @@ use rdlt_connector::{PartitionId, ReadMode, StreamName};
 use rdlt_engine::{Engine, PipelinePlan, Until};
 
 use super::scenario::{Executed, Scenario, execute_all};
-use super::{Simulation, plan, settle};
+use super::{Simulation, plan, settled};
 use crate::destination::committed_next;
 use crate::network::Placing;
 use crate::seed::Seed;
@@ -57,7 +57,7 @@ impl Reported<'_> {
                 executed.failures.last().map(|failure| &failure.text)
             );
         }
-        settle(seed).await;
+        settled(seed, self.world, self.placing).await;
         for ((stream, partition), told) in self.world.reports.read() {
             let committed = (self.stands)(self.world, &stream, &partition);
             assert!(
@@ -72,7 +72,7 @@ impl Reported<'_> {
         self.world.reports.refuse(true);
         let executed = self.run_again().await;
         let refused = self.world.reports.refuse(false);
-        settle(seed).await;
+        settled(seed, self.world, self.placing).await;
         // A stream every attempt reads again reports each partition state holds at a cursor,
         // so its run fails.
         let reporting: Vec<String> = self

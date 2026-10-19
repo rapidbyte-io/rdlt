@@ -12,7 +12,7 @@ use rdlt_testkit::canon::Canon;
 use super::config::{config, growth};
 use super::reports::Reported;
 use super::scenario::{Scenario, execute_all, pick};
-use super::{FAULTY_RUNS, settle};
+use super::{FAULTY_RUNS, settled};
 use crate::changes::{
     CHANGES_PARTITION, CHANGES_PHASE, ChangeStream, Logged, Merged, Position, ROUNDS, Version,
 };
@@ -63,7 +63,7 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>) -> Digest {
     for round in 0..ROUNDS {
         world.set_phase(round);
         converge(&engine, &plan, &world, &name, round, seed, &mut rng).await;
-        settle(seed).await;
+        settled(seed, &world, None).await;
         for stream in &world.changes.streams {
             check(&world, stream, round, seed);
         }
