@@ -37,8 +37,8 @@ fn first(load: LoadId) -> Horizon {
 /// The horizon is the load's own oldest commit or the first commit of another load listed,
 /// whichever is earlier, and no later than any of them.
 ///
-/// Bound: up to `LOADS` loads listed, any of them the load itself, each of any id, and the
-/// load's own oldest commit among its first `SEQS`.
+/// Bound: up to `LOADS` loads listed, any of them the load itself, each any of the ids
+/// `any_load` draws, and the load's own oldest commit among its first `SEQS`.
 #[kani::proof]
 #[kani::unwind(17)]
 fn the_horizon_is_the_earliest_commit_any_listed_log_may_repeat() {
@@ -65,9 +65,9 @@ fn the_horizon_is_the_earliest_commit_any_listed_log_may_repeat() {
 /// A later commit's horizon is never earlier than an earlier one's: the load's oldest commit
 /// only grows, and a log listed later was listed before or is a newer load's.
 ///
-/// Bound: two listings of up to `LOADS` loads, each of any id, the later holding only loads the
-/// earlier did or loads newer than the load itself, and two oldest commits among the first
-/// `SEQS`, the later no earlier.
+/// Bound: two listings of up to `LOADS` loads, each any of the ids `any_load` draws, the later
+/// holding only loads the earlier did or loads newer than the load itself, and two oldest
+/// commits among the first `SEQS`, the later no earlier.
 #[kani::proof]
 #[kani::unwind(17)]
 fn the_horizon_only_moves_forward() {
