@@ -257,11 +257,11 @@ jobs:
         if: always()
         run: if [[ -f target/instructions/report.md ]]; then cat target/instructions/report.md >> "$GITHUB_STEP_SUMMARY"; fi
 
-  # The formal checks' parts this change needs: Kani's proofs of each crate it touches that holds
-  # any, and the specs under `specs/` where it touches them; all of both where it touches the
-  # tools, the recipes or this workflow. A pull request's checkout is the change merged into its
-  # base, so the base is that merge's first parent; on main each push is compared with the one
-  # before.
+  # The formal checks' parts this change needs: Kani's proofs of each module that holds any in
+  # each crate it touches, and the specs under `specs/` where it touches them; all of both where
+  # it touches the tools, the recipes or this workflow. A pull request's checkout is the change
+  # merged into its base, so the base is that merge's first parent; on main each push is compared
+  # with the one before.
   formal-plan:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -310,10 +310,17 @@ jobs:
           github_token: ""
           install_args: --locked just github:quint-co/quint github:model-checking/kani
           cache_key_prefix: mise-v2-formal
+      # A crate's parts build the same, so they share its cache, keyed `kani:<crate>`.
+      - id: crate
+        if: matrix.part != 'quint'
+        run: |
+          echo "key=$(cut -d: -f1-2 <<< "${PART}")" >> "$GITHUB_OUTPUT"
+        env:
+          PART: ${{ matrix.part }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: matrix.part != 'quint'
         with:
-          key: ${{ matrix.part }}
+          key: ${{ steps.crate.outputs.key }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: just formal-part "${PART}"
         env:

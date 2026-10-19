@@ -198,10 +198,11 @@ fuzz target seconds="60":
     rustup toolchain install {{ nightly }} --profile minimal
     cargo +{{ nightly }} fuzz run {{ target }} --target "$(rustc -vV | sed -n 's/host: //p')" -- -max_total_time={{ seconds }}
 
-# Prove the Kani harnesses of `crate`, or of every crate that holds any, with Kani's release
-# bundle as mise.lock holds it: rustup installs the nightly the bundle was built with, a link in
-# the bundle names it, and its driver runs as `cargo kani` would run it; Linux x64 and macOS arm64
-kani crate="":
+# Prove the Kani harnesses of `crate`, or of every crate that holds any, or only those of the
+# proofs of `crate`'s `module`, a path such as `budget::admits`, with Kani's release bundle as
+# mise.lock holds it: rustup installs the nightly the bundle was built with, a link in the bundle
+# names it, and its driver runs as `cargo kani` would run it; Linux x64 and macOS arm64
+kani crate="" module="":
     #!/usr/bin/env bash
     set -euo pipefail
     bundle=$(mise where github:model-checking/kani)
@@ -213,18 +214,31 @@ kani crate="":
         exit 2
     fi
     crates="{{ crate }}"
-    [[ -n $crates ]] || crates=$(just --quiet proving)
+    module="{{ module }}"
+    [[ -z $module || -n $crates ]] || { echo "a module is proved with its crate named" >&2; exit 2; }
+    [[ -n $crates ]] || crates=$(just --quiet proving | cut -d: -f1 | sort -u)
     [[ -n $crates ]] || { echo "no crate holds a Kani harness" >&2; exit 2; }
     for crate in $crates; do
-        RUSTUP_TOOLCHAIN="$toolchain" PATH="$bundle/bin:$PATH" bash -c 'exec -a cargo-kani "$0" "$@"' "$bundle/bin/kani-driver" --package "$crate" --output-format terse
+        RUSTUP_TOOLCHAIN="$toolchain" PATH="$bundle/bin:$PATH" bash -c 'exec -a cargo-kani "$0" "$@"' "$bundle/bin/kani-driver" --package "$crate" ${module:+--harness "$module::proofs::"} --output-format terse
     done
 
-# The crates that hold Kani harnesses: those with a module only Kani compiles
+# The modules that hold Kani harnesses, those with a module only Kani compiles, one a line as
+# `<crate>:<module>`, such as `rdlt-engine:budget::admits` for `src/budget/admits.rs`, or as
+# `<crate>` alone for a crate whose root holds them, which stands for all of the crate's
 [private]
 proving:
     #!/usr/bin/env bash
     set -euo pipefail
-    grep -rlE --include='*.rs' '^[[:space:]]*#\[cfg\(kani\)\]$' crates | cut -d/ -f2 | sort -u
+    files=$(grep -rlE --include='*.rs' '^[[:space:]]*#\[cfg\(kani\)\]$' crates || true)
+    modules=$(for file in $files; do
+        [[ $file =~ ^crates/([^/]+)/src/(.+)\.rs$ ]] || { echo "$file holds Kani harnesses outside a library's src/" >&2; exit 2; }
+        module=${BASH_REMATCH[2]//\//::}
+        if [[ $module == lib ]]; then echo "${BASH_REMATCH[1]}"; else echo "${BASH_REMATCH[1]}:$module"; fi
+    done | sort -u)
+    for module in $modules; do
+        [[ $module == *:* ]] && grep -qx "${module%%:*}" <<< "$modules" && continue
+        echo "$module"
+    done
 
 # Check every spec under `specs/`: typecheck it, run its tests, simulate it against its
 # invariants (each a `val` whose name begins with a capital letter) as its `// quint steps:` and
@@ -401,9 +415,10 @@ formal-diff base="origin/main":
     for part in $(tr -d '[]"' <<< "$parts" | tr , ' '); do just formal-part "$part"; done
 
 # The parts of the formal checks that this branch's changes against `base`, uncommitted ones
-# included, need, as a JSON list: `kani:<crate>` for each changed crate that holds Kani harnesses,
-# and `quint` where `specs/` changed; every part where the tools, the recipes, the pull-request
-# workflow or any input of every crate's build changed
+# included, need, as a JSON list: `kani:<crate>:<module>` for each module of a changed crate that
+# holds Kani harnesses, `kani:<crate>` where the crate's root holds them, and `quint` where
+# `specs/` changed; every part where the tools, the recipes, the pull-request workflow or any
+# input of every crate's build changed
 [private]
 formal-parts base="origin/main":
     #!/usr/bin/env bash
@@ -413,20 +428,21 @@ formal-parts base="origin/main":
     proving=$(just --quiet proving)
     [[ -n $proving ]] || { echo "no crate holds a Kani harness" >&2; exit 2; }
     parts=()
-    for crate in $proving; do
-        if [[ -n $everything ]] || grep -q "^crates/$crate/" <<< "$changed"; then parts+=("\"kani:$crate\""); fi
+    for module in $proving; do
+        if [[ -n $everything ]] || grep -q "^crates/${module%%:*}/" <<< "$changed"; then parts+=("\"kani:$module\""); fi
     done
     if [[ -n $everything ]] || grep -q '^specs/' <<< "$changed"; then parts+=('"quint"'); fi
     (IFS=,; echo "[${parts[*]}]")
 
-# Run one part that `formal-parts` names: `kani:<crate>` proves the crate's harnesses, `quint`
-# checks the specs
+# Run one part that `formal-parts` names: `kani:<crate>:<module>` proves the module's harnesses,
+# `kani:<crate>` the crate's, `quint` checks the specs
 [private]
 formal-part part:
     #!/usr/bin/env bash
     set -euo pipefail
     part="{{ part }}"
     case $part in
+        kani:*:*) module=${part#kani:}; just kani "${module%%:*}" "${module#*:}" ;;
         kani:*) just kani "${part#kani:}" ;;
         quint) just quint ;;
         *) echo "no formal part is named $part" >&2; exit 2 ;;

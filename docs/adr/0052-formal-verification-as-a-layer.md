@@ -43,7 +43,8 @@ A formal layer is added to the layers of its class, never in place of one.
   the steps a sequence takes and the range each input is drawn from, or none, for a proof of one
   step from any state an invariant admits, which covers every sequence. A loop's unwinding,
   `#[kani::unwind]`, is one more than its steps.
-- `just kani <crate>` proves a crate's harnesses; `just kani` proves every crate's that holds any.
+- `just kani <crate>` proves a crate's harnesses; `just kani` proves every crate's that holds any;
+  `just kani <crate> <module>` proves those of one module's proofs, such as `budget::admits`'s.
 - Kani compiles every crate with `panic = "abort"`. A crate that contains a panic by unwinding
   refuses an aborting build with `#[cfg(all(panic = "abort", not(kani)))] compile_error!(..)`:
   Kani's build runs nothing it compiles, so no caught panic is at stake in it, and every other
@@ -56,9 +57,10 @@ A formal layer is added to the layers of its class, never in place of one.
   its own code, in the crate. Kani's output is not clean: its toolchain warns of the
   `register_tool` feature it forces and of deprecated methods in the engine, and it drops the
   arguments of an `unreachable!`, which warns of an unused variable; none comes from a proof.
-- A target whose proof does not finish within its job's limit at the least bound that still
-  states its property becomes a property test, with the reason here; no target is left with part
-  of its property proved.
+- A target whose proof alone does not finish within its job's limit at the least bound that
+  still states its property becomes a property test, with the reason here; no target is left
+  with part of its property proved. Proofs that only together come near the limit are split
+  into jobs of their own instead (below).
 - Kani 0.68.0 stops with an internal compiler error (`kani-compiler/src/intrinsics.rs:243`) on
   any harness that reaches a `parking_lot` lock, in the lock's slow path. Stubbing the lock's
   waits out (`#[kani::stub]` under `-Z stubbing`; sound, as a proof runs on one thread and never
@@ -87,7 +89,7 @@ A formal layer is added to the layers of its class, never in place of one.
   for the least ends beside whichever change its steps meet: over budgets up to 2^40 it meets the
   last for up to 24 reads, which the proof holds, and over every `u64` it would end at 53,690,299
   for one read. 24 reads hold both of what sets the least budget, a frame up to 16 reads and the
-  dictionaries from 17, and keep the proofs within the 15 minutes of `rdlt-engine`'s part of the
+  dictionaries from 17, and keep the proofs within the 15 minutes of their part of the
   `formal` check; past them each read keeps less, which leaves a frame no less, so `least`
   halves for at most 24 and takes the larger of that and what the reads' dictionaries need, twice
   the least dictionary for each in a quarter of the budget, exact as what a read keeps grows with
@@ -224,17 +226,23 @@ A formal layer is added to the layers of its class, never in place of one.
   `mise.lock`, the justfile or the pull-request workflow.
 - The pull-request workflow runs the parts of `just formal-diff` side by side, on Linux. Its
   `formal-plan` job asks `just formal-parts` which parts the change needs against its base: a
-  `kani:<crate>` part for each crate to prove, and a `quint` part for the specs. A `formal-part`
-  job for each runs it with `just formal-part`, within 15 minutes of its own; the `formal` job,
-  the check the ruleset requires, passes once every part has, or where the change needs none, so
-  it always reports. On GitHub's runners `rdlt-wire`'s part took 276 to 481 seconds over four
-  runs, nearly all of it its credit harness (271 to 450 seconds), and `quint` 16 seconds, each
-  beside a setup of about 25 seconds. `rdlt-engine`'s part took 300 to 481 seconds over nine
-  runs with its budget's three harnesses, 234 to 369 seconds of them proving, and the horizon's
-  two take another 210 to 360 on the same runners, scaled as the budget's are from a developer's
-  machine, so the part takes about 9 to 14 minutes. Each part is within its limit, the engine's
-  with one minute to spare on the slowest runner, where the three in turn exceed 15 minutes on a
-  slow runner.
+  part for each module that holds proofs in each crate the change touches, such as
+  `kani:rdlt-engine:budget::admits`, which proves the harnesses beneath the module's `proofs`
+  (Kani's `--harness budget::admits::proofs::`), a `kani:<crate>` part where a crate's root holds
+  them, and a `quint` part for the specs. A `formal-part` job for each runs it with
+  `just formal-part`, within 15 minutes of its own, from a build cache the crate's parts share;
+  the `formal` job, the check the ruleset requires, passes once every part has, or where the
+  change needs none, so it always reports.
+- On GitHub's runners `rdlt-wire`'s `flow` part took 276 to 481 seconds over four runs, nearly
+  all of it its credit harness (271 to 450 seconds), and `quint` 16 seconds, each beside a setup
+  of about 25 seconds. `rdlt-engine`'s five harnesses took 838 seconds in one job, against a
+  limit of 900: `budget::admits`'s two 228 and 95 seconds, `budget::ledger`'s one 22, and
+  `coordinator::horizon`'s two 28 and 394, beside about 70 seconds of compiling and setup. As
+  parts of their own, `coordinator::horizon`'s takes about 8 minutes, `budget::admits`'s about 7
+  and `budget::ledger`'s about 2.
+- A part that comes near its limit is split further, by module: its harnesses are divided
+  between modules, each with proofs of its own and so a part of its own. Only a harness that
+  alone would pass the limit becomes a property test.
 - The nightly workflow's `kani` job proves every harness, and its `quint-verify` job model-checks
   every specification.
 
