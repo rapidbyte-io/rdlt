@@ -104,7 +104,6 @@ impl DestinationSession for Recorder {
 struct Listener {
     acks: Acks,
     commits: Commits,
-    /// How many commits had landed as each acknowledgement was made.
     heard: Heard,
     /// Streams that cannot read again, which hear before their commit lands.
     early: Vec<StreamName>,
@@ -139,13 +138,14 @@ impl Source for Listener {
         cursors: &'a [(PartitionId, Cursor)],
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
+            let landed = self.commits.lock().len();
             tokio::time::sleep(self.pace).await;
             assert!(
                 self.early.contains(stream) || !self.commits.lock().is_empty(),
                 "acknowledged before any commit landed"
             );
             self.acks.lock().push((stream.clone(), cursors.to_vec()));
-            self.heard.lock().push(self.commits.lock().len());
+            self.heard.lock().push(landed);
             Ok(())
         })
     }

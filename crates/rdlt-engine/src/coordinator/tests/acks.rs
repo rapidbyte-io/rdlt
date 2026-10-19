@@ -123,6 +123,7 @@ proptest! {
                 match committed {
                     Some(PartitionState::Cursor(standing)) => {
                         let standing_at = sealed[at].iter().position(|sealed| *sealed == standing);
+                        prop_assert!(standing_at.is_some(), "{id}'s commit recorded a cursor it never sealed");
                         prop_assert!(told_at <= standing_at, "{id} was told a cursor ahead of its commit");
                     }
                     Some(PartitionState::Done) => {}
@@ -130,8 +131,11 @@ proptest! {
                 }
             }
         }
+        for commit in &commits {
+            prop_assert!(commit.horizon.is_some(), "commit {:?} carries no horizon", commit.commit_seq);
+        }
         for pair in commits.windows(2) {
-            prop_assert!(pair[0].horizon.is_some() && pair[0].horizon <= pair[1].horizon);
+            prop_assert!(pair[0].horizon <= pair[1].horizon, "commit {:?}'s horizon is earlier than its predecessor's", pair[1].commit_seq);
         }
     }
 }
