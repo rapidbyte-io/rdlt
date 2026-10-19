@@ -17,6 +17,7 @@ use push::batch;
 pub(crate) use push::json_push;
 
 use crate::destination::committed_next;
+use crate::owners::Live;
 use crate::workload::{Row, SimStream};
 use crate::world::{FaultPoint, World};
 
@@ -167,6 +168,8 @@ impl ReadStream<SimSource> for SimStreamReader {
         out: &mut Emitter<SimCursor>,
     ) -> Result<()> {
         let world = &source.world;
+        // Counted among its world's reads until it ends or is dropped.
+        let _read = Live::of(&[&world.owners.reads]);
         let stream = self.stream(source);
         let index = partition_index(partition)?;
         if !stream.replayable {

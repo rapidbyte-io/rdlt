@@ -10,10 +10,12 @@ mod store;
 mod tests;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::UNIX_EPOCH;
 
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
+use rdlt_connector::limits::ListenLimits;
 use rdlt_connector::{
     Capabilities, CommitMeta, ConnectContext, ConnectorError, DestinationConnector, Epoch,
     GenerationId, MergeKey, OpenContext, Opened, PipelineId, Receipt, Result, SchemaVersion,
@@ -22,6 +24,7 @@ use rdlt_connector::{
 use schemars::JsonSchema;
 use serde::Deserialize;
 
+use crate::owners::Live;
 use crate::world::{FaultPoint, World};
 
 pub(crate) use cells::WRITTEN;
@@ -44,6 +47,9 @@ pub struct SimDestinationConfig {
 #[derive(Debug)]
 pub struct SimDestination {
     world: Arc<World>,
+    /// The sessions it holds now, each from before it opens until its close ends: those of one
+    /// connection, where it is served.
+    sessions: Arc<AtomicUsize>,
 }
 
 impl DestinationConnector for SimDestination {
@@ -59,7 +65,10 @@ impl DestinationConnector for SimDestination {
     async fn connect(config: SimDestinationConfig, _context: &ConnectContext) -> Result<Self> {
         let world = World::named(&config.world)
             .ok_or_else(|| ConnectorError::config(format!("no world named {}", config.world)))?;
-        Ok(Self { world })
+        Ok(Self {
+            world,
+            sessions: Arc::default(),
+        })
     }
 
     async fn check(&self) -> Result<()> {
@@ -67,6 +76,17 @@ impl DestinationConnector for SimDestination {
     }
 
     async fn open(&self, context: &OpenContext) -> Result<Opened<SimSession>> {
+        // A session counts from before its destination opens it, as a served connection
+        // counts it, so an open in flight counts too.
+        let held = Live::of(&[&self.sessions, &self.world.owners.sessions]);
+        let holding = self.sessions.load(Ordering::SeqCst);
+        let bound = ListenLimits::default().connection_sessions();
+        if holding > bound {
+            self.world.violation(format!(
+                "a destination held {holding} sessions at once, beyond the {bound} one \
+                 connection may hold"
+            ));
+        }
         self.world.latency().await;
         if let Some(fault) = self.world.fault(FaultPoint::Open) {
             return Err(fault);
@@ -85,6 +105,7 @@ impl DestinationConnector for SimDestination {
                 world: Arc::clone(&self.world),
                 pipeline: context.pipeline.clone(),
                 epoch: pipeline.epoch,
+                _held: held,
             },
             epoch: pipeline.epoch,
             state: pipeline.state.values().cloned().collect(),
@@ -98,6 +119,9 @@ pub struct SimSession {
     world: Arc<World>,
     pipeline: PipelineId,
     epoch: Epoch,
+    /// Counts it among its destination's sessions and its world's, until it is dropped, which
+    /// a close does once it ends.
+    _held: Live,
 }
 
 impl Session for SimSession {
@@ -137,6 +161,7 @@ impl Session for SimSession {
             generation: table.generation,
             merge: table.merge.clone(),
             buffered: Vec::new(),
+            _held: Live::of(&[&self.world.owners.writers]),
         })
     }
 
@@ -219,6 +244,8 @@ pub struct SimWriter {
     generation: Option<GenerationId>,
     merge: Option<MergeKey>,
     buffered: Vec<(SegmentId, Vec<Stored>)>,
+    /// Counts it among its world's writers until it is dropped.
+    _held: Live,
 }
 
 impl TableWriter for SimWriter {

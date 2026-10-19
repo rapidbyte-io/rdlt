@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use super::history;
 use super::workload::{ChangeStream, Event, Merged};
+use crate::owners::Live;
 use crate::world::{FaultPoint, World};
 
 /// The phase a stream reads its changes in.
@@ -169,6 +170,8 @@ impl ReadStream<SimChangeSource> for Reader {
         out: &mut Emitter<Position>,
     ) -> Result<()> {
         let (world, stream) = (&source.world, self.stream(source));
+        // Counted among its world's reads until it ends or is dropped.
+        let _read = Live::of(&[&world.owners.reads]);
         if !stream.replayable {
             let key = (stream.name.clone(), partition.id().to_string());
             let forgotten = world.acknowledged.lock().get(&key).copied();
