@@ -103,3 +103,18 @@ fn a_seed_whose_rows_only_the_log_held_passes() {
     let drawn = Features::draw(&mut SplitMix64::new(61));
     assert_eq!(recorded["features"], serde_json::to_value(drawn).unwrap());
 }
+
+/// A seed's attempts are measured, so the check cannot switch itself off: its timing line records
+/// what the worst held and what its runs account for, in process and over the network.
+#[test]
+fn attempts_are_measured_in_process_and_over_the_network() {
+    let (in_process, network) = (Seed::new(1), Seed::new(508));
+    assert!(!Features::draw(&mut SplitMix64::new(1)).network);
+    assert!(Features::draw(&mut SplitMix64::new(508)).network);
+    for seed in [in_process, network] {
+        let recorded = check_exactly_once(seed).recorded();
+        let held = recorded["held_bytes"].as_u64().expect("held is recorded");
+        let bound = recorded["bound_bytes"].as_u64().expect("bound is recorded");
+        assert!(held > 0 && bound > 0, "{recorded:?}");
+    }
+}

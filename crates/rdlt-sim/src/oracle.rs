@@ -102,7 +102,12 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>, hangs: bo
     );
     let (limits, budget) = (config.limits(), config.memory().get());
     let partitions = u64::try_from(config.partitions().get()).unwrap_or(u64::MAX);
-    let allowance = memory::allowance(seed, env.inline(), net.is_some());
+    let allowance = memory::allowance(
+        seed,
+        env.inline(),
+        net.is_some(),
+        world.workload.features.wal,
+    );
     world.press(pressed(seed, &config, &world.workload, small_log(&config)));
     let engine = Engine::new(config, env);
     let placing = net.map(|net| Placing::new(net, &network::options(&mut rng, limits)));
