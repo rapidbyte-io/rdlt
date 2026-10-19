@@ -3,8 +3,11 @@
 //! merge of a merge table's rows is the SDK's.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
-use arrow_array::RecordBatch;
+use arrow_array::cast::AsArray as _;
+use arrow_array::{ArrayRef, RecordBatch, RecordBatchOptions, UInt32Array};
+use arrow_schema::DataType;
 use rdlt_connector::{ColumnKey, ColumnPath, ConnectorError, NameMap, Result, TableSchema};
 use rdlt_testkit::canon::Canon;
 use rdlt_testkit::decode;
@@ -27,7 +30,7 @@ pub struct Stored {
     pub row: RecordBatch,
 }
 
-/// The rows of `batch`.
+/// The rows of `batch`, each holding buffers of its own rather than the batch's.
 pub(crate) fn rows(batch: &RecordBatch) -> Result<Vec<Stored>> {
     let schema = TableSchema::from_arrow(&batch.schema())
         .map_err(|error| ConnectorError::data(format!("reading a batch: {error}")))?;
@@ -45,10 +48,32 @@ pub(crate) fn rows(batch: &RecordBatch) -> Result<Vec<Stored>> {
                 .collect();
             Stored {
                 cells,
-                row: batch.slice(row, 1),
+                row: apart(&batch.slice(row, 1)),
             }
         })
         .collect())
+}
+
+/// `row`, a batch of one row, copied into buffers of its own.
+///
+/// A slice keeps every buffer of the batch it was cut from, and the world keeps its rows for as
+/// long as it lives. A row of a type that cannot be taken stays the slice it is.
+fn apart(row: &RecordBatch) -> RecordBatch {
+    let Ok(taken) = arrow_select::take::take_record_batch(row, &UInt32Array::from(vec![0_u32]))
+    else {
+        return row.clone();
+    };
+    let columns: Vec<ArrayRef> = taken
+        .columns()
+        .iter()
+        .map(|column| match column.data_type() {
+            DataType::Utf8View => Arc::new(column.as_string_view().gc()) as ArrayRef,
+            DataType::BinaryView => Arc::new(column.as_binary_view().gc()) as ArrayRef,
+            _ => Arc::clone(column),
+        })
+        .collect();
+    let options = RecordBatchOptions::new().with_row_count(Some(1));
+    RecordBatch::try_new_with_options(taken.schema(), columns, &options).unwrap_or(taken)
 }
 
 /// The whole number `row` holds in the column `names` gives the source column `column`, stored

@@ -40,6 +40,19 @@ fn batch(columns: Vec<(&str, ArrayRef)>) -> RecordBatch {
     RecordBatch::try_from_iter(columns).unwrap()
 }
 
+#[test]
+fn a_stored_row_keeps_alive_its_own_values_not_its_batch() {
+    let ids: ArrayRef = Arc::new(Int64Array::from_iter_values(0..65_536));
+    let texts: ArrayRef = Arc::new(StringArray::from_iter_values(
+        (0..65_536).map(|row| format!("value {row}")),
+    ));
+    let stored = cells::rows(&batch(vec![("id", ids), ("text", texts)])).unwrap();
+    let kept = stored[7].row.get_array_memory_size();
+    assert!(kept < 1 << 10, "a row kept {kept} bytes alive");
+    assert_eq!(stored[7].cells["id"], Canon::Number("7".into()));
+    assert_eq!(stored[7].cells["text"], Canon::Text("value 7".into()));
+}
+
 /// The violations and results of writing `batches` to a table created with `id: Int64`, then of
 /// adding `extra` at `extra`'s type.
 fn session_over(
