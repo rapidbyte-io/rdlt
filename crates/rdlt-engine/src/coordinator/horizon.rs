@@ -1,6 +1,8 @@
 //! The oldest commit a replay may still repeat, which each commit declares so its destination
 //! may forget the receipts of the commits before it.
 
+#[cfg(kani)]
+mod proofs;
 #[cfg(test)]
 mod tests;
 
