@@ -528,7 +528,9 @@ module exactly_once_protocol {
 }
 
 /// The protocol at the bounds every checker explores: the first pipeline reads `a`, whose source
-/// reads again, and `u`, whose source does not, two rows each; the second reads `b`, one row.
+/// reads again, and `u`, whose source does not, two rows each; the second reads `b`, one row. A
+/// fault may end two runs, so each pipeline may start one run more than twice the faults: whatever
+/// the faults end, a run remains that meets none.
 module exactly_once {
   import exactly_once_protocol(
     PIPES = Set("p", "q"),
@@ -536,7 +538,7 @@ module exactly_once {
     OWNER = Map("a" -> "p", "u" -> "p", "b" -> "q"),
     REREADS = Set("a", "b"),
     ROWS = Map("a" -> 2, "u" -> 2, "b" -> 1),
-    LOADS = 4,
+    LOADS = 5,
     FAULTS = 2,
   ).*
 
@@ -713,6 +715,26 @@ module exactly_once {
       .expect(not(live.contains(p(1))) and dest.get("p").cursor.get("a") == 0 and FencedNeverCommits)
       .then(3.reps(_ => replay(p(2), Ok)))
       .expect(dest.get("p").cursor.get("a") == 1 and runOf(p(2)).stage == Reading and ExactlyOnce)
+
+  /// Two runs started together each replay the other's log, empty, and remove it, so neither has a
+  /// log to commit to: one fault ends both.
+  run aRunStartedBesideAnotherMayEndBothTest =
+    init
+      .then(start("p"))
+      .then(start("p"))
+      .then(replay(p(1), Ok))
+      .then(replay(p(2), Ok))
+      .then(replay(p(1), Ok))
+      .then(replay(p(2), Ok))
+      .then(replay(p(1), Ok))
+      .then(replay(p(2), Ok))
+      .then(read(p(1), "a"))
+      .then(checkpoint(p(1), "a"))
+      .then(log(p(1), Ok))
+      .then(read(p(2), "a"))
+      .then(checkpoint(p(2), "a"))
+      .then(log(p(2), Ok))
+      .expect(live == Set() and faults == FAULTS - 1 and dest.get("p").cursor.get("a") == 0)
 
   /// A run of the second pipeline opens its own session: the first pipeline's run, opened before,
   /// still commits.
