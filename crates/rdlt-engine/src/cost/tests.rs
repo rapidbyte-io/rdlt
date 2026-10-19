@@ -75,6 +75,43 @@ pub(crate) fn held_alone<T>(mut make: impl FnMut() -> T) -> (u64, T) {
     (u64::try_from(held).unwrap(), make())
 }
 
+/// What a thread that runs `run` keeps on the heap once it has run, beyond what the heap held as
+/// it began, the least over eight threads each counted only where the heap holds what it began
+/// with once the thread has ended.
+pub(crate) fn kept_alone(run: impl Fn() + Sync) -> u64 {
+    let mut least: Option<usize> = None;
+    for _ in 0..8 {
+        let before = HEAP.current_usage();
+        let kept = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let began = HEAP.current_usage();
+                    run();
+                    HEAP.current_usage().saturating_sub(began)
+                })
+                .join()
+                .expect("the thread ran")
+        });
+        if HEAP.current_usage() == before && least.is_none_or(|low| kept < low) {
+            least = Some(kept);
+        }
+    }
+    let kept = least.expect("a thread ended with the heap holding what it began with");
+    u64::try_from(kept).unwrap()
+}
+
+#[test]
+fn what_a_thread_keeps_is_measured_where_the_heap_is_as_it_began_once_it_ends() {
+    thread_local! {
+        static KEPT: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    let kept = kept_alone(|| {
+        KEPT.with_borrow_mut(|kept| kept.reserve_exact(2_000));
+        drop(std::hint::black_box(vec![0_u8; 5_000]));
+    });
+    assert_eq!(kept, 2_000);
+}
+
 #[test]
 fn a_peak_is_measured_in_a_window_that_ends_with_the_heap_as_it_began() {
     let mut beside = Vec::new();
