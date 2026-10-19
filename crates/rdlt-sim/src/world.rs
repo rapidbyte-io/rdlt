@@ -459,13 +459,6 @@ impl World {
 
     /// Whether the connector placed next goes to the peer that stalls, as the draw says where
     /// faults are on.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "only tests place connectors on a peer that stalls"
-        )
-    )]
     pub(crate) fn stalls(&self) -> bool {
         let faulty = self.faulty.load(Ordering::SeqCst);
         self.hangs.lock().stalls(faulty)
