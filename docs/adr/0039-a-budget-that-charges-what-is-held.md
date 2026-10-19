@@ -444,10 +444,11 @@ admitted, and what a remote connector's calls hold in transport.
   some pushes up to their limit. The world keeps its rows apart from the batches they were
   written in, and the short form of each fat value. Fat data does not set the allowance: the
   worst excess of a seed with a log is the world's copies of it, and fat worlds keep no log.
-  The check does not see every defect. With a JSON flush's text kept past its charge, or JSON
-  rendered uncharged, no seed of 20 000 fails, the worst passing by 1.8 MiB short of its
-  allowance; the thread holds up to 17.9 MB more, which the bound's own room for a fat JSON
-  seed hides. The shredder's heap tests hold both. A body that copies its message before taking
+  The check does not see every defect. With a JSON flush's text kept past its charge, the
+  thread holds up to 17.9 MB more, which the bound's own room for a fat JSON seed hides; with
+  JSON rendered uncharged, no seed holds measurably more (960 bytes at most). No seed of
+  20 000 fails either way, the worst passing 1.8 MiB short of its allowance. The shredder's
+  heap tests hold both. A body that copies its message before taking
   room holds one transport frame, which the network's allowance hides; the adversarial
   connector of the hostile-peer tests holds that. Seeds that change rows are not measured.
   `alloc_tracker` is kept out of `rdlt-adopt`, which holds the two audited files ADR 0048
