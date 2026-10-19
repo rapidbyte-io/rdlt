@@ -4,8 +4,8 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use proptest::prelude::*;
 use rdlt_connector::{
-    Cursor, LoadId, PartitionId, PartitionState, PipelineState, StateChange, StateEntry, StateKey,
-    StreamName, StreamState,
+    Cursor, GenerationId, LoadId, PartitionId, PartitionState, PipelineState, StateChange,
+    StateEntry, StateKey, StreamName, StreamState,
 };
 
 use super::Positions;
@@ -180,8 +180,9 @@ fn done_partitions_are_listed_the_earliest_recorded_first_as_commits_move_them()
     );
 }
 
-/// The streams and partitions a property's changes name.
+/// The streams a property's changes name.
 const STREAMS: [&str; 2] = ["orders", "users"];
+/// The partitions a property's changes name, in each stream.
 const PARTITIONS: [&str; 3] = ["p0", "p1", "p2"];
 
 /// One change a commit records.
@@ -197,6 +198,10 @@ enum Change {
     Unphased(usize),
     /// A record of no position or phase: the load whose commit first reached the destination.
     Other(u64),
+    /// A record of no position or phase beside a stream's: the generation it cycles to.
+    Cycled(usize, u64),
+    /// A stream's generation record deleted, as its cycle completes.
+    Uncycled(usize),
 }
 
 fn change() -> impl Strategy<Value = Change> {
@@ -206,8 +211,11 @@ fn change() -> impl Strategy<Value = Change> {
             .prop_map(|(name, id, next, seconds)| Change::Position(name, id, next, seconds)),
         2 => (streams.clone(), partitions).prop_map(|(name, id)| Change::Unplaced(name, id)),
         1 => (streams.clone(), any::<u16>()).prop_map(|(name, phase)| Change::Phase(name, phase)),
-        1 => streams.prop_map(Change::Unphased),
+        1 => streams.clone().prop_map(Change::Unphased),
         1 => (1_u64..4).prop_map(Change::Other),
+        1 => (streams.clone(), any::<u64>())
+            .prop_map(|(name, generation)| Change::Cycled(name, generation)),
+        1 => streams.prop_map(Change::Uncycled),
     ]
 }
 
@@ -232,6 +240,16 @@ fn written(change: &Change) -> StateChange {
             StateChange::Delete(StateKey::Phase(stream(STREAMS[name])).encode())
         }
         Change::Other(seconds) => StateChange::Put(StateEntry::Origin(load(seconds)).to_record()),
+        Change::Cycled(name, generation) => StateChange::Put(
+            StateEntry::Generation {
+                stream: stream(STREAMS[name]),
+                generation: GenerationId(generation),
+            }
+            .to_record(),
+        ),
+        Change::Uncycled(name) => {
+            StateChange::Delete(StateKey::Generation(stream(STREAMS[name])).encode())
+        }
     }
 }
 
@@ -269,7 +287,7 @@ proptest! {
                     Change::Unphased(name) => {
                         phases.remove(&name);
                     }
-                    Change::Other(_) => {}
+                    Change::Other(_) | Change::Cycled(..) | Change::Uncycled(_) => {}
                 }
             }
         }
