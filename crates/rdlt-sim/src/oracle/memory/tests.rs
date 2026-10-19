@@ -74,7 +74,7 @@ fn the_bound_gains_the_pushes_a_connector_queues_over_the_network() {
         pushes: 1 + super::QUEUED,
         ..account()
     };
-    assert_eq!(account.bound(), 1000 + 2 * 3 * 33 * 10);
+    assert_eq!(account.bound(), 1000 + 2 * 3 * 23 * 10);
 }
 
 #[test]

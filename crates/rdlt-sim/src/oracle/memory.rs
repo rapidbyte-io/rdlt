@@ -28,13 +28,15 @@ const NETWORK: u64 = 16 << 20;
 /// Bytes: as [`NETWORK`], for a seed that keeps a write-ahead log.
 const NETWORK_LOGGED: u64 = 19 << 20;
 
-/// Pushes a connector serving a read over the network holds for each partition, beyond what
-/// the engine admits.
+/// Pushes a connector serving a read over the network may hold for each partition, beyond what
+/// the engine admits, each place holding at most one.
 ///
-/// They are the events its source may send ahead of the frames waiting for credit, and those
-/// frames. A frame is cut from an event, and may be a whole push, so each queue may hold as many
-/// pushes as it has places.
-const QUEUED: u64 = 32;
+/// They are the sixteen events its source may send ahead, a push the source waits to send, the
+/// batch being cut and its piece waiting for credit, and the frames that credit lets go before
+/// the host takes them: a window of two of the largest frames and one sent past it. Where the
+/// pushes are smaller than half the credit floor, the window is the floor's, and the allowance
+/// holds it.
+const QUEUED: u64 = 16 + 1 + 2 + 3;
 
 /// Bytes: the allowance of `seed`'s attempts, where its work is `inline` on one thread, its
 /// connectors listen on the network where `network`, and it keeps a write-ahead log where
