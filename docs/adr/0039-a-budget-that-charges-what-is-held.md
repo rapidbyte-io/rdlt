@@ -427,32 +427,37 @@ admitted, and what a remote connector's calls hold in transport.
   each in a process of its own, with glibc's defaults and with the tunables a spawned
   connector gets, and holds the process's resident peak to the budget's bound, one push, and
   2 MiB of stack a thread.
-- **The simulation holds every attempt to it on the heap.** Its test binary counts each
-  thread's live bytes (`alloc_tracker`, a counting allocator kept per thread, installed in the
+- **The simulation holds its attempts to it on the heap.** Its test binary counts each thread's
+  live bytes (`alloc_tracker`, a counting allocator kept per thread, installed in the
   simulation's test binaries alone); a seed's runs share its thread, compute inline, while seeds
   run side by side on other threads. Over each attempt, the most the thread holds beyond what it
   held as the attempt began stays within the runs' reserved peaks, a whole budget for each run
-  dropped, the largest push its source made for each partition each run reads, and an
+  dropped, the most its source held at once of pushes made and not yet sent on, and an
   allowance. Where the connectors listen on the simulated network and share the thread, each
-  partition counts 22 pushes: the 16 events a source sends ahead, the push it waits to send,
-  the batch being cut and its piece waiting for credit, and the 3 frames that credit lets go.
-  The allowance is the next whole mebibyte above five quarters of the most seeds 0 to 9999
-  needed, apart by where the connectors run and by a write-ahead log, whose copies of its frames
-  the world holds too: 11 MiB in process and 20 MiB with a log, 16 MiB over the network and
-  19 MiB with a log. It is found in a world of fat values: a wide object of JSON on every
-  eighth record of a stream pushing JSON, up to a sixteenth of the least push, and spaces beside
-  some pushes up to their limit. The world keeps its rows apart from the batches they were
-  written in, and the short form of each fat value. Fat data does not set the allowance: the
-  worst excess of a seed with a log is the world's copies of it, and fat worlds keep no log.
-  The check does not see every defect. With a JSON flush's text kept past its charge, the
-  thread holds up to 17.9 MB more, which the bound's own room for a fat JSON seed hides; with
-  JSON rendered uncharged, no seed holds measurably more (960 bytes at most). No seed of
-  20 000 fails either way, the worst passing 1.8 MiB short of its allowance. The shredder's
-  heap tests hold both. A body that copies its message before taking
-  room holds one transport frame, which the network's allowance hides; the adversarial
-  connector of the hostile-peer tests holds that. Seeds that change rows are not measured.
-  `alloc_tracker` is kept out of `rdlt-adopt`, which holds the two audited files ADR 0048
-  keeps, and its `unsafe` is a dependency's, which ADR 0048's checks do not see, as
+  partition each run reads counts 20 more of the attempt's largest push: the host's push waiting
+  for admission, the 16 events a source sends ahead, the batch being cut and its piece waiting
+  for credit, and a frame sent past its credit. It counts too what a remote connector's calls
+  hold in transport: the frames credit lets go before the host takes them, two of the largest or
+  the host's credit floor of 4 MiB, whichever is more. The allowance is the next whole mebibyte
+  above five quarters of the most seeds 0 to 99 999 needed, apart by where the connectors run
+  and by a write-ahead log, whose copies of its frames the world holds too: 13 MiB in process
+  and 22 MiB with a log, 11 MiB over the network and 17 MiB with a log. It is found in a world
+  of fat values: a wide object of JSON on every eighth record of a stream pushing JSON, up to a
+  sixteenth of the least push, and spaces beside some pushes up to their limit. The world keeps
+  its rows apart from the batches they were written in, and the short form of each fat value.
+  Fat data does not set the allowance: fat worlds keep no log, and the most a fat world needed
+  is less than one without, 9.9 MB to 10.6 MB in process and 5.1 MB to 9.2 MB over the network.
+  Not measured: seeds that change rows, seeds under stress, whose compute runs on Rayon's
+  threads, and the runs with nothing new that check the reports a source hears. The check finds
+  none of the three defects it was built for. A JSON flush that gives back its text's charge
+  while it holds the text had that charge at its run's peak, and the bound is the peaks, not
+  what is reserved at each moment: with that fix undone, no seed of 20 000 fails, the worst
+  holding 5.0 MB beyond its bound. Rendering JSON uncharged draws from room reserved beforehand,
+  so no peak moves. A body that copies its message before taking room holds one transport frame,
+  which the network's allowance hides. The shredder's heap tests hold the first two, and
+  `rdlt-wire`'s `a_message_behind_one_passed_on_from_its_chunk_takes_room_before_it_is_copied`
+  the third. `alloc_tracker` is kept out of `rdlt-adopt`, which holds the two audited files ADR
+  0048 keeps, and its `unsafe` is a dependency's, which ADR 0048's checks do not see, as
   `peak_alloc`'s is.
 
 ## Consequences
