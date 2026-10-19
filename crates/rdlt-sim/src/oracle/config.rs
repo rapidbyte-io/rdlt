@@ -173,7 +173,8 @@ pub(super) fn pressed(
     if config.growth().log_bytes().get() < 128 << 10 {
         return Pressure::default();
     }
-    // Spaces fill a spaced push up to its limit, or the frame a transport carries it in, beside the widest fat value it may carry.
+    // Spaces fill a spaced push up to its limit, or the frame a transport carries it in, beside
+    // the widest fat value it may carry.
     if workload.features.fat {
         let limits = config.limits();
         let room = limits
