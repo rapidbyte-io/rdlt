@@ -106,9 +106,11 @@ A formal layer is added to the layers of its class, never in place of one.
   A specification's names never reuse one that a standard TLA+ module defines, such as `Head`,
   because TLC reads the translation and rejects the clash.
 - `just quint` typechecks each, runs its tests (its `run` definitions whose names end in `Test`),
-  and simulates 10,000 runs of up to 20 steps against its invariants. `just quint-verify` checks
-  each invariant with Apalache over every run of up to ten steps, and each invariant and temporal
-  property with TLC over every state the specification reaches, which needs every domain finite.
+  and simulates runs against its invariants, as many and as long as its header says.
+  `just quint-verify` checks each invariant with Apalache over every run of up to ten steps, or
+  as many as a `// quint verify: --max-steps <n>` line in the specification says, then each
+  invariant and temporal property with TLC over every state the specification reaches, which
+  needs every domain finite.
 - Quint runs Apalache from the distribution mise installs: `QUINT_HOME` is `target/quint`, where
   a link names it under its version, which `--apalache-version` passes, so Quint never fetches
   one. The recipe starts from an empty `QUINT_HOME`, refuses an `apalache-mc` that does not
@@ -116,27 +118,48 @@ A formal layer is added to the layers of its class, never in place of one.
   runs with GitHub's release hosts blocked. Quint uses any Apalache server that answers on its
   port, whatever its version, and starts one only when none does, so each check must print the
   banner of the server it started, naming the locked version, or the recipe fails. The servers
-  run in `target/apalache`, where they write their output. Quint's recipes pass `--backend typescript`, since
-  its default evaluator is a binary fetched from GitHub at run time, which the lock does not
-  hold. The tools warn on every run, of a vulnerable protobuf type in Apalache and of the
-  garbage collector in TLC. TLC is the jar inside Apalache's distribution, on the
-  Temurin JDK mise installs.
-- The log on object storage is specified (`specs/wal_objects.qnt`, ADR 0051): open marks created
-  once with a token, chunk heads created where their name is free and kept only while the mark
-  is there, either create losing its answer and landing later, and removal, mark first; the
-  invariant `NoReopenAfterRemove`, that a removed log is never open again with chunks. Each
-  operation is one step. A test takes a retried open, which the log never makes, and the
-  invariant fails, as ADR 0051 says it would. `just quint` takes 8 seconds; `just quint-verify`
-  takes about 44 minutes, Apalache's ten steps 35 to 43 of them and TLC 48 seconds over 123,904
-  distinct states. Apalache checks the invariant to a bound and TLC over every state: the
-  safety property is held both ways, and a temporal property would need TLC.
-- Traces will tie a specification to the code: `quint run --out-itf` writes runs in the
-  Informal Trace Format, and a driver among `rdlt-sim`'s tests will replay each against the real
-  store over the simulation's object store, through the `itf` crate, a dev-dependency of
-  `rdlt-sim` alone. A specification without a driver is tied to the code by its invariants'
-  names where a simulation check carries them, and is otherwise a design alone. No check
-  carries `NoReopenAfterRemove`'s name, so `wal_objects.qnt` is a design alone until its
-  driver exists.
+  run in `target/apalache`, where they write their output. Quint's recipes pass
+  `--backend typescript`, since its default evaluator is a binary fetched from GitHub at run
+  time, which the lock does not hold. The tools warn on every run, of a vulnerable protobuf type
+  in Apalache and of the garbage collector in TLC. TLC is the jar inside Apalache's
+  distribution, on the Temurin JDK mise installs.
+- The log on object storage is specified (`specs/wal_objects.qnt`, ADR 0051) at the level of the
+  store's requests, in the order the store makes them: a writer opening its log with one create
+  of its mark, publishing a chunk whole and one in parts, and deleting what its newest no longer
+  needs; a replay removing leftovers, fencing the log at its next chunk, reading what its tail
+  needs, releasing and removing it. Every request may succeed, fail, lose its answer once done,
+  or go unanswered and land later, and a create may meet a racing one; either load may crash,
+  and an intruder may leave a name the store never writes. Its invariants: a removed log is never
+  open again with its load's chunks (`NoReopenAfterRemove`); every chunk the writer was told it
+  published lies below every fence a replay holds (`OneHolder`); a replay reads a chunk from its
+  head or the body its head names by its token (`OwnTokenReplay`); a listing holding a stray name
+  refuses its operation (`StraysRefused`); a replay that read a log through read exactly what its
+  tail needs (`CrashExactOrRefused`). Each has a test that breaks its rule and sees it fail. TLC
+  checks every one over every state, 2,020,064 of them in about 8 minutes on four workers of a
+  developer's machine, with two attempts a request, two chunks, two fences a replay and two
+  faults a behavior: three faults take it past 13 minutes there, its states still growing. Its
+  time on the nightly runner is not measured, and the job's limit is 120 minutes. At two faults
+  TLC does not reach a fence read back from an earlier start's object; a test covers that
+  alone. Apalache cannot hold its state: its bounded run runs out of memory at the first step,
+  so `just quint-verify` fails there, before TLC. `just quint` simulates 500 runs of 80 steps.
+  The specification has no temporal property: the log's guarantees are safety, that it is never
+  reopened, has one holder, is read by its own tokens, refuses strays and replays exactly, and a
+  liveness claim needs fairness assumptions on a store that may answer nothing forever. A
+  property that needs one will add it.
+- Traces tie a specification to the code. A spec's header names each trace by name, seed and
+  the goal its run reaches; `just quint` writes each from its seed, which reproduces it exactly,
+  and fails where it differs from the one `specs/traces/<spec>/` holds, so a trace cannot drift
+  from its spec; `just quint write` rewrites them, and `just quint-seed` finds a seed reaching a
+  goal. A driver among `rdlt-sim`'s tests replays each trace of the log on object storage against
+  `ObjectStoreWal` over the simulation's store in memory, request by request: each request the
+  store makes waits for its step, must be the request the step makes, and meets the fault the
+  step names; a request left unanswered lands at the step the trace lands it, on the paused
+  clock; the code's answers and what the store holds must be the trace's at every step. The
+  traces are read with the `itf` crate, a dev-dependency of `rdlt-sim` alone, which `deny.toml`
+  bans everywhere else. The engine's fence is stated by the spec and run by the driver as the
+  store calls it makes, so the driver holds the store to the spec and the simulation holds the
+  engine to the store. A specification without a driver is tied to the code by its invariants'
+  names until it has one, or this record says it is a design alone.
 
 ### Tools
 
@@ -191,8 +214,13 @@ what no bound names.
   dependency. Cost: `formal-plan` checks out the whole history on every change, and each part's
   job installs Quint and Kani, from mise's cache after the first, and restores its own build.
 - **Quint is `quint-co/quint`,** the repository's name; `informalsystems/quint` redirects there.
-- **`itf` comes with the first trace driver,** with a ban that lets `rdlt-sim` alone depend on
-  it. `deny.toml` keeps no list of admitted crates, so nothing stands in the way until then.
+- **`itf` is a dev-dependency of `rdlt-sim` alone,** held there by a ban with that one wrapper.
+- **Quint runs its TypeScript simulator,** for the reason given under *Specifications*.
+  Cost: simulation is slower, about fifty runs of 80 steps a second for the log's spec, so
+  `just quint` samples fewer runs than a faster evaluator would allow.
+- **A spec's traces are committed.** The driver then runs in every test run, on Linux and macOS,
+  with no Quint, and every change to the code meets them. Cost: about 2 MB of generated JSON for
+  the log's spec, rewritten when the spec changes.
 
 ## Consequences
 
