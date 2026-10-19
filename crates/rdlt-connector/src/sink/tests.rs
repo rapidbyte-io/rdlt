@@ -1,6 +1,7 @@
 mod cancelled;
 
 use std::num::NonZeroUsize;
+use std::time::Duration;
 
 use bytes::Bytes;
 
@@ -98,13 +99,13 @@ struct Gate {
 }
 
 impl Admission for Gate {
-    fn admit<'a>(&'a self, event: &'a SourceEvent) -> BoxFuture<'a, crate::Result<Option<Permit>>> {
+    fn admit(&self, event: &SourceEvent) -> BoxFuture<'_, crate::Result<Option<Permit>>> {
+        let bytes = match event {
+            SourceEvent::Push(Push::Json(json)) => json.len(),
+            SourceEvent::Checkpoint { cursor, .. } => cursor.bytes().len(),
+            _ => return Box::pin(async { Ok(None) }),
+        };
         Box::pin(async move {
-            let bytes = match event {
-                SourceEvent::Push(Push::Json(json)) => json.len(),
-                SourceEvent::Checkpoint { cursor, .. } => cursor.bytes().len(),
-                _ => return Ok(None),
-            };
             let bytes = u64::try_from(bytes).unwrap();
             self.asked.lock().unwrap().push(bytes);
             self.open.notified().await;
@@ -217,6 +218,70 @@ async fn a_stop_request_releases_a_send_waiting_for_admission() {
         waiting.await.unwrap().unwrap_err().kind(),
         ConnectorErrorKind::Stopped
     );
+}
+
+/// What notes in its order when it is dropped, as the text of a push or the charge for it.
+struct Noted {
+    what: &'static str,
+    order: Arc<Mutex<Vec<&'static str>>>,
+}
+
+impl Drop for Noted {
+    fn drop(&mut self) {
+        self.order.lock().unwrap().push(self.what);
+    }
+}
+
+impl AsRef<[u8]> for Noted {
+    fn as_ref(&self) -> &[u8] {
+        b"[1]"
+    }
+}
+
+/// Grants each event a charge as it asks and never lets the admission end, as an admission
+/// whose answer comes after its event is given up.
+struct Granted(Arc<Mutex<Vec<&'static str>>>);
+
+impl Admission for Granted {
+    fn admit(&self, _: &SourceEvent) -> BoxFuture<'_, crate::Result<Option<Permit>>> {
+        let order = Arc::clone(&self.0);
+        let charge = Noted {
+            what: "charge",
+            order,
+        };
+        Box::pin(async move {
+            std::future::pending::<()>().await;
+            Ok(Some(Box::new(charge) as Permit))
+        })
+    }
+
+    fn charge(&self, bytes: u64) -> crate::Result<Permit> {
+        Ok(Box::new(bytes))
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_send_given_up_while_it_is_admitted_frees_its_event_before_its_charge() {
+    for stopped in [false, true] {
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let granted = Arc::new(Granted(Arc::clone(&order)));
+        let (mut sink, feed) = admitted_partition_channel(NonZeroUsize::MIN, granted);
+        let text = Noted {
+            what: "text",
+            order: Arc::clone(&order),
+        };
+        let push = SourceEvent::Push(Push::Json(Bytes::from_owner(text)));
+        if stopped {
+            feed.stop();
+        }
+        let sent = tokio::time::timeout(Duration::from_secs(1), sink.send(push)).await;
+        assert_eq!(sent.is_err(), !stopped, "{sent:?}");
+        assert_eq!(
+            *order.lock().unwrap(),
+            ["text", "charge"],
+            "stopped: {stopped}"
+        );
+    }
 }
 
 #[tokio::test]

@@ -104,10 +104,7 @@ const LIMIT: u64 = 100_000;
 struct Charging(Arc<Charges>);
 
 impl Admission for Charging {
-    fn admit<'a>(
-        &'a self,
-        _event: &'a SourceEvent,
-    ) -> BoxFuture<'a, rdlt_connector::Result<Option<Permit>>> {
+    fn admit(&self, _event: &SourceEvent) -> BoxFuture<'_, rdlt_connector::Result<Option<Permit>>> {
         Box::pin(async { Ok(None) })
     }
 

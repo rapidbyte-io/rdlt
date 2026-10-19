@@ -5,8 +5,11 @@ mod tests;
 
 use std::any::Any;
 use std::fmt;
+use std::future::Future;
 use std::num::NonZeroUsize;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 
 use arrow_array::RecordBatch;
 use bytes::Bytes;
@@ -86,11 +89,13 @@ pub trait Admission: Send + Sync {
     /// Waits until what `event` holds may enter, and returns what holds it; `None` for an event
     /// that holds nothing to charge.
     ///
+    /// The wait borrows nothing of the event, which the sink holds beside it.
+    ///
     /// # Errors
     ///
     /// Why the event may not enter, as an admission that waited as long as it waits: the send
     /// fails with it, and so does the read.
-    fn admit<'a>(&'a self, event: &'a SourceEvent) -> BoxFuture<'a, Result<Option<Permit>>>;
+    fn admit(&self, event: &SourceEvent) -> BoxFuture<'_, Result<Option<Permit>>>;
 
     /// Charges `bytes` a read keeps beside its events, at once.
     ///
@@ -235,14 +240,20 @@ impl PartitionSink {
             }
             _ => None,
         };
-        let permit = match &self.admission {
-            Some(admission) => tokio::select! {
-                biased;
-                // A stop request wins over an admission that could still arrive.
-                () = self.stop.cancelled() => return Err(ConnectorError::stopped()),
-                permit = admission.admit(&event) => permit?,
-            },
-            None => None,
+        let (event, permit) = match &self.admission {
+            Some(admission) => {
+                let admitting = Admitting {
+                    admission: admission.admit(&event),
+                    event: Some(event),
+                };
+                tokio::select! {
+                    biased;
+                    // A stop request wins over an admission that could still arrive.
+                    () = self.stop.cancelled() => return Err(ConnectorError::stopped()),
+                    (event, permit) = admitting => (event, permit?),
+                }
+            }
+            None => (event, None),
         };
         let sent = tokio::select! {
             biased;
@@ -301,6 +312,28 @@ impl PartitionSink {
     pub fn pending_barrier(&self) -> Option<u64> {
         let requested = *self.barrier.borrow();
         (requested > self.answered).then_some(requested)
+    }
+}
+
+/// An event waiting for its admission, held with it however the wait ends.
+///
+/// The event is declared first: dropped, it is freed before the charge its admission may have
+/// been granted is released.
+struct Admitting<'a> {
+    event: Option<SourceEvent>,
+    admission: BoxFuture<'a, Result<Option<Permit>>>,
+}
+
+impl Future for Admitting<'_> {
+    type Output = (SourceEvent, Result<Option<Permit>>);
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let admitted = std::task::ready!(self.admission.as_mut().poll(cx));
+        let event = self.event.take();
+        Poll::Ready((
+            event.expect("an admission is not polled once ready"),
+            admitted,
+        ))
     }
 }
 

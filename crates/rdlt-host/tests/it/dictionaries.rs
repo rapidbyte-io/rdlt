@@ -114,9 +114,10 @@ impl Drop for Kept {
 struct Counting(Arc<Ledger>);
 
 impl Admission for Counting {
-    fn admit<'a>(&'a self, event: &'a SourceEvent) -> BoxFuture<'a, Result<Option<Permit>>> {
+    fn admit(&self, event: &SourceEvent) -> BoxFuture<'_, Result<Option<Permit>>> {
+        let push = matches!(event, SourceEvent::Push(_));
         Box::pin(async move {
-            if self.0.refuses.load(Ordering::SeqCst) && matches!(event, SourceEvent::Push(_)) {
+            if self.0.refuses.load(Ordering::SeqCst) && push {
                 let refused = ConnectorError::new(ConnectorErrorKind::Transient, "no room");
                 return Err(refused.with_code("no_room"));
             }
