@@ -79,7 +79,8 @@ module exactly_once_protocol {
 
   /// A run: its pipeline and load, the epoch of the session it holds (0 before its first), where
   /// it stands, each partition's rows read, sealed by a checkpoint and committed, its commits'
-  /// count, the commit in flight, and the commit the destination last received as its log opened.
+  /// count, the commit in flight, and the commit the destination last received as its own session
+  /// opened.
   type Run = {
     pipe: Pipe,
     load: int,
@@ -192,16 +193,15 @@ module exactly_once_protocol {
     fencedLanded' = false,
   }
 
-  /// A run of `pipe` starts: its log opens, noting the commit the destination last received; it
-  /// holds no session yet. A run started while another of the pipeline runs meets a fault.
+  /// A run of `pipe` starts: its log opens; it holds no session yet. A run started while another
+  /// of the pipeline runs meets a fault.
   action start(pipe: Pipe): bool = {
     val load = started.get(pipe) + 1
     val concurrent = runs.keys().exists(k => k._1 == pipe)
-    val d = dest.get(pipe)
     val job = {
       pipe: pipe, load: load, epoch: 0, stage: Replaying,
       read: zero(partsOf(pipe)), sealed: zero(partsOf(pipe)), committed: zero(partsOf(pipe)),
-      seq: 0, inFlight: NOCOMMIT, opened: d.last,
+      seq: 0, inFlight: NOCOMMIT, opened: NONE,
     }
     all {
       load <= LOADS,
@@ -222,7 +222,8 @@ module exactly_once_protocol {
   /// The run `k` takes its next step at replaying the oldest other open log: fencing it, then
   /// committing again each commit it holds with no receipt, meeting `outcome`, in a session it
   /// opens for the first, then removing it; with none left, it opens its own session, which fences
-  /// every older one, and plans from where the destination holds each partition.
+  /// every older one, and plans from where the destination holds each partition and the commit it
+  /// last received.
   action replay(k: (Pipe, int), outcome: Outcome): bool = {
     val job = runOf(k)
     val d = dest.get(job.pipe)
@@ -245,7 +246,7 @@ module exactly_once_protocol {
           outcome == Ok,
           keepAll(
             dest.set(job.pipe, { ...d, epoch: epoch }), logs, kept,
-            if (planned) runs.set(k, { ...job, epoch: epoch, stage: Reading, read: at, sealed: at, committed: at })
+            if (planned) runs.set(k, { ...job, epoch: epoch, stage: Reading, read: at, sealed: at, committed: at, opened: d.last })
             else without(k),
             started, faults, landed, fencedLanded,
           ),
@@ -664,6 +665,36 @@ module exactly_once {
       .then(start("p"))
       .then(3.reps(_ => replay(p(2), Ok)))
       .expect(dest.get("p").rows.get("u").get(0) == 1 and runOf(p(2)).stage == Reading and ExactlyOnce)
+
+  /// A run's commits follow the commit the destination last received as its own session opened,
+  /// one its replay landed included: a crash after its first commit is logged leaves a commit the
+  /// next run's replay lands whole, its rows that read again included.
+  run aReplayedCommitPrecedesTheNextRunsFirstTest =
+    init
+      .then(start("p"))
+      .then(replay(p(1), Ok))
+      .then(read(p(1), "a"))
+      .then(checkpoint(p(1), "a"))
+      .then(read(p(1), "u"))
+      .then(checkpoint(p(1), "u"))
+      .then(log(p(1), Ok))
+      .then(crash(p(1)))
+      .then(start("p"))
+      .then(5.reps(_ => replay(p(2), Ok)))
+      .expect(dest.get("p").last == (1, 1) and runOf(p(2)).stage == Reading)
+      .then(read(p(2), "a"))
+      .then(checkpoint(p(2), "a"))
+      .then(log(p(2), Ok))
+      .expect(runOf(p(2)).inFlight.prev == (1, 1))
+      .then(crash(p(2)))
+      .then(start("p"))
+      .then(5.reps(_ => replay(p(3), Ok)))
+      .expect(all {
+        dest.get("p").last == (2, 1),
+        dest.get("p").cursor == Map("a" -> 2, "u" -> 1),
+        runOf(p(3)).stage == Reading,
+        ExactlyOnce,
+      })
 
   /// A run started beside a running one fences its log, then its session as the replay's opens:
   /// the older run's commit is refused at the destination, and the newer run's replay lands what
