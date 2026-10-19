@@ -50,6 +50,20 @@ const PART: usize = 64;
 /// Bytes the writer's chunks uploaded in parts hold, past a part and short of two.
 const LONG: usize = 100;
 
+/// The most entries a listing the driver collects may hold: the driver takes one more, and fails
+/// the trace if it gets it.
+const LISTING: usize = 10_000;
+
+/// `entries`, taken from a listing at most `LISTING + 1` long, failing `what` if there are more
+/// than `LISTING`.
+fn bounded<T>(entries: Vec<T>, what: &str) -> Vec<T> {
+    assert!(
+        entries.len() <= LISTING,
+        "{what}: more than {LISTING} entries"
+    );
+    entries
+}
+
 // ---- The trace's states, as the specification writes them
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
@@ -353,7 +367,13 @@ impl ObjectStore for Gated {
         let dir = prefix.cloned().unwrap_or_default();
         stream::once(async move {
             gate.turn(Op::List, &dir, None).await;
-            let listed: Vec<Result<ObjectMeta>> = gate.inner.list(Some(&dir)).collect().await;
+            let listed: Vec<Result<ObjectMeta>> = gate
+                .inner
+                .list(Some(&dir))
+                .take(LISTING + 1)
+                .collect()
+                .await;
+            let listed = bounded(listed, &format!("a list of {dir}"));
             stream::iter(gate.answered(listed))
         })
         .flatten()
@@ -538,8 +558,10 @@ impl Load {
             .with_attempts(NonZeroU32::new(2).expect("attempts are not none"))
             .with_backoff(Duration::from_millis(10), Duration::from_millis(200))
             .with_deadline(Duration::from_secs(1), Duration::ZERO);
-        let wal = ObjectStoreWal::open(Arc::new(gated) as _, PREFIX, Arc::new(clock), options)
+        let opening = ObjectStoreWal::open(Arc::new(gated) as _, PREFIX, Arc::new(clock), options);
+        let wal = tokio::time::timeout(BOUND, opening)
             .await
+            .expect("the probe's requests pass an open gate, so opening answers")
             .expect("a store in memory does what a log needs");
         armed.store(true, Ordering::SeqCst);
         let (commanding, commands) = mpsc::unbounded_channel();
@@ -814,14 +836,21 @@ fn landings(states: &[State]) -> BTreeMap<usize, Option<usize>> {
 }
 
 /// What the store holds beneath the driver's prefix, as the trace names it.
-async fn held(objects: &Faulty<InMemory>, tokens: &Tokens, bodies: &Bodies) -> BTreeSet<Obj> {
+async fn held(
+    at: &str,
+    objects: &Faulty<InMemory>,
+    tokens: &Tokens,
+    bodies: &Bodies,
+) -> BTreeSet<Obj> {
     let base = Path::from(format!("{PREFIX}/p.{}", pipeline().as_str()));
     let listed: Vec<ObjectMeta> = objects
         .inner()
         .list(Some(&base))
+        .take(LISTING + 1)
         .try_collect()
         .await
         .expect("a store in memory lists");
+    let listed = bounded(listed, &format!("{at}: what the store holds"));
     let mut held = BTreeSet::new();
     for meta in listed {
         let key = meta.location.as_ref();
@@ -977,7 +1006,7 @@ impl<'a> Driver<'a> {
                 }
                 other => panic!("{at}: an action the driver does not know: {other}"),
             }
-            let observed = held(&self.objects, &self.tokens, &self.bodies).await;
+            let observed = held(&at, &self.objects, &self.tokens, &self.bodies).await;
             let expected = comparable(&state.store);
             assert_eq!(
                 comparable(&observed),
@@ -1083,14 +1112,16 @@ impl<'a> Driver<'a> {
 /// The traces `just quint` writes of the log on object storage's specification.
 fn traces() -> Vec<PathBuf> {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../specs/traces/wal_objects");
-    let mut traces: Vec<PathBuf> = std::fs::read_dir(&dir)
+    let traces: Vec<PathBuf> = std::fs::read_dir(&dir)
         .unwrap_or_else(|error| panic!("{}: {error}", dir.display()))
         .map(|entry| entry.expect("a directory entry").path())
         .filter(|path| {
             path.extension()
                 .is_some_and(|extension| extension == "json")
         })
+        .take(LISTING + 1)
         .collect();
+    let mut traces = bounded(traces, &format!("the traces in {}", dir.display()));
     traces.sort();
     traces
 }
@@ -1111,4 +1142,10 @@ async fn the_store_does_what_each_trace_of_its_specification_does() {
             .to_owned();
         Driver::new(&name, &states).await.replay().await;
     }
+}
+
+#[test]
+#[should_panic(expected = "a listing: more than 10000 entries")]
+fn a_listing_past_its_bound_fails() {
+    drop(bounded(vec![(); LISTING + 1], "a listing"));
 }
