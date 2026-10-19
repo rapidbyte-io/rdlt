@@ -92,8 +92,8 @@ pub(crate) const SCHEMA_KEPT: u64 = 5;
 /// JSON text in a JSON string, which escaping its quotes may double.
 pub(crate) const RECORDED: u64 = 2;
 
-/// The code of the error for a configuration whose memory admits less than the protocol's
-/// least frame.
+/// The code of the error for a configuration whose memory admits less than the least limits the
+/// protocol lets a peer set.
 pub(crate) const MEMORY_BELOW_MINIMUM: &str = "memory_below_minimum";
 
 /// The code of the error for a followed unbounded read beyond what a run's partitions leave room

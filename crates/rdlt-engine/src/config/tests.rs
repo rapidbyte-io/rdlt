@@ -1,7 +1,10 @@
 use std::num::NonZeroU32;
 use std::time::Duration;
 
+use rdlt_wire::limits::{MIN_DICTIONARY_BYTES, MIN_FRAME_BYTES};
+
 use super::{BatchPolicy, CommitPolicy, EngineConfig, RetryPolicy};
+use crate::budget::{Shares, admitted};
 use crate::error::ErrorKind;
 
 #[test]
@@ -109,8 +112,8 @@ fn the_builder_applies_defaults_and_settings() {
 }
 
 #[test]
-fn memory_below_what_the_protocol_s_least_frame_needs_is_refused_naming_the_least() {
-    for partitions in [1, 4, 16, 600_000] {
+fn memory_below_what_the_protocol_s_least_limits_need_is_refused_naming_the_least() {
+    for partitions in [1, 4, 16, 17, 600_000] {
         let least = EngineConfig::least_memory(partitions).unwrap();
         let build = |memory| {
             EngineConfig::builder()
@@ -128,10 +131,20 @@ fn memory_below_what_the_protocol_s_least_frame_needs_is_refused_naming_the_leas
         let said = refused.to_string();
         assert!(said.contains(&format!("is {least} bytes")), "{said}");
         assert!(said.contains(&format!("{partitions} partitions")), "{said}");
+        assert!(
+            said.contains("the least limits the protocol lets a peer set"),
+            "{said}"
+        );
     }
     // About thirty-two mebibytes at the default sixteen partitions, and the default is far
     // above it.
     assert_eq!(EngineConfig::least_memory(16), Some(33_811_576));
+    // From 17 partitions their dictionaries set the least: a byte below it admits the least
+    // frame, and too little for each read's dictionaries.
+    let below = EngineConfig::least_memory(17).unwrap() - 1;
+    let limits = admitted(Shares::of(below), 17);
+    assert!(limits.frame_bytes >= MIN_FRAME_BYTES, "{limits:?}");
+    assert!(limits.dictionary_bytes < MIN_DICTIONARY_BYTES, "{limits:?}");
     assert!(EngineConfig::builder().build().is_ok());
 }
 
