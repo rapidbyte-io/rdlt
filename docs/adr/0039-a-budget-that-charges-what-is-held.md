@@ -315,11 +315,13 @@ budget before it is held, or bounded by a limit with a typed refusal.
   batch expands to. What a consumer makes is measured by the rows of its output, or by the
   allocations it does not share with its input where those are fewer: a builder's spare capacity
   is held, and charged by the capacity of its buffers, until the piece is written.
-- **Admission takes the event.** `Admission::admit` is given the event, and the engine costs it:
-  a push by what it keeps alive, a checkpoint by its cursor's bytes.
+- **Admission takes the event.** `Admission::admit` is given the event, and the engine costs it
+  before it waits: a push by what it keeps alive, a checkpoint by its cursor's bytes. The wait
+  borrows nothing of the event, which the sink holds beside it.
 - **A unit's pieces share what is charged.** A piece lowered from a unit is charged for the
-  allocations it keeps alive that the unit did not hold; the unit's permits hold its source
-  until its last piece is flushed. The constant columns of a load count for none.
+  allocations it keeps alive that the unit did not hold; the pieces share what holds the unit,
+  so its permits hold its source until its last piece is flushed. The constant columns of a load
+  count for none.
 - **A row that fits no request is refused.** A row that alone takes more to lower than a request
   may take of the budget, or than a JSON flush's batches leave of theirs, fails the write with
   `row_exceeds_budget`, naming the limit, before it is lowered. A row within the frame limit
@@ -378,6 +380,22 @@ budget before it is held, or bounded by a limit with a typed refusal.
   - A column a batch holds nothing in is built as the destination stores it. Its nulls are part
     of what each row costs, so a piece is cut by them and reserves them before they are built:
     rows times the table's width is bounded by the budget, through a plan that normalizes too.
+- **What a charge covers is freed before the charge is released**, however the work holding it
+  ends: done, failed, or let go by a cancelled attempt. Between a release and the free, another
+  task may reserve those bytes and allocate them, and the process holds more than its budget.
+  - A charge is held in one value with what it covers, declared after it, so dropping the value
+    frees what it covers first: a unit's batches with the permits they were admitted with, a JSON
+    flush's text with its permits, a flush's batches with what was reserved beyond them, an event
+    with its admission while it waits for it, a lowered batch with what holds it on its lane.
+  - A unit's pieces share what holds the unit, each holder of a piece's rows declaring its share
+    last: the unit's permits go once the last piece is written or let go, wherever it is, on the
+    compute pool, in the window being lowered, on its lane or waiting for the log.
+  - No job on the compute pool outlives the caller waiting for it: a caller that stops waiting
+    drops its jobs not yet started, and waits for those running to end, so what a job reads and
+    makes goes before what the caller holds.
+  - Tests let go of writes at each of their waits, for room, for the pool, for the log and for a
+    lane, of an Arrow, a JSON and a normalized flush, and of a send waiting for its admission,
+    and hold that what each charge covers was freed by the time it was released.
 - **The bound is tested as the system runs.** Every run of the engine's integration tests fails
   where it reserved more than its budget. Loads that widen columns, fill wide tables and
   normalize into several tables run with sixteen partitions on a compute pool of four threads,
@@ -446,6 +464,10 @@ admitted, and what a remote connector's calls hold in transport.
 - A partition that ends where it last checkpointed seals that cursor again: the commit records
   it, and the commit's frame holds it, so the seal waits for room in the cursors' share as a
   checkpoint does. The coordinator commits as soon as a cursor waits, whatever it heard last.
+- A partition let go while a job of its own runs on the compute pool waits, as it is dropped,
+  for that job to end, on the runtime's thread that drops it: the one wait of the runtime on the
+  pool, for bounded CPU work that never waits on the runtime. An attempt is let go no sooner
+  than the longest of its jobs running then ends, a piece's lowering or a chunk's parse.
 - A lane's call into its destination ends with the attempt: a write that never returns no
   longer keeps an attempt that failed, as at the memory deadline, from ending. An in-process
   destination's write behind a lane too full to queue on is bounded by nothing yet: the
