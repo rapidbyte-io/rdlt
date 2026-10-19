@@ -1,6 +1,9 @@
 //! The exact parse: a record walked a token at a time, as the fast parse streams one, its
 //! numbers kept as their text and each read as the narrowest type that holds it exactly.
 
+#[cfg(test)]
+mod tests;
+
 use serde::de::{self, DeserializeSeed, Visitor};
 
 use super::ShredError;
