@@ -10,7 +10,10 @@ use crate::budget::Shares;
 use crate::limits::{COLUMN_RECORD, RECORDED, SCHEMA_KEPT};
 
 /// The most reads at once the proofs take a budget to be read by.
-const READERS: usize = 64;
+///
+/// A frame sets the least budget for up to 16 reads and the dictionaries do from 20, so the
+/// bound holds both.
+const READERS: usize = 24;
 
 /// Any count of reads at once, from one to `READERS`.
 fn any_readers() -> usize {
