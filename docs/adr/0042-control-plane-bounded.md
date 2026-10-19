@@ -77,7 +77,8 @@ still taken largely on trust:
     given back as the whole message is passed on, and the window serves bodies in turn, so a
     commit behind writes holding the window gets room as soon as their messages arrive. A body
     waiting holds nothing of its message past the prefix, only the transport frame it read last,
-    at most `TRANSPORT_FRAME_BYTES` (1 MiB), and none waits on another body to finish its
+    at most `TRANSPORT_FRAME_BYTES` (1 MiB): a byte kept of a call's frame keeps that much
+    alive once the call and its connection are gone. None waits on another body to finish its
     message. The room it has gathered toward its message counts in the window and comes back if
     it is dropped.
   - A served connection holds at most 200 open calls (`MAX_CALLS`), set explicitly.
