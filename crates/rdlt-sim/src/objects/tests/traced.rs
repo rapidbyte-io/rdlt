@@ -708,8 +708,27 @@ fn log_dir() -> String {
 /// Tokens of creates, each with the load that made it and the start of that load.
 type Tokens = BTreeMap<String, (Who, u64)>;
 
-/// Bodies' tokens, each with the load that uploaded it.
-type Bodies = BTreeMap<String, Who>;
+/// The bodies the trace began: each token with the load that drew it, and for each chunk of each
+/// load the token of the body begun last.
+#[derive(Default)]
+struct Bodies {
+    makers: BTreeMap<String, Who>,
+    newest: BTreeMap<(u64, Who), String>,
+}
+
+impl Bodies {
+    /// Records that `who` began chunk `number`'s body under `token`, which then supersedes the
+    /// chunk's earlier tokens.
+    fn begin(&mut self, number: u64, who: Who, token: &str) {
+        self.makers.insert(token.to_owned(), who);
+        self.newest.insert((number, who), token.to_owned());
+    }
+
+    /// The load that drew `token`.
+    fn maker(&self, token: &str) -> Option<Who> {
+        self.makers.get(token).copied()
+    }
+}
 
 /// The key the request `at` asks of: a body by the token its uploader drew.
 fn key_of(at: At, bodies: &Bodies) -> String {
@@ -719,9 +738,9 @@ fn key_of(at: At, bodies: &Bodies) -> String {
         At::Object(Name::ChunkHead(number)) => format!("{}/{number:08}.wal", log_dir()),
         At::Object(Name::Body((number, who))) => {
             let token = bodies
-                .iter()
-                .find_map(|(token, by)| (*by == who).then_some(token.as_str()))
-                .unwrap_or("unbegun");
+                .newest
+                .get(&(number, who))
+                .map_or("unbegun", String::as_str);
             format!("{}/{number:08}.{token}.body", log_dir())
         }
         At::Object(Name::Stray) => format!("{}/stray", log_dir()),
@@ -907,7 +926,7 @@ fn named(
     } else {
         let (number, rest) = name.split_once('.').expect("a body's number");
         let token = rest.strip_suffix(".body").expect("a body");
-        let maker = bodies.get(token).copied().unwrap_or(Who::X);
+        let maker = bodies.maker(token).unwrap_or(Who::X);
         let number = number.parse().expect("a body's number");
         whole(Name::Body((number, maker)), maker, 0, parsed(bytes).1)
     }
@@ -965,7 +984,7 @@ impl<'a> Driver<'a> {
             landings: landings(states),
             tokens: Tokens::new(),
             epoch: 0,
-            bodies: Bodies::new(),
+            bodies: Bodies::default(),
         }
     }
 
@@ -1035,8 +1054,10 @@ impl<'a> Driver<'a> {
         };
         if asked.op == Op::Begin {
             let file = asked.key.rsplit('/').next().unwrap_or_default();
-            let token = file.split('.').nth(1).expect("a body's token");
-            self.bodies.insert(token.to_owned(), who);
+            let (number, rest) = file.split_once('.').expect("a body's number");
+            let token = rest.split('.').next().expect("a body's token");
+            let number = number.parse().expect("a body's number");
+            self.bodies.begin(number, who, token);
         }
         let expected = key_of(req.at, &self.bodies);
         assert_eq!(
@@ -1148,4 +1169,24 @@ async fn the_store_does_what_each_trace_of_its_specification_does() {
 #[should_panic(expected = "a listing: more than 10000 entries")]
 fn a_listing_past_its_bound_fails() {
     drop(bounded(vec![(); LISTING + 1], "a listing"));
+}
+
+#[test]
+fn two_bodies_of_one_load_have_their_own_tokens() {
+    let mut bodies = Bodies::default();
+    bodies.begin(2, Who::W, "zzz");
+    bodies.begin(1, Who::W, "aaa");
+    let key = |number| key_of(At::Object(Name::Body((number, Who::W))), &bodies);
+    assert_eq!(key(1), format!("{}/00000001.aaa.body", log_dir()));
+    assert_eq!(key(2), format!("{}/00000002.zzz.body", log_dir()));
+}
+
+#[test]
+fn a_retried_begin_names_the_token_the_trace_began_last() {
+    let mut bodies = Bodies::default();
+    bodies.begin(1, Who::W, "zzz");
+    bodies.begin(1, Who::W, "aaa");
+    let key = key_of(At::Object(Name::Body((1, Who::W))), &bodies);
+    assert_eq!(key, format!("{}/00000001.aaa.body", log_dir()));
+    assert_eq!(bodies.maker("zzz"), Some(Who::W));
 }
