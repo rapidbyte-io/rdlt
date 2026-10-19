@@ -92,6 +92,12 @@ A formal layer is added to the layers of its class, never in place of one.
   its `parking_lot` lock: every share stays within it through any asks, lets and presses, and none
   is held once all is let go; waiting requests are admitted in turn only where they fit, with
   abandoned ones given back; and a lent reservation gives back all it held, in any order.
+- A bounded body's length prefix and what it lacks are property tests
+  (`rdlt-wire/src/bounded/tests.rs`): from any bytes up to 16 and any wire bound, a prefix is read
+  as nothing until it is whole, then as the length it declares within the bound or a refusal
+  beyond it, and what a body lacks never reaches past its message's end. Their proofs do not fit:
+  a refusal formats the length and the bound into its message, and Kani 0.68 did not finish
+  formatting one number in five minutes, nor either harness within the job's limit.
 - A bounded body's growth rule is a property test (`rdlt-wire/src/bounded/tests.rs`): one
   arrival of what a body lacks, onto any arriving buffer the rule admits, holds what arrived and
   keeps the buffer's room at what arrived until the prefix is whole, then within the message's
@@ -101,8 +107,8 @@ A formal layer is added to the layers of its class, never in place of one.
   10 GB in about 70 seconds, with up to 8 bytes held and arriving and with up to 6.
 - Kani's further targets: acknowledgements against the committed cursor, and the horizon; a log
   frame's length arithmetic and the parse of its preamble and head; the limits a handshake
-  accepts and the identifier rules; a bounded body's length prefix and its window. Each is
-  proved, or held by a property test with the reason here.
+  accepts and the identifier rules. Each is proved, or held by a property test with the reason
+  here.
 
 ### Specifications: Quint over the design
 
