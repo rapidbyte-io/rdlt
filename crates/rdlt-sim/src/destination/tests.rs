@@ -1,6 +1,8 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use arrow_array::{ArrayRef, BinaryArray, Int64Array, RecordBatch, StringArray};
+use rdlt_connector::limits::ListenLimits;
 use rdlt_connector::{
     ChildTable, CommitMeta, CommitSeq, ConnectorErrorKind, DestinationConnector, Epoch, Field,
     LoadId, LogicalType, MergeKey, OpenContext, PipelineId, RootKey, SchemaVersion, SegmentId,
@@ -11,6 +13,7 @@ use rdlt_testkit::canon::Canon;
 use super::cells::{self, Stored};
 use super::store::{Staged, Store};
 use super::{SimDestination, SimSession};
+use crate::owners::Live;
 use crate::rng::SplitMix64;
 use crate::seed::{Seed, run};
 use crate::world::World;
@@ -22,6 +25,14 @@ fn table() -> TableRef {
         version: SchemaVersion(1),
         generation: None,
         merge: None,
+    }
+}
+
+/// A destination over `world` that holds no session yet.
+fn destination(world: Arc<World>) -> SimDestination {
+    SimDestination {
+        world,
+        sessions: Arc::default(),
     }
 }
 
@@ -45,6 +56,7 @@ fn session_over(
                 world,
                 pipeline: PipelineId::parse("sim").unwrap(),
                 epoch: Epoch::default(),
+                _held: Live::of(&[]),
             };
             let create = TableChange::Create {
                 table: table(),
@@ -116,6 +128,7 @@ fn a_writer_given_batches_of_two_schemas_is_a_violation() {
                 world,
                 pipeline: PipelineId::parse("sim").unwrap(),
                 epoch: Epoch::default(),
+                _held: Live::of(&[]),
             };
             let create = TableChange::Create {
                 table: table(),
@@ -293,7 +306,7 @@ fn pipelines_sharing_the_destination_neither_fence_nor_discard_each_other() {
     run(Seed::new(1), {
         let world = Arc::clone(&world);
         |_env| async move {
-            let destination = SimDestination { world };
+            let destination = destination(world);
             let open = |pipeline: &str| OpenContext {
                 pipeline: PipelineId::parse(pipeline).unwrap(),
                 load_id: LoadId::from_parts(std::time::UNIX_EPOCH, 1),
@@ -422,6 +435,7 @@ fn a_commit_whose_merge_is_refused_changes_no_table_and_keeps_what_was_staged() 
                 world: Arc::clone(&world),
                 pipeline: PipelineId::parse("sim").unwrap(),
                 epoch: Epoch::default(),
+                _held: Live::of(&[]),
             };
             // Table `b` is merged by a key column its rows lack, which the merge refuses.
             for table in [merged("a", "id"), merged("b", "missing")] {
@@ -561,4 +575,90 @@ fn a_child_table_no_row_ever_reached_follows_its_roots_by_staying_absent() {
     }]);
     store.publish(&pipeline, &meta).unwrap();
     assert!(!store.tables.contains_key("kids"));
+}
+
+/// Bounds every wait of a test: a call that hangs fails its test.
+const WAIT: Duration = Duration::from_secs(60);
+
+fn opening() -> OpenContext {
+    OpenContext {
+        pipeline: PipelineId::parse("held").unwrap(),
+        load_id: LoadId::from_parts(std::time::UNIX_EPOCH, 1),
+    }
+}
+
+#[test]
+fn a_destination_holding_more_sessions_than_a_connection_may_is_a_violation() {
+    let registered = World::register("held-sessions", &mut SplitMix64::new(1));
+    let world = Arc::clone(registered.world());
+    let bound = ListenLimits::default().connection_sessions();
+    let (within, beyond, after) = run(Seed::new(1), {
+        let world = Arc::clone(&world);
+        |_env| async move {
+            let destination = destination(Arc::clone(&world));
+            let mut sessions = Vec::new();
+            for _ in 0..bound {
+                let opened = tokio::time::timeout(WAIT, destination.open(&opening()))
+                    .await
+                    .expect("the open ends")
+                    .expect("the session opens");
+                sessions.push(opened.session);
+            }
+            let within = world.violations();
+            let opened = tokio::time::timeout(WAIT, destination.open(&opening()))
+                .await
+                .expect("the open ends")
+                .expect("the session opens");
+            sessions.push(opened.session);
+            let beyond = world.owners.held();
+            drop(sessions);
+            (within, beyond, world.owners.held())
+        }
+    });
+    drop(registered);
+    assert!(within.is_empty(), "{within:?}");
+    assert_eq!(beyond.sessions, bound + 1);
+    assert!(after.is_empty(), "{after}");
+    let violations = world.violations();
+    let held = format!("held {} sessions at once", bound + 1);
+    assert!(
+        violations.iter().any(|violation| violation.contains(&held)),
+        "{violations:?}"
+    );
+}
+
+#[test]
+fn a_session_and_its_writer_count_until_they_end() {
+    let registered = World::register("held-until", &mut SplitMix64::new(1));
+    let world = Arc::clone(registered.world());
+    let counted = run(Seed::new(1), {
+        let world = Arc::clone(&world);
+        |_env| async move {
+            let destination = destination(Arc::clone(&world));
+            let mut opened = tokio::time::timeout(WAIT, destination.open(&opening()))
+                .await
+                .expect("the open ends")
+                .expect("the session opens");
+            let create = TableChange::Create {
+                table: table(),
+                schema: TableSchema::new(vec![Field::new("id", LogicalType::Int64, false)])
+                    .unwrap(),
+            };
+            opened.session.apply_schema(&create).await.unwrap();
+            let writer = opened.session.writer(&table()).await.unwrap();
+            let open = world.owners.held();
+            drop(writer);
+            let written = world.owners.held();
+            tokio::time::timeout(WAIT, opened.session.close())
+                .await
+                .expect("the close ends")
+                .expect("the session closes");
+            (open, written, world.owners.held())
+        }
+    });
+    drop(registered);
+    let (open, written, closed) = counted;
+    assert_eq!((open.sessions, open.writers), (1, 1));
+    assert_eq!((written.sessions, written.writers), (1, 0));
+    assert!(closed.is_empty(), "{closed}");
 }

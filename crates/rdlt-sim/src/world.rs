@@ -20,6 +20,7 @@ use crate::changes::ChangeWorkload;
 use crate::destination::Store;
 use crate::env::SimEnv;
 use crate::objects::ObjectLogs;
+use crate::owners::Owners;
 use crate::rng::SplitMix64;
 use crate::seed::Seed;
 use crate::swarm::Features;
@@ -99,6 +100,8 @@ pub struct World {
     pub(crate) arrived: Notify,
     /// How hard the source presses on the engine's memory budget.
     pressure: Mutex<Pressure>,
+    /// The sessions, writers and reads its connectors hold now.
+    pub(crate) owners: Owners,
 }
 
 /// How hard a source presses on the engine's memory budget: the bytes each Arrow batch it pushes
@@ -227,6 +230,7 @@ impl World {
             produced: Mutex::new(None),
             arrived: Notify::new(),
             pressure: Mutex::default(),
+            owners: Owners::default(),
         });
         Registered::enter(name, world)
     }
@@ -286,6 +290,7 @@ impl World {
             produced: Mutex::new(None),
             arrived: Notify::new(),
             pressure: Mutex::default(),
+            owners: Owners::default(),
         });
         Registered::enter(name, world)
     }

@@ -31,6 +31,7 @@ mod env;
 mod network;
 mod objects;
 mod oracle;
+mod owners;
 mod rng;
 mod seed;
 mod source;
