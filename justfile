@@ -201,7 +201,8 @@ fuzz target seconds="60":
 # Prove the Kani harnesses of `crate`, or of every crate that holds any, or only those of the
 # proofs of `crate`'s `module`, a path such as `budget::admits`, with Kani's release bundle as
 # mise.lock holds it: rustup installs the nightly the bundle was built with, a link in the bundle
-# names it, and its driver runs as `cargo kani` would run it; Linux x64 and macOS arm64
+# names it, and its driver runs as `cargo kani` would run it, reading the crate's own
+# `[package.metadata.kani]`, where it turns on what its proofs use; Linux x64 and macOS arm64
 kani crate="" module="":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -219,7 +220,7 @@ kani crate="" module="":
     [[ -n $crates ]] || crates=$(just --quiet proving | cut -d: -f1 | sort -u)
     [[ -n $crates ]] || { echo "no crate holds a Kani harness" >&2; exit 2; }
     for crate in $crates; do
-        RUSTUP_TOOLCHAIN="$toolchain" PATH="$bundle/bin:$PATH" bash -c 'exec -a cargo-kani "$0" "$@"' "$bundle/bin/kani-driver" --package "$crate" ${module:+--harness "$module::proofs::"} --output-format terse
+        RUSTUP_TOOLCHAIN="$toolchain" PATH="$bundle/bin:$PATH" bash -c 'exec -a cargo-kani "$0" "$@"' "$bundle/bin/kani-driver" --manifest-path "crates/$crate/Cargo.toml" --package "$crate" ${module:+--harness "$module::proofs::"} --output-format terse
     done
 
 # The modules that hold Kani harnesses, those with a module only Kani compiles, one a line as
