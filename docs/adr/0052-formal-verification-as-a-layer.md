@@ -157,7 +157,9 @@ A formal layer is added to the layers of its class, never in place of one.
   A specification's names never reuse one that a standard TLA+ module defines, such as `Head`,
   because TLC reads the translation and rejects the clash.
 - `just quint` typechecks each, runs its tests (its `run` definitions whose names end in `Test`),
-  and simulates runs against its invariants, as many and as long as its header says.
+  and simulates runs against its invariants, as many and as long as its header says, in the
+  module named for the file or in each that a `// quint main:` line names. `just quint-verify`
+  checks the module named for the file alone.
   `just quint-verify` checks each specification with the checker that fits it, named by a
   `// quint verify:` line in its header. `tlc` checks each invariant and temporal property over
   every state a finite specification reaches, which covers every run a bounded check could
