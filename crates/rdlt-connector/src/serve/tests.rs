@@ -32,22 +32,24 @@ async fn a_served_response_carries_no_date_from_the_wall_clock() {
         connector,
         Limits::default(),
     ));
-    let (mut sender, connection) =
-        hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(host))
+    let exchange = async {
+        let (mut sender, connection) =
+            hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(host))
+                .await
+                .expect("the connection handshakes");
+        tokio::spawn(connection);
+        let request = http::Request::post("http://connector/rdlt.v1.Unknown/Call")
+            .header("content-type", "application/grpc")
+            .body(Nothing)
+            .expect("a request");
+        sender
+            .send_request(request)
             .await
-            .expect("the connection handshakes");
-    tokio::spawn(connection);
-    let request = http::Request::post("http://connector/rdlt.v1.Unknown/Call")
-        .header("content-type", "application/grpc")
-        .body(Nothing)
-        .expect("a request");
-    let response = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        sender.send_request(request),
-    )
-    .await
-    .expect("the connector answers")
-    .expect("the response arrives");
+            .expect("the response arrives")
+    };
+    let response = tokio::time::timeout(std::time::Duration::from_secs(10), exchange)
+        .await
+        .expect("the connector answers");
     assert!(
         response.headers().get(http::header::DATE).is_none(),
         "{:?}",
