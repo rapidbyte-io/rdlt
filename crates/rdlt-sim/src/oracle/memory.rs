@@ -30,10 +30,10 @@ const IN_PROCESS: u64 = 13 << 20;
 /// beside it, by [`QUEUED`] and the credit floor.
 const NETWORK: u64 = 11 << 20;
 
-/// Pushes a read over the network may hold beyond the push its source is sending, each place
-/// holding at most one: the host's push waiting for the engine to admit it, the sixteen events
+/// Events a read over the network may hold beyond the push its source is sending, each place
+/// holding at most one: the host's event waiting for the engine to admit it, the sixteen events
 /// the connector may send ahead, the batch being cut and its piece waiting for credit, and the
-/// frame sent past the credit left.
+/// frame sent past the credit left; an event is a push or a checkpoint, which carries its cursor.
 ///
 /// The frames credit lets go before the host takes them are counted apart: a window of two of
 /// the largest frames, or the credit floor where it is larger.
@@ -58,10 +58,10 @@ pub(super) fn allowance(seed: Seed, inline: bool, network: bool) -> Option<u64> 
 }
 
 /// Bytes: what `reads` reads over the network hold beyond the pushes their source is sending,
-/// where the largest push is `push` and each read is granted credit of at least `floor`.
-fn queued(reads: u64, push: u64, floor: u64) -> u64 {
-    let window = push.saturating_mul(2).max(floor);
-    reads.saturating_mul(QUEUED.saturating_mul(push).saturating_add(window))
+/// where the largest event is `event` and each read is granted credit of at least `floor`.
+fn queued(reads: u64, event: u64, floor: u64) -> u64 {
+    let window = event.saturating_mul(2).max(floor);
+    reads.saturating_mul(QUEUED.saturating_mul(event).saturating_add(window))
 }
 
 /// What a seed's thread held over its worst attempt beyond what was charged for it, and what

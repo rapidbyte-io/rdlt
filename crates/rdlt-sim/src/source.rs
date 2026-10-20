@@ -258,6 +258,8 @@ impl SimStreamReader {
         let id = PartitionId::parse(format!("p{partition}")).expect("valid partition id");
         let stream = self.stream(source);
         source.world.reports.note(&stream.name, &id, &cursor);
+        let encoded = aside(|| serde_json::to_vec(&cursor).map_or(0, |bytes| bytes.len()));
+        source.world.pushes.cursor(encoded);
         out.checkpoint(&cursor).await
     }
 
