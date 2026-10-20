@@ -13,6 +13,7 @@ use super::config::{config, growth, waited};
 use super::reports::Reported;
 use super::scenario::{Scenario, execute_all, pick};
 use super::{FAULTY_RUNS, settled};
+use crate::canary::Canary;
 use crate::changes::{
     CHANGES_PARTITION, CHANGES_PHASE, ChangeStream, Logged, Merged, Position, ROUNDS, Version,
 };
@@ -44,6 +45,9 @@ pub fn check_changes(seed: Seed) -> Digest {
 async fn simulate(seed: Seed, env: Arc<SimEnv>) -> Digest {
     let mut rng = SplitMix64::new(seed.value() ^ CHANGES);
     let name = format!("changes-{seed}");
+    let canary = Canary::of(&name);
+    // Kept until the checks: every event logged on this thread until then is looked at.
+    let (logged, logging) = canary.watching();
     let registered = World::register_changes(
         &name,
         &mut rng,
@@ -91,7 +95,9 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>) -> Digest {
             .all(|stream| stream.replay.is_none()),
     };
     reported.check(seed).await;
-    let violations = world.violations();
+    let mut violations = world.violations();
+    drop(logging);
+    violations.extend(logged.leaks());
     drop(registered);
     assert!(violations.is_empty(), "seed {seed}: {violations:#?}");
     digest

@@ -283,6 +283,7 @@ pub(crate) struct Placing {
     net: Arc<Net>,
     remote: Remote,
     remote_options: Options,
+    canary: Canary,
 }
 
 impl Placing {
@@ -298,6 +299,7 @@ impl Placing {
             net,
             remote,
             remote_options: *options,
+            canary: canary.clone(),
         }
     }
 
@@ -348,7 +350,7 @@ impl Placing {
         let id = source_factory::<SimSource>().spec().id.clone();
         let reference = reference(host(Side::Source, stalled), id);
         Arc::from(
-            placed("source", async || {
+            placed("source", &self.canary, async || {
                 self.remote.source(&reference, config).await
             })
             .await,
@@ -365,7 +367,7 @@ impl Placing {
         let id = destination_factory::<SimDestination>().spec().id.clone();
         let reference = reference(host(Side::Destination, stalled), id);
         let place = async || self.remote.destination(&reference, config).await;
-        Arc::from(placed("destination", place).await)
+        Arc::from(placed("destination", &self.canary, place).await)
     }
 
     /// How many connections to the stalled peer that stalled have been judged.
@@ -381,13 +383,21 @@ impl Placing {
     }
 }
 
-/// The connector `place` places, trying again until it is reachable.
-async fn placed<C>(what: &str, place: impl AsyncFn() -> Result<Placed<C>, ProviderError>) -> C {
+/// The connector `place` places, trying again until it is reachable; no error on the way may hold
+/// a secret of `canary`'s.
+async fn placed<C>(
+    what: &str,
+    canary: &Canary,
+    place: impl AsyncFn() -> Result<Placed<C>, ProviderError>,
+) -> C {
     let mut last = None;
     for _ in 0..PLACEMENTS {
         match place().await {
             Ok(placed) => return placed.connector,
-            Err(error) => last = Some(error.to_string()),
+            Err(error) => {
+                canary.placed(what, &error);
+                last = Some(error.to_string());
+            }
         }
         tokio::time::sleep(REPLACE).await;
     }

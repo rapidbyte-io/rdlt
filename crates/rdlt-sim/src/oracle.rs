@@ -89,6 +89,9 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>, hangs: bo
     let started = clock.instant();
     let mut rng = SplitMix64::new(seed.value());
     let name = format!("oracle-{seed}");
+    let canary = Canary::of(&name);
+    // Kept until the checks: every event logged on this thread until then is looked at.
+    let (logged, logging) = canary.watching();
     let registered = World::register(&name, &mut rng);
     let world = Arc::clone(registered.world());
     if !hangs {
@@ -109,8 +112,7 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>, hangs: bo
     let allowance = memory::allowance(seed, env.inline(), net.is_some());
     world.press(pressed(seed, &config, &world.workload, small_log(&config)));
     let engine = Engine::new(config, env);
-    let placing =
-        net.map(|net| Placing::new(net, &network::options(&mut rng, limits), &Canary::of(&name)));
+    let placing = net.map(|net| Placing::new(net, &network::options(&mut rng, limits), &canary));
     let mut simulation = Simulation {
         seed,
         engine,
@@ -132,7 +134,9 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>, hangs: bo
     if !stopped {
         simulation.check_reports(seed).await;
     }
-    let violations = simulation.violations();
+    let mut violations = simulation.violations();
+    drop(logging);
+    violations.extend(logged.leaks());
     drop(registered);
     assert!(violations.is_empty(), "seed {seed}: {violations:#?}");
     Checked {

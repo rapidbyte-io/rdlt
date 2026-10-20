@@ -38,6 +38,7 @@ impl Simulation {
         let outcome = tokio::time::timeout(RUN_LIMIT, handle)
             .await
             .expect("every run ends within the limit of virtual time");
+        crate::canary::Canary::of(&self.name).kept(world, &outcome);
         let refused = outcome.error.as_ref().is_some_and(|error| {
             error.kind() == ErrorKind::Config && error.code() == Some("table_owned")
         });
