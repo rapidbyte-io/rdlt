@@ -1,6 +1,6 @@
 use rdlt_sim::{Features, Seed, SplitMix64, Weight, check_exactly_once, for_each_seed};
 
-/// Hostile seeds that each found a defect with its fix reverted, kept so they stay caught.
+/// Seeds that fail if a defect they once caught comes back.
 #[rustfmt::skip]
 const FOUND: [u64; 8] = [
     // Two configurations of one connection at once each connected.
