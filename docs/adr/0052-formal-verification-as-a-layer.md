@@ -163,7 +163,8 @@ A formal layer is added to the layers of its class, never in place of one.
   every state a finite specification reaches, which covers every run a bounded check could
   explore. `apalache [--max-steps <n>]` checks each invariant symbolically over every run of up
   to ten steps, or `<n>`, for a specification whose states are too many to enumerate. A
-  specification that names neither is checked by both.
+  specification that names neither is checked by both, and `--max-steps <n>` alone bounds
+  Apalache's runs in that check.
 - Quint runs Apalache from the distribution mise installs: `QUINT_HOME` is `target/quint`, where
   a link names it under its version, which `--apalache-version` passes, so Quint never fetches
   one. The recipe starts from an empty `QUINT_HOME`, refuses an `apalache-mc` that does not
