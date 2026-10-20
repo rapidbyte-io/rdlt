@@ -102,6 +102,39 @@ jobs:
           if-no-files-found: warn
           overwrite: true
 
+  # A thousand seeds of both oracles, each run twice, side by side on the runner's four cores: a
+  # seed whose two runs differ in what any run reported or failed with, or in their simulated
+  # time, no longer replays.
+  sim-replay:
+    needs: sim-archive
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        timeout-minutes: 5
+        with:
+          version: ${{ env.SETUP_MISE_VERSION }}
+          sha256: ${{ runner.os == 'macOS' && env.SETUP_MISE_SHA256_MACOS || env.SETUP_MISE_SHA256_LINUX }}
+          github_token: ""
+          install_args: --locked just aqua:nextest-rs/nextest/cargo-nextest
+          cache_key_prefix: mise-v2-test
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sim-archive
+          path: target
+      - run: just --no-deps sim-replay
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: sim-replay-timings
+          path: target/sim-timings/
+          retention-days: 14
+          if-no-files-found: warn
+          overwrite: true
+
   # A million seeds, in fifty shards of 20 000 that run as runners free up, each shard's seeds side
   # by side on its runner's four cores: a runner checks 8 to 15 seeds a second, so a shard takes
   # 25 to 55 minutes.
