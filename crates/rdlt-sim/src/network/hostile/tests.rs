@@ -85,6 +85,7 @@ fn serving_meets_every_attack_of_a_hostile_host_as_the_protocol_says() {
         Attack::Abandoned(Side::Destination),
         Attack::Sessions,
         Attack::Oversized(Side::Destination),
+        Attack::Window,
     ];
     let violations = run_networked(Seed::new(3), true, move |_env, net| async move {
         let mut rng = SplitMix64::new(7);
