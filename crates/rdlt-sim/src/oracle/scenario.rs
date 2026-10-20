@@ -139,12 +139,12 @@ async fn execute(
 ) -> Executed {
     let (ended, dropped, started) = match scenario {
         Scenario::Plain => (
-            vec![bounded(start(engine, plan, world, placing).await).await],
+            vec![bounded(start(engine, plan, world, placing).await, world).await],
             false,
             1,
         ),
         Scenario::Crash(after) => {
-            let run = bounded(start(engine, plan, world, placing).await);
+            let run = bounded(start(engine, plan, world, placing).await, world);
             tokio::select! {
                 biased;
                 ended = run => (vec![ended], false, 1),
@@ -167,14 +167,14 @@ async fn execute(
                     _ => StopMode::AfterCommit,
                 });
             };
-            let (ended, ()) = tokio::join!(bounded(handle), stop);
+            let (ended, ()) = tokio::join!(bounded(handle, world), stop);
             (vec![ended], false, 1)
         }
         Scenario::Concurrent(delay) => {
-            let first = bounded(start(engine, plan, world, placing).await);
+            let first = bounded(start(engine, plan, world, placing).await, world);
             let second = async {
                 tokio::time::sleep(delay).await;
-                bounded(start(engine, plan, world, placing).await).await
+                bounded(start(engine, plan, world, placing).await, world).await
             };
             let (first, second) = tokio::join!(first, second);
             (vec![first, second], false, 2)
@@ -192,11 +192,17 @@ async fn execute(
     }
 }
 
-/// Awaits `run`, panicking if it takes longer than [`RUN_LIMIT`]; its report, and its failure.
-async fn bounded(run: RunHandle) -> (Report, Option<Failure>) {
+/// Awaits `run` of the world registered as `world`, panicking if it takes longer than
+/// [`RUN_LIMIT`]; its report, and its failure.
+///
+/// A secret in either is a broken invariant.
+async fn bounded(run: RunHandle, world: &str) -> (Report, Option<Failure>) {
     let outcome = tokio::time::timeout(RUN_LIMIT, run)
         .await
         .expect("every run ends within the limit of virtual time");
+    if let Some(registered) = World::named(world) {
+        Canary::of(world).kept(&registered, &outcome);
+    }
     let failure = outcome.error.as_ref().map(Failure::of);
     (outcome.report, failure)
 }

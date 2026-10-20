@@ -1,17 +1,25 @@
 //! Secrets in every simulated configuration, which nothing the engine, its host or a run's report
 //! may hold: their values, the vault that resolves them, and the checks that look for them.
 
+mod logged;
 #[cfg(test)]
 mod tests;
 
-use std::fmt;
+use std::fmt::{self, Write as _};
 
 use rdlt_connector::{BoxFuture, Secret};
-use rdlt_host::{Registry, SecretFault, SecretKind, SecretReference, SecretResolver};
+use rdlt_engine::RunOutcome;
+use rdlt_host::{
+    ProviderError, Registry, SecretFault, SecretKind, SecretReference, SecretResolver,
+};
+
+pub(crate) use logged::Logged;
 
 use crate::changes::SimChangeSource;
 use crate::destination::SimDestination;
+use crate::oracle::aside;
 use crate::source::SimSource;
+use crate::world::World;
 
 /// The secrets one world's configurations refer to.
 ///
@@ -65,7 +73,6 @@ impl Canary {
 
     /// What no text the engine or its host keeps may hold: each secret without its whitespace, and
     /// each line of the secret of several lines long enough to be found alone.
-    #[cfg(test)]
     fn needles(&self) -> [String; 4] {
         let world = &self.world;
         [
@@ -77,11 +84,60 @@ impl Canary {
     }
 
     /// The first secret `text` holds, where it holds one.
-    #[cfg(test)]
     pub(crate) fn found(&self, text: &str) -> Option<String> {
         self.needles()
             .into_iter()
             .find(|needle| text.contains(needle.as_str()))
+    }
+
+    /// Records in `world` each secret `outcome`'s error or report holds.
+    pub(crate) fn kept(&self, world: &World, outcome: &RunOutcome) {
+        // The simulation's own work: what it builds is not the engine's to hold.
+        let found = aside(|| {
+            let report = serde_json::to_string(&outcome.report).unwrap_or_default();
+            let shown = format!("{:?}", outcome.report);
+            let error = outcome
+                .error
+                .as_ref()
+                .map(|error| texts(error))
+                .unwrap_or_default();
+            [
+                ("report", report),
+                ("report, shown", shown),
+                ("error", error),
+            ]
+            .into_iter()
+            .filter_map(|(what, text)| {
+                let secret = self.found(&text)?;
+                Some(format!("a run's {what} holds the secret {secret}: {text}"))
+            })
+            .collect::<Vec<_>>()
+        });
+        for finding in found {
+            world.violation(finding);
+        }
+    }
+
+    /// Fails where `error`, met placing the `what`, holds a secret.
+    ///
+    /// # Panics
+    ///
+    /// Panics when it holds one.
+    pub(crate) fn placed(&self, what: &str, error: &ProviderError) {
+        let text = texts(error);
+        if let Some(secret) = self.found(&text) {
+            panic!("placing the {what} failed with the secret {secret} in its error: {text}");
+        }
+    }
+
+    /// Looks for the secrets in every event and span this thread logs until the guard drops.
+    ///
+    /// Turmoil's hosts all run on the thread, so it sees the connectors' hosts and the engine's
+    /// alike.
+    pub(crate) fn watching(&self) -> (Logged, tracing::subscriber::DefaultGuard) {
+        let logged = Logged::new(self.clone());
+        let guard = tracing::subscriber::set_default(logged.clone());
+        (logged, guard)
     }
 
     /// What resolves `${secret:canary}`, `${secret:lines}` and `${secret:token}`.
@@ -98,6 +154,17 @@ impl Canary {
             .trusted_destination::<SimDestination>()
             .secrets(self.vault())
     }
+}
+
+/// Every text an error holds: its own and each of its causes', as `Display` and `Debug` write them.
+fn texts(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut texts = format!("{error} {error:?}");
+    let mut cause = error.source();
+    while let Some(error) = cause {
+        write!(texts, " {error} {error:?}").ok();
+        cause = error.source();
+    }
+    texts
 }
 
 /// Resolves the secrets of one [`Canary`], and no other reference.

@@ -1,21 +1,8 @@
-use std::fmt::Write as _;
-
 use rdlt_connector::{ConnectorError, ConnectorErrorKind};
 use rdlt_host::{Redactions, SecretKind, SecretReference, SecretResolver as _};
 
-use super::Canary;
+use super::{Canary, texts};
 use crate::world::{FORMS, Told, quoting};
-
-/// Every text an error holds: its own and each of its causes', as `Display` and `Debug` write them.
-fn texts(error: &(dyn std::error::Error + 'static)) -> String {
-    let mut texts = format!("{error} {error:?}");
-    let mut cause = error.source();
-    while let Some(error) = cause {
-        write!(texts, " {error} {error:?}").ok();
-        cause = error.source();
-    }
-    texts
-}
 
 /// What a connector of `canary`'s world is told.
 fn told(canary: &Canary) -> Told {
@@ -115,4 +102,20 @@ fn every_form_a_connector_quotes_its_secrets_in_is_scrubbed_by_its_host() {
         let kept = texts(&error.received(&|text| redactions.scrubbed(text)));
         assert_eq!(canary.found(&kept), None, "form {turn}: {kept}");
     }
+}
+
+#[test]
+fn a_secret_logged_where_an_operator_reads_it_is_a_leak() {
+    let canary = Canary::of("oracle-7");
+    let (logged, guard) = canary.watching();
+    tracing::warn!(target: "rdlt_host", line = "said rdlt-canary-oracle-7 \t", "a connector wrote output");
+    tracing::info!(target: "hyper", "second-line-of-oracle-7");
+    tracing::debug!(target: "h2", "rdlt-canary-token-oracle-7 in a frame");
+    tracing::warn!(target: "rdlt_host", line = "said ***", "a connector wrote output");
+    drop(guard);
+    tracing::warn!(target: "rdlt_host", "rdlt-canary-oracle-7, once nothing watches");
+    let leaks = logged.leaks();
+    assert_eq!(leaks.len(), 2, "{leaks:#?}");
+    assert!(leaks[0].contains("rdlt-canary-oracle-7"), "{leaks:#?}");
+    assert!(leaks[1].contains("second-line-of-oracle-7"), "{leaks:#?}");
 }
