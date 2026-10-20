@@ -29,10 +29,6 @@ pub(super) struct Asked {
 
 impl Asked {
     /// A configuration of `connection` whose connect pauses for `pause`.
-    #[expect(
-        dead_code,
-        reason = "the hostile host's attacks, still to come, build these"
-    )]
     pub(super) fn connecting(connection: u64, pause: Duration) -> Self {
         Self {
             connection,
@@ -42,13 +38,6 @@ impl Asked {
     }
 
     /// A configuration of `connection` whose sessions each pause for `opening` as they open.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the hostile host's attacks, still to come, build these"
-        )
-    )]
     pub(super) fn opening(connection: u64, opening: Duration) -> Self {
         Self {
             connection,
@@ -58,10 +47,6 @@ impl Asked {
     }
 
     /// A configuration that asks nothing, for calls refused before any configuration is read.
-    #[expect(
-        dead_code,
-        reason = "the hostile host's attacks, still to come, build these"
-    )]
     pub(super) fn idle() -> Self {
         Self::connecting(0, Duration::ZERO)
     }
@@ -83,13 +68,6 @@ impl Asked {
     }
 
     /// The configuration of the world registered as `world` that asks this.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the hostile host's attacks, still to come, build these"
-        )
-    )]
     pub(super) fn config(self, world: &str) -> String {
         let millis = |pause: Duration| u64::try_from(pause.as_millis()).unwrap_or(u64::MAX);
         serde_json::json!({
