@@ -87,8 +87,8 @@ impl Attacker<'_> {
         };
         let connection = rng.next_u64();
         // Long enough that the call's cancellation, sent a quarter of the way through, reaches
-        // serving before the connector connects, at four times the network's longest latency.
-        let pause = Duration::from_millis(100 + rng.below(100));
+        // serving at least four times the network's longest latency before the connector connects.
+        let pause = Duration::from_millis(140 + rng.below(100));
         let mut abandoned = client.rpc.clone();
         let abandoning =
             abandoned.configure(self.configuration(Asked::connecting(connection, pause)));
@@ -110,7 +110,7 @@ impl Attacker<'_> {
             return;
         };
         let connection = rng.next_u64();
-        let opening = Duration::from_millis(100 + rng.below(100));
+        let opening = Duration::from_millis(140 + rng.below(100));
         let asked = self.configuration(Asked::opening(connection, opening));
         if self
             .answered("configuration", answer(client.rpc.configure(asked)).await)
