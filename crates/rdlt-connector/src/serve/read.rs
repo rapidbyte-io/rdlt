@@ -373,9 +373,15 @@ fn finish(
             Ok(())
         }
         Ok(Err(error)) => Err(status(&error)),
+        // The join error's text carries a process-wide task number and the panic's message,
+        // which may quote what was read; neither is this connector's to tell its host.
         Err(join) => Err(status(&crate::error::ConnectorError::new(
             ConnectorErrorKind::Internal,
-            format!("the read failed: {join}"),
+            if join.is_panic() {
+                "the read panicked"
+            } else {
+                "the read was cancelled"
+            },
         ))),
     }
 }

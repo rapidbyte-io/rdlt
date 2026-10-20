@@ -6,11 +6,12 @@ use rdlt_wire::Limits;
 use rdlt_wire::bounded::{Bounded, Bounds};
 use rdlt_wire::limits::Class;
 use rdlt_wire::plane::{Incoming, Outgoing};
+use rdlt_wire::tonic::Code;
 use rdlt_wire::tonic::body::Body;
 use tokio::sync::{Notify, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 
-use super::pump;
+use super::{Outbox, finish, pump};
 use crate::error::Result;
 use crate::id::{PartitionId, StreamName};
 use crate::serve::live::{Live, gone};
@@ -164,4 +165,27 @@ async fn a_read_ends_once_its_host_drops_its_answers_though_its_request_stays_op
         .await
         .expect("the source's read is dropped with the pump");
     drop(control);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_read_s_panic_tells_its_host_neither_its_message_nor_its_task() {
+    let read: tokio::task::JoinHandle<Result<()>> =
+        tokio::spawn(async { panic!("the read held row 4417 of the ledger") });
+    let ended = tokio::time::timeout(WAIT, read)
+        .await
+        .expect("the read ends");
+    let mut outbox = Outbox::new(Limits::default());
+    let Err(status) = finish(&mut outbox, ended) else {
+        panic!("a read that panicked fails");
+    };
+    assert_eq!(status.code(), Code::Internal);
+    for told in [
+        status.message().to_owned(),
+        crate::wire::error(&status).to_string(),
+    ] {
+        assert!(
+            !told.contains("4417") && !told.contains("task"),
+            "the host is told {told:?}"
+        );
+    }
 }
