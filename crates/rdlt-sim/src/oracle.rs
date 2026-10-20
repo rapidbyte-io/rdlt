@@ -6,6 +6,7 @@ mod changes;
 mod config;
 mod expected;
 mod intruder;
+mod ledger;
 mod memory;
 mod names;
 mod pressure;
@@ -19,12 +20,13 @@ mod streaming;
 mod tables;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use rdlt_connector::{ColumnPath, PartitionId, PipelineId, ReadMode, StreamName};
-use rdlt_engine::{Engine, Env as _, PipelinePlan, Report, StreamPlan, Until, Waits};
+use rdlt_engine::{Engine, Env as _, PipelinePlan, Report, StreamPlan, Until};
 
 use crate::canary::Canary;
-use crate::destination::{committed_next, completions, reads_in_progress};
+use crate::destination::{Digest, committed_next, completions, reads_in_progress};
 use crate::env::SimEnv;
 use crate::network::{self, Net, Placing, run_networked};
 use crate::rng::SplitMix64;
@@ -35,6 +37,7 @@ use crate::world::World;
 pub use changes::check_changes;
 use config::{config, endless, growth, pressed, small_log, waited};
 use expected::Discards;
+use ledger::Ledger;
 #[cfg(test)]
 pub(crate) use memory::beyond_charge;
 use memory::{Counterweight, Tracing};
@@ -119,7 +122,7 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>, hangs: bo
         world,
         name,
         budget,
-        waits: Waits::default(),
+        ledger: Ledger::default(),
         partitions,
         allowance,
         attacks: 0,
@@ -138,13 +141,7 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>, hangs: bo
     violations.extend(logged.leaks());
     drop(registered);
     assert!(violations.is_empty(), "seed {seed}: {violations:#?}");
-    Checked {
-        digest,
-        waits: simulation.waits,
-        simulated: clock.instant() - started,
-        features: simulation.world.workload.features,
-        held: simulation.held,
-    }
+    simulation.checked(digest, clock.instant() - started)
 }
 
 /// One simulation: its world, the engine its runs share, and what an operator relaxed after
@@ -159,8 +156,8 @@ struct Simulation {
     relaxed: Vec<Relaxed>,
     /// Bytes: the engine's memory budget, which no run reserves more than.
     budget: u64,
-    /// How often and how long its runs waited on the budget, by share.
-    waits: Waits,
+    /// What its runs left: their trace, their waits on the budget, and the last one's length.
+    ledger: Ledger,
     /// Partitions each run reads at once.
     partitions: u64,
     /// Bytes: the allowance an attempt's heap is held to beyond what is charged for it;
@@ -175,6 +172,18 @@ struct Simulation {
 }
 
 impl Simulation {
+    /// What the simulation left, `simulated` being how long it took on its own clock.
+    fn checked(self, digest: Digest, simulated: Duration) -> Checked {
+        Checked {
+            digest,
+            trace: self.ledger.trace(),
+            waits: self.ledger.waits,
+            simulated,
+            features: self.world.workload.features,
+            held: self.held,
+        }
+    }
+
     /// What the world and the network found wrong.
     fn violations(&self) -> Vec<String> {
         let mut violations = self.world.violations();
@@ -350,6 +359,7 @@ impl Simulation {
             .map(|pipeline| plan(workload, &self.relaxed, pipeline).with_until(until))
             .collect();
         let executed = self.measured(&plans, scenario, clean, network, phase).await;
+        self.ledger.ended(phase, scenario, &executed);
         let mut failures = Vec::new();
         for (plan, executed) in plans.iter().zip(&executed) {
             let refused = plan

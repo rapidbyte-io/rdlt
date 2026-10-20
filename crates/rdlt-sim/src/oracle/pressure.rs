@@ -18,6 +18,9 @@ use crate::swarm::Features;
 pub struct Checked {
     /// What the destination holds.
     pub digest: Digest,
+    /// Every run's report and failure, in the order the runs ended, hashed: the same seed always
+    /// comes to the same trace.
+    pub trace: u64,
     /// How often and how long its runs waited for room in the budget, by share.
     pub waits: Waits,
     /// How long the simulation took on its own clock.
@@ -32,6 +35,7 @@ pub struct Checked {
 impl Recorded for Checked {
     fn recorded(&self) -> Map<String, Value> {
         let mut fields = self.digest.recorded();
+        fields.insert("trace".to_owned(), json!(self.trace));
         fields.insert(
             "simulated_ms".to_owned(),
             json!(self.simulated.as_secs_f64() * 1e3),
@@ -54,9 +58,8 @@ const MEMORY_DEADLINE: &str = "memory_budget_wait_exceeded";
 const STATE_BOUND: &str = "state_bytes_exceeded";
 
 impl super::Simulation {
-    /// Checks that none of the runs `reports` tell of reserved more than the budget, and counts
-    /// their waits on it.
-    pub(super) fn within_budget(&mut self, reports: &[Report], phase: usize) {
+    /// Checks that none of the runs `reports` tell of reserved more than the budget.
+    pub(super) fn within_budget(&self, reports: &[Report], phase: usize) {
         let (seed, budget) = (self.seed, self.budget);
         for report in reports {
             assert!(
@@ -64,13 +67,12 @@ impl super::Simulation {
                 "seed {seed}: phase {phase}: a run reserved {} bytes of a budget of {budget}",
                 report.peak_memory
             );
-            added(&mut self.waits, &report.counters.waits);
         }
     }
 }
 
 /// `total` with the waits of `more` added, share by share.
-fn added(total: &mut Waits, more: &Waits) {
+pub(super) fn added(total: &mut Waits, more: &Waits) {
     let shares = [
         (&mut total.intake, more.intake),
         (&mut total.work, more.work),
