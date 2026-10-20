@@ -224,17 +224,22 @@ A formal layer is added to the layers of its class, never in place of one.
   engine's next attempt would replay; a test shows such an end, where no step is left. The protocol
   is a module of constants. The checkers explore one pipeline reading a partition that reads again,
   of one row, and one that does not, of two; five attempts and two faults, as a fault may end two
-  attempts started together and five leave one that meets none. TLC checks every state, 477,460 of
-  them, in about a minute on four workers of a developer's machine. Apalache checks every run of up
-  to seven steps, in about 90 seconds there: eight take about 8 minutes, past half the nightly job's
-  10 that its time there is held to. Two rows of each partition, or a second pipeline, take TLC past
-  10 minutes there, its states still growing. A second pipeline sharing the destination with a
-  partition of its own is the module `exactly_once_pair`, which `just quint` tests and simulates and
-  no checker explores; a test shows that its sessions fence none of the first pipeline's. `just
-  quint` simulates 2,000 runs of 60 steps of each module. Within these bounds the decide rule's
-  partial branch decides nothing its whole branch would not: replacing it with the whole replay
-  leaves TLC's 477,460 states as they were, and its filter never drops a seal. The branch guards
-  resets and phase transitions (ADRs 0033, 0034), which the spec leaves out.
+  attempts started together and five leave one that meets none. The checkers are held to 20 minutes
+  for TLC and 10 for Apalache on the nightly runner, and half that on four workers of a developer's
+  machine, which sized these bounds: TLC checks every state, 477,460 of them, in about a minute
+  there, and Apalache every run of up to seven steps in about 90 seconds, where eight take about 8
+  minutes. Two rows of each partition, or a second pipeline, take TLC past 10 minutes there, its
+  states still growing. A second pipeline sharing the destination with a partition of its own is the
+  module `exactly_once_pair`, which `just quint` tests and simulates and no checker explores; a test
+  shows that its sessions fence none of the first pipeline's. `just quint` simulates 2,000 runs of
+  60 steps of each module, and its tests and runs of this spec take about 45 seconds on a
+  developer's machine. A replay commits a logged commit again whole where the destination stands
+  where its load left it, and otherwise, where another commit landed since, only its seals of
+  partitions that cannot read again, each where its partition stands where the seal starts (ADR
+  0029). Within these bounds the second case decides nothing a whole replay would not: replaying
+  every commit whole leaves TLC's 477,460 states as they were, so no replay the bounds reach passes
+  over a seal. That case guards resets and phase transitions (ADRs 0033, 0034), which the spec
+  leaves out.
 - Traces tie a specification to the code. A spec's header names each trace by name, seed and
   the goal its run reaches; `just quint` writes each from its seed, which reproduces it exactly,
   and fails where it differs from the one `specs/traces/<spec>/` holds, so a trace cannot drift
@@ -319,18 +324,21 @@ what no bound names.
 - **A spec's traces are committed.** The driver then runs in every test run, on Linux and macOS,
   with no Quint, and every change to the code meets them. Cost: about 2 MB of generated JSON for
   the log's spec, rewritten when the spec changes.
-- **The exactly-once spec is tied to the code by its invariants' names alone.** Checking the
-  simulation's runs against it was tried: a seed's sessions, commits and positions told, written
-  as observations a checker searches the spec for, and ruled out on three of four criteria: of
-  the first 25 seeds within what the spec models, in file-name order, TLC admitted 19 in 7 to
-  163 s and ran out of ten minutes on 6, as Apalache did; no seeded engine bug was caught where
-  the simulation's oracle passes (one that tells sources that read again before the commit was
-  refused only on seeds the oracle fails too, one that replays every commit whole by neither);
-  and the hook was 393 lines against 300. 68 of the first 500 seeds lay within what the spec
-  models. The observer's last form admitted more than its first: replays of held commits,
-  commits that move no source told unseen, and commits with no ends dropped, fenced and failed
-  ones among them. Cost: a design defect the simulation does not meet is found only by the
-  spec's own checks.
+- **The exactly-once spec is tied to the code by its invariants' names alone,** each named with its
+  check under *Specifications*. Checking the simulation's runs against it was tried: a seed's
+  sessions, commits and positions told, written as observations a checker searches the spec for. It
+  was held to four criteria: reach, 25 seeds within what the spec models among the first 500;
+  admission, each of those admitted within 10 minutes; teeth, a seeded engine bug caught where the
+  simulation's oracle passes; and size, a hook of at most 300 lines. Reach held, as 68 of the first
+  500 seeds lay within what the spec models, and the other three failed. Of the first 25 seeds in
+  scope, in file-name order, TLC admitted 19 in 7 to 163 seconds, rejected none, and ran out of 10
+  minutes on 6, as Apalache did. No seeded engine bug was caught where the oracle passes: one that
+  tells sources that read again before the destination's commit was refused only on seeds the oracle
+  fails too, and one that replays every commit whole was refused on none. The hook was 393 lines.
+  The observer's last form admitted more than its first: replays of held commits, tellings of
+  commits that move no source of their kind, taken unobserved, and commits with no ends dropped,
+  fenced and failed ones among them. Cost: a design defect the simulation does not meet is found
+  only by the spec's own checks.
 
 ## Consequences
 
