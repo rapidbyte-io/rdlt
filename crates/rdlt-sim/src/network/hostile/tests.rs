@@ -172,3 +172,25 @@ fn a_write_waiting_for_room_holds_the_frame_it_read_and_no_copy_of_it() {
          each read"
     );
 }
+
+#[test]
+fn a_write_with_room_is_seen_answered_and_then_ends() {
+    let (seen, ended) = run_networked(Seed::new(1), false, move |_env, net| async move {
+        let mut rng = SplitMix64::new(7);
+        let canary = Canary::of("hostile-answered");
+        let placing = Placing::new(net, &options(&mut rng, Limits::default()), &canary);
+        let wire = placing
+            .wire(Side::Destination)
+            .await
+            .expect("the destination is reached");
+        let mut raw = Raw::over(wire, Side::Destination.host())
+            .await
+            .expect("HTTP/2 opens");
+        let write = raw.write(16, 17);
+        tokio::time::sleep(SETTLE).await;
+        let seen = write.answered();
+        (seen, write.ends_within(PATIENCE).await)
+    });
+    assert!(seen, "a write with room was not answered");
+    assert!(ended, "a write seen answered did not end");
+}
