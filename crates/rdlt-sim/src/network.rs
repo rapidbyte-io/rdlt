@@ -4,6 +4,7 @@
 
 mod connectors;
 mod faults;
+mod hostile;
 mod stalled;
 #[cfg(test)]
 mod tests;
@@ -37,6 +38,7 @@ use crate::seed::{Seed, Weight, report_failure};
 use crate::source::SimSource;
 use connectors::Connectors;
 use faults::{Healing, disrupt};
+use hostile::Watch;
 use stalled::Stalls;
 
 /// The engine's host.
@@ -95,10 +97,16 @@ pub(crate) struct Net {
     served: Mutex<Vec<Handle>>,
     /// What the stalled peer's connections share.
     stalls: Arc<Stalls>,
+    /// Whether a hostile host attacks the connectors, which are then watched, and start again now
+    /// and then under another version.
+    hostile: bool,
+    /// What a hostile seed's connectors keep across their lives and see of each hostile
+    /// connection.
+    watch: Watch,
 }
 
 impl Net {
-    fn new() -> Self {
+    fn new(hostile: bool) -> Self {
         let pki = Pki::new("ca");
         let server = pki.server(
             "server",
@@ -112,25 +120,27 @@ impl Net {
             connectors: Connectors::default(),
             served: Mutex::default(),
             stalls: Arc::default(),
+            hostile,
+            watch: Watch::default(),
         }
     }
 }
 
 /// Runs `scenario` as the engine's host of a simulated network, on which the source and the
-/// destination listen, and the peer that stalls, on a host of its own, with a [`SimEnv`] seeded by
-/// `seed`, and turmoil's network seeded by it too.
+/// destination listen, and the peer that stalls, on a host of its own, and a hostile host's targets
+/// where `hostile`, with a [`SimEnv`] seeded by `seed`, and turmoil's network seeded by it too.
 ///
 /// # Panics
 ///
 /// Re-raises any panic from `scenario` after printing the seed that reproduces it.
-pub(crate) fn run_networked<F, Fut, T>(seed: Seed, scenario: F) -> T
+pub(crate) fn run_networked<F, Fut, T>(seed: Seed, hostile: bool, scenario: F) -> T
 where
     F: FnOnce(Arc<SimEnv>, Arc<Net>) -> Fut + 'static,
     Fut: Future<Output = T> + 'static,
     T: 'static,
 {
     let mut rng = SplitMix64::new(seed.value() ^ LATENCY);
-    let net = Arc::new(Net::new());
+    let net = Arc::new(Net::new(hostile));
     let mut sim = turmoil::Builder::new()
         .tick_duration(TICK)
         .simulation_duration(LIMIT)
@@ -204,10 +214,8 @@ async fn listen(net: Arc<Net>, side: Side) -> turmoil::Result {
         let listener = turmoil::net::TcpListener::bind((Ipv4Addr::UNSPECIFIED, PORT)).await?;
         let (held, freed) = tokio::sync::oneshot::channel::<()>();
         let served = Arc::new(match side {
-            Side::Source => Served::new().with_source(source_factory::<SimSource>()),
-            Side::Destination => {
-                Served::new().with_destination(destination_factory::<SimDestination>())
-            }
+            Side::Source => Served::new().with_source(net.source_factory(crashes)),
+            Side::Destination => Served::new().with_destination(net.destination_factory(crashes)),
         });
         let stop = {
             let net = Arc::clone(&net);

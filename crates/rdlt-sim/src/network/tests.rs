@@ -15,7 +15,7 @@ use crate::world::World;
 
 #[test]
 fn connectors_on_the_simulated_network_are_placed_there_and_serve_the_engine() {
-    let (source, destination) = run_networked(Seed::new(1), |_env, net| async move {
+    let (source, destination) = run_networked(Seed::new(1), false, |_env, net| async move {
         let mut rng = SplitMix64::new(7);
         let name = "network-placed";
         let registered = World::register(name, &mut rng);
@@ -36,7 +36,7 @@ fn connectors_on_the_simulated_network_are_placed_there_and_serve_the_engine() {
 
 #[test]
 fn a_disrupted_network_loses_connectors_and_the_healed_one_serves_them_again() {
-    let (lost, served) = run_networked(Seed::new(1), |_env, net| async move {
+    let (lost, served) = run_networked(Seed::new(1), false, |_env, net| async move {
         let mut rng = SplitMix64::new(7);
         let name = "network-disrupted";
         let registered = World::register(name, &mut rng);
@@ -70,7 +70,7 @@ fn a_disrupted_network_loses_connectors_and_the_healed_one_serves_them_again() {
 
 #[test]
 fn a_call_the_network_held_lands_before_the_disrupted_work_is_over() {
-    let (before, after) = run_networked(Seed::new(1), |_env, net| async move {
+    let (before, after) = run_networked(Seed::new(1), false, |_env, net| async move {
         let mut rng = SplitMix64::new(7);
         let name = "network-held";
         let registered = World::register(name, &mut rng);
@@ -104,7 +104,7 @@ fn a_call_the_network_held_lands_before_the_disrupted_work_is_over() {
 
 #[test]
 fn a_stopped_connector_listens_again_while_a_read_its_host_holds_back_drains() {
-    let served = run_networked(Seed::new(1), |_env, net| async move {
+    let served = run_networked(Seed::new(1), false, |_env, net| async move {
         let mut rng = SplitMix64::new(7);
         let name = "network-drained";
         let registered = World::register(name, &mut rng);
@@ -140,7 +140,7 @@ fn a_stopped_connector_listens_again_while_a_read_its_host_holds_back_drains() {
 #[test]
 fn a_connector_whose_peer_stalls_is_lost_within_the_heartbeat_s_patience() {
     let (checked, waited, patience, violations, judged) =
-        run_networked(Seed::new(1), |_env, net| async move {
+        run_networked(Seed::new(1), false, |_env, net| async move {
             let mut rng = SplitMix64::new(7);
             let name = "network-stalled";
             let registered = World::register(name, &mut rng);
