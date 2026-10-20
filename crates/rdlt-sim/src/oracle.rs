@@ -23,6 +23,7 @@ use std::sync::Arc;
 use rdlt_connector::{ColumnPath, PartitionId, PipelineId, ReadMode, StreamName};
 use rdlt_engine::{Engine, Env as _, PipelinePlan, Report, StreamPlan, Until, Waits};
 
+use crate::canary::Canary;
 use crate::destination::{committed_next, completions, reads_in_progress};
 use crate::env::SimEnv;
 use crate::network::{self, Net, Placing, run_networked};
@@ -108,7 +109,8 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>, hangs: bo
     let allowance = memory::allowance(seed, env.inline(), net.is_some());
     world.press(pressed(seed, &config, &world.workload, small_log(&config)));
     let engine = Engine::new(config, env);
-    let placing = net.map(|net| Placing::new(net, &network::options(&mut rng, limits)));
+    let placing =
+        net.map(|net| Placing::new(net, &network::options(&mut rng, limits), &Canary::of(&name)));
     let mut simulation = Simulation {
         seed,
         engine,

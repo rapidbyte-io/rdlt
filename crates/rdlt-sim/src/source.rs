@@ -22,11 +22,13 @@ use crate::owners::Live;
 use crate::workload::{Row, SimStream};
 use crate::world::{FaultPoint, World};
 
-/// Configuration of [`SimSource`]: the world to serve.
+/// Configuration of [`SimSource`]: the world to serve, and the secrets it was told.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SimSourceConfig {
     /// The world's registered name.
     pub world: String,
+    /// The secrets its host resolved; a hostile host tells none.
+    pub told: Option<crate::world::Told>,
 }
 
 /// Serves every stream of a world's workload.
@@ -61,6 +63,7 @@ impl SourceConnector for SimSource {
     async fn connect(config: SimSourceConfig, _context: &ConnectContext) -> Result<Self> {
         let world = World::named(&config.world)
             .ok_or_else(|| ConnectorError::config(format!("no world named {}", config.world)))?;
+        world.heard.hear(config.told.as_ref());
         Ok(Self { world })
     }
 

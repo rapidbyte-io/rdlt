@@ -36,11 +36,13 @@ pub use store::Digest;
 use store::Staged;
 pub(crate) use store::Store;
 
-/// Configuration of [`SimDestination`]: the world to write to.
+/// Configuration of [`SimDestination`]: the world to write to, and the secrets it was told.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SimDestinationConfig {
     /// The world's registered name.
     pub world: String,
+    /// The secrets its host resolved; a hostile host tells none.
+    pub told: Option<crate::world::Told>,
 }
 
 /// Writes to a world's store, with the capabilities the world drew.
@@ -65,6 +67,7 @@ impl DestinationConnector for SimDestination {
     async fn connect(config: SimDestinationConfig, _context: &ConnectContext) -> Result<Self> {
         let world = World::named(&config.world)
             .ok_or_else(|| ConnectorError::config(format!("no world named {}", config.world)))?;
+        world.heard.hear(config.told.as_ref());
         Ok(Self {
             world,
             sessions: Arc::default(),

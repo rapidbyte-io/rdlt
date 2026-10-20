@@ -4,19 +4,14 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use rdlt_connector::{
-    ConnectContext, Destination, PipelineId, ReadMode, Source, StreamName, destination_factory,
-    source_factory,
-};
+use rdlt_connector::{Destination, PipelineId, ReadMode, Source, StreamName};
 use rdlt_engine::{Engine, ResetReport, ResetScope, WriteMode};
-use serde_json::json;
 
 use super::scenario::Scenario;
 use super::{PIPELINES, Simulation};
-use crate::destination::{SimDestination, records};
+use crate::destination::records;
 use crate::rng::SplitMix64;
 use crate::seed::Seed;
-use crate::source::SimSource;
 use crate::swarm::RESET;
 use crate::workload::SimStream;
 
@@ -58,7 +53,7 @@ impl Simulation {
         let racing = drawn.clone();
         let resetting = async move {
             tokio::time::sleep(racing.delay).await;
-            let (source, destination) = connected(&name).await;
+            let (source, destination) = super::scenario::in_process(&name).await;
             for _ in 0..TRIES {
                 let recorded = records(&world, &racing.pipeline, &racing.streams[0]);
                 match tried(&engine, &racing, &source, &destination).await {
@@ -135,20 +130,6 @@ impl Simulation {
             delay: Duration::from_millis(rng.below(40)),
         })
     }
-}
-
-/// The simulated source and destination of the world `world`.
-async fn connected(world: &str) -> (Arc<dyn Source>, Arc<dyn Destination>) {
-    let config = json!({ "world": world });
-    let destination = destination_factory::<SimDestination>()
-        .connect(config.clone(), ConnectContext::new())
-        .await
-        .expect("the simulated destination connects");
-    let source = source_factory::<SimSource>()
-        .connect(config, ConnectContext::new())
-        .await
-        .expect("the simulated source connects");
-    (Arc::from(source), Arc::from(destination))
 }
 
 /// Tries `drawn` once, with `engine`.

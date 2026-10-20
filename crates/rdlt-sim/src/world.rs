@@ -5,6 +5,7 @@ mod pushes;
 mod reports;
 #[cfg(test)]
 mod tests;
+mod told;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -31,6 +32,10 @@ use crate::workload::Workload;
 use hangs::Hangs;
 use pushes::Pushes;
 pub(crate) use reports::Reports;
+pub(crate) use told::Heard;
+pub use told::Told;
+#[cfg(test)]
+pub(crate) use told::{FORMS, quoting};
 
 /// Where a connector can fail, and how often, in failures per thousand calls.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -110,6 +115,8 @@ pub struct World {
     pub(crate) pushes: Pushes,
     /// The sessions, writers and reads its connectors hold now.
     pub(crate) owners: Owners,
+    /// What the connectors were told by their configurations, which their faults quote.
+    pub(crate) heard: Heard,
 }
 
 /// How hard a source presses on the engine's memory budget: the bytes each Arrow batch it pushes
@@ -249,6 +256,7 @@ impl World {
             pressure: Mutex::default(),
             pushes: Pushes::default(),
             owners: Owners::default(),
+            heard: Heard::default(),
         });
         Registered::enter(name, world)
     }
@@ -311,6 +319,7 @@ impl World {
             pressure: Mutex::default(),
             pushes: Pushes::default(),
             owners: Owners::default(),
+            heard: Heard::default(),
         });
         Registered::enter(name, world)
     }
@@ -420,7 +429,7 @@ impl World {
         if !rng.chance(point.per_mille()) {
             return None;
         }
-        let message = format!("injected fault at {point:?}");
+        let (message, cause) = self.heard.quoted(format!("injected fault at {point:?}"));
         let fault = match rng.below(20) {
             0 => {
                 drop(rng);
@@ -439,7 +448,10 @@ impl World {
             }
             _ => ConnectorError::new(ConnectorErrorKind::Transient, message),
         };
-        Some(fault)
+        Some(match cause {
+            Some(cause) => fault.with_source(std::io::Error::other(cause)),
+            None => fault,
+        })
     }
 
     /// Sleeps a short random while, sometimes, when faults are on.
