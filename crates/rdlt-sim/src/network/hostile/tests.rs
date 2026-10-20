@@ -173,6 +173,78 @@ fn a_write_waiting_for_room_holds_the_frame_it_read_and_no_copy_of_it() {
     );
 }
 
+/// How long serving may keep a task for a write once it was cut or answered, or for a connection
+/// once its host dropped it.
+const LET_GO: Duration = Duration::from_secs(1);
+
+/// What `serving` counts once it counts `most` or fewer, or once [`LET_GO`] passed.
+async fn let_go(serving: impl Fn() -> usize, most: usize) -> usize {
+    let started = tokio::time::Instant::now();
+    while serving() > most && started.elapsed() < LET_GO {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    serving()
+}
+
+#[test]
+fn serving_lets_go_of_writes_cut_behind_a_full_window_and_of_their_connection() {
+    let frame = usize::try_from(TRANSPORT_FRAME_BYTES).expect("a frame's length fits");
+    let message = frame - PREFIX - 1;
+    let (connected, holding, kept, left) =
+        run_networked(Seed::new(1), false, move |_env, net| async move {
+            let mut rng = SplitMix64::new(7);
+            let canary = Canary::of("hostile-release");
+            let placing = Placing::new(net, &options(&mut rng, Limits::default()), &canary);
+            let serving = || {
+                placing
+                    .hosts()
+                    .iter()
+                    .map(|host| host.metrics().num_alive_tasks())
+                    .sum::<usize>()
+            };
+            let wire = placing
+                .wire(Side::Destination)
+                .await
+                .expect("the destination is reached");
+            let mut raw = Raw::over(wire, Side::Destination.host())
+                .await
+                .expect("HTTP/2 opens");
+            tokio::time::sleep(SETTLE).await;
+            let connected = serving();
+            let largest = Limits::default().decoding(Class::Data) - PREFIX;
+            let holders: Vec<Write> = (0..HOLDERS).map(|_| raw.write(largest, 0)).collect();
+            tokio::time::sleep(SETTLE).await;
+            let waiting: Vec<Write> = (0..4).map(|_| raw.write(message, message + 1)).collect();
+            tokio::time::sleep(SETTLE).await;
+            let holding = serving();
+            drop(holders);
+            for write in waiting {
+                assert!(
+                    write.ends_within(PATIENCE).await,
+                    "a write waiting for room was not answered once it came back"
+                );
+            }
+            let kept = let_go(serving, connected).await;
+            drop(raw);
+            let left = let_go(serving, 0).await;
+            (connected, holding, kept, left)
+        });
+    assert!(
+        holding > connected && connected > 0,
+        "serving's tasks were not counted: {connected} for the connection, {holding} with its \
+         writes"
+    );
+    assert!(
+        kept <= connected,
+        "serving kept {kept} tasks for a connection whose writes were cut or answered, beyond the \
+         {connected} it had before them"
+    );
+    assert_eq!(
+        left, 0,
+        "serving kept tasks for a connection its host dropped"
+    );
+}
+
 #[test]
 fn a_write_with_room_is_seen_answered_and_then_ends() {
     let (seen, ended) = run_networked(Seed::new(1), false, move |_env, net| async move {
