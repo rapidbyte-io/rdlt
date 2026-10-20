@@ -10,8 +10,10 @@
 // destination's commit, keyed by load and number, under the session's epoch; the source that reads
 // again is told after. A run may crash, its log may refuse a commit, its commit may fail or land
 // with its answer lost, a telling may fail, and runs may start while another runs. The
-// destination may be shared by several pipelines; the bounds the checkers explore hold one.
+// destination may be shared by several pipelines: `quint test` and `quint run` take two, and
+// the model checkers one.
 //
+// quint main: exactly_once exactly_once_pair
 // quint steps: --step simulated --max-steps 60
 // quint run: --max-samples 2000
 // quint verify: --max-steps 7
@@ -31,7 +33,8 @@ module exactly_once_protocol {
   /// At least the most rows a partition holds; a range over rows is bounded by it, as Apalache
   /// takes a range only between constants.
   const MAXROWS: int
-  assume RowsWithinMax = PARTS.forall(part => ROWS.get(part) <= MAXROWS)
+  pure val rowsFit = PARTS.forall(part => ROWS.get(part) <= MAXROWS)
+  assume RowsWithinMax = rowsFit
   /// The runs each pipeline may start, its loads 1 onward.
   const LOADS: int
   /// Faults a behavior meets: crashes, commits a log refused, failed or lost commits, failed
@@ -550,6 +553,9 @@ module exactly_once {
 
   // ---- Tests
 
+  /// Quint's simulator does not check the assumption on the bound, so a test does.
+  run everyPartitionFitsTheBoundTest = init.expect(rowsFit)
+
   /// The first pipeline's run `load`.
   pure def p(load: int): (Pipe, int) = ("p", load)
 
@@ -810,4 +816,44 @@ module exactly_once {
       .expect(PositionOnlyInCommitted)
       .then(movedTo("u", 1))
       .expect(not(PositionOnlyInCommitted))
+}
+
+/// The protocol with a second pipeline sharing the destination, which only `quint test` and
+/// `quint run` explore: the checkers' bounds hold one.
+module exactly_once_pair {
+  import exactly_once_protocol(
+    PIPES = Set("p", "q"),
+    PARTS = Set("a", "u", "b"),
+    OWNER = Map("a" -> "p", "u" -> "p", "b" -> "q"),
+    REREADS = Set("a", "b"),
+    ROWS = Map("a" -> 2, "u" -> 2, "b" -> 1),
+    MAXROWS = 2,
+    LOADS = 5,
+    FAULTS = 2,
+  ).*
+
+  run everyPartitionFitsTheBoundTest = init.expect(rowsFit)
+
+  /// A run of the second pipeline opens its own session: the first pipeline's run, opened before,
+  /// still commits.
+  run aSecondPipelineFencesNoneOfTheFirstsTest =
+    init
+      .then(start("p"))
+      .then(replay(("p", 1), Ok))
+      .then(start("q"))
+      .then(replay(("q", 1), Ok))
+      .then(read(("p", 1), "a")).then(checkpoint(("p", 1), "a"))
+      .then(read(("p", 1), "u")).then(checkpoint(("p", 1), "u"))
+      .then(log(("p", 1), Ok)).then(tellLogged(("p", 1), Ok)).then(land(("p", 1), Ok)).then(tellLanded(("p", 1), Ok))
+      .then(read(("q", 1), "b"))
+      .then(checkpoint(("q", 1), "b"))
+      .then(log(("q", 1), Ok))
+      .then(land(("q", 1), Ok))
+      .then(tellLanded(("q", 1), Ok))
+      .expect(all {
+        dest.get("p").cursor == Map("a" -> 1, "u" -> 1),
+        dest.get("q").cursor == Map("b" -> 1),
+        ExactlyOnce,
+        FencedNeverCommits,
+      })
 }

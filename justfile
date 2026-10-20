@@ -261,9 +261,13 @@ quint mode="check":
             exit 1
         fi
         quint typecheck "$spec"
-        quint test --backend typescript "$spec"
-        # shellcheck disable=SC2086
-        quint run --backend typescript "$spec" $steps ${samples:---max-samples 10000} --invariants $invariants
+        # A spec names the modules to test and simulate, or has only the one named for it.
+        mains=$(sed -n 's|^// quint main: ||p' "$spec")
+        for main in ${mains:-$name}; do
+            quint test --backend typescript --main "$main" "$spec"
+            # shellcheck disable=SC2086
+            quint run --backend typescript --main "$main" "$spec" $steps ${samples:---max-samples 10000} --invariants $invariants
+        done
         written="$QUINT_HOME/traces/$name"
         mkdir -p "$written"
         sed -n 's|^// quint trace: ||p' "$spec" | while read -r trace seed goal; do
