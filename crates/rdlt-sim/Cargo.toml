@@ -18,6 +18,10 @@ arrow-schema.workspace = true
 arrow-select.workspace = true
 bytes.workspace = true
 futures-util.workspace = true
+http.workspace = true
+http-body.workspace = true
+hyper = { workspace = true, features = ["client", "http2"] }
+hyper-util = { workspace = true, features = ["tokio"] }
 object_store.workspace = true
 parking_lot.workspace = true
 rdlt-connector = { workspace = true, features = ["serve", "merge"] }

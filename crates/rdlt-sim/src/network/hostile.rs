@@ -9,6 +9,7 @@ mod factories;
 mod serving;
 #[cfg(test)]
 mod tests;
+mod window;
 
 use std::future::Future;
 use std::time::Duration;
@@ -43,23 +44,26 @@ enum Attack {
     Sessions,
     /// A configuration beyond the configuration limit.
     Oversized(Side),
+    /// Writes whose bodies hold the connection's window, and writes waiting for room behind them.
+    Window,
 }
 
 impl Attack {
     /// The attack `rng` draws, against the side it draws; a configuration beyond its limit, eight
-    /// mebibytes of it, one time in sixteen.
+    /// mebibytes of it, one time in eighteen.
     fn draw(rng: &mut SplitMix64) -> Self {
         let side = if rng.chance(500) {
             Side::Source
         } else {
             Side::Destination
         };
-        match rng.below(16) {
+        match rng.below(18) {
             0..=3 => Self::Order(side),
             4..=7 => Self::Configurations(side),
             8..=10 => Self::Abandoned(side),
             11..=14 => Self::Sessions,
-            _ => Self::Oversized(side),
+            15 => Self::Oversized(side),
+            _ => Self::Window,
         }
     }
 }
@@ -116,6 +120,7 @@ impl Attacker<'_> {
             Attack::Abandoned(side) => self.abandoned(side, &mut rng).await,
             Attack::Sessions => self.sessions(&mut rng).await,
             Attack::Oversized(side) => self.oversized(side).await,
+            Attack::Window => self.window(&mut rng).await,
         }
     }
 
