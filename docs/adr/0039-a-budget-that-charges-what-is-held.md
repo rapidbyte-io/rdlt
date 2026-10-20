@@ -457,7 +457,8 @@ admitted, and what a remote connector's calls hold in transport.
   some pushes up to their limit; on every fourth record the least budget refuses the batches. The
   world keeps its rows apart from the batches they were written in, and the short form of each fat
   value. Not measured: seeds that change rows, seeds under stress, whose compute runs on Rayon's
-  threads, and the runs with nothing new that check the reports a source hears.
+  threads, hostile seeds, whose hostile host's heap shares the seed's thread, and the runs with
+  nothing new that check the reports a source hears.
 - **What the check sees.** Every seed of 0 to 99 999 holds to it: what a charge covers is freed
   before the charge goes, so no moment holds it beyond its charge. A JSON flush that gives back
   its text's charge while it holds the text fails it: with that fix undone, 8 of seeds 0 to 1 999

@@ -60,15 +60,39 @@ the whole engine on a paused clock from a seed, with connectors in the engine's 
   keep to the protocol never answer out of turn, however the network or the connector fails.
 - **The simulation's coverage leaves out what it never runs**: generated wire code, process
   placement, a served binary's entry points, certification (the certify crate and the host's
-  connections, kills and raw wires it uses), the local and in-memory log stores (the simulation
-  keeps logs in a store of its own), the stores' shared contract tests, and test and bench code.
-  The data plane (`rdlt_wire::plane`) is hand-written, not generated, and every simulated served
-  read and write runs it, so it counts. Its floor is what 1 000 seeds reach, 80 % of lines and
-  70 % of branches. The simulation's worlds are honest peers, and reach little of the code that
-  refuses a dishonest one: a served connector's refusals of a host that breaks the protocol,
-  certification's probes, the scan's refusals of messages it cannot walk or that pass their
-  bounds, secrets read from files and the environment, and refusals of a log a store garbled. The
-  floor rises as worlds that act as hostile peers reach that code.
+  connections and kills it uses), the local and in-memory log stores (the simulation keeps logs
+  in a store of its own), the stores' shared contract tests, and test and bench code. The data
+  plane (`rdlt_wire::plane`) is hand-written, not generated, and every simulated served read and
+  write runs it, so it counts. In-process seeds place their connectors through the host's
+  registry, as an embedder does, so its resolution of secrets and its scrubbing of what
+  connectors say run in every seed. The coverage's floor is what 1 000 seeds reach, 81 % of lines
+  and 71 % of branches. A hostile host, in one networked seed in two, reaches the code that
+  refuses a host breaking the protocol. Beside the runs it:
+  - calls before the handshake and the configuration;
+  - configures one connection twice at once;
+  - gives up on configurations and opens mid-way;
+  - opens sessions beyond a connection's share;
+  - sends a configuration beyond its limit;
+  - holds a connection's window with writes that stop within a message.
+
+  The connectors it targets count what each hostile connection makes them do, and fail the seed
+  where serving lets two configurations connect at once or holds more sessions than it may. They
+  start again, every other life, under a version named after a secret they were told.
+
+  Every configuration refers to three secrets:
+  - one that ends in whitespace;
+  - one of several lines, each line of 8 or more non-whitespace characters found alone;
+  - one shaped as a version.
+
+  The connectors quote them in their faults. A secret in a run's error or report, in an error
+  placing a connector, or in an event or span logged on the seed's thread fails the seed. The
+  simulation still reaches little of:
+  - certification's probes;
+  - the scan's refusals of messages it cannot walk or whose decoded count passes its bound;
+  - secrets read from files and the environment;
+  - refusals of a log a store garbled;
+  - a connector that frames its answers against the protocol, which `rdlt-host`'s own tests
+    serve.
 
 ## Consequences
 
