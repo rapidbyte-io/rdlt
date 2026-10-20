@@ -24,6 +24,7 @@ use crate::destination::Store;
 use crate::env::SimEnv;
 use crate::objects::ObjectLogs;
 use crate::owners::Owners;
+use crate::reached::{Reach, Reached};
 use crate::rng::SplitMix64;
 use crate::seed::Seed;
 use crate::swarm::Features;
@@ -117,6 +118,8 @@ pub struct World {
     pub(crate) owners: Owners,
     /// What the connectors were told by their configurations, which their faults quote.
     pub(crate) heard: Heard,
+    /// The paths its runs reached.
+    reached: Mutex<Reached>,
 }
 
 /// How hard a source presses on the engine's memory budget: the bytes each Arrow batch it pushes
@@ -257,6 +260,7 @@ impl World {
             pushes: Pushes::default(),
             owners: Owners::default(),
             heard: Heard::default(),
+            reached: Mutex::default(),
         });
         Registered::enter(name, world)
     }
@@ -320,6 +324,7 @@ impl World {
             pushes: Pushes::default(),
             owners: Owners::default(),
             heard: Heard::default(),
+            reached: Mutex::default(),
         });
         Registered::enter(name, world)
     }
@@ -409,6 +414,31 @@ impl World {
         }
     }
 
+    /// Records that a run reached `reach`.
+    pub(crate) fn reach(&self, reach: Reach) {
+        self.reached.lock().add(reach);
+    }
+
+    /// Records that a run reached every path of `reached`.
+    pub(crate) fn reach_all(&self, reached: Reached) {
+        let mut held = self.reached.lock();
+        *held = held.with(reached);
+    }
+
+    /// The paths its runs reached.
+    pub(crate) fn reached(&self) -> Reached {
+        let mut reached = *self.reached.lock();
+        if self
+            .objects
+            .lock()
+            .as_ref()
+            .is_some_and(|objects| objects.landed_late())
+        {
+            reached.add(Reach::LandedLate);
+        }
+        reached
+    }
+
     /// Crashes the worker running `pipeline`: every chunk its logs staged and did not publish is
     /// lost.
     pub(crate) fn crash_logs(&self, pipeline: &rdlt_connector::PipelineId) {
@@ -429,7 +459,11 @@ impl World {
         if !rng.chance(point.per_mille()) {
             return None;
         }
-        let (message, cause) = self.heard.quoted(format!("injected fault at {point:?}"));
+        let (message, cause, line_alone) =
+            self.heard.quoted(format!("injected fault at {point:?}"));
+        if line_alone {
+            self.reach(Reach::LineSaid);
+        }
         let fault = match rng.below(20) {
             0 => {
                 drop(rng);

@@ -15,6 +15,7 @@ use crate::canary::Canary;
 use crate::changes::SimChangeSource;
 use crate::destination::SimDestination;
 use crate::network::Placing;
+use crate::reached::Reach;
 use crate::rng::SplitMix64;
 use crate::source::SimSource;
 use crate::world::World;
@@ -152,6 +153,7 @@ async fn execute(
                 () = tokio::time::sleep(after) => {
                     if let Some(world) = World::named(world) {
                         world.crash_logs(plan.pipeline());
+                        world.reach(Reach::Crashed);
                     }
                     (Vec::new(), true, 1)
                 }

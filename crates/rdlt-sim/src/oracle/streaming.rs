@@ -8,6 +8,7 @@ use rdlt_engine::{Report, Until};
 
 use super::Simulation;
 use super::scenario::{Scenario, pick};
+use crate::reached::Reach;
 use crate::rng::SplitMix64;
 use crate::world::World;
 
@@ -51,6 +52,7 @@ impl Simulation {
             let running =
                 self.attempt_until(phase, scenario, clean, None, reports, Until::For(deadline));
             let (ran, ()) = tokio::join!(running, arrive(&world, phase, arriving, ticks));
+            world.reach(Reach::Followed);
             if ran.stopped {
                 world.produce(None);
                 return true;

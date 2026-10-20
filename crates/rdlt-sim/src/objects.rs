@@ -8,6 +8,7 @@ mod tests;
 
 use std::num::{NonZeroU32, NonZeroUsize};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use futures_util::TryStreamExt as _;
@@ -34,6 +35,8 @@ pub(crate) struct ObjectLogs {
     objects: Arc<Faulty<Disk<InMemory>>>,
     /// The draws deciding which requests fail, while faulty.
     faults: Arc<Mutex<Option<SplitMix64>>>,
+    /// Whether a put or a deletion was drawn to land after its client gave up.
+    late: Arc<AtomicBool>,
 }
 
 /// The store's clock: the simulation's paused one, its sleeps a little longer now and then, as
@@ -77,7 +80,11 @@ impl ObjectLogs {
             .with_deadline(Duration::from_secs(1 + rng.below(4)), Duration::ZERO);
         let faults = Arc::new(Mutex::new(None));
         let bucket = Disk::new(InMemory::new());
-        let objects = Arc::new(Faulty::new(bucket, plan(Arc::clone(&faults))));
+        let late = Arc::new(AtomicBool::new(false));
+        let objects = Arc::new(Faulty::new(
+            bucket,
+            plan(Arc::clone(&faults), Arc::clone(&late)),
+        ));
         let clock = Arc::new(SimClock {
             rng: Mutex::new(SplitMix64::new(rng.next_u64())),
         });
@@ -88,12 +95,18 @@ impl ObjectLogs {
             wal: Arc::new(wal),
             objects,
             faults,
+            late,
         }
     }
 
     /// Makes requests fail now and then, as `faults` draws, or never again.
     pub(crate) fn set_faults(&self, faults: Option<SplitMix64>) {
         *self.faults.lock() = faults;
+    }
+
+    /// Whether a put or a deletion was drawn to land after its client gave up.
+    pub(crate) fn landed_late(&self) -> bool {
+        self.late.load(Ordering::SeqCst)
     }
 
     /// Whether it holds any log: an open one, or what a removal left.
@@ -112,18 +125,22 @@ impl ObjectLogs {
     }
 }
 
-/// The plan drawing each request's fault from `faults`, while there are draws.
-fn plan(faults: Arc<Mutex<Option<SplitMix64>>>) -> Plan {
+/// The plan drawing each request's fault from `faults`, while there are draws, and noting in
+/// `late` a fault that lands after its client gave up.
+fn plan(faults: Arc<Mutex<Option<SplitMix64>>>, late: Arc<AtomicBool>) -> Plan {
     Box::new(move |call| {
         let mut faults = faults.lock();
         let Some(rng) = faults.as_mut() else {
             return Fault::None;
         };
-        if rng.chance(FAULTS) {
-            fault(call, rng)
-        } else {
-            Fault::None
+        if !rng.chance(FAULTS) {
+            return Fault::None;
         }
+        let drawn = fault(call, rng);
+        if matches!(drawn, Fault::Late(_)) {
+            late.store(true, Ordering::SeqCst);
+        }
+        drawn
     })
 }
 

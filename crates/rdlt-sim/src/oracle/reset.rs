@@ -12,6 +12,7 @@ use super::{PIPELINES, Simulation};
 use crate::World;
 use crate::canary::Canary;
 use crate::destination::records;
+use crate::reached::Reach;
 use crate::rng::SplitMix64;
 use crate::seed::Seed;
 use crate::swarm::RESET;
@@ -72,6 +73,7 @@ impl Simulation {
                 {
                     Ok(_) => return None,
                     Err(error) if refused(&error) => {
+                        world.reach(Reach::ResetRefused);
                         assert!(
                             !recorded,
                             "seed {seed}: resetting {:?} as {:?} was refused, though the \
@@ -107,6 +109,9 @@ impl Simulation {
         let recorded = records(&self.world, &drawn.pipeline, &drawn.streams[0]);
         let watch = (&*self.world, self.name.as_str());
         let answer = tried(&engine, drawn, &source, &destination, watch).await;
+        if answer.as_ref().is_err_and(refused) {
+            self.world.reach(Reach::ResetRefused);
+        }
         let right = match &answer {
             Ok(_) => recorded,
             Err(error) => !recorded && refused(error),

@@ -1,16 +1,16 @@
-use rdlt_sim::{Features, Seed, SplitMix64, Weight, check_exactly_once, for_each_seed};
+use rdlt_sim::{Features, Reach, Seed, SplitMix64, Weight, check_exactly_once, for_each_seed};
 
 /// Seeds that fail if a defect they once caught comes back.
 #[rustfmt::skip]
-const FOUND: [u64; 8] = [
+const FOUND: [(u64, Reach); 8] = [
     // Two configurations of one connection at once each connected.
-    7, 19,
+    (7, Reach::ConfiguredTwice), (19, Reach::ConfiguredTwice),
     // An open beyond a connection's sessions closed the oldest while a call still held it.
-    12, 42,
+    (12, Reach::SessionsBeyond), (42, Reach::SessionsBeyond),
     // A connector started again under another version, named after a secret, saw it quoted.
-    343, 459,
+    (343, Reach::Renamed), (459, Reach::Renamed),
     // A line of a secret of several lines, said alone, was kept as said.
-    2, 9,
+    (2, Reach::LineSaid), (9, Reach::LineSaid),
 ];
 
 /// The first hostile seeds the swarm draws.
@@ -26,7 +26,14 @@ fn hostile(count: usize) -> impl Iterator<Item = Seed> {
 
 #[test]
 fn a_hostile_host_meets_typed_refusals_and_no_secret_leaves_the_engine_or_its_host() {
-    let first = hostile(8).filter(|seed| !FOUND.contains(&seed.value()));
-    let seeds = FOUND.into_iter().map(Seed::new).chain(first);
-    for_each_seed("hostile", seeds, Weight::One, check_exactly_once);
+    let first = hostile(8).filter(|seed| !FOUND.iter().any(|(kept, _)| *kept == seed.value()));
+    let seeds = FOUND
+        .into_iter()
+        .map(|(seed, _)| Seed::new(seed))
+        .chain(first);
+    for_each_seed("hostile", seeds, Weight::One, |seed| {
+        let checked = check_exactly_once(seed);
+        crate::reaches(&FOUND, seed, checked.reached);
+        checked
+    });
 }

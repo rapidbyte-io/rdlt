@@ -1,55 +1,59 @@
 use rdlt_sim::{
-    Features, Recorded, Seed, SplitMix64, Weight, check_exactly_once, for_each_seed, seeds,
+    Features, Reach, Recorded, Seed, SplitMix64, Weight, check_exactly_once, for_each_seed, seeds,
 };
 
 /// Seeds that fail if a defect the simulation once found comes back.
-const FOUND: [u64; 19] = [
+const FOUND: [(u64, Reach); 19] = [
     // Over the network: a host whose handshake a partition cut short held its connection, and
     // its connector's stop, forever.
-    743,
+    (743, Reach::LinkCut),
     // A batch of a normalized merge stream whose every row a new array dropped: its key's type
     // was never resolved, so it met no refusal.
-    163_723,
+    (22, Reach::Refused),
     // Logged: a failed load's commit of a new full read, replayed in the next phase, landed rows
     // the model had not counted, until a phase waited for every log to be replayed.
-    8_746,
+    (7_867, Reach::Replayed),
     // Streaming: a run that followed the source ended before the rows a refusal needed arrived,
     // and succeeded, as the model now allows.
-    2_838,
+    (2_838, Reach::Spared),
     // Streaming: reads cut batches wherever rows had arrived, so JSON pushes inferred types the
     // model never saw, until they served whole checkpoint groups.
-    4_516,
+    (4_516, Reach::Followed),
     // Pressed: a partition that ended at its last cursor sealed it again unreserved, so a
     // commit recording many such cursors passed the log's share of the budget.
-    820,
+    (252, Reach::LogWaited),
     // A column of integers made for a column of JSON as its table was created was recorded
     // exact, though the integers split into it were read only as they were lowered.
-    7_964,
+    (24, Reach::Widened),
     // A frozen normalized stream's declared array whose table no row had made yet was refused
     // as new to the table once a crashed attempt had created the stream's own table.
-    77_581,
+    (29, Reach::Crashed),
     // Logged in a small log: eight partitions' segments each spanned several chunks, which
     // stayed, holding committed frames beside open ones, until no batch fitted.
-    53_249,
+    (532, Reach::LogWaited),
     // Reset: an incremental stream whose partitions never held a row, so the pipeline recorded
     // nothing of it, was refused as no stream it knew, which the world took for a failure.
-    249_911, 728_591, 820_601, 918_105,
+    (249_911, Reach::ResetRefused),
+    (728_591, Reach::ResetRefused),
+    (820_601, Reach::ResetRefused),
+    (918_105, Reach::ResetRefused),
     // Logs in an object store: a mark's and a head's creates given up landed after their log
     // was removed, and the head named a body deleted with it, which no replay could read.
-    725_620,
+    (545, Reach::LandedLate),
     // A merge table's column widened to JSON over values written as floats and as plain text,
     // which the destination then held as JSON, and the check read as values of JSON, not of
     // the types they were written as.
-    11_754, 77_962,
+    (11_754, Reach::Widened),
+    (77_962, Reach::Widened),
     // A child table no row had reached yet was merged by its roots' commit, under no columns,
     // which the merge refused.
-    37_936,
+    (37_936, Reach::EmptyChild),
     // A date written into timestamps, whose column then widens to JSON, holds a timestamp's text.
-    642_848,
+    (642_848, Reach::Widened),
     // Logged in a small log: four partitions, each holding three pushes of a table and its child
     // table unsealed, held more than the whole log the world drew, and the engine refused a
     // batch, as it may where a log is smaller than the least it promises the load.
-    133_046,
+    (744, Reach::LogWaited),
 ];
 
 #[test]
@@ -77,12 +81,12 @@ fn every_row_lands_exactly_once_through_faults_crashes_and_concurrent_runs() {
 
 #[test]
 fn seeds_that_once_found_a_defect_pass() {
-    for_each_seed(
-        "found",
-        FOUND.map(Seed::new),
-        Weight::One,
-        check_exactly_once,
-    );
+    let seeds = FOUND.map(|(seed, _)| Seed::new(seed));
+    for_each_seed("found", seeds, Weight::One, |seed| {
+        let checked = check_exactly_once(seed);
+        crate::reaches(&FOUND, seed, checked.reached);
+        checked
+    });
 }
 
 /// A seed whose run acknowledged rows its destination then failed to commit, so only the
@@ -90,8 +94,10 @@ fn seeds_that_once_found_a_defect_pass() {
 /// later run fails.
 #[test]
 fn a_seed_whose_rows_only_the_log_held_passes() {
+    let checked = check_exactly_once(Seed::new(61));
+    assert!(checked.reached.has(Reach::LogLeft));
     // What the seed's timing line records beside its outcome.
-    let recorded = check_exactly_once(Seed::new(61)).recorded();
+    let recorded = checked.recorded();
     assert!(recorded["digest"].is_u64(), "{recorded:?}");
     assert!(
         recorded["simulated_ms"].as_f64().is_some_and(|ms| ms > 0.0),

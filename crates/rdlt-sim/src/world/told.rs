@@ -10,6 +10,9 @@ use serde::Deserialize;
 /// How many ways a fault quotes what its connector was told, each in turn.
 pub(crate) const FORMS: u64 = 4;
 
+/// The turn of [`FORMS`] that quotes a line of the secret of several lines alone.
+const LINE_ALONE: u64 = 1;
+
 /// The secrets a connector's configuration referred to, as its host resolved them.
 #[derive(Clone, Default, Deserialize)]
 pub struct Told {
@@ -48,13 +51,18 @@ impl Heard {
         }
     }
 
-    /// `message` and a cause, quoting what was heard in the next of the [`FORMS`]; `message` as
-    /// it is where nothing was heard.
-    pub(crate) fn quoted(&self, message: String) -> (String, Option<String>) {
+    /// `message` and a cause, quoting what was heard in the next of the [`FORMS`], and whether
+    /// that form was a line of the secret of several lines alone; `message` as it is where
+    /// nothing was heard.
+    pub(crate) fn quoted(&self, message: String) -> (String, Option<String>, bool) {
         let told = self.told.lock().clone();
         match told {
-            Some(told) => quoting(&told, self.quoted.fetch_add(1, Ordering::SeqCst), message),
-            None => (message, None),
+            Some(told) => {
+                let turn = self.quoted.fetch_add(1, Ordering::SeqCst);
+                let (message, cause) = quoting(&told, turn, message);
+                (message, cause, turn % FORMS == LINE_ALONE)
+            }
+            None => (message, None, false),
         }
     }
 }
@@ -65,7 +73,7 @@ impl Heard {
 pub(crate) fn quoting(told: &Told, turn: u64, message: String) -> (String, Option<String>) {
     match turn % FORMS {
         0 => (format!("{message}; told {}", told.canary), None),
-        1 => {
+        LINE_ALONE => {
             let line = told.lines.lines().nth(2).unwrap_or_default();
             (format!("{message}; told {line} of a key"), None)
         }

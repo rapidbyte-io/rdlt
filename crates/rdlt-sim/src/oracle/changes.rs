@@ -21,6 +21,7 @@ use crate::changes::{
 };
 use crate::destination::Stored;
 use crate::env::SimEnv;
+use crate::reached::Reach;
 use crate::rng::SplitMix64;
 use crate::seed::{Seed, run};
 use crate::world::World;
@@ -100,6 +101,7 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>) -> Checked {
         simulated: clock.instant() - started,
         features,
         held: None,
+        reached: super::reached(&world, None, &changing.ledger.waits),
     }
 }
 
@@ -172,9 +174,12 @@ impl Changing<'_> {
                     );
                 }
             }
-            if executed.iter().all(|executed| executed.succeeded) && !self.world.holds_logs().await
-            {
-                return;
+            if executed.iter().all(|executed| executed.succeeded) {
+                if !self.world.holds_logs().await {
+                    return;
+                }
+                // The next run replays what this one logged.
+                self.world.reach(Reach::Replayed);
             }
             assert!(runs < 32, "seed {seed}: round {round} did not converge");
         }
