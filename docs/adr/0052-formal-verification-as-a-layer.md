@@ -45,6 +45,8 @@ A formal layer is added to the layers of its class, never in place of one.
   `#[kani::unwind]`, is one more than its steps.
 - `just kani <crate>` proves a crate's harnesses; `just kani` proves every crate's that holds any;
   `just kani <crate> <module>` proves those of one module's proofs, such as `budget::admits`'s.
+  Kani reads the crate's own manifest: an unstable feature its proofs use, such as `stubbing`,
+  is turned on in its `[package.metadata.kani.unstable]`, for every harness of the crate.
 - Kani compiles every crate with `panic = "abort"`. A crate that contains a panic by unwinding
   refuses an aborting build with `#[cfg(all(panic = "abort", not(kani)))] compile_error!(..)`:
   Kani's build runs nothing it compiles, so no caught panic is at stake in it, and every other
@@ -312,6 +314,11 @@ what no bound names.
   shows.
 - **Kani is exempted by each guard.** Kani has no unwinding build. Cost: a build that sets
   `--cfg kani` by hand and aborts compiles where it should not; nothing does.
+- **A crate's Kani flags are its own.** `just kani` names the crate's manifest to Kani, which
+  reads its `[package.metadata.kani]`, rather than taking flags for each module's part: Kani
+  compiles with the features it turns on, and a crate's parts share one build cache because
+  they build alike. Cost: a feature one module needs is on for all of the crate's harnesses;
+  stubbing changes nothing for a harness that names no stub.
 - **The formal checks filter inside the workflow.** A check that a workflow's path filter skips
   never reports, so it could not be required; a filtering action would be one more pinned
   dependency. Cost: `formal-plan` checks out the whole history on every change, and each part's
