@@ -29,6 +29,7 @@ rate every night against the floor below.
 | Exactly-once sweep, seeds 0-399, one P-core | 10.7 seeds/s |
 | Per seed, seeds 0-399, one thread | 94 ms mean, 1 217 ms max |
 | Network seeds, seeds 0-399 | 25 % of seeds, 46 % of wall time |
+| Hostile networked seeds, seeds 0-999, this change on `9ff145dd` | 13.3 % of seeds, 22.0 % of wall time; the sweep 93 % of the parent's rate, interleaved rounds at a load of 6-9 |
 | Network seeds' steps in settling's fixed second, seeds 0-999, `90ce76c2` | 36.1 %, all after the last task ended |
 | Coverage run, 1 000 seeds, four P-cores | 7.6 min (456 s) |
 | Exactly-once sweep, a pull request's shard of 5 000 seeds, ubuntu-24.04 | 14.2 seeds/s median of 60 shards (12.5-27.6) |
