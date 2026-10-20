@@ -203,37 +203,38 @@ A formal layer is added to the layers of its class, never in place of one.
   liveness claim needs fairness assumptions on a store that may answer nothing forever. A
   property that needs one will add it.
 - Exactly-once delivery is specified (`specs/exactly_once.qnt`, ADRs 0004, 0029 and 0030) as the
-  engine orders it: a run opens its log, fences and replays the others in a session it opens for the
-  first commit it replays, then opens its own session and commits what it reads, logged first,
-  sources that cannot read again told once the log holds the commit, the destination's commit keyed
-  by load and number under the session's epoch, sources that read again told after. Runs crash, logs
-  refuse commits, commits fail or lose their answer, tellings fail, and runs start beside one
-  another. Its invariants, each with the check in the code it stands for: every row a partition's
-  position lies past is held once and none past it (`ExactlyOnce`, the contents and cursor checks of
-  the simulation's `check_exactly_once`); a source stands at a position only once its commit landed,
-  or for one that cannot read again once a log holds it (`Acknowledged`, the simulation's
-  `check_acknowledged` and its source's check that no acknowledged offset lies beyond the committed
-  one); a source stands only where it was told, at a committed position (`PositionOnlyInCommitted`,
-  ADR 0030's `S-ACK` clause as `rdlt-certify` checks it); no commit lands from a fenced session
-  (`FencedNeverCommits`, the destination's fence, which the model's destination enforces and no
-  simulation check covers). Each has a test that breaks its rule. Once faults stop, every row lands
-  once and no log is left (`Converges`), which TLC checks under weak fairness of every step. A
-  behavior need not end so: a run started once the load converged opens a log, and a fault that ends
-  the last run the bounds start leaves it open, which the engine's next run would replay; a test
-  shows such an end, where no step is left. The protocol is a module of constants. The checkers
-  explore one pipeline reading a partition that reads again, of one row, and one that does not, of
-  two; five runs and two faults, as a fault may end two runs started together and five leave one
-  that meets none. TLC checks every state, 477,460 of them, in about a minute on four workers of a
-  developer's machine. Apalache checks every run of up to seven steps, in about 90 seconds there:
-  eight take about 8 minutes, past half the nightly job's 10 that its time there is held to. Two
-  rows of each partition, or a second pipeline, take TLC past 10 minutes there, its states still
-  growing. A second pipeline sharing the destination with a partition of its own is the module
-  `exactly_once_pair`, which `just quint` tests and simulates and no checker explores; a test shows
-  that its sessions fence none of the first pipeline's. `just quint` simulates 2,000 runs of 60
-  steps of each module. Within these bounds the decide rule's partial branch decides nothing its
-  whole branch would not: replacing it with the whole replay leaves TLC's 477,460 states as they
-  were, and its filter never drops a seal. The branch guards resets and phase transitions (ADRs
-  0033, 0034), which the spec leaves out.
+  engine orders it: an attempt, its load, opens its log, fences and replays the others in a session
+  it opens for the first commit it replays, then opens its own session and commits what it reads,
+  logged first, sources that cannot read again told once the log holds the commit, the destination's
+  commit keyed by load and number under the session's epoch, sources that read again told after.
+  Attempts crash, logs refuse commits, commits fail or lose their answer, tellings fail, and
+  attempts start beside one another; a retry is an attempt of its own, and the model does not group
+  attempts into runs. Its invariants, each with the check in the code it stands for: every row a
+  partition's position lies past is held once and none past it (`ExactlyOnce`, the contents and
+  cursor checks of the simulation's `check_exactly_once`); a source stands at a position only once
+  its commit landed, or for one that cannot read again once a log holds it (`Acknowledged`, the
+  simulation's `check_acknowledged` and its source's check that no acknowledged offset lies beyond
+  the committed one); a source stands only where it was told, at a committed position
+  (`PositionOnlyInCommitted`, ADR 0030's `S-ACK` clause as `rdlt-certify` checks it); no commit
+  lands from a fenced session (`FencedNeverCommits`, the destination's fence, which the model's
+  destination enforces and no simulation check covers). Each has a test that breaks its rule. Once
+  faults stop, every row lands once and no log is left (`Converges`), which TLC checks under weak
+  fairness of every step. A behavior need not end so: an attempt started once the load converged
+  opens a log, and a fault that ends the last attempt the bounds start leaves it open, which the
+  engine's next attempt would replay; a test shows such an end, where no step is left. The protocol
+  is a module of constants. The checkers explore one pipeline reading a partition that reads again,
+  of one row, and one that does not, of two; five attempts and two faults, as a fault may end two
+  attempts started together and five leave one that meets none. TLC checks every state, 477,460 of
+  them, in about a minute on four workers of a developer's machine. Apalache checks every run of up
+  to seven steps, in about 90 seconds there: eight take about 8 minutes, past half the nightly job's
+  10 that its time there is held to. Two rows of each partition, or a second pipeline, take TLC past
+  10 minutes there, its states still growing. A second pipeline sharing the destination with a
+  partition of its own is the module `exactly_once_pair`, which `just quint` tests and simulates and
+  no checker explores; a test shows that its sessions fence none of the first pipeline's. `just
+  quint` simulates 2,000 runs of 60 steps of each module. Within these bounds the decide rule's
+  partial branch decides nothing its whole branch would not: replacing it with the whole replay
+  leaves TLC's 477,460 states as they were, and its filter never drops a seal. The branch guards
+  resets and phase transitions (ADRs 0033, 0034), which the spec leaves out.
 - Traces tie a specification to the code. A spec's header names each trace by name, seed and
   the goal its run reaches; `just quint` writes each from its seed, which reproduces it exactly,
   and fails where it differs from the one `specs/traces/<spec>/` holds, so a trace cannot drift
