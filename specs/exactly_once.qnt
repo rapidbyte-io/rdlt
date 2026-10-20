@@ -508,9 +508,9 @@ module exactly_once_protocol {
     0.to(MAXROWS - 1).filter(o => o < rowsOf(part)).forall(o => d.rows.get(part).get(o) == (if (o < d.cursor.get(part)) 1 else 0))
   }))
 
-  /// A source is told a position only once it is safe: a source that reads again once its
+  /// A source stands at a position only once it is safe: a source that reads again once its
   /// commit landed, and one that cannot once a log holds the commit until it lands.
-  val SAck = PARTS.filter(part => PIPES.contains(ownerOf(part))).forall(part => {
+  val Acknowledged = PARTS.forall(part => {
     val at = dest.get(ownerOf(part)).cursor.get(part)
     if (rereads(part)) kept.get(part) <= at
     else kept.get(part) <= (if (logged(part) > at) logged(part) else at)
@@ -643,7 +643,7 @@ module exactly_once {
         kept == Map("a" -> 1, "u" -> 2),
         logs.keys().forall(k => not(logs.get(k).open)),
         ExactlyOnce,
-        SAck,
+        Acknowledged,
         PositionOnlyInCommitted,
       })
 
@@ -657,7 +657,7 @@ module exactly_once {
       .then(checkpoint(p(1), "u"))
       .then(log(p(1), Ok))
       .then(tellLogged(p(1), Ok))
-      .expect(kept.get("u") == 1 and dest.get("p").cursor.get("u") == 0 and SAck)
+      .expect(kept.get("u") == 1 and dest.get("p").cursor.get("u") == 0 and Acknowledged)
       .then(crash(p(1)))
       .then(start("p"))
       .then(5.reps(_ => replay(p(2), Ok)))
@@ -668,7 +668,7 @@ module exactly_once {
         runOf(p(2)).stage == Reading,
         runOf(p(2)).read.get("u") == 1,
         ExactlyOnce,
-        SAck,
+        Acknowledged,
       })
 
   /// A commit that landed with its answer lost holds its receipt, so the next run's replay lands
@@ -786,7 +786,7 @@ module exactly_once {
       .then(read(p(1), "u"))
       .then(checkpoint(p(1), "u"))
       .then(toldEarly(p(1)))
-      .expect(not(SAck))
+      .expect(not(Acknowledged))
 
   /// A destination that took a fenced session's commit would land it: the invariant refuses it.
   run aDestinationTakingAFencedCommitWouldLandItTest =
