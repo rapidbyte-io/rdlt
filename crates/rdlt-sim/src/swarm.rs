@@ -24,6 +24,10 @@ const OBJECT_STORE: u64 = 0x6f62_6a73_746f_7265;
 /// What fat values' draw mixes into the seed's generator: "fat" in ASCII.
 const FAT: u64 = 0x0066_6174;
 
+/// What the hostile host's draw mixes into the seed's generator, and its attacks' into each
+/// attempt's: "hostile" in ASCII.
+pub(crate) const HOSTILE: u64 = 0x0068_6f73_7469_6c65;
+
 /// Which of the simulation's features one seed exercises.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[expect(
@@ -87,6 +91,10 @@ pub struct Features {
     /// as JSON, so most of what a run holds is data; never with a log, whose store in memory
     /// would hold the data too.
     pub fat: bool,
+    /// Where the connectors are on the network, a hostile host beside the runs that attacks their
+    /// serving, and connectors that now and then start again under a version named after a secret
+    /// they were told.
+    pub hostile: bool,
 }
 
 impl Features {
@@ -112,17 +120,18 @@ impl Features {
         streaming: true,
         reset: true,
         fat: false,
+        hostile: true,
     };
 
     /// The features one seed exercises: every feature one time in eight, else each on or off by
     /// a coin, drift more often than not, the network, the write-ahead log, streaming and
-    /// resetting one time in four each, the log's object store one time in two, and fat values
-    /// one time in four where no log is kept.
+    /// resetting one time in four each, the log's object store and a hostile host one time in two
+    /// each, and fat values one time in four where no log is kept.
     ///
-    /// The network, the log and its store, streaming, resetting and fat values are drawn apart
-    /// from the rest, from the value the next draw takes but without taking it, so a seed's
-    /// workload is the same over either transport, logged or not and in either store, streamed
-    /// or not, reset or not, and with fat values or without but for those values.
+    /// The network, the log and its store, streaming, resetting, fat values and a hostile host
+    /// are drawn apart from the rest, from the value the next draw takes but without taking it,
+    /// so a seed's workload is the same over either transport, logged or not and in either store,
+    /// streamed or not, reset or not, and with fat values or without but for those values.
     pub fn draw(rng: &mut SplitMix64) -> Self {
         let next = rng.clone().next_u64();
         let network = SplitMix64::new(next ^ NETWORK).chance(250);
@@ -131,6 +140,7 @@ impl Features {
         let reset = SplitMix64::new(next ^ RESET).chance(250);
         let objects = SplitMix64::new(next ^ OBJECT_STORE).chance(500);
         let fat = !wal && SplitMix64::new(next ^ FAT).chance(250);
+        let hostile = SplitMix64::new(next ^ HOSTILE).chance(500);
         if rng.chance(125) {
             return Self {
                 network,
@@ -139,6 +149,7 @@ impl Features {
                 streaming,
                 reset,
                 fat,
+                hostile,
                 ..Self::ALL
             };
         }
@@ -163,6 +174,7 @@ impl Features {
             streaming,
             reset,
             fat,
+            hostile,
         }
     }
 

@@ -56,8 +56,9 @@ const FAULTY_RUNS: usize = 4;
 /// Panics, naming the seed, when the destination's contents differ from the reference model, an
 /// invariant breaks, a run hangs, or a task outlives its run.
 pub fn check_exactly_once(seed: Seed) -> Checked {
-    if Features::draw(&mut SplitMix64::new(seed.value())).network {
-        run_networked(seed, move |env, net| async move {
+    let features = Features::draw(&mut SplitMix64::new(seed.value()));
+    if features.network {
+        run_networked(seed, features.hostile, move |env, net| async move {
             simulate(seed, env, Some(net), true).await
         })
     } else {

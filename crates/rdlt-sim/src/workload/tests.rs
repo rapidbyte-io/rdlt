@@ -502,6 +502,7 @@ const NONE: Features = Features {
     streaming: false,
     reset: false,
     fat: false,
+    hostile: false,
 };
 
 #[test]
