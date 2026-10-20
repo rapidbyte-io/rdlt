@@ -775,7 +775,7 @@ module exactly_once {
         dest.get("p").cursor == Map("a" -> 1, "u" -> 2),
         ExactlyOnce,
       })
-      .then(step.fail())
+      .expect(live == Set() and PIPES.forall(x => started.get(x) == LOADS))
 
   /// A source told a position before the log held its commit would stand past every copy of the
   /// rows: the invariant refuses it.
