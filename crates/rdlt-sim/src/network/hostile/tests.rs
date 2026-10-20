@@ -2,9 +2,14 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use rdlt_wire::Limits;
+
 use super::factories::{Asked, Counted};
-use crate::network::Net;
+use super::{Attack, Attacker};
+use crate::canary::Canary;
+use crate::network::{Net, Placing, Side, options, run_networked};
 use crate::rng::SplitMix64;
+use crate::seed::Seed;
 use crate::world::World;
 
 #[test]
@@ -67,4 +72,46 @@ fn a_hostile_configuration_says_what_it_asks() {
         (7, format!("{asked:?}"))
     );
     assert!(Asked::of(&serde_json::json!({ "world": "w" })).is_none());
+}
+
+#[test]
+fn serving_meets_every_attack_of_a_hostile_host_as_the_protocol_says() {
+    let attacks = [
+        Attack::Order(Side::Source),
+        Attack::Order(Side::Destination),
+        Attack::Configurations(Side::Source),
+        Attack::Configurations(Side::Destination),
+        Attack::Abandoned(Side::Source),
+        Attack::Abandoned(Side::Destination),
+        Attack::Sessions,
+        Attack::Oversized(Side::Destination),
+    ];
+    let violations = run_networked(Seed::new(3), true, move |_env, net| async move {
+        let mut rng = SplitMix64::new(7);
+        let name = "hostile-attacks";
+        let registered = World::register(name, &mut rng);
+        let placing = Placing::new(
+            net,
+            &options(&mut rng, Limits::default()),
+            &Canary::of(name),
+        );
+        for (index, attack) in attacks.into_iter().enumerate() {
+            let attacker = Attacker {
+                placing: &placing,
+                world: registered.world(),
+                name,
+                strict: true,
+            };
+            attacker
+                .attack(
+                    attack,
+                    SplitMix64::new(11 + u64::try_from(index).unwrap_or(0)),
+                )
+                .await;
+        }
+        let violations = registered.world().violations();
+        drop(registered);
+        violations
+    });
+    assert!(violations.is_empty(), "{violations:#?}");
 }

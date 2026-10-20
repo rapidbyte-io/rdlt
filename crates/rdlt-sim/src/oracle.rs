@@ -29,7 +29,7 @@ use crate::env::SimEnv;
 use crate::network::{self, Net, Placing, run_networked};
 use crate::rng::SplitMix64;
 use crate::seed::{Seed, run, run_threaded};
-use crate::swarm::Features;
+use crate::swarm::{Features, HOSTILE};
 use crate::workload::{Level, PHASES, Relaxed, Row, Workload};
 use crate::world::World;
 pub use changes::check_changes;
@@ -59,13 +59,12 @@ pub fn check_exactly_once(seed: Seed) -> Checked {
     let features = Features::draw(&mut SplitMix64::new(seed.value()));
     if features.network {
         run_networked(seed, features.hostile, move |env, net| async move {
-            simulate(seed, env, Some(net), true).await
+            Box::pin(simulate(seed, env, Some(net), true)).await
         })
     } else {
-        run(
-            seed,
-            |env| async move { simulate(seed, env, None, true).await },
-        )
+        run(seed, |env| async move {
+            Box::pin(simulate(seed, env, None, true)).await
+        })
     }
 }
 
@@ -76,10 +75,9 @@ pub fn check_exactly_once(seed: Seed) -> Checked {
 ///
 /// Panics, naming the seed, as [`check_exactly_once`] does.
 pub fn stress(seed: Seed) {
-    run_threaded(
-        seed,
-        |env| async move { simulate(seed, env, None, false).await },
-    );
+    run_threaded(seed, |env| async move {
+        Box::pin(simulate(seed, env, None, false)).await
+    });
 }
 
 /// Checks the exactly-once guarantee for the workload `seed` generates, with the connectors on
@@ -100,23 +98,22 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>, hangs: bo
     }
     env.perturb(world.workload.features.perturb);
     world.keep_logs(&env, seed).await;
-    let streaming = world.workload.features.streaming;
     let config = config(
         &mut rng,
-        streaming,
+        world.workload.features.streaming,
         endless(&world.workload),
         |partitions| growth(seed, Some(&world.workload), partitions),
         waited(seed, hangs && world.workload.features.faults),
     );
     let (limits, budget) = (config.limits(), config.memory().get());
     let partitions = u64::try_from(config.partitions().get()).unwrap_or(u64::MAX);
-    let allowance = memory::allowance(seed, env.inline(), net.is_some());
+    let hostile = world.workload.features.hostile;
+    let allowance = memory::allowance(seed, env.inline(), net.is_some(), hostile);
     world.press(pressed(seed, &config, &world.workload, small_log(&config)));
-    let engine = Engine::new(config, env);
     let placing = net.map(|net| Placing::new(net, &network::options(&mut rng, limits), &canary));
     let mut simulation = Simulation {
         seed,
-        engine,
+        engine: Engine::new(config, env),
         placing,
         relaxed: vec![Relaxed::default(); world.workload.streams.len()],
         world,
@@ -125,6 +122,7 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>, hangs: bo
         waits: Waits::default(),
         partitions,
         allowance,
+        attacks: 0,
         origin: charged(),
         held: None,
     };
@@ -168,6 +166,8 @@ struct Simulation {
     /// Bytes: the allowance an attempt's heap is held to beyond what is charged for it;
     /// `None` where the seed's work is on more than one thread.
     allowance: Option<u64>,
+    /// How many attempts its runs made, which mixes each attempt's hostile draws apart.
+    attacks: u64,
     /// Bytes: what was charged on the seed's thread as it began.
     origin: i64,
     /// What the worst attempt held beyond what was charged for it, where any was measured.
@@ -284,6 +284,7 @@ impl Simulation {
         &mut self,
         plans: &[PipelinePlan],
         scenario: Scenario,
+        clean: bool,
         network: Option<SplitMix64>,
         phase: usize,
     ) -> Vec<Executed> {
@@ -297,11 +298,25 @@ impl Simulation {
             let window = Window::open();
             (window, Counterweight::hang(self.origin, room, tracing))
         });
+        self.attacks += 1;
+        let attacking = SplitMix64::new(self.seed.value() ^ HOSTILE ^ self.attacks);
         let placing = self.placing.as_ref();
         let executing = execute_all(&self.engine, plans, &self.name, placing, scenario);
+        let hostile = placing.filter(|_| self.world.workload.features.hostile);
+        let (world, name) = (&self.world, self.name.as_str());
+        // A hostile host attacks the connectors beside the runs; where the run is clean, the
+        // network is healed and its answers are judged.
+        let attacked = async {
+            match hostile {
+                Some(placing) => {
+                    Box::pin(placing.attacking(attacking, world, name, clean, executing)).await
+                }
+                None => executing.await,
+            }
+        };
         let executed = match (placing, network) {
-            (Some(placing), Some(rng)) => placing.disrupting(rng, executing).await,
-            _ => executing.await,
+            (Some(placing), Some(rng)) => placing.disrupting(rng, attacked).await,
+            _ => attacked.await,
         };
         if let Some((window, weight)) = measuring {
             let lifted = weight.lift();
@@ -334,7 +349,7 @@ impl Simulation {
         let plans: Vec<PipelinePlan> = (0..workload.pipelines)
             .map(|pipeline| plan(workload, &self.relaxed, pipeline).with_until(until))
             .collect();
-        let executed = self.measured(&plans, scenario, network, phase).await;
+        let executed = self.measured(&plans, scenario, clean, network, phase).await;
         let mut failures = Vec::new();
         for (plan, executed) in plans.iter().zip(&executed) {
             let refused = plan

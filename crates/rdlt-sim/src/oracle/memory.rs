@@ -40,13 +40,14 @@ const NETWORK: u64 = 11 << 20;
 const QUEUED: u64 = 1 + 16 + 2 + 1;
 
 /// Bytes: the allowance of `seed`'s attempts, where its work is `inline` on one thread and its
-/// connectors listen on the network where `network`; `None` where nothing is measured.
+/// connectors listen on the network where `network`; `None` where nothing is measured, among them
+/// a networked seed with a `hostile` host, whose heap shares the thread with the engine's.
 ///
 /// # Panics
 ///
 /// Panics where the binary's allocator counts nothing.
-pub(super) fn allowance(seed: Seed, inline: bool, network: bool) -> Option<u64> {
-    if !inline {
+pub(super) fn allowance(seed: Seed, inline: bool, network: bool, hostile: bool) -> Option<u64> {
+    if !inline || (network && hostile) {
         return None;
     }
     assert!(

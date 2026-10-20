@@ -274,9 +274,10 @@ fn a_trace_reads_no_change_past_its_spans() {
 #[test]
 fn an_allowance_is_found_by_placement_where_work_is_on_one_thread() {
     let seed = Seed::new(7);
-    assert_eq!(allowance(seed, true, false), Some(IN_PROCESS));
-    assert_eq!(allowance(seed, true, true), Some(NETWORK));
-    assert_eq!(allowance(seed, false, false), None);
+    assert_eq!(allowance(seed, true, false, false), Some(IN_PROCESS));
+    assert_eq!(allowance(seed, true, true, false), Some(NETWORK));
+    assert_eq!(allowance(seed, false, false, false), None);
+    assert_eq!(allowance(seed, true, true, true), None);
 }
 
 #[test]
