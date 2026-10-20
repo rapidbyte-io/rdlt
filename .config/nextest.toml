@@ -36,6 +36,12 @@ slow-timeout = { period = "60s" }
 filter = "package(rdlt-sim) & binary(it) & (test(through_faults) | test(=exactly_once::seeds_that_once_found_a_defect_pass) | test(/^determinism::(the_same_seed_|a_seed_over_a_faulty_network)/) | test(=hostile::a_hostile_host_meets_typed_refusals_and_no_secret_leaves_the_engine_or_its_host) | test(many_threads))"
 threads-required = "num-test-threads"
 
+# Comparing records of optional fields with dense ones loads 384,000 rows four times: about 30 s
+# here, near two minutes under coverage's instrumentation.
+[[profile.default.overrides]]
+filter = "package(rdlt-engine) & binary(it) & test(=shredding::records_of_optional_fields_load_about_as_fast_as_records_of_all_of_them)"
+slow-timeout = { period = "60s", terminate-after = 4 }
+
 # The failpoint sweep and the kill matrix run a pipeline in processes of their own, a hundred
 # times and more a test: two minutes each here, several on a shared runner.
 [[profile.default.overrides]]
