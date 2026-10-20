@@ -5,14 +5,13 @@ use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use parking_lot::Mutex;
-use schemars::JsonSchema;
 use serde::Deserialize;
 
 /// How many ways a fault quotes what its connector was told, each in turn.
 pub(crate) const FORMS: u64 = 4;
 
 /// The secrets a connector's configuration referred to, as its host resolved them.
-#[derive(Clone, Default, Deserialize, JsonSchema)]
+#[derive(Clone, Default, Deserialize)]
 pub struct Told {
     /// A secret that ends in whitespace.
     pub canary: String,
