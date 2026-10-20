@@ -32,7 +32,11 @@ pub(crate) const CHANGES_PARTITION: &str = "changes";
 pub struct SimChangeSourceConfig {
     /// The world's registered name.
     pub world: String,
-    /// The secrets its host resolved; a hostile host tells none.
+    /// The secrets its host resolved; a host that resolves nothing tells none.
+    ///
+    /// Left out of the schema: every handshake carries the schema over the simulated network,
+    /// and bytes added there change what a seed's network faults do.
+    #[schemars(skip)]
     pub told: Option<crate::world::Told>,
 }
 

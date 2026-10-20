@@ -78,6 +78,22 @@ async fn the_vault_resolves_the_canarys_secrets_and_nothing_else() {
 }
 
 #[test]
+fn no_configurations_schema_holds_what_its_connector_was_told() {
+    let schemas = [
+        schemars::schema_for!(crate::source::SimSourceConfig),
+        schemars::schema_for!(crate::changes::SimChangeSourceConfig),
+        schemars::schema_for!(crate::destination::SimDestinationConfig),
+    ];
+    for schema in schemas.map(serde_json::to_value) {
+        let schema = schema.expect("a schema serializes");
+        let properties = schema["properties"]
+            .as_object()
+            .expect("a schema has properties");
+        assert_eq!(properties.keys().collect::<Vec<_>>(), ["world"], "{schema}");
+    }
+}
+
+#[test]
 fn every_form_a_connector_quotes_its_secrets_in_is_scrubbed_by_its_host() {
     let canary = Canary::of("oracle-7");
     let told = told(&canary);
