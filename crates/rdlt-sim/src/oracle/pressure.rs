@@ -28,7 +28,8 @@ pub struct Checked {
     /// The features its seed turned on.
     pub features: Features,
     /// What the thread held over the worst attempt beyond what was charged for it, and what its
-    /// reads hold over the network; `None` where the runs' work was on more than one thread.
+    /// reads hold over the network; `None` where nothing was measured: the runs' work was on more
+    /// than one thread, the seed's host was hostile, or the seed changed rows.
     pub held: Option<Held>,
 }
 
