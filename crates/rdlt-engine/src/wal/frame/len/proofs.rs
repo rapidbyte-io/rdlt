@@ -22,7 +22,7 @@ fn a_frame_is_its_payload_and_its_head_saturating_at_the_largest() {
 /// A list of numbers takes exactly the bytes JSON writes of it: its brackets and each number's
 /// digits, without overflow.
 ///
-/// Bound: every list of up to `NUMBERS` (one) number, each any `u64`; the commas between
+/// Bound: every list of up to `NUMBERS` numbers, each any `u64`; the commas between
 /// numbers are not covered.
 #[kani::proof]
 #[kani::unwind(24)]
