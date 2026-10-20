@@ -114,7 +114,7 @@ async fn replay_into(
             let Some(scanned) = scanned else {
                 continue;
             };
-            for logged in scanned.pending() {
+            for logged in &scanned.commits {
                 if replaying.is_none() {
                     let store = log.lock().store;
                     *replaying = Some(begin(context, load_id, store).await?);

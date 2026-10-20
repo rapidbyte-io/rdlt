@@ -302,7 +302,7 @@ async fn a_replay_reads_each_chunk_once_and_its_batch_frames_once_more() {
         .await
         .expect("the log reads")
         .expect("the log is open");
-    assert_eq!(scanned.pending().count(), 2);
+    assert_eq!(scanned.commits.len(), 2);
     let located: Vec<_> = scanned.batches.values().flatten().copied().collect();
     for located in &located {
         batch(&store, &pipeline(), *located, limits())
@@ -359,7 +359,7 @@ async fn a_log_scans_back_to_what_its_load_wrote() {
         commits,
         [(meta(1, &[1]), vec![1]), (meta(2, &[2]), vec![2])]
     );
-    assert_eq!(scanned.pending().count(), 2);
+    assert_eq!(scanned.commits.len(), 2);
     let mut read = Vec::new();
     for (segment, located) in &scanned.batches {
         for located in located {
@@ -393,7 +393,8 @@ async fn a_received_commit_s_chunk_is_gone_and_only_what_is_needed_is_read() {
         .collect();
     assert_eq!(named, ["orders"]);
     let pending: Vec<_> = scanned
-        .pending()
+        .commits
+        .iter()
         .map(|logged| logged.meta.clone())
         .collect();
     assert_eq!(pending, [meta(2, &[2])]);
@@ -452,11 +453,90 @@ async fn a_commit_s_receipt_noted_in_a_later_chunk_s_end_settles_it() {
         .await
         .expect("the log reads");
     assert!(scanned.received.contains(&seq(1)));
-    let pending: Vec<_> = scanned
-        .pending()
+    // Chunk 0 is read for segment 3's batches, and its commit, received, is not kept.
+    let kept: Vec<_> = scanned
+        .commits
+        .iter()
         .map(|logged| logged.meta.clone())
         .collect();
-    assert_eq!(pending, [meta(2, &[2])]);
+    assert_eq!(kept, [meta(2, &[2])]);
+}
+
+/// Bytes: the cursor each received commit of [`received_beside_an_open_segment`] records.
+const CURSOR: usize = 64 << 10;
+
+/// A log of `received` commits, each received and recording a cursor of [`CURSOR`] bytes, then
+/// one commit without its receipt; segment 100 stays open across them all, so each of their
+/// chunks holds batches the log still needs.
+async fn received_beside_an_open_segment(received: u64) -> Arc<MemoryWal> {
+    let store = Arc::new(MemoryWal::default());
+    store.open(&pipeline(), load());
+    let wal: Arc<dyn WalStore> = Arc::clone(&store) as Arc<dyn WalStore>;
+    let budget = crate::budget::budget(16 << 20);
+    let (log, task) = LoadLog::start(
+        wal,
+        owner(),
+        std::num::NonZeroU64::MAX,
+        (None, Arc::default()),
+    );
+    let orders = view("orders");
+    let cursor = rdlt_connector::Cursor::new(1, &vec![b'p'; CURSOR]).expect("a cursor");
+    let position = StateEntry::Partition {
+        stream: StreamName::new("orders").expect("a valid stream"),
+        partition: PartitionId::parse("p0").expect("a valid partition"),
+        state: PartitionState::Cursor(cursor),
+        load: load(),
+    };
+    let written = async {
+        for number in 1..=received + 1 {
+            let from = i64::try_from(number * 10).expect("few");
+            log_batch(&log, &budget, (0, &orders), SegmentId(100), &ids(from))
+                .await
+                .expect("logged");
+            log_batch(&log, &budget, (0, &orders), SegmentId(number), &ids(from))
+                .await
+                .expect("logged");
+            let mut meta = meta(number, &[number]);
+            if number <= received {
+                meta.state_delta = vec![StateChange::Put(position.to_record())];
+            }
+            log.commit(&budget, vec![sealed(number)], Vec::new(), &meta, 0)
+                .await
+                .expect("durable");
+            if number <= received {
+                let receipt = Receipt {
+                    load_id: load(),
+                    commit_seq: seq(number),
+                    committed_at: UNIX_EPOCH,
+                    rows: 2,
+                    bytes: 16,
+                };
+                log.committed(&receipt).await.expect("noted");
+            }
+        }
+        drop(log);
+    };
+    let (ended, ()) = tokio::join!(task, written);
+    ended.expect("the writer ends");
+    store
+}
+
+#[test]
+fn a_scan_keeps_nothing_of_the_received_commits_it_reads() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("a runtime");
+    let store = runtime.block_on(received_beside_an_open_segment(16));
+    assert_eq!(store.stored(&pipeline()).len(), 17, "every chunk is needed");
+    let (held, scanned) = crate::cost::tests::held_alone(|| {
+        runtime
+            .block_on(scan(store.as_ref(), &pipeline(), load(), FRAME_BYTES))
+            .expect("the log reads")
+    });
+    // Sixteen cursors read and none kept: what the scan holds is less than one of them.
+    assert!(held < CURSOR as u64, "the scan holds {held} bytes");
+    let kept: Vec<_> = scanned.commits.iter().map(|logged| &logged.meta).collect();
+    assert_eq!(kept, [&meta(17, &[17])]);
 }
 
 #[tokio::test]

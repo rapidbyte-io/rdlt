@@ -110,7 +110,7 @@ async fn scanned(chunks: Vec<(u64, Vec<Frame>)>) -> Result<usize, crate::Error> 
     }
     scan(&store, &pipeline(), load(), FRAME_BYTES)
         .await
-        .map(|scanned| scanned.pending().count())
+        .map(|scanned| scanned.commits.len())
 }
 
 /// Checks a log of `chunks` is refused as one no load wrote, as `case` says.
@@ -378,7 +378,7 @@ async fn a_scan_reads_a_large_batch_frame_a_piece_at_a_time() {
     let scanned = scan(&store, &pipeline(), load(), FRAME_BYTES)
         .await
         .expect("it reads");
-    assert_eq!(scanned.pending().count(), 1);
+    assert_eq!(scanned.commits.len(), 1);
     let largest = store.largest.load(Ordering::Relaxed);
     assert!(largest <= 1 << 16, "read {largest} bytes at once");
 }

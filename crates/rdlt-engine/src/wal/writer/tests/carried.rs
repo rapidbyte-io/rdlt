@@ -91,7 +91,7 @@ async fn a_carried_segment_replays_once_after_the_commit_that_takes_it() {
     let scanned = scan(store.as_ref(), &pipeline(), load(), FRAME_BYTES)
         .await
         .expect("the log reads");
-    let pending: Vec<_> = scanned.pending().collect();
+    let pending: Vec<_> = scanned.commits.iter().collect();
     assert_eq!(pending.len(), 1);
     assert!(pending[0].meta.segments.contains(SegmentId(1000)));
     // Each of its three batches once, though each was carried.
@@ -239,7 +239,8 @@ async fn a_segment_a_commit_waiting_for_its_receipt_takes_is_not_carried() {
         .await
         .expect("the log reads");
     let taking = scanned
-        .pending()
+        .commits
+        .iter()
         .filter(|logged| logged.meta.segments.contains(SegmentId(2)))
         .count();
     assert_eq!(taking, 1, "commit 2 replays");

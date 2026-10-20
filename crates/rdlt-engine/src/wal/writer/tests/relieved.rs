@@ -72,7 +72,7 @@ async fn a_chunk_published_between_commits_records_the_receipts_and_lets_go_of_w
         let scanned = scan(observed.as_ref(), &pipeline(), load(), 1 << 28)
             .await
             .expect("it reads");
-        assert_eq!(scanned.pending().count(), 1);
+        assert_eq!(scanned.commits.len(), 1);
     })
     .await
     .expect("the writer ends");
@@ -284,7 +284,7 @@ async fn a_frame_larger_than_what_a_carry_reads_at_once_is_copied_whole() {
         let scanned = scan(observed.as_ref(), &pipeline(), load(), 1 << 28)
             .await
             .expect("it reads");
-        assert_eq!(scanned.pending().count(), 1);
+        assert_eq!(scanned.commits.len(), 1);
     })
     .await
     .expect("the writer ends");

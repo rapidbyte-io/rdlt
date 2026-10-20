@@ -27,7 +27,7 @@ async fn replayed(store: &dyn WalStore) -> usize {
     let scanned = scan::fenced(store, &pipeline(), load(), FRAME_BYTES, *last)
         .await
         .expect("scans");
-    let pending = scanned.pending().count();
+    let pending = scanned.commits.len();
     assert!(
         taken::release(store, &pipeline(), load(), number)
             .await

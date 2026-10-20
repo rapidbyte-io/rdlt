@@ -211,7 +211,7 @@ pub fn memory_wal() -> Arc<dyn crate::WalStore> {
 }
 
 /// Reads `bytes` as the only chunk of a write-ahead log, as replay reads one, then each batch it
-/// found; the count of commit frames.
+/// found; the count of commits without receipts.
 ///
 /// # Errors
 ///
