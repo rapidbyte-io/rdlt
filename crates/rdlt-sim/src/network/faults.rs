@@ -5,6 +5,7 @@ use std::convert::Infallible;
 use std::time::Duration;
 
 use super::{ENGINE, Net, Side};
+use crate::reached::Reach;
 use crate::rng::SplitMix64;
 
 /// Disrupts `net` as `rng` draws, until dropped, each fault lasting up to twice `patience`.
@@ -23,6 +24,7 @@ pub(super) async fn disrupt(net: &Net, mut rng: SplitMix64, patience: Duration) 
         let lasting = Duration::from_millis(rng.below(longest + 1));
         match rng.below(5) {
             0 => {
+                net.reached.lock().add(Reach::LinkCut);
                 turmoil::partition(ENGINE, host);
                 tokio::time::sleep(lasting).await;
                 turmoil::repair(ENGINE, host);
@@ -33,11 +35,13 @@ pub(super) async fn disrupt(net: &Net, mut rng: SplitMix64, patience: Duration) 
                 } else {
                     (host, ENGINE)
                 };
+                net.reached.lock().add(Reach::LinkCut);
                 turmoil::partition_oneway(from, to);
                 tokio::time::sleep(lasting).await;
                 turmoil::repair_oneway(from, to);
             }
             2 => {
+                net.reached.lock().add(Reach::LinkCut);
                 turmoil::hold(ENGINE, host);
                 tokio::time::sleep(lasting).await;
                 turmoil::release(ENGINE, host);
@@ -49,6 +53,7 @@ pub(super) async fn disrupt(net: &Net, mut rng: SplitMix64, patience: Duration) 
             }
             _ => {
                 net.connectors.stop(side);
+                net.reached.lock().add(Reach::ConnectorStopped);
                 tokio::time::sleep(lasting).await;
                 net.connectors.restart(side);
             }

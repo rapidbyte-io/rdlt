@@ -5,6 +5,7 @@ use rdlt_connector::LogicalType;
 
 use super::super::cells::{self, Stored, WRITTEN};
 use super::{SOURCE, Sources};
+use crate::reached::Reached;
 
 /// `stored` merged into a column `n` now of type `logical`, held as `value`.
 fn merged(stored: &Stored, logical: LogicalType, value: ArrayRef) -> Stored {
@@ -16,7 +17,9 @@ fn merged(stored: &Stored, logical: LogicalType, value: ArrayRef) -> Stored {
     ])
     .unwrap();
     let columns = [("n".to_owned(), logical)].into();
-    let mut rows = sources.restored(&[batch], &columns).unwrap();
+    let mut rows = sources
+        .restored(&[batch], &columns, &mut Reached::default())
+        .unwrap();
     assert_eq!(rows.len(), 1);
     rows.remove(0)
 }
@@ -71,5 +74,9 @@ fn a_merged_row_that_names_no_source_is_refused() {
     .unwrap();
     let columns = [("id".to_owned(), LogicalType::Int64)].into();
     // The place of a row a merge gave back with no place is no source's, not the first one's.
-    assert!(sources.restored(&[batch], &columns).is_err());
+    assert!(
+        sources
+            .restored(&[batch], &columns, &mut Reached::default())
+            .is_err()
+    );
 }

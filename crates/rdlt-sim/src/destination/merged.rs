@@ -20,6 +20,7 @@ use rdlt_connector::{ConnectorError, Field, LogicalType, Result};
 
 use super::cells::WRITTEN;
 use super::{Stored, cells, columns};
+use crate::reached::{Reach, Reached};
 
 /// The column a row read by a merge carries its source's place in.
 const SOURCE: &str = "_rdlt_sim_source";
@@ -60,10 +61,14 @@ impl<'a> Sources<'a> {
     /// under the fields of the row it came from, in their order: a value at the type the table
     /// holds it, a column the row held and the merge left empty as nulls, and a column it never
     /// held after them.
+    ///
+    /// A value the merge widened to another type than it was written as adds [`Reach::Widened`]
+    /// to `reached`.
     pub(super) fn restored(
         &self,
         merged: &[RecordBatch],
         columns: &columns::Columns,
+        reached: &mut Reached,
     ) -> Result<Vec<Stored>> {
         let mut rows = Vec::new();
         for batch in merged {
@@ -84,6 +89,7 @@ impl<'a> Sources<'a> {
                     &batch.slice(row, 1),
                     source,
                     columns,
+                    reached,
                 ))?);
             }
         }
@@ -107,7 +113,14 @@ fn widened(source: &ArrowField, typed: &ArrowField) -> Option<LogicalType> {
 /// and naming what they named, at the types `merged` holds its values as; the columns of the
 /// table `source` held that `merged` does not as nulls, and those it holds that `source` did not
 /// after them.
-fn written(merged: &RecordBatch, source: &Stored, columns: &columns::Columns) -> RecordBatch {
+///
+/// A value widened to another type than its source adds [`Reach::Widened`] to `reached`.
+fn written(
+    merged: &RecordBatch,
+    source: &Stored,
+    columns: &columns::Columns,
+    reached: &mut Reached,
+) -> RecordBatch {
     let held = merged.schema_ref();
     let mut fields = Vec::new();
     let mut values: Vec<ArrayRef> = Vec::new();
@@ -125,8 +138,10 @@ fn written(merged: &RecordBatch, source: &Stored, columns: &columns::Columns) ->
         };
         // A value a merge widened before keeps the type it was first written as.
         let written = field.metadata().get(WRITTEN).cloned().or_else(|| {
-            widened(field, &typed)
-                .map(|written| serde_json::to_string(&written).expect("a logical type serializes"))
+            widened(field, &typed).map(|written| {
+                reached.add(Reach::Widened);
+                serde_json::to_string(&written).expect("a logical type serializes")
+            })
         });
         let mut metadata = field.metadata().clone();
         metadata.extend(typed.metadata().clone());

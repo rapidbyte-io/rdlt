@@ -29,6 +29,7 @@ use crate::canary::Canary;
 use crate::destination::{Digest, committed_next, completions, reads_in_progress};
 use crate::env::SimEnv;
 use crate::network::{self, Net, Placing, run_networked};
+use crate::reached::{Reach, Reached};
 use crate::rng::SplitMix64;
 use crate::seed::{Seed, run, run_threaded};
 use crate::swarm::{Features, HOSTILE};
@@ -141,7 +142,12 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>, hangs: bo
     violations.extend(logged.leaks());
     drop(registered);
     assert!(violations.is_empty(), "seed {seed}: {violations:#?}");
-    simulation.checked(digest, clock.instant() - started)
+    let reached = reached(
+        &simulation.world,
+        simulation.placing.as_ref(),
+        &simulation.ledger.waits,
+    );
+    simulation.checked(digest, clock.instant() - started, reached)
 }
 
 /// One simulation: its world, the engine its runs share, and what an operator relaxed after
@@ -173,7 +179,7 @@ struct Simulation {
 
 impl Simulation {
     /// What the simulation left, `simulated` being how long it took on its own clock.
-    fn checked(self, digest: Digest, simulated: Duration) -> Checked {
+    fn checked(self, digest: Digest, simulated: Duration, reached: Reached) -> Checked {
         Checked {
             digest,
             trace: self.ledger.trace(),
@@ -181,6 +187,7 @@ impl Simulation {
             simulated,
             features: self.world.workload.features,
             held: self.held,
+            reached,
         }
     }
 
@@ -236,10 +243,19 @@ impl Simulation {
         if self.stream(phase, &mut reports).await {
             return (reports, true);
         }
-        while succeeded.contains(&false)
-            || reads_in_progress(&self.world)
-            || self.world.holds_logs().await
-        {
+        loop {
+            let pending = succeeded.contains(&false) || reads_in_progress(&self.world);
+            let logged = self.world.holds_logs().await;
+            if logged {
+                self.world.reach(if pending {
+                    Reach::LogLeft
+                } else {
+                    // Nothing else is left: this run replays what the runs before it logged.
+                    Reach::Replayed
+                });
+            } else if !pending {
+                break;
+            }
             let faulty = runs < FAULTY_RUNS;
             self.world.set_faulty(faulty && features.faults);
             let scenario = if faulty && features.disruptions {
@@ -352,6 +368,9 @@ impl Simulation {
         let mut prediction = refusals::predict(&self.world, &self.relaxed, phase);
         if until.follows() {
             // A run that follows the source may end before the rows a refusal needs arrive.
+            if !prediction.must.is_empty() {
+                self.world.reach(Reach::Spared);
+            }
             prediction.must.clear();
         }
         let workload = &self.world.workload;
@@ -389,6 +408,7 @@ impl Simulation {
         let failure = failures.into_iter().last().map(|failure| failure.text);
         let mut stopped = false;
         if let Some((stream, code)) = refused {
+            self.world.reach(Reach::Refused);
             if code == refusals::KEY_CHANGED {
                 stopped = true;
             } else {
@@ -411,6 +431,18 @@ fn kept_to_the_protocol(failures: &[refusals::Failure], seed: Seed, phase: usize
             broken.text
         );
     }
+}
+
+/// The paths a simulation of `world` reached, its network's where `placing` places on one, and a
+/// wait on the log's share where `waits` holds one.
+fn reached(world: &World, placing: Option<&Placing>, waits: &rdlt_engine::Waits) -> Reached {
+    let mut reached = world
+        .reached()
+        .with(placing.map_or_else(Reached::default, Placing::reached));
+    if waits.log.count > 0 {
+        reached.add(Reach::LogWaited);
+    }
+    reached
 }
 
 /// How one scenario's runs went.

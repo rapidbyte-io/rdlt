@@ -14,6 +14,7 @@ use rdlt_connector::{
 
 use super::read::{names, next_offset};
 use super::{Stored, cells, columns, merged};
+use crate::reached::{Reach, Reached};
 use crate::world::World;
 
 /// The destination's contents, kept in its world: tables every pipeline shares, and each
@@ -59,6 +60,9 @@ pub(super) struct Table {
     /// sequenced before their removal brings back.
     pub(super) tombstones: Vec<RecordBatch>,
 }
+
+/// The rows a commit published, by table.
+pub(super) type Rows = Vec<(String, Vec<Stored>)>;
 
 /// A merge table's rows once a commit merges into it, and its tombstones.
 struct Plan {
@@ -168,7 +172,7 @@ impl Store {
     }
 
     /// Publishes the segments of `meta` that `pipeline` staged and swaps in the generations it
-    /// finishes; returns the rows published, by table.
+    /// finishes; returns the rows published, by table, and the paths the commit reached.
     ///
     /// Every merge table's merge is planned before any table changes, through the SDK's Arrow
     /// merge: a merge it refuses fails the commit whole, with every table and what was staged
@@ -177,8 +181,8 @@ impl Store {
         &mut self,
         pipeline: &PipelineId,
         meta: &CommitMeta,
-    ) -> Result<Vec<(String, Vec<Stored>)>> {
-        let plans = self.plan(pipeline, meta)?;
+    ) -> Result<(Rows, Reached)> {
+        let (plans, reached) = self.plan(pipeline, meta)?;
         let mut published = Vec::new();
         // What the session staged in a segment the load abandoned is never published.
         self.staged.retain(|(staged, segment), _| {
@@ -208,12 +212,12 @@ impl Store {
             table.tombstones = plan.tombstones;
         }
         self.finish(meta);
-        Ok(published)
+        Ok((published, reached))
     }
 
     /// The merges of `meta`'s segments that `pipeline` staged into their merge tables, and of
     /// the child tables whose roots they publish; changes nothing.
-    fn plan(&self, pipeline: &PipelineId, meta: &CommitMeta) -> Result<Vec<Plan>> {
+    fn plan(&self, pipeline: &PipelineId, meta: &CommitMeta) -> Result<(Vec<Plan>, Reached)> {
         let mut merging: BTreeMap<&str, (&MergeKey, Vec<&Stored>)> = BTreeMap::new();
         for segment in meta.segments.iter() {
             let staged = self.staged.get(&(pipeline.clone(), segment));
@@ -230,10 +234,12 @@ impl Store {
                 .or_insert((&child.merge, Vec::new()));
         }
         let mut plans = Vec::new();
+        let mut reached = Reached::default();
         for (&name, (key, incoming)) in &merging {
             let table = self.tables.get(name);
             // A child table no row has reached holds no children to replace.
             if table.is_none() && incoming.is_empty() {
+                reached.add(Reach::EmptyChild);
                 continue;
             }
             let columns = table.map(|table| table.columns.clone()).unwrap_or_default();
@@ -264,11 +270,11 @@ impl Store {
             };
             plans.push(Plan {
                 table: name.to_owned(),
-                published: sources.restored(&merged.rows, &columns)?,
+                published: sources.restored(&merged.rows, &columns, &mut reached)?,
                 tombstones: merged.tombstones,
             });
         }
-        Ok(plans)
+        Ok((plans, reached))
     }
 
     /// Swaps in the generations `meta` finishes, each table's rows replaced whole, and drops the

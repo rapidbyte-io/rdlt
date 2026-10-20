@@ -9,6 +9,7 @@ use serde_json::{Map, Value, json};
 use super::Held;
 use super::refusals::{Failure, Prediction, unexplained};
 use crate::destination::Digest;
+use crate::reached::Reached;
 use crate::seed::{Recorded, Seed};
 use crate::swarm::Features;
 
@@ -31,6 +32,8 @@ pub struct Checked {
     /// reads hold over the network; `None` where nothing was measured: the runs' work was on more
     /// than one thread, the seed's host was hostile, or the seed changed rows.
     pub held: Option<Held>,
+    /// The paths its runs reached, which a seed kept for a defect names.
+    pub reached: Reached,
 }
 
 impl Recorded for Checked {
@@ -43,6 +46,7 @@ impl Recorded for Checked {
         );
         fields.insert("features".to_owned(), json!(self.features));
         fields.insert("waits".to_owned(), json!(self.waits));
+        fields.insert("reached".to_owned(), json!(self.reached.names()));
         if let Some(held) = self.held {
             held.record(&mut fields);
         }

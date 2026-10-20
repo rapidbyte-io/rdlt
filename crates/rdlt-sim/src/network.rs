@@ -33,6 +33,7 @@ use tokio::runtime::Handle;
 use crate::canary::Canary;
 use crate::destination::SimDestination;
 use crate::env::SimEnv;
+use crate::reached::Reached;
 use crate::rng::SplitMix64;
 use crate::seed::{Seed, Weight, report_failure};
 use crate::source::SimSource;
@@ -103,6 +104,8 @@ pub(crate) struct Net {
     /// What a hostile seed's connectors keep across their lives and see of each hostile
     /// connection.
     watch: Watch,
+    /// The paths the network's faults and connectors reached.
+    reached: Mutex<Reached>,
 }
 
 impl Net {
@@ -122,6 +125,7 @@ impl Net {
             stalls: Arc::default(),
             hostile,
             watch: Watch::default(),
+            reached: Mutex::default(),
         }
     }
 }
@@ -309,6 +313,11 @@ impl Placing {
             remote_options: *options,
             canary: canary.clone(),
         }
+    }
+
+    /// The paths the network's faults and connectors reached.
+    pub(crate) fn reached(&self) -> Reached {
+        *self.net.reached.lock()
     }
 
     /// Bytes: the least credit the engine's host grants a read of a connector it placed.

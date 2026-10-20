@@ -15,6 +15,7 @@ use rdlt_connector::{
 
 use crate::destination::SimDestination;
 use crate::network::{Net, Side};
+use crate::reached::Reach;
 use crate::source::SimSource;
 use crate::world::World;
 
@@ -202,10 +203,13 @@ impl Net {
     fn spec(&self, spec: &ConnectorSpec, side: Side, crashes: u64) -> ConnectorSpec {
         let token = self.watch.token.lock()[slot(side)].clone();
         match token.filter(|_| crashes % 2 == 1) {
-            Some(token) => ConnectorSpec {
-                version: format!("{}-{token}", spec.version),
-                ..spec.clone()
-            },
+            Some(token) => {
+                self.reached.lock().add(Reach::Renamed);
+                ConnectorSpec {
+                    version: format!("{}-{token}", spec.version),
+                    ..spec.clone()
+                }
+            }
             None => spec.clone(),
         }
     }

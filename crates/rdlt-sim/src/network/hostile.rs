@@ -22,6 +22,7 @@ use rdlt_wire::{Limits, PROTOCOL_MAJOR};
 
 use super::{Placing, Side, reference};
 use crate::destination::SimDestination;
+use crate::reached::Reach;
 use crate::rng::SplitMix64;
 use crate::source::SimSource;
 use crate::world::World;
@@ -91,6 +92,11 @@ impl Placing {
         work: impl Future<Output = T>,
     ) -> T {
         let attack = Attack::draw(&mut rng);
+        match attack {
+            Attack::Configurations(_) => world.reach(Reach::ConfiguredTwice),
+            Attack::Sessions => world.reach(Reach::SessionsBeyond),
+            _ => {}
+        }
         let attacker = Attacker {
             placing: self,
             world,

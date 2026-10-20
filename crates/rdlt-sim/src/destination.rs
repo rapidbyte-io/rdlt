@@ -206,7 +206,8 @@ impl Session for SimSession {
                 return Ok(receipt.clone());
             }
             store.owned(&self.pipeline, meta)?;
-            let published = store.publish(&self.pipeline, meta)?;
+            let (published, reached) = store.publish(&self.pipeline, meta)?;
+            self.world.reach_all(reached);
             store.apply(&self.world, &self.pipeline, meta);
             store.check_cursors(&self.world, &self.pipeline, &published);
             let receipt = Receipt {
