@@ -11,6 +11,8 @@
 
 mod arrow;
 mod len;
+#[cfg(kani)]
+mod proofs;
 #[cfg(test)]
 mod tests;
 
