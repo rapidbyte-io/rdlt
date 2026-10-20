@@ -118,6 +118,21 @@ impl Canary {
         }
     }
 
+    /// Records in `world` the secret `error`, which the engine answered the `what` with, holds.
+    pub(crate) fn answered(
+        &self,
+        world: &World,
+        what: &str,
+        error: &(dyn std::error::Error + 'static),
+    ) {
+        let text = aside(|| texts(error));
+        if let Some(secret) = self.found(&text) {
+            world.violation(format!(
+                "the {what}'s error holds the secret {secret}: {text}"
+            ));
+        }
+    }
+
     /// Fails where `error`, met placing the `what`, holds a secret.
     ///
     /// # Panics
