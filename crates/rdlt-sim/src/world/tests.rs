@@ -194,7 +194,7 @@ fn some_placements_stall_where_faults_are_on_and_none_elsewhere() {
 }
 
 #[test]
-fn pushes_count_the_largest_since_they_restarted() {
+fn pushes_count_the_largest_event_since_they_restarted() {
     let pushes = Pushes::default();
     drop(pushes.hold(10));
     let held = pushes.hold(4);
@@ -203,4 +203,10 @@ fn pushes_count_the_largest_since_they_restarted() {
     assert_eq!(pushes.largest(), 0);
     drop((held, pushes.hold(3)));
     assert_eq!(pushes.largest(), 3);
+    pushes.cursor(8);
+    assert_eq!(
+        pushes.largest(),
+        8,
+        "a checkpoint's cursor is an event as a push is"
+    );
 }

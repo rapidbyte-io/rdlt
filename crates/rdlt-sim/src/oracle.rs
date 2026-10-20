@@ -280,7 +280,7 @@ impl Simulation {
         network: Option<SplitMix64>,
         phase: usize,
     ) -> Vec<Executed> {
-        // The largest push is counted afresh for each attempt.
+        // The largest event is counted afresh for each attempt.
         self.world.pushes.restart();
         let room = self.room(plans.len());
         // The window opens before the counterweight hangs, so it measures from where the thread
