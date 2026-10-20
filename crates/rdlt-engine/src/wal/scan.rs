@@ -74,19 +74,11 @@ pub(crate) struct Scanned {
     pub(crate) tables: BTreeMap<u32, Table>,
     /// Each segment's batch frames, in the order they were logged.
     pub(crate) batches: BTreeMap<SegmentId, Vec<Located>>,
-    /// Its commit frames with their seals, in order.
+    /// Its commits without receipts, with their seals and phases, in order; a commit with its
+    /// receipt is checked as it is read, then dropped.
     pub(crate) commits: Vec<Logged>,
     /// The commits whose receipts it holds.
     pub(crate) received: BTreeSet<CommitSeq>,
-}
-
-impl Scanned {
-    /// The commits without receipts, in order.
-    pub(crate) fn pending(&self) -> impl Iterator<Item = &Logged> {
-        self.commits
-            .iter()
-            .filter(|logged| !self.received.contains(&logged.meta.commit_seq))
-    }
 }
 
 /// The log a scan reads, which its refusals name.
@@ -225,6 +217,7 @@ async fn scan_with(
         ..Scanned::default()
     };
     let mut tail = Some(tail);
+    let mut previous = None;
     for number in needed {
         let opened = if let Some(opened) = tail.take_if(|_| number == last) {
             opened
@@ -241,7 +234,13 @@ async fn scan_with(
             let len = chunks.get(&number).ok_or_else(missing)?;
             reading.chunk(number, *len).await?
         };
-        note(&mut scanned, opened, Chunk { load, number }, of)?;
+        note(
+            &mut scanned,
+            &mut previous,
+            opened,
+            Chunk { load, number },
+            of,
+        )?;
     }
     checked::commits(&scanned, of)?;
     // A segment's batches replay in the order they were logged, though a carry moved some of
@@ -252,8 +251,15 @@ async fn scan_with(
     Ok(scanned)
 }
 
-/// Adds what `opened`, chunk `chunk`, holds to `scanned`; what makes it disagree otherwise.
-fn note(scanned: &mut Scanned, opened: Opened, chunk: Chunk, of: Of<'_>) -> Result<(), Error> {
+/// Adds what `opened`, chunk `chunk`, holds to `scanned`, `previous` the last commit read before
+/// it; what makes it disagree otherwise.
+fn note(
+    scanned: &mut Scanned,
+    previous: &mut Option<CommitSeq>,
+    opened: Opened,
+    chunk: Chunk,
+    of: Of<'_>,
+) -> Result<(), Error> {
     let number = chunk.number;
     headed(scanned, opened.first, number, of)?;
     let (mut sealing, mut beginning) = (Vec::new(), Vec::new());
@@ -294,11 +300,17 @@ fn note(scanned: &mut Scanned, opened: Opened, chunk: Chunk, of: Of<'_>) -> Resu
             Frame::Begun(begun) => beginning.push(begun),
             Frame::Commit(commit) => {
                 checked::counted(of, &commit, &sealing, &beginning)?;
-                scanned.commits.push(Logged {
+                let logged = Logged {
                     meta: commit.meta,
                     seals: std::mem::take(&mut sealing),
                     begun: std::mem::take(&mut beginning),
-                });
+                };
+                checked::commit(of, scanned.header.as_ref(), *previous, &logged)?;
+                let seq = logged.meta.commit_seq;
+                *previous = Some(seq);
+                if !scanned.received.contains(&seq) {
+                    scanned.commits.push(logged);
+                }
             }
             // A chunk's shape was checked as it was read: nothing else is here.
             _ => {}

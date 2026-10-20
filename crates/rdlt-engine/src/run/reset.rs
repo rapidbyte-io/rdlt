@@ -231,7 +231,8 @@ impl Engine {
             let scanned =
                 crate::wal::scan::fenced(store.as_ref(), pipeline, load, frame_bytes, last).await?;
             let unlanded = scanned
-                .pending()
+                .commits
+                .iter()
                 .flat_map(|logged| &logged.seals)
                 .find(|seal| !seal.replayable && streams.contains(&seal.stream));
             if let Some(seal) = unlanded {

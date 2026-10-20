@@ -137,7 +137,7 @@ async fn a_segment_open_across_many_commits_keeps_the_log_within_its_bound() {
     let scanned = scan(store.as_ref(), &pipeline(), load(), 1 << 28)
         .await
         .expect("the log reads");
-    let pending: Vec<_> = scanned.pending().collect();
+    let pending: Vec<_> = scanned.commits.iter().collect();
     assert_eq!(pending.len(), 1);
     assert!(pending[0].meta.segments.contains(SegmentId(0)));
     let ordinals: BTreeSet<u64> = scanned.batches[&SegmentId(0)]
