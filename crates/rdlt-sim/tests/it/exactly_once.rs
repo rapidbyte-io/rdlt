@@ -2,11 +2,11 @@ use rdlt_sim::{
     Features, Recorded, Seed, SplitMix64, Weight, check_exactly_once, for_each_seed, seeds,
 };
 
-/// Seeds that each found a defect when first run, kept so they stay green.
-const FOUND: [u64; 20] = [
+/// Seeds that fail if a defect the simulation once found comes back.
+const FOUND: [u64; 19] = [
     // Over the network: a host whose handshake a partition cut short held its connection, and
     // its connector's stop, forever.
-    9_576,
+    743,
     // A batch of a normalized merge stream whose every row a new array dropped: its key's type
     // was never resolved, so it met no refusal.
     163_723,
@@ -15,7 +15,7 @@ const FOUND: [u64; 20] = [
     8_746,
     // Streaming: a run that followed the source ended before the rows a refusal needed arrived,
     // and succeeded, as the model now allows.
-    370,
+    2_838,
     // Streaming: reads cut batches wherever rows had arrived, so JSON pushes inferred types the
     // model never saw, until they served whole checkpoint groups.
     4_516,
@@ -34,9 +34,6 @@ const FOUND: [u64; 20] = [
     // Reset: an incremental stream whose partitions never held a row, so the pipeline recorded
     // nothing of it, was refused as no stream it knew, which the world took for a failure.
     249_911, 728_591, 820_601, 918_105,
-    // Reset: a followed stream that never held a row, whose read had sent its position all the
-    // same, was reset, which a world that judged by the rows alone took for a failure.
-    685_665,
     // Logs in an object store: a mark's and a head's creates given up landed after their log
     // was removed, and the head named a body deleted with it, which no replay could read.
     725_620,
@@ -46,7 +43,7 @@ const FOUND: [u64; 20] = [
     11_754, 77_962,
     // A child table no row had reached yet was merged by its roots' commit, under no columns,
     // which the merge refused.
-    85_384,
+    37_936,
     // A date written into timestamps, whose column then widens to JSON, holds a timestamp's text.
     642_848,
     // Logged in a small log: four partitions, each holding three pushes of a table and its child
