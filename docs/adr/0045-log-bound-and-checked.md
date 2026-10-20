@@ -155,6 +155,9 @@ a local directory, and `ObjectStoreWal` in S3 and in stores that answer as S3 do
 - A frame may hold at most what one request for lowering may take of the memory budget, a
   quarter of it, and batch frames decode within that same limit for rows, lengths and nodes. A
   scan reads a batch frame 64 KiB at a time, summing its checksum, and keeps only its header.
+  It checks each commit as it reads it and keeps only those without receipts, so what a replay
+  holds of a log's seals and commits is its pending commits', however many received commits the
+  chunks it still needs hold.
 
 ### A log replays only into its destination, only whole, and only as the engine writes one
 
