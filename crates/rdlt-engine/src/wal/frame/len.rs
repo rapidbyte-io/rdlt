@@ -3,6 +3,9 @@
 use super::{HEAD, Header, unencoded};
 use crate::error::Error;
 
+#[cfg(kani)]
+mod proofs;
+
 /// Bytes: the frame of `header`, as `Frame::encode` writes it, counted without writing it.
 pub(crate) fn header_len(header: &Header) -> Result<u64, Error> {
     let mut counted = Counted(0);
