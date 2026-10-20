@@ -3,11 +3,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rdlt_wire::Limits;
+use rdlt_wire::limits::{Class, TRANSPORT_FRAME_BYTES};
 
 use super::factories::{Asked, Counted};
-use super::{Attack, Attacker};
+use super::window::{HOLDERS, PREFIX, Raw, SETTLE, Write};
+use super::{Attack, Attacker, PATIENCE};
 use crate::canary::Canary;
 use crate::network::{Net, Placing, Side, options, run_networked};
+use crate::oracle::Window;
 use crate::rng::SplitMix64;
 use crate::seed::Seed;
 use crate::world::World;
@@ -115,4 +118,57 @@ fn serving_meets_every_attack_of_a_hostile_host_as_the_protocol_says() {
         violations
     });
     assert!(violations.is_empty(), "{violations:#?}");
+}
+
+/// Writes that wait for room while the heap is measured.
+const WAITING: usize = 16;
+
+/// Bytes: what one waiting write may hold beside the frame it read, its call's state on both ends
+/// among it.
+const BESIDE: usize = 620 * 1024;
+
+#[test]
+fn a_write_waiting_for_room_holds_the_frame_it_read_and_no_copy_of_it() {
+    let frame = usize::try_from(TRANSPORT_FRAME_BYTES).expect("a frame's length fits");
+    // With its prefix and a byte past it, each waiting message fills one transport frame.
+    let message = frame - PREFIX - 1;
+    let (held, unanswered) = run_networked(Seed::new(1), false, move |_env, net| async move {
+        let mut rng = SplitMix64::new(7);
+        let canary = Canary::of("hostile-heap");
+        let placing = Placing::new(net, &options(&mut rng, Limits::default()), &canary);
+        let wire = placing
+            .wire(Side::Destination)
+            .await
+            .expect("the destination is reached");
+        let mut raw = Raw::over(wire, Side::Destination.host())
+            .await
+            .expect("HTTP/2 opens");
+        let largest = Limits::default().decoding(Class::Data) - PREFIX;
+        let holders: Vec<Write> = (0..HOLDERS).map(|_| raw.write(largest, 0)).collect();
+        tokio::time::sleep(SETTLE).await;
+        let window = Window::open();
+        let waiting: Vec<Write> = (0..WAITING)
+            .map(|_| raw.write(message, message + 1))
+            .collect();
+        tokio::time::sleep(SETTLE * 5).await;
+        let held = window.close();
+        drop(holders);
+        let mut unanswered = 0;
+        for write in waiting {
+            if !write.ends_within(PATIENCE).await {
+                unanswered += 1;
+            }
+        }
+        (held, unanswered)
+    });
+    assert_eq!(
+        unanswered, 0,
+        "writes waiting for room were not answered once it came back"
+    );
+    let most = u64::try_from(WAITING * (frame + BESIDE)).unwrap_or(u64::MAX);
+    assert!(
+        held <= most,
+        "{WAITING} writes waiting for room held {held} bytes, beyond {most}: more than the frame \
+         each read"
+    );
 }
