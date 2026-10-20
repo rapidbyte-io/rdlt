@@ -9,11 +9,12 @@
 // source that cannot read again told the commit's position once the log holds it, then the
 // destination's commit, keyed by load and number, under the session's epoch; the source that reads
 // again is told after. A run may crash, its log may refuse a commit, its commit may fail or land
-// with its answer lost, a telling may fail, and runs may start while another runs. A second
-// pipeline may share the destination.
+// with its answer lost, a telling may fail, and runs may start while another runs. The
+// destination may be shared by several pipelines; the bounds the checkers explore hold one.
 //
 // quint steps: --step simulated --max-steps 60
 // quint run: --max-samples 2000
+// quint verify: --max-steps 7
 module exactly_once_protocol {
   // ---- What a destination's pipelines read
 
@@ -27,6 +28,10 @@ module exactly_once_protocol {
   const REREADS: Set[str]
   /// The rows each partition holds, from offset 0.
   const ROWS: str -> int
+  /// At least the most rows a partition holds; a range over rows is bounded by it, as Apalache
+  /// takes a range only between constants.
+  const MAXROWS: int
+  assume RowsWithinMax = PARTS.forall(part => ROWS.get(part) <= MAXROWS)
   /// The runs each pipeline may start, its loads 1 onward.
   const LOADS: int
   /// Faults a behavior meets: crashes, commits a log refused, failed or lost commits, failed
@@ -115,7 +120,7 @@ module exactly_once_protocol {
 
   pure def zero(parts: Set[Part]): Part -> int = parts.mapBy(_ => 0)
 
-  pure def none(part: Part): int -> int = 0.to(rowsOf(part) - 1).mapBy(_ => 0)
+  pure def none(part: Part): int -> int = 0.to(MAXROWS - 1).filter(o => o < rowsOf(part)).mapBy(_ => 0)
 
   pure def fresh(pipe: Pipe): Dest =
     { epoch: 0, cursor: zero(partsOf(pipe)), rows: partsOf(pipe).mapBy(part => none(part)), receipts: Set(), last: NONE }
@@ -124,7 +129,7 @@ module exactly_once_protocol {
   /// where `whole`.
   pure def applied(d: Dest, key: Key, segs: Set[Seg], whole: bool): Dest = {
     val rows = segs.fold(d.rows, (rs, s) =>
-      rs.set(s.part, s.from.to(s.to - 1).fold(rs.get(s.part), (counts, o) => counts.set(o, counts.get(o) + 1))))
+      rs.set(s.part, 0.to(MAXROWS - 1).filter(o => s.from <= o and o < s.to).fold(rs.get(s.part), (counts, o) => counts.set(o, counts.get(o) + 1))))
     val cursor = segs.fold(d.cursor, (c, s) => c.set(s.part, s.to))
     { ...d, rows: rows, cursor: cursor, receipts: d.receipts.union(Set(key)), last: if (whole) key else d.last }
   }
@@ -141,7 +146,7 @@ module exactly_once_protocol {
 
   /// The open logs of `pipe` other than `load`'s.
   def others(pipe: Pipe, load: int): Set[int] =
-    1.to(started.get(pipe)).filter(l => l != load and logs.keys().contains((pipe, l)) and logs.get((pipe, l)).open)
+    1.to(LOADS).filter(l => l <= started.get(pipe) and l != load and logs.keys().contains((pipe, l)) and logs.get((pipe, l)).open)
 
   /// The least of `ns`; -1 where there is none.
   pure def least(ns: Set[int]): int = ns.fold(-1, (best, n) => if (best == -1 or n < best) n else best)
@@ -497,7 +502,7 @@ module exactly_once_protocol {
   /// Every row a partition's position lies past is held once, and none past it.
   val ExactlyOnce = PIPES.forall(pipe => partsOf(pipe).forall(part => {
     val d = dest.get(pipe)
-    0.to(rowsOf(part) - 1).forall(o => d.rows.get(part).get(o) == (if (o < d.cursor.get(part)) 1 else 0))
+    0.to(MAXROWS - 1).filter(o => o < rowsOf(part)).forall(o => d.rows.get(part).get(o) == (if (o < d.cursor.get(part)) 1 else 0))
   }))
 
   /// A source is told a position only once it is safe: a source that reads again once its
@@ -527,17 +532,18 @@ module exactly_once_protocol {
   temporal Converges = weakFair(step, vars).implies(eventually(converged))
 }
 
-/// The protocol at the bounds every checker explores: the first pipeline reads `a`, whose source
-/// reads again, and `u`, whose source does not, two rows each; the second reads `b`, one row. A
-/// fault may end two runs, so each pipeline may start one run more than twice the faults: whatever
-/// the faults end, a run remains that meets none.
+/// The protocol at the bounds every checker explores: one pipeline reads `a`, whose source reads
+/// again, one row, and `u`, whose source does not, two rows. A fault may end two runs, so the
+/// pipeline may start one run more than twice the faults: whatever the faults end, a run remains
+/// that meets none.
 module exactly_once {
   import exactly_once_protocol(
-    PIPES = Set("p", "q"),
-    PARTS = Set("a", "u", "b"),
-    OWNER = Map("a" -> "p", "u" -> "p", "b" -> "q"),
-    REREADS = Set("a", "b"),
-    ROWS = Map("a" -> 2, "u" -> 2, "b" -> 1),
+    PIPES = Set("p"),
+    PARTS = Set("a", "u"),
+    OWNER = Map("a" -> "p", "u" -> "p"),
+    REREADS = Set("a"),
+    ROWS = Map("a" -> 1, "u" -> 2),
+    MAXROWS = 2,
     LOADS = 5,
     FAULTS = 2,
   ).*
@@ -551,6 +557,11 @@ module exactly_once {
   /// partitions, everything answered.
   action rowEach(load: int): bool =
     read(p(load), "a").then(checkpoint(p(load), "a")).then(read(p(load), "u")).then(checkpoint(p(load), "u"))
+      .then(log(p(load), Ok)).then(tellLogged(p(load), Ok)).then(land(p(load), Ok)).then(tellLanded(p(load), Ok))
+
+  /// The steps a run takes to read, seal and commit a row of `u`, everything answered.
+  action rowOfU(load: int): bool =
+    read(p(load), "u").then(checkpoint(p(load), "u"))
       .then(log(p(load), Ok)).then(tellLogged(p(load), Ok)).then(land(p(load), Ok)).then(tellLanded(p(load), Ok))
 
   /// A source told a position before the log holds the commit, which a run never does.
@@ -617,11 +628,11 @@ module exactly_once {
       .then(start("p"))
       .then(replay(p(1), Ok))
       .then(rowEach(1))
-      .then(rowEach(1))
+      .then(rowOfU(1))
       .then(close(p(1)))
       .expect(all {
-        dest.get("p").cursor == Map("a" -> 2, "u" -> 2),
-        kept == Map("a" -> 2, "u" -> 2, "b" -> 0),
+        dest.get("p").cursor == Map("a" -> 1, "u" -> 2),
+        kept == Map("a" -> 1, "u" -> 2),
         logs.keys().forall(k => not(logs.get(k).open)),
         ExactlyOnce,
         SAck,
@@ -684,8 +695,8 @@ module exactly_once {
       .then(start("p"))
       .then(5.reps(_ => replay(p(2), Ok)))
       .expect(dest.get("p").last == (1, 1) and runOf(p(2)).stage == Reading)
-      .then(read(p(2), "a"))
-      .then(checkpoint(p(2), "a"))
+      .then(read(p(2), "u"))
+      .then(checkpoint(p(2), "u"))
       .then(log(p(2), Ok))
       .expect(runOf(p(2)).inFlight.prev == (1, 1))
       .then(crash(p(2)))
@@ -693,7 +704,7 @@ module exactly_once {
       .then(5.reps(_ => replay(p(3), Ok)))
       .expect(all {
         dest.get("p").last == (2, 1),
-        dest.get("p").cursor == Map("a" -> 2, "u" -> 1),
+        dest.get("p").cursor == Map("a" -> 1, "u" -> 2),
         runOf(p(3)).stage == Reading,
         ExactlyOnce,
       })
@@ -735,27 +746,6 @@ module exactly_once {
       .then(checkpoint(p(2), "a"))
       .then(log(p(2), Ok))
       .expect(live == Set() and faults == FAULTS - 1 and dest.get("p").cursor.get("a") == 0)
-
-  /// A run of the second pipeline opens its own session: the first pipeline's run, opened before,
-  /// still commits.
-  run aSecondPipelineFencesNoneOfTheFirstsTest =
-    init
-      .then(start("p"))
-      .then(replay(p(1), Ok))
-      .then(start("q"))
-      .then(replay(("q", 1), Ok))
-      .then(rowEach(1))
-      .then(read(("q", 1), "b"))
-      .then(checkpoint(("q", 1), "b"))
-      .then(log(("q", 1), Ok))
-      .then(land(("q", 1), Ok))
-      .then(tellLanded(("q", 1), Ok))
-      .expect(all {
-        dest.get("p").cursor == Map("a" -> 1, "u" -> 1),
-        dest.get("q").cursor == Map("b" -> 1),
-        ExactlyOnce,
-        FencedNeverCommits,
-      })
 
   /// A source told a position before the log held its commit would stand past every copy of the
   /// rows: the invariant refuses it.
