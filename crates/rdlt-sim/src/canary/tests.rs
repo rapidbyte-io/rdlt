@@ -1,8 +1,11 @@
+use std::panic::{AssertUnwindSafe, catch_unwind};
+
 use rdlt_connector::{ConnectorError, ConnectorErrorKind, ConnectorId};
 use rdlt_host::{ProviderError, Redactions, SecretKind, SecretReference, SecretResolver as _};
 
 use super::{Canary, texts};
-use crate::world::{FORMS, Told, quoting};
+use crate::rng::SplitMix64;
+use crate::world::{FORMS, Told, World, quoting};
 
 /// What a connector of `canary`'s world is told.
 fn told(canary: &Canary) -> Told {
@@ -110,6 +113,40 @@ fn caused_by(cause: &str) -> ProviderError {
         id: ConnectorId::parse("sim-source").expect("a valid id"),
         source: Some(std::io::Error::other(cause.to_owned())),
     }
+}
+
+#[test]
+fn an_answer_whose_cause_holds_a_secret_is_a_violation() {
+    let canary = Canary::of("oracle-7");
+    let registered = World::register("answered-oracle-7", &mut SplitMix64::new(1));
+    let world = registered.world();
+    canary.answered(world, "reset", &caused_by("a lookup of ***"));
+    assert_eq!(world.violations(), Vec::<String>::new());
+    canary.answered(
+        world,
+        "reset",
+        &caused_by("a lookup of rdlt-canary-oracle-7"),
+    );
+    let violations = world.violations();
+    assert_eq!(violations.len(), 1, "{violations:#?}");
+    assert!(
+        violations[0].contains("rdlt-canary-oracle-7"),
+        "{violations:#?}"
+    );
+}
+
+#[test]
+fn a_placement_whose_cause_holds_a_secret_fails() {
+    let canary = Canary::of("oracle-7");
+    canary.placed("source", &caused_by("a lookup of ***"));
+    let placed = catch_unwind(AssertUnwindSafe(|| {
+        canary.placed("source", &caused_by("a lookup of second-line-of-oracle-7"));
+    }));
+    let message = placed.expect_err("a secret in a placement's error fails");
+    let message = message
+        .downcast_ref::<String>()
+        .expect("the failure says why");
+    assert!(message.contains("second-line-of-oracle-7"), "{message}");
 }
 
 #[test]
