@@ -441,21 +441,21 @@ admitted, and what a remote connector's calls hold in transport.
   or a row is given room while it runs. Over each attempt, the most the thread holds beyond its
   charge stays within an allowance and, where the connectors listen on the simulated network and
   share the thread, what the reads hold between the source and the engine: for each partition each
-  run reads, 20 of the attempt's largest push (the host's push waiting for admission, the 16
-  events a source sends ahead, the batch being cut and its piece waiting for credit, and a frame
-  sent past its credit), and the frames credit lets go before the host takes them, two of the
-  largest or the host's credit floor of 4 MiB, whichever is more. The allowance is what the world
-  holds beside the engine and keeps uncounted, the runtime, its maps and builders' spare room,
-  apart by where the connectors run, with a write-ahead log or without, since the log's copies
-  count as the world's: 13 MiB in process and 11 MiB over the network, the next whole mebibyte
-  above five quarters of the most seeds 0 to 99 999 without a log held beyond their runs' reserved
-  peaks. Beyond their charge, seeds 0 to 99 999 hold at most 12.8 MB in process (12.1 MB with a
-  log) and 10.6 MB over the network (8.9 MB with a log). A failing seed names its phase; replayed
-  with `RDLT_SIM_TRACE` set, it names the change of the charge after which its thread held too
-  much, and the code that made it. The world is one of fat values: a wide object of JSON on every
-  eighth record of a stream pushing JSON, a sixteenth of the least push, and spaces beside some
-  pushes up to their limit; on every fourth record the least budget refuses the batches. The world
-  keeps its rows apart from the batches they were written in, and the short form of each fat
+  run reads, 20 of the attempt's largest event, a push or a checkpoint's cursor (the host's event
+  waiting for admission, the 16 events a source sends ahead, the batch being cut and its piece
+  waiting for credit, and a frame sent past its credit), and the frames credit lets go before the
+  host takes them, two of the largest or the host's credit floor of 4 MiB, whichever is more. The
+  allowance is what the world holds beside the engine and keeps uncounted, the runtime, its maps and
+  builders' spare room, apart by where the connectors run, with a write-ahead log or without, since
+  the log's copies count as the world's: 13 MiB in process and 11 MiB over the network, the next
+  whole mebibyte above five quarters of the most seeds 0 to 99 999 without a log held beyond their
+  runs' reserved peaks. Beyond their charge, seeds 0 to 99 999 hold at most 12.8 MB in process (12.1
+  MB with a log) and 10.6 MB over the network (8.9 MB with a log). A failing seed names its phase;
+  replayed with `RDLT_SIM_TRACE` set, it names the change of the charge after which its thread held
+  too much, and the code that made it. The world is one of fat values: a wide object of JSON on
+  every eighth record of a stream pushing JSON, a sixteenth of the least push, and spaces beside
+  some pushes up to their limit; on every fourth record the least budget refuses the batches. The
+  world keeps its rows apart from the batches they were written in, and the short form of each fat
   value. Not measured: seeds that change rows, seeds under stress, whose compute runs on Rayon's
   threads, and the runs with nothing new that check the reports a source hears.
 - **What the check sees.** Every seed of 0 to 99 999 holds to it: what a charge covers is freed
