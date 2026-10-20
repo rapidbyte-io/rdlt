@@ -333,8 +333,8 @@ what no bound names.
   500 seeds lay within what the spec models, and the other three failed. Of the first 25 seeds in
   scope, in file-name order, TLC admitted 19 in 7 to 163 seconds, rejected none, and ran out of 10
   minutes on 6, as Apalache did. No seeded engine bug was caught where the oracle passes: one that
-  tells sources that read again before the destination's commit was refused only on seeds the oracle
-  fails too, and one that replays every commit whole was refused on none. The hook was 393 lines.
+  tells sources that read again before the destination's commit was refused by the observer only on
+  seeds the oracle fails too, and one that replays every commit whole was refused on none. The hook was 393 lines.
   The observer's last form admitted more than its first: replays of held commits, tellings of
   commits that move no source of their kind, taken unobserved, and commits with no ends dropped,
   fenced and failed ones among them. Cost: a design defect the simulation does not meet is found
