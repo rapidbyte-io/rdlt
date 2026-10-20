@@ -52,7 +52,7 @@ impl Attacker<'_> {
         let asked = |pause: u64| {
             self.configuration(Asked::connecting(connection, Duration::from_millis(pause)))
         };
-        // The first pauses as it connects, so the second arrives while it does.
+        // The first pauses as it connects, so the second may arrive while it does.
         let (first, second) = (asked(1 + rng.below(20)), asked(rng.below(20)));
         let (mut one, mut other) = (client.rpc.clone(), client.rpc.clone());
         let (first, second) = tokio::join!(

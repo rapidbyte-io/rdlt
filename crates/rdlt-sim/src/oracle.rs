@@ -164,7 +164,7 @@ struct Simulation {
     /// Partitions each run reads at once.
     partitions: u64,
     /// Bytes: the allowance an attempt's heap is held to beyond what is charged for it;
-    /// `None` where the seed's work is on more than one thread.
+    /// `None` where nothing is measured, as `memory::allowance` says.
     allowance: Option<u64>,
     /// How many attempts its runs made, which mixes each attempt's hostile draws apart.
     attacks: u64,
