@@ -9,6 +9,8 @@ use rdlt_engine::{Engine, ResetReport, ResetScope, WriteMode};
 
 use super::scenario::Scenario;
 use super::{PIPELINES, Simulation};
+use crate::World;
+use crate::canary::Canary;
 use crate::destination::records;
 use crate::rng::SplitMix64;
 use crate::seed::Seed;
@@ -17,6 +19,9 @@ use crate::workload::SimStream;
 
 /// How many times a reset that faults is tried before faults are turned off for it.
 const TRIES: usize = 8;
+
+/// What a reset that faults kept from committing is tried again with.
+type Unfinished = (Engine, Arc<dyn Source>, Arc<dyn Destination>);
 
 /// A drawn reset: which pipeline's stream, how, and how long after the runs start.
 #[derive(Clone)]
@@ -56,7 +61,15 @@ impl Simulation {
             let (source, destination) = super::scenario::in_process(&name).await;
             for _ in 0..TRIES {
                 let recorded = records(&world, &racing.pipeline, &racing.streams[0]);
-                match tried(&engine, &racing, &source, &destination).await {
+                match tried(
+                    &engine,
+                    &racing,
+                    &source,
+                    &destination,
+                    (&*world, name.as_str()),
+                )
+                .await
+                {
                     Ok(_) => return None,
                     Err(error) if refused(&error) => {
                         assert!(
@@ -80,25 +93,31 @@ impl Simulation {
         // The raced runs have ended: no acknowledgement of a commit from before the reset is
         // left to reach the source, so it is checked again from here on.
         self.world.reset.lock().remove(drawn.streams[0].name());
-        if let Some((engine, source, destination)) = unfinished {
-            // Faults kept it from committing: without them, it must, or refuse a stream the
-            // pipeline recorded nothing of.
-            self.world.set_faulty(false);
-            let recorded = records(&self.world, &drawn.pipeline, &drawn.streams[0]);
-            let answer = tried(&engine, &drawn, &source, &destination).await;
-            let right = match &answer {
-                Ok(_) => recorded,
-                Err(error) => !recorded && refused(error),
-            };
-            if !right {
-                let (streams, scope) = (&drawn.streams, drawn.scope);
-                panic!(
-                    "seed {seed}: resetting {streams:?} as {scope:?}, recorded: {recorded}, \
-                     answered {answer:?}"
-                );
-            }
+        if let Some(unfinished) = unfinished {
+            self.settle(seed, &drawn, unfinished).await;
         }
         true
+    }
+
+    /// Resets again, without faults, what faults kept from committing: it must now, or refuse a
+    /// stream the pipeline recorded nothing of.
+    async fn settle(&self, seed: Seed, drawn: &Drawn, unfinished: Unfinished) {
+        let (engine, source, destination) = unfinished;
+        self.world.set_faulty(false);
+        let recorded = records(&self.world, &drawn.pipeline, &drawn.streams[0]);
+        let watch = (&*self.world, self.name.as_str());
+        let answer = tried(&engine, drawn, &source, &destination, watch).await;
+        let right = match &answer {
+            Ok(_) => recorded,
+            Err(error) => !recorded && refused(error),
+        };
+        if !right {
+            let (streams, scope) = (&drawn.streams, drawn.scope);
+            panic!(
+                "seed {seed}: resetting {streams:?} as {scope:?}, recorded: {recorded}, \
+                 answered {answer:?}"
+            );
+        }
     }
 
     /// The reset `seed` draws apart from its generator, where the feature is on and a stream
@@ -138,8 +157,9 @@ async fn tried(
     drawn: &Drawn,
     source: &Arc<dyn Source>,
     destination: &Arc<dyn Destination>,
+    (world, name): (&World, &str),
 ) -> Result<ResetReport, rdlt_engine::Error> {
-    engine
+    let answer = engine
         .reset(
             &drawn.pipeline,
             &drawn.streams,
@@ -147,7 +167,11 @@ async fn tried(
             Arc::clone(source),
             Arc::clone(destination),
         )
-        .await
+        .await;
+    if let Err(error) = &answer {
+        Canary::of(name).answered(world, "reset", error);
+    }
+    answer
 }
 
 /// The resets after which the model's rows for `stream` still hold.

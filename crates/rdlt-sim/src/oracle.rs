@@ -201,7 +201,7 @@ impl Simulation {
             settled(seed, &self.world, self.placing.as_ref()).await;
         }
         let last = PHASES - 1;
-        if !stopped && self.reset(seed, last).await {
+        if !stopped && Box::pin(self.reset(seed, last)).await {
             let (_, short) = self.converge(last, rng).await;
             stopped = short;
             settled(seed, &self.world, self.placing.as_ref()).await;
