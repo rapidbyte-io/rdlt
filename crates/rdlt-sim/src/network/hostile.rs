@@ -49,8 +49,8 @@ enum Attack {
 }
 
 impl Attack {
-    /// The attack `rng` draws, against the side it draws; a configuration beyond its limit, eight
-    /// mebibytes of it, one time in eighteen.
+    /// The attack `rng` draws, against the side it draws; a configuration beyond its limit one
+    /// time in eighteen.
     fn draw(rng: &mut SplitMix64) -> Self {
         let side = if rng.chance(500) {
             Side::Source
