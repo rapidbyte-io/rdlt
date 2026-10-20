@@ -1125,3 +1125,43 @@ proptest! {
         );
     }
 }
+
+/// Bytes near `whole`: as they are, cut, or with one byte changed.
+fn near(whole: Vec<u8>) -> impl Strategy<Value = Vec<u8>> {
+    let len = whole.len();
+    prop_oneof![
+        Just(whole.clone()),
+        (0..=len).prop_map({
+            let whole = whole.clone();
+            move |cut| whole[..cut].to_vec()
+        }),
+        (0..len.max(1), 1_u8..=255).prop_map(move |(at, flip)| {
+            let mut changed = whole.clone();
+            if let Some(byte) = changed.get_mut(at) {
+                *byte ^= flip;
+            }
+            changed
+        }),
+    ]
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(rdlt_testkit::cases(1024)))]
+
+    /// A frame reads back as it was framed, and bytes near it read only if they are exactly a
+    /// frame's framing.
+    #[test]
+    fn a_frame_reads_back_as_framed_and_no_other_bytes_read(
+        (kind, payload, bytes) in (any::<u8>(), proptest::collection::vec(any::<u8>(), 0..64))
+            .prop_flat_map(|(kind, payload)| {
+                let frame = forged(kind, &payload).to_vec();
+                (Just(kind), Just(payload), near(frame))
+            }),
+    ) {
+        let frame = forged(kind, &payload);
+        prop_assert_eq!(super::opened(&frame).unwrap(), (kind, &payload[..]));
+        if let Ok((kind, payload)) = super::opened(&bytes) {
+            prop_assert_eq!(&bytes[..], &forged(kind, payload)[..]);
+        }
+    }
+}
