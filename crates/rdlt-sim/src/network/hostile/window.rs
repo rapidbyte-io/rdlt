@@ -70,7 +70,10 @@ impl Raw {
     pub(super) async fn over(wire: rdlt_host::Wire, host: &'static str) -> Option<Self> {
         let handshaking =
             hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(wire));
-        let (sender, connection) = handshaking.await.ok()?;
+        let (sender, connection) = tokio::time::timeout(PATIENCE, handshaking)
+            .await
+            .ok()?
+            .ok()?;
         tokio::spawn(connection);
         Some(Self { sender, host })
     }
