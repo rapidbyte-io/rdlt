@@ -5,12 +5,6 @@ fn every_change_lands_as_the_model_says_through_faults_crashes_and_concurrent_ru
     for_each_seed("changes", seeds(20), Weight::One, check_changes);
 }
 
-#[test]
-fn a_change_simulation_replays_exactly_from_its_seed() {
-    let seed = Seed::new(7);
-    assert_eq!(check_changes(seed), check_changes(seed));
-}
-
 /// A seed whose source forgets what it acknowledged and whose transition to the changes only the
 /// write-ahead log held: without the log's transition, the changes are read again from their
 /// start, which the source no longer serves.

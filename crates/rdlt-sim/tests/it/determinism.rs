@@ -6,7 +6,7 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use parking_lot::Mutex;
 use rdlt_engine::Env;
-use rdlt_sim::{Seed, Weight, check_exactly_once, for_each_seed, run};
+use rdlt_sim::{Seed, Weight, check_changes, check_exactly_once, for_each_seed, run, seeds};
 use tokio::task::JoinSet;
 
 type Trace = Vec<(u32, u64, Duration)>;
@@ -103,29 +103,33 @@ fn alike(checked: &rdlt_sim::Checked) -> rdlt_sim::Checked {
 }
 
 #[test]
-fn the_same_seed_leaves_the_destination_alike() {
-    // A fixed few, each run twice, one run after the other.
-    let checked = for_each_seed(
-        "destinations_alike",
-        (0..20).map(Seed::new),
-        Weight::One,
-        |seed| {
-            let first = check_exactly_once(seed);
-            assert_eq!(
-                alike(&check_exactly_once(seed)),
-                alike(&first),
-                "seed {seed}"
-            );
-            first
-        },
-    );
-    let distinct: BTreeSet<String> = checked
+fn every_seed_replays_alike() {
+    // Each seed of both oracles twice, one run after the other: twenty in the test job, as many
+    // as `just sim-replay` says elsewhere. The two runs report alike, end at one simulated time
+    // and leave the destination alike.
+    let checked = for_each_seed("replays_alike", seeds(20), Weight::One, |seed| {
+        let first = check_exactly_once(seed);
+        assert_eq!(
+            alike(&check_exactly_once(seed)),
+            alike(&first),
+            "seed {seed}: the exactly-once oracle"
+        );
+        let changed = check_changes(seed);
+        assert_eq!(
+            check_changes(seed),
+            changed,
+            "seed {seed}: the change oracle"
+        );
+        first
+    });
+    let traces: BTreeSet<u64> = checked.iter().map(|checked| checked.trace).collect();
+    let digests: BTreeSet<String> = checked
         .iter()
         .map(|checked| format!("{:?}", checked.digest))
         .collect();
     assert!(
-        distinct.len() > 1,
-        "different seeds leave different contents"
+        checked.len() < 2 || (traces.len() > 1 && digests.len() > 1),
+        "different seeds run differently and leave different contents"
     );
 }
 

@@ -6,10 +6,12 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use rdlt_connector::{PartitionState, PipelineId, ReadMode, StateEntry, StreamName};
-use rdlt_engine::{DeleteMode, Engine, PipelinePlan, StreamPlan, WriteMode};
+use rdlt_engine::{DeleteMode, Engine, Env as _, PipelinePlan, StreamPlan, WriteMode};
 use rdlt_testkit::canon::Canon;
 
+use super::Checked;
 use super::config::{config, growth, waited};
+use super::ledger::Ledger;
 use super::reports::Reported;
 use super::scenario::{Scenario, execute_all, pick};
 use super::{FAULTY_RUNS, settled};
@@ -17,7 +19,7 @@ use crate::canary::Canary;
 use crate::changes::{
     CHANGES_PARTITION, CHANGES_PHASE, ChangeStream, Logged, Merged, Position, ROUNDS, Version,
 };
-use crate::destination::{Digest, Stored};
+use crate::destination::Stored;
 use crate::env::SimEnv;
 use crate::rng::SplitMix64;
 use crate::seed::{Seed, run};
@@ -32,17 +34,22 @@ const CHANGES: u64 = 0x0063_6861_6e67_6573;
 const HISTORY: u64 = 0x0068_6973_746f_7279;
 
 /// Checks that every change of the workload `seed` generates lands as the model says, through
-/// faults, crashes, stops and racing runs; the destination's digest.
+/// faults, crashes, stops and racing runs; what the simulation left.
 ///
 /// # Panics
 ///
 /// Panics, naming the seed, when a table differs from the model, a run without faults fails, the
 /// runs do not converge, or a connector saw a broken invariant.
-pub fn check_changes(seed: Seed) -> Digest {
-    run(seed, |env| async move { simulate(seed, env).await })
+pub fn check_changes(seed: Seed) -> Checked {
+    run(
+        seed,
+        |env| async move { Box::pin(simulate(seed, env)).await },
+    )
 }
 
-async fn simulate(seed: Seed, env: Arc<SimEnv>) -> Digest {
+async fn simulate(seed: Seed, env: Arc<SimEnv>) -> Checked {
+    let clock = Arc::clone(&env);
+    let started = clock.instant();
     let mut rng = SplitMix64::new(seed.value() ^ CHANGES);
     let name = format!("changes-{seed}");
     let canary = Canary::of(&name);
@@ -68,39 +75,110 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>) -> Digest {
         env,
     );
     let plan = plan(&world.changes.streams).with_wal(features.wal);
-    for round in 0..ROUNDS {
-        world.set_phase(round);
-        converge(&engine, &plan, &world, &name, round, seed, &mut rng).await;
-        settled(seed, &world, None).await;
-        for stream in &world.changes.streams {
-            check(&world, stream, round, seed);
-        }
-        check_acknowledged(&world, round, seed);
-    }
+    let mut changing = Changing {
+        engine: &engine,
+        plan: &plan,
+        world: &world,
+        name: &name,
+        seed,
+        ledger: Ledger::default(),
+    };
+    changing.rounds(&mut rng).await;
     // What the destination holds once the workload is loaded; the checks that follow load
     // nothing more.
     let digest = world.store.lock().digest();
-    let reported = Reported {
-        engine: &engine,
-        plans: vec![plan.clone()],
-        world: &world,
-        name: &name,
-        placing: None,
-        stands,
-        repeats: |_, _| true,
-        refusable: world
-            .changes
-            .streams
-            .iter()
-            .all(|stream| stream.replay.is_none()),
-    };
-    reported.check(seed).await;
+    changing.report().await;
     let mut violations = world.violations();
     drop(logging);
     violations.extend(logged.leaks());
     drop(registered);
     assert!(violations.is_empty(), "seed {seed}: {violations:#?}");
-    digest
+    Checked {
+        digest,
+        trace: changing.ledger.trace(),
+        waits: changing.ledger.waits,
+        simulated: clock.instant() - started,
+        features,
+        held: None,
+    }
+}
+
+/// The change oracle's runs: what they load and where, and what they left.
+struct Changing<'a> {
+    engine: &'a Engine,
+    plan: &'a PipelinePlan,
+    world: &'a World,
+    name: &'a str,
+    seed: Seed,
+    ledger: Ledger,
+}
+
+impl Changing<'_> {
+    /// Runs every round to its end and checks each table against the model.
+    async fn rounds(&mut self, rng: &mut SplitMix64) {
+        let (seed, world) = (self.seed, self.world);
+        for round in 0..ROUNDS {
+            world.set_phase(round);
+            self.converge(round, rng).await;
+            settled(seed, world, None).await;
+            for stream in &world.changes.streams {
+                check(world, stream, round, seed);
+            }
+            check_acknowledged(world, round, seed);
+        }
+    }
+
+    /// Checks what the runs reported.
+    async fn report(&self) {
+        let world = self.world;
+        let reported = Reported {
+            engine: self.engine,
+            plans: vec![self.plan.clone()],
+            world,
+            name: self.name,
+            placing: None,
+            stands,
+            repeats: |_, _| true,
+            refusable: world
+                .changes
+                .streams
+                .iter()
+                .all(|stream| stream.replay.is_none()),
+        };
+        reported.check(self.seed).await;
+    }
+
+    /// Runs `round` until a run succeeds and no write-ahead log is left to replay: the first few
+    /// runs with faults and disruptions where the seed has them, the rest without.
+    async fn converge(&mut self, round: usize, rng: &mut SplitMix64) {
+        let (seed, features) = (self.seed, self.world.workload.features);
+        for runs in 0.. {
+            let faulty = runs < FAULTY_RUNS;
+            self.world.set_faulty(faulty && features.faults);
+            let scenario = if faulty && features.disruptions {
+                pick(rng)
+            } else {
+                Scenario::Plain
+            };
+            let plans = std::slice::from_ref(self.plan);
+            let executed = execute_all(self.engine, plans, self.name, None, scenario).await;
+            self.ledger.ended(round, scenario, &executed);
+            let clean = !(faulty && (features.faults || features.disruptions));
+            for executed in &executed {
+                if let (true, Some(failure)) = (clean, executed.failures.first()) {
+                    panic!(
+                        "seed {seed}: round {round}: a run without faults failed with {}",
+                        failure.text
+                    );
+                }
+            }
+            if executed.iter().all(|executed| executed.succeeded) && !self.world.holds_logs().await
+            {
+                return;
+            }
+            assert!(runs < 32, "seed {seed}: round {round} did not converge");
+        }
+    }
 }
 
 /// Where state holds `partition` of `stream` at a cursor.
@@ -143,43 +221,6 @@ fn plan(streams: &[ChangeStream]) -> PipelinePlan {
     });
     PipelinePlan::new(PipelineId::parse("changes").expect("a valid id"), streams)
         .expect("the change plan is valid")
-}
-
-/// Runs `round` until a run succeeds and no write-ahead log is left to replay: the first few runs
-/// with faults and disruptions where the seed has them, the rest without.
-async fn converge(
-    engine: &Engine,
-    plan: &PipelinePlan,
-    world: &World,
-    name: &str,
-    round: usize,
-    seed: Seed,
-    rng: &mut SplitMix64,
-) {
-    let features = world.workload.features;
-    for runs in 0.. {
-        let faulty = runs < FAULTY_RUNS;
-        world.set_faulty(faulty && features.faults);
-        let scenario = if faulty && features.disruptions {
-            pick(rng)
-        } else {
-            Scenario::Plain
-        };
-        let executed = execute_all(engine, std::slice::from_ref(plan), name, None, scenario).await;
-        let clean = !(faulty && (features.faults || features.disruptions));
-        for executed in &executed {
-            if let (true, Some(failure)) = (clean, executed.failures.first()) {
-                panic!(
-                    "seed {seed}: round {round}: a run without faults failed with {}",
-                    failure.text
-                );
-            }
-        }
-        if executed.iter().all(|executed| executed.succeeded) && !world.holds_logs().await {
-            return;
-        }
-        assert!(runs < 32, "seed {seed}: round {round} did not converge");
-    }
 }
 
 /// Checks `stream`'s table after `round` against the model.
