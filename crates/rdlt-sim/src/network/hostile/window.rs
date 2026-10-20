@@ -105,12 +105,9 @@ impl Raw {
 }
 
 impl Write {
-    /// Whether serving has answered it.
-    pub(super) fn answered(&mut self) -> bool {
-        !matches!(
-            self.answered.try_recv(),
-            Err(oneshot::error::TryRecvError::Empty)
-        )
+    /// Whether serving has answered it; the answer stays for [`Write::ends_within`].
+    pub(super) fn answered(&self) -> bool {
+        !self.answered.is_empty()
     }
 
     /// Whether serving answers it within `patience`; it is held, not cut, until then.
@@ -142,14 +139,14 @@ impl Attacker<'_> {
         let holders: Vec<Write> = (0..HOLDERS).map(|_| raw.write(largest, 0)).collect();
         tokio::time::sleep(SETTLE).await;
         let count = 1 + rng.below(4);
-        let mut waiting: Vec<Write> = (0..count)
+        let waiting: Vec<Write> = (0..count)
             .map(|_| {
                 let length = 16 * 1024 + usize::try_from(rng.below(48 * 1024)).unwrap_or(0);
                 raw.write(length, length + 1)
             })
             .collect();
         tokio::time::sleep(SETTLE).await;
-        if self.strict && waiting.iter_mut().any(Write::answered) {
+        if self.strict && waiting.iter().any(Write::answered) {
             self.found(
                 "window",
                 "a write was answered while writes before it held the whole window",
