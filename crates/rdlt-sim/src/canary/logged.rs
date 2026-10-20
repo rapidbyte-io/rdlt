@@ -56,6 +56,15 @@ impl tracing::field::Visit for Fields {
     fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
         write!(self.0, "{}={value} ", field.name()).ok();
     }
+
+    /// An error's causes too, as an operator's log writes them beside it.
+    fn record_error(
+        &mut self,
+        field: &tracing::field::Field,
+        value: &(dyn std::error::Error + 'static),
+    ) {
+        write!(self.0, "{}={} ", field.name(), super::texts(value)).ok();
+    }
 }
 
 impl Subscriber for Logged {
