@@ -37,9 +37,9 @@ use config::{config, endless, growth, pressed, small_log, waited};
 use expected::Discards;
 #[cfg(test)]
 pub(crate) use memory::beyond_charge;
-use memory::{Counterweight, Tracing, Window};
+use memory::{Counterweight, Tracing};
 pub use memory::{Held, TRACE_VAR};
-pub(crate) use memory::{Kept, account, aside, charged, freed};
+pub(crate) use memory::{Kept, Window, account, aside, charged, freed};
 pub use pressure::Checked;
 use pressure::explained;
 use scenario::{Executed, Scenario, execute_all, pick};

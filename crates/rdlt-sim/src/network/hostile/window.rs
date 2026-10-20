@@ -141,7 +141,8 @@ impl Attacker<'_> {
         let largest = Limits::default().decoding(Class::Data) - PREFIX;
         let holders: Vec<Write> = (0..HOLDERS).map(|_| raw.write(largest, 0)).collect();
         tokio::time::sleep(SETTLE).await;
-        let mut waiting: Vec<Write> = (0..1 + rng.below(4))
+        let count = 1 + rng.below(4);
+        let mut waiting: Vec<Write> = (0..count)
             .map(|_| {
                 let length = 16 * 1024 + usize::try_from(rng.below(48 * 1024)).unwrap_or(0);
                 raw.write(length, length + 1)
