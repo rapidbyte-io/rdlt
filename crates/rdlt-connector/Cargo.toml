@@ -77,6 +77,7 @@ rdlt-adopt = { workspace = true, optional = true }
 
 [dev-dependencies]
 http-body.workspace = true
+hyper = { workspace = true, features = ["client", "http2"] }
 proptest.workspace = true
 rdlt-testkit.workspace = true
 regex.workspace = true
