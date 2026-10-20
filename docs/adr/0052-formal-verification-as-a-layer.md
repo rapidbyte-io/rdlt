@@ -136,6 +136,14 @@ A formal layer is added to the layers of its class, never in place of one.
   budget, a thread-local whose value has a destructor, and Kani 0.68 stops with an internal
   error on any such thread-local, at the `catch_unwind` intrinsic. A harness that takes and
   gives back room without waiting compiles, and took past 10 GB in about 7 minutes.
+- A log frame's lengths are proved (`rdlt-engine/src/wal/frame/len/proofs.rs`): a frame is its
+  payload and its head, saturating at the largest length rather than wrapping, for every payload
+  length (under a second), and a list of one number takes the brackets and digits JSON writes of
+  it, for every `u64` (424 to 595 seconds). The commas between a list's numbers are a property test
+  (`an_end_frame_s_length_is_what_it_encodes_to` in `wal/frame/tests.rs`, lists of up to 19
+  numbers). Their proof does not fit: over lists of up to two numbers it took 627 seconds and
+  over lists of up to three 640 seconds, past the 10 minutes a part may take on a laptop to fit
+  its job's 15 on GitHub's runners.
 - A commit's horizon is proved (`rdlt-engine/src/coordinator/horizon/proofs.rs`). With up to
   three loads listed, any of them the load itself, and the load's oldest commit among its first
   four, the horizon is the earlier of that oldest commit and another listed load's first, and no
@@ -147,8 +155,8 @@ A formal layer is added to the layers of its class, never in place of one.
   other. That a source is told only cursors a landed commit covers is an order of the async
   coordinator's calls (`coordinator/tests/acks.rs`), and that a log's positions are exactly what
   commits record is a property of maps of JSON-keyed records (`wal/positions/tests.rs`).
-- Kani's further targets: a log frame's length arithmetic and the parse of its preamble and
-  head. Each is proved, or held by a property test with the reason here.
+- Kani's further targets: the parse of a log frame's preamble and head. Each is proved, or held
+  by a property test with the reason here.
 
 ### Specifications: Quint over the design
 
