@@ -19,6 +19,8 @@ mod read;
 mod sending;
 mod service;
 mod sessions;
+#[cfg(test)]
+mod tests;
 mod until;
 mod write;
 
@@ -165,6 +167,9 @@ where
         let mut builder = hyper::server::conn::http2::Builder::new(TokioExecutor::new());
         builder
             .timer(TokioTimer::new())
+            // The date comes from the wall clock, which no host reads and which would make two
+            // runs of one simulated seed write different bytes.
+            .auto_date_header(false)
             .initial_stream_window_size(transport.stream_window)
             .initial_connection_window_size(transport.connection_window)
             .max_frame_size(transport.max_frame)
