@@ -142,8 +142,7 @@ fn every_seed_replays_alike() {
 #[test]
 fn a_seed_over_a_faulty_network_replays_alike() {
     // The first few seeds whose connectors listen on the simulated network, with faults on it,
-    // and two whose simulated time once differed between runs: 33, and 148, whose host is
-    // hostile.
+    // and two more: 33, and 148, whose host is hostile.
     let networked = (0..)
         .filter(|seed| {
             let features = rdlt_sim::Features::draw(&mut rdlt_sim::SplitMix64::new(*seed));

@@ -27,10 +27,16 @@ the whole engine on a paused clock from a seed, with connectors in the engine's 
     The source and the destination then listen on hosts of their own over mutual TLS, with a CA
     made for each run, and every run places them through `Remote`. Its keys come from the
     operating system, so the TLS bytes differ between runs of a seed; what the connectors and the
-    engine do, and when, does not. A served response carries no `Date` header: hyper
-    takes it from the wall clock and its text changes every second, so two runs of a seed would
-    encode HTTP/2 header blocks of different lengths, cut the connectors' writes differently and
-    have their peers read at other times.
+    engine do does not. A served response carries no `Date` header: hyper takes it from the wall
+    clock and its text changes every second, so two runs of a seed would encode HTTP/2 header
+    blocks of different lengths, cut the connectors' writes differently and have their peers read
+    at other times.
+  - One read of the wall clock is left, in h2: it remembers a stream it reset for a second of wall
+    time, and ten of them at most, and answers a frame that arrives late for a stream it forgot
+    with a reset of its own, where it drops one for a stream it remembers. How many it remembers
+    depends on how fast the run goes, so two runs of a seed can end a few milliseconds apart in
+    simulated time, more often on a loaded machine. hyper's server has no setting for these
+    limits, and tonic's client does not set them.
   - The feature is drawn apart from the others, so a seed's workload is the same over either
     transport, and seeds found before keep their workload.
   - Each seed draws its messages' latency, and the host's heartbeat, patience and connect deadline.
