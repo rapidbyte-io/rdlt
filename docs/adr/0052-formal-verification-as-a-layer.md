@@ -158,15 +158,14 @@ A formal layer is added to the layers of its class, never in place of one.
   because TLC reads the translation and rejects the clash.
 - `just quint` typechecks each, runs its tests (its `run` definitions whose names end in `Test`),
   and simulates runs against its invariants, as many and as long as its header says, in the
-  module named for the file or in each that a `// quint main:` line names. `just quint-verify`
-  checks the module named for the file alone.
-  `just quint-verify` checks each specification with the checker that fits it, named by a
-  `// quint verify:` line in its header. `tlc` checks each invariant and temporal property over
-  every state a finite specification reaches, which covers every run a bounded check could
-  explore. `apalache [--max-steps <n>]` checks each invariant symbolically over every run of up
-  to ten steps, or `<n>`, for a specification whose states are too many to enumerate. A
-  specification that names neither is checked by both, and `--max-steps <n>` alone bounds
-  Apalache's runs in that check.
+  module named for the file or in each that a `// quint main:` line names.
+  `just quint-verify` checks the module named for each specification's file with the checker
+  that fits it, named by a `// quint verify:` line in its header. `tlc` checks each invariant
+  and temporal property over every state a finite specification reaches, which covers every run
+  a bounded check could explore. `apalache [--max-steps <n>]` checks each invariant symbolically
+  over every run of up to ten steps, or `<n>`, for a specification whose states are too many to
+  enumerate. A specification that names neither is checked by both, and `--max-steps <n>` alone
+  bounds Apalache's runs in that check.
 - Quint runs Apalache from the distribution mise installs: `QUINT_HOME` is `target/quint`, where
   a link names it under its version, which `--apalache-version` passes, so Quint never fetches
   one. The recipe starts from an empty `QUINT_HOME`, refuses an `apalache-mc` that does not
@@ -203,6 +202,31 @@ A formal layer is added to the layers of its class, never in place of one.
   reopened, has one holder, is read by its own tokens, refuses strays and replays exactly, and a
   liveness claim needs fairness assumptions on a store that may answer nothing forever. A
   property that needs one will add it.
+- Exactly-once delivery is specified (`specs/exactly_once.qnt`, ADRs 0004, 0029 and 0030) as the
+  engine orders it: a run opens its log, fences and replays the others in a session it opens for
+  the first commit it replays, then opens its own session and commits what it reads, logged
+  first, sources that cannot read again told once the log holds the commit, the destination's
+  commit keyed by load and number under the session's epoch, sources that read again told after.
+  Runs crash, logs refuse commits, commits fail or lose their answer, tellings fail, and runs
+  start beside one another. Its invariants: every row a partition's position lies past is held
+  once and none past it (`ExactlyOnce`); a source is told a position only once its commit
+  landed, or for one that cannot read again once a log holds it (`SAck`); no commit lands from a
+  fenced session (`FencedNeverCommits`); a source stands only where it was told, at a committed
+  position (`PositionOnlyInCommitted`); each with a test that breaks its rule. Once faults stop,
+  every row lands once and no log is left (`Converges`), which TLC checks under weak fairness of
+  every step. A behavior need not end so: a run started once the load converged opens a log,
+  and a fault that ends the last run the bounds start leaves it open, which the engine's next
+  run would replay; a test shows such an end, where no step is left.
+  The protocol is a module of constants. The checkers explore one pipeline reading a partition
+  that reads again, of one row, and one that does not, of two; five runs and two faults, as a
+  fault may end two runs started together and five leave one that meets none. TLC checks every
+  state, 477,460 of them, in about a minute on four workers of a developer's machine. Apalache
+  checks every run of up to seven steps, in about 90 seconds there: eight take about 8 minutes,
+  past half the nightly job's 10 that its time there is held to. Two rows of each partition, or
+  a second pipeline, take TLC past 10 minutes there, its states still growing. A second pipeline
+  sharing the destination with a partition of its own is the module `exactly_once_pair`, which
+  `just quint` tests and simulates and no checker explores; a test shows that its sessions fence
+  none of the first pipeline's. `just quint` simulates 2,000 runs of 60 steps of each module.
 - Traces tie a specification to the code. A spec's header names each trace by name, seed and
   the goal its run reaches; `just quint` writes each from its seed, which reproduces it exactly,
   and fails where it differs from the one `specs/traces/<spec>/` holds, so a trace cannot drift
