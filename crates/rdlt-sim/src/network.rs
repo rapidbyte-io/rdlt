@@ -29,6 +29,7 @@ use rdlt_wire::Limits;
 use rdlt_wire::tls::{Accepted, Hosts};
 use tokio::runtime::Handle;
 
+use crate::canary::Canary;
 use crate::destination::SimDestination;
 use crate::env::SimEnv;
 use crate::rng::SplitMix64;
@@ -285,12 +286,14 @@ pub(crate) struct Placing {
 }
 
 impl Placing {
-    /// Places connectors on `net`, running their connections with `options`.
-    pub(crate) fn new(net: Arc<Net>, options: &Options) -> Self {
+    /// Places connectors on `net`, running their connections with `options`, and resolving the
+    /// secrets of `canary` their configurations refer to.
+    pub(crate) fn new(net: Arc<Net>, options: &Options, canary: &Canary) -> Self {
         net.stalls.judge_by(patience(options));
         let remote = Remote::new(identity(&net.client), net.pki.ca())
             .network(Turmoil)
-            .options(*options);
+            .options(*options)
+            .secrets(canary.vault());
         Self {
             net,
             remote,

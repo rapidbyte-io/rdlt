@@ -4,11 +4,14 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use rdlt_connector::{ConnectContext, destination_factory, source_factory};
+use rdlt_connector::{
+    ConnectorId, Destination, DestinationConnector as _, Source, SourceConnector as _,
+};
 use rdlt_engine::{Engine, PipelinePlan, Report, RunHandle, RunStatus, StopMode};
-use serde_json::json;
+use rdlt_host::{ConnectorRef, Provider as _};
 
 use super::refusals::Failure;
+use crate::canary::Canary;
 use crate::changes::SimChangeSource;
 use crate::destination::SimDestination;
 use crate::network::Placing;
@@ -54,30 +57,45 @@ pub(super) async fn start(
     world: &str,
     placing: Option<&Placing>,
 ) -> RunHandle {
-    let config = json!({ "world": world });
     if let Some(placing) = placing {
+        let config = Canary::of(world).config();
         // Where faults are on, a connector is now and then placed on the peer that stalls.
         let stalls = || World::named(world).is_some_and(|world| world.stalls());
         let source = placing.source(&config, stalls()).await;
         let destination = placing.destination(&config, stalls()).await;
         return engine.run(plan.clone(), source, destination);
     }
+    let (source, destination) = in_process(world).await;
+    engine.run(plan.clone(), source, destination)
+}
+
+/// The source and destination of the world registered as `world`, placed in this process through
+/// the host's registry, as an embedder places connectors it trusts, their configurations'
+/// secrets resolved by the world's vault.
+pub(super) async fn in_process(world: &str) -> (Arc<dyn Source>, Arc<dyn Destination>) {
+    let canary = Canary::of(world);
+    let (registry, config) = (canary.registry(), canary.config());
     // A world serving changes has the change source serve them.
     let changes = World::named(world).is_some_and(|world| !world.changes.streams.is_empty());
-    let factory = if changes {
-        source_factory::<SimChangeSource>()
+    let source = if changes {
+        SimChangeSource::ID
     } else {
-        source_factory::<SimSource>()
+        SimSource::ID
     };
-    let source = factory
-        .connect(config.clone(), ConnectContext::new())
+    let reference = |id: &str| {
+        ConnectorRef::new(ConnectorId::parse(id).expect("the simulated connectors' ids are valid"))
+    };
+    let source = registry
+        .source(&reference(source), &config)
         .await
-        .expect("the simulated source connects");
-    let destination = destination_factory::<SimDestination>()
-        .connect(config, ConnectContext::new())
+        .expect("the simulated source connects")
+        .connector;
+    let destination = registry
+        .destination(&reference(SimDestination::ID), &config)
         .await
-        .expect("the simulated destination connects");
-    engine.run(plan.clone(), Arc::from(source), Arc::from(destination))
+        .expect("the simulated destination connects")
+        .connector;
+    (Arc::from(source), Arc::from(destination))
 }
 
 /// How one pipeline's runs of a scenario went.

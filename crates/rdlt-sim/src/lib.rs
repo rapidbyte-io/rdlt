@@ -30,6 +30,7 @@ compile_error!(
 #[global_allocator]
 static HEAP: alloc_tracker::Allocator<std::alloc::System> = alloc_tracker::Allocator::system();
 
+mod canary;
 mod changes;
 mod destination;
 mod env;
@@ -63,4 +64,4 @@ pub use source::{SimCursor, SimSource, SimSourceConfig, schema};
 pub use swarm::Features;
 pub use wal::SimWal;
 pub use workload::{Drift, Level, PHASES, Relaxed, Resolved, Row, SimStream, Workload};
-pub use world::World;
+pub use world::{Told, World};

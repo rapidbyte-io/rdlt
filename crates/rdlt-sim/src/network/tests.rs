@@ -8,6 +8,7 @@ use rdlt_connector::{
 };
 
 use super::{DRAIN, ENGINE, Placing, Side, options, run_networked};
+use crate::canary::Canary;
 use crate::rng::SplitMix64;
 use crate::seed::Seed;
 use crate::world::World;
@@ -18,8 +19,12 @@ fn connectors_on_the_simulated_network_are_placed_there_and_serve_the_engine() {
         let mut rng = SplitMix64::new(7);
         let name = "network-placed";
         let registered = World::register(name, &mut rng);
-        let config = serde_json::json!({ "world": name });
-        let placing = Placing::new(net, &options(&mut rng, rdlt_wire::Limits::default()));
+        let config = Canary::of(name).config();
+        let placing = Placing::new(
+            net,
+            &options(&mut rng, rdlt_wire::Limits::default()),
+            &Canary::of(name),
+        );
         let source = placing.source(&config, false).await.check().await;
         let destination = placing.destination(&config, false).await.check().await;
         drop(registered);
@@ -35,8 +40,12 @@ fn a_disrupted_network_loses_connectors_and_the_healed_one_serves_them_again() {
         let mut rng = SplitMix64::new(7);
         let name = "network-disrupted";
         let registered = World::register(name, &mut rng);
-        let config = serde_json::json!({ "world": name });
-        let placing = Placing::new(net, &options(&mut rng, rdlt_wire::Limits::default()));
+        let config = Canary::of(name).config();
+        let placing = Placing::new(
+            net,
+            &options(&mut rng, rdlt_wire::Limits::default()),
+            &Canary::of(name),
+        );
         let source = placing.source(&config, false).await;
         // The source is checked again and again while the network is disrupted.
         let checks = async {
@@ -66,8 +75,12 @@ fn a_call_the_network_held_lands_before_the_disrupted_work_is_over() {
         let name = "network-held";
         let registered = World::register(name, &mut rng);
         let world = registered.world();
-        let config = serde_json::json!({ "world": name });
-        let placing = Placing::new(net, &options(&mut rng, rdlt_wire::Limits::default()));
+        let config = Canary::of(name).config();
+        let placing = Placing::new(
+            net,
+            &options(&mut rng, rdlt_wire::Limits::default()),
+            &Canary::of(name),
+        );
         let destination = placing.destination(&config, false).await;
         let before = world.store.lock().digest();
         // A session is opened while the network holds what the engine sends, and the work ends,
@@ -95,9 +108,9 @@ fn a_stopped_connector_listens_again_while_a_read_its_host_holds_back_drains() {
         let mut rng = SplitMix64::new(7);
         let name = "network-drained";
         let registered = World::register(name, &mut rng);
-        let config = serde_json::json!({ "world": name });
+        let config = Canary::of(name).config();
         let options = options(&mut rng, rdlt_wire::Limits::default());
-        let placing = Placing::new(Arc::clone(&net), &options);
+        let placing = Placing::new(Arc::clone(&net), &options, &Canary::of(name));
         let source = placing.source(&config, false).await;
         // A read that follows its partition, of whose events the host takes one and no more, as
         // when the engine's budget holds it back: it keeps the stopped source draining for as
@@ -131,10 +144,10 @@ fn a_connector_whose_peer_stalls_is_lost_within_the_heartbeat_s_patience() {
             let mut rng = SplitMix64::new(7);
             let name = "network-stalled";
             let registered = World::register(name, &mut rng);
-            let config = serde_json::json!({ "world": name });
+            let config = Canary::of(name).config();
             let options = options(&mut rng, rdlt_wire::Limits::default());
             let patience = options.heartbeat.saturating_mul(options.missed.get());
-            let placing = Placing::new(net, &options);
+            let placing = Placing::new(net, &options, &Canary::of(name));
             let source = placing.source(&config, true).await;
             let started = tokio::time::Instant::now();
             let checked = tokio::time::timeout(Duration::from_secs(3600), source.check())

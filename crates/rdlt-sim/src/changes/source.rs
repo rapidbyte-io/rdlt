@@ -27,11 +27,13 @@ pub(crate) const CHANGES: u16 = 1;
 /// The partition a stream's changes are read in.
 pub(crate) const CHANGES_PARTITION: &str = "changes";
 
-/// Configuration of [`SimChangeSource`]: the world to serve.
+/// Configuration of [`SimChangeSource`]: the world to serve, and the secrets it was told.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SimChangeSourceConfig {
     /// The world's registered name.
     pub world: String,
+    /// The secrets its host resolved; a hostile host tells none.
+    pub told: Option<crate::world::Told>,
 }
 
 /// Serves every stream of a world's change workload.
@@ -58,6 +60,7 @@ impl SourceConnector for SimChangeSource {
     async fn connect(config: SimChangeSourceConfig, _context: &ConnectContext) -> Result<Self> {
         let world = World::named(&config.world)
             .ok_or_else(|| ConnectorError::config(format!("no world named {}", config.world)))?;
+        world.heard.hear(config.told.as_ref());
         Ok(Self { world })
     }
 
