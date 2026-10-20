@@ -531,7 +531,9 @@ module exactly_once_protocol {
   /// Every variable.
   val vars = (dest, logs, kept, runs, started, faults, landed, fencedLanded)
 
-  /// Once faults stop, the load converges: every row lands once, and no log is left.
+  /// Once faults stop, the load converges: every row lands once, and no log is left. It need not
+  /// stay so to a behavior's end: a later run opens a log, which a fault ending the last run the
+  /// bounds start leaves open, for a run the engine would start next to replay.
   temporal Converges = weakFair(step, vars).implies(eventually(converged))
 }
 
@@ -752,6 +754,28 @@ module exactly_once {
       .then(checkpoint(p(2), "a"))
       .then(log(p(2), Ok))
       .expect(live == Set() and faults == FAULTS - 1 and dest.get("p").cursor.get("a") == 0)
+
+  /// A behavior may end converged no longer: once the load converged, a fault ending the last run
+  /// leaves its log open, and no step is left.
+  run aFaultEndingTheLastRunLeavesItsLogTest =
+    init
+      .then(start("p"))
+      .then(replay(p(1), Ok))
+      .then(rowEach(1))
+      .then(rowOfU(1))
+      .then(close(p(1)))
+      .expect(converged)
+      .then((LOADS - 2).reps(i => start("p").then(replay(p(i + 2), Ok)).then(close(p(i + 2)))))
+      .expect(converged)
+      .then(start("p"))
+      .then(crash(p(LOADS)))
+      .expect(all {
+        not(converged),
+        logs.get(("p", LOADS)).open,
+        dest.get("p").cursor == Map("a" -> 1, "u" -> 2),
+        ExactlyOnce,
+      })
+      .then(step.fail())
 
   /// A source told a position before the log held its commit would stand past every copy of the
   /// rows: the invariant refuses it.
