@@ -227,6 +227,10 @@ A formal layer is added to the layers of its class, never in place of one.
   sharing the destination with a partition of its own is the module `exactly_once_pair`, which
   `just quint` tests and simulates and no checker explores; a test shows that its sessions fence
   none of the first pipeline's. `just quint` simulates 2,000 runs of 60 steps of each module.
+  Within these bounds the decide rule's partial branch decides nothing its whole branch would
+  not: replacing it with the whole replay leaves TLC's 477,460 states as they were, and its
+  filter never drops a seal. The branch guards resets and phase transitions (ADRs 0033, 0034),
+  which the spec leaves out.
 - Traces tie a specification to the code. A spec's header names each trace by name, seed and
   the goal its run reaches; `just quint` writes each from its seed, which reproduces it exactly,
   and fails where it differs from the one `specs/traces/<spec>/` holds, so a trace cannot drift
@@ -270,13 +274,13 @@ A formal layer is added to the layers of its class, never in place of one.
   `just formal-part`, within 15 minutes of its own, from a build cache the crate's parts share;
   the `formal` job, the check the ruleset requires, passes once every part has, or where the
   change needs none, so it always reports.
-- On GitHub's runners `rdlt-wire`'s `flow` part took 276 to 481 seconds over four runs, nearly
-  all of it its credit harness (271 to 450 seconds), and `quint` 16 seconds, each beside a setup
-  of about 25 seconds. `rdlt-engine`'s five harnesses took 838 seconds in one job, against a
+- On GitHub's runners `rdlt-wire`'s `flow` part took 276 to 481 seconds over four runs, nearly all
+  of it its credit harness (271 to 450 seconds), and `quint`, both specs, 181 seconds, each beside a
+  setup of about 25 seconds. `rdlt-engine`'s five harnesses took 838 seconds in one job, against a
   limit of 900: `budget::admits`'s two 228 and 95 seconds, `budget::ledger`'s one 22, and
-  `coordinator::horizon`'s two 28 and 394, beside about 70 seconds of compiling and setup. As
-  parts of their own, `coordinator::horizon`'s takes about 8 minutes, `budget::admits`'s about 7
-  and `budget::ledger`'s about 2.
+  `coordinator::horizon`'s two 28 and 394, beside about 70 seconds of compiling and setup. As parts
+  of their own, `coordinator::horizon`'s takes about 8 minutes, `budget::admits`'s about 7 and
+  `budget::ledger`'s about 2.
 - A part that comes near its limit is split further, by module: its harnesses are divided
   between modules, each with proofs of its own and so a part of its own. Only a harness that
   alone would pass the limit becomes a property test.
@@ -311,6 +315,18 @@ what no bound names.
 - **A spec's traces are committed.** The driver then runs in every test run, on Linux and macOS,
   with no Quint, and every change to the code meets them. Cost: about 2 MB of generated JSON for
   the log's spec, rewritten when the spec changes.
+- **The exactly-once spec is tied to the code by its invariants' names alone.** Checking the
+  simulation's runs against it was tried: a seed's sessions, commits and positions told, written
+  as observations a checker searches the spec for, and ruled out on three of four criteria: of
+  the first 25 seeds within what the spec models, in file-name order, TLC admitted 19 in 7 to
+  163 s and ran out of ten minutes on 6, as Apalache did; no seeded engine bug was caught where
+  the simulation's oracle passes (one that tells sources that read again before the commit was
+  refused only on seeds the oracle fails too, one that replays every commit whole by neither);
+  and the hook was 393 lines against 300. 68 of the first 500 seeds lay within what the spec
+  models. The observer's last form admitted more than its first: replays of held commits,
+  commits that move no source told unseen, and commits with no ends dropped, fenced and failed
+  ones among them. Cost: a design defect the simulation does not meet is found only by the
+  spec's own checks.
 
 ## Consequences
 
