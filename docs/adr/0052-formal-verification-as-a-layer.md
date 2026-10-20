@@ -144,6 +144,22 @@ A formal layer is added to the layers of its class, never in place of one.
   numbers). Their proof does not fit: over lists of up to two numbers it took 627 seconds and
   over lists of up to three 640 seconds, past the 10 minutes a part may take on a laptop to fit
   its job's 15 on GitHub's runners.
+- A log frame's preamble and head are proved (`rdlt-engine/src/wal/frame/proofs.rs`): from any
+  bytes up to 16, a head's length is nothing until its five bytes have arrived, then the
+  little-endian length they announce (under a second), and a chunk is accepted only where the
+  bytes start with this format's own preamble (10 seconds); summing a frame's checksum in two
+  pieces cut anywhere accepts exactly the frames of up to four bytes of payload that reading it
+  whole accepts (185 seconds). A refusal's message is formatted as nothing in these proofs, by
+  stubbing, which `rdlt-engine`'s manifest turns on, as no property reads it. The checksum is a
+  bitwise CRC-32C, proved to give the algorithm's standard check value and to sum in pieces as
+  it does whole (293 seconds), stubbed in for the crate's, whose CPU detection is inline
+  assembly, which Kani does not run. That a frame reads back as framed, and that bytes near it,
+  cut or with a byte changed, read only where they are a frame's framing, is a property test
+  (`a_frame_reads_back_as_framed_and_no_other_bytes_read` in `wal/frame/tests.rs`, payloads of
+  up to 63 bytes). Its proof does not fit: with the reader beside the writer the harness took
+  past 10 GB in 41 to 304 seconds in every form tried, even one byte of payload of a given
+  length, as the writer's and the reader's bitwise checksums must be shown equal; the writer
+  alone verifies in 4 seconds.
 - A commit's horizon is proved (`rdlt-engine/src/coordinator/horizon/proofs.rs`). With up to
   three loads listed, any of them the load itself, and the load's oldest commit among its first
   four, the horizon is the earlier of that oldest commit and another listed load's first, and no
@@ -155,8 +171,6 @@ A formal layer is added to the layers of its class, never in place of one.
   other. That a source is told only cursors a landed commit covers is an order of the async
   coordinator's calls (`coordinator/tests/acks.rs`), and that a log's positions are exactly what
   commits record is a property of maps of JSON-keyed records (`wal/positions/tests.rs`).
-- Kani's further targets: the parse of a log frame's preamble and head. Each is proved, or held
-  by a property test with the reason here.
 
 ### Specifications: Quint over the design
 
