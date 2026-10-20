@@ -1,5 +1,5 @@
-use rdlt_connector::{ConnectorError, ConnectorErrorKind};
-use rdlt_host::{Redactions, SecretKind, SecretReference, SecretResolver as _};
+use rdlt_connector::{ConnectorError, ConnectorErrorKind, ConnectorId};
+use rdlt_host::{ProviderError, Redactions, SecretKind, SecretReference, SecretResolver as _};
 
 use super::{Canary, texts};
 use crate::world::{FORMS, Told, quoting};
@@ -104,6 +104,14 @@ fn every_form_a_connector_quotes_its_secrets_in_is_scrubbed_by_its_host() {
     }
 }
 
+/// An error whose own text is clean and whose cause says `cause`.
+fn caused_by(cause: &str) -> ProviderError {
+    ProviderError::NotFound {
+        id: ConnectorId::parse("sim-source").expect("a valid id"),
+        source: Some(std::io::Error::other(cause.to_owned())),
+    }
+}
+
 #[test]
 fn a_secret_logged_where_an_operator_reads_it_is_a_leak() {
     let canary = Canary::of("oracle-7");
@@ -112,10 +120,16 @@ fn a_secret_logged_where_an_operator_reads_it_is_a_leak() {
     tracing::info!(target: "hyper", "second-line-of-oracle-7");
     tracing::debug!(target: "h2", "rdlt-canary-token-oracle-7 in a frame");
     tracing::warn!(target: "rdlt_host", line = "said ***", "a connector wrote output");
+    let failed = caused_by("a lookup of rdlt-canary-token-oracle-7");
+    tracing::warn!(target: "rdlt_engine", error = &failed as &dyn std::error::Error, "placing failed");
     drop(guard);
     tracing::warn!(target: "rdlt_host", "rdlt-canary-oracle-7, once nothing watches");
     let leaks = logged.leaks();
-    assert_eq!(leaks.len(), 2, "{leaks:#?}");
+    assert_eq!(leaks.len(), 3, "{leaks:#?}");
     assert!(leaks[0].contains("rdlt-canary-oracle-7"), "{leaks:#?}");
     assert!(leaks[1].contains("second-line-of-oracle-7"), "{leaks:#?}");
+    assert!(
+        leaks[2].contains("rdlt-canary-token-oracle-7"),
+        "{leaks:#?}"
+    );
 }
