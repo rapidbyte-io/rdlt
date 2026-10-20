@@ -167,8 +167,9 @@ where
         let mut builder = hyper::server::conn::http2::Builder::new(TokioExecutor::new());
         builder
             .timer(TokioTimer::new())
-            // The date comes from the wall clock, which no host reads and which would make two
-            // runs of one simulated seed write different bytes.
+            // Hosts never read the date, and its text changes each second of the wall clock,
+            // which would make two runs of one simulated seed write header blocks of different
+            // lengths.
             .auto_date_header(false)
             .initial_stream_window_size(transport.stream_window)
             .initial_connection_window_size(transport.connection_window)
