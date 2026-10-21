@@ -933,6 +933,47 @@ async fn a_partition_still_owing_when_a_cursor_waits_for_room_is_asked_again() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_seal_heard_in_a_stop_s_barrier_lets_a_waiting_cursor_make_a_commit_due() {
+    let mut setup = Setup::new(
+        vec![stream(WriteMode::Append, None, 1)],
+        vec![partition("p0", true)],
+    );
+    setup.policy = CommitPolicy::new(None, Some(10), None).unwrap();
+    setup.budget = 1 << 20;
+    let (task, mut harness) = setup.start().await;
+    harness.send(Progress::Started { partition: 0 });
+    harness.send(Progress::Written {
+        partition: 0,
+        rows: 10,
+        bytes: 80,
+    });
+    assert_eq!(raised(&mut harness, "a barrier is raised").await, 1);
+    harness.seal(0, 1, 10, PartitionState::Cursor(cursor(10)), Some(1));
+    until(|| harness.commit_count() == 1).await;
+    // Nothing arrives after that commit but the answer to the stop's barrier.
+    harness.stop.cancel();
+    assert_eq!(raised(&mut harness, "stopping raises a barrier").await, 2);
+    harness.seal(0, 2, 1, PartitionState::Cursor(cursor(11)), Some(2));
+    tokio::time::timeout(Duration::from_secs(60), harness.stop_reads.cancelled())
+        .await
+        .expect("the barrier is answered and the reads stop within a minute");
+    let share = harness.budget.shares().cursors;
+    let held = harness.budget.acquire_cursor(share).await.unwrap();
+    let budget = harness.budget.clone();
+    let waiting = tokio::spawn(async move { budget.acquire_cursor(1).await.map(drop) });
+    until(|| harness.commit_count() == 2).await;
+    assert_eq!(harness.tally.counters().commits.cursors, 1);
+    drop(held);
+    tokio::time::timeout(Duration::from_secs(60), waiting)
+        .await
+        .expect("the waiting cursor is admitted within a minute")
+        .unwrap()
+        .unwrap();
+    harness.end(0, true);
+    ended(task).await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_partition_that_did_not_answer_is_not_asked_again_until_it_writes_more() {
     // p1 seals when asked but never answers; p0 answers every barrier.
     let mut setup = Setup::new(
