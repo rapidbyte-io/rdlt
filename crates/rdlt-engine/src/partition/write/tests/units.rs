@@ -1,89 +1,25 @@
 //! What a partition holds while it waits to build its JSON pushes.
 
-use std::num::NonZeroUsize;
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::Duration;
 
 use bytes::Bytes;
-use rdlt_connector::{
-    Capabilities, ConnectContext, LoadId, OpenContext, PipelineId, destination_factory,
-    source_factory,
-};
-use rdlt_connector_reference::{GeneratorSource, MemoryDestination};
-use serde_json::json;
-use tokio_util::sync::CancellationToken;
 
 use super::super::units::{Beside, built};
 use super::job;
 use crate::budget::{MemoryBudget, Reservation};
 use crate::compute::Pool;
 use crate::config::BatchPolicy;
-use crate::env::{Env, InlineEnv};
+use crate::env::InlineEnv;
 use crate::error::Error;
-use crate::lane::Lanes;
-use crate::partition::{LoadClock, PartitionContext, Slots};
+use crate::partition::PartitionContext;
+use crate::partition::tests::on_pool;
 use crate::shred::{self, ShredLimits};
-use crate::table::{SharedSession, Tables};
-use crate::watch;
 
 /// A partition's context over `budget`, its pool running jobs on the calling thread, its
 /// connectors never called.
 async fn context(budget: MemoryBudget) -> PartitionContext {
     on_pool(budget, Pool::inline()).await
-}
-
-/// A partition's context over `budget` whose jobs run on `pool`, its source never called and its
-/// lanes ended.
-pub(super) async fn on_pool(budget: MemoryBudget, pool: Pool) -> PartitionContext {
-    let env: Arc<dyn Env> = Arc::new(InlineEnv);
-    let source = source_factory::<GeneratorSource>()
-        .connect(json!({ "seed": 1, "streams": [] }), ConnectContext::new())
-        .await
-        .expect("the generator connects");
-    let destination = destination_factory::<MemoryDestination>()
-        .connect(json!({ "store": "units" }), ConnectContext::new())
-        .await
-        .expect("the destination connects");
-    let load_id = LoadId::from_parts(UNIX_EPOCH, 1);
-    let open = OpenContext {
-        pipeline: PipelineId::parse("units").expect("a valid pipeline id"),
-        load_id,
-    };
-    let opened = destination.open(&open).await.expect("the session opens");
-    let tables = Arc::new(Tables::new(SharedSession::new(opened.session)));
-    let writers = crate::config::GrowthLimits::default().writers();
-    let (lanes, _) = Lanes::new(
-        (NonZeroUsize::MIN, writers),
-        &tables,
-        NonZeroUsize::MIN,
-        &budget,
-        (&env, &Arc::default()),
-    );
-    let (progress, _) = tokio::sync::mpsc::unbounded_channel();
-    let (_, barrier) = watch::channel(0);
-    PartitionContext {
-        source: Arc::from(source),
-        lanes,
-        tables,
-        budget,
-        rendering: Arc::new(crate::cost::rendering(&Capabilities::minimal())),
-        progress,
-        latest: Arc::default(),
-        barrier,
-        stop: CancellationToken::new(),
-        cancel: CancellationToken::new(),
-        slots: Slots::new(NonZeroUsize::MIN),
-        segments: Arc::new(AtomicU64::new(1)),
-        buffer: NonZeroUsize::MIN,
-        load_id,
-        clock: Arc::new(LoadClock::new(UNIX_EPOCH)),
-        env: Arc::clone(&env),
-        pool,
-        batch: BatchPolicy::default(),
-        stop_wait: Duration::from_secs(60),
-        wal: None,
-    }
 }
 
 /// Reserves `bytes` of what lowering holds, a request's share at a time.

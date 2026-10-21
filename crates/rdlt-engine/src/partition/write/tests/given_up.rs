@@ -19,10 +19,10 @@ use super::super::super::coalesce::{Flushed, Unit};
 use super::super::super::{OpenSegment, PartitionContext};
 use super::super::{Schemas, queue::queue, write_flushed};
 use super::job;
-use super::units::on_pool;
 use crate::budget::{MemoryBudget, Reservation};
 use crate::compute::{ComputePool, Job, Pool};
 use crate::env::{Env, InlineEnv, Sleep};
+use crate::partition::tests::on_pool;
 use crate::table::{Model, Prepared, testing};
 
 /// Bounds every wait of a check; a request waits on the budget far longer.
