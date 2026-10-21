@@ -19,7 +19,7 @@ pub enum Reach {
     LogLeft,
     /// A run that follows the source was spared a refusal every other run must meet.
     Spared,
-    /// A run followed the source until its deadline.
+    /// A run followed the source for a while.
     Followed,
     /// A run waited for room in the log's share of the budget.
     LogWaited,
