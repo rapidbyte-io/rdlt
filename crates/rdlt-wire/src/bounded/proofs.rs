@@ -10,6 +10,10 @@ use crate::limits::Class;
 const BYTES: usize = 16;
 
 /// Formats nothing: what a refusal says has no bearing on whether a prefix is refused.
+#[expect(
+    dead_code,
+    reason = "Kani's stub attributes name it, which rustc does not count as a use"
+)]
 fn unformatted(_: std::fmt::Arguments<'_>) -> String {
     String::new()
 }
