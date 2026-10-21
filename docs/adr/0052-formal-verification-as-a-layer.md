@@ -20,11 +20,11 @@ or the protocol's design.
 | Class | Caught by |
 |---|---|
 | Cancellation safety: state changed before an `.await` | a harness cancelling at every await point; the simulation's leak oracle |
-| Check-then-act, or state initialised in parts | the simulation's hostile peers; Kani where the state is pure |
+| Check-then-act, or state initialised in parts | the simulation's hostile peers; starts racing on real threads for a process's last group, in the soak; Kani where the state is pure |
 | Resources held but not charged | the simulation's real-memory and bounds oracles; property tests of the budget's ledger |
 | A wait with no deadline | the simulation's hung and stalled faults |
-| Redaction out of order or bypassed | the simulation's secret canary; a property test of `Redactions::scrubbed` |
-| Trust in the file system | regression tests; the simulation, where process placement enters it |
+| Redaction out of order or bypassed | the simulation's secret canary, said by connectors in process, over the network and in played processes; a property test of `Redactions::scrubbed` |
+| Trust in the file system | regression tests; every played placement opens, checks and hashes its binary |
 | Conversion fidelity | the simulation's encodings; differential tests |
 | A contract's documentation, fixtures, or an API's precondition | Kani over the limits a handshake accepts; tests |
 | Arithmetic of credit, budgets, positions and frame lengths | Kani; property tests where a proof does not fit (below) |
@@ -428,6 +428,28 @@ what no bound names.
   and checking its runs against a spec was ruled out for the exactly-once spec. Cost: a design
   defect in re-planning that the engine's tests do not meet is found only by the spec's own
   checks.
+- **Process placement enters the simulation as a played launch.** `rdlt-host`'s `sim` feature gives
+  `Local` a launch whose process a script plays in the host's own process. The host checks the
+  binary, drains and scrubs the output, witnesses the exit, and stops and kills the process as it
+  does a spawned one, through `Process`. The script serves the simulated connector over an in-memory
+  socket. What only the operating system does stays out: descriptors, process groups and their
+  reaper, the registry of groups, which every seed's thread would share, and bubblewrap. Those keep
+  their tests against real processes. A start's check and its listing are a section no
+  single-threaded seed interleaves, so the soak races starts on real threads. Evidence: a played
+  seed replays alike over 64 seeds, and over a sweep of 1 000 once a process's exit and the close of
+  its standard error wake their waiters in the order they waited, where two seeds of the sweep had
+  replayed apart; a played seed takes 206 ms against a networked seed's 432 ms, the mean over 1 000
+  seeds; with a drained line trimmed before it is scrubbed, 37 of the first 200 seeds fail on the
+  canary in the exactly-once sweep and 38 in the change sweep, each a played seed; and 1 000 seeds
+  reach 58 % of `local.rs`, 52 % of `local/provide.rs`, 50 % of `local/binary.rs`, 55 % of
+  `local/grants.rs`, 94 % of `local/process/output.rs`, 76 % of `local/process/played.rs`, 98 % of
+  `kills/landing.rs` and 80 % of `supervise.rs`, `supervise::spawn` among it. Two criteria set
+  before it was built were passed over. The seam adds 312 lines outside tests where 280 were
+  allowed, about 30 of them moved, not new. `kills.rs` is reached in 49 % of its lines and
+  `local/process.rs` in 45 %, short of half: the first's rest is the kill path of a remote
+  placement, which the simulation's network does not wire up, and the second's is the spawn that
+  only the operating system runs. Both stay out of the simulation's coverage (ADR 0019). Cost if
+  wrong: a feature's worth of code beside `Process`, removed with the feature.
 
 ## Consequences
 
