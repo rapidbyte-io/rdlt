@@ -7,6 +7,10 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+# A connector's process played by a script in this process, for the simulation; not a public API.
+sim = []
+
 [dependencies]
 arrow-array.workspace = true
 arrow-schema.workspace = true
