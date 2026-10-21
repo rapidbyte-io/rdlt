@@ -1231,7 +1231,7 @@ async fn a_frame_the_local_store_reads_is_decoded_where_it_lies() {
 }
 
 /// Whether `name` is one plain name a directory may hold: not empty, not `.` or `..`, and
-/// holding no separator.
+/// holding no separator or NUL.
 fn plain(name: &str) -> bool {
     !name.is_empty() && name != "." && name != ".." && !name.contains('/') && !name.contains('\0')
 }
@@ -1239,7 +1239,7 @@ fn plain(name: &str) -> bool {
 /// Two pipeline ids that fold alike or nearly: an id and the same with its case changed, or
 /// its `.` and `_` swapped, or another id.
 fn pipeline_pair() -> impl Strategy<Value = (String, String)> {
-    "[A-Za-z0-9._-]{1,128}".prop_flat_map(|id| {
+    prop_oneof!["[A-Za-z0-9._-]{1,128}", Just("A".repeat(128))].prop_flat_map(|id| {
         let swapped: String = id
             .chars()
             .map(|c| match c {
@@ -1250,6 +1250,7 @@ fn pipeline_pair() -> impl Strategy<Value = (String, String)> {
             .collect();
         let other = prop_oneof![
             Just(id.to_uppercase()),
+            Just("A".repeat(128)),
             Just(id.to_lowercase()),
             Just(swapped),
             "[A-Za-z0-9._-]{1,128}",
@@ -1259,7 +1260,7 @@ fn pipeline_pair() -> impl Strategy<Value = (String, String)> {
 }
 
 /// Names near those a log writes: chunk numbers of every width, staging names with a token of
-/// any case and width, ids with one change, and noise.
+/// any case and width, ids in upper case or in another form, and noise.
 fn near_names() -> impl Strategy<Value = String> {
     prop_oneof![
         (any::<u32>(), 0_usize..12).prop_map(|(number, width)| format!("{number:0width$}.wal")),
@@ -1273,9 +1274,16 @@ fn near_names() -> impl Strategy<Value = String> {
                 format!("{number:08}.{token}.part")
             }
         ),
-        any::<u128>().prop_map(|random| LoadId::from_parts(UNIX_EPOCH, random)
-            .to_string()
-            .to_uppercase()),
+        (any::<u128>(), 0_u8..4).prop_map(|(random, form)| {
+            let load = LoadId::from_parts(UNIX_EPOCH, random).to_string();
+            let simple = load.replace('-', "");
+            match form {
+                0 => load.to_uppercase(),
+                1 => simple,
+                2 => format!("{{{load}}}"),
+                _ => format!("urn:uuid:{load}"),
+            }
+        }),
         "[0-9a-fA-F.+ -]{0,40}(\\.wal|\\.part|\\.opening)?",
     ]
 }
@@ -1289,7 +1297,8 @@ proptest! {
     fn pipelines_keep_directories_of_their_own_that_are_one_plain_name(
         (one, other) in pipeline_pair(),
     ) {
-        let (one_dir, other_dir) = (names::pipeline(&pipeline(&one)), names::pipeline(&pipeline(&other)));
+        let one_dir = names::pipeline(&pipeline(&one));
+        let other_dir = names::pipeline(&pipeline(&other));
         for name in [&one_dir, &other_dir] {
             prop_assert!(plain(name), "{}", name);
             prop_assert!(name.len() <= 207, "{}", name);
@@ -1329,7 +1338,9 @@ proptest! {
                 .strip_suffix(".part")
                 .and_then(|rest| rest.split_once('.'))
                 .expect("a staging name");
-            let written = names::part(number.parse().expect("a number"), u64::from_str_radix(token, 16).expect("a token"));
+            let number = number.parse().expect("a number");
+            let token = u64::from_str_radix(token, 16).expect("a token");
+            let written = names::part(number, token);
             prop_assert_eq!(&near, &written);
         }
     }

@@ -265,16 +265,20 @@ proptest! {
                 ];
                 for key in &written {
                     prop_assert!(key.as_ref().starts_with(&format!("{prefix}/")), "{}", key);
-                    for part in key.parts() {
-                        let part = part.as_ref();
+                    // A part that was `.`, `..` or empty would show as `%2E` or be dropped.
+                    prop_assert!(!key.as_ref().contains('%'), "{}", key);
+                    for part in key.as_ref().split('/') {
                         prop_assert!(!part.is_empty() && part != "." && part != "..", "{}", key);
                     }
                 }
                 let log = keys.log(&pipeline, chunk.load);
-                prop_assert_eq!(name_in(&log, &keys.head(&pipeline, chunk)).and_then(parse_name), Some(Name::Head(number)));
-                prop_assert_eq!(name_in(&log, &keys.body(&pipeline, chunk, token)).and_then(parse_name), Some(Name::Body(number, token)));
+                let head = name_in(&log, &keys.head(&pipeline, chunk)).and_then(parse_name);
+                prop_assert_eq!(head, Some(Name::Head(number)));
+                let body = name_in(&log, &keys.body(&pipeline, chunk, token)).and_then(parse_name);
+                prop_assert_eq!(body, Some(Name::Body(number, token)));
                 let marks = keys.marks(&pipeline);
-                prop_assert_eq!(name_in(&marks, &keys.mark(&pipeline, chunk.load)).and_then(parse_load), Some(chunk.load));
+                let mark = name_in(&marks, &keys.mark(&pipeline, chunk.load)).and_then(parse_load);
+                prop_assert_eq!(mark, Some(chunk.load));
             }
             Err(error) => {
                 prop_assert!(!plain, "{:?} was refused", prefix);
