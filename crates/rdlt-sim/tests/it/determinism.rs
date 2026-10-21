@@ -122,8 +122,8 @@ fn every_seed_replays_alike() {
         );
         let changed = check_changes(seed);
         assert_eq!(
-            check_changes(seed),
-            changed,
+            alike(&check_changes(seed)),
+            alike(&changed),
             "seed {seed}: the change oracle"
         );
         first

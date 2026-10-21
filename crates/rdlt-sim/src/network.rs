@@ -20,7 +20,9 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use rdlt_connector::serve::{Listener, Listening, Log, Served, serve_listener};
-use rdlt_connector::{BoxFuture, Destination, Source, destination_factory, source_factory};
+use rdlt_connector::{
+    BoxFuture, Destination, Source, SourceFactory, destination_factory, source_factory,
+};
 use rdlt_host::{
     ConnectorRef, Deadlines, Identity, Network, Options, Placed, Provider as _, ProviderError,
     Remote, Stream,
@@ -31,6 +33,7 @@ use rdlt_wire::tls::{Accepted, Hosts};
 use tokio::runtime::Handle;
 
 use crate::canary::Canary;
+use crate::changes::SimChangeSource;
 use crate::destination::SimDestination;
 use crate::env::SimEnv;
 use crate::reached::Reached;
@@ -88,6 +91,25 @@ impl Side {
     }
 }
 
+/// Which source the source's host serves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Serving {
+    /// The simulated source of rows, of the exactly-once oracle's worlds.
+    Rows,
+    /// The simulated change source, of the change oracle's worlds.
+    Changes,
+}
+
+impl Serving {
+    /// A factory of the source it names; `network`'s own modules serve and dial by it.
+    fn factory(self) -> Box<dyn SourceFactory> {
+        match self {
+            Self::Rows => source_factory::<SimSource>(),
+            Self::Changes => source_factory::<SimChangeSource>(),
+        }
+    }
+}
+
 /// The network one simulation runs on: its certificates, and its listening connectors.
 pub(crate) struct Net {
     pki: Pki,
@@ -98,6 +120,8 @@ pub(crate) struct Net {
     served: Mutex<Vec<Handle>>,
     /// What the stalled peer's connections share.
     stalls: Arc<Stalls>,
+    /// Which source its source's host serves, and the peer that stalls.
+    serving: Serving,
     /// Whether a hostile host attacks the connectors, which are then watched, and start again now
     /// and then under another version.
     hostile: bool,
@@ -109,7 +133,7 @@ pub(crate) struct Net {
 }
 
 impl Net {
-    fn new(hostile: bool) -> Self {
+    fn new(serving: Serving, hostile: bool) -> Self {
         let pki = Pki::new("ca");
         let server = pki.server(
             "server",
@@ -123,6 +147,7 @@ impl Net {
             connectors: Connectors::default(),
             served: Mutex::default(),
             stalls: Arc::default(),
+            serving,
             hostile,
             watch: Watch::default(),
             reached: Mutex::default(),
@@ -137,14 +162,19 @@ impl Net {
 /// # Panics
 ///
 /// Re-raises any panic from `scenario` after printing the seed that reproduces it.
-pub(crate) fn run_networked<F, Fut, T>(seed: Seed, hostile: bool, scenario: F) -> T
+pub(crate) fn run_networked<F, Fut, T>(
+    seed: Seed,
+    serving: Serving,
+    hostile: bool,
+    scenario: F,
+) -> T
 where
     F: FnOnce(Arc<SimEnv>, Arc<Net>) -> Fut + 'static,
     Fut: Future<Output = T> + 'static,
     T: 'static,
 {
     let mut rng = SplitMix64::new(seed.value() ^ LATENCY);
-    let net = Arc::new(Net::new(hostile));
+    let net = Arc::new(Net::new(serving, hostile));
     let mut sim = turmoil::Builder::new()
         .tick_duration(TICK)
         .simulation_duration(LIMIT)
@@ -291,6 +321,7 @@ fn identity(files: &Files) -> Identity {
 }
 
 /// Places the simulation's connectors on its network: the engine's side of it.
+#[derive(Clone)]
 pub(crate) struct Placing {
     net: Arc<Net>,
     remote: Remote,
@@ -364,7 +395,7 @@ impl Placing {
         config: &serde_json::Value,
         stalled: bool,
     ) -> Arc<dyn Source> {
-        let id = source_factory::<SimSource>().spec().id.clone();
+        let id = self.net.serving.factory().spec().id.clone();
         let reference = reference(host(Side::Source, stalled), id);
         Arc::from(
             placed("source", &self.canary, async || {

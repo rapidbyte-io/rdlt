@@ -1,6 +1,8 @@
 //! The change streams' oracle: runs a change workload through faults, crashes, stops and racing
 //! runs, round after round, and checks each table against the model: a merged table holds each
 //! key as the changes leave it, and a log holds every change exactly once.
+//!
+//! A seed in four runs them on the simulated network, its faulty runs disrupting it.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -9,21 +11,23 @@ use rdlt_connector::{PartitionState, PipelineId, ReadMode, StateEntry, StreamNam
 use rdlt_engine::{DeleteMode, Engine, Env as _, PipelinePlan, StreamPlan, WriteMode};
 use rdlt_testkit::canon::Canon;
 
-use super::Checked;
+use super::FAULTY_RUNS;
 use super::config::{config, growth, waited};
 use super::ledger::Ledger;
 use super::reports::Reported;
 use super::scenario::{Scenario, execute_all, pick};
-use super::{FAULTY_RUNS, settled};
+use super::{Checked, kept_to_the_protocol, settled};
 use crate::canary::Canary;
 use crate::changes::{
     CHANGES_PARTITION, CHANGES_PHASE, ChangeStream, Logged, Merged, Position, ROUNDS, Version,
 };
 use crate::destination::Stored;
 use crate::env::SimEnv;
+use crate::network::{self, Net, Placing, Serving, run_networked};
 use crate::reached::Reach;
 use crate::rng::SplitMix64;
 use crate::seed::{Seed, run};
+use crate::swarm::Features;
 use crate::world::World;
 
 /// What the change oracle mixes into the seed, so its draws differ from the exactly-once
@@ -42,13 +46,21 @@ const HISTORY: u64 = 0x0068_6973_746f_7279;
 /// Panics, naming the seed, when a table differs from the model, a run without faults fails, the
 /// runs do not converge, or a connector saw a broken invariant.
 pub fn check_changes(seed: Seed) -> Checked {
-    run(
-        seed,
-        |env| async move { Box::pin(simulate(seed, env)).await },
-    )
+    // The world's features, drawn as `World::register_changes` draws them.
+    let drawn = Features::draw(&mut SplitMix64::new(seed.value() ^ CHANGES));
+    if drawn.network {
+        // A change world meets no hostile host: the attacks are the exactly-once oracle's.
+        run_networked(seed, Serving::Changes, false, move |env, net| async move {
+            Box::pin(simulate(seed, env, Some(net))).await
+        })
+    } else {
+        run(seed, |env| async move {
+            Box::pin(simulate(seed, env, None)).await
+        })
+    }
 }
 
-async fn simulate(seed: Seed, env: Arc<SimEnv>) -> Checked {
+async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>) -> Checked {
     let clock = Arc::clone(&env);
     let started = clock.instant();
     let mut rng = SplitMix64::new(seed.value() ^ CHANGES);
@@ -65,22 +77,24 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>) -> Checked {
     let features = world.workload.features;
     env.perturb(features.perturb);
     world.keep_logs(&env, seed).await;
-    let engine = Engine::new(
-        config(
-            &mut rng,
-            false,
-            0,
-            |partitions| growth(seed, None, partitions),
-            waited(seed, features.faults),
-        ),
-        env,
+    let config = config(
+        &mut rng,
+        false,
+        0,
+        |partitions| growth(seed, None, partitions),
+        waited(seed, features.faults),
     );
+    let limits = config.limits();
+    let engine = Engine::new(config, env);
+    // Drawn only where the network is, so every other seed draws as it always has.
+    let placing = net.map(|net| Placing::new(net, &network::options(&mut rng, limits), &canary));
     let plan = plan(&world.changes.streams).with_wal(features.wal);
     let mut changing = Changing {
         engine: &engine,
         plan: &plan,
         world: &world,
         name: &name,
+        placing: placing.as_ref(),
         seed,
         ledger: Ledger::default(),
     };
@@ -90,6 +104,7 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>) -> Checked {
     let digest = world.store.lock().digest();
     changing.report().await;
     let mut violations = world.violations();
+    violations.extend(placing.iter().flat_map(Placing::stall_violations));
     drop(logging);
     violations.extend(logged.leaks());
     drop(registered);
@@ -101,7 +116,7 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>) -> Checked {
         simulated: clock.instant() - started,
         features,
         held: None,
-        reached: super::reached(&world, None, &changing.ledger.waits),
+        reached: super::reached(&world, placing.as_ref(), &changing.ledger.waits),
     }
 }
 
@@ -111,6 +126,8 @@ struct Changing<'a> {
     plan: &'a PipelinePlan,
     world: &'a World,
     name: &'a str,
+    /// Where the connectors are placed, when they listen on a simulated network.
+    placing: Option<&'a Placing>,
     seed: Seed,
     ledger: Ledger,
 }
@@ -122,7 +139,7 @@ impl Changing<'_> {
         for round in 0..ROUNDS {
             world.set_phase(round);
             self.converge(round, rng).await;
-            settled(seed, world, None).await;
+            settled(seed, world, self.placing).await;
             for stream in &world.changes.streams {
                 check(world, stream, round, seed);
             }
@@ -138,7 +155,7 @@ impl Changing<'_> {
             plans: vec![self.plan.clone()],
             world,
             name: self.name,
-            placing: None,
+            placing: self.placing,
             stands,
             repeats: |_, _| true,
             refusable: world
@@ -162,17 +179,27 @@ impl Changing<'_> {
             } else {
                 Scenario::Plain
             };
+            // Drawn only where the network is, so every other seed draws as it always has.
+            let network = (faulty && features.faults && self.placing.is_some())
+                .then(|| SplitMix64::new(rng.next_u64()));
             let plans = std::slice::from_ref(self.plan);
-            let executed = execute_all(self.engine, plans, self.name, None, scenario).await;
+            let executing = execute_all(self.engine, plans, self.name, self.placing, scenario);
+            let executed = match (self.placing, network) {
+                (Some(placing), Some(rng)) => placing.disrupting(rng, executing).await,
+                _ => executing.await,
+            };
             self.ledger.ended(round, scenario, &executed);
             let clean = !(faulty && (features.faults || features.disruptions));
-            for executed in &executed {
-                if let (true, Some(failure)) = (clean, executed.failures.first()) {
-                    panic!(
-                        "seed {seed}: round {round}: a run without faults failed with {}",
-                        failure.text
-                    );
-                }
+            let failures: Vec<_> = executed
+                .iter()
+                .flat_map(|executed| executed.failures.iter().cloned())
+                .collect();
+            kept_to_the_protocol(&failures, seed, round);
+            if let (true, Some(failure)) = (clean, failures.first()) {
+                panic!(
+                    "seed {seed}: round {round}: a run without faults failed with {}",
+                    failure.text
+                );
             }
             if executed.iter().all(|executed| executed.succeeded) {
                 if !self.world.holds_logs().await {

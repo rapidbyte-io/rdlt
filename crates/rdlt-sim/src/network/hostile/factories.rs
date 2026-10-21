@@ -10,13 +10,12 @@ use rdlt_connector::{
     BoxFuture, Capabilities, CommitMeta, ConnectContext, ConnectorError, ConnectorErrorKind,
     ConnectorSpec, Destination, DestinationFactory, DestinationSession, DestinationWriter,
     OpenContext, OpenedSession, Receipt, Result, Source, SourceFactory, TableChange, TableRef,
-    destination_factory, source_factory,
+    destination_factory,
 };
 
 use crate::destination::SimDestination;
 use crate::network::{Net, Side};
 use crate::reached::Reach;
-use crate::source::SimSource;
 use crate::world::World;
 
 /// What a hostile host's configuration asks of the connector it configures: its connection's
@@ -166,7 +165,7 @@ impl Net {
         self: &Arc<Self>,
         crashes: u64,
     ) -> Box<dyn SourceFactory> {
-        let inner = source_factory::<SimSource>();
+        let inner = self.serving.factory();
         if !self.hostile {
             return inner;
         }
