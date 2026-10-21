@@ -100,11 +100,12 @@ streams, which need the write-ahead log to know phases, are **M5d4**: the M5 exi
   and dropping another pipeline's table is refused as `table_owned`. `D-OWNED` also refuses a
   generation swap into another pipeline's table, unless it changes nothing.
 - **The simulation's `reset` feature**, drawn apart from the seed's generator: once every phase
-  converged, a stream is reset, from its beginning or with its tables, while a run of every
-  pipeline loads, and the phase converges again on what the model says. Only resets after which
-  the model's rows still hold are drawn: streams the source can read again, whose columns and key
-  do not drift, whose partitions share no keys, never appended to again, and whose tables are
-  dropped only where the read is incremental or replaces them.
+  converged, a stream is reset, from its beginning or with its tables, while a run of every pipeline
+  loads, the network disrupted meanwhile where the seed has it and faults, and the phase converges
+  again on what the model says. Only resets after which the model's rows still hold are drawn:
+  streams the source can read again, whose columns and key do not drift, whose partitions share no
+  keys, never appended to again, and whose tables are dropped only where the read is incremental or
+  replaces them.
 
 ## Consequences
 

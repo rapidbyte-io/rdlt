@@ -23,31 +23,33 @@ the whole engine on a paused clock from a seed, with connectors in the engine's 
   with a paused clock, and steps them together, 1 ms at a time, delivering messages between them.
   The engine's `SimEnv` is tokio's clock, and so are the host's heartbeat and deadlines (ADR
   0018), so the whole engine runs on simulated time unchanged.
-  - A seed places its connectors on the network one time in four (the swarm feature `network`).
-    The source and the destination then listen on hosts of their own over mutual TLS, with a CA
-    made for each run, and every run places them through `Remote`. Its keys come from the
-    operating system, so the TLS bytes differ between runs of a seed; what the connectors and the
-    engine do does not. A served response carries no `Date` header: hyper takes it from the wall
-    clock and its text changes every second, so two runs of a seed would encode HTTP/2 header
-    blocks of different lengths, cut the connectors' writes differently and have their peers read
-    at other times.
+  - A seed of either oracle places its connectors on the network one time in four (the swarm feature
+    `network`). The source and the destination then listen on hosts of their own over mutual TLS,
+    with a CA made for each run, and every run places them through `Remote`. A change world's source
+    host, and the peer that stalls, serve the simulated change source; a change world meets no
+    hostile host. Its keys come from the operating system, so the TLS bytes differ between runs of a
+    seed; what the connectors and the engine do does not. A served response carries no `Date`
+    header: hyper takes it from the wall clock and its text changes every second, so two runs of a
+    seed would encode HTTP/2 header blocks of different lengths, cut the connectors' writes
+    differently and have their peers read at other times.
   - One read of the wall clock is left, in h2: it remembers a stream it reset for a second of wall
     time, and ten of them at most, and answers a frame that arrives late for a stream it forgot
     with a reset of its own, where it drops one for a stream it remembers. How many it remembers
     depends on how fast the run goes, so two runs of a seed can end a few milliseconds apart in
     simulated time, more often on a loaded machine. The replay check leaves the end time out of
-    a networked seed's comparison and holds the rest to equal. hyper's server has no setting for these
-    limits, and tonic's client does not set them.
+    a networked seed's comparison and holds the rest to equal. hyper's server has no setting for
+    these limits, and tonic's client does not set them.
   - The feature is drawn apart from the others, so a seed's workload is the same over either
     transport, and seeds found before keep their workload.
   - Each seed draws its messages' latency, and the host's heartbeat, patience and connect deadline.
-  - With faults, a fault driver disrupts the network while each faulty run lasts: partitions both
-    ways and one way, messages held and released late, and connectors that crash, dropping their
-    listener and every connection at once, or stop gracefully, then start again. A crash leaves
-    the calls a connector had begun to run to their end: turmoil's own crash of a host, which
-    would end them too, needs the simulation to step turmoil itself. Each fault lasts up to twice the host's
-    patience, so the host notices some and not others. The network heals before the runs that
-    must succeed.
+  - With faults, a fault driver disrupts the network while each faulty run of a phase lasts, each
+    run that follows a streaming source, and each reset with the runs it races: partitions both ways
+    and one way, messages held and released late, and connectors that crash, dropping their listener
+    and every connection at once, or stop gracefully, then start again. A crash leaves the calls a
+    connector had begun to run to their end: turmoil's own crash of a host, which would end them
+    too, needs the simulation to step turmoil itself. Each fault lasts up to twice the host's
+    patience, so the host notices some and not others. The network heals before the runs that must
+    succeed.
   - With faults, one placement in twenty goes to a peer that stalls, on a host of its own the
     fault driver never disrupts. It serves both connectors through `serve_connection`, behind a
     transport that drops every frame answering a call after the configuration, and passes pings

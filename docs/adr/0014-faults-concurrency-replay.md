@@ -41,6 +41,11 @@ The owner chose to keep all of this in one milestone.
     nothing to send. The stress run on the real clock draws no hang.
   - A run with neither faults nor disruptions may fail only with a refusal the model predicts, so
     a failure only faults explain is a finding once they are off.
+  - Each phase draws, apart from the seed's generator, how many of its first runs have faults
+    injected: four to sixteen. Runs past the fourth draw their disruptions from a generator of
+    their own, so a seed's generator draws alike whatever the count.
+  - A crash, stop or racing run lands within the length of the last run that succeeded, or a
+    following run's deadline; within two seconds before any run has succeeded.
 - **Nothing a run began outlives it.** The simulated connectors count the sessions, writers and
   reads they hold. Once a phase's runs and the engine's tasks have ended, every count must fall
   to zero, and, over the network, every connector's host must run no task, within the longest a
@@ -79,11 +84,19 @@ The owner chose to keep all of this in one milestone.
   - A failure names its seed but does not replay exactly.
   - `just stress` runs it; the nightly workflow runs 200 seeds, as many at once as the runner's
     cores hold, eight cores to a seed. The contention between them is intended.
-- **Same-seed replay.** `check_exactly_once` returns a digest of everything the destination holds
-  at the end: its tables' columns and rows, each pipeline's state, and the receipts. A test runs
-  twenty fixed seeds twice each, one run after the other, and requires the same digests. It runs
-  in the test job alone, not in the simulation's shards; a mismatch replays with
-  `just test -E 'test(the_same_seed_leaves_the_destination_alike)'`.
+- **Same-seed replay.** `check_exactly_once` and `check_changes` return a digest of everything the
+  destination holds at the end (its tables' columns and rows, each pipeline's state, and the
+  receipts), a trace (every run's report and failure, in the order the runs ended, hashed), and
+  the simulated time they took. A test runs each seed of both twice, one run after the other, and
+  requires the same digests, traces, waits and simulated time (a networked seed's end time apart,
+  ADR 0019). The test job runs twenty seeds, and the nightly workflow a thousand through
+  `just sim-replay`; a mismatch replays with `just sim-replay <seed>`.
+- **Kept seeds name their path.** A seed kept because it found a defect names the path its defect
+  was on, one of the paths the simulation records as its runs reach them (a connector the network
+  stopped, a crash, a replay of a log left behind, a reset refused, a hostile host's attack and
+  the rest), and its test fails where the seed no longer reaches it. The simulation grows around
+  its seeds; a seed that no longer reaches its path is replaced by one that does and fails with
+  the defect's fix undone.
 - **Cancellation at every wait, beside the simulation.** A seed drops a call only where its faults
   and timing happen to. So each object a caller may call again after dropping a call to it is
   also tested by `rdlt_testkit::cancel::at_every_point`: the partition sink and the emitter, the
@@ -138,7 +151,7 @@ The owner chose to keep all of this in one milestone.
     only samples some. ADR 0004 defers the budget's to M9, and the others belong with it.
   - Turmoil simulates networks, and belongs to the milestone that runs connectors over the
     network (M4).
-- The simulation reaches least of JSON shredding's rarer paths, temporal text, plan validation,
-  state records other than cursors, and change streams, which the engine does not load yet.
+- The simulation reaches least of JSON shredding's rarer paths, temporal text, plan validation
+  and state records other than cursors.
 - The nightly workflow runs the stress seeds and the coverage run beside the shards;
   [docs/perf/sim.md](../perf/sim.md) records how long each takes.

@@ -116,9 +116,9 @@ partition inside a run; the second is an operator's command between runs. So the
   - It is certified, `S-ACK` included, replayable or not.
 - **The simulation's `streaming` feature**, drawn apart from the seed's generator:
   - The incremental streams follow, and every other one's partitions never end.
-  - Each phase begins with runs `until: For(d)`, disrupted and faulted as the seed says, while a
-    production future joined with them makes rows arrive. The source serves what has arrived, and
-    a following read waits on the world's notification, or a stop.
+  - Each phase begins with runs `until: For(d)`, disrupted and faulted as the seed says, the network
+    included, while a production future joined with them makes rows arrive. The source serves what
+    has arrived, and a following read waits on the world's notification, or a stop.
   - The source serves only whole checkpoint groups (whole batches where the stream checkpoints
     on demand) until every row has arrived. Every read then sends the batches and checkpoints the
     model infers types and discards by. Seed 4516 found reads that cut batches wherever rows had

@@ -108,13 +108,13 @@ data is replayed from the source.
   §9.3's column-wise merging of partial updates is left to the destination, which has the stored
   row. A batch holding a truncate is not compacted.
 - **The reference CDC source** is `io.rapidbyte.changes` (`ChangesSource`). It reads a snapshot in
-  partitions, taken after its first `captured` changes and carrying that position, then a
-  `changes` partition starting after it. The simulation's
-  `io.rapidbyte.sim.changes` serves a seeded workload of inserts, updates, partial updates,
-  deletes and truncates over two rounds, through faults, crashes, stops and racing runs. It
-  captures its snapshot partway through the changes, as §9.4 says a CDC source does. Snapshot
-  rows carry the captured position, so a change read again from before it lands twice in a log.
-  `check_changes` compares each merged table and each log with a model of the workload.
+  partitions, taken after its first `captured` changes and carrying that position, then a `changes`
+  partition starting after it. The simulation's `io.rapidbyte.sim.changes` serves a seeded workload
+  of inserts, updates, partial updates, deletes and truncates over two rounds, through faults,
+  crashes, stops and racing runs, on the simulated network one seed in four (ADR 0019). It captures
+  its snapshot partway through the changes, as §9.4 says a CDC source does. Snapshot rows carry the
+  captured position, so a change read again from before it lands twice in a log. `check_changes`
+  compares each merged table and each log with a model of the workload.
 
 ## Consequences
 
