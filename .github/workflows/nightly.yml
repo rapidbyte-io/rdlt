@@ -135,9 +135,9 @@ jobs:
           if-no-files-found: warn
           overwrite: true
 
-  # A million seeds, in fifty shards of 20 000 that run as runners free up, each shard's seeds side
-  # by side on its runner's four cores: a runner checks 8 to 15 seeds a second, so a shard takes
-  # 25 to 55 minutes.
+  # A million seeds, in eighty shards of 12 500 that run as runners free up, each shard's seeds
+  # side by side on its runner's four cores: a runner checks 6 to 12 seeds a second, so a shard
+  # takes 20 to 45 minutes.
   sim:
     needs: sim-archive
     runs-on: ubuntu-24.04
@@ -147,7 +147,8 @@ jobs:
       matrix:
         shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
           23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44,
-          45, 46, 47, 48, 49]
+          45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66,
+          67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -164,7 +165,7 @@ jobs:
         with:
           name: sim-archive
           path: target
-      - run: just --no-deps sim "" 20000 "$(( ${{ matrix.shard }} * 20000 ))"
+      - run: just --no-deps sim "" 12500 "$(( ${{ matrix.shard }} * 12500 ))"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
