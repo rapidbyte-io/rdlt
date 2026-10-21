@@ -25,6 +25,7 @@ use super::grants::Lease;
 use crate::provider::Digest;
 use crate::secrets::Redactions;
 use output::{Draining, Stream, Tail, drain, logging};
+use tokio::io::AsyncRead;
 use tokio::process::{ChildStderr, ChildStdout};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
@@ -337,11 +338,26 @@ fn drained(
     redactions: &Redactions,
     steps: &Steps,
 ) -> std::io::Result<(Arc<Tail>, watch::Receiver<bool>)> {
-    let pid = started.id;
-    let tail = Arc::new(Tail::default());
-    let (closed, stderr_closed) = watch::channel(false);
     let stdout = started.stdout.take().map(steps.stdout).transpose()?;
     let stderr = started.stderr.take().map(steps.stderr).transpose()?;
+    Ok(draining(stdout, stderr, started.id, connector, redactions))
+}
+
+/// Drains `stdout` and `stderr`, what process `pid` of `connector` writes, into `tracing`,
+/// scrubbed of `redactions`: the tail of its standard error, and what tells when that has closed.
+fn draining<O, E>(
+    stdout: Option<O>,
+    stderr: Option<E>,
+    pid: u32,
+    connector: &ConnectorId,
+    redactions: &Redactions,
+) -> (Arc<Tail>, watch::Receiver<bool>)
+where
+    O: AsyncRead + Unpin + Send + 'static,
+    E: AsyncRead + Unpin + Send + 'static,
+{
+    let tail = Arc::new(Tail::default());
+    let (closed, stderr_closed) = watch::channel(false);
     if let Some(stdout) = stdout {
         let draining = Draining {
             kept: None,
@@ -358,5 +374,5 @@ fn drained(
         };
         tokio::spawn(drain(stderr, draining));
     }
-    Ok((tail, stderr_closed))
+    (tail, stderr_closed)
 }

@@ -67,17 +67,10 @@ pub(crate) fn arguments(launch: &Launch) -> Vec<OsString> {
     std::iter::once(socket).chain(state).collect()
 }
 
-/// The command that starts `launch`'s binary serving `socket` at file descriptor 3, with the
-/// environment `launch` keeps and glibc's malloc tunables, in a process group of its own,
-/// inheriting no other descriptor of this process; and how the connector is asked to stop.
-///
-/// A sandboxed connector is spawned only where `marks_at_once` says the kernel marks every
-/// other descriptor close-on-exec in one call.
-pub(crate) fn command(
-    launch: &Launch,
-    socket: OwnedFd,
-    marks_at_once: fn() -> bool,
-) -> Result<Commanded, Unspawned> {
+/// Refuses to start `launch`'s binary where its bytes changed since it was placed, or where a
+/// program its placement runs has a name it was held as not having; how many names lead to the
+/// binary now.
+pub(crate) fn checked(launch: &Launch) -> Result<u64, Unspawned> {
     if let Some(expected) = launch.digest {
         let found = launch.binary.digest()?;
         if found != expected {
@@ -92,6 +85,21 @@ pub(crate) fn command(
         // held now writes.
         return Err(SandboxError::Exposed { path }.into());
     }
+    Ok(names)
+}
+
+/// The command that starts `launch`'s binary serving `socket` at file descriptor 3, with the
+/// environment `launch` keeps and glibc's malloc tunables, in a process group of its own,
+/// inheriting no other descriptor of this process; and how the connector is asked to stop.
+///
+/// A sandboxed connector is spawned only where `marks_at_once` says the kernel marks every
+/// other descriptor close-on-exec in one call.
+pub(crate) fn command(
+    launch: &Launch,
+    socket: OwnedFd,
+    marks_at_once: fn() -> bool,
+) -> Result<Commanded, Unspawned> {
+    let names = checked(launch)?;
     let args = arguments(launch);
     let kept = |name: &String| Some((OsString::from(name), std::env::var_os(name)?));
     let mut env: Vec<(OsString, OsString)> =
