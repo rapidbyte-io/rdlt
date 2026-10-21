@@ -44,7 +44,7 @@ pub(super) struct Script {
 struct Control {
     stalled: Mutex<bool>,
     /// Wakes the relay once the stall ends.
-    unstalled: Notify,
+    resumed: Notify,
     /// Ends the process as a connector that exits by itself does.
     ends: Notify,
 }
@@ -53,20 +53,20 @@ impl Control {
     fn stall(&self, stalled: bool) {
         *self.stalled.lock() = stalled;
         if !stalled {
-            self.unstalled.notify_waiters();
+            self.resumed.notify_waiters();
         }
     }
 
     /// Resolves once the process is not stalled.
     async fn going(&self) {
         loop {
-            let unstalled = self.unstalled.notified();
-            tokio::pin!(unstalled);
-            unstalled.as_mut().enable();
+            let resumed = self.resumed.notified();
+            tokio::pin!(resumed);
+            resumed.as_mut().enable();
             if !*self.stalled.lock() {
                 return;
             }
-            unstalled.await;
+            resumed.await;
         }
     }
 }
