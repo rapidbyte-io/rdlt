@@ -31,13 +31,13 @@ the reference rate every night against the floor below.
 | Both sweeps together, seeds 0-999 | 64.0 s, 1.27 times the parent's 50.4 s |
 | Replay of both oracles, 1 000 seeds, four P-cores | 134.3 s (7.4 seeds/s), `just sim-replay` |
 | Replay tests of the test job, dev profile | 83.3 s and 93.8 s, against 54.4 s |
-| Pull request shards | 40 of 2 500 seeds, about 9.2 min of 15 each, estimated (`d28d458f`'s 25 of 4 000 took up to 11.6 min); no more than about 8 of a run's jobs started together, so the job's wall time is the shards' total over the runners that are free, about 25 min, estimated |
-| Exactly-once sweep, a pull request's shard, ubuntu-24.04 | about 6.5 seeds/s median, estimated (`d28d458f`'s 25 shards: 7.7 median, 7.3-14.6) |
+| Pull request shards | 40 of 2 500 seeds, 4.8-8.8 min of 15 each on CI (`d28d458f`'s 25 of 4 000 took up to 11.6 min); no more than about 8 of a run's jobs start together, so the shards took 21 min from the first start to the last end |
+| Exactly-once sweep, a pull request's shard, ubuntu-24.04 | 7.2 seeds/s median, 6.6-12.9 over 40 shards (`d28d458f`'s 25 shards: 7.7 median, 7.3-14.6) |
 | Nightly shards | 80 of 12 500 seeds, about 46 min of 70, estimated (`d28d458f`'s 50 of 20 000 took up to 58.2 min) |
 | Coverage run, CI | about 36 min of 60, estimated from the parent's 28.4 min |
 | Replay job, CI | about 7 min of 30, estimated from the local time |
 | Replay test of the test job, CI | 58-120 s on ubuntu-24.04 (median 80 s), 107-124 s on macos-15, against 54.4 s locally on the parent; the two replay tests need every core |
-| Test job, ubuntu-24.04 | 27-29 min of 45, estimated from the parent's 24.4 min and 3-4.5 min more |
-| Test job, macos-15 | about 32 min of 45, estimated from the parent's 27.3 min and 4.7 min more |
+| Test job, ubuntu-24.04 | 18.2 min of 45 on one run (the parent's took up to 24.4 min) |
+| Test job, macos-15 | 23.7 min of 45 on one run (the parent's took up to 27.3 min, and its replay test 107-124 s) |
 | Archive extraction per shard | 0.1 s |
 | Nightly floor for the reference set | 5 seeds/s, the whole number below half the reference job's rate: 12.0 seeds/s on `d28d458f`, about 10.3 at this branch's local ratio (19.5 / 22.8), estimated |
