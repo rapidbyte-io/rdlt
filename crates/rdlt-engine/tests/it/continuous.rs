@@ -345,9 +345,10 @@ async fn a_following_run_stops_the_partitions_its_source_no_longer_plans() {
         outcome.error
     );
     let counts = exactly_once("retired", "retired", 3).await;
-    // The retired partition stopped within a plan of its retirement; the others read on.
+    // The retired partition stopped within a plan of its retirement, its first rows read; the
+    // others read on.
     assert!(counts[2] < counts[0] && counts[2] < counts[1], "{counts:?}");
-    assert!(counts[2] <= 2 + 4, "{counts:?}");
+    assert!((2..=2 + 4).contains(&counts[2]), "{counts:?}");
 }
 
 /// A source whose every read fails, as one whose broker is down does.
@@ -491,8 +492,9 @@ async fn a_following_run_reads_a_full_stream_to_its_end_and_swaps_it_in() {
     assert_eq!(outcome.report.streams["events"].generations_swapped, 1);
 }
 
-/// How many partitions of `events` the state `store` holds for pipeline `pipeline` records.
-async fn recorded_partitions(store: &str, pipeline: &str) -> usize {
+/// The next offset the state `store` holds for pipeline `pipeline` records for each partition of
+/// `events`.
+async fn recorded(store: &str, pipeline: &str) -> Vec<u64> {
     let context = rdlt_connector::OpenContext {
         pipeline: rdlt_connector::PipelineId::parse(pipeline).expect("a valid pipeline"),
         load_id: rdlt_connector::LoadId::from_parts(std::time::UNIX_EPOCH, 1),
@@ -508,7 +510,17 @@ async fn recorded_partitions(store: &str, pipeline: &str) -> usize {
     state
         .streams
         .get(&events)
-        .map_or(0, |stream| stream.partitions.len())
+        .into_iter()
+        .flat_map(|stream| stream.partitions.values())
+        .map(|partition| match partition {
+            rdlt_connector::PartitionState::Cursor(cursor) => {
+                cursor.decode::<Value>(1).expect("an offset")["next"]
+                    .as_u64()
+                    .expect("a next offset")
+            }
+            rdlt_connector::PartitionState::Done => panic!("a log's partition is never done"),
+        })
+        .collect()
 }
 
 #[tokio::test(start_paused = true)]
@@ -533,8 +545,19 @@ async fn a_partition_a_replan_drops_keeps_its_position_across_runs() {
     // A plan of the run that follows drops the retired partition: its position stays, should a
     // plan name it again.
     run().await;
-    assert_eq!(recorded_partitions("kept", "kept").await, 3);
-    // The next run's plans do not name it either, and it stays.
+    let first = exactly_once("kept", "kept", 3).await;
+    assert!(first[2] >= 2, "{first:?}");
+    assert_eq!(recorded("kept", "kept").await, first);
+    // The next run's plans do not name it either, and it stays; every partition reads on from
+    // where the first run committed it, no row loaded twice.
     run().await;
-    assert_eq!(recorded_partitions("kept", "kept").await, 3);
+    let second = exactly_once("kept", "kept", 3).await;
+    assert_eq!(recorded("kept", "kept").await, second);
+    assert!(
+        first
+            .iter()
+            .zip(&second)
+            .all(|(first, second)| first <= second),
+        "{first:?} {second:?}"
+    );
 }
