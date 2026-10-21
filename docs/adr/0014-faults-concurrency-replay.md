@@ -95,8 +95,9 @@ The owner chose to keep all of this in one milestone.
   was on, one of the paths the simulation records as its runs reach them (a connector the network
   stopped, a crash, a replay of a log left behind, a reset refused, a hostile host's attack and
   the rest), and its test fails where the seed no longer reaches it. The simulation grows around
-  its seeds; a seed that no longer reaches its path is replaced by one that does and fails with
-  the defect's fix undone.
+  its seeds; a seed that no longer reaches its path is replaced by one that does, one that fails
+  with the defect's fix undone where such a seed is found. Where none is, the seed keeps only its
+  path, as its comment says.
 - **Cancellation at every wait, beside the simulation.** A seed drops a call only where its faults
   and timing happen to. So each object a caller may call again after dropping a call to it is
   also tested by `rdlt_testkit::cancel::at_every_point`: the partition sink and the emitter, the
