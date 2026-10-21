@@ -118,8 +118,13 @@ impl Logged {
         self.0.lock().expect("no panic holds it").clone()
     }
 
+    /// Takes what was logged, leaving nothing.
+    pub(crate) fn take(&self) -> String {
+        std::mem::take(&mut *self.0.lock().expect("no panic holds it"))
+    }
+
     /// Waits, for five seconds at most, until what was logged holds `expected`.
-    pub(crate) async fn until(&self, expected: &str) -> String {
+    async fn until(&self, expected: &str) -> String {
         for _ in 0..500 {
             if self.text().contains(expected) {
                 break;
