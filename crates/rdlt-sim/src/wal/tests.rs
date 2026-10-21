@@ -4,7 +4,7 @@ use bytes::Bytes;
 use rdlt_connector::{LoadId, PipelineId};
 use rdlt_engine::{Chunk, WalStore};
 
-use super::SimWal;
+use super::{READS, SimWal};
 use crate::oracle::charged;
 use crate::rng::SplitMix64;
 
@@ -230,4 +230,52 @@ async fn a_disk_s_reads_draw_their_failures_apart_from_its_writes() {
         beside.push(busy.remove(&orders, chunk(0)).await.is_err());
     }
     assert_eq!(alone, beside);
+}
+
+fn hiccuped(error: Option<std::io::Error>) -> bool {
+    error.is_some_and(|error| error.kind() == std::io::ErrorKind::Interrupted)
+}
+
+#[tokio::test]
+async fn a_disk_s_writes_draw_as_their_generator_does_and_every_read_from_another_stream() {
+    let orders = pipeline();
+    let load = chunk(0).load;
+    let wals: [SimWal; 8] = std::array::from_fn(|_| SimWal::default());
+    for (number, wal) in wals.iter().enumerate() {
+        if number != 6 {
+            published(wal, &orders, chunk(0), b"frame").await;
+        }
+        wal.set_faults(Some(SplitMix64::new(7)));
+    }
+    let mut writes = SplitMix64::new(7);
+    let apart = SplitMix64::new(SplitMix64::new(7).next_u64() ^ READS);
+    let mut reads: [SplitMix64; 5] = std::array::from_fn(|_| apart.clone());
+    let mut expected = [const { Vec::new() }; 8];
+    let mut seen = [const { Vec::new() }; 8];
+    for _ in 0..2000 {
+        expected[0].push(writes.chance(10));
+        for (draws, per_mille) in [10, 10, 10, 2, 10].into_iter().enumerate() {
+            expected[draws + 1].push(reads[draws].chance(per_mille));
+        }
+        seen[0].push(wals[0].remove(&orders, chunk(0)).await.is_err());
+        seen[1].push(wals[1].loads(&orders).await.is_err());
+        seen[2].push(wals[2].leftovers(&orders).await.is_err());
+        seen[3].push(wals[3].chunks(&orders, load).await.is_err());
+        seen[4].push(wals[4].read(&orders, chunk(0), 0, 5).await.is_err());
+        seen[5].push(wals[5].remove_staged(&orders, load).await.is_err());
+        seen[6].push(hiccuped(wals[6].open_log(&orders, load).await.err()));
+        seen[7].push(hiccuped(wals[7].stage(&orders, chunk(1)).await.err()));
+    }
+    for writes in [0, 6, 7] {
+        assert_eq!(
+            seen[writes], expected[0],
+            "write {writes} draws as the generator does"
+        );
+    }
+    for (draws, method) in ["loads", "leftovers", "chunks", "read", "remove_staged"]
+        .into_iter()
+        .enumerate()
+    {
+        assert_eq!(seen[draws + 1], expected[draws + 1], "{method} draws apart");
+    }
 }
