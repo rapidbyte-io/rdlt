@@ -3,9 +3,8 @@ use std::time::Duration;
 
 use proptest::prelude::*;
 use tokio::io::AsyncWriteExt as _;
-use tokio::sync::watch;
 
-use super::{Allowance, Draining, Said, Tail, drain, ending};
+use super::{Allowance, Draining, Ended, Said, Tail, drain, ending};
 use crate::limits::{
     LAST_WORDS_BYTES, OUTPUT_BYTES_BURST, OUTPUT_BYTES_PER_SECOND, OUTPUT_LINE_BYTES,
     OUTPUT_LINES_BURST, OUTPUT_LINES_PER_SECOND, TAIL_BYTES,
@@ -40,9 +39,9 @@ impl Drained {
 async fn drained(output: impl tokio::io::AsyncRead + Unpin, redactions: &Redactions) -> Drained {
     let said = Arc::new(Mutex::new(Vec::new()));
     let (tail, saying) = (Arc::new(Tail::default()), Arc::clone(&said));
-    let (closed, is_closed) = watch::channel(false);
+    let closed = Arc::new(Ended::default());
     let draining = Draining {
-        kept: Some((Arc::clone(&tail), closed)),
+        kept: Some((Arc::clone(&tail), Arc::clone(&closed))),
         redactions: redactions.clone(),
         log: move |said| saying.lock().expect("no panic holds it").push(said),
     };
@@ -51,7 +50,7 @@ async fn drained(output: impl tokio::io::AsyncRead + Unpin, redactions: &Redacti
     Drained {
         said,
         tail,
-        closed: *is_closed.borrow(),
+        closed: closed.get().is_some(),
     }
 }
 

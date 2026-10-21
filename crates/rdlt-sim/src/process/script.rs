@@ -14,9 +14,9 @@ use rdlt_connector::{
     SourceFactory, destination_factory,
 };
 use rdlt_host::limits::TAIL_BYTES;
-use rdlt_host::{Played, Playing};
+use rdlt_host::{Ended, Played, Playing};
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, DuplexStream};
-use tokio::sync::{Notify, mpsc, watch};
+use tokio::sync::{Notify, mpsc};
 use tokio::task::AbortHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -146,7 +146,7 @@ impl Script {
         let (served_end, serving_end) = tokio::io::duplex(PIPE);
         let (stdout, stdout_written) = tokio::io::duplex(PIPE);
         let (stderr, stderr_written) = tokio::io::duplex(PIPE);
-        let (exited, exit) = watch::channel(None);
+        let exit = Arc::new(Ended::default());
         let (said, saying) = mpsc::unbounded_channel();
         let source = Saying {
             inner: self.serving.factory(),
@@ -171,7 +171,7 @@ impl Script {
             stdout: stdout_written,
             stderr: stderr_written,
             saying,
-            exited,
+            exited: Arc::clone(&exit),
         }));
         Played {
             id,
@@ -288,7 +288,7 @@ struct Life {
     stdout: DuplexStream,
     stderr: DuplexStream,
     saying: mpsc::UnboundedReceiver<String>,
-    exited: watch::Sender<Option<ExitStatus>>,
+    exited: Arc<Ended<ExitStatus>>,
 }
 
 /// How a played process ended.
@@ -384,5 +384,5 @@ async fn life(life: Life) {
     serving.abort();
     relaying.abort();
     drop((stdout, stderr));
-    exited.send_replace(Some(end.status()));
+    exited.set(end.status());
 }

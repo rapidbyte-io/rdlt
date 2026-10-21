@@ -9,9 +9,9 @@ use std::time::Duration;
 use rdlt_connector::ConnectorId;
 use rdlt_connector::text::{CUT, shown};
 use tokio::io::{AsyncBufReadExt as _, AsyncRead, AsyncReadExt as _, BufReader};
-use tokio::sync::watch;
 use tokio::time::Instant;
 
+use super::Ended;
 use crate::limits::{
     LAST_WORDS_BYTES, OUTPUT_BYTES_BURST, OUTPUT_BYTES_PER_SECOND, OUTPUT_LINE_BYTES,
     OUTPUT_LINES_BURST, OUTPUT_LINES_PER_SECOND, TAIL_BYTES,
@@ -94,7 +94,7 @@ pub(crate) enum Said {
 /// Whose output is drained, and where to.
 pub(crate) struct Draining<F> {
     /// The end of the output, kept, and what tells it has closed.
-    pub(crate) kept: Option<(Arc<Tail>, watch::Sender<bool>)>,
+    pub(crate) kept: Option<(Arc<Tail>, Arc<Ended<()>>)>,
     /// What the connector was given that no log may hold.
     pub(crate) redactions: Redactions,
     /// What takes each thing the log is given.
@@ -151,7 +151,7 @@ pub(crate) async fn drain<F: FnMut(Said)>(
         (draining.log)(Said::Suppressed(suppressed));
     }
     if let Some((_, closed)) = draining.kept {
-        closed.send_replace(true);
+        closed.set(());
     }
 }
 

@@ -22,7 +22,9 @@ use crate::supervise::{Configured, Gate, Spawned, Start, Supervisor};
 use binary::{Binary, Unfit};
 pub use bubblewrap::Bubblewrap;
 use grants::{Chain, Claim, Guarded, Lease, Leases, Opened, Program, Roots};
-pub use process::{Interrupts, LastWords, Lingering, StopsSpawned, Witness, spawned, stop_spawned};
+pub use process::{
+    Ended, Interrupts, LastWords, Lingering, StopsSpawned, Witness, spawned, stop_spawned,
+};
 use process::{Launch, Process};
 #[cfg(feature = "sim")]
 pub use process::{Played, Playing};

@@ -531,7 +531,7 @@ fn a_connector_whose_operator_set_every_malloc_tunable_is_not_given_the_variable
 struct Script {
     socket: tokio::io::DuplexStream,
     says: tokio::io::DuplexStream,
-    exited: tokio::sync::watch::Sender<Option<std::process::ExitStatus>>,
+    exited: Arc<super::Ended<std::process::ExitStatus>>,
     /// What the host was given as the process started.
     given: Arc<std::sync::Mutex<Option<super::Playing>>>,
 }
@@ -542,7 +542,8 @@ fn played_once() -> (super::Play, Script) {
     let (socket, connector) = tokio::io::duplex(1024);
     let (stderr, says) = tokio::io::duplex(1024);
     let (stdout, _quiet) = tokio::io::duplex(1024);
-    let (exited, exit) = tokio::sync::watch::channel(None);
+    let exit = Arc::new(super::Ended::default());
+    let exited = Arc::clone(&exit);
     let played = super::Played {
         id: 7,
         socket: Box::new(socket),
@@ -599,7 +600,7 @@ async fn a_played_connector_is_given_checked_drained_stopped_and_killed_as_a_spa
     script.says.write_all(said).await.expect("it says it");
     drop(script.says);
     let exit = std::process::ExitStatus::from_raw(3 << 8);
-    script.exited.send_replace(Some(exit));
+    script.exited.set(exit);
     let patience = Duration::from_secs(1);
     let words = tokio::time::timeout(Duration::from_secs(5), process.last_words(patience))
         .await

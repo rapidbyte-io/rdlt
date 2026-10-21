@@ -21,9 +21,9 @@ use std::time::{Duration, Instant};
 use rustix::process::{
     Pid, Signal, WaitId, WaitIdOptions, WaitIdStatus, kill_process, kill_process_group, waitid,
 };
-use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
+use super::Ended;
 use crate::local::grants::Lease;
 use crate::local::sandbox::Stops;
 pub use interrupts::Interrupts;
@@ -114,7 +114,7 @@ pub(super) struct Starting {
     pub(super) command: Command,
     pub(super) terms: Terms,
     pub(super) killed: Option<CancellationToken>,
-    pub(super) exit: watch::Sender<Option<ExitStatus>>,
+    pub(super) exit: Arc<Ended<ExitStatus>>,
     /// What its placement holds, released by this connector once it is reaped.
     pub(super) lease: Arc<Lease>,
     /// Its place among the groups this process may own, which its group takes once listed.
@@ -217,7 +217,7 @@ pub(super) struct Owned {
     held: Arc<Held>,
     killed: Option<CancellationToken>,
     /// Told the leader's exit, once it is reaped.
-    exit: watch::Sender<Option<ExitStatus>>,
+    exit: Arc<Ended<ExitStatus>>,
 }
 
 impl Owned {
@@ -227,7 +227,7 @@ impl Owned {
         mut child: Child,
         terms: Terms,
         killed: Option<CancellationToken>,
-        exit: watch::Sender<Option<ExitStatus>>,
+        exit: Arc<Ended<ExitStatus>>,
     ) -> Self {
         let state = State {
             leader: Some(Pid::from_child(&child)),
@@ -284,7 +284,9 @@ impl Owned {
             };
             if due {
                 let status = reap(&mut self.child, group, state);
-                self.exit.send_replace(status);
+                if let Some(status) = status {
+                    self.exit.set(status);
+                }
                 return (status, emptied(group));
             }
             drop(state);

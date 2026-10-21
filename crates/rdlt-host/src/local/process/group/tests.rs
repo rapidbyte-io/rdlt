@@ -1,13 +1,13 @@
 use std::io::{BufRead as _, BufReader};
 use std::os::unix::process::CommandExt as _;
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
 use std::time::Duration;
 
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
-use tokio::sync::watch;
 
-use super::{Leader, Owned, Terms};
+use super::{Ended, Leader, Owned, Terms};
 use crate::local::sandbox::Stops;
 
 /// A group stopped by `SIGTERM`, with `grace` to end.
@@ -43,7 +43,7 @@ fn pid(child: &Child) -> Pid {
 
 /// `child` and its group, owned, with `grace` to end once stopped.
 fn owned(child: Child, grace: Duration) -> Owned {
-    Owned::new(child, signalled(grace), None, watch::channel(None).0)
+    Owned::new(child, signalled(grace), None, Arc::default())
 }
 
 #[test]
@@ -155,11 +155,11 @@ fn a_stop_has_asked_every_member_to_end_before_it_returns() {
 #[test]
 fn a_connectors_exit_is_told_before_its_group_is_asked_whether_it_is_empty() {
     let (child, _member) = leading("exit 3");
-    let (exit, told) = watch::channel(None);
-    let mut owned = Owned::new(child, signalled(Duration::ZERO), None, exit);
+    let told = Arc::new(Ended::default());
+    let mut owned = Owned::new(child, signalled(Duration::ZERO), None, Arc::clone(&told));
     let asked = |_| {
         // Whoever waits to say how the connector ended need not wait for its members.
-        let code = told.borrow().and_then(|status| status.code());
+        let code = told.get().and_then(|status| status.code());
         assert_eq!(code, Some(3));
         false
     };
@@ -203,7 +203,7 @@ fn a_connector_stopped_by_the_end_of_its_input_is_sent_no_signal_until_it_is_kil
         stops: Stops::ByInputEnd,
         grace: Duration::from_secs(1000),
     };
-    let owned = Owned::new(child, terms, None, watch::channel(None).0);
+    let owned = Owned::new(child, terms, None, Arc::default());
     owned.held().stop();
     // The leader ends as its input does, by itself: a signal would have ended it otherwise.
     let exited = nix::sys::wait::WaitStatus::Exited(leader, 7);

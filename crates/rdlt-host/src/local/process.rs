@@ -7,6 +7,7 @@
 //! runtime is dropped is stopped all the same.
 
 mod command;
+mod ended;
 mod group;
 mod output;
 #[cfg(feature = "sim")]
@@ -29,7 +30,6 @@ use crate::secrets::Redactions;
 use output::{Draining, Stream, Tail, drain, logging};
 use tokio::io::AsyncRead;
 use tokio::process::{ChildStderr, ChildStdout};
-use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 use crate::kills::Kills;
@@ -37,6 +37,7 @@ use crate::kills::Kills;
 pub(crate) use command::executed_from;
 use command::{Commanded, command};
 pub(crate) use command::{Confinement, Unspawned, inheriting};
+pub use ended::Ended;
 pub use group::{Interrupts, Lingering, StopsSpawned, spawned, stop_spawned};
 #[cfg(feature = "sim")]
 pub(crate) use played::Play;
@@ -115,9 +116,9 @@ pub(crate) struct Process {
     /// What the kill that kills it cancels, when one may.
     killed: Option<CancellationToken>,
     /// The process's exit, once it has exited and is reaped.
-    exit: watch::Receiver<Option<ExitStatus>>,
+    exit: Arc<Ended<ExitStatus>>,
     /// Whether its standard error has closed.
-    stderr_closed: watch::Receiver<bool>,
+    stderr_closed: Arc<Ended<()>>,
     tail: Arc<Tail>,
     /// What the connector was sent that nothing it says may show.
     redactions: Redactions,
@@ -182,7 +183,7 @@ impl Process {
             stops,
             held,
         } = command(launch, socket, steps.marks_at_once)?;
-        let (exit_sender, exit) = watch::channel(None);
+        let exit = Arc::new(Ended::default());
         let killed = launch.kills.as_ref().map(Kills::next);
         let starting = group::Starting {
             command,
@@ -191,7 +192,7 @@ impl Process {
                 grace: launch.grace,
             },
             killed: killed.clone(),
-            exit: exit_sender,
+            exit: Arc::clone(&exit),
             lease: Arc::clone(&launch.lease),
             slot,
         };
@@ -299,8 +300,8 @@ impl Process {
     /// A witness to how the process ends, which outlives it.
     pub(crate) fn witness(&self) -> Witness {
         Witness {
-            exit: self.exit.clone(),
-            stderr_closed: self.stderr_closed.clone(),
+            exit: Arc::clone(&self.exit),
+            stderr_closed: Arc::clone(&self.stderr_closed),
             tail: Arc::clone(&self.tail),
             redactions: self.redactions.clone(),
         }
@@ -310,8 +311,8 @@ impl Process {
 /// A witness to how a spawned connector ends: its exit, and the last bytes of its standard error.
 #[derive(Clone, Debug)]
 pub struct Witness {
-    exit: watch::Receiver<Option<ExitStatus>>,
-    stderr_closed: watch::Receiver<bool>,
+    exit: Arc<Ended<ExitStatus>>,
+    stderr_closed: Arc<Ended<()>>,
     tail: Arc<Tail>,
     redactions: Redactions,
 }
@@ -320,14 +321,13 @@ impl Witness {
     /// What the connector left on its standard error, and how it exited, once it has: waits
     /// `patience` for it to exit and its standard error to close, as a failed transport suggests.
     pub async fn last_words(&self, patience: Duration) -> LastWords {
-        let (mut closed, mut exit) = (self.stderr_closed.clone(), self.exit.clone());
         let ended = async {
-            closed.wait_for(|closed| *closed).await.ok();
-            exit.wait_for(Option::is_some).await.ok();
+            self.stderr_closed.wait().await;
+            self.exit.wait().await;
         };
         tokio::time::timeout(patience, ended).await.ok();
         LastWords {
-            exit: *self.exit.borrow(),
+            exit: self.exit.get(),
             stderr: self.tail.words(&self.redactions),
         }
     }
@@ -365,7 +365,7 @@ fn drained(
     connector: &ConnectorId,
     redactions: &Redactions,
     steps: &Steps,
-) -> std::io::Result<(Arc<Tail>, watch::Receiver<bool>)> {
+) -> std::io::Result<(Arc<Tail>, Arc<Ended<()>>)> {
     let stdout = started.stdout.take().map(steps.stdout).transpose()?;
     let stderr = started.stderr.take().map(steps.stderr).transpose()?;
     Ok(draining(stdout, stderr, started.id, connector, redactions))
@@ -379,13 +379,13 @@ fn draining<O, E>(
     pid: u32,
     connector: &ConnectorId,
     redactions: &Redactions,
-) -> (Arc<Tail>, watch::Receiver<bool>)
+) -> (Arc<Tail>, Arc<Ended<()>>)
 where
     O: AsyncRead + Unpin + Send + 'static,
     E: AsyncRead + Unpin + Send + 'static,
 {
     let tail = Arc::new(Tail::default());
-    let (closed, stderr_closed) = watch::channel(false);
+    let stderr_closed = Arc::new(Ended::default());
     if let Some(stdout) = stdout {
         let draining = Draining {
             kept: None,
@@ -396,7 +396,7 @@ where
     }
     if let Some(stderr) = stderr {
         let draining = Draining {
-            kept: Some((Arc::clone(&tail), closed)),
+            kept: Some((Arc::clone(&tail), Arc::clone(&stderr_closed))),
             redactions: redactions.clone(),
             log: logging(connector.clone(), pid, Stream::Stderr),
         };
