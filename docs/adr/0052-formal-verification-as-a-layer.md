@@ -352,9 +352,9 @@ A formal layer is added to the layers of its class, never in place of one.
   the `formal` job, the check the ruleset requires, passes once every part has, or where the
   change needs none, so it always reports.
 - On GitHub's runners `rdlt-wire`'s `flow` part took 276 to 481 seconds over four runs, nearly all
-  of it its credit harness (271 to 450 seconds), and `quint`, both specs, 181 seconds, each beside a
-  setup of about 25 seconds. `rdlt-engine`'s five harnesses took 838 seconds in one job, against a
-  limit of 900: `budget::admits`'s two 228 and 95 seconds, `budget::ledger`'s one 22, and
+  of it its credit harness (271 to 450 seconds), and `quint`, all three specs, 241 seconds, each
+  beside a setup of about 25 seconds. `rdlt-engine`'s five harnesses took 838 seconds in one job,
+  against a limit of 900: `budget::admits`'s two 228 and 95 seconds, `budget::ledger`'s one 22, and
   `coordinator::horizon`'s two 28 and 394, beside about 70 seconds of compiling and setup. As parts
   of their own, `coordinator::horizon`'s takes about 8 minutes, `budget::admits`'s about 7 and
   `budget::ledger`'s about 2. `wal::frame`'s three harnesses took 201 seconds in a job of 252,
