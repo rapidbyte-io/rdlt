@@ -284,19 +284,21 @@ A formal layer is added to the layers of its class, never in place of one.
   which TLC checks under weak fairness of every commit. Each invariant has a test that breaks its
   rule. Its header names `tlc`: the model is finite, and TLC checks every state, 1,095,033 of
   them, in about 2 minutes on four workers of a developer's machine, at three partitions, one of
-  two rows and two of one, and two changes or crashes, held to 10 minutes on the nightly runner
-  and half that there; that covers every run Apalache's bounded check could explore. `just quint`
+  two rows and two of one, and two changes or crashes, sized to 10 minutes on the nightly runner
+  and half that there; that covers every run a bounded check could explore. `just quint`
   tests and simulates 2,000 runs of 60 steps at two rows of every partition and three changes or
   crashes. The simulation never adds or retires a partition, so no seed re-plans a changed set and
   no simulation check holds these invariants: the engine's tests
   `a_following_run_starts_the_partitions_its_source_adds`,
   `a_following_run_reads_a_bounded_stream_again_as_it_grows`,
-  `a_partition_a_replan_drops_keeps_its_position_across_runs`,
   `a_run_for_a_while_follows_its_source_and_loads_each_message_once`,
   `a_partition_read_again_takes_its_place_and_a_new_one_a_retired_place` and
-  `replans_naming_new_partitions_take_the_places_of_those_they_dropped` hold
+  `replans_naming_new_partitions_take_the_places_of_those_they_dropped` exercise
   `NoPartitionLostOrDoubled` on the code, and
-  `a_following_run_stops_the_partitions_its_source_no_longer_plans` `RemovedDrains`.
+  `a_following_run_stops_the_partitions_its_source_no_longer_plans` exercises `RemovedDrains`,
+  bounding the retired partition's reads from above only: no test asserts that its sealed rows
+  were committed, and `a_partition_a_replan_drops_keeps_its_position_across_runs` counts the
+  partitions the run recorded and reads no rows.
 - Traces tie a specification to the code. A spec's header names each trace by name, seed and
   the goal its run reaches; `just quint` writes each from its seed, which reproduces it exactly,
   and fails where it differs from the one `specs/traces/<spec>/` holds, so a trace cannot drift
