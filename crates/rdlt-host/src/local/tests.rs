@@ -66,3 +66,49 @@ async fn a_binary_not_hashed_within_the_connect_deadline_is_not_launched() {
     };
     assert_eq!(source.kind(), std::io::ErrorKind::TimedOut, "{source}");
 }
+
+// The real clock: a hash sent to a blocking thread is what it rules out, and a paused clock does
+// not move while a blocking task runs.
+#[cfg(all(target_os = "linux", feature = "sim"))]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_played_placement_hashes_its_binary_where_it_is_placed() {
+    use std::time::Duration;
+
+    use rdlt_connector::ConnectorId;
+
+    use super::Local;
+    use crate::provider::ConnectorRef;
+    use crate::remote::{Deadlines, Options};
+
+    let root = tempfile::tempdir().expect("a temporary directory");
+    let script = root.path().join("rdlt-connector-large");
+    std::fs::write(&script, "#!/bin/sh\nexit 3\n").expect("the script writes");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+        .expect("the script is executable");
+    // Long enough that a hash on a thread of its own outlasts the deadline.
+    let file = std::fs::OpenOptions::new().write(true).open(&script);
+    file.expect("the script opens")
+        .set_len(256 << 20)
+        .expect("the script grows");
+    let options = Options {
+        deadlines: Deadlines {
+            connect: Duration::from_millis(1),
+            ..Deadlines::default()
+        },
+        ..Options::default()
+    };
+    let local = Local::trusting_binaries()
+        .options(options)
+        .played(|_| Err(std::io::Error::other("nothing is played")));
+    let mut reference = ConnectorRef::new(ConnectorId::parse("test.large").expect("a valid id"));
+    reference.path = Some(script.clone());
+    let launch = local
+        .launch(&reference)
+        .await
+        .expect("it is hashed in place");
+    let expected = Binary::at(&script)
+        .expect("it opens")
+        .digest()
+        .expect("it hashes");
+    assert_eq!(launch.digest, Some(expected));
+}
