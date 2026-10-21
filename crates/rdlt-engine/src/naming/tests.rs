@@ -473,3 +473,66 @@ fn state_naming_a_column_as_a_metadata_column_is_refused() {
         );
     }
 }
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(rdlt_testkit::cases(256)))]
+
+    /// Tables named one after another, each against the names given before, as a load's
+    /// registry names them, never share an identifier, each is one the rules admit as a
+    /// table's, and naming them again in the same order gives the same names.
+    #[test]
+    fn tables_named_in_turn_never_share_an_identifier(
+        rules in any_rules(),
+        prefixes in proptest::sample::subsequence(vec!["pragma_", "_", "sqlite_"], 0..3),
+        paths in proptest::collection::vec(
+            proptest::collection::vec("[pP]ragma|[aAbB_ ]{1,6}", 1..3),
+            1..12,
+        ),
+    ) {
+        let mut rules = rules;
+        rules.reserved_table_prefixes = prefixes.iter().map(|prefix| (*prefix).to_owned()).collect();
+        let naming = Naming::new(rules);
+        let named = || {
+            let mut taken = BTreeSet::new();
+            let mut names = Vec::new();
+            for segments in &paths {
+                let path = TablePath::new(segments).unwrap();
+                let name = naming.table(&path, &taken).ok();
+                if let Some(name) = &name {
+                    taken.insert(name.clone());
+                }
+                names.push(name);
+            }
+            names
+        };
+        let names = named();
+        let mut seen = BTreeSet::new();
+        for name in names.iter().flatten() {
+            prop_assert!(seen.insert(name.clone()), "{} is given twice", name);
+            prop_assert!(naming.admits_table(name), "{}", name);
+        }
+        prop_assert_eq!(named(), names);
+    }
+
+    /// Naming that appends a salted hash to every identifier keeps a table's columns apart,
+    /// within the length the rules allow and clear of the metadata columns, under every salt.
+    #[test]
+    fn salted_naming_keeps_columns_apart(
+        rules in any_rules(),
+        keys in any_keys(),
+        salt in any::<u64>(),
+    ) {
+        let naming = Naming::new(rules.clone()).hashing(salt);
+        let mut names = NameMap::default();
+        let all: BTreeSet<ColumnKey> = keys.into_iter().collect();
+        naming.assign_columns(&mut names, &all).unwrap();
+        let mut seen = BTreeSet::new();
+        for (key, name) in names.iter() {
+            prop_assert!(seen.insert(name.to_owned()), "{} is assigned twice", name);
+            prop_assert!(name.len() <= usize::from(rules.max_len.get()), "{}", name);
+            prop_assert!(!naming.is_metadata(name), "{}", name);
+            prop_assert!(all.contains(key));
+        }
+        prop_assert_eq!(names.len(), all.len());
+    }
+}
