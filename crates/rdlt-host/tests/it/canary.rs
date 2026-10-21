@@ -29,12 +29,13 @@ fn secrets() -> BTreeMap<&'static str, &'static str> {
         ("control", "CANARY\twith\u{1b}[2Jcontrols\r\n"),
         ("wide", "CANARY-päss-名-🦀"),
         ("short", "CANARY"),
+        ("trailing", "CANARY-trailing-5c1f \t"),
     ])
 }
 
 /// Resolves `${secret:name}` to the secret of that name.
 #[derive(Debug)]
-struct Vault;
+pub(crate) struct Vault;
 
 impl SecretResolver for Vault {
     fn resolve<'a>(
@@ -64,7 +65,7 @@ fn everywhere() -> serde_json::Value {
 }
 
 /// Every text an error holds: its own and each of its causes', as `Display` and `Debug`.
-fn texts(error: &(dyn std::error::Error + 'static)) -> String {
+pub(crate) fn texts(error: &(dyn std::error::Error + 'static)) -> String {
     let mut texts = format!("{error} {error:?}");
     let mut cause = error.source();
     while let Some(error) = cause {
@@ -76,7 +77,7 @@ fn texts(error: &(dyn std::error::Error + 'static)) -> String {
 
 /// Every field of every event the host logged, as text.
 #[derive(Clone, Default)]
-struct Logged(Arc<Mutex<String>>);
+pub(crate) struct Logged(Arc<Mutex<String>>);
 
 impl tracing::field::Visit for Logged {
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
@@ -113,12 +114,12 @@ impl tracing::Subscriber for Logged {
 }
 
 impl Logged {
-    fn text(&self) -> String {
+    pub(crate) fn text(&self) -> String {
         self.0.lock().expect("no panic holds it").clone()
     }
 
     /// Waits, for five seconds at most, until what was logged holds `expected`.
-    async fn until(&self, expected: &str) -> String {
+    pub(crate) async fn until(&self, expected: &str) -> String {
         for _ in 0..500 {
             if self.text().contains(expected) {
                 break;
@@ -143,7 +144,7 @@ fn logging<T>(test: impl Future<Output = T>) -> (T, Logged) {
 /// Fails unless `text`, which is `what`, holds none of the secrets, and shows that one was
 /// scrubbed where `scrubbed` says some were said.
 #[track_caller]
-fn clean(what: &str, text: &str, scrubbed: bool) {
+pub(crate) fn clean(what: &str, text: &str, scrubbed: bool) {
     assert!(!text.contains(CANARY), "{what} holds a secret: {text}");
     assert!(
         !scrubbed || text.contains("***"),

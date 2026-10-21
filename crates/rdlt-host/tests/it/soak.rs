@@ -1,17 +1,30 @@
-//! Connectors spawned through `Local` as real processes, beyond what a simulated seed runs: starts
-//! racing on real threads for the last of the groups a process may own.
+//! Connectors spawned through `Local` as real processes, beyond what a simulated seed runs: loads
+//! whose source is killed, stalled with `SIGSTOP`, crashing and flooding its output, saying a
+//! secret that ends in whitespace; and starts racing on real threads for the last of the groups a
+//! process may own.
 //!
 //! These run real processes on the real clock, so a failure names its round and does not replay.
 
+use std::convert::Infallible;
+use std::num::NonZeroU32;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
-use rdlt_connector::ConnectorId;
-use rdlt_host::{ConnectorRef, Local, ProviderError, Wire};
+use nix::sys::signal::{Signal, kill};
+use nix::unistd::Pid;
+use rdlt_connector::{ConnectorId, PipelineId, StreamName};
+use rdlt_engine::{
+    CommitPolicy, Engine, EngineConfig, PipelinePlan, RetryPolicy, RunOutcome, RunStatus,
+    StreamPlan,
+};
+use rdlt_host::{ConnectorRef, Kills, Local, Options, Provider as _, ProviderError, Wire};
 use tokio::task::JoinSet;
 
-use crate::process::local;
+use crate::canary::{Logged, Vault, clean, texts};
+use crate::process::{local, published_ids, scripted};
+use crate::support::{memory_destination, system_env};
 
 /// The groups a process may own at once, those still starting among them (ADR 0050).
 const OWNED: usize = 1024;
@@ -107,4 +120,189 @@ fn of_starts_racing_for_the_last_group_of_a_process_one_alone_starts() {
         drop(held);
     });
     assert_eq!(rdlt_host::stop_spawned(ENDING), Ok(()));
+}
+
+/// How long a round's run may take.
+const ROUND: Duration = Duration::from_secs(120);
+
+/// A round's options: a heartbeat every 100 ms, three missed losing a connector, so that a stall
+/// of a few hundred milliseconds loses one and a shorter one does not.
+fn options() -> Options {
+    Options {
+        heartbeat: Duration::from_millis(100),
+        missed: NonZeroU32::new(3).expect("three is not zero"),
+        ..Options::default()
+    }
+}
+
+/// An engine that commits every 500 rows and tries a failed attempt again a hundred times.
+fn engine() -> Engine {
+    let policy = CommitPolicy::new(None, Some(500), None).expect("a row threshold is valid");
+    let retry = RetryPolicy::default()
+        .max_attempts(100)
+        .initial(Duration::from_millis(10));
+    let config = EngineConfig::builder()
+        .commit(policy)
+        .retry(retry)
+        .build()
+        .expect("the engine's configuration is valid");
+    Engine::new(config, Arc::new(system_env()))
+}
+
+/// Draws from a seed a failure names.
+struct Draws(u64);
+
+impl Draws {
+    /// A value in `0..bound`.
+    fn below(&mut self, bound: u64) -> u64 {
+        self.0 = rdlt_testkit::draw::mix(self.0);
+        self.0 % bound
+    }
+}
+
+/// How long the soak loads: `RDLT_SOAK_SECONDS`, or a minute.
+fn soaking() -> Duration {
+    let seconds = std::env::var("RDLT_SOAK_SECONDS").ok();
+    Duration::from_secs(
+        seconds
+            .and_then(|seconds| seconds.parse().ok())
+            .unwrap_or(60),
+    )
+}
+
+/// Kills and stalls the round's connector as `seed` draws, until dropped: a stall is `SIGSTOP`
+/// for up to 600 ms, twice the host's patience, then `SIGCONT`.
+async fn disrupting(seed: u64, kills: &Kills) -> Infallible {
+    let mut draws = Draws(seed);
+    loop {
+        tokio::time::sleep(Duration::from_millis(100 + draws.below(900))).await;
+        match draws.below(3) {
+            0 => kills.kill(),
+            1 => {
+                // A group this process leads and has not reaped: its id is no other process's.
+                let Some(leader) = rdlt_host::spawned().last().copied() else {
+                    continue;
+                };
+                let leader = Pid::from_raw(i32::try_from(leader).expect("a process id"));
+                kill(leader, Signal::SIGSTOP).ok();
+                tokio::time::sleep(Duration::from_millis(draws.below(600))).await;
+                kill(leader, Signal::SIGCONT).ok();
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Waits, for twenty seconds at most, until every connector round `round` spawned has ended.
+async fn ended(round: u64) {
+    for _ in 0..1000 {
+        if rdlt_host::spawned().is_empty() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!(
+        "round {round}: groups {:?} outlived their run",
+        rdlt_host::spawned()
+    );
+}
+
+/// Fails unless round `round` loaded `rows` rows of store `store` once each, and its error, report
+/// and log hold no secret, the log showing that one was scrubbed.
+async fn landed(round: u64, rows: u64, store: &str, outcome: &RunOutcome, logged: &Logged) {
+    let error = outcome
+        .error
+        .as_ref()
+        .map(|error| texts(error))
+        .unwrap_or_default();
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "round {round}: {error}"
+    );
+    let expected: Vec<i64> = (0..i64::try_from(rows).expect("a row count")).collect();
+    assert_eq!(
+        published_ids(store),
+        expected,
+        "round {round}: a row did not land once"
+    );
+    let report = serde_json::to_string(&outcome.report).expect("a report serializes");
+    clean(&format!("round {round}'s error"), &error, false);
+    clean(&format!("round {round}'s report"), &report, false);
+    // The drain logs what the source said as it connected a moment after the run may have ended.
+    clean(
+        &format!("round {round}'s log"),
+        &logged.until("***").await,
+        true,
+    );
+}
+
+/// Round `round`: a scripted source of a drawn number of rows, crashing once where the draws
+/// say, and killed and stalled while the engine loads it into the memory destination.
+async fn loading(round: u64, logged: &Logged) {
+    let mut draws = Draws(round);
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let rows = 2_000 + draws.below(20_000);
+    let mut script = serde_json::json!({
+        "rows": rows,
+        "says": "configured with ${secret:trailing}",
+        "marker": directory.path().join("crashed"),
+    });
+    if draws.below(2) == 0 {
+        script["crash_once_at"] = serde_json::json!(draws.below(rows));
+    }
+    if draws.below(4) == 0 {
+        script["stdout_bytes"] = serde_json::json!(64 * (256 + draws.below(1024)));
+    }
+    let kills = Kills::new();
+    let local = local()
+        .grace(Duration::from_millis(500))
+        .options(options())
+        .kills(&kills)
+        .secrets(Vault);
+    let source = local
+        .source(&scripted(), &script)
+        .await
+        .expect("the source starts")
+        .connector;
+    let store = format!("soak-{round}");
+    let destination = memory_destination(&store, &options()).await;
+    let stream = StreamPlan::new(StreamName::new("rows").expect("a valid stream name"));
+    let plan = PipelinePlan::new(PipelineId::parse("soak").expect("a valid id"), [stream])
+        .expect("a valid plan");
+    let running = engine().run(plan, Arc::from(source), Arc::new(destination));
+    let disrupted = draws.below(u64::MAX);
+    let outcome = tokio::time::timeout(ROUND, async {
+        tokio::select! {
+            biased;
+            // The run wins: the disruptions end with it.
+            outcome = running => outcome,
+            never = disrupting(disrupted, &kills) => match never {},
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("round {round}: the run did not end within {ROUND:?}"));
+    landed(round, rows, &store, &outcome, logged).await;
+    ended(round).await;
+}
+
+// The real clock: the processes are real, and so are their kills and stalls.
+#[test]
+#[ignore = "loads through real connectors for minutes; run it with `just soak`"]
+fn connectors_killed_stalled_and_crashing_load_every_row_once_and_say_no_secret() {
+    let logged = Logged::default();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a runtime");
+    let until = std::time::Instant::now() + soaking();
+    let mut round = 0;
+    tracing::subscriber::with_default(logged.clone(), || {
+        while std::time::Instant::now() < until {
+            runtime.block_on(loading(round, &logged));
+            round += 1;
+        }
+    });
+    assert!(round > 0, "no round ran");
+    assert_eq!(rdlt_host::stop_spawned(Duration::from_secs(20)), Ok(()));
 }

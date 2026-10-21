@@ -353,6 +353,22 @@ async fn a_placed_connector_runs_with_the_providers_options() {
     assert_eq!(error.code(), Some(rdlt_host::DEADLINE_EXCEEDED));
 }
 
+/// The ids of every row the memory destination's store `store` published to `rows`, in order.
+pub(crate) fn published_ids(store: &str) -> Vec<i64> {
+    let mut ids: Vec<i64> = rdlt_connector_reference::published(store, "rows")
+        .iter()
+        .flat_map(|batch| {
+            let ids = batch
+                .column_by_name("id")
+                .and_then(|ids| ids.as_any().downcast_ref::<arrow_array::Int64Array>())
+                .expect("ids are Int64");
+            ids.values().to_vec()
+        })
+        .collect();
+    ids.sort_unstable();
+    ids
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_crashed_connector_is_respawned_and_the_run_loads_every_row_once() {
     let dir = tempfile::tempdir().expect("a temporary directory");
@@ -390,17 +406,7 @@ async fn a_crashed_connector_is_respawned_and_the_run_loads_every_row_once() {
         dir.path().join("crashed").exists(),
         "the connector crashed once"
     );
-    let mut ids: Vec<i64> = rdlt_connector_reference::published("respawned_rows", "rows")
-        .iter()
-        .flat_map(|batch| {
-            let ids = batch
-                .column_by_name("id")
-                .and_then(|ids| ids.as_any().downcast_ref::<arrow_array::Int64Array>())
-                .expect("ids are Int64");
-            ids.values().to_vec()
-        })
-        .collect();
-    ids.sort_unstable();
+    let ids = published_ids("respawned_rows");
     assert_eq!(ids, (0..300).collect::<Vec<_>>());
 }
 
