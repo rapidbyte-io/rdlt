@@ -45,7 +45,7 @@ pub(super) enum Scenario {
 const UNKNOWN_LENGTH: Duration = Duration::from_secs(2);
 
 /// A disruption for a run, drawn from `rng`, landing within `length`, how long the last run that
-/// succeeded took, or within two seconds before one has.
+/// succeeded took, or within `UNKNOWN_LENGTH` before one has.
 pub(super) fn pick(rng: &mut SplitMix64, length: Option<Duration>) -> Scenario {
     let within = u64::try_from(length.unwrap_or(UNKNOWN_LENGTH).as_millis()).unwrap_or(u64::MAX);
     let after = Duration::from_millis(rng.below(within.max(1)));
