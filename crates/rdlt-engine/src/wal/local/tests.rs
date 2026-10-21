@@ -1229,3 +1229,108 @@ async fn a_frame_the_local_store_reads_is_decoded_where_it_lies() {
         }
     }
 }
+
+/// Whether `name` is one plain name a directory may hold: not empty, not `.` or `..`, and
+/// holding no separator.
+fn plain(name: &str) -> bool {
+    !name.is_empty() && name != "." && name != ".." && !name.contains('/') && !name.contains('\0')
+}
+
+/// Two pipeline ids that fold alike or nearly: an id and the same with its case changed, or
+/// its `.` and `_` swapped, or another id.
+fn pipeline_pair() -> impl Strategy<Value = (String, String)> {
+    "[A-Za-z0-9._-]{1,128}".prop_flat_map(|id| {
+        let swapped: String = id
+            .chars()
+            .map(|c| match c {
+                '.' => '_',
+                '_' => '.',
+                c => c,
+            })
+            .collect();
+        let other = prop_oneof![
+            Just(id.to_uppercase()),
+            Just(id.to_lowercase()),
+            Just(swapped),
+            "[A-Za-z0-9._-]{1,128}",
+        ];
+        (Just(id), other)
+    })
+}
+
+/// Names near those a log writes: chunk numbers of every width, staging names with a token of
+/// any case and width, ids with one change, and noise.
+fn near_names() -> impl Strategy<Value = String> {
+    prop_oneof![
+        (any::<u32>(), 0_usize..12).prop_map(|(number, width)| format!("{number:0width$}.wal")),
+        (any::<u32>(), any::<u64>(), 0_usize..20, any::<bool>()).prop_map(
+            |(number, token, width, upper)| {
+                let token = if upper {
+                    format!("{token:0width$X}")
+                } else {
+                    format!("{token:0width$x}")
+                };
+                format!("{number:08}.{token}.part")
+            }
+        ),
+        any::<u128>().prop_map(|random| LoadId::from_parts(UNIX_EPOCH, random)
+            .to_string()
+            .to_uppercase()),
+        "[0-9a-fA-F.+ -]{0,40}(\\.wal|\\.part|\\.opening)?",
+    ]
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(rdlt_testkit::cases(256)))]
+
+    /// A pipeline's directory is one plain name, at most 207 bytes, that no listing passes over
+    /// as a system's, and no other pipeline's folds to it, on a file system that folds case.
+    #[test]
+    fn pipelines_keep_directories_of_their_own_that_are_one_plain_name(
+        (one, other) in pipeline_pair(),
+    ) {
+        let (one_dir, other_dir) = (names::pipeline(&pipeline(&one)), names::pipeline(&pipeline(&other)));
+        for name in [&one_dir, &other_dir] {
+            prop_assert!(plain(name), "{}", name);
+            prop_assert!(name.len() <= 207, "{}", name);
+            prop_assert!(!names::is_made_by_system(name.as_ref()), "{}", name);
+            prop_assert!(name.starts_with("p.") || name.starts_with("x."), "{}", name);
+        }
+        prop_assert_eq!(one_dir.to_lowercase() == other_dir.to_lowercase(), one == other);
+    }
+
+    /// Every name a log writes for a chunk, a staging file, a load or a load being opened is one
+    /// plain name read back as what it names, and a name is read only as it is written.
+    #[test]
+    fn the_names_a_log_writes_are_read_back_only_as_written(
+        number in any::<u64>(),
+        token in any::<u64>(),
+        random in any::<u128>(),
+        near in near_names(),
+    ) {
+        let load = LoadId::from_parts(UNIX_EPOCH, random);
+        prop_assert_eq!(names::parse_chunk(names::chunk(number).as_ref()), Some(number));
+        prop_assert!(names::is_part(names::part(number, token).as_ref()));
+        prop_assert_eq!(names::parse_load(names::load(load).as_ref()), Some(load));
+        prop_assert_eq!(names::parse_opening(names::opening(load).as_ref()), Some(load));
+        for name in [names::chunk(number), names::part(number, token), names::load(load)] {
+            prop_assert!(plain(&name), "{}", name);
+            prop_assert!(!names::is_made_by_system(name.as_ref()), "{}", name);
+        }
+        prop_assert!(names::is_made_by_system(names::opening(load).as_ref()));
+        if let Some(number) = names::parse_chunk(near.as_ref()) {
+            prop_assert_eq!(&near, &names::chunk(number));
+        }
+        if let Some(load) = names::parse_load(near.as_ref()) {
+            prop_assert_eq!(&near, &names::load(load));
+        }
+        if names::is_part(near.as_ref()) {
+            let (number, token) = near
+                .strip_suffix(".part")
+                .and_then(|rest| rest.split_once('.'))
+                .expect("a staging name");
+            let written = names::part(number.parse().expect("a number"), u64::from_str_radix(token, 16).expect("a token"));
+            prop_assert_eq!(&near, &written);
+        }
+    }
+}

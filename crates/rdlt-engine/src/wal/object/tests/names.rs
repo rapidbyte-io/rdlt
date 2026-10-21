@@ -3,15 +3,18 @@
 
 use std::io;
 use std::sync::Arc;
+use std::time::UNIX_EPOCH;
 
 use object_store::{ObjectStoreExt as _, PutPayload};
+use proptest::prelude::*;
+use rdlt_connector::LoadId;
 use rdlt_testkit::objects::{Fault, Op, faultless};
 
 use super::{always, chunk, judged, keys, objects, opened, options, pipeline};
 use crate::env::SystemClock;
-use crate::wal::WalStore;
 use crate::wal::object::ObjectStoreWal;
-use crate::wal::object::keys::{Name, parse_name};
+use crate::wal::object::keys::{Keys, Name, name_in, parse_load, parse_name};
+use crate::wal::{Chunk, WalStore};
 use crate::{ErrorKind, ObjectStoreOptions};
 
 #[tokio::test]
@@ -210,5 +213,73 @@ async fn a_store_refused_a_look_at_its_identity_or_its_making_reports_the_refusa
             (Some("wal_storage_denied".to_owned()), false),
             "{refused:?}"
         );
+    }
+}
+
+/// Prefixes a log may be given: plain segments, text that may hold `.`, `..`, empty segments,
+/// spaces and other characters, and the longest and one byte longer.
+fn prefixes() -> impl Strategy<Value = String> {
+    prop_oneof![
+        "[A-Za-z0-9._-]{1,8}(/[A-Za-z0-9._-]{1,8}){0,3}",
+        "[A-Za-z0-9._/ :ü-]{0,24}",
+        proptest::sample::select(vec!["..", ".", "a/..", "../a", "a/./b", "a//b", "/a", "a/"])
+            .prop_map(str::to_owned),
+        Just("a".repeat(512)),
+        Just("a".repeat(513)),
+    ]
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(rdlt_testkit::cases(256)))]
+
+    /// A prefix is taken exactly when it is one or more segments of `[A-Za-z0-9._-]`, none of
+    /// them empty, `.` or `..`, within 512 bytes; and every key a log writes beneath it lies
+    /// beneath it, holds no empty, `.` or `..` segment, and reads back as what it names.
+    #[test]
+    fn a_prefix_is_taken_exactly_when_it_is_plain_segments_and_keys_beneath_it_read_back(
+        prefix in prefixes(),
+        id in "[A-Za-z0-9._-]{1,16}",
+        number in any::<u64>(),
+        token in any::<u128>(),
+        random in any::<u128>(),
+    ) {
+        let segment = |segment: &str| {
+            !segment.is_empty()
+                && segment != "."
+                && segment != ".."
+                && segment.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        };
+        let plain = !prefix.is_empty() && prefix.len() <= 512 && prefix.split('/').all(segment);
+        match Keys::parse(&prefix) {
+            Ok(keys) => {
+                prop_assert!(plain, "{:?} was taken", prefix);
+                prop_assert_eq!(keys.identity().to_string(), format!("{prefix}/store"));
+                let pipeline = pipeline(&id);
+                let chunk = Chunk { load: LoadId::from_parts(UNIX_EPOCH, random), number };
+                let written = [
+                    keys.identity(),
+                    keys.probe(token),
+                    keys.mark(&pipeline, chunk.load),
+                    keys.head(&pipeline, chunk),
+                    keys.body(&pipeline, chunk, token),
+                ];
+                for key in &written {
+                    prop_assert!(key.as_ref().starts_with(&format!("{prefix}/")), "{}", key);
+                    for part in key.parts() {
+                        let part = part.as_ref();
+                        prop_assert!(!part.is_empty() && part != "." && part != "..", "{}", key);
+                    }
+                }
+                let log = keys.log(&pipeline, chunk.load);
+                prop_assert_eq!(name_in(&log, &keys.head(&pipeline, chunk)).and_then(parse_name), Some(Name::Head(number)));
+                prop_assert_eq!(name_in(&log, &keys.body(&pipeline, chunk, token)).and_then(parse_name), Some(Name::Body(number, token)));
+                let marks = keys.marks(&pipeline);
+                prop_assert_eq!(name_in(&marks, &keys.mark(&pipeline, chunk.load)).and_then(parse_load), Some(chunk.load));
+            }
+            Err(error) => {
+                prop_assert!(!plain, "{:?} was refused", prefix);
+                prop_assert_eq!(error.code(), Some("wal_prefix_invalid"));
+            }
+        }
     }
 }
