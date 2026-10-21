@@ -116,19 +116,19 @@ A formal layer is added to the layers of its class, never in place of one.
   is held once all is let go; waiting requests are admitted in turn only where they fit, with
   abandoned ones given back; and a lent reservation gives back all it held, in any order.
 - A bounded body's length prefix is proved (`rdlt-wire/src/bounded/proofs.rs`), and its property
-  test of the same name stays beside it (`rdlt-wire/src/bounded/tests.rs`): from any bytes up to
-  16 and any wire bound, a prefix is read as nothing until it is whole, then as the length it
-  declares within the bound or a refusal beyond it (120 seconds). A refusal formats the length
-  and the bound into its message, and Kani 0.68 does not finish formatting one number in five
-  minutes, so the proof replaces `std::fmt::format` with a function that formats nothing, by
-  stubbing, which `rdlt-wire`'s manifest turns on: what is read or refused never depends on a
-  message's text. What a body lacks is a property test: its proof, with formatting stubbed out and bounded to
-  6 bytes arrived and 6 waiting unread, which still holds a whole prefix and a byte past it, had
-  not reported when ended at 900 seconds, past the 10 minutes a proof may take, most likely since a
-  first growth of the empty arriving buffer writes up to 63 bytes before its first aligned one.
-  With up to 16 bytes arrived and up to 16 waiting unread, the property test holds that what a body
-  lacks never reaches past its message's end, the length read from what arrived or, before
-  anything has, from what waits unread.
+  test of the same name stays beside it (`rdlt-wire/src/bounded/tests.rs`): from any bytes up to 16
+  and any wire bound, a prefix is read as nothing until it is whole, then as the length it declares
+  within the bound or a refusal beyond it (120 seconds). A refusal formats the length and the bound
+  into its message, and Kani 0.68 does not finish formatting one number in five minutes, so the
+  proof replaces `std::fmt::format` with a function that formats nothing, by stubbing, which
+  `rdlt-wire`'s manifest turns on: what is read or refused never depends on a message's text. What a
+  body lacks is a property test: its proof, with formatting stubbed out and bounded to 6 bytes
+  arrived and 6 waiting unread, which still holds a whole prefix and a byte past it, had not
+  reported when ended at 900 seconds, past the 10 minutes a proof may take, most likely since a
+  first growth of the empty arriving buffer writes up to 63 bytes before its first aligned one. With
+  up to 16 bytes arrived and up to 16 waiting unread, the property test holds that what a body lacks
+  never reaches past its message's end, the length read from what arrived or, before anything has,
+  from what waits unread.
 - A bounded body's growth rule is a property test (`rdlt-wire/src/bounded/tests.rs`): one
   arrival of what a body lacks, onto any arriving buffer the rule admits, holds what arrived and
   keeps the buffer's room at what arrived until the prefix is whole, then within the message's
