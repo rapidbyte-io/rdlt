@@ -3,8 +3,11 @@ use std::collections::BTreeSet;
 use rdlt_connector::{Capabilities, DecimalType, LogicalType, SchemaChanges, TypeKind};
 use rdlt_engine::{Nested, SchemaPolicy};
 
-use super::keys::key_step;
-use super::{Arrival, Outcome, Own, Rules, Step, UNSUPPORTED, orders, outcome};
+use super::keys::{key_outcome, key_step};
+use super::{Arrival, Outcome, Own, Rules, Step, UNSUPPORTED, orders, outcome, predict, prunes};
+use crate::rng::SplitMix64;
+use crate::workload::{PHASES, Relaxed};
+use crate::world::{Registered, World};
 
 /// A destination storing every scalar type natively that widens only `widenings`.
 fn capabilities(widenings: &[(TypeKind, TypeKind)]) -> Capabilities {
@@ -318,4 +321,43 @@ fn an_integer_a_float_would_round_ends_a_column_s_exactness() {
         Step::To(float.clone()),
         "a column of floats takes exact integers"
     );
+}
+
+/// A world of a merge stream that surely meets a key refusal in a phase unless its rows go before
+/// their batch is resolved, which some do: the world, the stream, the phase and the code.
+fn pruned_key() -> (Registered, String, usize, &'static str) {
+    for seed in 0..400 {
+        let registered = World::register(&format!("pruned_key_{seed}"), &mut SplitMix64::new(seed));
+        let capabilities = registered.world().capabilities();
+        for stream in registered
+            .world()
+            .workload
+            .streams
+            .iter()
+            .filter(|s| s.keys > 0)
+        {
+            for phase in 0..PHASES {
+                let key = key_outcome(stream, Relaxed::default(), &capabilities, phase);
+                if let Some(code) = key.code.filter(|_| key.must && prunes(stream, phase)) {
+                    let name = stream.name.clone();
+                    return (registered, name, phase, code);
+                }
+            }
+        }
+    }
+    panic!("no merge stream whose rows go before a key refusal it surely meets");
+}
+
+#[test]
+fn a_key_refusal_is_never_required_of_a_stream_whose_rows_go_before_their_batch_is_resolved() {
+    // A unit whose every row a new array dropped resolves no key type, so it meets no refusal.
+    let (registered, stream, phase, code) = pruned_key();
+    let world = registered.world();
+    let relaxed = vec![Relaxed::default(); world.workload.streams.len()];
+    let prediction = predict(world, &relaxed, phase);
+    assert!(
+        prediction.may.contains(&(stream.clone(), code)),
+        "{prediction:?}"
+    );
+    assert!(!prediction.must.contains(&stream), "{prediction:?}");
 }
