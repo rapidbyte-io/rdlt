@@ -94,12 +94,13 @@ fn a_failing_scenario_panics_with_its_payload() {
 }
 
 /// What a run of a seed checked, but for what its thread held, which work the thread did
-/// earlier changes, and, over the simulated network, for when it ended: h2 times the streams it
-/// reset by the wall clock, which moves the end by a few milliseconds from run to run.
+/// earlier changes, and, where its connectors are on the simulated network or in played
+/// processes, for when it ended: h2 times the streams it reset by the wall clock, which moves the
+/// end by a few milliseconds from run to run.
 fn alike(checked: &rdlt_sim::Checked) -> rdlt_sim::Checked {
     rdlt_sim::Checked {
         held: None,
-        simulated: if checked.features.network {
+        simulated: if checked.features.network || checked.features.process {
             Duration::ZERO
         } else {
             checked.simulated
@@ -152,6 +153,25 @@ fn a_seed_over_a_faulty_network_replays_alike() {
         .chain([33, 148])
         .map(Seed::new);
     for_each_seed("network_replays", networked, Weight::One, |seed| {
+        assert_eq!(
+            alike(&check_exactly_once(seed)),
+            alike(&check_exactly_once(seed)),
+            "seed {seed}"
+        );
+    });
+}
+
+#[test]
+fn a_seed_placed_in_played_processes_replays_alike() {
+    // The first few seeds whose connectors are placed in played processes, with faults on them.
+    let played = (0..)
+        .filter(|seed| {
+            let features = rdlt_sim::Features::draw(&mut rdlt_sim::SplitMix64::new(*seed));
+            features.process && features.faults
+        })
+        .take(8)
+        .map(Seed::new);
+    for_each_seed("process_replays", played, Weight::One, |seed| {
         assert_eq!(
             alike(&check_exactly_once(seed)),
             alike(&check_exactly_once(seed)),
