@@ -458,7 +458,8 @@ admitted, and what a remote connector's calls hold in transport.
   holds among the four network seeds, not hostile, that hold the most the nightly has measured,
   replayed under these faults: 8.9 MB on seed 732369, twice the most of seeds 0 to 99 999. No sweep
   of the nightly's million has measured the network's tail, so the allowance rests on those four
-  seeds and the nightly is what tests it further. In process five quarters of the most, 15.6 MB,
+  seeds and the nightly is what tests it further. Played processes share it without a measure of
+  their own: no sweep has taken their tail either. In process five quarters of the most, 15.6 MB,
   would pass a replay's scan that keeps every commit it reads, its received ones too, which holds
   14.5 MB on seed 241570; the allowance is the next whole mebibyte above a mebibyte more than the
   most seeds 0 to 99 999 hold. A failing seed names its phase; replayed with `RDLT_SIM_TRACE` set,
