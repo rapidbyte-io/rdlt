@@ -51,12 +51,12 @@ A formal layer is added to the layers of its class, never in place of one.
   refuses an aborting build with `#[cfg(all(panic = "abort", not(kani)))] compile_error!(..)`:
   Kani's build runs nothing it compiles, so no caught panic is at stake in it, and every other
   aborting build is still refused. `cargo xtask lint`'s unwinding rule reads `kani` as false.
-- Kani's compiler builds `rdlt-wire` and `rdlt-engine` with their default features, Arrow,
-  tonic, sonic-rs and stacker among them. `rdlt-wire`'s eight harnesses take about six minutes,
-  341 seconds warm, 319 of them `flow`'s credit harness, so verification and not compilation is
-  the time, and at most 0.7 GB for the largest process. `rdlt-engine`'s five
-  harnesses take 493 to 620 seconds warm, nearly all of it verification. A crate's proofs check
-  its own code, in the crate. Kani's output is not clean: its toolchain warns of the
+- Kani's compiler builds `rdlt-wire` and `rdlt-engine` with their default features, Arrow, tonic,
+  sonic-rs and stacker among them. Each module's proofs are a part of their own, which compiles for
+  seconds when warm, so verification and not compilation is the time, as the bullets below give it
+  harness by harness. Warm on a laptop, `rdlt-wire`'s nine harnesses take about 460 seconds, 319 of
+  them `flow`'s credit harness, and `rdlt-engine`'s eleven 1,400 to 1,850 seconds. A crate's proofs
+  check its own code, in the crate. Kani's output is not clean: its toolchain warns of the
   `register_tool` feature it forces and of deprecated methods in the engine, and it drops the
   arguments of an `unreachable!`, which warns of an unused variable; none comes from a proof.
 - A target whose proof alone does not finish within its job's limit at the least bound that
@@ -382,10 +382,10 @@ what no bound names.
 
 - A crate that adds proofs adds `#[cfg(kani)] mod proofs;`. If it catches panics, its guard
   against aborting builds exempts `kani`, as `rdlt-wire`'s does.
-- `just ready` costs Kani's build and proofs of each crate under proof whenever the change
-  touches it: on a laptop, about 340 seconds for `rdlt-wire` and 500 for `rdlt-engine`, warm, so
-  a change that touches the tools, the justfile or the workflow, which runs both, spends about
-  840 seconds proving. The `formal` check waits for its longest part alone.
+- `just ready` costs Kani's build and proofs of each crate under proof whenever the change touches
+  it: on a laptop, about 460 seconds for `rdlt-wire` and 1,400 to 1,850 for `rdlt-engine`, warm, so
+  a change that touches the tools, the justfile or the workflow, which runs both, spends about 1,900
+  to 2,300 seconds proving. The `formal` check waits for its longest part alone.
 - A contributor's `mise install` installs about 1.1 GB more on disk, and the first `just kani`
   fetches a nightly toolchain.
 - Updating Kani is its version and `mise lock`; its nightly comes with its bundle. Updating
