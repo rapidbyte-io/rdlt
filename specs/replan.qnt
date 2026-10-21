@@ -5,8 +5,10 @@
 // an ended partition whose end is not committed waits for a later plan; and every partition the
 // plan names that no read holds starts from where the destination holds it, a bounded one that
 // ended included, so a table is polled. Partitions appear and disappear between plans, and change
-// from bounded to unbounded and back; rows arrive as the run reads; the run may crash, and the
-// next plans from what was committed.
+// from bounded to unbounded and back, a read keeping the kind its partition had when it started; a
+// read of an unbounded partition may end on its own, the rows after its last checkpoint read again
+// by the next; rows arrive as the run reads; the run may crash, and the next plans from what was
+// committed.
 //
 // quint steps: --step simulated --max-steps 60
 // quint run: --max-samples 2000
@@ -23,10 +25,19 @@ module replan {
 
   // ---- State
 
-  /// A read of a partition: the offset its next segment starts at, how far it read and sealed,
-  /// whether a plan stopped it, whether it ended with its end sealed, and whether a commit took its
-  /// end.
-  type Read = { part: str, base: int, read: int, sealed: int, stopped: bool, ended: bool, landed: bool }
+  /// A read of a partition: whether the partition ends where its rows end, as when the read
+  /// started; the offset its next segment starts at; how far it read and sealed; whether a plan
+  /// stopped it; whether it ended; and whether a commit took all it sealed by its end.
+  type Read = {
+    part: str,
+    bounded: bool,
+    base: int,
+    read: int,
+    sealed: int,
+    stopped: bool,
+    ended: bool,
+    landed: bool,
+  }
 
   /// What the source names.
   var named: Set[str]
@@ -51,6 +62,7 @@ module replan {
   /// A read of `part` from where the destination holds it.
   def fresh(part: str): Read = {
     part: part,
+    bounded: bounded.contains(part),
     base: committed.get(part),
     read: committed.get(part),
     sealed: committed.get(part),
@@ -107,10 +119,10 @@ module replan {
     keep,
   }
 
-  /// The read `r` checkpoints where it read: its rows so far are sealed, and a bounded partition
-  /// read to where its rows end ends, its end sealed with them.
+  /// The read `r` checkpoints where it read: its rows so far are sealed, and a read of a bounded
+  /// partition to where its rows end ends, its end sealed with them.
   action checkpoint(r: Read): bool = {
-    val ends = bounded.contains(r.part) and r.read == arrived.get(r.part)
+    val ends = r.bounded and r.read == arrived.get(r.part)
     all {
       reads.contains(r),
       not(r.stopped),
@@ -121,6 +133,19 @@ module replan {
       rows' = rows,
       keep,
     }
+  }
+
+  /// The read `r` of an unbounded partition ends on its own: the rows it read after its last
+  /// checkpoint are left for the next read, which a plan starts once a commit took what it sealed.
+  action pause(r: Read): bool = all {
+    reads.contains(r),
+    not(r.bounded),
+    not(r.stopped),
+    not(r.ended),
+    reads' = reads.exclude(Set(r)).union(Set({ ...r, read: r.sealed, ended: true, landed: r.sealed <= r.base })),
+    committed' = committed,
+    rows' = rows,
+    keep,
   }
 
   /// The run commits every read's sealed segment, the rows from where its last ended to its seal,
@@ -179,7 +204,7 @@ module replan {
     replan,
     commit,
     crash,
-    all { reads != Set(), nondet r = reads.oneOf() any { readRow(r), checkpoint(r) } },
+    all { reads != Set(), nondet r = reads.oneOf() any { readRow(r), checkpoint(r), pause(r) } },
     all {
       PARTS.exists(p => arrived.get(p) < ROWS),
       nondet p = PARTS.filter(x => arrived.get(x) < ROWS).oneOf()
@@ -200,7 +225,7 @@ module replan {
       all { rare <= 2, replan },
       commit,
       all { rare == 1, crash },
-      all { reads != Set(), nondet r = reads.oneOf() any { readRow(r), checkpoint(r) } },
+      all { reads != Set(), nondet r = reads.oneOf() any { readRow(r), checkpoint(r), pause(r) } },
       all {
         PARTS.exists(p => arrived.get(p) < ROWS),
         nondet p = PARTS.filter(x => arrived.get(x) < ROWS).oneOf()
@@ -251,6 +276,9 @@ module replan {
 
   /// The read of `p` checkpoints.
   action checkpointOn(p: str): bool = all { readsOf(p).size() == 1, checkpoint(readsOf(p).fold(fresh(p), (_, r) => r)) }
+
+  /// The read of `p` ends on its own.
+  action pauseOn(p: str): bool = all { readsOf(p).size() == 1, pause(readsOf(p).fold(fresh(p), (_, r) => r)) }
 
   /// A plan that starts every partition it names beside whatever read of it there is, which a
   /// plan never does.
@@ -337,6 +365,46 @@ module replan {
       .then(checkpointOn("p1"))
       .then(commit)
       .expect(rows.get("p1").get(0) == 1 and NoPartitionLostOrDoubled)
+
+  /// A read keeps the kind its partition had when it started: one started bounded ends where its
+  /// rows end though the source now names the partition unbounded, and the next, started
+  /// unbounded, does not.
+  run aReadKeepsTheKindItStartedWithTest =
+    init
+      .then(replan)
+      .then(reshape(Set("p0", "p1"), Set()))
+      .then(readOn("p0"))
+      .then(checkpointOn("p0"))
+      .expect(readsOf("p0").size() == 1 and readsOf("p0").forall(r => r.ended))
+      .then(commit)
+      .then(arrive("p0"))
+      .then(replan)
+      .then(readOn("p0"))
+      .then(checkpointOn("p0"))
+      .expect(readsOf("p0").size() == 1 and readsOf("p0").forall(r => r.base == 1 and r.sealed == 2 and not(r.ended)))
+      .then(commit)
+      .expect(committed.get("p0") == 2 and NoPartitionLostOrDoubled)
+
+  /// A read of an unbounded partition that ends on its own leaves the rows after its checkpoint
+  /// unsealed: plans wait until a commit takes what it sealed, then read it again from there.
+  run aReadThatPausesIsReadAgainFromWhereItWasCommittedTest =
+    init
+      .then(replan)
+      .then(arrive("p1"))
+      .then(readOn("p1"))
+      .then(checkpointOn("p1"))
+      .then(readOn("p1"))
+      .then(pauseOn("p1"))
+      .expect(readsOf("p1").size() == 1 and readsOf("p1").forall(r => r.ended and r.read == 1 and not(r.landed)))
+      .then(replan)
+      .expect(readsOf("p1").size() == 1 and readsOf("p1").forall(r => r.ended))
+      .then(commit)
+      .then(replan)
+      .expect(readsOf("p1").size() == 1 and readsOf("p1").forall(r => r.base == 1 and not(r.ended)))
+      .then(readOn("p1"))
+      .then(checkpointOn("p1"))
+      .then(commit)
+      .expect(committed.get("p1") == 2 and rows.get("p1") == Map(0 -> 1, 1 -> 1) and NoPartitionLostOrDoubled)
 
   /// A plan that started a partition beside its stopped read would read it twice at once: the
   /// invariant refuses it.
