@@ -14,7 +14,8 @@ use super::Shares;
 use crate::limits::{COLUMN_RECORD, READ_SHARE, RECORDED, SCHEMA_KEPT};
 
 /// The limits on what a read sends that a budget of `shares`, read by `readers` reads at once at
-/// most, admits: a connector that keeps to them is refused nothing for the budget's sake.
+/// most, admits: a connector that keeps to them is refused nothing for the budget's sake but
+/// what its pushes become beyond one request.
 ///
 /// Each is what lets the worst case it admits, all at once, fit the share it draws on:
 ///
@@ -37,7 +38,8 @@ use crate::limits::{COLUMN_RECORD, READ_SHARE, RECORDED, SCHEMA_KEPT};
 ///   decoded: a catalog, state and any other control message are at most what the share holds
 ///   of one decoded, as [`Class::decoded_per_byte`] says for each. State is bounded on what it
 ///   holds decoded, so it may take the whole share, and the engine commits no more of it.
-/// - JSON text is admitted for itself and for the batches it becomes.
+/// - JSON text is admitted for itself and for twice itself of the batches it becomes; what they
+///   take beyond that is reserved from a request, and refused beyond one.
 /// - Every read may hold a cursor waiting for a commit and a barrier's answer beside it, and the
 ///   commit a barrier calls is due once waiting cursors take half their share: half the share,
 ///   one cursor more and every read's answer fit it when a cursor is the share over twice one
@@ -46,7 +48,9 @@ use crate::limits::{COLUMN_RECORD, READ_SHARE, RECORDED, SCHEMA_KEPT};
 ///
 /// Rows, values and nesting are not the budget's to bound: a batch is lowered a piece at a time,
 /// whatever it holds. A table whose records take more than its share all the same, as one of
-/// longer names does, is refused at its schema change, before any commit.
+/// longer names does, is refused at its schema change, before any commit; a row its table
+/// widens, or JSON whose batches take more than a request beyond twice its text, when it is
+/// lowered or built.
 pub(crate) fn admitted(shares: Shares, readers: usize) -> Limits {
     let kept = kept(shares, readers);
     let readers = u64::try_from(readers).unwrap_or(u64::MAX).max(1);
