@@ -47,10 +47,22 @@ pub struct SimWal {
     crashes: Arc<Mutex<BTreeMap<PipelineId, u64>>>,
     /// Where stagings, publishes and deletions fail now and then, the draws deciding when.
     faults: Arc<Mutex<Option<SplitMix64>>>,
+    /// Where listings, reads and removals of stagings fail now and then, drawn apart from the
+    /// writes' failures.
+    reads: Mutex<Option<SplitMix64>>,
 }
 
-/// Failures per thousand stagings, publishes or deletions, while faulty.
+/// Failures per thousand stagings, publishes, deletions, listings and removals of stagings, while
+/// faulty.
 const FAULTS: u64 = 10;
+
+/// Failures per thousand reads of a chunk, while faulty: fewer than of other calls, as a replay
+/// reads every frame of a log and must still finish under faults now and then.
+const READ_FAULTS: u64 = 2;
+
+/// What a disk's draws for its listings, reads and removals of stagings mix into those for its
+/// writes: "reads" in ASCII.
+const READS: u64 = 0x0072_6561_6473;
 
 /// A chunk a [`SimWal`] stages: its bytes, until it is published, and the crash it follows.
 struct Staged {
@@ -85,7 +97,7 @@ impl StagedChunk for Staged {
     }
 
     fn publish(self: Box<Self>) -> BoxFuture<'static, io::Result<()>> {
-        let published = fault(&self.faults).and_then(|()| {
+        let published = fault(&self.faults, FAULTS).and_then(|()| {
             let crashed = self.crashes.lock().get(&self.key.0).copied();
             if crashed.unwrap_or(0) != self.crashed {
                 return Err(io::Error::other("the worker that staged the chunk crashed"));
@@ -115,9 +127,12 @@ impl StagedChunk for Staged {
     }
 }
 
-/// A transient failure, where `faults` draws one.
-fn fault(faults: &Mutex<Option<SplitMix64>>) -> io::Result<()> {
-    let failed = faults.lock().as_mut().is_some_and(|rng| rng.chance(FAULTS));
+/// A transient failure, where `faults` draws one, `per_mille` times in a thousand.
+fn fault(faults: &Mutex<Option<SplitMix64>>, per_mille: u64) -> io::Result<()> {
+    let failed = faults
+        .lock()
+        .as_mut()
+        .is_some_and(|rng| rng.chance(per_mille));
     if failed {
         return Err(io::Error::new(
             io::ErrorKind::Interrupted,
@@ -134,9 +149,13 @@ impl SimWal {
         *self.crashes.lock().entry(pipeline.clone()).or_default() += 1;
     }
 
-    /// Makes stagings, publishes and deletions of chunks fail now and then, as `faults` draws, or
-    /// never again.
+    /// Makes stagings, publishes and deletions of chunks fail now and then, as `faults` draws,
+    /// and listings, reads and removals of stagings as draws mixed from it, or never again.
     pub(crate) fn set_faults(&self, faults: Option<SplitMix64>) {
+        // The next value of `faults`, taken without drawing it, so its draws fall as they did.
+        *self.reads.lock() = faults
+            .as_ref()
+            .map(|rng| SplitMix64::new(rng.clone().next_u64() ^ READS));
         *self.faults.lock() = faults;
     }
 
@@ -161,7 +180,7 @@ impl WalStore for SimWal {
         pipeline: &'a PipelineId,
         load: LoadId,
     ) -> BoxFuture<'a, io::Result<()>> {
-        let opened = fault(&self.faults).and_then(|()| {
+        let opened = fault(&self.faults, FAULTS).and_then(|()| {
             let mut logs = self.logs.lock();
             if logs.contains_key(&(pipeline.clone(), load)) {
                 return Err(io::Error::from(io::ErrorKind::AlreadyExists));
@@ -177,7 +196,7 @@ impl WalStore for SimWal {
         pipeline: &'a PipelineId,
         chunk: Chunk,
     ) -> BoxFuture<'a, io::Result<Box<dyn StagedChunk>>> {
-        if let Err(error) = fault(&self.faults) {
+        if let Err(error) = fault(&self.faults, FAULTS) {
             return Box::pin(async { Err(error) });
         }
         if self.logs.lock().get(&(pipeline.clone(), chunk.load)) != Some(&true) {
@@ -202,6 +221,9 @@ impl WalStore for SimWal {
     }
 
     fn loads<'a>(&'a self, pipeline: &'a PipelineId) -> BoxFuture<'a, io::Result<Vec<LoadId>>> {
+        if let Err(error) = fault(&self.reads, FAULTS) {
+            return Box::pin(async { Err(error) });
+        }
         let loads = self
             .logs
             .lock()
@@ -213,6 +235,9 @@ impl WalStore for SimWal {
     }
 
     fn leftovers<'a>(&'a self, pipeline: &'a PipelineId) -> BoxFuture<'a, io::Result<Vec<LoadId>>> {
+        if let Err(error) = fault(&self.reads, FAULTS) {
+            return Box::pin(async { Err(error) });
+        }
         let logs = self.logs.lock();
         let leftovers: BTreeSet<LoadId> = self
             .chunks
@@ -231,6 +256,9 @@ impl WalStore for SimWal {
         pipeline: &'a PipelineId,
         load: LoadId,
     ) -> BoxFuture<'a, io::Result<Vec<(u64, u64)>>> {
+        if let Err(error) = fault(&self.reads, FAULTS) {
+            return Box::pin(async { Err(error) });
+        }
         let chunks = self
             .chunks
             .lock()
@@ -248,6 +276,9 @@ impl WalStore for SimWal {
         offset: u64,
         len: u64,
     ) -> BoxFuture<'a, io::Result<Bytes>> {
+        if let Err(error) = fault(&self.reads, READ_FAULTS) {
+            return Box::pin(async { Err(error) });
+        }
         let chunks = self.chunks.lock();
         let Some(Published { bytes, .. }) = chunks.get(&(pipeline.clone(), chunk)) else {
             return Box::pin(async { Err(io::Error::from(io::ErrorKind::NotFound)) });
@@ -266,6 +297,9 @@ impl WalStore for SimWal {
         pipeline: &'a PipelineId,
         load: LoadId,
     ) -> BoxFuture<'a, io::Result<()>> {
+        if let Err(error) = fault(&self.reads, FAULTS) {
+            return Box::pin(async { Err(error) });
+        }
         *self
             .cleared
             .lock()
@@ -279,7 +313,7 @@ impl WalStore for SimWal {
         pipeline: &'a PipelineId,
         chunk: Chunk,
     ) -> BoxFuture<'a, io::Result<()>> {
-        if let Err(error) = fault(&self.faults) {
+        if let Err(error) = fault(&self.faults, FAULTS) {
             return Box::pin(async { Err(error) });
         }
         self.chunks.lock().remove(&(pipeline.clone(), chunk));

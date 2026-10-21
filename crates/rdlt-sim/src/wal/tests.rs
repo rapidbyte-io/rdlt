@@ -38,6 +38,16 @@ async fn published(wal: &SimWal, owner: &PipelineId, chunk: Chunk, bytes: &'stat
     staged.publish().await.expect("publishes");
 }
 
+/// The chunks of `load`'s log of `owner` in `wal`, listed again where a faulty disk fails it.
+async fn listed(wal: &SimWal, owner: &PipelineId, load: LoadId) -> Vec<(u64, u64)> {
+    for _ in 0..64 {
+        if let Ok(chunks) = wal.chunks(owner, load).await {
+            return chunks;
+        }
+    }
+    panic!("a disk failing one listing in a hundred failed 64 in a row");
+}
+
 #[tokio::test]
 async fn a_crash_keeps_every_chunk_published_and_loses_every_one_staged() {
     let wal = SimWal::default();
@@ -138,7 +148,7 @@ async fn a_faulty_disk_fails_a_publish_or_a_removal_now_and_then_and_keeps_the_c
         }
         if wal.remove(&pipeline(), chunk).await.is_err() {
             unremoved += 1;
-            let kept = wal.chunks(&pipeline(), chunk.load).await.expect("lists");
+            let kept = listed(&wal, &pipeline(), chunk.load).await;
             assert!(kept.iter().any(|(kept, _)| *kept == number));
         }
     }
@@ -176,4 +186,48 @@ async fn a_staged_chunk_counts_as_the_worlds_until_it_is_dropped() {
     assert_eq!(charged() - before, 2_000);
     drop(staged);
     assert_eq!(charged(), before);
+}
+
+#[tokio::test]
+async fn a_faulty_disk_fails_a_listing_a_read_or_a_staging_s_removal_now_and_then() {
+    let wal = SimWal::default();
+    let orders = pipeline();
+    let load = chunk(0).load;
+    published(&wal, &orders, chunk(0), b"frame").await;
+    wal.set_faults(Some(SplitMix64::new(7)));
+    let mut failed = [0_usize; 5];
+    for _ in 0..5000 {
+        failed[0] += usize::from(wal.loads(&orders).await.is_err());
+        failed[1] += usize::from(wal.leftovers(&orders).await.is_err());
+        failed[2] += usize::from(wal.chunks(&orders, load).await.is_err());
+        failed[3] += usize::from(wal.read(&orders, chunk(0), 0, 5).await.is_err());
+        failed[4] += usize::from(wal.remove_staged(&orders, load).await.is_err());
+    }
+    assert!(
+        failed.iter().all(|failed| (1..250).contains(failed)),
+        "{failed:?} of 5000 failed"
+    );
+    assert!(
+        failed[3] < failed[2],
+        "reads fail less often than listings: {failed:?}"
+    );
+    wal.set_faults(None);
+    assert_eq!(wal.chunks(&orders, load).await.expect("lists"), [(0, 5)]);
+    let read = wal.read(&orders, chunk(0), 0, 5).await.expect("reads");
+    assert_eq!(read, Bytes::from_static(b"frame"));
+}
+
+#[tokio::test]
+async fn a_disk_s_reads_draw_their_failures_apart_from_its_writes() {
+    let (quiet, busy) = (SimWal::default(), SimWal::default());
+    quiet.set_faults(Some(SplitMix64::new(7)));
+    busy.set_faults(Some(SplitMix64::new(7)));
+    let orders = pipeline();
+    let (mut alone, mut beside) = (Vec::new(), Vec::new());
+    for _ in 0..1000 {
+        alone.push(quiet.remove(&orders, chunk(0)).await.is_err());
+        drop(busy.loads(&orders).await);
+        beside.push(busy.remove(&orders, chunk(0)).await.is_err());
+    }
+    assert_eq!(alone, beside);
 }
