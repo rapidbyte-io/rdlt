@@ -37,7 +37,7 @@ A formal layer is added to the layers of its class, never in place of one.
 - A module's proofs live in `src/<module>/proofs.rs`, declared `#[cfg(kani)] mod proofs;` beside
   its tests. `kani` is a configuration only Kani sets; the workspace's `unexpected_cfgs` lint
   names it in its `check-cfg`, so every other build compiles none of it and warns of none of it.
-  Kani provides the `kani` crate itself: a crate adds nothing to its manifest.
+  Kani provides the `kani` crate itself: a crate adds no dependency for it.
 - A proof is a `#[kani::proof]` function, named as a test is, over `kani::any()` inputs narrowed
   by `kani::assume`, and states its bound in a paragraph of its doc comment that begins `Bound:`:
   the steps a sequence takes and the range each input is drawn from, or none, for a proof of one
