@@ -7,11 +7,12 @@ use std::time::Duration;
 use rdlt_connector::{Destination, PipelineId, ReadMode, Source, StreamName};
 use rdlt_engine::{Engine, ResetReport, ResetScope, WriteMode};
 
-use super::scenario::Scenario;
-use super::{PIPELINES, Simulation};
+use super::scenario::{Scenario, in_process};
+use super::{DISRUPTED, PIPELINES, Simulation};
 use crate::World;
 use crate::canary::Canary;
 use crate::destination::records;
+use crate::network::Placing;
 use crate::reached::Reach;
 use crate::rng::SplitMix64;
 use crate::seed::Seed;
@@ -33,6 +34,61 @@ struct Drawn {
     delay: Duration,
 }
 
+/// The simulated source and destination of the world registered as `world`: placed by `placing`
+/// on their hosts where the connectors listen on a simulated network, never on the peer that
+/// stalls, and through the host's registry in this process otherwise.
+async fn connected(
+    world: &str,
+    placing: Option<&Placing>,
+) -> (Arc<dyn Source>, Arc<dyn Destination>) {
+    let Some(placing) = placing else {
+        return in_process(world).await;
+    };
+    let config = Canary::of(world).config();
+    (
+        placing.source(&config, false).await,
+        placing.destination(&config, false).await,
+    )
+}
+
+/// Tries `racing` after its delay, up to [`TRIES`] times while faults fail it; the connectors a
+/// reset that faults kept from committing, or none once it answered.
+async fn resetting(
+    (engine, world): (Engine, Arc<World>),
+    (name, placing): (String, Option<Placing>),
+    seed: Seed,
+    racing: Drawn,
+) -> Option<Unfinished> {
+    tokio::time::sleep(racing.delay).await;
+    let (source, destination) = connected(&name, placing.as_ref()).await;
+    for _ in 0..TRIES {
+        let recorded = records(&world, &racing.pipeline, &racing.streams[0]);
+        match tried(
+            &engine,
+            &racing,
+            &source,
+            &destination,
+            (&*world, name.as_str()),
+        )
+        .await
+        {
+            Ok(_) => return None,
+            Err(error) if refused(&error) => {
+                world.reach(Reach::ResetRefused);
+                assert!(
+                    !recorded,
+                    "seed {seed}: resetting {:?} as {:?} was refused, though the \
+                     pipeline recorded the stream before the reset began: {error}",
+                    racing.streams, racing.scope
+                );
+                return None;
+            }
+            Err(_) => {}
+        }
+    }
+    Some((engine, source, destination))
+}
+
 impl Simulation {
     /// Resets a stream the source can read again, drawn with its scope apart from the seed's
     /// generator, while a run of every pipeline loads in `phase`; whether it drew one.
@@ -43,6 +99,9 @@ impl Simulation {
     /// may record the stream as the reset begins, so a reset raced is wrong only where it refuses
     /// a stream the state recorded before it began; once the runs have ended, the state alone
     /// says which answer is right.
+    ///
+    /// On the simulated network with faults, the network is disrupted while the reset and the
+    /// runs it races last, and its retry without faults places its connectors again.
     pub(super) async fn reset(&mut self, seed: Seed, phase: usize) -> bool {
         let Some(drawn) = self.draw(seed) else {
             return false;
@@ -51,47 +110,26 @@ impl Simulation {
             .reset
             .lock()
             .insert(drawn.streams[0].name().to_owned());
-        let (engine, world, name) = (
-            self.engine.clone(),
-            Arc::clone(&self.world),
-            self.name.clone(),
+        let resetting = resetting(
+            (self.engine.clone(), Arc::clone(&self.world)),
+            (self.name.clone(), self.placing.clone()),
+            seed,
+            drawn.clone(),
         );
-        let racing = drawn.clone();
-        let resetting = async move {
-            tokio::time::sleep(racing.delay).await;
-            let (source, destination) = super::scenario::in_process(&name).await;
-            for _ in 0..TRIES {
-                let recorded = records(&world, &racing.pipeline, &racing.streams[0]);
-                match tried(
-                    &engine,
-                    &racing,
-                    &source,
-                    &destination,
-                    (&*world, name.as_str()),
-                )
-                .await
-                {
-                    Ok(_) => return None,
-                    Err(error) if refused(&error) => {
-                        world.reach(Reach::ResetRefused);
-                        assert!(
-                            !recorded,
-                            "seed {seed}: resetting {:?} as {:?} was refused, though the \
-                             pipeline recorded the stream before the reset began: {error}",
-                            racing.streams, racing.scope
-                        );
-                        return None;
-                    }
-                    Err(_) => {}
-                }
-            }
-            Some((engine, source, destination))
-        };
-        self.world.set_faulty(self.world.workload.features.faults);
+        let features = self.world.workload.features;
+        self.world.set_faulty(features.faults);
+        // Drawn apart from every other draw, and only where the network is.
+        let network = (features.faults && self.placing.is_some())
+            .then(|| SplitMix64::new(seed.value() ^ RESET ^ DISRUPTED));
+        let placing = self.placing.clone();
         let mut reports = Vec::new();
         // The reset fences the runs it races: they may fail, faults or not.
         let running = self.attempt(phase, Scenario::Plain, false, None, &mut reports);
-        let (_, unfinished) = tokio::join!(running, resetting);
+        let raced = Box::pin(async { tokio::join!(running, resetting) });
+        let (_, unfinished) = match (&placing, network) {
+            (Some(placing), Some(rng)) => Box::pin(placing.disrupting(rng, raced)).await,
+            _ => raced.await,
+        };
         // The raced runs have ended: no acknowledgement of a commit from before the reset is
         // left to reach the source, so it is checked again from here on.
         self.world.reset.lock().remove(drawn.streams[0].name());
@@ -104,8 +142,12 @@ impl Simulation {
     /// Resets again, without faults, what faults kept from committing: it must now, or refuse a
     /// stream the pipeline recorded nothing of.
     async fn settle(&self, seed: Seed, drawn: &Drawn, unfinished: Unfinished) {
-        let (engine, source, destination) = unfinished;
+        let (engine, mut source, mut destination) = unfinished;
         self.world.set_faulty(false);
+        if self.placing.is_some() {
+            // A network that healed may have cut the connections the faulty tries held.
+            (source, destination) = connected(&self.name, self.placing.as_ref()).await;
+        }
         let recorded = records(&self.world, &drawn.pipeline, &drawn.streams[0]);
         let watch = (&*self.world, self.name.as_str());
         let answer = tried(&engine, drawn, &source, &destination, watch).await;

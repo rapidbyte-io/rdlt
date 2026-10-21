@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use rdlt_engine::{Report, Until};
 
-use super::Simulation;
 use super::scenario::{Scenario, pick};
+use super::{DISRUPTED, Simulation};
 use crate::reached::Reach;
 use crate::rng::SplitMix64;
 use crate::world::World;
@@ -49,8 +49,17 @@ impl Simulation {
             let clean = !(features.faults || features.disruptions);
             let ticks = 1 + rng.below(20);
             let arriving = SplitMix64::new(rng.next_u64());
-            let running =
-                self.attempt_until(phase, scenario, clean, None, reports, Until::For(deadline));
+            // Drawn apart from the phase's draws, and only where the network is.
+            let network = (features.faults && self.placing.is_some())
+                .then(|| SplitMix64::new(rng.clone().next_u64() ^ DISRUPTED));
+            let running = self.attempt_until(
+                phase,
+                scenario,
+                clean,
+                network,
+                reports,
+                Until::For(deadline),
+            );
             let (ran, ()) = tokio::join!(running, arrive(&world, phase, arriving, ticks));
             world.reach(Reach::Followed);
             if ran.stopped {
