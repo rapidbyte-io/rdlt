@@ -522,9 +522,9 @@ async fn an_allowance_waits_as_long_as_its_rate_takes_to_earn_what_it_owes() {
     assert_eq!(owing(0, 0), Duration::from_secs(1));
 }
 
-/// A line of a secret: letters, digits, spaces, `*` and the punctuation JSON and Debug escape,
-/// with at least four characters other than whitespace and a digit, which no mark a redaction
-/// writes holds, and never `[` or `]`.
+/// A line of a secret: letters, digits, spaces, `*`, the quote and backslash JSON and Debug
+/// escape, and other punctuation, with at least four characters other than whitespace and a
+/// digit, which no mark a redaction writes holds, and never `[` or `]`.
 fn secret_line() -> impl Strategy<Value = String> {
     "[a-z0-9\"\\\\:={}_ *-]{4,20}".prop_filter(
         "four characters other than whitespace, a digit",
@@ -559,7 +559,10 @@ fn said_as(secret: &str) -> Vec<String> {
             let json = serde_json::to_string(value).expect("text encodes");
             [
                 value.to_owned(),
-                json.trim_matches('"').to_owned(),
+                json.strip_prefix('"')
+                    .and_then(|inner| inner.strip_suffix('"'))
+                    .expect("JSON quotes a string")
+                    .to_owned(),
                 value.escape_debug().collect(),
                 rdlt_connector::text::shown(value, usize::MAX),
             ]
