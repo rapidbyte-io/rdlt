@@ -310,10 +310,11 @@ A formal layer is added to the layers of its class, never in place of one.
   `replans_naming_new_partitions_take_the_places_of_those_they_dropped` exercise
   `NoPartitionLostOrDoubled` on the code; the first two, which read an added partition and a
   bounded one again, and `a_following_run_stops_the_partitions_its_source_no_longer_plans`
-  exercise `PlansFollowTheSource`; and that last one exercises `RemovedDrains`, bounding the
-  retired partition's reads from above only: no test asserts that its sealed rows were committed,
-  and `a_partition_a_replan_drops_keeps_its_position_across_runs` counts the partitions the run
-  recorded and reads no rows.
+  exercise `PlansFollowTheSource`; and that last one exercises `RemovedDrains`: the retired
+  partition's first rows land and are committed, and it reads no further than a plan past its
+  retirement. `a_partition_a_replan_drops_keeps_its_position_across_runs` holds that a run records
+  a dropped partition's position where it committed it, and that the next run reads on from there
+  with no row loaded twice.
 - Traces tie a specification to the code. A spec's header names each trace by name, seed and
   the goal its run reaches; `just quint` writes each from its seed, which reproduces it exactly,
   and fails where it differs from the one `specs/traces/<spec>/` holds, so a trace cannot drift
