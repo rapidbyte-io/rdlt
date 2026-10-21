@@ -10,16 +10,19 @@
 // by the next; rows arrive as the run reads; the run may crash, and the next plans from what was
 // committed.
 //
+// quint main: replan replan_rows2
 // quint steps: --step simulated --max-steps 60
 // quint run: --max-samples 2000
 // quint verify: tlc
-module replan {
+/// The protocol, for a source whose partitions each hold `ROWS` rows.
+module replan_protocol {
   // ---- Bounds
 
   /// The partitions a source may name.
   pure val PARTS: Set[str] = Set("p0", "p1", "p2")
   /// The rows each partition holds once every row arrived.
-  pure val ROWS = 2
+  const ROWS: int
+  assume RowsHold = ROWS >= 1
   /// The source's changes to what it names, and the run's crashes, a behavior meets in all.
   pure val CHANGES = 3
 
@@ -84,7 +87,7 @@ module replan {
   action init = all {
     named' = Set("p0", "p1"),
     bounded' = Set("p0"),
-    arrived' = PARTS.mapBy(_ => 1),
+    arrived' = PARTS.mapBy(_ => ROWS - 1),
     reads' = Set(),
     committed' = PARTS.mapBy(_ => 0),
     rows' = PARTS.mapBy(p => zero(p)),
@@ -297,6 +300,20 @@ module replan {
     rows' = rows,
     keep,
   }
+}
+
+/// The protocol with each partition holding one row, the bound TLC explores whole.
+module replan {
+  import replan_protocol(ROWS = 1).*
+
+  /// Every partition starts with its one row still to arrive.
+  run everyPartitionAwaitsItsRowTest = init.expect(arrived == PARTS.mapBy(_ => 0))
+}
+
+/// The protocol with each partition holding two rows, which only `quint test` and `quint run`
+/// explore: TLC's bound holds one.
+module replan_rows2 {
+  import replan_protocol(ROWS = 2).*
 
   /// A partition the source stops naming is stopped: its sealed row is committed, and its read
   /// drains.
