@@ -520,3 +520,94 @@ async fn an_allowance_waits_as_long_as_its_rate_takes_to_earn_what_it_owes() {
     // No rate earns one a second.
     assert_eq!(owing(0, 0), Duration::from_secs(1));
 }
+
+/// A line of a secret: letters, digits, spaces, `*` and the punctuation JSON and Debug escape,
+/// with at least four characters other than whitespace and a digit, which no mark a redaction
+/// writes holds, and never `[` or `]`.
+fn secret_line() -> impl Strategy<Value = String> {
+    "[a-z0-9\"\\\\:={}_ *-]{4,20}".prop_filter(
+        "four characters other than whitespace, a digit",
+        |line| {
+            line.chars().filter(|c| !c.is_whitespace()).count() >= 4
+                && line.chars().any(|c| c.is_ascii_digit())
+        },
+    )
+}
+
+/// A secret of one to three lines, ended by `\n` or `\r\n` between them, and by the whitespace a
+/// property's secrets end with.
+fn secret() -> impl Strategy<Value = String> {
+    (
+        proptest::collection::vec(secret_line(), 1..4),
+        prop::sample::select(vec!["\n", "\r\n"]),
+        prop::collection::vec(prop::sample::select(WHITESPACE.to_vec()), 0..3),
+    )
+        .prop_map(|(lines, end, trailing)| {
+            format!("{}{}", lines.join(end), trailing.iter().collect::<String>())
+        })
+}
+
+/// What a connector may say a secret as: the secret and each of its lines of at least eight
+/// characters other than whitespace, each as written, as JSON writes it, as Rust's `Debug`
+/// writes it, and as it is shown.
+fn said_as(secret: &str) -> Vec<String> {
+    let long = |line: &&str| line.chars().filter(|c| !c.is_whitespace()).count() >= 8;
+    std::iter::once(secret)
+        .chain(secret.lines().filter(long))
+        .flat_map(|value| {
+            let json = serde_json::to_string(value).expect("text encodes");
+            [
+                value.to_owned(),
+                json.trim_matches('"').to_owned(),
+                value.escape_debug().collect(),
+                rdlt_connector::text::shown(value, usize::MAX),
+            ]
+        })
+        .collect()
+}
+
+/// Text around a secret: a little, or enough to put the secret across the end of what one read
+/// takes or the start of what the tail keeps.
+fn around(fill: char) -> impl Strategy<Value = String> {
+    prop_oneof![
+        3 => "[A-Z.,;]{0,12}",
+        1 => (0_usize..24).prop_map(move |less| fill.to_string().repeat(TAIL_BYTES - less)),
+    ]
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(rdlt_testkit::cases(128)))]
+
+    /// However a connector says a secret it was sent, in any form the secret is registered in
+    /// and whatever surrounds it, no line the log is given, no tail's last words and no error's
+    /// text holds that form or the secret, each trimmed of its whitespace; a line of the secret
+    /// with fewer than eight characters other than whitespace may show on its own.
+    #[test]
+    fn nothing_said_of_a_secret_survives_scrubbing_and_what_follows_it(
+        secret in secret(),
+        form in any::<prop::sample::Index>(),
+        before in around('A'),
+        after in around('B'),
+        ending in prop::sample::select(vec!["\n", "\r\n", ""]),
+    ) {
+        let forms = said_as(&secret);
+        let said = &forms[form.index(forms.len())];
+        let output = format!("{before}{said}{after}{ending}");
+        let redactions = Redactions::new();
+        redactions.add(&secret);
+        let drained = paused().block_on(async {
+            tokio::time::timeout(Duration::from_secs(60), drained(output.as_bytes(), &redactions)).await
+        });
+        let drained = drained.expect("a drain of a few lines ends");
+        let error = rdlt_connector::ConnectorError::internal(output.clone())
+            .received(&|text| redactions.scrubbed(text));
+        let mut shown: Vec<String> = drained.lines().iter().map(|line| (*line).to_owned()).collect();
+        shown.push(drained.tail.words(&redactions));
+        shown.push(error.to_string());
+        for found in forms.iter().map(|form| form.trim()).filter(|form| !form.is_empty()) {
+            for text in &shown {
+                prop_assert!(!text.contains(found), "{found:?} in {text:?}, from {output:?}");
+            }
+        }
+    }
+}
