@@ -406,6 +406,25 @@ module replan {
       .then(commit)
       .expect(committed.get("p1") == 2 and rows.get("p1") == Map(0 -> 1, 1 -> 1) and NoPartitionLostOrDoubled)
 
+  /// Reads of unbounded partitions that end on their own with nothing sealed give their places up
+  /// at once: with no commit between, the next plan reads again the partition it still names and
+  /// starts the one it now names in place of the one it dropped.
+  run aReadThatPausesWithNothingSealedIsReadAgainAtTheNextPlanTest =
+    init
+      .then(reshape(Set("p0", "p1"), Set()))
+      .then(replan)
+      .then(pauseOn("p0"))
+      .then(pauseOn("p1"))
+      .then(reshape(Set("p0", "p2"), Set()))
+      .then(replan)
+      .expect(all {
+        readsOf("p0").size() == 1,
+        readsOf("p0").forall(r => r.base == 0 and not(r.ended)),
+        readsOf("p1") == Set(),
+        readsOf("p2").size() == 1,
+        NoPartitionLostOrDoubled,
+      })
+
   /// A plan that started a partition beside its stopped read would read it twice at once: the
   /// invariant refuses it.
   run aPlanBesideAStoppedReadWouldDoubleItTest =
