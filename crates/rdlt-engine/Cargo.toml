@@ -83,8 +83,8 @@ tokio = { workspace = true, features = [
 [lints]
 workspace = true
 
-# Kani's proofs replace a function with a stub where what it computes has no bearing on what they
-# prove; no build but Kani's reads this.
+# Kani's proofs replace with a stub a function whose result no property reads, or one Kani cannot
+# run with a plainer one that computes the same; no build but Kani's reads this.
 [package.metadata.kani.unstable]
 stubbing = true
 
