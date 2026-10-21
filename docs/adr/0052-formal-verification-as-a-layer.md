@@ -146,12 +146,13 @@ A formal layer is added to the layers of its class, never in place of one.
   gives back room without waiting compiles, and took past 10 GB in about 7 minutes.
 - A log frame's lengths are proved (`rdlt-engine/src/wal/frame/len/proofs.rs`): a frame is its
   payload and its head, saturating at the largest length rather than wrapping, for every payload
-  length (under a second), and a list of one number takes the brackets and digits JSON writes of
-  it, for every `u64` (424 to 595 seconds). The commas between a list's numbers are a property test
-  (`an_end_frame_s_length_is_what_it_encodes_to` in `wal/frame/tests.rs`, lists of up to 19
-  numbers). Their proof does not fit: over lists of up to two numbers it took 627 seconds and
-  over lists of up to three 640 seconds, past the 10 minutes a part may take on a laptop to fit
-  its job's 15 on GitHub's runners.
+  length (under a second), and what `listed` counts of a list of numbers is what JSON writes of it,
+  within a bound of one number, of any `u64` (424 to 595 seconds). A list of two numbers or more,
+  the only lists with commas between their numbers, is held by the property test
+  `an_end_frame_s_length_is_what_it_encodes_to` in `wal/frame/tests.rs` instead, which draws lists
+  of up to 19 numbers: the proof over lists of up to two numbers took 627 seconds and over lists of
+  up to three 640 seconds, past the 10 minutes a part may take on a laptop to fit its job's 15 on
+  GitHub's runners.
 - A log frame's preamble and head are proved (`rdlt-engine/src/wal/frame/proofs.rs`): from any
   bytes up to 16, a head's length is nothing until its five bytes have arrived, then the
   little-endian length they announce (under a second), and a chunk is accepted only where the
