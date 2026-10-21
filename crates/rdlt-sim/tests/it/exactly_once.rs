@@ -27,7 +27,7 @@ const FOUND: [(u64, Reach); 19] = [
     (29_442, Reach::Widened),
     // A frozen normalized stream's declared array whose table no row had made yet was refused
     // as new to the table once a crashed attempt had created the stream's own table.
-    (29, Reach::Crashed),
+    (167_631, Reach::Crashed),
     // Logged in a small log: eight partitions' segments each spanned several chunks, which
     // stayed, holding committed frames beside open ones, until no batch fitted.
     (532, Reach::LogWaited),
