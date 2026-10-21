@@ -44,7 +44,7 @@ const FOUND: [(u64, Reach); 19] = [
     // which the destination then held as JSON, and the check read as values of JSON, not of
     // the types they were written as.
     (11_754, Reach::Widened),
-    (77_962, Reach::Widened),
+    (302, Reach::Widened),
     // A child table no row had reached yet was merged by its roots' commit, under no columns,
     // which the merge refused.
     (37_936, Reach::EmptyChild),
