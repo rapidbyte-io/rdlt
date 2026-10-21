@@ -451,21 +451,21 @@ admitted, and what a remote connector's calls hold in transport.
   their charge, seeds 0 to 99 999 hold at most 12.5 MB in process (10.6 MB with a log) and 4.3 MB
   over the network (3.1 MB with a log), the network's beyond what its reads hold. Over the network
   the allowance is the next whole mebibyte above five quarters of the most a seed without a log
-  holds among the four network seeds that failed the nightly's heap check before cursors counted
-  among the reads and are not hostile, replayed under these faults, 8.9 MB on seed 732369, twice
-  the most of seeds 0 to 99 999. No sweep of the nightly's million has measured the network's
-  tail, so the allowance rests on those four seeds and the nightly is what tests it further. In
-  process five quarters of the most, 15.6 MB, would pass a replay's scan that kept every commit it
-  read, its received ones too, which held 14.5 MB on seed 241570 on main before that scan was fixed;
-  the allowance is the next whole mebibyte above a mebibyte more than the most seeds 0 to 99 999
-  hold. A failing seed names its phase; replayed with `RDLT_SIM_TRACE` set, it names the change of
-  the charge after which its thread held too much, and the code that made it. The world is one of
-  fat values: a wide object of JSON on every eighth record of a stream pushing JSON, a sixteenth of
-  the least push, and spaces beside some pushes up to their limit; on every fourth record the least
-  budget refuses the batches. The world keeps its rows apart from the batches they were written in,
-  and the short form of each fat value. Not measured: seeds that change rows, seeds under stress,
-  whose compute runs on Rayon's threads, hostile seeds over the network, whose hostile host's heap
-  shares the seed's thread, and the runs with nothing new that check the reports a source hears.
+  holds among the four network seeds, not hostile, that hold the most the nightly has measured,
+  replayed under these faults: 8.9 MB on seed 732369, twice the most of seeds 0 to 99 999. No sweep
+  of the nightly's million has measured the network's tail, so the allowance rests on those four
+  seeds and the nightly is what tests it further. In process five quarters of the most, 15.6 MB,
+  would pass a replay's scan that keeps every commit it reads, its received ones too, which holds
+  14.5 MB on seed 241570; the allowance is the next whole mebibyte above a mebibyte more than the
+  most seeds 0 to 99 999 hold. A failing seed names its phase; replayed with `RDLT_SIM_TRACE` set,
+  it names the change of the charge after which its thread held too much, and the code that made it.
+  The world is one of fat values: a wide object of JSON on every eighth record of a stream pushing
+  JSON, a sixteenth of the least push, and spaces beside some pushes up to their limit; on every
+  fourth record the least budget refuses the batches. The world keeps its rows apart from the
+  batches they were written in, and the short form of each fat value. Not measured: seeds that
+  change rows, seeds under stress, whose compute runs on Rayon's threads, hostile seeds over the
+  network, whose hostile host's heap shares the seed's thread, and the runs with nothing new that
+  check the reports a source hears.
 - **What the check sees.** Every seed of 0 to 99 999 holds to it: what a charge covers is freed
   before the charge goes, so no moment holds it beyond its charge. A JSON flush that gives back
   its text's charge while it holds the text fails it: with that fix undone, 8 of seeds 0 to 1 999
