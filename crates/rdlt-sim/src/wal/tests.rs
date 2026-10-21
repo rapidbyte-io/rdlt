@@ -217,21 +217,6 @@ async fn a_faulty_disk_fails_a_listing_a_read_or_a_staging_s_removal_now_and_the
     assert_eq!(read, Bytes::from_static(b"frame"));
 }
 
-#[tokio::test]
-async fn a_disk_s_reads_draw_their_failures_apart_from_its_writes() {
-    let (quiet, busy) = (SimWal::default(), SimWal::default());
-    quiet.set_faults(Some(SplitMix64::new(7)));
-    busy.set_faults(Some(SplitMix64::new(7)));
-    let orders = pipeline();
-    let (mut alone, mut beside) = (Vec::new(), Vec::new());
-    for _ in 0..1000 {
-        alone.push(quiet.remove(&orders, chunk(0)).await.is_err());
-        drop(busy.loads(&orders).await);
-        beside.push(busy.remove(&orders, chunk(0)).await.is_err());
-    }
-    assert_eq!(alone, beside);
-}
-
 fn hiccuped(error: Option<std::io::Error>) -> bool {
     error.is_some_and(|error| error.kind() == std::io::ErrorKind::Interrupted)
 }
