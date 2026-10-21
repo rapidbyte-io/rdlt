@@ -19,8 +19,8 @@ use crate::swarm::Features;
 pub struct Checked {
     /// What the destination holds.
     pub digest: Digest,
-    /// Every run's report and failure, in the order the runs ended, hashed: the same seed always
-    /// comes to the same trace.
+    /// Every report and failure of the phases' runs, in the order the runs ended, hashed: the same
+    /// seed always comes to the same trace.
     pub trace: u64,
     /// How often and how long its runs waited for room in the budget, by share.
     pub waits: Waits,
