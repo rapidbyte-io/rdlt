@@ -15,7 +15,7 @@ const FOUND: [(u64, Reach); 19] = [
     (7_466, Reach::Replayed),
     // Streaming: a run that followed the source ended before the rows a refusal needed arrived,
     // and succeeded, as the model now allows.
-    (2_838, Reach::Spared),
+    (2_656, Reach::Spared),
     // Streaming: reads cut batches wherever rows had arrived, so JSON pushes inferred types the
     // model never saw, until they served whole checkpoint groups.
     (4_516, Reach::Followed),
