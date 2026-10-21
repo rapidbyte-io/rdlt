@@ -220,6 +220,13 @@ fn unavailable(path: &Path, said: &dyn std::fmt::Display) -> SandboxError {
 #[cfg(target_os = "linux")]
 fn launched(launcher: &Binary, confined: &Confined<'_>) -> Result<Launcher, SandboxError> {
     let failed = |error| SandboxError::failed(launcher.path(), error);
+    // What runs is the file opened once: a name it was given since may lie where a grant held
+    // now writes, whatever its path names now.
+    if launcher.names().map_err(failed)? > 1 && !launcher.linked() {
+        return Err(SandboxError::Exposed {
+            path: launcher.path().to_owned(),
+        });
+    }
     let arguments = arguments(&Bubblewrap::confinement(confined)).map_err(failed)?;
     // Executed from a descriptor above every one the launcher is given.
     let given = confined.binds.iter().map(|bind| bind.fd);

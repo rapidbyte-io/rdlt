@@ -74,7 +74,9 @@ anything runs; none is ignored.
     a held grant may write. A program with a second name counts as written by every write grant
     on its file system, since a directory grant does not list what it holds; no connector is
     spawned again whose binary, interpreter or launcher was given a second name after it was
-    placed.
+    placed. The binary and the launcher are checked by the file that runs, the interpreter by its
+    path, which the kernel runs. A launcher whose one name is moved elsewhere is beyond this:
+    moving it needs write access to its directory, which no root that may be written may hold.
   - **The network grant** shares the host's network namespace: every interface and route, the
     host's loopback services, and the abstract Unix sockets of that namespace, such as a
     session's buses. Grant it only to a connector you would let reach those.
