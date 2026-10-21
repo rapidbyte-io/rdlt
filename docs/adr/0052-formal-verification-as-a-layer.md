@@ -305,11 +305,14 @@ A formal layer is added to the layers of its class, never in place of one.
   changed set and no simulation check holds these properties: the engine's
   tests `a_following_run_starts_the_partitions_its_source_adds`,
   `a_following_run_reads_a_bounded_stream_again_as_it_grows`,
-  `a_run_for_a_while_follows_its_source_and_loads_each_message_once`,
+  `a_run_for_a_while_follows_its_source_and_loads_each_message_once` and
+  `a_partition_a_plan_drops_and_names_again_reads_on_from_where_it_was_committed` exercise
+  `NoPartitionLostOrDoubled` on the code, each holding that every row lands once;
   `a_partition_read_again_takes_its_place_and_a_new_one_a_retired_place` and
-  `replans_naming_new_partitions_take_the_places_of_those_they_dropped` exercise
-  `NoPartitionLostOrDoubled` on the code; the first two, which read an added partition and a
-  bounded one again, and `a_following_run_stops_the_partitions_its_source_no_longer_plans`
+  `replans_naming_new_partitions_take_the_places_of_those_they_dropped` read no rows and hold the
+  places reads take: a partition read again takes its own, a new one a retired one, and a run
+  tracks no more partitions than its plans name; the first two, which read an added partition
+  and a bounded one again, and `a_following_run_stops_the_partitions_its_source_no_longer_plans`
   exercise `PlansFollowTheSource`; and that last one exercises `RemovedDrains`: the retired
   partition's first rows land and are committed, and it reads no further than a plan past its
   retirement. `a_partition_a_replan_drops_keeps_its_position_across_runs` holds that a run records
