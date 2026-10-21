@@ -22,6 +22,8 @@
 //! charged, and the charge is held until it is decoded.
 
 mod charge;
+#[cfg(kani)]
+mod proofs;
 #[cfg(test)]
 mod tests;
 
