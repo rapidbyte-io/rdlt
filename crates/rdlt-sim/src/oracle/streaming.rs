@@ -41,7 +41,7 @@ impl Simulation {
         for _ in 0..RUNS {
             let deadline = Duration::from_millis(500 + rng.below(1500));
             let scenario = if features.disruptions {
-                pick(&mut rng)
+                pick(&mut rng, Some(deadline))
             } else {
                 Scenario::Plain
             };
