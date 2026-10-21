@@ -133,8 +133,8 @@ just instructions   # instruction and allocation counts against main, as CI take
 cargo xtask codegen # regenerate the wire protocol's code after changing its .proto files
 ```
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request. Architecture decisions live
-in [docs/adr](docs/adr).
+Read [CONTRIBUTING.md](CONTRIBUTING.md) and [STYLE.md](STYLE.md) before opening a pull request.
+Architecture decisions live in [docs/adr](docs/adr).
 
 ## License
 
