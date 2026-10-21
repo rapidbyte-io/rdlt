@@ -78,16 +78,17 @@ A load's log is kept in a `WalStore`: a local directory (`LocalWal`) or object s
     created first, each segment's in the order its batches were logged, each batch frame carrying
     its ordinal among the load's batches (ADR 0041), and the log is removed.
 - **The simulation** keeps logs in a store of the world that outlives runs; a run's crash keeps
-  every chunk its worker's logs published and loses what they staged, and leaves other
-  pipelines' logs to their own workers (seed 7331 found a crash tearing another's live log). A
-  swarm feature, drawn apart from the seed's generator, has the pipelines log and every other
-  incremental stream forget what it acknowledged: a read from before it fails, retryably, until
-  the rows land. A phase converges only once no log is left to replay, and then every offset such
-  a stream acknowledged is committed.
-  Seed 8746 found the phase ending with a failed load's log of a new full read, which the next
-  phase replayed as the rows the load had read. So the simulation never replays a log across a
-  phase's end, where the source's rows change. With replay disabled, seed 61
-  fails: its rows were only in the log.
+  every chunk its worker's logs published and loses what they staged, and leaves other pipelines'
+  logs to their own workers (seed 7331 found a crash tearing another's live log). While faulty, its
+  disk fails stagings, publishes, deletions, listings of logs, leftovers and chunks, and removals of
+  stagings one time in a hundred, and reads of a chunk one time in five hundred; the reads' draws
+  are mixed apart from the rest. A swarm feature, drawn apart from the seed's generator, has the
+  pipelines log and every other incremental stream forget what it acknowledged: a read from before
+  it fails, retryably, until the rows land. A phase converges only once no log is left to replay,
+  and then every offset such a stream acknowledged is committed. Seed 8746 found the phase ending
+  with a failed load's log of a new full read, which the next phase replayed as the rows the load
+  had read. So the simulation never replays a log across a phase's end, where the source's rows
+  change. With replay disabled, seed 61 fails: its rows were only in the log.
 - **Fuzzing.** `wal_log` reads any bytes, and valid logs cut and garbled, their checksums
   rewritten or not, as replay does.
 - **Damage.** A chunk is published whole, so none is ever torn: any damage, and any chunk the
