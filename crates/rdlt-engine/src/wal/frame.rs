@@ -10,6 +10,8 @@
 //! into an aligned allocation is read where it lies.
 
 mod arrow;
+#[cfg(kani)]
+mod crc;
 mod len;
 #[cfg(kani)]
 mod proofs;
