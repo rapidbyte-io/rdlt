@@ -87,7 +87,7 @@ impl Recording {
                 Ok(())
             }
             Some(Turn::Fails) => Err(ConnectorError::data("the write was refused")),
-            Some(Turn::Panics) => panic!("the writer panicked"),
+            Some(Turn::Panics) => panic!("the writer held row 4417 of the ledger"),
         }
     }
 }
@@ -426,6 +426,34 @@ async fn a_writer_that_panics_fails_the_write_as_internal() {
             .iter()
             .all(|answer| matches!(answer, Ok(Ack::Credit(_))))
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_writer_s_panic_tells_its_host_neither_its_message_nor_its_task() {
+    let sent = vec![schema(), batch(1, 10), batch(1, 20)];
+    let frames = tokio_stream::iter(sent).chain(tokio_stream::pending());
+    let (writer, _) = Recording::new([Turn::Takes(Duration::ZERO), Turn::Panics]);
+    let body = Body::new(Outgoing::request(frames, Limits::default().largest()));
+    let incoming = Incoming::request(Bounded::new(body, bounds(&Limits::default()), None));
+    let answers = writing(Box::new(writer), incoming, Limits::default())
+        .take(16)
+        .collect::<Vec<_>>();
+    let answers = tokio::time::timeout(WAIT, answers)
+        .await
+        .expect("the write ends");
+    let Some(Err(status)) = answers.last() else {
+        panic!("the write fails: {answers:?}");
+    };
+    assert_eq!(status.code(), Code::Internal);
+    for told in [
+        status.message().to_owned(),
+        crate::wire::error(status).to_string(),
+    ] {
+        assert!(
+            !told.contains("4417") && !told.contains("task"),
+            "the host is told {told:?}"
+        );
+    }
 }
 
 #[tokio::test(start_paused = true)]

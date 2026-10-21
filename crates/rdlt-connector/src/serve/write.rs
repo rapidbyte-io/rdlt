@@ -58,13 +58,17 @@ fn writing(
     let writing = tokio::spawn(write(writer, taken, acks.clone(), limits));
     tokio::spawn(async move {
         let (receiving, writing) = tokio::join!(receiving, writing);
-        // A stage that panics fails the write with the panic once the writer has answered all it
-        // will, as a read's panic fails the read, rather than ending the write as though it were
-        // done.
+        // A stage that panics fails the write once the writer has answered all it will, as a
+        // read's panic fails the read. Not with the join error's text: its task number and the
+        // panic's message, which may quote what was written, are not this connector's to tell.
         if let Some(join) = writing.err().or(receiving.err()) {
             let error = ConnectorError::new(
                 ConnectorErrorKind::Internal,
-                format!("the write failed: {join}"),
+                if join.is_panic() {
+                    "the write panicked"
+                } else {
+                    "the write was cancelled"
+                },
             );
             acks.send(Err(status(&error))).await.ok();
         }
