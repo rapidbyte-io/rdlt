@@ -34,6 +34,7 @@ mod redial;
 mod sandbox;
 mod secrets;
 mod sessions;
+mod soak;
 mod staging;
 mod started;
 mod support;
