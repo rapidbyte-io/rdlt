@@ -10,7 +10,7 @@ use rdlt_connector::limits::ListenLimits;
 use tokio::runtime::Handle;
 use tokio::time::Instant;
 
-use crate::network::Placing;
+use crate::placing::Placing;
 use crate::seed::Seed;
 use crate::world::World;
 

@@ -7,7 +7,7 @@ use rdlt_engine::{Engine, PipelinePlan, Until};
 use super::scenario::{Executed, Scenario, execute_all};
 use super::{Simulation, plan, settled};
 use crate::destination::committed_next;
-use crate::network::Placing;
+use crate::placing::Placing;
 use crate::seed::Seed;
 use crate::world::World;
 

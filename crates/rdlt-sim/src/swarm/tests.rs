@@ -12,7 +12,7 @@ fn every_feature_is_drawn_on_and_off_and_now_and_then_all_at_once() {
     let drawn: Vec<Features> = (0..64000)
         .map(|seed| Features::draw(&mut SplitMix64::new(seed)))
         .collect();
-    let flags: [(&str, Flag); 20] = [
+    let flags: [(&str, Flag); 21] = [
         ("drift", |features| features.drift),
         ("encodings", |features| features.encodings),
         ("json", |features| features.json),
@@ -27,6 +27,7 @@ fn every_feature_is_drawn_on_and_off_and_now_and_then_all_at_once() {
         ("shared", |features| features.shared),
         ("perturb", |features| features.perturb),
         ("network", |features| features.network),
+        ("process", |features| features.process),
         ("wal", |features| features.wal),
         ("objects", |features| features.objects),
         ("streaming", |features| features.streaming),
@@ -38,6 +39,12 @@ fn every_feature_is_drawn_on_and_off_and_now_and_then_all_at_once() {
         assert!(drawn.iter().any(flag), "{name} is never on");
         assert!(!drawn.iter().all(flag), "{name} is never off");
     }
+    assert!(
+        !drawn
+            .iter()
+            .any(|features| features.network && features.process),
+        "a seed is placed one way"
+    );
     for depth in 0..=3 {
         assert!(
             drawn.iter().any(|features| features.depth == depth),

@@ -102,7 +102,7 @@ pub(crate) enum Serving {
 
 impl Serving {
     /// A factory of the source it names; `network`'s own modules serve and dial by it.
-    fn factory(self) -> Box<dyn SourceFactory> {
+    pub(crate) fn factory(self) -> Box<dyn SourceFactory> {
         match self {
             Self::Rows => source_factory::<SimSource>(),
             Self::Changes => source_factory::<SimChangeSource>(),
@@ -322,14 +322,14 @@ fn identity(files: &Files) -> Identity {
 
 /// Places the simulation's connectors on its network: the engine's side of it.
 #[derive(Clone)]
-pub(crate) struct Placing {
+pub(crate) struct Networked {
     net: Arc<Net>,
     remote: Remote,
     remote_options: Options,
     canary: Canary,
 }
 
-impl Placing {
+impl Networked {
     /// Places connectors on `net`, running their connections with `options`, and resolving the
     /// secrets of `canary` their configurations refer to.
     pub(crate) fn new(net: Arc<Net>, options: &Options, canary: &Canary) -> Self {
@@ -433,7 +433,7 @@ impl Placing {
 
 /// The connector `place` places, trying again until it is reachable; no error on the way may hold
 /// a secret of `canary`'s.
-async fn placed<C>(
+pub(crate) async fn placed<C>(
     what: &str,
     canary: &Canary,
     place: impl AsyncFn() -> Result<Placed<C>, ProviderError>,

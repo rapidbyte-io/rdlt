@@ -26,14 +26,16 @@ object_store.workspace = true
 parking_lot.workspace = true
 rdlt-connector = { workspace = true, features = ["serve", "merge"] }
 rdlt-engine = { workspace = true, features = ["object-store", "sim"] }
-rdlt-host.workspace = true
+rdlt-host = { workspace = true, features = ["sim"] }
 rdlt-testkit.workspace = true
 rdlt-wire = { workspace = true, features = ["tls"] }
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tempfile.workspace = true
 thiserror.workspace = true
 tokio-rustls.workspace = true
+tokio-util.workspace = true
 tracing.workspace = true
 turmoil.workspace = true
 tokio = { workspace = true, features = [
@@ -49,7 +51,6 @@ tokio = { workspace = true, features = [
 [dev-dependencies]
 itf.workspace = true
 rdlt-connector = { workspace = true, features = ["serve", "merge", "testing"] }
-tempfile.workspace = true
 
 [lints]
 workspace = true

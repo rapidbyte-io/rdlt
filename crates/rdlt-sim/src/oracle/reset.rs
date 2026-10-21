@@ -12,7 +12,7 @@ use super::{DISRUPTED, PIPELINES, Simulation};
 use crate::World;
 use crate::canary::Canary;
 use crate::destination::records;
-use crate::network::Placing;
+use crate::placing::Placing;
 use crate::reached::Reach;
 use crate::rng::SplitMix64;
 use crate::seed::Seed;
@@ -35,8 +35,8 @@ struct Drawn {
 }
 
 /// The simulated source and destination of the world registered as `world`: placed by `placing`
-/// on their hosts where the connectors listen on a simulated network, never on the peer that
-/// stalls, and through the host's registry in this process otherwise.
+/// where there is one, never on the peer that stalls, and through the host's registry in this
+/// process otherwise.
 async fn connected(
     world: &str,
     placing: Option<&Placing>,

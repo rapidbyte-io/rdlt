@@ -7,7 +7,7 @@ use rdlt_connector::{
     StreamName, partition_channel,
 };
 
-use super::{DRAIN, ENGINE, Placing, Serving, Side, options, run_networked};
+use super::{DRAIN, ENGINE, Networked, Serving, Side, options, run_networked};
 use crate::canary::Canary;
 use crate::rng::SplitMix64;
 use crate::seed::Seed;
@@ -21,7 +21,7 @@ fn connectors_on_the_simulated_network_are_placed_there_and_serve_the_engine() {
             let name = "network-placed";
             let registered = World::register(name, &mut rng);
             let config = Canary::of(name).config();
-            let placing = Placing::new(
+            let placing = Networked::new(
                 net,
                 &options(&mut rng, rdlt_wire::Limits::default()),
                 &Canary::of(name),
@@ -43,7 +43,7 @@ fn a_disrupted_network_loses_connectors_and_the_healed_one_serves_them_again() {
             let name = "network-disrupted";
             let registered = World::register(name, &mut rng);
             let config = Canary::of(name).config();
-            let placing = Placing::new(
+            let placing = Networked::new(
                 net,
                 &options(&mut rng, rdlt_wire::Limits::default()),
                 &Canary::of(name),
@@ -79,7 +79,7 @@ fn a_call_the_network_held_lands_before_the_disrupted_work_is_over() {
             let registered = World::register(name, &mut rng);
             let world = registered.world();
             let config = Canary::of(name).config();
-            let placing = Placing::new(
+            let placing = Networked::new(
                 net,
                 &options(&mut rng, rdlt_wire::Limits::default()),
                 &Canary::of(name),
@@ -113,7 +113,7 @@ fn a_stopped_connector_listens_again_while_a_read_its_host_holds_back_drains() {
         let registered = World::register(name, &mut rng);
         let config = Canary::of(name).config();
         let options = options(&mut rng, rdlt_wire::Limits::default());
-        let placing = Placing::new(Arc::clone(&net), &options, &Canary::of(name));
+        let placing = Networked::new(Arc::clone(&net), &options, &Canary::of(name));
         let source = placing.source(&config, false).await;
         // A read that follows its partition, of whose events the host takes one and no more, as
         // when the engine's budget holds it back: it keeps the stopped source draining for as
@@ -150,7 +150,7 @@ fn a_connector_whose_peer_stalls_is_lost_within_the_heartbeat_s_patience() {
             let config = Canary::of(name).config();
             let options = options(&mut rng, rdlt_wire::Limits::default());
             let patience = options.heartbeat.saturating_mul(options.missed.get());
-            let placing = Placing::new(net, &options, &Canary::of(name));
+            let placing = Networked::new(net, &options, &Canary::of(name));
             let source = placing.source(&config, true).await;
             let started = tokio::time::Instant::now();
             let checked = tokio::time::timeout(Duration::from_secs(3600), source.check())
@@ -186,12 +186,12 @@ fn a_change_world_s_source_is_placed_on_the_network_and_serves_the_engine() {
             let name = "network-changes";
             let registered = World::register_changes(name, &mut rng, &mut apart);
             let config = Canary::of(name).config();
-            let placing = Placing::new(
+            let placing = Networked::new(
                 net,
                 &options(&mut rng, rdlt_wire::Limits::default()),
                 &Canary::of(name),
             );
-            // Placing checks the connector's id against the reference's, the change source's.
+            // Networked checks the connector's id against the reference's, the change source's.
             let checked = placing.source(&config, false).await.check().await;
             drop(registered);
             checked

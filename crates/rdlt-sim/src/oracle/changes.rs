@@ -2,7 +2,8 @@
 //! runs, round after round, and checks each table against the model: a merged table holds each
 //! key as the changes leave it, and a log holds every change exactly once.
 //!
-//! A seed in four runs them on the simulated network, its faulty runs disrupting it.
+//! A seed in four runs them on the simulated network, its faulty runs disrupting it, and one in
+//! four of the rest in played processes.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -10,6 +11,7 @@ use std::sync::Arc;
 use rdlt_connector::{PartitionState, PipelineId, ReadMode, StateEntry, StreamName};
 use rdlt_engine::{DeleteMode, Engine, Env as _, PipelinePlan, StreamPlan, WriteMode};
 use rdlt_testkit::canon::Canon;
+use rdlt_wire::Limits;
 
 use super::config::{config, growth, waited};
 use super::faulty::Faulty;
@@ -23,7 +25,8 @@ use crate::changes::{
 };
 use crate::destination::Stored;
 use crate::env::SimEnv;
-use crate::network::{self, Net, Placing, Serving, run_networked};
+use crate::network::{Net, Serving, run_networked};
+use crate::placing::Placing;
 use crate::reached::Reach;
 use crate::rng::SplitMix64;
 use crate::seed::{Seed, run};
@@ -60,6 +63,21 @@ pub fn check_changes(seed: Seed) -> Checked {
     }
 }
 
+/// Where `seed`'s connectors are placed apart from the engine, where they are, drawn from `rng`,
+/// their secrets `canary`'s and their connections' limits `limits`; drawn only there, so every
+/// other seed draws as it always has.
+fn placed(
+    seed: Seed,
+    world: &World,
+    net: Option<Arc<Net>>,
+    rng: &mut SplitMix64,
+    limits: Limits,
+    canary: &Canary,
+) -> Option<Placing> {
+    let process = world.workload.features.process;
+    Placing::drawn(seed, process, net, rng, limits, canary, Serving::Changes)
+}
+
 async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>) -> Checked {
     let clock = Arc::clone(&env);
     let started = clock.instant();
@@ -86,8 +104,7 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>) -> Checke
     );
     let limits = config.limits();
     let engine = Engine::new(config, env);
-    // Drawn only where the network is, so every other seed draws as it always has.
-    let placing = net.map(|net| Placing::new(net, &network::options(&mut rng, limits), &canary));
+    let placing = placed(seed, &world, net, &mut rng, limits, &canary);
     let plan = plan(&world.changes.streams).with_wal(features.wal);
     let mut changing = Changing {
         engine: &engine,
@@ -126,7 +143,8 @@ struct Changing<'a> {
     plan: &'a PipelinePlan,
     world: &'a World,
     name: &'a str,
-    /// Where the connectors are placed, when they listen on a simulated network.
+    /// Where the connectors are placed apart from the engine: on a simulated network or in played
+    /// processes.
     placing: Option<&'a Placing>,
     seed: Seed,
     ledger: Ledger,
@@ -181,7 +199,8 @@ impl Changing<'_> {
             } else {
                 Scenario::Plain
             };
-            // Drawn only where the network is, so every other seed draws as it always has.
+            // Drawn only where the connectors are placed apart, so every other seed draws as it
+            // always has.
             let network = (disrupted && features.faults && self.placing.is_some())
                 .then(|| SplitMix64::new(draws.next_u64()));
             let plans = std::slice::from_ref(self.plan);

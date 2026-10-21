@@ -25,11 +25,13 @@ use std::time::Duration;
 
 use rdlt_connector::{ColumnPath, PartitionId, PipelineId, ReadMode, StreamName};
 use rdlt_engine::{Engine, Env as _, PipelinePlan, Report, StreamPlan, Until};
+use rdlt_wire::Limits;
 
 use crate::canary::Canary;
 use crate::destination::{Digest, committed_next, completions, reads_in_progress};
 use crate::env::SimEnv;
-use crate::network::{self, Net, Placing, Serving, run_networked};
+use crate::network::{Net, Serving, run_networked};
+use crate::placing::Placing;
 use crate::reached::{Reach, Reached};
 use crate::rng::SplitMix64;
 use crate::seed::{Seed, run, run_threaded};
@@ -89,6 +91,36 @@ pub fn stress(seed: Seed) {
     });
 }
 
+/// The heap `seed`'s attempts may hold, and where its connectors are placed apart from the engine,
+/// where they are, drawn from `rng`, their secrets `canary`'s and their connections' limits
+/// `limits`.
+fn placed(
+    seed: Seed,
+    world: &World,
+    inline: bool,
+    net: Option<Arc<Net>>,
+    rng: &mut SplitMix64,
+    limits: Limits,
+    canary: &Canary,
+) -> (Option<u64>, Option<Placing>) {
+    let features = world.workload.features;
+    // Played connectors share this thread with the engine as networked ones do, and their reads
+    // cross the wire too; a hostile host attacks only those on the network.
+    let apart = net.is_some() || features.process;
+    let hostile = features.hostile && net.is_some();
+    let allowance = memory::allowance(seed, inline, apart, hostile);
+    let placing = Placing::drawn(
+        seed,
+        features.process,
+        net,
+        rng,
+        limits,
+        canary,
+        Serving::Rows,
+    );
+    (allowance, placing)
+}
+
 /// Checks the exactly-once guarantee for the workload `seed` generates, with the connectors on
 /// `net` when there is one, and in this process otherwise, its connectors' calls hanging now and
 /// then where `hangs`, which only a simulated clock waits out at once.
@@ -116,10 +148,9 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>, hangs: bo
     );
     let (limits, budget) = (config.limits(), config.memory().get());
     let partitions = u64::try_from(config.partitions().get()).unwrap_or(u64::MAX);
-    let hostile = world.workload.features.hostile;
-    let allowance = memory::allowance(seed, env.inline(), net.is_some(), hostile);
+    let inline = env.inline();
+    let (allowance, placing) = placed(seed, &world, inline, net, &mut rng, limits, &canary);
     world.press(pressed(seed, &config, &world.workload, small_log(&config)));
-    let placing = net.map(|net| Placing::new(net, &network::options(&mut rng, limits), &canary));
     let mut simulation = Simulation {
         seed,
         engine: Engine::new(config, env),
@@ -162,7 +193,8 @@ struct Simulation {
     name: String,
     world: Arc<World>,
     engine: Engine,
-    /// Where the connectors are placed, when they listen on a simulated network.
+    /// Where the connectors are placed apart from the engine: on a simulated network or in played
+    /// processes.
     placing: Option<Placing>,
     relaxed: Vec<Relaxed>,
     /// Bytes: the engine's memory budget, which no run reserves more than.
@@ -200,6 +232,9 @@ impl Simulation {
     fn violations(&self) -> Vec<String> {
         let mut violations = self.world.violations();
         violations.extend(self.placing.iter().flat_map(Placing::stall_violations));
+        // A played process is no group of this process's: none is listed among those it spawned.
+        let listed = !rdlt_host::spawned().is_empty();
+        violations.extend(listed.then(|| "a played process was listed".to_owned()));
         violations
     }
 
@@ -273,7 +308,8 @@ impl Simulation {
             };
             runs += 1;
             let clean = !(disrupted && (features.faults || features.disruptions));
-            // Drawn only where the network is, so every other seed draws as it always has.
+            // Drawn only where the connectors are placed apart, so every other seed draws as it always
+            // has.
             let network = (disrupted && features.faults && self.placing.is_some())
                 .then(|| SplitMix64::new(draws.next_u64()));
             let ran = self
@@ -335,20 +371,22 @@ impl Simulation {
         let attacking = SplitMix64::new(self.seed.value() ^ HOSTILE ^ self.attacks);
         let placing = self.placing.as_ref();
         let executing = execute_all(&self.engine, plans, &self.name, placing, scenario);
-        let hostile = placing.filter(|_| self.world.workload.features.hostile);
+        let hostile = placing
+            .and_then(Placing::networked)
+            .filter(|_| self.world.workload.features.hostile);
         let (world, name) = (&self.world, self.name.as_str());
         // A hostile host attacks the connectors beside the runs; where the run is clean, the
         // network is healed and its answers are judged.
         let attacked = async {
             match hostile {
-                Some(placing) => {
-                    Box::pin(placing.attacking(attacking, world, name, clean, executing)).await
+                Some(networked) => {
+                    Box::pin(networked.attacking(attacking, world, name, clean, executing)).await
                 }
                 None => executing.await,
             }
         };
         let executed = match (placing, network) {
-            (Some(placing), Some(rng)) => placing.disrupting(rng, attacked).await,
+            (Some(placing), Some(rng)) => Box::pin(placing.disrupting(rng, attacked)).await,
             _ => attacked.await,
         };
         if let Some((window, weight)) = measuring {

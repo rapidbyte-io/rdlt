@@ -39,6 +39,8 @@ mod network;
 mod objects;
 mod oracle;
 mod owners;
+mod placing;
+mod process;
 mod reached;
 mod rng;
 mod seed;

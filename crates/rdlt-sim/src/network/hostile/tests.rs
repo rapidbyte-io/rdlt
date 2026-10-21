@@ -9,7 +9,7 @@ use super::factories::{Asked, Counted};
 use super::window::{HOLDERS, PREFIX, Raw, SETTLE, Write};
 use super::{Attack, Attacker, PATIENCE};
 use crate::canary::Canary;
-use crate::network::{Net, Placing, Serving, Side, options, run_networked};
+use crate::network::{Net, Networked, Serving, Side, options, run_networked};
 use crate::oracle::Window;
 use crate::rng::SplitMix64;
 use crate::seed::Seed;
@@ -98,7 +98,7 @@ fn serving_meets_every_attack_of_a_hostile_host_as_the_protocol_says() {
             let mut rng = SplitMix64::new(7);
             let name = "hostile-attacks";
             let registered = World::register(name, &mut rng);
-            let placing = Placing::new(
+            let placing = Networked::new(
                 net,
                 &options(&mut rng, Limits::default()),
                 &Canary::of(name),
@@ -144,7 +144,7 @@ fn a_write_waiting_for_room_holds_the_frame_it_read_and_no_copy_of_it() {
         move |_env, net| async move {
             let mut rng = SplitMix64::new(7);
             let canary = Canary::of("hostile-heap");
-            let placing = Placing::new(net, &options(&mut rng, Limits::default()), &canary);
+            let placing = Networked::new(net, &options(&mut rng, Limits::default()), &canary);
             let wire = placing
                 .wire(Side::Destination)
                 .await
@@ -207,7 +207,7 @@ fn serving_lets_go_of_writes_cut_behind_a_full_window_and_of_their_connection() 
         move |_env, net| async move {
             let mut rng = SplitMix64::new(7);
             let canary = Canary::of("hostile-release");
-            let placing = Placing::new(net, &options(&mut rng, Limits::default()), &canary);
+            let placing = Networked::new(net, &options(&mut rng, Limits::default()), &canary);
             let serving = || {
                 placing
                     .hosts()
@@ -268,7 +268,7 @@ fn a_write_with_room_is_seen_answered_and_then_ends() {
         move |_env, net| async move {
             let mut rng = SplitMix64::new(7);
             let canary = Canary::of("hostile-answered");
-            let placing = Placing::new(net, &options(&mut rng, Limits::default()), &canary);
+            let placing = Networked::new(net, &options(&mut rng, Limits::default()), &canary);
             let wire = placing
                 .wire(Side::Destination)
                 .await
