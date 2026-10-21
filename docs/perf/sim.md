@@ -1,8 +1,9 @@
 # Simulation throughput
 
-How fast the simulation checks seeds. The local sweep's rows were measured with this change on
-`90ce76c2`, the coverage run's and CI's rows at `590f7ff3`. `just sim-rate` checks the reference
-rate every night against the floor below.
+How fast the simulation checks seeds. The local rows were measured on `b2bda30d` against
+`c69b15e1`, the parent of its first commit; the CI rows are `c69b15e1`'s jobs scaled by the local
+ratio until a pull request's own run replaces them. `just sim-rate`
+checks the reference rate every night against the floor below.
 
 ## Method
 
@@ -25,14 +26,18 @@ rate every night against the floor below.
 
 | Measure | Value |
 |---|---|
-| Exactly-once sweep, seeds 0-399, four P-cores | 38.0 seeds/s (10.53 s), at most 328 MiB resident |
-| Exactly-once sweep, seeds 0-399, one P-core | 10.7 seeds/s |
-| Per seed, seeds 0-399, one thread | 94 ms mean, 1 217 ms max |
-| Network seeds, seeds 0-399 | 25 % of seeds, 46 % of wall time |
-| Hostile networked seeds, seeds 0-999, this change on `9ff145dd` | 13.3 % of seeds, 22.0 % of wall time; the sweep 93 % of the parent's rate, interleaved rounds at a load of 6-9 |
+| Exactly-once sweep, seeds 0-999, four P-cores | 19.5 seeds/s (51.4 s), against 22.8 on the parent |
+| Change sweep, seeds 0-999, four P-cores | 79.7 seeds/s (12.6 s), against 154.3 on the parent |
+| Both sweeps together, seeds 0-999 | 64.0 s, 1.27 times the parent's 50.4 s |
+| Replay of both oracles, 1 000 seeds, four P-cores | 134.3 s (7.4 seeds/s), `just sim-replay` |
+| Replay tests of the test job, dev profile | 83.3 s and 93.8 s, against 54.4 s |
+| Hostile networked seeds, seeds 0-999, `9ff145dd` | 13.3 % of seeds, 22.0 % of wall time; the sweep 93 % of the parent's rate, interleaved rounds at a load of 6-9 |
 | Network seeds' steps in settling's fixed second, seeds 0-999, `90ce76c2` | 36.1 %, all after the last task ended |
-| Coverage run, 1 000 seeds, four P-cores | 7.6 min (456 s) |
-| Exactly-once sweep, a pull request's shard of 5 000 seeds, ubuntu-24.04 | 14.2 seeds/s median of 60 shards (12.5-27.6) |
-| Test job, Linux / macOS | 17.1 min (10.9-17.4) / 18.1 min (17.8-18.6), three runs |
+| Pull request shards | 40 of 2 500 seeds, about 9.4 min of 15 (the parent's 20 of 5 000 took up to 14.7 min) |
+| Exactly-once sweep, a pull request's shard, ubuntu-24.04 | about 6.6 seeds/s median, estimated (the parent's 20 shards: 7.8 median, 7.3-14.3) |
+| Nightly shards | 80 of 12 500 seeds, about 44 min of 70 (the parent's 40 of 25 000 took up to 69 min) |
+| Coverage run, CI | about 36 min of 60, estimated from the parent's 28.4 min |
+| Replay job, CI | about 7 min of 30, estimated from the local time |
+| Test job, Linux | about 2 min more than the parent's 22.7 min, estimated |
 | Archive extraction per shard | 0.1 s |
-| Nightly floor for the reference set | 7 seeds/s, half the shards' median |
+| Nightly floor for the reference set | 3 seeds/s, the whole number below half the shards' estimated median |
