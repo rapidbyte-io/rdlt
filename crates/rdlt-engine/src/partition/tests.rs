@@ -1,8 +1,31 @@
-use rdlt_connector::{Cursor, PartitionState, SegmentId};
+use std::num::NonZeroUsize;
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use std::time::{Duration, UNIX_EPOCH};
+
+use rdlt_connector::{
+    Capabilities, ConnectContext, Cursor, LoadId, OpenContext, Partition, PartitionId,
+    PartitionState, PipelineId, SegmentId, StreamName, destination_factory, source_factory,
+};
+use rdlt_connector_reference::{GeneratorSource, MemoryDestination};
+use serde_json::json;
+use tokio_util::sync::CancellationToken;
 
 use super::coalesce::Coalescer;
-use super::{CursorHold, Ingested, OpenSegment, end_state};
+use super::{
+    CursorHold, Ingested, LoadClock, OpenSegment, PartitionContext, PartitionJob, Progress, Slots,
+    end_state,
+};
+use crate::budget::MemoryBudget;
+use crate::compute::Pool;
 use crate::config::BatchPolicy;
+use crate::env::{Env, InlineEnv};
+use crate::lane::Lanes;
+use crate::table::{SharedSession, Tables};
+use crate::watch;
+
+/// Bounds every wait of a check; a request waits on the budget far longer.
+const WAIT: Duration = Duration::from_secs(1);
 
 /// A read that ended with `received` rows after its last cursor, `written` of them written.
 fn received(received: u64, written: u64, cursor: Option<u64>) -> Ingested {
@@ -103,12 +126,115 @@ fn a_sealed_segment_carries_its_rows_state_and_discards() {
 async fn a_cursors_hold_shows_the_bytes_it_holds() {
     let budget = crate::budget::budget(1 << 20);
     let cursor = Cursor::new(1, b"abc").unwrap();
-    let cancel = tokio_util::sync::CancellationToken::new();
+    let cancel = CancellationToken::new();
     let held = CursorHold::reserve(&budget, &cancel, &PartitionState::Cursor(cursor))
         .await
         .unwrap();
     assert_eq!(format!("{held:?}"), "CursorHold(3)");
     assert_eq!(format!("{:?}", CursorHold::default()), "CursorHold(0)");
+}
+
+#[tokio::test(start_paused = true)]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the test bounds its wait on tokio's paused clock directly"
+)]
+async fn a_read_ending_at_its_last_cursor_holds_that_cursor_in_the_cursors_share() {
+    let budget = MemoryBudget::new(64 << 20, Arc::new(InlineEnv), Duration::from_secs(60));
+    let source = source_factory::<GeneratorSource>()
+        .connect(
+            json!({ "seed": 1, "streams": [{ "name": "events", "rows": 10 }] }),
+            ConnectContext::new(),
+        )
+        .await
+        .expect("the generator connects");
+    let (progress, mut told) = tokio::sync::mpsc::unbounded_channel();
+    let context = PartitionContext {
+        source: Arc::from(source),
+        progress,
+        ..on_pool(budget.clone(), Pool::inline()).await
+    };
+    // Resumed past the partition's last row, the read sends nothing and ends where it resumed.
+    let cursor = Cursor::encode(1, &json!({ "next": 10 })).unwrap();
+    let job = PartitionJob {
+        index: 0,
+        stream: StreamName::new("events").unwrap(),
+        table: 0,
+        partition: Partition::new(PartitionId::parse("0").unwrap()),
+        cursor: Some(cursor.clone()),
+        on_demand: false,
+        changes: None,
+        stop: CancellationToken::new(),
+        follow: false,
+        reset_retention: false,
+    };
+    let ran = tokio::time::timeout(WAIT, super::run(job, Arc::new(context))).await;
+    ran.expect("the read ends in time")
+        .expect("the read succeeds");
+    let seal = std::iter::from_fn(|| told.try_recv().ok())
+        .find_map(|progress| match progress {
+            Progress::Sealed(seal) => Some(seal),
+            _ => None,
+        })
+        .expect("the read seals where it ended");
+    assert_eq!(seal.state, PartitionState::Cursor(cursor.clone()));
+    let bytes = u64::try_from(cursor.bytes().len()).unwrap();
+    assert_eq!((seal.held.bytes(), budget.reserved()), (bytes, bytes));
+    drop(seal);
+    assert_eq!(budget.reserved(), 0);
+}
+
+/// A partition's context over `budget` whose jobs run on `pool`, its source never called and its
+/// lanes ended.
+pub(super) async fn on_pool(budget: MemoryBudget, pool: Pool) -> PartitionContext {
+    let env: Arc<dyn Env> = Arc::new(InlineEnv);
+    let source = source_factory::<GeneratorSource>()
+        .connect(json!({ "seed": 1, "streams": [] }), ConnectContext::new())
+        .await
+        .expect("the generator connects");
+    let destination = destination_factory::<MemoryDestination>()
+        .connect(json!({ "store": "units" }), ConnectContext::new())
+        .await
+        .expect("the destination connects");
+    let load_id = LoadId::from_parts(UNIX_EPOCH, 1);
+    let open = OpenContext {
+        pipeline: PipelineId::parse("units").expect("a valid pipeline id"),
+        load_id,
+    };
+    let opened = destination.open(&open).await.expect("the session opens");
+    let tables = Arc::new(Tables::new(SharedSession::new(opened.session)));
+    let writers = crate::config::GrowthLimits::default().writers();
+    let (lanes, _) = Lanes::new(
+        (NonZeroUsize::MIN, writers),
+        &tables,
+        NonZeroUsize::MIN,
+        &budget,
+        (&env, &Arc::default()),
+    );
+    let (progress, _) = tokio::sync::mpsc::unbounded_channel();
+    let (_, barrier) = watch::channel(0);
+    PartitionContext {
+        source: Arc::from(source),
+        lanes,
+        tables,
+        budget,
+        rendering: Arc::new(crate::cost::rendering(&Capabilities::minimal())),
+        progress,
+        latest: Arc::default(),
+        barrier,
+        stop: CancellationToken::new(),
+        cancel: CancellationToken::new(),
+        slots: Slots::new(NonZeroUsize::MIN),
+        segments: Arc::new(AtomicU64::new(1)),
+        buffer: NonZeroUsize::MIN,
+        load_id,
+        clock: Arc::new(LoadClock::new(UNIX_EPOCH)),
+        env: Arc::clone(&env),
+        pool,
+        batch: BatchPolicy::default(),
+        stop_wait: Duration::from_secs(60),
+        wal: None,
+    }
 }
 
 /// A clock reading what a list says, in turn, then its last reading.
@@ -117,7 +243,7 @@ struct Readings(
     crate::env::SystemEnv,
 );
 
-impl crate::env::Env for Readings {
+impl Env for Readings {
     fn now(&self) -> std::time::SystemTime {
         let mut readings = self.0.lock();
         if readings.len() > 1 {
@@ -131,7 +257,7 @@ impl crate::env::Env for Readings {
         self.1.instant()
     }
 
-    fn sleep(&self, duration: std::time::Duration) -> crate::env::Sleep {
+    fn sleep(&self, duration: Duration) -> crate::env::Sleep {
         self.1.sleep(duration)
     }
 
@@ -143,21 +269,20 @@ impl crate::env::Env for Readings {
         self.1.compute()
     }
 
-    fn cores(&self) -> std::num::NonZeroUsize {
+    fn cores(&self) -> NonZeroUsize {
         self.1.cores()
     }
 }
 
 #[test]
 fn a_load_s_batches_are_received_in_order_whatever_the_clock_reads() {
-    use std::time::{Duration, UNIX_EPOCH};
     let at = |seconds: u64| UNIX_EPOCH + Duration::from_secs(seconds);
     let readings = [at(5), at(20), at(10), at(30)];
     let env = Readings(
         parking_lot::Mutex::new(readings.to_vec()),
         crate::env::SystemEnv::one_core(),
     );
-    let clock = super::LoadClock::new(at(10));
+    let clock = LoadClock::new(at(10));
     let received: Vec<_> = (0..4).map(|_| clock.received(&env)).collect();
     assert_eq!(received, [at(10), at(20), at(20), at(30)]);
     assert_eq!(clock.started(), at(10));
