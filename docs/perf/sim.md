@@ -26,10 +26,10 @@ the reference rate every night against the floor below.
 
 | Measure | Value |
 |---|---|
-| Exactly-once sweep, seeds 0-999, four P-cores | 17.1 seeds/s (58.4 s), against 22.8 on the parent |
-| Change sweep, seeds 0-999, four P-cores | 71.1 seeds/s (14.1 s), against 154.3 on the parent |
-| Both sweeps together, seeds 0-999 | 72.5 s, 1.44 times the parent's 50.4 s |
-| Replay of both oracles, 1 000 seeds, four P-cores | 141.6 s (7.1 seeds/s), `just sim-replay` |
+| Exactly-once sweep, seeds 0-999, four P-cores | 18.4 seeds/s (54.5 s), against 22.8 on the parent |
+| Change sweep, seeds 0-999, four P-cores | 72.5 seeds/s (13.8 s), against 154.3 on the parent |
+| Both sweeps together, seeds 0-999 | 68.3 s, 1.36 times the parent's 50.4 s |
+| Replay of both oracles, 1 000 seeds, four P-cores | 139.1 s (7.2 seeds/s), `just sim-replay` |
 | Replay tests of the test job, dev profile | 83.3 s and 93.8 s, against 54.4 s |
 | Pull request shards | 40 of 2 500 seeds, 5.5-10.0 min of 15 each on CI, estimated from the shards before played processes (4.8-8.8 min; `d28d458f`'s 25 of 4 000 took up to 11.6 min); no more than about 8 of a run's jobs start together, so the shards took 21 min from the first start to the last end |
 | Exactly-once sweep, a pull request's shard, ubuntu-24.04 | 6.3 seeds/s median, 5.8-11.3 over 40 shards, estimated from 7.2 and 6.6-12.9 before played processes (`d28d458f`'s 25 shards: 7.7 median, 7.3-14.6) |
@@ -40,4 +40,4 @@ the reference rate every night against the floor below.
 | Test job, ubuntu-24.04 | 18.2 min of 45 on one run (the parent's took up to 24.4 min) |
 | Test job, macos-15 | 23.7 min of 45 on one run (the parent's took up to 27.3 min, and its replay test 107-124 s) |
 | Archive extraction per shard | 0.1 s |
-| Nightly floor for the reference set | 4 seeds/s, the whole number below half the reference job's rate: 12.0 seeds/s on `d28d458f`, about 9.0 at this branch's local ratio (17.1 / 22.8), estimated |
+| Nightly floor for the reference set | 4 seeds/s, the whole number below half the reference job's rate: 12.0 seeds/s on `d28d458f`, about 9.7 at this branch's local ratio (18.4 / 22.8), estimated, so half is 4.8 |
