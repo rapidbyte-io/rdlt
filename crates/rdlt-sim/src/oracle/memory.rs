@@ -25,9 +25,10 @@ pub(super) use trace::{Rise, Tracing};
 /// Fat values do not raise it: the data they add is smaller than this fixed overhead.
 const IN_PROCESS: u64 = 13 << 20;
 
-/// Bytes: as [`IN_PROCESS`], where the connectors listen on the simulated network and their
-/// hosts share the thread; what their reads hold between the source and the engine is counted
-/// beside it, by [`QUEUED`] and the credit floor.
+/// Bytes: as [`IN_PROCESS`], where the connectors are served apart from the engine, on the
+/// simulated network or in played processes, and their hosts share the thread; what their reads
+/// hold between the source and the engine is counted beside it, by [`QUEUED`] and the credit
+/// floor.
 const NETWORK: u64 = 11 << 20;
 
 /// Events a read over the network may hold beyond the push its source is sending, each place
@@ -40,14 +41,15 @@ const NETWORK: u64 = 11 << 20;
 const QUEUED: u64 = 1 + 16 + 2 + 1;
 
 /// Bytes: the allowance of `seed`'s attempts, where its work is `inline` on one thread and its
-/// connectors listen on the network where `network`; `None` where nothing is measured, among them
-/// a networked seed with a `hostile` host, whose heap shares the thread with the engine's.
+/// connectors are served apart from the engine on its thread, on the network or in played
+/// processes, where `apart`; `None` where nothing is measured, among them a networked seed with a
+/// `hostile` host, whose heap shares the thread with the engine's.
 ///
 /// # Panics
 ///
 /// Panics where the binary's allocator counts nothing.
-pub(super) fn allowance(seed: Seed, inline: bool, network: bool, hostile: bool) -> Option<u64> {
-    if !inline || (network && hostile) {
+pub(super) fn allowance(seed: Seed, inline: bool, apart: bool, hostile: bool) -> Option<u64> {
+    if !inline || (apart && hostile) {
         return None;
     }
     assert!(
@@ -55,7 +57,7 @@ pub(super) fn allowance(seed: Seed, inline: bool, network: bool, hostile: bool) 
         "seed {seed}: the test binary counts no allocations: it needs alloc_tracker's Allocator \
          as its global allocator"
     );
-    Some(if network { NETWORK } else { IN_PROCESS })
+    Some(if apart { NETWORK } else { IN_PROCESS })
 }
 
 /// Bytes: what `reads` reads over the network hold beyond the pushes their source is sending,

@@ -14,7 +14,7 @@ use super::refusals::Failure;
 use crate::canary::Canary;
 use crate::changes::SimChangeSource;
 use crate::destination::SimDestination;
-use crate::network::Placing;
+use crate::placing::Placing;
 use crate::reached::Reach;
 use crate::rng::SplitMix64;
 use crate::source::SimSource;
@@ -59,7 +59,8 @@ pub(super) fn pick(rng: &mut SplitMix64, length: Option<Duration>) -> Scenario {
 }
 
 /// Starts a run of `plan` against the world registered as `world`, its connectors placed by
-/// `placing` on a simulated network where there is one, and in this process otherwise.
+/// `placing` where there is one, on a simulated network or in played processes, and in this
+/// process otherwise.
 pub(super) async fn start(
     engine: &Engine,
     plan: &PipelinePlan,

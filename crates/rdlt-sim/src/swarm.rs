@@ -28,6 +28,9 @@ const FAT: u64 = 0x0066_6174;
 /// attempt's: "hostile" in ASCII.
 pub(crate) const HOSTILE: u64 = 0x0068_6f73_7469_6c65;
 
+/// What process placement's draw mixes into the seed's generator: "process" in ASCII.
+const PROCESS: u64 = 0x0070_726f_6365_7373;
+
 /// Which of the simulation's features one seed exercises.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[expect(
@@ -71,6 +74,11 @@ pub struct Features {
     /// mutual TLS rather than run in the engine's process; with faults, the network partitions
     /// and holds messages, and the connectors crash and stop.
     pub network: bool,
+    /// Connectors placed in processes of their own through the host's process placement, whose
+    /// processes the simulation plays in the engine's: each says its configuration's canary on
+    /// its output, and with faults they are killed, stall and end by themselves; never beside
+    /// the network, which places them otherwise.
+    pub process: bool,
     /// Pipelines that keep write-ahead logs, whose incremental and change streams, every other
     /// one, cannot read again what they acknowledged; crashes tear the logs' unsynced tails.
     pub wal: bool,
@@ -115,6 +123,7 @@ impl Features {
         shared: true,
         perturb: true,
         network: true,
+        process: false,
         wal: true,
         objects: true,
         streaming: true,
@@ -125,11 +134,12 @@ impl Features {
 
     /// The features one seed exercises: every feature one time in eight, else each on or off by
     /// a coin, drift more often than not, the network, the write-ahead log, streaming and
-    /// resetting one time in four each, the log's object store and a hostile host one time in two
-    /// each, and fat values one time in four where no log is kept.
+    /// resetting one time in four each, process placement one time in four of the seeds the
+    /// network leaves, the log's object store and a hostile host one time in two each, and fat
+    /// values one time in four where no log is kept.
     ///
-    /// The network, the log and its store, streaming, resetting, fat values and a hostile host
-    /// are drawn apart from the rest, from the value the next draw takes but without taking it,
+    /// The network, process placement, the log and its store, streaming, resetting, fat values and
+    /// a hostile host are drawn apart from the rest, from the value the next draw takes but without taking it,
     /// so a seed's workload is the same over either transport, logged or not and in either store,
     /// streamed or not, reset or not, and with fat values or without but for those values.
     pub fn draw(rng: &mut SplitMix64) -> Self {
@@ -141,9 +151,11 @@ impl Features {
         let objects = SplitMix64::new(next ^ OBJECT_STORE).chance(500);
         let fat = !wal && SplitMix64::new(next ^ FAT).chance(250);
         let hostile = SplitMix64::new(next ^ HOSTILE).chance(500);
+        let process = !network && SplitMix64::new(next ^ PROCESS).chance(250);
         if rng.chance(125) {
             return Self {
                 network,
+                process,
                 wal,
                 objects,
                 streaming,
@@ -169,6 +181,7 @@ impl Features {
             shared: rng.chance(500),
             perturb: rng.chance(500),
             network,
+            process,
             wal,
             objects,
             streaming,

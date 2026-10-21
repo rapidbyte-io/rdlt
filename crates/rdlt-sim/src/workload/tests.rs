@@ -497,6 +497,7 @@ const NONE: Features = Features {
     shared: false,
     perturb: false,
     network: false,
+    process: false,
     wal: false,
     objects: false,
     streaming: false,

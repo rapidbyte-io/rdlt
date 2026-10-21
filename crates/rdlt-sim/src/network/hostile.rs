@@ -20,7 +20,7 @@ use rdlt_host::remote::Client;
 use rdlt_wire::tonic::{Response, Status};
 use rdlt_wire::{Limits, PROTOCOL_MAJOR};
 
-use super::{Placing, Side, reference};
+use super::{Networked, Side, reference};
 use crate::destination::SimDestination;
 use crate::reached::Reach;
 use crate::rng::SplitMix64;
@@ -71,13 +71,13 @@ impl Attack {
 /// A hostile host making one attack: where it dials, the world it names and records findings in,
 /// and whether the network is healed, so every call must be answered as the protocol says.
 struct Attacker<'a> {
-    placing: &'a Placing,
+    placing: &'a Networked,
     world: &'a World,
     name: &'a str,
     strict: bool,
 }
 
-impl Placing {
+impl Networked {
     /// Runs `work` while a hostile host makes the attack `rng` draws on the connectors' serving.
     ///
     /// What breaks is recorded in `world`, registered as `name`. Where `strict`, the network is

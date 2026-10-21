@@ -12,7 +12,7 @@ use tokio::runtime::Handle;
 
 use super::{LOOK, OUTLIVED, alive, released, served_outlived, settle};
 use crate::canary::Canary;
-use crate::network::{Placing, Serving, options, run_networked};
+use crate::network::{Networked, Serving, options, run_networked};
 use crate::owners::Live;
 use crate::rng::SplitMix64;
 use crate::seed::{Seed, run};
@@ -211,7 +211,7 @@ fn a_served_writer_whose_write_hangs_ends_once_its_host_lets_it_go() {
         world.hang_at(FaultPoint::Write);
         let canary = Canary::of(name);
         let config = canary.config();
-        let placing = Placing::new(net, &options(&mut rng, Limits::default()), &canary);
+        let placing = Networked::new(net, &options(&mut rng, Limits::default()), &canary);
         let destination = placing.destination(&config, false).await;
         let context = OpenContext {
             pipeline: PipelineId::parse("released").expect("a valid pipeline id"),

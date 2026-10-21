@@ -113,14 +113,20 @@ fn a_seed_whose_rows_only_the_log_held_passes() {
 }
 
 /// A seed's attempts are measured, so the check cannot switch itself off: its timing line records
-/// what the worst held beyond its charge and, over the network, what its reads hold.
+/// what the worst held beyond its charge and, where the connectors are placed apart, what its reads
+/// hold.
 #[test]
-fn attempts_are_measured_in_process_and_over_the_network() {
-    for (seed, network) in [(1, false), (508, true)] {
-        assert_eq!(Features::draw(&mut SplitMix64::new(seed)).network, network);
+fn attempts_are_measured_in_process_over_the_network_and_in_played_processes() {
+    for (seed, network, process) in [(0, false, false), (508, true, false), (1, false, true)] {
+        let features = Features::draw(&mut SplitMix64::new(seed));
+        assert_eq!((features.network, features.process), (network, process));
         let recorded = check_exactly_once(Seed::new(seed)).recorded();
         let bytes = |name: &str| recorded[name].as_u64().expect("every term is recorded");
         assert!(bytes("held_bytes") > 0, "{recorded:?}");
-        assert_eq!(bytes("queued_bytes") > 0, network, "{recorded:?}");
+        assert_eq!(
+            bytes("queued_bytes") > 0,
+            network || process,
+            "{recorded:?}"
+        );
     }
 }
