@@ -265,6 +265,17 @@ module replan_protocol {
   /// run crashes first and the next reads them again.
   temporal RemovedDrains = weakFair(commit, vars).implies(PARTS.forall(p => draining(p).leadsTo(not(draining(p)))))
 
+  /// Whether the reads of `p` follow what the source names: a partition it names has a read
+  /// running, and one it does not has none.
+  def follows(p: str): bool =
+    if (named.contains(p)) readsOf(p).exists(r => not(r.stopped) and not(r.ended))
+    else readsOf(p).forall(r => r.stopped or r.ended)
+
+  /// Plans follow the source: a partition it names is started, and read again once a read of it
+  /// that stopped or ended gave its place up, and a partition it no longer names is stopped.
+  temporal PlansFollowTheSource =
+    (weakFair(replan, vars) and weakFair(commit, vars)).implies(PARTS.forall(p => not(follows(p)).leadsTo(follows(p))))
+
   // ---- Tests
 
   /// The read of `p` reads its next row.
