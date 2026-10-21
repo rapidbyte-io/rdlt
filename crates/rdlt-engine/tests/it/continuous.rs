@@ -351,6 +351,35 @@ async fn a_following_run_stops_the_partitions_its_source_no_longer_plans() {
     assert!((2..=2 + 4).contains(&counts[2]), "{counts:?}");
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_partition_a_plan_drops_and_names_again_reads_on_from_where_it_was_committed() {
+    let source = log(
+        "returned",
+        json!({
+            "name": "events", "partitions": 3, "messages": 2, "per_second": 4,
+            "partitions_retired": 1, "retired_after_ms": 500,
+            "partitions_later": 1, "later_after_ms": 1_500,
+        }),
+    )
+    .await;
+    let plan = pipeline("returned", [incremental()]).with_until(Until::For(Duration::from_secs(3)));
+    // A dropped partition is read again once its last rows are committed.
+    let every = CommitPolicy::new(Some(Duration::from_millis(100)), None, None)
+        .expect("an interval is valid");
+    let outcome = engine(following().commit(every))
+        .run(plan, source, memory("returned").await)
+        .await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    let counts = exactly_once("returned", "returned", 3).await;
+    // Named again, the returned partition read on past what it read before it went.
+    assert!(counts[2] > 2 + 4, "{counts:?}");
+}
+
 /// A source whose every read fails, as one whose broker is down does.
 struct Down(Arc<dyn Source>);
 
