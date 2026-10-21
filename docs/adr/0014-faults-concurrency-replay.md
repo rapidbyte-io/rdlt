@@ -90,7 +90,8 @@ The owner chose to keep all of this in one milestone.
   hashed; not those of the runs that then check the engine's reports, whose times h2 moves over the
   network, ADR 0019), and the simulated time they took. A test runs each seed of both twice, one run
   after the other, and requires the same digests, traces, waits, features, reached paths and
-  simulated time (a networked seed's end time apart, ADR 0019). The test job runs twenty seeds, and
+  simulated time (the end time of a networked seed, or of one whose connectors are played in
+  processes, apart, ADR 0019). The test job runs twenty seeds, and
   the nightly workflow a thousand through `just sim-replay`; a mismatch replays with
   `just sim-replay <seed>`.
 - **Kept seeds name their path.** A seed kept because it found a defect names the path its defect
