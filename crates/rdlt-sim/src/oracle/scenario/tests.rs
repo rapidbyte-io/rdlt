@@ -35,5 +35,5 @@ fn a_disruption_lands_within_the_length_of_the_last_run_that_succeeded() {
     assert!(!unknown.is_empty() && unknown.iter().all(|after| *after < Duration::from_secs(2)));
     // A run too short to measure still gets a disruption, at its start.
     let instant = landings(Some(Duration::ZERO));
-    assert!(!instant.is_empty() && instant.iter().all(|after| after.is_zero()));
+    assert!(!instant.is_empty() && instant.iter().all(Duration::is_zero));
 }
