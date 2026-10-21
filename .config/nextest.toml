@@ -33,7 +33,7 @@ slow-timeout = { period = "60s" }
 
 # The simulation tests that run seeds side by side take every core: nothing runs beside them.
 [[profile.default.overrides]]
-filter = "package(rdlt-sim) & binary(it) & (test(through_faults) | test(=exactly_once::seeds_that_once_found_a_defect_pass) | test(/^determinism::(every_seed_replays_alike|a_seed_over_a_faulty_network)/) | test(=hostile::a_hostile_host_meets_typed_refusals_and_no_secret_leaves_the_engine_or_its_host) | test(many_threads))"
+filter = "package(rdlt-sim) & binary(it) & (test(through_faults) | test(=exactly_once::seeds_that_once_found_a_defect_pass) | test(/^determinism::(every_seed_replays_alike|a_seed_over_a_faulty_network|a_seed_placed_in_played)/) | test(=hostile::a_hostile_host_meets_typed_refusals_and_no_secret_leaves_the_engine_or_its_host) | test(many_threads))"
 threads-required = "num-test-threads"
 
 # Comparing records of optional fields with dense ones loads 384,000 rows four times: about 30 s
