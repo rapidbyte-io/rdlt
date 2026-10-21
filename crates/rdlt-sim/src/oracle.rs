@@ -28,7 +28,7 @@ use rdlt_engine::{Engine, Env as _, PipelinePlan, Report, StreamPlan, Until};
 use crate::canary::Canary;
 use crate::destination::{Digest, committed_next, completions, reads_in_progress};
 use crate::env::SimEnv;
-use crate::network::{self, Net, Placing, run_networked};
+use crate::network::{self, Net, Placing, Serving, run_networked};
 use crate::reached::{Reach, Reached};
 use crate::rng::SplitMix64;
 use crate::seed::{Seed, run, run_threaded};
@@ -62,9 +62,12 @@ const FAULTY_RUNS: usize = 4;
 pub fn check_exactly_once(seed: Seed) -> Checked {
     let features = Features::draw(&mut SplitMix64::new(seed.value()));
     if features.network {
-        run_networked(seed, features.hostile, move |env, net| async move {
-            Box::pin(simulate(seed, env, Some(net), true)).await
-        })
+        run_networked(
+            seed,
+            Serving::Rows,
+            features.hostile,
+            move |env, net| async move { Box::pin(simulate(seed, env, Some(net), true)).await },
+        )
     } else {
         run(seed, |env| async move {
             Box::pin(simulate(seed, env, None, true)).await

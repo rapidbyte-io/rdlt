@@ -7,7 +7,7 @@ use rdlt_connector::{
     StreamName, partition_channel,
 };
 
-use super::{DRAIN, ENGINE, Placing, Side, options, run_networked};
+use super::{DRAIN, ENGINE, Placing, Serving, Side, options, run_networked};
 use crate::canary::Canary;
 use crate::rng::SplitMix64;
 use crate::seed::Seed;
@@ -15,96 +15,99 @@ use crate::world::World;
 
 #[test]
 fn connectors_on_the_simulated_network_are_placed_there_and_serve_the_engine() {
-    let (source, destination) = run_networked(Seed::new(1), false, |_env, net| async move {
-        let mut rng = SplitMix64::new(7);
-        let name = "network-placed";
-        let registered = World::register(name, &mut rng);
-        let config = Canary::of(name).config();
-        let placing = Placing::new(
-            net,
-            &options(&mut rng, rdlt_wire::Limits::default()),
-            &Canary::of(name),
-        );
-        let source = placing.source(&config, false).await.check().await;
-        let destination = placing.destination(&config, false).await.check().await;
-        drop(registered);
-        (source, destination)
-    });
+    let (source, destination) =
+        run_networked(Seed::new(1), Serving::Rows, false, |_env, net| async move {
+            let mut rng = SplitMix64::new(7);
+            let name = "network-placed";
+            let registered = World::register(name, &mut rng);
+            let config = Canary::of(name).config();
+            let placing = Placing::new(
+                net,
+                &options(&mut rng, rdlt_wire::Limits::default()),
+                &Canary::of(name),
+            );
+            let source = placing.source(&config, false).await.check().await;
+            let destination = placing.destination(&config, false).await.check().await;
+            drop(registered);
+            (source, destination)
+        });
     source.expect("the source serves its check");
     destination.expect("the destination serves its check");
 }
 
 #[test]
 fn a_disrupted_network_loses_connectors_and_the_healed_one_serves_them_again() {
-    let (lost, served) = run_networked(Seed::new(1), false, |_env, net| async move {
-        let mut rng = SplitMix64::new(7);
-        let name = "network-disrupted";
-        let registered = World::register(name, &mut rng);
-        let config = Canary::of(name).config();
-        let placing = Placing::new(
-            net,
-            &options(&mut rng, rdlt_wire::Limits::default()),
-            &Canary::of(name),
-        );
-        let source = placing.source(&config, false).await;
-        // The source is checked again and again while the network is disrupted.
-        let checks = async {
-            let mut lost = 0;
-            for _ in 0..200 {
-                if let Err(error) = source.check().await {
-                    assert_eq!(error.kind(), ConnectorErrorKind::Transient, "{error}");
-                    lost += 1;
+    let (lost, served) =
+        run_networked(Seed::new(1), Serving::Rows, false, |_env, net| async move {
+            let mut rng = SplitMix64::new(7);
+            let name = "network-disrupted";
+            let registered = World::register(name, &mut rng);
+            let config = Canary::of(name).config();
+            let placing = Placing::new(
+                net,
+                &options(&mut rng, rdlt_wire::Limits::default()),
+                &Canary::of(name),
+            );
+            let source = placing.source(&config, false).await;
+            // The source is checked again and again while the network is disrupted.
+            let checks = async {
+                let mut lost = 0;
+                for _ in 0..200 {
+                    if let Err(error) = source.check().await {
+                        assert_eq!(error.kind(), ConnectorErrorKind::Transient, "{error}");
+                        lost += 1;
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
                 }
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-            lost
-        };
-        let lost = placing.disrupting(SplitMix64::new(11), checks).await;
-        let served = placing.source(&config, false).await.check().await;
-        drop(registered);
-        (lost, served)
-    });
+                lost
+            };
+            let lost = placing.disrupting(SplitMix64::new(11), checks).await;
+            let served = placing.source(&config, false).await.check().await;
+            drop(registered);
+            (lost, served)
+        });
     assert!(lost > 0, "no check failed while the network was disrupted");
     served.expect("the healed network serves the source again");
 }
 
 #[test]
 fn a_call_the_network_held_lands_before_the_disrupted_work_is_over() {
-    let (before, after) = run_networked(Seed::new(1), false, |_env, net| async move {
-        let mut rng = SplitMix64::new(7);
-        let name = "network-held";
-        let registered = World::register(name, &mut rng);
-        let world = registered.world();
-        let config = Canary::of(name).config();
-        let placing = Placing::new(
-            net,
-            &options(&mut rng, rdlt_wire::Limits::default()),
-            &Canary::of(name),
-        );
-        let destination = placing.destination(&config, false).await;
-        let before = world.store.lock().digest();
-        // A session is opened while the network holds what the engine sends, and the work ends,
-        // leaving the open to go on, before the network heals.
-        let opening = async {
-            turmoil::hold(ENGINE, Side::Destination.host());
-            let context = OpenContext {
-                pipeline: PipelineId::parse("held").expect("valid pipeline id"),
-                load_id: LoadId::from_parts(std::time::UNIX_EPOCH, 1),
+    let (before, after) =
+        run_networked(Seed::new(1), Serving::Rows, false, |_env, net| async move {
+            let mut rng = SplitMix64::new(7);
+            let name = "network-held";
+            let registered = World::register(name, &mut rng);
+            let world = registered.world();
+            let config = Canary::of(name).config();
+            let placing = Placing::new(
+                net,
+                &options(&mut rng, rdlt_wire::Limits::default()),
+                &Canary::of(name),
+            );
+            let destination = placing.destination(&config, false).await;
+            let before = world.store.lock().digest();
+            // A session is opened while the network holds what the engine sends, and the work ends,
+            // leaving the open to go on, before the network heals.
+            let opening = async {
+                turmoil::hold(ENGINE, Side::Destination.host());
+                let context = OpenContext {
+                    pipeline: PipelineId::parse("held").expect("valid pipeline id"),
+                    load_id: LoadId::from_parts(std::time::UNIX_EPOCH, 1),
+                };
+                tokio::spawn(async move { destination.open(&context).await.map(drop) });
+                tokio::time::sleep(Duration::from_millis(2)).await;
             };
-            tokio::spawn(async move { destination.open(&context).await.map(drop) });
-            tokio::time::sleep(Duration::from_millis(2)).await;
-        };
-        placing.disrupting(SplitMix64::new(11), opening).await;
-        let after = world.store.lock().digest();
-        drop(registered);
-        (before, after)
-    });
+            placing.disrupting(SplitMix64::new(11), opening).await;
+            let after = world.store.lock().digest();
+            drop(registered);
+            (before, after)
+        });
     assert_ne!(before, after, "the session the network held was not opened");
 }
 
 #[test]
 fn a_stopped_connector_listens_again_while_a_read_its_host_holds_back_drains() {
-    let served = run_networked(Seed::new(1), false, |_env, net| async move {
+    let served = run_networked(Seed::new(1), Serving::Rows, false, |_env, net| async move {
         let mut rng = SplitMix64::new(7);
         let name = "network-drained";
         let registered = World::register(name, &mut rng);
@@ -140,7 +143,7 @@ fn a_stopped_connector_listens_again_while_a_read_its_host_holds_back_drains() {
 #[test]
 fn a_connector_whose_peer_stalls_is_lost_within_the_heartbeat_s_patience() {
     let (checked, waited, patience, violations, judged) =
-        run_networked(Seed::new(1), false, |_env, net| async move {
+        run_networked(Seed::new(1), Serving::Rows, false, |_env, net| async move {
             let mut rng = SplitMix64::new(7);
             let name = "network-stalled";
             let registered = World::register(name, &mut rng);
@@ -170,4 +173,29 @@ fn a_connector_whose_peer_stalls_is_lost_within_the_heartbeat_s_patience() {
     );
     assert!(violations.is_empty(), "{violations:?}");
     assert_eq!(judged, 1, "the stalled connection is judged once it closes");
+}
+
+#[test]
+fn a_change_world_s_source_is_placed_on_the_network_and_serves_the_engine() {
+    let checked = run_networked(
+        Seed::new(1),
+        Serving::Changes,
+        false,
+        |_env, net| async move {
+            let (mut rng, mut apart) = (SplitMix64::new(7), SplitMix64::new(8));
+            let name = "network-changes";
+            let registered = World::register_changes(name, &mut rng, &mut apart);
+            let config = Canary::of(name).config();
+            let placing = Placing::new(
+                net,
+                &options(&mut rng, rdlt_wire::Limits::default()),
+                &Canary::of(name),
+            );
+            // Placing checks the connector's id against the reference's, the change source's.
+            let checked = placing.source(&config, false).await.check().await;
+            drop(registered);
+            checked
+        },
+    );
+    checked.expect("the change source serves its check");
 }

@@ -15,7 +15,7 @@ use std::future::Future;
 use std::time::Duration;
 
 use rdlt_connector::wire::{TRANSPORT, v1};
-use rdlt_connector::{ConnectorError, ConnectorId, destination_factory, source_factory};
+use rdlt_connector::{ConnectorError, ConnectorId, destination_factory};
 use rdlt_host::remote::Client;
 use rdlt_wire::tonic::{Response, Status};
 use rdlt_wire::{Limits, PROTOCOL_MAJOR};
@@ -24,7 +24,6 @@ use super::{Placing, Side, reference};
 use crate::destination::SimDestination;
 use crate::reached::Reach;
 use crate::rng::SplitMix64;
-use crate::source::SimSource;
 use crate::world::World;
 use factories::Asked;
 pub(crate) use factories::Watch;
@@ -110,7 +109,7 @@ impl Placing {
     /// A raw connection to `side`'s connector, before its handshake; none where the dial failed.
     pub(super) async fn wire(&self, side: Side) -> Option<rdlt_host::Wire> {
         let id: ConnectorId = match side {
-            Side::Source => source_factory::<SimSource>().spec().id.clone(),
+            Side::Source => self.net.serving.factory().spec().id.clone(),
             Side::Destination => destination_factory::<SimDestination>().spec().id.clone(),
         };
         self.remote.wire(&reference(side.host(), id)).await.ok()

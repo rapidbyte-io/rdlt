@@ -12,7 +12,7 @@ use tokio::runtime::Handle;
 
 use super::{LOOK, OUTLIVED, alive, released, served_outlived, settle};
 use crate::canary::Canary;
-use crate::network::{Placing, options, run_networked};
+use crate::network::{Placing, Serving, options, run_networked};
 use crate::owners::Live;
 use crate::rng::SplitMix64;
 use crate::seed::{Seed, run};
@@ -203,7 +203,7 @@ fn rows() -> RecordBatch {
 
 #[test]
 fn a_served_writer_whose_write_hangs_ends_once_its_host_lets_it_go() {
-    let (ended, left) = run_networked(Seed::new(1), false, |_env, net| async move {
+    let (ended, left) = run_networked(Seed::new(1), Serving::Rows, false, |_env, net| async move {
         let mut rng = SplitMix64::new(7);
         let name = "released-writer";
         let registered = World::register(name, &mut rng);

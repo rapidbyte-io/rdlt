@@ -15,8 +15,8 @@ use std::task::{Context, Poll, ready};
 use std::time::Duration;
 
 use parking_lot::Mutex;
+use rdlt_connector::destination_factory;
 use rdlt_connector::serve::{Served, serve_connection};
-use rdlt_connector::{destination_factory, source_factory};
 use rdlt_wire::Limits;
 use rdlt_wire::tls::{Accepted, Hosts};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
@@ -26,7 +26,6 @@ use tokio_rustls::TlsAcceptor;
 
 use super::{DRAIN, ENGINE, Net, PORT, identity};
 use crate::destination::SimDestination;
-use crate::source::SimSource;
 
 /// The first stream whose answers are withheld: a client's streams are odd, the handshake's 1
 /// and the configuration's 3.
@@ -84,7 +83,7 @@ pub(super) async fn stall(net: Arc<Net>) -> turmoil::Result {
     let acceptor = TlsAcceptor::from(tls);
     let served = Arc::new(
         Served::new()
-            .with_source(source_factory::<SimSource>())
+            .with_source(net.serving.factory())
             .with_destination(destination_factory::<SimDestination>()),
     );
     let listener = turmoil::net::TcpListener::bind((Ipv4Addr::UNSPECIFIED, PORT)).await?;
