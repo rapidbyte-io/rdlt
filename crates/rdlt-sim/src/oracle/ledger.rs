@@ -12,8 +12,8 @@ use super::scenario::{Executed, Scenario};
 /// What a simulation's runs left, folded in as each scenario's runs end.
 #[derive(Debug, Default)]
 pub(super) struct Ledger {
-    /// Every run's report and failure, in the order the runs ended, hashed: alike on every run of
-    /// a seed.
+    /// Every report and failure of the phases' runs, in the order the runs ended, hashed: alike on
+    /// every run of a seed.
     trace: DefaultHasher,
     /// How often and how long the runs waited for room in the budget, by share.
     pub(super) waits: Waits,
