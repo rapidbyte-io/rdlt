@@ -244,7 +244,7 @@ module replan_protocol {
     }
   }
 
-  // ---- Invariants, named as the checks that hold the same
+  // ---- Invariants
 
   /// No partition is lost or doubled: no two reads of one partition at once; a read's next
   /// segment starts where the destination holds its partition, so no row is skipped or read twice;
@@ -264,13 +264,6 @@ module replan_protocol {
   /// A removed partition drains: a read a plan stopped with sealed rows has them committed, or the
   /// run crashes first and the next reads them again.
   temporal RemovedDrains = weakFair(commit, vars).implies(PARTS.forall(p => draining(p).leadsTo(not(draining(p)))))
-
-  // ---- Goals: states the simulation reaches, each the start of a test
-
-  /// A partition the source no longer names was stopped with rows sealed, and drained to a commit.
-  val removedDrained = committed.keys().exists(p => committed.get(p) > 0 and not(named.contains(p))) and PARTS.forall(p => not(draining(p)))
-  /// A partition the source names again is read from where its stopped read was committed.
-  val resumed = reads.exists(r => r.base > 0 and not(r.stopped))
 
   // ---- Tests
 
@@ -445,8 +438,7 @@ module replan_rows2 {
       .expect(committed.get("p1") == 2 and rows.get("p1") == Map(0 -> 1, 1 -> 1) and NoPartitionLostOrDoubled)
 
   /// Reads of unbounded partitions that end on their own with nothing sealed give their places up
-  /// at once: with no commit between, the next plan reads again the partition it still names and
-  /// starts the one it now names in place of the one it dropped.
+  /// at once: with no commit between, the next plan reads p0 again and starts p2 in place of p1.
   run aReadThatPausesWithNothingSealedIsReadAgainAtTheNextPlanTest =
     init
       .then(reshape(Set("p0", "p1"), Set()))
