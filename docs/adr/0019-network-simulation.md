@@ -28,10 +28,10 @@ the whole engine on a paused clock from a seed, with connectors in the engine's 
     with a CA made for each run, and every run places them through `Remote`. A change world's source
     host, and the peer that stalls, serve the simulated change source; a change world meets no
     hostile host. Its keys come from the operating system, so the TLS bytes differ between runs of a
-    seed; what the connectors and the engine do does not. A served response carries no `Date`
-    header: hyper takes it from the wall clock and its text changes every second, so two runs of a
-    seed would encode HTTP/2 header blocks of different lengths, cut the connectors' writes
-    differently and have their peers read at other times.
+    seed; what the engine reports does not. A served response carries no `Date` header: hyper takes
+    it from the wall clock and its text changes every second, so two runs of a seed would encode
+    HTTP/2 header blocks of different lengths, cut the connectors' writes differently and have their
+    peers read at other times.
   - One read of the wall clock is left, in h2: it remembers a stream it reset for a second of wall
     time, and ten of them at most, and answers a frame that arrives late for a stream it forgot
     with a reset of its own, where it drops one for a stream it remembers. How many it remembers
