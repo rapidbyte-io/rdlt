@@ -1260,7 +1260,9 @@ fn pipeline_pair() -> impl Strategy<Value = (String, String)> {
 }
 
 /// Names near those a log writes: chunk numbers of every width, staging names with a token of
-/// any case and width, ids in upper case or in another form, and noise.
+/// any case and width, ids as written, in upper case or in another form, each with none, one or
+/// two dots before it and with or without the ending of the name a load is opened in, in either
+/// case, and noise.
 fn near_names() -> impl Strategy<Value = String> {
     prop_oneof![
         (any::<u32>(), 0_usize..12).prop_map(|(number, width)| format!("{number:0width$}.wal")),
@@ -1274,16 +1276,24 @@ fn near_names() -> impl Strategy<Value = String> {
                 format!("{number:08}.{token}.part")
             }
         ),
-        (any::<u128>(), 0_u8..4).prop_map(|(random, form)| {
-            let load = LoadId::from_parts(UNIX_EPOCH, random).to_string();
-            let simple = load.replace('-', "");
-            match form {
-                0 => load.to_uppercase(),
-                1 => simple,
-                2 => format!("{{{load}}}"),
-                _ => format!("urn:uuid:{load}"),
-            }
-        }),
+        (
+            any::<u128>(),
+            0_u8..5,
+            prop::sample::select(vec!["", ".", ".."]),
+            prop::sample::select(vec!["", ".opening", ".OPENING"]),
+        )
+            .prop_map(|(random, form, dots, opening)| {
+                let load = LoadId::from_parts(UNIX_EPOCH, random).to_string();
+                let simple = load.replace('-', "");
+                let form = match form {
+                    0 => load.to_uppercase(),
+                    1 => simple,
+                    2 => format!("{{{load}}}"),
+                    3 => format!("urn:uuid:{load}"),
+                    _ => load,
+                };
+                format!("{dots}{form}{opening}")
+            }),
         "[0-9a-fA-F.+ -]{0,40}(\\.wal|\\.part|\\.opening)?",
     ]
 }
@@ -1326,12 +1336,16 @@ proptest! {
             prop_assert!(plain(&name), "{}", name);
             prop_assert!(!names::is_made_by_system(name.as_ref()), "{}", name);
         }
+        prop_assert!(plain(&names::opening(load)), "{}", names::opening(load));
         prop_assert!(names::is_made_by_system(names::opening(load).as_ref()));
         if let Some(number) = names::parse_chunk(near.as_ref()) {
             prop_assert_eq!(&near, &names::chunk(number));
         }
         if let Some(load) = names::parse_load(near.as_ref()) {
             prop_assert_eq!(&near, &names::load(load));
+        }
+        if let Some(load) = names::parse_opening(near.as_ref()) {
+            prop_assert_eq!(&near, &names::opening(load));
         }
         if names::is_part(near.as_ref()) {
             let (number, token) = near
