@@ -55,8 +55,8 @@ A formal layer is added to the layers of its class, never in place of one.
   sonic-rs and stacker among them. Each module's proofs are a part of their own, which compiles for
   seconds when warm, so verification and not compilation is the time, as the bullets below give it
   harness by harness. Warm on a laptop, `rdlt-wire`'s nine harnesses take about 460 seconds, 319 of
-  them `flow`'s credit harness, and `rdlt-engine`'s eleven 1,400 to 1,850 seconds. A crate's proofs
-  check its own code, in the crate. Kani's output is not clean: its toolchain warns of the
+  them `flow`'s credit harness, and `rdlt-engine`'s ten about 1,000 to 1,250 seconds. A crate's
+  proofs check its own code, in the crate. Kani's output is not clean: its toolchain warns of the
   `register_tool` feature it forces and of deprecated methods in the engine, and it drops the
   arguments of an `unreachable!`, which warns of an unused variable; none comes from a proof.
 - A target whose proof alone does not finish within its job's limit at the least bound that
@@ -144,15 +144,15 @@ A formal layer is added to the layers of its class, never in place of one.
   budget, a thread-local whose value has a destructor, and Kani 0.68 stops with an internal
   error on any such thread-local, at the `catch_unwind` intrinsic. A harness that takes and
   gives back room without waiting compiles, and took past 10 GB in about 7 minutes.
-- A log frame's lengths are proved (`rdlt-engine/src/wal/frame/len/proofs.rs`): a frame is its
+- A log frame's length is proved (`rdlt-engine/src/wal/frame/len/proofs.rs`): a frame is its
   payload and its head, saturating at the largest length rather than wrapping, for every payload
-  length (under a second), and what `listed` counts of a list of numbers is what JSON writes of it,
-  within a bound of one number, of any `u64` (424 to 595 seconds). A list of two numbers or more,
-  the only lists with commas between their numbers, is held by the property test
-  `an_end_frame_s_length_is_what_it_encodes_to` in `wal/frame/tests.rs` instead, which draws lists
-  of up to 19 numbers: the proof over lists of up to two numbers took 627 seconds and over lists of
-  up to three 640 seconds, past the 10 minutes a part may take on a laptop to fit its job's 15 on
-  GitHub's runners.
+  length (under a second). What `listed` counts of a list of numbers is held by tests in
+  `wal/frame/tests.rs` instead: `an_end_frame_s_length_counts_every_width_of_number` checks a
+  number at both ends of every width a `u64` takes, and the property test
+  `an_end_frame_s_length_is_what_it_encodes_to` draws lists of up to 19 numbers, commas included.
+  Its proof within a bound of one number took 424 to 595 seconds on a laptop and 786 on GitHub's
+  runner, its job 833 of the 900 seconds it may take; over two numbers it took 627 seconds and
+  over three 640, past the 10 minutes a part may take on a laptop.
 - A log frame's preamble and head are proved (`rdlt-engine/src/wal/frame/proofs.rs`): from any bytes
   up to 16, a head's length is nothing until its five bytes have arrived, then the little-endian
   length they announce (under a second), and a chunk is accepted only where the bytes start with
@@ -322,7 +322,8 @@ A formal layer is added to the layers of its class, never in place of one.
   limit of 900: `budget::admits`'s two 228 and 95 seconds, `budget::ledger`'s one 22, and
   `coordinator::horizon`'s two 28 and 394, beside about 70 seconds of compiling and setup. As parts
   of their own, `coordinator::horizon`'s takes about 8 minutes, `budget::admits`'s about 7 and
-  `budget::ledger`'s about 2.
+  `budget::ledger`'s about 2. `wal::frame`'s three harnesses took 201 seconds in a job of 252,
+  and `wal::frame::crc`'s one 545 in a job of 589.
 - A part that comes near its limit is split further, by module: its harnesses are divided
   between modules, each with proofs of its own and so a part of its own. Only a harness that
   alone would pass the limit becomes a property test.

@@ -1102,6 +1102,30 @@ fn a_header_frame_s_length_is_what_it_encodes_to() {
     }
 }
 
+/// An end frame's length counts a number's digits at both ends of every width a `u64` takes.
+#[test]
+fn an_end_frame_s_length_counts_every_width_of_number() {
+    let numbers = (1..=19)
+        .flat_map(|power| {
+            let first = 10_u64.pow(power);
+            [first - 1, first]
+        })
+        .chain([0, u64::MAX]);
+    for number in numbers {
+        let encoded = Frame::End(End {
+            live: vec![number],
+            received: Vec::new(),
+        })
+        .encode()
+        .unwrap();
+        assert_eq!(
+            super::end_len([number], []),
+            u64::try_from(encoded.len()).unwrap(),
+            "{number}"
+        );
+    }
+}
+
 proptest! {
     #[test]
     fn an_end_frame_s_length_is_what_it_encodes_to(
