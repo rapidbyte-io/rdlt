@@ -22,7 +22,7 @@ fn a_disruption_lands_within_the_length_of_the_last_run_that_succeeded() {
     for length in [Duration::from_millis(40), Duration::from_secs(30)] {
         let landed = landings(Some(length));
         assert!(
-            landed.iter().all(|after| *after <= length),
+            !landed.is_empty() && landed.iter().all(|after| *after < length),
             "{length:?}: {landed:?}"
         );
         let late = landed.iter().filter(|after| **after > length / 2).count();
@@ -31,9 +31,9 @@ fn a_disruption_lands_within_the_length_of_the_last_run_that_succeeded() {
             "{length:?}: few landed in the second half"
         );
     }
-    assert!(
-        landings(None)
-            .iter()
-            .all(|after| *after < Duration::from_secs(2))
-    );
+    let unknown = landings(None);
+    assert!(!unknown.is_empty() && unknown.iter().all(|after| *after < Duration::from_secs(2)));
+    // A run too short to measure still gets a disruption, at its start.
+    let instant = landings(Some(Duration::ZERO));
+    assert!(!instant.is_empty() && instant.iter().all(|after| after.is_zero()));
 }
