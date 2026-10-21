@@ -4,4 +4,5 @@
 /fuzz/artifacts
 /fuzz/corpus
 /fuzz/coverage
+*.profraw
 /fuzz/target
