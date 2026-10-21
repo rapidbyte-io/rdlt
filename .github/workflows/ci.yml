@@ -72,7 +72,7 @@ jobs:
       matrix:
         os: [ubuntu-24.04, macos-15]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -149,8 +149,8 @@ jobs:
           overwrite: true
 
   # The simulation's hundred thousand seeds, the gate every change to the engine passes, run as
-  # forty shards side by side, each shard's seeds side by side on its runner's cores; `sim`
-  # passes once every shard has.
+  # forty shards that run as runners free up, each shard's seeds side by side on its runner's
+  # cores; `sim` passes once every shard has.
   sim-shard:
     needs: sim-archive
     runs-on: ubuntu-24.04
