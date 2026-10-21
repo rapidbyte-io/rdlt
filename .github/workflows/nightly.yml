@@ -137,7 +137,7 @@ jobs:
 
   # A million seeds, in eighty shards of 12 500 that run as runners free up, each shard's seeds
   # side by side on its runner's four cores: a runner checks 6 to 12 seeds a second, so a shard
-  # takes 20 to 45 minutes.
+  # takes 25 to 50 minutes.
   sim:
     needs: sim-archive
     runs-on: ubuntu-24.04
