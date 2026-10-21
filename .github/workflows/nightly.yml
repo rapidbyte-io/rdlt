@@ -103,8 +103,8 @@ jobs:
           overwrite: true
 
   # A thousand seeds of both oracles, each run twice, side by side on the runner's four cores: a
-  # seed whose two runs differ in what any run reported or failed with, or in their simulated
-  # time, no longer replays.
+  # seed whose two runs differ in what any of its phases' runs reported or failed with, or in
+  # their simulated time (but over the network), no longer replays.
   sim-replay:
     needs: sim-archive
     runs-on: ubuntu-24.04
