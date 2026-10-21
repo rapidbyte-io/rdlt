@@ -44,7 +44,7 @@ jobs:
       - run: just deny
 
   # The simulation's integration tests, built once in its profile into the archive the shards,
-  # the stress run and the rate check take.
+  # the replay, the stress run and the rate check take.
   sim-archive:
     runs-on: ubuntu-24.04
     timeout-minutes: 40

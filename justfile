@@ -66,7 +66,8 @@ test *args:
     cargo nextest run --package rdlt-connector --features serve -E 'test(serve::probes)'
 
 # Build the simulation's integration tests in the `sim` profile, optimised with its overflow
-# checks and debug assertions kept, into the archive `sim`, `stress` and `sim-rate` run
+# checks and debug assertions kept, into the archive `sim`, `sim-replay`, `stress` and `sim-rate`
+# run
 sim-archive:
     cargo nextest archive --package rdlt-sim --all-features --cargo-profile sim --test it --archive-file target/sim.tar.zst
 
