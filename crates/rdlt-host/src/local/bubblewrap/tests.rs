@@ -308,3 +308,33 @@ fn a_step_the_system_refuses_is_kept_as_the_cause_not_as_text() {
         .expect("the system's error, kept whole");
     assert_eq!(os.io().kind(), std::io::ErrorKind::InvalidInput);
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_launcher_given_names_since_it_was_opened_launches_nothing_whatever_its_path_names() {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+    use crate::local::binary::Binary;
+
+    let root = tempfile::tempdir().expect("a temporary directory");
+    let (bin, data) = (root.path().join("bin"), root.path().join("data"));
+    for directory in [&bin, &data] {
+        std::fs::create_dir(directory).expect("a directory");
+    }
+    let path = bin.join("bwrap");
+    std::fs::write(&path, "#!/bin/sh\n").expect("the launcher writes");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("a mode");
+    let opened = Binary::at(&path).expect("the launcher opens");
+    let launching = || super::launched(&opened, &confined(&[], NetworkGrant::Denied, &[], &[]));
+    assert_eq!(launching().map(drop), Ok(()));
+    // The file opened gains two names in data, and a fresh file of one name takes its path:
+    // nothing the path names has a second name, and what runs has two.
+    for alias in ["one", "two"] {
+        std::fs::hard_link(&path, data.join(alias)).expect("a name");
+    }
+    let fresh = bin.join("fresh");
+    std::fs::copy(&path, &fresh).expect("a copy");
+    std::fs::rename(&fresh, &path).expect("the copy takes the launcher's name");
+    assert_eq!(std::fs::metadata(&path).expect("a file").nlink(), 1);
+    assert_eq!(launching().map(drop), Err(SandboxError::Exposed { path }));
+}

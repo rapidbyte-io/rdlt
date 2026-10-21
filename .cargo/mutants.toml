@@ -112,7 +112,7 @@ exclude_re = [
   "crates/rdlt-engine/src/table/registry\\.rs:.*replace match guard !resolver\\.unwidened\\.contains\\(&column\\) with true in Tables::fit$",
   "crates/rdlt-engine/src/wal/local/dir\\.rs:.*replace \\| with \\^ in Dir::(dir|create|open)$",
   "crates/rdlt-engine/src/wal/local/names\\.rs:.*replace \\| with \\^ in (base32|token)$",
-  "crates/rdlt-host/src/local/bubblewrap\\.rs:247:5: replace launched -> Result<Launcher, SandboxError> with ",
+  "crates/rdlt-host/src/local/bubblewrap\\.rs:254:5: replace launched -> Result<Launcher, SandboxError> with ",
   "crates/rdlt-host/src/local/grants/opened\\.rs:.*replace \\| with \\^ in (up|holding)$",
   "crates/rdlt-host/src/local/process/command\\.rs:272:5: replace trusted -> std::io::Result<\\(Command, Vec<OwnedFd>\\)> with ",
   "crates/rdlt-host/src/local/process/group/members\\.rs:22:5: replace unended -> Option<bool> with Some\\((true|false)\\)$",
