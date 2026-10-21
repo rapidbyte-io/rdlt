@@ -40,8 +40,8 @@ impl Faulty {
         run < self.runs
     }
 
-    /// What run `run` draws its disruption from: the first four from `rng`, as they always did,
-    /// the rest from draws of their own, so `rng` draws alike however many there are.
+    /// What run `run` draws its disruption from: the first four from `rng`, the rest from draws
+    /// of their own, so `rng` draws alike however many there are.
     pub(super) fn draws<'a>(
         &'a mut self,
         run: usize,

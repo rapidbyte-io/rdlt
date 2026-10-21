@@ -8,6 +8,6 @@ fn every_change_lands_as_the_model_says_through_faults_crashes_and_concurrent_ru
 /// A seed whose round ran again only to replay a log the run before it left: without replay, the
 /// log stays and the round never converges.
 #[test]
-fn a_seed_whose_transition_only_the_log_held_passes() {
+fn a_change_round_that_runs_again_only_to_replay_its_log_passes() {
     assert!(check_changes(Seed::new(9)).reached.has(Reach::Replayed));
 }
