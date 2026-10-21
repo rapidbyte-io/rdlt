@@ -35,7 +35,8 @@ the whole engine on a paused clock from a seed, with connectors in the engine's 
     time, and ten of them at most, and answers a frame that arrives late for a stream it forgot
     with a reset of its own, where it drops one for a stream it remembers. How many it remembers
     depends on how fast the run goes, so two runs of a seed can end a few milliseconds apart in
-    simulated time, more often on a loaded machine. hyper's server has no setting for these
+    simulated time, more often on a loaded machine. The replay check leaves the end time out of
+    a networked seed's comparison and holds the rest to equal. hyper's server has no setting for these
     limits, and tonic's client does not set them.
   - The feature is drawn apart from the others, so a seed's workload is the same over either
     transport, and seeds found before keep their workload.

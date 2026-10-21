@@ -77,8 +77,9 @@ sim seed="" seeds="1000" from="0" cores="": sim-archive
     RDLT_SIM_SEED="{{ seed }}" RDLT_SIM_SEEDS="{{ seeds }}" RDLT_SIM_SEEDS_FROM="{{ from }}" RDLT_SIM_CORES="{{ cores }}" cargo nextest run --archive-file target/sim.tar.zst --workspace-remap . -E 'test(through_faults)'
 
 # Run each seed of both oracles twice from the simulation's archive, and fail where a seed's two
-# runs differ in what any run reported or failed with, in their simulated time, or in what they
-# left; pass a seed to replay one, or an empty seed, a count and the first seed of a shard
+# runs differ in what any run reported or failed with, in their simulated time (but over the
+# network), or in what they left; pass a seed to replay one, or an empty seed, a count and the
+# first seed of a shard
 sim-replay seed="" seeds="1000" from="0" cores="": sim-archive
     RDLT_SIM_SEED="{{ seed }}" RDLT_SIM_SEEDS="{{ seeds }}" RDLT_SIM_SEEDS_FROM="{{ from }}" RDLT_SIM_CORES="{{ cores }}" cargo nextest run --archive-file target/sim.tar.zst --workspace-remap . -E 'test(=determinism::every_seed_replays_alike)'
 
