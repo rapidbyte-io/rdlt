@@ -122,11 +122,13 @@ A formal layer is added to the layers of its class, never in place of one.
   and the bound into its message, and Kani 0.68 does not finish formatting one number in five
   minutes, so the proof replaces `std::fmt::format` with a function that formats nothing, by
   stubbing, which `rdlt-wire`'s manifest turns on: what is read or refused never depends on a
-  message's text. What a body lacks is a property test: with formatting stubbed out, its proof
-  had not finished in 20 minutes at the least bound that states it, since a first growth of the
-  empty arriving buffer writes up to 63 bytes before its first aligned one, and with up to 16
-  bytes arrived and up to 16 waiting unread, what a body lacks never reaches past its message's
-  end, the length read from what arrived or, before anything has, from what waits unread.
+  message's text. What a body lacks is a property test: its proof, with formatting stubbed out and bounded to
+  6 bytes arrived and 6 waiting unread, which still holds a whole prefix and a byte past it, had
+  not reported when ended at 900 seconds, past the 10 minutes a proof may take, most likely since a
+  first growth of the empty arriving buffer writes up to 63 bytes before its first aligned one.
+  With up to 16 bytes arrived and up to 16 waiting unread, the property test holds that what a body
+  lacks never reaches past its message's end, the length read from what arrived or, before
+  anything has, from what waits unread.
 - A bounded body's growth rule is a property test (`rdlt-wire/src/bounded/tests.rs`): one
   arrival of what a body lacks, onto any arriving buffer the rule admits, holds what arrived and
   keeps the buffer's room at what arrived until the prefix is whole, then within the message's
