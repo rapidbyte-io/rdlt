@@ -45,15 +45,16 @@ pub struct SimWal {
     cleared: Counts,
     /// How many times each pipeline's worker crashed: a chunk staged before a crash is lost.
     crashes: Arc<Mutex<BTreeMap<PipelineId, u64>>>,
-    /// Where stagings, publishes and deletions fail now and then, the draws deciding when.
+    /// Where openings of logs, stagings, publishes and deletions fail now and then, the draws
+    /// deciding when.
     faults: Arc<Mutex<Option<SplitMix64>>>,
     /// Where listings, reads and removals of stagings fail now and then, drawn apart from the
     /// writes' failures.
     reads: Mutex<Option<SplitMix64>>,
 }
 
-/// Failures per thousand stagings, publishes, deletions, listings and removals of stagings, while
-/// faulty.
+/// Failures per thousand openings of logs, stagings, publishes, deletions, listings and removals
+/// of stagings, while faulty.
 const FAULTS: u64 = 10;
 
 /// Failures per thousand reads of a chunk, while faulty: fewer than of other calls, as a replay
@@ -149,10 +150,12 @@ impl SimWal {
         *self.crashes.lock().entry(pipeline.clone()).or_default() += 1;
     }
 
-    /// Makes stagings, publishes and deletions of chunks fail now and then, as `faults` draws,
-    /// and listings, reads and removals of stagings as draws mixed from it, or never again.
+    /// Makes openings of logs, stagings, publishes and deletions of chunks fail now and then, as
+    /// `faults` draws, and listings, reads and removals of stagings as draws mixed from it, or
+    /// never again.
     pub(crate) fn set_faults(&self, faults: Option<SplitMix64>) {
-        // The next value of `faults`, taken without drawing it, so its draws fall as they did.
+        // The next value of `faults`, taken without drawing it, so the writes' draws are unchanged
+        // by it.
         *self.reads.lock() = faults
             .as_ref()
             .map(|rng| SplitMix64::new(rng.clone().next_u64() ^ READS));
