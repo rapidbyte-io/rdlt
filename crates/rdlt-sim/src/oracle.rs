@@ -263,18 +263,18 @@ impl Simulation {
             } else if !pending {
                 break;
             }
-            let faulty = faults.faulty(runs);
-            self.world.set_faulty(faulty && features.faults);
+            let disrupted = faults.faulty(runs);
+            self.world.set_faulty(disrupted && features.faults);
             let draws = faults.draws(runs, rng);
-            let scenario = if faulty && features.disruptions {
+            let scenario = if disrupted && features.disruptions {
                 pick(draws)
             } else {
                 Scenario::Plain
             };
             runs += 1;
-            let clean = !(faulty && (features.faults || features.disruptions));
+            let clean = !(disrupted && (features.faults || features.disruptions));
             // Drawn only where the network is, so every other seed draws as it always has.
-            let network = (faulty && features.faults && self.placing.is_some())
+            let network = (disrupted && features.faults && self.placing.is_some())
                 .then(|| SplitMix64::new(draws.next_u64()));
             let ran = self
                 .attempt(phase, scenario, clean, network, &mut reports)
