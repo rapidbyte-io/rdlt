@@ -206,10 +206,11 @@ jobs:
           overwrite: true
 
   # Connectors spawned through `Local` as real processes, beyond what a simulated seed runs:
-  # starts racing for the last of the groups a process may own.
+  # starts racing for the last of the groups a process may own, and twenty minutes of loads whose
+  # source is killed, stalled and crashing, saying a secret that ends in whitespace.
   soak:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -222,7 +223,7 @@ jobs:
           github_token: ""
           install_args: --locked just aqua:nextest-rs/nextest/cargo-nextest
           cache_key_prefix: mise-v2-test
-      - run: just soak
+      - run: just soak 1200
 
   # Each bench workload's resident peak against its budget's bound.
   resident:

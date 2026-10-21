@@ -77,6 +77,9 @@ struct Script {
     fail_once_at: Option<u64>,
     /// A file where it keeps what it was told to say, so that a later start says it again.
     remembers: Option<PathBuf>,
+    /// A line its connect writes to standard error as it stands, as a connector logging its
+    /// configuration does, and its crash at `crash_once_at` writes again.
+    says: Option<String>,
 }
 
 /// A cause that says `0`, as a driver's error says what it was given.
@@ -234,6 +237,9 @@ impl SourceConnector for Scripted {
             writeln!(stderr, "connecting with {said:?}").ok();
             writeln!(stderr, "{said:#}").ok();
         }
+        if let Some(says) = &script.says {
+            writeln!(std::io::stderr(), "{says}").ok();
+        }
         if let Some(started) = &script.starts {
             std::process::Command::new("/bin/sh")
                 .args(["-c", &format!("trap '' TERM; {started}")])
@@ -325,7 +331,8 @@ impl ReadStream<Scripted> for Rows {
                 && let Some(marker) = &script.marker
                 && std::fs::File::create_new(marker).is_ok()
             {
-                crash(&format!("crashing at row {next}"));
+                let says = script.says.as_deref().unwrap_or_default();
+                crash(&format!("crashing at row {next}: {says}"));
             }
             if script.fail_once_at == Some(next)
                 && let (Some(marker), Some(said)) = (&script.marker, &script.said)

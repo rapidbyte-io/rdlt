@@ -52,7 +52,8 @@ slow-timeout = { period = "60s", terminate-after = 5 }
 filter = "package(rdlt-engine) & binary(crashes)"
 slow-timeout = { period = "120s", terminate-after = 8 }
 
-# The soak starts a thousand connectors: it runs alone, and is reported as slow, never terminated.
+# The soak starts a thousand connectors and loads for as long as `RDLT_SOAK_SECONDS` says: it runs
+# alone, and is reported as slow, never terminated.
 [[profile.default.overrides]]
 filter = "package(rdlt-host) & binary(it) & test(/^soak::/)"
 threads-required = "num-test-threads"
