@@ -112,6 +112,10 @@ only at its end. The owner also asked for the host to be simulated over a networ
   - The next call respawns it and handshakes again. The engine's retry of the attempt reaches the
     new process and resumes from committed state.
   - A respawned destination must declare the capabilities it first declared.
+- **The simulation plays a connector's process.** `rdlt-host`'s `sim` feature gives `Local` a
+  launch whose process is a script in the host's own process. The host checks, drains, witnesses,
+  stops and kills it as it does a spawned one, and only `rdlt-sim` enables the feature. One seed
+  in four of those the network leaves, in either oracle, places its connectors so (ADR 0052).
 - **The placement matrix** (§20.9) runs the engine's destination-facing scenarios in two legs.
   - In process, against every reference destination, on the paused clock.
   - Spawned, against the SQLite and files destinations, on the real clock (the `placement`
@@ -124,6 +128,8 @@ only at its end. The owner also asked for the host to be simulated over a networ
 - **P1–P4** are `rdlt-host` tests against a scripted connector:
   `sigint_leaves_no_orphaned_connectors`, `connector_writing_stdout_keeps_running`,
   `connector_crash_error_carries_stderr_tail` and `env_passthrough_reaches_connector`.
+- **The soak** (`just soak`, nightly) races starts on real threads for the last of a process's
+  groups.
 
 ## Consequences
 

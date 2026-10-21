@@ -115,15 +115,15 @@ sim-rate floor="5" cores=env("RDLT_SIM_CORES", ""): sim-archive
 
 # Measure how much of the engine, connector, host and data-plane code the simulation alone
 # reaches, and hold it above its floor: left out are test code, the connector's test kit and SQL
-# planner, generated code, and what the simulation never runs (process placement, a served
-# binary's entry, and the write-ahead log's local-directory and in-memory stores: the simulation
-# keeps logs in its own).
+# planner, generated code, and what the simulation never runs (what process placement leaves to
+# the operating system, a served binary's entry, and the write-ahead log's local-directory and
+# in-memory stores: the simulation keeps logs in its own).
 # Each sweep's seeds run side by side on the host's cores, or on `cores` (by default
 # `RDLT_SIM_CORES`) when given
 sim-coverage seeds="1000" cores=env("RDLT_SIM_CORES", ""):
     rustup toolchain install {{ nightly }} --profile minimal --component llvm-tools-preview
-    RDLT_SIM_SEEDS="{{ seeds }}" RDLT_SIM_CORES="{{ cores }}" cargo +{{ nightly }} llvm-cov nextest --branch --workspace --all-features --json --summary-only --output-path target/sim-coverage.json --ignore-filename-regex '(rdlt-sim|rdlt-testkit|rdlt-connector-reference|rdlt-adopt|rdlt-log-store|xtask)/|/tests?(\.rs|/)|differential|reference\.rs|/bench|/testing|sqlgen|encodings\.rs|/generated/|rdlt-host/src/(local|connect|kills|sink)|rdlt-certify/|serve/(args|binary)|wal/(local|memory)(\.rs|/)|/conformance\.rs|rdlt-connector/src/required\.rs|rdlt-engine/src/fixtures(\.rs|/)' -E 'package(rdlt-sim) & test(through_faults)'
-    cargo xtask coverage-gate target/sim-coverage.json --lines 81 --branches 71
+    RDLT_SIM_SEEDS="{{ seeds }}" RDLT_SIM_CORES="{{ cores }}" cargo +{{ nightly }} llvm-cov nextest --branch --workspace --all-features --json --summary-only --output-path target/sim-coverage.json --ignore-filename-regex '(rdlt-sim|rdlt-testkit|rdlt-connector-reference|rdlt-adopt|rdlt-log-store|xtask)/|/tests?(\.rs|/)|differential|reference\.rs|/bench|/testing|sqlgen|encodings\.rs|/generated/|rdlt-host/src/(local/(binary|bubblewrap|grants|sandbox)|local/process/(command|group)|connect|sink)|rdlt-certify/|serve/(args|binary)|wal/(local|memory)(\.rs|/)|/conformance\.rs|rdlt-connector/src/required\.rs|rdlt-engine/src/fixtures(\.rs|/)' -E 'package(rdlt-sim) & test(through_faults)'
+    cargo xtask coverage-gate target/sim-coverage.json --lines 81 --branches 72
 
 # Measure line and branch coverage and apply the CI gate. Spawned connectors write profiles too, and
 # one killed as its test ends leaves a truncated profile, which the merge skips
