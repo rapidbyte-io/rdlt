@@ -2,13 +2,16 @@ use rdlt_sim::{
     Features, Reach, Recorded, Seed, SplitMix64, Weight, check_exactly_once, for_each_seed, seeds,
 };
 
-/// Seeds that fail if a defect the simulation once found comes back.
+/// Seeds on which the simulation once found a defect, each held to the path it found it on.
+///
+/// A seed fails if its defect comes back, unless its comment says otherwise: such a seed keeps
+/// only the path, and its defect may come back unseen.
 const FOUND: [(u64, Reach); 19] = [
     // Over the network: a host whose handshake a partition cut short held its connection, and
     // its connector's stop, forever.
     (743, Reach::LinkCut),
     // A batch of a normalized merge stream whose every row a new array dropped: its key's type
-    // was never resolved, so it met no refusal.
+    // was never resolved, so it met no refusal. The defect may not fail this seed.
     (22, Reach::Refused),
     // Logged: a failed load's commit of a new full read, replayed in the next phase, landed rows
     // the model had not counted, until a phase waited for every log to be replayed.
@@ -20,7 +23,8 @@ const FOUND: [(u64, Reach); 19] = [
     // model never saw, until they served whole checkpoint groups.
     (4_516, Reach::Followed),
     // Pressed: a partition that ended at its last cursor sealed it again unreserved, so a
-    // commit recording many such cursors passed the log's share of the budget.
+    // commit recording many such cursors passed the log's share of the budget. The defect no
+    // longer fails this seed.
     (252, Reach::LogWaited),
     // A column of integers made for a column of JSON as its table was created was recorded
     // exact, though the integers split into it were read only as they were lowered.
@@ -29,7 +33,8 @@ const FOUND: [(u64, Reach); 19] = [
     // as new to the table once a crashed attempt had created the stream's own table.
     (167_631, Reach::Crashed),
     // Logged in a small log: eight partitions' segments each spanned several chunks, which
-    // stayed, holding committed frames beside open ones, until no batch fitted.
+    // stayed, holding committed frames beside open ones, until no batch fitted. The defect no
+    // longer fails this seed.
     (532, Reach::LogWaited),
     // Reset: an incremental stream whose partitions never held a row, so the pipeline recorded
     // nothing of it, was refused as no stream it knew, which the world took for a failure.
@@ -50,9 +55,9 @@ const FOUND: [(u64, Reach); 19] = [
     (37_936, Reach::EmptyChild),
     // A date written into timestamps, whose column then widens to JSON, holds a timestamp's text.
     (642_848, Reach::Widened),
-    // Logged in a small log: four partitions, each holding three pushes of a table and its child
-    // table unsealed, held more than the whole log the world drew, and the engine refused a
-    // batch, as it may where a log is smaller than the least it promises the load.
+    // Logged in a small log: four partitions holding three pushes of a table and its child table
+    // unsealed held more than the whole log, and the engine refused a batch, as it may where a
+    // log is below the least it promises the load. The defect no longer fails this seed.
     (744, Reach::LogWaited),
 ];
 
