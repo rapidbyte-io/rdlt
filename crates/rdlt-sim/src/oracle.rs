@@ -52,6 +52,9 @@ use settle::settled;
 /// Runs before this many have faults injected; the rest run clean, so every phase converges.
 const FAULTY_RUNS: usize = 4;
 
+/// What a draw of network faults made apart from a generator mixes in: "disrupt" in ASCII.
+const DISRUPTED: u64 = 0x0064_6973_7275_7074;
+
 /// Checks the exactly-once guarantee for the workload `seed` generates; returns what the
 /// simulation left.
 ///

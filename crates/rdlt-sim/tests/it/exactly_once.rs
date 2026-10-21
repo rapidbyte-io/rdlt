@@ -12,7 +12,7 @@ const FOUND: [(u64, Reach); 19] = [
     (22, Reach::Refused),
     // Logged: a failed load's commit of a new full read, replayed in the next phase, landed rows
     // the model had not counted, until a phase waited for every log to be replayed.
-    (7_867, Reach::Replayed),
+    (7_466, Reach::Replayed),
     // Streaming: a run that followed the source ended before the rows a refusal needed arrived,
     // and succeeded, as the model now allows.
     (2_838, Reach::Spared),
@@ -39,7 +39,7 @@ const FOUND: [(u64, Reach); 19] = [
     (918_105, Reach::ResetRefused),
     // Logs in an object store: a mark's and a head's creates given up landed after their log
     // was removed, and the head named a body deleted with it, which no replay could read.
-    (545, Reach::LandedLate),
+    (773, Reach::LandedLate),
     // A merge table's column widened to JSON over values written as floats and as plain text,
     // which the destination then held as JSON, and the check read as values of JSON, not of
     // the types they were written as.
