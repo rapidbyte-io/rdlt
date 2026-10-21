@@ -24,6 +24,8 @@ pub use bubblewrap::Bubblewrap;
 use grants::{Chain, Claim, Guarded, Lease, Leases, Opened, Program, Roots};
 pub use process::{Interrupts, LastWords, Lingering, StopsSpawned, Witness, spawned, stop_spawned};
 use process::{Launch, Process};
+#[cfg(feature = "sim")]
+pub use process::{Played, Playing};
 pub(crate) use provide::refused;
 use provide::{binary_name, handshake_failed, spawn_failed};
 pub use sandbox::{
@@ -63,6 +65,8 @@ pub struct Local {
     kills: Option<Kills>,
     told: Option<process::Told>,
     secrets: Arc<dyn SecretResolver>,
+    #[cfg(feature = "sim")]
+    played: Option<process::Play>,
 }
 
 impl Local {
@@ -80,6 +84,8 @@ impl Local {
             kills: None,
             told: None,
             secrets: Arc::new(Secrets::new()),
+            #[cfg(feature = "sim")]
+            played: None,
         }
     }
 
@@ -192,6 +198,18 @@ impl Local {
         self
     }
 
+    /// Plays each connector's process in this process with `play`, rather than spawning it: the
+    /// simulation's process placement.
+    #[cfg(feature = "sim")]
+    #[must_use]
+    pub fn played(
+        mut self,
+        play: impl Fn(Playing) -> std::io::Result<Played> + Send + Sync + 'static,
+    ) -> Self {
+        self.played = Some(process::Play::new(play));
+        self
+    }
+
     /// Where the binary `reference` names is: its path, or
     /// `rdlt-connector-<the id's last segment>` in the first connector directory that holds it.
     ///
@@ -246,17 +264,11 @@ impl Local {
         let binary = Arc::new(self.found(reference)?);
         let found = Arc::clone(&binary);
         let digest = if cfg!(target_os = "linux") {
-            let hashed = Arc::clone(&binary);
-            let hashing = tokio::task::spawn_blocking(move || hashed.digest());
-            let deadline = self.options.deadlines.connect;
-            let hashed = match tokio::time::timeout(deadline, hashing).await {
-                Ok(joined) => joined.map_err(std::io::Error::other).flatten(),
-                Err(_) => Err(std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    format!("the connector's binary was not read within {deadline:?}"),
-                )),
-            };
-            Some(hashed.map_err(|source| spawn_failed(reference, binary.path(), source))?)
+            Some(
+                self.digest(&binary)
+                    .await
+                    .map_err(|source| spawn_failed(reference, binary.path(), source))?,
+            )
         } else {
             None
         };
@@ -283,7 +295,29 @@ impl Local {
             confinement,
             lease: Arc::new(lease),
             state_bytes: process::told_state(&self.options.limits),
+            #[cfg(feature = "sim")]
+            played: self.played.clone(),
         })
+    }
+
+    /// The digest of `binary`, read on a thread that may block, within the connect deadline.
+    async fn digest(&self, binary: &Arc<Binary>) -> std::io::Result<Digest> {
+        #[cfg(feature = "sim")]
+        if self.played.is_some() {
+            // A simulated seed runs on one thread: a hash answered from another would land
+            // when the clock on the wall says, not when the seed does.
+            return binary.digest();
+        }
+        let hashed = Arc::clone(binary);
+        let hashing = tokio::task::spawn_blocking(move || hashed.digest());
+        let deadline = self.options.deadlines.connect;
+        match tokio::time::timeout(deadline, hashing).await {
+            Ok(joined) => joined.map_err(std::io::Error::other).flatten(),
+            Err(_) => Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("the connector's binary was not read within {deadline:?}"),
+            )),
+        }
     }
 
     /// What confines the connector `reference` names: the provider's sandbox, and the

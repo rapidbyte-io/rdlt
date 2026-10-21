@@ -32,9 +32,9 @@ all_features = true
 # before SQLite opens it, in a directory no one else writes, and a connection is used by one thread
 # at a time, so that lock never holds anything up. A JSON lines reader's `Debug` names the type and
 # nothing else, since its decoder has none, and so does that of the function a host is told each
-# spawned connector's process id through; a file writer's names its path only for a failing test's
-# message, and a resolver of the environment's secrets its scope only for a person to read: what
-# they write is no behaviour a test can hold.
+# spawned connector's process id through and the one that plays a simulated one's; a file writer's
+# names its path only for a failing test's message, and a resolver of the environment's secrets its
+# scope only for a person to read: what they write is no behaviour a test can hold.
 # The engine's inline test env has one core, which a mutant answering one also has. A mutant that
 # judges a plain column of 64-bit integers through the rows it names reads what the plain arm reads,
 # which spares only the mapping; and one that has a normalized flush's walk read every column for
@@ -118,6 +118,7 @@ exclude_re = [
   "crates/rdlt-host/src/local/process/group/members\\.rs:22:5: replace unended -> Option<bool> with Some\\((true|false)\\)$",
   "crates/rdlt-host/src/local/process/group\\.rs:.*replace \\| with \\^ in asked$",
   "crates/rdlt-host/src/local/process\\.rs:.*replace <impl fmt::Debug for Told>::fmt -> fmt::Result with Ok\\(Default::default\\(\\)\\)",
+  "crates/rdlt-host/src/local/process/played\\.rs:.*replace <impl fmt::Debug for Play>::fmt -> fmt::Result with Ok\\(Default::default\\(\\)\\)",
   "crates/rdlt-host/src/local/sandbox\\.rs:.*replace Sandbox::programs -> Vec<PathBuf> with vec!\\[(Default::default\\(\\))?\\]",
   "crates/rdlt-host/src/secrets/redact\\.rs:.*replace > with >= in starts$",
   "crates/rdlt-host/src/secrets/resolve/env\\.rs:.*replace <impl fmt::Debug for EnvSecrets>::fmt -> fmt::Result with Ok\\(Default::default\\(\\)\\)",

@@ -55,6 +55,8 @@ fn script(directory: &Path, body: &str) -> Launch {
         confinement: None,
         lease: Arc::new(writing(&Leases::default(), directory).expect("held")),
         state_bytes: None,
+        #[cfg(feature = "sim")]
+        played: None,
     }
 }
 
@@ -521,4 +523,113 @@ fn a_connector_whose_operator_set_every_malloc_tunable_is_not_given_the_variable
     ];
     super::command::tuned(&mut env);
     assert_eq!(env.len(), 2, "{env:?}");
+}
+
+/// What a played connector's script holds of its process: its end of the socket, what it writes to
+/// its standard error, and how it exits.
+#[cfg(feature = "sim")]
+struct Script {
+    socket: tokio::io::DuplexStream,
+    says: tokio::io::DuplexStream,
+    exited: tokio::sync::watch::Sender<Option<std::process::ExitStatus>>,
+    /// What the host was given as the process started.
+    given: Arc<std::sync::Mutex<Option<super::Playing>>>,
+}
+
+/// A play that hands out one played process, and what its script holds.
+#[cfg(feature = "sim")]
+fn played_once() -> (super::Play, Script) {
+    let (socket, connector) = tokio::io::duplex(1024);
+    let (stderr, says) = tokio::io::duplex(1024);
+    let (stdout, _quiet) = tokio::io::duplex(1024);
+    let (exited, exit) = tokio::sync::watch::channel(None);
+    let played = super::Played {
+        id: 7,
+        socket: Box::new(socket),
+        stdout: Box::new(stdout),
+        stderr: Box::new(stderr),
+        exit,
+    };
+    assert_eq!(format!("{played:?}"), "Played { id: 7, .. }");
+    let handed = std::sync::Mutex::new(Some(played));
+    let given = Arc::new(std::sync::Mutex::new(None));
+    let play = super::Play::new({
+        let given = Arc::clone(&given);
+        move |playing| {
+            *given.lock().expect("no panic holds it") = Some(playing);
+            let played = handed.lock().expect("no panic holds it").take();
+            played.ok_or_else(|| std::io::Error::other("it is played once"))
+        }
+    });
+    let script = Script {
+        socket: connector,
+        says,
+        exited,
+        given,
+    };
+    (play, script)
+}
+
+#[cfg(feature = "sim")]
+#[tokio::test(start_paused = true)]
+async fn a_played_connector_is_given_checked_drained_stopped_and_killed_as_a_spawned_one() {
+    use std::os::unix::process::ExitStatusExt as _;
+
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let mut launch = sleeper(directory.path());
+    launch.state_bytes = Some(1 << 25);
+    let kills = crate::Kills::new();
+    launch.kills = Some(kills.clone());
+    let (play, mut script) = played_once();
+    let redactions = Redactions::new();
+    redactions.add("hunter2-canary \t");
+    let (mut host, process) = Process::played(&launch, &play, redactions).expect("it plays");
+    let playing = script
+        .given
+        .lock()
+        .expect("no panic holds it")
+        .take()
+        .expect("it was played");
+    assert_eq!(playing.id, launch.id);
+    assert_eq!(playing.args, ["--rdlt-fd=3", "--max-state-bytes=33554432"]);
+    // It says its secret where a trim would cut it, then exits by itself.
+    let said = b"configured with hunter2-canary \t\n";
+    script.says.write_all(said).await.expect("it says it");
+    drop(script.says);
+    let exit = std::process::ExitStatus::from_raw(3 << 8);
+    script.exited.send_replace(Some(exit));
+    let patience = Duration::from_secs(1);
+    let words = tokio::time::timeout(Duration::from_secs(5), process.last_words(patience))
+        .await
+        .expect("its last words are read");
+    assert_eq!(words.exit.and_then(|exit| exit.code()), Some(3));
+    let hidden = words.stderr.contains("***") && !words.stderr.contains("hunter2-canary");
+    assert!(hidden, "{words}");
+    // A kill cancels what it was given, and its socket's end, after it, lands it.
+    let killed = playing.killed.clone().expect("a kill may kill it");
+    kills.kill();
+    assert!(killed.is_cancelled());
+    drop(script.socket);
+    let mut read = [0; 8];
+    let ended = tokio::time::timeout(Duration::from_secs(5), host.read(&mut read)).await;
+    assert_eq!(ended.expect("its socket ends").expect("it reads"), 0);
+    assert_eq!(kills.landed(), 1);
+    // Dropping it asks it to stop.
+    assert!(!playing.stopped.is_cancelled());
+    drop(process);
+    assert!(playing.stopped.is_cancelled());
+}
+
+#[cfg(feature = "sim")]
+#[test]
+fn a_played_connector_whose_binary_changed_is_not_played() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let mut launch = sleeper(directory.path());
+    launch.digest = Some(launch.binary.digest().expect("it hashes"));
+    std::fs::write(directory.path().join("sleeper"), "#!/bin/sh\nexit 4\n").expect("rewritten");
+    let play = super::Play::new(|_| panic!("a changed binary was played"));
+    let refused = Process::played(&launch, &play, Redactions::new());
+    assert!(matches!(refused, Err(Unspawned::Changed { .. })));
 }

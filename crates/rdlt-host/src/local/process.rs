@@ -9,6 +9,8 @@
 mod command;
 mod group;
 mod output;
+#[cfg(feature = "sim")]
+mod played;
 #[cfg(test)]
 mod tests;
 
@@ -36,6 +38,10 @@ pub(crate) use command::executed_from;
 use command::{Commanded, command};
 pub(crate) use command::{Confinement, Unspawned, inheriting};
 pub use group::{Interrupts, Lingering, StopsSpawned, spawned, stop_spawned};
+#[cfg(feature = "sim")]
+pub(crate) use played::Play;
+#[cfg(feature = "sim")]
+pub use played::{Played, Playing};
 
 /// The descriptor a connector finds its socket at.
 pub(crate) const SOCKET_FD: RawFd = 3;
@@ -72,6 +78,9 @@ pub(crate) struct Launch {
     /// The bytes of state one request to it may carry, where not the protocol's: the host's own
     /// limit, so the connector takes what the host sends.
     pub(crate) state_bytes: Option<u64>,
+    /// What plays the connector's process in this process, where nothing is spawned.
+    #[cfg(feature = "sim")]
+    pub(crate) played: Option<Play>,
 }
 
 /// The bytes of state a spawned connector is told one request may carry, given the host's
@@ -101,8 +110,8 @@ impl fmt::Debug for Told {
 
 /// A running connector's process, which dropping stops, with every process of its group.
 pub(crate) struct Process {
-    /// What stops the process and its group.
-    held: Arc<group::Held>,
+    /// What stops the process.
+    owner: Owner,
     /// What the kill that kills it cancels, when one may.
     killed: Option<CancellationToken>,
     /// The process's exit, once it has exited and is reaped.
@@ -114,11 +123,24 @@ pub(crate) struct Process {
     redactions: Redactions,
 }
 
+/// What stops a connector's process.
+enum Owner {
+    /// Its group, which the thread that reaps its leader owns.
+    Group(Arc<group::Held>),
+    /// What a played process's script ends at, as a spawned one ends at its stop.
+    #[cfg(feature = "sim")]
+    Played(CancellationToken),
+}
+
 impl Drop for Process {
     fn drop(&mut self) {
         // Asked before this returns: a host that drops its connectors and exits has stopped
         // them, though only one that waits sees them end.
-        self.held.stop();
+        match &self.owner {
+            Owner::Group(held) => held.stop(),
+            #[cfg(feature = "sim")]
+            Owner::Played(stopped) => stopped.cancel(),
+        }
     }
 }
 
@@ -191,7 +213,7 @@ impl Process {
             told(pid);
         }
         Ok(Self {
-            held,
+            owner: Owner::Group(held),
             killed,
             exit,
             stderr_closed,
@@ -219,6 +241,12 @@ impl Process {
         deadline: Duration,
         steps: &'static Steps,
     ) -> Result<Launched, Box<(Launch, Unspawned)>> {
+        #[cfg(feature = "sim")]
+        if let Some(play) = launch.played.clone() {
+            // A played process starts in this process at once: nothing waits on a thread.
+            return Self::played(&launch, &play, redactions)
+                .map_err(|unspawned| Box::new((launch, unspawned)));
+        }
         let asked = launch.clone();
         let launching =
             tokio::task::spawn_blocking(move || match Self::launched(&launch, redactions, steps) {
