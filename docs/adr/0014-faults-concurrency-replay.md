@@ -154,5 +154,5 @@ The owner chose to keep all of this in one milestone.
     network (M4).
 - The simulation reaches least of JSON shredding's rarer paths, temporal text, plan validation
   and state records other than cursors.
-- The nightly workflow runs the stress seeds and the coverage run beside the shards;
-  [docs/perf/sim.md](../perf/sim.md) records how long each takes.
+- The nightly workflow runs the stress seeds, the replay's thousand seeds and the coverage run
+  beside the shards; [docs/perf/sim.md](../perf/sim.md) records how long each takes.
