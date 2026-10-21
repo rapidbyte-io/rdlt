@@ -1051,8 +1051,8 @@ proptest! {
         prop_assert_eq!(NameMap::try_from(record).ok(), Some(map));
     }
 
-    /// A recorded name map is read back exactly where no column and no identifier appears in it
-    /// twice.
+    /// A recorded name map is read back as exactly its pairs where no column and no identifier
+    /// appears in it twice, and is refused where one does.
     #[test]
     fn a_recorded_name_map_is_read_only_where_it_is_injective(
         pairs in proptest::collection::vec((0_usize..4, 0_usize..4), 0..8),
@@ -1067,6 +1067,15 @@ proptest! {
             pairs.iter().all(|pair| seen.insert(at(pair)))
         };
         let injective = distinct(|pair| pair.0) && distinct(|pair| pair.1);
-        prop_assert_eq!(NameMap::try_from(record).is_ok(), injective);
+        let read = NameMap::try_from(record.clone());
+        if injective {
+            let mut back: Vec<(ColumnKey, String)> = read.expect("an injective record reads").into();
+            back.sort();
+            let mut record = record;
+            record.sort();
+            prop_assert_eq!(back, record);
+        } else {
+            prop_assert!(read.is_err(), "{:?}", pairs);
+        }
     }
 }
