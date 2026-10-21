@@ -1,9 +1,9 @@
 # Simulation throughput
 
-How fast the simulation checks seeds. The local rows were measured on `0390f910` against
-`c69b15e1` (the parent below), whose simulation `1f28d921` runs unchanged; the CI rows marked
-estimated are scaled by the local ratio from what each row names. `just sim-rate` checks the
-reference rate every night against the floor below.
+How fast the simulation checks seeds. The local rows were measured on the simulation as this record
+leaves it, against `c69b15e1` (the parent below), whose simulation `1f28d921` runs unchanged; the CI
+rows marked estimated are scaled by the local ratio from what each row names. `just sim-rate` checks
+the reference rate every night against the floor below.
 
 ## Method
 
