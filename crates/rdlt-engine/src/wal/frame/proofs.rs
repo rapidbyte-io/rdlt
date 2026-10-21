@@ -21,7 +21,7 @@ fn any_bytes(most: usize) -> Vec<u8> {
 }
 
 /// CRC-32C (Castagnoli) of `data` after `crc`, a bit at a time, as `crc32c_append` defines it.
-fn reference_append(crc: u32, data: &[u8]) -> u32 {
+pub(super) fn reference_append(crc: u32, data: &[u8]) -> u32 {
     let mut crc = !crc;
     for byte in data {
         crc ^= u32::from(*byte);
@@ -37,7 +37,7 @@ fn reference_append(crc: u32, data: &[u8]) -> u32 {
 }
 
 /// CRC-32C of `data`, as `crc32c` defines it.
-fn reference(data: &[u8]) -> u32 {
+pub(super) fn reference(data: &[u8]) -> u32 {
     reference_append(0, data)
 }
 
@@ -97,20 +97,4 @@ fn summing_a_frame_in_pieces_agrees_with_reading_it_whole() {
     summing.add(&payload[cut..]);
     assert_eq!(summing.check().is_ok(), opened(&bytes).is_ok());
     assert!(Summing::of(&bytes[..HEAD - 1]).is_none());
-}
-
-/// The reference is CRC-32C: it gives the algorithm's standard check value, and appending
-/// is summing the whole.
-///
-/// Bound: none for the check value, a concrete input; any split of a 9-byte input.
-#[kani::proof]
-#[kani::unwind(10)]
-fn the_reference_checksum_is_crc32c() {
-    assert_eq!(reference(b"123456789"), 0xE306_9283);
-    let data: [u8; 9] = kani::any();
-    let cut = kani::any_where(|cut: &usize| *cut <= data.len());
-    assert_eq!(
-        reference_append(reference(&data[..cut]), &data[cut..]),
-        reference(&data)
-    );
 }
