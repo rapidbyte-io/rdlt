@@ -11,8 +11,8 @@ use rdlt_connector::{PartitionState, PipelineId, ReadMode, StateEntry, StreamNam
 use rdlt_engine::{DeleteMode, Engine, Env as _, PipelinePlan, StreamPlan, WriteMode};
 use rdlt_testkit::canon::Canon;
 
-use super::FAULTY_RUNS;
 use super::config::{config, growth, waited};
+use super::faulty::Faulty;
 use super::ledger::Ledger;
 use super::reports::Reported;
 use super::scenario::{Scenario, execute_all, pick};
@@ -167,21 +167,23 @@ impl Changing<'_> {
         reported.check(self.seed).await;
     }
 
-    /// Runs `round` until a run succeeds and no write-ahead log is left to replay: the first few
-    /// runs with faults and disruptions where the seed has them, the rest without.
+    /// Runs `round` until a run succeeds and no write-ahead log is left to replay: the first four
+    /// to sixteen runs with faults and disruptions where the seed has them, the rest without.
     async fn converge(&mut self, round: usize, rng: &mut SplitMix64) {
         let (seed, features) = (self.seed, self.world.workload.features);
+        let mut faults = Faulty::draw(seed.value() ^ CHANGES, round);
         for runs in 0.. {
-            let faulty = runs < FAULTY_RUNS;
+            let faulty = faults.faulty(runs);
             self.world.set_faulty(faulty && features.faults);
+            let draws = faults.draws(runs, rng);
             let scenario = if faulty && features.disruptions {
-                pick(rng)
+                pick(draws)
             } else {
                 Scenario::Plain
             };
             // Drawn only where the network is, so every other seed draws as it always has.
             let network = (faulty && features.faults && self.placing.is_some())
-                .then(|| SplitMix64::new(rng.next_u64()));
+                .then(|| SplitMix64::new(draws.next_u64()));
             let plans = std::slice::from_ref(self.plan);
             let executing = execute_all(self.engine, plans, self.name, self.placing, scenario);
             let executed = match (self.placing, network) {
