@@ -235,7 +235,7 @@ module replan {
 
   /// A removed partition drains: a read a plan stopped with sealed rows has them committed, or the
   /// run crashes first and the next reads them again.
-  temporal RemovedDrains = weakFair(step, vars).implies(PARTS.forall(p => draining(p).leadsTo(not(draining(p)))))
+  temporal RemovedDrains = weakFair(commit, vars).implies(PARTS.forall(p => draining(p).leadsTo(not(draining(p)))))
 
   // ---- Goals: states the simulation reaches, each the start of a test
 
