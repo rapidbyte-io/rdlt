@@ -272,7 +272,7 @@ module replan_protocol {
     else readsOf(p).forall(r => r.stopped or r.ended)
 
   /// Plans follow the source: a partition it names is started, and read again once a read of it
-  /// that stopped or ended gave its place up, and a partition it no longer names is stopped.
+  /// that stopped or ended gave its place up, and a partition it no longer names has no read running.
   temporal PlansFollowTheSource =
     (weakFair(replan, vars) and weakFair(commit, vars)).implies(PARTS.forall(p => not(follows(p)).leadsTo(follows(p))))
 
