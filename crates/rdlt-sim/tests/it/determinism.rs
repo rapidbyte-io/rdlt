@@ -94,13 +94,13 @@ fn a_failing_scenario_panics_with_its_payload() {
 }
 
 /// What a run of a seed checked, but for what its thread held, which work the thread did
-/// earlier changes, and, where its connectors are on the simulated network or in played
-/// processes, for when it ended: h2 times the streams it reset by the wall clock, which moves the
-/// end by a few milliseconds from run to run.
+/// earlier changes, and, where its connectors are on the simulated network, for when it ended: h2
+/// times the streams it reset by the wall clock, which moves the end by a few milliseconds from
+/// run to run.
 fn alike(checked: &rdlt_sim::Checked) -> rdlt_sim::Checked {
     rdlt_sim::Checked {
         held: None,
-        simulated: if checked.features.network || checked.features.process {
+        simulated: if checked.features.network {
             Duration::ZERO
         } else {
             checked.simulated
