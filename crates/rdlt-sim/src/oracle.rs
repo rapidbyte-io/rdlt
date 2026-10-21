@@ -267,7 +267,7 @@ impl Simulation {
             self.world.set_faulty(disrupted && features.faults);
             let draws = faults.draws(runs, rng);
             let scenario = if disrupted && features.disruptions {
-                pick(draws)
+                pick(draws, self.ledger.length)
             } else {
                 Scenario::Plain
             };

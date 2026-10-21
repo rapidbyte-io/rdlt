@@ -20,6 +20,9 @@ use crate::rng::SplitMix64;
 use crate::source::SimSource;
 use crate::world::World;
 
+#[cfg(test)]
+mod tests;
+
 /// The longest a single run may take in virtual time before the oracle calls it hung.
 pub(super) const RUN_LIMIT: Duration = Duration::from_secs(3600);
 
@@ -38,9 +41,14 @@ pub(super) enum Scenario {
     Concurrent(Duration),
 }
 
-/// A disruption for a run, drawn from `rng`.
-pub(super) fn pick(rng: &mut SplitMix64) -> Scenario {
-    let after = Duration::from_millis(rng.below(2000));
+/// How long a disruption may wait before any run of the simulation has succeeded.
+const UNKNOWN_LENGTH: Duration = Duration::from_secs(2);
+
+/// A disruption for a run, drawn from `rng`, landing within `length`, how long the last run that
+/// succeeded took, or within two seconds before one has.
+pub(super) fn pick(rng: &mut SplitMix64, length: Option<Duration>) -> Scenario {
+    let within = u64::try_from(length.unwrap_or(UNKNOWN_LENGTH).as_millis()).unwrap_or(u64::MAX);
+    let after = Duration::from_millis(rng.below(within.max(1)));
     match rng.below(5) {
         0 => Scenario::Plain,
         1 => Scenario::Crash(after),
