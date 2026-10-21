@@ -259,7 +259,9 @@ bounded by a limit with a typed refusal (ADR 0039):
 - What a connector is told at the handshake it may send, a frame, a JSON push, a cursor, its
   dictionaries, its schema and its columns, is what the budget admits, each limit derived so
   the worst case it admits, all at once, fits its share: a connector that keeps to them is
-  refused nothing for the budget's sake and waits on it for nothing but commits. An engine
+  refused nothing for the budget's sake but what its pushes become beyond one request, a row
+  its table widens (`row_exceeds_budget`) or JSON whose batches take more than a request beyond
+  twice its text (`json_exceeds_budget`), and waits on it for nothing but commits. An engine
   whose memory admits less than the protocol's least frame or dictionary limit is refused when
   it is configured, and a peer that sets a dictionary limit below the protocol's least is
   refused at the handshake.

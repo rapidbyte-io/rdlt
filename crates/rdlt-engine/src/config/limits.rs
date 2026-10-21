@@ -13,7 +13,9 @@ impl EngineConfig {
     ///
     /// A host advertises them at its handshake, so a connector cuts and bounds what it sends to
     /// what will be admitted, and a source in the engine's process is held to them where it
-    /// emits. The engine refuses for its budget only what passes them.
+    /// emits. The engine refuses for its budget only what passes them, and what a push within
+    /// them becomes beyond one request: a row its table widens, or JSON whose batches take more
+    /// than a request beyond twice its text.
     pub fn limits(&self) -> Limits {
         let shares = Shares::of(self.memory.get());
         self.limits.lesser(&admitted(shares, self.partitions.get()))

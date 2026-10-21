@@ -126,7 +126,11 @@ budget before it is held, or bounded by a limit with a typed refusal.
   it sends to it, and refuses its source what it cannot cut; the host's decoder refuses what
   passes it. The budget's own refusals, `push_exceeds_budget` and `limit_exceeded` for `read
   kept bytes`, stay as the backstop for a connector that ignores what it was told, or a host
-  told the wire's defaults.
+  told the wire's defaults. What a push becomes is not the limits' to bound, so a push within
+  them is still refused where it becomes more than one request may take: a row its table widens
+  (`row_exceeds_budget`, Rows above) and JSON whose batches take more than a request beyond
+  twice its text (`json_exceeds_budget`, ADR 0040). A megabyte of JSON records, each naming one
+  of three hundred keys, is refused at 34 MiB, where a JSON push may be 3.9 MB.
 - **The least memory.** A budget whose derived frame limit is below the protocol's least frame
   (`MIN_FRAME_BYTES`, 4 MiB), or whose dictionary limit is below the protocol's least
   (`MIN_DICTIONARY_BYTES`, 256 KiB), is refused when the engine's configuration is built, with
