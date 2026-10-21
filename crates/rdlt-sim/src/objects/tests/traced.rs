@@ -686,19 +686,28 @@ fn content(obj: &Obj) -> Bytes {
     Bytes::from(text)
 }
 
-/// The maker and the chunks it needs that `bytes`, a chunk's, name.
-fn parsed(bytes: &[u8]) -> (String, BTreeSet<u64>) {
+/// The chunks that `bytes`, a chunk's, name as needed.
+fn needs(bytes: &[u8]) -> BTreeSet<u64> {
     let text = std::str::from_utf8(bytes).expect("a chunk's bytes are text");
-    let text = text.trim_end_matches('.');
-    let (maker, live) = text
+    let (_, live) = text
+        .trim_end_matches('.')
         .split_once(" live ")
         .expect("a chunk names what it needs");
-    let live = live
-        .split(',')
+    live.split(',')
         .filter(|number| !number.is_empty())
         .map(|number| number.parse().expect("a chunk number"))
-        .collect();
-    (maker.chars().take(1).collect(), live)
+        .collect()
+}
+
+/// The bytes a read of `obj` answers: a body holds a chunk uploaded in parts.
+fn read_of(obj: &Obj) -> Bytes {
+    match obj.name {
+        Name::Body((_, by)) => content(&Obj {
+            kind: Kind::InParts(by),
+            ..obj.clone()
+        }),
+        Name::Mark | Name::ChunkHead(_) | Name::Stray => content(obj),
+    }
 }
 
 fn log_dir() -> String {
@@ -803,9 +812,7 @@ fn agrees(answered: &Answered, answer: &Answer) -> bool {
         (Answered::Done, Answer::Done) => true,
         (Answered::Numbers(numbers), Answer::Numbers(expected)) => numbers == expected,
         (Answered::Listed(listed), Answer::Listed(expected)) => listed == expected,
-        (Answered::Bytes(bytes), Answer::Content(obj)) => {
-            parsed(bytes) == (format!("{:?}", obj.by), obj.live.clone())
-        }
+        (Answered::Bytes(bytes), Answer::Content(obj)) => *bytes == read_of(obj),
         (Answered::Refused(kind), Answer::Refused(refusal)) => {
             *kind
                 == match refusal {
@@ -921,14 +928,14 @@ fn named(
                 ..whole(Name::ChunkHead(number), maker, start, BTreeSet::new())
             }
         } else {
-            whole(Name::ChunkHead(number), maker, start, parsed(bytes).1)
+            whole(Name::ChunkHead(number), maker, start, needs(bytes))
         }
     } else {
         let (number, rest) = name.split_once('.').expect("a body's number");
         let token = rest.strip_suffix(".body").expect("a body");
         let maker = bodies.maker(token).unwrap_or(Who::X);
         let number = number.parse().expect("a body's number");
-        whole(Name::Body((number, maker)), maker, 0, parsed(bytes).1)
+        whole(Name::Body((number, maker)), maker, 0, needs(bytes))
     }
 }
 
@@ -1189,4 +1196,35 @@ fn a_retried_begin_names_the_token_the_trace_began_last() {
     let key = key_of(At::Object(Name::Body((1, Who::W))), &bodies);
     assert_eq!(key, format!("{}/00000001.aaa.body", log_dir()));
     assert_eq!(bodies.maker("zzz"), Some(Who::W));
+}
+
+#[test]
+fn a_read_agrees_only_with_the_bytes_of_the_chunk_the_trace_names() {
+    let chunk = |name, kind| Obj {
+        name,
+        by: Who::W,
+        tok: 0,
+        live: BTreeSet::from([1]),
+        kind,
+    };
+    let whole = Answer::Content(chunk(Name::ChunkHead(3), Kind::Whole));
+    let body = Answer::Content(chunk(Name::Body((3, Who::W)), Kind::Whole));
+    let padded = |text: &str| {
+        let mut text = text.as_bytes().to_vec();
+        text.resize(LONG, b'.');
+        text
+    };
+    let cases: [(&Answer, Vec<u8>, bool); 7] = [
+        (&whole, b"W3 live 1".to_vec(), true),
+        (&whole, b"W4 live 1".to_vec(), false),
+        (&whole, b"W31 live 1".to_vec(), false),
+        (&whole, b"R3 live 1".to_vec(), false),
+        (&whole, padded("W3 live 1"), false),
+        (&body, padded("W3 live 1"), true),
+        (&body, b"W3 live 1".to_vec(), false),
+    ];
+    for (answer, bytes, agreed) in cases {
+        let answered = Answered::Bytes(Bytes::from(bytes));
+        assert_eq!(agrees(&answered, answer), agreed, "{answered:?}");
+    }
 }
