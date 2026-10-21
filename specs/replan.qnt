@@ -14,17 +14,17 @@
 // quint steps: --step simulated --max-steps 60
 // quint run: --max-samples 2000
 // quint verify: tlc
-/// The protocol, for a source whose partitions each hold `ROWS` rows.
+/// The protocol, for a source whose partitions each hold the rows `ROWS` gives them.
 module replan_protocol {
   // ---- Bounds
 
   /// The partitions a source may name.
   pure val PARTS: Set[str] = Set("p0", "p1", "p2")
   /// The rows each partition holds once every row arrived.
-  const ROWS: int
-  assume RowsHold = ROWS >= 1
+  const ROWS: str -> int
+  assume RowsHold = PARTS.forall(p => ROWS.get(p) >= 1)
   /// The source's changes to what it names, and the run's crashes, a behavior meets in all.
-  pure val CHANGES = 3
+  const CHANGES: int
 
   // ---- State
 
@@ -57,7 +57,7 @@ module replan_protocol {
   /// The source's changes and the run's crashes left.
   var changes: int
 
-  pure def zero(part: str): int -> int = 0.to(ROWS - 1).mapBy(_ => 0)
+  pure def zero(part: str): int -> int = 0.to(ROWS.get(part) - 1).mapBy(_ => 0)
 
   /// The reads of `part`.
   def readsOf(part: str): Set[Read] = reads.filter(r => r.part == part)
@@ -87,7 +87,7 @@ module replan_protocol {
   action init = all {
     named' = Set("p0", "p1"),
     bounded' = Set("p0"),
-    arrived' = PARTS.mapBy(_ => ROWS - 1),
+    arrived' = PARTS.mapBy(p => ROWS.get(p) - 1),
     reads' = Set(),
     committed' = PARTS.mapBy(_ => 0),
     rows' = PARTS.mapBy(p => zero(p)),
@@ -158,7 +158,7 @@ module replan_protocol {
     all {
       pending != Set(),
       rows' = pending.fold(rows, (rs, r) =>
-        rs.set(r.part, 0.to(ROWS - 1).filter(o => r.base <= o and o < r.sealed).fold(rs.get(r.part), (counts, o) => counts.set(o, counts.get(o) + 1)))),
+        rs.set(r.part, 0.to(ROWS.get(r.part) - 1).filter(o => r.base <= o and o < r.sealed).fold(rs.get(r.part), (counts, o) => counts.set(o, counts.get(o) + 1)))),
       committed' = pending.fold(committed, (c, r) => c.set(r.part, r.sealed)),
       reads' = reads.filter(r => not(r.stopped)).map(r => { ...r, base: r.sealed, landed: r.ended }),
       keep,
@@ -167,7 +167,7 @@ module replan_protocol {
 
   /// A row of `part` arrives.
   action arrive(part: str): bool = all {
-    arrived.get(part) < ROWS,
+    arrived.get(part) < ROWS.get(part),
     arrived' = arrived.set(part, arrived.get(part) + 1),
     named' = named,
     bounded' = bounded,
@@ -209,8 +209,8 @@ module replan_protocol {
     crash,
     all { reads != Set(), nondet r = reads.oneOf() any { readRow(r), checkpoint(r), pause(r) } },
     all {
-      PARTS.exists(p => arrived.get(p) < ROWS),
-      nondet p = PARTS.filter(x => arrived.get(x) < ROWS).oneOf()
+      PARTS.exists(p => arrived.get(p) < ROWS.get(p)),
+      nondet p = PARTS.filter(x => arrived.get(x) < ROWS.get(x)).oneOf()
       arrive(p),
     },
     all {
@@ -230,8 +230,8 @@ module replan_protocol {
       all { rare == 1, crash },
       all { reads != Set(), nondet r = reads.oneOf() any { readRow(r), checkpoint(r), pause(r) } },
       all {
-        PARTS.exists(p => arrived.get(p) < ROWS),
-        nondet p = PARTS.filter(x => arrived.get(x) < ROWS).oneOf()
+        PARTS.exists(p => arrived.get(p) < ROWS.get(p)),
+        nondet p = PARTS.filter(x => arrived.get(x) < ROWS.get(x)).oneOf()
         arrive(p),
       },
       all {
@@ -252,7 +252,7 @@ module replan_protocol {
   val NoPartitionLostOrDoubled = PARTS.forall(p => all {
     readsOf(p).size() <= 1,
     readsOf(p).forall(r => r.base == committed.get(p)),
-    0.to(ROWS - 1).forall(o => rows.get(p).get(o) == (if (o < committed.get(p)) 1 else 0)),
+    0.to(ROWS.get(p) - 1).forall(o => rows.get(p).get(o) == (if (o < committed.get(p)) 1 else 0)),
   })
 
   /// Every variable.
@@ -302,18 +302,39 @@ module replan_protocol {
   }
 }
 
-/// The protocol with each partition holding one row, the bound TLC explores whole.
+/// The protocol with one partition holding two rows and the others one, and two changes: the bound
+/// TLC explores whole.
 module replan {
-  import replan_protocol(ROWS = 1).*
+  import replan_protocol(ROWS = Map("p0" -> 1, "p1" -> 2, "p2" -> 1), CHANGES = 2).*
 
-  /// Every partition starts with its one row still to arrive.
-  run everyPartitionAwaitsItsRowTest = init.expect(arrived == PARTS.mapBy(_ => 0))
+  /// Every partition starts with one row still to arrive.
+  run everyPartitionAwaitsItsRowTest = init.expect(arrived == PARTS.mapBy(p => ROWS.get(p) - 1))
+
+  /// A read holds a sealed row and a row after it when a plan stops it: the sealed row is
+  /// committed, and the next read starts after it.
+  run aStoppedReadsUnsealedRowIsReadAgainTest =
+    init
+      .then(replan)
+      .then(readOn("p1"))
+      .then(checkpointOn("p1"))
+      .then(arrive("p1"))
+      .then(readOn("p1"))
+      .expect(readsOf("p1").exists(r => r.sealed == 1 and r.read == 2))
+      .then(reshape(Set("p0"), Set("p0")))
+      .then(replan)
+      .then(commit)
+      .then(reshape(Set("p0", "p1"), Set("p0")))
+      .then(replan)
+      .expect(all {
+        readsOf("p1").exists(r => r.base == 1 and r.read == 1 and not(r.stopped)),
+        rows.get("p1") == Map(0 -> 1, 1 -> 0),
+      })
 }
 
-/// The protocol with each partition holding two rows, which only `quint test` and `quint run`
-/// explore: TLC's bound holds one.
+/// The protocol with each partition holding two rows, and three changes, which only `quint test`
+/// and `quint run` explore: TLC's bound holds less.
 module replan_rows2 {
-  import replan_protocol(ROWS = 2).*
+  import replan_protocol(ROWS = Map("p0" -> 2, "p1" -> 2, "p2" -> 2), CHANGES = 3).*
 
   /// A partition the source stops naming is stopped: its sealed row is committed, and its read
   /// drains.
