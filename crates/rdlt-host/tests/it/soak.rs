@@ -232,9 +232,20 @@ async fn landed(round: u64, rows: u64, store: &str, outcome: &RunOutcome, logged
     // The drain logs what the source said as it connected a moment after the run may have ended.
     clean(
         &format!("round {round}'s log"),
-        &logged.until("***").await,
+        &scrubbed(logged).await,
         true,
     );
+}
+
+/// Waits, for five seconds at most, until `logged` holds a scrubbed line, and takes what it holds.
+async fn scrubbed(logged: &Logged) -> String {
+    for _ in 0..500 {
+        if logged.text().contains("configured with ***") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    logged.take()
 }
 
 /// Round `round`: a scripted source of a drawn number of rows, crashing once where the draws
@@ -305,4 +316,9 @@ fn connectors_killed_stalled_and_crashing_load_every_row_once_and_say_no_secret(
     });
     assert!(round > 0, "no round ran");
     assert_eq!(rdlt_host::stop_spawned(Duration::from_secs(20)), Ok(()));
+    // The drains log the last round's late lines while the runtime runs.
+    tracing::subscriber::with_default(logged.clone(), || {
+        runtime.block_on(async { tokio::time::sleep(Duration::from_millis(500)).await });
+    });
+    clean("the soak's last log", &logged.take(), false);
 }
