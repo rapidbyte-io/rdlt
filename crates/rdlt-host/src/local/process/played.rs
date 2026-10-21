@@ -9,10 +9,9 @@ use std::sync::Arc;
 
 use rdlt_connector::ConnectorId;
 use tokio::io::AsyncRead;
-use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-use super::{Launch, Launched, Owner, Process, Told, Unspawned, command, draining};
+use super::{Ended, Launch, Launched, Owner, Process, Told, Unspawned, command, draining};
 use crate::kills::Kills;
 use crate::network::Stream;
 use crate::secrets::Redactions;
@@ -41,7 +40,7 @@ pub struct Played {
     /// Its standard error.
     pub stderr: Box<dyn AsyncRead + Send + Unpin>,
     /// How it exited, once it has.
-    pub exit: watch::Receiver<Option<ExitStatus>>,
+    pub exit: Arc<Ended<ExitStatus>>,
 }
 
 impl fmt::Debug for Played {

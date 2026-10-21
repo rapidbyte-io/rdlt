@@ -22,8 +22,9 @@ mod wire;
 pub use connect::{Connect, Open};
 pub use kills::Kills;
 pub use local::{
-    Bubblewrap, Confined, Grants, Interrupts, LastWords, Launcher, Lingering, Local, NetworkGrant,
-    OsError, Sandbox, SandboxError, Stops, StopsSpawned, Witness, spawned, stop_spawned,
+    Bubblewrap, Confined, Ended, Grants, Interrupts, LastWords, Launcher, Lingering, Local,
+    NetworkGrant, OsError, Sandbox, SandboxError, Stops, StopsSpawned, Witness, spawned,
+    stop_spawned,
 };
 #[cfg(feature = "sim")]
 pub use local::{Played, Playing};
