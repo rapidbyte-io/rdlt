@@ -981,3 +981,92 @@ fn a_destination_s_state_value_with_whitespace_around_it_reads_as_its_entry() {
     // What the engine records of it again is the entry's own JSON, with nothing around it.
     assert_eq!(entry.to_record(), epoch);
 }
+
+/// The identifiers a name map property assigns from: two folding alike, so a destination that
+/// keeps case tells them apart.
+const IDENTIFIERS: [&str; 4] = ["x", "y", "X", "z"];
+
+/// The columns a name map property maps: two sources, one nested, and a variant.
+fn columns() -> [ColumnKey; 4] {
+    [
+        ColumnKey::Source(ColumnPath::from("a")),
+        ColumnKey::Source(ColumnPath::from("b")),
+        ColumnKey::Source(ColumnPath::new(["a", "b"]).expect("a nested path")),
+        ColumnKey::Variant {
+            column: ColumnPath::from("a"),
+            kind: TypeKind::Json,
+        },
+    ]
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(rdlt_testkit::cases(256)))]
+
+    /// Through any inserts a name map keeps one identifier for each column and one column for
+    /// each identifier, keeps a column's first identifier, changes nothing on a refusal, and
+    /// reads back from its record unchanged.
+    #[test]
+    fn a_name_map_stays_injective_and_append_only_through_any_inserts(
+        inserts in proptest::collection::vec((0_usize..4, 0_usize..4), 0..16),
+    ) {
+        let columns = columns();
+        let mut map = NameMap::default();
+        let mut model: Vec<(usize, usize)> = Vec::new();
+        for (column, identifier) in inserts {
+            let before = map.clone();
+            let inserted = map.insert(columns[column].clone(), IDENTIFIERS[identifier]);
+            let mapped = model.iter().find(|(known, _)| *known == column).map(|(_, named)| *named);
+            let owner = model.iter().find(|(_, named)| *named == identifier).map(|(known, _)| *known);
+            match (mapped, owner) {
+                (Some(named), _) if named == identifier => {
+                    prop_assert_eq!(inserted, Ok(()));
+                    prop_assert_eq!(&map, &before);
+                }
+                (Some(named), _) => {
+                    prop_assert_eq!(inserted, Err(NameConflict::Remapped {
+                        key: columns[column].clone(),
+                        existing: IDENTIFIERS[named].to_owned(),
+                    }));
+                    prop_assert_eq!(&map, &before);
+                }
+                (None, Some(known)) => {
+                    prop_assert_eq!(inserted, Err(NameConflict::Taken {
+                        name: IDENTIFIERS[identifier].to_owned(),
+                        owner: columns[known].clone(),
+                    }));
+                    prop_assert_eq!(&map, &before);
+                }
+                (None, None) => {
+                    prop_assert_eq!(inserted, Ok(()));
+                    model.push((column, identifier));
+                }
+            }
+        }
+        prop_assert_eq!(map.len(), model.len());
+        for (column, identifier) in &model {
+            prop_assert_eq!(map.get(&columns[*column]), Some(IDENTIFIERS[*identifier]));
+            prop_assert_eq!(map.owner(IDENTIFIERS[*identifier]), Some(&columns[*column]));
+        }
+        let record: Vec<(ColumnKey, String)> = map.clone().into();
+        prop_assert_eq!(NameMap::try_from(record).ok(), Some(map));
+    }
+
+    /// A recorded name map is read back exactly where no column and no identifier appears in it
+    /// twice.
+    #[test]
+    fn a_recorded_name_map_is_read_only_where_it_is_injective(
+        pairs in proptest::collection::vec((0_usize..4, 0_usize..4), 0..8),
+    ) {
+        let columns = columns();
+        let record: Vec<(ColumnKey, String)> = pairs
+            .iter()
+            .map(|(column, identifier)| (columns[*column].clone(), IDENTIFIERS[*identifier].to_owned()))
+            .collect();
+        let distinct = |at: fn(&(usize, usize)) -> usize| {
+            let mut seen = std::collections::BTreeSet::new();
+            pairs.iter().all(|pair| seen.insert(at(pair)))
+        };
+        let injective = distinct(|pair| pair.0) && distinct(|pair| pair.1);
+        prop_assert_eq!(NameMap::try_from(record).is_ok(), injective);
+    }
+}
