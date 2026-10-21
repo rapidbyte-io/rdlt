@@ -10,6 +10,10 @@ const BYTES: usize = 16;
 const PAYLOAD: usize = 4;
 
 /// Formats nothing: what a refusal says has no bearing on whether bytes are refused.
+#[expect(
+    dead_code,
+    reason = "Kani's stub attributes name it, which rustc does not count as a use"
+)]
 fn unformatted(_: std::fmt::Arguments<'_>) -> String {
     String::new()
 }
@@ -50,7 +54,9 @@ pub(super) fn reference(data: &[u8]) -> u32 {
 fn a_head_announces_its_payload_s_length_from_any_bytes() {
     let head = any_bytes(BYTES);
     match payload_len(&head) {
-        None => assert!(head.len() < 5),
+        None => {
+            assert!(head.len() < 5);
+        }
         Some(len) => {
             assert!(head.len() >= 5);
             let announced = u32::from_le_bytes([head[1], head[2], head[3], head[4]]);
