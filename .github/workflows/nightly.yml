@@ -205,6 +205,25 @@ jobs:
           if-no-files-found: warn
           overwrite: true
 
+  # Connectors spawned through `Local` as real processes, beyond what a simulated seed runs:
+  # starts racing for the last of the groups a process may own.
+  soak:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        timeout-minutes: 5
+        with:
+          version: ${{ env.SETUP_MISE_VERSION }}
+          sha256: ${{ runner.os == 'macOS' && env.SETUP_MISE_SHA256_MACOS || env.SETUP_MISE_SHA256_LINUX }}
+          github_token: ""
+          install_args: --locked just aqua:nextest-rs/nextest/cargo-nextest
+          cache_key_prefix: mise-v2-test
+      - run: just soak
+
   # Each bench workload's resident peak against its budget's bound.
   resident:
     runs-on: ubuntu-24.04

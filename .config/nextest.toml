@@ -52,6 +52,12 @@ slow-timeout = { period = "60s", terminate-after = 5 }
 filter = "package(rdlt-engine) & binary(crashes)"
 slow-timeout = { period = "120s", terminate-after = 8 }
 
+# The soak starts a thousand connectors: it runs alone, and is reported as slow, never terminated.
+[[profile.default.overrides]]
+filter = "package(rdlt-host) & binary(it) & test(/^soak::/)"
+threads-required = "num-test-threads"
+slow-timeout = { period = "60s" }
+
 # Mutation testing: each limit sits far enough above what its tests take beside another mutant's
 # on a four-core runner that only a test hung on its mutant reaches it, and terminating that test
 # fails it, which catches the mutant; no limit catches a mutant no assertion would.
