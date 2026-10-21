@@ -11,6 +11,7 @@ use crate::limits::{
     OUTPUT_LINES_BURST, OUTPUT_LINES_PER_SECOND, TAIL_BYTES,
 };
 use crate::secrets::Redactions;
+use rdlt_connector::text::CUT;
 
 /// What a drain gave the log, the tail it kept, and whether it told its stream closed.
 struct Drained {
@@ -109,7 +110,7 @@ async fn a_line_longer_than_a_line_may_be_is_one_event_cut_at_the_limit() {
     let lines = drained.lines();
     assert_eq!(lines.len(), 2, "{}", lines.len());
     assert_eq!(lines[0].len(), OUTPUT_LINE_BYTES);
-    assert!(lines[0].ends_with(rdlt_connector::text::CUT));
+    assert!(lines[0].ends_with(CUT));
     assert_eq!(lines[1], "the end");
     // The tail keeps the end of what was written, whatever the log was given.
     let words = drained.tail.words(&Redactions::new());
@@ -566,13 +567,40 @@ fn said_as(secret: &str) -> Vec<String> {
         .collect()
 }
 
-/// Text around a secret: a little, or enough to put the secret across the end of what one read
-/// takes or the start of what the tail keeps.
-fn around(fill: char) -> impl Strategy<Value = String> {
+/// Text around a secret: a little, or spaces enough to put the secret across the end of what one
+/// read takes or the start of what the tail keeps.
+///
+/// Spaces are shown as one, so a line and an error still show the secret's part at that cut.
+fn around() -> impl Strategy<Value = String> {
     prop_oneof![
         3 => "[A-Z.,;]{0,12}",
-        1 => (0_usize..24).prop_map(move |less| fill.to_string().repeat(TAIL_BYTES - less)),
+        1 => (0_usize..24).prop_map(|less| " ".repeat(TAIL_BYTES - less)),
     ]
+}
+
+/// Whether `text` ends with a start of `form`, a part of it a mask would hold.
+fn ends_in_a_start(text: &str, form: &str) -> bool {
+    form.char_indices()
+        .map(|(at, _)| &form[..at])
+        .any(|start| maskable(start) && text.ends_with(start))
+}
+
+/// Whether `text` begins with an end of `form`, a part of it a mask would hold.
+fn begins_with_an_end(text: &str, form: &str) -> bool {
+    form.char_indices()
+        .skip(1)
+        .map(|(at, _)| &form[at..])
+        .any(|end| maskable(end) && text.starts_with(end))
+}
+
+/// Whether showing `text` leaves it as it is.
+fn shown_as_it_is(text: &str) -> bool {
+    rdlt_connector::text::shown(text, usize::MAX) == text
+}
+
+/// Whether `text` holds a character other than `*` and whitespace.
+fn maskable(text: &str) -> bool {
+    text.chars().any(|c| c != '*' && !c.is_whitespace())
 }
 
 proptest! {
@@ -582,12 +610,15 @@ proptest! {
     /// and whatever surrounds it, no line the log is given, no tail's last words and no error's
     /// text holds that form or the secret, each trimmed of its whitespace; a line of the secret
     /// with fewer than eight characters other than whitespace may show on its own.
+    ///
+    /// Where a read cuts a line, no part of the form said is left but a mask, and where the tail
+    /// begins, none of it.
     #[test]
     fn nothing_said_of_a_secret_survives_scrubbing_and_what_follows_it(
         secret in secret(),
         form in any::<prop::sample::Index>(),
-        before in around('A'),
-        after in around('B'),
+        before in around(),
+        after in around(),
         ending in prop::sample::select(vec!["\n", "\r\n", ""]),
     ) {
         let forms = said_as(&secret);
@@ -602,11 +633,23 @@ proptest! {
         let error = rdlt_connector::ConnectorError::internal(output.clone())
             .received(&|text| redactions.scrubbed(text));
         let mut shown: Vec<String> = drained.lines().iter().map(|line| (*line).to_owned()).collect();
-        shown.push(drained.tail.words(&redactions));
+        let words = drained.tail.words(&redactions);
+        shown.push(words.clone());
         shown.push(error.to_string());
         for found in forms.iter().map(|form| form.trim()).filter(|form| !form.is_empty()) {
             for text in &shown {
                 prop_assert!(!text.contains(found), "{found:?} in {text:?}, from {output:?}");
+            }
+        }
+        // A part of a form is seen at a cut only in a form that showing leaves as it is.
+        if shown_as_it_is(said) {
+            for line in drained.lines() {
+                if let Some(cut) = line.strip_suffix(CUT) && !cut.ends_with("***") {
+                    prop_assert!(!ends_in_a_start(cut, said), "{said:?} ends {line:?}, from {output:?}");
+                }
+            }
+            if !words.starts_with("***") {
+                prop_assert!(!begins_with_an_end(&words, said), "{said:?} begins {words:?}, from {output:?}");
             }
         }
     }
