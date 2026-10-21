@@ -5,6 +5,7 @@ mod arrivals;
 mod changes;
 mod config;
 mod expected;
+mod faulty;
 mod intruder;
 mod ledger;
 mod memory;
@@ -38,6 +39,7 @@ use crate::world::World;
 pub use changes::check_changes;
 use config::{config, endless, growth, pressed, small_log, waited};
 use expected::Discards;
+use faulty::Faulty;
 use ledger::Ledger;
 #[cfg(test)]
 pub(crate) use memory::beyond_charge;
@@ -48,9 +50,6 @@ pub use pressure::Checked;
 use pressure::explained;
 use scenario::{Executed, Scenario, execute_all, pick};
 use settle::settled;
-
-/// Runs before this many have faults injected; the rest run clean, so every phase converges.
-const FAULTY_RUNS: usize = 4;
 
 /// What a draw of network faults made apart from a generator mixes in: "disrupt" in ASCII.
 const DISRUPTED: u64 = 0x0064_6973_7275_7074;
@@ -239,13 +238,15 @@ impl Simulation {
     ///
     /// A phase converges once a run of each pipeline has succeeded, no full read is left half
     /// done, and no write-ahead log is left to replay, so each full read the model counts is
-    /// complete and none lands in a later phase.
+    /// complete and none lands in a later phase. The first four to sixteen runs have faults and
+    /// disruptions where the seed has them, the rest none.
     async fn converge(&mut self, phase: usize, rng: &mut SplitMix64) -> (Vec<Report>, bool) {
         let (seed, features) = (self.seed, self.world.workload.features);
         self.world.set_phase(phase);
         let (mut runs, mut failure) = (0, None);
         let mut succeeded = vec![false; self.world.workload.pipelines];
         let mut reports = Vec::new();
+        let mut faults = Faulty::draw(seed.value(), phase);
         if self.stream(phase, &mut reports).await {
             return (reports, true);
         }
@@ -262,10 +263,11 @@ impl Simulation {
             } else if !pending {
                 break;
             }
-            let faulty = runs < FAULTY_RUNS;
+            let faulty = faults.faulty(runs);
             self.world.set_faulty(faulty && features.faults);
+            let draws = faults.draws(runs, rng);
             let scenario = if faulty && features.disruptions {
-                pick(rng)
+                pick(draws)
             } else {
                 Scenario::Plain
             };
@@ -273,7 +275,7 @@ impl Simulation {
             let clean = !(faulty && (features.faults || features.disruptions));
             // Drawn only where the network is, so every other seed draws as it always has.
             let network = (faulty && features.faults && self.placing.is_some())
-                .then(|| SplitMix64::new(rng.next_u64()));
+                .then(|| SplitMix64::new(draws.next_u64()));
             let ran = self
                 .attempt(phase, scenario, clean, network, &mut reports)
                 .await;
