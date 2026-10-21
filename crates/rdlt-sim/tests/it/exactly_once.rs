@@ -24,7 +24,7 @@ const FOUND: [(u64, Reach); 19] = [
     (252, Reach::LogWaited),
     // A column of integers made for a column of JSON as its table was created was recorded
     // exact, though the integers split into it were read only as they were lowered.
-    (24, Reach::Widened),
+    (29_442, Reach::Widened),
     // A frozen normalized stream's declared array whose table no row had made yet was refused
     // as new to the table once a crashed attempt had created the stream's own table.
     (29, Reach::Crashed),
