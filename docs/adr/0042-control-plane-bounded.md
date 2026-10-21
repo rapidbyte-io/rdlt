@@ -117,7 +117,13 @@ still taken largely on trust:
     and 200 MiB on a connection of `MAX_CALLS`; and HTTP/2's stream windows bound what waits for
     them in transport, a stream window a call. A write holds its staged bound and one decoded
     frame waiting for its writer, beside the frame it received next, which decodes once the
-    writer takes the frame before it.
+    writer takes the frame before it. A read holds its source's pushes as the source made them,
+    bounded by count, not bytes: the 16 events the source sends ahead, the one it waits to send,
+    the one being sent, and the frames its credit lets go, two of its largest and one more below
+    zero (ADR 0016). A JSON push is at most the host's `json push bytes`, and a batch, which the
+    read cuts to frames as it sends it, is bounded by its source alone: a read of JSON pushes
+    holds 21 at most, 617 MB at the default budget. What a connector's own process takes is the
+    operator's to bound (ADR 0043).
 - **Lists are bounded and checked in linear time.** A catalog holds at most 65,536 streams and a
   plan 16,384 partitions, in every placement; a plan names each partition once and starts only
   those it names. A destination's identifier rules hold at most 4,096 reserved words and 64
