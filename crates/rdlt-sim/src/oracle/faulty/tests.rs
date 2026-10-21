@@ -35,4 +35,6 @@ fn the_first_four_runs_draw_from_the_simulation_s_generator_and_the_rest_apart()
     );
     assert!(faults.faulty(FEWEST - 1));
     assert!(!faults.faulty(MOST));
+    assert!(faults.faulty(faults.runs - 1));
+    assert!(!faults.faulty(faults.runs));
 }

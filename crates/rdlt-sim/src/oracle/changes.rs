@@ -173,16 +173,16 @@ impl Changing<'_> {
         let (seed, features) = (self.seed, self.world.workload.features);
         let mut faults = Faulty::draw(seed.value() ^ CHANGES, round);
         for runs in 0.. {
-            let faulty = faults.faulty(runs);
-            self.world.set_faulty(faulty && features.faults);
+            let disrupted = faults.faulty(runs);
+            self.world.set_faulty(disrupted && features.faults);
             let draws = faults.draws(runs, rng);
-            let scenario = if faulty && features.disruptions {
+            let scenario = if disrupted && features.disruptions {
                 pick(draws)
             } else {
                 Scenario::Plain
             };
             // Drawn only where the network is, so every other seed draws as it always has.
-            let network = (faulty && features.faults && self.placing.is_some())
+            let network = (disrupted && features.faults && self.placing.is_some())
                 .then(|| SplitMix64::new(draws.next_u64()));
             let plans = std::slice::from_ref(self.plan);
             let executing = execute_all(self.engine, plans, self.name, self.placing, scenario);
@@ -191,7 +191,7 @@ impl Changing<'_> {
                 _ => executing.await,
             };
             self.ledger.ended(round, scenario, &executed);
-            let clean = !(faulty && (features.faults || features.disruptions));
+            let clean = !(disrupted && (features.faults || features.disruptions));
             let failures: Vec<_> = executed
                 .iter()
                 .flat_map(|executed| executed.failures.iter().cloned())
