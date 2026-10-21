@@ -1,4 +1,7 @@
 mod forged;
+// Local logs check unix owners and modes on every file they open.
+#[cfg(unix)]
+mod torn;
 
 use std::collections::BTreeMap;
 use std::io;
