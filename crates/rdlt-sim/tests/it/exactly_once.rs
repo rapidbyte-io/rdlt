@@ -39,7 +39,7 @@ const FOUND: [(u64, Reach); 19] = [
     (918_105, Reach::ResetRefused),
     // Logs in an object store: a mark's and a head's creates given up landed after their log
     // was removed, and the head named a body deleted with it, which no replay could read.
-    (773, Reach::LandedLate),
+    (273_183, Reach::LandedLate),
     // A merge table's column widened to JSON over values written as floats and as plain text,
     // which the destination then held as JSON, and the check read as values of JSON, not of
     // the types they were written as.
