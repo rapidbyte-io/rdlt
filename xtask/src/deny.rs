@@ -11,12 +11,15 @@ use anyhow::Context as _;
 
 use crate::workspaces::{self, MANIFESTS};
 
+/// The manifest of the workspace that builds every crate a ban of `deny.toml` names as a wrapper.
+const MAIN: &str = "Cargo.toml";
+
 /// The arguments of one cargo-deny run for each workspace of the repository at `root`.
 pub(crate) fn runs(root: &Path) -> Vec<Vec<OsString>> {
     MANIFESTS
         .iter()
         .map(|manifest| {
-            vec![
+            let mut run: Vec<OsString> = vec![
                 "deny".into(),
                 "--locked".into(),
                 "--manifest-path".into(),
@@ -24,7 +27,12 @@ pub(crate) fn runs(root: &Path) -> Vec<Vec<OsString>> {
                 "--config".into(),
                 root.join("deny.toml").into_os_string(),
                 "check".into(),
-            ]
+            ];
+            // Another workspace builds none of the wrappers, and still holds each ban.
+            if *manifest != MAIN {
+                run.extend(["--allow".into(), "unused-wrapper".into()]);
+            }
+            run
         })
         .collect()
 }
