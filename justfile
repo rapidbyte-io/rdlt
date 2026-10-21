@@ -101,6 +101,12 @@ containers *args:
 stress seeds="20" cores=env("RDLT_SIM_CORES", ""): sim-archive
     RDLT_SIM_SEEDS="{{ seeds }}" RDLT_SIM_CORES="{{ cores }}" cargo nextest run --archive-file target/sim.tar.zst --workspace-remap . --run-ignored ignored-only -E 'test(many_threads)'
 
+# Start connectors in processes of their own through `Local` past the groups a process may own,
+# racing on real threads, which no simulated seed interleaves; real processes on the real clock,
+# so a failure names its round
+soak:
+    cargo nextest run --package rdlt-host --all-features --test it --run-ignored ignored-only -E 'test(/^soak::/)'
+
 # Measure how many seeds a second the exactly-once sweep runs over seeds 0 to 999, from the
 # simulation's archive, and fail below `floor`; docs/perf/sim.md records the rate and the floor
 sim-rate floor="5" cores=env("RDLT_SIM_CORES", ""): sim-archive
