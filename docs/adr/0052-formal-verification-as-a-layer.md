@@ -180,6 +180,12 @@ A formal layer is added to the layers of its class, never in place of one.
   other. That a source is told only cursors a landed commit covers is an order of the async
   coordinator's calls (`coordinator/tests/acks.rs`), and that a log's positions are exactly what
   commits record is a property of maps of JSON-keyed records (`wal/positions/tests.rs`).
+- Where a property is over strings, sets, files or draining, a property test holds it, beside
+  the code: a name map stays injective and append-only, tables named in turn and salted naming
+  never share an identifier, a log's local and object-store names read back only as written
+  and never hold `..` or an empty segment, nothing said of a secret, `*` and all, survives
+  scrubbing and what follows it, and a torn local log is replayed exactly or refused with a
+  typed error.
 
 ### Specifications: Quint over the design
 
