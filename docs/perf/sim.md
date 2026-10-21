@@ -40,4 +40,4 @@ the reference rate every night against the floor below.
 | Test job, ubuntu-24.04 | 27-29 min of 45, estimated from the parent's 24.4 min and 3-4.5 min more |
 | Test job, macos-15 | about 32 min of 45, estimated from the parent's 27.3 min and 4.7 min more |
 | Archive extraction per shard | 0.1 s |
-| Nightly floor for the reference set | 3 seeds/s, the whole number below half the shards' estimated median |
+| Nightly floor for the reference set | 5 seeds/s, the whole number below half the reference job's rate: 12.0 seeds/s on `d28d458f`, about 10.3 at this branch's local ratio (19.5 / 22.8), estimated |

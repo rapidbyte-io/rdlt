@@ -78,9 +78,9 @@ sim seed="" seeds="1000" from="0" cores="": sim-archive
     RDLT_SIM_SEED="{{ seed }}" RDLT_SIM_SEEDS="{{ seeds }}" RDLT_SIM_SEEDS_FROM="{{ from }}" RDLT_SIM_CORES="{{ cores }}" cargo nextest run --archive-file target/sim.tar.zst --workspace-remap . -E 'test(through_faults)'
 
 # Run each seed of both oracles twice from the simulation's archive, and fail where a seed's two
-# runs differ in what any run reported or failed with, in their simulated time (but over the
-# network), or in what they left; pass a seed to replay one, or an empty seed, a count and the
-# first seed of a shard
+# runs differ in what any of its phases' runs reported or failed with, in their simulated time
+# (but over the network), or in what they left; pass a seed to replay one, or an empty seed, a
+# count and the first seed of a shard
 sim-replay seed="" seeds="1000" from="0" cores="": sim-archive
     RDLT_SIM_SEED="{{ seed }}" RDLT_SIM_SEEDS="{{ seeds }}" RDLT_SIM_SEEDS_FROM="{{ from }}" RDLT_SIM_CORES="{{ cores }}" cargo nextest run --archive-file target/sim.tar.zst --workspace-remap . -E 'test(=determinism::every_seed_replays_alike)'
 
@@ -102,7 +102,7 @@ stress seeds="20" cores="": sim-archive
 
 # Measure how many seeds a second the exactly-once sweep runs over seeds 0 to 999, from the
 # simulation's archive, and fail below `floor`; docs/perf/sim.md records the rate and the floor
-sim-rate floor="3" cores="": sim-archive
+sim-rate floor="5" cores="": sim-archive
     RDLT_SIM_SEED="" RDLT_SIM_SEEDS=1000 RDLT_SIM_SEEDS_FROM=0 RDLT_SIM_CORES="{{ cores }}" cargo nextest run --archive-file target/sim.tar.zst --workspace-remap . -E 'test(=exactly_once::every_row_lands_exactly_once_through_faults_crashes_and_concurrent_runs)'
     cargo xtask sim-rate target/sim-timings/exactly_once.jsonl --floor {{ floor }}
 
