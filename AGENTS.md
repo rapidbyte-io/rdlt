@@ -1,6 +1,7 @@
 # Working on rdlt
 
-Notes for coding agents. The code standard is in `CONTRIBUTING.md` and enforced by `just lint`;
+Notes for coding agents. The code standard is in `CONTRIBUTING.md` and `STYLE.md` (how Rust is
+written: imports, ownership, traits, locks, panics, naming) and enforced by `just lint`;
 decisions and their reasons are in `docs/adr/`. Read those before changing code.
 
 ## Before you start

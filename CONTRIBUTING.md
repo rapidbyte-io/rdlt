@@ -4,6 +4,10 @@ This is the code standard for every line in this repository. Tooling enforces mo
 (`just lint`); reviewers enforce the rest. Where this document and the code disagree, this document
 wins and the code is fixed.
 
+How Rust is written (imports, ownership, types, traits, locks, panics, naming beyond the rules
+below) is in [STYLE.md](STYLE.md), which adapts Google's Rust style guide to rdlt. It is part of
+this standard, and points here where a rule is already stated.
+
 ## Workflow
 
 - Work on a branch and open a pull request; `main` accepts changes only through pull requests
@@ -147,8 +151,9 @@ and durations are `Duration`, never integer milliseconds.
 - Inside `rdlt-engine`, time, randomness, scheduling and the count of cores come only from `Env`.
   Clippy bans the direct calls, and iteration order must never depend on a hash map's random state.
 - Every `select!` starts with `biased;` and documents which branch wins.
-- Timeouts are per operation and configurable. Locks come from `parking_lot` and are never held
-  across `.await`.
+- Timeouts are per operation and configurable. Blocking locks come from `parking_lot` and are
+  never held across `.await`; a lock held across `.await` is `tokio::sync::Mutex` (STYLE.md
+  § Concurrency).
 
 ## API design
 
@@ -178,7 +183,8 @@ and durations are `Duration`, never integer milliseconds.
 A change is done when:
 
 1. `just ready` passes, with no lint allowance lacking a reason (use `#[expect(.., reason = "..")]`).
-2. Every public item is documented and no comment breaks the rules above.
+2. Every public item is documented, no comment breaks the rules above, and its code follows
+   STYLE.md.
 3. Its tests are behavioral, cover every defect it fixes, and include property tests where the
    code is law-like.
 4. It has no detached tasks, no blocking on the runtime and no string errors.
