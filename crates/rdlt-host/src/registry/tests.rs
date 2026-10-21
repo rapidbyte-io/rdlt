@@ -1,8 +1,13 @@
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
+
 use rdlt_connector::{BoxFuture, ConnectorErrorKind, ConnectorId, Destination, Source};
 use rdlt_connector_reference::{MemoryDestination, MemorySource};
 
 use super::Registry;
 use crate::provider::{ConnectorRef, Placed, Placement, Provider, ProviderError};
+use crate::secrets::{SecretFault, SecretReference, SecretResolver};
 
 fn memory() -> ConnectorRef {
     ConnectorRef::new(ConnectorId::parse("io.rapidbyte.memory").expect("a valid id"))
@@ -160,16 +165,16 @@ fn a_registry_debugs_its_connectors_by_id() {
 
 /// Counts how often it is asked, and resolves nothing.
 #[derive(Debug, Default)]
-struct Asked(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+struct Asked(Arc<AtomicUsize>);
 
-impl crate::secrets::SecretResolver for Asked {
+impl SecretResolver for Asked {
     fn resolve<'a>(
         &'a self,
-        _reference: &'a crate::secrets::SecretReference,
-    ) -> BoxFuture<'a, Result<rdlt_connector::Secret<String>, crate::secrets::SecretFault>> {
+        _reference: &'a SecretReference,
+    ) -> BoxFuture<'a, Result<rdlt_connector::Secret<String>, SecretFault>> {
         Box::pin(async move {
-            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Err(crate::secrets::SecretFault::Missing)
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Err(SecretFault::Missing)
         })
     }
 }
@@ -177,7 +182,7 @@ impl crate::secrets::SecretResolver for Asked {
 #[tokio::test]
 async fn a_linked_connectors_secrets_are_resolved_only_once_its_reference_is_accepted() {
     let asked = Asked::default();
-    let count = std::sync::Arc::clone(&asked.0);
+    let count = Arc::clone(&asked.0);
     let registry = Registry::trusted()
         .trusted_source::<MemorySource>()
         .trusted_destination::<MemoryDestination>()
@@ -197,7 +202,7 @@ async fn a_linked_connectors_secrets_are_resolved_only_once_its_reference_is_acc
                 .is_err()
         );
     }
-    assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(count.load(Ordering::SeqCst), 0);
     // Accepted, its reference is resolved, and one that does not resolve fails the placement.
     for refused in [
         Provider::source(&registry, &memory(), &config).await.err(),
@@ -209,7 +214,67 @@ async fn a_linked_connectors_secrets_are_resolved_only_once_its_reference_is_acc
         assert!(matches!(refused, ProviderError::Secret { .. }), "{refused}");
         assert_eq!(refused.code(), "secret_unresolved");
     }
-    assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(count.load(Ordering::SeqCst), 2);
+}
+
+/// Never answers its first ask, as a secret store that stalled, and resolves every later one;
+/// counts the asks still waiting.
+#[derive(Debug, Default)]
+struct StallsOnce {
+    asked: AtomicUsize,
+    waiting: Arc<AtomicUsize>,
+}
+
+/// One ask waiting, until it is dropped.
+struct Waiting(Arc<AtomicUsize>);
+
+impl Drop for Waiting {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+impl SecretResolver for StallsOnce {
+    fn resolve<'a>(
+        &'a self,
+        _reference: &'a SecretReference,
+    ) -> BoxFuture<'a, Result<rdlt_connector::Secret<String>, SecretFault>> {
+        let first = self.asked.fetch_add(1, Ordering::SeqCst) == 0;
+        let waiting = Arc::clone(&self.waiting);
+        Box::pin(async move {
+            if first {
+                waiting.fetch_add(1, Ordering::SeqCst);
+                let _waiting = Waiting(waiting);
+                std::future::pending::<()>().await;
+            }
+            Ok(rdlt_connector::Secret::new("canary".to_owned()))
+        })
+    }
+}
+
+// In-process placement precedes any run and has no deadline of its own: what ends it is its
+// caller dropping it, which must leave no ask waiting and the registry placing again.
+#[tokio::test(start_paused = true)]
+async fn a_placement_whose_secret_store_never_answers_ends_when_its_caller_drops_it() {
+    let store = StallsOnce::default();
+    let waiting = Arc::clone(&store.waiting);
+    let registry = Registry::trusted()
+        .trusted_source::<MemorySource>()
+        .secrets(store);
+    let (memory, config) = (
+        memory(),
+        serde_json::json!({ "streams": { "rows": [{ "id": "${secret:canary}" }] } }),
+    );
+    let placing = Provider::source(&registry, &memory, &config);
+    let stalled = tokio::time::timeout(Duration::from_secs(60), placing).await;
+    assert!(stalled.is_err(), "the store never answered");
+    assert_eq!(waiting.load(Ordering::SeqCst), 0);
+    let placing = Provider::source(&registry, &memory, &config);
+    let placed = tokio::time::timeout(Duration::from_secs(60), placing)
+        .await
+        .expect("the store answers the next ask")
+        .expect("placed");
+    assert_eq!(placed.placement, Placement::InProcess);
 }
 
 /// An error of each kind a connector that was found fails to be placed with, and its code.
