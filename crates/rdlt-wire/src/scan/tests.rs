@@ -1,6 +1,6 @@
 use prost::Message as _;
 
-use super::{MAX_DEPTH, Unscanned, decoded, request, response};
+use super::{MAX_DEPTH, Unscanned, decoded, field_bytes, request, response};
 use crate::v1;
 
 /// The service's methods.
@@ -237,4 +237,30 @@ fn a_text_set_again_holds_twice_its_length_as_its_room_grows() {
     let spec_size = size_of::<v1::ConfigureResponse>();
     assert_eq!(decoded(spec, &in_spec(50), usize::MAX), Ok(spec_size + 50));
     assert_eq!(decoded(spec, &specs, usize::MAX), Ok(spec_size + 50 + 112));
+}
+
+#[test]
+fn a_text_or_bytes_field_set_once_holds_what_its_measure_says() {
+    let form = response("Open").unwrap();
+    let answered = |state| {
+        let answer = v1::OpenResponse {
+            state,
+            ..v1::OpenResponse::default()
+        };
+        decoded(form, &answer.encode_to_vec(), usize::MAX).unwrap()
+    };
+    let empty = answered(Vec::new());
+    for length in [1, 7, 8, 9, 100, 1 << 20] {
+        let record = v1::StateRecord {
+            key: "k".repeat(length),
+            value: vec![1; length].into(),
+        };
+        let held = answered(vec![record]) - empty;
+        let entry = 4 * size_of::<v1::StateRecord>();
+        assert_eq!(
+            held,
+            entry + 2 * field_bytes(length),
+            "a field of {length} bytes"
+        );
+    }
 }

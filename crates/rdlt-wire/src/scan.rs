@@ -59,6 +59,16 @@ enum Kind {
 /// Bytes: the least a vector of bytes allocates once it holds any.
 const LEAST: usize = 8;
 
+/// Bytes: what a text or bytes field of `length` bytes, set once and not repeated, holds
+/// decoded beside the message it is a field of.
+#[must_use]
+pub const fn field_bytes(length: usize) -> usize {
+    match length {
+        0..=LEAST => LEAST,
+        _ => length,
+    }
+}
+
 /// Entries a vector of elements of more than a byte allocates room for at its first.
 ///
 /// One of bytes allocates [`LEAST`]. Growing, a vector holds its old entries beside twice as
@@ -174,14 +184,14 @@ impl Count {
             // again is decoded into the room the last took, which grows to twice that, or to the
             // text, beside the room it grew from.
             Kind::String => {
-                let text = payload.len().max(LEAST);
+                let text = field_bytes(payload.len());
                 let text = if again { text.saturating_mul(2) } else { text };
                 self.hold(entry(size_of::<String>()).saturating_add(text));
                 Ok(())
             }
             Kind::Bytes => {
                 self.hold(
-                    entry(size_of::<bytes::Bytes>()).saturating_add(payload.len().max(LEAST)),
+                    entry(size_of::<bytes::Bytes>()).saturating_add(field_bytes(payload.len())),
                 );
                 Ok(())
             }
