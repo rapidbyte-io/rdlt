@@ -72,16 +72,17 @@ sim-archive:
     cargo nextest archive --package rdlt-sim --all-features --cargo-profile sim --test it --archive-file target/sim.tar.zst
 
 # Run the simulation's two sweeps from its archive, each sweep's seeds side by side on the host's
-# cores, or on `cores` when given; pass a seed to replay one run, or an empty seed, a count and the
-# first seed of a shard. Each seed's timing is a line of `target/sim-timings/<sweep>.jsonl`
-sim seed="" seeds="1000" from="0" cores="": sim-archive
+# cores, or on `cores` (by default `RDLT_SIM_CORES`) when given; pass a seed to replay one run, or
+# an empty seed, a count and the first seed of a shard. Each seed's timing is a line of
+# `target/sim-timings/<sweep>.jsonl`
+sim seed="" seeds="1000" from="0" cores=env("RDLT_SIM_CORES", ""): sim-archive
     RDLT_SIM_SEED="{{ seed }}" RDLT_SIM_SEEDS="{{ seeds }}" RDLT_SIM_SEEDS_FROM="{{ from }}" RDLT_SIM_CORES="{{ cores }}" cargo nextest run --archive-file target/sim.tar.zst --workspace-remap . -E 'test(through_faults)'
 
 # Run each seed of both oracles twice from the simulation's archive, and fail where a seed's two
 # runs differ in what any of its phases' runs reported or failed with, in their simulated time
 # (but over the network), or in what they left; pass a seed to replay one, or an empty seed, a
 # count and the first seed of a shard
-sim-replay seed="" seeds="1000" from="0" cores="": sim-archive
+sim-replay seed="" seeds="1000" from="0" cores=env("RDLT_SIM_CORES", ""): sim-archive
     RDLT_SIM_SEED="{{ seed }}" RDLT_SIM_SEEDS="{{ seeds }}" RDLT_SIM_SEEDS_FROM="{{ from }}" RDLT_SIM_CORES="{{ cores }}" cargo nextest run --archive-file target/sim.tar.zst --workspace-remap . -E 'test(=determinism::every_seed_replays_alike)'
 
 # Crash a pipeline run in a process of its own at every durability step, and kill it or its
@@ -97,12 +98,12 @@ containers *args:
 
 # Run the simulation on many threads and the real clock, where races the paused single thread
 # never meets can happen; its failures name their seed but do not replay exactly
-stress seeds="20" cores="": sim-archive
+stress seeds="20" cores=env("RDLT_SIM_CORES", ""): sim-archive
     RDLT_SIM_SEEDS="{{ seeds }}" RDLT_SIM_CORES="{{ cores }}" cargo nextest run --archive-file target/sim.tar.zst --workspace-remap . --run-ignored ignored-only -E 'test(many_threads)'
 
 # Measure how many seeds a second the exactly-once sweep runs over seeds 0 to 999, from the
 # simulation's archive, and fail below `floor`; docs/perf/sim.md records the rate and the floor
-sim-rate floor="5" cores="": sim-archive
+sim-rate floor="5" cores=env("RDLT_SIM_CORES", ""): sim-archive
     RDLT_SIM_SEED="" RDLT_SIM_SEEDS=1000 RDLT_SIM_SEEDS_FROM=0 RDLT_SIM_CORES="{{ cores }}" cargo nextest run --archive-file target/sim.tar.zst --workspace-remap . -E 'test(=exactly_once::every_row_lands_exactly_once_through_faults_crashes_and_concurrent_runs)'
     cargo xtask sim-rate target/sim-timings/exactly_once.jsonl --floor {{ floor }}
 
@@ -111,8 +112,9 @@ sim-rate floor="5" cores="": sim-archive
 # planner, generated code, and what the simulation never runs (process placement, a served
 # binary's entry, and the write-ahead log's local-directory and in-memory stores: the simulation
 # keeps logs in its own).
-# Each sweep's seeds run side by side on the host's cores, or on `cores` when given
-sim-coverage seeds="1000" cores="":
+# Each sweep's seeds run side by side on the host's cores, or on `cores` (by default
+# `RDLT_SIM_CORES`) when given
+sim-coverage seeds="1000" cores=env("RDLT_SIM_CORES", ""):
     rustup toolchain install {{ nightly }} --profile minimal --component llvm-tools-preview
     RDLT_SIM_SEEDS="{{ seeds }}" RDLT_SIM_CORES="{{ cores }}" cargo +{{ nightly }} llvm-cov nextest --branch --workspace --all-features --json --summary-only --output-path target/sim-coverage.json --ignore-filename-regex '(rdlt-sim|rdlt-testkit|rdlt-connector-reference|rdlt-adopt|rdlt-log-store|xtask)/|/tests?(\.rs|/)|differential|reference\.rs|/bench|/testing|sqlgen|encodings\.rs|/generated/|rdlt-host/src/(local|connect|kills|sink)|rdlt-certify/|serve/(args|binary)|wal/(local|memory)(\.rs|/)|/conformance\.rs|rdlt-connector/src/required\.rs|rdlt-engine/src/fixtures(\.rs|/)' -E 'package(rdlt-sim) & test(through_faults)'
     cargo xtask coverage-gate target/sim-coverage.json --lines 81 --branches 71
