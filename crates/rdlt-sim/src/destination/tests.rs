@@ -10,15 +10,18 @@ use arrow_buffer::OffsetBuffer;
 use arrow_schema::{DataType, Field as ArrowField};
 use rdlt_connector::limits::ListenLimits;
 use rdlt_connector::{
-    ChildTable, CommitMeta, CommitSeq, ConnectorErrorKind, DestinationConnector, Epoch, Field,
-    LoadId, LogicalType, MergeKey, OpenContext, PipelineId, RootKey, SchemaVersion, SegmentId,
-    SegmentSet, Session, TableChange, TablePath, TableRef, TableSchema, TableWriter,
+    ChildTable, CommitMeta, CommitSeq, ConnectContext, ConnectorErrorKind, Cursor,
+    DestinationConnector, Epoch, Field, LoadId, LogicalType, MergeKey, OpenContext, PartitionId,
+    PartitionState, PipelineId, RootKey, SchemaVersion, SegmentId, SegmentSet, Session,
+    StateChange, StateEntry, StreamName, TableChange, TablePath, TableRef, TableSchema,
+    TableWriter, source_factory,
 };
 use rdlt_testkit::canon::Canon;
 
 use super::cells::{self, Stored};
 use super::store::{Staged, Store};
 use super::{SimDestination, SimSession};
+use crate::changes::{Position, SimChangeSource};
 use crate::owners::Live;
 use crate::rng::SplitMix64;
 use crate::seed::{Seed, run};
@@ -788,4 +791,82 @@ fn stored_rows_are_the_worlds_and_count_beyond_no_charge() {
         "held {held} beside {vector}"
     );
     drop(written);
+}
+
+/// A commit that puts `position` for `partition` of `stream`, or deletes its cursor where none.
+fn moving(stream: &StreamName, partition: &PartitionId, position: Option<Position>) -> CommitMeta {
+    let entry = StateEntry::Partition {
+        stream: stream.clone(),
+        partition: partition.clone(),
+        state: PartitionState::Cursor(Cursor::encode(1, &position.unwrap_or_default()).unwrap()),
+        load: LoadId::from_parts(std::time::UNIX_EPOCH, 1),
+    };
+    let change = match position {
+        Some(_) => StateChange::Put(entry.to_record()),
+        None => StateChange::Delete(entry.key().encode()),
+    };
+    CommitMeta {
+        state_delta: vec![change],
+        ..first_commit(Vec::new())
+    }
+}
+
+#[test]
+fn a_source_told_late_of_a_cursor_a_later_commit_removed_hears_what_was_committed() {
+    let name = "told-late";
+    let registered =
+        World::register_changes(name, &mut SplitMix64::new(3), &mut SplitMix64::new(4));
+    let world = Arc::clone(registered.world());
+    let replayable = world
+        .changes
+        .streams
+        .iter()
+        .find(|stream| stream.replayable);
+    let stream = StreamName::new(&replayable.expect("a replayable stream").name).unwrap();
+    let partition = PartitionId::parse("s0").unwrap();
+    let (committed, beyond) = (
+        Position {
+            next: 7,
+            done: true,
+        },
+        Position {
+            next: 8,
+            done: true,
+        },
+    );
+    {
+        let mut store = world.store.lock();
+        let pipeline = PipelineId::parse("changes").unwrap();
+        store.apply(
+            &world,
+            &pipeline,
+            &moving(&stream, &partition, Some(committed)),
+        );
+        // The read of the snapshot partition is over: the next commit moves on to the changes.
+        store.apply(&world, &pipeline, &moving(&stream, &partition, None));
+    }
+    for position in [committed, beyond] {
+        world.reports.note(stream.name(), &partition, &position);
+    }
+    let heard = run(Seed::new(3), {
+        let (world, stream) = (Arc::clone(&world), stream.clone());
+        |_| async move {
+            let config = serde_json::json!({ "world": name });
+            let source = source_factory::<SimChangeSource>()
+                .connect(config, ConnectContext::new())
+                .await
+                .unwrap();
+            let mut heard = Vec::new();
+            for position in [committed, beyond] {
+                let cursor = Cursor::encode(1, &position).unwrap();
+                let told = [(partition.clone(), cursor)];
+                source.committed(&stream, &told).await.unwrap();
+                heard.push(world.violations().len());
+            }
+            heard
+        }
+    });
+    drop(registered);
+    // Told late, it heard a position a commit landed; a position past every commit is a violation.
+    assert_eq!(heard, [0, 1], "{:#?}", world.violations());
 }

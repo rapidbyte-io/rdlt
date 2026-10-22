@@ -10,8 +10,8 @@ use arrow_array::{
 use rdlt_connector::{
     ChangeOp, Checkpointing, ConnectContext, ConnectorError, ConnectorErrorKind, Cursor, Emitter,
     Field, LogicalType, OP_COLUMN, Partition, PartitionId, PartitionPlan, PartitionState, ReadMode,
-    ReadStream, Result, SEQ_COLUMN, SourceConnector, StateEntry, StreamName, StreamSpec,
-    StreamState, Streams, TableSchema, UNCHANGED_COLUMN,
+    ReadStream, Result, SEQ_COLUMN, SourceConnector, StreamName, StreamSpec, StreamState, Streams,
+    TableSchema, UNCHANGED_COLUMN,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -230,11 +230,11 @@ impl ReadStream<SimChangeSource> for Reader {
                 *furthest = (*furthest).max(cursor.next);
                 continue;
             }
-            let committed = committed_position(world, &name, partition);
-            if committed.is_none_or(|committed| cursor.next > committed.next) {
+            let committed = world.store.lock().landed(&name, partition);
+            if committed.is_none_or(|committed| cursor.next > committed) {
                 world.violation(format!(
                     "stream {name} partition {partition}: acknowledged position {} beyond the \
-                     committed {committed:?}",
+                     furthest committed {committed:?}",
                     cursor.next
                 ));
             }
@@ -368,29 +368,6 @@ async fn read_snapshot(
         reading.checkpoint(out, &position).await?;
     }
     Ok(())
-}
-
-/// The committed position of `partition` of `stream`, in any pipeline's state.
-fn committed_position(
-    world: &World,
-    stream: &StreamName,
-    partition: &PartitionId,
-) -> Option<Position> {
-    let store = world.store.lock();
-    store
-        .states()
-        .flat_map(|records| records.values())
-        .filter_map(|record| StateEntry::from_record(record).ok())
-        .filter_map(|entry| match entry {
-            StateEntry::Partition {
-                stream: named,
-                partition: id,
-                state: PartitionState::Cursor(cursor),
-                ..
-            } if &named == stream && &id == partition => cursor.decode::<Position>(1).ok(),
-            _ => None,
-        })
-        .max_by_key(|position| position.next)
 }
 
 /// One change row as the source pushes it.
