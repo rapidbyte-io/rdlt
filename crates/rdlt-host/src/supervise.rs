@@ -6,26 +6,25 @@ use std::sync::Arc;
 
 use rdlt_connector::wire::TRANSPORT;
 use rdlt_connector::{
-    BoxFuture, Capabilities, Catalog, ConnectorError, ConnectorErrorKind, ConnectorSpec, Cursor,
-    Destination, OpenContext, OpenedSession, PartitionId, PartitionPlan, PartitionSink,
-    ReadRequest, Role, Source, StreamName, StreamState,
+    Capabilities, ConnectorError, ConnectorErrorKind, ConnectorSpec, Destination, Role,
 };
 use tokio::sync::Mutex;
 
+mod destination;
 mod session;
+mod source;
 #[cfg(test)]
 mod tests;
 
-use session::SupervisedSession;
+pub(crate) use destination::SupervisedDestination;
+pub(crate) use source::SupervisedSource;
 
 use crate::connect::Open;
 use crate::local::Witness;
 use crate::local::process::{Launch, Process, Unspawned};
 use crate::network::Dial;
 use crate::provider::{ConnectorRef, ProviderError, accepts};
-use crate::remote::{
-    CONNECTOR_LOST, Connection, Options, RemoteDestination, RemoteSource, exceeded,
-};
+use crate::remote::{CONNECTOR_LOST, Connection, Options, RemoteDestination, exceeded};
 use crate::secrets::{Config, Redactions, SecretError, SecretResolver};
 use rdlt_connector::wire::v1;
 
@@ -398,113 +397,4 @@ async fn spawn(
         connection,
         process: Some(process),
     })
-}
-
-/// A spawned source, respawned when lost.
-pub(crate) struct SupervisedSource(pub(crate) Arc<Supervisor>);
-
-impl SupervisedSource {
-    async fn source(&self) -> Result<(RemoteSource, Words), ConnectorError> {
-        let (connection, words) = self.0.connection().await?;
-        Ok((RemoteSource::new(connection), words))
-    }
-}
-
-impl Source for SupervisedSource {
-    fn check(&self) -> BoxFuture<'_, rdlt_connector::Result<()>> {
-        Box::pin(async move {
-            let (source, words) = self.source().await?;
-            words.explain(source.check().await).await
-        })
-    }
-
-    fn discover(&self) -> BoxFuture<'_, rdlt_connector::Result<Catalog>> {
-        Box::pin(async move {
-            let (source, words) = self.source().await?;
-            words.explain(source.discover().await).await
-        })
-    }
-
-    fn plan<'a>(
-        &'a self,
-        stream: &'a StreamName,
-        state: &'a StreamState,
-    ) -> BoxFuture<'a, rdlt_connector::Result<PartitionPlan>> {
-        Box::pin(async move {
-            let (source, words) = self.source().await?;
-            words.explain(source.plan(stream, state).await).await
-        })
-    }
-
-    fn read(
-        &self,
-        request: ReadRequest,
-        sink: PartitionSink,
-    ) -> BoxFuture<'_, rdlt_connector::Result<()>> {
-        Box::pin(async move {
-            let (source, words) = self.source().await?;
-            words.explain(source.read(request, sink).await).await
-        })
-    }
-
-    fn committed<'a>(
-        &'a self,
-        stream: &'a StreamName,
-        cursors: &'a [(PartitionId, Cursor)],
-    ) -> BoxFuture<'a, rdlt_connector::Result<()>> {
-        Box::pin(async move {
-            let (source, words) = self.source().await?;
-            words.explain(source.committed(stream, cursors).await).await
-        })
-    }
-}
-
-/// A spawned destination, respawned when lost; its capabilities are those it first declared.
-pub(crate) struct SupervisedDestination {
-    pub(crate) supervisor: Arc<Supervisor>,
-    pub(crate) capabilities: Capabilities,
-}
-
-impl SupervisedDestination {
-    async fn destination(&self) -> Result<(RemoteDestination, Words), ConnectorError> {
-        let (connection, words) = self.supervisor.connection().await?;
-        let destination = RemoteDestination::new(connection)?;
-        if *destination.capabilities() != self.capabilities {
-            return Err(ConnectorError::new(
-                ConnectorErrorKind::Internal,
-                "the respawned connector declares other capabilities than it first did",
-            ));
-        }
-        Ok((destination, words))
-    }
-}
-
-impl Destination for SupervisedDestination {
-    fn capabilities(&self) -> &Capabilities {
-        &self.capabilities
-    }
-
-    fn check(&self) -> BoxFuture<'_, rdlt_connector::Result<()>> {
-        Box::pin(async move {
-            let (destination, words) = self.destination().await?;
-            words.explain(destination.check().await).await
-        })
-    }
-
-    fn open<'a>(
-        &'a self,
-        context: &'a OpenContext,
-    ) -> BoxFuture<'a, rdlt_connector::Result<OpenedSession>> {
-        Box::pin(async move {
-            let (destination, words) = self.destination().await?;
-            let opened = words.explain(destination.open(context).await).await?;
-            Ok(OpenedSession {
-                session: Box::new(SupervisedSession {
-                    inner: opened.session,
-                    words,
-                }),
-                ..opened
-            })
-        })
-    }
 }
