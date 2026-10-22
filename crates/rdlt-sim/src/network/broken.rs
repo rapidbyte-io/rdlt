@@ -18,17 +18,13 @@ use rdlt_connector::wire::{MALFORMED_FRAME, TRANSPORT, v1};
 use rdlt_host::{CONNECTOR_LOST, DEADLINE_EXCEEDED, MAX_FREE_FRAMES};
 use rdlt_testkit::fake::{self, Fake, Fault};
 use rdlt_wire::limits::{LIMIT_BELOW_MINIMUM, LIMIT_EXCEEDED};
-use rdlt_wire::tls::{Accepted, Hosts};
 use tokio::runtime::Handle;
 use tokio_rustls::TlsAcceptor;
 
-use super::{ENGINE, Net, identity};
+use super::Net;
 
 /// The port of the catalogue's first broken connector; each next one listens on the next.
 const FIRST_PORT: u16 = 7500;
-
-/// How long a broken connector's TLS handshake may take before its host gives up on it.
-const HANDSHAKE: Duration = Duration::from_secs(10);
 
 /// The id every broken connector answers its handshake as.
 #[cfg_attr(
@@ -272,14 +268,7 @@ pub(super) fn port(index: usize) -> u16 {
 /// until the simulation ends.
 pub(super) async fn host(net: Arc<Net>) -> turmoil::Result {
     net.served.lock().push(Handle::current());
-    let accepted = Accepted {
-        ca: net.pki.ca(),
-        hosts: Hosts::new([ENGINE]).map_err(|error| error.to_string())?,
-        crl: None,
-    };
-    let tls = rdlt_wire::tls::server_config(&identity(&net.server), &accepted)
-        .map(Arc::new)
-        .map_err(|error| error.to_string())?;
+    let (tls, _) = super::mutual(&net)?;
     let acceptor = TlsAcceptor::from(tls);
     let mut listening = Vec::new();
     for (index, broken) in catalogue().into_iter().enumerate() {
@@ -299,8 +288,8 @@ async fn accept(listener: turmoil::net::TcpListener, acceptor: TlsAcceptor, faul
         };
         let acceptor = acceptor.clone();
         tokio::spawn(async move {
-            let accepting = tokio::time::timeout(HANDSHAKE, acceptor.accept(stream));
-            if let Ok(Ok(tls)) = accepting.await {
+            let tls = super::handshake(&acceptor, stream).await;
+            if let Some(tls) = tls {
                 fake::serve(Fake(fault), tls).await;
             }
         });
