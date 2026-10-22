@@ -498,12 +498,12 @@ async fn a_batch_is_cut_to_the_connectors_own_frames_for_a_host_that_takes_large
 
 /// A writer of the table `orders` on a fake destination that answers its writes as `fault` says.
 pub(crate) async fn trickled(
-    fault: crate::support::fake::Fault,
+    fault: rdlt_testkit::fake::Fault,
     options: &Options,
 ) -> Box<dyn DestinationWriter> {
-    use crate::support::fake::{Fake, serve_fake};
+    use rdlt_testkit::fake::{Fake, socket};
     let connection = Connection::connect(
-        serve_fake(Fake(fault)),
+        socket(Fake(fault)),
         Role::Destination,
         &serde_json::json!({}),
         *options,
@@ -525,7 +525,7 @@ pub(crate) async fn trickled(
 
 #[tokio::test(start_paused = true)]
 async fn a_write_whose_credit_trickles_in_fails_at_its_write_ack_deadline() {
-    use crate::support::fake::Fault;
+    use rdlt_testkit::fake::Fault;
     let deadline = Deadlines::default().write_ack;
     // A byte of credit just within each answer's deadline never makes up a frame's size.
     let every = deadline
@@ -556,7 +556,7 @@ async fn a_write_whose_credit_trickles_in_fails_at_its_write_ack_deadline() {
 
 #[tokio::test(start_paused = true)]
 async fn a_credit_of_no_bytes_is_refused() {
-    use crate::support::fake::Fault;
+    use rdlt_testkit::fake::Fault;
     let mut writer = trickled(
         Fault::Trickles(Duration::from_secs(1), 0),
         &Options::default(),

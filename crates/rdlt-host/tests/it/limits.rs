@@ -143,13 +143,13 @@ async fn a_host_whose_limits_are_below_the_protocols_minimums_is_refused_at_the_
 
 /// The fake source answering bloated, connected with `limits`.
 async fn bloated(limits: Limits) -> RemoteSource {
-    use crate::support::fake::{Fake, Fault, serve_fake};
+    use rdlt_testkit::fake::{Fake, Fault, socket};
     let options = Options {
         limits,
         ..Options::default()
     };
     // 64 KiB of entries on the wire, each of which decodes to tens of bytes.
-    let io = serve_fake(Fake(Fault::Bloats(32 * 1024)));
+    let io = socket(Fake(Fault::Bloats(32 * 1024)));
     let connection = Connection::connect(io, Role::Source, &serde_json::json!({}), options)
         .await
         .expect("the fake handshakes");
@@ -210,10 +210,10 @@ async fn a_request_beyond_its_class_limit_is_refused_by_the_served_connector() {
 
 #[tokio::test]
 async fn a_state_key_beyond_the_control_string_limit_is_refused_where_it_is_received() {
-    use crate::support::fake::{Fake, Fault, serve_fake};
     use rdlt_connector::{Destination as _, LoadId, OpenContext, PipelineId};
+    use rdlt_testkit::fake::{Fake, Fault, socket};
     let opened = |key: fn() -> String| async move {
-        let io = serve_fake(Fake(Fault::Keys(key)));
+        let io = socket(Fake(Fault::Keys(key)));
         let connection = Connection::connect(
             io,
             Role::Destination,
@@ -246,10 +246,10 @@ async fn a_state_key_beyond_the_control_string_limit_is_refused_where_it_is_rece
 
 #[tokio::test]
 async fn a_destination_s_identifier_rules_at_their_limits_are_configured() {
-    use crate::support::fake::{Fake, Fault, serve_fake};
     use rdlt_connector::Destination as _;
     use rdlt_connector::limits::{MAX_RESERVED_PREFIXES, MAX_RESERVED_WORDS};
-    let io = serve_fake(Fake(Fault::WideRules));
+    use rdlt_testkit::fake::{Fake, Fault, socket};
+    let io = socket(Fake(Fault::WideRules));
     let connection = Connection::connect(
         io,
         Role::Destination,

@@ -1,25 +1,31 @@
 //! A connector that answers the handshake and then breaks the protocol, as a faulty one would.
 
-use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+#[cfg(test)]
+mod tests;
 
-use bytes::Bytes;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
+
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use hyper_util::service::TowerToHyperService;
+use parking_lot::Mutex;
 use rdlt_connector::wire::v1;
 use rdlt_wire::bounded::Window;
 use rdlt_wire::plane::{Incoming, Plane, Router, Serving};
+use rdlt_wire::prost::bytes::Bytes;
+use rdlt_wire::tonic::{Request, Response, Status, Streaming};
 use rdlt_wire::v1::connector_server::{Connector, ConnectorServer};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::UnixStream;
+use tokio::time::Instant;
 use tokio_stream::{Stream, StreamExt as _};
-use tonic::{Request, Response, Status, Streaming};
 use tower::ServiceExt as _;
 
 /// How the fake breaks the protocol.
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum Fault {
+pub enum Fault {
     /// Its reads send a checkpoint answering a barrier the host never asked for.
     AnswersAhead,
     /// It answers each heartbeat with a sequence number the host never sent.
@@ -78,17 +84,23 @@ pub(crate) enum Fault {
 }
 
 /// The credits a fake's read was granted, in order.
-pub(crate) type Granted = Mutex<Vec<u64>>;
+pub type Granted = Mutex<Vec<u64>>;
 
 /// What a flooding read's transport took of it, and when last.
 #[derive(Debug)]
-pub(crate) struct Polled {
+pub struct Polled {
     bytes: AtomicU64,
     last: Mutex<Option<Instant>>,
 }
 
 impl Polled {
-    pub(crate) const fn new() -> Self {
+    /// A count of nothing taken.
+    #[must_use]
+    #[expect(
+        clippy::new_without_default,
+        reason = "a test keeps one in a static, which only a const constructor builds"
+    )]
+    pub const fn new() -> Self {
         Self {
             bytes: AtomicU64::new(0),
             last: Mutex::new(None),
@@ -98,19 +110,19 @@ impl Polled {
     fn took(&self, bytes: usize) {
         let bytes = u64::try_from(bytes).expect("a frame's length fits");
         self.bytes.fetch_add(bytes, Ordering::SeqCst);
-        *self.last.lock().expect("the lock is not poisoned") = Some(Instant::now());
+        *self.last.lock() = Some(Instant::now());
     }
 
     /// Bytes: the frames the transport took.
-    pub(crate) fn bytes(&self) -> u64 {
+    pub fn bytes(&self) -> u64 {
         self.bytes.load(Ordering::SeqCst)
     }
 
     /// Waits until the transport has taken a frame and then none for `quiet`.
-    pub(crate) async fn settled(&self, quiet: Duration) {
+    pub async fn settled(&self, quiet: Duration) {
         loop {
             tokio::time::sleep(quiet / 4).await;
-            let last = *self.last.lock().expect("the lock is not poisoned");
+            let last = *self.last.lock();
             if last.is_some_and(|last| last.elapsed() >= quiet) {
                 return;
             }
@@ -119,7 +131,7 @@ impl Polled {
 }
 
 /// The schema of a column of ids, and a batch frame of a mebibyte of them.
-pub(crate) fn mebibyte() -> (v1::ReadFrame, v1::ReadFrame) {
+pub fn mebibyte() -> (v1::ReadFrame, v1::ReadFrame) {
     let values: Vec<i64> = (0..131_072).collect();
     let column = Arc::new(arrow_array::Int64Array::from(values));
     let batch = arrow_array::RecordBatch::try_from_iter([("id", column as _)]).expect("a batch");
@@ -157,10 +169,7 @@ async fn granting(
     let mut frames = frames.into_iter();
     while let Ok(Some(control)) = controls.message().await {
         if let Some(v1::read_control::Control::Credit(credit)) = control.control {
-            granted
-                .lock()
-                .expect("the lock is not poisoned")
-                .push(credit.bytes);
+            granted.lock().push(credit.bytes);
             if let Some(frame) = frames.next()
                 && sent.send(Ok(frame)).await.is_err()
             {
@@ -172,43 +181,63 @@ async fn granting(
 
 /// A connector that breaks the protocol as its fault says.
 #[derive(Debug)]
-pub(crate) struct Fake(pub(crate) Fault);
+pub struct Fake(pub Fault);
 
 type Answer<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + Send>>;
 
-/// The host's end of a socket whose other end serves `fake`.
-pub(crate) fn serve_fake(fake: Fake) -> UnixStream {
-    let (host, connector) = UnixStream::pair().expect("a socket pair");
+/// Serves `fake` on `io` until the connection ends.
+pub async fn serve<IO>(fake: Fake, io: IO)
+where
+    IO: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+{
     let garbles = matches!(fake.0, Fault::GarbledDetails);
     let unread = matches!(fake.0, Fault::Unread);
     let service = routed(fake)
         .map_request(|request: http::Request<hyper::body::Incoming>| {
-            request.map(tonic::body::Body::new)
+            request.map(rdlt_wire::tonic::body::Body::new)
         })
-        .map_response(move |mut response: http::Response<tonic::body::Body>| {
-            let headers = response.headers_mut();
-            if garbles && headers.contains_key("grpc-status") {
-                headers.insert(
-                    "grpc-status-details-bin",
-                    http::HeaderValue::from_static("!"),
-                );
-            }
-            response
-        });
+        .map_response(
+            move |mut response: http::Response<rdlt_wire::tonic::body::Body>| {
+                let headers = response.headers_mut();
+                if garbles && headers.contains_key("grpc-status") {
+                    headers.insert(
+                        "grpc-status-details-bin",
+                        http::HeaderValue::from_static("!"),
+                    );
+                }
+                response
+            },
+        );
     let mut builder = hyper::server::conn::http2::Builder::new(TokioExecutor::new());
-    builder.timer(TokioTimer::new());
+    builder
+        .timer(TokioTimer::new())
+        // Hosts never read the date, and its text is the wall clock's, which would make two runs
+        // of one simulated seed write header blocks of different lengths.
+        .auto_date_header(false)
+        // Pings end a connection whose host the network dropped silently, as a served
+        // connector's do.
+        .keep_alive_interval(Some(Duration::from_secs(5)))
+        .keep_alive_timeout(Duration::from_secs(30));
     if unread {
         builder.initial_stream_window_size(16);
     }
-    tokio::spawn(
-        builder.serve_connection(TokioIo::new(connector), TowerToHyperService::new(service)),
-    );
+    // A connection that fails ends, which is all a fake does about it.
+    builder
+        .serve_connection(TokioIo::new(io), TowerToHyperService::new(service))
+        .await
+        .ok();
+}
+
+/// The host's end of a socket whose other end serves `fake`.
+pub fn socket(fake: Fake) -> UnixStream {
+    let (host, connector) = UnixStream::pair().expect("a socket pair");
+    tokio::spawn(serve(fake, connector));
     host
 }
 
 /// `fake`'s calls, each request held to the default limits, the data plane's served by it as
 /// its generated calls are.
-pub(crate) fn routed(fake: Fake) -> Router<ConnectorServer<Fake>, Fake> {
+fn routed(fake: Fake) -> Router<ConnectorServer<Fake>, Fake> {
     let fake = Arc::new(fake);
     let limits = rdlt_wire::Limits::default();
     let window = Window::new(usize::MAX);
@@ -326,7 +355,7 @@ impl Fake {
     }
 }
 
-#[tonic::async_trait]
+#[async_trait::async_trait]
 impl Connector for Fake {
     async fn handshake(
         &self,

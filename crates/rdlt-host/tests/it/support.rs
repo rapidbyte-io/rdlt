@@ -1,12 +1,9 @@
-//! Connectors served over sockets for the tests: the reference connectors, scripted ones, and
-//! fakes that break the protocol.
+//! Connectors served over sockets for the tests: the reference connectors and scripted ones.
 
 pub(crate) mod connectors;
-pub(crate) mod fake;
 pub(crate) mod raw;
 pub(crate) mod served;
 
-pub(crate) use fake::{Fake, Fault, serve_fake};
 pub(crate) use served::{
     engine, memory_destination, memory_source, plane_client, raw_channel, raw_client, served,
     served_within, system_env,

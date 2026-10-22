@@ -12,7 +12,7 @@ use tokio::net::UnixStream;
 use tonic::Status;
 use tonic::codec::{Codec, DecodeBuf, Decoder, EncodeBuf, Encoder};
 
-use super::fake::{Fake, Fault};
+use rdlt_testkit::fake::{Fake, Fault};
 
 /// A body of one gRPC message, prefix and all, and the trailers of a call that succeeded.
 struct Raw(Option<Bytes>, bool);

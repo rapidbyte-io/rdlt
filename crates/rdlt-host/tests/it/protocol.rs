@@ -15,9 +15,8 @@ use rdlt_wire::{Limits, PROTOCOL_MAJOR};
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::support::connectors::{Denied, SlowCommits};
-use crate::support::{
-    Fake, Fault, memory_destination, plane_client, serve_fake, served, served_within,
-};
+use crate::support::{memory_destination, plane_client, served, served_within};
+use rdlt_testkit::fake::{Fake, Fault, socket};
 
 /// Options that notice a lost connector within about a tenth of a second.
 fn quick() -> Options {
@@ -118,7 +117,7 @@ async fn a_host_that_sets_no_dictionary_limit_is_refused_at_the_handshake() {
 
 #[tokio::test]
 async fn a_connector_that_says_no_dictionary_limit_is_refused_at_the_handshake() {
-    let io = serve_fake(Fake(Fault::NoDictionaryLimit));
+    let io = socket(Fake(Fault::NoDictionaryLimit));
     let refused = Connection::connect(io, Role::Source, &rows(1), Options::default())
         .await
         .expect_err("the handshake is refused");
@@ -226,7 +225,7 @@ async fn a_json_push_beyond_the_hosts_limit_is_refused() {
 
 #[tokio::test]
 async fn a_malformed_frame_from_the_connector_is_refused_typed() {
-    let io = serve_fake(Fake(Fault::GarbageSchema));
+    let io = socket(Fake(Fault::GarbageSchema));
     let connection =
         Connection::connect(io, Role::Source, &serde_json::json!({}), Options::default())
             .await
@@ -242,7 +241,7 @@ async fn a_malformed_frame_from_the_connector_is_refused_typed() {
 
 #[tokio::test]
 async fn a_checkpoint_answering_a_barrier_never_asked_for_is_refused_typed() {
-    let io = serve_fake(Fake(Fault::AnswersAhead));
+    let io = socket(Fake(Fault::AnswersAhead));
     let connection =
         Connection::connect(io, Role::Source, &serde_json::json!({}), Options::default())
             .await
@@ -258,7 +257,7 @@ async fn a_checkpoint_answering_a_barrier_never_asked_for_is_refused_typed() {
 
 #[tokio::test]
 async fn a_connector_configured_as_another_than_it_handshook_as_is_refused() {
-    let io = serve_fake(Fake(Fault::Impostor));
+    let io = socket(Fake(Fault::Impostor));
     let error = Connection::connect(io, Role::Source, &serde_json::json!({}), Options::default())
         .await
         .unwrap_err();
@@ -270,7 +269,7 @@ async fn a_connector_configured_as_another_than_it_handshook_as_is_refused() {
 
 #[tokio::test]
 async fn a_zero_heartbeat_interval_is_refused_before_connecting() {
-    let io = serve_fake(Fake(Fault::Silent));
+    let io = socket(Fake(Fault::Silent));
     let options = Options {
         heartbeat: Duration::ZERO,
         ..Options::default()
@@ -286,7 +285,7 @@ async fn a_zero_heartbeat_interval_is_refused_before_connecting() {
 
 #[tokio::test]
 async fn a_connector_that_stops_answering_heartbeats_is_lost() {
-    let io = serve_fake(Fake(Fault::Silent));
+    let io = socket(Fake(Fault::Silent));
     let connection = Connection::connect(io, Role::Source, &serde_json::json!({}), quick())
         .await
         .unwrap();
@@ -304,7 +303,7 @@ async fn a_connector_that_stops_answering_heartbeats_is_lost() {
 #[tokio::test]
 async fn a_connector_whose_heartbeat_does_not_open_is_lost() {
     for fault in [Fault::Unopened, Fault::RefusesHeartbeat] {
-        let io = serve_fake(Fake(fault));
+        let io = socket(Fake(fault));
         let connection = Connection::connect(io, Role::Source, &serde_json::json!({}), quick())
             .await
             .unwrap();
@@ -330,7 +329,7 @@ async fn a_connector_that_never_reads_its_heartbeats_is_lost() {
         missed: NonZeroU32::new(16).expect("not zero"),
         ..Options::default()
     };
-    let io = serve_fake(Fake(Fault::Unread));
+    let io = socket(Fake(Fault::Unread));
     let connection = Connection::connect(io, Role::Source, &serde_json::json!({}), options)
         .await
         .unwrap();
@@ -603,8 +602,7 @@ async fn a_connection_dropped_before_its_connector_is_configured_is_cut() {
 
 #[tokio::test]
 async fn status_details_that_do_not_decode_fail_the_call_rather_than_the_host() {
-    use crate::support::fake::{Fake, Fault, serve_fake};
-    let io = serve_fake(Fake(Fault::GarbledDetails));
+    let io = socket(Fake(Fault::GarbledDetails));
     let connection =
         Connection::connect(io, Role::Source, &serde_json::json!({}), Options::default())
             .await
@@ -620,8 +618,7 @@ async fn status_details_that_do_not_decode_fail_the_call_rather_than_the_host() 
 
 #[tokio::test]
 async fn a_write_refused_with_details_that_do_not_decode_fails_without_them() {
-    use crate::support::fake::{Fake, Fault, serve_fake};
-    let io = serve_fake(Fake(Fault::GarbledDetails));
+    let io = socket(Fake(Fault::GarbledDetails));
     let mut client = rdlt_host::remote::client(io, Options::default())
         .await
         .expect("the client connects");
@@ -647,7 +644,6 @@ fn every_code_the_host_gives_its_own_findings_is_one_no_connector_may_claim() {
 
 #[tokio::test]
 async fn a_handshake_answer_the_host_did_not_agree_to_is_refused() {
-    use crate::support::fake::{Fake, Fault, serve_fake};
     type Change = fn(&mut v1::HandshakeResponse);
     let answers: [(Change, &str); 6] = [
         (|answer| answer.protocol_major += 1, "protocol_version"),
@@ -670,14 +666,14 @@ async fn a_handshake_answer_the_host_did_not_agree_to_is_refused() {
         ),
     ];
     for (answer, code) in answers {
-        let io = serve_fake(Fake(Fault::Handshakes(answer)));
+        let io = socket(Fake(Fault::Handshakes(answer)));
         let refused = Connection::handshake(io, Role::Source, Options::default())
             .await
             .expect_err("the handshake is refused");
         assert_eq!(refused.code(), Some(code), "{refused}");
     }
     let agreed = |_: &mut v1::HandshakeResponse| {};
-    let io = serve_fake(Fake(Fault::Handshakes(agreed)));
+    let io = socket(Fake(Fault::Handshakes(agreed)));
     Connection::handshake(io, Role::Source, Options::default())
         .await
         .expect("the handshake agrees");
@@ -685,7 +681,6 @@ async fn a_handshake_answer_the_host_did_not_agree_to_is_refused() {
 
 #[tokio::test]
 async fn a_configuration_schema_beyond_its_limit_is_refused_at_the_handshake() {
-    use crate::support::fake::{Fake, Fault, serve_fake};
     use rdlt_connector::limits::MAX_CONFIG_SCHEMA_BYTES;
     /// A configuration schema of `bytes`.
     fn schema(bytes: usize) -> String {
@@ -698,14 +693,14 @@ async fn a_configuration_schema_beyond_its_limit_is_refused_at_the_handshake() {
     let at: fn(&mut v1::HandshakeResponse) = |answer| {
         answer.spec.as_mut().unwrap().config_schema_json = schema(MAX_CONFIG_SCHEMA_BYTES);
     };
-    let io = serve_fake(Fake(Fault::Handshakes(at)));
+    let io = socket(Fake(Fault::Handshakes(at)));
     Connection::handshake(io, Role::Source, Options::default())
         .await
         .expect("a schema at its limit is taken");
     let beyond: fn(&mut v1::HandshakeResponse) = |answer| {
         answer.spec.as_mut().unwrap().config_schema_json = schema(MAX_CONFIG_SCHEMA_BYTES + 1);
     };
-    let io = serve_fake(Fake(Fault::Handshakes(beyond)));
+    let io = socket(Fake(Fault::Handshakes(beyond)));
     let refused = Connection::handshake(io, Role::Source, Options::default())
         .await
         .expect_err("a schema beyond its limit is refused");

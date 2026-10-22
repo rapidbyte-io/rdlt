@@ -8,6 +8,21 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[features]
+# A connector that answers the handshake and then breaks the protocol, served over any transport,
+# for rdlt-host's tests and the simulation.
+fake = [
+  "dep:http",
+  "dep:hyper",
+  "dep:hyper-util",
+  "dep:rdlt-wire",
+  "dep:tokio-stream",
+  "dep:tower",
+  "rdlt-connector/wire",
+  "tokio/net",
+  "tokio/sync",
+]
+
 [dependencies]
 arrow-array.workspace = true
 arrow-buffer.workspace = true
@@ -15,16 +30,25 @@ arrow-cast.workspace = true
 arrow-schema.workspace = true
 async-trait.workspace = true
 futures-util.workspace = true
+http = { workspace = true, optional = true }
+hyper = { workspace = true, optional = true, features = ["http2", "server"] }
+hyper-util = { workspace = true, optional = true, features = ["service", "tokio"] }
 object_store.workspace = true
 parking_lot.workspace = true
 proptest.workspace = true
 rcgen.workspace = true
 rdlt-connector.workspace = true
+rdlt-wire = { workspace = true, optional = true, features = ["serve"] }
 ryu.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
+tokio-stream = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["rt", "test-util", "time"] }
+tower = { workspace = true, optional = true, features = ["util"] }
+
+[dev-dependencies]
+hyper = { workspace = true, features = ["client", "http2"] }
 
 [lints]
 workspace = true
