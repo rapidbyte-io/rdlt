@@ -23,7 +23,7 @@ or the protocol's design.
 | Check-then-act, or state initialised in parts | the simulation's hostile peers; starts racing on real threads for a process's last group, in the soak; Kani where the state is pure |
 | Resources held but not charged | the simulation's real-memory and bounds oracles; property tests of the budget's ledger |
 | A wait with no deadline | the simulation's hung and stalled faults |
-| Redaction out of order or bypassed | the simulation's secret canary, said by connectors in process, over the network and in played processes; a property test of `Redactions::scrubbed` |
+| Redaction out of order or bypassed | the simulation's secret canary, said by connectors in process, over the network and in played processes, and the soak's spawned connectors, which say one; a property test of `Redactions::scrubbed` |
 | Trust in the file system | regression tests; every played placement opens, checks and hashes its binary |
 | Conversion fidelity | the simulation's encodings; differential tests |
 | A contract's documentation, fixtures, or an API's precondition | Kani over the limits a handshake accepts; tests |
@@ -434,7 +434,9 @@ what no bound names.
   does a spawned one, through `Process`. The script serves the simulated connector over an in-memory
   socket. What only the operating system does stays out: descriptors, process groups and their
   reaper, the registry of groups, which every seed's thread would share, and bubblewrap. Those keep
-  their tests against real processes. A start's check and its listing are a section no
+  their tests against real processes: a nightly soak loads through connectors spawned through
+  `Local` as real processes (killed, stopped with SIGSTOP, crashing, flooding their output, saying
+  a secret that ends in whitespace) and does not replay, so a failure names its round. A start's check and its listing are a section no
   single-threaded seed interleaves, so the soak races starts on real threads. Evidence: a played
   seed replays alike over 64 seeds, and over a sweep of 1 000 once a process's exit and the close of
   its standard error wake their waiters in the order they waited, where two seeds of the sweep had
