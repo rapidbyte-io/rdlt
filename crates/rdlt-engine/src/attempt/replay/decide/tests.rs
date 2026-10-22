@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 use std::time::UNIX_EPOCH;
 
 use rdlt_connector::{
-    CommitMeta, CommitSeq, Cursor, Epoch, LoadId, PartitionId, PartitionState, PipelineState,
-    SegmentId, StateChange, StateEntry, StreamName,
+    CommitMeta, CommitSeq, Cursor, Epoch, LoadId, PartitionId, PartitionState, SegmentId,
+    StateChange, StateEntry, StreamName,
 };
 
 use super::{Decision, decide};
@@ -85,7 +85,7 @@ fn position(id: &str, next: u64) -> StateChange {
 
 /// The destination's positions: `p0` and `p1` at theirs, `p2` nowhere.
 fn standing(p0: u64, p1: u64) -> Positions {
-    let mut positions = Positions::of(&PipelineState::default());
+    let mut positions = Positions::default();
     positions.set(stream(), partition("p0"), at(p0));
     positions.set(stream(), partition("p1"), at(p1));
     positions
@@ -175,7 +175,7 @@ fn a_stream_that_reads_again_is_left_to_the_next_load_where_a_newer_one_committe
     for seal in &mut replayable.seals {
         seal.replayable = true;
     }
-    let cleared = Positions::of(&PipelineState::default());
+    let cleared = Positions::default();
     let decision = decide(&cleared, &unreset(), Some((load(3), 1)), None, &replayable);
     assert_eq!(
         decision,
@@ -322,7 +322,7 @@ fn seals_of_a_stream_reset_after_their_session_opened_never_apply() {
     // A reset at epoch 5 cleared the stream's positions: p2's first seal, from nowhere, would
     // otherwise match and stage its rows into the cleared stream.
     let reset = BTreeMap::from([(stream(), Epoch(5))]);
-    let cleared = Positions::of(&PipelineState::default());
+    let cleared = Positions::default();
     let decision = decide(&cleared, &reset, Some((load(9), 1)), None, &logged());
     assert_eq!(
         decision,

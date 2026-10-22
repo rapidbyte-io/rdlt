@@ -152,16 +152,19 @@ async fn begin(
         super::closed_within(context, opened.session.close()).await;
         return Err(error);
     }
+    let resets = opened.state.resets.clone();
+    let last = opened
+        .state
+        .last_receipt
+        .as_ref()
+        .map(|receipt| (receipt.load_id, receipt.commit_seq.get()));
+    let origin = opened.state.origin;
     Ok(Replaying {
         store,
-        positions: Positions::of(&opened.state),
-        resets: opened.state.resets.clone(),
-        last: opened
-            .state
-            .last_receipt
-            .as_ref()
-            .map(|receipt| (receipt.load_id, receipt.commit_seq.get())),
-        origin: opened.state.origin,
+        positions: Positions::from(opened.state),
+        resets,
+        last,
+        origin,
         session: opened.session,
         epoch: opened.epoch,
         writers: context.config.growth().writers(),

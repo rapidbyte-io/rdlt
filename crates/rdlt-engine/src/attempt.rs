@@ -308,7 +308,7 @@ async fn launch(
         log,
         launcher: launcher(partition_context, tasks),
         wal,
-        positions: Positions::of(&opened.state),
+        positions: Positions::from(opened.state),
         stored: opened.stored,
         follow: context.plan.until().follows(),
         replan: context.config.replan(),
