@@ -128,8 +128,10 @@ only at its end. The owner also asked for the host to be simulated over a networ
 - **P1–P4** are `rdlt-host` tests against a scripted connector:
   `sigint_leaves_no_orphaned_connectors`, `connector_writing_stdout_keeps_running`,
   `connector_crash_error_carries_stderr_tail` and `env_passthrough_reaches_connector`.
-- **The soak** (`just soak`, nightly) races starts on real threads for the last of a process's
-  groups.
+- **The soak** (`just soak`, twenty minutes nightly): connectors spawned through `Local` load while
+  they are killed, stopped with `SIGSTOP`, crashing and flooding their output, saying a secret that
+  ends in whitespace. Starts race on real threads for the last of a process's groups. Real
+  processes on the real clock: a failure names its round (ADR 0052).
 
 ## Consequences
 
