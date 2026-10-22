@@ -32,7 +32,7 @@ use crate::swarm::Features;
 use crate::wal::SimWal;
 use crate::workload::Workload;
 use hangs::Hangs;
-pub(crate) use named::Named;
+pub(crate) use named::{Named, Naming};
 use pushes::Pushes;
 pub(crate) use reports::Reports;
 pub(crate) use told::Heard;
