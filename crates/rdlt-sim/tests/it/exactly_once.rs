@@ -7,7 +7,7 @@ use rdlt_sim::{
 ///
 /// A seed fails if its defect comes back, unless its comment says otherwise: such a seed keeps
 /// only the path, and its defect may come back unseen.
-const FOUND: [(u64, Reach); 19] = [
+const FOUND: [(u64, Reach); 21] = [
     // Over the network: a host whose handshake a partition cut short held its connection, and
     // its connector's stop, forever.
     (743, Reach::LinkCut),
@@ -60,6 +60,10 @@ const FOUND: [(u64, Reach); 19] = [
     // unsealed held more than the whole log, and the engine refused a batch, as it may where a
     // log is below the least it promises the load. The defect no longer fails this seed.
     (744, Reach::LogWaited),
+    // A run held more than the heap's allowance beside what it charged. The defect may not fail
+    // these seeds.
+    (577_320, Reach::LogLeft),
+    (777_590, Reach::Replanned),
 ];
 
 #[test]
