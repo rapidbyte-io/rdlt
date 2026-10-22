@@ -14,7 +14,7 @@ use crate::id::{
     CommitSeq, Epoch, GenerationId, LoadId, PartitionId, SchemaVersion, StreamName, TablePath,
 };
 use crate::schema::{ColumnKey, ColumnPath, TableSchema};
-use crate::types::{Field, LogicalType, TypeKind};
+use crate::types::{Field, Fields, LogicalType, TypeKind};
 
 fn stream(name: &str) -> StreamName {
     StreamName::new(name).unwrap()
@@ -733,7 +733,7 @@ fn nested(depth: usize, nesting: Nesting) -> Vec<Field> {
         logical = if list {
             LogicalType::List(Box::new(Field::new("item", logical, true)))
         } else {
-            let fields = crate::types::Fields::new(vec![Field::new("a", logical, true)]).unwrap();
+            let fields = Fields::new(vec![Field::new("a", logical, true)]).unwrap();
             LogicalType::Struct(fields)
         };
     }
@@ -1047,7 +1047,8 @@ proptest! {
             prop_assert_eq!(map.get(&columns[*column]), Some(IDENTIFIERS[*identifier]));
             prop_assert_eq!(map.owner(IDENTIFIERS[*identifier]), Some(&columns[*column]));
         }
-        let record: Vec<(ColumnKey, String)> = map.clone().into();
+        let record: Vec<(ColumnKey, String)> =
+            serde_json::from_value(serde_json::to_value(&map).unwrap()).unwrap();
         prop_assert_eq!(NameMap::try_from(record).ok(), Some(map));
     }
 
@@ -1069,7 +1070,9 @@ proptest! {
         let injective = distinct(|pair| pair.0) && distinct(|pair| pair.1);
         let read = NameMap::try_from(record.clone());
         if injective {
-            let mut back: Vec<(ColumnKey, String)> = read.expect("an injective record reads").into();
+            let read = read.expect("an injective record reads");
+            let mut back: Vec<(ColumnKey, String)> =
+                serde_json::from_value(serde_json::to_value(&read).unwrap()).unwrap();
             back.sort();
             let mut record = record;
             record.sort();
@@ -1107,5 +1110,89 @@ fn a_record_holds_the_json_its_entry_writes() {
             written.as_slice(),
             "{entry:?}"
         );
+    }
+}
+
+/// A table's schema, names and sequences, of a nested table with a struct, a list and a variant.
+fn a_table_s_entries() -> [StateEntry; 3] {
+    let table = TablePath::new(["orders", "lines"]).unwrap();
+    let city = ColumnPath::new(["address", "city"]).unwrap();
+    let address = Fields::new(vec![Field::new("city", LogicalType::Utf8, true)]).unwrap();
+    let tags = Field::new("item", LogicalType::Utf8, true);
+    let schema = TableSchema::new(vec![
+        Field::new("id", LogicalType::Int64, false),
+        Field::new("address", LogicalType::Struct(address), true),
+        Field::new("tags", LogicalType::List(Box::new(tags)), true),
+    ])
+    .unwrap();
+    let mut names = NameMap::default();
+    names.insert(ColumnPath::from("id"), "id").unwrap();
+    names
+        .insert(
+            ColumnKey::Variant {
+                column: city.clone(),
+                kind: TypeKind::Int64,
+            },
+            "address__city__int",
+        )
+        .unwrap();
+    [
+        StateEntry::Schema {
+            table: table.clone(),
+            version: SchemaVersion(3),
+            schema,
+            exact: ["id".into()].into(),
+        },
+        StateEntry::Names {
+            table: table.clone(),
+            physical: "orders__lines".into(),
+            names,
+        },
+        StateEntry::Sequences {
+            table,
+            sequences: Sequences::Source,
+            history: true,
+            key: vec![ColumnPath::from("id"), city.clone()],
+            change_time: Some(city),
+        },
+    ]
+}
+
+#[test]
+fn a_table_s_records_are_this_json() {
+    let expected = [
+        (
+            r#"{"schema":["orders","lines"]}"#,
+            concat!(
+                r#"{"v":2,"entry":{"schema":{"table":["orders","lines"],"version":3,"schema":"#,
+                r#"{"fields":[[{"name":"id","nullable":false,"type":"int64"}],"#,
+                r#"[{"name":"address","nullable":true,"type":{"struct":1}},"#,
+                r#"{"name":"city","nullable":true,"type":"utf8"}],"#,
+                r#"[{"name":"tags","nullable":true,"type":"list"},"#,
+                r#"{"name":"item","nullable":true,"type":"utf8"}]]},"exact":["id"]}}}"#,
+            ),
+        ),
+        (
+            r#"{"names":["orders","lines"]}"#,
+            concat!(
+                r#"{"v":2,"entry":{"names":{"table":["orders","lines"],"#,
+                r#""physical":"orders__lines","names":[[{"source":["id"]},"id"],"#,
+                r#"[{"variant":{"column":["address","city"],"kind":"int64"}},"#,
+                r#""address__city__int"]]}}}"#,
+            ),
+        ),
+        (
+            r#"{"sequences":["orders","lines"]}"#,
+            concat!(
+                r#"{"v":2,"entry":{"sequences":{"table":["orders","lines"],"#,
+                r#""sequences":"source","history":true,"key":[["id"],["address","city"]],"#,
+                r#""change_time":["address","city"]}}}"#,
+            ),
+        ),
+    ];
+    for (entry, (key, value)) in a_table_s_entries().iter().zip(expected) {
+        let record = entry.to_record();
+        assert_eq!(record.key, key);
+        assert_eq!(std::str::from_utf8(&record.value).unwrap(), value);
     }
 }

@@ -265,8 +265,8 @@ impl Field {
 }
 
 /// Fields with distinct names, in order.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(try_from = "Vec<Field>", into = "Vec<Field>")]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize)]
+#[serde(try_from = "Vec<Field>")]
 pub struct Fields(Vec<Field>);
 
 impl Fields {
@@ -310,9 +310,9 @@ impl TryFrom<Vec<Field>> for Fields {
     }
 }
 
-impl From<Fields> for Vec<Field> {
-    fn from(fields: Fields) -> Self {
-        fields.0
+impl Serialize for Fields {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(self.iter())
     }
 }
 
