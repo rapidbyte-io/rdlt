@@ -72,11 +72,11 @@ pub fn check_exactly_once(seed: Seed) -> Checked {
             seed,
             Serving::Rows,
             features.hostile,
-            move |env, net| async move { Box::pin(simulate(seed, env, Some(net), true)).await },
+            move |env, net| async move { Box::pin(simulate(seed, env, Some(net), false)).await },
         )
     } else {
         run(seed, |env| async move {
-            Box::pin(simulate(seed, env, None, true)).await
+            Box::pin(simulate(seed, env, None, false)).await
         })
     }
 }
@@ -89,7 +89,7 @@ pub fn check_exactly_once(seed: Seed) -> Checked {
 /// Panics, naming the seed, as [`check_exactly_once`] does.
 pub fn stress(seed: Seed) {
     run_threaded(seed, |env| async move {
-        Box::pin(simulate(seed, env, None, false)).await
+        Box::pin(simulate(seed, env, None, true)).await
     });
 }
 
@@ -125,8 +125,8 @@ fn placed(
 
 /// Checks the exactly-once guarantee for the workload `seed` generates, with the connectors on
 /// `net` when there is one, and in this process otherwise, its connectors' calls hanging now and
-/// then where `hangs`, which only a simulated clock waits out at once.
-async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>, hangs: bool) -> Checked {
+/// then unless `threaded`, whose real clock does not wait a hang out at once.
+async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>, threaded: bool) -> Checked {
     let clock = Arc::clone(&env);
     let started = clock.instant();
     let mut rng = SplitMix64::new(seed.value());
@@ -136,7 +136,7 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>, hangs: bo
     let (logged, logging) = canary.watching();
     let registered = World::register(&name, &mut rng);
     let world = Arc::clone(registered.world());
-    if !hangs {
+    if threaded {
         world.without_hangs();
     }
     env.perturb(world.workload.features.perturb);
@@ -146,13 +146,12 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>, hangs: bo
         world.workload.features.streaming,
         endless(&world.workload),
         |partitions| growth(seed, Some(&world.workload), partitions),
-        waited(seed, hangs && world.workload.features.faults),
+        waited(seed, !threaded && world.workload.features.faults),
     );
     let (limits, budget) = (config.limits(), config.memory().get());
     let partitions = u64::try_from(config.partitions().get()).unwrap_or(u64::MAX);
     let buffer = config.partition_buffer().get();
-    let inline = env.inline();
-    let (allowance, placing) = placed(seed, &world, inline, net, &mut rng, limits, &canary);
+    let (allowance, placing) = placed(seed, &world, env.inline(), net, &mut rng, limits, &canary);
     world.press(pressed(seed, &config, &world.workload, small_log(&config)));
     let mut simulation = Simulation {
         seed,
@@ -165,6 +164,7 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>, hangs: bo
         ledger: Ledger::default(),
         partitions,
         buffer,
+        threaded,
         allowance,
         attacks: 0,
         origin: charged(),
@@ -210,6 +210,10 @@ struct Simulation {
     /// Events each partition's channel holds: what a read may still send once its run stopped it,
     /// beside a send in flight.
     buffer: usize,
+    /// Whether its runs share many threads and the real clock, where reads on other threads go on
+    /// between the source's answer and the engine's stop for as long as the scheduler pauses
+    /// the thread between them.
+    threaded: bool,
     /// Bytes: the allowance an attempt's heap is held to beyond what is charged for it;
     /// `None` where nothing is measured, as `memory::allowance` says.
     allowance: Option<u64>,

@@ -31,7 +31,12 @@ impl Simulation {
         for plans in &connections {
             let findings = plans.findings();
             no_partition_lost_or_doubled(&self.world, &findings);
-            plans_follow_the_source(&self.world, &findings, self.buffer);
+            // Between the source's answer and the engine's stop another thread's reads go on
+            // for as long as the scheduler pauses the thread between them, which no bound holds:
+            // only the single thread has nothing between the two.
+            if !self.threaded {
+                plans_follow_the_source(&self.world, &findings, self.buffer);
+            }
         }
         // An attempt that failed leaves seals for the next, so only a run that succeeded in one
         // attempt has committed every seal its reads made.
