@@ -26,5 +26,5 @@ pub(crate) use local::Refusal;
 pub(crate) use object::code as object_code;
 #[cfg(feature = "object-store")]
 pub use object::{ObjectStoreOptions, ObjectStoreWal, StoreRefusal, WalObjects};
-pub(crate) use positions::Positions;
+pub(crate) use positions::{Positions, Recorded};
 pub use store::{Chunk, StagedChunk, WalStore};

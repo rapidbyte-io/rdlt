@@ -8,7 +8,7 @@ use rdlt_connector::{
     StateEntry, StateKey, StreamName, StreamState,
 };
 
-use super::Positions;
+use super::{Positions, Recorded};
 
 fn stream(name: &str) -> StreamName {
     StreamName::new(name).expect("a valid stream")
@@ -318,5 +318,65 @@ proptest! {
         let mut together = Positions::of(&PipelineState::default());
         together.apply(&all);
         prop_assert_eq!(together, positions);
+    }
+}
+
+#[test]
+fn a_landed_commit_s_positions_share_the_cursors_it_was_made_from() {
+    let cursor = Cursor::new(1, &vec![b'c'; 1 << 20]).unwrap();
+    let state = PartitionState::Cursor(cursor.clone());
+    let delta = vec![recorded("orders", "p0", state.clone(), 1)];
+    let states = BTreeMap::from([((stream("orders"), partition("p0")), state)]);
+    let made = Recorded {
+        load: load(1),
+        states: &states,
+    };
+    let (peak, positions) = crate::cost::tests::peak_alone(|| {
+        let mut positions = Positions::default();
+        positions.landed(&delta, &made);
+        positions
+    });
+    assert!(
+        peak < 4 << 10,
+        "applying the commit allocated {peak} bytes at its peak"
+    );
+    let Some(PartitionState::Cursor(kept)) = positions.get(&stream("orders"), &partition("p0"))
+    else {
+        panic!("p0 stands at its cursor");
+    };
+    assert_eq!(kept.bytes().as_ptr(), cursor.bytes().as_ptr());
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(rdlt_testkit::cases(64)))]
+
+    /// A load's commit, applied from the states it was made from, leaves the positions its
+    /// records decode to, whatever stood before and however often it names a partition.
+    #[test]
+    fn a_commit_applied_from_its_states_stands_where_its_records_put_it(
+        before in proptest::collection::vec(change(), 0..6),
+        commit in proptest::collection::vec(change(), 0..8),
+    ) {
+        let ours: Vec<Change> = commit
+            .iter()
+            .map(|change| match change {
+                Change::Position(name, id, next, _) => Change::Position(*name, *id, *next, 1),
+                other => other.clone(),
+            })
+            .collect();
+        let mut states = BTreeMap::new();
+        for change in &ours {
+            if let Change::Position(name, id, next, _) = change {
+                let state = next.map_or(PartitionState::Done, at);
+                states.insert((stream(STREAMS[*name]), partition(PARTITIONS[*id])), state);
+            }
+        }
+        let delta: Vec<StateChange> = ours.iter().map(written).collect();
+        let mut decoded = Positions::default();
+        decoded.apply(&before.iter().map(written).collect::<Vec<_>>());
+        let mut landed = decoded.clone();
+        decoded.apply(&delta);
+        landed.landed(&delta, &Recorded { load: load(1), states: &states });
+        prop_assert_eq!(landed, decoded);
     }
 }

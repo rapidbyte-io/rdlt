@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use rdlt_connector::{
     LoadId, PartitionId, PartitionState, PipelineState, StateChange, StateEntry, StateKey,
-    StreamName,
+    StateRecord, StreamName,
 };
 
 /// Each partition's position, by stream and partition, with the load whose commit recorded it,
@@ -19,6 +19,14 @@ pub(crate) struct Positions {
     partitions: BTreeMap<(StreamName, PartitionId), PartitionState>,
     loads: BTreeMap<(StreamName, PartitionId), LoadId>,
     phases: BTreeMap<StreamName, u16>,
+}
+
+/// The states a load's own commit records its partitions at, by stream and partition, and the
+/// load: what applying the commit takes as they are, rather than decoding its records.
+#[derive(Debug)]
+pub(crate) struct Recorded<'a> {
+    pub(crate) load: LoadId,
+    pub(crate) states: &'a BTreeMap<(StreamName, PartitionId), PartitionState>,
 }
 
 impl Positions {
@@ -81,30 +89,19 @@ impl Positions {
     /// The positions once `delta`, a commit's state changes in order, applies; its other records
     /// change nothing here, and are not read.
     pub(crate) fn apply(&mut self, delta: &[StateChange]) {
+        self.applied(delta, None);
+    }
+
+    /// The positions once `delta`, the changes of a commit `recorded` was made from, applies: a
+    /// partition `recorded` names stands at its state there, sharing its bytes.
+    pub(crate) fn landed(&mut self, delta: &[StateChange], recorded: &Recorded<'_>) {
+        self.applied(delta, Some(recorded));
+    }
+
+    fn applied(&mut self, delta: &[StateChange], recorded: Option<&Recorded<'_>>) {
         for change in delta {
             match change {
-                StateChange::Put(record) => {
-                    let Ok(StateKey::Partition(..) | StateKey::Phase(_)) =
-                        StateKey::parse(&record.key)
-                    else {
-                        continue;
-                    };
-                    match StateEntry::from_record(record) {
-                        Ok(StateEntry::Partition {
-                            stream,
-                            partition,
-                            state,
-                            load,
-                        }) => {
-                            self.loads.insert((stream.clone(), partition.clone()), load);
-                            self.set(stream, partition, state);
-                        }
-                        Ok(StateEntry::Phase { stream, phase }) => {
-                            self.phases.insert(stream, phase);
-                        }
-                        _ => {}
-                    }
-                }
+                StateChange::Put(record) => self.put(record, recorded),
                 StateChange::Delete(key) => match StateKey::parse(key) {
                     Ok(StateKey::Partition(stream, partition)) => {
                         let key = (stream, partition);
@@ -117,6 +114,39 @@ impl Positions {
                     _ => {}
                 },
             }
+        }
+    }
+
+    /// Applies the put of `record`, taking a partition's state from `recorded` where it names it.
+    fn put(&mut self, record: &StateRecord, recorded: Option<&Recorded<'_>>) {
+        match StateKey::parse(&record.key) {
+            Ok(StateKey::Partition(stream, partition)) => {
+                let key = (stream, partition);
+                if let Some(recorded) = recorded
+                    && let Some(state) = recorded.states.get(&key)
+                {
+                    self.loads.insert(key.clone(), recorded.load);
+                    self.partitions.insert(key, state.clone());
+                    return;
+                }
+            }
+            Ok(StateKey::Phase(_)) => {}
+            _ => return,
+        }
+        match StateEntry::from_record(record) {
+            Ok(StateEntry::Partition {
+                stream,
+                partition,
+                state,
+                load,
+            }) => {
+                self.loads.insert((stream.clone(), partition.clone()), load);
+                self.set(stream, partition, state);
+            }
+            Ok(StateEntry::Phase { stream, phase }) => {
+                self.phases.insert(stream, phase);
+            }
+            _ => {}
         }
     }
 }

@@ -16,6 +16,7 @@ use crate::error::Error;
 use crate::partition::CursorHold;
 use crate::report::{CommitPhases, CommitRecord, StreamReport, Trigger};
 use crate::wal::LoadLog;
+use crate::wal::frame::BegunPhase;
 
 impl Coordinator {
     /// Commits every sealed segment with the state that goes with it, then acknowledges the
@@ -29,10 +30,7 @@ impl Coordinator {
         // A new phase's stale entries go before its partitions' positions, which may reuse ids;
         // the log records its partitions' seals from where the phase starts them.
         let begun = self.phase_delta();
-        let mut delta: Vec<StateChange> = begun
-            .iter()
-            .flat_map(|begun| begun.changes.iter().cloned())
-            .collect();
+        let mut delta = begun_changes(&begun);
         let mut collected = self.collect(&delta);
         // The seals' cursors stay charged until the commit that takes them has landed.
         let _held: Vec<CursorHold> = std::mem::take(&mut collected.held);
@@ -69,7 +67,9 @@ impl Coordinator {
         phases.log = laps.lap();
         // The commit completing a stream publishes it: a replace swaps its generation in.
         crash_point!("engine.complete.before", !completing.is_empty());
-        let receipt = self.committed(&meta, measured).await?;
+        let receipt = self
+            .committed(&meta, measured, &collected.positions)
+            .await?;
         crash_point!("engine.complete.after", !completing.is_empty());
         phases.commit = laps.lap();
         self.parts.tables.recorded(&tables.revisions);
@@ -165,4 +165,12 @@ impl<'a> Laps<'a> {
         self.last = now;
         lap
     }
+}
+
+/// The state changes the phases in `begun` record, in order.
+fn begun_changes(begun: &[BegunPhase]) -> Vec<StateChange> {
+    begun
+        .iter()
+        .flat_map(|begun| begun.changes.iter().cloned())
+        .collect()
 }
