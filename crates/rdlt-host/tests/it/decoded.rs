@@ -5,12 +5,12 @@
 use bytes::Bytes;
 use rdlt_connector::{Destination as _, LoadId, OpenContext, PipelineId, Role, Source as _};
 use rdlt_host::{Connection, Options, RemoteDestination, RemoteSource};
+use rdlt_testkit::fake::Fault;
 use rdlt_wire::Limits;
 use rdlt_wire::limits::Class;
 
 use crate::HEAP;
 use crate::support::raw::{answering, called};
-use rdlt_testkit::fake::Fault;
 
 /// `entry`, an empty entry of a repeated field, as many times as `bytes` take.
 fn entries(entry: [u8; 2], bytes: usize) -> Bytes {

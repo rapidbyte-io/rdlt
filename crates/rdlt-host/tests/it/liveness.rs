@@ -7,10 +7,10 @@ use rdlt_connector::serve::Served;
 use rdlt_connector::{Role, Source as _, source_factory};
 use rdlt_connector_reference::MemorySource;
 use rdlt_host::{CONNECTOR_LOST, Connection, Options, RemoteSource};
+use rdlt_testkit::fake::{Fake, Fault, socket};
 
 use crate::support::connectors::{CHECKS, Counted};
 use crate::support::served;
-use rdlt_testkit::fake::{Fake, Fault, socket};
 
 /// Options that notice a lost connector within about a tenth of a second.
 fn quick() -> Options {
