@@ -1,12 +1,14 @@
 //! What a source is told is committed, against the commits that had landed when it was told,
 //! and each commit's horizon, whatever order partitions seal and end in.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use proptest::prelude::*;
 use rdlt_connector::{Cursor, PartitionId, PartitionState, StateChange, StateEntry};
 
-use super::{Setup, cursor, ended, partition, stream};
+use super::{Setup, cursor, ended, partition, position, stream};
+use crate::coordinator::delta::Collected;
 use crate::partition::Progress;
 use crate::plan::WriteMode;
 use crate::wal::memory::MemoryWal;
@@ -138,4 +140,35 @@ proptest! {
             prop_assert!(pair[0].horizon <= pair[1].horizon, "commit {:?}'s horizon is earlier than its predecessor's", pair[1].commit_seq);
         }
     }
+}
+
+#[tokio::test]
+async fn a_commit_judged_for_progress_copies_no_cursor_it_records_again() {
+    const CURSOR: usize = 1 << 20;
+    let (mut coordinator, _harness) = Setup::new(
+        vec![stream(WriteMode::Append, None, 1)],
+        vec![partition("p0", false)],
+    )
+    .coordinator()
+    .await;
+    let standing = PartitionState::Cursor(Cursor::new(1, &vec![b'p'; CURSOR]).unwrap());
+    let positions = BTreeMap::from([(0, standing.clone())]);
+    coordinator.landed(&positions, false);
+    // Sealed where it stands, the partition is recorded there again and moves nothing.
+    let delta = vec![position("p0", standing)];
+    let collected = Collected {
+        segments: rdlt_connector::SegmentSet::new(),
+        positions,
+        reported: BTreeMap::new(),
+        streams: BTreeMap::new(),
+        sealed: Vec::new(),
+        held: Vec::new(),
+    };
+    let (peak, progressed) =
+        crate::cost::tests::peak_alone(|| coordinator.progresses(&collected, &delta));
+    assert!(!progressed);
+    assert!(
+        peak < 4 << 10,
+        "judging the commit allocated {peak} bytes at its peak"
+    );
 }

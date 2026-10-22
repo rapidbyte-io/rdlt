@@ -1,10 +1,9 @@
 //! Acknowledging committed positions to the source, and telling a commit that moves the load on
 //! from one that only records again what state already holds.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use bytes::Bytes;
-use rdlt_connector::{CommitMeta, Cursor, PartitionId, PartitionState, StateChange};
+use rdlt_connector::{CommitMeta, Cursor, PartitionId, PartitionState, StateChange, StateKey};
 
 use super::Coordinator;
 use super::delta::Collected;
@@ -48,21 +47,20 @@ impl Coordinator {
     /// again. Positions are compared byte for byte: a source that encodes an equal position
     /// anew has moved, as far as the engine can tell.
     pub(super) fn progresses(&self, collected: &Collected, delta: &[StateChange]) -> bool {
-        let restated: BTreeMap<String, Bytes> = collected
+        let restated: BTreeSet<String> = collected
             .positions
             .iter()
             .filter(|(partition, state)| {
                 self.parts.partitions[**partition].stands.as_ref() == Some(*state)
             })
-            .filter_map(
-                |(partition, state)| match self.position(*partition, state) {
-                    StateChange::Put(record) => Some((record.key, record.value)),
-                    StateChange::Delete(_) => None,
-                },
-            )
+            .map(|(partition, _)| {
+                let partition = &self.parts.partitions[*partition];
+                let stream = self.parts.streams[partition.stream].name.clone();
+                StateKey::Partition(stream, partition.id.clone()).encode()
+            })
             .collect();
         let moves = |change: &StateChange| match change {
-            StateChange::Put(record) => restated.get(&record.key) != Some(&record.value),
+            StateChange::Put(record) => !restated.contains(&record.key),
             StateChange::Delete(_) => true,
         };
         !collected.segments.is_empty() || delta.iter().any(moves)
