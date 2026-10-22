@@ -254,3 +254,17 @@ fn a_cursor_is_read_from_json_into_one_allocation_of_its_bytes() {
         "reading a cursor of {CURSOR} bytes peaked at {peak}"
     );
 }
+
+#[test]
+fn a_state_record_is_written_once_into_a_buffer_of_its_length() {
+    let state = PartitionState::Cursor(padded(1 << 20));
+    let (peak, change) = crate::cost::tests::peak_alone(|| position("p0", state.clone()));
+    let StateChange::Put(record) = change else {
+        panic!("a position is put");
+    };
+    let json = u64::try_from(record.key.len() + record.value.len()).unwrap();
+    assert!(
+        peak <= json + (4 << 10),
+        "a record of {json} bytes peaked at {peak} as it was written"
+    );
+}
