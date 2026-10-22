@@ -33,7 +33,7 @@ fn a_played_source_serves_and_is_played_again_once_it_is_killed() {
         let options = options(&mut rng, rdlt_wire::Limits::default());
         let spawning = Spawning::new(Seed::new(1), &options, &canary, Serving::Rows);
         let source = spawning.source(&canary.config()).await;
-        let first = source.check().await;
+        let first = tokio::time::timeout(Duration::from_secs(60), source.check()).await;
         spawning.sides[0].kills.kill();
         // The killed process ends before the next call is made.
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -43,7 +43,9 @@ fn a_played_source_serves_and_is_played_again_once_it_is_killed() {
         drop(registered);
         (first, again, played)
     });
-    first.expect("the played source serves its check");
+    first
+        .expect("bounded")
+        .expect("the played source serves its check");
     again
         .expect("bounded")
         .expect("the source played again serves it");
@@ -97,7 +99,10 @@ fn a_played_process_ends_with_the_connector_placed_in_it() {
         let options = options(&mut rng, rdlt_wire::Limits::default());
         let spawning = Spawning::new(Seed::new(3), &options, &canary, Serving::Rows);
         let source = spawning.source(&canary.config()).await;
-        source.check().await.expect("it serves");
+        tokio::time::timeout(Duration::from_secs(60), source.check())
+            .await
+            .expect("bounded")
+            .expect("it serves");
         drop(source);
         // Its process lingers 300 ms at most once stopped; its tasks end with it.
         tokio::time::sleep(Duration::from_secs(1)).await;
