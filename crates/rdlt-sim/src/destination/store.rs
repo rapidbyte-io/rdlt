@@ -28,6 +28,10 @@ pub(crate) struct Store {
     pub(super) staged: BTreeMap<(PipelineId, SegmentId), Vec<Staged>>,
     pub(super) names: BTreeMap<TablePath, String>,
     pub(super) tables: BTreeMap<String, Table>,
+    /// The furthest any commit moved each partition, by stream and partition, kept once a later
+    /// commit deletes its cursor: a source may be told a commit landed after the next moved its
+    /// stream on.
+    landed: BTreeMap<(StreamName, PartitionId), u64>,
 }
 
 /// What the destination keeps for one pipeline.
@@ -71,8 +75,8 @@ struct Plan {
     tombstones: Vec<RecordBatch>,
 }
 
-/// A digest of everything a destination holds: its tables' columns and rows, and each pipeline's
-/// state and receipts.
+/// A digest of everything a destination holds: its tables' columns and rows, each pipeline's
+/// state and receipts, and how far commits moved each partition.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Digest(u64);
 
@@ -92,6 +96,7 @@ impl Store {
             format!("{:?}", store.state).hash(&mut hasher);
         }
         format!("{:?}", self.receipts).hash(&mut hasher);
+        format!("{:?}", self.landed).hash(&mut hasher);
         Digest(hasher.finish())
     }
 
@@ -162,6 +167,13 @@ impl Store {
     /// Every pipeline's state records.
     pub(crate) fn states(&self) -> impl Iterator<Item = &BTreeMap<String, StateRecord>> {
         self.pipelines.values().map(|store| &store.state)
+    }
+
+    /// The furthest any pipeline's commit moved `partition` of `stream`, where one did.
+    pub(crate) fn landed(&self, stream: &StreamName, partition: &PartitionId) -> Option<u64> {
+        self.landed
+            .get(&(stream.clone(), partition.clone()))
+            .copied()
     }
 
     /// The epoch of `pipeline`'s newest session.
@@ -334,6 +346,10 @@ impl Store {
                                     "stream {stream} partition {partition}: cursor moved back \
                                      from {before:?} to {after:?}"
                                 ));
+                            }
+                            if let Some(after) = after {
+                                let furthest = self.landed.entry((stream, partition)).or_default();
+                                *furthest = (*furthest).max(after);
                             }
                             continue;
                         }
