@@ -12,8 +12,8 @@ use tokio::runtime::Handle;
 
 use super::{LOOK, OUTLIVED, alive, released, served_outlived, settle};
 use crate::canary::Canary;
-use crate::network::{Networked, Serving, options, run_networked};
-use crate::owners::Live;
+use crate::network::{Net, Networked, Peers, Serving, options, run_networked};
+use crate::owners::{Held, Live};
 use crate::rng::SplitMix64;
 use crate::seed::{Seed, run};
 use crate::world::{FaultPoint, World};
@@ -201,62 +201,68 @@ fn rows() -> RecordBatch {
         .expect("a valid batch")
 }
 
+/// Runs a served writer whose write hangs, and returns whether its host let it go, with what
+/// was left.
+async fn hung_writer_released(net: Arc<Net>) -> (bool, (usize, Held)) {
+    let mut rng = SplitMix64::new(7);
+    let name = "released-writer";
+    let registered = World::register(name, &mut rng);
+    let world = Arc::clone(registered.world());
+    world.hang_at(FaultPoint::Write);
+    let canary = Canary::of(name);
+    let config = canary.config();
+    let placing = Networked::new(net, &options(&mut rng, Limits::default()), &canary);
+    let destination = placing.destination(&config, false).await;
+    let context = OpenContext {
+        pipeline: PipelineId::parse("released").expect("a valid pipeline id"),
+        load_id: LoadId::from_parts(std::time::UNIX_EPOCH, 1),
+    };
+    let mut opened = tokio::time::timeout(WAIT, destination.open(&context))
+        .await
+        .expect("the open ends")
+        .expect("the session opens");
+    let table = table();
+    let create = TableChange::Create {
+        table: table.clone(),
+        schema: TableSchema::new(vec![Field::new("id", LogicalType::Int64, false)])
+            .expect("a valid schema"),
+    };
+    tokio::time::timeout(WAIT, opened.session.apply_schema(&create))
+        .await
+        .expect("the schema change ends")
+        .expect("the table is created");
+    let mut writer = tokio::time::timeout(WAIT, opened.session.writer(&table))
+        .await
+        .expect("the writer's opening ends")
+        .expect("the writer opens");
+    let rows = rows();
+    tokio::time::timeout(WAIT, writer.write(SegmentId(1), rows))
+        .await
+        .expect("the write ends")
+        .expect("the batch is sent");
+    // The destination's write never returns, so neither does the flush behind it: the host
+    // gives up on it, as the engine does at its wait.
+    let flushed = tokio::time::timeout(Duration::from_secs(5), writer.flush()).await;
+    assert!(flushed.is_err(), "a flush behind a write that hangs waits");
+    drop((writer, opened, destination));
+    let hosts = placing.hosts();
+    let releasing = async {
+        while alive(&hosts) > 0 || !world.owners.held().is_empty() {
+            tokio::time::sleep(LOOK).await;
+        }
+    };
+    let ended = tokio::time::timeout(served_outlived(), releasing)
+        .await
+        .is_ok();
+    let left = (alive(&hosts), world.owners.held());
+    drop(registered);
+    (ended, left)
+}
+
 #[test]
 fn a_served_writer_whose_write_hangs_ends_once_its_host_lets_it_go() {
-    let (ended, left) = run_networked(Seed::new(1), Serving::Rows, false, |_env, net| async move {
-        let mut rng = SplitMix64::new(7);
-        let name = "released-writer";
-        let registered = World::register(name, &mut rng);
-        let world = Arc::clone(registered.world());
-        world.hang_at(FaultPoint::Write);
-        let canary = Canary::of(name);
-        let config = canary.config();
-        let placing = Networked::new(net, &options(&mut rng, Limits::default()), &canary);
-        let destination = placing.destination(&config, false).await;
-        let context = OpenContext {
-            pipeline: PipelineId::parse("released").expect("a valid pipeline id"),
-            load_id: LoadId::from_parts(std::time::UNIX_EPOCH, 1),
-        };
-        let mut opened = tokio::time::timeout(WAIT, destination.open(&context))
-            .await
-            .expect("the open ends")
-            .expect("the session opens");
-        let table = table();
-        let create = TableChange::Create {
-            table: table.clone(),
-            schema: TableSchema::new(vec![Field::new("id", LogicalType::Int64, false)])
-                .expect("a valid schema"),
-        };
-        tokio::time::timeout(WAIT, opened.session.apply_schema(&create))
-            .await
-            .expect("the schema change ends")
-            .expect("the table is created");
-        let mut writer = tokio::time::timeout(WAIT, opened.session.writer(&table))
-            .await
-            .expect("the writer's opening ends")
-            .expect("the writer opens");
-        let rows = rows();
-        tokio::time::timeout(WAIT, writer.write(SegmentId(1), rows))
-            .await
-            .expect("the write ends")
-            .expect("the batch is sent");
-        // The destination's write never returns, so neither does the flush behind it: the host
-        // gives up on it, as the engine does at its wait.
-        let flushed = tokio::time::timeout(Duration::from_secs(5), writer.flush()).await;
-        assert!(flushed.is_err(), "a flush behind a write that hangs waits");
-        drop((writer, opened, destination));
-        let hosts = placing.hosts();
-        let releasing = async {
-            while alive(&hosts) > 0 || !world.owners.held().is_empty() {
-                tokio::time::sleep(LOOK).await;
-            }
-        };
-        let ended = tokio::time::timeout(served_outlived(), releasing)
-            .await
-            .is_ok();
-        let left = (alive(&hosts), world.owners.held());
-        drop(registered);
-        (ended, left)
+    let (ended, left) = run_networked(Seed::new(1), Serving::Rows, Peers::HONEST, |_env, net| {
+        hung_writer_released(net)
     });
     assert!(
         ended,

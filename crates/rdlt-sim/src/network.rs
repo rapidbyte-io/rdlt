@@ -2,6 +2,7 @@
 //! TLS, and the engine places them there through the host's remote placement, all on turmoil's
 //! hosts, each a paused tokio clock the network steps together.
 
+mod broken;
 mod connectors;
 mod faults;
 mod hostile;
@@ -40,8 +41,9 @@ use crate::reached::Reached;
 use crate::rng::SplitMix64;
 use crate::seed::{Seed, Weight, report_failure};
 use crate::source::SimSource;
+use crate::swarm::FRAMING;
 use connectors::Connectors;
-use faults::{Healing, disrupt};
+use faults::{Healing, cut, disrupt};
 use hostile::Watch;
 use stalled::Stalls;
 
@@ -71,6 +73,35 @@ const REPLACE: Duration = Duration::from_millis(100);
 
 /// The host of the peer that stalls, which the fault driver never disrupts.
 const STALLED: &str = "stalled";
+
+/// The host of the connectors that break the protocol, whose link only a driver of its own
+/// cuts.
+const BROKEN: &str = "broken";
+
+/// Which hostile peers a simulated network holds beside the connectors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Peers {
+    /// A hostile host that attacks the connectors' serving, and connectors that start
+    /// again under a version named after a secret.
+    pub(crate) hostile: bool,
+    /// Connectors on a host of their own that break the protocol to the engine's host.
+    pub(crate) framing: bool,
+}
+
+impl Peers {
+    /// No hostile peer.
+    pub(crate) const HONEST: Self = Self {
+        hostile: false,
+        framing: false,
+    };
+
+    /// A hostile host, and no broken connector.
+    #[cfg(test)]
+    pub(crate) const HOSTILE: Self = Self {
+        hostile: true,
+        framing: false,
+    };
+}
 
 /// A connector's side of a pipeline, each on a host of its own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -125,6 +156,8 @@ pub(crate) struct Net {
     /// Whether a hostile host attacks the connectors, which are then watched, and start again now
     /// and then under another version.
     hostile: bool,
+    /// Whether connectors that break the protocol listen on a host of their own.
+    framing: bool,
     /// What a hostile seed's connectors keep across their lives and see of each hostile
     /// connection.
     watch: Watch,
@@ -133,12 +166,14 @@ pub(crate) struct Net {
 }
 
 impl Net {
-    fn new(serving: Serving, hostile: bool) -> Self {
+    fn new(serving: Serving, peers: Peers) -> Self {
         let pki = Pki::new("ca");
-        let server = pki.server(
-            "server",
-            &[Side::Source.host(), Side::Destination.host(), STALLED],
-        );
+        let mut hosts = vec![Side::Source.host(), Side::Destination.host(), STALLED];
+        // Named only where it listens, so every other seed's certificate is as it was.
+        if peers.framing {
+            hosts.push(BROKEN);
+        }
+        let server = pki.server("server", &hosts);
         let client = pki.client(ENGINE);
         Self {
             pki,
@@ -148,7 +183,8 @@ impl Net {
             served: Mutex::default(),
             stalls: Arc::default(),
             serving,
-            hostile,
+            hostile: peers.hostile,
+            framing: peers.framing,
             watch: Watch::default(),
             reached: Mutex::default(),
         }
@@ -156,25 +192,21 @@ impl Net {
 }
 
 /// Runs `scenario` as the engine's host of a simulated network, on which the source and the
-/// destination listen, and the peer that stalls, on a host of its own, and a hostile host's targets
-/// where `hostile`, with a [`SimEnv`] seeded by `seed`, and turmoil's network seeded by it too.
+/// destination listen, and the peer that stalls, on a host of its own, a hostile host's targets
+/// where `peers` holds one, and the broken connectors on a host of their own where it holds them,
+/// with a [`SimEnv`] seeded by `seed`, and turmoil's network seeded by it too.
 ///
 /// # Panics
 ///
 /// Re-raises any panic from `scenario` after printing the seed that reproduces it.
-pub(crate) fn run_networked<F, Fut, T>(
-    seed: Seed,
-    serving: Serving,
-    hostile: bool,
-    scenario: F,
-) -> T
+pub(crate) fn run_networked<F, Fut, T>(seed: Seed, serving: Serving, peers: Peers, scenario: F) -> T
 where
     F: FnOnce(Arc<SimEnv>, Arc<Net>) -> Fut + 'static,
     Fut: Future<Output = T> + 'static,
     T: 'static,
 {
     let mut rng = SplitMix64::new(seed.value() ^ LATENCY);
-    let net = Arc::new(Net::new(serving, hostile));
+    let net = Arc::new(Net::new(serving, peers));
     let mut sim = turmoil::Builder::new()
         .tick_duration(TICK)
         .simulation_duration(LIMIT)
@@ -188,6 +220,10 @@ where
     }
     let peer = Arc::clone(&net);
     sim.host(STALLED, move || stalled::stall(Arc::clone(&peer)));
+    if peers.framing {
+        let broken = Arc::clone(&net);
+        sim.host(BROKEN, move || broken::host(Arc::clone(&broken)));
+    }
     let outcome = Rc::new(RefCell::new(None));
     let slot = Rc::clone(&outcome);
     sim.client(ENGINE, async move {
@@ -362,10 +398,14 @@ impl Networked {
         let healing = Healing(&self.net);
         // Faults last up to twice the host's patience, so it notices some and not others.
         let patience = patience(&self.remote_options);
+        // The broken connectors' link is cut from a draw of its own, so every other link is
+        // disrupted as it always was.
+        let broken = SplitMix64::new(rng.clone().next_u64() ^ FRAMING);
         let done = tokio::select! {
             biased;
             done = work => done,
             never = disrupt(&self.net, rng, patience) => match never {},
+            never = cut(broken, patience), if self.net.framing => match never {},
         };
         drop(healing);
         // What the network held lands once it heals, a commit among them: the runs' effects are

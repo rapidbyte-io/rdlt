@@ -32,7 +32,7 @@ use rdlt_wire::Limits;
 use crate::canary::Canary;
 use crate::destination::{Digest, committed_next, completions, reads_in_progress};
 use crate::env::SimEnv;
-use crate::network::{Net, Serving, run_networked};
+use crate::network::{Net, Peers, Serving, run_networked};
 use crate::placing::Placing;
 use crate::reached::{Reach, Reached};
 use crate::rng::SplitMix64;
@@ -71,7 +71,10 @@ pub fn check_exactly_once(seed: Seed) -> Checked {
         run_networked(
             seed,
             Serving::Rows,
-            features.hostile,
+            Peers {
+                hostile: features.hostile,
+                framing: features.framing,
+            },
             move |env, net| async move { Box::pin(simulate(seed, env, Some(net), false)).await },
         )
     } else {

@@ -9,7 +9,7 @@ use super::factories::{Asked, Counted};
 use super::window::{HOLDERS, PREFIX, Raw, SETTLE, Write};
 use super::{Attack, Attacker, PATIENCE};
 use crate::canary::Canary;
-use crate::network::{Net, Networked, Serving, Side, options, run_networked};
+use crate::network::{Net, Networked, Peers, Serving, Side, options, run_networked};
 use crate::oracle::Window;
 use crate::rng::SplitMix64;
 use crate::seed::Seed;
@@ -18,7 +18,7 @@ use crate::world::World;
 #[test]
 fn a_watch_records_a_hostile_connection_holding_more_than_it_may() {
     let registered = World::register("hostile-watch", &mut SplitMix64::new(3));
-    let net = Arc::new(Net::new(Serving::Rows, true));
+    let net = Arc::new(Net::new(Serving::Rows, Peers::HOSTILE));
     let first = Counted::enter(&net, 9, 1, "hostile-watch");
     assert!(registered.world().violations().is_empty());
     let second = Counted::enter(&net, 9, 1, "hostile-watch");
@@ -43,7 +43,7 @@ fn a_watch_records_a_hostile_connection_holding_more_than_it_may() {
 #[test]
 fn a_connector_started_again_after_an_odd_count_of_crashes_names_itself_after_its_token() {
     let token = "rdlt-canary-token-oracle-18446744073709551615";
-    let hostile = Arc::new(Net::new(Serving::Rows, true));
+    let hostile = Arc::new(Net::new(Serving::Rows, Peers::HOSTILE));
     hostile.watch.token.lock()[0] = Some(token.to_owned());
     let renamed = hostile.source_factory(1).spec().version.clone();
     assert_eq!(renamed, format!("0.0.0-{token}"));
@@ -60,7 +60,7 @@ fn a_connector_started_again_after_an_odd_count_of_crashes_names_itself_after_it
         "0.0.0",
         "no token was heard"
     );
-    let plain = Arc::new(Net::new(Serving::Rows, false));
+    let plain = Arc::new(Net::new(Serving::Rows, Peers::HONEST));
     plain.watch.token.lock()[0] = Some(token.to_owned());
     assert_eq!(plain.source_factory(1).spec().version, "0.0.0");
 }
@@ -93,7 +93,7 @@ fn serving_meets_every_attack_of_a_hostile_host_as_the_protocol_says() {
     let violations = run_networked(
         Seed::new(3),
         Serving::Rows,
-        true,
+        Peers::HOSTILE,
         move |_env, net| async move {
             let mut rng = SplitMix64::new(7);
             let name = "hostile-attacks";
@@ -140,7 +140,7 @@ fn a_write_waiting_for_room_holds_the_frame_it_read_and_no_copy_of_it() {
     let (held, unanswered) = run_networked(
         Seed::new(1),
         Serving::Rows,
-        false,
+        Peers::HONEST,
         move |_env, net| async move {
             let mut rng = SplitMix64::new(7);
             let canary = Canary::of("hostile-heap");
@@ -203,7 +203,7 @@ fn serving_lets_go_of_writes_cut_behind_a_full_window_and_of_their_connection() 
     let (connected, holding, kept, left) = run_networked(
         Seed::new(1),
         Serving::Rows,
-        false,
+        Peers::HONEST,
         move |_env, net| async move {
             let mut rng = SplitMix64::new(7);
             let canary = Canary::of("hostile-release");
@@ -264,7 +264,7 @@ fn a_write_with_room_is_seen_answered_and_then_ends() {
     let (seen, ended) = run_networked(
         Seed::new(1),
         Serving::Rows,
-        false,
+        Peers::HONEST,
         move |_env, net| async move {
             let mut rng = SplitMix64::new(7);
             let canary = Canary::of("hostile-answered");
