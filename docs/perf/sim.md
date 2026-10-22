@@ -34,8 +34,8 @@ checks the reference rate every night against the floor below.
 | Exactly-once sweep, a pull request's shard, ubuntu-24.04 | about 6.8 seeds/s median, 6.1-11.4 over 40 shards, estimated from the parent's shards (7.0 median, 6.3-11.8) |
 | Nightly shards | 80 of 12 500 seeds, up to about 51 min of 70, estimated from `d28d458f`'s nightly, whose 50 of 20 000 took 28.9-58.3 min |
 | Coverage run, CI | about 32-40 min of 60, estimated from the parent's nightlies, 22.6 min on `d28d458f` and 28.4 on `9ff145dd` |
-| Replay job, CI | about 7.4 min of 30, estimated from the local time and the 3.15 times CI took over local before this record |
+| Replay job, CI | about 7.6 min of 30, estimated: the nightly at `c48540dd` (run 39748626499, which ran the parent's simulation) took 7.3 min, times the local ratio 1.036 |
 | Test job, ubuntu-24.04 | 20.2 min of 45 on main's run at `bf2b4a5e`, plus 3.3 s for the churning seeds' test |
 | Test job, macos-15 | 23.3 min of 45 on main's run at `bf2b4a5e`, plus the same 3.3 s |
 | Archive extraction per shard | 0.1 s |
-| Nightly floor for the reference set | 4 seeds/s, the whole number below half the reference job's rate: 12.0 and 12.2 seeds/s on the parent-era nightlies (`9ff145dd`, `d28d458f`), about 9.0-9.2 at this branch's local ratio (17.2 / 22.8 against the sweep those nightlies ran), estimated, so half is 4.5 |
+| Nightly floor for the reference set | 2 seeds/s, the whole number below half the reference job's rate: 5.91 seeds/s on the nightly at `c48540dd` (run 39748626499, the parent's simulation, 169.3 s), about 5.6 at this branch's local ratio (17.2 / 18.1), estimated, so half is 2.8 |
