@@ -1,3 +1,5 @@
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 use bytes::Bytes;
 use proptest::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -56,18 +58,59 @@ fn cursors_over_the_limit_are_refused() {
     assert_eq!(error.limit().unwrap().actual, CURSOR_BYTES + 1);
 }
 
-#[test]
-fn deserializing_refuses_bad_base64() {
-    assert!(serde_json::from_str::<Cursor>(r#"{"version":1,"base64":"@@@"}"#).is_err());
+/// A cursor as JSON: its version, and its bytes in base64 as one string.
+#[derive(Serialize)]
+struct Spelled {
+    version: u16,
+    base64: String,
 }
 
 proptest! {
     #[test]
-    fn cursors_round_trip_through_json(version in any::<u16>(), bytes in proptest::collection::vec(any::<u8>(), 0..512)) {
+    fn a_cursor_is_written_as_its_version_and_its_bytes_in_base64_and_read_back(
+        version in any::<u16>(),
+        bytes in proptest::collection::vec(any::<u8>(), 0..2048),
+    ) {
         let cursor = Cursor::new(version, &bytes).unwrap();
-        let json = serde_json::to_string(&cursor).unwrap();
-        prop_assert_eq!(serde_json::from_str::<Cursor>(&json).unwrap(), cursor);
+        let json = serde_json::to_vec(&cursor).unwrap();
+        let spelled = Spelled { version, base64: STANDARD.encode(&bytes) };
+        prop_assert_eq!(&json, &serde_json::to_vec(&spelled).unwrap());
+        prop_assert_eq!(serde_json::from_slice::<Cursor>(&json).unwrap(), cursor.clone());
+        // A reader hands the decoder text it is about to reuse, not text it can borrow.
+        prop_assert_eq!(serde_json::from_reader::<_, Cursor>(json.as_slice()).unwrap(), cursor);
     }
+}
+
+#[test]
+fn a_cursor_s_base64_escaped_in_json_reads_as_its_text() {
+    let json = r#"{"version":1,"base64":"\u0059Q=="}"#;
+    let cursor: Cursor = serde_json::from_str(json).unwrap();
+    assert_eq!(cursor, Cursor::new(1, b"a").unwrap());
+}
+
+#[test]
+fn a_cursor_missing_a_member_naming_another_or_of_bad_base64_is_refused() {
+    for json in [
+        r#"{"version":1}"#,
+        r#"{"base64":"YQ=="}"#,
+        r#"{"version":1,"base64":"YQ==","other":1}"#,
+        r#"{"version":1,"base64":"Y"}"#,
+        r#"{"version":1,"base64":"@@@"}"#,
+        r#"{"version":1,"base64":7}"#,
+    ] {
+        assert!(serde_json::from_str::<Cursor>(json).is_err(), "{json}");
+    }
+}
+
+#[test]
+fn a_cursor_in_json_beyond_the_cursor_limit_is_refused() {
+    let bytes = vec![0_u8; usize::try_from(CURSOR_BYTES).unwrap() + 1];
+    let json = serde_json::to_vec(&Spelled {
+        version: 1,
+        base64: STANDARD.encode(&bytes),
+    })
+    .unwrap();
+    assert!(serde_json::from_slice::<Cursor>(&json).is_err());
 }
 
 #[test]
@@ -79,5 +122,14 @@ fn a_cursor_owns_exactly_its_bytes() {
     assert!(
         message.is_unique(),
         "the cursor keeps the message it arrived in alive"
+    );
+}
+
+#[test]
+fn a_cursor_whose_bytes_are_not_text_says_what_it_expects() {
+    let error = serde_json::from_str::<Cursor>(r#"{"version":1,"base64":7}"#).unwrap_err();
+    assert!(
+        error.to_string().contains("a cursor's bytes in base64"),
+        "{error}"
     );
 }

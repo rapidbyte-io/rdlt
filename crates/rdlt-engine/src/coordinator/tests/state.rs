@@ -2,6 +2,7 @@
 //! again whatever it committed.
 
 use std::collections::BTreeMap;
+use std::io;
 use std::time::UNIX_EPOCH;
 
 use rdlt_connector::wire::commit_bytes;
@@ -226,4 +227,30 @@ fn a_commit_s_record_of_a_cursor_holds_its_json_and_no_more() {
     };
     let json = u64::try_from(record.key.len() + record.value.len()).unwrap();
     assert!(held <= json + 256, "a record of {json} bytes held {held}");
+}
+
+#[test]
+fn a_cursor_is_written_as_json_without_a_copy_of_its_text() {
+    let cursor = Cursor::new(1, &vec![b'c'; 1 << 20]).unwrap();
+    let (peak, ()) = crate::cost::tests::peak_alone(|| {
+        serde_json::to_writer(io::sink(), &cursor).unwrap();
+    });
+    assert!(
+        peak < 4 << 10,
+        "writing a cursor allocated {peak} bytes at its peak"
+    );
+}
+
+#[test]
+fn a_cursor_is_read_from_json_into_one_allocation_of_its_bytes() {
+    const CURSOR: usize = 1 << 20;
+    let json = serde_json::to_vec(&Cursor::new(1, &vec![b'c'; CURSOR]).unwrap()).unwrap();
+    let (peak, cursor) =
+        crate::cost::tests::peak_alone(|| serde_json::from_slice::<Cursor>(&json).unwrap());
+    assert_eq!(cursor.bytes().len(), CURSOR);
+    let most = u64::try_from(CURSOR).unwrap() + (4 << 10);
+    assert!(
+        peak <= most,
+        "reading a cursor of {CURSOR} bytes peaked at {peak}"
+    );
 }
