@@ -135,12 +135,15 @@ fn options() -> Options {
     }
 }
 
-/// An engine that commits every 500 rows and tries a failed attempt again a hundred times.
+/// An engine that commits every 500 rows and tries a failed attempt again a hundred times, never
+/// waiting a second for one: a streak of attempts killed before a commit would otherwise back off
+/// for minutes, past the round's bound, and read as a hang.
 fn engine() -> Engine {
     let policy = CommitPolicy::new(None, Some(500), None).expect("a row threshold is valid");
     let retry = RetryPolicy::default()
         .max_attempts(100)
-        .initial(Duration::from_millis(10));
+        .initial(Duration::from_millis(10))
+        .max_delay(Duration::from_secs(1));
     let config = EngineConfig::builder()
         .commit(policy)
         .retry(retry)
@@ -308,12 +311,16 @@ fn connectors_killed_stalled_and_crashing_load_every_row_once_and_say_no_secret(
         .expect("a runtime");
     let until = std::time::Instant::now() + soaking();
     let mut round = 0;
+    let mut longest = Duration::ZERO;
     tracing::subscriber::with_default(logged.clone(), || {
         while std::time::Instant::now() < until {
+            let began = std::time::Instant::now();
             runtime.block_on(loading(round, &logged));
+            longest = longest.max(began.elapsed());
             round += 1;
         }
     });
+    eprintln!("soak: {round} rounds, the longest {longest:?}");
     assert!(round > 0, "no round ran");
     assert_eq!(rdlt_host::stop_spawned(Duration::from_secs(20)), Ok(()));
     // The drains log the last round's late lines while the runtime runs.
