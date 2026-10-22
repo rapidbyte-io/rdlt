@@ -18,7 +18,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use plans::PlannedRead;
-pub(crate) use plans::Plans;
+pub(crate) use plans::{Findings, Plans};
 use push::batch;
 pub(crate) use push::json_push;
 

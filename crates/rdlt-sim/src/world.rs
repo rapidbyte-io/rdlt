@@ -377,13 +377,6 @@ impl World {
     }
 
     /// The records of every connection made since this was last asked.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the oracle reads it once it judges a run against the records"
-        )
-    )]
     pub(crate) fn connections(&self) -> Vec<Arc<Plans>> {
         mem::take(&mut *self.connections.lock())
     }
