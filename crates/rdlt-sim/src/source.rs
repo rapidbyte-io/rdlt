@@ -1,9 +1,11 @@
 //! The simulated source: serves the world's workload, with faults.
 
+mod plans;
 mod push;
 #[cfg(test)]
 mod tests;
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -15,6 +17,8 @@ use rdlt_connector::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use plans::PlannedRead;
+pub(crate) use plans::Plans;
 use push::batch;
 pub(crate) use push::json_push;
 
@@ -41,6 +45,8 @@ pub struct SimSourceConfig {
 #[derive(Debug)]
 pub struct SimSource {
     world: Arc<World>,
+    /// What this connection's plans named and its reads did.
+    plans: Arc<Plans>,
 }
 
 /// Where a simulated partition resumes.
@@ -70,7 +76,8 @@ impl SourceConnector for SimSource {
         let world = World::named(&config.world)
             .ok_or_else(|| ConnectorError::config(format!("no world named {}", config.world)))?;
         world.heard.hear(config.told.as_ref());
-        Ok(Self { world })
+        let plans = world.connected();
+        Ok(Self { world, plans })
     }
 
     async fn check(&self) -> Result<()> {
@@ -178,6 +185,11 @@ impl ReadStream<SimSource> for SimStreamReader {
 
     async fn plan(&self, source: &SimSource, state: &StreamState) -> Result<PartitionPlan> {
         let partitions = self.partitions(source, state).await?;
+        let named = partitions
+            .iter()
+            .map(partition_index)
+            .collect::<Result<BTreeSet<usize>>>()?;
+        source.plans.answered(self.index, named);
         let world = &source.world;
         let stream = self.stream(source);
         if !(world.workload.features.churn && stream.follows) {
@@ -217,6 +229,8 @@ impl ReadStream<SimSource> for SimStreamReader {
         let _read = Live::of(&[&world.owners.reads]);
         let stream = self.stream(source);
         let index = partition_index(partition)?;
+        // Counted among its connection's reads of the partition, which its plans hold it to.
+        let reading = source.plans.read(self.index, index);
         if !stream.replayable {
             let key = (stream.name.clone(), partition.id().to_string());
             let forgotten = world.acknowledged.lock().get(&key).copied();
@@ -238,7 +252,7 @@ impl ReadStream<SimSource> for SimStreamReader {
             let arrived = world.available(self.index, index, rows.len());
             let available = stream.servable(index, world.phase(), arrived);
             let serving = Serving {
-                partition: index,
+                reading: &reading,
                 available,
             };
             self.serve(source, out, rows, &mut next, serving, &mut batches)
@@ -247,12 +261,16 @@ impl ReadStream<SimSource> for SimStreamReader {
             if !(out.follows() && partition.is_unbounded()) {
                 break;
             }
-            self.checkpoint(source, out, index, next).await?;
+            self.checkpoint(source, out, &reading, next).await?;
             // As a log does, it says how far behind its newest rows it is; and it asks for the
-            // stream to be planned again, which, its partitions unchanged, must change nothing.
+            // stream to be planned again, which changes nothing unless its world named other
+            // partitions since.
             out.behind(arrived.saturating_sub(next) as u64).await?;
             out.replan().await?;
-            if !self.arrival(source, out, index, rows.len(), next).await? {
+            if !self
+                .arrival(source, out, &reading, rows.len(), next)
+                .await?
+            {
                 return Ok(());
             }
         }
@@ -260,7 +278,7 @@ impl ReadStream<SimSource> for SimStreamReader {
         // host then reports the cursor it read from, which the source never sent.
         let silent = next == started && (index + started).is_multiple_of(2);
         if stream.final_checkpoint && !silent {
-            self.checkpoint(source, out, index, next).await?;
+            self.checkpoint(source, out, &reading, next).await?;
         }
         Ok(())
     }
@@ -277,30 +295,33 @@ impl ReadStream<SimSource> for SimStreamReader {
     }
 }
 
-/// What a read serves next: of which partition, and up to which of its rows.
+/// What a read serves next: as which read, and up to which of its partition's rows.
 #[derive(Clone, Copy)]
-struct Serving {
-    partition: usize,
+struct Serving<'a> {
+    reading: &'a PlannedRead<'a>,
     available: usize,
 }
 
 impl SimStreamReader {
-    /// Sends the checkpoint at row `next` of partition `partition`, which the source remembers
-    /// it sent.
+    /// Sends the checkpoint at row `next` of the partition `reading` reads, which the source
+    /// remembers it sent and its connection that the engine took.
     async fn checkpoint(
         &self,
         source: &SimSource,
         out: &mut Emitter<SimCursor>,
-        partition: usize,
+        reading: &PlannedRead<'_>,
         next: usize,
     ) -> Result<()> {
         let cursor = at(&source.world, next);
-        let id = PartitionId::parse(format!("p{partition}")).expect("valid partition id");
+        let id =
+            PartitionId::parse(format!("p{}", reading.partition())).expect("valid partition id");
         let stream = self.stream(source);
         source.world.reports.note(&stream.name, &id, &cursor);
         let encoded = aside(|| serde_json::to_vec(&cursor).map_or(0, |bytes| bytes.len()));
         source.world.pushes.cursor(encoded);
-        out.checkpoint(&cursor).await
+        out.checkpoint(&cursor).await?;
+        reading.took(cursor.next);
+        Ok(())
     }
 
     /// Serves `rows` from `next` up to what `serving` says, counting `batches`.
@@ -310,7 +331,7 @@ impl SimStreamReader {
         out: &mut Emitter<SimCursor>,
         rows: &[Row],
         next: &mut usize,
-        serving: Serving,
+        serving: Serving<'_>,
         batches: &mut u64,
     ) -> Result<()> {
         let available = serving.available;
@@ -340,6 +361,7 @@ impl SimStreamReader {
                 });
                 out.batch(batch).await?;
             }
+            serving.reading.pushed();
             *next = end;
             *batches += 1;
             let due = match stream.checkpointing {
@@ -347,14 +369,14 @@ impl SimStreamReader {
                 Checkpointing::Natural => (*batches).is_multiple_of(stream.checkpoint_every),
             };
             if due {
-                self.checkpoint(source, out, serving.partition, *next)
-                    .await?;
+                self.checkpoint(source, out, serving.reading, *next).await?;
             }
         }
         Ok(())
     }
 
-    /// Waits until more of partition `partition`'s `rows` rows than `next` have arrived: false
+    /// Waits until more of the `rows` rows of the partition `reading` reads than `next` have
+    /// arrived: false
     /// once the read is asked to stop instead.
     ///
     /// It wakes now and then to answer a barrier, as a source waiting for data does.
@@ -362,7 +384,7 @@ impl SimStreamReader {
         &self,
         source: &SimSource,
         out: &mut Emitter<SimCursor>,
-        partition: usize,
+        reading: &PlannedRead<'_>,
         rows: usize,
         next: usize,
     ) -> Result<bool> {
@@ -371,9 +393,9 @@ impl SimStreamReader {
             let arrived = world.arrived.notified();
             tokio::pin!(arrived);
             arrived.as_mut().enable();
-            let count = world.available(self.index, partition, rows);
+            let count = world.available(self.index, reading.partition(), rows);
             let stream = self.stream(source);
-            if stream.servable(partition, world.phase(), count) > next {
+            if stream.servable(reading.partition(), world.phase(), count) > next {
                 return Ok(true);
             }
             tokio::select! {
@@ -382,7 +404,7 @@ impl SimStreamReader {
                 () = &mut arrived => {}
                 () = tokio::time::sleep(WAKE) => {
                     if out.checkpoint_due() {
-                        self.checkpoint(source, out, partition, next).await?;
+                        self.checkpoint(source, out, reading, next).await?;
                     }
                 }
             }
