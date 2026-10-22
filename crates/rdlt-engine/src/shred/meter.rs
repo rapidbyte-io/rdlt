@@ -53,7 +53,7 @@ impl Beyond {
     /// Takes `bytes` of the room, where there is that much.
     fn take(&self, bytes: u64) -> bool {
         self.room
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |room| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |room| {
                 room.checked_sub(bytes)
             })
             .is_ok()

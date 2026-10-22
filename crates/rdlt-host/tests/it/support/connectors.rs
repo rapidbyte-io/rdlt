@@ -621,7 +621,7 @@ impl DestinationWriter for WrongWriter {
                     use std::sync::atomic::Ordering::SeqCst;
                     let ahead = gate
                         .ahead
-                        .fetch_update(SeqCst, SeqCst, |left| left.checked_sub(1));
+                        .try_update(SeqCst, SeqCst, |left| left.checked_sub(1));
                     while ahead.is_err() && !gate.open.load(SeqCst) {
                         tokio::time::sleep(Duration::from_millis(10)).await;
                     }
