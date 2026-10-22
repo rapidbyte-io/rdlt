@@ -27,6 +27,9 @@ const FAT: u64 = 0x0066_6174;
 /// What the hostile host's draw mixes into the seed's generator, and its attacks' into each
 /// attempt's: "hostile" in ASCII.
 pub(crate) const HOSTILE: u64 = 0x0068_6f73_7469_6c65;
+/// What the broken connectors' draw mixes into the seed's generator, and their attacks' and
+/// their link's into each attempt's: "framing" in ASCII.
+pub(crate) const FRAMING: u64 = 0x0066_7261_6d69_6e67;
 
 /// What process placement's draw mixes into the seed's generator: "process" in ASCII.
 const PROCESS: u64 = 0x0070_726f_6365_7373;
@@ -110,6 +113,10 @@ pub struct Features {
     /// serving, and connectors that now and then start again under a version named after a secret
     /// they were told.
     pub hostile: bool,
+    /// Where a hostile host attacks the connectors' serving, connectors on a host of their own
+    /// that break the protocol to the engine's host, one met beside each attempt's runs; one time
+    /// in two of the hostile seeds.
+    pub framing: bool,
 }
 
 impl Features {
@@ -138,19 +145,21 @@ impl Features {
         reset: true,
         fat: false,
         hostile: true,
+        framing: true,
     };
 
     /// The features one seed exercises: every feature one time in eight, else each on or off by
     /// a coin, drift more often than not, the network, the write-ahead log, streaming and
     /// resetting one time in four each, churn one time in two of the streaming seeds, process
     /// placement one time in four of the seeds the network leaves, the log's object store and a
-    /// hostile host one time in two each, and fat values one time in four where no log is kept.
+    /// hostile host one time in two each, broken connectors one time in two of the hostile seeds,
+    /// and fat values one time in four where no log is kept.
     ///
     /// The network, process placement, the log and its store, streaming, churn, resetting, fat
-    /// values and a hostile host are drawn apart from the rest, from the value the next draw takes
-    /// but without taking it, so a seed's workload is the same over either transport, logged or
-    /// not and in either store, streamed or not, churned or not, reset or not, and with fat values
-    /// or without but for those values.
+    /// values, a hostile host and broken connectors are drawn apart from the rest, from the value
+    /// the next draw takes but without taking it, so a seed's workload is the same over either
+    /// transport, logged or not and in either store, streamed or not, churned or not, reset or
+    /// not, and with fat values or without but for those values.
     pub fn draw(rng: &mut SplitMix64) -> Self {
         let next = rng.clone().next_u64();
         let network = SplitMix64::new(next ^ NETWORK).chance(250);
@@ -161,6 +170,7 @@ impl Features {
         let objects = SplitMix64::new(next ^ OBJECT_STORE).chance(500);
         let fat = !wal && SplitMix64::new(next ^ FAT).chance(250);
         let hostile = SplitMix64::new(next ^ HOSTILE).chance(500);
+        let framing = hostile && SplitMix64::new(next ^ FRAMING).chance(500);
         let process = !network && SplitMix64::new(next ^ PROCESS).chance(250);
         if rng.chance(125) {
             return Self {
@@ -173,6 +183,7 @@ impl Features {
                 reset,
                 fat,
                 hostile,
+                framing,
                 ..Self::ALL
             };
         }
@@ -200,6 +211,7 @@ impl Features {
             reset,
             fat,
             hostile,
+            framing,
         }
     }
 

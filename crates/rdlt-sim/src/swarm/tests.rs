@@ -6,13 +6,13 @@ type Flag = fn(&Features) -> bool;
 
 #[test]
 fn every_feature_is_drawn_on_and_off_and_now_and_then_all_at_once() {
-    // Every feature at once is one seed in 16 384: the network, the log, streaming and resetting
-    // are drawn apart, one time in four each, the log's store and a hostile host one time in two
-    // each, and churn one time in two of the streaming seeds, beside the others' one time in eight.
-    let drawn: Vec<Features> = (0..128_000)
+    // Every feature at once is one seed in 32 768: the network, the log, streaming, resetting, a
+    // hostile host and the log's store are drawn apart, churn and broken connectors in the seeds
+    // that stream and that are hostile, beside the others' one time in eight.
+    let drawn: Vec<Features> = (0..256_000)
         .map(|seed| Features::draw(&mut SplitMix64::new(seed)))
         .collect();
-    let flags: [(&str, Flag); 22] = [
+    let flags: [(&str, Flag); 23] = [
         ("drift", |features| features.drift),
         ("encodings", |features| features.encodings),
         ("json", |features| features.json),
@@ -35,6 +35,7 @@ fn every_feature_is_drawn_on_and_off_and_now_and_then_all_at_once() {
         ("reset", |features| features.reset),
         ("fat", |features| features.fat),
         ("hostile", |features| features.hostile),
+        ("framing", |features| features.framing),
     ];
     for (name, flag) in flags {
         assert!(drawn.iter().any(flag), "{name} is never on");
@@ -51,6 +52,12 @@ fn every_feature_is_drawn_on_and_off_and_now_and_then_all_at_once() {
             .iter()
             .any(|features| features.churn && !features.streaming),
         "only a streaming seed churns"
+    );
+    assert!(
+        !drawn
+            .iter()
+            .any(|features| features.framing && !features.hostile),
+        "only a hostile seed meets broken connectors"
     );
     for depth in 0..=3 {
         assert!(
@@ -111,4 +118,25 @@ fn churn_is_drawn_apart_and_changes_nothing_a_workload_draws() {
         assert_eq!(format!("{churned:?}"), format!("{plain:?}"), "seed {seed}");
     }
     assert!(any, "some seed churns");
+}
+
+#[test]
+fn framing_is_drawn_apart_and_changes_nothing_a_workload_draws() {
+    let mut any = false;
+    for seed in 0..1000 {
+        let mut rng = SplitMix64::new(seed);
+        let features = Features::draw(&mut rng);
+        any |= features.framing;
+        let still = Features {
+            framing: false,
+            ..features
+        };
+        let mut framed = crate::workload::Workload::generate(&mut rng.clone(), features);
+        let plain = crate::workload::Workload::generate(&mut rng, still);
+        framed.features = still;
+        // Drawn floats include NaN, which is not equal to itself, so the workloads are compared
+        // by what they print.
+        assert_eq!(format!("{framed:?}"), format!("{plain:?}"), "seed {seed}");
+    }
+    assert!(any, "some seed meets broken connectors");
 }

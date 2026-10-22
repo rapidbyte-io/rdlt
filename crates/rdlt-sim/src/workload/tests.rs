@@ -505,6 +505,7 @@ const NONE: Features = Features {
     reset: false,
     fat: false,
     hostile: false,
+    framing: false,
 };
 
 #[test]
