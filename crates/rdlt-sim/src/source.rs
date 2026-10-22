@@ -376,8 +376,7 @@ impl SimStreamReader {
     }
 
     /// Waits until more of the `rows` rows of the partition `reading` reads than `next` have
-    /// arrived: false
-    /// once the read is asked to stop instead.
+    /// arrived: false once the read is asked to stop instead.
     ///
     /// It wakes now and then to answer a barrier, as a source waiting for data does.
     async fn arrival(

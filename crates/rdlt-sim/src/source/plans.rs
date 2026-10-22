@@ -20,15 +20,17 @@ struct Planned {
     began: u64,
     /// The partitions each stream's last plan named.
     named: BTreeMap<usize, BTreeSet<usize>>,
-    /// The number of the last plan that stopped naming each partition.
+    /// The number of the last plan that stopped naming each partition, kept once a later plan
+    /// names it again: a read that plan stopped still answers to it.
     dropped: BTreeMap<(usize, usize), u64>,
     /// How many reads of each partition run.
     reading: BTreeMap<(usize, usize), usize>,
     /// What each running read sent once a plan answered since it began dropped its partition, by
     /// the read's number.
     beyond: BTreeMap<u64, u64>,
-    /// The furthest checkpoint the engine took from a read of each partition.
-    taken: BTreeMap<(usize, usize), u64>,
+    /// The furthest checkpoint the engine took from the reads of each partition, by how many plans
+    /// the connection had answered when they began.
+    taken: BTreeMap<(usize, usize), BTreeMap<u64, u64>>,
     findings: Findings,
 }
 
@@ -92,7 +94,8 @@ impl Plans {
     }
 
     /// The furthest checkpoint the engine took from a read of each partition a plan stopped
-    /// naming.
+    /// naming, of the reads begun before the last plan that stopped naming it: a read begun once
+    /// the partition was named again answers to the run, not to the drop.
     #[cfg_attr(
         not(test),
         expect(
@@ -103,10 +106,13 @@ impl Plans {
     pub(crate) fn drained(&self) -> Vec<((usize, usize), u64)> {
         let planned = self.0.lock();
         planned
-            .taken
+            .dropped
             .iter()
-            .filter(|(key, _)| planned.dropped.contains_key(*key))
-            .map(|(key, next)| (*key, *next))
+            .filter_map(|(key, plan)| {
+                let reads = planned.taken.get(key)?;
+                let furthest = reads.range(..*plan).map(|(_, next)| *next).max()?;
+                Some((*key, furthest))
+            })
             .collect()
     }
 }
@@ -146,7 +152,8 @@ impl PlannedRead<'_> {
     pub(crate) fn took(&self, next: u64) {
         {
             let mut planned = self.plans.0.lock();
-            let taken = planned.taken.entry(self.key).or_default();
+            let reads = planned.taken.entry(self.key).or_default();
+            let taken = reads.entry(self.since).or_default();
             *taken = (*taken).max(next);
         }
         self.pushed();
