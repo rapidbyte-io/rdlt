@@ -322,7 +322,7 @@ impl ReadStream<ScriptSource> for Scripted {
             source
                 .script
                 .limited_acks
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                .try_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
                     left.checked_sub(1)
                 });
         if limited.is_ok() {

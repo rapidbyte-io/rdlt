@@ -87,7 +87,7 @@ impl LoadLog {
         let sealed = &self.pressure.sealed;
         // The update only lowers the count, so it never fails.
         sealed
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |held| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |held| {
                 Some(held.saturating_sub(seals))
             })
             .ok();

@@ -39,7 +39,7 @@ impl Allowance {
 
 /// Takes `spent` from what `left` holds; whether that much was left, none being left after.
 fn take(left: &AtomicUsize, spent: usize) -> bool {
-    let took = left.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+    let took = left.try_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
         Some(left.saturating_sub(spent))
     });
     took.is_ok_and(|left| left >= spent)

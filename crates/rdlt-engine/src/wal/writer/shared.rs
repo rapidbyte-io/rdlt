@@ -59,7 +59,7 @@ impl Shared {
     pub(crate) fn reserve(&self, bytes: u64, beside: u64) -> bool {
         let limit = self.limit.load(Ordering::SeqCst);
         self.held
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |held| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |held| {
                 let held = held.checked_add(bytes)?;
                 (held.saturating_add(beside) <= limit).then_some(held)
             })
@@ -70,7 +70,7 @@ impl Shared {
     pub(crate) fn release(&self, bytes: u64) {
         // The update only lowers the count, so it never fails.
         self.held
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |held| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |held| {
                 Some(held.saturating_sub(bytes))
             })
             .ok();
