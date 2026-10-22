@@ -62,7 +62,7 @@ fn positions_follow_the_state_they_start_from_and_the_commits_after_it() {
         streams,
         ..PipelineState::default()
     };
-    let mut positions = Positions::of(&state);
+    let mut positions = Positions::from(state.clone());
     assert_eq!(
         positions.get(&stream("orders"), &partition("p0")),
         Some(&at(3))
@@ -108,7 +108,7 @@ fn phases_follow_the_state_they_start_from_and_the_commits_after_it() {
         streams: streams.into_iter().collect(),
         ..PipelineState::default()
     };
-    let mut positions = Positions::of(&state);
+    let mut positions = Positions::from(state.clone());
     assert_eq!(positions.phase(&stream("orders")), 1);
     assert_eq!(positions.phase(&stream("users")), 0);
     let begun = |name, phase| {
@@ -144,7 +144,7 @@ fn done_partitions_are_listed_the_earliest_recorded_first_as_commits_move_them()
             .apply(&recorded("orders", id, position, seconds))
             .expect("applies");
     }
-    let mut positions = Positions::of(&state);
+    let mut positions = Positions::from(state.clone());
     positions.apply(&[
         recorded("orders", "newest", PartitionState::Done, 9),
         recorded("events", "middle", PartitionState::Done, 5),
@@ -264,7 +264,7 @@ proptest! {
     fn positions_are_what_the_commits_record_in_order(
         commits in proptest::collection::vec(proptest::collection::vec(change(), 0..6), 0..6),
     ) {
-        let mut positions = Positions::of(&PipelineState::default());
+        let mut positions = Positions::default();
         let mut placed: BTreeMap<(usize, usize), (PartitionState, LoadId)> = BTreeMap::new();
         let mut phases: BTreeMap<usize, u16> = BTreeMap::new();
         let mut all = Vec::new();
@@ -315,7 +315,7 @@ proptest! {
             .map(|(load, name, id)| (load, name.clone(), id.clone()))
             .collect();
         prop_assert_eq!(listed, done);
-        let mut together = Positions::of(&PipelineState::default());
+        let mut together = Positions::default();
         together.apply(&all);
         prop_assert_eq!(together, positions);
     }
@@ -379,4 +379,29 @@ proptest! {
         landed.landed(&delta, &Recorded { load: load(1), states: &states });
         prop_assert_eq!(landed, decoded);
     }
+}
+
+#[test]
+fn positions_taken_from_the_state_an_open_answered_keep_its_cursors_where_they_lie() {
+    let cursor = Cursor::new(1, &vec![b'c'; 1 << 20]).unwrap();
+    let streamed = StreamState {
+        partitions: BTreeMap::from([(partition("p0"), PartitionState::Cursor(cursor.clone()))]),
+        phase: 3,
+        ..StreamState::default()
+    };
+    let state = PipelineState {
+        streams: BTreeMap::from([(stream("orders"), streamed)]),
+        ..PipelineState::default()
+    };
+    let (held, positions) = crate::cost::tests::held_alone(|| Positions::from(state.clone()));
+    assert!(
+        held < 4 << 10,
+        "positions held {held} bytes of the state they took"
+    );
+    let Some(PartitionState::Cursor(kept)) = positions.get(&stream("orders"), &partition("p0"))
+    else {
+        panic!("p0 stands at its cursor");
+    };
+    assert_eq!(kept.bytes().as_ptr(), cursor.bytes().as_ptr());
+    assert_eq!(positions.phase(&stream("orders")), 3);
 }

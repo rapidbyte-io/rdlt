@@ -112,7 +112,7 @@ async fn marked(marker: &StateRecord, limits: StateLimits) -> (Coordinator, Harn
     .coordinator()
     .await;
     let state = PipelineState::from_records(std::slice::from_ref(marker)).unwrap();
-    coordinator.parts.positions = Positions::of(&state);
+    coordinator.parts.positions = Positions::from(state);
     coordinator.parts.stored = Stored::of(std::slice::from_ref(marker), limits);
     (coordinator, harness)
 }

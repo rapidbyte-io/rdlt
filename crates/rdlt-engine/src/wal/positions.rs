@@ -30,24 +30,6 @@ pub(crate) struct Recorded<'a> {
 }
 
 impl Positions {
-    /// The positions and phases `state` records.
-    pub(crate) fn of(state: &PipelineState) -> Self {
-        let partitions = state.streams.iter().flat_map(|(stream, streamed)| {
-            streamed.partitions.iter().map(|(partition, position)| {
-                ((stream.clone(), partition.clone()), position.clone())
-            })
-        });
-        let phases = state
-            .streams
-            .iter()
-            .map(|(stream, streamed)| (stream.clone(), streamed.phase));
-        Self {
-            partitions: partitions.collect(),
-            loads: state.recorded_by.clone(),
-            phases: phases.collect(),
-        }
-    }
-
     /// The phase `stream` is at.
     pub(crate) fn phase(&self, stream: &StreamName) -> u16 {
         self.phases.get(stream).copied().unwrap_or_default()
@@ -147,6 +129,25 @@ impl Positions {
                 self.phases.insert(stream, phase);
             }
             _ => {}
+        }
+    }
+}
+
+impl From<PipelineState> for Positions {
+    /// The positions and phases `state` records, taking its cursors as they are.
+    fn from(state: PipelineState) -> Self {
+        let mut partitions = BTreeMap::new();
+        let mut phases = BTreeMap::new();
+        for (stream, streamed) in state.streams {
+            phases.insert(stream.clone(), streamed.phase);
+            for (partition, position) in streamed.partitions {
+                partitions.insert((stream.clone(), partition), position);
+            }
+        }
+        Self {
+            partitions,
+            loads: state.recorded_by,
+            phases,
         }
     }
 }

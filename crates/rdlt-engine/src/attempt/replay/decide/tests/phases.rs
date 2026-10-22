@@ -4,8 +4,7 @@
 use std::collections::BTreeMap;
 
 use rdlt_connector::{
-    CommitMeta, CommitSeq, Epoch, PartitionState, PipelineState, SegmentId, StateChange,
-    StateEntry, StateKey,
+    CommitMeta, CommitSeq, Epoch, PartitionState, SegmentId, StateChange, StateEntry, StateKey,
 };
 
 use super::{at, load, partition, position, segments, stream, unreset};
@@ -68,7 +67,7 @@ fn crossing() -> Logged {
 
 /// A destination whose stream stands as `changes` leave it.
 fn standing(changes: &[StateChange]) -> Positions {
-    let mut positions = Positions::of(&PipelineState::default());
+    let mut positions = Positions::default();
     positions.apply(changes);
     positions
 }
