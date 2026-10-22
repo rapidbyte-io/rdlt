@@ -207,7 +207,9 @@ jobs:
 
   # Connectors spawned through `Local` as real processes, beyond what a simulated seed runs:
   # starts racing for the last of the groups a process may own, and twenty minutes of loads whose
-  # source is killed, stalled and crashing, saying a secret that ends in whitespace.
+  # source is killed, stalled and crashing, saying a secret that ends in whitespace. The build has
+  # a limit of its own, so a slow build fails as itself rather than cutting the soak short; the
+  # soak's limit holds its twenty minutes and the bounds on its last round and its stop.
   soak:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -223,7 +225,10 @@ jobs:
           github_token: ""
           install_args: --locked just aqua:nextest-rs/nextest/cargo-nextest
           cache_key_prefix: mise-v2-test
-      - run: just soak 1200
+      - run: just soak-build
+        timeout-minutes: 10
+      - run: just --no-deps soak 1200
+        timeout-minutes: 30
 
   # Each bench workload's resident peak against its budget's bound.
   resident:
