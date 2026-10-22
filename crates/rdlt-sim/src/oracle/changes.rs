@@ -25,7 +25,7 @@ use crate::changes::{
 };
 use crate::destination::Stored;
 use crate::env::SimEnv;
-use crate::network::{Net, Serving, run_networked};
+use crate::network::{Net, Peers, Serving, run_networked};
 use crate::placing::Placing;
 use crate::reached::Reach;
 use crate::rng::SplitMix64;
@@ -53,9 +53,12 @@ pub fn check_changes(seed: Seed) -> Checked {
     let drawn = Features::draw(&mut SplitMix64::new(seed.value() ^ CHANGES));
     if drawn.network {
         // A change world meets no hostile host: the attacks are the exactly-once oracle's.
-        run_networked(seed, Serving::Changes, false, move |env, net| async move {
-            Box::pin(simulate(seed, env, Some(net))).await
-        })
+        run_networked(
+            seed,
+            Serving::Changes,
+            Peers::HONEST,
+            move |env, net| async move { Box::pin(simulate(seed, env, Some(net))).await },
+        )
     } else {
         run(seed, |env| async move {
             Box::pin(simulate(seed, env, None)).await

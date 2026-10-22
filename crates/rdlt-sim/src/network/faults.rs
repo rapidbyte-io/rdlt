@@ -4,7 +4,7 @@
 use std::convert::Infallible;
 use std::time::Duration;
 
-use super::{ENGINE, Net, Side};
+use super::{BROKEN, ENGINE, Net, Side};
 use crate::reached::Reach;
 use crate::rng::SplitMix64;
 
@@ -70,6 +70,44 @@ impl Drop for Healing<'_> {
             turmoil::repair(ENGINE, side.host());
             turmoil::release(ENGINE, side.host());
             self.0.connectors.restart(side);
+        }
+        if self.0.framing {
+            turmoil::repair(ENGINE, BROKEN);
+            turmoil::release(ENGINE, BROKEN);
+        }
+    }
+}
+
+/// Cuts and holds the engine's link to the broken connectors' host as `rng` draws, until
+/// dropped, each fault lasting up to twice `patience`.
+///
+/// Dropping it leaves faults in place; [`Healing`] heals them.
+pub(super) async fn cut(mut rng: SplitMix64, patience: Duration) -> Infallible {
+    let longest = u64::try_from(patience.as_millis()).unwrap_or(u64::MAX / 2) * 2;
+    loop {
+        tokio::time::sleep(Duration::from_millis(rng.below(500))).await;
+        let lasting = Duration::from_millis(rng.below(longest + 1));
+        match rng.below(3) {
+            0 => {
+                turmoil::partition(ENGINE, BROKEN);
+                tokio::time::sleep(lasting).await;
+                turmoil::repair(ENGINE, BROKEN);
+            }
+            1 => {
+                let (from, to) = if rng.chance(500) {
+                    (ENGINE, BROKEN)
+                } else {
+                    (BROKEN, ENGINE)
+                };
+                turmoil::partition_oneway(from, to);
+                tokio::time::sleep(lasting).await;
+                turmoil::repair_oneway(from, to);
+            }
+            _ => {
+                turmoil::hold(ENGINE, BROKEN);
+                tokio::time::sleep(lasting).await;
+                turmoil::release(ENGINE, BROKEN);
+            }
         }
     }
 }

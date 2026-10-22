@@ -41,6 +41,26 @@ fn every_feature_is_drawn_on_and_off_and_now_and_then_all_at_once() {
         assert!(drawn.iter().any(flag), "{name} is never on");
         assert!(!drawn.iter().all(flag), "{name} is never off");
     }
+    for depth in 0..=3 {
+        assert!(
+            drawn.iter().any(|features| features.depth == depth),
+            "depth {depth}"
+        );
+    }
+    assert!(drawn.contains(&Features::ALL), "every feature at once");
+    assert!(
+        drawn
+            .iter()
+            .any(|features| features.reports_complete() && features.drift),
+        "some seed drifts with complete reports, so its discards are counted"
+    );
+}
+
+#[test]
+fn features_that_exclude_or_need_one_another_never_clash() {
+    let drawn: Vec<Features> = (0..256_000)
+        .map(|seed| Features::draw(&mut SplitMix64::new(seed)))
+        .collect();
     assert!(
         !drawn
             .iter()
@@ -58,19 +78,6 @@ fn every_feature_is_drawn_on_and_off_and_now_and_then_all_at_once() {
             .iter()
             .any(|features| features.framing && !features.hostile),
         "only a hostile seed meets broken connectors"
-    );
-    for depth in 0..=3 {
-        assert!(
-            drawn.iter().any(|features| features.depth == depth),
-            "depth {depth}"
-        );
-    }
-    assert!(drawn.contains(&Features::ALL), "every feature at once");
-    assert!(
-        drawn
-            .iter()
-            .any(|features| features.reports_complete() && features.drift),
-        "some seed drifts with complete reports, so its discards are counted"
     );
 }
 
