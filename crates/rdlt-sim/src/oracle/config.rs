@@ -11,8 +11,11 @@ use crate::seed::Seed;
 use crate::workload::Workload;
 use crate::world::Pressure;
 
-/// The engine's configuration, drawn from `rng`; a streaming world plans again every quarter
-/// second, so its runs meet the partitions and rows that arrive.
+/// How often a streaming world plans again: every quarter second, so its runs meet the partitions
+/// and rows that arrive.
+pub(super) const REPLAN: Duration = Duration::from_millis(250);
+
+/// The engine's configuration, drawn from `rng`.
 ///
 /// Its memory budget is between the least an engine takes, whatever its partitions, and twice
 /// that: small enough that a source pressing on it, as [`pressed`] draws, fills its shares.
@@ -41,7 +44,7 @@ pub(super) fn config(
     let lanes = u16::try_from(1 + rng.below(3)).unwrap_or(1);
     let builder = EngineConfig::builder();
     let builder = if streaming {
-        builder.replan(Duration::from_millis(250))
+        builder.replan(REPLAN)
     } else {
         builder
     };

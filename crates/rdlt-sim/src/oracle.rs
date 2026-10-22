@@ -13,6 +13,7 @@ mod memory;
 mod names;
 mod pressure;
 mod refusals;
+mod replanned;
 mod reports;
 mod reset;
 mod rows;
@@ -149,6 +150,7 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>, hangs: bo
     );
     let (limits, budget) = (config.limits(), config.memory().get());
     let partitions = u64::try_from(config.partitions().get()).unwrap_or(u64::MAX);
+    let buffer = config.partition_buffer().get();
     let inline = env.inline();
     let (allowance, placing) = placed(seed, &world, inline, net, &mut rng, limits, &canary);
     world.press(pressed(seed, &config, &world.workload, small_log(&config)));
@@ -162,6 +164,7 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>, hangs: bo
         budget,
         ledger: Ledger::default(),
         partitions,
+        buffer,
         allowance,
         attacks: 0,
         origin: charged(),
@@ -204,6 +207,9 @@ struct Simulation {
     ledger: Ledger,
     /// Partitions each run reads at once.
     partitions: u64,
+    /// Events each partition's channel holds: what a read may still send once its run stopped it,
+    /// beside a send in flight.
+    buffer: usize,
     /// Bytes: the allowance an attempt's heap is held to beyond what is charged for it;
     /// `None` where nothing is measured, as `memory::allowance` says.
     allowance: Option<u64>,
@@ -412,6 +418,8 @@ impl Simulation {
         // Each run meets a source started for it, as a spawned connector is: it remembers
         // nothing an earlier run was sent.
         self.world.reports.restart();
+        // Each run is held to its own connections' plans: those made before it are forgotten.
+        drop(self.world.connections());
         let mut prediction = refusals::predict(&self.world, &self.relaxed, phase);
         if until.follows() {
             // A run that follows the source may end before the rows a refusal needs arrive.
@@ -426,6 +434,7 @@ impl Simulation {
             .collect();
         let executed = self.measured(&plans, scenario, clean, network, phase).await;
         self.ledger.ended(phase, scenario, &executed);
+        self.held_to_plans(scenario, &executed);
         let mut failures = Vec::new();
         for (plan, executed) in plans.iter().zip(&executed) {
             let refused = plan

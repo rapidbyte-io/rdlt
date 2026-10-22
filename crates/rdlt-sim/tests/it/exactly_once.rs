@@ -1,5 +1,6 @@
 use rdlt_sim::{
-    Features, Reach, Recorded, Seed, SplitMix64, Weight, check_exactly_once, for_each_seed, seeds,
+    Features, Reach, Recorded, Seed, SplitMix64, Weight, Workload, check_exactly_once,
+    for_each_seed, seeds,
 };
 
 /// Seeds on which the simulation once found a defect, each held to the path it found it on.
@@ -129,4 +130,29 @@ fn attempts_are_measured_in_process_over_the_network_and_in_played_processes() {
             "{recorded:?}"
         );
     }
+}
+
+/// The first seeds whose source churns a stream runs follow re-plan changed sets and pass, so the
+/// churn cannot switch itself off.
+#[test]
+fn seeds_whose_source_churns_replan_changed_sets_and_pass() {
+    let churning = (0..)
+        .filter(|seed| {
+            let mut rng = SplitMix64::new(*seed);
+            let features = Features::draw(&mut rng);
+            let workload = Workload::generate(&mut rng, features);
+            features.churn && workload.streams.iter().any(|stream| stream.follows)
+        })
+        .take(8)
+        .map(Seed::new);
+    let checked = for_each_seed("churning", churning, Weight::One, check_exactly_once);
+    let replanned = checked
+        .iter()
+        .filter(|checked| checked.reached.has(Reach::Replanned))
+        .count();
+    assert!(
+        replanned > 0,
+        "none of {} churning seeds re-planned",
+        checked.len()
+    );
 }

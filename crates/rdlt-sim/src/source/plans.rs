@@ -82,13 +82,6 @@ impl Plans {
     }
 
     /// What the connection's reads did beside what its plans named.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the oracle reads it once it judges a run against the records"
-        )
-    )]
     pub(crate) fn findings(&self) -> Findings {
         self.0.lock().findings.clone()
     }
@@ -96,13 +89,6 @@ impl Plans {
     /// The furthest checkpoint the engine took from a read of each partition a plan stopped
     /// naming, of the reads begun before the last plan that stopped naming it: a read begun once
     /// the partition was named again answers to the run, not to the drop.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the oracle reads it once it judges a run against the records"
-        )
-    )]
     pub(crate) fn drained(&self) -> Vec<((usize, usize), u64)> {
         let planned = self.0.lock();
         planned
