@@ -105,7 +105,7 @@ pub struct World {
     /// by stream and partition: what it no longer holds.
     pub(crate) acknowledged: Mutex<BTreeMap<(String, String), u64>>,
     /// The streams a reset is clearing while runs race it, whose committed positions move back:
-    /// an acknowledgement of a commit that landed before the reset may reach the source after it.
+    /// a row may land below where its partition was held.
     pub(crate) reset: Mutex<BTreeSet<String>>,
     /// What the source remembers of the reports it may hear, and what it heard.
     pub(crate) reports: Reports,
