@@ -41,11 +41,13 @@ pub enum Reach {
     LineSaid,
     /// A plan named other partitions of a stream than the plan before it on one connection.
     Replanned,
+    /// A connector that breaks the protocol was met as its fault says, on a healed network.
+    Framing,
 }
 
 impl Reach {
     /// Every path, in the order a timing line names them.
-    const ALL: [Self; 18] = [
+    const ALL: [Self; 19] = [
         Self::ConnectorStopped,
         Self::LinkCut,
         Self::Crashed,
@@ -64,6 +66,7 @@ impl Reach {
         Self::Renamed,
         Self::LineSaid,
         Self::Replanned,
+        Self::Framing,
     ];
 
     fn bit(self) -> u32 {
