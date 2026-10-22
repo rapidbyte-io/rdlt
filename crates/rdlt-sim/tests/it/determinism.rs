@@ -94,13 +94,13 @@ fn a_failing_scenario_panics_with_its_payload() {
 }
 
 /// What a run of a seed checked, but for what its thread held, which work the thread did
-/// earlier changes, and, where its connectors are on the simulated network, for when it ended: h2
-/// times the streams it reset by the wall clock, which moves the end by a few milliseconds from
-/// run to run.
+/// earlier changes, and, where its connectors are on the simulated network or in played
+/// processes, for when it ended: h2 times the streams it reset by the wall clock, which moves the
+/// end by a few milliseconds from run to run.
 fn alike(checked: &rdlt_sim::Checked) -> rdlt_sim::Checked {
     rdlt_sim::Checked {
         held: None,
-        simulated: if checked.features.network {
+        simulated: if checked.features.network || checked.features.process {
             Duration::ZERO
         } else {
             checked.simulated
@@ -113,7 +113,7 @@ fn alike(checked: &rdlt_sim::Checked) -> rdlt_sim::Checked {
 fn every_seed_replays_alike() {
     // Each seed of both oracles twice, one run after the other: twenty in the test job, as many
     // as `just sim-replay` says elsewhere. The two runs report alike, end at one simulated time
-    // (but over the network) and leave the destination alike.
+    // (but over the network or in played processes) and leave the destination alike.
     let checked = for_each_seed("replays_alike", seeds(20), Weight::One, |seed| {
         let first = check_exactly_once(seed);
         assert_eq!(
