@@ -381,3 +381,22 @@ proptest! {
         prop_assert_eq!(stored.total(), answer_bytes(&after));
     }
 }
+
+#[test]
+fn a_commit_and_the_state_an_open_answered_are_measured_without_encoding_their_records() {
+    let records = [record("k", 1 << 20)];
+    let meta = meta(vec![
+        StateChange::Put(record("k", 1 << 20)),
+        StateChange::Delete("d".to_owned()),
+    ]);
+    let (peak, _) = crate::cost::tests::peak_alone(|| Measured::of(&meta));
+    assert!(
+        peak < 4 << 10,
+        "measuring a commit allocated {peak} bytes at its peak"
+    );
+    let (peak, _) = crate::cost::tests::peak_alone(|| Stored::of(&records, limits(ROOM, ROOM)));
+    assert!(
+        peak < 4 << 10,
+        "measuring stored state allocated {peak} bytes at its peak"
+    );
+}

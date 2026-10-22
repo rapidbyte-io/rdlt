@@ -24,6 +24,20 @@ fn records() -> impl Strategy<Value = Vec<StateRecord>> {
     })
 }
 
+fn changes() -> impl Strategy<Value = Vec<StateChange>> {
+    let delete = ".{0,300}".prop_map(StateChange::Delete);
+    let put = records().prop_map(|records| {
+        records
+            .into_iter()
+            .map(StateChange::Put)
+            .collect::<Vec<_>>()
+    });
+    (put, proptest::collection::vec(delete, 0..6)).prop_map(|(mut puts, deletes)| {
+        puts.extend(deletes);
+        puts
+    })
+}
+
 proptest! {
     #[test]
     fn records_hold_in_an_open_s_answer_what_their_measures_sum_to(records in records()) {
@@ -42,14 +56,14 @@ proptest! {
     }
 
     #[test]
-    fn a_commit_s_request_takes_what_its_measure_says(records in records(), seq in 1_u64..1 << 40) {
+    fn a_commit_s_request_takes_what_its_measure_says(changes in changes(), seq in 1_u64..1 << 40) {
         let meta = CommitMeta {
             load_id: LoadId::from_parts(UNIX_EPOCH, 3),
             commit_seq: (1..seq.min(64)).fold(CommitSeq::FIRST, |seq, _| seq.next()),
             epoch: Epoch(seq),
             segments: [SegmentId(seq)].into_iter().collect(),
             abandoned: crate::SegmentSet::new(),
-            state_delta: records.into_iter().map(StateChange::Put).collect(),
+            state_delta: changes,
             finish_generations: Vec::new(),
             child_tables: Vec::new(),
             drop_tables: Vec::new(),

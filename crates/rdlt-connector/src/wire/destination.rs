@@ -217,40 +217,8 @@ impl From<v1::WriteStats> for WriteStats {
 impl From<&CommitMeta> for v1::CommitMeta {
     fn from(meta: &CommitMeta) -> Self {
         Self {
-            load_id: meta.load_id.as_bytes().to_vec().into(),
-            commit_seq: meta.commit_seq.get(),
-            epoch: meta.epoch.0,
-            segments: ranges(&meta.segments),
-            abandoned: ranges(&meta.abandoned),
             state_delta: meta.state_delta.iter().map(v1::StateChange::from).collect(),
-            finish_generations: meta
-                .finish_generations
-                .iter()
-                .map(|(table, generation)| v1::FinishGeneration {
-                    table: Some(v1::TablePath::from(table)),
-                    generation: generation.0,
-                })
-                .collect(),
-            child_tables: meta
-                .child_tables
-                .iter()
-                .map(|child| v1::ChildTable {
-                    table: child.table.to_string(),
-                    merge: Some(v1::MergeKey::from(&child.merge)),
-                })
-                .collect(),
-            drop_tables: meta
-                .drop_tables
-                .iter()
-                .map(|dropped| v1::DroppedTable {
-                    path: Some(v1::TablePath::from(&dropped.path)),
-                    name: dropped.name.to_string(),
-                })
-                .collect(),
-            horizon: meta.horizon.map(|horizon| v1::Horizon {
-                load_id: horizon.load_id.as_bytes().to_vec().into(),
-                commit_seq: horizon.commit_seq.get(),
-            }),
+            ..unchanged(meta)
         }
     }
 }
@@ -322,6 +290,46 @@ fn horizon(horizon: &v1::Horizon) -> Result<Horizon, Invalid> {
         commit_seq: CommitSeq::new(horizon.commit_seq)
             .ok_or(Invalid::OutOfRange("horizon's commit seq"))?,
     })
+}
+
+/// The message of `meta` without its state changes.
+pub(super) fn unchanged(meta: &CommitMeta) -> v1::CommitMeta {
+    v1::CommitMeta {
+        load_id: meta.load_id.as_bytes().to_vec().into(),
+        commit_seq: meta.commit_seq.get(),
+        epoch: meta.epoch.0,
+        segments: ranges(&meta.segments),
+        abandoned: ranges(&meta.abandoned),
+        state_delta: Vec::new(),
+        finish_generations: meta
+            .finish_generations
+            .iter()
+            .map(|(table, generation)| v1::FinishGeneration {
+                table: Some(v1::TablePath::from(table)),
+                generation: generation.0,
+            })
+            .collect(),
+        child_tables: meta
+            .child_tables
+            .iter()
+            .map(|child| v1::ChildTable {
+                table: child.table.to_string(),
+                merge: Some(v1::MergeKey::from(&child.merge)),
+            })
+            .collect(),
+        drop_tables: meta
+            .drop_tables
+            .iter()
+            .map(|dropped| v1::DroppedTable {
+                path: Some(v1::TablePath::from(&dropped.path)),
+                name: dropped.name.to_string(),
+            })
+            .collect(),
+        horizon: meta.horizon.map(|horizon| v1::Horizon {
+            load_id: horizon.load_id.as_bytes().to_vec().into(),
+            commit_seq: horizon.commit_seq.get(),
+        }),
+    }
 }
 
 /// `set`'s ranges, as the wire carries them.
