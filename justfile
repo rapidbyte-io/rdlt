@@ -101,11 +101,15 @@ containers *args:
 stress seeds="20" cores=env("RDLT_SIM_CORES", ""): sim-archive
     RDLT_SIM_SEEDS="{{ seeds }}" RDLT_SIM_CORES="{{ cores }}" cargo nextest run --archive-file target/sim.tar.zst --workspace-remap . --run-ignored ignored-only -E 'test(many_threads)'
 
+# Build what `soak` runs: the host's examples, which it spawns as connectors, and its tests
+soak-build:
+    cargo build --package rdlt-host --all-features --examples
+    cargo nextest run --package rdlt-host --all-features --test it --no-run
+
 # Start connectors in processes of their own through `Local` past the groups a process may own,
 # racing on real threads, which no simulated seed interleaves, and load through ones killed,
 # stalled and crashing for `seconds`; real processes on the real clock, so a failure names its round
-soak seconds="60":
-    cargo build --package rdlt-host --all-features --examples
+soak seconds="60": soak-build
     RDLT_SOAK_SECONDS="{{ seconds }}" cargo nextest run --package rdlt-host --all-features --test it --run-ignored ignored-only -E 'test(/^soak::/)'
 
 # Measure how many seeds a second the exactly-once sweep runs over seeds 0 to 999, from the
