@@ -306,8 +306,8 @@ A formal layer is added to the layers of its class, never in place of one.
   invariants hold its runs. `no_partition_lost_or_doubled` holds, in the engine's process, that no
   run reads a partition twice at once. Beside it, in every placement, the destination holds that no
   row of an incremental stream lands below where it held the partition, and the contents check
-  holds that every row lands once. `plans_follow_the_source` holds, in the engine's process, that a
-  read whose partition a later plan dropped sends no more than its partition's channel holds and
+  holds that every row lands once. `plans_follow_the_source` holds, in the engine's process on the single
+  thread, that a read whose partition a later plan dropped sends no more than its partition's channel holds and
   one in flight. Its other half, that a partition named comes to be read, holds only at each
   phase's end, where every partition is named again and every row must land. `removed_drains`
   holds, in the engine's process, that a run that succeeded in one attempt commits every
@@ -436,7 +436,10 @@ what no bound names.
   that take them, and the engine's tests.** A read placed apart ends only once its stop crosses
   the wire, and sends into what the wire holds meanwhile. A stopped one's sends are dropped
   there. So the simulation holds reads to their plans in the engine's process alone, and holds
-  every placement to the destination's and the contents checks. Within a following run of
+  every placement to the destination's and the contents checks. On threaded runs it does
+  not hold them even there: between the source's answer and the engine's stop, another
+  worker's reads go on for an unbounded time, so no bound on a late send holds. A
+  threaded run's late sends are judged by nothing. Within a following run of
   half a second to two, a named partition may wait for a read slot, or for a commit the policy
   makes due later. So that a named partition comes to be read is held only at a phase's end, by
   initial planning. A churned source names starts in the recorded phase, which the engine must
