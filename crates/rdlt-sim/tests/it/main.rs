@@ -5,6 +5,7 @@
 mod changes;
 mod determinism;
 mod exactly_once;
+mod framing;
 mod hostile;
 mod stress;
 

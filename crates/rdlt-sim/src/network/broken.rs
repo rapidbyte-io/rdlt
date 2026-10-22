@@ -16,6 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arrow_array::{Int64Array, RecordBatch};
+use rdlt_connector::limits::ListenLimits;
 use rdlt_connector::wire::{MALFORMED_FRAME, TRANSPORT, v1};
 use rdlt_connector::{
     ConnectorError, ConnectorId, Destination as _, LoadId, OpenContext, Partition, PipelineId,
@@ -287,10 +288,16 @@ async fn accept(listener: turmoil::net::TcpListener, acceptor: TlsAcceptor, faul
         };
         let acceptor = acceptor.clone();
         tokio::spawn(async move {
-            let tls = super::handshake(&acceptor, stream).await;
-            if let Some(tls) = tls {
-                fake::serve(Fake(fault), tls).await;
-            }
+            // A host that vanished behind a cut takes none of what is sent to it: a served
+            // connector ends that connection by its send limit, and so does a broken one.
+            let serving = async {
+                if let Some(tls) = super::handshake(&acceptor, stream).await {
+                    fake::serve(Fake(fault), tls).await;
+                }
+            };
+            tokio::time::timeout(ListenLimits::default().send, serving)
+                .await
+                .ok();
         });
     }
 }
@@ -354,7 +361,6 @@ pub(super) struct Breaker<'a> {
 impl Networked {
     /// Runs `work` while the engine's host makes the call a broken connector `rng` draws breaks,
     /// and records in `world` how it was met: in full where `strict`, the network healed.
-    #[expect(dead_code, reason = "a run calls it beside its work, not yet wired")]
     pub(crate) async fn breaking<T>(
         &self,
         mut rng: SplitMix64,

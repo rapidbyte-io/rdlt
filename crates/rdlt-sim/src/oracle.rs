@@ -37,7 +37,7 @@ use crate::placing::Placing;
 use crate::reached::{Reach, Reached};
 use crate::rng::SplitMix64;
 use crate::seed::{Seed, run, run_threaded};
-use crate::swarm::{Features, HOSTILE};
+use crate::swarm::{FRAMING, Features, HOSTILE};
 use crate::workload::{Level, PHASES, Relaxed, Row, Workload};
 use crate::world::World;
 pub use changes::check_changes;
@@ -389,6 +389,21 @@ impl Simulation {
             .and_then(Placing::networked)
             .filter(|_| self.world.workload.features.hostile);
         let (world, name) = (&self.world, self.name.as_str());
+        let breaking = SplitMix64::new(self.seed.value() ^ FRAMING ^ self.attacks);
+        let framing = placing
+            .and_then(Placing::networked)
+            .filter(|_| self.world.workload.features.framing);
+        // A broken connector is met beside the runs; where the run is clean, the network is healed
+        // and its call is judged in full.
+        let strict = clean;
+        let executing = async {
+            match framing {
+                Some(networked) => {
+                    Box::pin(networked.breaking(breaking, world, strict, executing)).await
+                }
+                None => executing.await,
+            }
+        };
         // A hostile host attacks the connectors beside the runs; where the run is clean, the
         // network is healed and its answers are judged.
         let attacked = async {
