@@ -4,7 +4,7 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use rdlt_connector::{
     BoxFuture, Capabilities, ColumnKey, ColumnPath, CommitMeta, ConnectorError, DestinationSession,
-    DestinationWriter, Field, GenerationId, IdentifierCase, LogicalType, Receipt, Result,
+    DestinationWriter, Field, GenerationId, IdentifierCase, LoadId, LogicalType, Receipt, Result,
     SchemaChanges, SchemaVersion, StateChange, StateEntry, StreamName, TableChange, TablePath,
     TableRef, TableSchema,
 };
@@ -353,15 +353,17 @@ impl DestinationSession for Physical {
     }
 }
 
-/// One attempt's tables over the destination columns `columns`, folding identifiers to lower
-/// case; nothing is committed, so each attempt starts from no table.
-fn attempt(columns: &Columns) -> Tables {
+/// The tables of attempt `number` over the destination columns `columns`, folding identifiers to
+/// lower case; nothing is committed, so each attempt starts from no table.
+fn attempt(columns: &Columns, number: u128) -> Tables {
     let mut resolver = resolver();
     let mut capabilities = (*resolver.capabilities).clone();
     capabilities.identifiers.case = IdentifierCase::Lower;
     resolver.naming = Naming::new(capabilities.identifiers.clone());
     resolver.capabilities = Arc::new(capabilities);
-    let tables = Tables::new(SharedSession::new(Box::new(Physical(Arc::clone(columns)))));
+    let load = LoadId::from_parts(std::time::UNIX_EPOCH, number);
+    let tables =
+        Tables::new(SharedSession::new(Box::new(Physical(Arc::clone(columns))))).salted(load);
     tables
         .add(resolver, &table(None), Model::default())
         .unwrap();
@@ -377,10 +379,10 @@ async fn an_attempt_names_columns_around_those_a_crashed_attempt_left_behind() {
     let columns = Columns::default();
     let upper = schema(&[("X", LogicalType::Int64)]);
     let lower = schema(&[("x", LogicalType::Utf8)]);
-    let crashed = attempt(&columns);
+    let crashed = attempt(&columns, 0);
     crashed.fit(0, &upper).await.unwrap();
     let (before, _) = crashed.fit(0, &lower).await.unwrap();
-    let retried = attempt(&columns);
+    let retried = attempt(&columns, 1);
     retried.fit(0, &lower).await.unwrap();
     let (after, _) = retried.fit(0, &upper).await.unwrap();
     let physical = columns.lock().clone();
@@ -393,11 +395,8 @@ async fn an_attempt_names_columns_around_those_a_crashed_attempt_left_behind() {
         assert_ne!(before.model.names.get(&key), None);
     }
     let names: Vec<&str> = after.model.names.iter().map(|(_, name)| name).collect();
-    assert_eq!(
-        physical.len(),
-        names.len() + 2,
-        "no column besides these and metadata"
-    );
+    // Beside these and metadata, only the column the crashed attempt named around its own.
+    assert_eq!(physical.len(), names.len() + 2 + 1, "{physical:?}");
 }
 
 /// Refuses every change with `code`, counting the calls.
@@ -434,23 +433,36 @@ impl DestinationSession for Refusing {
 }
 
 #[tokio::test]
-async fn each_attempt_names_around_every_attempt_before_it() {
+async fn attempts_name_around_more_leftovers_than_one_attempt_names_around() {
     let columns = Columns::default();
-    for (attempt_number, logical) in [LogicalType::Int64, LogicalType::Utf8, LogicalType::Bool]
-        .into_iter()
-        .enumerate()
-    {
-        let tables = attempt(&columns);
-        let (view, _) = tables
-            .fit(0, &schema(&[("x", logical.clone())]))
-            .await
-            .unwrap();
+    // Each type is wider than every one before it, so no column an earlier attempt left holds it.
+    let widening = [
+        LogicalType::Int8,
+        LogicalType::Int16,
+        LogicalType::Int32,
+        LogicalType::Int64,
+        LogicalType::Decimal(rdlt_connector::DecimalType::new(38, 0).unwrap()),
+        LogicalType::Utf8,
+    ];
+    assert!(widening.len() > 1 + CONFLICT_RETRIES);
+    for (index, wider) in widening.iter().enumerate() {
+        for narrower in &widening[..index] {
+            assert_ne!(
+                narrower.join(wider),
+                *narrower,
+                "{wider:?} over {narrower:?}"
+            );
+        }
+    }
+    for (number, logical) in (0_u128..).zip(widening) {
+        let tables = attempt(&columns, number);
+        let fitted = tables.fit(0, &schema(&[("x", logical.clone())])).await;
+        let (view, _) = fitted.unwrap_or_else(|error| panic!("attempt {number}: {error}"));
         let name = view.model.names.get(&source("x")).unwrap().to_owned();
-        let physical = columns.lock().clone();
         assert_eq!(
-            physical.get(&name),
+            columns.lock().get(&name),
             Some(&logical),
-            "attempt {attempt_number}: {physical:?}"
+            "attempt {number}"
         );
     }
 }
@@ -732,7 +744,7 @@ fn shape(view: &crate::table::TableView) -> Vec<(String, LogicalType)> {
 #[tokio::test]
 async fn a_column_a_crashed_attempt_left_behind_is_named_around_though_another_widens() {
     let columns = Columns::default();
-    let crashed = attempt(&columns);
+    let crashed = attempt(&columns, 0);
     crashed
         .fit(
             0,
@@ -740,7 +752,7 @@ async fn a_column_a_crashed_attempt_left_behind_is_named_around_though_another_w
         )
         .await
         .unwrap();
-    let retried = attempt(&columns);
+    let retried = attempt(&columns, 1);
     retried
         .fit(0, &schema(&[("a", LogicalType::Int32)]))
         .await
@@ -763,7 +775,7 @@ async fn a_column_a_crashed_attempt_left_behind_is_named_around_though_another_w
 #[tokio::test]
 async fn only_the_column_whose_widen_is_refused_is_kept_from_widening_for_the_attempt() {
     let columns = Columns::default();
-    let tables = attempt(&columns);
+    let tables = attempt(&columns, 0);
     let narrow = schema(&[("a", LogicalType::Int32), ("b", LogicalType::Int32)]);
     tables.fit(0, &narrow).await.unwrap();
     // The destination holds `b` otherwise than the table says: it refuses to widen it.

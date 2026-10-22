@@ -32,10 +32,12 @@ contract M2b settles. Building M2b surfaced decisions the spec leaves open or ge
   a new column clashing with a leftover, or a join the destination cannot store, is a `Data`
   error coded `schema_conflict` that changes nothing. The engine then resolves the change again with
   every new identifier hash-suffixed, the hash seeded with a fresh salt on each of up to four
-  retries, and a further conflict fails the run. Recording names in state before applying changes
-  was rejected: it needs a commit per schema change, against one commit per barrier. A widen the
-  destination refuses keeps that column as it is for the attempt, its values routed to variant
-  columns; a refused new column still has new names hashed (ADR 0041).
+  retries, and a further conflict fails the run. The salts are drawn from the attempt's load, so
+  no attempt names its retries where an earlier attempt left columns at its own. Recording names
+  in state before applying changes was rejected: it needs a commit per schema change, against one
+  commit per barrier. A widen the destination refuses keeps that column as it is for the attempt,
+  its values routed to variant columns; a refused new column still has new names hashed
+  (ADR 0041).
 - **The first batch, or the declared schema, creates the table.** A stream needs no
   declared schema; a declared one is resolved like a batch before anything is read. After the
   table exists, a new column or a value its column cannot hold is a change, which the column's
