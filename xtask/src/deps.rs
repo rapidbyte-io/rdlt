@@ -46,7 +46,7 @@ const RULES: &[(&str, &[&str])] = &[
             "rdlt-wire",
         ],
     ),
-    ("rdlt-testkit", &["rdlt-connector"]),
+    ("rdlt-testkit", &["rdlt-connector", "rdlt-wire"]),
     ("xtask", &[]),
 ];
 

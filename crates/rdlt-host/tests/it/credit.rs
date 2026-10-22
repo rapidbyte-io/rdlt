@@ -23,8 +23,7 @@ use tokio_stream::wrappers::ReceiverStream;
 
 use crate::sessions::{raw_session_within, table};
 use crate::support::connectors::{Gate, Writes, Writing};
-use crate::support::fake::{Granted, Polled};
-use crate::support::{Fake, Fault, serve_fake};
+use rdlt_testkit::fake::{Fake, Fault, Granted, Polled, socket};
 
 /// Rows: the ids of a frame of seven megabytes, as the default coalescing target makes.
 const ROWS: i64 = 875_000;
@@ -217,7 +216,7 @@ async fn read(
     events: usize,
 ) -> tokio::task::JoinHandle<rdlt_connector::Result<()>> {
     let connection = Connection::connect(
-        serve_fake(Fake(fault)),
+        socket(Fake(fault)),
         Role::Source,
         &serde_json::json!({}),
         *options,
@@ -247,7 +246,7 @@ async fn read(
 async fn credits(granted: &Granted, count: usize) -> Vec<u64> {
     let waited = tokio::time::timeout(Duration::from_secs(30), async {
         loop {
-            let credits = granted.lock().expect("the lock is not poisoned").clone();
+            let credits = granted.lock().clone();
             if credits.len() >= count {
                 return credits;
             }
@@ -303,7 +302,7 @@ async fn a_read_the_engine_does_not_take_holds_at_most_its_stream_window_in_tran
         ..Options::default()
     };
     let connection = Connection::connect(
-        serve_fake(Fake(Fault::Floods(&POLLED))),
+        socket(Fake(Fault::Floods(&POLLED))),
         Role::Source,
         &serde_json::json!({}),
         options,
@@ -327,7 +326,7 @@ async fn a_read_the_engine_does_not_take_holds_at_most_its_stream_window_in_tran
     .expect("the transport stops taking frames");
     assert!(!reading.is_finished(), "the read ended");
     let transport = Transport::default();
-    let frame = length(&crate::support::fake::mebibyte().1);
+    let frame = length(&rdlt_testkit::fake::mebibyte().1);
     // What left the connector: the frame the sink holds, a frame waiting for its room, the
     // call's stream window, and on the connector the frame its encoder holds and what HTTP/2
     // buffers to send, at most 400 KiB.

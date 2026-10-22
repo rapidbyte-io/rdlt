@@ -9,7 +9,8 @@ use rdlt_connector_reference::MemorySource;
 use rdlt_host::{CONNECTOR_LOST, Connection, Options, RemoteSource};
 
 use crate::support::connectors::{CHECKS, Counted};
-use crate::support::{Fake, Fault, serve_fake, served};
+use crate::support::served;
+use rdlt_testkit::fake::{Fake, Fault, socket};
 
 /// Options that notice a lost connector within about a tenth of a second.
 fn quick() -> Options {
@@ -23,7 +24,7 @@ fn quick() -> Options {
 #[tokio::test]
 async fn a_connector_that_echoes_heartbeats_never_sent_is_lost() {
     let connection = Connection::connect(
-        serve_fake(Fake(Fault::EchoAhead)),
+        socket(Fake(Fault::EchoAhead)),
         Role::Source,
         &serde_json::json!({}),
         quick(),

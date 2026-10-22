@@ -11,7 +11,8 @@ use rdlt_engine::{PipelinePlan, RunStatus, StreamPlan};
 use rdlt_host::{Connection, Options, RemoteSource};
 
 use crate::support::connectors::{COMMITTED, IDLE_READING, READS, Ticks};
-use crate::support::{Fake, Fault, engine, memory_destination, serve_fake, served};
+use crate::support::{engine, memory_destination, served};
+use rdlt_testkit::fake::{Fake, Fault, socket};
 
 /// The ticks source, served, with `config`.
 async fn ticks(config: serde_json::Value) -> RemoteSource {
@@ -235,7 +236,7 @@ async fn a_barrier_pending_when_a_read_starts_is_answered_across_the_wire() {
 #[tokio::test]
 async fn a_barrier_pending_when_a_read_starts_reaches_a_connector_that_knows_no_barrier_in_its_start()
  {
-    let io = serve_fake(Fake(Fault::Unstarted));
+    let io = socket(Fake(Fault::Unstarted));
     let connection =
         Connection::connect(io, Role::Source, &serde_json::json!({}), Options::default())
             .await
@@ -267,7 +268,7 @@ async fn a_barrier_pending_when_a_read_starts_reaches_a_connector_that_knows_no_
 
 #[tokio::test]
 async fn a_read_with_no_barrier_pending_asks_for_none() {
-    let io = serve_fake(Fake(Fault::Unstarted));
+    let io = socket(Fake(Fault::Unstarted));
     let connection =
         Connection::connect(io, Role::Source, &serde_json::json!({}), Options::default())
             .await

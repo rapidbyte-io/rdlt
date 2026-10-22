@@ -17,7 +17,8 @@ use tokio::net::UnixStream;
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::support::connectors::{Writes, Writing};
-use crate::support::{Fake, Fault, serve_fake, served_within};
+use crate::support::served_within;
+use rdlt_testkit::fake::{Fake, Fault, socket};
 
 pub(crate) fn handshake(role: v1::Role) -> v1::HandshakeRequest {
     v1::HandshakeRequest {
@@ -393,7 +394,7 @@ async fn dropping_the_connection_ends_the_served_one() {
 #[tokio::test]
 async fn a_schema_epoch_that_does_not_grow_is_refused() {
     let connection = Connection::connect(
-        serve_fake(Fake(Fault::StaleEpoch)),
+        socket(Fake(Fault::StaleEpoch)),
         Role::Source,
         &serde_json::json!({}),
         Options::default(),
@@ -424,7 +425,7 @@ async fn read_of(fault: Fault, limits: Limits) -> Option<rdlt_connector::Connect
         ..Options::default()
     };
     let connection = Connection::connect(
-        serve_fake(Fake(fault)),
+        socket(Fake(fault)),
         Role::Source,
         &serde_json::json!({}),
         options,

@@ -3365,16 +3365,22 @@ dependencies = [
  "arrow-schema",
  "async-trait",
  "futures-util",
+ "http",
+ "hyper",
+ "hyper-util",
  "object_store",
  "parking_lot",
  "proptest",
  "rcgen",
  "rdlt-connector",
+ "rdlt-wire",
  "ryu",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-stream",
+ "tower",
 ]
 
 [[package]]

@@ -9,8 +9,8 @@ use rdlt_wire::Limits;
 use rdlt_wire::limits::Class;
 
 use crate::HEAP;
-use crate::support::fake::Fault;
 use crate::support::raw::{answering, called};
+use rdlt_testkit::fake::Fault;
 
 /// `entry`, an empty entry of a repeated field, as many times as `bytes` take.
 fn entries(entry: [u8; 2], bytes: usize) -> Bytes {

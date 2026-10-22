@@ -26,7 +26,8 @@ use tokio_stream::wrappers::ReceiverStream;
 
 use crate::sessions::{context, raw_session, table};
 use crate::support::connectors::{Kept, Ticks, Writes, Writing, flagged};
-use crate::support::{Fake, Fault, engine, serve_fake, served, served_within};
+use crate::support::{engine, served, served_within};
+use rdlt_testkit::fake::{Fake, Fault, socket};
 
 type Sent = (Bytes, Vec<IpcFrame>);
 
@@ -124,7 +125,7 @@ fn refusal(error: &ConnectorError) -> (Option<&str>, Option<&'static str>) {
 #[tokio::test]
 async fn the_host_refuses_a_connectors_frame_no_limit_bounds_as_a_whole() {
     for (sent, code, limit) in REFUSED {
-        let io = serve_fake(Fake(Fault::Sends(sent)));
+        let io = socket(Fake(Fault::Sends(sent)));
         let config = serde_json::json!({});
         let connection = Connection::connect(io, Role::Source, &config, Options::default())
             .await

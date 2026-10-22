@@ -18,7 +18,9 @@ faults, concurrency, replay and coverage.
   the exact value model (`Canon`) and the cell decoder that ADR 0011's differentials use. Property
   tests shrink its strategies; the simulation draws from the same strategies seeded by its own
   seed (`draw::draw`), so every draw is a pure function of the seed. It depends on
-  `rdlt-connector` alone, and no production crate depends on it.
+  `rdlt-connector`, and, for its `fake` feature, on `rdlt-wire`: a connector that answers the
+  handshake and then breaks the protocol, served over any transport, which `rdlt-host`'s tests and
+  the simulation meet. No production crate depends on it.
 - **The simulation draws every type in every encoding.** Drift columns take any logical type in
   any encoding a source may send, nested up to three levels (objects in arrays, arrays in arrays),
   change to a type the lattice joins them with or to another, and hold edge values: full ranges,

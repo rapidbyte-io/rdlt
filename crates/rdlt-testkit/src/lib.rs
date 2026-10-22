@@ -8,6 +8,9 @@
 //!
 //! [`cancel`] drops a call at each point it waits and checks what the call left, for every object
 //! a caller may call again after a call it dropped.
+//!
+//! [`fake`], with the `fake` feature, serves a connector that answers the handshake and then
+//! breaks the protocol, over any transport and on the clock of the runtime that serves it.
 
 #![forbid(unsafe_code)]
 #![expect(
@@ -25,6 +28,8 @@ pub mod canon;
 pub mod decode;
 pub mod draw;
 pub mod drawn;
+#[cfg(feature = "fake")]
+pub mod fake;
 pub mod held;
 pub mod nested;
 pub mod objects;
