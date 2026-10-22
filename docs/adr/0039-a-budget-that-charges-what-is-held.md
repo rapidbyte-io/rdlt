@@ -432,30 +432,30 @@ admitted, and what a remote connector's calls hold in transport.
   connector gets, and holds the process's resident peak to the budget's bound, one push, and
   2 MiB of stack a thread.
 - **The simulation holds its attempts to it on the heap, at every moment.** Its test binary counts
-  each thread's live bytes (`alloc_tracker`, a counting allocator kept per thread, installed in
-  the simulation's test binaries alone); a seed's runs share its thread, compute inline, while
-  seeds run side by side on other threads. Built with its `sim` feature, the engine tells its
-  environment each change of what a budget holds reserved. On the seed's thread a counterweight,
-  an allocation never written whose size falls as the charge rises, makes what the thread counts
-  what it holds beyond what is charged at that moment: what the budgets hold reserved and what the
-  source holds of pushes made and not yet sent on. What the simulated world keeps of what it
-  stores counts beside the charge, exactly, as the world's: a stored row as much as freeing a
-  first making of it gives back, a chunk the log store stages or publishes by its buffer, and each
-  object of the bucket the logs are kept in by an exact copy. The world's own work building a push
-  or a row is given room while it runs. Over each attempt, the most the thread holds beyond its
-  charge stays within an allowance and, where the connectors listen on the simulated network or are
-  played in processes and share the thread, what the reads hold between the source and the engine:
-  for each partition each run reads, 20 of the attempt's largest event, a push or a checkpoint's
-  cursor (the host's event waiting for admission, the 16 events a source sends ahead, the batch
-  being cut and its piece waiting for credit, and a frame sent past its credit), and the frames
-  credit lets go before the host takes them, two of the largest or the host's credit floor of 4
-  MiB, whichever is more. The allowance is what the world holds beside the engine and keeps
-  uncounted, the runtime, its maps and builders' spare room, apart by where the connectors run, with
-  a write-ahead log or without, since the log's copies count as the world's: 13 MiB in process and
-  11 MiB over the network or in played processes. Beyond their charge, seeds 0 to 99 999 hold at most 12.5 MB in process (10.6 MB with a log) and 4.3 MB
-  over the network (3.1 MB with a log), the network's beyond what its reads hold. Over the network
-  the allowance is the next whole mebibyte above five quarters of the most a seed without a log
-  holds among the four network seeds, not hostile, that hold the most the nightly has measured,
+  each thread's live bytes (`alloc_tracker`, a counting allocator kept per thread, installed in the
+  simulation's test binaries alone); a seed's runs share its thread, compute inline, while seeds run
+  side by side on other threads. Built with its `sim` feature, the engine tells its environment each
+  change of what a budget holds reserved. On the seed's thread a counterweight, an allocation never
+  written whose size falls as the charge rises, makes what the thread counts what it holds beyond
+  what is charged at that moment: what the budgets hold reserved and what the source holds of pushes
+  made and not yet sent on. What the simulated world keeps of what it stores counts beside the
+  charge, exactly, as the world's: a stored row as much as freeing a first making of it gives back,
+  a chunk the log store stages or publishes by its buffer, and each object of the bucket the logs
+  are kept in by an exact copy. The world's own work building a push or a row is given room while it
+  runs. Over each attempt, the most the thread holds beyond its charge stays within an allowance
+  and, where the connectors listen on the simulated network or are played in processes and share the
+  thread, what the reads hold between the source and the engine: for each partition each run reads,
+  20 of the attempt's largest event, a push or a checkpoint's cursor (the host's event waiting for
+  admission, the 16 events a source sends ahead, the batch being cut and its piece waiting for
+  credit, and a frame sent past its credit), and the frames credit lets go before the host takes
+  them, two of the largest or the host's credit floor of 4 MiB, whichever is more. The allowance is
+  what the world holds beside the engine and keeps uncounted, the runtime, its maps and builders'
+  spare room, apart by where the connectors run, with a write-ahead log or without, since the log's
+  copies count as the world's: 13 MiB in process and 11 MiB over the network or in played processes.
+  Beyond their charge, seeds 0 to 99 999 hold at most 12.5 MB in process (10.6 MB with a log) and
+  4.3 MB over the network (3.1 MB with a log), the network's beyond what its reads hold. Over the
+  network the allowance is the next whole mebibyte above five quarters of the most a seed without a
+  log holds among the four network seeds, not hostile, that hold the most the nightly has measured,
   replayed under these faults: 8.9 MB on seed 732369, twice the most of seeds 0 to 99 999. No sweep
   of the nightly's million has measured the network's tail, so the allowance rests on those four
   seeds and the nightly is what tests it further. Played processes share it without a measure of

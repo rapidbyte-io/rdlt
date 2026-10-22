@@ -139,9 +139,10 @@ impl Features {
     /// values one time in four where no log is kept.
     ///
     /// The network, process placement, the log and its store, streaming, resetting, fat values and
-    /// a hostile host are drawn apart from the rest, from the value the next draw takes but without taking it,
-    /// so a seed's workload is the same over either transport, logged or not and in either store,
-    /// streamed or not, reset or not, and with fat values or without but for those values.
+    /// a hostile host are drawn apart from the rest, from the value the next draw takes but without
+    /// taking it, so a seed's workload is the same over either transport, logged or not and in
+    /// either store, streamed or not, reset or not, and with fat values or without but for those
+    /// values.
     pub fn draw(rng: &mut SplitMix64) -> Self {
         let next = rng.clone().next_u64();
         let network = SplitMix64::new(next ^ NETWORK).chance(250);
