@@ -9,6 +9,7 @@ mod tests;
 mod told;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::mem;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
@@ -28,6 +29,7 @@ use crate::owners::Owners;
 use crate::reached::{Reach, Reached};
 use crate::rng::SplitMix64;
 use crate::seed::Seed;
+use crate::source::Plans;
 use crate::swarm::Features;
 use crate::wal::SimWal;
 use crate::workload::Workload;
@@ -114,6 +116,8 @@ pub struct World {
     pub(crate) arrived: Notify,
     /// Which partitions of its followed streams the source names.
     pub(crate) named: Named,
+    /// What each connection to the source made since the oracle last looked planned and read.
+    connections: Mutex<Vec<Arc<Plans>>>,
     /// How hard the source presses on the engine's memory budget.
     pressure: Mutex<Pressure>,
     /// What the source holds of the pushes it made and has not yet sent on.
@@ -261,6 +265,7 @@ impl World {
             produced: Mutex::new(None),
             arrived: Notify::new(),
             named: Named::default(),
+            connections: Mutex::default(),
             pressure: Mutex::default(),
             pushes: Pushes::default(),
             owners: Owners::default(),
@@ -326,6 +331,7 @@ impl World {
             produced: Mutex::new(None),
             arrived: Notify::new(),
             named: Named::default(),
+            connections: Mutex::default(),
             pressure: Mutex::default(),
             pushes: Pushes::default(),
             owners: Owners::default(),
@@ -360,6 +366,23 @@ impl World {
                 .map_or(rows, |arrived| (*arrived).min(rows)),
             None => rows,
         }
+    }
+
+    /// A new connection's record of what its plans name and its reads do, which the oracle holds
+    /// its run to.
+    pub(crate) fn connected(&self) -> Arc<Plans> {
+        let plans = Arc::new(Plans::default());
+        self.connections.lock().push(Arc::clone(&plans));
+        plans
+    }
+
+    /// The records of every connection made since this was last asked.
+    #[expect(
+        dead_code,
+        reason = "the oracle reads it once it judges a run against the records"
+    )]
+    pub(crate) fn connections(&self) -> Vec<Arc<Plans>> {
+        mem::take(&mut *self.connections.lock())
     }
 
     /// Sets how many rows of each followed partition have arrived, or none for every row, and

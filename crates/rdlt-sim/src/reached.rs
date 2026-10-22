@@ -39,11 +39,13 @@ pub enum Reach {
     Renamed,
     /// A connector quoted one line of a secret of several lines alone.
     LineSaid,
+    /// A plan named other partitions of a stream than the plan before it on one connection.
+    Replanned,
 }
 
 impl Reach {
     /// Every path, in the order a timing line names them.
-    const ALL: [Self; 17] = [
+    const ALL: [Self; 18] = [
         Self::ConnectorStopped,
         Self::LinkCut,
         Self::Crashed,
@@ -61,6 +63,7 @@ impl Reach {
         Self::SessionsBeyond,
         Self::Renamed,
         Self::LineSaid,
+        Self::Replanned,
     ];
 
     fn bit(self) -> u32 {
