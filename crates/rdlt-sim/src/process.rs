@@ -23,7 +23,7 @@ use crate::rng::SplitMix64;
 use crate::seed::Seed;
 use script::Script;
 
-/// How long a host takes to act on a process that goes on after a stall.
+/// How long a host takes to act on what was done to a process: a kill, or a stall's end.
 const DRAIN: Duration = Duration::from_millis(80);
 
 /// What the played processes' draws mix into the seed: "played" in ASCII.

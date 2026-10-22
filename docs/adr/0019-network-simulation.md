@@ -33,13 +33,13 @@ the whole engine on a paused clock from a seed, with connectors in the engine's 
     HTTP/2 header blocks of different lengths, cut the connectors' writes differently and have their
     peers read at other times.
   - One read of the wall clock is left, in h2: it remembers a stream it reset for a second of wall
-    time, and ten of them at most, and answers a frame that arrives late for a stream it forgot
-    with a reset of its own, where it drops one for a stream it remembers. How many it remembers
-    depends on how fast the run goes, so two runs of a seed can end a few milliseconds apart in
-    simulated time, more often on a loaded machine. The replay check leaves the end time out of
-    a networked seed's comparison, and of a seed whose connectors are played in processes, which
-    speak HTTP/2 to the host too, and holds the rest to equal. hyper's server has no setting for
-    these limits, and tonic's client does not set them.
+    time, and ten of them at most, and answers a frame that arrives late for a stream it forgot with
+    a reset of its own, where it drops one for a stream it remembers. How many it remembers depends
+    on how fast the run goes, so two runs of a seed can end a few milliseconds apart in simulated
+    time, more often on a loaded machine. The replay check leaves the end time out of a networked
+    seed's comparison, and of a seed whose connectors are played in processes, which speak HTTP/2 to
+    the host too, and holds the rest to equal. hyper's server has no setting for these limits, and
+    tonic's client does not set them.
   - The feature is drawn apart from the others, so a seed's workload is the same over either
     transport, and seeds found before keep their workload.
   - Each seed draws its messages' latency, and the host's heartbeat, patience and connect deadline.
@@ -73,20 +73,19 @@ the whole engine on a paused clock from a seed, with connectors in the engine's 
   keep to the protocol never answer out of turn, however the network or the connector fails.
 - **The simulation's coverage leaves out what it never runs**: generated wire code, what process
   placement leaves to the operating system (descriptors, process groups and their reaper, the
-  registry of groups, a command past its checks, and bubblewrap; the soak and the host's own
-  tests run those, ADR 0052), three files the seeds reach in under half their lines
-  (`local/process.rs`, `kills.rs` and `local/grants/opened.rs`), a served
-  binary's entry points, certification (the certify crate and the host's
-  connections and kills it uses), the local and in-memory log stores (the simulation keeps logs
-  in a store of its own), the stores' shared contract tests, and test and bench code. The data
-  plane (`rdlt_wire::plane`) is hand-written, not generated, and every simulated served read and
-  write runs it, so it counts. In-process seeds place their connectors through the host's
-  registry, as an embedder does, so its resolution of secrets and its scrubbing of what
-  connectors say run in every seed. Played seeds place their connectors through `Local`, so its
-  placement and supervision, the output drains with their scrubbing and the witness run in them,
-  and so do the host's digest and grant checks. The coverage's floor is what 1 000 seeds reach,
-  81 % of lines and 71 % of branches. A hostile host, in one networked seed in two, reaches the
-  code that refuses a host breaking the protocol. Beside the runs it:
+  registry of groups, a command past its checks, and bubblewrap; the soak and the host's own tests
+  run those, ADR 0052), three files the seeds reach in under half their lines (`local/process.rs`,
+  `kills.rs` and `local/grants/opened.rs`), a served binary's entry points, certification (the
+  certify crate and the host's connections it uses), the local and in-memory log stores (the
+  simulation keeps logs in a store of its own), the stores' shared contract tests, and test and
+  bench code. The data plane (`rdlt_wire::plane`) is hand-written, not generated, and every
+  simulated served read and write runs it, so it counts. In-process seeds place their connectors
+  through the host's registry, as an embedder does, so its resolution of secrets and its scrubbing
+  of what connectors say run in every seed. Played seeds place their connectors through `Local`, so
+  its placement and supervision, the output drains with their scrubbing and the witness run in them,
+  and so do the host's digest and grant checks. The coverage's floor is what 1 000 seeds reach, 81 %
+  of lines and 71 % of branches. A hostile host, in one networked seed in two, reaches the code that
+  refuses a host breaking the protocol. Beside the runs it:
   - calls before the handshake and the configuration;
   - configures one connection twice at once;
   - gives up on configurations and opens mid-way;
