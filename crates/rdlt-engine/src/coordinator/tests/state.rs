@@ -216,3 +216,14 @@ async fn a_commit_is_measured_once_from_admission_to_landing() {
     coordinator.parts.stored.apply(measured);
     assert_eq!(MEASURES.with(std::cell::Cell::get), 1 + 2);
 }
+
+#[test]
+fn a_commit_s_record_of_a_cursor_holds_its_json_and_no_more() {
+    let state = PartitionState::Cursor(padded(1 << 20));
+    let (held, change) = crate::cost::tests::held_alone(|| position("p0", state.clone()));
+    let StateChange::Put(record) = change else {
+        panic!("a position is put");
+    };
+    let json = u64::try_from(record.key.len() + record.value.len()).unwrap();
+    assert!(held <= json + 256, "a record of {json} bytes held {held}");
+}
