@@ -27,6 +27,7 @@ const FAT: u64 = 0x0066_6174;
 /// What the hostile host's draw mixes into the seed's generator, and its attacks' into each
 /// attempt's: "hostile" in ASCII.
 pub(crate) const HOSTILE: u64 = 0x0068_6f73_7469_6c65;
+
 /// What the broken connectors' draw mixes into the seed's generator, and their attacks' and
 /// their link's into each attempt's: "framing" in ASCII.
 pub(crate) const FRAMING: u64 = 0x0066_7261_6d69_6e67;
