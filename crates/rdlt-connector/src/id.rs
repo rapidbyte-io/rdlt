@@ -221,8 +221,8 @@ impl fmt::Display for StreamName {
 }
 
 /// A logical destination table: the stream's root plus nested path segments.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(try_from = "Vec<String>", into = "Vec<String>")]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
+#[serde(try_from = "Vec<String>")]
 pub struct TablePath(Vec<Arc<str>>);
 
 impl TablePath {
@@ -262,9 +262,9 @@ impl TryFrom<Vec<String>> for TablePath {
     }
 }
 
-impl From<TablePath> for Vec<String> {
-    fn from(path: TablePath) -> Self {
-        path.0.iter().map(ToString::to_string).collect()
+impl Serialize for TablePath {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(self.segments())
     }
 }
 

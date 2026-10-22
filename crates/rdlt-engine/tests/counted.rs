@@ -1,5 +1,6 @@
 //! What the bench module's allocation counter sees, and what the log's frames, shredding rows of
-//! arrays and checking escaped JSON allocate and hold, in a process whose global allocator counts.
+//! arrays, checking escaped JSON and writing a table's state records allocate and hold, in a
+//! process whose global allocator counts.
 
 #![forbid(unsafe_code)]
 
@@ -7,6 +8,10 @@ use std::alloc::System;
 use std::hint::black_box;
 use std::num::NonZeroU64;
 
+use rdlt_connector::{
+    ColumnPath, Field, LogicalType, NameMap, SchemaVersion, Sequences, StateEntry, TablePath,
+    TableSchema,
+};
 use rdlt_engine::bench::counted;
 use stats_alloc::{INSTRUMENTED_SYSTEM, Region, StatsAlloc};
 
@@ -109,4 +114,56 @@ fn rendering_a_drifted_column_allocates_nothing_a_value() {
         drifted - plain < 100.0,
         "{drifted} allocations against {plain}"
     );
+}
+
+#[test]
+fn a_table_s_state_records_allocate_their_key_value_and_each_field_s_walk_alone() {
+    let table = TablePath::new(["orders", "lines"]).unwrap();
+    let columns = ["id", "name", "updated_at"];
+    let fields = columns.map(|column| Field::new(column, LogicalType::Int64, true));
+    let mut names = NameMap::default();
+    for column in columns {
+        names.insert(ColumnPath::from(column), column).unwrap();
+    }
+    // Each record allocates its key's path and text and its value; a schema's also walks each of
+    // its three fields from a stack of the field's nodes, once to count its JSON and once to write
+    // it.
+    let entries = [
+        (
+            StateEntry::Schema {
+                table: table.clone(),
+                version: SchemaVersion(1),
+                schema: TableSchema::new(fields.to_vec()).unwrap(),
+                exact: ["id".into()].into(),
+            },
+            3.0 + 2.0 * 3.0,
+        ),
+        (
+            StateEntry::Names {
+                table: table.clone(),
+                physical: "orders__lines".into(),
+                names,
+            },
+            3.0,
+        ),
+        (
+            StateEntry::Sequences {
+                table,
+                sequences: Sequences::Source,
+                history: true,
+                key: vec![ColumnPath::from("id")],
+                change_time: Some(ColumnPath::from("updated_at")),
+            },
+            3.0,
+        ),
+    ];
+    for (entry, allocations) in entries {
+        let allocated = counted(HEAP, || {
+            black_box(entry.to_record());
+        });
+        assert!(
+            allocated.allocations <= allocations,
+            "{allocated} for {entry:?}"
+        );
+    }
 }

@@ -11,11 +11,8 @@ use crate::schema::ColumnKey;
 ///
 /// The map is injective, so two columns never share an identifier, and append-only: a mapping,
 /// once added, never changes. A recorded map is read back only as such.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(
-    try_from = "Vec<(ColumnKey, String)>",
-    into = "Vec<(ColumnKey, String)>"
-)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "Vec<(ColumnKey, String)>")]
 pub struct NameMap {
     names: BTreeMap<ColumnKey, Arc<str>>,
     /// The column each identifier names.
@@ -117,12 +114,8 @@ impl TryFrom<Vec<(ColumnKey, String)>> for NameMap {
     }
 }
 
-impl From<NameMap> for Vec<(ColumnKey, String)> {
-    fn from(names: NameMap) -> Self {
-        names
-            .names
-            .into_iter()
-            .map(|(key, name)| (key, name.to_string()))
-            .collect()
+impl Serialize for NameMap {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(self.names.iter().map(|(key, name)| (key, &**name)))
     }
 }

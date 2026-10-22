@@ -7,21 +7,22 @@ use std::fmt;
 use std::sync::Arc;
 
 use arrow_schema::Schema;
-use serde::{Deserialize, Serialize};
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Serialize, Serializer};
 
 use crate::types::{Field, Fields, LogicalType, TypeError, TypeKind, UnsupportedType};
 use rdlt_wire::limits::NESTING_DEPTH;
 
 /// The ordered, uniquely named fields of a table, nested no deeper than
 /// [`NESTING_DEPTH`] levels, counting a top-level column as the first.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(try_from = "StoredSchema", into = "StoredSchema")]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize)]
+#[serde(try_from = "StoredSchema")]
 pub struct TableSchema {
     fields: Fields,
 }
 
-/// A schema as it is stored.
-#[derive(Serialize, Deserialize)]
+/// A schema as it is read.
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StoredSchema {
     fields: Vec<Field>,
@@ -87,11 +88,11 @@ impl TryFrom<StoredSchema> for TableSchema {
     }
 }
 
-impl From<TableSchema> for StoredSchema {
-    fn from(schema: TableSchema) -> Self {
-        Self {
-            fields: schema.fields.into(),
-        }
+impl Serialize for TableSchema {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut stored = serializer.serialize_struct("StoredSchema", 1)?;
+        stored.serialize_field("fields", &self.fields)?;
+        stored.end()
     }
 }
 
@@ -115,8 +116,8 @@ fn depth(fields: &[Field]) -> u64 {
 }
 
 /// A column addressed from a table's root: one segment per nesting level.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(try_from = "Vec<String>", into = "Vec<String>")]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
+#[serde(try_from = "Vec<String>")]
 pub struct ColumnPath(Vec<Arc<str>>);
 
 /// A column path had no segments.
@@ -163,9 +164,9 @@ impl TryFrom<Vec<String>> for ColumnPath {
     }
 }
 
-impl From<ColumnPath> for Vec<String> {
-    fn from(path: ColumnPath) -> Self {
-        path.0.iter().map(ToString::to_string).collect()
+impl Serialize for ColumnPath {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(self.segments())
     }
 }
 
