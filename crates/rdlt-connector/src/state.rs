@@ -192,11 +192,13 @@ impl StateEntry {
         reason = "state entries always serialize to JSON"
     )]
     pub fn to_record(&self) -> StateRecord {
-        let value = serde_json::to_vec(&Writing {
+        let mut value = serde_json::to_vec(&Writing {
             v: STATE_VERSION,
             entry: self,
         })
         .expect("state entries serialize to JSON");
+        // State holds a record as long as the entry stands: its buffer keeps no spare room.
+        value.shrink_to_fit();
         StateRecord {
             key: self.key().encode(),
             value: Bytes::from(value),
