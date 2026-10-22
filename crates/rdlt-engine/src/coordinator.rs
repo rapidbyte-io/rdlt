@@ -25,8 +25,8 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use rdlt_connector::{
-    CommitMeta, CommitSeq, Epoch, GenerationId, LoadId, PartitionId, PipelineId, Receipt,
-    SegmentSet, Source, StreamName, TablePath,
+    CommitMeta, CommitSeq, Epoch, GenerationId, LoadId, PartitionId, PartitionState, PipelineId,
+    Receipt, SegmentSet, Source, StreamName, TablePath,
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -43,7 +43,7 @@ use crate::plan::WriteMode;
 use crate::report::{AttemptEnd, AttemptLog, CommitRecord, Tally, Trigger};
 use crate::stored::{Measured, Stored};
 use crate::table::Tables;
-use crate::wal::{LoadLog, Positions, WalStore};
+use crate::wal::{LoadLog, Positions, Recorded, WalStore};
 use crate::watch;
 pub(crate) use phases::{Begun, Launcher, Phases, Template, launcher, plan_of};
 use waiting::WaitingSeals;
@@ -116,7 +116,7 @@ pub(crate) struct PartitionRun {
     stop: CancellationToken,
     /// Where the partition stood when its read started, then the position of its last commit
     /// that landed: a commit that records it there again moves it nowhere.
-    stands: Option<rdlt_connector::PartitionState>,
+    stands: Option<PartitionState>,
 }
 
 impl PartitionRun {
@@ -140,7 +140,7 @@ impl PartitionRun {
 
     /// The partition, whose read starts from `cursor`, where the destination holds it.
     pub(crate) fn starting(mut self, cursor: Option<&rdlt_connector::Cursor>) -> Self {
-        self.stands = cursor.cloned().map(rdlt_connector::PartitionState::Cursor);
+        self.stands = cursor.cloned().map(PartitionState::Cursor);
         self
     }
 
@@ -449,9 +449,14 @@ impl Coordinator {
         self.sealed.push(seal);
     }
 
-    /// Commits `meta`, whose state changes are `measured`, in the destination's session, and
-    /// records its receipt in the log.
-    async fn committed(&mut self, meta: &CommitMeta, measured: Measured) -> Result<Receipt, Error> {
+    /// Commits `meta`, whose state changes are `measured` and whose partitions stand at
+    /// `positions`, in the destination's session, and records its receipt in the log.
+    async fn committed(
+        &mut self,
+        meta: &CommitMeta,
+        measured: Measured,
+        positions: &BTreeMap<usize, PartitionState>,
+    ) -> Result<Receipt, Error> {
         crash_point!("engine.commit.before");
         let receipt = self
             .parts
@@ -462,7 +467,19 @@ impl Coordinator {
             .map_err(|error| Error::connector(Side::Destination, "committing", error))?;
         crash_point!("engine.commit.after");
         self.parts.stored.apply(measured);
-        self.parts.positions.apply(&meta.state_delta);
+        let states: BTreeMap<(StreamName, PartitionId), PartitionState> = positions
+            .iter()
+            .map(|(partition, state)| {
+                let partition = &self.parts.partitions[*partition];
+                let stream = self.parts.streams[partition.stream].name.clone();
+                ((stream, partition.id.clone()), state.clone())
+            })
+            .collect();
+        let recorded = Recorded {
+            load: self.parts.load_id,
+            states: &states,
+        };
+        self.parts.positions.landed(&meta.state_delta, &recorded);
         if let Some(log) = &self.parts.wal {
             log.committed(&receipt).await?;
         }
