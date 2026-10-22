@@ -435,18 +435,19 @@ what no bound names.
   socket. What only the operating system does stays out: descriptors, process groups and their
   reaper, the registry of groups, which every seed's thread would share, and bubblewrap. Those keep
   their tests against real processes: a nightly soak loads through connectors spawned through
-  `Local` as real processes (killed, stopped with SIGSTOP, crashing, flooding their output, saying
-  a secret that ends in whitespace) and does not replay, so a failure names its round. A start's check and its listing are a section no
-  single-threaded seed interleaves, so the soak races starts on real threads. Evidence: a played
-  seed replays alike over 64 seeds, and over a sweep of 1 000 once a process's exit and the close of
-  its standard error wake their waiters in the order they waited, where two seeds of the sweep had
-  replayed apart; a played seed takes 206 ms against a networked seed's 432 ms, the mean over 1 000
-  seeds; with a drained line trimmed before it is scrubbed, 37 of the first 200 seeds fail on the
-  canary in the exactly-once sweep and 38 in the change sweep, each a played seed; and 1 000 seeds
-  reach 58 % of `local.rs`, 52 % of `local/provide.rs`, 50 % of `local/binary.rs`, 55 % of
-  `local/grants.rs`, 94 % of `local/process/output.rs`, 76 % of `local/process/played.rs`, 98 % of
-  `kills/landing.rs` and 80 % of `supervise.rs`, `supervise::spawn` among it. Two criteria set
-  before it was built were passed over. The seam adds 312 lines outside tests where 280 were
+  `Local` as real processes (killed, stopped with SIGSTOP, crashing, flooding their output, saying a
+  secret that ends in whitespace) and does not replay, so a failure names its round. A start's check
+  and its listing are a section no single-threaded seed interleaves, so the soak races starts on
+  real threads. Evidence: a played seed replays alike over 64 seeds, and over a sweep of 1 000 once
+  a process's exit and the close of its standard error wake their waiters in the order they waited,
+  where two seeds of the sweep had replayed apart; a played seed took 206 ms and a networked seed
+  432 ms, the means over the 185 played seeds and over the networked seeds of one 1 000-seed sweep,
+  timed before that change; with a drained line trimmed before it is scrubbed, 37 of the first 200
+  seeds fail on the canary in the exactly-once sweep and 38 in the change sweep, each a played seed;
+  and 1 000 seeds reach 58 % of `local.rs`, 52 % of `local/provide.rs`, 50 % of `local/binary.rs`,
+  55 % of `local/grants.rs`, 94 % of `local/process/output.rs`, 76 % of `local/process/played.rs`,
+  98 % of `kills/landing.rs` and 80 % of `supervise.rs`, `supervise::spawn` among it. Two criteria
+  set before it was built were passed over. The seam adds 312 lines outside tests where 280 were
   allowed, about 30 of them moved, not new. `kills.rs` is reached in 49 % of its lines and
   `local/process.rs` in 45 %, short of half: the first's rest is the kill path of a remote
   placement, which the simulation's network does not wire up, and the second's is the spawn that
