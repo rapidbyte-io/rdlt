@@ -369,15 +369,15 @@ impl Networked {
             world,
             strict,
         };
-        let (done, ()) = tokio::join!(work, Box::pin(breaker.attack(index, rng)));
+        let (done, _) = tokio::join!(work, Box::pin(breaker.attack(index, rng)));
         done
     }
 }
 
 impl Breaker<'_> {
     /// Attacks the broken connector at `index`, its options drawn from `rng`, and judges how it
-    /// ended.
-    pub(super) async fn attack(&self, index: usize, mut rng: SplitMix64) {
+    /// ended: whether the network's disruption kept it from being met.
+    pub(super) async fn attack(&self, index: usize, mut rng: SplitMix64) -> bool {
         let broken = catalogue()[index];
         let connect = self.placing.remote_options.deadlines.connect;
         let options = attacking(&mut rng, connect, broken.small);
@@ -393,6 +393,7 @@ impl Breaker<'_> {
             None if self.strict => self.world.reach(Reach::Framing),
             None => {}
         }
+        disrupted(broken.expect, &ended)
     }
 
     /// Dials the broken connector at `index` and makes `call` on it with `options`.
@@ -441,6 +442,12 @@ fn bound(options: &Options) -> Duration {
         + patience(options).saturating_mul(4)
         + options.deadlines.write_ack
         + LATE
+}
+
+/// Whether the attack passes only because the network was disrupted: judged in full it is a
+/// finding, judged as lost it is not.
+fn disrupted(expect: Expect, ended: &Ended) -> bool {
+    judge(expect, ended, true).is_some() && judge(expect, ended, false).is_none()
 }
 
 /// Sets up a connection over `wire` as `call`'s role, with `options`, and makes `call` on it.

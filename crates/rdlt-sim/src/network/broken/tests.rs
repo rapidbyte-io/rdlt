@@ -116,7 +116,7 @@ async fn left(net: &Net) -> usize {
 /// Attacks every broken connector in turn, judged in full where `strict`, its link cut and held
 /// meanwhile where not: what the world found, whether it reached [`Reach::Framing`], and the
 /// tasks the connectors' hosts ran a minute on.
-fn attacked(strict: bool) -> (Vec<String>, bool, usize) {
+fn attacked(strict: bool) -> (Vec<String>, bool, usize, usize) {
     run_networked(
         Seed::new(5),
         Serving::Rows,
@@ -132,6 +132,7 @@ fn attacked(strict: bool) -> (Vec<String>, bool, usize) {
             let options = options(&mut rng, Limits::default());
             let placing = Networked::new(Arc::clone(&net), &options, &Canary::of(name));
             let attacks = async {
+                let mut disrupted = 0;
                 for index in 0..catalogue().len() {
                     let breaker = Breaker {
                         placing: &placing,
@@ -139,26 +140,29 @@ fn attacked(strict: bool) -> (Vec<String>, bool, usize) {
                         strict,
                     };
                     let rng = SplitMix64::new(11 + u64::try_from(index).unwrap_or(0));
-                    breaker.attack(index, rng).await;
+                    disrupted += usize::from(breaker.attack(index, rng).await);
                 }
+                disrupted
             };
-            if strict {
-                attacks.await;
+            let disrupted = if strict {
+                attacks.await
             } else {
-                tokio::select! {
+                let disrupted = tokio::select! {
                     biased;
-                    () = attacks => {}
+                    disrupted = attacks => disrupted,
                     never = cut(SplitMix64::new(13), patience(&options)) => match never {},
-                }
+                };
                 turmoil::repair(ENGINE, BROKEN);
                 turmoil::release(ENGINE, BROKEN);
-            }
+                disrupted
+            };
             let tasks = left(&net).await;
             let world = registered.world();
             let found = (
                 world.violations(),
                 world.reached().has(Reach::Framing),
                 tasks,
+                disrupted,
             );
             drop(registered);
             found
@@ -168,15 +172,17 @@ fn attacked(strict: bool) -> (Vec<String>, bool, usize) {
 
 #[test]
 fn every_broken_connector_is_met_as_its_fault_says_on_a_healed_network() {
-    let (violations, reached, tasks) = attacked(true);
+    let (violations, reached, tasks, disrupted) = attacked(true);
     assert!(violations.is_empty(), "{violations:#?}");
     assert!(reached, "a healed attack reaches its path");
+    assert_eq!(disrupted, 0, "attacks a healed network disrupted");
     assert_eq!(tasks, 0, "tasks the connectors' hosts still run");
 }
 
 #[test]
 fn every_broken_connector_behind_a_cut_link_is_met_or_lost_within_its_bound() {
-    let (violations, _, tasks) = attacked(false);
+    let (violations, _, tasks, disrupted) = attacked(false);
     assert!(violations.is_empty(), "{violations:#?}");
     assert_eq!(tasks, 0, "tasks the connectors' hosts still run");
+    assert!(disrupted > 0, "the cut disrupted no attack");
 }
