@@ -75,8 +75,9 @@ takes the rest of what a streaming source must be able to tell a run:
   - A source that ignores its cursor now fails `S-PARTITION` as well as `S-RESUME`: it repeats
     rows however it is planned.
 - **The simulation's streaming reads** report how far behind they are and signal a re-plan after
-  every checkpoint of a following read. The partitions never change, so each signalled plan must
-  change nothing, through every crash and fault the seed draws.
+  every checkpoint of a following read. Where the seed's source does not churn (ADR 0031), the
+  partitions never change, so each signalled plan must change nothing, through every crash and
+  fault the seed draws; where it churns, a signalled plan names what the source names by then.
 
 ## Consequences
 
