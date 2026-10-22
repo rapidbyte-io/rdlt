@@ -206,10 +206,12 @@ impl Session for SimSession {
                 return Ok(receipt.clone());
             }
             store.owned(&self.pipeline, meta)?;
+            // Where the destination held each partition before this commit, which its rows start at.
+            let held = store.positions(&self.pipeline);
             let (published, reached) = store.publish(&self.pipeline, meta)?;
             self.world.reach_all(reached);
             store.apply(&self.world, &self.pipeline, meta);
-            store.check_cursors(&self.world, &self.pipeline, &published);
+            store.check_cursors(&self.world, &self.pipeline, &published, &held);
             let receipt = Receipt {
                 load_id: meta.load_id,
                 commit_seq: meta.commit_seq,

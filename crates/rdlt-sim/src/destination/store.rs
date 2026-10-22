@@ -8,8 +8,8 @@ use arrow_array::RecordBatch;
 use rdlt_connector::merge::{Merged, failed, merge_children_sparse, merge_sparse};
 use rdlt_connector::{
     CommitMeta, CommitSeq, ConnectorError, Epoch, GenerationId, LoadId, MergeKey, PartitionId,
-    PipelineId, Receipt, Result, SegmentId, StateChange, StateEntry, StateRecord, StreamName,
-    TablePath, TableRef,
+    PipelineId, ReadMode, Receipt, Result, SegmentId, StateChange, StateEntry, StateKey,
+    StateRecord, StreamName, TablePath, TableRef,
 };
 
 use super::read::{names, next_offset};
@@ -174,6 +174,24 @@ impl Store {
         self.landed
             .get(&(stream.clone(), partition.clone()))
             .copied()
+    }
+
+    /// Where `pipeline`'s state holds each partition, by the names of its stream and its own.
+    pub(super) fn positions(&self, pipeline: &PipelineId) -> BTreeMap<(String, String), u64> {
+        let Some(store) = self.pipelines.get(pipeline) else {
+            return BTreeMap::new();
+        };
+        store
+            .state
+            .keys()
+            .filter_map(|key| match StateKey::parse(key) {
+                Ok(StateKey::Partition(stream, partition)) => {
+                    let next = next_offset(&store.state, &stream, &partition)?;
+                    Some(((stream.to_string(), partition.to_string()), next))
+                }
+                _ => None,
+            })
+            .collect()
     }
 
     /// The epoch of `pipeline`'s newest session.
@@ -375,12 +393,14 @@ impl Store {
     }
 
     /// Checks that every row just published to a stream's table lies before its partition's
-    /// cursor `pipeline` committed.
+    /// cursor `pipeline` committed, and, for an incremental stream, not below where `held` says
+    /// the destination held the partition before the commit.
     pub(super) fn check_cursors(
         &self,
         world: &World,
         pipeline: &PipelineId,
         published: &[(String, Vec<Stored>)],
+        held: &BTreeMap<(String, String), u64>,
     ) {
         let Some(store) = self.pipelines.get(pipeline) else {
             return;
@@ -408,6 +428,9 @@ impl Store {
                 world.violation(format!("stream {stream}: rows published without names"));
                 continue;
             };
+            // Rows of an incremental stream land once, so none lands below where its partition was
+            // held, unless a reset racing the runs moved the position back.
+            let judged = incremental(world, &stream) && !world.reset.lock().contains(stream.name());
             for row in rows {
                 let number = |column: &str| cells::number(row, &names, column);
                 let (Some(partition), Some(offset)) = (number("partition"), number("offset"))
@@ -424,7 +447,23 @@ impl Store {
                          committed cursor {next:?}"
                     ));
                 }
+                let key = (stream.to_string(), partition.to_string());
+                if let Some(held) = held.get(&key).filter(|held| judged && offset < **held) {
+                    world.violation(format!(
+                        "stream {stream} partition {partition}: row {offset} published below the \
+                         position {held} the destination held"
+                    ));
+                }
             }
         }
     }
+}
+
+/// Whether `world`'s stream `stream` is read incrementally.
+fn incremental(world: &World, stream: &StreamName) -> bool {
+    world
+        .workload
+        .streams
+        .iter()
+        .any(|found| found.name == stream.name() && found.read == ReadMode::Incremental)
 }

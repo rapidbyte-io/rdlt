@@ -10,11 +10,11 @@ use arrow_buffer::OffsetBuffer;
 use arrow_schema::{DataType, Field as ArrowField};
 use rdlt_connector::limits::ListenLimits;
 use rdlt_connector::{
-    ChildTable, CommitMeta, CommitSeq, ConnectContext, ConnectorErrorKind, Cursor,
-    DestinationConnector, Epoch, Field, LoadId, LogicalType, MergeKey, OpenContext, PartitionId,
-    PartitionState, PipelineId, RootKey, SchemaVersion, SegmentId, SegmentSet, Session,
-    StateChange, StateEntry, StreamName, TableChange, TablePath, TableRef, TableSchema,
-    TableWriter, source_factory,
+    ChildTable, ColumnKey, ColumnPath, CommitMeta, CommitSeq, ConnectContext, ConnectorErrorKind,
+    Cursor, DestinationConnector, Epoch, Field, LoadId, LogicalType, MergeKey, NameMap,
+    OpenContext, PartitionId, PartitionState, PipelineId, ReadMode, RootKey, SchemaVersion,
+    SegmentId, SegmentSet, Session, StateChange, StateEntry, StreamName, TableChange, TablePath,
+    TableRef, TableSchema, TableWriter, source_factory,
 };
 use rdlt_testkit::canon::Canon;
 
@@ -25,7 +25,8 @@ use crate::changes::{Position, SimChangeSource};
 use crate::owners::Live;
 use crate::rng::SplitMix64;
 use crate::seed::{Seed, run};
-use crate::world::World;
+use crate::source::SimCursor;
+use crate::world::{Registered, World};
 
 fn table() -> TableRef {
     TableRef {
@@ -869,4 +870,79 @@ fn a_source_told_late_of_a_cursor_a_later_commit_removed_hears_what_was_committe
     drop(registered);
     // Told late, it heard a position a commit landed; a position past every commit is a violation.
     assert_eq!(heard, [0, 1], "{:#?}", world.violations());
+}
+
+/// A world registered as `name` whose first stream is read incrementally.
+fn incremental_world(name: &str) -> Registered {
+    for seed in 0.. {
+        let registered = World::register(name, &mut SplitMix64::new(seed));
+        if registered.world().workload.streams[0].read == ReadMode::Incremental {
+            return registered;
+        }
+    }
+    unreachable!("some seed reads its first stream incrementally")
+}
+
+/// A commit that moves partition `p0` of stream `s0` to `next`.
+fn cursor_commit(next: u64) -> CommitMeta {
+    let cursor = SimCursor {
+        next,
+        pad: String::new(),
+    };
+    let entry = StateEntry::Partition {
+        stream: StreamName::new("s0").unwrap(),
+        partition: PartitionId::parse("p0").unwrap(),
+        state: PartitionState::Cursor(Cursor::encode(1, &cursor).unwrap()),
+        load: LoadId::from_parts(std::time::UNIX_EPOCH, 1),
+    };
+    CommitMeta {
+        state_delta: vec![StateChange::Put(entry.to_record())],
+        ..first_commit(Vec::new())
+    }
+}
+
+#[test]
+fn a_row_of_an_incremental_stream_published_below_where_its_partition_was_held_is_a_violation() {
+    let registered = incremental_world("below");
+    let world = registered.world();
+    let pipeline = PipelineId::parse("sim").unwrap();
+    let path = TablePath::new(["s0"]).unwrap();
+    let mut names = NameMap::default();
+    for column in ["partition", "offset"] {
+        names
+            .insert(ColumnKey::Source(ColumnPath::from(column)), column)
+            .unwrap();
+    }
+    let mapped = StateEntry::Names {
+        table: path.clone(),
+        physical: "s0".into(),
+        names,
+    };
+    let mut store = Store::default();
+    store.names.insert(path, "s0".to_owned());
+    let naming = CommitMeta {
+        state_delta: vec![StateChange::Put(mapped.to_record())],
+        ..first_commit(Vec::new())
+    };
+    store.apply(world, &pipeline, &naming);
+    store.apply(world, &pipeline, &cursor_commit(5));
+    let held = store.positions(&pipeline);
+    store.apply(world, &pipeline, &cursor_commit(8));
+    let rows = |offsets: Vec<i64>| {
+        let partitions: ArrayRef = Arc::new(Int64Array::from(vec![0; offsets.len()]));
+        let offsets: ArrayRef = Arc::new(Int64Array::from(offsets));
+        cells::rows(&batch(vec![("partition", partitions), ("offset", offsets)])).unwrap()
+    };
+    store.check_cursors(
+        world,
+        &pipeline,
+        &[("s0".to_owned(), rows(vec![5, 7]))],
+        &held,
+    );
+    assert!(world.violations().is_empty(), "{:?}", world.violations());
+    store.check_cursors(world, &pipeline, &[("s0".to_owned(), rows(vec![4]))], &held);
+    let violations = world.violations();
+    assert_eq!(violations.len(), 1, "{violations:?}");
+    assert!(violations[0].contains("below"), "{violations:?}");
+    drop(registered);
 }
