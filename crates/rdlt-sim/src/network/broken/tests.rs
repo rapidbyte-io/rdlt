@@ -1,12 +1,15 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use rdlt_connector::limits::ListenLimits;
 use rdlt_connector::wire::MALFORMED_FRAME;
 use rdlt_connector::{ConnectorError, ConnectorErrorKind, ConnectorId};
 use rdlt_host::{CONNECTOR_LOST, ConnectorRef};
 use rdlt_wire::Limits;
 
-use super::{Breaker, Ended, Expect, ID, INVALID_MESSAGE, catalogue, judge, port};
+use super::{
+    Breaker, Ended, Expect, ID, INVALID_MESSAGE, attacking, bound, catalogue, judge, port,
+};
 use crate::canary::Canary;
 use crate::network::faults::cut;
 use crate::network::{
@@ -60,6 +63,25 @@ fn every_broken_connector_listens_on_its_port_over_mutual_tls() {
         .collect();
     assert!(failed.is_empty(), "{failed:#?}");
     assert_eq!(dialed.len(), 20);
+}
+
+// The host accepts a connection only after the attack dials it, so a cap longer than every
+// attack's bound ends no connection whose call is still being judged.
+#[test]
+fn every_attack_ends_before_the_broken_host_caps_its_connection() {
+    let cap = ListenLimits::default().send;
+    let longest = (0..10_000)
+        .map(|seed| {
+            let mut rng = SplitMix64::new(seed);
+            let connect = options(&mut rng, Limits::default()).deadlines.connect;
+            bound(&attacking(&mut rng, connect, seed % 2 == 0))
+        })
+        .max()
+        .unwrap_or_default();
+    assert!(
+        longest < cap,
+        "an attack may take {longest:?}, past the host's cap of {cap:?}"
+    );
 }
 
 /// An error coded `code`.
