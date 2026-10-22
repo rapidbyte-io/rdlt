@@ -125,7 +125,7 @@ fn of_starts_racing_for_the_last_group_of_a_process_one_alone_starts() {
 /// How long a round's run may take.
 const ROUND: Duration = Duration::from_secs(120);
 
-/// A round's options: a heartbeat every 100 ms, three missed losing a connector, so that a stall
+/// The source's options: a heartbeat every 100 ms, three missed losing a connector, so that a stall
 /// of a few hundred milliseconds loses one and a shorter one does not.
 fn options() -> Options {
     Options {
@@ -283,7 +283,9 @@ async fn loading(round: u64, logged: &Logged) {
         .expect("the source starts")
         .connector;
     let store = format!("soak-{round}");
-    let destination = memory_destination(&store, &options()).await;
+    // The destination is served on the round's one thread, which the test never stalls but a slow
+    // machine holds for longer than the source's patience: it keeps the default heartbeat.
+    let destination = memory_destination(&store, &Options::default()).await;
     let stream = StreamPlan::new(StreamName::new("rows").expect("a valid stream name"));
     let plan = PipelinePlan::new(PipelineId::parse("soak").expect("a valid id"), [stream])
         .expect("a valid plan");
