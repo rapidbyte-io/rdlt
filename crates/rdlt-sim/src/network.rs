@@ -253,6 +253,40 @@ where
     }
 }
 
+/// How long a connector's TLS handshake may take before its host gives up on it.
+const HANDSHAKE: Duration = Duration::from_secs(10);
+
+/// The TLS configuration every connector's host serves with, and the hosts it accepts: the
+/// engine's alone, by the name in its certificate.
+fn mutual(
+    net: &Net,
+) -> Result<(Arc<tokio_rustls::rustls::ServerConfig>, Hosts), Box<dyn std::error::Error>> {
+    let accepted = Accepted {
+        ca: net.pki.ca(),
+        hosts: Hosts::new([ENGINE])?,
+        crl: None,
+    };
+    let tls = Arc::new(rdlt_wire::tls::server_config(
+        &identity(&net.server),
+        &accepted,
+    )?);
+    Ok((tls, accepted.hosts))
+}
+
+/// Accepts the TLS handshake of `stream` within [`HANDSHAKE`], or none.
+async fn handshake<IO>(
+    acceptor: &tokio_rustls::TlsAcceptor,
+    stream: IO,
+) -> Option<tokio_rustls::server::TlsStream<IO>>
+where
+    IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    tokio::time::timeout(HANDSHAKE, acceptor.accept(stream))
+        .await
+        .ok()?
+        .ok()
+}
+
 /// What the latency's draw mixes into the seed: "latency" in ASCII.
 const LATENCY: u64 = 0x006c_6174_656e_6379;
 
@@ -264,19 +298,11 @@ const LATENCY: u64 = 0x006c_6174_656e_6379;
 /// drain goes on apart, until its connections end.
 async fn listen(net: Arc<Net>, side: Side) -> turmoil::Result {
     net.served.lock().push(Handle::current());
-    // The connectors accept the engine's host alone, by the name in its certificate.
-    let accepted = Accepted {
-        ca: net.pki.ca(),
-        hosts: Hosts::new([ENGINE]).map_err(|error| error.to_string())?,
-        crl: None,
-    };
-    let tls = rdlt_wire::tls::server_config(&identity(&net.server), &accepted)
-        .map(Arc::new)
-        .map_err(|error| error.to_string())?;
+    let (tls, hosts) = mutual(&net)?;
     // A seed's output is its failure alone: what the connectors would report is dropped.
     let listening = Listening {
         log: Log::new(|_| {}),
-        ..Listening::new(tls, accepted.hosts).map_err(|error| error.to_string())?
+        ..Listening::new(tls, hosts).map_err(|error| error.to_string())?
     };
     loop {
         net.connectors.up(side).await;

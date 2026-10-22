@@ -18,13 +18,12 @@ use parking_lot::Mutex;
 use rdlt_connector::destination_factory;
 use rdlt_connector::serve::{Served, serve_connection};
 use rdlt_wire::Limits;
-use rdlt_wire::tls::{Accepted, Hosts};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::runtime::Handle;
 use tokio::time::Instant;
 use tokio_rustls::TlsAcceptor;
 
-use super::{DRAIN, ENGINE, Net, PORT, identity};
+use super::{DRAIN, Net, PORT};
 use crate::destination::SimDestination;
 
 /// The first stream whose answers are withheld: a client's streams are odd, the handshake's 1
@@ -36,9 +35,6 @@ const ANSWERS: [u8; 4] = [0x0, 0x1, 0x9, 0x3];
 
 /// Bytes: the head of an HTTP/2 frame.
 const HEAD: usize = 9;
-
-/// How long a stalled connection's TLS handshake may take before the peer gives up on it.
-const HANDSHAKE: Duration = Duration::from_secs(10);
 
 /// What every stalled connection shares: the patience of the engine's heartbeat, and each
 /// connection the engine kept open beyond it.
@@ -72,14 +68,7 @@ impl Stalls {
 /// until the simulation ends.
 pub(super) async fn stall(net: Arc<Net>) -> turmoil::Result {
     net.served.lock().push(Handle::current());
-    let accepted = Accepted {
-        ca: net.pki.ca(),
-        hosts: Hosts::new([ENGINE]).map_err(|error| error.to_string())?,
-        crl: None,
-    };
-    let tls = rdlt_wire::tls::server_config(&identity(&net.server), &accepted)
-        .map(Arc::new)
-        .map_err(|error| error.to_string())?;
+    let (tls, _) = super::mutual(&net)?;
     let acceptor = TlsAcceptor::from(tls);
     let served = Arc::new(
         Served::new()
@@ -94,8 +83,8 @@ pub(super) async fn stall(net: Arc<Net>) -> turmoil::Result {
         let (acceptor, served) = (acceptor.clone(), Arc::clone(&served));
         let stalls = Arc::clone(&net.stalls);
         tokio::spawn(async move {
-            let accepting = tokio::time::timeout(HANDSHAKE, acceptor.accept(stream));
-            let Ok(Ok(tls)) = accepting.await else {
+            let tls = super::handshake(&acceptor, stream).await;
+            let Some(tls) = tls else {
                 return;
             };
             // A transport that fails ends the connection, which is all the peer does about it.
