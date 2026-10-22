@@ -31,6 +31,9 @@ pub(crate) const HOSTILE: u64 = 0x0068_6f73_7469_6c65;
 /// What process placement's draw mixes into the seed's generator: "process" in ASCII.
 const PROCESS: u64 = 0x0070_726f_6365_7373;
 
+/// What churn's draw mixes into the seed's generator: "churn" in ASCII.
+const CHURN: u64 = 0x0063_6875_726e;
+
 /// Which of the simulation's features one seed exercises.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[expect(
@@ -92,6 +95,10 @@ pub struct Features {
     /// while before a run reads them to their end; every other one's partitions never end, and
     /// the rest are read again as they grow.
     pub streaming: bool,
+    /// Where runs follow the source, a source that retires partitions of the streams they follow,
+    /// adds others and names retired ones again while they read, saying in each plan where each
+    /// partition ends; one time in two of the streaming seeds.
+    pub churn: bool,
     /// Once every phase converged, a stream the source can read again is reset, from its
     /// beginning or with its tables, while runs of every pipeline load, and they converge again.
     pub reset: bool,
@@ -127,6 +134,7 @@ impl Features {
         wal: true,
         objects: true,
         streaming: true,
+        churn: true,
         reset: true,
         fat: false,
         hostile: true,
@@ -134,20 +142,21 @@ impl Features {
 
     /// The features one seed exercises: every feature one time in eight, else each on or off by
     /// a coin, drift more often than not, the network, the write-ahead log, streaming and
-    /// resetting one time in four each, process placement one time in four of the seeds the
-    /// network leaves, the log's object store and a hostile host one time in two each, and fat
-    /// values one time in four where no log is kept.
+    /// resetting one time in four each, churn one time in two of the streaming seeds, process
+    /// placement one time in four of the seeds the network leaves, the log's object store and a
+    /// hostile host one time in two each, and fat values one time in four where no log is kept.
     ///
-    /// The network, process placement, the log and its store, streaming, resetting, fat values and
-    /// a hostile host are drawn apart from the rest, from the value the next draw takes but without
-    /// taking it, so a seed's workload is the same over either transport, logged or not and in
-    /// either store, streamed or not, reset or not, and with fat values or without but for those
-    /// values.
+    /// The network, process placement, the log and its store, streaming, churn, resetting, fat
+    /// values and a hostile host are drawn apart from the rest, from the value the next draw takes
+    /// but without taking it, so a seed's workload is the same over either transport, logged or
+    /// not and in either store, streamed or not, churned or not, reset or not, and with fat values
+    /// or without but for those values.
     pub fn draw(rng: &mut SplitMix64) -> Self {
         let next = rng.clone().next_u64();
         let network = SplitMix64::new(next ^ NETWORK).chance(250);
         let wal = SplitMix64::new(next ^ WAL).chance(250);
         let streaming = SplitMix64::new(next ^ STREAMING).chance(250);
+        let churn = streaming && SplitMix64::new(next ^ CHURN).chance(500);
         let reset = SplitMix64::new(next ^ RESET).chance(250);
         let objects = SplitMix64::new(next ^ OBJECT_STORE).chance(500);
         let fat = !wal && SplitMix64::new(next ^ FAT).chance(250);
@@ -160,6 +169,7 @@ impl Features {
                 wal,
                 objects,
                 streaming,
+                churn,
                 reset,
                 fat,
                 hostile,
@@ -186,6 +196,7 @@ impl Features {
             wal,
             objects,
             streaming,
+            churn,
             reset,
             fat,
             hostile,

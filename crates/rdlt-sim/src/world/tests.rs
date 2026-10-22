@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::time::Duration;
@@ -209,4 +209,23 @@ fn pushes_count_the_largest_event_since_they_restarted() {
         8,
         "a checkpoint's cursor is an event as a push is"
     );
+}
+
+#[test]
+fn a_source_names_every_partition_unless_a_phase_churns_them() {
+    let named = super::Named::default();
+    assert!(named.names(0, 3) && named.naming().is_none());
+    named.name(Some(BTreeMap::from([(1, BTreeSet::from([0]))])));
+    assert!(
+        named.names(0, 3),
+        "a stream the naming leaves out is named whole"
+    );
+    assert!(named.names(1, 0) && !named.names(1, 1));
+    named.name(Some(BTreeMap::from([(1, BTreeSet::new())])));
+    assert!(
+        !named.names(1, 0),
+        "a stream may name none of its partitions"
+    );
+    named.name(None);
+    assert!(named.names(1, 1));
 }

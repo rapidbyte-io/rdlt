@@ -1,6 +1,7 @@
 //! The world one simulation shares: its workload, faults, destination store and findings.
 
 mod hangs;
+mod named;
 mod pushes;
 mod reports;
 #[cfg(test)]
@@ -31,6 +32,7 @@ use crate::swarm::Features;
 use crate::wal::SimWal;
 use crate::workload::Workload;
 use hangs::Hangs;
+pub(crate) use named::Named;
 use pushes::Pushes;
 pub(crate) use reports::Reports;
 pub(crate) use told::Heard;
@@ -110,6 +112,8 @@ pub struct World {
     produced: Mutex<Option<BTreeMap<(usize, usize), usize>>>,
     /// Wakes reads that follow a partition when more of its rows arrive.
     pub(crate) arrived: Notify,
+    /// Which partitions of its followed streams the source names.
+    pub(crate) named: Named,
     /// How hard the source presses on the engine's memory budget.
     pressure: Mutex<Pressure>,
     /// What the source holds of the pushes it made and has not yet sent on.
@@ -256,6 +260,7 @@ impl World {
             reports: Reports::default(),
             produced: Mutex::new(None),
             arrived: Notify::new(),
+            named: Named::default(),
             pressure: Mutex::default(),
             pushes: Pushes::default(),
             owners: Owners::default(),
@@ -320,6 +325,7 @@ impl World {
             reports: Reports::default(),
             produced: Mutex::new(None),
             arrived: Notify::new(),
+            named: Named::default(),
             pressure: Mutex::default(),
             pushes: Pushes::default(),
             owners: Owners::default(),
@@ -512,6 +518,25 @@ impl World {
     pub fn violations(&self) -> Vec<String> {
         self.violations.lock().clone()
     }
+}
+
+/// A world registered as `name` whose source churns a stream runs follow, with that stream's
+/// index.
+#[cfg(test)]
+pub(crate) fn churning(name: &str) -> (Registered, usize) {
+    for seed in 0.. {
+        let registered = World::register(name, &mut SplitMix64::new(seed));
+        let world = registered.world();
+        let followed = world
+            .workload
+            .streams
+            .iter()
+            .position(|stream| stream.follows);
+        if let Some(index) = followed.filter(|_| world.workload.features.churn) {
+            return (registered, index);
+        }
+    }
+    unreachable!("some seed churns a stream runs follow")
 }
 
 /// Destination capabilities drawn from `rng`: which types it stores natively, whether it stores
