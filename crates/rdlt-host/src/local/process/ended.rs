@@ -2,6 +2,13 @@
 //!
 //! Tokio's `watch` channel spreads its waiters over queues it picks at random, so tasks woken by
 //! one value would run in an order a simulated seed does not decide.
+#![cfg_attr(
+    not(feature = "sim"),
+    expect(
+        unreachable_pub,
+        reason = "public only where the simulation plays a process"
+    )
+)]
 
 use std::sync::{Mutex, PoisonError};
 

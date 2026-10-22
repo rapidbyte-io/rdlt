@@ -37,6 +37,9 @@ use crate::kills::Kills;
 pub(crate) use command::executed_from;
 use command::{Commanded, command};
 pub(crate) use command::{Confinement, Unspawned, inheriting};
+#[cfg(not(feature = "sim"))]
+use ended::Ended;
+#[cfg(feature = "sim")]
 pub use ended::Ended;
 pub use group::{Interrupts, Lingering, StopsSpawned, spawned, stop_spawned};
 #[cfg(feature = "sim")]
