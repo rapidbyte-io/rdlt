@@ -1,9 +1,9 @@
 # Simulation throughput
 
 How fast the simulation checks seeds. The local rows were measured on the simulation as this record
-leaves it, `c3cc0588`, against `bf2b4a5e` (the parent below), which has no churning sources; the CI
-rows marked estimated are scaled by the local ratio from what each row names. `just sim-rate`
-checks the reference rate every night against the floor below.
+leaves it, against `bf2b4a5e` (the parent below), which has no churning sources; the CI rows marked
+estimated are scaled by the local ratio from what each row names. `just sim-rate` checks the
+reference rate every night against the floor below.
 
 ## Method
 
@@ -31,9 +31,9 @@ checks the reference rate every night against the floor below.
 | Both sweeps together, seeds 0-999 | 71.8 s, 1.036 times the parent's 69.4 s |
 | Replay of both oracles, 1 000 seeds, four P-cores | 141.4 s (7.1 seeds/s), `just sim-replay` |
 | Pull request shards | 40 of 2 500 seeds, 4.9-9.3 min of 15 each on CI, estimated from main's run at `bf2b4a5e` (4.7-9.0 min); no more than about 8 of a run's jobs start together |
-| Exactly-once sweep, a pull request's shard, ubuntu-24.04 | about 6.8 seeds/s median, 6.1-11.4 over 40 shards, estimated from the parent's shards (7.0 median, 6.3-11.8) |
+| Exactly-once sweep, a pull request's shard, ubuntu-24.04 | about 6.6 seeds/s median, 6.2-12.6 over 40 shards, estimated from the shards of main's run at `bf2b4a5e` (6.9 median, 6.4-13.1) |
 | Nightly shards | 80 of 12 500 seeds, up to about 51 min of 70, estimated from `d28d458f`'s nightly, whose 50 of 20 000 took 28.9-58.3 min |
-| Coverage run, CI | about 32-40 min of 60, estimated from the parent's nightlies, 22.6 min on `d28d458f` and 28.4 on `9ff145dd` |
+| Coverage run, CI | about 38 min of 60, estimated: the nightly at `c48540dd` (run 39748626499, which ran the parent's simulation) took 36.7 min, times the local ratio 1.036 |
 | Replay job, CI | about 7.6 min of 30, estimated: the nightly at `c48540dd` (run 39748626499, which ran the parent's simulation) took 7.3 min, times the local ratio 1.036 |
 | Test job, ubuntu-24.04 | 20.2 min of 45 on main's run at `bf2b4a5e`, plus 3.3 s for the churning seeds' test |
 | Test job, macos-15 | 23.3 min of 45 on main's run at `bf2b4a5e`, plus the same 3.3 s |
