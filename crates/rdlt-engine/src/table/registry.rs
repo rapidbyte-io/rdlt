@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use parking_lot::{Mutex, RwLock};
 use rdlt_connector::{
-    ColumnKey, ConnectorError, Field, PipelineState, StateChange, StreamName, TableChange,
+    ColumnKey, ConnectorError, Field, LoadId, PipelineState, StateChange, StreamName, TableChange,
     TablePath, TableRef, TableState,
 };
 
@@ -93,6 +93,9 @@ pub(crate) struct Tables {
     charge: std::sync::OnceLock<records::Charge>,
     /// Tables: the most child tables a stream's table may have.
     children_limit: usize,
+    /// What the hashes of names around conflicts are seeded from: the attempt's own, so no
+    /// attempt meets the names an earlier one left behind at the same retries.
+    salt: u64,
 }
 
 /// What a commit records about the tables, and the model revisions it records.
@@ -118,6 +121,16 @@ impl Tables {
             taken: Mutex::new(BTreeSet::new()),
             charge: std::sync::OnceLock::new(),
             children_limit: GrowthLimits::default().child_tables().get(),
+            salt: 0,
+        }
+    }
+
+    /// The same tables, naming around conflicts with hashes seeded from the load `load`.
+    #[must_use]
+    pub(crate) fn salted(self, load: LoadId) -> Self {
+        Self {
+            salt: xxhash_rust::xxh3::xxh3_64(load.as_bytes()),
+            ..self
         }
     }
 
@@ -321,7 +334,7 @@ impl Tables {
                 // Else a name an attempt that never committed left behind: new columns are
                 // named around it.
                 Err(_) => {
-                    resolver = Cow::Owned(resolver.hashing(retries as u64));
+                    resolver = Cow::Owned(resolver.hashing(self.salt.wrapping_add(retries as u64)));
                     retries += 1;
                 }
             }

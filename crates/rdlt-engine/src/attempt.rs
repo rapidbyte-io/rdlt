@@ -184,6 +184,7 @@ async fn opened_run(
         capabilities,
     };
     let tables = Tables::new(Arc::clone(&opened.session))
+        .salted(load_id)
         .growing(context.config.child_table_limit())
         .committed(&opened.state)?;
     let planned = planning.streams(context.plan.streams(), &tables).await?;
