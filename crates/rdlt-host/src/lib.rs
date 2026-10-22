@@ -22,12 +22,11 @@ mod wire;
 pub use connect::{Connect, Open};
 pub use kills::Kills;
 pub use local::{
-    Bubblewrap, Confined, Ended, Grants, Interrupts, LastWords, Launcher, Lingering, Local,
-    NetworkGrant, OsError, Sandbox, SandboxError, Stops, StopsSpawned, Witness, spawned,
-    stop_spawned,
+    Bubblewrap, Confined, Grants, Interrupts, LastWords, Launcher, Lingering, Local, NetworkGrant,
+    OsError, Sandbox, SandboxError, Stops, StopsSpawned, Witness, spawned, stop_spawned,
 };
 #[cfg(feature = "sim")]
-pub use local::{Played, Playing};
+pub use local::{Ended, Played, Playing};
 pub use network::{Endpoint, EndpointError, Network, Remote, Stream, Tcp};
 pub use provider::{ConnectorRef, Digest, Isolation, Placed, Placement, Provider, ProviderError};
 pub use rdlt_wire::tls::Identity;
