@@ -501,6 +501,7 @@ const NONE: Features = Features {
     wal: false,
     objects: false,
     streaming: false,
+    churn: false,
     reset: false,
     fat: false,
     hostile: false,

@@ -1,14 +1,16 @@
 //! The simulated source: serves the world's workload, with faults.
 
 mod push;
+#[cfg(test)]
+mod tests;
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use rdlt_connector::{
-    Checkpointing, ConnectContext, ConnectorError, ConnectorErrorKind, Emitter, Field, LogicalType,
-    Partition, PartitionId, ReadMode, ReadStream, Result, SourceConnector, StreamName, StreamSpec,
-    StreamState, Streams, TableSchema,
+    Checkpointing, ConnectContext, ConnectorError, ConnectorErrorKind, Cursor, Emitter, Field,
+    LogicalType, Partition, PartitionId, PartitionPlan, ReadMode, ReadStream, Result,
+    SourceConnector, StreamName, StreamSpec, StreamState, Streams, TableSchema,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -160,7 +162,9 @@ impl ReadStream<SimSource> for SimStreamReader {
             return Err(fault);
         }
         let stream = self.stream(source);
+        let named = |index: &usize| source.world.named.names(self.index, *index);
         Ok((0..stream.partitions.len())
+            .filter(named)
             .map(|index| {
                 let id = PartitionId::parse(format!("p{index}")).expect("valid partition id");
                 if stream.unbounded {
@@ -170,6 +174,35 @@ impl ReadStream<SimSource> for SimStreamReader {
                 }
             })
             .collect())
+    }
+
+    async fn plan(&self, source: &SimSource, state: &StreamState) -> Result<PartitionPlan> {
+        let partitions = self.partitions(source, state).await?;
+        let world = &source.world;
+        let stream = self.stream(source);
+        if !(world.workload.features.churn && stream.follows) {
+            return Ok(PartitionPlan::new(partitions));
+        }
+        // As a log's listing says where each partition ends: a plan in the phase state records
+        // resumes each partition from where it was committed, never from here.
+        let starts = partitions
+            .iter()
+            .map(|partition| {
+                let index = partition_index(partition)?;
+                let rows = stream.rows(index, world.phase()).len();
+                let newest = SimCursor {
+                    next: world.available(self.index, index, rows) as u64,
+                    pad: String::new(),
+                };
+                let version = <Self as ReadStream<SimSource>>::CURSOR_VERSION;
+                let cursor = Cursor::encode(version, &newest).expect("a simulated cursor encodes");
+                Ok((partition.id().clone(), cursor))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let plan = PartitionPlan::new(partitions);
+        Ok(starts
+            .into_iter()
+            .fold(plan, |plan, (id, cursor)| plan.start(id, cursor)))
     }
 
     async fn read(
