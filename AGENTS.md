@@ -8,8 +8,8 @@ decisions and their reasons are in `docs/adr/`. Read those before changing code.
 
 - Check the latest nightly run (`gh run list --workflow nightly.yml --limit 1`). A failing nightly
   is fixed before other work: its gates (the simulation's seeds and coverage, fuzzing, stress,
-  mutation testing, every Kani proof, the specs' model checking and the resident-memory check)
-  run nowhere else.
+  the soak of spawned connectors, mutation testing, every Kani proof, the specs' model checking
+  and the resident-memory check) run nowhere else.
 
 ## Before you push
 
