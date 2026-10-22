@@ -1,11 +1,13 @@
 //! A streaming phase: runs follow the source for a while as the rows of its followed streams
-//! arrive, before the phase's runs read every row to its end.
+//! arrive, and, where the seed churns, as its partitions come and go, before the phase's runs
+//! read every row to its end.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
 
 use rdlt_engine::{Report, Until};
 
+use super::churn::{self, CHANGES, NAMING};
 use super::scenario::{Scenario, pick};
 use super::{DISRUPTED, Simulation};
 use crate::reached::Reach;
@@ -36,7 +38,14 @@ impl Simulation {
         }
         let phase_salt = u64::try_from(phase).unwrap_or(0);
         let mut rng = SplitMix64::new(self.seed.value() ^ ARRIVALS ^ phase_salt);
+        // Drawn apart, so a seed whose source does not churn draws as it always has.
+        let mut churning = features
+            .churn
+            .then(|| SplitMix64::new(self.seed.value() ^ NAMING ^ phase_salt));
         let world = std::sync::Arc::clone(&self.world);
+        if let Some(churning) = churning.as_mut() {
+            world.named.name(Some(churn::first(&world, churning)));
+        }
         world.produce(Some(arrived(&world, phase, &mut rng)));
         for _ in 0..RUNS {
             let deadline = Duration::from_millis(500 + rng.below(1500));
@@ -52,6 +61,9 @@ impl Simulation {
             // Drawn apart from the phase's draws, and only where the network is.
             let network = (features.faults && self.placing.is_some())
                 .then(|| SplitMix64::new(rng.clone().next_u64() ^ DISRUPTED));
+            let ticking = churning
+                .as_mut()
+                .map(|churning| SplitMix64::new(churning.next_u64()));
             let running = self.attempt_until(
                 phase,
                 scenario,
@@ -60,14 +72,16 @@ impl Simulation {
                 reports,
                 Until::For(deadline),
             );
-            let (ran, ()) = tokio::join!(running, arrive(&world, phase, arriving, ticks));
+            let (ran, ()) = tokio::join!(running, arrive(&world, phase, arriving, ticks, ticking));
             world.reach(Reach::Followed);
             if ran.stopped {
                 world.produce(None);
+                world.named.name(None);
                 return true;
             }
         }
         world.produce(None);
+        world.named.name(None);
         false
     }
 }
@@ -94,8 +108,15 @@ fn arrived(world: &World, phase: usize, rng: &mut SplitMix64) -> BTreeMap<(usize
     arrived
 }
 
-/// Makes more of phase `phase`'s rows arrive every tick, `ticks` times.
-async fn arrive(world: &World, phase: usize, mut rng: SplitMix64, ticks: u64) {
+/// Makes more of phase `phase`'s rows arrive every tick, `ticks` times; where the source churns,
+/// drawing from `churning`, it also retires or names a partition at a third of them.
+async fn arrive(
+    world: &World,
+    phase: usize,
+    mut rng: SplitMix64,
+    ticks: u64,
+    mut churning: Option<SplitMix64>,
+) {
     for _ in 0..ticks {
         tokio::time::sleep(TICK).await;
         let mut arrived = BTreeMap::new();
@@ -111,5 +132,10 @@ async fn arrive(world: &World, phase: usize, mut rng: SplitMix64, ticks: u64) {
             }
         }
         world.produce(Some(arrived));
+        if let Some(churning) = churning.as_mut()
+            && churning.chance(CHANGES)
+        {
+            churn::change(world, churning);
+        }
     }
 }

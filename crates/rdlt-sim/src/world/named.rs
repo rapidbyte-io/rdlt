@@ -23,19 +23,11 @@ impl Named {
     }
 
     /// What the source names, where a phase churns it.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "read by the phases that churn a source")
-    )]
     pub(crate) fn naming(&self) -> Option<Naming> {
         self.0.lock().clone()
     }
 
     /// Names what `naming` says from now on, and every partition where it is `None`.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "called by the phases that churn a source")
-    )]
     pub(crate) fn name(&self, naming: Option<Naming>) {
         *self.0.lock() = naming;
     }

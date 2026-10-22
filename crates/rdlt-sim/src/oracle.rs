@@ -3,6 +3,7 @@
 
 mod arrivals;
 mod changes;
+mod churn;
 mod config;
 mod expected;
 mod faulty;
