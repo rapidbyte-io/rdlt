@@ -11,12 +11,12 @@ use rdlt_connector::{
 use rdlt_connector_reference::MemorySource;
 use rdlt_host::remote::Client;
 use rdlt_host::{CONNECTOR_LOST, Connection, DEADLINE_EXCEEDED, Deadlines, Options, RemoteSource};
+use rdlt_testkit::fake::{Fake, Fault, socket};
 use rdlt_wire::{Limits, PROTOCOL_MAJOR};
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::support::connectors::{Denied, SlowCommits};
 use crate::support::{memory_destination, plane_client, served, served_within};
-use rdlt_testkit::fake::{Fake, Fault, socket};
 
 /// Options that notice a lost connector within about a tenth of a second.
 fn quick() -> Options {

@@ -16,6 +16,7 @@ use rdlt_connector::{
 };
 use rdlt_connector_reference::MemoryDestination;
 use rdlt_host::{Connection, Options, RemoteSource};
+use rdlt_testkit::fake::{Fake, Fault, Granted, Polled, socket};
 use rdlt_wire::flow::Transport;
 use rdlt_wire::limits::{CREDIT_FLOOR, Class, MIN_FRAME_BYTES};
 use rdlt_wire::{Encoder, Limits};
@@ -23,7 +24,6 @@ use tokio_stream::wrappers::ReceiverStream;
 
 use crate::sessions::{raw_session_within, table};
 use crate::support::connectors::{Gate, Writes, Writing};
-use rdlt_testkit::fake::{Fake, Fault, Granted, Polled, socket};
 
 /// Rows: the ids of a frame of seven megabytes, as the default coalescing target makes.
 const ROWS: i64 = 875_000;

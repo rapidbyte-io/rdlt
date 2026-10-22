@@ -11,6 +11,7 @@ use rdlt_connector::{
 use rdlt_connector_reference::{MemoryDestination, MemorySource};
 use rdlt_host::remote::Client;
 use rdlt_host::{Connection, Options, RemoteDestination, RemoteSource};
+use rdlt_testkit::fake::{Fake, Fault, socket};
 use rdlt_wire::prost::Message as _;
 use rdlt_wire::{Encoder, Limits, PROTOCOL_MAJOR};
 use tokio::net::UnixStream;
@@ -18,7 +19,6 @@ use tokio_stream::wrappers::ReceiverStream;
 
 use crate::support::connectors::{Writes, Writing};
 use crate::support::served_within;
-use rdlt_testkit::fake::{Fake, Fault, socket};
 
 pub(crate) fn handshake(role: v1::Role) -> v1::HandshakeRequest {
     v1::HandshakeRequest {

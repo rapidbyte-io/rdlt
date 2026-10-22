@@ -7,12 +7,11 @@ use std::task::{Context, Poll};
 use bytes::{Buf as _, BufMut as _, Bytes};
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use hyper_util::service::TowerToHyperService;
+use rdlt_testkit::fake::{Fake, Fault};
 use rdlt_wire::v1::connector_server::ConnectorServer;
 use tokio::net::UnixStream;
 use tonic::Status;
 use tonic::codec::{Codec, DecodeBuf, Decoder, EncodeBuf, Encoder};
-
-use rdlt_testkit::fake::{Fake, Fault};
 
 /// A body of one gRPC message, prefix and all, and the trailers of a call that succeeded.
 struct Raw(Option<Bytes>, bool);

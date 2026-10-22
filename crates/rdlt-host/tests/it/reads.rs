@@ -9,10 +9,10 @@ use rdlt_connector::{
 use rdlt_connector_reference::{GeneratorSource, published};
 use rdlt_engine::{PipelinePlan, RunStatus, StreamPlan};
 use rdlt_host::{Connection, Options, RemoteSource};
+use rdlt_testkit::fake::{Fake, Fault, socket};
 
 use crate::support::connectors::{COMMITTED, IDLE_READING, READS, Ticks};
 use crate::support::{engine, memory_destination, served};
-use rdlt_testkit::fake::{Fake, Fault, socket};
 
 /// The ticks source, served, with `config`.
 async fn ticks(config: serde_json::Value) -> RemoteSource {

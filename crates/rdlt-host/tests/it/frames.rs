@@ -20,6 +20,7 @@ use rdlt_connector::{
 use rdlt_connector_reference::{MemoryDestination, published};
 use rdlt_engine::{PipelinePlan, RunStatus, StreamPlan};
 use rdlt_host::{Connection, Options, RemoteDestination, RemoteSource};
+use rdlt_testkit::fake::{Fake, Fault, socket};
 use rdlt_wire::limits::{MIN_BATCH_ROWS, MIN_BATCH_VALUES};
 use rdlt_wire::{Encoder, IpcFrame, Limits};
 use tokio_stream::wrappers::ReceiverStream;
@@ -27,7 +28,6 @@ use tokio_stream::wrappers::ReceiverStream;
 use crate::sessions::{context, raw_session, table};
 use crate::support::connectors::{Kept, Ticks, Writes, Writing, flagged};
 use crate::support::{engine, served, served_within};
-use rdlt_testkit::fake::{Fake, Fault, socket};
 
 type Sent = (Bytes, Vec<IpcFrame>);
 
