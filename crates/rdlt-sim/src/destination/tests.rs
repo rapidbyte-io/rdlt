@@ -17,6 +17,7 @@ use rdlt_connector::{
     TableRef, TableSchema, TableWriter, source_factory,
 };
 use rdlt_testkit::canon::Canon;
+use serde::Serialize;
 
 use super::cells::{self, Stored};
 use super::store::{Staged, Store};
@@ -25,7 +26,7 @@ use crate::changes::{Position, SimChangeSource};
 use crate::owners::Live;
 use crate::rng::SplitMix64;
 use crate::seed::{Seed, run};
-use crate::source::SimCursor;
+use crate::source::{SimCursor, SimSource};
 use crate::world::{Registered, World};
 
 fn table() -> TableRef {
@@ -795,16 +796,22 @@ fn stored_rows_are_the_worlds_and_count_beyond_no_charge() {
 }
 
 /// A commit that puts `position` for `partition` of `stream`, or deletes its cursor where none.
-fn moving(stream: &StreamName, partition: &PartitionId, position: Option<Position>) -> CommitMeta {
+fn moving<C: Serialize + Default>(
+    stream: &StreamName,
+    partition: &PartitionId,
+    position: Option<C>,
+) -> CommitMeta {
+    let put = position.is_some();
     let entry = StateEntry::Partition {
         stream: stream.clone(),
         partition: partition.clone(),
         state: PartitionState::Cursor(Cursor::encode(1, &position.unwrap_or_default()).unwrap()),
         load: LoadId::from_parts(std::time::UNIX_EPOCH, 1),
     };
-    let change = match position {
-        Some(_) => StateChange::Put(entry.to_record()),
-        None => StateChange::Delete(entry.key().encode()),
+    let change = if put {
+        StateChange::Put(entry.to_record())
+    } else {
+        StateChange::Delete(entry.key().encode())
     };
     CommitMeta {
         state_delta: vec![change],
@@ -844,7 +851,11 @@ fn a_source_told_late_of_a_cursor_a_later_commit_removed_hears_what_was_committe
             &moving(&stream, &partition, Some(committed)),
         );
         // The read of the snapshot partition is over: the next commit moves on to the changes.
-        store.apply(&world, &pipeline, &moving(&stream, &partition, None));
+        store.apply(
+            &world,
+            &pipeline,
+            &moving::<Position>(&stream, &partition, None),
+        );
     }
     for position in [committed, beyond] {
         world.reports.note(stream.name(), &partition, &position);
@@ -945,4 +956,65 @@ fn a_row_of_an_incremental_stream_published_below_where_its_partition_was_held_i
     assert_eq!(violations.len(), 1, "{violations:?}");
     assert!(violations[0].contains("below"), "{violations:?}");
     drop(registered);
+}
+
+#[test]
+fn a_source_told_late_of_a_cursor_a_newer_full_read_restarted_hears_what_was_committed() {
+    let name = "told-late-rows";
+    let registered = World::register(name, &mut SplitMix64::new(1));
+    let world = Arc::clone(registered.world());
+    let replayable = world
+        .workload
+        .streams
+        .iter()
+        .find(|stream| stream.replayable);
+    let stream = StreamName::new(&replayable.expect("a replayable stream").name).unwrap();
+    let partition = PartitionId::parse("p0").unwrap();
+    let cursor = |next| SimCursor {
+        next,
+        pad: String::new(),
+    };
+    {
+        let mut store = world.store.lock();
+        let pipeline = PipelineId::parse("sim").unwrap();
+        store.apply(
+            &world,
+            &pipeline,
+            &moving(&stream, &partition, Some(cursor(22))),
+        );
+        // A newer run reads the stream in full again, from its start.
+        store.apply(
+            &world,
+            &pipeline,
+            &moving::<SimCursor>(&stream, &partition, None),
+        );
+        store.apply(
+            &world,
+            &pipeline,
+            &moving(&stream, &partition, Some(cursor(20))),
+        );
+    }
+    for next in [22, 23] {
+        world.reports.note(stream.name(), &partition, &cursor(next));
+    }
+    let heard = run(Seed::new(1), {
+        let (world, stream) = (Arc::clone(&world), stream.clone());
+        |_| async move {
+            let config = serde_json::json!({ "world": name });
+            let source = source_factory::<SimSource>()
+                .connect(config, ConnectContext::new())
+                .await
+                .unwrap();
+            let mut heard = Vec::new();
+            for next in [22, 23] {
+                let told = [(partition.clone(), Cursor::encode(1, &cursor(next)).unwrap())];
+                source.committed(&stream, &told).await.unwrap();
+                heard.push(world.violations().len());
+            }
+            heard
+        }
+    });
+    drop(registered);
+    // Told late, it heard a cursor a commit landed; a cursor past every commit is a violation.
+    assert_eq!(heard, [0, 1], "{:#?}", world.violations());
 }

@@ -130,8 +130,7 @@ impl Simulation {
             (Some(placing), Some(rng)) => Box::pin(placing.disrupting(rng, raced)).await,
             _ => raced.await,
         };
-        // The raced runs have ended: no acknowledgement of a commit from before the reset is
-        // left to reach the source, so it is checked again from here on.
+        // The raced runs have ended: the stream's positions only move forward from here on.
         self.world.reset.lock().remove(drawn.streams[0].name());
         if let Some(unfinished) = unfinished {
             self.settle(seed, &drawn, unfinished).await;

@@ -22,7 +22,6 @@ pub(crate) use plans::{Findings, Plans};
 use push::batch;
 pub(crate) use push::json_push;
 
-use crate::destination::committed_next;
 use crate::oracle::aside;
 use crate::owners::Live;
 use crate::workload::{Row, SimStream};
@@ -434,12 +433,12 @@ fn committed(
             *furthest = (*furthest).max(cursor.next);
             continue;
         }
-        let committed = committed_next(world, &name, partition);
-        let reset = world.reset.lock().contains(&stream.name);
-        if !reset && committed.is_none_or(|committed| cursor.next > committed) {
+        // Told late, it may hear of a commit after a newer one restarted or reset the partition.
+        let committed = world.store.lock().landed(&name, partition);
+        if committed.is_none_or(|committed| cursor.next > committed) {
             world.violation(format!(
                 "stream {name} partition {partition}: acknowledged offset {} beyond the \
-                 committed {committed:?}",
+                 furthest committed {committed:?}",
                 cursor.next
             ));
         }
