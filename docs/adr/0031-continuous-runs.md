@@ -128,6 +128,16 @@ partition inside a run; the second is an operator's command between runs. So the
   - A refusal the model says every run must meet only may happen in a following run, which may
     end before the rows that need it arrive.
   - Streaming worlds plan again every quarter second.
+  - In one streaming seed in two (`churn`), the source's followed streams churn while runs
+    follow them. Each phase begins with one to three of their partitions retired, and a third of
+    the ticks that make rows arrive retire, add or name again one more. Once the following runs
+    end, the source names every partition again, and the phase's last runs read every row. A
+    churned stream's plans name a start for each partition at its newest arrived row, which a
+    plan in the recorded phase must not start a partition from. Over 10 000 seeds, 658
+    re-planned a changed set, 296 of them with their connectors placed apart. The runs are held
+    to re-planning's invariants (ADR 0052). With the fix that starts a partition added mid-run
+    from its beginning undone, 21 of 1 000 seeds lose the rows before the start their source
+    named.
 
 ## Consequences
 
