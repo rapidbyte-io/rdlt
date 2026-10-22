@@ -9,6 +9,7 @@ mod tests;
 mod value_json;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::io;
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -192,13 +193,16 @@ impl StateEntry {
         reason = "state entries always serialize to JSON"
     )]
     pub fn to_record(&self) -> StateRecord {
-        let mut value = serde_json::to_vec(&Writing {
+        let writing = Writing {
             v: STATE_VERSION,
             entry: self,
-        })
-        .expect("state entries serialize to JSON");
-        // State holds a record as long as the entry stands: its buffer keeps no spare room.
-        value.shrink_to_fit();
+        };
+        // State holds a record as long as the entry stands: it is written once, into a buffer
+        // of its length.
+        let mut counted = Counted(0);
+        serde_json::to_writer(&mut counted, &writing).expect("state entries serialize to JSON");
+        let mut value = Vec::with_capacity(counted.0);
+        serde_json::to_writer(&mut value, &writing).expect("state entries serialize to JSON");
         StateRecord {
             key: self.key().encode(),
             value: Bytes::from(value),
@@ -379,5 +383,19 @@ impl<'de> serde::de::Visitor<'de> for ReadingVisitor {
             ));
         }
         Ok(read)
+    }
+}
+
+/// A writer that keeps only how many bytes it was given.
+struct Counted(usize);
+
+impl io::Write for Counted {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0 = self.0.saturating_add(bytes.len());
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
     }
 }

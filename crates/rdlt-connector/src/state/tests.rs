@@ -6,7 +6,7 @@ use proptest::prelude::*;
 
 use super::{
     NameConflict, NameMap, PartitionState, PipelineState, Sequences, StateChange, StateEntry,
-    StateError, StateKey, StateRecord, StreamState, TableState,
+    StateError, StateKey, StateRecord, StreamState, TableState, Writing,
 };
 use crate::commit::Receipt;
 use crate::cursor::Cursor;
@@ -1077,5 +1077,35 @@ proptest! {
         } else {
             prop_assert!(read.is_err(), "{:?}", pairs);
         }
+    }
+}
+
+#[test]
+fn a_record_holds_the_json_its_entry_writes() {
+    let cursor = Cursor::new(1, &[7; 300]).unwrap();
+    let entries = [
+        StateEntry::Partition {
+            stream: stream("orders"),
+            partition: partition("p0"),
+            state: PartitionState::Cursor(cursor),
+            load: LoadId::from_parts(UNIX_EPOCH, 1),
+        },
+        StateEntry::Phase {
+            stream: stream("ü \"quoted\""),
+            phase: 2,
+        },
+        StateEntry::Origin(LoadId::from_parts(UNIX_EPOCH, 3)),
+    ];
+    for entry in entries {
+        let written = serde_json::to_vec(&Writing {
+            v: super::STATE_VERSION,
+            entry: &entry,
+        })
+        .unwrap();
+        assert_eq!(
+            entry.to_record().value.as_ref(),
+            written.as_slice(),
+            "{entry:?}"
+        );
     }
 }
