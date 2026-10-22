@@ -163,14 +163,16 @@ impl Draws {
     }
 }
 
-/// How long the soak loads: `RDLT_SOAK_SECONDS`, or a minute.
+/// How long the soak loads: `RDLT_SOAK_SECONDS`, or a minute where it is unset.
 fn soaking() -> Duration {
-    let seconds = std::env::var("RDLT_SOAK_SECONDS").ok();
-    Duration::from_secs(
-        seconds
+    let seconds = match std::env::var("RDLT_SOAK_SECONDS") {
+        Err(std::env::VarError::NotPresent) => 60,
+        seconds => seconds
+            .ok()
             .and_then(|seconds| seconds.parse().ok())
-            .unwrap_or(60),
-    )
+            .expect("RDLT_SOAK_SECONDS is a whole number of seconds"),
+    };
+    Duration::from_secs(seconds)
 }
 
 /// Kills and stalls the round's connector as `seed` draws, until dropped: a stall is `SIGSTOP`
@@ -182,7 +184,8 @@ async fn disrupting(seed: u64, kills: &Kills) -> Infallible {
         match draws.below(3) {
             0 => kills.kill(),
             1 => {
-                // A group this process leads and has not reaped: its id is no other process's.
+                // The group with the highest id this process lists: the host reaps a connector a
+                // moment before it leaves the list, and a signal sent in between is lost.
                 let Some(leader) = rdlt_host::spawned().last().copied() else {
                     continue;
                 };
