@@ -308,8 +308,8 @@ impl Simulation {
             };
             runs += 1;
             let clean = !(disrupted && (features.faults || features.disruptions));
-            // Drawn only where the connectors are placed apart, so every other seed draws as it always
-            // has.
+            // Drawn only where the connectors are placed apart, so every other seed draws as it
+            // always has.
             let network = (disrupted && features.faults && self.placing.is_some())
                 .then(|| SplitMix64::new(draws.next_u64()));
             let ran = self
