@@ -56,6 +56,24 @@ impl Class {
     }
 }
 
+/// What a wait for room is counted as: its share's, or, for a frame of a served read waiting to
+/// be decoded, which waits in the pushes' share, a decode's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Wait {
+    Of(Class),
+    Decode,
+}
+
+impl Wait {
+    /// The share the wait is for.
+    pub(super) fn class(self) -> Class {
+        match self {
+            Self::Of(class) => class,
+            Self::Decode => Class::Intake,
+        }
+    }
+}
+
 /// Bytes: what each share of a budget holds at most.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Shares {
@@ -369,16 +387,17 @@ impl Ledger {
         Some((id, receiver))
     }
 
-    /// Notes that a request of `class` waited `time`.
-    pub(super) fn count_wait(&mut self, class: Class, time: Duration) {
-        let waited = match class {
-            Class::Intake => &mut self.waited.intake,
-            Class::Work => &mut self.waited.work,
-            Class::Cursor => &mut self.waited.cursors,
-            Class::Log => &mut self.waited.log,
-            Class::Tables => &mut self.waited.tables,
-            Class::Read => &mut self.waited.reads,
-            Class::Control => &mut self.waited.control,
+    /// Notes that a request counted as `wait` waited `time`.
+    pub(super) fn count_wait(&mut self, wait: Wait, time: Duration) {
+        let waited = match wait {
+            Wait::Decode => &mut self.waited.decode,
+            Wait::Of(Class::Intake) => &mut self.waited.intake,
+            Wait::Of(Class::Work) => &mut self.waited.work,
+            Wait::Of(Class::Cursor) => &mut self.waited.cursors,
+            Wait::Of(Class::Log) => &mut self.waited.log,
+            Wait::Of(Class::Tables) => &mut self.waited.tables,
+            Wait::Of(Class::Read) => &mut self.waited.reads,
+            Wait::Of(Class::Control) => &mut self.waited.control,
         };
         waited.add(time);
     }

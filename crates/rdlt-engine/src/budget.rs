@@ -17,7 +17,7 @@ use parking_lot::Mutex;
 pub(crate) use self::admits::{admitted, kept, least};
 pub(crate) use self::decoding::Decoding;
 pub(crate) use self::ledger::{Class, Denied, Exhausted, Shares, TooLarge};
-use self::ledger::{Ledger, admit_waiting};
+use self::ledger::{Ledger, Wait, admit_waiting};
 use crate::env::Env;
 use crate::report::Waits;
 use crate::watch;
@@ -75,10 +75,10 @@ struct Queued<'a> {
     id: u64,
 }
 
-/// A wait of a request of a class, counted with its time once it ends, however it ends.
+/// A wait of a request, counted with its time once it ends, however it ends.
 struct Waiting<'a> {
     budget: &'a MemoryBudget,
-    class: Class,
+    wait: Wait,
     began: Instant,
 }
 
@@ -95,7 +95,7 @@ impl Waiting<'_> {
 impl Drop for Waiting<'_> {
     fn drop(&mut self) {
         let waited = self.waited();
-        self.budget.shared.lock().count_wait(self.class, waited);
+        self.budget.shared.lock().count_wait(self.wait, waited);
     }
 }
 
@@ -157,7 +157,17 @@ impl MemoryBudget {
     /// [`Denied::TooLarge`] for more than pushes may ever take, and [`Denied::Exhausted`] with
     /// what held the budget once the request has waited the budget's deadline.
     pub(crate) async fn acquire(&self, bytes: u64) -> Result<Reservation, Denied> {
-        self.request(Class::Intake, bytes).await
+        self.request(Wait::Of(Class::Intake), bytes).await
+    }
+
+    /// Reserves `bytes` a frame of a served read holds while it is decoded, as
+    /// [`MemoryBudget::acquire`] reserves a push's: its wait is counted apart from pushes'.
+    ///
+    /// # Errors
+    ///
+    /// As [`MemoryBudget::acquire`].
+    pub(crate) async fn acquire_decoding(&self, bytes: u64) -> Result<Reservation, Denied> {
+        self.request(Wait::Decode, bytes).await
     }
 
     /// Reserves `bytes` for lowering, all its next step holds, in one request: it waits only for
@@ -167,7 +177,7 @@ impl MemoryBudget {
     ///
     /// As [`MemoryBudget::acquire`], for more than one request for lowering may take.
     pub(crate) async fn acquire_working(&self, bytes: u64) -> Result<Reservation, Denied> {
-        self.request(Class::Work, bytes).await
+        self.request(Wait::Of(Class::Work), bytes).await
     }
 
     /// As [`MemoryBudget::acquire_working`], where that needs no wait; nothing otherwise.
@@ -187,7 +197,7 @@ impl MemoryBudget {
     ///
     /// As [`MemoryBudget::acquire`], for a cursor larger than the share.
     pub(crate) async fn acquire_cursor(&self, bytes: u64) -> Result<Reservation, Denied> {
-        self.request(Class::Cursor, bytes).await
+        self.request(Wait::Of(Class::Cursor), bytes).await
     }
 
     /// Reserves the `bytes` of a frame on its way into the log, or of what a carry reads at once,
@@ -197,7 +207,7 @@ impl MemoryBudget {
     ///
     /// As [`MemoryBudget::acquire`], for a request larger than the share.
     pub(crate) async fn acquire_log(&self, bytes: u64) -> Result<Reservation, Denied> {
-        self.request(Class::Log, bytes).await
+        self.request(Wait::Of(Class::Log), bytes).await
     }
 
     /// Reserves the `bytes` a commit will record of a table, from the tables' share: only a
@@ -207,7 +217,7 @@ impl MemoryBudget {
     ///
     /// As [`MemoryBudget::acquire`], for records larger than the share.
     pub(crate) async fn acquire_tables(&self, bytes: u64) -> Result<Reservation, Denied> {
-        self.request(Class::Tables, bytes).await
+        self.request(Wait::Of(Class::Tables), bytes).await
     }
 
     /// Reserves the `bytes` decoding a connector's answer holds, from the share of answers being
@@ -217,7 +227,7 @@ impl MemoryBudget {
     ///
     /// As [`MemoryBudget::acquire`], for an answer that holds more than the share.
     pub(crate) async fn acquire_control(&self, bytes: u64) -> Result<Reservation, Denied> {
-        self.request(Class::Control, bytes).await
+        self.request(Wait::Of(Class::Control), bytes).await
     }
 
     /// Reserves `bytes` a read keeps beside its events, at once.
@@ -239,7 +249,8 @@ impl MemoryBudget {
         Ok(Reservation::of(&self.shared, Class::Read, bytes))
     }
 
-    async fn request(&self, class: Class, bytes: u64) -> Result<Reservation, Denied> {
+    async fn request(&self, wait: Wait, bytes: u64) -> Result<Reservation, Denied> {
+        let class = wait.class();
         let (queued, receiver) = {
             let mut ledger = self.shared.lock();
             if let Some(refused) = ledger.too_large(class, bytes) {
@@ -258,7 +269,7 @@ impl MemoryBudget {
             };
             (queued, receiver)
         };
-        let waiting = self.waiting(class);
+        let waiting = self.waiting(wait);
         tokio::select! {
             biased;
             reservation = receiver => {
@@ -272,11 +283,11 @@ impl MemoryBudget {
         }
     }
 
-    /// A wait of a request of `class` that begins now.
-    fn waiting(&self, class: Class) -> Waiting<'_> {
+    /// A wait counted as `wait` that begins now.
+    fn waiting(&self, wait: Wait) -> Waiting<'_> {
         Waiting {
             budget: self,
-            class,
+            wait,
             began: self.env.instant(),
         }
     }
@@ -289,7 +300,7 @@ impl MemoryBudget {
     /// [`Exhausted`] for what reads keep, with the part a slot holds, once the wait reaches the
     /// budget's deadline.
     pub(crate) async fn read_slot<T>(&self, slot: impl Future<Output = T>) -> Result<T, Exhausted> {
-        let waiting = self.waiting(Class::Read);
+        let waiting = self.waiting(Wait::Of(Class::Read));
         tokio::select! {
             biased;
             taken = slot => Ok(taken),

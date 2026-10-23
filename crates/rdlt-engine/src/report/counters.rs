@@ -220,6 +220,9 @@ impl ShredCounts {
 pub struct Waits {
     /// Pushes waiting for room to be admitted.
     pub intake: Waited,
+    /// Frames of served reads waiting for room among pushes to be decoded, apart from the
+    /// pushes they carry.
+    pub decode: Waited,
     /// Pieces waiting for room to be lowered.
     pub work: Waited,
     /// Checkpoints' cursors waiting for a commit to make room for them.

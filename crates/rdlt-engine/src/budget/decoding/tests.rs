@@ -13,6 +13,7 @@ use rdlt_wire::tonic::Code;
 use super::Decoding;
 use crate::budget::MemoryBudget;
 use crate::env::SystemEnv;
+use crate::report::Waited;
 
 const BUDGET: u64 = 6_400;
 
@@ -67,4 +68,31 @@ async fn an_answer_that_waits_until_the_deadline_fails_its_call_as_exhausted() {
         "{refused:?}"
     );
     drop(held);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_frame_waiting_to_be_decoded_is_counted_apart_from_pushes() {
+    let budget = budget();
+    let decoding = Decoding(budget.clone());
+    let pushes = budget.acquire(budget.shares().intake).await.unwrap();
+    let release = async {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        drop(pushes);
+    };
+    let (frame, ()) = tokio::join!(decoding.charge(Class::Data, 1), release);
+    let decode = Waited {
+        count: 1,
+        time: Duration::from_secs(2),
+    };
+    assert_eq!(budget.waited().decode, decode);
+    assert_eq!(budget.waited().intake, Waited::default());
+    // A push that waits for the frame's byte is counted as a push.
+    let release = async {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        drop(frame);
+    };
+    let (push, ()) = tokio::join!(budget.acquire(budget.shares().intake), release);
+    drop(push);
+    assert_eq!(budget.waited().decode, decode);
+    assert_eq!(budget.waited().intake.count, 1);
 }
