@@ -40,10 +40,12 @@ machine, so this record keeps the method with the figures.
   that builds its own runtime does, through `Cores::try_from_host`: half of them, and two at
   least, for its tokio workers, and a compute thread for every core (`SystemEnv::try_new`).
 - **Readings.** After each cell, one line from its last run's report: commits by what made each
-  due; the time pushes and requests for lowering waited for room, each summed over the run's
-  tasks, over the run's wall time; the compute pool's idle share, one less its jobs' running
-  time over its threads times the wall time; its jobs' waits to start and ways back to their
-  callers, summed, over the wall time; the lanes that wrote; and the budget's signals a batch.
+  due; the time pushes, requests for lowering and served frames waiting to be decoded waited for
+  room, each summed over the run's tasks, over the run's wall time; the compute pool's idle
+  share, one less its jobs' running time over its threads times the wall time; its jobs' waits
+  to start and ways back to their callers, summed, over the wall time; the lanes that wrote; the
+  lanes' flushes of their writers, by what asked for each: pressure, a commit or a writer's
+  retirement; and the budget's signals a batch.
   The waits and the queue and way back are summed over every task or job, so where several wait
   at once they read past 100 %: a reading of 900 % is nine tasks waiting the whole run, on
   average.
