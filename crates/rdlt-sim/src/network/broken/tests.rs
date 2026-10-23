@@ -84,6 +84,21 @@ fn every_attack_ends_before_the_broken_host_caps_its_connection() {
     );
 }
 
+// A connection's dial, handshake and configuration may each take the whole connect deadline
+// before a disrupted network ends it.
+#[test]
+fn an_attack_outlasts_each_setup_step_taking_its_whole_connect_deadline() {
+    let mut rng = SplitMix64::new(3);
+    let options = attacking(&mut rng, Duration::from_secs(3), false);
+    let setup = options.deadlines.connect.saturating_mul(3);
+    let after = patience(&options).saturating_mul(4) + options.deadlines.write_ack;
+    assert!(
+        bound(&options) > setup + after,
+        "{:?} leaves no time past a setup of {setup:?} and {after:?} after it",
+        bound(&options)
+    );
+}
+
 /// An error coded `code`.
 fn refused(code: &'static str) -> Ended {
     Ended::Refused(ConnectorError::new(ConnectorErrorKind::Internal, "refused").with_code(code))
