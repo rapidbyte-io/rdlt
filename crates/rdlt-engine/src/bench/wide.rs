@@ -8,12 +8,15 @@ mod tests;
 
 use std::num::{NonZeroU32, NonZeroU64};
 use std::ops::Range;
+use std::sync::Arc;
+
+use rdlt_connector::{Destination, Source};
 
 use super::corpora::wide_lines;
 use super::runner::{Runner, stream};
 use super::{Corpus, Mix, PUSH_BYTES, Replayed, logical_bytes, null_sink, replay};
 use crate::fixtures::{events, events_in};
-use crate::{ComputePoolError, Cores, SchemaPolicy, SchemaSettings, StreamPlan};
+use crate::{ComputePoolError, Cores, Report, SchemaPolicy, SchemaSettings, StreamPlan};
 
 /// The form a wide table's rows are pushed in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,8 +69,19 @@ impl Wide {
         columns: u16,
         pushes: u32,
     ) -> Result<Self, ComputePoolError> {
+        let replayed = Self::replayed(form, columns, pushes);
+        let rows = Self::rows_of(form, columns, pushes);
+        Self::loading(cores, stream(), replayed, (rows, 0))
+    }
+
+    /// The pushes [`Wide::try_new`] loads, made the same in any process.
+    ///
+    /// # Panics
+    ///
+    /// Panics where `columns` is zero.
+    pub fn replayed(form: Form, columns: u16, pushes: u32) -> Replayed {
         let per_push = per_push(form, columns);
-        let replayed = match form {
+        match form {
             Form::Arrow => Replayed::Batches(
                 (0..pushes)
                     .map(|push| {
@@ -81,9 +95,7 @@ impl Wide {
                 let per_push = NonZeroU64::from(NonZeroU32::new(per_push).expect("a row a push"));
                 Replayed::Json(Corpus::Wide(columns).rows(rows, per_push))
             }
-        };
-        let rows = Self::rows_of(form, columns, pushes);
-        Self::loading(cores, stream(), replayed, (rows, 0))
+        }
     }
 
     /// `pushes` Arrow pushes of a table of `columns` columns, as many rows a push as a sparse
@@ -229,6 +241,16 @@ impl Wide {
         let (source, destination) = self
             .runner
             .block_on(async { (replay("wide", replayed).await, null_sink().await) });
+        self.load(source, destination).rows
+    }
+
+    /// Runs the engine from `source`, which pushes the pushes, into `destination`; its report.
+    ///
+    /// # Panics
+    ///
+    /// Panics where the run fails, or loads other rows or discards other values than the pushes
+    /// hold.
+    pub fn load(&self, source: Arc<dyn Source>, destination: Arc<dyn Destination>) -> Report {
         let report = self.runner.load(source, destination);
         assert_eq!(report.rows, self.rows);
         let discarded: u64 = report
@@ -237,7 +259,12 @@ impl Wide {
             .map(|stream| stream.discarded_values)
             .sum();
         assert_eq!(discarded, self.discards);
-        report.rows
+        report
+    }
+
+    /// Runs `future` on the workload's runtime, where connectors served from this process run.
+    pub fn block_on<F: Future>(&self, future: F) -> F::Output {
+        self.runner.block_on(future)
     }
 }
 

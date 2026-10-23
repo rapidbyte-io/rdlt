@@ -1,4 +1,4 @@
-//! The bench's own binary run as a served connector: the replay source and the IPC sink in a
+//! The bench's own binary run as a served connector: the replay source and the bench's sink in a
 //! process of their own, held to the connectors' cores where the bench names them.
 
 use std::process::ExitCode;
@@ -9,6 +9,7 @@ use rdlt_connector::{BoxFuture, ConnectContext, ConnectorSpec, Result, Source, S
 use rdlt_engine::bench::{Replayed, register, replay_factory, sink_factory};
 
 use crate::Frames;
+use crate::shaped::Shaped;
 
 /// The variable naming the CPUs a served connector's process runs on, a list such as `4-11`; a
 /// connector started without it runs where its host does.
@@ -69,11 +70,42 @@ fn cpu_list(list: &str) -> Vec<usize> {
         .collect()
 }
 
-/// The replay source, its batches made in this process the first time a host asks for them.
+/// The replay source, its pushes made in this process the first time a host asks for them.
 struct Generating(Box<dyn SourceFactory>);
 
-/// Each frame size's batches, made once in this process.
-static MADE: [Once; 3] = [Once::new(), Once::new(), Once::new()];
+/// A replay a host may ask a source served here for.
+#[derive(Clone, Copy)]
+enum Asked {
+    Frames(Frames),
+    Shaped(Shaped),
+}
+
+impl Asked {
+    /// The replay named `name`.
+    fn named(name: &str) -> Option<Self> {
+        let frames = Frames::named(name).map(Self::Frames);
+        frames.or_else(|| Shaped::named(name).map(Self::Shaped))
+    }
+
+    /// The replay's place in [`MADE`]: each frame size's, then each other workload's.
+    fn index(self) -> usize {
+        match self {
+            Self::Frames(frames) => frames.index(),
+            Self::Shaped(shaped) => Frames::ALL.len() + shaped.index(),
+        }
+    }
+
+    /// Makes the replay's pushes and registers them under its name.
+    fn register(self) {
+        match self {
+            Self::Frames(frames) => register(frames.replay(), Replayed::Batches(frames.batches())),
+            Self::Shaped(shaped) => register(shaped.replay(), shaped.replayed()),
+        }
+    }
+}
+
+/// Each replay's pushes, made once in this process.
+static MADE: [Once; 5] = [const { Once::new() }; 5];
 
 impl SourceFactory for Generating {
     fn spec(&self) -> &ConnectorSpec {
@@ -86,15 +118,13 @@ impl SourceFactory for Generating {
         context: ConnectContext,
     ) -> BoxFuture<'_, Result<Box<dyn Source>>> {
         let name = config.get("name").and_then(serde_json::Value::as_str);
-        let frames = name.and_then(Frames::named);
+        let asked = name.and_then(Asked::named);
         Box::pin(async move {
-            if let Some(frames) = frames {
+            if let Some(asked) = asked {
                 let making = tokio::task::spawn_blocking(move || {
-                    MADE[frames.index()].call_once(|| {
-                        register(frames.replay(), Replayed::Batches(frames.batches()));
-                    });
+                    MADE[asked.index()].call_once(|| asked.register());
                 });
-                making.await.expect("the batches are made");
+                making.await.expect("the pushes are made");
             }
             self.0.connect(config, context).await
         })
