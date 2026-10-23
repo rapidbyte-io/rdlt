@@ -14,6 +14,9 @@ use rdlt_wire::limits::count;
 /// An allocation is told from another by where it starts, so a slice counts the whole buffer it
 /// was cut from, and a dictionary or a body shared by many columns counts once. A batch's schema
 /// counts too, once for the batches that share it.
+///
+/// A set is kept only while what it names is alive: the allocator hands a freed address out
+/// again, and an allocation made there would count as one the set holds.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Allocations {
     /// Where each allocation starts.
@@ -37,46 +40,73 @@ impl Allocations {
     /// Adds the allocations `batch` keeps alive, and returns the bytes of those the set did not
     /// hold yet.
     pub fn add(&mut self, batch: &RecordBatch) -> u64 {
-        let before = self.bytes;
-        for column in batch.columns() {
-            self.data(&column.to_data());
-        }
-        // A batch keeps its schema alive too, which batches of one stream share.
-        let schema = batch.schema_ref();
-        if self.seen.insert(Arc::as_ptr(schema).addr()) {
-            self.bytes = self.bytes.saturating_add(schema_bytes(schema));
-        }
-        self.bytes - before
+        self.batch(batch, None)
     }
 
     /// Adds the allocations `array` keeps alive, and returns the bytes of those the set did not
     /// hold yet.
     pub fn add_array(&mut self, array: &dyn Array) -> u64 {
+        self.array(array, None)
+    }
+
+    /// Adds the allocations `batch` keeps alive beyond those `held` holds, and returns the bytes
+    /// of those the set did not hold yet; `held` is left as it is.
+    pub fn add_beyond(&mut self, batch: &RecordBatch, held: &Self) -> u64 {
+        self.batch(batch, Some(held))
+    }
+
+    /// Adds the allocations `array` keeps alive beyond those `held` holds, and returns the bytes
+    /// of those the set did not hold yet; `held` is left as it is.
+    pub fn add_array_beyond(&mut self, array: &dyn Array, held: &Self) -> u64 {
+        self.array(array, Some(held))
+    }
+
+    fn batch(&mut self, batch: &RecordBatch, beyond: Option<&Self>) -> u64 {
         let before = self.bytes;
-        self.data(&array.to_data());
+        for column in batch.columns() {
+            self.data(&column.to_data(), beyond);
+        }
+        // A batch keeps its schema alive too, which batches of one stream share.
+        let schema = batch.schema_ref();
+        let start = Arc::as_ptr(schema).addr();
+        if !held_by(beyond, start) && self.seen.insert(start) {
+            self.bytes = self.bytes.saturating_add(schema_bytes(schema));
+        }
         self.bytes - before
     }
 
-    fn data(&mut self, data: &ArrayData) {
+    fn array(&mut self, array: &dyn Array, beyond: Option<&Self>) -> u64 {
+        let before = self.bytes;
+        self.data(&array.to_data(), beyond);
+        self.bytes - before
+    }
+
+    fn data(&mut self, data: &ArrayData, beyond: Option<&Self>) {
         // A stack of the nodes still to visit, so a deep type costs no call stack.
         let mut pending = vec![data];
         while let Some(data) = pending.pop() {
             for buffer in data.buffers() {
-                self.buffer(buffer);
+                self.buffer(buffer, beyond);
             }
             if let Some(nulls) = data.nulls() {
-                self.buffer(nulls.buffer());
+                self.buffer(nulls.buffer(), beyond);
             }
             pending.extend(data.child_data());
         }
     }
 
-    fn buffer(&mut self, buffer: &Buffer) {
+    fn buffer(&mut self, buffer: &Buffer, beyond: Option<&Self>) {
         let bytes = count(buffer.capacity());
-        if bytes > 0 && self.seen.insert(buffer.data_ptr().as_ptr().addr()) {
+        let start = buffer.data_ptr().as_ptr().addr();
+        if bytes > 0 && !held_by(beyond, start) && self.seen.insert(start) {
             self.bytes = self.bytes.saturating_add(bytes);
         }
     }
+}
+
+/// Whether `held`, where there is one, holds the allocation that starts at `start`.
+fn held_by(held: Option<&Allocations>, start: usize) -> bool {
+    held.is_some_and(|held| held.seen.contains(&start))
 }
 
 /// Bytes: what one field of a schema takes beside its name and its metadata.
