@@ -537,6 +537,35 @@ async fn a_commit_frame_is_charged_for_the_state_it_records_and_refused_beyond_t
     ended.expect("the writer ends");
 }
 
+#[tokio::test]
+async fn a_commit_is_charged_for_each_range_of_segments_it_names_not_each_segment() {
+    let store = Arc::new(MemoryWal::default());
+    let (log, task) = start(&store);
+    let written = async move {
+        // A hundred thousand segments in one range, and two abandoned apart: three ranges.
+        let ids: Vec<u64> = (1..=100_000).collect();
+        let mut commit = meta(&ids);
+        commit.abandoned = [SegmentId(100_002), SegmentId(100_004)]
+            .into_iter()
+            .collect();
+        let estimate = super::commit::commit_bytes(&[], &commit);
+        assert_eq!(estimate, 3 * 1_024 + 4_096);
+        // The log's share, 64 KiB, holds the commit's frame, which the estimate covers.
+        let budget = crate::budget::budget(1 << 20);
+        log.commit(&budget, Vec::new(), Vec::new(), &commit, 0)
+            .await
+            .expect("durable");
+        assert!(
+            budget.peak() <= estimate,
+            "{} over {estimate}",
+            budget.peak()
+        );
+        drop(log);
+    };
+    let (ended, ()) = tokio::join!(task, written);
+    ended.expect("the writer ends");
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_commit_recording_a_full_share_of_cursors_fits_beside_a_carry_s_read() {
     let store = Arc::new(MemoryWal::default());
@@ -556,7 +585,7 @@ async fn a_commit_recording_a_full_share_of_cursors_fits_beside_a_carry_s_read()
         .map(|partition| {
             StateChange::Put(StateRecord {
                 key: format!("position/orders/p{partition}"),
-                value: json_value(123_000),
+                value: json_value(123_350),
             })
         })
         .collect();
