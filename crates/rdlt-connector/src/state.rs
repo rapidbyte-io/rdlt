@@ -429,9 +429,7 @@ impl io::Write for Same<'_> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         let end = self.at.saturating_add(bytes.len());
         if self.expected.get(self.at..end) != Some(bytes) {
-            return Err(io::Error::other(
-                "the bytes written differ from those expected",
-            ));
+            return Err(io::Error::from(io::ErrorKind::InvalidData));
         }
         self.at = end;
         Ok(bytes.len())
