@@ -4,6 +4,10 @@
 //! from sixteen partitions, within the default budget and within four times it, each printing
 //! its last run's readings.
 //!
+//! The merge of hot keys merges by id orders whose ids a Zipf distribution of 0.99 draws from a
+//! hundred thousand keys, fifty thousand rows a push, into the IPC sink, and prints the root rows,
+//! child rows and distinct keys a commit staged.
+//!
 //! Throughput counts the rows of the three tables.
 
 #![forbid(unsafe_code)]
@@ -12,7 +16,7 @@ use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use rdlt_engine::Cores;
-use rdlt_engine::bench::{Normalized, Readings};
+use rdlt_engine::bench::{Merged, Normalized, Readings};
 
 #[expect(
     clippy::print_stdout,
@@ -92,5 +96,31 @@ fn partitioned(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, normalized, partitioned);
+#[expect(
+    clippy::print_stdout,
+    reason = "criterion reports times; what the merge staged is printed beside them"
+)]
+fn merged(c: &mut Criterion) {
+    let cores = Cores::try_from_host().expect("the host says how many cores the bench may use");
+    let mut group = c.benchmark_group("normalized/merge");
+    group.sample_size(10);
+    group.throughput(Throughput::Elements(Merged::ROWS));
+    let (mut bench, mut last) = (None, None);
+    group.bench_function("zipf", |b| {
+        let bench = bench
+            .get_or_insert_with(|| Merged::try_new(cores, Merged::ROWS).expect("the pool starts"));
+        b.iter(|| last = Some(bench.run()));
+    });
+    if let (Some(bench), Some((report, staging))) = (&bench, &last) {
+        let flushes = Merged::ROWS.div_ceil(Merged::PUSH_ROWS.get());
+        let readings = Readings::of(report.elapsed, &report.counters, flushes, cores.count());
+        println!(
+            "normalized/merge/zipf: {} bytes of JSON a run; {staging}; {readings}",
+            bench.bytes()
+        );
+    }
+    group.finish();
+}
+
+criterion_group!(benches, normalized, partitioned, merged);
 criterion_main!(benches);

@@ -8,6 +8,7 @@ mod logged;
 mod lowering;
 mod matrix;
 mod measure;
+mod merged;
 mod mix;
 mod mixed;
 mod normalized;
@@ -16,9 +17,11 @@ mod pools;
 mod readings;
 mod resident;
 mod runner;
+mod tally;
 #[cfg(test)]
 mod tests;
 mod wide;
+mod zipf;
 
 use std::num::NonZeroUsize;
 use std::sync::{Arc, LazyLock};
@@ -46,6 +49,7 @@ pub use logged::Logged;
 pub use lowering::Lowering;
 pub use matrix::{Cadence, Cell};
 pub use measure::{Allocations, Paired, counted, logical_bytes};
+pub use merged::{Merged, Staging};
 pub use mix::Mix;
 pub use mixed::Mixed;
 pub use normalized::Normalized;
@@ -53,7 +57,9 @@ pub use passthrough::Passthrough;
 pub use pools::pool_cores;
 pub use readings::Readings;
 pub use resident::{Resident, reset_peak, resident_kib};
+pub use tally::{Staged, staged};
 pub use wide::{Form, Wide};
+pub use zipf::Zipf;
 
 /// Why the shredder refused pushes.
 #[derive(Clone, Debug, PartialEq, Eq)]

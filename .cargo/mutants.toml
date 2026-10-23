@@ -77,6 +77,10 @@ all_features = true
 # when not, and the escaped length never exceeds the worst case, so a mutant that sends a string
 # of exactly the worst case's room the long way finds it has the room.
 #
+# A bench's Zipf draw takes the first key whose summed weight passes a uniform number, which lands
+# on a sum exactly with a chance of about one in 2^53, so a mutant that takes the first sum at least
+# the number draws the same keys.
+#
 # A mutant that joins a hex digit to the value before it with `^` for `|` is the code as it is: the
 # value is shifted left four bits first, so its low four bits are clear and both give one result. So
 # is one that joins a byte to the bits of base 32 held before it, shifted left eight bits first, or
@@ -102,6 +106,7 @@ exclude_re = [
   "crates/rdlt-connector/src/sink\\.rs:.*replace Admission::limits -> Limits with Default::default\\(\\)",
   "crates/rdlt-connector/src/sqlgen/tables\\.rs:.*replace \\| with \\^ in base32$",
   "crates/rdlt-connector/src/sqlgen\\.rs:.*replace SqlDialect::reserves_table -> bool with false",
+  "crates/rdlt-engine/src/bench/zipf\\.rs:.*replace <= with < in Zipf::draw$",
   "crates/rdlt-engine/src/env/inline\\.rs:.*replace <impl Env for InlineEnv>::cores -> NonZeroUsize with 1\\.try_into\\(\\)\\.unwrap\\(\\)",
   "crates/rdlt-engine/src/normalize/identity\\.rs:.*replace >= with < in leb128$",
   "crates/rdlt-engine/src/shred/render\\.rs:.*replace > with >= in Rendering::string$",

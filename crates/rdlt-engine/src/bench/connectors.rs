@@ -23,6 +23,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 use serde_json::{Value, json};
 
+use super::tally::{Staged, tally};
+
 static REPLAYS: LazyLock<Mutex<BTreeMap<String, Replayed>>> = LazyLock::new(Mutex::default);
 
 /// Batches the sinks of this process have written.
@@ -327,6 +329,12 @@ impl Sinking {
     pub fn writing(self, writers: NonZeroU16) -> Value {
         json!({ "sinking": self, "writers": writers })
     }
+
+    /// The configuration of a sink that does this and tallies what it stages under `name`, for
+    /// [`staged`](super::staged) to take.
+    pub fn tallied(self, name: &str) -> Value {
+        json!({ "sinking": self, "tally": name })
+    }
 }
 
 /// The factory of sinks, to serve.
@@ -368,17 +376,19 @@ async fn connect_sink(config: Value) -> Arc<dyn rdlt_connector::Destination> {
     Arc::from(destination)
 }
 
-/// What a [`Sink`] does with each batch, and the writers it declares it can run at once: one
-/// where it names none.
+/// What a [`Sink`] does with each batch, the writers it declares it can run at once, one where it
+/// names none, and the tally it notes what it stages in, where it names one.
 #[derive(Debug, Deserialize, JsonSchema)]
 struct SinkConfig {
     sinking: Sinking,
     writers: Option<NonZeroU16>,
+    tally: Option<String>,
 }
 
 struct Sink {
     sinking: Sinking,
     writers: NonZeroU16,
+    tally: Option<Arc<Mutex<Staged>>>,
 }
 
 impl DestinationConnector for Sink {
@@ -400,6 +410,7 @@ impl DestinationConnector for Sink {
         Ok(Self {
             sinking: config.sinking,
             writers: config.writers.unwrap_or(NonZeroU16::MIN),
+            tally: config.tally.as_deref().map(tally),
         })
     }
 
@@ -412,6 +423,7 @@ impl DestinationConnector for Sink {
             session: SinkSession {
                 staged: Arc::default(),
                 sinking: self.sinking,
+                tally: self.tally.as_ref().map(Arc::clone),
             },
             epoch: Epoch(1),
             state: Vec::new(),
@@ -419,11 +431,13 @@ impl DestinationConnector for Sink {
     }
 }
 
-/// The sink's session: rows staged per segment, which commits count.
+/// The sink's session: rows staged per segment, which commits count, and the tally it notes
+/// what it stages in, where its sink keeps one.
 #[derive(Debug)]
 pub struct SinkSession {
     staged: Arc<Mutex<BTreeMap<SegmentId, u64>>>,
     sinking: Sinking,
+    tally: Option<Arc<Mutex<Staged>>>,
 }
 
 impl Session for SinkSession {
@@ -433,8 +447,12 @@ impl Session for SinkSession {
         Ok(())
     }
 
-    async fn writer(&mut self, _table: &TableRef) -> Result<SinkWriter> {
-        Ok(SinkWriter::new(Arc::clone(&self.staged), self.sinking))
+    async fn writer(&mut self, table: &TableRef) -> Result<SinkWriter> {
+        let writer = SinkWriter::new(Arc::clone(&self.staged), self.sinking);
+        Ok(match &self.tally {
+            Some(tally) => writer.tallying(Arc::clone(tally), table.name.to_string()),
+            None => writer,
+        })
     }
 
     async fn discard_staged(&mut self) -> Result<()> {
@@ -453,6 +471,9 @@ impl Session for SinkSession {
             .iter()
             .filter_map(|segment| staged.remove(&segment))
             .sum();
+        if let Some(tally) = &self.tally {
+            tally.lock().commits += 1;
+        }
         Ok(Receipt {
             load_id: meta.load_id,
             commit_seq: meta.commit_seq,
@@ -475,6 +496,8 @@ pub struct SinkWriter {
     sinking: Sinking,
     buffer: Vec<u8>,
     stats: WriteStats,
+    /// The tally the writer notes its rows in, and its table's name there.
+    tally: Option<(Arc<Mutex<Staged>>, String)>,
 }
 
 impl SinkWriter {
@@ -485,6 +508,16 @@ impl SinkWriter {
             sinking,
             buffer: Vec::new(),
             stats: WriteStats::default(),
+            tally: None,
+        }
+    }
+
+    /// The writer, noting the rows it writes in `tally` as the table `table`'s.
+    #[must_use]
+    fn tallying(self, tally: Arc<Mutex<Staged>>, table: String) -> Self {
+        Self {
+            tally: Some((tally, table)),
+            ..self
         }
     }
 
@@ -511,6 +544,9 @@ impl TableWriter for SinkWriter {
         };
         let rows = batch.num_rows() as u64;
         *self.staged.lock().entry(segment).or_default() += rows;
+        if let Some((tally, table)) = &self.tally {
+            tally.lock().stage(table, rows);
+        }
         self.stats.rows += rows;
         self.stats.bytes += bytes;
         Ok(())
