@@ -11,9 +11,25 @@ fn framing(count: usize) -> impl Iterator<Item = Seed> {
         .take(count)
 }
 
+/// Seeds that fail if a defect they once caught comes back.
+#[rustfmt::skip]
+const FOUND: [(u64, Reach); 2] = [
+    // A heartbeat that waited for room for each ping never lost a connector that read none.
+    (155, Reach::Framing), (576, Reach::Framing),
+];
+
 #[test]
 fn connectors_that_break_the_protocol_are_refused_or_lost_in_time() {
-    let checked = for_each_seed("framing", framing(8), Weight::One, check_exactly_once);
+    let first = framing(8).filter(|seed| !FOUND.iter().any(|(kept, _)| *kept == seed.value()));
+    let seeds = FOUND
+        .into_iter()
+        .map(|(seed, _)| Seed::new(seed))
+        .chain(first);
+    let checked = for_each_seed("framing", seeds, Weight::One, |seed| {
+        let checked = check_exactly_once(seed);
+        crate::reaches(&FOUND, seed, checked.reached);
+        checked
+    });
     assert!(
         checked
             .iter()
