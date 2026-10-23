@@ -72,7 +72,7 @@ impl Engine {
         let budget = crate::budget::MemoryBudget::new(
             self.config.memory().get(),
             Arc::clone(&self.env),
-            self.config.memory_wait(),
+            self.config.budget_wait(),
         );
         let waits =
             Waits::new(Arc::clone(&self.env), self.config.connector_wait()).charging(&budget);

@@ -80,7 +80,7 @@ impl Engine {
         let budget = MemoryBudget::new(
             self.config.memory().get(),
             Arc::clone(&self.env),
-            self.config.memory_wait(),
+            self.config.budget_wait(),
         )
         .read_by(self.config.partitions().get())
         .limited(self.config.limits());

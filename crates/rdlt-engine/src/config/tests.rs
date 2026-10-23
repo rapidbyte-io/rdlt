@@ -340,6 +340,24 @@ fn a_connector_call_and_a_stopped_read_wait_their_defaults_or_more_than_zero() {
 }
 
 #[test]
+fn a_wait_for_room_in_the_budget_ends_at_twice_the_connector_deadline_and_an_hour_at_least() {
+    let deadline = |wait| {
+        EngineConfig::builder()
+            .connector_wait(wait)
+            .build()
+            .unwrap()
+            .budget_wait()
+    };
+    assert_eq!(
+        EngineConfig::default().budget_wait(),
+        Duration::from_hours(1)
+    );
+    assert_eq!(deadline(Duration::from_secs(10)), Duration::from_hours(1));
+    assert_eq!(deadline(Duration::from_mins(31)), Duration::from_mins(62));
+    assert_eq!(deadline(Duration::from_hours(2)), Duration::from_hours(4));
+}
+
+#[test]
 fn a_wait_a_failure_asks_for_is_held_between_the_first_and_the_longest_delay() {
     let policy = RetryPolicy::default()
         .initial(Duration::from_secs(2))

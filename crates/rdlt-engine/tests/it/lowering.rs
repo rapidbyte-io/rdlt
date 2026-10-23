@@ -309,13 +309,23 @@ async fn a_read_keeping_more_than_its_part_of_the_budget_fails_at_once_naming_th
     assert!(elapsed < Duration::from_secs(1), "{elapsed:?}");
 }
 
-#[tokio::test(start_paused = true)]
-async fn cursors_no_commit_releases_fail_the_attempt_at_the_deadline_with_what_held_the_budget() {
-    const WAIT: Duration = Duration::from_secs(120);
-    // The destination never answers the first commit, while the source of one partition
-    // checkpoints on: cursors of a quarter of what cursors may take, as large as it is told it
-    // may send, wait for a commit until the fifth finds no room.
-    let gate = Gate::closed();
+/// The deadline of a connector's call where it is `wait`, and the default's elsewhere.
+fn deadline(wait: Option<Duration>) -> Duration {
+    wait.unwrap_or(Duration::from_mins(30))
+}
+
+/// Loads one partition's six rows through a destination whose commits wait at `gate`, in one
+/// attempt whose connector calls each wait `wait` where one is given: how the run ended, and how
+/// long it took.
+///
+/// Each row is checkpointed with a cursor of a quarter of what cursors may take, as large as the
+/// source is told it may send, so behind a commit that has not landed the fifth finds no room
+/// and waits.
+async fn behind_a_commit(
+    name: &str,
+    gate: &Arc<Gate>,
+    wait: Option<Duration>,
+) -> (RunOutcome, Duration) {
     let steps: Steps = Arc::new(|step| match step {
         step if step < 12 && step.is_multiple_of(2) => {
             Some(Step::Batch(batch(Arc::new(Int64Array::from(vec![1_i64])))))
@@ -328,81 +338,114 @@ async fn cursors_no_commit_releases_fail_the_attempt_at_the_deadline_with_what_h
     let config = commit_every(1)
         .memory(ONE_READ)
         .partitions(1)
-        .memory_wait(WAIT)
         .retry(RetryPolicy::default().max_attempts(1))
         .lanes(1);
+    let config = match wait {
+        Some(wait) => config.connector_wait(wait),
+        None => config,
+    };
     let started = tokio::time::Instant::now();
-    // The commit lands once the attempt has failed, which waits for it.
-    let late = Arc::clone(&gate);
-    let opened = tokio::spawn(async move {
-        tokio::time::sleep(WAIT + Duration::from_secs(10)).await;
-        late.open();
-    });
     let outcome = engine(config)
+        .with_limit(Duration::from_hours(3))
         .run(
-            pipeline("lowering_cursors", [stream("events")]),
-            making("lowering_cursors", steps).await,
-            gated(null().await, Arc::clone(&gate)),
+            pipeline(name, [stream("events")]),
+            making(name, steps).await,
+            gated(null().await, Arc::clone(gate)),
         )
         .await;
-    opened.await.expect("the gate opens");
-    let error = outcome.error.expect("the run fails");
-    assert_eq!(
-        (error.kind(), error.code()),
-        (ErrorKind::Memory, Some("memory_budget_wait_exceeded"))
-    );
-    assert!(error.is_retryable());
-    assert_eq!(
-        error.stream().map(ToString::to_string),
-        Some("events".to_owned())
-    );
-    let said = format!("{:?}", error.report());
-    assert!(said.contains("for a cursor waited 120s"), "{said}");
-    let full = format!("cursors waiting for a commit {}", ONE_READ / 64);
-    assert!(said.contains(&full), "{said}");
-    let elapsed = started.elapsed();
-    assert!(
-        elapsed >= WAIT && elapsed < WAIT + Duration::from_secs(30),
-        "{elapsed:?}"
-    );
+    (outcome, started.elapsed())
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_destination_that_stops_writing_fails_the_attempt_at_the_deadline_within_the_budget() {
-    const WAIT: Duration = Duration::from_secs(120);
+async fn a_commit_that_never_answers_fails_at_its_own_deadline_before_a_cursor_blames_memory() {
+    for wait in [None, Some(Duration::from_hours(2))] {
+        let name = format!("lowering_hung_commit_{}", deadline(wait).as_secs());
+        let (outcome, elapsed) = behind_a_commit(&name, &Gate::closed(), wait).await;
+        let error = outcome.error.expect("the run fails");
+        assert_eq!(
+            error.code(),
+            Some("deadline_exceeded"),
+            "{wait:?}: {error:?}"
+        );
+        assert!(error.is_retryable());
+        assert_eq!(outcome.report.counters.waits.cursors.count, 1, "{wait:?}");
+        assert!(
+            elapsed >= deadline(wait) && elapsed < deadline(wait) + Duration::from_secs(30),
+            "{wait:?}: {elapsed:?}"
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_cursor_waits_behind_a_commit_for_as_long_as_twice_the_connector_deadline() {
+    let gate = Gate::closed();
+    let late = Arc::clone(&gate);
+    let landed = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_mins(90)).await;
+        late.open();
+    });
+    let wait = Some(Duration::from_hours(2));
+    let (outcome, _) = behind_a_commit("lowering_slow_commit", &gate, wait).await;
+    landed.await.expect("the commit lands");
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    assert_eq!(outcome.report.rows, 6);
+    let cursors = outcome.report.counters.waits.cursors;
+    assert!(cursors.time > Duration::from_hours(1), "{cursors:?}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_destination_that_stops_writing_fails_at_its_write_deadline_within_the_budget() {
     // No write returns, so nothing lowered is ever released: pieces queue on the lane, deep
-    // enough to take them, until the budget has no room for another, and the wait for room ends
-    // at the deadline, the stuck write with the attempt.
+    // enough to take them, until the budget has no room for another, and the stuck write fails
+    // at its own deadline with the attempt, before the wait for room reaches the budget's.
     let steps: Steps = Arc::new(|step| {
         let small = Int8Array::from(vec![1_i8; 1_000_000]);
         (step < 64).then(|| Step::Batch(batch(Arc::new(small))))
     });
-    let config = commit_every(1_000_000_000)
-        .memory(BUDGET)
-        .memory_wait(WAIT)
-        .retry(RetryPolicy::default().max_attempts(1))
-        .lanes(1)
-        .lane_window(10_000);
-    let started = tokio::time::Instant::now();
-    let outcome = engine(config)
-        .run(
-            pipeline("lowering_stalled", [stream("events")]),
-            making("lowering_stalled", steps).await,
-            stalling().await,
-        )
-        .await;
-    let error = outcome.error.expect("the run fails");
-    assert_eq!(
-        (error.kind(), error.code()),
-        (ErrorKind::Memory, Some("memory_budget_wait_exceeded"))
-    );
-    assert!(error.is_retryable());
-    let elapsed = started.elapsed();
-    assert!(
-        elapsed >= WAIT && elapsed < WAIT + Duration::from_secs(30),
-        "{elapsed:?}"
-    );
-    assert!(outcome.report.peak_memory <= BUDGET);
+    for wait in [None, Some(Duration::from_hours(2))] {
+        let name = format!("lowering_stalled_{}", deadline(wait).as_secs());
+        let config = commit_every(1_000_000_000)
+            .memory(BUDGET)
+            .retry(RetryPolicy::default().max_attempts(1))
+            .lanes(1)
+            .lane_window(10_000);
+        let config = match wait {
+            Some(wait) => config.connector_wait(wait),
+            None => config,
+        };
+        let started = tokio::time::Instant::now();
+        let outcome = engine(config)
+            .with_limit(Duration::from_hours(3))
+            .run(
+                pipeline(&name, [stream("events")]),
+                making(&name, Arc::clone(&steps)).await,
+                stalling().await,
+            )
+            .await;
+        let error = outcome.error.expect("the run fails");
+        assert_eq!(
+            error.code(),
+            Some("deadline_exceeded"),
+            "{wait:?}: {error:?}"
+        );
+        assert!(error.is_retryable());
+        let waits = outcome.report.counters.waits;
+        assert!(
+            waits.work.count + waits.intake.count > 0,
+            "{wait:?}: {waits:?}"
+        );
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= deadline(wait) && elapsed < deadline(wait) + Duration::from_secs(30),
+            "{wait:?}: {elapsed:?}"
+        );
+        assert!(outcome.report.peak_memory <= BUDGET);
+    }
 }
 
 #[tokio::test(start_paused = true)]

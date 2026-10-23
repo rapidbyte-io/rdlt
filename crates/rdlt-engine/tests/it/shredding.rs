@@ -293,7 +293,6 @@ async fn sparse_partitions(name: &str, parts: usize, memory: u64, normalized: bo
     let config = commit_every(1_000_000_000)
         .memory(memory)
         .partitions(parts)
-        .memory_wait(Duration::from_secs(60))
         .retry(RetryPolicy::default().max_attempts(1));
     let plan = if normalized {
         stream("events").schema(SchemaSettings::new().nested(Nested::normalize()))
@@ -352,7 +351,6 @@ async fn beside_a_build(name: &str, beside: u64) -> RunOutcome {
     let source = making(name, steps).await;
     let config = commit_every(1_000_000_000)
         .memory((BUILT_BEYOND + beside) * 4)
-        .memory_wait(Duration::from_secs(60))
         .retry(RetryPolicy::default().max_attempts(1));
     engine(config)
         .run(pipeline(name, [stream("events")]), source, null().await)

@@ -73,9 +73,8 @@ pub(crate) const MAX_PIECE_BYTES: u64 = (1 << 31) - 1;
 /// useful batches.
 pub(crate) const MIN_PIECE: u64 = 64 << 10;
 
-/// How long a request waits for room in the memory budget by default, before the attempt fails
-/// with what held the budget: an hour, longer than any call of a destination may take by default,
-/// the thirty minutes of a commit.
+/// The shortest deadline of a wait for room in the memory budget, after which the attempt fails
+/// with what held the budget: an hour, twice the default deadline of a connector's call.
 ///
 /// A wait ends sooner once what is in flight is written or a commit lands; one that lasts this
 /// long waits for bytes nothing will release.
