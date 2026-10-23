@@ -147,8 +147,11 @@ pub(super) fn decide(
 /// The record of `entry` that `meta` puts, shared, where it puts one: a replay records what its
 /// commit logged without writing it again.
 fn logged_record(meta: &CommitMeta, entry: &StateEntry) -> Option<StateRecord> {
+    let key = entry.key().encode();
     meta.state_delta.iter().find_map(|change| match change {
-        StateChange::Put(record) if entry.is_written_as(record) => Some(record.clone()),
+        StateChange::Put(record) if record.key == key && entry.is_written_as(record) => {
+            Some(record.clone())
+        }
         StateChange::Put(_) | StateChange::Delete(_) => None,
     })
 }
