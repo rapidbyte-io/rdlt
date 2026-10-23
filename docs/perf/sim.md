@@ -49,4 +49,4 @@ the reference rate every night against the floor below.
 | Test job, ubuntu-24.04 | 26.5 min of 45 on main's run at `a92436bf` (run 39811772076), plus 41 s for the broken connectors' tests: about 27.2 |
 | Test job, macos-15 | 24.8 min of 45 on main's run at `a92436bf` (run 39811772076), plus the same 41 s: about 25.5 |
 | Archive extraction per shard | 0.1 s |
-| Nightly floor for the reference set | 2 seeds/s, the whole number below half the reference job's rate: 5.91 seeds/s on the nightly at `c48540dd` (run 39748626499, before churn, 169.3 s), about 5.5 after churn (17.2 / 18.1 on the sweep alone) and this branch (1 / 1.02), estimated, so half is about 2.75 |
+| Nightly floor for the reference set | 2 seeds/s, the whole number below half the reference job's rate: 5.91 seeds/s on the nightly at `c48540dd` (run 39748626499, before churn, 169.3 s), estimated at about 5.5 here: times 17.2 / 18.1 for churn and divided by 1.02 for this branch, so half is about 2.75 |
