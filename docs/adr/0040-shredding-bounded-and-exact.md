@@ -167,6 +167,17 @@ Arrow columns and the rows normalizing makes of both escaped that in several way
   column's policy: a column holding values only in dropped rows is no column.
 - **Errors quote a record's content cut short.** A key or a number an error quotes is shown to
   `QUOTED_BYTES`, 128, as other text a connector sent is.
+- **A record the shredder refuses fails the run.** A JSON push holding a record that is not JSON
+  (`json_invalid`), is not an object (`json_not_object`), repeats a key (`json_duplicate_key`) or
+  passes one of the shredder's limits (`limit_exceeded`) fails the run with an `ErrorKind::Source`
+  error naming its stream and coded for the refusal, which is not retried; `json_invalid` also
+  numbers the record, from one, among the records shredded with it. No schema policy applies to
+  such a record. Every later run resumes before it and fails at it again, so the only remedy is
+  to fix or remove the record at the source. A source that cannot change its records, such as a
+  topic, offers none until the record leaves its retention, when `RetentionLoss::Reset` reads on
+  from the oldest record kept. A value its column cannot hold is the schema policy's: under
+  `evolve` it fails its batch, and `discard_row` or `discard_value` on that column drop it and
+  count it.
 - Rejected:
   - Two passes for every chunk (observe, then build): the throughput gate of ADR 0007 needs the
     single pass, and only chunks that pass their allowance pay a second.

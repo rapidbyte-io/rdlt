@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use bytes::Bytes;
-use rdlt_connector::Push;
+use rdlt_connector::{Push, ReadMode};
 use rdlt_connector_reference::published;
 use rdlt_engine::{
     BatchPolicy, ErrorKind, Nested, RunStatus, SchemaSettings, StreamPlan, WriteMode,
@@ -148,6 +148,33 @@ async fn a_push_the_shredder_refuses_fails_the_run_with_its_code() {
             "{store}"
         );
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_record_the_shredder_refuses_fails_every_run_that_reads_it() {
+    let store = "refused_again";
+    let pushes = BatchStream::json("events", &[r#"{"id":1}"#, r#"{"id":"#]);
+    let source = batches(store, vec![pushes]).await;
+    let destination = memory(store).await;
+    let plan = pipeline(store, [stream("events").read(ReadMode::Incremental)]);
+    for run in 0..2 {
+        let outcome = engine(commit_every(1))
+            .run(plan.clone(), Arc::clone(&source), Arc::clone(&destination))
+            .await;
+        let error = outcome.error.expect("the run fails");
+        assert_eq!(
+            (error.kind(), error.code(), error.is_retryable()),
+            (ErrorKind::Source, Some("json_invalid"), false),
+            "run {run}"
+        );
+        assert_eq!(
+            error.stream().map(ToString::to_string),
+            Some("events".to_owned()),
+            "run {run}"
+        );
+        assert_eq!(outcome.report.attempted, 1, "run {run}");
+    }
+    assert!(published_rows(store, "events") <= 1);
 }
 
 #[tokio::test(start_paused = true)]
