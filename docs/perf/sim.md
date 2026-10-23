@@ -1,9 +1,11 @@
 # Simulation throughput
 
-How fast the simulation checks seeds. The local rows were measured on the simulation as this record
-leaves it, against `bf2b4a5e` (the parent below), which has no churning sources; the CI rows marked
-estimated are scaled by the local ratio from what each row names. `just sim-rate` checks the
-reference rate every night against the floor below.
+How fast the simulation checks seeds. The figures are of the simulation at `096f6e74`, the tip of
+the branch that added connectors which break the protocol, against its parent `a92436bf`. The
+local rows come from the parent's rounds on an idle machine, scaled by the ratio of the two
+measured side by side on a loaded one (below); the CI rows marked estimated are scaled by the
+same ratio from what each row names. `just sim-rate` checks the reference rate every night against
+the floor below.
 
 ## Method
 
@@ -15,9 +17,10 @@ reference rate every night against the floor below.
   seed's wall time is a line of `target/sim-timings/<sweep>.jsonl`, and the last line is the
   sweep's seeds a second.
 - **Local.** Intel Core Ultra X7 358H, performance cores 0-3 (`taskset -c 0-3`), governor
-  `powersave`, each run started with the one-minute load under 1.0, median of three runs; the
-  parent's medians are of three runs taken the same way in an earlier session. A test's time is
-  nextest's `PASS` duration.
+  `powersave`, median of three runs. The parent's rates are of runs started with the one-minute
+  load under 1.0. The branch was measured side by side with the parent, the two alternating on
+  the same cores under a one-minute load of 8.6 to 9.7, and its rates are the parent's scaled by
+  the ratio of the medians. A test's time is nextest's `PASS` duration.
 - **CI.** GitHub's ubuntu-24.04 runners, four vCPUs; macos-15 for the macOS test job. Job times
   from the jobs API, test times from nextest's `PASS` lines in the job logs.
 - **Reference set.** The exactly-once sweep over seeds 0 to 999.
@@ -26,16 +29,15 @@ reference rate every night against the floor below.
 
 | Measure | Value |
 |---|---|
-| Exactly-once sweep, seeds 0-999, four P-cores | 17.2 seeds/s (58.2 s), against 18.1 on the parent |
-| Change sweep, seeds 0-999, four P-cores | 73.5 seeds/s (13.6 s), against 71.1 on the parent |
-| Both sweeps together, seeds 0-999 | 71.8 s, 1.036 times the parent's 69.4 s |
-| Replay of both oracles, 1 000 seeds, four P-cores | 141.4 s (7.1 seeds/s), `just sim-replay` |
-| Pull request shards | 40 of 2 500 seeds, 4.9-9.3 min of 15 each on CI, estimated from main's run at `bf2b4a5e` (4.7-9.0 min); no more than about 8 of a run's jobs start together |
-| Exactly-once sweep, a pull request's shard, ubuntu-24.04 | about 6.6 seeds/s median, 6.2-12.6 over 40 shards, estimated from the shards of main's run at `bf2b4a5e` (6.9 median, 6.4-13.1) |
-| Nightly shards | 80 of 12 500 seeds, up to about 51 min of 70, estimated from `d28d458f`'s nightly, whose 50 of 20 000 took 28.9-58.3 min |
-| Coverage run, CI | about 38 min of 60, estimated: the nightly at `c48540dd` (run 39748626499, which ran the parent's simulation) took 36.7 min, times the local ratio 1.036 |
-| Replay job, CI | about 7.6 min of 30, estimated: the nightly at `c48540dd` (run 39748626499, which ran the parent's simulation) took 7.3 min, times the local ratio 1.036 |
-| Test job, ubuntu-24.04 | 20.2 min of 45 on main's run at `bf2b4a5e`, plus 3.3 s for the churning seeds' test |
-| Test job, macos-15 | 23.3 min of 45 on main's run at `bf2b4a5e`, plus the same 3.3 s |
+| Exactly-once sweep, seeds 0-999, four P-cores | about 17.7 seeds/s (56.5 s), estimated, against 18.25 (54.8 s) on the parent |
+| Change sweep, seeds 0-999, four P-cores | about 76.6 seeds/s (13.1 s), estimated, against 74.5 (13.4 s) on the parent |
+| Both sweeps together, seeds 0-999 | about 69.6 s, estimated: 1.02 times the parent's 68.2 s (measured side by side 105.7 s against 104.0 s, 1.016) |
+| Replay of both oracles, 1 000 seeds, four P-cores | about 139.6 s (7.2 seeds/s), `just sim-replay`: the parent's 139.4 s times the side-by-side ratio 1.001 (185.2 s against 185.1 s) |
+| Pull request shards | 40 of 2 500 seeds, 4.9-9.3 min of 15 each on CI, estimated from main's run at `a92436bf` (4.8-9.1 min); no more than about 8 of a run's jobs start together |
+| Nightly shards | 80 of 12 500 seeds, 23.1-44.8 min of 70, estimated from the nightly at `c48540dd` (run 39748626499), whose shards took 22.6-43.9 min |
+| Coverage run, CI | about 37.4 min of 60, estimated: the nightly at `c48540dd` took 36.7 min, times 1.02 |
+| Replay job, CI | about 7.3 min of 30, estimated: the nightly at `c48540dd` took 7.3 min, times 1.00 |
+| Test job, ubuntu-24.04 | 26.5 min of 45 on main's run at `a92436bf`, plus 41 s for the broken connectors' tests: about 27.2 |
+| Test job, macos-15 | 24.7 min of 45 on main's run at `a92436bf`, plus the same 41 s: about 25.4 |
 | Archive extraction per shard | 0.1 s |
-| Nightly floor for the reference set | 2 seeds/s, the whole number below half the reference job's rate: 5.91 seeds/s on the nightly at `c48540dd` (run 39748626499, the parent's simulation, 169.3 s), about 5.6 at this branch's local ratio (17.2 / 18.1), estimated, so half is 2.8 |
+| Nightly floor for the reference set | 2 seeds/s, the whole number below half the reference job's rate: 5.91 seeds/s on the nightly at `c48540dd` (run 39748626499, 169.3 s), about 5.7 at this branch's ratio (18.25 / 17.7 on the sweep alone), estimated, so half is 2.9 |
