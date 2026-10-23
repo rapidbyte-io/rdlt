@@ -2,7 +2,8 @@
 //! or both served over the wire protocol, over a `UnixStream` pair and over mutual TLS on
 //! loopback, in frames as large as the default coalescing target makes and in eighths of that;
 //! and both over the socket in processes of their own, as production runs them, from up to
-//! sixteen partitions, also in eightieths.
+//! sixteen partitions, also in eightieths, and the wide bench's widest Arrow table and the
+//! normalized bench's merge of hot keys as those benches run them in process.
 //!
 //! Served connectors run in the bench's own process, on the engine's runtime, which measures the
 //! wire path's CPU alone; or each in a process of its own, as in production, the bench's binary
@@ -25,6 +26,8 @@ mod resident;
 )]
 #[path = "support/served.rs"]
 mod served;
+#[path = "bench/shaped.rs"]
+mod shaped;
 
 use std::hint::black_box;
 use std::num::NonZeroUsize;
@@ -388,6 +391,30 @@ struct Busy {
     destination: Option<f64>,
 }
 
+impl Seconds {
+    /// The CPU seconds a gigabyte of `runs` runs that each moved `bytes` and together took
+    /// `took` and `usage`.
+    fn of(usage: Usage, took: Duration, bytes: u64, runs: u64) -> Self {
+        #[expect(clippy::cast_precision_loss, reason = "bytes stay far below 2^52")]
+        let gigabytes = bytes as f64 * runs as f64 / 1e9;
+        let a_gigabyte = |time: Duration| time.as_secs_f64() / gigabytes;
+        let apart = |time: Option<Duration>| time.unwrap_or_default();
+        let total = usage.host + apart(usage.source) + apart(usage.destination);
+        let busy = |time: Duration| time.as_secs_f64() / took.as_secs_f64();
+        Self {
+            total: a_gigabyte(total),
+            host: a_gigabyte(usage.host),
+            source: usage.source.map(a_gigabyte),
+            destination: usage.destination.map(a_gigabyte),
+            busy: Busy {
+                host: busy(usage.host),
+                source: usage.source.map(busy),
+                destination: usage.destination.map(busy),
+            },
+        }
+    }
+}
+
 /// A run's source and destination, those `case` names served as it says within `options`, and
 /// the processes of those served in processes of their own.
 async fn connectors(
@@ -459,7 +486,10 @@ async fn apart(
         in_process_source(&replay).await
     };
     let destination = if mode.serves_destination() {
-        let Placed { connector, pid } = processes.destination(transport, options).await;
+        let placed = processes
+            .destination(transport, Sinking::Ipc, options)
+            .await;
+        let Placed { connector, pid } = placed;
         pids.destination = Some(pid);
         connector
     } else {
@@ -538,24 +568,7 @@ impl Workload {
             last = Some(black_box(report));
             drop(held);
         }
-        #[expect(clippy::cast_precision_loss, reason = "bytes stay far below 2^52")]
-        let gigabytes = bytes as f64 * runs as f64 / 1e9;
-        let a_gigabyte = |time: Duration| time.as_secs_f64() / gigabytes;
-        let apart = |time: Option<Duration>| time.unwrap_or_default();
-        let total = usage.host + apart(usage.source) + apart(usage.destination);
-        let busy = |time: Duration| time.as_secs_f64() / took.as_secs_f64();
-        let seconds = Seconds {
-            total: a_gigabyte(total),
-            host: a_gigabyte(usage.host),
-            source: usage.source.map(a_gigabyte),
-            destination: usage.destination.map(a_gigabyte),
-            busy: Busy {
-                host: busy(usage.host),
-                source: usage.source.map(busy),
-                destination: usage.destination.map(busy),
-            },
-        };
-        (took, seconds, last)
+        (took, Seconds::of(usage, took, bytes, runs), last)
     }
 }
 
@@ -671,7 +684,7 @@ fn spread(samples: impl Iterator<Item = Option<f64>>) -> String {
     format!("{median:.3} ({low:.3} to {high:.3})")
 }
 
-criterion_group!(benches, served);
+criterion_group!(benches, served, shaped::shaped);
 
 fn main() -> ExitCode {
     if connector::asked() {

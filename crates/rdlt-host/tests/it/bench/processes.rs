@@ -84,14 +84,15 @@ impl Processes {
         }
     }
 
-    /// An IPC sink, reached over `transport`.
+    /// A sink doing `sinking` with each batch, reached over `transport`.
     pub(crate) async fn destination(
         &mut self,
         transport: Transport,
+        sinking: Sinking,
         options: &Options,
     ) -> Placed<Arc<dyn Destination>> {
         let id = sink_factory().spec().id.clone();
-        let config = Sinking::Ipc.config();
+        let config = sinking.config();
         match transport {
             Transport::Socket => {
                 let reference = ConnectorRef::new(id).path(&self.binary);
