@@ -163,7 +163,7 @@ const PER_RECORD: u64 = 64;
 
 /// Bytes: the most the frames of the commit `meta` and of the phases `begun` with it take: each
 /// record's key and value at most twice over, what a record and a frame take beside, and the
-/// segments, generations and tables the commit names.
+/// ranges of segments, the generations and the tables the commit names.
 pub(super) fn commit_bytes(begun: &[frame::BegunPhase], meta: &CommitMeta) -> u64 {
     let changes = begun.iter().flat_map(|begun| &begun.changes);
     let record = |change: &rdlt_connector::StateChange| match change {
@@ -178,16 +178,18 @@ pub(super) fn commit_bytes(begun: &[frame::BegunPhase], meta: &CommitMeta) -> u6
             .saturating_add(PER_RECORD)
     });
     let named = [
+        meta.segments.ranges().len(),
+        meta.abandoned.ranges().len(),
         meta.finish_generations.len(),
         meta.child_tables.len(),
         meta.drop_tables.len(),
     ];
-    let named = named.into_iter().map(count);
-    let named = named.fold(meta.segments.len(), u64::saturating_add);
+    let named = named.into_iter().map(count).fold(0, u64::saturating_add);
     let named = named.saturating_mul(NAMED);
     let frames = count(begun.len()).saturating_add(1).saturating_mul(FRAMED);
     records.fold(named.saturating_add(frames), u64::saturating_add)
 }
 
-/// Bytes: the most a segment, a generation or a table a commit names takes in its frame.
+/// Bytes: the most a range of segments, a generation or a table a commit names takes in its
+/// frame.
 const NAMED: u64 = 1 << 10;
