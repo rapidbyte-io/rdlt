@@ -5,8 +5,8 @@ the branch that added connectors which break the protocol, against its parent `a
 local rows come from the parent's rounds on an idle machine, scaled by the ratio of the two
 measured side by side on a loaded one (below); the CI rows marked estimated are scaled by the
 same ratio from what each row names; rows scaled from the nightly at `c48540dd`, which ran
-the simulation before partition churn (1.036 on both sweeps together), carry that factor too. `just sim-rate` checks the reference rate every night against
-the floor below.
+the simulation before partition churn (1.036 on both sweeps together), carry that factor too. `just sim-rate` checks the reference rate every night
+against the floor below.
 
 ## Method
 
@@ -21,7 +21,13 @@ the floor below.
   `powersave`, median of three runs. The parent's rates are of runs started with the one-minute
   load under 1.0. The branch was measured side by side with the parent, the two alternating on
   the same cores under a one-minute load of 8.6 to 9.7, and its rates are the parent's scaled by
-  the ratio of the medians. A test's time is nextest's `PASS` duration.
+  the ratio of the medians. The rounds, in seconds: exactly-once 79.0, 77.0, 77.9 on the parent
+  and 78.9, 80.3, 89.8 on the branch; changes 30.0, 26.1, 24.6 and 25.4, 20.7, 25.7; replay 185.1
+  and 185.2. The rounds vary more than the 1.6 % between the medians, so the ratio is good to a few
+  percent. A test's time is nextest's `PASS` duration.
+- **Staleness.** Any later change to simulation code outdates these figures: measure again after
+  the last such change before merging, and replace the estimates with the medians of the pull
+  request's own CI run.
 - **CI.** GitHub's ubuntu-24.04 runners, four vCPUs; macos-15 for the macOS test job. Job times
   from the jobs API, test times from nextest's `PASS` lines in the job logs.
 - **Reference set.** The exactly-once sweep over seeds 0 to 999.
