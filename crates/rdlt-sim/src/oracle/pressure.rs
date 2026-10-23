@@ -80,6 +80,7 @@ impl super::Simulation {
 pub(super) fn added(total: &mut Waits, more: &Waits) {
     let shares = [
         (&mut total.intake, more.intake),
+        (&mut total.decode, more.decode),
         (&mut total.work, more.work),
         (&mut total.cursors, more.cursors),
         (&mut total.log, more.log),

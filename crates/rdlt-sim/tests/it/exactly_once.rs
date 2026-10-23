@@ -67,13 +67,16 @@ const FOUND: [(u64, Reach); 20] = [
 #[test]
 fn every_row_lands_exactly_once_through_faults_crashes_and_concurrent_runs() {
     let checked = for_each_seed("exactly_once", seeds(20), Weight::One, check_exactly_once);
-    // The budget presses on a good share of the seeds: their pushes wait for lowering's room and
-    // their cursors for a commit. The test job's twenty seeds are too few to hold the share; the
-    // shards' and the nightly's thousands hold it.
+    // The budget presses on a good share of the seeds: their pushes, or the frames carrying them,
+    // wait for lowering's room and their cursors for a commit. The test job's twenty seeds are too
+    // few to hold the share; the shards' and the nightly's thousands hold it.
     if checked.len() >= 100 {
         let pushes = checked
             .iter()
-            .filter(|run| run.waits.intake.count + run.waits.work.count > 0)
+            .filter(|run| {
+                let waits = &run.waits;
+                waits.intake.count + waits.decode.count + waits.work.count > 0
+            })
             .count();
         let cursors = checked
             .iter()

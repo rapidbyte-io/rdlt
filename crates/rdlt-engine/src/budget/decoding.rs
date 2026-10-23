@@ -1,7 +1,8 @@
 //! What decoding a remote connector's answers holds, charged to the budget before it is decoded.
 //!
 //! A frame of a read is charged to what pushes may take, which the batch it carries is admitted
-//! to next; every other answer to the share of answers being decoded. Each charge waits as any
+//! to next, its wait counted apart from pushes'; every other answer to the share of answers being
+//! decoded. Each charge waits as any
 //! request does, and is released once its message is decoded, before the event a frame carries
 //! waits for room, so no charge is held while another is waited for.
 
@@ -23,7 +24,7 @@ impl Charge for Decoding {
         let bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
         Box::pin(async move {
             let reserved = match class {
-                Class::Data => budget.acquire(bytes).await,
+                Class::Data => budget.acquire_decoding(bytes).await,
                 _ => budget.acquire_control(bytes).await,
             };
             reserved
