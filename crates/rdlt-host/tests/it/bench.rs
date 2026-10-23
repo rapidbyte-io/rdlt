@@ -688,7 +688,7 @@ criterion_group!(benches, served, shaped::shaped);
 
 fn main() -> ExitCode {
     if connector::asked() {
-        return connector::serve();
+        return connector::serve(processes::served);
     }
     if resident::asked() {
         let exit = resident::measure();
