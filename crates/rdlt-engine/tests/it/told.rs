@@ -33,6 +33,8 @@ struct Shape {
     rows: usize,
     /// Bytes: a cursor answering a barrier.
     cursor: usize,
+    /// How long a read takes after each batch.
+    pause: Duration,
 }
 
 static SHAPES: LazyLock<Mutex<BTreeMap<String, Shape>>> = LazyLock::new(Mutex::default);
@@ -97,6 +99,7 @@ impl ReadStream<Asked> for AskedStream {
             batches,
             rows,
             cursor,
+            pause,
             ..
         } = source.shape;
         for batch in 0..batches {
@@ -105,7 +108,7 @@ impl ReadStream<Asked> for AskedStream {
             out.batch(RecordBatch::try_from_iter([("id", ids)]).expect("a batch"))
                 .await?;
             // A read that takes its time, so barriers arrive while it reads.
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(pause).await;
             if out.checkpoint_due() {
                 // The cursor's JSON text is its characters and their two quotes.
                 let text = format!("{batch:08}{}", "c".repeat(cursor.saturating_sub(10)));
@@ -124,6 +127,7 @@ async fn on_demand(name: &str, cursor: usize) -> RunOutcome {
         batches: 20,
         rows: 100,
         cursor,
+        pause: Duration::from_millis(100),
     };
     SHAPES.lock().insert(name.to_owned(), shape);
     let source = source_factory::<Asked>()
@@ -176,26 +180,23 @@ async fn barriers_answered_with_cursors_as_large_as_told_never_wait_on_the_budge
     );
 }
 
-/// Loads two partitions, each reading for two seconds, through one slot, a read waiting for a
-/// slot or for bytes `wait` at most.
-async fn one_slot(name: &str, wait: Duration) -> RunOutcome {
+/// Loads two partitions through one slot, each reading for two hours.
+async fn one_slot(name: &str) -> RunOutcome {
     let shape = Shape {
         partitions: 2,
         batches: 20,
         rows: 10,
         cursor: 64,
+        pause: Duration::from_mins(6),
     };
     SHAPES.lock().insert(name.to_owned(), shape);
     let source = source_factory::<Asked>()
         .connect(json!({ "name": name }), ConnectContext::new())
         .await
         .expect("registered");
-    let config = EngineConfig::builder()
-        .partitions(1)
-        .lanes(1)
-        .memory_wait(wait)
-        .retry(rdlt_engine::RetryPolicy::default().max_attempts(1));
+    let config = EngineConfig::builder().partitions(1).lanes(1);
     engine(config)
+        .with_limit(Duration::from_hours(5))
         .run(
             pipeline(name, [stream("events")]),
             Arc::from(source),
@@ -205,30 +206,23 @@ async fn one_slot(name: &str, wait: Duration) -> RunOutcome {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_read_waits_for_a_slot_as_long_as_a_request_waits_for_bytes() {
-    // Within the wait, the second read takes the slot once the first ends.
-    let waited = one_slot("told_slot", Duration::from_secs(60)).await;
+async fn a_read_waits_for_its_slot_until_one_frees_however_long_that_takes() {
+    let outcome = one_slot("told_slot").await;
     assert_eq!(
-        waited.report.status,
+        outcome.report.status,
         RunStatus::Succeeded,
         "{:?}",
-        waited.error
+        outcome.error
     );
-    assert_eq!(waited.report.rows, 400);
-    // Beyond it, the read waiting fails the attempt, saying what the reads kept.
-    let started = tokio::time::Instant::now();
-    let beyond = one_slot("told_slot_beyond", Duration::from_secs(1)).await;
-    let error = beyond.error.expect("the run fails");
-    assert_eq!(
-        (error.kind(), error.code()),
-        (ErrorKind::Memory, Some("memory_budget_wait_exceeded"))
-    );
-    let said = format!("{:?}", error.report());
-    assert!(said.contains("what reads keep"), "{said}");
+    assert_eq!(outcome.report.attempted, 1);
+    assert_eq!(outcome.report.rows, 400);
+    // The second read waited for as long as the first read, past the budget's hour.
+    let waited = outcome.report.counters.waits.reads;
+    assert_eq!(waited.count, 1, "{waited:?}");
+    let first = Duration::from_hours(2);
     assert!(
-        started.elapsed() < Duration::from_secs(2),
-        "{:?}",
-        started.elapsed()
+        waited.time >= first && waited.time < first + Duration::from_mins(1),
+        "{waited:?}"
     );
 }
 

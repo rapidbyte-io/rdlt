@@ -61,21 +61,15 @@ impl Slots {
         })
     }
 
-    /// A slot, at once where one is free, or waited for as long as `budget` waits for bytes.
+    /// A slot, at once where one is free, or once one frees, the wait counted by `budget`.
     ///
-    /// # Errors
-    ///
-    /// The budget's error, naming what reads keep, once the wait reaches its deadline.
-    pub(super) async fn read(
-        &self,
-        budget: &MemoryBudget,
-        job: &PartitionJob,
-    ) -> Result<SemaphorePermit<'_>, Error> {
+    /// No deadline ends the wait: a bounded read's end frees its slot, and the followed unbounded
+    /// reads leave one, so a slot always comes round.
+    pub(super) async fn read(&self, budget: &MemoryBudget) -> Result<SemaphorePermit<'_>, Error> {
         if let Ok(slot) = self.reads.try_acquire() {
             return Ok(slot);
         }
         let slot = budget.read_slot(self.reads.acquire()).await;
-        let slot = slot.map_err(|exhausted| Error::memory(exhausted).with_stream(&job.stream))?;
         slot.map_err(|_| Error::internal("partition slots closed"))
     }
 }
