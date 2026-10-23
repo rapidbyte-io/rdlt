@@ -1,5 +1,5 @@
 //! Schema policies: what the engine does with a batch that would change its table, set per
-//! pipeline, stream, table and column.
+//! pipeline, stream and column.
 
 #[cfg(test)]
 mod tests;
@@ -7,6 +7,7 @@ mod tests;
 /// What happens to values that would change their table's schema, and to values their column
 /// cannot hold whatever its schema: a time beyond its unit, a decimal beyond its precision, a
 /// change time no version can begin at.
+
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SchemaPolicy {
@@ -62,7 +63,7 @@ impl Nested {
 }
 
 /// Schema settings at one level of a pipeline; unset settings inherit from the level above:
-/// column, then table, then stream, then pipeline.
+/// column, then stream, then pipeline.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SchemaSettings {
     policy: Option<SchemaPolicy>,
@@ -111,11 +112,11 @@ pub(crate) struct Resolved {
     pub(crate) nested: Nested,
 }
 
-/// Resolves a column's settings over the chain column → table → stream → pipeline: each setting
-/// comes from the most specific level that sets it, and defaults otherwise.
+/// Resolves a column's settings over the chain column → stream → pipeline: each setting comes
+/// from the most specific level that sets it, and defaults otherwise.
 ///
 /// This is the only place settings are inherited.
-pub(crate) fn resolve(levels: [Option<&SchemaSettings>; 4]) -> Resolved {
+pub(crate) fn resolve(levels: [Option<&SchemaSettings>; 3]) -> Resolved {
     let set = || levels.iter().flatten();
     Resolved {
         policy: set().find_map(|level| level.policy).unwrap_or_default(),

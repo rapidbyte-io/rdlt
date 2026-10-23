@@ -87,7 +87,6 @@ impl Settings {
         let owner = self.owner.as_ref().or(top.as_ref()).unwrap_or(column);
         policy::resolve([
             self.stream.column_settings(owner),
-            None,
             Some(self.stream.schema_settings()),
             Some(&self.pipeline),
         ])
