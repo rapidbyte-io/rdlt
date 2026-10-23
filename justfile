@@ -5,7 +5,7 @@ nightly := "nightly-2026-09-20"
 # The crates mutation testing mutates, and the crates whose tests may catch a mutant: the
 # protocol's served end is tested from the host, where a client exists, and the reference
 # connectors from the engine and certification too
-mutated := "rdlt-engine rdlt-connector rdlt-adopt rdlt-wire rdlt-host rdlt-certify rdlt-connector-reference rdlt-log-store"
+mutated := "rdlt-engine rdlt-connector rdlt-adopt rdlt-wire rdlt-host rdlt-certify rdlt-connector-reference"
 
 # List the recipes
 default:
@@ -91,11 +91,6 @@ crashes seed="":
     cargo build --package rdlt-engine --features failpoints --examples
     RDLT_KILL_SEED="{{ seed }}" cargo nextest run --package rdlt-engine --features failpoints --test crashes
 
-# Run the S3 log store's tests on S3 servers in containers, which need Docker: its contract, its
-# probe, and loads killed as they commit; two containers at most at once
-containers *args:
-    cargo nextest run --package rdlt-log-store --all-features --ignore-default-filter -E 'binary(containers)' {{ args }}
-
 # Run the simulation on many threads and the real clock, where races the paused single thread
 # never meets can happen; its failures name their seed but do not replay exactly
 stress seeds="20" cores=env("RDLT_SIM_CORES", ""): sim-archive
@@ -128,7 +123,7 @@ sim-rate floor="2" cores=env("RDLT_SIM_CORES", ""): sim-archive
 # `RDLT_SIM_CORES`) when given
 sim-coverage seeds="1000" cores=env("RDLT_SIM_CORES", ""):
     rustup toolchain install {{ nightly }} --profile minimal --component llvm-tools-preview
-    RDLT_SIM_SEEDS="{{ seeds }}" RDLT_SIM_CORES="{{ cores }}" cargo +{{ nightly }} llvm-cov nextest --branch --workspace --all-features --json --summary-only --output-path target/sim-coverage.json --ignore-filename-regex '(rdlt-sim|rdlt-testkit|rdlt-connector-reference|rdlt-adopt|rdlt-log-store|xtask)/|/tests?(\.rs|/)|differential|reference\.rs|/bench|/testing|sqlgen|encodings\.rs|/generated/|rdlt-host/src/(kills\.rs|local/(bubblewrap|sandbox)|local/grants/opened\.rs|local/process\.rs|local/process/(command|group)|connect|sink)|rdlt-certify/|serve/(args|binary)|wal/(local|memory)(\.rs|/)|/conformance\.rs|rdlt-connector/src/required\.rs|rdlt-engine/src/fixtures(\.rs|/)' -E 'package(rdlt-sim) & test(through_faults)'
+    RDLT_SIM_SEEDS="{{ seeds }}" RDLT_SIM_CORES="{{ cores }}" cargo +{{ nightly }} llvm-cov nextest --branch --workspace --all-features --json --summary-only --output-path target/sim-coverage.json --ignore-filename-regex '(rdlt-sim|rdlt-testkit|rdlt-connector-reference|rdlt-adopt|xtask)/|/tests?(\.rs|/)|differential|reference\.rs|/bench|/testing|sqlgen|encodings\.rs|/generated/|rdlt-host/src/(kills\.rs|local/(bubblewrap|sandbox)|local/grants/opened\.rs|local/process\.rs|local/process/(command|group)|connect|sink)|rdlt-certify/|serve/(args|binary)|wal/(local|memory)(\.rs|/)|/conformance\.rs|rdlt-connector/src/required\.rs|rdlt-engine/src/fixtures(\.rs|/)' -E 'package(rdlt-sim) & test(through_faults)'
     cargo xtask coverage-gate target/sim-coverage.json --lines 81 --branches 71
 
 # Measure line and branch coverage and apply the CI gate. Spawned connectors write profiles too, and
@@ -196,16 +191,16 @@ mutants-diff base="origin/main" jobs="4":
     # A function rather than an associative array, which the bash macOS ships lacks.
     catching() {
         case "$1" in
-            rdlt-connector) echo "rdlt-connector rdlt-connector-reference rdlt-engine rdlt-host rdlt-certify rdlt-log-store" ;;
+            rdlt-connector) echo "rdlt-connector rdlt-connector-reference rdlt-engine rdlt-host rdlt-certify" ;;
             rdlt-adopt) echo "rdlt-adopt rdlt-host" ;;
             rdlt-connector-reference) echo "rdlt-connector-reference rdlt-engine" ;;
             rdlt-wire) echo "rdlt-wire rdlt-host" ;;
-            rdlt-host) echo "rdlt-host rdlt-certify rdlt-log-store" ;;
+            rdlt-host) echo "rdlt-host rdlt-certify" ;;
             *) echo "$1" ;;
         esac
     }
     failed=0
-    for crate in rdlt-engine rdlt-connector rdlt-adopt rdlt-connector-reference rdlt-wire rdlt-host rdlt-certify rdlt-log-store; do
+    for crate in rdlt-engine rdlt-connector rdlt-adopt rdlt-connector-reference rdlt-wire rdlt-host rdlt-certify; do
         grep -q "^+++ b/crates/$crate/" target/mutants.diff || continue
         tests=()
         for package in $(catching "$crate"); do tests+=(--test-package "$package"); done
