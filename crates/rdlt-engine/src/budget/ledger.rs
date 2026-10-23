@@ -327,8 +327,14 @@ impl Ledger {
         self.tell(bytes, true);
     }
 
+    /// Releases `bytes` of `class`, which holds them: releasing more is a bug, which debug builds
+    /// and the simulation trip on, and a release build releases what is held.
     pub(super) fn release(&mut self, class: Class, bytes: u64) {
         let held = self.held(class);
+        debug_assert!(
+            bytes <= *held,
+            "a release of {bytes} bytes passes the {held} bytes {class:?} holds"
+        );
         let released = bytes.min(*held);
         *held -= released;
         #[cfg(feature = "sim")]

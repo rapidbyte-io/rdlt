@@ -45,6 +45,23 @@ fn said(ledger: &Ledger) -> (bool, bool) {
     )
 }
 
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "passes the 10 bytes")]
+fn a_release_beyond_what_a_share_holds_is_a_bug() {
+    let mut ledger = Ledger::new(BUDGET);
+    ledger.reserve(Class::Work, 10);
+    ledger.release(Class::Work, 11);
+}
+
+#[test]
+fn a_release_of_what_a_share_holds_leaves_it_nothing() {
+    let mut ledger = Ledger::new(BUDGET);
+    ledger.reserve(Class::Work, 10);
+    ledger.release(Class::Work, 10);
+    assert_eq!(ledger.reserved(), 0);
+}
+
 proptest! {
     /// Each change of what the ledger says is sent once, and every receiver holds what it says.
     #[test]
