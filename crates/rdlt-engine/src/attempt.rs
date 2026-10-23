@@ -29,7 +29,7 @@ use crate::coordinator::{Coordinator, CoordinatorParts, PartitionRun, StreamRun,
 use crate::env::Env;
 use crate::error::{Error, ErrorKind, Side};
 use crate::lane::Lanes;
-use crate::limits::{LOG_COPY_BYTES, WAL_STAGING_EXCEEDS_BUDGET};
+use crate::limits::LOG_COPY_BYTES;
 use crate::naming::{Naming, recorded};
 use crate::partition::{
     self, ChangeMode, Latest, LoadClock, PartitionContext, PartitionJob, Progress, Slots,
@@ -39,7 +39,7 @@ use crate::report::{AttemptEnd, AttemptLog, Tally};
 use crate::scope::TaskScope;
 use crate::stored::{StateLimits, Stored};
 use crate::table::{SharedSession, Tables};
-use crate::wal::{LoadLog, Owner, Positions, WalStore, staged_at_most};
+use crate::wal::{LoadLog, Owner, Positions, WalStore};
 use crate::watch;
 
 pub(crate) use sequences::Keying;
@@ -387,11 +387,6 @@ fn start_lanes(context: &RunContext, tables: &Arc<Tables>, scope: &mut TaskScope
 /// source cannot read again what it acknowledged; `opened` is the session the attempt opened.
 ///
 /// The log opened for a load that needs none is removed in `scope`.
-///
-/// # Errors
-///
-/// `wal_staging_exceeds_budget` where the store stages more in memory than `staged_at_most`
-/// leaves of the log's share beside a commit's frame, a carry's read and a frame's head.
 async fn start_log(
     context: &RunContext,
     load_id: LoadId,
@@ -414,7 +409,7 @@ async fn start_log(
         });
         return Ok(None);
     }
-    let staging = staged(&context.budget, store.staging_bytes()).await?;
+    let carry = carried(&context.budget).await?;
     let owner = Owner {
         pipeline: context.plan.pipeline().clone(),
         load: load_id,
@@ -426,46 +421,25 @@ async fn start_log(
             .map(|receipt| (receipt.load_id, receipt.commit_seq)),
         origin: opened.state.origin.unwrap_or(load_id),
     };
-    // A store's largest chunk bounds the log too: a chunk holds at most what the log does.
-    let log_bytes = context.config.growth().log_bytes();
-    let bound = store
-        .chunk_bytes()
-        .map_or(log_bytes, |most| most.min(log_bytes));
+    let bound = context.config.growth().log_bytes();
     let tally = Arc::clone(&context.tally);
-    let (log, task) = LoadLog::start(store, owner, bound, (Some(staging), tally));
+    let (log, task) = LoadLog::start(store, owner, bound, (Some(carry), tally));
     scope.spawn(task);
     Ok(Some(log))
 }
 
-/// What a log holds in memory beside its frames, `bytes` its store's stagings hold and what a
-/// carry reads back at once, reserved from `budget`'s share for the log for as long as the log
-/// is written.
-///
-/// # Errors
-///
-/// `wal_staging_exceeds_budget` for stagings that leave the share too little for a commit's
-/// frame recording a full share of cursors ([`staged_at_most`]).
-async fn staged(budget: &MemoryBudget, bytes: u64) -> Result<Reservation, Error> {
-    let most = staged_at_most(budget.shares());
-    if bytes > most {
-        return Err(Error::config(format!(
-            "the write-ahead log's store stages {bytes} bytes in memory, more than the {most} \
-             the memory budget's share for the log leaves beside a commit recording every \
-             cursor it holds: a larger budget, or smaller parts, let it run"
-        ))
-        .with_code(WAL_STAGING_EXCEEDS_BUDGET));
-    }
-    // What a carry reads back at once is held beside the staging, in the log's share.
+/// What a carry reads back at once, reserved from `budget`'s share for the log for as long as the
+/// log is written.
+async fn carried(budget: &MemoryBudget) -> Result<Reservation, Error> {
     budget
-        .acquire_log(bytes.saturating_add(LOG_COPY_BYTES))
+        .acquire_log(LOG_COPY_BYTES)
         .await
         .map_err(|denied| match denied {
             Denied::Exhausted(exhausted) => Error::memory(exhausted),
-            Denied::TooLarge(large) => Error::config(format!(
-                "the write-ahead log's store stages {bytes} bytes in memory, more than the memory \
-                 budget's share for the log holds beside what a carry reads at once"
-            ))
-            .with_code(WAL_STAGING_EXCEEDS_BUDGET)
+            // The least memory a configuration admits gives the log's share more than this.
+            Denied::TooLarge(large) => Error::internal(
+                "the memory budget's share for the log holds less than what a carry reads at once",
+            )
             .with_source(large),
         })
 }

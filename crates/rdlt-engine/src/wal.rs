@@ -17,7 +17,7 @@ mod writer;
 mod tests;
 
 pub(crate) use counted::CountedStore;
-pub(crate) use load::{LoadLog, Owner, Sealed, staged_at_most};
+pub(crate) use load::{LoadLog, Owner, Sealed};
 pub use local::LocalWal;
 pub(crate) use local::Refusal;
 pub(crate) use positions::{Positions, Recorded};

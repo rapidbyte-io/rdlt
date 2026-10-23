@@ -119,3 +119,15 @@ fn lanes_never_exceed_the_writers_an_attempt_holds_open() {
         .unwrap();
     assert_eq!(lane_count(&config, cores(16), &destination(8)).get(), 3);
 }
+
+#[test]
+fn the_least_memory_s_share_for_logs_holds_a_carry_s_read() {
+    for partitions in [1, 16, 17, 600_000] {
+        let least = EngineConfig::least_memory(partitions).expect("a least memory");
+        let shares = crate::budget::Shares::of(least);
+        assert!(
+            shares.log >= crate::limits::LOG_COPY_BYTES,
+            "{partitions} partitions: {shares:?}"
+        );
+    }
+}

@@ -12,8 +12,7 @@ use crate::support::destinations::{Step, counting, failing};
 use crate::support::memory_wal::Memory;
 use crate::support::script::{Script, ScriptStream, id};
 use crate::support::{
-    commit_every, engine, logging_engine, memory, memory as memory_destination, pipeline,
-    published_ids, retrying, stream,
+    commit_every, engine, logging_engine, memory, pipeline, published_ids, retrying, stream,
 };
 
 /// The ids `partitions` partitions of `rows` rows each hold, in order.
@@ -284,45 +283,6 @@ async fn a_source_that_never_checkpoints_is_refused_before_its_log_passes_its_li
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_store_s_largest_chunk_bounds_a_load_s_log_as_its_limit_does() {
-    let small = std::num::NonZeroU64::new(16 << 10).expect("not zero");
-    let large = std::num::NonZeroU64::new(1 << 30).expect("not zero");
-    // The lower of the store's bound and the engine's applies, whichever it is.
-    for (chunks, log) in [
-        (small, GrowthLimits::default()),
-        (large, GrowthLimits::default()),
-    ] {
-        let log = if chunks == large {
-            log.with_log_bytes(small.get()).expect("a valid limit")
-        } else {
-            log
-        };
-        let name = format!("wal_chunked_{}", chunks.get());
-        // A partition that checkpoints only at its end, as above.
-        let store = Arc::new(Memory::chunked(chunks));
-        let mut events = ScriptStream::new("events", 1, 4_000, 20);
-        events.replayable = false;
-        events.checkpoint_every = u64::MAX;
-        let (script, source) = Script::new(vec![events]).connect(&name).await;
-        let plan = pipeline(
-            &name.replace('_', "-"),
-            [stream("events").read(ReadMode::Incremental)],
-        );
-        let engine = logging_engine(commit_every(100).growth(log), Arc::clone(&store) as _);
-        let refused = engine.run(plan, source, memory(&name).await).await;
-        // Refused by the engine at the bound, not by the store past it.
-        let error = refused.error.expect("the run fails");
-        assert_eq!(
-            error.code(),
-            Some("log_bytes_exceeded"),
-            "{name}: {error:?}"
-        );
-        assert!(script.acks.lock().is_empty(), "{name}");
-        assert_eq!(published_ids(&name, "events"), Vec::<i64>::new(), "{name}");
-    }
-}
-
-#[tokio::test(start_paused = true)]
 async fn a_full_disk_fails_its_attempts_retryably_and_keeps_none_of_what_they_staged() {
     // A disk with room for less than one commit's chunk.
     let store = Arc::new(Memory::of(2_048));
@@ -559,52 +519,6 @@ async fn a_batch_waiting_for_room_in_the_log_brings_its_commit_at_once() {
         outcome.error
     );
     assert!(outcome.report.commits > 1, "{:?}", outcome.report);
-}
-
-#[tokio::test(start_paused = true)]
-async fn what_a_store_stages_in_memory_is_charged_to_the_budget_and_bounded_by_it() {
-    let memory = 64_u64 << 20;
-    let (log_share, cursors) = (memory / 16, memory / 64);
-    // What leaves the share room for what a carry reads at once, 256 KiB, and for a commit's
-    // frame recording every cursor the cursors' share holds, twice over, beside its 4 KiB head.
-    let most = log_share - (256 << 10) - 2 * cursors - (4 << 10);
-    for (staging, refused) in [(most, false), (most + 1, true)] {
-        let name = format!("wal_staging_{refused}");
-        let store = Arc::new(Memory::staging(staging));
-        let mut events = ScriptStream::new("events", 1, 40, 20);
-        events.replayable = false;
-        let (_, source) = Script::new(vec![events]).connect(&name).await;
-        let plan = pipeline(
-            &name.replace('_', "-"),
-            [stream("events").read(ReadMode::Incremental)],
-        );
-        let config = commit_every(20).memory(memory);
-        let outcome = logging_engine(config, Arc::clone(&store) as Arc<dyn WalStore>)
-            .run(plan, source, memory_destination(&name).await)
-            .await;
-        if refused {
-            let error = outcome.error.expect("refused");
-            assert_eq!(
-                error.code(),
-                Some("wal_staging_exceeds_budget"),
-                "{error:?}"
-            );
-            assert_eq!(error.kind(), ErrorKind::Config);
-            assert_eq!(published_ids(&name, "events"), Vec::<i64>::new());
-        } else {
-            assert_eq!(
-                outcome.report.status,
-                RunStatus::Succeeded,
-                "{:?}",
-                outcome.error
-            );
-            assert!(
-                outcome.report.peak_memory >= staging,
-                "{:?}",
-                outcome.report
-            );
-        }
-    }
 }
 
 /// Loads `rows` rows of each of `partitions` partitions, a checkpoint every `every` batches of

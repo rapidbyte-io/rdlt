@@ -55,8 +55,7 @@ pub struct Report {
     pub bytes: u64,
     /// Commits made.
     pub commits: u64,
-    /// Bytes: the most the run reserved of its memory budget at once, across all its shares, the
-    /// log store's staging included.
+    /// Bytes: the most the run reserved of its memory budget at once, across all its shares.
     pub peak_memory: u64,
     /// What the run waited for and spent its time on; no decision reads them.
     pub counters: Counters,

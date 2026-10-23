@@ -190,8 +190,8 @@ impl MemoryBudget {
         self.request(Class::Cursor, bytes).await
     }
 
-    /// Reserves the `bytes` of a frame on its way into the log, or of what the log's store stages
-    /// and a carry reads at once, from the log's own share.
+    /// Reserves the `bytes` of a frame on its way into the log, or of what a carry reads at once,
+    /// from the log's own share.
     ///
     /// # Errors
     ///

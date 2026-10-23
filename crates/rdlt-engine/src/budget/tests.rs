@@ -138,7 +138,7 @@ async fn a_request_for_more_than_its_share_takes_is_refused_and_never_cut_down()
     );
     assert_eq!(
         budget.acquire_log(401).await.unwrap_err(),
-        large("the log's frames or staging", 401, 400)
+        large("the log's frames or a carry's read", 401, 400)
     );
     assert_eq!(
         budget.acquire_tables(201).await.unwrap_err(),
@@ -512,7 +512,7 @@ async fn every_share_that_waits_ends_its_wait_at_the_deadline() {
         (push.unwrap_err(), "a push"),
         (work.unwrap_err(), "lowering"),
         (cursor.unwrap_err(), "a cursor"),
-        (frame.unwrap_err(), "the log's frames or staging"),
+        (frame.unwrap_err(), "the log's frames or a carry's read"),
         (tables.unwrap_err(), "a table's records"),
         (answer.unwrap_err(), "decoding an answer"),
     ] {

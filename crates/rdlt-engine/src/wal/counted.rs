@@ -5,7 +5,6 @@
 mod tests;
 
 use std::io;
-use std::num::NonZeroU64;
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -70,14 +69,6 @@ impl StagedChunk for CountedChunk {
 }
 
 impl WalStore for CountedStore {
-    fn chunk_bytes(&self) -> Option<NonZeroU64> {
-        self.store.chunk_bytes()
-    }
-
-    fn staging_bytes(&self) -> u64 {
-        self.store.staging_bytes()
-    }
-
     fn identity(&self, proposed: LoadId) -> BoxFuture<'_, io::Result<LoadId>> {
         count(&self.tally, |requests| &mut requests.identity, |_| {});
         self.store.identity(proposed)
