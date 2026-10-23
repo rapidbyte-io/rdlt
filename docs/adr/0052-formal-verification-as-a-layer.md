@@ -428,11 +428,11 @@ what no bound names.
   scope, in file-name order, TLC admitted 19 in 7 to 163 seconds, rejected none, and ran out of 10
   minutes on 6, as Apalache did. No seeded engine bug was caught where the oracle passes: one that
   tells sources that read again before the destination's commit was refused by the observer only on
-  seeds the oracle fails too, and one that replays every commit whole was refused on none. The hook was 393 lines.
-  The observer's last form admitted more than its first: replays of held commits, tellings of
-  commits that move no source of their kind, taken unobserved, and commits with no ends dropped,
-  fenced and failed ones among them. Cost: a design defect the simulation does not meet is found
-  only by the spec's own checks.
+  seeds the oracle fails too, and one that replays every commit whole was refused on none. The
+  hook was 393 lines. The observer's last form admitted more than its first: replays of held
+  commits, tellings of commits that move no source of their kind, taken unobserved, and commits
+  with no ends dropped, fenced and failed ones among them. Cost: a design defect the simulation
+  does not meet is found only by the spec's own checks.
 - **The re-planning spec is tied to the code by its invariants' names, the simulation's checks that
   take them, and the engine's tests.** A read placed apart ends only once its stop crosses the wire,
   and sends into what the wire holds meanwhile. A stopped one's sends are dropped there. So the
