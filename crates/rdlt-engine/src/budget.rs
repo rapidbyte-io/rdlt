@@ -36,8 +36,8 @@ use crate::watch;
 ///   lowering while it holds pushes, and nothing waits for pushes while it holds anything; while
 ///   it holds lowering's bytes it lowers inside what it reserved with them, a [`Lent`] it waits
 ///   on for its own pieces.
-/// - **No wait is for ever.** A wait ends at the budget's deadline with what held the budget, and
-///   a request nobody waits for any more leaves the queue at once.
+/// - **No wait for bytes is for ever.** A request's wait ends at the budget's deadline with what
+///   held the budget, and a request nobody waits for any more leaves the queue at once.
 ///
 /// Requests of one share are admitted in arrival order. Reservations are released by dropping
 /// them.
@@ -293,23 +293,10 @@ impl MemoryBudget {
     }
 
     /// Waits for `slot`, one of the places among which what reads keep is divided, which was not
-    /// free, for no longer than a request waits for bytes.
-    ///
-    /// # Errors
-    ///
-    /// [`Exhausted`] for what reads keep, with the part a slot holds, once the wait reaches the
-    /// budget's deadline.
-    pub(crate) async fn read_slot<T>(&self, slot: impl Future<Output = T>) -> Result<T, Exhausted> {
-        let waiting = self.waiting(Wait::Of(Class::Read));
-        tokio::select! {
-            biased;
-            taken = slot => Ok(taken),
-            () = self.env.sleep(self.wait) => {
-                let readers = u64::try_from(self.readers).unwrap_or(u64::MAX);
-                let part = self.shares().reads / readers.max(1);
-                Err(self.shared.lock().exhausted(Class::Read, part, waiting.waited()))
-            }
-        }
+    /// free, for as long as it takes, counting the wait with what reads keep.
+    pub(crate) async fn read_slot<T>(&self, slot: impl Future<Output = T>) -> T {
+        let _waiting = self.waiting(Wait::Of(Class::Read));
+        slot.await
     }
 
     /// Raised while a request waits for bytes of pushes or of lowering, or a holder of queued

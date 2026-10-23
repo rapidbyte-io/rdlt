@@ -158,8 +158,8 @@ pub(crate) async fn run(job: PartitionJob, context: Arc<PartitionContext>) -> Re
         () = context.cancel.cancelled() => return Err(Error::cancelled("the attempt was cancelled")),
         // A stop request comes next: a partition still waiting for a slot ends without reading.
         () = job.stop.cancelled() => None,
-        // A read waits for a slot as long as a request waits for bytes.
-        slot = context.slots.read(&context.budget, &job) => Some(slot?),
+        // Otherwise the read waits for a slot until one frees.
+        slot = context.slots.read(&context.budget) => Some(slot?),
     };
     if job.stop.is_cancelled() {
         return context.report(Progress::Ended {

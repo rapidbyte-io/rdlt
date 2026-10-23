@@ -724,15 +724,17 @@ async fn a_request_that_stops_waiting_or_waits_out_the_deadline_records_its_wait
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_read_waiting_for_a_slot_records_the_time_it_waited() {
+async fn a_read_waits_for_its_slot_past_the_deadline_and_records_the_time_it_waited() {
     let budget = bounded(BUDGET);
-    let slot = budget.read_slot(tokio::time::sleep(Duration::from_secs(2)));
-    assert_eq!(slot.await, Ok(()));
-    let late = budget.read_slot(std::future::pending::<()>()).await;
-    assert_eq!(late.unwrap_err().waited, HOUR);
+    let slot = |after: Duration, slot: u8| async move {
+        tokio::time::sleep(after).await;
+        slot
+    };
+    assert_eq!(budget.read_slot(slot(Duration::from_secs(2), 1)).await, 1);
+    assert_eq!(budget.read_slot(slot(HOUR * 2, 2)).await, 2);
     let reads = Waited {
         count: 2,
-        time: HOUR + Duration::from_secs(2),
+        time: HOUR * 2 + Duration::from_secs(2),
     };
     assert_eq!(budget.waited().reads, reads);
 }

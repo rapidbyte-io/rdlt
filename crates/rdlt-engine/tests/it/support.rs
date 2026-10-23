@@ -211,33 +211,52 @@ impl ComputePool for Inline {
     }
 }
 
-/// How long a test waits, in the runtime's paused time, before it calls something hung; the
-/// longest wait any test needs is a 90-second rate limit.
+/// How long a test waits, in the runtime's paused time, before it calls something hung, unless
+/// its engine says otherwise ([`TestEngine::with_limit`]); the longest wait any other test
+/// needs is a 90-second rate limit.
 const LIMIT: Duration = Duration::from_secs(600);
 
 /// An engine whose runs fail the test instead of hanging it, or where one reserved more than
 /// its memory budget.
-pub(crate) struct TestEngine(Engine, u64);
+pub(crate) struct TestEngine {
+    engine: Engine,
+    /// Bytes: the memory budget.
+    budget: u64,
+    /// How long a run may take, in the runtime's paused time, before the test calls it hung.
+    limit: Duration,
+}
 
 impl TestEngine {
     fn new(config: EngineConfig, env: Arc<dyn Env>) -> Self {
         let budget = config.memory().get();
-        Self(Engine::new(config, env), budget)
+        Self {
+            engine: Engine::new(config, env),
+            budget,
+            limit: LIMIT,
+        }
     }
 
-    /// Starts a run that panics if it has not ended within [`LIMIT`], or if it ever reserved
-    /// more than its budget.
+    /// The engine, its runs taking up to `limit` before the test calls them hung: for a test of
+    /// waits as long as the engine's deadlines.
+    #[must_use]
+    pub(crate) fn with_limit(mut self, limit: Duration) -> Self {
+        self.limit = limit;
+        self
+    }
+
+    /// Starts a run that panics if it has not ended within the engine's limit, or if it ever
+    /// reserved more than its budget.
     pub(crate) fn run(
         &self,
         plan: PipelinePlan,
         source: Arc<dyn Source>,
         destination: Arc<dyn Destination>,
     ) -> Guarded {
-        let handle = self.0.run(plan, source, destination);
+        let handle = self.engine.run(plan, source, destination);
         let control = handle.control();
-        let budget = self.1;
+        let (budget, limit) = (self.budget, self.limit);
         let future = async move {
-            let outcome = tokio::time::timeout(LIMIT, handle)
+            let outcome = tokio::time::timeout(limit, handle)
                 .await
                 .expect("the run ends within the test's limit");
             let peak = outcome.report.peak_memory;
@@ -268,7 +287,7 @@ impl TestEngine {
             .map(|name| StreamName::new(name).expect("a valid stream name"))
             .collect();
         let reset = self
-            .0
+            .engine
             .reset(&pipeline, &streams, scope, source, destination);
         tokio::time::timeout(LIMIT, reset)
             .await
