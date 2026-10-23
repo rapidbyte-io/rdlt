@@ -47,8 +47,8 @@ pub mod bench;
 mod budget;
 mod compute;
 mod config;
-#[cfg(any(test, feature = "conformance"))]
-pub mod conformance;
+#[cfg(test)]
+mod conformance;
 mod coordinator;
 mod cost;
 mod crash;

@@ -1,5 +1,4 @@
-//! What every [`WalStore`] does, as tests any store runs: the memory, local and object stores
-//! here, and an object store on a real server in another crate's tests.
+//! What every [`WalStore`] does, as tests each store runs: the memory and local stores.
 
 use std::io;
 use std::time::UNIX_EPOCH;
@@ -48,7 +47,7 @@ async fn published(
 /// # Panics
 ///
 /// Panics, naming what it found, where the store breaks the contract.
-pub async fn conforms(store: &dyn WalStore) {
+pub(crate) async fn conforms(store: &dyn WalStore) {
     a_chunk_is_staged_only_in_a_log_opened_once(store).await;
     no_chunk_is_published_once_its_log_is_removed(store).await;
     what_was_staged_and_deleted_is_never_published(store).await;
@@ -146,7 +145,7 @@ async fn what_was_staged_and_deleted_is_never_published(store: &dyn WalStore) {
 /// # Panics
 ///
 /// Panics where a publish is left behind its log's removal.
-pub async fn a_publish_racing_a_removal_is_never_left_behind(store: &dyn WalStore) {
+pub(crate) async fn a_publish_racing_a_removal_is_never_left_behind(store: &dyn WalStore) {
     let orders = pipeline("racing");
     for round in 0..16 {
         let load = chunk(100 + round, 0).load;
@@ -232,7 +231,7 @@ async fn a_published_chunk_is_whole_read_by_range_and_never_replaced(store: &dyn
 /// # Panics
 ///
 /// Panics where the second is published, or the first is not kept.
-pub async fn the_first_of_two_chunks_of_one_name_published_is_kept(store: &dyn WalStore) {
+pub(crate) async fn the_first_of_two_chunks_of_one_name_published_is_kept(store: &dyn WalStore) {
     let orders = pipeline("raced");
     let at = chunk(1, 4);
     opened(store, &orders, at.load).await;
