@@ -13,10 +13,10 @@ use serde::Serialize;
 use crate::error::{Error, ErrorKind, ErrorReport};
 
 pub use counters::{
-    CommitPhases, Commits, Counters, LaneCounters, LogCounters, PoolCounters, ShredCounts,
+    CommitPhases, Commits, Counters, Flushes, LaneCounters, LogCounters, PoolCounters, ShredCounts,
     StoreRequests, Waited, Waits,
 };
-pub(crate) use counters::{Tally, Trigger};
+pub(crate) use counters::{Flush, Tally, Trigger};
 
 /// How a run ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]

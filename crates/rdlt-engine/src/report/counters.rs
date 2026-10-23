@@ -143,6 +143,30 @@ pub struct LaneCounters {
     pub writing: Duration,
     /// The time its destination writers took to flush, a failed flush's included, summed.
     pub flushing: Duration,
+    /// Its destination writers' flushes, by what asked for each.
+    pub flushes: Flushes,
+}
+
+/// A lane's flushes of its destination writers, a failed flush's included, by what asked for
+/// each.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct Flushes {
+    /// A request waiting for bytes the lane's writes held.
+    pub pressure: u64,
+    /// A commit, before it publishes what the lanes staged, or the attempt's end, for writes no
+    /// commit took.
+    pub commit: u64,
+    /// The writer's retirement: of a schema version a newer one superseded, or of the writer
+    /// written longest ago where the lane holds as many open as it may.
+    pub retired: u64,
+}
+
+/// What asked a lane to flush a writer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Flush {
+    Pressure,
+    Commit,
+    Retirement,
 }
 
 /// What shredding JSON took, in passes over chunks of its records.
@@ -247,6 +271,26 @@ impl LaneCounters {
         self.blocked = self.blocked.saturating_add(other.blocked);
         self.writing = self.writing.saturating_add(other.writing);
         self.flushing = self.flushing.saturating_add(other.flushing);
+        self.flushes.add(&other.flushes);
+    }
+}
+
+impl Flushes {
+    /// Adds what `other` counted.
+    pub(crate) fn add(&mut self, other: &Self) {
+        self.pressure = self.pressure.saturating_add(other.pressure);
+        self.commit = self.commit.saturating_add(other.commit);
+        self.retired = self.retired.saturating_add(other.retired);
+    }
+
+    /// Counts one more flush `flush` asked for.
+    pub(crate) fn count(&mut self, flush: Flush) {
+        let count = match flush {
+            Flush::Pressure => &mut self.pressure,
+            Flush::Commit => &mut self.commit,
+            Flush::Retirement => &mut self.retired,
+        };
+        *count = count.saturating_add(1);
     }
 }
 

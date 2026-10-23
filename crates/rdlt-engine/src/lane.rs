@@ -18,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 use crate::budget::MemoryBudget;
 use crate::env::Env;
 use crate::error::{Error, Side};
-use crate::report::{LaneCounters, Tally};
+use crate::report::{Flush, LaneCounters, Tally};
 use crate::table::Tables;
 
 /// A batch for one table, tagged with its segment and the schema version it was lowered for; the
@@ -188,7 +188,7 @@ impl Lane {
                 () = cancel.cancelled() => return Err(Error::cancelled("the attempt was cancelled")),
                 // Pressure comes before more writes, so the bytes it waits for are freed first.
                 () = pressure.raised(), if !self.held.is_empty() => {
-                    until_cancelled(&cancel, self.flush_written()).await?;
+                    until_cancelled(&cancel, self.flush_written(Flush::Pressure)).await?;
                     continue;
                 }
                 message = self.receiver.recv() => message,
@@ -199,7 +199,7 @@ impl Lane {
                     until_cancelled(&cancel, self.stage(write)).await?;
                 }
                 Some(Message::Flush(reply)) => {
-                    until_cancelled(&cancel, self.flush_written()).await?;
+                    until_cancelled(&cancel, self.flush_written(Flush::Commit)).await?;
                     // The coordinator may have stopped waiting; the flush happened either way.
                     reply.send(()).ok();
                 }
@@ -230,24 +230,26 @@ impl Lane {
         Ok(())
     }
 
-    /// Flushes every writer written since the last flush, then releases what their writes held.
-    async fn flush_written(&mut self) -> Result<(), Error> {
+    /// Flushes every writer written since the last flush, as `asked` asked, then releases what
+    /// their writes held.
+    async fn flush_written(&mut self, asked: Flush) -> Result<(), Error> {
         // A writer written before the last flush holds nothing more to flush.
         for key in std::mem::take(&mut self.written) {
             let Some(open) = self.writers.get_mut(&key) else {
                 continue;
             };
             let (flushing, flushed) = flush(open.writer.as_mut(), self.env.as_ref()).await;
-            self.flushed(flushing);
+            self.flushed(asked, flushing);
             flushed?;
         }
         self.held.clear();
         Ok(())
     }
 
-    /// Counts a flush of `flushing` as the lane's.
-    fn flushed(&mut self, flushing: Duration) {
+    /// Counts a flush `asked` asked for, which took `flushing`, as the lane's.
+    fn flushed(&mut self, asked: Flush, flushing: Duration) {
         self.counted.flushing = self.counted.flushing.saturating_add(flushing);
+        self.counted.flushes.count(asked);
     }
 
     /// Closes the writer at `key`, having flushed what it was written since the last flush, so
@@ -258,7 +260,7 @@ impl Lane {
         };
         if self.written.remove(&key) {
             let (flushing, flushed) = flush(open.writer.as_mut(), self.env.as_ref()).await;
-            self.flushed(flushing);
+            self.flushed(Flush::Retirement, flushing);
             flushed?;
         }
         Ok(())

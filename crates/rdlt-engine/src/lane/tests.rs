@@ -19,7 +19,7 @@ use super::{Lanes, Write};
 use crate::budget::MemoryBudget;
 use crate::env::{Env, InlineEnv};
 use crate::error::ErrorKind;
-use crate::report::{LaneCounters, Tally};
+use crate::report::{Flushes, LaneCounters, Tally};
 use crate::table::{Model, SharedSession, Tables, testing::resolver};
 
 type Log = Arc<Mutex<Vec<String>>>;
@@ -544,6 +544,10 @@ async fn a_lane_counts_the_time_a_full_queue_blocks_and_its_writes_and_flushes_t
         blocked: Duration::from_secs(1),
         writing: Duration::from_secs(3),
         flushing: Duration::from_secs(2),
+        flushes: Flushes {
+            commit: 1,
+            ..Flushes::default()
+        },
     };
     assert_eq!(tally.counters().lanes, [LaneCounters::default(), second]);
 }
@@ -579,6 +583,10 @@ async fn a_cancelled_lane_adds_what_it_counted() {
         blocked: Duration::ZERO,
         writing: Duration::from_secs(2),
         flushing: Duration::from_secs(2),
+        flushes: Flushes {
+            commit: 1,
+            ..Flushes::default()
+        },
     };
     assert_eq!(tally.counters().lanes, [counted]);
 }
@@ -612,6 +620,10 @@ async fn a_failed_write_or_flush_counts_its_time() {
             blocked: Duration::ZERO,
             writing: Duration::from_secs(writing),
             flushing: Duration::from_secs(flushing),
+            flushes: Flushes {
+                commit: u64::from(fail_flush),
+                ..Flushes::default()
+            },
         };
         assert_eq!(tally.counters().lanes, [counted], "fail_write {fail_write}");
     }
@@ -631,4 +643,72 @@ async fn a_lane_started_under_pressure_flushes_what_it_holds_at_once() {
     drop(pressing);
     drop(lanes);
     lane.await.unwrap().unwrap();
+}
+
+/// What the lane's tally counted of its writers' flushes, once `lanes` and the lane are gone.
+async fn flushes_of(
+    lanes: Lanes,
+    lane: tokio::task::JoinHandle<Result<(), crate::Error>>,
+    tally: &Tally,
+) -> Flushes {
+    drop(lanes);
+    let ended = tokio::time::timeout(Duration::from_secs(5), lane).await;
+    ended
+        .expect("the lane ends once its senders are gone")
+        .unwrap()
+        .unwrap();
+    tally.counters().lanes[0].flushes
+}
+
+#[tokio::test]
+async fn a_lane_counts_each_writer_flush_by_what_asked_for_it() {
+    let log = Log::default();
+    // Pushes may take 27 bytes of this budget: two writes of ten and no third.
+    let budget = crate::budget::budget(64);
+    let tally = Arc::new(Tally::default());
+    let session = Session {
+        log: Arc::clone(&log),
+        fail_open: false,
+        fail_write: false,
+        fail_flush: false,
+        pace: Duration::ZERO,
+    };
+    let (lanes, mut tasks) = over(session, (1, 2, 8), &budget, &tally);
+    let lane = tokio::spawn(tasks.remove(0).run(CancellationToken::new()));
+    // A newer version retires the older's writer, which flushes what it was written; a commit
+    // then flushes the newer.
+    write_at(&lanes, &budget, (0, 0, SchemaVersion(1)), 1, 1)
+        .await
+        .unwrap();
+    write_at(&lanes, &budget, (0, 0, SchemaVersion(2)), 1, 1)
+        .await
+        .unwrap();
+    lanes.flush().await.unwrap();
+    // A commit flushes each writer written since the last flush: two tables'.
+    write_at(&lanes, &budget, (0, 0, SchemaVersion(2)), 2, 1)
+        .await
+        .unwrap();
+    write(&lanes, &budget, 0, 1, 2, 1).await.unwrap();
+    lanes.flush().await.unwrap();
+    // A request waiting for the bytes two staged writes hold presses the lane to flush both.
+    write_at(&lanes, &budget, (0, 0, SchemaVersion(2)), 3, 1)
+        .await
+        .unwrap();
+    write(&lanes, &budget, 0, 1, 3, 1).await.unwrap();
+    logged(&log, "t1 v0 s3 r1").await;
+    let admitted = tokio::time::timeout(Duration::from_secs(5), budget.acquire(10))
+        .await
+        .expect("the lane releases what it flushed");
+    drop(admitted);
+    let expected = Flushes {
+        pressure: 2,
+        commit: 3,
+        retired: 1,
+    };
+    assert_eq!(
+        flushes_of(lanes, lane, &tally).await,
+        expected,
+        "{:?}",
+        log.lock()
+    );
 }
