@@ -12,6 +12,7 @@ The cases are those of the engine's `allocations` bench whose names hold a `/`.
 | Case | One iteration |
 |---|---|
 | `passthrough/null_sink` | `bench::Passthrough::run` moving 8 batches of 8,192 rows from a replaying source to the null sink, within two cores: two runtime workers and two compute threads |
+| `commit/1024` | `bench::Passthrough::run` moving one batch of one row from each of 1,024 partitions of a replaying source, committed once, at the end, into the reference in-memory destination, a store of its own each iteration, within the same two cores |
 | `shred/nested`, `shred/with_arrays`, `shred/flat_narrow`, `shred/wide_200`, `shred/string_heavy`, `shred/array_form`, `shred/drift_json`, `shred/drift_scalar`, `shred/big_numbers` | shredding 1 MiB of the corpus in 1 MiB chunks on the calling thread |
 | `normalize/keyless/nested`, `normalize/keyless/with_arrays`, `normalize/keyed/with_arrays` | normalizing, to depth 8, keyless or keyed on `id`, the batches 1 MiB of the corpus shreds into |
 | `normalize/dropped/with_arrays` | normalizing the `with_arrays` batches as `normalize/keyless/with_arrays` does, then dropping every tenth root row and pruning each child table of the rows whose parent went |
@@ -21,10 +22,10 @@ The cases are those of the engine's `allocations` bench whose names hold a `/`.
 | `json/check` | `bench::check_json` over a column of 8,192 escaped JSON values, the string-heavy corpus's rows |
 | `lowering/append_text`, `lowering/merge_unique`, `lowering/merge_duplicates`, `lowering/history`, `lowering/changes`, `lowering/split_json`, `lowering/one_bad_value`, `lowering/one_dropped_row`, `lowering/temporal_widening` | preparing the lowering bench's batch of that name, of 8,192 rows, on the calling thread, as [lowering.md](lowering.md) describes it |
 
-The passthrough case fixes its layout whatever the host has: a count is the same on every machine
-only on one layout, so this is a measuring fixture, not a deployment default; every timed
-workload still takes its layout from the host. The shred bench's `sparse` corpus is not a case:
-it is `nested` with one row in ten thousand holding one more key.
+The passthrough and commit cases fix their layout whatever the host has: a count is the same on
+every machine only on one layout, so this is a measuring fixture, not a deployment default; every
+timed workload still takes its layout from the host. The shred bench's `sparse` corpus is not a
+case: it is `nested` with one row in ten thousand holding one more key.
 
 ## Method
 
