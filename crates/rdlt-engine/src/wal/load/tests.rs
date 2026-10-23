@@ -536,16 +536,16 @@ async fn a_commit_frame_is_charged_for_the_state_it_records_and_refused_beyond_t
     ended.expect("the writer ends");
 }
 
-#[cfg(feature = "object-store")]
 #[tokio::test(start_paused = true)]
-async fn a_commit_recording_a_full_share_of_cursors_fits_beside_the_default_part_s_staging() {
+async fn a_commit_recording_a_full_share_of_cursors_fits_beside_a_carry_s_read() {
     let store = Arc::new(MemoryWal::default());
     let (log, task) = start(&store);
     let budget = crate::budget::budget(256 << 20);
     // Held, as an attempt holds it, for as long as the log is written.
-    let part = u64::try_from(crate::limits::OBJECT_PART_BYTES).expect("a size");
-    let held = part + crate::limits::LOG_COPY_BYTES;
-    let _staging = budget.acquire_log(held).await.expect("it fits");
+    let _carry = budget
+        .acquire_log(crate::limits::LOG_COPY_BYTES)
+        .await
+        .expect("it fits");
     // Positions of 34 partitions, each under what a partition's cursor may take, filling the
     // cursors' share: the commit's frame is charged for each twice over.
     let segments: Vec<u64> = (0..34).collect();
@@ -567,7 +567,7 @@ async fn a_commit_recording_a_full_share_of_cursors_fits_beside_the_default_part
         tokio::select! {
             biased;
             committed = committed => committed.expect("durable"),
-            () = deadline => panic!("the commit waits for memory the log's staging holds"),
+            () = deadline => panic!("the commit waits for memory a carry's read holds"),
         }
         drop(log);
     };

@@ -7,8 +7,6 @@ pub(crate) mod load;
 mod local;
 #[cfg(any(test, feature = "bench"))]
 pub(crate) mod memory;
-#[cfg(feature = "object-store")]
-mod object;
 mod positions;
 pub(crate) mod scan;
 mod store;
@@ -22,9 +20,5 @@ pub(crate) use counted::CountedStore;
 pub(crate) use load::{LoadLog, Owner, Sealed, staged_at_most};
 pub use local::LocalWal;
 pub(crate) use local::Refusal;
-#[cfg(feature = "object-store")]
-pub(crate) use object::code as object_code;
-#[cfg(feature = "object-store")]
-pub use object::{ObjectStoreOptions, ObjectStoreWal, StoreRefusal, WalObjects};
 pub(crate) use positions::{Positions, Recorded};
 pub use store::{Chunk, StagedChunk, WalStore};
