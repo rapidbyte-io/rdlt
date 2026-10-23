@@ -87,7 +87,7 @@ partition inside a run; the second is an operator's command between runs. So the
   one frees.
 - **The commit default.** An unset commit policy resolves per run:
   - `CommitPolicy::streaming()` (every 10 s, or 1 GiB) where the run follows its source or reads
-    changes (spec §6.4);
+    changes;
   - 60 s or 1 GiB otherwise.
 
   A policy that is set is kept. `EngineConfig::commit` is an `Option`.

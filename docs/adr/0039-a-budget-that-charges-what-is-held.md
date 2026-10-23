@@ -555,11 +555,10 @@ admitted, and what a remote connector's calls hold in transport.
   for that job to end, on the runtime's thread that drops it: the one wait of the runtime on the
   pool, for bounded CPU work that never waits on the runtime. An attempt is let go no sooner
   than the longest of its jobs running then ends, a piece's lowering or a chunk's parse.
-- A lane's call into its destination ends with the attempt: a write that never returns no
-  longer keeps an attempt that failed, as at the memory deadline, from ending. An in-process
-  destination's write behind a lane too full to queue on is bounded by nothing yet: the
-  partition waits for its lane with no deadline. A served one's is bounded by the host's
-  write deadline.
+- A lane's call into its destination ends with the attempt: a write that never returns keeps
+  no attempt that failed from ending. An in-process destination's write behind a lane too full
+  to queue on is bounded by nothing: the partition waits for its lane with no deadline. A served
+  one's is bounded by the host's write deadline.
 - A normalized piece holds a quarter of the budget from before its split until its parts are
   cut, so a little over two normalize at once while pushes fill their share; and a unit of a
   few rows takes three trips to the compute pool before its parts are lowered in one.
@@ -574,12 +573,12 @@ admitted, and what a remote connector's calls hold in transport.
   raises the budget's deadline with it.
 - A read that hangs while it holds its slot holds the reads waiting for one as long as it
   hangs: no deadline bounds a source's read.
-- `ErrorKind` gained `Memory`, and `Admission::admit` and `Admission::charge` return a
-  `Result`; an `Admission` says the limits it admits within, and a `PartitionSink` holds what
-  is sent to them. A run's report counts every wait on the budget and its time on the engine's
-  clock, by share, a read's wait for a slot among them, and a served frame's wait to be decoded
-  apart from the pushes it waits among; every budget has a clock and a deadline.
-  The wire's limits gained `dictionary_bytes`, with a least of 256 KiB.
+- `ErrorKind` has `Memory`, and `Admission::admit` and `Admission::charge` return a `Result`;
+  an `Admission` says the limits it admits within, and a `PartitionSink` holds what is sent to
+  them. A run's report counts every wait on the budget and its time on the engine's clock, by
+  share, a read's wait for a slot among them, and a served frame's wait to be decoded apart from
+  the pushes it waits among; every budget has a clock and a deadline for the bytes it is asked
+  for. The wire's limits hold `dictionary_bytes`, with a least of 256 KiB.
 - A cut that reads values costs a trip to the compute pool a piece; one that reads none takes
   none.
 - The dictionary and staged limits follow the frame limit: one and four frames' bytes.

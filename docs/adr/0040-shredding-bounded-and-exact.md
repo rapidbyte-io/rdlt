@@ -92,8 +92,8 @@ Arrow columns and the rows normalizing makes of both escaped that in several way
   JSON text a writer makes of it hash alike.
 - **A JSON column's numbers are kept as written.** A chunk whose column of JSON holds a float is
   built by the exact parse, which renders each number as its text was written; rendering a float
-  without its text is an internal error, never a rounding. Columns of floats keep spec §8.2's
-  typing: a number with a fraction or exponent is a 64-bit float.
+  without its text is an internal error, never a rounding. A number with a fraction or exponent
+  is typed a 64-bit float.
 - **Every value of an Arrow push's columns of JSON is checked before it is used.** On the compute
   pool, at any depth and in every encoding (dictionaries, runs, views, structs, lists, list views
   and maps), only the values rows name, each once: text that is not JSON fails the write,
