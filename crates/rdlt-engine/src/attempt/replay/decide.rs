@@ -6,7 +6,8 @@ mod tests;
 use std::collections::BTreeMap;
 
 use rdlt_connector::{
-    CommitMeta, CommitSeq, Epoch, LoadId, SegmentSet, StateChange, StateEntry, StateKey, StreamName,
+    CommitMeta, CommitSeq, Epoch, LoadId, SegmentSet, StateChange, StateEntry, StateKey,
+    StateRecord, StreamName,
 };
 
 use crate::wal::Positions;
@@ -133,7 +134,7 @@ pub(super) fn decide(
                 state,
                 load: meta.load_id,
             };
-            StateChange::Put(entry.to_record())
+            StateChange::Put(logged_record(meta, &entry).unwrap_or_else(|| entry.to_record()))
         }))
         .collect();
     Decision {
@@ -141,6 +142,15 @@ pub(super) fn decide(
         moved,
         whole: matched && untouched,
     }
+}
+
+/// The record of `entry` that `meta` puts, shared, where it puts one: a replay records what its
+/// commit logged without writing it again.
+fn logged_record(meta: &CommitMeta, entry: &StateEntry) -> Option<StateRecord> {
+    meta.state_delta.iter().find_map(|change| match change {
+        StateChange::Put(record) if entry.is_written_as(record) => Some(record.clone()),
+        StateChange::Put(_) | StateChange::Delete(_) => None,
+    })
 }
 
 /// Whether `begun`, a phase a logged commit began, applies where the destination holds

@@ -341,3 +341,67 @@ fn seals_of_a_stream_reset_after_their_session_opened_never_apply() {
         assert_eq!(decision.staged, segments(&[6]), "epoch {epoch}");
     }
 }
+
+/// Load 2's second commit moving p0 from 10 to a cursor of a mebibyte, its record of that
+/// position as the coordinator logged it, and the moved state.
+fn large(logs_position: bool) -> (Logged, StateChange) {
+    let state = PartitionState::Cursor(Cursor::new(1, &vec![b'c'; 1 << 20]).unwrap());
+    let put = StateChange::Put(
+        StateEntry::Partition {
+            stream: stream(),
+            partition: partition("p0"),
+            state: state.clone(),
+            load: load(2),
+        }
+        .to_record(),
+    );
+    let mut logged = logged();
+    logged.meta.state_delta = if logs_position {
+        vec![put.clone()]
+    } else {
+        Vec::new()
+    };
+    logged.seals = vec![Seal {
+        state,
+        ..seal(3, "p0", Some(10), 0)
+    }];
+    (logged, put)
+}
+
+#[test]
+fn a_moved_partition_is_recorded_with_the_record_its_commit_logged() {
+    let (logged, put) = large(true);
+    // Another load committed since: only the seal of a stream that cannot read again applies.
+    let (peak, decision) = crate::cost::tests::peak_alone(|| {
+        decide(
+            &standing(10, 5),
+            &unreset(),
+            Some((load(3), 1)),
+            None,
+            &logged,
+        )
+    });
+    assert!(!decision.whole);
+    assert_eq!(decision.moved, std::slice::from_ref(&put));
+    let (StateChange::Put(moved), StateChange::Put(logged)) = (&decision.moved[0], &put) else {
+        panic!("a position is put");
+    };
+    assert_eq!(moved.value.as_ptr(), logged.value.as_ptr());
+    assert!(
+        peak < 4 << 10,
+        "deciding the replay allocated {peak} bytes at its peak"
+    );
+}
+
+#[test]
+fn a_moved_partition_its_commit_logged_no_record_of_is_recorded_as_its_entry_writes() {
+    let (logged, put) = large(false);
+    let decision = decide(
+        &standing(10, 5),
+        &unreset(),
+        Some((load(3), 1)),
+        None,
+        &logged,
+    );
+    assert_eq!(decision.moved, [put]);
+}
