@@ -6,13 +6,13 @@ type Flag = fn(&Features) -> bool;
 
 #[test]
 fn every_feature_is_drawn_on_and_off_and_now_and_then_all_at_once() {
-    // Every feature at once is one seed in 32 768: one in eight, by one in four for each of the
-    // network, the log, streaming and resetting, and one in two for each of the log's store, a
-    // hostile host, churn and broken connectors.
+    // Every feature at once is one seed in 16 384: one in eight, by one in four for each of the
+    // network, the log, streaming and resetting, and one in two for each of a hostile host, churn
+    // and broken connectors.
     let drawn: Vec<Features> = (0..256_000)
         .map(|seed| Features::draw(&mut SplitMix64::new(seed)))
         .collect();
-    let flags: [(&str, Flag); 23] = [
+    let flags: [(&str, Flag); 22] = [
         ("drift", |features| features.drift),
         ("encodings", |features| features.encodings),
         ("json", |features| features.json),
@@ -29,7 +29,6 @@ fn every_feature_is_drawn_on_and_off_and_now_and_then_all_at_once() {
         ("network", |features| features.network),
         ("process", |features| features.process),
         ("wal", |features| features.wal),
-        ("objects", |features| features.objects),
         ("streaming", |features| features.streaming),
         ("churn", |features| features.churn),
         ("reset", |features| features.reset),

@@ -36,7 +36,6 @@ mod destination;
 mod env;
 mod fat;
 mod network;
-mod objects;
 mod oracle;
 mod owners;
 mod placing;

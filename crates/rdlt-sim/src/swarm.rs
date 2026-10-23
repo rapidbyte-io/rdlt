@@ -18,9 +18,6 @@ const STREAMING: u64 = 0x7374_7265_616d;
 /// What resetting's draw mixes into the seed's generator: "reset" in ASCII.
 pub(crate) const RESET: u64 = 0x0072_6573_6574;
 
-/// What the object store's draw mixes into the seed's generator: "objstore" in ASCII.
-const OBJECT_STORE: u64 = 0x6f62_6a73_746f_7265;
-
 /// What fat values' draw mixes into the seed's generator: "fat" in ASCII.
 const FAT: u64 = 0x0066_6174;
 
@@ -89,12 +86,6 @@ pub struct Features {
     /// Pipelines that keep write-ahead logs, whose incremental and change streams, every other
     /// one, cannot read again what they acknowledged; crashes tear the logs' unsynced tails.
     pub wal: bool,
-    /// Logs kept in an object store in memory through the engine's `ObjectStoreWal`, whose
-    /// requests fail, stall, race and lose their answers with the faults, and whose puts and
-    /// deletions land up to twenty seconds after their clients gave up on them, rather than in
-    /// the simulation's own store; no listing misses an object, and it changes nothing where no
-    /// log is kept.
-    pub objects: bool,
     /// Incremental streams whose rows arrive as simulated time passes, which runs follow for a
     /// while before a run reads them to their end; every other one's partitions never end, and
     /// the rest are read again as they grow.
@@ -140,7 +131,6 @@ impl Features {
         network: true,
         process: false,
         wal: true,
-        objects: true,
         streaming: true,
         churn: true,
         reset: true,
@@ -152,15 +142,15 @@ impl Features {
     /// The features one seed exercises: every feature one time in eight, else each on or off by
     /// a coin, drift more often than not, the network, the write-ahead log, streaming and
     /// resetting one time in four each, churn one time in two of the streaming seeds, process
-    /// placement one time in four of the seeds the network leaves, the log's object store and a
-    /// hostile host one time in two each, broken connectors one time in two of the hostile seeds,
-    /// and fat values one time in four where no log is kept.
+    /// placement one time in four of the seeds the network leaves, a hostile host one time in two,
+    /// broken connectors one time in two of the hostile seeds, and fat values one time in four
+    /// where no log is kept.
     ///
-    /// The network, process placement, the log and its store, streaming, churn, resetting, fat
-    /// values, a hostile host and broken connectors are drawn apart from the rest, from the value
-    /// the next draw takes but without taking it, so a seed's workload is the same over either
-    /// transport, logged or not and in either store, streamed or not, churned or not, reset or
-    /// not, and with fat values or without but for those values.
+    /// The network, process placement, the log, streaming, churn, resetting, fat values, a hostile
+    /// host and broken connectors are drawn apart from the rest, from the value the next draw takes
+    /// but without taking it, so a seed's workload is the same over either transport, logged or
+    /// not, streamed or not, churned or not, reset or not, and with fat values or without but for
+    /// those values.
     pub fn draw(rng: &mut SplitMix64) -> Self {
         let next = rng.clone().next_u64();
         let network = SplitMix64::new(next ^ NETWORK).chance(250);
@@ -168,7 +158,6 @@ impl Features {
         let streaming = SplitMix64::new(next ^ STREAMING).chance(250);
         let churn = streaming && SplitMix64::new(next ^ CHURN).chance(500);
         let reset = SplitMix64::new(next ^ RESET).chance(250);
-        let objects = SplitMix64::new(next ^ OBJECT_STORE).chance(500);
         let fat = !wal && SplitMix64::new(next ^ FAT).chance(250);
         let hostile = SplitMix64::new(next ^ HOSTILE).chance(500);
         let framing = hostile && SplitMix64::new(next ^ FRAMING).chance(500);
@@ -178,7 +167,6 @@ impl Features {
                 network,
                 process,
                 wal,
-                objects,
                 streaming,
                 churn,
                 reset,
@@ -206,7 +194,6 @@ impl Features {
             network,
             process,
             wal,
-            objects,
             streaming,
             churn,
             reset,

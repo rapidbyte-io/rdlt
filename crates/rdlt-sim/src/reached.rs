@@ -29,8 +29,6 @@ pub enum Reach {
     EmptyChild,
     /// A reset was refused as a stream the pipeline recorded nothing of.
     ResetRefused,
-    /// A put or deletion of the logs' object store was drawn to land after its client gave up.
-    LandedLate,
     /// A hostile host configured one connection twice at once.
     ConfiguredTwice,
     /// A hostile host opened sessions beyond a connection's share.
@@ -47,7 +45,7 @@ pub enum Reach {
 
 impl Reach {
     /// Every path, in the order a timing line names them.
-    const ALL: [Self; 19] = [
+    const ALL: [Self; 18] = [
         Self::ConnectorStopped,
         Self::LinkCut,
         Self::Crashed,
@@ -60,7 +58,6 @@ impl Reach {
         Self::Widened,
         Self::EmptyChild,
         Self::ResetRefused,
-        Self::LandedLate,
         Self::ConfiguredTwice,
         Self::SessionsBeyond,
         Self::Renamed,

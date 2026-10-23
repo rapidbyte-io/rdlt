@@ -97,7 +97,7 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>) -> Checke
     let world = Arc::clone(registered.world());
     let features = world.workload.features;
     env.perturb(features.perturb);
-    world.keep_logs(&env, seed).await;
+    world.keep_logs(&env);
     let config = config(
         &mut rng,
         false,
@@ -226,7 +226,7 @@ impl Changing<'_> {
                 );
             }
             if executed.iter().all(|executed| executed.succeeded) {
-                if !self.world.holds_logs().await {
+                if !self.world.holds_logs() {
                     return;
                 }
                 // The next run replays what this one logged.
