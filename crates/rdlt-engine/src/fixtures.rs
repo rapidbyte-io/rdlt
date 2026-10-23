@@ -5,6 +5,7 @@ pub(crate) mod lowering;
 #[cfg(test)]
 mod tests;
 
+use std::ops::Range;
 use std::sync::Arc;
 
 use arrow_array::{
@@ -35,7 +36,23 @@ pub(crate) fn events(first: i64, rows: u32, columns: usize) -> RecordBatch {
 /// Panics where `columns` is zero.
 pub(crate) fn events_of(ids: &[i64], columns: usize, shift: i64) -> RecordBatch {
     assert!(columns > 0, "a batch has a column");
-    let columns = (0..columns).map(|index| {
+    mixed_columns(ids, 0..columns, shift)
+}
+
+/// The rows of `ids`, as [`events`] makes them, of the columns whose places `indexes` names among
+/// those of a batch as wide as its end.
+///
+/// # Panics
+///
+/// Panics where `indexes` is empty.
+pub(crate) fn events_in(ids: &[i64], indexes: Range<usize>) -> RecordBatch {
+    assert!(!indexes.is_empty(), "a batch has a column");
+    mixed_columns(ids, indexes, 0)
+}
+
+/// The columns at `indexes` of the rows of `ids`, every value but the ids shifted by `shift`.
+fn mixed_columns(ids: &[i64], indexes: Range<usize>, shift: i64) -> RecordBatch {
+    let columns = indexes.map(|index| {
         let (round, kind) = (index / MIXED.len(), index % MIXED.len());
         let name = match round {
             0 => MIXED[kind].to_owned(),
