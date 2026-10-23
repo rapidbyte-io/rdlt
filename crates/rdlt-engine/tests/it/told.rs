@@ -22,8 +22,18 @@ use serde_json::json;
 use crate::support::making::{Step, Steps, making};
 use crate::support::{engine, logging_engine, memory, pipeline, retrying, stream};
 
-/// Partitions, batches each reads, rows a batch, and the bytes of a cursor answering a barrier.
-type Shape = (usize, usize, usize, usize);
+/// What an [`Asked`] source reads.
+#[derive(Clone, Copy, Debug)]
+struct Shape {
+    /// Partitions the stream has.
+    partitions: usize,
+    /// Batches each partition reads.
+    batches: usize,
+    /// Rows a batch.
+    rows: usize,
+    /// Bytes: a cursor answering a barrier.
+    cursor: usize,
+}
 
 static SHAPES: LazyLock<Mutex<BTreeMap<String, Shape>>> = LazyLock::new(Mutex::default);
 
@@ -73,7 +83,7 @@ impl ReadStream<Asked> for AskedStream {
             let id = rdlt_connector::PartitionId::parse(format!("p{index}"));
             Partition::new(id.expect("an id"))
         };
-        Ok((0..source.shape.0).map(part).collect())
+        Ok((0..source.shape.partitions).map(part).collect())
     }
 
     async fn read(
@@ -83,7 +93,12 @@ impl ReadStream<Asked> for AskedStream {
         _: String,
         out: &mut Emitter<String>,
     ) -> Result<()> {
-        let (_, batches, rows, cursor) = source.shape;
+        let Shape {
+            batches,
+            rows,
+            cursor,
+            ..
+        } = source.shape;
         for batch in 0..batches {
             let id = i64::try_from(batch).expect("an id");
             let ids: ArrayRef = Arc::new(Int64Array::from(vec![id; rows]));
@@ -104,20 +119,23 @@ impl ReadStream<Asked> for AskedStream {
 /// Loads sixteen partitions answering barriers with cursors of `cursor` bytes under the
 /// default budget, committing every sixteen batches, with the default barrier wait.
 async fn on_demand(name: &str, cursor: usize) -> RunOutcome {
-    let (parts, batches, rows) = (16, 20, 100);
-    SHAPES
-        .lock()
-        .insert(name.to_owned(), (parts, batches, rows, cursor));
+    let shape = Shape {
+        partitions: 16,
+        batches: 20,
+        rows: 100,
+        cursor,
+    };
+    SHAPES.lock().insert(name.to_owned(), shape);
     let source = source_factory::<Asked>()
         .connect(json!({ "name": name }), ConnectContext::new())
         .await
         .expect("registered");
-    let every = u64::try_from(parts * rows).expect("a count");
+    let every = u64::try_from(shape.partitions * shape.rows).expect("a count");
     let policy = CommitPolicy::new(None, Some(every), None).expect("a policy");
     let config = EngineConfig::builder()
         .commit(policy)
         .lanes(2)
-        .partitions(parts)
+        .partitions(shape.partitions)
         .barrier_wait(Duration::from_secs(5));
     engine(config)
         .run(
@@ -161,7 +179,13 @@ async fn barriers_answered_with_cursors_as_large_as_told_never_wait_on_the_budge
 /// Loads two partitions, each reading for two seconds, through one slot, a read waiting for a
 /// slot or for bytes `wait` at most.
 async fn one_slot(name: &str, wait: Duration) -> RunOutcome {
-    SHAPES.lock().insert(name.to_owned(), (2, 20, 10, 64));
+    let shape = Shape {
+        partitions: 2,
+        batches: 20,
+        rows: 10,
+        cursor: 64,
+    };
+    SHAPES.lock().insert(name.to_owned(), shape);
     let source = source_factory::<Asked>()
         .connect(json!({ "name": name }), ConnectContext::new())
         .await
