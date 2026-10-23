@@ -244,9 +244,9 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # From Ubuntu's archive, which mise cannot lock (ADR 0048); the gate refuses one older
-      # than 3.22.
+      # than 3.22. The runners' archive mirror can take minutes over each package.
       - name: Install valgrind
-        timeout-minutes: 5
+        timeout-minutes: 15
         run: |
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends valgrind
