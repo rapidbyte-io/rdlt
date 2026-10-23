@@ -1,11 +1,18 @@
 //! SQLite: rows loaded through the engine into the reference SQLite destination, on disk beside
-//! the build: appends at one commit and at a commit every 10k rows, and a million rows merged by
-//! key into a million, a tenth of them updates.
+//! the build: appends at one commit and at a commit every 10k rows, a million rows at a commit
+//! every 10k from a source that cannot read them again, so the engine logs them ahead into a
+//! local log on the same disk, and a million rows merged by key into a million, a tenth of them
+//! updates.
+//!
+//! Each append prints the time its last run's commits took, phase by phase. The database's files
+//! are `loaded.db` and SQLite's beside it, and a log's are under `wal`, so a run's syncs of each
+//! tell apart by path.
 
 #![forbid(unsafe_code)]
 
 use std::num::NonZeroU64;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use criterion::{
@@ -13,8 +20,8 @@ use criterion::{
 };
 use rdlt_connector::destination_factory;
 use rdlt_connector_reference::SqliteDestination;
-use rdlt_engine::Cores;
 use rdlt_engine::bench::{Load, Loading};
+use rdlt_engine::{Cores, LocalWal, Report, WalStore};
 use serde_json::json;
 use tempfile::TempDir;
 
@@ -27,12 +34,21 @@ const COMMIT_ROWS: NonZeroU64 = NonZeroU64::new(10_000).expect("not zero");
 /// Rows of the merge, and of the table it merges into.
 const MERGED: u64 = 1_000_000;
 
-/// The appends: rows, and the rows between commits, or none for one commit at the end.
-const APPENDS: [(u64, Option<NonZeroU64>); 4] = [
-    (1_000_000, None),
-    (200_000, Some(COMMIT_ROWS)),
-    (500_000, Some(COMMIT_ROWS)),
-    (1_000_000, Some(COMMIT_ROWS)),
+/// Whether an append's source can read its rows again, or cannot, so the engine logs them ahead.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Source {
+    Replayable,
+    Unreplayable,
+}
+
+/// The appends: rows, the rows between commits or none for one commit at the end, and whether
+/// their source can read them again.
+const APPENDS: [(u64, Option<NonZeroU64>, Source); 5] = [
+    (1_000_000, None, Source::Replayable),
+    (200_000, Some(COMMIT_ROWS), Source::Replayable),
+    (500_000, Some(COMMIT_ROWS), Source::Replayable),
+    (1_000_000, Some(COMMIT_ROWS), Source::Replayable),
+    (1_000_000, Some(COMMIT_ROWS), Source::Unreplayable),
 ];
 
 /// A database of its own in a directory of its own beside the build, which the destination
@@ -44,17 +60,57 @@ fn database() -> (TempDir, std::path::PathBuf) {
     (dir, path)
 }
 
-/// Loads `loading` into the database at `path`; how long the run took, and its commits.
+/// Loads `loading` into the database at `path`; how long the run took, and its report.
 #[expect(
     clippy::disallowed_methods,
     reason = "a benchmark times its runs on the real clock"
 )]
-fn load(loading: &Loading, path: &Path) -> (Duration, u64) {
+fn load(loading: &Loading, path: &Path) -> (Duration, Report) {
     let factory = destination_factory::<SqliteDestination>();
     let destination = loading.connect(factory.as_ref(), json!({ "path": path }));
     let started = Instant::now();
     let report = loading.run(destination);
-    (started.elapsed(), report.commits)
+    (started.elapsed(), report)
+}
+
+/// The loading of `rows` appended rows committed every `commit` rows or once, from `source`; and
+/// the directory of the log it keeps, under `wal` in it, where its source cannot read again.
+fn appends(
+    cores: Cores,
+    rows: u64,
+    commit: Option<NonZeroU64>,
+    source: Source,
+) -> (Loading, Option<TempDir>) {
+    let made = match source {
+        Source::Replayable => Loading::try_new(cores, Load::Append, rows, APPEND_BATCH, commit)
+            .map(|loading| (loading, None)),
+        Source::Unreplayable => {
+            let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR"))
+                .expect("a directory beside the build");
+            let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(dir.path().join("wal")));
+            Loading::logged(cores, rows, APPEND_BATCH, commit, store)
+                .map(|loading| (loading, Some(dir)))
+        }
+    };
+    made.expect("the pool starts")
+}
+
+/// The time `report`'s commits took a commit, phase by phase.
+#[expect(clippy::cast_precision_loss, reason = "commits are far below 2^52")]
+fn phases(report: &Report) -> String {
+    let phases = &report.counters.phases;
+    let commits = report.commits.max(1) as f64;
+    let each = |phase: Duration| phase.as_secs_f64() * 1e3 / commits;
+    format!(
+        "commits {}; a commit's phases: flush {:.3} ms, horizon {:.3} ms, log {:.3} ms, commit \
+         {:.3} ms, ack {:.3} ms",
+        report.commits,
+        each(phases.flush),
+        each(phases.horizon),
+        each(phases.log),
+        each(phases.commit),
+        each(phases.ack),
+    )
 }
 
 /// Asserts that the table at `path` holds `rows` rows and its staging none.
@@ -75,32 +131,43 @@ fn holds(path: &Path, rows: u64) {
     );
 }
 
+#[expect(
+    clippy::print_stdout,
+    reason = "criterion reports times; each append's commit phases are printed beside them"
+)]
 fn appending(c: &mut Criterion) {
     let cores = Cores::try_from_host().expect("the host says how many cores the bench may use");
     let mut group = c.benchmark_group("sqlite");
     group.sample_size(10).sampling_mode(SamplingMode::Flat);
-    for (rows, commit) in APPENDS {
+    for (rows, commit, source) in APPENDS {
         let every = commit.map_or_else(|| "once".to_owned(), |rows| rows.to_string());
-        let mut loading = None;
+        let name = match source {
+            Source::Replayable => format!("{rows}/{every}"),
+            Source::Unreplayable => format!("{rows}/{every}/unreplayable"),
+        };
+        let (mut loading, mut reported) = (None, None);
         group.throughput(Throughput::Elements(rows));
-        group.bench_function(BenchmarkId::new("append", format!("{rows}/{every}")), |b| {
-            let loading = loading.get_or_insert_with(|| {
-                Loading::try_new(cores, Load::Append, rows, APPEND_BATCH, commit)
-                    .expect("the pool starts")
-            });
+        group.bench_function(BenchmarkId::new("append", &name), |b| {
+            let (loading, _log) =
+                loading.get_or_insert_with(|| appends(cores, rows, commit, source));
             b.iter_custom(|runs| {
                 let mut took = Duration::ZERO;
                 for _ in 0..runs {
                     let (_dir, path) = database();
-                    let (elapsed, commits) = load(loading, &path);
+                    let (elapsed, report) = load(loading, &path);
                     took += elapsed;
                     let least = commit.map_or(1, |every| rows.div_ceil(every.get()));
-                    assert!(commits >= least, "{commits} commits of {rows} rows");
+                    let made = report.commits;
+                    assert!(made >= least, "{made} commits of {rows} rows");
                     holds(&path, rows);
+                    reported = Some(report);
                 }
                 took
             });
         });
+        if let Some(report) = &reported {
+            println!("sqlite/append/{name}: {}", phases(report));
+        }
     }
     group.finish();
 }

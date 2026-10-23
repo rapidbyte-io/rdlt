@@ -498,8 +498,10 @@ bench-package name:
 # Measure a bench as every recorded figure is measured: on the CPUs `cores` lists, every CPU
 # this process may use by default, saved as criterion's baseline named after the commit, then each
 # benchmark under `perf stat` for the instructions a cycle and the CPUs kept busy, and once under
-# a count-only `strace -c` for the syscalls a run makes, then the bench's allocation counts at
-# full size (`--bench`), with the commit, load, governor and thread counts. Connectors a bench
+# a count-only `strace -c` for the syscalls a run makes, and where a run syncs files once more
+# under `strace -y` for the files it syncs, each named by its place under the temporary directory
+# that holds it, then the bench's allocation counts at full size (`--bench`), with the commit,
+# load, governor and thread counts. Connectors a bench
 # serves in processes of their own run on the CPUs `connectors` lists, by default every online CPU
 # outside `cores`; their CPU time is in the CPUs kept busy and their syscalls are counted. Linux
 # only, which can hold a process to chosen CPUs; the record is in `target/bench`
@@ -573,6 +575,27 @@ bench $name $cores="" $filter="" $connectors="":
                 printf "%s: %s a run, its setup included (strace -c, one run in test mode)\n", id, line
             }
         ' target/bench/strace.txt | tee -a "$record"
+        awk '($1 == "fsync" || $1 == "fdatasync") && $2 > 0 { synced = 1 } END { exit !synced }' target/bench/strace.txt || continue
+        taskset -c "$cores" strace -f -y --seccomp-bpf -e trace=fsync,fdatasync -o target/bench/synced.txt "$exe" --test --exact "$id" > /dev/null
+        # A file under a directory tempfile made, `.tmp` and a suffix, is named by the first part
+        # of its path below it, `.` for that directory itself; any other by its whole path.
+        awk '
+            match($0, /(fsync|fdatasync)\([0-9]+</) {
+                path = substr($0, RSTART + RLENGTH)
+                sub(/>.*/, "", path)
+                if (match(path, /\/\.tmp[^\/]*/)) {
+                    path = substr(path, RSTART + RLENGTH)
+                    sub(/^\//, "", path)
+                    sub(/\/.*/, "", path)
+                    if (path == "") path = "."
+                }
+                synced[path]++
+            }
+            END { for (path in synced) print synced[path], path }
+        ' target/bench/synced.txt | sort -k 2 | awk -v id="$id" '
+            { files = files (NR > 1 ? ", " : "") $1 " " $2 }
+            END { printf "%s: fsyncs and fdatasyncs by file: %s (strace -f -y, one run in test mode)\n", id, files }
+        ' | tee -a "$record"
     done
     if "$counter" --list | grep -qx "$name: test"; then taskset -c "$cores" "$counter" --bench "$name" | tee -a "$record"; fi
     echo "load after: $(cut -d' ' -f1-3 /proc/loadavg)" | tee -a "$record"
