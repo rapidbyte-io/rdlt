@@ -4,22 +4,33 @@ What a run holds resident beyond its inputs, against the limit its budget gives 
 
 ## Method
 
-- **Running it.** `just resident` builds the `resident` bench and runs it once for each workload,
-  core count and malloc setting, each in a process of its own.
+- **Running it.** `just resident` builds the engine's `resident` bench and the host's `served`
+  bench and runs each workload once for each core count and malloc setting, each in a process of
+  its own.
 - **Workloads.** `passthrough` moves 64 batches of the passthrough workload (80,000 rows of ten
   mixed columns, about 7 MB each) to the null sink. `normalized` loads 200,000 roots in pushes of
-  50,000 rows and normalizes them.
+  50,000 rows and normalizes them. `served` (`served --resident <cores>`) moves the same 64
+  batches, read from 16 partitions, an even share each, through a host that spawned both
+  connectors over a socket pair, as production runs them: the replay source makes its batches in
+  its own process, and the IPC sink, which declares one writer, writes them in its own.
 - **Budget.** 256 MiB for every run.
 - **Cores.** 2, 4 and `nproc`, 16 on this machine.
 - **Malloc.** Once with glibc's defaults, and once with the tunables a spawned connector gets,
   `glibc.malloc.trim_threshold=268435456` and `glibc.malloc.mmap_threshold=33554432`
-  (`/tunables` in a line's name).
+  (`/tunables` in a line's name). The setting is the bench's, the host's in `served`; the host
+  starts every connector it spawns with the tunables.
 - **Growth.** The inputs are made first, then the process's peak resident memory is reset
   (`/proc/self/clear_refs`) and its resident memory read; the run then raises the peak to
   `VmHWM`. Growth is that peak less the resident memory at the reset.
 - **Limit.** The budget, a fifth of it and 32 MiB, plus the largest push the run holds
   unadmitted, plus 2 MiB of stack a thread (the runtime's workers, the compute threads and the
-  main thread). A run over its limit exits with 1.
+  main thread). `served`'s host holds a frame unadmitted a partition, and what its connectors'
+  open calls hold in transport besides, a stream window of 4 MiB (`CREDIT_FLOOR`) a call: a read
+  a partition and the sink's one writer. A run over its limit exits with 1.
+- **Connector processes.** In `served`, each spawned connector's peak resident memory (`VmHWM`)
+  is read before it stops: a process spawned for the run, so the peak is all it held, the
+  source's batches among it. They are reported apart, and not held to a limit: the budget bounds
+  the host.
 - **peak_memory.** The budget the run's meter reached at its peak, from the engine's report.
 - **Figures.** The bench prints whole MiB, so a ratio is of the printed figures.
 

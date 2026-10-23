@@ -11,17 +11,19 @@ fn a_status_field_reads_in_kibibytes() {
 }
 
 #[test]
-fn the_limit_is_the_budget_s_bound_and_one_push_and_a_stack_a_thread() {
+fn the_limit_is_the_budget_s_bound_what_is_unadmitted_and_in_transport_and_a_stack_a_thread() {
     let resident = Resident {
         memory: 256 << 20,
         push: 8 << 20,
+        transport: 12 << 20,
         threads: 4,
     };
-    // ADR 0039: the budget, a fifth of it and 32 MiB, one push, and 2 MiB of stack a thread.
+    // ADR 0039: the budget, a fifth of it and 32 MiB, what is unadmitted and in transport, and
+    // 2 MiB of stack a thread.
     let fifth = (256u64 << 20) / 5;
     assert_eq!(
         resident.limit(),
-        (256 << 20) + fifth + (32 << 20) + (8 << 20) + 4 * (2 << 20)
+        (256 << 20) + fifth + (32 << 20) + (8 << 20) + (12 << 20) + 4 * (2 << 20)
     );
 }
 
