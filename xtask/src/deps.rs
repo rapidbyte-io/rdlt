@@ -22,10 +22,6 @@ const RULES: &[(&str, &[&str])] = &[
     ("rdlt-host", &["rdlt-adopt", "rdlt-connector", "rdlt-wire"]),
     ("rdlt-engine", &["rdlt-connector", "rdlt-wire"]),
     (
-        "rdlt-log-store",
-        &["rdlt-engine", "rdlt-connector", "rdlt-host", "rdlt-wire"],
-    ),
-    (
         "rdlt-certify",
         &[
             "rdlt-connector",

@@ -58,9 +58,6 @@ futures-util = { version = "0.3.34", default-features = false, features = [
   "std",
 ] } # reading an object store's listings and bodies as they stream
 object_store = { version = "0.14.2", default-features = false } # write-ahead logs on S3 and compatible stores
-reqwest = { version = "0.13.5", default-features = false } # the HTTP client the S3 log store's requests go through
-rustls-platform-verifier = "0.7.0" # the system's trusted roots, for the S3 log store's TLS
-url = "2.5.8" # parsing the S3 log store's endpoint
 command-fds = { version = "0.3.3", default-features = false } # a spawned connector's socket at file descriptor 3
 rustix = { version = "1.1.5", default-features = false, features = [
   "std",
@@ -141,9 +138,6 @@ rusqlite = { version = "0.40.2", default-features = false, features = [
   "limits",
 ] } # the reference SQL destination, and running sqlgen's statements in its tests
 tempfile = "3.27.0" # temporary directories in tests
-testcontainers = { version = "0.28.0", default-features = false, features = [
-  "watchdog",
-] } # S3 servers in containers, for the S3 log store's tests, removed even when a test is stopped
 toml = "1.1.6" # xtask reads the tool lockfile
 walkdir = "2.5.0" # xtask walks the source tree
 
