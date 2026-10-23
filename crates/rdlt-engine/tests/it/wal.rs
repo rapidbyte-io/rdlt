@@ -798,25 +798,21 @@ async fn a_slow_first_commit_beside_a_partition_committing_every_batch_loads_thr
     );
 }
 
-#[cfg(feature = "object-store")]
 #[tokio::test(start_paused = true)]
 async fn frames_larger_than_the_log_s_memory_are_carried_a_piece_at_a_time() {
-    // A budget whose share for logs, beside a store's part, holds less than one batch frame: a
-    // carry copies each frame in pieces, so the slow partition's frames still leave the chunks
-    // the fast one settles.
-    use object_store::memory::InMemory;
-    use rdlt_engine::{ObjectStoreOptions, ObjectStoreWal, SystemClock};
-    let (rows, frame, every) = (160_000, 1_920_000, 24);
+    // A budget whose share for logs holds less than one batch frame: a carry copies each frame
+    // in pieces, so the slow partition's frames still leave the chunks the fast one settles.
+    let (rows, frame, every) = (256_000, 2_600_000, 24);
     let name = "wal_large_frames";
-    let options = ObjectStoreOptions::default().with_part_bytes((768 << 10).try_into().unwrap());
-    let objects = Arc::new(InMemory::new());
-    let wal = ObjectStoreWal::open(objects as _, "logs", Arc::new(SystemClock), options)
-        .await
-        .expect("the probe passes");
-    let store: Arc<dyn WalStore> = Arc::new(wal);
+    let memory_bytes = 34 << 20;
+    assert!(
+        frame > memory_bytes / 16,
+        "a frame larger than the log's share"
+    );
+    let store: Arc<dyn WalStore> = Arc::new(Memory::default());
     let destination = memory(name).await;
     let engine = |config: rdlt_engine::EngineConfigBuilder, store| {
-        logging_engine(config.memory(34 << 20).partitions(2), store)
+        logging_engine(config.memory(memory_bytes).partitions(2), store)
     };
     let shape = (every, rows * (2 * every + 4), rows);
     let outcome =
@@ -827,6 +823,8 @@ async fn frames_larger_than_the_log_s_memory_are_carried_a_piece_at_a_time() {
         "{:?}",
         outcome.error
     );
+    let log = outcome.report.counters.log;
+    assert!(log.carried > frame, "{log:?}");
 }
 
 #[tokio::test(start_paused = true)]
