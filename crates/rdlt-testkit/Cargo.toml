@@ -28,12 +28,9 @@ arrow-array.workspace = true
 arrow-buffer.workspace = true
 arrow-cast.workspace = true
 arrow-schema.workspace = true
-async-trait.workspace = true
-futures-util.workspace = true
 http = { workspace = true, optional = true }
 hyper = { workspace = true, optional = true, features = ["http2", "server"] }
 hyper-util = { workspace = true, optional = true, features = ["service", "tokio"] }
-object_store.workspace = true
 parking_lot.workspace = true
 proptest.workspace = true
 rcgen.workspace = true

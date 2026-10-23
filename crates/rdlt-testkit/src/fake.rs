@@ -355,7 +355,7 @@ impl Fake {
     }
 }
 
-#[async_trait::async_trait]
+#[rdlt_wire::tonic::async_trait]
 impl Connector for Fake {
     async fn handshake(
         &self,

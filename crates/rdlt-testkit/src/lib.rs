@@ -32,7 +32,6 @@ pub mod drawn;
 pub mod fake;
 pub mod held;
 pub mod nested;
-pub mod objects;
 pub mod process;
 pub mod required;
 pub mod tls;
