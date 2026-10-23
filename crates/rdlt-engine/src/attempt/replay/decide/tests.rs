@@ -113,7 +113,7 @@ fn a_commit_the_destination_never_saw_replays_whole_where_nothing_moved_since() 
         decision,
         Decision {
             staged: segments(&[3, 4, 6]),
-            moved: vec![position("p0", 30), position("p1", 6), position("p2", 1)],
+            moved: Vec::new(),
             whole: true,
         }
     );
