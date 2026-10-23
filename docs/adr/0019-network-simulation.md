@@ -57,6 +57,27 @@ the whole engine on a paused clock from a seed, with connectors in the engine's 
     and settings. HTTP/2's keep-alive therefore never notices it; only the host's heartbeat can.
     Once the first answer is withheld, a stalled connection the engine keeps open longer than its
     heartbeat's patience plus the time a close takes to arrive is a violation.
+  - In one hostile seed in two (`framing`), connectors that break the protocol listen on a host of
+    their own, each fault of the test kit's connector on a port of its own. Beside each attempt's
+    runs the engine's host dials one through `Remote`, sets up a connection with options of its
+    own, and makes the call its fault breaks:
+    - the connection's setup: a configuration as another connector, a handshake with no
+      dictionary limit, at the next major version, or accepting a feature never offered;
+    - a check once the heartbeat has had twice its patience: pings echoed ahead, none answered, a
+      heartbeat that never opens or is refused, pings never read;
+    - a read: a schema that is no IPC message, a barrier never asked for, a schema epoch sent
+      twice, too many frames that carry no event, too many log lines, and a connector that knows
+      no barrier in a read's start;
+    - a discovery: status details that do not decode, a catalog too large to decode;
+    - a session's opening with a state key past its limit, and writes whose credit trickles or
+      is of no bytes.
+
+    On a healed network the host must meet each as its own tests do. Where the attempt's network
+    is disrupted, a driver of its own also cuts and holds that host's link, and the host may lose
+    the connector instead. Either way the call must end within the bound its deadlines and
+    heartbeat set, and nothing of it may outlive the phase on either host. Over 10 000 seeds,
+    237 met one on a healed network. With the fix that counts a heartbeat with no room in its
+    queue as missed undone, 2 of 1 000 seeds fail.
   - The exactly-once oracle is the same over either transport: the destination holds exactly what
     the model says, whatever the network did.
 - **What the simulation found**, each fixed with a regression test:
@@ -109,8 +130,6 @@ the whole engine on a paused clock from a seed, with connectors in the engine's 
   - the scan's refusals of messages it cannot walk or whose decoded count passes its bound;
   - secrets read from files and the environment;
   - refusals of a log a store garbled;
-  - a connector that frames its answers against the protocol, which `rdlt-host`'s own tests
-    serve.
 
 ## Consequences
 
