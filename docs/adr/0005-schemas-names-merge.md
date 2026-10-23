@@ -42,8 +42,8 @@ contract M2b settles. Building M2b surfaced decisions the spec leaves open or ge
   declared schema; a declared one is resolved like a batch before anything is read. After the
   table exists, a new column or a value its column cannot hold is a change, which the column's
   policy applies (`evolve`), refuses (`freeze`) or discards (`discard_row`, `discard_value`).
-  Settings resolve column → table → stream → pipeline in one function; the table level has no
-  builder until child tables exist (M3).
+  Settings resolve column → stream → pipeline in one function. A child table's columns take the
+  settings of the stream's column whose arrays the table holds.
 - **Evolution widens in place or adds a variant.** A change the destination can apply, or that
   does not change how it stores the column, widens the column. Otherwise, under `variant_column`,
   values land in `<name>__<kind>`, the variant of the joined type's kind, widened while the
