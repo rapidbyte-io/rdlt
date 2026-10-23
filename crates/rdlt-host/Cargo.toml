@@ -54,6 +54,7 @@ http-body.workspace = true
 hyper = { workspace = true, features = ["client", "http2", "server"] }
 hyper-util = { workspace = true, features = ["service", "tokio"] }
 nix = { workspace = true, features = ["process", "resource", "sched", "signal", "time"] }
+parking_lot.workspace = true
 peak_alloc.workspace = true
 proptest.workspace = true
 rdlt-connector = { workspace = true, features = ["certify", "serve"] }
@@ -80,4 +81,10 @@ workspace = true
 [[bench]]
 name = "served"
 path = "tests/it/bench.rs"
+harness = false
+
+# Beside the served bench, whose binary's entry as a connector it shares.
+[[bench]]
+name = "latency"
+path = "tests/it/bench/latency.rs"
 harness = false
