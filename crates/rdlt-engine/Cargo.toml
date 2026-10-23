@@ -12,8 +12,6 @@ repository.workspace = true
 bench = ["dep:arrow-ipc", "dep:schemars", "dep:stats_alloc", "tokio/rt-multi-thread"]
 # Crash points at every durability step, for the failpoint sweep; never in a release.
 failpoints = ["dep:fail", "fail/failpoints"]
-# The write-ahead log store's contract as tests another crate runs; not a public API.
-conformance = []
 # What the deterministic simulation observes of the engine; never in a release.
 sim = []
 
