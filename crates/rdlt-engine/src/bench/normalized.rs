@@ -1,16 +1,21 @@
 //! The normalized write path: keyless nested JSON pushed a flush at a time through the engine,
 //! each flush shredded into units, normalized into its table and child tables, and lowered into a
-//! destination that discards what it stages.
+//! destination that discards what it stages; read from one partition, or from many through as
+//! many writers as the passthrough workload's.
 
 #[cfg(test)]
 mod tests;
 
-use std::num::NonZeroU64;
+use std::num::{NonZeroU64, NonZeroUsize};
 
 use bytes::Bytes;
 
+use super::connectors::connect_replay;
 use super::runner::{Runner, stream};
-use super::{CHUNK_BYTES, Corpus, Replayed, null_sink, replay};
+use super::{
+    CHUNK_BYTES, Corpus, Passthrough, Replayed, Sinking, null_sink, register, sink,
+    split_replay_config,
+};
 use crate::{ComputePoolError, Cores, Nested, Report, SchemaSettings};
 
 /// The rows of the orders corpus pushed `per_push` a push, normalized through the engine.
@@ -19,6 +24,7 @@ pub struct Normalized {
     runner: Runner,
     pushes: Vec<Bytes>,
     roots: u64,
+    partitions: NonZeroUsize,
 }
 
 impl Normalized {
@@ -31,6 +37,18 @@ impl Normalized {
         NonZeroU64::new(10_000).expect("not zero"),
         NonZeroU64::new(50_000).expect("not zero"),
     ];
+    /// Rows of the stream each run read from several partitions normalizes.
+    pub const SPLIT_ROOTS: u64 = 200_000;
+    /// Rows a push holds in the runs read from several partitions.
+    pub const SPLIT_PUSH_ROWS: NonZeroU64 = NonZeroU64::new(10_000).expect("not zero");
+    /// The partitions of the runs read from several.
+    pub const PARTITIONS: [NonZeroUsize; 2] = [
+        NonZeroUsize::new(4).expect("not zero"),
+        NonZeroUsize::new(16).expect("not zero"),
+    ];
+    /// Bytes: the budgets the runs read from several partitions load within, the default and
+    /// four times it.
+    pub const BUDGETS: [u64; 2] = [256 << 20, 1 << 30];
 
     /// The first `roots` rows of the orders corpus in pushes of `per_push` rows, a checkpoint
     /// after each so each push is one flush, and a runtime of `cores`' workers and an engine
@@ -71,7 +89,20 @@ impl Normalized {
             runner: Runner::within(cores, "normalized", vec![stream], None, memory)?,
             pushes: Corpus::Orders.rows(roots, per_push),
             roots,
+            partitions: NonZeroUsize::MIN,
         })
+    }
+
+    /// The load, its pushes read from `partitions` partitions, each an even share in order, into
+    /// a sink of as many writers as the passthrough workload's.
+    #[must_use]
+    pub fn partitioned(self, partitions: NonZeroUsize) -> Self {
+        Self { partitions, ..self }
+    }
+
+    /// The partitions the pushes are read from.
+    pub fn partitions(&self) -> NonZeroUsize {
+        self.partitions
     }
 
     /// The bytes of JSON each run loads.
@@ -138,10 +169,17 @@ impl Normalized {
     ///
     /// Panics where the run fails or loads other rows than [`Normalized::rows`].
     pub fn report(&self) -> Report {
-        let replayed = Replayed::Json(self.pushes.clone());
-        let (source, destination) = self
-            .runner
-            .block_on(async { (replay("normalized", replayed).await, null_sink().await) });
+        let (source, destination) = self.runner.block_on(async {
+            register("normalized", Replayed::Json(self.pushes.clone()));
+            let config = split_replay_config("normalized", self.partitions, NonZeroUsize::MIN);
+            let source = connect_replay(config).await;
+            let destination = if self.partitions == NonZeroUsize::MIN {
+                null_sink().await
+            } else {
+                sink(Sinking::Discard, Passthrough::WRITERS).await
+            };
+            (source, destination)
+        });
         let report = self.runner.load(source, destination);
         assert_eq!(report.rows, self.rows());
         report
