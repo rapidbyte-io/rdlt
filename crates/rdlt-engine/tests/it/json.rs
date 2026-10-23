@@ -2,16 +2,15 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
-use arrow_array::StringArray;
-use arrow_array::{ArrayRef, Int64Array, RecordBatch};
+use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use bytes::Bytes;
 use rdlt_connector::Push;
 use rdlt_connector_reference::published;
-use std::time::Duration;
-
-use rdlt_engine::StreamPlan;
-use rdlt_engine::{BatchPolicy, ErrorKind, Nested, RunStatus, SchemaSettings, WriteMode};
+use rdlt_engine::{
+    BatchPolicy, ErrorKind, Nested, RunStatus, SchemaSettings, StreamPlan, WriteMode,
+};
 use serde_json::{Value, json};
 
 use crate::support::batches::{BatchStream, batches};
