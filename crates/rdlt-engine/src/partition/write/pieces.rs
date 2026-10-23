@@ -69,8 +69,8 @@ pub(super) struct Pieces {
     cut: Option<Run>,
     /// Pieces cut ahead, in order, before any of them is lowered.
     ready: VecDeque<Piece>,
-    /// The unit's batches, taken from what holds them: each piece's slices keep alive what they
-    /// cut, so a batch is freed once its last piece is.
+    /// The unit's batches, which what holds the unit keeps too: the allocations it counts each
+    /// piece's growth beyond stay alive until its last piece goes.
     parts: Vec<RecordBatch>,
     /// What holds the unit, which each of its pieces shares: last, so the batches and the pieces
     /// cut ahead of them go before it.
@@ -79,7 +79,7 @@ pub(super) struct Pieces {
 
 impl Pieces {
     /// `unit`, batches of one schema, to be cut as `lowered` measures them.
-    pub(super) fn new(mut unit: Held, lowered: Lowered) -> Self {
+    pub(super) fn new(unit: Held, lowered: Lowered) -> Self {
         Self {
             lowered,
             part: 0,
@@ -87,7 +87,7 @@ impl Pieces {
             measures: None,
             cut: None,
             ready: VecDeque::new(),
-            parts: std::mem::take(&mut unit.batches),
+            parts: unit.batches.clone(),
             unit: Arc::new(Mutex::new(unit)),
         }
     }
@@ -117,14 +117,14 @@ impl Pieces {
         self.part >= self.parts.len()
     }
 
-    /// The allocations the unit keeps alive, which its pieces share.
-    pub(super) fn allocations(&self) -> Arc<Mutex<Allocations>> {
+    /// The allocations the unit's batches keep alive, which its pieces share.
+    pub(super) fn allocations(&self) -> Arc<Allocations> {
         Arc::clone(&self.unit.lock().allocations)
     }
 
     /// Holds `unit`, the same batches, in place of what held them.
-    pub(super) fn held_by(&mut self, mut unit: Held) {
-        self.parts = std::mem::take(&mut unit.batches);
+    pub(super) fn held_by(&mut self, unit: Held) {
+        self.parts.clone_from(&unit.batches);
         self.unit = Arc::new(Mutex::new(unit));
     }
 

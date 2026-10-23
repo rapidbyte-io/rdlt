@@ -17,7 +17,6 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
-use parking_lot::Mutex;
 use rdlt_connector::cost::Allocations;
 use rdlt_connector::{ColumnPath, Permit, SchemaError, TableSchema};
 
@@ -353,11 +352,12 @@ async fn next(
 /// What holds a piece while it is lowered and until it is written: dropped, what it reserved is
 /// released before its unit, whose batches go before their permits.
 struct Lowering {
-    /// The allocations its unit holds, which what it is lowered to may share.
-    allocations: Arc<Mutex<Allocations>>,
+    /// The allocations its unit's batches keep alive, which what it is lowered to may share.
+    allocations: Arc<Allocations>,
     /// What lowering the piece holds, reserved before it is lowered.
     reserved: Reservation,
-    /// A share of what holds its unit, so the unit's permits hold until all of it is written.
+    /// A share of what holds its unit, so the unit's batches and permits hold until all of it is
+    /// written.
     unit: Share,
 }
 
@@ -438,8 +438,8 @@ impl Window {
     }
 
     /// Lowers the window's pieces and queues them, in order: each then holds what it was lowered
-    /// to and its unit did not hold already, where that is less than was reserved for lowering
-    /// it, and its frame in the log what the frame takes.
+    /// to beyond its unit's batches, where that is less than was reserved for lowering it, and
+    /// its frame in the log what the frame takes.
     async fn lower(
         &mut self,
         job: &PartitionJob,
@@ -455,7 +455,7 @@ impl Window {
                 prepared.map(|prepared| {
                     let frame = frame_part(&mut lowering.reserved, times);
                     let frame = frame.map(|frame| Box::new(frame) as Permit);
-                    let fresh = prepared.growth(&mut lowering.allocations.lock());
+                    let fresh = prepared.growth(&lowering.allocations);
                     lowering.reserved.shrink(fresh);
                     (prepared, lowering, frame)
                 })

@@ -20,14 +20,15 @@ use crate::cost::Admitted;
 pub(super) struct Held {
     pub(super) batches: Vec<RecordBatch>,
     pub(super) permits: Vec<Permit>,
-    /// The allocations the unit keeps alive; the pieces of a unit share them, so what a piece
-    /// is lowered to counts only what it keeps alive beside them.
-    pub(super) allocations: Arc<Mutex<Allocations>>,
+    /// The allocations the batches keep alive, made once and never added to, so every address
+    /// in it is alive while it is: what a piece is lowered to counts only what it keeps alive
+    /// beyond them.
+    pub(super) allocations: Arc<Allocations>,
 }
 
 /// What holds a unit, shared by each of its pieces, each declaring its share after its rows:
-/// the unit's permits go once the last piece is written or let go, whichever piece that is and
-/// wherever it is.
+/// the unit's batches, then its permits, go once the last piece is written or let go, whichever
+/// piece that is and wherever it is.
 pub(super) type Share = Arc<Mutex<Held>>;
 
 impl Held {
@@ -40,7 +41,7 @@ impl Held {
         Self {
             batches,
             permits,
-            allocations: Arc::new(Mutex::new(allocations)),
+            allocations: Arc::new(allocations),
         }
     }
 

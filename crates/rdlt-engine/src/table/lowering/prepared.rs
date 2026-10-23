@@ -20,19 +20,19 @@ pub(crate) struct Prepared {
 }
 
 impl Prepared {
-    /// The bytes of the allocations the batch keeps alive beyond those `held` holds, which then
-    /// holds them too.
+    /// The bytes of the allocations the batch keeps alive beyond those `unit` holds, each counted
+    /// once, `unit` left as it is.
     ///
     /// The load's constant columns count for nothing: they are built once and every batch
     /// shares them.
-    pub(crate) fn growth(&self, held: &mut Allocations) -> u64 {
+    pub(crate) fn growth(&self, unit: &Allocations) -> u64 {
         let constants = self.view.model.columns.len();
-        self.batch
-            .columns()
-            .iter()
-            .enumerate()
-            .filter(|(column, _)| !(constants..constants + 2).contains(column))
-            .map(|(_, column)| held.add_array(column.as_ref()))
-            .fold(0, u64::saturating_add)
+        let mut grown = Allocations::default();
+        for (index, column) in self.batch.columns().iter().enumerate() {
+            if !(constants..constants + 2).contains(&index) {
+                grown.add_array_beyond(column.as_ref(), unit);
+            }
+        }
+        grown.bytes()
     }
 }
