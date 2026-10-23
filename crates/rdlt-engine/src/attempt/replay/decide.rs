@@ -6,8 +6,8 @@ mod tests;
 use std::collections::BTreeMap;
 
 use rdlt_connector::{
-    CommitMeta, CommitSeq, Epoch, LoadId, SegmentSet, StateChange, StateEntry, StateKey,
-    StateRecord, StreamName,
+    CommitMeta, CommitSeq, Epoch, LoadId, PartitionId, PartitionState, SegmentSet, StateChange,
+    StateEntry, StateKey, StateRecord, StreamName,
 };
 
 use crate::wal::Positions;
@@ -125,7 +125,36 @@ pub(super) fn decide(
             staged.insert(seal.segment);
         }
     }
-    let moved = transitions
+    let whole = matched && untouched;
+    // A whole commit applies its logged state, so what it still moves is never read.
+    let moved = if whole {
+        Vec::new()
+    } else {
+        recorded(meta, transitions, moved)
+    };
+    Decision {
+        staged,
+        moved,
+        whole,
+    }
+}
+
+/// The state changes a replay of `meta` records: the phases' `transitions`, then each `moved`
+/// partition's position, with the record the commit logged for it where it logged that one.
+fn recorded(
+    meta: &CommitMeta,
+    transitions: Vec<StateChange>,
+    moved: BTreeMap<(StreamName, PartitionId), PartitionState>,
+) -> Vec<StateChange> {
+    let puts = meta
+        .state_delta
+        .iter()
+        .filter_map(|change| match change {
+            StateChange::Put(record) => Some((record.key.as_str(), record)),
+            StateChange::Delete(_) => None,
+        })
+        .collect();
+    transitions
         .into_iter()
         .chain(moved.into_iter().map(|((stream, partition), state)| {
             let entry = StateEntry::Partition {
@@ -134,26 +163,17 @@ pub(super) fn decide(
                 state,
                 load: meta.load_id,
             };
-            StateChange::Put(logged_record(meta, &entry).unwrap_or_else(|| entry.to_record()))
+            StateChange::Put(logged_record(&puts, &entry).unwrap_or_else(|| entry.to_record()))
         }))
-        .collect();
-    Decision {
-        staged,
-        moved,
-        whole: matched && untouched,
-    }
+        .collect()
 }
 
-/// The record of `entry` that `meta` puts, shared, where it puts one: a replay records what its
-/// commit logged without writing it again.
-fn logged_record(meta: &CommitMeta, entry: &StateEntry) -> Option<StateRecord> {
-    let key = entry.key().encode();
-    meta.state_delta.iter().find_map(|change| match change {
-        StateChange::Put(record) if record.key == key && entry.is_written_as(record) => {
-            Some(record.clone())
-        }
-        StateChange::Put(_) | StateChange::Delete(_) => None,
-    })
+/// The record of `entry` among `puts`, a commit's puts by key, shared, where the commit put the
+/// one `entry` writes: a replay records what its commit logged without writing it again.
+fn logged_record(puts: &BTreeMap<&str, &StateRecord>, entry: &StateEntry) -> Option<StateRecord> {
+    puts.get(entry.key().encode().as_str())
+        .filter(|record| entry.is_written_as(record))
+        .map(|record| (*record).clone())
 }
 
 /// Whether `begun`, a phase a logged commit began, applies where the destination holds
