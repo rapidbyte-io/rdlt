@@ -239,6 +239,32 @@ fn reading_more_partitions_at_once_lowers_what_each_read_may_send() {
 }
 
 #[test]
+fn every_partition_read_at_once_takes_two_mebibytes_of_memory_at_least() {
+    let build = |memory: u64, partitions: u64| {
+        EngineConfig::builder()
+            .memory(memory)
+            .partitions(usize::try_from(partitions).unwrap())
+            .build()
+    };
+    let least = EngineConfig::least_memory(16).unwrap();
+    for memory in [least, 34 << 20, 256 << 20, 1 << 30] {
+        let most = memory / (2 << 20);
+        assert!(build(memory, most).is_ok(), "{memory}");
+        let refused = build(memory, most + 1).unwrap_err();
+        assert_eq!(refused.code(), Some("memory_below_minimum"), "{memory}");
+    }
+    // A run follows one unbounded partition fewer than its partitions: 127 at the default
+    // memory, read by 128 partitions, each of which keeps a schema of 936 columns at most.
+    let many = build(256 << 20, 128).unwrap().limits();
+    assert_eq!((many.schema_bytes, many.schema_columns), (52_428, 936));
+    let defaults = EngineConfig::default().limits();
+    assert_eq!(
+        (defaults.schema_bytes, defaults.schema_columns),
+        (419_430, 7_489)
+    );
+}
+
+#[test]
 fn a_retry_policy_whose_first_delay_is_its_longest_is_valid() {
     let equal = RetryPolicy::default()
         .initial(Duration::from_secs(5))

@@ -539,8 +539,13 @@ admitted, and what a remote connector's calls hold in transport.
   on a stopping connector's drain would bound it.
 - A source may keep 2 MiB of dictionaries a read at the defaults, where a frame may hold
   32 MiB. More memory or fewer partitions raise it.
-- A following run needs more partitions than the unbounded partitions it follows: where it
-  read them slotless before, it is now refused with `partitions_too_few`.
+- A following run needs more partitions than the unbounded partitions it follows, and is
+  refused with `partitions_too_few` where it has too few. Each partition read at once takes
+  2 MiB of budget at least, twice the least dictionary in a quarter of the memory, so a run
+  follows at most ⌊memory ÷ 2 MiB⌋ − 1 unbounded partitions: 127 at the default 256 MiB with
+  128 partitions, and 15 at the default 16 partitions. At 2 MiB a read, a schema's message may
+  take 52,428 bytes and a table 936 columns, against 419,430 bytes and 7,489 columns at the
+  defaults.
 - A table wider than the derived column limit, 7,489 at the defaults, is refused where its
   source pushes it.
 - A partition that ends where it last checkpointed seals that cursor again: the commit records

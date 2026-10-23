@@ -166,7 +166,12 @@ impl EngineConfig {
     /// Each read is held to an equal part of the shares reads draw on, so the cursor, schema,
     /// column and dictionary limits [`EngineConfig::limits`] gives fall as this rises; past the
     /// most the memory admits, [`EngineConfig::least_memory`] says how much it needs.
-
+    ///
+    /// Each partition read at once takes 2 MiB of memory at least, and a following run follows
+    /// fewer unbounded partitions than this, so it follows at most ⌊memory ÷ 2 MiB⌋ − 1 of them:
+    /// 127 at the default 256 MiB with 128 partitions, and 15 at the default 16. At 2 MiB a
+    /// read, a schema's message may take 52,428 bytes and a table 936 columns, against 7,489 at
+    /// the defaults.
     pub fn partitions(&self) -> NonZeroUsize {
         self.partitions
     }
