@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc f429f0b1e948dadc976cf4ba57074971b47c5fb3bc5008e50ea6e47f41968686 # shrinks to unit = [1000], rows = 95, pieces = [([Unit { index: 0, first: 906 }], false)]
+cc b9a4c21cf840b09419d044a1b4487fe5beff0a8f7a11d3ad666bb96c10cd8f31 # shrinks to unit = [1500], rows = 1, pieces = [([Unit { index: 0, first: 0 }, Again], true), ([InPlace], false)]

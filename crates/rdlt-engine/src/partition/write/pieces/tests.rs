@@ -281,6 +281,26 @@ fn a_piece_of_a_unit_shares_the_allocations_the_unit_holds() {
 }
 
 #[test]
+fn what_holds_a_unit_keeps_its_batches_whole_until_its_last_piece_goes() {
+    let budget = crate::budget::budget(1 << 30);
+    let batch = encoded(0, 100);
+    let mut pieces = sliced(vec![held(&budget, vec![batch.clone()], 64)], 2_000).into_iter();
+    let last = pieces.next_back().unwrap();
+    assert!(pieces.len() > 1);
+    drop(pieces);
+    // Every address in the unit's set is alive while a piece counted beyond it is: the batch
+    // whole, not only the rows the last piece cut.
+    let unit = last.permits[0]
+        .downcast_ref::<super::super::held::Share>()
+        .expect("a piece's permit is its share of the unit");
+    let kept = unit.lock().batches.clone();
+    assert_eq!(kept, [batch]);
+    drop(kept);
+    drop(last);
+    assert_eq!(budget.reserved(), 0);
+}
+
+#[test]
 fn each_piece_takes_what_its_rows_were_measured_to_and_items_cost_what_they_are_told() {
     let row = native().expanded(&encoded(0, 1), 0..1, u64::MAX);
     assert_eq!(

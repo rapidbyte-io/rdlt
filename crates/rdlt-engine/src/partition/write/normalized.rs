@@ -24,7 +24,7 @@ use crate::cost::{LINEAGE_ITEM, LINEAGE_ROW, SPLIT_COPIES};
 use crate::error::Error;
 use crate::limits::MIN_PIECE;
 use crate::normalize::rounding::Rounding;
-use crate::normalize::{self, Dropped, Part, Pruned, PushKind, Shape};
+use crate::normalize::{self, Dropped, Lineage, Part, Pruned, PushKind, Shape};
 use crate::table::{
     Admission, Creation, Incoming, LoweringPlan, Prepared, Stamp, key_values, with_columns,
 };
@@ -61,12 +61,7 @@ pub(super) async fn write_normalized(
         let mut reserved = reserve(job, context, &room, request).await?;
         let (shape, stream, parts) = (Arc::clone(shape), job.stream.clone(), held.batches.clone());
         let parts = on_pool(context, move || split(&stream, &parts, &shape)).await?;
-        // What the split made beside the unit is held until the last of it is written.
-        let made = {
-            let mut allocations = held.allocations.lock();
-            let made = parts.iter().map(|part| part_growth(part, &mut allocations));
-            made.fold(0, u64::saturating_add)
-        };
+        let made = made(&parts, &held.allocations);
         let received = parts.first().map_or(0, |part| part.batch.num_rows() as u64);
         if received == 0 {
             continue;
@@ -75,6 +70,7 @@ pub(super) async fn write_normalized(
         let (unit, discarded) = plan_parts(job, context, parts, &mut flush).await?;
         open.discarded_values += discarded.values;
         open.discarded_rows += discarded.rows;
+        let kept = kept(unit.iter().map(|(_, part, _)| part));
         let cutter = Cutter::within(context, request.saturating_sub(made));
         let rendering = context.rendering.as_ref().clone();
         let cut = on_pool(context, move || cutter.cut(&rendering, unit)).await;
@@ -86,10 +82,10 @@ pub(super) async fn write_normalized(
             // No piece asks for more: what the room has left goes back to the budget.
             room.close();
         }
-        // The piece's parts, on their lanes and in the log, share what holds its batches and what
-        // it reserved until the last of them is written: its rows go first, and with them its
-        // share of the unit.
-        let hold = Arc::new(Mutex::new((held, reserved)));
+        // The piece's parts, on their lanes and in the log, share what holds them, the piece's
+        // batches and what it reserved until the last of them is written: the parts go first,
+        // then the piece's rows and with them its share of the unit, then what the split made.
+        let hold = Arc::new(Mutex::new((kept, held, reserved)));
         let mut cut = cut.into_iter().peekable();
         while let Some(piece) = cut.next() {
             // The partition waits for its allowance only while it holds no piece it has not
@@ -464,17 +460,36 @@ fn split(stream: &StreamName, parts: &[RecordBatch], shape: &Shape) -> Result<Ve
     normalize::normalize(&batch, shape).map_err(failed)
 }
 
-/// The bytes of the allocations `part`'s batch and lineage keep alive beyond those `held`
-/// holds, which then holds them too.
-pub(super) fn part_growth(part: &Part, held: &mut Allocations) -> u64 {
+/// The bytes of the allocations `parts`, a split of a piece of a unit, keep alive beyond those
+/// `unit` holds, each counted once.
+pub(super) fn made(parts: &[Part], unit: &Allocations) -> u64 {
+    let mut made = Allocations::default();
+    for part in parts {
+        part_growth(part, unit, &mut made);
+    }
+    made.bytes()
+}
+
+/// The bytes of the allocations `part`'s batch and lineage keep alive beyond those `unit` holds
+/// that `made` did not hold yet, which then holds them too.
+pub(super) fn part_growth(part: &Part, unit: &Allocations, made: &mut Allocations) -> u64 {
     let lineage = &part.lineage;
     let mut arrays = vec![&lineage.id, &lineage.root_row];
     if let Some(parent) = &lineage.parent {
         arrays.extend([&parent.id, &parent.root, &parent.idx, &parent.row]);
     }
-    let batch = held.add(&part.batch);
+    let batch = made.add_beyond(&part.batch, unit);
     arrays
         .into_iter()
-        .map(|array| held.add_array(array.as_ref()))
+        .map(|array| made.add_array_beyond(array.as_ref(), unit))
         .fold(batch, u64::saturating_add)
+}
+
+/// What a split's `parts` hold, their batches and lineage, kept until the last of their pieces
+/// is written, as what the split made is charged until then.
+pub(super) fn kept<'a>(parts: impl IntoIterator<Item = &'a Part>) -> Vec<(RecordBatch, Lineage)> {
+    parts
+        .into_iter()
+        .map(|part| (part.batch.clone(), part.lineage.clone()))
+        .collect()
 }

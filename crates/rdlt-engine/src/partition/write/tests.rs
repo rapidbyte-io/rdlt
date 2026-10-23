@@ -6,16 +6,15 @@ use rdlt_connector::{LogicalType, Partition, Permit, StreamName};
 
 use super::Held;
 use super::held::shredded;
-use super::normalized::part_growth;
 use super::queue::written_bytes;
 use super::units::{not_json, shred_failed};
 use crate::budget::MemoryBudget;
 use crate::error::ErrorKind;
 use crate::partition::PartitionJob;
 use crate::shred::ShredError;
-use crate::table::Prepared;
 
 mod given_up;
+mod growth;
 mod units;
 
 fn job() -> PartitionJob {
@@ -123,7 +122,7 @@ async fn shredded_batches_hold_what_they_keep_alive_of_what_their_pushes_were_ad
     // the budget for them.
     assert_eq!((budget.reserved(), budget.peak()), (alive, 3 * 42_000));
     for (held, batch) in held.iter().zip(&batches) {
-        assert_eq!(held.allocations.lock().bytes(), allocated(batch));
+        assert_eq!(held.allocations.bytes(), allocated(batch));
     }
     // The batches share what holds them until the last is written.
     let mut held = held.into_iter();
@@ -183,75 +182,6 @@ async fn a_piece_reserved_twice_over_gives_half_to_its_frame_in_the_log() {
     assert_eq!(budget.reserved(), 500);
     drop(frame);
     assert_eq!(budget.reserved(), 0);
-}
-
-#[test]
-fn the_loads_constant_columns_count_for_no_growth() {
-    let rows = ids(100);
-    let constant = ids(100);
-    let columns = [
-        ("load", Arc::clone(constant.column(0))),
-        ("at", Arc::clone(constant.column(0))),
-        ("id", Arc::clone(rows.column(0))),
-    ];
-    let prepared = Prepared {
-        batch: RecordBatch::try_from_iter(columns).unwrap(),
-        view: crate::table::testing::view("t"),
-        discarded_rows: 0,
-        discarded_values: 0,
-    };
-    let mut held = Allocations::default();
-    assert_eq!(prepared.growth(&mut held), buffers(&rows));
-    assert_eq!(held.bytes(), buffers(&rows));
-    // What a unit holds already is no growth, however many pieces keep it alive.
-    assert_eq!(prepared.growth(&mut held), 0);
-}
-
-#[test]
-fn a_units_parts_grow_it_by_their_lineage_and_their_schemas() {
-    let unit = ids(1000);
-    let held = Held::of(vec![unit.clone()], Vec::new());
-    let shape = crate::normalize::Shape {
-        max_depth: 8,
-        whole: std::collections::BTreeSet::new(),
-        key: Vec::new(),
-    };
-    let parts = crate::normalize::normalize(&unit, &shape).unwrap();
-    // The roots' ids are one buffer of exactly a row's 32 bytes each.
-    let ids = parts[0].lineage.id.to_data();
-    assert_eq!(ids.buffers()[1].capacity(), 1000 * 32);
-    // The part keeps the unit's column alive, which is held already: its lineage is new.
-    let lineage: usize = parts
-        .iter()
-        .map(|part| {
-            let lineage = &part.lineage;
-            lineage
-                .id
-                .to_data()
-                .buffers()
-                .iter()
-                .map(arrow_buffer::Buffer::capacity)
-                .sum::<usize>()
-                + lineage.root_row.to_data().buffers()[0].capacity()
-        })
-        .sum();
-    // Each part's batch has a schema of its own, which it keeps alive too.
-    let schemas: u64 = parts
-        .iter()
-        .map(|part| rdlt_connector::cost::schema_bytes(&part.batch.schema()))
-        .sum();
-    let mut allocations = held.allocations.lock();
-    let made: u64 = parts
-        .iter()
-        .map(|part| part_growth(part, &mut allocations))
-        .sum();
-    assert_eq!(made, u64::try_from(lineage).unwrap() + schemas);
-    // Counted once: the parts are held from then on.
-    let again: u64 = parts
-        .iter()
-        .map(|part| part_growth(part, &mut allocations))
-        .sum();
-    assert_eq!(again, 0);
 }
 
 #[test]
@@ -320,7 +250,10 @@ fn a_change_stream_s_unit_is_judged_and_cut_where_it_lies() {
     let judged = data(&unit).unwrap();
     assert_eq!(judged.num_columns(), 1);
     let schema = rdlt_connector::cost::schema_bytes(&judged.schema());
-    assert_eq!(held.allocations.lock().add(&judged), schema);
+    assert_eq!(
+        Allocations::default().add_beyond(&judged, &held.allocations),
+        schema
+    );
     // The rows the stream ignores are counted from their ops, where they lie.
     let counted = ignored(mode, std::slice::from_ref(&unit));
     assert_eq!(
@@ -418,7 +351,7 @@ fn held_by(
     copies: bool,
 ) {
     let lowering = super::Lowering {
-        allocations: Arc::new(parking_lot::Mutex::new(Allocations::default())),
+        allocations: Arc::default(),
         reserved: budget.try_acquire_working(bytes).unwrap(),
         unit: Arc::default(),
     };
