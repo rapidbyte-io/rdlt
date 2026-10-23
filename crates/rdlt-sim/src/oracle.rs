@@ -143,7 +143,7 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>, threaded:
         world.without_hangs();
     }
     env.perturb(world.workload.features.perturb);
-    world.keep_logs(&env, seed).await;
+    world.keep_logs(&env);
     let config = config(
         &mut rng,
         world.workload.features.streaming,
@@ -301,7 +301,7 @@ impl Simulation {
         }
         loop {
             let pending = succeeded.contains(&false) || reads_in_progress(&self.world);
-            let logged = self.world.holds_logs().await;
+            let logged = self.world.holds_logs();
             if logged {
                 self.world.reach(if pending {
                     Reach::LogLeft

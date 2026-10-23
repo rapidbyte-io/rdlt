@@ -10,7 +10,6 @@ publish = false
 
 [dependencies]
 alloc_tracker.workspace = true
-async-trait.workspace = true
 arrow-array.workspace = true
 arrow-buffer.workspace = true
 arrow-cast.workspace = true
@@ -22,10 +21,9 @@ http.workspace = true
 http-body.workspace = true
 hyper = { workspace = true, features = ["client", "http2"] }
 hyper-util = { workspace = true, features = ["tokio"] }
-object_store.workspace = true
 parking_lot.workspace = true
 rdlt-connector = { workspace = true, features = ["serve", "merge"] }
-rdlt-engine = { workspace = true, features = ["object-store", "sim"] }
+rdlt-engine = { workspace = true, features = ["sim"] }
 rdlt-host = { workspace = true, features = ["sim"] }
 rdlt-testkit = { workspace = true, features = ["fake"] }
 rdlt-wire = { workspace = true, features = ["tls"] }
@@ -49,7 +47,6 @@ tokio = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
-itf.workspace = true
 rdlt-connector = { workspace = true, features = ["serve", "merge", "testing"] }
 
 [lints]

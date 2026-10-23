@@ -7,7 +7,7 @@ use rdlt_sim::{
 ///
 /// A seed fails if its defect comes back, unless its comment says otherwise: such a seed keeps
 /// only the path, and its defect may come back unseen.
-const FOUND: [(u64, Reach); 21] = [
+const FOUND: [(u64, Reach); 20] = [
     // Over the network: a host whose handshake a partition cut short held its connection, and
     // its connector's stop, forever.
     (743, Reach::LinkCut),
@@ -15,8 +15,9 @@ const FOUND: [(u64, Reach); 21] = [
     // was never resolved, so it met no refusal. The defect may not fail this seed.
     (22, Reach::Refused),
     // Logged: a failed load's commit of a new full read, replayed in the next phase, landed rows
-    // the model had not counted, until a phase waited for every log to be replayed.
-    (7_466, Reach::Replayed),
+    // the model had not counted, until a phase waited for every log to be replayed. The defect
+    // may not fail this seed.
+    (270, Reach::Replayed),
     // Streaming: a run that followed the source ended before the rows a refusal needed arrived,
     // and succeeded, as the model now allows.
     (2_656, Reach::Spared),
@@ -24,9 +25,9 @@ const FOUND: [(u64, Reach); 21] = [
     // model never saw, until they served whole checkpoint groups.
     (4_516, Reach::Followed),
     // Pressed: a partition that ended at its last cursor sealed it again unreserved, so a
-    // commit recording many such cursors passed the log's share of the budget. The defect no
-    // longer fails this seed.
-    (252, Reach::LogWaited),
+    // commit recording many such cursors passed the log's share of the budget. The defect may
+    // not fail this seed.
+    (884, Reach::LogWaited),
     // A column of integers made for a column of JSON as its table was created was recorded
     // exact, though the integers split into it were read only as they were lowered.
     (29_442, Reach::Widened),
@@ -34,18 +35,15 @@ const FOUND: [(u64, Reach); 21] = [
     // as new to the table once a crashed attempt had created the stream's own table.
     (167_631, Reach::Crashed),
     // Logged in a small log: eight partitions' segments each spanned several chunks, which
-    // stayed, holding committed frames beside open ones, until no batch fitted. The defect no
-    // longer fails this seed.
-    (532, Reach::LogWaited),
+    // stayed, holding committed frames beside open ones, until no batch fitted. The defect may
+    // not fail this seed.
+    (1_726, Reach::LogWaited),
     // Reset: an incremental stream whose partitions never held a row, so the pipeline recorded
     // nothing of it, was refused as no stream it knew, which the world took for a failure.
     (249_911, Reach::ResetRefused),
     (728_591, Reach::ResetRefused),
     (820_601, Reach::ResetRefused),
     (918_105, Reach::ResetRefused),
-    // Logs in an object store: a mark's and a head's creates given up landed after their log
-    // was removed, and the head named a body deleted with it, which no replay could read.
-    (273_183, Reach::LandedLate),
     // A merge table's column widened to JSON over values written as floats and as plain text,
     // which the destination then held as JSON, and the check read as values of JSON, not of
     // the types they were written as.
