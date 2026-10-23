@@ -434,8 +434,10 @@ admitted, and what a remote connector's calls hold in transport.
   pushed fill a table of two hundred 256-bit columns, 9 MB where sixteen million small integers
   widen to 256 bits, and 22 MB with sixteen partitions doing so at once, under 16 MiB.
 - What the budget does not bound: what the allocator keeps after it is freed, its arenas and
-  its thresholds, each thread's stack, and what sonic-rs keeps a thread that parsed a record
-  exactly, 3 MiB at most. A nightly check runs the passthrough and the normalized workloads,
+  its thresholds, and each thread's stack. sonic-rs keeps nothing on a thread: the buffer it
+  keeps for each thread fills only as it builds a document, and the shredder builds none, its
+  fast parse streaming each record through sonic-rs's deserializer and its exact parse walking
+  the record's tokens itself. A nightly check runs the passthrough and the normalized workloads,
   each in a process of its own, with glibc's defaults and with the tunables a spawned
   connector gets, and holds the process's resident peak to the budget's bound, one push, and
   2 MiB of stack a thread. It runs the passthrough workload served too, read from sixteen
