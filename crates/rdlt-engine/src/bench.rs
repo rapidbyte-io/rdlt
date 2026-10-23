@@ -2,6 +2,7 @@
 
 mod connectors;
 mod corpora;
+mod json_passthrough;
 mod loading;
 mod logged;
 mod lowering;
@@ -39,6 +40,7 @@ pub use connectors::{
     written,
 };
 pub use corpora::{CHUNK_BYTES, CORPUS_BYTES, Corpus, PUSH_BYTES};
+pub use json_passthrough::{JsonCell, JsonPassthrough};
 pub use loading::{Load, Loading};
 pub use logged::Logged;
 pub use lowering::Lowering;
