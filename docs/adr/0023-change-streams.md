@@ -30,9 +30,8 @@ data is replayed from the source.
   - **M5f**, the failpoint sweep, the kill matrix with spawned connectors, and M5's exit
     criterion (ADR 0036).
 - **The WAL's store is a trait.** `WalStore` keeps a load's log: `LocalWal` in a local
-  directory, `ObjectStoreWal` on object storage (ADR 0051). A worker that loses a local log's
-  disk replays from the source, which every replayable source can do; a source that cannot read
-  again keeps its log where it outlives the worker.
+  directory. A worker that loses a local log's disk replays from the source, which every
+  replayable source can do.
 - **Truncate is op 3 in `_rdlt_op`**, in band and ordered by `_rdlt_seq`, and its rows name no
   key. A truncate at seq `s` removes every row whose seq is below `s`, or soft-deletes it, even
   rows staged earlier in the same commit. §9.4's "deletes all rows" is refined this way so that a
@@ -134,4 +133,4 @@ data is replayed from the source.
   table and state is owed with M5d's retention reset.
 - A log kept in a local directory does not survive the loss of a worker's disk. That costs a
   re-read from the source, or, for a source that cannot read again, the changes the lost log
-  held; a deployment that cannot afford that keeps its log on object storage (ADR 0051).
+  held.

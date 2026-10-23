@@ -32,7 +32,7 @@ budget before it is held, or bounded by a limit with a typed refusal.
   | Share | Of the budget | At the default 256 MiB | Holds |
   |---|---|---|---|
   | cursors | 1/64 | 4 MiB | the cursors of seals waiting for a commit |
-  | log | 1/16 | 16 MiB | seal, commit and table frames from before they are encoded until they are appended, and, while a log is open, what its store stages and what a carry reads at once |
+  | log | 1/16 | 16 MiB | seal, commit and table frames from before they are encoded until they are appended, and, while a log is open, what a carry reads at once |
   | tables | 1/32 | 8 MiB | what a commit records of each changed table, its schema and names, from the change until the commit lands |
   | reads | 1/4 | 64 MiB | what reads keep beside their events: a decoder's schema and dictionaries |
   | answers | 1/16 | 16 MiB | what decoding a remote connector's answers holds, but a read's frames, from before each is decoded until it is (ADR 0042) |
@@ -47,9 +47,7 @@ budget before it is held, or bounded by a limit with a typed refusal.
     share and what a read keeps beyond its part fail the read with `limit_exceeded`, naming
     `cursor bytes` and `read kept bytes`; a seal's or commit's frame beyond the log's share
     fails the commit, and a table's frame the write that logs it, with
-    `log_frame_exceeds_budget`; a log store that stages more than the log's share leaves beside
-    a commit recording a full share of cursors, a carry's read and a frame's head fails the
-    attempt with `wal_staging_exceeds_budget`; a table whose records pass the tables' share
+    `log_frame_exceeds_budget`; a table whose records pass the tables' share
     fails its schema change with `table_exceeds_budget`, before the destination or any commit
     sees it.
   - **Control never waits behind data.** A checkpoint's cursor is reserved from the cursors'
@@ -440,37 +438,36 @@ admitted, and what a remote connector's calls hold in transport.
   what is charged at that moment: what the budgets hold reserved and what the source holds of pushes
   made and not yet sent on. What the simulated world keeps of what it stores counts beside the
   charge, exactly, as the world's: a stored row as much as freeing a first making of it gives back,
-  a chunk the log store stages or publishes by its buffer, and each object of the bucket the logs
-  are kept in by an exact copy. The world's own work building a push or a row is given room while it
-  runs. Over each attempt, the most the thread holds beyond its charge stays within an allowance
-  and, where the connectors listen on the simulated network or are played in processes and share the
-  thread, what the reads hold between the source and the engine: for each partition each run reads,
-  20 of the attempt's largest event, a push or a checkpoint's cursor (the host's event waiting for
-  admission, the 16 events a source sends ahead, the batch being cut and its piece waiting for
-  credit, and a frame sent past its credit), and the frames credit lets go before the host takes
-  them, two of the largest or the host's credit floor of 4 MiB, whichever is more. The allowance is
-  what the world holds beside the engine and keeps uncounted, the runtime, its maps and builders'
-  spare room, apart by where the connectors run, with a write-ahead log or without, since the log's
-  copies count as the world's: 13 MiB in process and 11 MiB over the network or in played processes.
-  Beyond their charge, seeds 0 to 99 999 hold at most 12.5 MB in process (10.6 MB with a log) and
-  4.3 MB over the network (3.1 MB with a log), the network's beyond what its reads hold. Over the
-  network the allowance is the next whole mebibyte above five quarters of the most a seed without a
-  log holds among the four network seeds, not hostile, that hold the most the nightly has measured,
-  replayed under these faults: 8.9 MB on seed 732369, twice the most of seeds 0 to 99 999. No sweep
-  of the nightly's million has measured the network's tail, so the allowance rests on those four
-  seeds and the nightly is what tests it further. Played processes share it without a measure of
-  their own: no sweep has taken their tail either. In process five quarters of the most, 15.6 MB,
-  would pass a replay's scan that keeps every commit it reads, its received ones too, which holds
-  14.5 MB on seed 241570; the allowance is the next whole mebibyte above a mebibyte more than the
-  most seeds 0 to 99 999 hold. A failing seed names its phase; replayed with `RDLT_SIM_TRACE` set,
-  it names the change of the charge after which its thread held too much, and the code that made it.
-  The world is one of fat values: a wide object of JSON on every eighth record of a stream pushing
-  JSON, a sixteenth of the least push, and spaces beside some pushes up to their limit; on every
-  fourth record the least budget refuses the batches. The world keeps its rows apart from the
-  batches they were written in, and the short form of each fat value. Not measured: seeds that
-  change rows, seeds under stress, whose compute runs on Rayon's threads, hostile seeds over the
-  network, whose hostile host's heap shares the seed's thread, and the runs with nothing new that
-  check the reports a source hears.
+  and a chunk the log store stages or publishes by its buffer. The world's own work building a push
+  or a row is given room while it runs. Over each attempt, the most the thread holds beyond its
+  charge stays within an allowance and, where the connectors listen on the simulated network or are
+  played in processes and share the thread, what the reads hold between the source and the engine:
+  for each partition each run reads, 20 of the attempt's largest event, a push or a checkpoint's
+  cursor (the host's event waiting for admission, the 16 events a source sends ahead, the batch
+  being cut and its piece waiting for credit, and a frame sent past its credit), and the frames
+  credit lets go before the host takes them, two of the largest or the host's credit floor of 4 MiB,
+  whichever is more. The allowance is what the world holds beside the engine and keeps uncounted,
+  the runtime, its maps and builders' spare room, apart by where the connectors run, with a
+  write-ahead log or without, since the log's copies count as the world's: 13 MiB in process and 11
+  MiB over the network or in played processes. Beyond their charge, seeds 0 to 99 999 hold at most
+  12.5 MB in process (10.6 MB with a log) and 4.3 MB over the network (3.1 MB with a log), the
+  network's beyond what its reads hold. Over the network the allowance is the next whole mebibyte
+  above five quarters of the most a seed without a log holds among the four network seeds, not
+  hostile, that hold the most the nightly has measured, replayed under these faults: 8.9 MB on seed
+  732369, twice the most of seeds 0 to 99 999. No sweep of the nightly's million has measured the
+  network's tail, so the allowance rests on those four seeds and the nightly is what tests it
+  further. Played processes share it without a measure of their own: no sweep has taken their tail
+  either. In process five quarters of the most, 15.6 MB, would pass a replay's scan that keeps every
+  commit it reads, its received ones too, which holds 14.5 MB on seed 241570; the allowance is the
+  next whole mebibyte above a mebibyte more than the most seeds 0 to 99 999 hold. A failing seed
+  names its phase; replayed with `RDLT_SIM_TRACE` set, it names the change of the charge after which
+  its thread held too much, and the code that made it. The world is one of fat values: a wide object
+  of JSON on every eighth record of a stream pushing JSON, a sixteenth of the least push, and spaces
+  beside some pushes up to their limit; on every fourth record the least budget refuses the batches.
+  The world keeps its rows apart from the batches they were written in, and the short form of each
+  fat value. Not measured: seeds that change rows, seeds under stress, whose compute runs on Rayon's
+  threads, hostile seeds over the network, whose hostile host's heap shares the seed's thread, and
+  the runs with nothing new that check the reports a source hears.
 - **What the check sees.** Every seed of 0 to 99 999 holds to it: what a charge covers is freed
   before the charge goes, so no moment holds it beyond its charge. A JSON flush that gives back
   its text's charge while it holds the text fails it: with that fix undone, 8 of seeds 0 to 1 999

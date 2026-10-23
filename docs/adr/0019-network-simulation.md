@@ -98,15 +98,15 @@ the whole engine on a paused clock from a seed, with connectors in the engine's 
   run those, ADR 0052), three files the seeds reach in under half their lines (`local/process.rs`,
   `kills.rs` and `local/grants/opened.rs`), a served binary's entry points, certification (the
   certify crate and the host's connections it uses), the local and in-memory log stores (the
-  simulation keeps logs in a store of its own), the stores' shared contract tests, and test and
-  bench code. The data plane (`rdlt_wire::plane`) is hand-written, not generated, and every
-  simulated served read and write runs it, so it counts. In-process seeds place their connectors
-  through the host's registry, as an embedder does, so its resolution of secrets and its scrubbing
-  of what connectors say run in every seed. Played seeds place their connectors through `Local`, so
-  its placement and supervision, the output drains with their scrubbing and the witness run in them,
-  and so do the host's digest and grant checks. The coverage's floor is what 1 000 seeds reach, 81 %
-  of lines and 71 % of branches. A hostile host, in one networked seed in two, reaches the code that
-  refuses a host breaking the protocol. Beside the runs it:
+  simulation keeps logs in a store of its own), and test and bench code. The data plane
+  (`rdlt_wire::plane`) is hand-written, not generated, and every simulated served read and write
+  runs it, so it counts. In-process seeds place their connectors through the host's registry, as an
+  embedder does, so its resolution of secrets and its scrubbing of what connectors say run in every
+  seed. Played seeds place their connectors through `Local`, so its placement and supervision, the
+  output drains with their scrubbing and the witness run in them, and so do the host's digest and
+  grant checks. The coverage's floor is what 1 000 seeds reach, 81 % of lines and 71 % of branches.
+  A hostile host, in one networked seed in two, reaches the code that refuses a host breaking the
+  protocol. Beside the runs it:
   - calls before the handshake and the configuration;
   - configures one connection twice at once;
   - gives up on configurations and opens mid-way;

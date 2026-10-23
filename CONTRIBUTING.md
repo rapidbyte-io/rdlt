@@ -116,8 +116,7 @@ it replaced; a new ADR is written for a new decision, never for a change to an o
 - Unit tests live in a sibling `tests.rs` (`foo/tests.rs` for `foo.rs`). A crate's integration
   tests are one binary, `tests/it/main.rs`, with `tests/it/<area>.rs`, but where they need what
   the rest must not have: `rdlt-engine`'s `crashes` (the `failpoints` feature) is a binary of
-  its own, and `rdlt-log-store`'s integration tests are `containers` (Docker). `rdlt-wire`'s
-  one binary is `tests/decoded.rs`.
+  its own, and `rdlt-wire`'s one binary is `tests/decoded.rs`.
 - Crate roots hold a crate doc with one example, `mod` declarations and an explicit `pub use`
   list. No glob re-exports.
 - Every numeric limit a crate enforces lives in that crate's `limits.rs`; a limit of the protocol

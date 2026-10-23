@@ -7,8 +7,8 @@ Status: accepted, 2026-10-18.
 The simulation, the mutation tests and fuzzing find a defect by running into it: a seed that
 interleaves a cancellation with a send, a change no test catches, an input the fuzzer reaches.
 Some properties are stated over every input or every interleaving, and a run meets a sample of
-them: the credit a sender may spend, a budget's arithmetic, a log on object storage whose creates
-land late. A bounded model checker proves a property of the code for every input up to a bound;
+them: the credit a sender may spend, a budget's arithmetic, attempts that crash and race over one
+destination. A bounded model checker proves a property of the code for every input up to a bound;
 a specification checked by a model checker proves a protocol's invariant over every interleaving
 up to a bound. Neither runs the program: each holds only what it is given, the code's arithmetic
 or the protocol's design.
@@ -28,7 +28,7 @@ or the protocol's design.
 | Conversion fidelity | the simulation's encodings; differential tests |
 | A contract's documentation, fixtures, or an API's precondition | Kani over the limits a handshake accepts; tests |
 | Arithmetic of credit, budgets, positions and frame lengths | Kani; property tests where a proof does not fit (below) |
-| A protocol across processes and a store: the log on object storage, exactly-once, re-planning | Quint |
+| A protocol across processes: exactly-once, re-planning | Quint |
 
 A formal layer is added to the layers of its class, never in place of one.
 
@@ -182,10 +182,9 @@ A formal layer is added to the layers of its class, never in place of one.
   commits record is a property of maps of JSON-keyed records (`wal/positions/tests.rs`).
 - Where a property is over strings, sets, files or draining, a property test holds it, beside
   the code: a name map stays injective and append-only, tables named in turn and salted naming
-  never share an identifier, a log's local and object-store names read back only as written
-  and never hold `..` or an empty segment, nothing said of a secret, `*` and all, survives
-  scrubbing and what follows it, and a torn local log is replayed exactly or refused with a
-  typed error.
+  never share an identifier, a local log's names read back only as written, each one plain name,
+  nothing said of a secret, `*` and all, survives scrubbing and what follows it, and a torn local
+  log is replayed exactly or refused with a typed error.
 
 ### Specifications: Quint over the design
 
@@ -217,30 +216,6 @@ A formal layer is added to the layers of its class, never in place of one.
   time, which the lock does not hold. The tools warn on every run, of a vulnerable protobuf type
   in Apalache and of the garbage collector in TLC. TLC is the jar inside Apalache's
   distribution, on the Temurin JDK mise installs.
-- The log on object storage is specified (`specs/wal_objects.qnt`, ADR 0051) at the level of the
-  store's requests, in the order the store makes them: a writer opening its log with one create
-  of its mark, publishing a chunk whole and one in parts, and deleting what its newest no longer
-  needs; a replay removing leftovers, fencing the log at its next chunk, reading what its tail
-  needs, releasing and removing it. Every request may succeed, fail, lose its answer once done,
-  or go unanswered and land later, and a create may meet a racing one; either load may crash,
-  and an intruder may leave a name the store never writes. Its invariants: a removed log is never
-  open again with its load's chunks (`NoReopenAfterRemove`); every chunk the writer was told it
-  published lies below every fence a replay holds (`OneHolder`); a replay reads a chunk from its
-  head or the body its head names by its token (`OwnTokenReplay`); a listing holding a stray name
-  refuses its operation (`StraysRefused`); a replay that read a log through read exactly what its
-  tail needs (`CrashExactOrRefused`). Each has a test that breaks its rule and sees it fail. TLC
-  checks every one over every state, 2,020,064 of them in about 8 minutes on four workers of a
-  developer's machine, with two attempts a request, two chunks, two fences a replay and two
-  faults a behavior: three faults take it past 13 minutes there, its states still growing. Its
-  time on the nightly runner is not measured, and the job's limit is 120 minutes. At two faults
-  TLC does not reach a fence read back from an earlier start's object; a test covers that
-  alone. Its header names `tlc`: its model is finite and TLC enumerates it whole, while
-  Apalache's bounded run cannot hold its state and runs out of memory at the first step. `just
-  quint` simulates 500 runs of 80 steps.
-  The specification has no temporal property: the log's guarantees are safety, that it is never
-  reopened, has one holder, is read by its own tokens, refuses strays and replays exactly, and a
-  liveness claim needs fairness assumptions on a store that may answer nothing forever. A
-  property that needs one will add it.
 - Exactly-once delivery is specified (`specs/exactly_once.qnt`, ADRs 0004, 0029 and 0030) as the
   engine orders it: an attempt, its load, opens its log, fences and replays the others in a session
   it opens for the first commit it replays, then opens its own session and commits what it reads,
@@ -328,20 +303,13 @@ A formal layer is added to the layers of its class, never in place of one.
   retirement. `a_partition_a_replan_drops_keeps_its_position_across_runs` holds that a run records
   a dropped partition's position where it committed it, and that the next run reads on from there
   with no row loaded twice.
-- Traces tie a specification to the code. A spec's header names each trace by name, seed and
-  the goal its run reaches; `just quint` writes each from its seed, which reproduces it exactly,
-  and fails where it differs from the one `specs/traces/<spec>/` holds, so a trace cannot drift
-  from its spec; `just quint write` rewrites them, and `just quint-seed` finds a seed reaching a
-  goal. A driver among `rdlt-sim`'s tests replays each trace of the log on object storage against
-  `ObjectStoreWal` over the simulation's store in memory, request by request: each request the
-  store makes waits for its step, must be the request the step makes, and meets the fault the
-  step names; a request left unanswered lands at the step the trace lands it, on the paused
-  clock; the code's answers and what the store holds must be the trace's at every step. The
-  traces are read with the `itf` crate, a dev-dependency of `rdlt-sim` alone, which `deny.toml`
-  bans everywhere else. The engine's fence is stated by the spec and run by the driver as the
-  store calls it makes, so the driver holds the store to the spec and the simulation holds the
-  engine to the store. A specification without a driver is tied to the code by its invariants'
-  names until it has one, or this record says it is a design alone.
+- Traces tie a specification to the code through a driver among the tests that replays each of
+  them against the code, step by step. A spec's header names each trace by name, seed and the
+  goal its run reaches; `just quint` writes each from its seed, which reproduces it exactly, and
+  fails where it differs from the one `specs/traces/<spec>/` holds, so a trace cannot drift from
+  its spec; `just quint write` rewrites them, and `just quint-seed` finds a seed reaching a goal.
+  No spec names a trace, so none has a driver: each is tied to the code by its invariants' names
+  until it has one, or this record says it is a design alone.
 
 ### Tools
 
@@ -372,13 +340,12 @@ A formal layer is added to the layers of its class, never in place of one.
   the `formal` job, the check the ruleset requires, passes once every part has, or where the
   change needs none, so it always reports.
 - On GitHub's runners `rdlt-wire`'s `flow` part took 276 to 481 seconds over four runs, nearly all
-  of it its credit harness (271 to 450 seconds), and `quint`, all three specs, 241 seconds, each
-  beside a setup of about 25 seconds. `rdlt-engine`'s five harnesses took 838 seconds in one job,
-  against a limit of 900: `budget::admits`'s two 228 and 95 seconds, `budget::ledger`'s one 22, and
-  `coordinator::horizon`'s two 28 and 394, beside about 70 seconds of compiling and setup. As parts
-  of their own, `coordinator::horizon`'s takes about 8 minutes, `budget::admits`'s about 7 and
-  `budget::ledger`'s about 2. `wal::frame`'s three harnesses took 201 seconds in a job of 252,
-  and `wal::frame::crc`'s one 545 in a job of 589.
+  of it its credit harness (271 to 450 seconds), beside a setup of about 25 seconds. `rdlt-engine`'s
+  five harnesses took 838 seconds in one job, against a limit of 900: `budget::admits`'s two 228 and
+  95 seconds, `budget::ledger`'s one 22, and `coordinator::horizon`'s two 28 and 394, beside about
+  70 seconds of compiling and setup. As parts of their own, `coordinator::horizon`'s takes about 8
+  minutes, `budget::admits`'s about 7 and `budget::ledger`'s about 2. `wal::frame`'s three harnesses
+  took 201 seconds in a job of 252, and `wal::frame::crc`'s one 545 in a job of 589.
 - A part that comes near its limit is split further, by module: its harnesses are divided
   between modules, each with proofs of its own and so a part of its own. Only a harness that
   alone would pass the limit becomes a property test.
@@ -411,13 +378,12 @@ what no bound names.
   dependency. Cost: `formal-plan` checks out the whole history on every change, and each part's
   job installs Quint and Kani, from mise's cache after the first, and restores its own build.
 - **Quint is `quint-co/quint`,** the repository's name; `informalsystems/quint` redirects there.
-- **`itf` is a dev-dependency of `rdlt-sim` alone,** held there by a ban with that one wrapper.
 - **Quint runs its TypeScript simulator,** for the reason given under *Specifications*.
-  Cost: simulation is slower, about fifty runs of 80 steps a second for the log's spec, so
-  `just quint` samples fewer runs than a faster evaluator would allow.
-- **A spec's traces are committed.** The driver then runs in every test run, on Linux and macOS,
-  with no Quint, and every change to the code meets them. Cost: about 2 MB of generated JSON for
-  the log's spec, rewritten when the spec changes.
+  Cost: simulation is slower, so `just quint` samples fewer runs than a faster evaluator would
+  allow.
+- **A spec's traces are committed,** so a driver replays them in every test run, on Linux and
+  macOS, with no Quint, and every change to the code meets them. Cost: generated JSON, rewritten
+  when the spec changes.
 - **The exactly-once spec is tied to the code by its invariants' names alone,** each named with its
   check under *Specifications*. Checking the simulation's runs against it was tried: a seed's
   sessions, commits and positions told, written as observations a checker searches the spec for. It

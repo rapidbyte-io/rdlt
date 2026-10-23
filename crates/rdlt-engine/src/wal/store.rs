@@ -1,5 +1,5 @@
-//! Where write-ahead logs are kept: one log per load of a pipeline, in numbered chunks, each an
-//! object written whole.
+//! Where write-ahead logs are kept: one log per load of a pipeline, in numbered chunks, each
+//! written whole.
 
 use std::io;
 
@@ -43,13 +43,13 @@ pub trait StagedChunk: Send + Sync {
     fn discard(self: Box<Self>) -> BoxFuture<'static, io::Result<()>>;
 }
 
-/// Keeps each load's write-ahead log as numbered chunks, each an object written whole.
+/// Keeps each load's write-ahead log as numbered chunks, each written whole.
 ///
-/// The operations are those an object store offers: a log is opened by creating an object where
-/// none of its name exists, a chunk is staged and published whole where its name is free, listed
-/// by its log, read by range, and deleted. Nothing is appended to a published chunk, renamed over
-/// another, or held locked. A crash loses what was staged and not published, and nothing else: a
-/// published chunk is whole, and a deletion that returned is durable.
+/// A log is opened by creating its mark where none of its name exists, and a chunk is staged and
+/// published whole where its name is free, listed by its log, read by range, and deleted. Nothing
+/// is appended to a published chunk, renamed over another, or held locked. A crash loses what was
+/// staged and not published, and nothing else: a published chunk is whole, and a deletion that
+/// returned is durable.
 ///
 /// A log is open from [`WalStore::open_log`] until [`WalStore::remove_log`] begins, and never
 /// again: only while it is open is a chunk of it published and the log listed.

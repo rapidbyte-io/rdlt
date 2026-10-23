@@ -27,15 +27,12 @@ what it holds with the engine's authority. Yet a log was found to be much less t
 - Destinations kept every receipt for ever; the files destination kept those of its sixteen
   latest loads, and so forgot receipts a replay could still ask for.
 
-The log's store has an object store's semantics, wherever it keeps logs: `LocalWal` keeps them in
-a local directory, and `ObjectStoreWal` in S3 and in stores that answer as S3 does (ADR 0051).
-
 ## Decision
 
-### The store is shaped as an object store is
+### The store publishes whole chunks under free names
 
-- A load opens its log before anything else of its attempt, replay included, by creating an
-  object where none of its name exists (`open_log`); the log is open until its removal begins,
+- A load opens its log before anything else of its attempt, replay included, by creating its
+  mark where none of its name exists (`open_log`); the log is open until its removal begins,
   and never again. `WalStore` stages a chunk of an open log, appends to it, and publishes it
   whole where no chunk of its name exists and the log is still open, which is its durability
   point: a name taken is refused with `AlreadyExists`, a log removed with `NotFound`, and a
@@ -46,7 +43,7 @@ a local directory, and `ObjectStoreWal` in S3 and in stores that answer as S3 do
   holds. A publish creates the chunk where its name is free first and asks whether the log is
   open after, deleting the chunk where it is not: asked first, a removal could close and list
   the log in between. Nothing is appended to a published chunk, renamed over another, or locked,
-  and nothing relies on a directory's order or on an operation over several objects.
+  and nothing relies on a directory's order or on an operation over several chunks.
 - A store has an identity, written once by the first to ask (`identity`) and kept with it.
 - `LocalWal` marks a load's log open with a file `open` in the load's directory, removed, and
   made durable, first when the log is removed. It opens a log in a directory `.<load>.opening`,
@@ -180,13 +177,12 @@ a local directory, and `ObjectStoreWal` in S3 and in stores that answer as S3 do
 
 Replay reserves each frame's bytes and the alignment's room before it reads the frame, held with its
 batch: a replayed batch is decoded where its frame lies and keeps the frame alive. As much again is
-reserved while the frame is read and decoded, for a store that copies a frame once as it reads it,
-as the object-store log does, or hands it over at another address or as a slice of what it keeps, as
-the in-memory log does, where it is copied once; what else the batch holds is reserved once it is
-decoded. What a batch holds stays charged until the writer it went to flushes, and every writer
-flushes once the budget has no room for the next batch, as a lane does. A batch beyond what one
-request for lowering may take, logged under more memory than replays it, is refused as
-`replay_exceeds_budget`.
+reserved while the frame is read and decoded, for a store that hands it over at another address or
+as a slice of what it keeps, as the in-memory log does, where it is copied once; what else the batch
+holds is reserved once it is decoded. What a batch holds stays charged until the writer it went to
+flushes, and every writer flushes once the budget has no room for the next batch, as a lane does. A
+batch beyond what one request for lowering may take, logged under more memory than replays it, is
+refused as `replay_exceeds_budget`.
 
 ### Disk is bounded, and a full disk is retried
 
@@ -272,17 +268,10 @@ request for lowering may take, logged under more memory than replays it, is refu
   the largest commit before it, beside the carry's room. The log holds more until a later
   publish, a commit's or a relief's, frees what it settled; every batch waits or is
   refused meanwhile, as it finds no room.
-- What a relief copies is read back 256 KiB at a time, through a buffer reserved from
-  the budget's share for logs with the store's staging: a carry never waits or is left undone
-  for memory, however large a frame it copies.
-- What a store stages in memory beside the log, a part for `ObjectStoreWal`
-  (`WalStore::staging_bytes`), is reserved from the budget's share for logs, with the carry's
-  buffer, when a load's log starts. A store staging more than leaves the share room for that
-  buffer and for a commit's frame recording as many cursor bytes as the cursors' share holds,
-  each twice over, beside a frame's 4 KiB head, is refused (`wal_staging_exceeds_budget`): past
-  8,122,368 bytes at the default 256 MiB budget. What a commit names of each partition beside
-  its cursor, some kilobyte, takes the margin a smaller part leaves: the default 7 MiB part
-  leaves 782,336 bytes, about 690 partitions' names in one commit.
+- What a relief copies is read back 256 KiB at a time, through a buffer reserved from the
+  budget's share for logs when a load's log starts: a carry never waits or is left undone for
+  memory, however large a frame it copies. The share holds that buffer beside a commit's frame
+  recording as many cursor bytes as the cursors' share holds, each twice over.
 - A failed write fails every batch after it at once and discards what its chunk staged. A full
   disk or quota is `wal_storage_full` and retryable. Where opening its own log finds the disk
   full, the next attempt removes what removals a crash cut short left and deletes what every load
