@@ -17,6 +17,8 @@
 mod connector;
 #[path = "bench/processes.rs"]
 mod processes;
+#[path = "bench/resident.rs"]
+mod resident;
 #[expect(
     dead_code,
     reason = "the bench serves connectors as the tests do and needs only some of their helpers"
@@ -674,6 +676,11 @@ criterion_group!(benches, served);
 fn main() -> ExitCode {
     if connector::asked() {
         return connector::serve();
+    }
+    if resident::asked() {
+        let exit = resident::measure();
+        rdlt_host::stop_spawned(STOPPING).expect("every connector the bench spawned stops");
+        return exit;
     }
     benches();
     Criterion::default().configure_from_args().final_summary();
