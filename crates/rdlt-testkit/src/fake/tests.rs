@@ -9,10 +9,13 @@ use super::{Fake, Fault, Polled, serve};
 async fn a_fake_answers_without_the_wall_clocks_date() {
     let (host, connector) = tokio::io::duplex(64 * 1024);
     tokio::spawn(serve(Fake(Fault::GarbageSchema), connector));
-    let (mut sender, connection) =
-        hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(host))
-            .await
-            .expect("the fake speaks HTTP/2");
+    let (mut sender, connection) = tokio::time::timeout(
+        Duration::from_secs(5),
+        hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(host)),
+    )
+    .await
+    .expect("the fake handshakes in time")
+    .expect("the fake speaks HTTP/2");
     tokio::spawn(connection);
     let request = http::Request::post("http://fake/rdlt.connector.v1.Connector/Check")
         .header("content-type", "application/grpc")
