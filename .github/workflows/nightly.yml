@@ -347,16 +347,24 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { crate: rdlt-engine, part: 0, of: 40, every: 4 }
-          - { crate: rdlt-engine, part: 1, of: 40, every: 4 }
-          - { crate: rdlt-engine, part: 2, of: 40, every: 4 }
-          - { crate: rdlt-engine, part: 3, of: 40, every: 4 }
-          - { crate: rdlt-engine, part: 4, of: 40, every: 4 }
-          - { crate: rdlt-engine, part: 5, of: 40, every: 4 }
-          - { crate: rdlt-engine, part: 6, of: 40, every: 4 }
-          - { crate: rdlt-engine, part: 7, of: 40, every: 4 }
-          - { crate: rdlt-engine, part: 8, of: 40, every: 4 }
-          - { crate: rdlt-engine, part: 9, of: 40, every: 4 }
+          - { crate: rdlt-engine, part: 0, of: 72, every: 4 }
+          - { crate: rdlt-engine, part: 1, of: 72, every: 4 }
+          - { crate: rdlt-engine, part: 2, of: 72, every: 4 }
+          - { crate: rdlt-engine, part: 3, of: 72, every: 4 }
+          - { crate: rdlt-engine, part: 4, of: 72, every: 4 }
+          - { crate: rdlt-engine, part: 5, of: 72, every: 4 }
+          - { crate: rdlt-engine, part: 6, of: 72, every: 4 }
+          - { crate: rdlt-engine, part: 7, of: 72, every: 4 }
+          - { crate: rdlt-engine, part: 8, of: 72, every: 4 }
+          - { crate: rdlt-engine, part: 9, of: 72, every: 4 }
+          - { crate: rdlt-engine, part: 10, of: 72, every: 4 }
+          - { crate: rdlt-engine, part: 11, of: 72, every: 4 }
+          - { crate: rdlt-engine, part: 12, of: 72, every: 4 }
+          - { crate: rdlt-engine, part: 13, of: 72, every: 4 }
+          - { crate: rdlt-engine, part: 14, of: 72, every: 4 }
+          - { crate: rdlt-engine, part: 15, of: 72, every: 4 }
+          - { crate: rdlt-engine, part: 16, of: 72, every: 4 }
+          - { crate: rdlt-engine, part: 17, of: 72, every: 4 }
           - { crate: rdlt-connector, part: 0, of: 28, every: 4 }
           - { crate: rdlt-connector, part: 1, of: 28, every: 4 }
           - { crate: rdlt-connector, part: 2, of: 28, every: 4 }
