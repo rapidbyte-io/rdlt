@@ -521,6 +521,32 @@ fn allocations_count_only_what_a_set_did_not_hold() {
 }
 
 #[test]
+fn allocations_beyond_a_set_count_what_it_does_not_hold_once_and_leave_it_as_it_was() {
+    let unit: ArrayRef = Arc::new(Int64Array::from(vec![1; 1_000]));
+    let made: ArrayRef = Arc::new(Int64Array::from(vec![2; 1_000]));
+    // The set's batch is kept alive, as a set holds only what its holder keeps alive.
+    let unit_batch = batch(Arc::clone(&unit));
+    let held = Allocations::of(&unit_batch);
+    let before = held.clone();
+    let mut beyond = Allocations::default();
+    // What the other set holds counts nothing, whole or sliced.
+    assert_eq!(beyond.add_array_beyond(unit.as_ref(), &held), 0);
+    assert_eq!(beyond.add_array_beyond(unit.slice(3, 4).as_ref(), &held), 0);
+    // What it does not hold counts once.
+    let bytes = beyond.add_array_beyond(made.as_ref(), &held);
+    assert!(bytes >= 8_000, "{bytes}");
+    assert_eq!(beyond.add_array_beyond(made.slice(1, 2).as_ref(), &held), 0);
+    assert_eq!(beyond.bytes(), bytes);
+    // A batch of both adds its own schema beyond, once.
+    let both = RecordBatch::try_from_iter([("a", unit), ("b", made)]).unwrap();
+    let schema = schema_bytes(&both.schema());
+    assert_eq!(beyond.add_beyond(&both, &held), schema);
+    assert_eq!(beyond.add_beyond(&both.slice(0, 5), &held), 0);
+    assert_eq!(beyond.bytes(), bytes + schema);
+    assert_eq!(held, before, "counting beyond a set never adds to it");
+}
+
+#[test]
 fn an_allocation_arrow_did_not_make_counts_whole() {
     let owner = Bytes::from(vec![0_u8; 4_096]);
     let column: ArrayRef = Arc::new(Int8Array::new(
