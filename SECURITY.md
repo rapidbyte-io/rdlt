@@ -237,11 +237,11 @@ Whatever a connector sends is reserved from the memory budget before the engine 
 bounded by a limit with a typed refusal (ADR 0039):
 
 - The budget is never passed. It is divided into shares, for the cursors of checkpoints, the
-  log's frames and its store's staging, what commits record of tables, what reads keep, what
-  decoding answers holds, and data, and a reservation is made only where it fits its share.
+  log's frames and what a carry reads at once, what commits record of tables, what reads keep,
+  what decoding answers holds, and data, and a reservation is made only where it fits its share.
   One that could never fit is refused: `push_exceeds_budget`, `row_exceeds_budget`,
-  `log_frame_exceeds_budget`, `wal_staging_exceeds_budget`, `table_exceeds_budget`, and
-  `limit_exceeded` naming `cursor bytes` or `read kept bytes`.
+  `log_frame_exceeds_budget`, `table_exceeds_budget`, and `limit_exceeded` naming
+  `cursor bytes` or `read kept bytes`.
 - A push reserves what it keeps alive, its schema included; JSON text reserves three times
   itself, for the batches it becomes, and what its batches take beyond that is reckoned and
   reserved before any of it is built, or refused, `json_exceeds_budget` (ADR 0040). The
@@ -338,12 +338,10 @@ the engine's authority, so it is bound, private and checked (ADR 0045):
   it none. A chunk holds at most an eighth of the bound, but a chunk of one batch frame or of
   frames carried out of one chunk, beside the frames of the commit that ends it, and frames are
   copied out of old chunks 256 KiB at a time, so neither a frame's size nor a slow commit keeps
-  a chunk from being freed. What a store stages in memory, and the copy's buffer, are reserved
-  from the budget's share for logs, and a staging that leaves that share too little for a
-  commit recording a full share of cursors is refused (`wal_staging_exceeds_budget`). A full
-  disk is retried (`wal_storage_full`): a failed write
-  gives back what it staged, and the next attempt deletes what a crashed load staged, which
-  needs no room, before it needs a directory's block and a few hundred bytes of its own.
+  a chunk from being freed. The copy's buffer is reserved from the budget's share for logs. A
+  full disk is retried (`wal_storage_full`): a failed write gives back what it staged, and the
+  next attempt deletes what a crashed load staged, which needs no room, before it needs a
+  directory's block and a few hundred bytes of its own.
 - A load opens its log before it reads any other. A replay or a reset fences a running load by
   publishing its log's next chunk, and its load can publish nothing once the log is removed, so
   the two never both write; a load that keeps publishing fails the other attempt
@@ -351,22 +349,6 @@ the engine's authority, so it is bound, private and checked (ADR 0045):
 - A pipeline's destination takes logs from one store: the store's identity is kept in its base
   and recorded by the pipeline's first commit there, and an engine with another store is refused
   (`wal_store_other`) before it reads anything.
-
-- A log in an object store (ADR 0051) lies beneath a prefix of plain segments
-  (`wal_prefix_invalid`), and a name it never writes is refused there too (`wal_stray`). The
-  store is probed before a log is kept in it: one that takes two of creates of one name racing,
-  keeps no metadata, lists no fresh object, takes no upload in parts or keeps what it says it
-  deleted is refused (`wal_storage_unsupported`), so no log runs unfenced. Each create's object
-  bears a random token, read back only where an attempt's answer was lost, so two publishes of
-  the same bytes never both succeed. What a log costs, deletions and listings among it, is
-  bounded by its live chunks, and a listing past 65,536 objects is refused. Its credentials are secret references
-  the operator's resolver alone resolves, never literals, never shown; it is reached over TLS
-  checked against the system's trusted roots, with no redirect or proxy, and in plain HTTP only
-  at a loopback IP address. Every request has a deadline and a bounded number of attempts
-  (`wal_storage_unavailable`, retryable); a refusal of the credentials is final
-  (`wal_storage_denied`), as are a failed TLS handshake and a status saying the request is wrong
-  (`wal_storage_refused`). Whoever may write the bucket's prefix holds the log's authority, as
-  whoever may write a local base does: grant it to the engine's credentials alone.
 
 A log is not signed: whoever can write as the engine's user holds its authority already. A log
 that cannot be read stops its pipeline's runs until an operator removes it, since setting it

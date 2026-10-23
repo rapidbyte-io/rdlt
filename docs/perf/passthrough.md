@@ -283,11 +283,9 @@ Notes on the readings:
   commits, the commits' phases summed 301–486 ms a run. The waits are summed over every call, the
   commits' included, so they never understate.
 - **The core layouts and the normalized scaling** are below.
-- **Not decided here.** Four changes read the log on an object store: a bench of it with request
-  latency, listing the horizon while the lanes flush, staging the next chunk after the answer,
-  and uploading several parts at once. Production keeps the log on local disk, so none is built.
-  Charging a served push frame once needs the resident memory of served placements, which the
-  resident check does not measure (it runs in process only), so its rule cannot be applied.
+- **Not decided here.** Charging a served push frame once needs the resident memory of served
+  placements, which the resident check does not measure (it runs in process only), so its rule
+  cannot be applied.
 
 ### Pressure and progress, built
 

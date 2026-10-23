@@ -63,9 +63,8 @@ log.
     before `data_body` (ADR 0015), and the log pads each message's header in its frame (ADR 0045).
     Every receiver holds what arrives from a first byte at a 64-byte address: `Bounded`'s room (ADR
     0042), the files reader's blocks, and the log's reads, each in an allocation of its own: the
-    local log reads into one, and the object-store log copies each read once into one. A log frame a
-    store hands over elsewhere, or as a slice of what it keeps, as the in-memory log does, is copied
-    once into one of its own.
+    local log reads into one. A log frame a store hands over elsewhere, or as a slice of what it
+    keeps, as the in-memory log does, is copied once into one of its own.
   - Each buffer must lie, in memory, at a multiple of its type's alignment and of eight bytes. One
     that does not is refused as `BufferUnaligned`, `malformed_frame`, before Arrow reads anything:
     every sender rdlt ships aligns, so a peer that does not is broken. The decoder copies no buffer
@@ -248,8 +247,7 @@ log.
 - A frame on the wire or in the local log costs no copy beyond its transport's: a decoded batch
   holds the allocation its message arrived in, header and room included. A sender padding to eight
   bytes is refused; a files block so padded is copied once, as is one whose metadata is padded
-  beyond a message's room. The object-store log copies each read once, and the in-memory log each
-  batch frame read.
+  beyond a message's room. The in-memory log copies each batch frame read once.
 - The wire does not bound what a dictionary or a run-end encoding multiplies: keys or runs that
   each name a large value. What a batch expands to is the cost model's to charge.
 - Left for the cost model, which charges what is held:

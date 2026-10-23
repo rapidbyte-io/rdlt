@@ -31,8 +31,7 @@ TLS is security-sensitive, so the owner decided its policy before this milestone
   - Certificates and keys come from PEM files named by path; secret references come with M7's secrets. A private key is read only from a regular file of the user's alone.
   - Tests make their CA at test time; no key is ever committed.
 - **The policy is in one place: `rdlt_wire::tls`**, behind `rdlt-wire`'s `tls` feature.
-  - `provider` is the cryptography of every TLS connection: both ends of the protocol, and the
-    S3 log store's.
+  - `provider` is the cryptography of every TLS connection: both ends of the protocol.
   - `server_config` and `client_config` build both ends' configurations, with ALPN `h2` alone. `server_config` takes the hosts accepted: their CA bundle, their names and their revocation lists.
   - `TlsError` names the file a failure came from.
 - **A served binary listens with `--listen <address>`**, and needs `--tls-cert`, `--tls-key`, `--tls-client-ca` and a `--tls-allow-host` for each host it accepts. `--listen` and `--rdlt-fd` exclude each other.
@@ -60,8 +59,7 @@ TLS is security-sensitive, so the owner decided its policy before this milestone
 ## Consequences
 
 - AWS-LC is C, which `aws-lc-sys` builds with the C compiler alone (ADR 0048).
-- `ring` remains in the build through `object_store`'s request signing and `rcgen`'s test CA,
-  and no TLS connection uses it.
+- `ring` remains in the build through `rcgen`'s test CA, and no TLS connection uses it.
 - A listening connector trusts the hosts named to it, among the certificates its CA issued (ADR 0044).
 - Certificates and revocation lists rotate by restarting the listening connector, and by placing the connector again on the host.
 - One call over a link of round trip `r` moves at most its stream window a round trip, 4 MiB (ADR 0016): about 4 GB/s at 1 ms. A test holds that a call over a link of a 50 ms round trip keeps its windows in flight; throughput over a real network is unmeasured.

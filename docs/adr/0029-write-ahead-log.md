@@ -9,8 +9,7 @@ acknowledged, as a message queue that forgets what its consumer committed cannot
 acknowledges such a source before the destination commits, so the log is the only copy of those
 rows until the commit lands. Without the log, a source would have to be replayable.
 
-A load's log is kept in a `WalStore`: a local directory (`LocalWal`) or object storage
-(`ObjectStoreWal`, ADR 0051).
+A load's log is kept in a `WalStore`, a local directory (`LocalWal`).
 
 ## Decision
 
@@ -27,8 +26,8 @@ A load's log is kept in a `WalStore`: a local directory (`LocalWal`) or object s
 - **Store.** `WalStore` keeps each load's log as numbered chunks, and `LocalWal` keeps them in a
   local directory: `<base>/<pipeline>/<load>/<chunk:08>.wal`, the pipeline's directory being
   `p.<id>` or `x.<base32 of the id>`. The embedder chooses the base. A chunk is staged and
-  published whole where its name is free, as an object store would, and every directory and file
-  beneath the base must be the user's alone, checked at every open (ADR 0045).
+  published whole where its name is free, and every directory and file beneath the base must be
+  the user's alone, checked at every open (ADR 0045).
 - **Frames** are spec §15.6's, `[kind u8][len u32 LE][crc32c u32 LE][payload]`: metadata as JSON,
   a batch as a JSON header then its Arrow data in the wire's framing (`rdlt_wire::codec`), whose
   decoder checks each message against its body and contains Arrow's panics. A raw Arrow reader
@@ -117,6 +116,6 @@ A load's log is kept in a `WalStore`: a local directory (`LocalWal`) or object s
 - A commit frame the destination refuses on replay fails every later run until an operator
   removes the log: the price of acknowledging before the commit.
 - A load that keeps a log writes each batch twice, once to the log, and publishes a chunk of the
-  log at each commit before the destination commits; ADR 0051 counts what that takes on S3.
+  log at each commit before the destination commits.
 - `S-ACK`, a certification clause checking that a source advances only once acknowledged, and its
   probe of what a source acknowledged, move to M5c2 (ADR 0030).

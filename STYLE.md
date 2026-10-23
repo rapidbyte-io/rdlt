@@ -18,7 +18,7 @@ Most rules are enforced by a tool, named beside the rule: rustfmt, clippy (the w
 ## Library and application code
 
 Google's API rules bind library code and guide application code. The library crates are
-`rdlt-connector`, `rdlt-engine`, `rdlt-host`, `rdlt-wire`, `rdlt-log-store`, `rdlt-adopt` and
+`rdlt-connector`, `rdlt-engine`, `rdlt-host`, `rdlt-wire`, `rdlt-adopt` and
 `rdlt-connector-macros`: connector authors and embedders build on their public items. The
 application and tooling crates are `rdlt-certify`, `rdlt-connector-reference`, `rdlt-sim`,
 `rdlt-testkit`, `xtask` and `fuzz`, which favor simplicity over generality.
@@ -102,8 +102,8 @@ forever, `#[non_exhaustive]` everywhere) are adapted below.
 - **Enums, not booleans** (CONTRIBUTING.md § Naming).
 - **`Option`, `Result` or a panic.** `Option` when absence explains itself; `Result` when the
   caller needs to know why (CONTRIBUTING.md § Errors); a panic only for a bug in rdlt. Anything a
-  connector, the wire, a file or an object store hands rdlt is untrusted: malformed or hostile
-  input is an error, never a panic (ADRs 0037 and 0050).
+  connector, the wire or a file hands rdlt is untrusted: malformed or hostile input is an error,
+  never a panic (ADRs 0037 and 0050).
 
 ## Types
 
