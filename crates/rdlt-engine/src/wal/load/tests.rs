@@ -16,6 +16,7 @@ use rdlt_connector::{
 use super::{LoadLog, Owner, Sealed};
 use crate::budget::MemoryBudget;
 use crate::compute::Pool;
+use crate::env::{Env, InlineEnv};
 use crate::table::TableView;
 use crate::table::testing::view;
 use crate::wal::frame::{self, Frame};
@@ -562,8 +563,7 @@ async fn a_commit_recording_a_full_share_of_cursors_fits_beside_a_carry_s_read()
     assert!(super::commit::commit_bytes(&[], &commit) > 2 * budget.shares().cursors);
     let written = async {
         let committed = log.commit(&budget, Vec::new(), Vec::new(), &commit, 0);
-        let deadline =
-            crate::env::Clock::sleep(&crate::env::SystemClock, std::time::Duration::from_hours(4));
+        let deadline = InlineEnv.sleep(std::time::Duration::from_hours(4));
         tokio::select! {
             biased;
             committed = committed => committed.expect("durable"),
@@ -586,8 +586,7 @@ async fn a_commit_s_seals_hold_the_log_s_share_of_memory_one_after_another() {
         let sealed: Vec<Sealed> = (1..=8).map(sealed_at).collect();
         let commit = meta(&[]);
         let committed = log.commit(&budget, sealed, Vec::new(), &commit, 0);
-        let deadline =
-            crate::env::Clock::sleep(&crate::env::SystemClock, std::time::Duration::from_secs(60));
+        let deadline = InlineEnv.sleep(std::time::Duration::from_secs(60));
         tokio::select! {
             biased;
             committed = committed => committed.expect("durable"),
@@ -1018,8 +1017,7 @@ async fn a_batch_finding_the_log_full_waits_only_while_a_commit_can_free_room() 
         assert!(!log.waits());
         drop(log);
     };
-    let deadline =
-        crate::env::Clock::sleep(&crate::env::SystemClock, std::time::Duration::from_secs(60));
+    let deadline = InlineEnv.sleep(std::time::Duration::from_secs(60));
     tokio::select! {
         biased;
         (ended, ()) = async { tokio::join!(task, written) } => ended.expect("the writer ends"),
