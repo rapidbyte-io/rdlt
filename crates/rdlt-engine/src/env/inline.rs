@@ -5,7 +5,7 @@ use std::num::NonZeroUsize;
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::compute::{ComputePool, Inline};
-use crate::env::{Clock, Env, Sleep, SystemClock};
+use crate::env::{Env, Sleep};
 
 /// The system's clock and randomness, tokio's timers, and an [`Inline`] compute pool of one core.
 #[derive(Clone, Copy, Debug, Default)]
@@ -28,12 +28,20 @@ impl Env for InlineEnv {
         tokio::time::Instant::now().into_std()
     }
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "tests and benches take tokio's timers, which a test may pause"
+    )]
     fn sleep(&self, duration: Duration) -> Sleep {
-        SystemClock.sleep(duration)
+        Box::pin(tokio::time::sleep(duration))
     }
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "tests and benches take the system's random source"
+    )]
     fn random(&self) -> u64 {
-        SystemClock.random()
+        getrandom::u64().expect("the operating system random source is available")
     }
 
     fn compute(&self) -> &dyn ComputePool {

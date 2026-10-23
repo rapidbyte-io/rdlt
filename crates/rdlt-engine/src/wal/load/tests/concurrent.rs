@@ -21,7 +21,7 @@ use tokio::sync::{mpsc, oneshot};
 use super::room::{Load, loads, started, stored};
 use super::{logged, receipt, sealed_at};
 use crate::budget::MemoryBudget;
-use crate::env::{Clock, SystemClock};
+use crate::env::{Env, InlineEnv};
 use crate::table::testing::view;
 use crate::wal::load::LoadLog;
 use crate::wal::memory::MemoryWal;
@@ -221,7 +221,7 @@ async fn coordinate(
             () = log.full() => {}
         }
         if seq == CommitSeq::FIRST {
-            SystemClock.sleep(landing.late).await;
+            InlineEnv.sleep(landing.late).await;
         }
         while let Ok(seal) = sealed.try_recv() {
             taken.push(seal);
@@ -240,9 +240,9 @@ async fn coordinate(
             (landing.sealed.1, landing.landed.1)
         };
         let seals = log.seals(&budget, seals, &commit).await?;
-        SystemClock.sleep(sealed_for).await;
+        InlineEnv.sleep(sealed_for).await;
         log.finish(&budget, seals, Vec::new(), &commit, 0).await?;
-        SystemClock.sleep(landed).await;
+        InlineEnv.sleep(landed).await;
         log.committed(&receipt(seq)).await?;
         drop(committing);
         for (_, answer) in taken {
