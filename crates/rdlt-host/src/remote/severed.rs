@@ -1,6 +1,7 @@
 //! A connection's transport, which ends with the connection: once it is dropped, or its connector
 //! lost, reads and writes fail at once, so HTTP/2's task for it ends then, rather than when its
-//! pings time out, which on a network that stopped answering takes the heartbeat's patience.
+//! pings time out, which on a network that stopped answering takes twice the heartbeat's
+//! patience.
 
 #[cfg(test)]
 mod tests;

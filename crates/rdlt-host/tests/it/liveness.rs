@@ -52,6 +52,58 @@ async fn a_host_that_stalls_does_not_lose_a_live_connector() {
     source.check().await.expect("the source is still connected");
 }
 
+// The real clock and a socket: the stalled runtime's driver sees the connector's answer only
+// once the stall ends, together with the timers that elapsed during it.
+#[tokio::test]
+async fn a_host_that_stalls_with_a_ping_unanswered_keeps_a_live_connector() {
+    // A patience of 600 ms: the stalls outlast it and fall well short of twice it.
+    const STALL: Duration = Duration::from_millis(900);
+    let options = Options {
+        heartbeat: Duration::from_millis(200),
+        missed: NonZeroU32::new(3).expect("not zero"),
+        ..Options::default()
+    };
+    let (host, connector) = std::os::unix::net::UnixStream::pair().expect("a socket pair");
+    for end in [&host, &connector] {
+        end.set_nonblocking(true)
+            .expect("the socket is non-blocking");
+    }
+    // The connector runs on a runtime of its own, which answers pings while the host's stalls.
+    let serving = tokio::runtime::Runtime::new().expect("a runtime starts");
+    let connector = {
+        let _entered = serving.enter();
+        tokio::net::UnixStream::from_std(connector).expect("the socket registers")
+    };
+    serving.spawn(rdlt_connector::serve::serve_connection(
+        std::sync::Arc::new(Served::new().with_source(source_factory::<MemorySource>())),
+        connector,
+        rdlt_wire::Limits::default(),
+    ));
+    let host = tokio::net::UnixStream::from_std(host).expect("the socket registers");
+    let config = serde_json::json!({ "streams": {} });
+    let connection = Connection::connect(host, Role::Source, &config, options)
+        .await
+        .expect("the source handshakes");
+    let source = RemoteSource::new(connection);
+    // The heartbeat's stream opens before the stalls begin.
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    // Each yield lets the tasks the elapsed timers woke run first, so a stall begins with the
+    // ping they sent unanswered.
+    let stalling = tokio::spawn(async {
+        for _ in 0..3 {
+            std::thread::sleep(STALL);
+            tokio::task::yield_now().await;
+        }
+    });
+    stalling.await.expect("the stalls end");
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let checked = tokio::time::timeout(Duration::from_secs(5), source.check()).await;
+    checked
+        .expect("the check ends")
+        .expect("the source is still connected");
+    serving.shutdown_background();
+}
+
 /// A network partition between the host and a connector, which can come and go.
 #[derive(Clone, Default)]
 struct Partition(std::sync::Arc<std::sync::Mutex<(bool, Vec<std::task::Waker>)>>);
