@@ -405,3 +405,21 @@ fn a_moved_partition_its_commit_logged_no_record_of_is_recorded_as_its_entry_wri
     );
     assert_eq!(decision.moved, [put]);
 }
+
+#[test]
+fn a_logged_record_of_the_partition_with_other_bytes_is_passed_over() {
+    let (mut logged, put) = large(true);
+    logged.meta.state_delta.insert(0, position("p0", 20));
+    let decision = decide(
+        &standing(10, 5),
+        &unreset(),
+        Some((load(3), 1)),
+        None,
+        &logged,
+    );
+    assert_eq!(decision.moved, std::slice::from_ref(&put));
+    let (StateChange::Put(moved), StateChange::Put(logged)) = (&decision.moved[0], &put) else {
+        panic!("a position is put");
+    };
+    assert_eq!(moved.value.as_ptr(), logged.value.as_ptr());
+}
