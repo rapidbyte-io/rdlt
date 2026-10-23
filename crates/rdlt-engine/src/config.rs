@@ -11,6 +11,7 @@ use std::num::{NonZeroU16, NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::time::Duration;
 
 use crate::error::Error;
+use crate::limits::BUDGET_WAIT;
 
 pub use batch::BatchPolicy;
 pub use commit::CommitPolicy;
@@ -105,7 +106,6 @@ pub struct EngineConfig {
     partitions: NonZeroUsize,
     partition_buffer: NonZeroUsize,
     barrier_wait: Duration,
-    memory_wait: Duration,
     connector_wait: Duration,
     stop_wait: Duration,
     close_wait: Duration,
@@ -129,7 +129,6 @@ impl EngineConfig {
             partitions: None,
             partition_buffer: None,
             barrier_wait: None,
-            memory_wait: None,
             connector_wait: None,
             stop_wait: None,
             close_wait: None,
@@ -167,6 +166,7 @@ impl EngineConfig {
     /// Each read is held to an equal part of the shares reads draw on, so the cursor, schema,
     /// column and dictionary limits [`EngineConfig::limits`] gives fall as this rises; past the
     /// most the memory admits, [`EngineConfig::least_memory`] says how much it needs.
+
     pub fn partitions(&self) -> NonZeroUsize {
         self.partitions
     }
@@ -181,18 +181,26 @@ impl EngineConfig {
         self.barrier_wait
     }
 
-    /// How long a request waits for room in the memory budget before the attempt fails.
-    pub fn memory_wait(&self) -> Duration {
-        self.memory_wait
-    }
-
     /// How long one call into a connector other than a read may take before it fails as
     /// transient.
     ///
     /// The calls are a check, a discovery, a plan, an acknowledgement, an open, a schema change,
-    /// a writer's opening, a write, a flush, a commit and a close.
+    /// a writer's opening, a write, a flush, a commit and a close. A wait for room in the memory
+    /// budget ends at twice this, and an hour at least, so a call that hangs fails at its own
+    /// deadline before a wait that began while it ran.
     pub fn connector_wait(&self) -> Duration {
         self.connector_wait
+    }
+
+    /// How long a request waits for room in the memory budget before the attempt fails with
+    /// what held the budget: twice [`EngineConfig::connector_wait`], and [`BUDGET_WAIT`] at
+    /// least.
+    ///
+    /// It is a backstop against a defect in the budget's own protocol, not a bound on latency: a
+    /// call that hangs fails at its own deadline, naming the call, before a wait that began less
+    /// than one connector deadline before the call reaches this one.
+    pub(crate) fn budget_wait(&self) -> Duration {
+        BUDGET_WAIT.max(self.connector_wait.saturating_mul(2))
     }
 
     /// How long a read asked to stop may take to end; one that takes longer is dropped, as if
@@ -253,7 +261,6 @@ impl Default for EngineConfig {
             partitions: NonZeroUsize::new(16).unwrap_or(NonZeroUsize::MIN),
             partition_buffer: NonZeroUsize::new(16).unwrap_or(NonZeroUsize::MIN),
             barrier_wait: Duration::from_secs(5),
-            memory_wait: crate::limits::BUDGET_WAIT,
             connector_wait: Duration::from_mins(30),
             stop_wait: Duration::from_secs(60),
             close_wait: Duration::from_secs(60),
@@ -276,7 +283,6 @@ pub struct EngineConfigBuilder {
     partitions: Option<usize>,
     partition_buffer: Option<usize>,
     barrier_wait: Option<Duration>,
-    memory_wait: Option<Duration>,
     connector_wait: Option<Duration>,
     stop_wait: Option<Duration>,
     close_wait: Option<Duration>,
@@ -333,16 +339,10 @@ impl EngineConfigBuilder {
         self
     }
 
-    /// How long a request waits for room in the memory budget before the attempt fails with
-    /// what held the budget (default an hour): longer than any call of the destination may take.
-    #[must_use]
-    pub fn memory_wait(mut self, wait: Duration) -> Self {
-        self.memory_wait = Some(wait);
-        self
-    }
-
     /// How long one call into a connector, other than a read, may take (default 30 min); more
     /// than zero.
+    ///
+    /// A wait for room in the memory budget ends at twice it, and an hour at least.
     #[must_use]
     pub fn connector_wait(mut self, wait: Duration) -> Self {
         self.connector_wait = Some(wait);
@@ -431,10 +431,6 @@ impl EngineConfigBuilder {
             )
             .ok_or_else(|| invalid("partition_buffer"))?,
             barrier_wait: self.barrier_wait.unwrap_or(defaults.barrier_wait),
-            memory_wait: match self.memory_wait {
-                Some(Duration::ZERO) => return Err(invalid("memory_wait")),
-                wait => wait.unwrap_or(defaults.memory_wait),
-            },
             connector_wait: positive(self.connector_wait, defaults.connector_wait)
                 .ok_or_else(|| invalid("connector_wait"))?,
             stop_wait: positive(self.stop_wait, defaults.stop_wait)
