@@ -441,10 +441,11 @@ fn attacking(rng: &mut SplitMix64, connect: Duration, small: bool) -> Options {
     }
 }
 
-/// How long an attack with `options` may take: its dial and its connection's setup, four of
-/// its heartbeat's patience, a write's wait for credit, and [`LATE`].
+/// How long an attack with `options` may take: its dial, its handshake and its configuration,
+/// each within the connect deadline, four of its heartbeat's patience, a write's wait for
+/// credit, and [`LATE`].
 fn bound(options: &Options) -> Duration {
-    options.deadlines.connect.saturating_mul(2)
+    options.deadlines.connect.saturating_mul(3)
         + patience(options).saturating_mul(4)
         + options.deadlines.write_ack
         + LATE
