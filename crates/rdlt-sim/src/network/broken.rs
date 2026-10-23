@@ -288,8 +288,9 @@ async fn accept(listener: turmoil::net::TcpListener, acceptor: TlsAcceptor, faul
         };
         let acceptor = acceptor.clone();
         tokio::spawn(async move {
-            // A host that vanished behind a cut takes none of what is sent to it: a served
-            // connector ends that connection by its send limit, and so does a broken one.
+            // The fake has no send limit of its own, and a host that vanished behind a cut
+            // takes none of what is sent to it, so each connection lives at most a served
+            // connector's send limit, longer than any attack's bound.
             let serving = async {
                 if let Some(tls) = super::handshake(&acceptor, stream).await {
                     fake::serve(Fake(fault), tls).await;

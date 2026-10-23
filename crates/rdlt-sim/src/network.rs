@@ -169,7 +169,7 @@ impl Net {
     fn new(serving: Serving, peers: Peers) -> Self {
         let pki = Pki::new("ca");
         let mut hosts = vec![Side::Source.host(), Side::Destination.host(), STALLED];
-        // Named only where it listens, so every other seed's certificate is as it was.
+        // Named only where it listens, so no other seed's handshakes carry its name.
         if peers.framing {
             hosts.push(BROKEN);
         }
@@ -424,8 +424,8 @@ impl Networked {
         let healing = Healing(&self.net);
         // Faults last up to twice the host's patience, so it notices some and not others.
         let patience = patience(&self.remote_options);
-        // The broken connectors' link is cut from a draw of its own, so every other link is
-        // disrupted as it always was.
+        // The broken connectors' link is cut from a draw of its own, which takes nothing from
+        // the other links' draws.
         let broken = SplitMix64::new(rng.clone().next_u64() ^ FRAMING);
         let done = tokio::select! {
             biased;
