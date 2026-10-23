@@ -30,7 +30,7 @@ pub(crate) enum Class {
     /// The cursor of a seal waiting for its commit.
     Cursor,
     /// The log's seal, commit and table frames on their way into it, and, while a log is open,
-    /// its store's staging and what a carry reads at once.
+    /// what a carry reads at once.
     Log,
     /// What a commit records of a table's schema and names, from the schema change that makes
     /// it until the commit recording it lands.
@@ -48,7 +48,7 @@ impl Class {
             Self::Intake => "a push",
             Self::Work => "lowering",
             Self::Cursor => "a cursor",
-            Self::Log => "the log's frames or staging",
+            Self::Log => "the log's frames or a carry's read",
             Self::Tables => "a table's records",
             Self::Read => "what reads keep",
             Self::Control => "decoding an answer",
@@ -61,8 +61,8 @@ impl Class {
 pub(crate) struct Shares {
     /// The cursors of seals waiting for a commit.
     pub(crate) cursors: u64,
-    /// The log's seal, commit and table frames, and, while a log is open, its store's staging
-    /// and what a carry reads at once.
+    /// The log's seal, commit and table frames, and, while a log is open, what a carry reads at
+    /// once.
     pub(crate) log: u64,
     /// What commits record of tables' schemas and names.
     pub(crate) tables: u64,
@@ -135,7 +135,7 @@ pub(crate) struct Exhausted {
     pub(crate) work: u64,
     /// Bytes the cursors of seals waiting for a commit hold.
     pub(crate) cursors: u64,
-    /// Bytes the log's frames and its store's staging hold.
+    /// Bytes the log's frames and a carry's read hold.
     pub(crate) log: u64,
     /// Bytes tables' records waiting for a commit hold.
     pub(crate) tables: u64,

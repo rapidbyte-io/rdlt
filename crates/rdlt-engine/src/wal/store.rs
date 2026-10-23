@@ -2,7 +2,6 @@
 //! object written whole.
 
 use std::io;
-use std::num::NonZeroU64;
 
 use bytes::Bytes;
 use rdlt_connector::{BoxFuture, LoadId, PipelineId};
@@ -55,20 +54,6 @@ pub trait StagedChunk: Send + Sync {
 /// A log is open from [`WalStore::open_log`] until [`WalStore::remove_log`] begins, and never
 /// again: only while it is open is a chunk of it published and the log listed.
 pub trait WalStore: std::fmt::Debug + Send + Sync + 'static {
-    /// Bytes: the most a chunk of this store may hold, which bounds a load's log as
-    /// [`GrowthLimits::log_bytes`](crate::GrowthLimits::log_bytes) does, the lower of the two
-    /// applying; none where a chunk is bounded only by that.
-    fn chunk_bytes(&self) -> Option<NonZeroU64> {
-        None
-    }
-
-    /// Bytes: what a chunk this store stages holds in memory at most, beside the frames the
-    /// engine charges until each is appended, which the engine charges to its memory budget for
-    /// as long as a load's log is written; none where a store stages nothing in memory.
-    fn staging_bytes(&self) -> u64 {
-        0
-    }
-
     /// The store's identity, durable: the first caller's `proposed`, which every later call, of
     /// any process, answers with.
     fn identity(&self, proposed: LoadId) -> BoxFuture<'_, io::Result<LoadId>>;

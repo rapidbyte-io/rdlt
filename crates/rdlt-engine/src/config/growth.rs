@@ -51,7 +51,7 @@ impl GrowthLimits {
     }
 
     /// Bytes: the most a load's write-ahead log holds on disk, its chunks published and the chunk
-    /// it stages together; a store whose largest chunk is smaller bounds the log to that.
+    /// it stages together.
     ///
     /// Only a commit lets a chunk go, so a source that does not checkpoint grows its load's log
     /// by what it sends. Once the log holds half of its bound, a commit is due, and again at each

@@ -24,10 +24,10 @@ use super::frame::{self, Frame};
 use super::store::WalStore;
 pub(crate) use super::writer::Owner;
 use super::writer::{Command, WalWriter};
-use crate::budget::{Denied, MemoryBudget, Reservation, Shares};
+use crate::budget::{Denied, MemoryBudget, Reservation};
 use crate::compute::Pool;
 use crate::error::Error;
-use crate::limits::{LOG_COPY_BYTES, LOG_FRAME_EXCEEDS_BUDGET, LOG_PARTS, RECORDED};
+use crate::limits::{LOG_FRAME_EXCEEDS_BUDGET, LOG_PARTS};
 use crate::report::Tally;
 use crate::table::TableView;
 
@@ -65,8 +65,8 @@ pub(crate) struct LoadLog {
     disk: Arc<Disk>,
     /// What decides whether a batch that finds the log full waits for room or is refused.
     pressure: Arc<room::Pressure>,
-    /// What the store's stagings hold in memory, charged to the budget while the log is written.
-    _staging: Arc<Option<Reservation>>,
+    /// What a carry reads back at once, charged to the budget while the log is written.
+    _carry: Arc<Option<Reservation>>,
 }
 
 /// What a load's log may hold on disk, and when it makes a commit due.
@@ -104,13 +104,13 @@ struct Version {
 impl LoadLog {
     /// The log of `owner`'s load in `store`, holding at most `limit` bytes on disk, and the task
     /// writing it, for the attempt's scope to run until every clone is dropped or the log is
-    /// closed; `staging` holds what the store stages in memory, and what a carry reads at once,
-    /// and the writer counts what it carries and relieves into `tally`.
+    /// closed; `carry` holds what a carry reads at once, and the writer counts what it carries
+    /// and relieves into `tally`.
     pub(crate) fn start(
         store: Arc<dyn WalStore>,
         owner: Owner,
         limit: NonZeroU64,
-        (staging, tally): (Option<Reservation>, Arc<Tally>),
+        (carry, tally): (Option<Reservation>, Arc<Tally>),
     ) -> (
         Self,
         impl Future<Output = Result<(), Error>> + Send + 'static,
@@ -131,7 +131,7 @@ impl LoadLog {
             counts: Arc::default(),
             disk: Arc::new(disk),
             pressure: Arc::default(),
-            _staging: Arc::new(staging),
+            _carry: Arc::new(carry),
         };
         (log, task)
     }
@@ -345,17 +345,6 @@ async fn reserved(budget: &MemoryBudget, bytes: u64) -> Result<Reservation, Erro
 /// Bytes: what a frame takes beside the records it holds, at most: its head, its kind and the
 /// names and numbers it carries.
 const FRAMED: u64 = 4 << 10;
-
-/// Bytes: the most a log's store may stage in memory within a budget of `shares`: what leaves
-/// the log's share room for what a carry reads at once and for a commit's frame recording as
-/// many cursor bytes as the cursors' share holds, at most twice each, beside a frame's head.
-pub(crate) fn staged_at_most(shares: Shares) -> u64 {
-    shares
-        .log
-        .saturating_sub(LOG_COPY_BYTES)
-        .saturating_sub(RECORDED.saturating_mul(shares.cursors))
-        .saturating_sub(FRAMED)
-}
 
 /// Bytes a table's schema frame takes for each byte its fields take, at most: their names and
 /// types as JSON text.

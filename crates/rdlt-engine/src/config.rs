@@ -145,7 +145,7 @@ impl EngineConfig {
     /// Bytes: the memory budget, across all its shares, which the engine's reservations never pass.
     ///
     /// The shares are fixed parts of it: pushes and what lowering makes of them, cursors waiting
-    /// for a commit, the log's frames and its store's staging, what commits record of tables,
+    /// for a commit, the log's frames and a carry's read, what commits record of tables,
     /// what reads keep, and what decoding connectors' answers holds.
     pub fn memory(&self) -> NonZeroU64 {
         self.memory

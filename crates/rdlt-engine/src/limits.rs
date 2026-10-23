@@ -15,14 +15,12 @@ use std::time::Duration;
 /// larger than the share is refused. A cursor waits for no push: its share is its own.
 pub(crate) const CURSOR_SHARE: u64 = 64;
 
-/// The log's frames and its store's staging: a 16th of the budget, four times the cursors'
-/// share, so a commit's frame recording a full share of cursors fits beside what the store
-/// stages.
+/// The log's frames and what a carry reads at once: a 16th of the budget, four times the cursors'
+/// share, so a commit's frame recording a full share of cursors fits beside a carry's read.
 ///
 /// Seal, commit and table frames hold it from before they are encoded until they are appended,
 /// a cursor they record reserved as `RECORDED` bytes for each of its bytes; while a log is
-/// open, what its store stages and what a carry reads at once hold it too, at most what
-/// `staged_at_most` leaves.
+/// open, what a carry reads at once holds it too.
 pub(crate) const LOG_SHARE: u64 = 16;
 
 /// What commits record of tables, each table's schema and names, from the schema change that
@@ -180,11 +178,6 @@ pub(crate) const WAL_FOREIGN: &str = "wal_foreign";
 /// The code of the error for a logged batch that takes more than one request for lowering may
 /// take of the memory budget: the log was written under more memory than replays it.
 pub(crate) const REPLAY_EXCEEDS_BUDGET: &str = "replay_exceeds_budget";
-
-/// The code of the error for a write-ahead log store that stages more in memory than the log's
-/// share of the budget leaves beside a commit's frame recording a full share of cursors, a
-/// carry's read and a frame's head (`staged_at_most`).
-pub(crate) const WAL_STAGING_EXCEEDS_BUDGET: &str = "wal_staging_exceeds_budget";
 
 /// Bytes: what a load's write-ahead log holds on disk at most by default, 4 GiB: four commits'
 /// worth at the default policy's byte threshold.
