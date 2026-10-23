@@ -199,9 +199,9 @@ budget before it is held, or bounded by a limit with a typed refusal.
     only while it holds no piece it has not handed to its lane; beside that piece it lowers as
     many more as the budget has room for at once, eight at most. How many pieces are lowered
     at once follows from what the budget admits.
-  - Once lowered a piece holds what it kept alive that its unit did not, in place of what was
-    reserved, and its frame what the frame takes. The unit's own reservation stays with its
-    last piece until that is written.
+  - Once lowered a piece holds what it keeps alive beyond its unit's batches, in place of what
+    was reserved, and its frame what the frame takes. The unit's batches and its own reservation
+    stay with its last piece until that is written.
   - **Normalized streams follow the same rule.** A unit's tables are known only once it is
     split, so it is measured twice. It is first cut, as it arrives, into pieces whose split makes
     no more than a piece: each row with its lineage, each item an array holds with its own, for
@@ -209,8 +209,10 @@ budget before it is held, or bounded by a limit with a typed refusal.
     request may take, is split, and each of its parts is cut by its own table: its columns as
     the table stores them, the nulls of the columns it lacks and the metadata lowering adds.
     What the piece asked for beyond what its split made and an allowance for two of its parts'
-    pieces is given back. Its parts' pieces are lowered inside the allowance: the partition
-    waits for its own pieces to be written, never for the budget, while it holds them.
+    pieces is given back. What the split made is counted beyond the unit's batches, and the
+    parts it planned are held until the last of their pieces is written. Its parts' pieces are
+    lowered inside the allowance: the partition waits for its own pieces to be written, never
+    for the budget, while it holds them.
   - A change stream's unit is judged and cut where it lies: it is split into its data and its
     change columns, and loses the rows its stream ignores, only as each piece is lowered.
   - A JSON push reserves three times its text when it is admitted: the text, and twice it for
@@ -321,9 +323,17 @@ budget before it is held, or bounded by a limit with a typed refusal.
   before it waits: a push by what it keeps alive, a checkpoint by its cursor's bytes. The wait
   borrows nothing of the event, which the sink holds beside it.
 - **A unit's pieces share what is charged.** A piece lowered from a unit is charged for the
-  allocations it keeps alive that the unit did not hold; the pieces share what holds the unit,
-  so its permits hold its source until its last piece is flushed. The constant columns of a load
-  count for none.
+  allocations it keeps alive beyond the unit's batches, each once; the pieces share what holds
+  the unit, so its batches and permits hold until its last piece is flushed. The constant columns
+  of a load count for none.
+- **A set of allocations names only what is alive.** `cost::Allocations` tells allocations
+  apart by where they start, and the allocator hands a freed address out again, so a set is kept
+  only while its holder keeps alive what it names. A unit's set is built once from its batches,
+  which what holds the unit keeps until its last piece goes, and is never added to; a piece's
+  growth, and a split's, is counted in a set of its own, dropped once counted. A piece made where
+  an earlier piece of its unit was freed is charged in full: tests build one in the very
+  allocation an earlier piece freed, and a property holds each piece's charge to its allocations
+  beyond its unit, counted afresh.
 - **A row that fits no request is refused.** A row that alone takes more to lower than a request
   may take of the budget, or than a JSON flush's batches leave of theirs, fails the write with
   `row_exceeds_budget`, naming the limit, before it is lowered. A row within the frame limit
@@ -428,7 +438,10 @@ admitted, and what a remote connector's calls hold in transport.
   exactly, 3 MiB at most. A nightly check runs the passthrough and the normalized workloads,
   each in a process of its own, with glibc's defaults and with the tunables a spawned
   connector gets, and holds the process's resident peak to the budget's bound, one push, and
-  2 MiB of stack a thread.
+  2 MiB of stack a thread. It runs the passthrough workload served too, read from sixteen
+  partitions through a host that spawned both connectors, and holds the host's peak to the
+  bound, a frame a partition and a stream window an open call, reporting each connector
+  process's peak beside it.
 - **The simulation holds its attempts to it on the heap, at every moment.** Its test binary counts
   each thread's live bytes (`alloc_tracker`, a counting allocator kept per thread, installed in the
   simulation's test binaries alone); a seed's runs share its thread, compute inline, while seeds run
@@ -543,7 +556,8 @@ admitted, and what a remote connector's calls hold in transport.
 - `ErrorKind` gained `Memory`, and `Admission::admit` and `Admission::charge` return a
   `Result`; an `Admission` says the limits it admits within, and a `PartitionSink` holds what
   is sent to them. A run's report counts every wait on the budget and its time on the engine's
-  clock, by share, a read's wait for a slot among them; every budget has a clock and a deadline.
+  clock, by share, a read's wait for a slot among them, and a served frame's wait to be decoded
+  apart from the pushes it waits among; every budget has a clock and a deadline.
   The wire's limits gained `dictionary_bytes`, with a least of 256 KiB.
 - A cut that reads values costs a trip to the compute pool a piece; one that reads none takes
   none.
