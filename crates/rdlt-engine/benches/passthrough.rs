@@ -12,6 +12,11 @@
 //! The logged cells move a pipeline of two streams, the second of which its source cannot read
 //! again, so that each load logs both streams' batches ahead, on tmpfs and on the disk beside the
 //! build; beside them, the same pipeline with both streams readable again logs nothing.
+//!
+//! The JSON cells push nested rows and rows of 200 columns, sixteen pushes of about 8 MiB a run, a
+//! checkpoint after each, from one partition and from sixteen, into the null sink, each printing
+//! its readings and the passes shredding took. As a test, each pushes two small pushes a
+//! partition.
 
 #![forbid(unsafe_code)]
 
@@ -25,7 +30,9 @@ use criterion::{
     BenchmarkGroup, BenchmarkId, Criterion, SamplingMode, Throughput, criterion_group,
     criterion_main,
 };
-use rdlt_engine::bench::{Cell, Mixed, Paired, Passthrough, Readings, written};
+use rdlt_engine::bench::{
+    Cell, JsonCell, JsonPassthrough, Mixed, Paired, Passthrough, Readings, written,
+};
 use rdlt_engine::{Cores, LocalWal, Report, WalStore};
 
 /// Samples the paired group takes, each the ratio of the blocks it ran.
@@ -222,5 +229,50 @@ fn counted(report: &Report, (replayable, frames): (u64, u64)) -> String {
     )
 }
 
-criterion_group!(benches, passthrough, logged);
+/// Each JSON cell, made when it first runs, its readings and the passes shredding took printed
+/// after it.
+#[expect(
+    clippy::print_stdout,
+    reason = "criterion reports the engine's time; the readings are printed beside it"
+)]
+fn json(c: &mut Criterion) {
+    let cores = Cores::try_from_host().expect("the host says how many cores the bench may use");
+    let mut group = c.benchmark_group("passthrough/json");
+    group.sample_size(10).sampling_mode(SamplingMode::Flat);
+    for cell in JsonCell::all() {
+        let (mut bench, mut last) = (None, None);
+        let made = || {
+            let pushes = if timed() {
+                cell.pushes()
+            } else {
+                cell.tested()
+            };
+            JsonPassthrough::try_new(cores, cell, pushes).expect("the pool starts")
+        };
+        group.bench_function(cell.name(), |b| {
+            let bench = bench.get_or_insert_with(made);
+            b.iter(|| last = Some(bench.run()));
+        });
+        if let (Some(bench), Some(report)) = (&bench, &last) {
+            let pushes = u64::try_from(JsonCell::PUSHES).expect("pushes fit in 64 bits");
+            let readings = Readings::of(report.elapsed, &report.counters, pushes, cores.count());
+            let shred = &report.streams["events"].shred;
+            println!(
+                "passthrough/json/{}: {} rows of {} bytes a run; {readings}; shred passes \
+                 parsed {}, tripped {}, observed {}, rebuilt {}, exact {}",
+                cell.name(),
+                bench.rows(),
+                bench.bytes(),
+                shred.parsed,
+                shred.tripped,
+                shred.observed,
+                shred.rebuilt,
+                shred.exact,
+            );
+        }
+    }
+    group.finish();
+}
+
+criterion_group!(benches, passthrough, logged, json);
 criterion_main!(benches);

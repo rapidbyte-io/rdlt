@@ -1,13 +1,13 @@
 //! What the engine's hot paths allocate under a counting allocator: what one run of each bench
 //! workload allocates, a row and a batch, and each case the instruction counts run.
 //!
-//! The workloads are the shred bench's single-core groups, both sides of the passthrough pairs,
-//! each batch the lowering bench prepares, each run of the normalized and wide benches, and the
-//! wal bench's load logged into memory; the timed benches keep the system allocator, since
-//! counting every call slows the runs that allocate most. An argument, the name of one of those
-//! benches, counts only its workloads. The workloads run at the benches' full sizes only when
-//! `--bench` is among the arguments, as `just bench` passes it; otherwise, as a test run, they
-//! run on small inputs that still check each workload's shape and counting.
+//! The workloads are the shred bench's single-core groups, both sides of the passthrough pairs
+//! and its JSON cells, each batch the lowering bench prepares, each run of the normalized and
+//! wide benches, and the wal bench's load logged into memory; the timed benches keep the system
+//! allocator, since counting every call slows the runs that allocate most. An argument, the name
+//! of one of those benches, counts only its workloads. The workloads run at the benches' full
+//! sizes only when `--bench` is among the arguments, as `just bench` passes it; otherwise, as a
+//! test run, they run on small inputs that still check each workload's shape and counting.
 //!
 //! A case's name, then a count of iterations, as `cargo xtask instructions` runs it under
 //! callgrind, makes the case's inputs, runs its work that many times, once without a count, and
@@ -28,9 +28,9 @@ use rdlt_connector::{ConnectContext, destination_factory};
 use rdlt_connector_reference::MemoryDestination;
 use rdlt_engine::Cores;
 use rdlt_engine::bench::{
-    CHUNK_BYTES, CORPUS_BYTES, Cell, Corpus, Form, Logged, Lowering, Normalized, Passthrough,
-    Replayed, Wide, check_json, counted, json_column, memory_wal, normalize, null_sink, pruned,
-    replay, rows_pushed, sample_log, scan_log, shred,
+    CHUNK_BYTES, CORPUS_BYTES, Cell, Corpus, Form, JsonCell, JsonPassthrough, Logged, Lowering,
+    Normalized, Passthrough, Replayed, Wide, check_json, counted, json_column, memory_wal,
+    normalize, null_sink, pruned, replay, rows_pushed, sample_log, scan_log, shred,
 };
 use rdlt_wire::{Decoder, Encoder, Limits};
 use stats_alloc::{INSTRUMENTED_SYSTEM, StatsAlloc};
@@ -255,7 +255,8 @@ fn shredding() {
     }
 }
 
-/// Both sides of the passthrough bench's pairs.
+/// Both sides of the passthrough bench's pairs, and each of its JSON cells: their rows the lines
+/// pushed, their batches the pushes.
 fn passing_through() {
     let cores = Cores::try_from_host().expect("the host says how many cores the bench may use");
     let passthrough = Passthrough::paired(cores, Cell::PAIRED).expect("the pool starts");
@@ -268,6 +269,19 @@ fn passing_through() {
         black_box(passthrough.engine_run());
         batches
     });
+    for cell in JsonCell::all() {
+        let pushes = if timed() {
+            cell.pushes()
+        } else {
+            cell.tested()
+        };
+        let count = pushes.len();
+        let json = JsonPassthrough::try_new(cores, cell, pushes).expect("the pool starts");
+        report(&format!("passthrough/json/{}", cell.name()), || {
+            let rows = json.run().rows;
+            (usize::try_from(rows).expect("rows fit in usize"), count)
+        });
+    }
 }
 
 /// Each batch the lowering bench prepares, prepared once after the prepare that makes it.
