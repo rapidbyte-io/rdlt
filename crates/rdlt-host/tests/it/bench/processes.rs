@@ -1,26 +1,99 @@
 //! Served connectors in processes of their own, as in production: spawned by the host over a
 //! socket pair, or listening for it over mutual TLS on loopback; and each process's CPU time.
 //!
-//! Each process is the bench's own binary, which serves as a connector when started as one, held
-//! to the connectors' cores where the bench's environment names them.
+//! Each process is the bench's own binary, which serves the replay source and the IPC sink when
+//! started as a connector, held to the connectors' cores where the bench's environment names them.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Arc;
 use std::sync::mpsc::{Receiver, channel};
+use std::sync::{Arc, Once};
 use std::time::Duration;
 
-use rdlt_connector::{Destination, Source};
-use rdlt_engine::bench::{Sinking, replay_factory, sink_factory};
+use rdlt_connector::serve::Served;
+use rdlt_connector::{
+    BoxFuture, ConnectContext, ConnectorSpec, Destination, Result, Source, SourceFactory,
+};
+use rdlt_engine::bench::{Replayed, Sinking, register, replay_factory, sink_factory};
 use rdlt_host::{ConnectorRef, Local, Options, Provider as _};
 use tokio::io::{AsyncBufReadExt as _, BufReader};
 use tokio::process::{Child, Command};
 
 use crate::connector::CORES;
-use crate::{Tls, Transport};
+use crate::shaped::Shaped;
+use crate::{Frames, Tls, Transport};
 
 /// How long a listening connector has to say where it listens.
 const STARTING: Duration = Duration::from_secs(60);
+
+/// What the bench's binary serves when started as a connector: the replay source, whose pushes
+/// it makes the first time a host asks for them, and the IPC sink.
+pub(crate) fn served() -> Served {
+    Served::new()
+        .with_source(Box::new(Generating(replay_factory())))
+        .with_destination(sink_factory())
+}
+
+/// The replay source, its pushes made in this process the first time a host asks for them.
+struct Generating(Box<dyn SourceFactory>);
+
+/// A replay a host may ask a source served here for.
+#[derive(Clone, Copy)]
+enum Asked {
+    Frames(Frames),
+    Shaped(Shaped),
+}
+
+impl Asked {
+    /// The replay named `name`.
+    fn named(name: &str) -> Option<Self> {
+        let frames = Frames::named(name).map(Self::Frames);
+        frames.or_else(|| Shaped::named(name).map(Self::Shaped))
+    }
+
+    /// The replay's place in [`MADE`]: each frame size's, then each other workload's.
+    fn index(self) -> usize {
+        match self {
+            Self::Frames(frames) => frames.index(),
+            Self::Shaped(shaped) => Frames::ALL.len() + shaped.index(),
+        }
+    }
+
+    /// Makes the replay's pushes and registers them under its name.
+    fn register(self) {
+        match self {
+            Self::Frames(frames) => register(frames.replay(), Replayed::Batches(frames.batches())),
+            Self::Shaped(shaped) => register(shaped.replay(), shaped.replayed()),
+        }
+    }
+}
+
+/// Each replay's pushes, made once in this process.
+static MADE: [Once; 5] = [const { Once::new() }; 5];
+
+impl SourceFactory for Generating {
+    fn spec(&self) -> &ConnectorSpec {
+        self.0.spec()
+    }
+
+    fn connect(
+        &self,
+        config: serde_json::Value,
+        context: ConnectContext,
+    ) -> BoxFuture<'_, Result<Box<dyn Source>>> {
+        let name = config.get("name").and_then(serde_json::Value::as_str);
+        let asked = name.and_then(Asked::named);
+        Box::pin(async move {
+            if let Some(asked) = asked {
+                let making = tokio::task::spawn_blocking(move || {
+                    MADE[asked.index()].call_once(|| asked.register());
+                });
+                making.await.expect("the pushes are made");
+            }
+            self.0.connect(config, context).await
+        })
+    }
+}
 
 /// A connector served in a process of its own, and that process.
 pub(crate) struct Placed<T> {
