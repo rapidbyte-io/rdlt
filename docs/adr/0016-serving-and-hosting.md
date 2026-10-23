@@ -97,6 +97,10 @@ socket will be.
   - After this end stalls, the next heartbeat waits its interval rather than catching up, so a
     stalled host does not lose a live connector. An echo of a heartbeat never sent answers
     nothing.
+  - The host's HTTP/2 pings, which end a connection the network dropped silently, wait twice
+    the heartbeat's patience. After a stall, HTTP/2 checks a ping's deadline before it reads
+    the pong waiting, where the heartbeat reads its echoes first: with the longer patience, the
+    heartbeat alone judges whether a connector is lost.
   - A commit longer than the heartbeat's patience succeeds while the connector answers
     heartbeats, which is ledger item L3 (`slow_commit_within_deadline_succeeds`).
 - **Reads.**

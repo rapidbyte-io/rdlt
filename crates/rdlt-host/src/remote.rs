@@ -387,9 +387,12 @@ where
             })
         }
     });
-    // HTTP/2's own pings notice a connection the network dropped silently, beside the
-    // protocol's heartbeat, which notices a connector that stopped answering.
-    let patience = options.heartbeat.saturating_mul(options.missed.get());
+    // HTTP/2's pings end a connection the network dropped silently. They wait twice the
+    // heartbeat's patience: after a stall they check their deadline before reading the pong
+    // waiting, where the heartbeat reads its echoes first, so the heartbeat judges a connector.
+    let patience = options
+        .heartbeat
+        .saturating_mul(options.missed.get().saturating_mul(2));
     let transport = Transport::default();
     let channel = Endpoint::from_static("http://connector")
         .initial_stream_window_size(transport.stream_window)
