@@ -21,8 +21,11 @@ use std::alloc::System;
 use std::hint::black_box;
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use arrow_array::RecordBatch;
+use rdlt_connector::{ConnectContext, destination_factory};
+use rdlt_connector_reference::MemoryDestination;
 use rdlt_engine::Cores;
 use rdlt_engine::bench::{
     CHUNK_BYTES, CORPUS_BYTES, Cell, Corpus, Form, Logged, Lowering, Normalized, Passthrough,
@@ -62,13 +65,16 @@ const ROWS: u32 = 8192;
 /// Two cores, whatever the host has: a case counts the same on every machine only on a count it
 /// fixes, which is a measuring fixture and no deployment's.
 const LAYOUT: Cores = Cores::new(NonZeroUsize::new(2).expect("two is not zero"));
+/// Partitions whose seals the commit case's one commit holds.
+const COMMITTED: NonZeroUsize = NonZeroUsize::new(1_024).expect("not zero");
 
 /// A case's name, and what runs it: its inputs made once, then its work as many times as asked.
 type Case = (&'static str, fn(usize));
 
 /// Every case the instruction counts run.
-const CASES: [Case; 27] = [
+const CASES: [Case; 28] = [
     ("passthrough/null_sink", passed_through),
+    ("commit/1024", committed),
     ("shred/nested", |times| shredded(Corpus::Nested, times)),
     ("shred/with_arrays", |times| {
         shredded(Corpus::WithArrays, times);
@@ -378,6 +384,28 @@ fn passed_through(times: usize) {
         let replayed = Replayed::Batches(passthrough.batches().to_vec());
         let source = passthrough.block_on(replay("passthrough", replayed));
         black_box(passthrough.run(source, passthrough.block_on(null_sink())));
+    }
+}
+
+/// One commit of [`COMMITTED`] partitions' seals: a batch of one row from each partition of a
+/// replaying source, committed once, at the end, into the in-memory destination, a store of its
+/// own each time, on [`LAYOUT`].
+fn committed(times: usize) {
+    let cell = Cell {
+        rows: 1,
+        batches: u32::try_from(COMMITTED.get()).expect("the partitions fit in 32 bits"),
+        partitions: COMMITTED,
+        ..Cell::PAIRED
+    };
+    let passthrough = Passthrough::try_new(LAYOUT, cell).expect("the pool starts");
+    let factory = destination_factory::<MemoryDestination>();
+    for time in 0..times {
+        let source = passthrough.block_on(passthrough.source());
+        let config = serde_json::json!({ "store": format!("commit-{time}") });
+        let connected = passthrough.block_on(factory.connect(config, ConnectContext::new()));
+        let destination = Arc::from(connected.expect("the destination connects"));
+        let report = black_box(passthrough.run(source, destination));
+        assert_eq!(report.commits, 1, "one commit holds every partition's seal");
     }
 }
 
