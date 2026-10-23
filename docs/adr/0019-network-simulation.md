@@ -129,7 +129,7 @@ the whole engine on a paused clock from a seed, with connectors in the engine's 
   - certification's probes;
   - the scan's refusals of messages it cannot walk or whose decoded count passes its bound;
   - secrets read from files and the environment;
-  - refusals of a log a store garbled;
+  - refusals of a log a store garbled.
 
 ## Consequences
 
