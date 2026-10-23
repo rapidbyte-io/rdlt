@@ -7,7 +7,13 @@ mod tests;
 /// What happens to values that would change their table's schema, and to values their column
 /// cannot hold whatever its schema: a time beyond its unit, a decimal beyond its precision, a
 /// change time no version can begin at.
-
+///
+/// No policy applies to a JSON record the engine cannot shred, one that is not JSON or not an
+/// object, repeats a key or passes a limit: its push fails the run, naming the stream and the
+/// refusal's code, with no retry, and every later run fails at it again. Fixing or removing it at
+/// the source is the only remedy; a source that cannot change its records, such as a topic,
+/// offers none until the record leaves its retention, when
+/// [`RetentionLoss::Reset`](crate::RetentionLoss::Reset) reads on from the oldest record kept.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SchemaPolicy {
