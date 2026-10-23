@@ -2,7 +2,7 @@ use arrow_array::RecordBatch;
 use arrow_array::cast::AsArray;
 use arrow_array::types::{Float64Type, Int32Type, Int64Type, TimestampMicrosecondType};
 
-use super::{events, events_of};
+use super::{events, events_in, events_of};
 
 fn ints(batch: &RecordBatch, name: &str) -> Vec<i64> {
     let column = batch.column_by_name(name).unwrap();
@@ -101,4 +101,19 @@ fn events_of_any_ids_shift_every_value_but_the_ids() {
     assert_eq!(names.value(0), "user7-00000005");
     let unshifted = events_of(&[5, 6], 10, 0);
     assert_eq!(unshifted, events(5, 2, 10));
+}
+
+#[test]
+fn a_window_of_events_columns_is_those_columns_of_the_whole_width() {
+    let ids = [7, 8, 9];
+    let window = events_in(&ids, 12..15);
+    let whole = events_of(&ids, 15, 0);
+    assert_eq!(window, whole.project(&[12, 13, 14]).unwrap());
+    let names: Vec<String> = window
+        .schema()
+        .fields()
+        .iter()
+        .map(|field| field.name().clone())
+        .collect();
+    assert_eq!(names, ["b_1", "x_1", "y_1"]);
 }

@@ -72,7 +72,7 @@ const COMMITTED: NonZeroUsize = NonZeroUsize::new(1_024).expect("not zero");
 type Case = (&'static str, fn(usize));
 
 /// Every case the instruction counts run.
-const CASES: [Case; 29] = [
+const CASES: [Case; 30] = [
     ("passthrough/null_sink", passed_through),
     ("commit/1024", committed),
     ("shred/nested", |times| shredded(Corpus::Nested, times)),
@@ -113,6 +113,7 @@ const CASES: [Case; 29] = [
     ("normalize/dropped/with_arrays", |times| {
         dropped(Corpus::WithArrays, times);
     }),
+    ("wide/arrow_1000", widened),
     ("wal/encode", log_encoded),
     ("wal/scan", log_scanned),
     ("ipc/roundtrip", round_tripped),
@@ -313,17 +314,33 @@ fn normalizing() {
 /// Each case of the wide bench, run once: its batches the pushes.
 fn widening() {
     let cores = Cores::try_from_host().expect("the host says how many cores the bench may use");
-    let pushes = if timed() { Wide::PUSHES } else { TESTED_PUSHES };
+    let sized = |pushes: u32| if timed() { pushes } else { TESTED_PUSHES };
+    let pushes = sized(Wide::PUSHES);
     for (form, name) in [(Form::Arrow, "arrow"), (Form::Json, "json")] {
         for columns in Wide::COLUMNS {
             let bench = Wide::try_new(cores, form, columns, pushes).expect("the pool starts");
-            report(&format!("wide/{name}/{columns}"), || {
-                let rows = bench.run();
-                let pushes = usize::try_from(pushes).expect("pushes fit in usize");
-                (usize::try_from(rows).expect("rows fit in usize"), pushes)
-            });
+            widened_once(&format!("wide/{name}/{columns}"), &bench, pushes);
         }
     }
+    let (kept, sparse) = (sized(Wide::KEPT_PUSHES), sized(Wide::SPARSE_PUSHES));
+    let (narrow, wide) = (Wide::KEPT, Wide::SPARSE);
+    let bench = Wide::keeping(cores, narrow, narrow, kept).expect("the pool starts");
+    widened_once(&format!("wide/arrow/{narrow}"), &bench, kept);
+    let bench = Wide::keeping(cores, wide, narrow, kept).expect("the pool starts");
+    widened_once(&format!("wide/arrow/{wide}_keep_{narrow}"), &bench, kept);
+    for (form, name) in [(Form::Arrow, "arrow"), (Form::Json, "json")] {
+        let bench = Wide::sparse(cores, form, sparse).expect("the pool starts");
+        widened_once(&format!("wide/sparse/{name}"), &bench, sparse);
+    }
+}
+
+/// What one run of `bench`, of `pushes` pushes, allocates a row and a push, reported as `id`.
+fn widened_once(id: &str, bench: &Wide, pushes: u32) {
+    report(id, || {
+        let rows = bench.run();
+        let pushes = usize::try_from(pushes).expect("pushes fit in usize");
+        (usize::try_from(rows).expect("rows fit in usize"), pushes)
+    });
 }
 
 /// The wal bench's load logged ahead, its log in memory and a commit each batch: what one run
@@ -424,6 +441,14 @@ fn shredded_rows(times: usize) {
     let pushes = rows_pushed(Corpus::Nested.pushes(COUNTED_BYTES));
     for _ in 0..times {
         black_box(shred(&pushes, CHUNK_BYTES).expect("the rows shred"));
+    }
+}
+
+/// The wide bench's run of a table of a thousand columns pushed as Arrow, on [`LAYOUT`].
+fn widened(times: usize) {
+    let bench = Wide::try_new(LAYOUT, Form::Arrow, 1_000, Wide::PUSHES).expect("the pool starts");
+    for _ in 0..times {
+        black_box(bench.run());
     }
 }
 

@@ -5,6 +5,7 @@ mod tests;
 
 use std::fmt::Write as _;
 use std::num::NonZeroU64;
+use std::ops::Range;
 
 use bytes::Bytes;
 
@@ -131,7 +132,7 @@ impl Corpus {
             Self::Nested | Self::ArrayForm | Self::Pretty => nested(index, mix),
             Self::Sparse => sparse(index, mix),
             Self::FlatNarrow => flat_narrow(index, mix),
-            Self::Wide(columns) => wide(columns, mix),
+            Self::Wide(columns) => wide(0..columns, mix),
             Self::StringHeavy => string_heavy(index, mix),
             Self::WithArrays => with_arrays(index, mix),
             Self::Orders => orders(index),
@@ -340,9 +341,21 @@ fn flat_narrow(index: u64, mix: &mut Mix) -> String {
     )
 }
 
-/// A flat row of `columns` columns, integers and short strings by turns.
-fn wide(columns: u16, mix: &mut Mix) -> String {
-    let columns: Vec<String> = (0..columns)
+/// `rows` flat rows, newline-delimited, of the columns `columns` of a wide table, as
+/// [`Corpus::Wide`] makes them, their values drawn from `mix`.
+pub(super) fn wide_lines(columns: &Range<u16>, rows: u32, mix: &mut Mix) -> Bytes {
+    let mut lines = String::new();
+    for _ in 0..rows {
+        lines.push_str(&wide(columns.clone(), mix));
+        lines.push('\n');
+    }
+    Bytes::from(lines)
+}
+
+/// A flat row of the columns `columns`, `c` and their number, integers and short strings by
+/// turns.
+fn wide(columns: Range<u16>, mix: &mut Mix) -> String {
+    let columns: Vec<String> = columns
         .map(|column| match column % 2 {
             0 => format!(r#""c{column}":{}"#, mix.below(1 << 20)),
             _ => format!(r#""c{column}":"v{}""#, mix.below(1000)),
