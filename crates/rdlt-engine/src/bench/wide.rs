@@ -71,7 +71,9 @@ impl Wide {
         };
         let bytes = match &replayed {
             Replayed::Batches(batches) => logical_bytes(batches),
-            Replayed::Json(pushes) => pushes.iter().map(|push| push.len() as u64).sum(),
+            Replayed::Json(pushes) | Replayed::Rows(pushes) => {
+                pushes.iter().map(|push| push.len() as u64).sum()
+            }
         };
         Ok(Self {
             runner: Runner::try_new(cores, "wide", stream(), None)?,

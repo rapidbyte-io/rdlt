@@ -12,13 +12,15 @@ use bytes::Bytes;
 use parking_lot::Mutex;
 use rdlt_connector::{
     Capabilities, CommitMeta, ConnectContext, ConnectorError, DestinationConnector,
-    DestinationFactory, Emitter, Epoch, OpenContext, Opened, Partition, PartitionId, ReadMode,
-    ReadStream, Receipt, Result, SegmentId, Session, Source, SourceConnector, SourceFactory,
-    StreamName, StreamSpec, StreamState, Streams, TableChange, TableRef, TableWriter, TypeKind,
-    WriteStats, destination_factory, source_factory,
+    DestinationFactory, Emitter, Epoch, OpenContext, Opened, Partition, PartitionId, Push,
+    ReadMode, ReadRequest, ReadStream, Receipt, Result, ResultExt as _, SegmentId, Session, Source,
+    SourceConnector, SourceEvent, SourceFactory, StreamName, StreamSpec, StreamState, Streams,
+    TableChange, TableRef, TableWriter, TypeKind, WriteStats, destination_factory,
+    partition_channel, source_factory,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde_json::value::RawValue;
 use serde_json::{Value, json};
 
 static REPLAYS: LazyLock<Mutex<BTreeMap<String, Replayed>>> = LazyLock::new(Mutex::default);
@@ -33,6 +35,9 @@ pub enum Replayed {
     Batches(Vec<RecordBatch>),
     /// JSON records, newline-delimited, a push each.
     Json(Vec<Bytes>),
+    /// JSON records, newline-delimited, each push's records pushed as one call of
+    /// [`Emitter::rows`] makes them.
+    Rows(Vec<Bytes>),
 }
 
 impl Replayed {
@@ -40,9 +45,39 @@ impl Replayed {
     pub fn pushes(&self) -> usize {
         match self {
             Self::Batches(batches) => batches.len(),
-            Self::Json(pushes) => pushes.len(),
+            Self::Json(pushes) | Self::Rows(pushes) => pushes.len(),
         }
     }
+}
+
+/// The pushes a source makes calling [`Emitter::rows`] once with the records of each of `lines`,
+/// a push of newline-delimited JSON objects each.
+///
+/// # Panics
+///
+/// Panics where a push of `lines` is not JSON a line, which no corpus's is.
+pub fn rows_pushed(lines: Vec<Bytes>) -> Vec<Bytes> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("a runtime starts");
+    runtime.block_on(async {
+        register("rows", Replayed::Rows(lines));
+        let source = connect_replay(replay_config("rows")).await;
+        let (sink, mut feed) = partition_channel(NonZeroUsize::MIN);
+        let request = ReadRequest::new(stream_name(0), Partition::single(), None);
+        let received = async {
+            let mut pushes = Vec::new();
+            while let Some(event) = feed.recv().await {
+                if let SourceEvent::Push(Push::Json(json)) = event {
+                    pushes.push(json);
+                }
+            }
+            pushes
+        };
+        let (read, pushes) = tokio::join!(source.read(request, sink), received);
+        read.expect("each push is JSON a line");
+        pushes
+    })
 }
 
 /// Registers `replayed` as the replay `name`, which a source connected with
@@ -250,6 +285,7 @@ impl ReadStream<Replay> for Events {
             match &source.replayed {
                 Replayed::Batches(batches) => out.batch(batches[index].clone()).await?,
                 Replayed::Json(pushes) => out.json(pushes[index].clone()).await?,
+                Replayed::Rows(pushes) => out.rows(&records(&pushes[index])?).await?,
             }
             let pushed = index + 1;
             if (pushed - share.start).is_multiple_of(source.every.get()) || pushed == share.end {
@@ -258,6 +294,15 @@ impl ReadStream<Replay> for Events {
         }
         Ok(())
     }
+}
+
+/// The records of `lines`, a JSON object a line, each as its text.
+fn records(lines: &[u8]) -> Result<Vec<&RawValue>> {
+    let text = std::str::from_utf8(lines).data("reading a replay's rows")?;
+    let records = text.lines().map(serde_json::from_str);
+    records
+        .collect::<std::result::Result<_, _>>()
+        .data("reading a replay's rows")
 }
 
 /// What a sink does with each batch it stages, keeping nothing.

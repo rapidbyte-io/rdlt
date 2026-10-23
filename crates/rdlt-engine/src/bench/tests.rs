@@ -18,8 +18,8 @@ use super::runner::streams;
 use super::{CHUNK_BYTES, Corpus, PUSH_BYTES};
 use super::{
     Refused, Replayed, SinkWriter, Sinking, check_json, ipc_sink, json_column, normalize,
-    null_sink, pruned, register, replay, replay_factory, shred, shred_counted, shred_on,
-    sink_factory, split_replay_config, stream_name,
+    null_sink, pruned, register, replay, replay_config, replay_factory, rows_pushed, shred,
+    shred_counted, shred_on, sink_factory, split_replay_config, stream_name,
 };
 use crate::compute::Cores;
 use crate::env::Env;
@@ -471,4 +471,58 @@ fn a_column_of_json_checks_with_escapes_where_asked_and_a_broken_value_is_refuse
     let schema = escaped.schema();
     let refused = RecordBatch::try_new(schema, vec![Arc::new(column)]).unwrap();
     assert_eq!(check_json(&refused).unwrap_err().code, "json_invalid");
+}
+
+#[test]
+fn rows_pushed_through_the_sdk_shred_to_the_records_of_their_lines() {
+    let lines = Corpus::Nested.rows(1_000, std::num::NonZeroU64::new(300).unwrap());
+    let pushed = rows_pushed(lines.clone());
+    assert_eq!(pushed.len(), 4);
+    for (push, lines) in pushed.iter().zip(&lines) {
+        assert_ne!(push, lines);
+        let rows = shred(std::slice::from_ref(push), CHUNK_BYTES).unwrap();
+        assert_eq!(
+            rows,
+            shred(std::slice::from_ref(lines), CHUNK_BYTES).unwrap()
+        );
+    }
+}
+
+#[tokio::test]
+async fn replayed_rows_pass_through_the_engine_a_push_of_rows_each() {
+    let lines = vec![
+        Bytes::from_static(b"{\"id\":1}\n{\"id\":2}\n"),
+        Bytes::from_static(b"{\"id\":3}"),
+    ];
+    let replayed = Replayed::Rows(lines);
+    assert_eq!(replayed.pushes(), 2);
+    let engine = Engine::new(EngineConfig::default(), Arc::new(SystemEnv::one_core()));
+    let plan = PipelinePlan::new(
+        PipelineId::parse("rows").unwrap(),
+        [StreamPlan::new(StreamName::new("events").unwrap())],
+    )
+    .unwrap();
+    let outcome = engine
+        .run(plan, replay("rows", replayed).await, null_sink().await)
+        .await;
+    assert!(outcome.error.is_none(), "{:?}", outcome.error);
+    assert_eq!(outcome.report.rows, 3);
+}
+
+#[tokio::test]
+async fn a_replay_of_rows_that_are_not_json_lines_fails_its_read() {
+    for text in [&b"{\"id\":1}\nnot json"[..], &[0xff, b'\n']] {
+        register(
+            "broken-rows",
+            Replayed::Rows(vec![Bytes::copy_from_slice(text)]),
+        );
+        let source = replay_factory()
+            .connect(replay_config("broken-rows"), ConnectContext::new())
+            .await
+            .unwrap();
+        let (sink, _feed) = partition_channel(NonZeroUsize::new(4).unwrap());
+        let request = ReadRequest::new(stream_name(0), Partition::single(), None);
+        let error = source.read(request, sink).await.unwrap_err();
+        assert_eq!(error.kind(), ConnectorErrorKind::Data);
+    }
 }

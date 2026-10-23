@@ -30,7 +30,7 @@ use rdlt_engine::Cores;
 use rdlt_engine::bench::{
     CHUNK_BYTES, CORPUS_BYTES, Cell, Corpus, Form, Logged, Lowering, Normalized, Passthrough,
     Replayed, Wide, check_json, counted, json_column, memory_wal, normalize, null_sink, pruned,
-    replay, sample_log, scan_log, shred,
+    replay, rows_pushed, sample_log, scan_log, shred,
 };
 use rdlt_wire::{Decoder, Encoder, Limits};
 use stats_alloc::{INSTRUMENTED_SYSTEM, StatsAlloc};
@@ -72,10 +72,11 @@ const COMMITTED: NonZeroUsize = NonZeroUsize::new(1_024).expect("not zero");
 type Case = (&'static str, fn(usize));
 
 /// Every case the instruction counts run.
-const CASES: [Case; 28] = [
+const CASES: [Case; 29] = [
     ("passthrough/null_sink", passed_through),
     ("commit/1024", committed),
     ("shred/nested", |times| shredded(Corpus::Nested, times)),
+    ("shred/rows", shredded_rows),
     ("shred/with_arrays", |times| {
         shredded(Corpus::WithArrays, times);
     }),
@@ -414,6 +415,15 @@ fn shredded(corpus: Corpus, times: usize) {
     let pushes = corpus.pushes(COUNTED_BYTES);
     for _ in 0..times {
         black_box(shred(&pushes, CHUNK_BYTES).expect("the corpus shreds"));
+    }
+}
+
+/// Shredding [`COUNTED_BYTES`] of the nested corpus on the calling thread, pushed as a source's
+/// one call of `Emitter::rows` with its records pushes them.
+fn shredded_rows(times: usize) {
+    let pushes = rows_pushed(Corpus::Nested.pushes(COUNTED_BYTES));
+    for _ in 0..times {
+        black_box(shred(&pushes, CHUNK_BYTES).expect("the rows shred"));
     }
 }
 
