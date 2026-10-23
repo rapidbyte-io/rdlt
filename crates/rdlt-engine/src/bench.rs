@@ -35,7 +35,8 @@ use connectors::sink;
 
 pub use connectors::{
     Replayed, SinkSession, SinkWriter, Sinking, ipc_sink, null_sink, register, replay,
-    replay_config, replay_factory, sink_factory, split_replay_config, stream_name, written,
+    replay_config, replay_factory, rows_pushed, sink_factory, split_replay_config, stream_name,
+    written,
 };
 pub use corpora::{CHUNK_BYTES, CORPUS_BYTES, Corpus, PUSH_BYTES};
 pub use loading::{Load, Loading};
