@@ -36,24 +36,55 @@ What a run holds resident beyond its inputs, against the limit its budget gives 
 
 ## Results
 
-This change on `7d3604e0`, 2026-10-12, one run of each line, not timed. Intel Core Ultra X7 358H, 16
-CPUs, Linux 7.2.5, Rust 1.98.1.
+`just resident` on this change over `fbef9f4b`, 2026-10-24, one run of each line, not timed. Intel
+Core Ultra X7 358H, 16 CPUs, Linux 7.2.5, Rust 1.98.1. Growth ÷ peak_memory is not read for
+`served`, whose host holds its frames and transport beside the budget.
 
 | Workload | Cores | Malloc | peak_memory | Growth | Limit | Growth ÷ limit | Growth ÷ peak_memory |
 |---|---|---|---|---|---|---|---|
-| passthrough | 2 | defaults | 86 MiB | 12 MiB | 353 MiB | 3.4 % | 14.0 % |
-| passthrough | 2 | tunables | 86 MiB | 10 MiB | 353 MiB | 2.8 % | 11.6 % |
-| passthrough | 4 | defaults | 86 MiB | 11 MiB | 355 MiB | 3.1 % | 12.8 % |
-| passthrough | 4 | tunables | 86 MiB | 12 MiB | 355 MiB | 3.4 % | 14.0 % |
-| passthrough | 16 | defaults | 86 MiB | 11 MiB | 379 MiB | 2.9 % | 12.8 % |
-| passthrough | 16 | tunables | 86 MiB | 12 MiB | 379 MiB | 3.2 % | 14.0 % |
-| normalized | 2 | defaults | 145 MiB | 15 MiB | 356 MiB | 4.2 % | 10.3 % |
-| normalized | 2 | tunables | 145 MiB | 15 MiB | 356 MiB | 4.2 % | 10.3 % |
-| normalized | 4 | defaults | 145 MiB | 15 MiB | 358 MiB | 4.2 % | 10.3 % |
-| normalized | 4 | tunables | 145 MiB | 17 MiB | 358 MiB | 4.7 % | 11.7 % |
-| normalized | 16 | defaults | 145 MiB | 18 MiB | 382 MiB | 4.7 % | 12.4 % |
-| normalized | 16 | tunables | 145 MiB | 31 MiB | 382 MiB | 8.1 % | 21.4 % |
+| passthrough | 2 | defaults | 86 MiB | 12 MiB | 355 MiB | 3.4 % | 14.0 % |
+| passthrough | 2 | tunables | 86 MiB | 10 MiB | 355 MiB | 2.8 % | 11.6 % |
+| passthrough | 4 | defaults | 79 MiB | 12 MiB | 359 MiB | 3.3 % | 15.2 % |
+| passthrough | 4 | tunables | 79 MiB | 10 MiB | 359 MiB | 2.8 % | 12.7 % |
+| passthrough | 16 | defaults | 86 MiB | 10 MiB | 395 MiB | 2.5 % | 11.6 % |
+| passthrough | 16 | tunables | 86 MiB | 11 MiB | 395 MiB | 2.8 % | 12.8 % |
+| normalized | 2 | defaults | 144 MiB | 19 MiB | 358 MiB | 5.3 % | 13.2 % |
+| normalized | 2 | tunables | 144 MiB | 22 MiB | 358 MiB | 6.1 % | 15.3 % |
+| normalized | 4 | defaults | 144 MiB | 20 MiB | 362 MiB | 5.5 % | 13.9 % |
+| normalized | 4 | tunables | 144 MiB | 29 MiB | 362 MiB | 8.0 % | 20.1 % |
+| normalized | 16 | defaults | 144 MiB | 22 MiB | 398 MiB | 5.5 % | 15.3 % |
+| normalized | 16 | tunables | 144 MiB | 35 MiB | 398 MiB | 8.8 % | 24.3 % |
+| served | 2 | defaults | 94 MiB | 234 MiB | 522 MiB | 44.8 % | |
+| served | 2 | tunables | 87 MiB | 243 MiB | 522 MiB | 46.6 % | |
+| served | 4 | defaults | 94 MiB | 247 MiB | 526 MiB | 47.0 % | |
+| served | 4 | tunables | 94 MiB | 219 MiB | 526 MiB | 41.6 % | |
+| served | 16 | defaults | 94 MiB | 322 MiB | 562 MiB | 57.3 % | |
+| served | 16 | tunables | 101 MiB | 359 MiB | 562 MiB | 63.9 % | |
 
-Every run's growth is within its limit: from 2.8 % to 8.1 % of it, the largest being
-`normalized` on 16 cores with the tunables (31 MiB of 382 MiB). Growth is 10.3 % to 21.4 % of
-the budget the meter reached at its peak.
+The spawned connector processes' peaks, in the same runs:
+
+| Cores | Malloc | Source | Destination |
+|---|---|---|---|
+| 2 | defaults | 831 MiB | 86 MiB |
+| 2 | tunables | 840 MiB | 80 MiB |
+| 4 | defaults | 823 MiB | 89 MiB |
+| 4 | tunables | 821 MiB | 66 MiB |
+| 16 | defaults | 776 MiB | 54 MiB |
+| 16 | tunables | 833 MiB | 83 MiB |
+
+- **Every run's growth is within its limit**: in process from 2.5 % to 8.8 % of it, the largest
+  `normalized` on 16 cores with the tunables (35 MiB of 398 MiB); `served` from 41.6 % to 63.9 %,
+  the largest on 16 cores with the tunables (359 MiB of 562 MiB).
+- **The served host holds 125 to 258 MiB beyond the budget its meter reached**, 49 % to 101 % of
+  the 256 MiB budget: the 16 frames its partitions hold before they are admitted (about 7 MB
+  each) and its transport. One run a line moves by tens of MiB: an earlier run of the same lines,
+  over `41284517`, read 205 to 401 MiB of growth, 16 cores with the tunables the most.
+- **The spawned source peaks at 776 to 840 MiB**, the 64 batches it makes (about 450 MB) among
+  it; the spawned destination at 54 to 89 MiB.
+- **Pieces' allocation sets of live addresses** (this change): what holds a unit keeps its
+  batches until its last piece is written, and a normalized piece holds its split's parts until
+  their last piece is, both within what they are charged. Against the merge base `41284517`, two
+  rounds of each in-process line interleaved, base and branch alike: `normalized` grows 1 to 5
+  MiB more without the tunables (15 to 20 against 19 to 23 MiB) and up to 8 MiB more with them
+  (16 to 32 against 21 to 34 MiB), at the same peak_memory, 144 MiB; `passthrough` is unchanged
+  (10 to 13 against 11 to 13 MiB).
