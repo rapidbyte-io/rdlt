@@ -267,9 +267,11 @@ bounded by a limit with a typed refusal (ADR 0039):
   whose memory admits less than the protocol's least frame or dictionary limit is refused when
   it is configured, and a peer that sets a dictionary limit below the protocol's least is
   refused at the handshake.
-- No wait on the budget is for ever: at its deadline, an hour by default, the attempt fails with
-  `memory_budget_wait_exceeded`, saying what held the budget. No connector's error can claim
-  that kind or code.
+- No wait for the budget's bytes is for ever: at its deadline, twice a connector call's and an
+  hour at least, the attempt fails with `memory_budget_wait_exceeded`, saying what held the
+  budget. No connector's error can claim that kind or code. A read waits for its slot until one
+  frees, with no deadline: a read that hangs holds its slot, and the reads waiting for one, as
+  long as it hangs.
 - A batch pushed in process meets the limits a frame meets on the wire: its nesting, its values,
   the bytes its views name and the bytes it keeps alive.
 - A checkpoint's cursor is charged until its commit lands, and checkpoints that seal no rows keep

@@ -57,10 +57,12 @@ budget before it is held, or bounded by a limit with a typed refusal.
   - **A read keeps a bounded part.** Each read may keep the reads' share divided by the
     partitions read at once, 4 MiB at the defaults, so all reads together never pass the share.
     Every read holds one of the partitions' slots while it reads, a followed unbounded read
-    included, so no more reads keep bytes than the share is divided among. A read beyond the
-    slots waits for one as long as a request waits for bytes. A followed unbounded read holds
-    its slot as long as the run, so a run reads fewer of them than it has slots: one more is
-    refused as it starts, `partitions_too_few`, rather than leaving the other reads no slot.
+    included, so no more reads keep bytes than the share is divided among. A followed
+    unbounded read holds its slot as long as the run, so a run reads fewer of them than it has
+    slots: one more is refused as it starts, `partitions_too_few`, rather than leaving the
+    other reads no slot. A read beyond the slots waits for one until one frees, with no
+    deadline: a bounded read's end frees its slot, and the followed reads leave one, so a slot
+    always comes round. The wait is counted with the reads' share.
     A read that would keep more than its part fails at the frame that would pass it. Sixteen
     reads keeping all they may, and seventeen followed reads through eighteen slots, leave
     pushes and checkpoints flowing, which tests hold on the ledger, through the engine's
@@ -243,10 +245,19 @@ budget before it is held, or bounded by a limit with a typed refusal.
     structs and lists too. A piece and a row take at most `i32::MAX` bytes whatever the budget,
     as far as a text array's offsets reach (ADR 0040).
 - **No request waits on the budget for ever.**
-  - Every wait ends at a deadline on the engine's clock, `memory_wait`, an hour by default,
-    longer than any call of a destination may take by default. The attempt then fails with
-    `ErrorKind::Memory`, coded `memory_budget_wait_exceeded` and retryable, saying what the
-    request was for, how long it waited and what each share held.
+  - Every wait for bytes ends at a deadline on the engine's clock: twice the deadline of a
+    connector's call (`connector_wait`), and an hour at least, an hour at the defaults. The
+    attempt then fails with `ErrorKind::Memory`, coded `memory_budget_wait_exceeded` and
+    retryable, saying what the request was for, how long it waited and what each share held.
+  - The deadline is not a bound on latency but a backstop against a defect in the budget's own
+    protocol, whose freedom from deadlock this record argues in prose: such a defect fails an
+    attempt, which is retried, rather than hanging the pipeline. A call that hangs fails at its
+    own deadline, naming the call, before any wait that began less than one connector deadline
+    before the call reaches the budget's; a chain of calls each near its deadline is not
+    healthy, and the backstop may end it. No bound on a wait follows from the engine's other
+    deadlines: a commit is a barrier, each lane's queued writes, the commit itself and an
+    acknowledgement a stream, each a call of its own, and a cursor sealed late waits for the
+    commit in flight and the next.
   - That kind and code are the engine's own. A read whose event waited until the deadline
     fails as the budget's whatever error its source ends with, and no connector's error is
     given the kind or keeps the code.
@@ -552,9 +563,12 @@ admitted, and what a remote connector's calls hold in transport.
   again where the budget lacks room for its lowering beside it. A normalized JSON flush holds a
   quarter of the budget from before it is observed until its last piece is split, as a
   normalized piece does from before its split.
-- A waiting request of an hour is the last resort: nothing but a destination that stops
-  writing, or a commit that never lands, makes one wait.
-- A destination whose calls may take longer than an hour needs `memory_wait` raised with them.
+- A wait for bytes that reaches the budget's deadline is the last resort: a destination that
+  stops writing, or a commit that never lands, fails at its call's own deadline first. A
+  destination whose calls take longer than thirty minutes needs `connector_wait` raised, which
+  raises the budget's deadline with it.
+- A read that hangs while it holds its slot holds the reads waiting for one as long as it
+  hangs: no deadline bounds a source's read.
 - `ErrorKind` gained `Memory`, and `Admission::admit` and `Admission::charge` return a
   `Result`; an `Admission` says the limits it admits within, and a `PartitionSink` holds what
   is sent to them. A run's report counts every wait on the budget and its time on the engine's
