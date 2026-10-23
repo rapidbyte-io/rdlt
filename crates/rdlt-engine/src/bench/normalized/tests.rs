@@ -51,3 +51,40 @@ fn the_largest_push_is_the_length_of_the_longest() {
     assert!(pushes.iter().any(|push| push.len() < longest));
     assert_eq!(normalized(203, 50).largest_push(), longest as u64);
 }
+
+#[test]
+fn a_load_split_over_partitions_within_a_small_budget_loads_every_root_item_and_tag() {
+    let cores = Cores::new(NonZeroUsize::new(2).unwrap());
+    let four = NonZeroUsize::new(4).unwrap();
+    let per_push = NonZeroU64::new(100).unwrap();
+    let bench = Normalized::within(cores, 2_000, per_push, 256 << 20)
+        .unwrap()
+        .partitioned(four);
+    assert_eq!(bench.partitions(), four);
+    assert_eq!(normalized(2_000, 100).partitions(), NonZeroUsize::MIN);
+    for _ in 0..2 {
+        let report = bench.report();
+        assert_eq!(report.rows, bench.rows());
+        let written = report
+            .counters
+            .lanes
+            .iter()
+            .filter(|lane| !lane.writing.is_zero())
+            .count();
+        assert!(written > 1, "{written} lanes written");
+    }
+}
+
+#[test]
+fn the_partitioned_cells_are_four_and_sixteen_partitions_within_two_budgets() {
+    let partitions: Vec<usize> = Normalized::PARTITIONS
+        .iter()
+        .map(|count| count.get())
+        .collect();
+    assert_eq!(partitions, [4, 16]);
+    assert_eq!(Normalized::BUDGETS, [256 << 20, 1 << 30]);
+    assert_eq!(
+        (Normalized::SPLIT_ROOTS, Normalized::SPLIT_PUSH_ROWS.get()),
+        (200_000, 10_000)
+    );
+}
