@@ -297,6 +297,33 @@ fn with_arrays(index: u64, mix: &mut Mix) -> String {
 
 /// Rows of an object and of as many items as `index` modulo four, each of two tags.
 fn orders(index: u64) -> String {
+    order(index, index)
+}
+
+/// The first `rows` rows of the orders corpus, each with the id `id` draws for it in turn, cut
+/// into pushes of `per_push` lines, the last of the rest.
+pub(super) fn orders_identified(
+    rows: u64,
+    per_push: NonZeroU64,
+    mut id: impl FnMut() -> u64,
+) -> Vec<Bytes> {
+    let mut pushes = Vec::new();
+    let mut push = String::new();
+    for index in 0..rows {
+        push.push_str(&order(index, id()));
+        push.push('\n');
+        if (index + 1).is_multiple_of(per_push.get()) {
+            pushes.push(Bytes::from(std::mem::take(&mut push)));
+        }
+    }
+    if !push.is_empty() {
+        pushes.push(Bytes::from(push));
+    }
+    pushes
+}
+
+/// The orders corpus's row `index`, its id `id`.
+fn order(index: u64, id: u64) -> String {
     let items: Vec<String> = (0..index % 4)
         .map(|item| {
             format!(
@@ -308,7 +335,7 @@ fn orders(index: u64) -> String {
         })
         .collect();
     format!(
-        r#"{{"id":{index},"user":{{"name":"user-{index:08}","age":{},"active":{}}},"total":{}.5,"items":[{}]}}"#,
+        r#"{{"id":{id},"user":{{"name":"user-{index:08}","age":{},"active":{}}},"total":{}.5,"items":[{}]}}"#,
         index % 90,
         index.is_multiple_of(2),
         index % 1000,
