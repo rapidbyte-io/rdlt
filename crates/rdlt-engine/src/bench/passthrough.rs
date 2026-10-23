@@ -10,8 +10,9 @@ use std::sync::Arc;
 use arrow_array::RecordBatch;
 use rdlt_connector::{Destination, SegmentId, Source, TableWriter};
 
+use super::connectors::connect_replay;
 use super::runner::{Runner, streams};
-use super::{Cell, Replayed, SinkWriter, logical_bytes, sink, split_replay};
+use super::{Cell, Replayed, SinkWriter, logical_bytes, register, sink};
 use crate::fixtures::events;
 use crate::{ComputePoolError, Cores, EngineConfig, Report};
 
@@ -134,11 +135,16 @@ impl Passthrough {
     ///
     /// Panics where the run fails, or reports other rows than the batches hold.
     pub fn engine_report(&self) -> Report {
-        let replayed = Replayed::Batches(self.batches.clone());
-        let (partitions, streams) = (self.cell.partitions, self.cell.streams);
-        let source = self.block_on(split_replay("passthrough", replayed, partitions, streams));
+        let source = self.block_on(self.source());
         let destination = self.block_on(sink(self.cell.sinking, self.writers));
         self.run(source, destination)
+    }
+
+    /// A source replaying the batches from the cell's partitions and streams, checkpointing as
+    /// the cell says.
+    pub async fn source(&self) -> Arc<dyn Source> {
+        register("passthrough", Replayed::Batches(self.batches.clone()));
+        connect_replay(self.cell.replay_config("passthrough")).await
     }
 
     /// Bytes: the logical bytes of a run of `cell`, known before its batches are made: every

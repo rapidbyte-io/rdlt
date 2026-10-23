@@ -9,7 +9,7 @@ use bytes::Bytes;
 use rdlt_connector::testing::certify_source;
 use rdlt_connector::{
     ConnectContext, ConnectorErrorKind, Partition, PartitionId, PipelineId, ReadRequest, SegmentId,
-    StreamName, StreamState, TableWriter, WriteStats, partition_channel,
+    SourceEvent, StreamName, StreamState, TableWriter, WriteStats, partition_channel,
 };
 use serde_json::json;
 
@@ -191,6 +191,61 @@ async fn a_replay_of_several_streams_pushes_every_batch_once_across_them() {
 async fn a_replay_of_several_streams_resumes_each_partition_after_each_checkpoint() {
     register("certified-streams", Replayed::Batches(ten_row_batches(7)));
     let config = json!({ "name": "certified-streams", "partitions": 3, "streams": 2 });
+    certify_source::<Replay>(config).await.assert_passed();
+}
+
+/// What a read of `config`'s one partition sends: `None` for a push, the cursor of a checkpoint.
+async fn read_one(config: serde_json::Value) -> Vec<Option<usize>> {
+    read_partition(config, Partition::single()).await
+}
+
+/// What a read of `config`'s `partition` sends: `None` for a push, the cursor of a checkpoint.
+async fn read_partition(config: serde_json::Value, partition: Partition) -> Vec<Option<usize>> {
+    let source = replay_factory()
+        .connect(config, ConnectContext::new())
+        .await
+        .unwrap();
+    let (sink, mut feed) = partition_channel(NonZeroUsize::new(64).unwrap());
+    let request = ReadRequest::new(stream_name(0), partition, None);
+    source.read(request, sink).await.unwrap();
+    let mut sent = Vec::new();
+    while let Some(event) = feed.recv().await {
+        match event {
+            SourceEvent::Push(_) => sent.push(None),
+            SourceEvent::Checkpoint { cursor, .. } => {
+                sent.push(Some(serde_json::from_slice(cursor.bytes()).unwrap()));
+            }
+            other => panic!("a replay sends pushes and checkpoints alone, not {other:?}"),
+        }
+    }
+    sent
+}
+
+#[tokio::test]
+async fn a_replay_checkpoints_after_every_kth_push_of_a_partition_and_after_its_last() {
+    register("every-third", Replayed::Batches(ten_row_batches(7)));
+    let config = json!({ "name": "every-third", "every": 3 });
+    let sent = read_one(config).await;
+    let pushed = [None, None, None];
+    let expected: Vec<Option<usize>> =
+        [&pushed[..], &[Some(3)], &pushed, &[Some(6), None, Some(7)]].concat();
+    assert_eq!(sent, expected);
+    let each = read_one(json!({ "name": "every-third" })).await;
+    let checkpoints: Vec<usize> = each.into_iter().flatten().collect();
+    assert_eq!(checkpoints, (1..=7).collect::<Vec<_>>());
+    // Nine pushes over two partitions: the second's share is pushes 5 to 9.
+    register("every-third-split", Replayed::Batches(ten_row_batches(9)));
+    let config = json!({ "name": "every-third-split", "partitions": 2, "every": 3 });
+    let second = Partition::new(PartitionId::parse("1").unwrap());
+    let sent = read_partition(config, second).await;
+    let checkpoints: Vec<usize> = sent.iter().flatten().copied().collect();
+    assert_eq!((sent.len(), checkpoints), (7, vec![7, 9]));
+}
+
+#[tokio::test]
+async fn a_replay_checkpointing_every_few_pushes_resumes_after_each_checkpoint() {
+    register("certified-every", Replayed::Batches(ten_row_batches(11)));
+    let config = json!({ "name": "certified-every", "partitions": 2, "every": 3 });
     certify_source::<Replay>(config).await.assert_passed();
 }
 

@@ -10,7 +10,9 @@ use rdlt_connector::ConnectContext;
 
 use super::Passthrough;
 use crate::Cores;
-use crate::bench::{Cadence, Cell, Replayed, null_sink, register, replay_config, replay_factory};
+use crate::bench::{
+    Cadence, Cell, Replayed, null_sink, register, replay_config, replay_factory, written,
+};
 
 fn ids(batch: &RecordBatch) -> Vec<i64> {
     batch
@@ -127,4 +129,23 @@ fn the_paired_cell_writes_through_one_lane_whatever_its_partitions() {
         .filter(|lane| !lane.writing.is_zero())
         .count();
     assert_eq!(written, 1);
+}
+
+#[test]
+fn a_cell_checkpointed_every_few_pushes_writes_their_batches_together() {
+    let cores = Cores::new(NonZeroUsize::new(2).unwrap());
+    let cell = Cell {
+        rows: 10,
+        batches: 12,
+        ..Cell::PAIRED
+    };
+    let writes = |cell: Cell| {
+        let passthrough = Passthrough::try_new(cores, cell).unwrap();
+        let before = written();
+        assert_eq!(passthrough.engine_run(), 120);
+        written() - before
+    };
+    assert_eq!(writes(cell), 12);
+    assert_eq!(writes(cell.checkpointed(NonZeroUsize::new(6).unwrap())), 2);
+    assert_eq!(writes(cell.checkpointed(NonZeroUsize::new(5).unwrap())), 3);
 }
