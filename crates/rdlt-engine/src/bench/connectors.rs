@@ -3,6 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::num::{NonZeroU16, NonZeroUsize};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::UNIX_EPOCH;
 
@@ -22,7 +23,10 @@ use serde_json::{Value, json};
 
 static REPLAYS: LazyLock<Mutex<BTreeMap<String, Replayed>>> = LazyLock::new(Mutex::default);
 
-/// What a replay pushes, in order, a checkpoint after each push.
+/// Batches the sinks of this process have written.
+static WRITTEN: AtomicU64 = AtomicU64::new(0);
+
+/// What a replay pushes, in order.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Replayed {
     /// Arrow batches.
@@ -69,6 +73,13 @@ pub fn split_replay_config(name: &str, partitions: NonZeroUsize, streams: NonZer
     json!({ "name": name, "partitions": partitions, "streams": streams })
 }
 
+/// `config`, the configuration of a replay source, checkpointing after every `every`-th push of
+/// each partition and after its last.
+pub(super) fn checkpointing(mut config: Value, every: NonZeroUsize) -> Value {
+    config["every"] = json!(every);
+    config
+}
+
 /// The factory of replay sources, to serve.
 pub fn replay_factory() -> Box<dyn SourceFactory> {
     source_factory::<Replay>()
@@ -81,20 +92,9 @@ pub async fn replay(name: &str, replayed: Replayed) -> Arc<dyn Source> {
     connect_replay(replay_config(name)).await
 }
 
-/// A source pushing `replayed` from `partitions` partitions of each of `streams` streams, an
-/// even share each, in order, a checkpoint after each push; registered as `name`.
-pub async fn split_replay(
-    name: &str,
-    replayed: Replayed,
-    partitions: NonZeroUsize,
-    streams: NonZeroUsize,
-) -> Arc<dyn Source> {
-    register(name, replayed);
-    connect_replay(split_replay_config(name, partitions, streams)).await
-}
-
-/// A source pushing `replayed` as [`split_replay`] does, the last `unreplayable` of whose
-/// streams it cannot read again, each read incrementally; registered as `name`.
+/// A source pushing `replayed` from `partitions` partitions of each of `streams` streams, an even
+/// share each, in order, a checkpoint after each push, the last `unreplayable` of whose streams it
+/// cannot read again, each read incrementally; registered as `name`.
 pub(super) async fn mixed_replay(
     name: &str,
     replayed: Replayed,
@@ -127,7 +127,7 @@ pub(super) fn share(
 }
 
 /// A replay source connected with `config`, whose replay is registered.
-async fn connect_replay(config: Value) -> Arc<dyn Source> {
+pub(super) async fn connect_replay(config: Value) -> Arc<dyn Source> {
     let source = replay_factory()
         .connect(config, ConnectContext::new())
         .await
@@ -136,22 +136,25 @@ async fn connect_replay(config: Value) -> Arc<dyn Source> {
 }
 
 /// Names the registered replay a [`Replay`] pushes, the partitions it pushes from, the streams
-/// it pushes, one of each where it names none, and how many of them, the last, it cannot read
-/// again, none where it names none.
+/// it pushes, one of each where it names none, how many of them, the last, it cannot read again,
+/// none where it names none, and the pushes of a partition between its checkpoints, one where it
+/// names none.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(super) struct ReplayConfig {
     name: String,
     partitions: Option<NonZeroUsize>,
     streams: Option<NonZeroUsize>,
     unreplayable: Option<usize>,
+    every: Option<NonZeroUsize>,
 }
 
-/// The source [`split_replay`] connects.
+/// The source a replay's configuration connects.
 pub(super) struct Replay {
     replayed: Replayed,
     partitions: NonZeroUsize,
     streams: NonZeroUsize,
     unreplayable: usize,
+    every: NonZeroUsize,
 }
 
 impl Replay {
@@ -179,6 +182,7 @@ impl SourceConnector for Replay {
             partitions: config.partitions.unwrap_or(NonZeroUsize::MIN),
             streams: config.streams.unwrap_or(NonZeroUsize::MIN),
             unreplayable: config.unreplayable.unwrap_or(0),
+            every: config.every.unwrap_or(NonZeroUsize::MIN),
         })
     }
 
@@ -228,7 +232,7 @@ impl ReadStream<Replay> for Events {
     }
 
     /// Pushes the partition's share from `next`, the index of the push after its last
-    /// checkpoint.
+    /// checkpoint, with a checkpoint after every `every`-th push of the share and after its last.
     async fn read(
         &self,
         source: &Replay,
@@ -247,7 +251,10 @@ impl ReadStream<Replay> for Events {
                 Replayed::Batches(batches) => out.batch(batches[index].clone()).await?,
                 Replayed::Json(pushes) => out.json(pushes[index].clone()).await?,
             }
-            out.checkpoint(&(index + 1)).await?;
+            let pushed = index + 1;
+            if (pushed - share.start).is_multiple_of(source.every.get()) || pushed == share.end {
+                out.checkpoint(&pushed).await?;
+            }
         }
         Ok(())
     }
@@ -291,6 +298,11 @@ pub async fn ipc_sink() -> Arc<dyn rdlt_connector::Destination> {
 /// A destination counting the rows of every batch it stages and dropping it.
 pub async fn null_sink() -> Arc<dyn rdlt_connector::Destination> {
     connect_sink(Sinking::Discard.config()).await
+}
+
+/// Batches the bench's sinks in this process have written so far.
+pub fn written() -> u64 {
+    WRITTEN.load(Ordering::Relaxed)
 }
 
 /// A sink doing `sinking` with each batch, declaring it runs as many as `writers` writers at
@@ -447,6 +459,7 @@ impl SinkWriter {
 
 impl TableWriter for SinkWriter {
     async fn write(&mut self, segment: SegmentId, batch: RecordBatch) -> Result<()> {
+        WRITTEN.fetch_add(1, Ordering::Relaxed);
         let bytes = match self.sinking {
             Sinking::Ipc => self.encode(&batch)?.len() as u64,
             Sinking::Discard | Sinking::Refuse => 0,

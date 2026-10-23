@@ -1,6 +1,7 @@
 //! Arrow passthrough: the engine moving the same rows in batches of three sizes, from one to
 //! sixteen partitions of one or four streams, committed at the end or every sixteenth of the
-//! rows, each cell's readings printed after it; and its paired cell, within 1 GiB and through
+//! rows, the small batches also checkpointed every 6 and every 97 pushes, each cell's readings
+//! and its sink's writes a run printed after it; and its paired cell, within 1 GiB and through
 //! one writer as its bound is stated, against a bare loop writing the same batches to the same
 //! destination, timed in blocks that run each side first as often as last, so drift between runs
 //! cancels out of their ratio.
@@ -19,10 +20,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use criterion::measurement::WallTime;
 use criterion::{
-    BenchmarkId, Criterion, SamplingMode, Throughput, criterion_group, criterion_main,
+    BenchmarkGroup, BenchmarkId, Criterion, SamplingMode, Throughput, criterion_group,
+    criterion_main,
 };
-use rdlt_engine::bench::{Cell, Mixed, Paired, Passthrough, Readings};
+use rdlt_engine::bench::{Cell, Mixed, Paired, Passthrough, Readings, written};
 use rdlt_engine::{Cores, LocalWal, Report, WalStore};
 
 /// Samples the paired group takes, each the ratio of the blocks it ran.
@@ -50,7 +53,7 @@ fn sized(cell: Cell) -> Cell {
 
 #[expect(
     clippy::print_stdout,
-    reason = "criterion reports the engine's time; the ratio and readings are printed beside it"
+    reason = "criterion reports the engine's time; the ratio is printed beside it"
 )]
 #[expect(
     clippy::disallowed_methods,
@@ -97,6 +100,17 @@ fn passthrough(c: &mut Criterion) {
         );
         println!("  engine over bare loop: {paired}");
     }
+    matrix(&mut group, cores);
+    group.finish();
+}
+
+/// The matrix's cells asked for, each timed in `group` and its readings and sink writes printed
+/// after it.
+#[expect(
+    clippy::print_stdout,
+    reason = "criterion reports the engine's time; the readings are printed beside it"
+)]
+fn matrix(group: &mut BenchmarkGroup<'_, WallTime>, cores: Cores) {
     let args: Vec<String> = std::env::args().collect();
     let (kind, cells) = Cell::asked(&args);
     group.sample_size(10);
@@ -109,15 +123,21 @@ fn passthrough(c: &mut Criterion) {
             let bench = bench.get_or_insert_with(|| {
                 Passthrough::try_new(cores, moved).expect("the pool starts")
             });
-            b.iter(|| last = Some(bench.engine_report()));
+            b.iter(|| {
+                let before = written();
+                let report = bench.engine_report();
+                last = Some((report, written() - before));
+            });
         });
-        if let Some(report) = &last {
+        if let Some((report, writes)) = &last {
             let batches = u64::from(moved.batches);
-            let readings = Readings::of(report.elapsed, &report.counters, batches, threads);
-            println!("passthrough/{kind}/{}: {readings}", cell.name());
+            let readings = Readings::of(report.elapsed, &report.counters, batches, cores.count());
+            println!(
+                "passthrough/{kind}/{}: {readings}, sink writes {writes}",
+                cell.name()
+            );
         }
     }
-    group.finish();
 }
 
 /// The roots logs are kept under: tmpfs where the host has one, and the disk beside the build.
