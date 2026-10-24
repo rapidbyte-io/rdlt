@@ -10,7 +10,7 @@ use std::sync::Arc;
 use arrow_array::RecordBatch;
 use rdlt_connector::{Destination, SegmentId, Source, TableWriter};
 
-use super::connectors::connect_replay;
+use super::replay::connect_replay;
 use super::runner::{Runner, streams};
 use super::{Cell, Replayed, SinkWriter, logical_bytes, register, sink};
 use crate::fixtures::events;

@@ -9,7 +9,7 @@ use std::num::{NonZeroU64, NonZeroUsize};
 
 use serde_json::Value;
 
-use super::connectors::checkpointing;
+use super::replay::checkpointing;
 use super::{Sinking, split_replay_config};
 
 /// When a cell's run commits.

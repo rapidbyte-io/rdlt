@@ -13,7 +13,7 @@ use rdlt_connector::{ConnectContext, Destination, DestinationFactory, ReadMode};
 use serde_json::Value;
 
 use super::Replayed;
-use super::connectors::mixed_replay;
+use super::replay::mixed_replay;
 use super::runner::{Runner, stream};
 use crate::fixtures::events_of;
 use crate::{ComputePoolError, Cores, GrowthLimits, Report, WalStore, WriteMode};

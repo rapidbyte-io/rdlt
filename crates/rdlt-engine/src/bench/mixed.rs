@@ -11,7 +11,7 @@ use std::sync::Arc;
 use arrow_array::RecordBatch;
 use rdlt_connector::ReadMode;
 
-use super::connectors::{mixed_replay, share};
+use super::replay::{mixed_replay, share};
 use super::runner::{Runner, streams};
 use super::{Cadence, Cell, Passthrough, Replayed, Sinking, batch_frame, sink};
 use crate::{ComputePoolError, Cores, EngineConfig, GrowthLimits, Report, WalStore};

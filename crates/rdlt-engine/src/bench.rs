@@ -1,6 +1,5 @@
 //! Internals the benchmarks and fuzz targets drive; not part of the engine's API.
 
-mod connectors;
 mod corpora;
 mod json_passthrough;
 mod loading;
@@ -15,8 +14,10 @@ mod normalized;
 mod passthrough;
 mod pools;
 mod readings;
+mod replay;
 mod resident;
 mod runner;
+mod sink;
 mod tally;
 #[cfg(test)]
 mod tests;
@@ -36,14 +37,9 @@ use crate::error::codes;
 use crate::normalize::{self, Shape};
 use crate::shred::{self, ShredError};
 
-use connectors::sink;
+use sink::sink;
 
 pub use crate::normalize::reference::compared::{Cut, Disagreement, normalized_against_reference};
-pub use connectors::{
-    Replayed, SinkSession, SinkWriter, Sinking, ipc_sink, null_sink, register, replay,
-    replay_config, replay_factory, rows_pushed, sink_factory, split_replay_config, stream_name,
-    written,
-};
 pub use corpora::{CHUNK_BYTES, CORPUS_BYTES, Corpus, PUSH_BYTES};
 pub use json_passthrough::{JsonCell, JsonPassthrough};
 pub use loading::{Load, Loading};
@@ -58,7 +54,12 @@ pub use normalized::Normalized;
 pub use passthrough::Passthrough;
 pub use pools::pool_cores;
 pub use readings::Readings;
+pub use replay::{
+    Replayed, register, replay, replay_config, replay_factory, rows_pushed, split_replay_config,
+    stream_name,
+};
 pub use resident::{Resident, reset_peak, resident_kib};
+pub use sink::{SinkSession, SinkWriter, Sinking, ipc_sink, null_sink, sink_factory, written};
 pub use tally::{Staged, staged};
 pub use wide::{Form, Wide};
 pub use zipf::Zipf;
