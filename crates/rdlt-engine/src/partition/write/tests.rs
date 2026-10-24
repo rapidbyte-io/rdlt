@@ -3,6 +3,7 @@ use std::sync::Arc;
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use rdlt_connector::cost::Allocations;
 use rdlt_connector::{LogicalType, Partition, Permit, StreamName};
+use rdlt_wire::limits::MESSAGE_ROOM;
 
 use super::Held;
 use super::held::shredded;
@@ -111,16 +112,18 @@ async fn json_text(budget: &MemoryBudget, text: bytes::Bytes) -> Permit {
 #[tokio::test]
 async fn shredded_batches_hold_what_they_keep_alive_of_what_their_pushes_were_admitted_for() {
     let budget = crate::budget::budget(1 << 24);
-    // Two pushes of text, each admitted for its text and the batches it becomes.
+    // Two pushes of text, each admitted for its text, its message's room and the batches it
+    // becomes.
     let pushed = vec![json(&budget, 40_000).await, json(&budget, 2_000).await];
-    assert_eq!(budget.reserved(), 3 * 42_000);
+    let admitted = 3 * 42_000 + 2 * MESSAGE_ROOM;
+    assert_eq!(budget.reserved(), admitted);
     let batches = [ids(10), ids(1000)];
     let alive = allocated(&batches[0]) + allocated(&batches[1]);
     assert!(alive > 8_000 && alive < 3 * 40_000);
     let held = shredded(pushed, None, batches.to_vec());
     // The text is gone: the pushes hold what the batches keep alive, and nothing was asked of
     // the budget for them.
-    assert_eq!((budget.reserved(), budget.peak()), (alive, 3 * 42_000));
+    assert_eq!((budget.reserved(), budget.peak()), (alive, admitted));
     for (held, batch) in held.iter().zip(&batches) {
         assert_eq!(held.allocations.bytes(), allocated(batch));
     }
@@ -136,10 +139,11 @@ async fn shredded_batches_hold_what_they_keep_alive_of_what_their_pushes_were_ad
 async fn shredded_batches_keeping_more_alive_than_was_admitted_hold_what_was_admitted() {
     let budget = crate::budget::budget(1 << 24);
     let pushed = vec![json(&budget, 100).await, json(&budget, 100).await];
+    let admitted = 2 * (300 + MESSAGE_ROOM);
     let batch = ids(1000);
-    assert!(allocated(&batch) > 600);
+    assert!(allocated(&batch) > admitted);
     let held = shredded(pushed, None, vec![batch.clone()]);
-    assert_eq!((budget.reserved(), budget.peak()), (600, 600));
+    assert_eq!((budget.reserved(), budget.peak()), (admitted, admitted));
     drop(held);
     assert_eq!(budget.reserved(), 0);
     // Permits of another's making are kept as they are.
@@ -156,7 +160,7 @@ async fn shredded_batches_hold_what_was_reserved_beyond_their_pushes_for_what_th
     let batch = ids(1000);
     let alive = allocated(&batch);
     let beyond = budget.acquire_working(alive).await.unwrap();
-    assert_eq!(budget.reserved(), 300 + alive);
+    assert_eq!(budget.reserved(), 300 + MESSAGE_ROOM + alive);
     let held = shredded(pushed, Some(beyond), vec![batch]);
     // The pushes hold all they were admitted for, and the reservation the rest of what the
     // batch keeps alive; what it reserved beyond that goes back.

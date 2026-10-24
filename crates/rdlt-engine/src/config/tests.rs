@@ -1,7 +1,7 @@
 use std::num::NonZeroU32;
 use std::time::Duration;
 
-use rdlt_wire::limits::{MIN_DICTIONARY_BYTES, MIN_FRAME_BYTES};
+use rdlt_wire::limits::{MESSAGE_ROOM, MIN_DICTIONARY_BYTES, MIN_FRAME_BYTES};
 
 use super::{BatchPolicy, CommitPolicy, EngineConfig, RetryPolicy};
 use crate::budget::{Shares, admitted};
@@ -156,7 +156,7 @@ fn the_limits_are_the_lesser_of_those_configured_and_those_the_memory_admits() {
         defaults,
         Limits {
             frame_bytes: (32 << 20) - 7_489 * 33 - 1_024,
-            json_push_bytes: (84 << 20) / 3,
+            json_push_bytes: ((84 << 20) - MESSAGE_ROOM) / 3,
             cursor_bytes: (4 << 20) / 34,
             dictionary_bytes: 2 << 20,
             schema_bytes: (2 << 20) / 5,

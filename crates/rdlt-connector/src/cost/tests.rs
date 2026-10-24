@@ -18,8 +18,12 @@ use arrow_buffer::{Buffer, OffsetBuffer, ScalarBuffer};
 use arrow_schema::{DataType, Field, Fields, IntervalUnit, UnionFields};
 use bytes::Bytes;
 use proptest::prelude::*;
+use rdlt_wire::limits::MESSAGE_ROOM;
 
-use super::{Allocations, JSON_CHARGE, Piece, Rendering, Stored, nulls, push_charge, schema_bytes};
+use super::{
+    Allocations, JSON_CHARGE, Piece, Rendering, Stored, json_charge, nulls, push_charge,
+    schema_bytes,
+};
 use crate::sink::Push;
 use crate::types::{self, LogicalType, TypeKind};
 
@@ -484,7 +488,7 @@ fn a_dictionary_column_holds_values_no_key_names() {
 }
 
 #[test]
-fn a_push_is_charged_what_it_keeps_alive_and_json_three_bytes_a_byte_of_text() {
+fn a_push_is_charged_what_it_keeps_alive_and_json_three_bytes_a_byte_and_its_message_s_room() {
     let large = "x".repeat(1 << 16);
     let values = StringArray::from(vec![large.as_str()]);
     let keyed: ArrayRef = Arc::new(
@@ -498,9 +502,11 @@ fn a_push_is_charged_what_it_keeps_alive_and_json_three_bytes_a_byte_of_text() {
     assert_eq!(push_charge(&Push::Changes(keyed)), held);
     assert_eq!(
         push_charge(&Push::Json(Bytes::from_static(b"[{}]"))),
-        4 * JSON_CHARGE
+        4 * JSON_CHARGE + MESSAGE_ROOM
     );
+    assert_eq!(push_charge(&Push::Json(Bytes::new())), MESSAGE_ROOM);
     assert_eq!(JSON_CHARGE, 3);
+    assert_eq!(json_charge(u64::MAX), u64::MAX);
 }
 
 #[test]

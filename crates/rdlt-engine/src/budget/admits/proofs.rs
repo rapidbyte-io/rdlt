@@ -1,7 +1,7 @@
 //! Proofs that what a budget admits a connector to send fits the shares it draws on, for
 //! every budget and count of reads within each proof's bound.
 
-use rdlt_connector::cost::JSON_CHARGE;
+use rdlt_connector::cost::json_charge;
 use rdlt_wire::Limits;
 use rdlt_wire::limits::{Class, MESSAGE_ROOM};
 
@@ -17,7 +17,8 @@ fn any_readers() -> usize {
 
 /// Each limit a budget admits, all at once, fits the share it draws on: a frame beside what a
 /// read keeps and its message's room within what pushes take, and one row of it within half a
-/// request; JSON text and the batches it becomes within what pushes take; where the budget
+/// request; JSON text, its message's room and the batches it becomes within what pushes take,
+/// at the longest text that fits but where the wire's own limit binds; where the budget
 /// admits a peer, a frame decoded within what pushes take; any other answer decoded within the
 /// answers' share; every read's cursor and answer within the cursors' share, and a seal's
 /// within the log's; a schema, its decoding and the dictionaries within what a read keeps; and a
@@ -39,7 +40,9 @@ fn what_each_admitted_limit_admits_fits_the_share_it_draws_on() {
         .frame_bytes
         .saturating_add(row_overhead(limits.schema_columns));
     assert!(limits.frame_bytes == 0 || row <= shares.request / 2);
-    assert!(limits.json_push_bytes.saturating_mul(JSON_CHARGE) <= shares.intake);
+    let json = limits.json_push_bytes;
+    assert!(json_charge(json) <= shares.intake.max(MESSAGE_ROOM));
+    assert!(json == defaults.json_push_bytes || json_charge(json + 1) > shares.intake);
     let decoded = |class| u64::try_from(limits.decoded(class)).unwrap_or(u64::MAX);
     assert!(limits.admit_peer().is_err() || decoded(Class::Data) <= shares.intake);
     for class in [Class::Catalog, Class::State, Class::Control] {
