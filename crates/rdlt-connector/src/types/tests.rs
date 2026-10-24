@@ -7,6 +7,7 @@ use arrow_schema::{
 use proptest::prelude::*;
 
 use super::{DecimalType, Field, Fields, LogicalType, TimeUnit, TypeError, TypeKind};
+use crate::strategy::logical_type;
 
 fn decimal(precision: u8, scale: u8) -> LogicalType {
     LogicalType::Decimal(DecimalType::new(precision, scale).unwrap())
@@ -318,62 +319,6 @@ fn arrow_types_without_a_logical_equivalent_are_refused() {
             .logical_type(),
         &LogicalType::Binary
     );
-}
-
-pub(crate) fn unit() -> impl Strategy<Value = TimeUnit> {
-    prop_oneof![
-        Just(TimeUnit::Second),
-        Just(TimeUnit::Millisecond),
-        Just(TimeUnit::Microsecond),
-        Just(TimeUnit::Nanosecond),
-    ]
-}
-
-pub(crate) fn logical_type() -> impl Strategy<Value = LogicalType> {
-    use LogicalType as T;
-    let zone = prop_oneof![
-        Just(None),
-        Just(Some(Arc::<str>::from("UTC"))),
-        Just(Some(Arc::<str>::from("Asia/Tokyo")))
-    ];
-    let leaf = prop_oneof![
-        Just(T::Null),
-        Just(T::Bool),
-        Just(T::Int8),
-        Just(T::Int16),
-        Just(T::Int32),
-        Just(T::Int64),
-        Just(T::Float32),
-        Just(T::Float64),
-        (1u8..=76)
-            .prop_flat_map(|p| (Just(p), 0..=p))
-            .prop_map(|(p, s)| decimal(p, s)),
-        Just(T::Utf8),
-        Just(T::Binary),
-        Just(T::Date),
-        unit().prop_map(T::Time),
-        (unit(), zone).prop_map(|(u, z)| T::Timestamp(u, z)),
-        unit().prop_map(T::Duration),
-        Just(T::Uuid),
-        Just(T::Json),
-    ];
-    leaf.prop_recursive(3, 16, 3, |inner| {
-        prop_oneof![
-            (inner.clone(), any::<bool>()).prop_map(|(item, nullable)| list(item, nullable)),
-            proptest::collection::btree_map(
-                prop_oneof![Just("a"), Just("b"), Just("c")],
-                (inner, any::<bool>()),
-                0..3
-            )
-            .prop_map(|fields| {
-                let fields = fields
-                    .into_iter()
-                    .map(|(name, (ty, nullable))| Field::new(name, ty, nullable))
-                    .collect();
-                LogicalType::Struct(Fields::new(fields).unwrap())
-            }),
-        ]
-    })
 }
 
 proptest! {

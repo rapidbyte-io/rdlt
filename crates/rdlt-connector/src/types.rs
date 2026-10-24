@@ -5,7 +5,7 @@ mod flat;
 mod lattice;
 pub(crate) mod preorder;
 #[cfg(test)]
-pub(crate) mod tests;
+mod tests;
 
 use std::collections::BTreeSet;
 use std::fmt;

@@ -4,7 +4,7 @@ use proptest::prelude::*;
 use rdlt_wire::limits::NESTING_DEPTH;
 
 use super::{Node, Shape, Unread, nodes, whole};
-use crate::types::tests::logical_type;
+use crate::strategy::logical_type;
 use crate::types::{Field, Fields, LogicalType};
 
 /// The node a test reads `logical`, one node of a preorder, as.

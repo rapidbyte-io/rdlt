@@ -23,7 +23,7 @@ const SHIPPED: &[(&str, &[&str])] = &[(
 
 /// The features that add a test or certification surface, by the package that has them.
 const SURFACES: &[(&str, &[&str])] = &[
-    ("rdlt-connector", &["certify", "testing"]),
+    ("rdlt-connector", &["certify", "strategy", "testing"]),
     ("rdlt-connector-reference", &["certify", "test-connectors"]),
     ("rdlt-engine", &["bench", "failpoints", "sim"]),
 ];

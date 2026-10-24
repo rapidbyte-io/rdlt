@@ -56,7 +56,7 @@ chrono.workspace = true
 criterion.workspace = true
 peak_alloc.workspace = true
 proptest.workspace = true
-rdlt-connector = { workspace = true, features = ["merge", "serve", "testing"] }
+rdlt-connector = { workspace = true, features = ["merge", "serve", "strategy", "testing"] }
 rdlt-connector-reference = { workspace = true, features = ["certify"] }
 rdlt-host.workspace = true
 rdlt-testkit.workspace = true
