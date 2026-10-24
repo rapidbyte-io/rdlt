@@ -10,8 +10,9 @@ use arrow_schema::DataType;
 use super::{Bench, commit, expect_rows, meta, rows};
 use crate::OpenedSession;
 use crate::commit::CommitMeta;
-use crate::destination::Destination;
-use crate::destination::{DestinationSession, DestinationWriter, MergeKey, TableChange, TableRef};
+use crate::destination::{
+    Destination, DestinationSession, DestinationWriter, MergeKey, TableChange, TableRef,
+};
 use crate::error::ConnectorErrorKind;
 use crate::id::{CommitSeq, GenerationId, SchemaVersion, SegmentId, TablePath};
 use crate::schema::TableSchema;

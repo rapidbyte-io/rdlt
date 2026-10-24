@@ -7,8 +7,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::limits::{BUSY_WAIT, JOURNAL_BYTES};
-
 use parking_lot::Mutex;
 use rdlt_connector::sqlgen::{Column, SqlDialect, SqlValue, Sqlite, Statement};
 use rdlt_connector::{ConnectorError, ConnectorErrorKind, Result};
@@ -19,6 +17,7 @@ use rusqlite::{Connection, ErrorCode, OpenFlags, TransactionBehavior};
 
 use super::location::located;
 use crate::blocking::blocking;
+use crate::limits::{BUSY_WAIT, JOURNAL_BYTES};
 
 /// One connection to the database, used only on the blocking thread pool.
 #[derive(Clone, Debug)]
