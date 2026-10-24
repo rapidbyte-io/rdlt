@@ -13,7 +13,7 @@ use bytes::Bytes;
 use serde::Serialize;
 
 use crate::cursor::Cursor;
-use crate::error::{Result, ResultExt};
+use crate::error::{ConnectorError, Result, ResultExt};
 use crate::sink::{LogLevel, PartitionSink, Push, SourceEvent};
 
 /// Sends one partition's data and checkpoints to the engine, with cursors of type `C`.
@@ -69,14 +69,37 @@ impl<C: Serialize> Emitter<C> {
         self.sink.stopped().await;
     }
 
-    /// Pushes `rows` as JSON for the engine to infer their schema; an empty slice pushes nothing.
+    /// Pushes `rows`, each a JSON object, as JSON lines for the engine to infer their schema; an
+    /// empty slice pushes nothing.
+    ///
+    /// A row that is not an object refuses the push, sending nothing, with a data error coded
+    /// `json_not_object`.
     pub async fn rows<T: Serialize>(&mut self, rows: &[T]) -> Result<()> {
         if rows.is_empty() {
             return Ok(());
         }
-        // serde_json, not sonic-rs: rows holding serde_json's raw values or arbitrary-precision
-        // numbers serialize through its private tokens, which sonic-rs writes out as objects.
-        let json = serde_json::to_vec(rows).data("serializing rows")?;
+        let mut json = Vec::new();
+        for (row, number) in rows.iter().zip(1_usize..) {
+            let start = json.len();
+            // serde_json, not sonic-rs: rows holding serde_json's raw values or arbitrary-precision
+            // numbers serialize through its private tokens, which sonic-rs writes out as objects.
+            serde_json::to_writer(&mut json, row).data("serializing rows")?;
+            // The engine reads a push that opens with an array as that array's elements.
+            if json.get(start) != Some(&b'{') {
+                return Err(
+                    ConnectorError::data(format!("row {number}: not a JSON object"))
+                        .with_code("json_not_object"),
+                );
+            }
+            // A raw value is written as it was given, and a line end in it lies between tokens;
+            // serde_json escapes every line end it writes inside a string.
+            for byte in &mut json[start..] {
+                if *byte == b'\n' {
+                    *byte = b' ';
+                }
+            }
+            json.push(b'\n');
+        }
         self.json(Bytes::from(json)).await
     }
 

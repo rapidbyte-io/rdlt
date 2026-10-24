@@ -213,10 +213,7 @@ async fn a_read_from_the_start_emits_every_row_with_checkpoints() {
     let source = connect(3).await;
     let (result, events) = read_all(source.as_ref(), None).await;
     result.unwrap();
-    assert_eq!(
-        rows(&events),
-        [r#"[{"n":0}]"#, r#"[{"n":1}]"#, r#"[{"n":2}]"#]
-    );
+    assert_eq!(rows(&events), ["{\"n\":0}\n", "{\"n\":1}\n", "{\"n\":2}\n"]);
     assert_eq!(events.len(), 6);
 }
 
@@ -226,7 +223,7 @@ async fn a_read_resumes_from_a_cursor() {
     let cursor = Cursor::encode(2, &Next { n: 2 }).unwrap();
     let (result, events) = read_all(source.as_ref(), Some(cursor)).await;
     result.unwrap();
-    assert_eq!(rows(&events), [r#"[{"n":2}]"#]);
+    assert_eq!(rows(&events), ["{\"n\":2}\n"]);
 }
 
 #[tokio::test]

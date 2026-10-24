@@ -6,12 +6,14 @@ use arrow_array::cast::AsArray;
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use arrow_ipc::reader::StreamReader;
 use bytes::Bytes;
+use proptest::prelude::*;
 use rdlt_connector::testing::certify_source;
 use rdlt_connector::{
     ConnectContext, ConnectorErrorKind, Partition, PartitionId, PipelineId, ReadRequest, SegmentId,
     SourceEvent, StreamName, StreamState, TableWriter, WriteStats, partition_channel,
 };
-use serde_json::json;
+use serde_json::value::RawValue;
+use serde_json::{Value, json};
 
 use super::connectors::Replay;
 use super::runner::streams;
@@ -196,12 +198,12 @@ async fn a_replay_of_several_streams_resumes_each_partition_after_each_checkpoin
 }
 
 /// What a read of `config`'s one partition sends: `None` for a push, the cursor of a checkpoint.
-async fn read_one(config: serde_json::Value) -> Vec<Option<usize>> {
+async fn read_one(config: Value) -> Vec<Option<usize>> {
     read_partition(config, Partition::single()).await
 }
 
 /// What a read of `config`'s `partition` sends: `None` for a push, the cursor of a checkpoint.
-async fn read_partition(config: serde_json::Value, partition: Partition) -> Vec<Option<usize>> {
+async fn read_partition(config: Value, partition: Partition) -> Vec<Option<usize>> {
     let source = replay_factory()
         .connect(config, ConnectContext::new())
         .await
@@ -483,17 +485,79 @@ fn a_column_of_json_checks_with_escapes_where_asked_and_a_broken_value_is_refuse
 }
 
 #[test]
-fn rows_pushed_through_the_sdk_shred_to_the_records_of_their_lines() {
+fn rows_of_compact_lines_pushed_through_the_sdk_are_pushed_as_those_lines() {
     let lines = Corpus::Nested.rows(1_000, std::num::NonZeroU64::new(300).unwrap());
-    let pushed = rows_pushed(lines.clone());
-    assert_eq!(pushed.len(), 4);
-    for (push, lines) in pushed.iter().zip(&lines) {
-        assert_ne!(push, lines);
-        let rows = shred(std::slice::from_ref(push), CHUNK_BYTES).unwrap();
-        assert_eq!(
-            rows,
-            shred(std::slice::from_ref(lines), CHUNK_BYTES).unwrap()
+    assert_eq!(lines.len(), 4);
+    assert_eq!(rows_pushed(lines.clone()), lines);
+}
+
+/// A JSON object a few levels deep, its strings holding line ends, quotes and backslashes.
+fn json_object() -> impl Strategy<Value = Value> {
+    let leaf = prop_oneof![
+        Just(Value::Null),
+        any::<bool>().prop_map(Value::from),
+        any::<i64>().prop_map(Value::from),
+        (-1e6..1e6_f64).prop_map(Value::from),
+        "[a\n\r\t\"\\\\ \u{e9}\u{2028}]{0,6}".prop_map(Value::from),
+    ];
+    let value = leaf.prop_recursive(3, 24, 4, |inner| {
+        prop_oneof![
+            prop::collection::vec(inner.clone(), 0..4).prop_map(Value::Array),
+            prop::collection::btree_map("[a-c]", inner, 0..4)
+                .prop_map(|fields| Value::Object(fields.into_iter().collect())),
+        ]
+    });
+    prop::collection::btree_map("[a-d]", value, 0..4)
+        .prop_map(|fields| Value::Object(fields.into_iter().collect()))
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    #[test]
+    fn rows_pushed_through_the_sdk_hold_a_record_a_line_and_shred_as_the_same_rows_in_an_array(
+        rows in prop::collection::vec((json_object(), any::<bool>()), 1..8),
+    ) {
+        let texts: Vec<String> = rows
+            .iter()
+            .map(|(row, printed)| {
+                if *printed {
+                    serde_json::to_string_pretty(row).unwrap()
+                } else {
+                    row.to_string()
+                }
+            })
+            .collect();
+        let pushed = rows_pushed(vec![Bytes::from(texts.join("\n"))]);
+        let [lines] = pushed.as_slice() else {
+            panic!("one call of rows makes one push: {pushed:?}");
+        };
+        prop_assert!(lines.ends_with(b"\n"), "{lines:?}");
+        let ends = memchr::memchr_iter(b'\n', lines).count();
+        prop_assert_eq!(ends, rows.len());
+        let records: Vec<&RawValue> = texts
+            .iter()
+            .map(|text| serde_json::from_str(text).unwrap())
+            .collect();
+        let array = Bytes::from(serde_json::to_vec(&records).unwrap());
+        prop_assert_eq!(
+            shred(std::slice::from_ref(lines), CHUNK_BYTES),
+            shred(&[array], CHUNK_BYTES)
         );
+    }
+}
+
+#[test]
+fn lines_that_are_not_objects_are_refused_the_first_an_array_as_invalid_json() {
+    // A first line that is an array reads as an array with more after it.
+    for (lines, code) in [
+        ("[1,2]\n[3]\n", codes::JSON_INVALID),
+        ("{\"a\":1}\n[1]\n", codes::JSON_NOT_OBJECT),
+        ("\"a\"\n{\"a\":1}\n", codes::JSON_NOT_OBJECT),
+    ] {
+        let push = Bytes::from_static(lines.as_bytes());
+        let refused = shred(&[push], CHUNK_BYTES).unwrap_err();
+        assert_eq!(refused.code, code.as_str(), "{lines}");
     }
 }
 
