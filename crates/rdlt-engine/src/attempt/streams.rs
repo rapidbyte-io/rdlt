@@ -219,9 +219,10 @@ fn checked<'a>(
     catalog: &'a Catalog,
 ) -> Result<Checked<'a>, Error> {
     let spec = check_stream(context, plan, catalog)?;
-    let shape = normalized(context, plan, spec);
-    unnormalizable(plan, shape.is_some())?;
+    let max_depth = normalized_depth(context, plan);
+    unnormalizable(plan, max_depth.is_some())?;
     let key = merge_key(plan, spec)?;
+    let shape = max_depth.map(|max_depth| shape(plan, max_depth, &key));
     Ok(Checked { spec, shape, key })
 }
 
@@ -302,18 +303,22 @@ fn unnormalizable(plan: &StreamPlan, normalized: bool) -> Result<(), Error> {
     )
 }
 
-/// How `plan`'s stream normalizes, if its settings or the pipeline's say it does.
-///
-/// Its rows are identified by the merge key or the source's primary key where there is one.
-fn normalized(context: &RunContext, plan: &StreamPlan, spec: &StreamSpec) -> Option<Shape> {
+/// The depth `plan`'s stream normalizes to, if its settings or the pipeline's say it does.
+fn normalized_depth(context: &RunContext, plan: &StreamPlan) -> Option<u8> {
     let pipeline = context.plan.schema_settings();
     let nested = plan
         .schema_settings()
         .nested_setting()
         .or_else(|| pipeline.nested_setting());
-    let Some(Nested::Normalize { max_depth }) = nested else {
-        return None;
-    };
+    match nested {
+        Some(Nested::Normalize { max_depth }) => Some(max_depth),
+        _ => None,
+    }
+}
+
+/// How `plan`'s stream normalizes to `max_depth`: its root rows identified by `key`, the columns
+/// it merges by, where it merges, and every other row by its position.
+fn shape(plan: &StreamPlan, max_depth: u8, key: &[ColumnPath]) -> Shape {
     let whole = plan
         .columns()
         .filter(|(_, settings)| {
@@ -326,18 +331,15 @@ fn normalized(context: &RunContext, plan: &StreamPlan, spec: &StreamSpec) -> Opt
         .chain(plan.hinted_columns())
         .filter_map(|column| column.segments().next().map(Arc::from))
         .collect();
-    let key = plan
-        .merge_key()
-        .or_else(|| spec.primary_key())
-        .unwrap_or_default()
+    let key = key
         .iter()
         .filter_map(|column| column.segments().next().map(Arc::from))
         .collect();
-    Some(Shape {
+    Shape {
         max_depth,
         whole,
         key,
-    })
+    }
 }
 
 /// How a change stream's table holds its changes: merged by key for a merge or history stream,
