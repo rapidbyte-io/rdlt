@@ -72,7 +72,7 @@ A certification cut at its timeout reports what it saw: the clauses already chec
 | Clause | Statement | Does not apply when |
 |---|---|---|
 | `D-CHECK` | check succeeds exactly when opening a session does, and both do for a valid configuration | — |
-| `D-EPOCH` | each open returns a higher epoch than the last | — |
+| `D-EPOCH` | each open returns a higher epoch than every earlier open of its pipeline, a commit that drops its tables and deletes its state between them included | — |
 | `D-STAGING` | staged segments are invisible until committed | — |
 | `D-COMMIT` | a commit publishes exactly its segments and reports their rows | — |
 | `D-IDEMPOTENT` | re-committing a commit no horizon of its pipeline has passed returns its receipt and publishes nothing | — |

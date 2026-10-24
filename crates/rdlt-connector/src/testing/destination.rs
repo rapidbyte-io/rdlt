@@ -348,14 +348,35 @@ impl Bench<'_> {
             .map_err(|error| Violation::from(format!("writer: {error}")))
     }
 
-    /// Opens through both connections, so an epoch kept in one connection's memory is caught.
+    /// Opens three times, through both connections, so an epoch kept in one connection's memory
+    /// is caught; the second session resets the pipeline, dropping its table where the destination
+    /// drops tables and deleting its state, so an epoch kept with either is caught too.
     async fn epochs_increase(&self) -> Result<(), Violation> {
-        let first = self.open(self.destination, 1).await?.epoch;
-        let second = self.open(self.peer, 2).await?.epoch;
-        if second > first {
+        let record = StateRecord {
+            key: "certify".to_owned(),
+            value: Bytes::from_static(b"{\"v\":1}"),
+        };
+        let mut first = self.staged(self.destination, 1, &[1]).await?;
+        let put = vec![StateChange::Put(record.clone())];
+        let loaded = meta(self.load_id(1), first.epoch, &[1], put);
+        commit(&mut first.session, &loaded).await?;
+        let mut second = self.open(self.peer, 2).await?;
+        let deleted = vec![StateChange::Delete(record.key)];
+        let reset = if self.peer.capabilities().drop_tables {
+            CommitMeta {
+                state_delta: deleted,
+                ..self.dropping(2, second.epoch)
+            }
+        } else {
+            meta(self.load_id(2), second.epoch, &[], deleted)
+        };
+        commit(&mut second.session, &reset).await?;
+        let third = self.open(self.destination, 3).await?.epoch;
+        let epochs = [first.epoch, second.epoch, third];
+        if epochs[0] < epochs[1] && epochs[1] < epochs[2] {
             Ok(())
         } else {
-            Err(format!("epoch went from {first} to {second}").into())
+            Err(format!("epochs went {}, {} and {}", epochs[0], epochs[1], epochs[2]).into())
         }
     }
 
