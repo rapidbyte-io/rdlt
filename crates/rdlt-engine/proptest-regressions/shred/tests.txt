@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 17f07e3e042b53c0833106d90219e23b96ee7f428d6fc8154f75043597d2c47d # shrinks to text = "", int = 0, wide = 9223372036854775808, huge = 0, flag = false, order = [0, 1, 2, 3, 4, 5, 6], chunk_bytes = 1048576
+cc 93a4df9021e898808f102d38f90c81473ca1a47b1ffc1d6699eb2404e2b333fe # shrinks to value = Written { text: "{\"c\":null,\"\\u0063\":null}", rendered: None }, exact = false, chunk_bytes = 1048576
