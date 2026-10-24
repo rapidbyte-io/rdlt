@@ -413,7 +413,9 @@ impl<'de> Visitor<'de> for Value<'_> {
 
     fn visit_f64<E: de::Error>(self, value: f64) -> Result<(), E> {
         self.context.float(value);
-        self.scalar(Scalar::Float(value))
+        // The fast parse reads a negative number too small for a float as negative zero, which
+        // reads as zero, as the exact parse reads it.
+        self.scalar(Scalar::Float(if value == 0.0 { 0.0 } else { value }))
     }
 
     fn visit_i128<E: de::Error>(self, value: i128) -> Result<(), E> {

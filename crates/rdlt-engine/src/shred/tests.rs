@@ -474,6 +474,8 @@ fn a_number_reads_alike_whether_or_not_its_chunk_is_parsed_exactly() {
         "1e19",
         "-1e19",
         "1e-400",
+        "-1e-400",
+        "-2.4e-324",
         "4.9e-324",
         "1e400",
         "-1e400",
