@@ -211,6 +211,33 @@ What each row of this change does, and the rule it was held to:
   object for the building and the observing parse, and the depth check and an integer's digits
   are one function each; no case moves by more than 0.35 % of instructions.
 
+### Rows pushed as lines
+
+`Emitter::rows` pushes a row a line, which the engine cuts at its line ends as it cuts any JSON
+lines, where it pushed one JSON array, cut by a walk of its structure. This change against its
+merge base `017f65a4`, 2026-10-24, each row held to a rule written before its run:
+
+- **`shred/rows` takes 38.3 % fewer instructions.** Under `just instructions` it takes 38,657,657
+  instructions an iteration against the merge base's 62,699,079, as many as `shred/nested`
+  (38,684,356), since the push is now the nested corpus's own lines byte for byte; it allocates
+  190 times, as before. The rule was at least 25 % fewer, with no other case more than 2 % above
+  its base; the largest rise was `passthrough/null_sink`'s 0.30 %, a case whose count moves
+  between runs of one tree.
+- **A string's end is not found with `memchr2`.** Jumping to a string's next quote or backslash
+  with `memchr::memchr2`, as the engine's JSON reader does, instead of the structure scan's byte
+  loop, was held to `shred_cliffs/array_form` at least 1.10× its base, with `pretty` not slower
+  than its base's range. Two rounds of `just bench shred 0 shred_cliffs` of this change with
+  `memchr2` added, interleaved with the merge base in alternating orders, started at one-minute
+  load averages of 1.66 and 1.24 (the merge base's 4.52 and 1.86), give each round's figure, the
+  range in brackets, below. Its instructions on `shred/array_form` fell 0.66 %, while the
+  instructions a cycle fell more: the call costs more cycles on the corpora's short strings than
+  the bytes it skips save. Both halves of the rule fail, and the byte loop stays.
+
+| Corpus | Merge base | With `memchr2` | Against the base | Instructions a cycle, base and with |
+|---|---|---|---|---|
+| `array_form` | 301 MiB/s [275–320], 372 MiB/s [371–373] | 301 MiB/s [291–314], 316 MiB/s [304–325] | 1.00×, 0.85× | 5.86, 5.80; 4.90, 5.02 |
+| `pretty` | 359 MiB/s [357–361], 365 MiB/s [364–365] | 302 MiB/s [289–317], 335 MiB/s [333–336] | 0.84×, 0.92× | 5.42, 5.39; 5.06, 5.06 |
+
 ### Columns of JSON
 
 `json_check` checks a column of 100 000 JSON values as an Arrow push's is checked, on one core,
