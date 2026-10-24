@@ -276,15 +276,18 @@ The shredder is faster on both, and needs no schema, so the engine has no fast p
 
 A normalized stream's batches are split into child tables after shredding, and each row gets
 its lineage. The `normalize` group measures it on one core, on `with_arrays`: `shred_only`
-shreds it; `keyed` shreds and normalizes rows identified by their `id`; `keyless` shreds and
-normalizes rows identified by their whole content, whose canonical encoding is the extra cost.
-This change on `3c0260b2`, 2026-10-12, rounds as above.
+shreds it; `keyed` shreds and normalizes a merge's rows, whose roots hash their `id`; `keyless`
+shreds and normalizes rows that carry their positions alone, from which lowering builds their
+ids, outside this group. Ids by role against its base `51f61a9c`, 2026-10-24: three rounds on
+core 0, base and change interleaved, under the measurement lock, the one-minute load average
+falling from 8.7 at the first round's start, as other work ended, to 1.3 by the last; each
+round's criterion median.
 
-| Group | Time | Throughput | Against `shred_only` |
+| Group | Base | Change | Change against `shred_only` |
 |---|---|---|---|
-| `shred_only` | 67.6 ms | 473 MiB/s [471–476] | 1 |
-| `keyed` | 115.1 ms | 278 MiB/s [278–278] | 1.70× |
-| `keyless` | 174.5 ms | 184 MiB/s [179–190] | 2.58× |
+| `shred_only` | 72.5, 66.6, 65.9 ms | 68.2, 66.8, 66.7 ms | 1 |
+| `keyed` | 117.9, 113.5, 112.2 ms | 83.7, 82.0, 81.6 ms | 1.22–1.23× |
+| `keyless` | 180.5, 175.3, 174.3 ms | 70.8, 70.0, 69.8 ms | 1.04–1.05× |
 
 ### Allocations
 
@@ -300,9 +303,12 @@ One run of each one-core group; the counts were the same in every round. This ch
 | `shred/flat_narrow` | 0.001 | 0.000 | 16 | 27.781 | 335176 |
 | `shred/wide_200` | 3.538 | 0.077 | 2390 | 1386.969 | 936829 |
 | `shred/string_heavy` | 1.007 | 4.901 | 616 | 4772.531 | 2919291 |
-| `normalize/shred_only` | 2.562 | 0.003 | 298 | 10775.844 | 1255532 |
-| `normalize/keyed` | 2.604 | 0.006 | 654 | 10951.844 | 2749029 |
-| `normalize/keyless` | 2.611 | 0.006 | 655 | 10982.844 | 2753071 |
+| `normalize/shred_only` | 0.061 | 0.004 | 178 | 255.312 | 750372 |
+| `normalize/keyed` | 0.098 | 0.007 | 263 | 410.312 | 1106206 |
+| `normalize/keyless` | 0.095 | 0.007 | 227 | 401.312 | 953463 |
+
+The `normalize` rows are of ids by role, at full size; its base, `51f61a9c`, made 533 bytes a
+row keyed and 534 keyless, with 0.103 and 0.110 allocations a row.
 
 ## Build profile
 
