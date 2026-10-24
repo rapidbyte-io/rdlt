@@ -4,7 +4,8 @@
 //! and both over the socket in processes of their own, as production runs them, from up to
 //! sixteen partitions, also in eightieths, into a sink declaring one writer and, from one, four and
 //! sixteen partitions, one declaring a writer a core; the wide bench's widest Arrow table and the
-//! normalized bench's merge of hot keys as those benches run them in process.
+//! normalized bench's merge of hot keys as those benches run them in process; and the passthrough
+//! bench's many-table cells.
 //!
 //! Served connectors run in the bench's own process, on the engine's runtime, which measures the
 //! wire path's CPU alone; or each in a process of its own, as in production, the bench's binary
@@ -29,6 +30,8 @@ mod resident;
 mod served;
 #[path = "bench/shaped.rs"]
 mod shaped;
+#[path = "bench/tables.rs"]
+mod tables;
 
 use std::hint::black_box;
 use std::num::{NonZeroU16, NonZeroUsize};
@@ -42,7 +45,7 @@ use rdlt_connector::serve::{Listening, Served, serve_listener};
 use rdlt_connector::{ConnectContext, Destination, Role, Source};
 use rdlt_engine::bench::{
     Cell, Passthrough, Readings, Replayed, Sinking, ipc_sink, register, replay_factory,
-    sink_factory, split_replay_config,
+    sink_factory, split_replay_config, spread,
 };
 use rdlt_engine::{Cores, Report};
 use rdlt_host::{
@@ -717,18 +720,7 @@ fn print_sides(case: Case, seconds: &[Seconds]) {
     );
 }
 
-/// The median of `samples` and their range, or `unmeasured` where any is unknown.
-fn spread(samples: impl Iterator<Item = Option<f64>>) -> String {
-    let Some(mut samples) = samples.collect::<Option<Vec<f64>>>() else {
-        return "unmeasured".to_owned();
-    };
-    samples.sort_by(f64::total_cmp);
-    let (low, high) = (samples[0], samples[samples.len() - 1]);
-    let median = samples[samples.len() / 2];
-    format!("{median:.3} ({low:.3} to {high:.3})")
-}
-
-criterion_group!(benches, served, shaped::shaped);
+criterion_group!(benches, served, shaped::shaped, tables::tables);
 
 fn main() -> ExitCode {
     if connector::asked() {

@@ -14,7 +14,7 @@ use rdlt_connector::serve::Served;
 use rdlt_connector::{
     BoxFuture, ConnectContext, ConnectorSpec, Destination, Result, Source, SourceFactory,
 };
-use rdlt_engine::bench::{Replayed, register, replay_factory, sink_factory};
+use rdlt_engine::bench::{Replayed, TablesCell, register, replay_factory, sink_factory};
 use rdlt_host::{ConnectorRef, Local, Options, Provider as _};
 use tokio::io::{AsyncBufReadExt as _, BufReader};
 use tokio::process::{Child, Command};
@@ -42,20 +42,28 @@ struct Generating(Box<dyn SourceFactory>);
 enum Asked {
     Frames(Frames),
     Shaped(Shaped),
+    Tables(TablesCell),
 }
 
 impl Asked {
     /// The replay named `name`.
     fn named(name: &str) -> Option<Self> {
         let frames = Frames::named(name).map(Self::Frames);
-        frames.or_else(|| Shaped::named(name).map(Self::Shaped))
+        let shaped = || Shaped::named(name).map(Self::Shaped);
+        frames
+            .or_else(shaped)
+            .or_else(|| TablesCell::named(name).map(Self::Tables))
     }
 
-    /// The replay's place in [`MADE`]: each frame size's, then each other workload's.
+    /// The replay's place in [`MADE`]: each frame size's, then each other workload's, then each
+    /// many-table cell's.
     fn index(self) -> usize {
+        let after_frames = Frames::ALL.len();
+        let after_shaped = after_frames + Shaped::ALL.len();
         match self {
             Self::Frames(frames) => frames.index(),
-            Self::Shaped(shaped) => Frames::ALL.len() + shaped.index(),
+            Self::Shaped(shaped) => after_frames + shaped.index(),
+            Self::Tables(cell) => after_shaped + cell.index(),
         }
     }
 
@@ -64,12 +72,14 @@ impl Asked {
         match self {
             Self::Frames(frames) => register(frames.replay(), Replayed::Batches(frames.batches())),
             Self::Shaped(shaped) => register(shaped.replay(), shaped.replayed()),
+            Self::Tables(cell) => register(&cell.replay(), cell.replayed()),
         }
     }
 }
 
 /// Each replay's pushes, made once in this process.
-static MADE: [Once; 5] = [const { Once::new() }; 5];
+static MADE: [Once; Frames::ALL.len() + Shaped::ALL.len() + TablesCell::ALL.len()] =
+    [const { Once::new() }; Frames::ALL.len() + Shaped::ALL.len() + TablesCell::ALL.len()];
 
 impl SourceFactory for Generating {
     fn spec(&self) -> &ConnectorSpec {
