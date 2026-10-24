@@ -5,7 +5,7 @@ use rdlt_wire::limits::{MIN_DICTIONARY_BYTES, MIN_FRAME_BYTES};
 
 use super::{BatchPolicy, CommitPolicy, EngineConfig, RetryPolicy};
 use crate::budget::{Shares, admitted};
-use crate::error::ErrorKind;
+use crate::error::{ErrorKind, codes};
 
 #[test]
 fn a_commit_policy_needs_a_nonzero_threshold() {
@@ -17,7 +17,7 @@ fn a_commit_policy_needs_a_nonzero_threshold() {
     ] {
         let error = CommitPolicy::new(every, rows, bytes).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Config);
-        assert_eq!(error.code(), Some("commit_policy_invalid"));
+        assert_eq!(error.code(), Some(codes::COMMIT_POLICY_INVALID));
     }
     let policy = CommitPolicy::new(Some(Duration::from_secs(3)), Some(10), Some(20)).unwrap();
     assert_eq!(policy.every(), Some(Duration::from_secs(3)));
@@ -126,7 +126,7 @@ fn memory_below_what_the_protocol_s_least_limits_need_is_refused_naming_the_leas
         let refused = build(least - 1).unwrap_err();
         assert_eq!(
             (refused.kind(), refused.code()),
-            (ErrorKind::Config, Some("memory_below_minimum"))
+            (ErrorKind::Config, Some(codes::MEMORY_BELOW_MINIMUM))
         );
         let said = refused.to_string();
         assert!(said.contains(&format!("is {least} bytes")), "{said}");
@@ -224,7 +224,7 @@ fn reading_more_partitions_at_once_lowers_what_each_read_may_send() {
     }
     assert!((17..4_096).contains(&partitions), "{partitions}");
     let refused = build(partitions).unwrap_err();
-    assert_eq!(refused.code(), Some("memory_below_minimum"));
+    assert_eq!(refused.code(), Some(codes::MEMORY_BELOW_MINIMUM));
     let least = EngineConfig::least_memory(partitions).unwrap();
     assert!(least > memory, "{least}");
     assert!(
@@ -251,7 +251,11 @@ fn every_partition_read_at_once_takes_two_mebibytes_of_memory_at_least() {
         let most = memory / (2 << 20);
         assert!(build(memory, most).is_ok(), "{memory}");
         let refused = build(memory, most + 1).unwrap_err();
-        assert_eq!(refused.code(), Some("memory_below_minimum"), "{memory}");
+        assert_eq!(
+            refused.code(),
+            Some(codes::MEMORY_BELOW_MINIMUM),
+            "{memory}"
+        );
     }
     // A run follows one unbounded partition fewer than its partitions: 127 at the default
     // memory, read by 128 partitions, each of which keeps a schema of 936 columns at most.
@@ -283,7 +287,7 @@ fn a_batch_policy_needs_every_threshold_above_zero() {
     ] {
         let error = BatchPolicy::new(bytes, rows, latency, chunk).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Config);
-        assert_eq!(error.code(), Some("batch_policy_invalid"));
+        assert_eq!(error.code(), Some(codes::BATCH_POLICY_INVALID));
         assert!(error.to_string().contains(name), "{error}");
     }
     let policy = BatchPolicy::new(1, 2, second, 3).unwrap();
@@ -331,7 +335,7 @@ fn a_following_run_plans_again_every_minute_unless_told_otherwise_and_never_ever
     let refused = EngineConfig::builder().replan(Duration::ZERO).build();
     assert_eq!(
         refused.unwrap_err().code(),
-        Some("config_invalid"),
+        Some(codes::CONFIG_INVALID),
         "a zero interval would plan without end"
     );
 }
@@ -361,7 +365,10 @@ fn a_connector_call_and_a_stopped_read_wait_their_defaults_or_more_than_zero() {
         EngineConfig::builder().stop_wait(Duration::ZERO),
         EngineConfig::builder().close_wait(Duration::ZERO),
     ] {
-        assert_eq!(zero.build().unwrap_err().code(), Some("config_invalid"));
+        assert_eq!(
+            zero.build().unwrap_err().code(),
+            Some(codes::CONFIG_INVALID)
+        );
     }
 }
 
@@ -407,7 +414,7 @@ fn a_wait_a_failure_asks_for_is_held_between_the_first_and_the_longest_delay() {
 fn growth_limits_need_room_for_a_child_table_and_a_writer() {
     for (children, writers) in [(0, 1), (1, 0)] {
         let error = super::GrowthLimits::new(children, writers).unwrap_err();
-        assert_eq!(error.code(), Some("growth_limits_invalid"));
+        assert_eq!(error.code(), Some(codes::GROWTH_LIMITS_INVALID));
     }
     let limits = super::GrowthLimits::new(1, 1).unwrap();
     assert_eq!(limits.child_tables().get(), 1);

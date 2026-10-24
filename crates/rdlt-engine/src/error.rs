@@ -1,23 +1,21 @@
 //! The engine's error type.
 
+pub mod codes;
 #[cfg(test)]
 mod tests;
 
 use std::error::Error as StdError;
 use std::fmt;
-use std::sync::Arc;
 use std::time::Duration;
 
-use rdlt_connector::limits::{MAX_ERROR_CAUSES, MAX_ERROR_TEXT_BYTES};
+use rdlt_connector::limits::{MAX_ERROR_CAUSES, MAX_ERROR_CODE_BYTES, MAX_ERROR_TEXT_BYTES};
 use rdlt_connector::{ConnectorError, ConnectorErrorKind, StreamName};
 use serde::Serialize;
 
 use crate::budget::Exhausted;
-use crate::limits::{
-    BUDGET_WAIT_EXCEEDED, WAL_FENCED, WAL_NOT_PRIVATE, WAL_RUNNING, WAL_STORAGE_FULL,
-    WAL_STORE_OTHER, WAL_STRAY,
-};
+use crate::deadline::Expired;
 use crate::scope::ScopeError;
+pub use codes::Code;
 
 /// What kind of failure an [`Error`] reports.
 #[non_exhaustive]
@@ -44,6 +42,18 @@ pub enum ErrorKind {
     Memory,
 }
 
+/// Who failed: the engine, or the connector on one side of it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Origin {
+    /// The engine: every error it builds, its own wait for a connector's call among them.
+    Engine,
+    /// The source connector, or the host serving it: an error it or its host raised.
+    Source,
+    /// The destination connector, or the host serving it: an error it or its host raised.
+    Destination,
+}
+
 /// Which connector a [`ConnectorError`] came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Side {
@@ -53,12 +63,38 @@ pub(crate) enum Side {
     Destination,
 }
 
-/// An engine failure: a kind, a one-line context naming its subject, and the cause.
+impl Side {
+    /// Who failed where an error came from this side's connector.
+    pub(crate) fn origin(self) -> Origin {
+        match self {
+            Self::Source => Origin::Source,
+            Self::Destination => Origin::Destination,
+        }
+    }
+
+    /// The kind of a failure of this side's that no other kind describes.
+    fn kind(self) -> ErrorKind {
+        match self {
+            Self::Source => ErrorKind::Source,
+            Self::Destination => ErrorKind::Destination,
+        }
+    }
+}
+
+/// Whose code an error carries: the engine's, or the code its connector's error carried, shown
+/// and bounded.
+enum Coded {
+    Engine(Code),
+    Connector(Box<str>),
+}
+
+/// An engine failure: a kind, who failed, a one-line context naming its subject, and the cause.
 pub struct Error {
     kind: ErrorKind,
+    origin: Origin,
     context: String,
     stream: Option<StreamName>,
-    code: Option<Arc<str>>,
+    code: Option<Coded>,
     retryable: bool,
     retry_after: Option<Duration>,
     source: Option<Box<dyn StdError + Send + Sync>>,
@@ -68,6 +104,7 @@ impl Error {
     pub(crate) fn new(kind: ErrorKind, context: impl Into<String>) -> Self {
         Self {
             kind,
+            origin: Origin::Engine,
             context: context.into(),
             stream: None,
             code: None,
@@ -101,7 +138,7 @@ impl Error {
     /// saying what held the budget: retryable, since another attempt holds other bytes.
     pub(crate) fn memory(exhausted: Exhausted) -> Self {
         let mut memory = Self::new(ErrorKind::Memory, exhausted.to_string());
-        memory.code = Some(Arc::from(BUDGET_WAIT_EXCEEDED));
+        memory.code = Some(Coded::Engine(codes::MEMORY_BUDGET_WAIT_EXCEEDED));
         memory.retryable = true;
         memory.source = Some(Box::new(exhausted));
         memory
@@ -126,13 +163,14 @@ impl Error {
             .get_ref()
             .and_then(|inner| inner.downcast_ref::<crate::wal::Refusal>())
             .map(|refusal| match refusal {
-                crate::wal::Refusal::NotPrivate { .. } => WAL_NOT_PRIVATE,
-                crate::wal::Refusal::Stray { .. } => WAL_STRAY,
+                crate::wal::Refusal::NotPrivate { .. } => codes::WAL_NOT_PRIVATE,
+                crate::wal::Refusal::Stray { .. } => codes::WAL_STRAY,
             });
-        let code = refused.or(full.then_some(WAL_STORAGE_FULL));
         let mut wal = Self::wal(format!("the write-ahead log failed: {error}"));
         wal.retryable = transient;
-        wal.code = code.map(Arc::from);
+        wal.code = refused
+            .or(full.then_some(codes::WAL_STORAGE_FULL))
+            .map(Coded::Engine);
         wal.source = Some(Box::new(error));
         wal
     }
@@ -144,7 +182,7 @@ impl Error {
             failure.kind,
             format!("the write-ahead log failed before: {failure}"),
         );
-        wal.code.clone_from(&failure.code);
+        wal.code = failure.code().map(Coded::Engine);
         wal.retryable = failure.retryable;
         wal
     }
@@ -156,7 +194,7 @@ impl Error {
             ErrorKind::Fenced,
             format!("the write-ahead log of load {load} was taken over by a replay"),
         )
-        .with_code(WAL_FENCED)
+        .with_code(codes::WAL_FENCED)
     }
 
     /// The error for a replay that could not fence `load`'s log, which its load kept publishing
@@ -165,7 +203,7 @@ impl Error {
         let mut running = Self::wal(format!(
             "load {load} of the pipeline is still writing its write-ahead log"
         ))
-        .with_code(WAL_RUNNING);
+        .with_code(codes::WAL_RUNNING);
         running.retryable = true;
         running
     }
@@ -177,7 +215,7 @@ impl Error {
             "another attempt of the pipeline removed the write-ahead log of load {load} as it \
              was opened"
         ))
-        .with_code(WAL_RUNNING);
+        .with_code(codes::WAL_RUNNING);
         taken.retryable = true;
         taken
     }
@@ -193,40 +231,56 @@ impl Error {
              engine's is store {ours}: its runs keep their logs in one store, whose identity \
              file moves with it"
         ))
-        .with_code(WAL_STORE_OTHER)
+        .with_code(codes::WAL_STORE_OTHER)
     }
 
-    /// Classifies a connector's `error` from `side`, keeping it as the cause.
+    /// Classifies a connector's `error` from `side`, keeping it as the cause: the side failed.
     ///
     /// Configuration, credential and capability failures are [`ErrorKind::Config`]; a session a
     /// newer one fenced is [`ErrorKind::Fenced`]; everything else belongs to the side, a stop
     /// among it, since the engine knows which reads it stopped. Only transient and rate-limited
     /// failures are retryable, and only a rate limit keeps the wait it asks for. No connector's
-    /// error is of the kind or code a wait on the memory budget fails with.
+    /// error is of the kind a wait on the memory budget fails with, and its code stays the
+    /// connector's, [shown](rdlt_connector::text::shown) within a code's limit: the error's
+    /// [`connector_code`](Self::connector_code), never its [`code`](Self::code).
+    ///
+    /// A call the engine's wait ended is no connector's failure: it is the engine's, as
+    /// [`expired`](Self::expired) builds it.
     pub(crate) fn connector(side: Side, context: impl Into<String>, error: ConnectorError) -> Self {
         use ConnectorErrorKind as K;
+        if let Some(expired) = Expired::of(&error) {
+            return Self::expired(side, context, expired);
+        }
         let kind = match (error.kind(), side) {
             (K::Config | K::Auth | K::Unsupported, _) => ErrorKind::Config,
             (K::Fenced, Side::Destination) => ErrorKind::Fenced,
-            (_, Side::Source) => ErrorKind::Source,
-            (_, Side::Destination) => ErrorKind::Destination,
+            (_, side) => side.kind(),
         };
         let retry_after = error
             .retry_after()
             .filter(|_| error.kind() == K::RateLimited);
         Self {
             kind,
+            origin: side.origin(),
             context: context.into(),
             stream: None,
-            // The budget's code is the engine's own: no connector's error carries it.
-            code: error
-                .code()
-                .filter(|code| *code != BUDGET_WAIT_EXCEEDED)
-                .map(Arc::from),
+            code: error.code().map(|code| {
+                Coded::Connector(rdlt_connector::text::shown(code, MAX_ERROR_CODE_BYTES).into())
+            }),
             retryable: error.is_retryable(),
             retry_after,
             source: Some(Box::new(error)),
         }
+    }
+
+    /// The error for a call into `side`'s connector that the engine's wait ended, as `expired`
+    /// says: of the side's kind, coded `deadline_exceeded`, and retryable, since the next
+    /// attempt calls again.
+    fn expired(side: Side, context: impl Into<String>, expired: Expired) -> Self {
+        Self::new(side.kind(), context)
+            .with_code(codes::DEADLINE_EXCEEDED)
+            .retryable()
+            .with_source(expired)
     }
 
     /// The failure, which a new attempt may mend.
@@ -243,10 +297,11 @@ impl Error {
         self
     }
 
-    /// Attaches a stable machine code.
+    /// Attaches the engine's code for the failure, in place of any code a connector's error
+    /// carried.
     #[must_use]
-    pub(crate) fn with_code(mut self, code: &str) -> Self {
-        self.code = Some(Arc::from(code));
+    pub(crate) fn with_code(mut self, code: Code) -> Self {
+        self.code = Some(Coded::Engine(code));
         self
     }
 
@@ -262,14 +317,33 @@ impl Error {
         self.kind
     }
 
+    /// Who failed.
+    pub fn origin(&self) -> Origin {
+        self.origin
+    }
+
     /// The stream the failure belongs to, if it belongs to one.
     pub fn stream(&self) -> Option<&StreamName> {
         self.stream.as_ref()
     }
 
-    /// The machine code, if the failure has one.
-    pub fn code(&self) -> Option<&str> {
-        self.code.as_deref()
+    /// The engine's code for the failure, if it has one: never a connector's, which
+    /// [`connector_code`](Self::connector_code) returns.
+    pub fn code(&self) -> Option<Code> {
+        match &self.code {
+            Some(Coded::Engine(code)) => Some(*code),
+            Some(Coded::Connector(_)) | None => None,
+        }
+    }
+
+    /// The code a connector's error carried, as a connector's text is
+    /// [shown](rdlt_connector::text::shown), within
+    /// [`MAX_ERROR_CODE_BYTES`](rdlt_connector::limits::MAX_ERROR_CODE_BYTES).
+    pub fn connector_code(&self) -> Option<&str> {
+        match &self.code {
+            Some(Coded::Connector(code)) => Some(code),
+            Some(Coded::Engine(_)) | None => None,
+        }
     }
 
     /// Whether a new attempt may succeed.
@@ -299,8 +373,10 @@ impl Error {
         }
         ErrorReport {
             kind: self.kind,
+            origin: self.origin,
             stream: self.stream.as_ref().map(|stream| shown(stream)),
-            code: self.code.as_deref().map(|code| shown(&code)),
+            code: self.code(),
+            connector_code: self.connector_code().map(str::to_owned),
             message: shown(&self.context),
             causes,
             retryable: self.retryable,
@@ -323,9 +399,11 @@ impl fmt::Debug for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Error")
             .field("kind", &self.kind)
+            .field("origin", &self.origin)
             .field("context", &self.context)
             .field("stream", &self.stream)
-            .field("code", &self.code)
+            .field("code", &self.code())
+            .field("connector_code", &self.connector_code())
             .field("retryable", &self.retryable)
             .field("source", &self.source)
             .finish_non_exhaustive()
@@ -350,15 +428,19 @@ impl ScopeError for Error {
     }
 }
 
-/// An [`Error`] as data: its kind, stream, code, message and causes.
+/// An [`Error`] as data: its kind, who failed, its stream, codes, message and causes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ErrorReport {
     /// The failure's kind.
     pub kind: ErrorKind,
+    /// Who failed.
+    pub origin: Origin,
     /// The stream it belongs to.
     pub stream: Option<String>,
-    /// Its machine code.
-    pub code: Option<String>,
+    /// The engine's code for it.
+    pub code: Option<Code>,
+    /// The code a connector's error carried, shown and bounded.
+    pub connector_code: Option<String>,
     /// A one-line description naming the failure's subject.
     pub message: String,
     /// Each cause, outermost first.

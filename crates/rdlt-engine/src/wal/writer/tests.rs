@@ -22,7 +22,7 @@ use super::super::frame::{Batch, Committing, End, Frame, Seal, Table};
 use super::super::memory::MemoryWal;
 use super::super::store::WalStore;
 use super::{Command, Owner, WalWriter};
-use crate::error::{Error, ErrorKind};
+use crate::error::{Error, ErrorKind, codes};
 use crate::report::Tally;
 
 fn pipeline() -> PipelineId {
@@ -539,10 +539,10 @@ async fn a_load_whose_next_chunk_a_replay_took_is_fenced_before_it_answers() {
         log.batch(2, 0).await;
         let error = log.commit(2, &[2]).await.expect_err("fenced");
         assert_eq!(error.kind(), ErrorKind::Fenced);
-        assert_eq!(error.code(), Some("wal_fenced"));
+        assert_eq!(error.code(), Some(codes::WAL_FENCED));
         // So is every command after.
         let error = log.commit(3, &[]).await.expect_err("fenced");
-        assert_eq!(error.code(), Some("wal_fenced"));
+        assert_eq!(error.code(), Some(codes::WAL_FENCED));
         assert_eq!(error.kind(), ErrorKind::Fenced);
     })
     .await
@@ -595,7 +595,7 @@ async fn a_write_the_disk_has_no_room_for_gives_back_what_its_chunk_staged() {
             log.batch(1, 0).await;
         }
         let error = log.commit(1, &[1]).await.expect_err("the disk is full");
-        assert_eq!(error.code(), Some("wal_storage_full"), "{error}");
+        assert_eq!(error.code(), Some(codes::WAL_STORAGE_FULL), "{error}");
         assert!(error.is_retryable());
     })
     .await

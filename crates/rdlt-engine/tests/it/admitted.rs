@@ -4,7 +4,8 @@
 use std::sync::Arc;
 
 use arrow_array::{ArrayRef, RecordBatch, StringArray};
-use rdlt_engine::{EngineConfig, RunStatus};
+use rdlt_engine::{EngineConfig, Origin, RunStatus};
+use rdlt_wire::limits::LIMIT_EXCEEDED;
 
 use crate::support::destinations::null;
 use crate::support::making::{Step, Steps, making};
@@ -75,7 +76,10 @@ async fn a_source_sending_beyond_what_the_budget_admits_is_refused_where_it_emit
         )
         .await;
     let error = outcome.error.expect("the run fails");
-    assert_eq!(error.code(), Some("limit_exceeded"));
+    assert_eq!(
+        (error.origin(), error.connector_code()),
+        (Origin::Source, Some(LIMIT_EXCEEDED))
+    );
     let said = format!("{:?}", error.report());
     let expected = format!("json push bytes is {json}, over the limit of {}", json - 1);
     assert!(said.contains(&expected), "{said}");

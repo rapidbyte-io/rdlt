@@ -1,6 +1,7 @@
 //! Why a JSON push cannot be shredded, the code each refusal carries, and a refused record's
 //! number among the pushes.
 
+use crate::error::{Code, codes};
 use crate::limits::MAX_CELLS;
 
 /// Why a JSON push cannot be shredded.
@@ -58,19 +59,19 @@ pub(crate) enum ShredError {
 }
 
 impl ShredError {
-    /// The machine code of the error.
-    pub(crate) fn code(&self) -> &'static str {
+    /// The engine's code for the error.
+    pub(crate) fn code(&self) -> Code {
         match self {
-            Self::Invalid(_) | Self::Record { .. } => "json_invalid",
-            Self::NotObject => "json_not_object",
+            Self::Invalid(_) | Self::Record { .. } => codes::JSON_INVALID,
+            Self::NotObject => codes::JSON_NOT_OBJECT,
             Self::TooDeep
             | Self::Exponent(_)
             | Self::ColumnsBeyondText(_)
             | Self::TooManyColumns(..)
             | Self::TooManyCells(_)
-            | Self::TooLarge => rdlt_wire::limits::LIMIT_EXCEEDED,
-            Self::DuplicateKey(_) => "json_duplicate_key",
-            Self::Internal(_) => "shred_internal",
+            | Self::TooLarge => codes::LIMIT_EXCEEDED,
+            Self::DuplicateKey(_) => codes::JSON_DUPLICATE_KEY,
+            Self::Internal(_) => codes::SHRED_INTERNAL,
         }
     }
 }

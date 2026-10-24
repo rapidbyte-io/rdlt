@@ -4,8 +4,8 @@ use rdlt_wire::Limits;
 
 use super::{EngineConfig, EngineConfigBuilder};
 use crate::budget::{Shares, admitted, least};
-use crate::error::Error;
-use crate::limits::{MEMORY_BELOW_MINIMUM, TABLE_RECORDS};
+use crate::error::{Error, codes};
+use crate::limits::TABLE_RECORDS;
 
 impl EngineConfig {
     /// The limits on what connectors send that this configuration admits: the lesser, for each
@@ -61,7 +61,7 @@ impl EngineConfig {
             "memory of {memory} bytes admits less than the least limits the protocol lets a peer \
              set with {partitions} partitions read at once: {least}"
         ))
-        .with_code(MEMORY_BELOW_MINIMUM))
+        .with_code(codes::MEMORY_BELOW_MINIMUM))
     }
 }
 

@@ -30,7 +30,7 @@ use crate::compute::Pool;
 use crate::config::BatchPolicy;
 use crate::cost::{Admitted, Charging};
 use crate::env::Env;
-use crate::error::{Error, ErrorKind, Side};
+use crate::error::{Error, ErrorKind, Side, codes};
 use crate::lane::Lanes;
 use crate::report::ShredCounts;
 use crate::table::Tables;
@@ -517,6 +517,6 @@ fn pushed_wrongly(job: &PartitionJob, what: &str) -> Error {
         ErrorKind::Source,
         format!("stream {} pushed {what}", job.stream),
     )
-    .with_code("push_unexpected")
+    .with_code(codes::PUSH_UNEXPECTED)
     .with_stream(&job.stream)
 }

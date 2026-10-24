@@ -54,6 +54,7 @@ rustix = { workspace = true, features = ["process", "thread", "time"] }
 [dev-dependencies]
 chrono.workspace = true
 criterion.workspace = true
+insta.workspace = true
 peak_alloc.workspace = true
 proptest.workspace = true
 rdlt-connector = { workspace = true, features = ["merge", "serve", "testing"] }

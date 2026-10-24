@@ -15,7 +15,7 @@ use arrow_buffer::{OffsetBuffer, ScalarBuffer};
 use arrow_schema::{DataType, Field, Fields};
 use rdlt_connector::Push;
 use rdlt_connector::cost::{Rendering, push_charge};
-use rdlt_engine::RunStatus;
+use rdlt_engine::{RunStatus, codes};
 
 use crate::HEAP;
 use crate::support::destinations::{Gate, buffering, gated, null};
@@ -267,7 +267,7 @@ async fn a_row_expanding_beyond_the_budget_fails_the_run_before_it_is_built() {
     let peak = HEAP.peak_usage().saturating_sub(before);
     assert_eq!(outcome.report.status, RunStatus::Failed);
     let error = outcome.error.expect("a failed run has its error");
-    assert_eq!(error.code(), Some("row_exceeds_budget"));
+    assert_eq!(error.code(), Some(codes::ROW_EXCEEDS_BUDGET));
     assert!(peak <= bound(BUDGET), "peak {peak} bytes");
 }
 

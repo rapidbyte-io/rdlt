@@ -13,6 +13,7 @@ fuzz_target!(|input: (u8, Vec<u8>)| {
     let push = Bytes::from(json);
     // Two copies meet across pushes and chunks, joining their shapes.
     if let Err(refused) = rdlt_engine::bench::shred(&[push.clone(), push], chunk_bytes) {
-        assert_ne!(refused.code, "shred_internal", "{}", refused.message);
+        let internal = rdlt_engine::codes::SHRED_INTERNAL.as_str();
+        assert_ne!(refused.code, internal, "{}", refused.message);
     }
 });

@@ -10,8 +10,7 @@ use rdlt_connector::wire::{answer_bytes, commit_bytes, record_bytes};
 use rdlt_connector::{CommitMeta, StateChange, StateKey, StateRecord, StreamName};
 
 use crate::config::EngineConfig;
-use crate::error::Error;
-use crate::limits::{CHILD_TABLES_EXCEEDED, STATE_BYTES_EXCEEDED};
+use crate::error::{Error, codes};
 
 #[cfg(test)]
 thread_local! {
@@ -162,7 +161,7 @@ impl Stored {
                 "stream {stream}: its new child tables would leave {left} bytes of state, where \
                  {stored} may be stored"
             ))
-            .with_code(CHILD_TABLES_EXCEEDED)
+            .with_code(codes::CHILD_TABLES_EXCEEDED)
             .with_stream(stream));
         }
         Err(Error::config(format!(
@@ -170,7 +169,7 @@ impl Stored {
              {request} in its request, where {sent} may be: raise the memory or the state limit, \
              or reset the streams whose positions or tables grew it"
         ))
-        .with_code(STATE_BYTES_EXCEEDED))
+        .with_code(codes::STATE_BYTES_EXCEEDED))
     }
 
     /// Notes that the commit `measured` measures landed.

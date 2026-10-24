@@ -12,7 +12,7 @@ use rdlt_connector::{Destination, Field as RdltField, Fields, LogicalType, Table
 use rdlt_connector_reference::{published, schema};
 use rdlt_engine::{
     BatchPolicy, ErrorKind, Nested, RunOutcome, RunStatus, SchemaPolicy, SchemaSettings,
-    StreamPlan, WriteMode,
+    StreamPlan, WriteMode, codes,
 };
 use serde_json::{Value, json};
 
@@ -344,7 +344,7 @@ async fn a_new_array_follows_the_policy_once_the_streams_table_exists_in_the_loa
         .expect("the table the first push created is frozen");
     assert_eq!(
         (error.kind(), error.code()),
-        (ErrorKind::Schema, Some("schema_frozen"))
+        (ErrorKind::Schema, Some(codes::SCHEMA_FROZEN))
     );
 }
 
@@ -521,7 +521,7 @@ async fn a_new_array_follows_the_streams_policy_once_its_table_exists() {
             let error = outcome.error.expect("a frozen table refuses a new array");
             assert_eq!(
                 (error.kind(), error.code()),
-                (ErrorKind::Schema, Some("schema_frozen"))
+                (ErrorKind::Schema, Some(codes::SCHEMA_FROZEN))
             );
         } else {
             succeeded(&outcome);
@@ -667,7 +667,7 @@ async fn a_frozen_array_column_freezes_its_child_tables_columns() {
     let error = outcome.error.expect("the frozen items refuse a new field");
     assert_eq!(
         (error.kind(), error.code()),
-        (ErrorKind::Schema, Some("schema_frozen"))
+        (ErrorKind::Schema, Some(codes::SCHEMA_FROZEN))
     );
 }
 
@@ -1092,7 +1092,7 @@ async fn a_destination_that_cannot_add_columns_refuses_one_only_a_later_chunk_of
     let error = outcome.error.expect("the run failed");
     assert_eq!(
         (error.kind(), error.code()),
-        (ErrorKind::Schema, Some("schema_change_unsupported")),
+        (ErrorKind::Schema, Some(codes::SCHEMA_CHANGE_UNSUPPORTED)),
         "{error:?}"
     );
     let events = schema(store, "events").expect("the first chunk created the table");
@@ -1150,7 +1150,7 @@ async fn the_flush_that_creates_a_table_takes_a_child_column_only_a_later_piece_
         .expect("a later piece's column is refused");
     assert_eq!(
         (error.kind(), error.code()),
-        (ErrorKind::Schema, Some("schema_change_unsupported")),
+        (ErrorKind::Schema, Some(codes::SCHEMA_CHANGE_UNSUPPORTED)),
         "{error:?}"
     );
 }
@@ -1243,7 +1243,7 @@ async fn an_array_under_a_key_no_table_can_be_named_after_follows_the_streams_po
         let error = outcome.error.expect("the array has no table");
         assert_eq!(
             (error.kind(), error.code()),
-            (ErrorKind::Schema, Some("table_path_invalid")),
+            (ErrorKind::Schema, Some(codes::TABLE_PATH_INVALID)),
             "{document}"
         );
         // A stream that discards the values or rows of schema changes loads without it.
@@ -1272,7 +1272,7 @@ async fn an_array_under_a_key_no_table_can_be_named_after_follows_the_streams_po
         )
         .await;
         let error = outcome.error.expect("a frozen stream adds no table");
-        assert_eq!(error.code(), Some("schema_frozen"), "{document}");
+        assert_eq!(error.code(), Some(codes::SCHEMA_FROZEN), "{document}");
     }
 }
 
@@ -1309,7 +1309,7 @@ async fn a_declared_schema_gaining_an_array_follows_the_policy_once_its_table_ex
                 let error = outcome.error.expect("a frozen stream gains no table");
                 assert_eq!(
                     (error.kind(), error.code()),
-                    (ErrorKind::Schema, Some("schema_frozen"))
+                    (ErrorKind::Schema, Some(codes::SCHEMA_FROZEN))
                 );
                 assert!(!child);
             }

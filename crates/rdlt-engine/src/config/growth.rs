@@ -2,7 +2,7 @@
 
 use std::num::{NonZeroU64, NonZeroUsize};
 
-use crate::error::Error;
+use crate::error::{Error, codes};
 use crate::limits::LOG_BYTES;
 
 /// Limits on what a pipeline's tables and state grow to across pushes and runs, each refused,
@@ -28,7 +28,7 @@ impl GrowthLimits {
     pub fn new(child_tables: usize, writers: usize) -> Result<Self, Error> {
         let invalid = |name: &str| {
             Error::config(format!("growth limits: {name} must be more than zero"))
-                .with_code("growth_limits_invalid")
+                .with_code(codes::GROWTH_LIMITS_INVALID)
         };
         Ok(Self {
             child_tables: NonZeroUsize::new(child_tables).ok_or_else(|| invalid("child_tables"))?,
@@ -45,7 +45,7 @@ impl GrowthLimits {
     pub fn with_log_bytes(mut self, bytes: u64) -> Result<Self, Error> {
         self.log_bytes = NonZeroU64::new(bytes).ok_or_else(|| {
             Error::config("growth limits: log_bytes must be more than zero")
-                .with_code("growth_limits_invalid")
+                .with_code(codes::GROWTH_LIMITS_INVALID)
         })?;
         Ok(self)
     }

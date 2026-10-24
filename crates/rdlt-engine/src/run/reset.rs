@@ -10,7 +10,7 @@ use rdlt_connector::{
 
 use super::Engine;
 use crate::deadline::Waits;
-use crate::error::{Error, ErrorKind, Side};
+use crate::error::{Error, ErrorKind, Side, codes};
 use crate::naming::Naming;
 use crate::scope::contained;
 use crate::wal::taken::{self, Taken};
@@ -93,13 +93,13 @@ impl Engine {
         destination: Arc<dyn Destination>,
     ) -> Result<ResetReport, Error> {
         if streams.is_empty() {
-            return Err(Error::config("a reset names no streams").with_code("no_streams"));
+            return Err(Error::config("a reset names no streams").with_code(codes::NO_STREAMS));
         }
         if scope == ResetScope::Tables && !destination.capabilities().drop_tables {
             return Err(Error::config(
                 "the destination cannot drop tables, so a stream's tables cannot be reset",
             )
-            .with_code("drop_unsupported"));
+            .with_code(codes::DROP_UNSUPPORTED));
         }
         readable_again(source.as_ref(), streams).await?;
         let naming = Naming::checked(&destination.capabilities().identifiers)?;
@@ -241,7 +241,7 @@ impl Engine {
                     "stream {stream}: the log of load {load} holds rows its source was told \
                      were committed and that never landed; a run of the pipeline lands them"
                 ))
-                .with_code("reset_unreplayable")
+                .with_code(codes::RESET_UNREPLAYABLE)
                 .with_stream(stream));
             }
         }
@@ -268,7 +268,7 @@ async fn readable_again(source: &dyn Source, streams: &[StreamName]) -> Result<(
             "stream {stream}: its source cannot read again what it acknowledged, so it cannot \
              be read from its beginning"
         ))
-        .with_code("reset_unreplayable")
+        .with_code(codes::RESET_UNREPLAYABLE)
         .with_stream(stream)),
         None => Ok(()),
     }
@@ -298,7 +298,7 @@ fn cleared(
             ErrorKind::Destination,
             format!("reading pipeline state: {error}"),
         )
-        .with_code("state_invalid")
+        .with_code(codes::STATE_INVALID)
     })?;
     let mut cleared = Cleared {
         state_delta: Vec::new(),
@@ -358,7 +358,7 @@ fn recorded(state: &PipelineState, stream: &StreamName) -> Result<(), Error> {
         return Err(Error::config(format!(
             "stream {stream}: the pipeline recorded nothing of it"
         ))
-        .with_code("stream_not_found")
+        .with_code(codes::STREAM_NOT_FOUND)
         .with_stream(stream));
     }
     let displayed = stream.to_string();
@@ -367,7 +367,7 @@ fn recorded(state: &PipelineState, stream: &StreamName) -> Result<(), Error> {
             "stream {stream}: another stream the pipeline recorded is displayed as it is, and \
              their tables cannot be told apart"
         ))
-        .with_code("stream_ambiguous")
+        .with_code(codes::STREAM_AMBIGUOUS)
         .with_stream(stream));
     }
     Ok(())

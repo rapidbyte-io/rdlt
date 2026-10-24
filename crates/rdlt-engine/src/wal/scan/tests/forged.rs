@@ -9,6 +9,7 @@ use rdlt_connector::{
 };
 
 use super::{FRAME_BYTES, Measured, load, meta, pipeline, published, scan, seq};
+use crate::error::codes;
 use crate::wal::frame::{self, Batch, Committing, End, Fence, Frame, Header, Seal, Table};
 use crate::wal::memory::MemoryWal;
 use crate::wal::store::Chunk;
@@ -116,7 +117,7 @@ async fn scanned(chunks: Vec<(u64, Vec<Frame>)>) -> Result<usize, crate::Error> 
 /// Checks a log of `chunks` is refused as one no load wrote, as `case` says.
 async fn refused(case: &str, chunks: Vec<(u64, Vec<Frame>)>) {
     let error = scanned(chunks).await.expect_err(case);
-    assert_eq!(error.code(), Some("wal_unreadable"), "{case}: {error}");
+    assert_eq!(error.code(), Some(codes::WAL_UNREADABLE), "{case}: {error}");
 }
 
 /// `whole()` with the frame at `at` replaced by `frames`.
@@ -339,7 +340,7 @@ async fn a_frame_announcing_more_than_a_frame_may_hold_is_refused_before_it_is_r
         let error = scan(&store, &pipeline(), load(), FRAME_BYTES)
             .await
             .expect_err("refused");
-        assert_eq!(error.code(), Some("wal_unreadable"), "{announced}");
+        assert_eq!(error.code(), Some(codes::WAL_UNREADABLE), "{announced}");
         let largest = store.largest.load(Ordering::Relaxed);
         assert!(
             largest < FRAME_BYTES.min(announced),

@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use rdlt_connector::limits::ListenLimits;
-use rdlt_connector::wire::v1;
+use rdlt_connector::wire::{CONFIGURE_REPEATED, v1};
 use rdlt_connector::{LoadId, SchemaVersion, TablePath, TableRef};
 use rdlt_host::remote::Client;
 use rdlt_wire::Limits;
@@ -64,7 +64,7 @@ impl Attacker<'_> {
             return;
         };
         let repeated =
-            |error: &rdlt_connector::ConnectorError| error.code() == Some("configure_repeated");
+            |error: &rdlt_connector::ConnectorError| error.code() == Some(CONFIGURE_REPEATED);
         let kept = match (&first, &second) {
             (Ok(_), Err(error)) | (Err(error), Ok(_)) => repeated(error),
             _ => false,

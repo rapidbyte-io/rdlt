@@ -7,7 +7,7 @@ use arrow_array::{BooleanArray, RecordBatch};
 use rdlt_connector::{ChangeOp, OP_COLUMN, StreamName};
 
 use super::super::ChangeMode;
-use crate::error::Error;
+use crate::error::{Error, codes};
 use crate::plan::{DeleteMode, OnTruncate};
 use crate::table::ChangeRows;
 
@@ -97,7 +97,7 @@ pub(super) fn split_changes(
              keep",
             names.join(", ")
         ))
-        .with_code("partial_updates_unsupported")
+        .with_code(codes::PARTIAL_UPDATES_UNSUPPORTED)
         .with_stream(stream));
     }
     let keep: BooleanArray = (0..changes.op.len())

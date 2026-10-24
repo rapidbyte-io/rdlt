@@ -10,7 +10,7 @@ mod tests;
 use std::num::{NonZeroU16, NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::time::Duration;
 
-use crate::error::Error;
+use crate::error::{Error, codes};
 use crate::limits::BUDGET_WAIT;
 
 pub use batch::BatchPolicy;
@@ -186,8 +186,8 @@ impl EngineConfig {
         self.barrier_wait
     }
 
-    /// How long one call into a connector other than a read may take before it fails as
-    /// transient.
+    /// How long one call into a connector other than a read may take before it fails with the
+    /// engine's own retryable error, coded [`DEADLINE_EXCEEDED`](crate::codes::DEADLINE_EXCEEDED).
     ///
     /// The calls are a check, a discovery, a plan, an acknowledgement, an open, a schema change,
     /// a writer's opening, a write, a flush, a commit and a close. A wait for room in the memory
@@ -410,13 +410,12 @@ impl EngineConfigBuilder {
     pub fn build(self) -> Result<EngineConfig, Error> {
         let defaults = EngineConfig::default();
         let invalid = |name: &str| {
-            Error::config(format!("{name} must be more than zero")).with_code("config_invalid")
+            Error::config(format!("{name} must be more than zero")).with_code(codes::CONFIG_INVALID)
         };
         let retry = self.retry.unwrap_or(defaults.retry);
         if retry.initial > retry.max_delay {
-            return Err(
-                Error::config("retry: initial delay exceeds max_delay").with_code("config_invalid")
-            );
+            return Err(Error::config("retry: initial delay exceeds max_delay")
+                .with_code(codes::CONFIG_INVALID));
         }
         let config = EngineConfig {
             memory: nonzero(self.memory, defaults.memory, NonZeroU64::new)

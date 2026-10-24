@@ -10,9 +10,9 @@ use rdlt_wire::limits::{NESTING_DEPTH, SCHEMA_COLUMNS, count};
 
 use super::differential::shredded;
 use super::meter::{KEY, OBJECT_SHAPE};
-use super::reference::Code;
 use super::{Parsed, ShredLimits, chunks, parse, shred};
 use crate::compute::Cores;
+use crate::error::{Code, codes};
 use crate::report::ShredCounts;
 
 /// The limits of pushes whose records may hold as many columns as the wire's schemas.
@@ -45,10 +45,8 @@ fn batch_of(pushes: &[&str], chunk_bytes: usize) -> RecordBatch {
 }
 
 /// The code `push` fails to shred with.
-fn refused(push: &str) -> &'static str {
-    shredded(&[Bytes::from(push.to_owned())], 1 << 20)
-        .unwrap_err()
-        .0
+fn refused(push: &str) -> Code {
+    shredded(&[Bytes::from(push.to_owned())], 1 << 20).unwrap_err()
 }
 
 /// The logical type of each column of `batch`.
@@ -112,7 +110,7 @@ fn malformed_pushes_are_invalid_json() {
         "{\"a\":1e400}",
         "[{\"a\":1}]}",
     ] {
-        assert_eq!(refused(push), "json_invalid", "{push:?}");
+        assert_eq!(refused(push), codes::JSON_INVALID, "{push:?}");
     }
     // Alone, and after an integer that sends its chunk through the exact parse.
     for invalid_utf8 in [
@@ -121,7 +119,7 @@ fn malformed_pushes_are_invalid_json() {
     ] {
         assert_eq!(
             shredded(&[Bytes::from_static(invalid_utf8)], 1 << 20),
-            Err(Code("json_invalid"))
+            Err(codes::JSON_INVALID)
         );
     }
 }
@@ -138,11 +136,15 @@ fn records_that_are_not_objects_are_refused() {
         "[1]",
         "[{\"a\":1},[]]",
     ] {
-        assert_eq!(refused(push), "json_not_object", "{push:?}");
+        assert_eq!(refused(push), codes::JSON_NOT_OBJECT, "{push:?}");
     }
     // Integers beyond 38 digits, which only the exact parse reads.
     for digits in [39, 400] {
-        assert_eq!(refused(&"9".repeat(digits)), "json_not_object", "{digits}");
+        assert_eq!(
+            refused(&"9".repeat(digits)),
+            codes::JSON_NOT_OBJECT,
+            "{digits}"
+        );
     }
 }
 
@@ -161,7 +163,7 @@ fn a_repeated_key_is_refused_at_any_depth_and_however_it_is_escaped() {
         format!("{{\"j\":1}}\n{{\"j\":{{\"a\":1,\"{escaped}\":1}}}}"),
     ] {
         assert!(push.is_ascii(), "{push}");
-        assert_eq!(refused(&push), "json_duplicate_key", "{push:?}");
+        assert_eq!(refused(&push), codes::JSON_DUPLICATE_KEY, "{push:?}");
     }
 }
 
@@ -197,18 +199,18 @@ fn values_nest_up_to_the_limit_and_no_deeper() {
             assert_eq!(batch_of(&[&deepest], 1 << 20).num_rows(), rows);
             assert_eq!(roomy_batch(&deepest, 1 << 20).1.num_rows(), rows);
             let deeper = format!("{before}{}", nested(NESTING_DEPTH + 1, open, close));
-            assert_eq!(refused(&deeper), "limit_exceeded", "{before:?} {open}");
+            assert_eq!(refused(&deeper), codes::LIMIT_EXCEEDED, "{before:?} {open}");
             let pushes = [Bytes::from(deeper)];
             let refused_roomy = super::differential::shredded_within(&pushes, 1 << 20, roomy);
             assert_eq!(
-                refused_roomy.unwrap_err().0,
-                "limit_exceeded",
+                refused_roomy.unwrap_err(),
+                codes::LIMIT_EXCEEDED,
                 "{before:?} {open}"
             );
         }
         // Far past the limit, as the shredder refuses it before it builds anything.
         let far = format!("{before}{}", nested(200, "{\"b\":", "}"));
-        assert_eq!(refused(&far), "limit_exceeded", "{before:?}");
+        assert_eq!(refused(&far), codes::LIMIT_EXCEEDED, "{before:?}");
     }
 }
 
@@ -219,7 +221,7 @@ fn a_value_nested_far_past_the_limit_is_refused_without_exhausting_the_stack() {
         "[".repeat(1_000_000),
         "]".repeat(1_000_000)
     );
-    assert_eq!(refused(&deep), "limit_exceeded");
+    assert_eq!(refused(&deep), codes::LIMIT_EXCEEDED);
 }
 
 #[test]
@@ -233,7 +235,11 @@ fn a_value_nested_past_the_limit_is_refused_even_where_the_chunk_is_parsed_exact
     for prefix in &prefixes {
         for levels in [depth + 1, 1_000_000] {
             let deep = format!("{prefix}{}{}}}", "[".repeat(levels), "]".repeat(levels));
-            assert_eq!(refused(&deep), "limit_exceeded", "{prefix:?} at {levels}");
+            assert_eq!(
+                refused(&deep),
+                codes::LIMIT_EXCEEDED,
+                "{prefix:?} at {levels}"
+            );
         }
     }
     // A record is refused for what it holds first: here a number beyond a float's range.
@@ -243,21 +249,17 @@ fn a_value_nested_past_the_limit_is_refused_even_where_the_chunk_is_parsed_exact
             "[".repeat(levels),
             "]".repeat(levels)
         );
-        assert_eq!(refused(&invalid), "json_invalid", "at {levels}");
+        assert_eq!(refused(&invalid), codes::JSON_INVALID, "at {levels}");
         let pushes = [Bytes::from(invalid)];
         let reference = super::reference::shred(&pushes).unwrap_err();
-        assert_eq!(
-            reference,
-            Code("json_invalid"),
-            "the reference, at {levels}"
-        );
+        assert_eq!(reference, codes::JSON_INVALID, "the reference, at {levels}");
     }
     let beside = format!(
         "{{\"n\":18446744073709551616}}\n{{\"a\":{}{}}}",
         "[".repeat(1_000_000),
         "]".repeat(1_000_000)
     );
-    assert_eq!(refused(&beside), "limit_exceeded");
+    assert_eq!(refused(&beside), codes::LIMIT_EXCEEDED);
     // An empty container at the limit is a value at the limit.
     let levels = depth - 1;
     let at_limit = format!(
@@ -304,7 +306,7 @@ fn records_with_more_columns_than_the_limit_are_refused() {
         batch_of(&[&record(columns)], 1 << 20).num_columns(),
         columns
     );
-    assert_eq!(refused(&record(columns + 1)), "limit_exceeded");
+    assert_eq!(refused(&record(columns + 1)), codes::LIMIT_EXCEEDED);
 }
 
 #[test]
@@ -609,7 +611,7 @@ fn strings_with_lone_surrogates_or_bad_escapes_are_invalid_json() {
         r#"{"a":"\x"}"#,
         r#"{"a":"\u12"}"#,
     ] {
-        assert_eq!(refused(push), "json_invalid", "{push:?}");
+        assert_eq!(refused(push), codes::JSON_INVALID, "{push:?}");
     }
     // The escapes are built with an explicit backslash so no tool decodes them on the way in.
     let pair = format!(r#"{{"a":"{0}ud83d{0}ude00"}}"#, '\\');
@@ -743,16 +745,16 @@ fn a_record_over_the_column_limit_is_refused_as_soon_as_it_is_read() {
 fn nested_objects_are_bound_by_the_column_limit_too() {
     let columns = usize::try_from(SCHEMA_COLUMNS).unwrap();
     let nested = format!("{{\"o\":{}}}", wide_object(0, columns + 1));
-    assert_eq!(refused(&nested), "limit_exceeded");
+    assert_eq!(refused(&nested), codes::LIMIT_EXCEEDED);
     let half = columns / 2 + 1;
     let first = format!("{{\"o\":{}}}", wide_object(0, half));
     let second = format!("{{\"o\":{}}}", wide_object(half, half));
     let pushes = [Bytes::from(first), Bytes::from(second)];
-    assert_eq!(shredded(&pushes, 1).unwrap_err(), Code("limit_exceeded"));
+    assert_eq!(shredded(&pushes, 1).unwrap_err(), codes::LIMIT_EXCEEDED);
     let first = format!("{{\"l\":[{}]}}", wide_object(0, half));
     let second = format!("{{\"l\":[{}]}}", wide_object(half, half));
     let in_lists = [Bytes::from(first), Bytes::from(second)];
-    assert_eq!(shredded(&in_lists, 1).unwrap_err(), Code("limit_exceeded"));
+    assert_eq!(shredded(&in_lists, 1).unwrap_err(), codes::LIMIT_EXCEEDED);
     // The object's own column and its fields together are the limit.
     let fits = format!("{{\"o\":{}}}", wide_object(0, columns - 1));
     assert_eq!(batch_of(&[&fits], 1 << 20).num_rows(), 1);
@@ -762,7 +764,7 @@ fn nested_objects_are_bound_by_the_column_limit_too() {
 fn sparse_wide_records_are_refused_before_they_are_built() {
     // Over five thousand rows under almost ten thousand columns: fifty million cells, from 114 KB.
     let push = format!("{}{}", "{}\n".repeat(5000), wide_object(0, 9999));
-    assert_eq!(refused(&push), "limit_exceeded");
+    assert_eq!(refused(&push), codes::LIMIT_EXCEEDED);
 }
 
 #[test]
@@ -870,7 +872,7 @@ fn a_refusal_names_where_the_json_broke_without_quoting_the_data() {
     ))
     .unwrap_err();
     let message = error.to_string();
-    assert_eq!(error.code(), "json_invalid");
+    assert_eq!(error.code(), codes::JSON_INVALID);
     assert!(!message.contains(secret), "{message}");
     assert!(
         !message.contains('\n') && !message.contains('\t'),
@@ -907,7 +909,7 @@ fn a_bad_record_is_numbered_in_its_push_whichever_chunk_holds_it() {
             limits(),
         ))
         .unwrap_err();
-        assert_eq!(refused.code(), "json_invalid");
+        assert_eq!(refused.code(), codes::JSON_INVALID);
         assert!(
             matches!(refused, super::ShredError::Record { index: 250, .. }),
             "{refused:?}"
@@ -974,9 +976,9 @@ fn only_json_whitespace_surrounds_records() {
         format!("[{{\"a\":1}}]{form_feed}"),
         format!("{no_break_space}{{\"a\":1}}"),
     ] {
-        assert_eq!(refused(&push), "json_invalid", "{push:?}");
+        assert_eq!(refused(&push), codes::JSON_INVALID, "{push:?}");
         let reference = super::reference::shred(&[Bytes::from(push.clone())]);
-        assert_eq!(reference.unwrap_err(), Code("json_invalid"), "{push:?}");
+        assert_eq!(reference.unwrap_err(), codes::JSON_INVALID, "{push:?}");
     }
     assert_eq!(
         batch_of(&[" \t\r\n{\"a\":1} \t\r\n"], 1 << 20).num_rows(),
@@ -1007,7 +1009,10 @@ fn values_at_the_nesting_limit_shred_on_a_small_stack_in_any_build() {
                     let deepest = format!("{before}{}", nested(levels, open, close));
                     assert!(shred_here(deepest).is_ok());
                     let deeper = format!("{before}{}", nested(NESTING_DEPTH + 1, open, close));
-                    assert_eq!(shred_here(deeper).unwrap_err().code(), "limit_exceeded");
+                    assert_eq!(
+                        shred_here(deeper).unwrap_err().code(),
+                        codes::LIMIT_EXCEEDED
+                    );
                 }
             }
         })
@@ -1424,7 +1429,10 @@ fn a_chunk_whose_rendering_finds_no_room_is_built_again_to_the_same_batch() {
 
 #[test]
 fn an_object_repeating_a_key_in_a_drifted_column_is_refused_as_before() {
-    assert_eq!(refused(&drifting(r#"{"a":1,"a":2}"#)), "json_duplicate_key");
+    assert_eq!(
+        refused(&drifting(r#"{"a":1,"a":2}"#)),
+        codes::JSON_DUPLICATE_KEY
+    );
 }
 
 /// How many chunks shredding `push` in one chunk builds again, and the batch.
@@ -1864,7 +1872,7 @@ proptest::proptest! {
         let push = format!("{{\"v\":1}}\n{{\"v\":{},\"f\":1.5}}\n{{\"v\":{last}}}\n", value.text);
         let shredded = shredded(&[Bytes::from(push)], chunk_bytes);
         match value.rendered {
-            None => proptest::prop_assert_eq!(shredded.unwrap_err().0, "json_duplicate_key"),
+            None => proptest::prop_assert_eq!(shredded.unwrap_err(), codes::JSON_DUPLICATE_KEY),
             Some(rendered) => {
                 let batch = shredded.unwrap().unwrap();
                 let column = batch.column_by_name("v").unwrap().as_string::<i32>();
@@ -1884,7 +1892,7 @@ fn a_string_holding_a_raw_control_character_is_invalid_json() {
     for control in ['\u{0}', '\u{1}', '\n', '\u{1f}'] {
         assert_eq!(
             refused(&format!("{{\"a\":\"x{control}y\"}}")),
-            "json_invalid"
+            codes::JSON_INVALID
         );
     }
 }

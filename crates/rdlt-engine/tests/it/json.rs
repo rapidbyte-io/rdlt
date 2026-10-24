@@ -9,8 +9,9 @@ use bytes::Bytes;
 use rdlt_connector::{Push, ReadMode};
 use rdlt_connector_reference::published;
 use rdlt_engine::{
-    BatchPolicy, ErrorKind, Nested, RunStatus, SchemaSettings, StreamPlan, WriteMode,
+    BatchPolicy, ErrorKind, Nested, Origin, RunStatus, SchemaSettings, StreamPlan, WriteMode, codes,
 };
+use rdlt_wire::limits::LIMIT_EXCEEDED;
 use serde_json::{Value, json};
 
 use crate::support::batches::{BatchStream, batches};
@@ -129,9 +130,13 @@ async fn arrow_batches_between_checkpoints_are_coalesced_into_one() {
 #[tokio::test(start_paused = true)]
 async fn a_push_the_shredder_refuses_fails_the_run_with_its_code() {
     for (store, push, code) in [
-        ("truncated", r#"{"id":"#, "json_invalid"),
-        ("not_objects", "[1,2]", "json_not_object"),
-        ("repeated_key", r#"{"id":1,"id":2}"#, "json_duplicate_key"),
+        ("truncated", r#"{"id":"#, codes::JSON_INVALID),
+        ("not_objects", "[1,2]", codes::JSON_NOT_OBJECT),
+        (
+            "repeated_key",
+            r#"{"id":1,"id":2}"#,
+            codes::JSON_DUPLICATE_KEY,
+        ),
     ] {
         let source = batches(store, vec![BatchStream::json("events", &[push])]).await;
         let outcome = engine(commit_every(10))
@@ -164,7 +169,7 @@ async fn a_record_the_shredder_refuses_fails_every_run_that_reads_it() {
         let error = outcome.error.expect("the run fails");
         assert_eq!(
             (error.kind(), error.code(), error.is_retryable()),
-            (ErrorKind::Source, Some("json_invalid"), false),
+            (ErrorKind::Source, Some(codes::JSON_INVALID), false),
             "run {run}"
         );
         assert_eq!(
@@ -207,8 +212,8 @@ async fn a_json_push_beyond_what_the_budget_admits_is_refused_where_it_is_emitte
     // The source is told the limit the budget admits, so the push never reaches the budget.
     let error = outcome.error.expect("the run fails");
     assert_eq!(
-        (error.kind(), error.code()),
-        (ErrorKind::Source, Some("limit_exceeded"))
+        (error.kind(), error.origin(), error.connector_code()),
+        (ErrorKind::Source, Origin::Source, Some(LIMIT_EXCEEDED))
     );
     let said = format!("{:?}", error.report());
     assert!(
@@ -427,7 +432,7 @@ async fn an_arrow_push_holding_text_that_is_not_json_in_a_json_column_fails_unwr
     let error = outcome.error.expect("the run fails");
     assert_eq!(
         (error.kind(), error.code()),
-        (ErrorKind::Source, Some("json_invalid"))
+        (ErrorKind::Source, Some(codes::JSON_INVALID))
     );
     assert_eq!(published_rows(store, "events"), 0);
 }

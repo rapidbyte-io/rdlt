@@ -7,13 +7,14 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use rdlt_connector::{
     BoxFuture, Capabilities, CommitMeta, ConnectContext, ConnectorError, ConnectorErrorKind,
     Destination, DestinationSession, DestinationWriter, OpenContext, OpenedSession, ReadMode,
-    Receipt, Source, StateEntry, StateRecord, TableChange, TablePath, TableRef, source_factory,
+    Receipt, Source, StateEntry, StateRecord, TABLE_OWNED, TableChange, TablePath, TableRef,
+    source_factory,
 };
 use rdlt_connector_reference::LogSource;
 use rdlt_connector_reference::changes::expected;
 use rdlt_engine::{
     ErrorKind, LocalWal, Nested, ResetReport, ResetScope, RunStatus, SchemaSettings, WalStore,
-    WriteMode,
+    WriteMode, codes,
 };
 use serde_json::json;
 
@@ -91,7 +92,7 @@ async fn a_receipt_for_another_commit_fails_a_run_and_a_reset() {
     let error = outcome.error.expect("the run failed");
     assert_eq!(
         (error.kind(), error.code(), error.is_retryable()),
-        (ErrorKind::Destination, Some("receipt_mismatch"), false)
+        (ErrorKind::Destination, Some(codes::RECEIPT_MISMATCH), false)
     );
     let reset = engine(commit_every(16))
         .reset(
@@ -105,7 +106,7 @@ async fn a_receipt_for_another_commit_fails_a_run_and_a_reset() {
     let error = reset.expect_err("the reset fails");
     assert_eq!(
         (error.kind(), error.code()),
-        (ErrorKind::Destination, Some("receipt_mismatch"))
+        (ErrorKind::Destination, Some(codes::RECEIPT_MISMATCH))
     );
 }
 
@@ -174,7 +175,7 @@ async fn a_reset_of_a_stream_the_pipeline_recorded_nothing_of_is_refused_and_cha
         .await
         .expect_err("a stream the pipeline never loaded is refused");
     assert_eq!(refused.kind(), ErrorKind::Config);
-    assert_eq!(refused.code(), Some("stream_not_found"));
+    assert_eq!(refused.code(), Some(codes::STREAM_NOT_FOUND));
     // Nothing was reset: the next run finds every message already loaded.
     load(target, "unknown", "reset_unknown").await;
     assert_eq!(offsets(target, "reset_unknown"), [0, 1, 2, 3]);
@@ -198,7 +199,7 @@ async fn a_destination_that_drops_no_tables_refuses_to_reset_a_stream_s_tables()
         .await
         .expect_err("the destination drops no tables");
     assert_eq!(refused.kind(), ErrorKind::Config);
-    assert_eq!(refused.code(), Some("drop_unsupported"));
+    assert_eq!(refused.code(), Some(codes::DROP_UNSUPPORTED));
     assert_eq!(offsets(target, "reset_undroppable"), [0, 1, 2, 3]);
 }
 
@@ -217,7 +218,7 @@ async fn a_table_reset_with_its_stream_is_handed_to_any_pipeline() {
             .await;
         assert_eq!(refused.report.status, RunStatus::Failed, "{target:?}");
         let error = refused.error.expect("the table is the first pipeline's");
-        assert_eq!(error.code(), Some("table_owned"), "{target:?}");
+        assert_eq!(error.connector_code(), Some(TABLE_OWNED), "{target:?}");
         reset(target, "first", store, ResetScope::Tables).await;
         let outcome = engine(commit_every(16))
             .run(plan, log("second").await, target.destination(store).await)
@@ -383,7 +384,7 @@ async fn a_log_whose_epochs_were_forged_past_a_reset_is_refused_not_replayed() {
     let after = run(memory("reset_forged").await).await;
     assert_eq!(after.report.status, RunStatus::Failed);
     let error = after.error.expect("the replay is refused");
-    assert_eq!(error.code(), Some("wal_unreadable"), "{error:?}");
+    assert_eq!(error.code(), Some(codes::WAL_UNREADABLE), "{error:?}");
     // Refused for its session, not for frames the forging garbled.
     assert!(
         error.to_string().contains("not older than this one"),
@@ -428,7 +429,7 @@ async fn a_stream_whose_acknowledged_rows_wait_in_a_log_is_not_reset_until_they_
         )
         .await
         .expect_err("the log holds rows nothing else does");
-    assert_eq!(refused.code(), Some("reset_unreplayable"));
+    assert_eq!(refused.code(), Some(codes::RESET_UNREPLAYABLE));
     // A run lands them from the log, after which the stream may be reset.
     let landed = run(memory("reset_waiting").await).await;
     assert_eq!(
@@ -475,9 +476,7 @@ async fn a_reset_fences_the_log_of_a_load_still_running_before_it_reads_it() {
                         memory("reset_racing").await,
                     )
                     .await;
-                *refused.lock() = reset
-                    .err()
-                    .and_then(|error| error.code().map(str::to_owned));
+                *refused.lock() = reset.err().and_then(|error| error.code());
             })
         })
     };
@@ -486,10 +485,10 @@ async fn a_reset_fences_the_log_of_a_load_still_running_before_it_reads_it() {
     let running = logging_engine(commit_every(10), Arc::clone(&wal))
         .run(plan.clone(), Arc::clone(&source), destination)
         .await;
-    assert_eq!(refused.lock().as_deref(), Some("reset_unreplayable"));
+    assert_eq!(*refused.lock(), Some(codes::RESET_UNREPLAYABLE));
     // The reset read the log only once it was fenced: the load logs nothing more after it.
     let error = running.error.expect("the load is fenced");
-    assert_eq!(error.code(), Some("wal_fenced"), "{error}");
+    assert_eq!(error.code(), Some(codes::WAL_FENCED), "{error}");
     // A run lands what the log holds, and the rest, once each.
     let landed = logging_engine(commit_every(10), Arc::clone(&wal))
         .run(
@@ -591,7 +590,7 @@ async fn a_reset_through_another_log_store_than_the_pipeline_s_is_refused() {
     let refused = reset(two.path())
         .await
         .expect_err("another store than the pipeline's");
-    assert_eq!(refused.code(), Some("wal_store_other"), "{refused}");
+    assert_eq!(refused.code(), Some(codes::WAL_STORE_OTHER), "{refused}");
     reset(one.path()).await.expect("the pipeline's own store");
 }
 
@@ -611,7 +610,7 @@ async fn a_stream_whose_source_cannot_read_again_is_not_reset() {
         .await
         .expect_err("a source that cannot read again cannot read from the beginning");
     assert_eq!(refused.kind(), ErrorKind::Config);
-    assert_eq!(refused.code(), Some("reset_unreplayable"));
+    assert_eq!(refused.code(), Some(codes::RESET_UNREPLAYABLE));
 }
 
 #[tokio::test]
@@ -827,7 +826,7 @@ async fn a_reset_of_no_streams_is_refused_before_it_fences_anything() {
         .await
         .expect_err("a reset of no streams is refused");
     assert_eq!(refused.kind(), ErrorKind::Config);
-    assert_eq!(refused.code(), Some("no_streams"));
+    assert_eq!(refused.code(), Some(codes::NO_STREAMS));
     // The session opened before it still commits: nothing fenced it.
     let meta = CommitMeta {
         load_id: context.load_id,
@@ -961,7 +960,7 @@ async fn state_of_the_previous_format_is_refused_by_a_run_and_a_reset() {
         .await;
     assert_eq!(outcome.report.status, RunStatus::Failed);
     let error = outcome.error.expect("the run fails");
-    assert_eq!(error.code(), Some("state_invalid"));
+    assert_eq!(error.code(), Some(codes::STATE_INVALID));
     assert!(!error.is_retryable());
     let refused = engine(commit_every(16))
         .reset(
@@ -973,7 +972,7 @@ async fn state_of_the_previous_format_is_refused_by_a_run_and_a_reset() {
         )
         .await
         .expect_err("a reset reads the state it resets");
-    assert_eq!(refused.code(), Some("state_invalid"));
+    assert_eq!(refused.code(), Some(codes::STATE_INVALID));
 }
 
 /// `records` with each value followed by text that is not JSON.
@@ -997,7 +996,7 @@ async fn a_destination_s_state_value_that_is_not_json_is_refused_before_it_is_lo
         .await;
     assert_eq!(outcome.report.status, RunStatus::Failed);
     let error = outcome.error.expect("the run fails");
-    assert_eq!(error.code(), Some("state_invalid"), "{error:?}");
+    assert_eq!(error.code(), Some(codes::STATE_INVALID), "{error:?}");
     assert_eq!(
         outcome.report.counters.log.appended, 0,
         "nothing was logged"
@@ -1053,7 +1052,7 @@ async fn two_tables_recorded_under_one_identifier_are_refused_at_open() {
     assert_eq!(outcome.report.status, RunStatus::Failed);
     assert_eq!(
         outcome.error.expect("the run fails").code(),
-        Some("state_invalid")
+        Some(codes::STATE_INVALID)
     );
     assert_eq!(published_ids(store, "a"), [1]);
 }

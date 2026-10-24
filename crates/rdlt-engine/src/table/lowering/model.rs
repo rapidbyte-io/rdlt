@@ -9,7 +9,7 @@ use rdlt_connector::{Field, LogicalType, StreamName};
 use super::split::Fitted;
 use super::unheld::Converted;
 use super::{LoweringPlan, Source, lower_array};
-use crate::error::Error;
+use crate::error::{Error, codes};
 use crate::table::convert::convert;
 
 impl LoweringPlan {
@@ -103,6 +103,6 @@ fn unrepresentable(stream: &StreamName, column: &Field, error: &arrow_schema::Ar
         column.name()
     );
     Error::schema(detail)
-        .with_code("value_unrepresentable")
+        .with_code(codes::VALUE_UNREPRESENTABLE)
         .with_stream(stream)
 }

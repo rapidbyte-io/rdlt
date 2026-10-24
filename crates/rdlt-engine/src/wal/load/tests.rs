@@ -17,6 +17,7 @@ use super::{LoadLog, Owner, Sealed};
 use crate::budget::MemoryBudget;
 use crate::compute::Pool;
 use crate::env::{Env, InlineEnv};
+use crate::error::codes;
 use crate::table::TableView;
 use crate::table::testing::view;
 use crate::wal::frame::{self, Frame};
@@ -240,7 +241,7 @@ async fn a_second_writer_of_one_log_is_fenced_at_its_first_commit() {
             .commit(&budget, Vec::new(), Vec::new(), &meta(&[]), 0)
             .await
             .expect_err("the chunk is taken");
-        assert_eq!(refused.code(), Some("wal_fenced"));
+        assert_eq!(refused.code(), Some(codes::WAL_FENCED));
         drop((first, second));
     };
     let (first_ended, second_ended, ()) = tokio::join!(first_task, second_task, written);
@@ -432,7 +433,7 @@ async fn a_tables_schema_frame_beyond_the_log_s_share_fails_the_batch_that_needs
     ended.expect("the writer ends");
     assert_eq!(
         (refused.kind(), refused.code()),
-        (crate::ErrorKind::Wal, Some("log_frame_exceeds_budget"))
+        (crate::ErrorKind::Wal, Some(codes::LOG_FRAME_EXCEEDS_BUDGET))
     );
     let logged = frames(&store);
     assert!(
@@ -522,7 +523,7 @@ async fn a_commit_frame_is_charged_for_the_state_it_records_and_refused_beyond_t
         let refused = refused.expect_err("the frame passes the log's share");
         assert_eq!(
             (refused.kind(), refused.code()),
-            (crate::ErrorKind::Wal, Some("log_frame_exceeds_budget"))
+            (crate::ErrorKind::Wal, Some(codes::LOG_FRAME_EXCEEDS_BUDGET))
         );
         let cause = std::error::Error::source(&refused);
         let cause = cause.and_then(|cause| cause.downcast_ref::<crate::budget::TooLarge>());
@@ -811,7 +812,7 @@ async fn a_batch_that_would_take_the_log_past_what_it_may_hold_is_refused() {
         }
         let (segment, error) = refused.expect("the log fills");
         assert!(segment > 2, "refused at batch {segment}");
-        assert_eq!(error.code(), Some("log_bytes_exceeded"));
+        assert_eq!(error.code(), Some(codes::LOG_BYTES_EXCEEDED));
         assert!(!error.is_retryable());
         assert!(log.held() <= limit);
 
@@ -1042,7 +1043,7 @@ async fn a_batch_finding_the_log_full_waits_only_while_a_commit_can_free_room() 
         };
         let (refused, ()) = tokio::join!(waiting, ended);
         let error = refused.expect_err("no room");
-        assert_eq!(error.code(), Some("log_bytes_exceeded"));
+        assert_eq!(error.code(), Some(codes::LOG_BYTES_EXCEEDED));
         assert!(!log.waits());
         drop(log);
     };

@@ -12,7 +12,7 @@ use rdlt_connector::{
 use tokio::sync::mpsc;
 
 use super::{Coordinator, PartitionRun};
-use crate::error::{Error, ErrorKind, Side};
+use crate::error::{Error, ErrorKind, Side, codes};
 use crate::partition::{self, ChangeMode, PartitionContext, PartitionJob};
 use crate::wal::frame::BegunPhase;
 
@@ -69,7 +69,7 @@ pub(crate) async fn plan_of(
     })?;
     planned.validate().map_err(|invalid| {
         Error::new(ErrorKind::Source, format!("stream {name}: {invalid}"))
-            .with_code("plan_invalid")
+            .with_code(codes::PLAN_INVALID)
             .with_stream(name)
     })?;
     Ok(planned)
@@ -183,7 +183,7 @@ impl Coordinator {
                     run.name
                 ),
             )
-            .with_code("phase_unexpected")
+            .with_code(codes::PHASE_UNEXPECTED)
             .with_stream(&run.name));
         }
         let mut begun = phases.begun.take().unwrap_or_default();

@@ -1,9 +1,11 @@
 use std::error::Error as _;
 use std::time::Duration;
 
+use proptest::prelude::*;
+use rdlt_connector::limits::MAX_ERROR_CODE_BYTES;
 use rdlt_connector::{ConnectorError, ConnectorErrorKind, StreamName};
 
-use super::{Error, ErrorKind, Side};
+use super::{Error, ErrorKind, Origin, Side, codes};
 use crate::scope::ScopeError;
 
 fn connector(kind: ConnectorErrorKind) -> ConnectorError {
@@ -39,7 +41,68 @@ fn connector_errors_map_to_engine_kinds_by_side() {
         let error = Error::connector(side, "doing something", connector(kind));
         assert_eq!(error.kind(), expected, "{kind:?} from {side:?}");
         assert_eq!(error.is_retryable(), retryable, "{kind:?} from {side:?}");
-        assert_eq!(error.code(), Some("x.code"));
+        assert_eq!(error.code(), None);
+        assert_eq!(error.connector_code(), Some("x.code"));
+        assert_eq!(error.origin(), side.origin(), "{kind:?} from {side:?}");
+        assert_eq!(error.report().origin, side.origin());
+    }
+}
+
+#[test]
+fn no_connector_error_has_the_engine_s_origin() {
+    use ConnectorErrorKind as K;
+    let kinds = [
+        K::Config,
+        K::Auth,
+        K::Transient,
+        K::RateLimited,
+        K::Data,
+        K::Unsupported,
+        K::Fenced,
+        K::Stopped,
+        K::Internal,
+    ];
+    let codes = [
+        None,
+        Some("x.code"),
+        Some("deadline_exceeded"),
+        Some("state_invalid"),
+    ];
+    for kind in kinds {
+        for code in codes {
+            for (side, origin) in [
+                (Side::Source, Origin::Source),
+                (Side::Destination, Origin::Destination),
+            ] {
+                let mut raised = ConnectorError::new(kind, "the connector failed");
+                if let Some(code) = code {
+                    raised = raised.with_code(code);
+                }
+                let error = Error::connector(side, "doing something", raised);
+                assert_eq!(error.origin(), origin, "{kind:?} {code:?} from {side:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_connector_error_coded_deadline_exceeded_is_the_connector_s() {
+    for (side, origin) in [
+        (Side::Source, Origin::Source),
+        (Side::Destination, Origin::Destination),
+    ] {
+        // Its words and its cause's are the engine's wait's, and it is still the connector's.
+        let said = "the commit took longer than the engine's wait of 30s";
+        let cause = Driver {
+            text: said.to_owned(),
+            source: None,
+        };
+        let late = ConnectorError::new(ConnectorErrorKind::Transient, said)
+            .with_code(rdlt_connector::DEADLINE_EXCEEDED)
+            .with_source(cause);
+        let error = Error::connector(side, "committing", late);
+        assert_eq!(error.origin(), origin, "from {side:?}");
+        assert!(error.is_retryable());
     }
 }
 
@@ -69,7 +132,7 @@ fn a_connector_cannot_claim_a_stop_or_a_fence_but_a_session_s_fence() {
             assert!(
                 !matches!(
                     mapped,
-                    ErrorKind::Cancelled | ErrorKind::Internal | ErrorKind::Wal
+                    ErrorKind::Cancelled | ErrorKind::Internal | ErrorKind::Wal | ErrorKind::Memory
                 ),
                 "{kind:?} from {side:?} is {mapped:?}"
             );
@@ -123,7 +186,8 @@ fn reports_carry_the_kind_stream_code_and_causes() {
     let report = error.report();
     assert_eq!(report.kind, ErrorKind::Source);
     assert_eq!(report.stream.as_deref(), Some("orders"));
-    assert_eq!(report.code.as_deref(), Some("x.code"));
+    assert_eq!(report.code, None);
+    assert_eq!(report.connector_code.as_deref(), Some("x.code"));
     assert_eq!(report.message, "reading stream orders");
     assert_eq!(report.causes, ["the connector failed"]);
     assert!(!report.retryable);
@@ -142,13 +206,18 @@ fn engine_errors_have_their_kinds_and_no_cause() {
     ];
     for (error, kind) in cases {
         assert_eq!(error.kind(), kind);
+        assert_eq!(error.origin(), Origin::Engine);
+        assert_eq!(error.report().origin, Origin::Engine);
         assert!(!error.is_retryable());
         assert!(error.source().is_none());
         assert!(error.report().causes.is_empty());
         assert_eq!(error.stream(), None);
         assert_eq!(error.code(), None);
+        assert_eq!(error.connector_code(), None);
     }
-    assert_eq!(Error::config("c").with_code("k").code(), Some("k"));
+    let coded = Error::config("c").with_code(codes::CONFIG_INVALID);
+    assert_eq!(coded.code(), Some(codes::CONFIG_INVALID));
+    assert_eq!(coded.report().code, Some(codes::CONFIG_INVALID));
 }
 
 #[test]
@@ -162,7 +231,10 @@ fn only_cancellations_count_as_induced_and_panics_are_internal() {
 
 #[test]
 fn debug_output_names_the_kind() {
-    let rendered = format!("{:?}", Error::schema("mismatch").with_code("k"));
+    let rendered = format!(
+        "{:?}",
+        Error::schema("mismatch").with_code(codes::SCHEMA_FROZEN)
+    );
     assert!(rendered.contains("Schema"), "{rendered}");
 }
 
@@ -191,7 +263,7 @@ fn a_report_shows_a_connectors_words_and_obeys_none_of_them() {
     let json = serde_json::to_string(&report).expect("a report serializes");
     let texts = [
         &report.message,
-        report.code.as_ref().expect("a code"),
+        report.connector_code.as_ref().expect("a code"),
         &json,
     ]
     .into_iter()
@@ -245,30 +317,7 @@ fn an_errors_display_shows_a_name_a_connector_chose_and_obeys_none_of_it() {
 }
 
 #[test]
-fn no_connector_error_is_of_the_memory_budget_s_kind_or_code() {
-    use ConnectorErrorKind as K;
-    let kinds = [
-        K::Config,
-        K::Auth,
-        K::Unsupported,
-        K::Fenced,
-        K::Stopped,
-        K::Transient,
-        K::RateLimited,
-        K::Data,
-        K::Internal,
-    ];
-    for kind in kinds {
-        for side in [Side::Source, Side::Destination] {
-            let forged = ConnectorError::new(kind, "the budget failed, says the connector")
-                .with_code("memory_budget_wait_exceeded");
-            let error = Error::connector(side, "reading", forged);
-            assert_ne!(error.kind(), ErrorKind::Memory, "{kind:?} from {side:?}");
-            assert_eq!(error.code(), None, "{kind:?} from {side:?}");
-            assert_eq!(error.report().code, None);
-        }
-    }
-    // The engine's own says what held the budget, and may be tried again.
+fn the_budget_s_error_says_what_held_it_and_may_be_tried_again() {
     let exhausted = crate::budget::Exhausted {
         what: "a push",
         asked: 10,
@@ -284,8 +333,18 @@ fn no_connector_error_is_of_the_memory_budget_s_kind_or_code() {
     };
     let memory = Error::memory(exhausted);
     assert_eq!(
-        (memory.kind(), memory.code(), memory.is_retryable()),
-        (ErrorKind::Memory, Some("memory_budget_wait_exceeded"), true)
+        (
+            memory.kind(),
+            memory.origin(),
+            memory.code(),
+            memory.is_retryable()
+        ),
+        (
+            ErrorKind::Memory,
+            Origin::Engine,
+            Some(codes::MEMORY_BUDGET_WAIT_EXCEEDED),
+            true
+        )
     );
     assert!(memory.to_string().contains("waited 3600s"), "{memory}");
 }
@@ -294,10 +353,10 @@ fn no_connector_error_is_of_the_memory_budget_s_kind_or_code() {
 fn a_log_another_load_still_writes_is_waited_for_and_a_taken_one_is_not() {
     let load = rdlt_connector::LoadId::from_parts(std::time::UNIX_EPOCH, 3);
     let running = Error::wal_running(load);
-    assert_eq!(running.code(), Some("wal_running"));
+    assert_eq!(running.code(), Some(codes::WAL_RUNNING));
     assert!(running.is_retryable(), "another attempt may end");
     let raced = Error::wal_opening_taken(load);
-    assert_eq!(raced.code(), Some("wal_running"));
+    assert_eq!(raced.code(), Some(codes::WAL_RUNNING));
     assert!(raced.is_retryable(), "another attempt begins");
     let fenced = Error::wal_fenced(load);
     assert_eq!(fenced.kind(), ErrorKind::Fenced);
@@ -313,7 +372,7 @@ fn a_full_disk_under_the_log_is_retryable_and_says_so() {
     for full in [Kind::StorageFull, Kind::QuotaExceeded] {
         let error = Error::from_wal(Io::from(full));
         assert_eq!(error.kind(), ErrorKind::Wal);
-        assert_eq!(error.code(), Some("wal_storage_full"), "{full:?}");
+        assert_eq!(error.code(), Some(codes::WAL_STORAGE_FULL), "{full:?}");
         assert!(error.is_retryable(), "{full:?}");
     }
     for transient in [
@@ -330,5 +389,92 @@ fn a_full_disk_under_the_log_is_retryable_and_says_so() {
         let error = Error::from_wal(Io::from(lasting));
         assert_eq!(error.code(), None, "{lasting:?}");
         assert!(!error.is_retryable(), "{lasting:?}");
+    }
+}
+
+#[test]
+fn a_report_serializes_as_an_embedder_reads_it() {
+    let stream = StreamName::new("orders").unwrap();
+    let driver = Driver {
+        text: "duplicate key value violates unique constraint".to_owned(),
+        source: None,
+    };
+    let refused = ConnectorError::data("the batch was refused")
+        .with_code("pg.unique_violation")
+        .with_source(driver);
+    let destination =
+        Error::connector(Side::Destination, "writing a batch", refused).with_stream(&stream);
+    let engine = Error::schema("stream orders: column total cannot hold text")
+        .with_code(codes::SCHEMA_FROZEN)
+        .with_stream(&stream);
+    let reports = [destination.report(), engine.report()];
+    insta::assert_snapshot!(serde_json::to_string_pretty(&reports).expect("reports serialize"));
+}
+
+#[test]
+fn a_connector_s_code_is_never_the_engine_s() {
+    let codes = [
+        "x.code",
+        "state_invalid",
+        "deadline_exceeded",
+        "memory_budget_wait_exceeded",
+    ];
+    for code in codes {
+        for side in [Side::Source, Side::Destination] {
+            let raised =
+                ConnectorError::new(ConnectorErrorKind::Transient, "failed").with_code(code);
+            let error = Error::connector(side, "doing something", raised);
+            assert_eq!(
+                (error.origin(), error.code(), error.connector_code()),
+                (side.origin(), None, Some(code)),
+                "{code} from {side:?}"
+            );
+            let report = error.report();
+            assert_eq!(
+                (report.code, report.connector_code.as_deref()),
+                (None, Some(code))
+            );
+        }
+    }
+}
+
+#[test]
+fn the_engine_s_codes_read_as_their_text() {
+    assert_eq!(codes::STATE_INVALID.as_str(), "state_invalid");
+    assert_eq!(codes::STATE_INVALID.to_string(), "state_invalid");
+    assert_eq!(
+        serde_json::to_string(&codes::STATE_INVALID).unwrap(),
+        r#""state_invalid""#
+    );
+    // Where the engine and a connector or the wire name one failure alike, the text is one.
+    assert_eq!(
+        codes::DEADLINE_EXCEEDED.as_str(),
+        rdlt_connector::DEADLINE_EXCEEDED
+    );
+    assert_eq!(
+        codes::LIMIT_EXCEEDED.as_str(),
+        rdlt_wire::limits::LIMIT_EXCEEDED
+    );
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(rdlt_testkit::cases(256)))]
+
+    /// Whatever code a connector's error carries, the engine keeps it as the connector's, shown
+    /// as a connector's text is and within the limit of a code, and never as its own.
+    #[test]
+    fn any_code_a_connector_sends_is_shown_bounded_and_its_own(
+        code in proptest::string::string_regex("(?s).{0,200}").unwrap(),
+        destination in any::<bool>(),
+    ) {
+        let side = if destination { Side::Destination } else { Side::Source };
+        let raised = ConnectorError::data("refused").with_code(code.as_str());
+        let error = Error::connector(side, "doing something", raised);
+        let shown = rdlt_connector::text::shown(&code, MAX_ERROR_CODE_BYTES);
+        prop_assert_eq!(error.code(), None);
+        prop_assert_eq!(error.origin(), side.origin());
+        prop_assert_eq!(error.connector_code(), Some(shown.as_str()));
+        prop_assert!(shown.len() <= MAX_ERROR_CODE_BYTES);
+        prop_assert_eq!(error.report().connector_code, Some(shown));
     }
 }

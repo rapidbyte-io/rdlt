@@ -23,6 +23,7 @@ use super::{
 };
 use crate::compute::Cores;
 use crate::env::Env;
+use crate::error::codes;
 use crate::{Engine, EngineConfig, PipelinePlan, StreamPlan, SystemEnv};
 
 #[test]
@@ -74,13 +75,13 @@ fn a_refusal_carries_the_errors_code_and_message() {
     assert_eq!(
         refused,
         Refused {
-            code: "json_not_object",
+            code: codes::JSON_NOT_OBJECT.as_str(),
             message: "a record is not a JSON object".to_owned(),
         }
     );
     assert_eq!(
         shred(&[Bytes::from_static(b"[")], 8).unwrap_err().code,
-        "json_invalid"
+        codes::JSON_INVALID.as_str()
     );
 }
 
@@ -434,7 +435,7 @@ fn a_sample_log_reads_back_with_its_one_commit_and_a_garbled_one_is_refused() {
     );
     garbled[at + 5..at + 9].copy_from_slice(&crc.to_le_bytes());
     let refused = super::scan_log(&garbled).expect_err("the commit does not decode");
-    assert_eq!(refused.code, "wal_unreadable");
+    assert_eq!(refused.code, codes::WAL_UNREADABLE.as_str());
 }
 
 #[test]
@@ -454,7 +455,12 @@ fn a_log_another_load_wrote_is_refused_as_foreign() {
         log.extend_from_slice(&frame.encode().expect("the frame encodes"));
     }
     let refused = super::scan_log(&log).expect_err("another load's log");
-    assert_eq!(refused.code, "wal_foreign", "{}", refused.message);
+    assert_eq!(
+        refused.code,
+        codes::WAL_FOREIGN.as_str(),
+        "{}",
+        refused.message
+    );
 }
 
 #[test]
@@ -470,7 +476,10 @@ fn a_column_of_json_checks_with_escapes_where_asked_and_a_broken_value_is_refuse
     let column = arrow_array::StringArray::from(vec![r#"{"a":"\x01"}"#]);
     let schema = escaped.schema();
     let refused = RecordBatch::try_new(schema, vec![Arc::new(column)]).unwrap();
-    assert_eq!(check_json(&refused).unwrap_err().code, "json_invalid");
+    assert_eq!(
+        check_json(&refused).unwrap_err().code,
+        codes::JSON_INVALID.as_str()
+    );
 }
 
 #[test]

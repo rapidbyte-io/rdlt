@@ -11,6 +11,7 @@ use super::super::memory::MemoryWal;
 use super::super::scan;
 use super::super::store::{Chunk, StagedChunk, WalStore};
 use super::{Taken, take};
+use crate::error::codes;
 
 fn pipeline() -> PipelineId {
     PipelineId::parse("orders").expect("a valid pipeline")
@@ -198,7 +199,7 @@ async fn a_log_removed_as_it_is_read_is_gone_and_one_damaged_is_refused() {
     let Err(refused) = super::scanned(&store, &pipeline(), load(), 1 << 20, first).await else {
         panic!("an open log that does not read");
     };
-    assert_eq!(refused.code(), Some("wal_unreadable"));
+    assert_eq!(refused.code(), Some(codes::WAL_UNREADABLE));
     store
         .remove_log(&pipeline(), load())
         .await
@@ -226,7 +227,7 @@ async fn a_fence_the_disk_has_no_room_for_leaves_nothing_staged() {
     let refused = take(&store, &pipeline(), load(), 1 << 20)
         .await
         .expect_err("no room for a fence");
-    assert_eq!(refused.code(), Some("wal_storage_full"), "{refused}");
+    assert_eq!(refused.code(), Some(codes::WAL_STORAGE_FULL), "{refused}");
     assert_eq!(store.disk.stagings(), 0, "the fence's staging is gone");
 }
 
@@ -370,7 +371,7 @@ async fn an_open_a_rival_replay_takes_is_running_and_one_refused_otherwise_frees
     let taken = super::open_own(&Rival::default(), &pipeline(), load())
         .await
         .expect_err("the log is gone");
-    assert_eq!(taken.code(), Some("wal_running"), "{taken}");
+    assert_eq!(taken.code(), Some(codes::WAL_RUNNING), "{taken}");
     assert!(taken.is_retryable());
     // An open refused for anything but a full disk gives back no staging of another load.
     let store = MemoryWal::default();

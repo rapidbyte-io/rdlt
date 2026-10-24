@@ -9,7 +9,7 @@ use arrow_array::{
 use rdlt_connector::{ChangeOp, OP_COLUMN, Push, ReadMode, SEQ_COLUMN, UNCHANGED_COLUMN};
 use rdlt_connector_reference::changes::expected;
 use rdlt_connector_reference::published;
-use rdlt_engine::{DeleteMode, ErrorKind, RunStatus, WriteMode};
+use rdlt_engine::{DeleteMode, ErrorKind, RunStatus, WriteMode, codes};
 
 use crate::change_limits::Pushing;
 use crate::changes::{changes, orders, rows};
@@ -45,7 +45,11 @@ async fn a_table_the_engine_merged_takes_no_change_stream() {
     assert_eq!(outcome.report.status, RunStatus::Failed);
     let error = outcome.error.expect("the run failed");
     assert_eq!(error.kind(), ErrorKind::Config, "{error}");
-    assert_eq!(error.code(), Some("table_sequences_mismatch"), "{error}");
+    assert_eq!(
+        error.code(),
+        Some(codes::TABLE_SEQUENCES_MISMATCH),
+        "{error}"
+    );
     assert_eq!(published(store, "orders"), before);
 }
 

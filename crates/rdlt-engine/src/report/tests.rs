@@ -7,7 +7,7 @@ use super::{
     AttemptLog, AttemptRecord, CommitRecord, Committed, Forgotten, REPORTED_ATTEMPTS,
     REPORTED_FORGOTTEN, Report, RunStatus, ShredCounts, StreamReport,
 };
-use crate::error::{Error, ErrorKind};
+use crate::error::{Error, ErrorKind, codes};
 
 fn commit(load: LoadId, rows: u64, streams: &[(&str, u64, u64)]) -> CommitRecord {
     CommitRecord {
@@ -258,7 +258,7 @@ fn overflowed(result: Result<(), Error>) {
     let error = result.unwrap_err();
     assert_eq!(
         (error.kind(), error.code(), error.is_retryable()),
-        (ErrorKind::Destination, Some("receipt_overflow"), false)
+        (ErrorKind::Destination, Some(codes::RECEIPT_OVERFLOW), false)
     );
 }
 

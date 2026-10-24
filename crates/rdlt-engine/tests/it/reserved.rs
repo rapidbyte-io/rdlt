@@ -8,7 +8,7 @@ use arrow_array::{ArrayRef, BinaryArray, Int64Array, RecordBatch};
 use rdlt_connector::{Destination, IdentifierCase, ReadMode};
 use rdlt_engine::{
     ErrorKind, LocalWal, Nested, RunOutcome, RunStatus, SchemaSettings, StreamPlan, WalStore,
-    WriteMode,
+    WriteMode, codes,
 };
 
 use crate::support::batches::{BatchStream, batches};
@@ -22,7 +22,7 @@ fn refused(outcome: &RunOutcome) {
     let error = outcome.error.as_ref().expect("the run fails");
     assert_eq!(
         (error.kind(), error.code(), error.is_retryable()),
-        (ErrorKind::Schema, Some("column_name_reserved"), false),
+        (ErrorKind::Schema, Some(codes::COLUMN_NAME_RESERVED), false),
         "{error}"
     );
     assert_eq!(outcome.report.rows, 0);

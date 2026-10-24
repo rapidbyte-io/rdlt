@@ -2,7 +2,7 @@
 
 use super::{Bench, commit, expect_rows, meta, rows};
 use crate::commit::DroppedTable;
-use crate::error::{ConnectorError, ConnectorErrorKind};
+use crate::error::{ConnectorError, ConnectorErrorKind, TABLE_OWNED};
 use crate::id::{Epoch, PipelineId, SegmentId};
 use crate::testing::{Violation, bounded};
 use crate::{CommitMeta, OpenContext, OpenedSession};
@@ -103,8 +103,7 @@ fn fenced(outcome: Result<(), ConnectorError>) -> Result<(), Violation> {
 fn owned(outcome: Result<(), ConnectorError>) -> Result<(), Violation> {
     match outcome {
         Err(error)
-            if error.kind() == ConnectorErrorKind::Config
-                && error.code() == Some("table_owned") =>
+            if error.kind() == ConnectorErrorKind::Config && error.code() == Some(TABLE_OWNED) =>
         {
             Ok(())
         }

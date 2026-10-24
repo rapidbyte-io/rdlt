@@ -10,7 +10,7 @@ use arrow_array::{
 };
 use arrow_buffer::{OffsetBuffer, ScalarBuffer};
 use arrow_schema::{DataType, Field, Schema};
-use rdlt_engine::{RunOutcome, RunStatus};
+use rdlt_engine::{RunOutcome, RunStatus, codes};
 
 use crate::HEAP;
 use crate::support::destinations::null;
@@ -61,7 +61,7 @@ async fn a_run_naming_sixty_million_items_is_checked_within_the_least_memory() {
         RunArray::<Int32Type>::try_new(&Int32Array::from(vec![ITEMS]), &one).expect("one run");
     let (peak, outcome) = run("checked_runs", BUDGET, one_long_list(ITEMS, Arc::new(runs))).await;
     let error = outcome.error.expect("no budget lowers the row");
-    assert_eq!(error.code(), Some("row_exceeds_budget"), "{error:?}");
+    assert_eq!(error.code(), Some(codes::ROW_EXCEEDS_BUDGET), "{error:?}");
     assert!(peak <= bound(BUDGET), "the heap held {peak} bytes");
 }
 
@@ -75,7 +75,7 @@ async fn keys_of_a_byte_naming_one_value_are_checked_within_the_budget() {
     let keyed = DictionaryArray::<Int8Type>::try_new(keys, one).expect("keys name the value");
     let (peak, outcome) = run("checked_keys", BUDGET, one_long_list(KEYS, Arc::new(keyed))).await;
     let error = outcome.error.expect("no request lowers the row");
-    assert_eq!(error.code(), Some("row_exceeds_budget"), "{error:?}");
+    assert_eq!(error.code(), Some(codes::ROW_EXCEEDS_BUDGET), "{error:?}");
     assert!(peak <= bound(BUDGET), "the heap held {peak} bytes");
 }
 
@@ -108,7 +108,7 @@ async fn what_checking_holds_beside_a_push_is_reserved_before_it_is_held() {
     let pushed = u64::try_from(batch.get_array_memory_size()).expect("a size");
     let (_, outcome) = run("checked_views", 256 << 20, batch).await;
     let error = outcome.error.expect("the text is not JSON");
-    assert_eq!(error.code(), Some("json_invalid"), "{error:?}");
+    assert_eq!(error.code(), Some(codes::JSON_INVALID), "{error:?}");
     // The push and the spans gathered beside it, both reserved at once.
     let gathered = 16 * u64::try_from(ROWS).expect("a count");
     assert!(

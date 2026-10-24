@@ -10,7 +10,7 @@
 mod tests;
 
 use rdlt_connector::limits::MAX_CONFIG_SCHEMA_BYTES;
-use rdlt_connector::wire::{Invalid, v1};
+use rdlt_connector::wire::{Invalid, PROTOCOL_VERSION, v1};
 use rdlt_connector::{ConnectorError, ConnectorErrorKind};
 use rdlt_wire::PROTOCOL_MAJOR;
 
@@ -37,7 +37,7 @@ pub(super) fn agreed(
                 answer.protocol_major
             ),
         )
-        .with_code("protocol_version"));
+        .with_code(PROTOCOL_VERSION));
     }
     if let Some(feature) = answer
         .accepted_features

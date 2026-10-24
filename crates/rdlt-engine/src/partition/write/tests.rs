@@ -9,7 +9,7 @@ use super::held::shredded;
 use super::queue::written_bytes;
 use super::units::{not_json, shred_failed};
 use crate::budget::MemoryBudget;
-use crate::error::ErrorKind;
+use crate::error::{ErrorKind, codes};
 use crate::partition::PartitionJob;
 use crate::shred::ShredError;
 
@@ -37,7 +37,7 @@ fn a_refused_push_is_a_source_error_and_a_shredder_bug_an_internal_one() {
     let refused = shred_failed(&job(), ShredError::NotObject);
     assert_eq!(
         (refused.kind(), refused.code()),
-        (ErrorKind::Source, Some("json_not_object"))
+        (ErrorKind::Source, Some(codes::JSON_NOT_OBJECT))
     );
     assert_eq!(refused.stream(), Some(&job().stream));
     assert!(
@@ -47,7 +47,7 @@ fn a_refused_push_is_a_source_error_and_a_shredder_bug_an_internal_one() {
     let bug = shred_failed(&job(), ShredError::Internal("a bug".to_owned()));
     assert_eq!(
         (bug.kind(), bug.code()),
-        (ErrorKind::Internal, Some("shred_internal"))
+        (ErrorKind::Internal, Some(codes::SHRED_INTERNAL))
     );
     // The shredder's error is the cause, kept whole.
     for (error, failed) in [
@@ -193,7 +193,7 @@ fn a_row_beyond_what_a_request_may_take_is_a_source_error_naming_its_stream() {
     let error = super::row_too_large(&job(), &row);
     assert_eq!(
         (error.kind(), error.code()),
-        (ErrorKind::Source, Some("row_exceeds_budget"))
+        (ErrorKind::Source, Some(codes::ROW_EXCEEDS_BUDGET))
     );
     assert_eq!(error.stream(), Some(&job().stream));
     let said = error.to_string();

@@ -14,7 +14,7 @@ mod width;
 
 use super::lower::{LineageColumns, MetaNames, lower};
 use super::model::{Creation, Model};
-use crate::error::Error;
+use crate::error::{Code, Error, codes};
 use crate::naming::Naming;
 use crate::plan::StreamPlan;
 use crate::policy::{self, Nested, OnUnsupported, Resolved, SchemaPolicy, SchemaSettings};
@@ -285,7 +285,7 @@ impl Resolver {
     fn identifies(&self, column: &Arriving<'_>, logical: &LogicalType) -> Result<(), Error> {
         if column.is_key && self.meta.id.is_some() && *logical == LogicalType::Json {
             let detail = "a merge key stored as JSON cannot identify a normalized stream's rows";
-            return Err(self.refused(column, "merge_key_json", detail));
+            return Err(self.refused(column, codes::MERGE_KEY_JSON, detail));
         }
         Ok(())
     }
@@ -307,7 +307,8 @@ impl Resolver {
         if !column.is_key && creation == Creation::AsModeled {
             match column.settings.policy {
                 SchemaPolicy::Freeze => {
-                    return Err(self.refused(column, "schema_frozen", "a new column appeared"));
+                    let detail = "a new column appeared";
+                    return Err(self.refused(column, codes::SCHEMA_FROZEN, detail));
                 }
                 SchemaPolicy::DiscardRow => return Ok(Some(Route::DiscardRows)),
                 SchemaPolicy::DiscardValue => return Ok(Some(Route::DiscardValues)),
@@ -316,7 +317,7 @@ impl Resolver {
         }
         if !self.capabilities.schema_changes.add_column {
             let detail = "the destination cannot add columns";
-            return Err(self.refused(column, "schema_change_unsupported", detail));
+            return Err(self.refused(column, codes::SCHEMA_CHANGE_UNSUPPORTED, detail));
         }
         Ok(None)
     }
@@ -357,7 +358,7 @@ impl Resolver {
         if column.is_key {
             // A frozen schema changes for no column, its key's included.
             if column.settings.policy == SchemaPolicy::Freeze {
-                return Err(self.refused(column, "schema_frozen", &cannot("cannot hold")));
+                return Err(self.refused(column, codes::SCHEMA_FROZEN, &cannot("cannot hold")));
             }
             // A key keeps matching its stored rows only where its values are stored alike: a
             // decimal stored as text renders 1.50 as 1.5000 once its scale grows.
@@ -365,11 +366,12 @@ impl Resolver {
                 draft.widen(original, joined, !column.rounding);
                 return Ok(Route::Column(original));
             }
-            return Err(self.refused(column, "merge_key_changed", &cannot("the key cannot hold")));
+            let detail = cannot("the key cannot hold");
+            return Err(self.refused(column, codes::MERGE_KEY_CHANGED, &detail));
         }
         match column.settings.policy {
             SchemaPolicy::Freeze => {
-                return Err(self.refused(column, "schema_frozen", &cannot("cannot hold")));
+                return Err(self.refused(column, codes::SCHEMA_FROZEN, &cannot("cannot hold")));
             }
             SchemaPolicy::DiscardRow => return Ok(rest(Rest::DiscardRows)),
             SchemaPolicy::DiscardValue => return Ok(rest(Rest::DiscardValues)),
@@ -384,7 +386,7 @@ impl Resolver {
         {
             let detail =
                 cannot("the destination cannot change it, without a variant column, to hold");
-            return Err(self.refused(column, "schema_change_unsupported", &detail));
+            return Err(self.refused(column, codes::SCHEMA_CHANGE_UNSUPPORTED, &detail));
         }
         Ok(rest(Rest::Column(self.variant(draft, column, &joined))))
     }
@@ -467,7 +469,7 @@ impl Resolver {
         family(stored.kind()) == family(logical.kind())
     }
 
-    fn refused(&self, column: &Arriving<'_>, code: &str, detail: &str) -> Error {
+    fn refused(&self, column: &Arriving<'_>, code: Code, detail: &str) -> Error {
         Error::schema(format!(
             "stream {}: column {}: {detail}",
             self.stream, column.path

@@ -17,6 +17,7 @@ use arrow_buffer::i256;
 use arrow_schema::DataType;
 
 use super::{leb128, root_ids};
+use crate::error::codes;
 
 /// `bytes` after their length in LEB128, as the canonical encoding writes them.
 fn prefixed(bytes: &[u8]) -> Vec<u8> {
@@ -428,8 +429,8 @@ fn json_text_that_is_not_json_is_refused_not_hashed_as_a_string() {
 fn json_identity_cannot_read_is_refused_typed_for_the_stream() {
     let stream = rdlt_connector::StreamName::new("events").unwrap();
     for (text, code) in [
-        ("1e-1234567890123456789", "limit_exceeded"),
-        ("{", "json_invalid"),
+        ("1e-1234567890123456789", codes::LIMIT_EXCEEDED),
+        ("{", codes::JSON_INVALID),
     ] {
         let field = arrow_schema::Field::new("k", DataType::Utf8, true)
             .with_metadata([("ARROW:extension:name".to_owned(), "arrow.json".to_owned())].into());

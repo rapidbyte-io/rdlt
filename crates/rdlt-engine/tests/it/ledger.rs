@@ -9,8 +9,8 @@ use rdlt_connector::{
 };
 use rdlt_connector_reference::schema;
 use rdlt_engine::{
-    CommitPolicy, EngineConfig, ErrorKind, PipelinePlan, RetryPolicy, RunStatus, SchemaPolicy,
-    SchemaSettings, StopMode, StreamPlan, WriteMode,
+    CommitPolicy, EngineConfig, ErrorKind, Origin, PipelinePlan, RetryPolicy, RunStatus,
+    SchemaPolicy, SchemaSettings, StopMode, StreamPlan, WriteMode, codes,
 };
 use serde_json::json;
 
@@ -239,21 +239,21 @@ fn invalid_config_is_rejected_at_build() {
     ] {
         assert_eq!(
             (error.kind(), error.code()),
-            (ErrorKind::Config, Some("config_invalid"))
+            (ErrorKind::Config, Some(codes::CONFIG_INVALID))
         );
     }
     let policy = CommitPolicy::new(None, None, None).unwrap_err();
-    assert_eq!(policy.code(), Some("commit_policy_invalid"));
+    assert_eq!(policy.code(), Some(codes::COMMIT_POLICY_INVALID));
     let pipeline = PipelineId::parse("l6").unwrap();
     let events = || StreamPlan::new(StreamName::new("events").unwrap());
     let plans = [
         (
             PipelinePlan::new(pipeline.clone(), []).unwrap_err(),
-            "plan_empty",
+            codes::PLAN_EMPTY,
         ),
         (
             PipelinePlan::new(pipeline.clone(), [events(), events()]).unwrap_err(),
-            "plan_duplicate_stream",
+            codes::PLAN_DUPLICATE_STREAM,
         ),
         (
             PipelinePlan::new(
@@ -263,7 +263,7 @@ fn invalid_config_is_rejected_at_build() {
                     .write(WriteMode::Replace)],
             )
             .unwrap_err(),
-            "plan_mode_invalid",
+            codes::PLAN_MODE_INVALID,
         ),
     ];
     for (error, code) in plans {
@@ -327,7 +327,7 @@ async fn receipts_counting_past_a_total_fail_the_run_typed() {
         let error = outcome.error.expect("the run failed");
         assert_eq!(
             (error.kind(), error.code()),
-            (ErrorKind::Destination, Some("receipt_overflow")),
+            (ErrorKind::Destination, Some(codes::RECEIPT_OVERFLOW)),
             "{name}"
         );
         assert_eq!(outcome.report.rows, u64::MAX, "{name}");
@@ -538,7 +538,7 @@ async fn freeze_holds_across_runs() {
         .expect("the second run changes a frozen table");
     assert_eq!(
         (error.kind(), error.code()),
-        (ErrorKind::Schema, Some("schema_frozen"))
+        (ErrorKind::Schema, Some(codes::SCHEMA_FROZEN))
     );
     assert_eq!(
         column_names("d2_freeze", "events"),
@@ -730,9 +730,20 @@ async fn a_destination_write_that_never_returns_fails_at_its_wait() {
     let outcome = engine(config).run(plan, source, destination).await;
     assert_eq!(outcome.report.status, RunStatus::Failed);
     let error = outcome.error.expect("the run failed");
+    // The engine's wait ended the write: the engine says so, not the destination.
     assert_eq!(
-        (error.kind(), error.code(), error.is_retryable()),
-        (ErrorKind::Destination, Some("deadline_exceeded"), true)
+        (
+            error.kind(),
+            error.origin(),
+            error.code(),
+            error.is_retryable()
+        ),
+        (
+            ErrorKind::Destination,
+            Origin::Engine,
+            Some(codes::DEADLINE_EXCEEDED),
+            true
+        )
     );
     let elapsed = started.elapsed();
     assert!(elapsed >= WAIT && elapsed < WAIT * 2, "{elapsed:?}");
@@ -871,7 +882,7 @@ async fn an_attempt_reads_no_more_partitions_at_once_than_a_plan_may_name() {
     let error = outcome.error.expect("the attempt is refused");
     assert_eq!(
         (error.kind(), error.code(), error.is_retryable()),
-        (ErrorKind::Source, Some("plan_invalid"), false),
+        (ErrorKind::Source, Some(codes::PLAN_INVALID), false),
         "{error}"
     );
     assert_eq!(started.load(std::sync::atomic::Ordering::SeqCst), 0);

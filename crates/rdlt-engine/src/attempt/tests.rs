@@ -4,6 +4,7 @@ use rdlt_connector::{BoxFuture, Capabilities, Destination, OpenContext, OpenedSe
 
 use super::lane_count;
 use crate::config::EngineConfig;
+use crate::error::codes;
 
 struct Writers(Capabilities);
 
@@ -61,6 +62,7 @@ mod keys {
     use rdlt_connector::{ColumnPath, StreamName, StreamSpec};
 
     use super::super::streams::merge_key;
+    use crate::error::codes;
     use crate::plan::{StreamPlan, WriteMode};
 
     fn spec(key: Option<ColumnPath>) -> StreamSpec {
@@ -94,10 +96,10 @@ mod keys {
     #[test]
     fn a_missing_or_nested_merge_key_is_refused() {
         let missing = merge_key(&merging(), &spec(None)).unwrap_err();
-        assert_eq!(missing.code(), Some("merge_key_missing"));
+        assert_eq!(missing.code(), Some(codes::MERGE_KEY_MISSING));
         let nested = spec(Some(ColumnPath::new(["a", "b"]).unwrap()));
         let error = merge_key(&merging(), &nested).unwrap_err();
-        assert_eq!(error.code(), Some("plan_column_nested"));
+        assert_eq!(error.code(), Some(codes::PLAN_COLUMN_NESTED));
     }
 }
 
@@ -106,7 +108,7 @@ fn an_attempt_reads_as_many_partitions_at_once_as_a_plan_may_name_and_no_more() 
     use rdlt_connector::limits::MAX_PLAN_PARTITIONS;
     assert!(super::within_partition_limit(MAX_PLAN_PARTITIONS).is_ok());
     let refused = super::within_partition_limit(MAX_PLAN_PARTITIONS + 1).unwrap_err();
-    assert_eq!(refused.code(), Some("plan_invalid"));
+    assert_eq!(refused.code(), Some(codes::PLAN_INVALID));
 }
 
 #[test]

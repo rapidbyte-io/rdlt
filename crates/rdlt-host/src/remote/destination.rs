@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use rdlt_connector::wire::v1;
+use rdlt_connector::wire::{INVALID_MESSAGE, v1};
 use rdlt_connector::{
     BoxFuture, Capabilities, CommitMeta, ConnectorError, ConnectorErrorKind, Destination,
     DestinationSession, DestinationWriter, Epoch, OpenContext, OpenedSession, Receipt, StateRecord,
@@ -177,5 +177,5 @@ pub(super) fn out_of_turn(what: &str) -> ConnectorError {
         ConnectorErrorKind::Internal,
         format!("the connector answered a write with {what}"),
     )
-    .with_code("invalid_message")
+    .with_code(INVALID_MESSAGE)
 }

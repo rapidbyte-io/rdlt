@@ -12,9 +12,9 @@ use rdlt_connector::limits::ListenLimits;
 use rdlt_connector::{
     ChildTable, ColumnKey, ColumnPath, CommitMeta, CommitSeq, ConnectContext, ConnectorErrorKind,
     Cursor, DestinationConnector, Epoch, Field, LoadId, LogicalType, MergeKey, NameMap,
-    OpenContext, PartitionId, PartitionState, PipelineId, ReadMode, RootKey, SchemaVersion,
-    SegmentId, SegmentSet, Session, StateChange, StateEntry, StreamName, TableChange, TablePath,
-    TableRef, TableSchema, TableWriter, source_factory,
+    OpenContext, PartitionId, PartitionState, PipelineId, ReadMode, RootKey, SCHEMA_CONFLICT,
+    SchemaVersion, SegmentId, SegmentSet, Session, StateChange, StateEntry, StreamName,
+    TableChange, TablePath, TableRef, TableSchema, TableWriter, source_factory,
 };
 use rdlt_testkit::canon::Canon;
 use serde::Serialize;
@@ -128,7 +128,7 @@ fn session_over(
                 field: Field::new("extra", extra, true),
             };
             session.apply_schema(&add).await.err().map(|error| {
-                assert_eq!(error.code(), Some("schema_conflict"));
+                assert_eq!(error.code(), Some(SCHEMA_CONFLICT));
                 error.kind()
             })
         }

@@ -30,7 +30,7 @@ fn arrived(received: std::time::SystemTime) -> Begins<'static> {
         fallback: false,
     }
 }
-use crate::error::ErrorKind;
+use crate::error::{ErrorKind, codes};
 
 fn stream() -> StreamName {
     StreamName::new("orders").unwrap()
@@ -207,7 +207,7 @@ fn a_change_time_missing_in_any_encoding_is_refused() {
             .expect_err("a change without its time");
         assert_eq!(
             refused.code(),
-            Some("change_time_null"),
+            Some(codes::CHANGE_TIME_NULL),
             "{}",
             time.data_type()
         );
@@ -223,7 +223,7 @@ fn a_change_time_holding_no_time_in_any_encoding_is_refused() {
             .expect_err("a change time holding numbers");
         assert_eq!(
             refused.code(),
-            Some("change_time_invalid"),
+            Some(codes::CHANGE_TIME_INVALID),
             "{}",
             time.data_type()
         );
@@ -253,7 +253,7 @@ fn a_delete_carries_no_hash_and_a_change_without_its_time_is_refused() {
     let refused =
         history_columns(&stream(), &data, changed(&time, UNIX_EPOCH), &|_| false).unwrap_err();
     assert_eq!(refused.kind(), ErrorKind::Schema);
-    assert_eq!(refused.code(), Some("change_time_null"));
+    assert_eq!(refused.code(), Some(codes::CHANGE_TIME_NULL));
 }
 
 #[test]
@@ -263,7 +263,7 @@ fn a_change_time_that_is_no_time_is_refused() {
     let refused =
         history_columns(&stream(), &data, changed(&time, UNIX_EPOCH), &|_| false).unwrap_err();
     assert_eq!(refused.kind(), ErrorKind::Schema);
-    assert_eq!(refused.code(), Some("change_time_invalid"));
+    assert_eq!(refused.code(), Some(codes::CHANGE_TIME_INVALID));
 }
 
 #[test]
@@ -273,7 +273,7 @@ fn a_change_time_beyond_what_microseconds_hold_is_refused() {
     let refused =
         history_columns(&stream(), &data, changed(&far, UNIX_EPOCH), &|_| false).unwrap_err();
     assert_eq!(refused.kind(), ErrorKind::Schema);
-    assert_eq!(refused.code(), Some("change_time_invalid"));
+    assert_eq!(refused.code(), Some(codes::CHANGE_TIME_INVALID));
 }
 
 /// When each version of `data`'s rows begins, by its change time `time`.
@@ -320,7 +320,7 @@ fn a_change_time_a_microsecond_cannot_hold_is_refused_never_wrapped() {
         let refused = begins(&data, &time).unwrap_err();
         assert_eq!(
             (refused.kind(), refused.code()),
-            (ErrorKind::Schema, Some("change_time_invalid")),
+            (ErrorKind::Schema, Some(codes::CHANGE_TIME_INVALID)),
             "{millis}"
         );
     }

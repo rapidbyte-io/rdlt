@@ -12,7 +12,7 @@ use crate::OpenedSession;
 use crate::commit::CommitMeta;
 use crate::destination::Destination;
 use crate::destination::{DestinationSession, DestinationWriter, MergeKey, TableChange, TableRef};
-use crate::error::ConnectorErrorKind;
+use crate::error::{ConnectorErrorKind, SCHEMA_CONFLICT};
 use crate::id::{CommitSeq, GenerationId, SchemaVersion, SegmentId, TablePath};
 use crate::schema::TableSchema;
 use crate::testing::reason::Listed;
@@ -141,7 +141,7 @@ impl Bench<'_> {
         match bounded("apply_schema", opened.session.apply_schema(&conflicting)).await? {
             Err(error)
                 if error.kind() == ConnectorErrorKind::Data
-                    && error.code() == Some("schema_conflict") =>
+                    && error.code() == Some(SCHEMA_CONFLICT) =>
             {
                 Ok(())
             }

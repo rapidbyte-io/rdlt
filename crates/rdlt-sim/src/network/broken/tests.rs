@@ -2,14 +2,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rdlt_connector::limits::ListenLimits;
-use rdlt_connector::wire::MALFORMED_FRAME;
+use rdlt_connector::wire::{INVALID_MESSAGE, MALFORMED_FRAME};
 use rdlt_connector::{ConnectorError, ConnectorErrorKind, ConnectorId};
 use rdlt_host::{CONNECTOR_LOST, ConnectorRef};
 use rdlt_wire::Limits;
 
-use super::{
-    Breaker, Ended, Expect, ID, INVALID_MESSAGE, attacking, bound, catalogue, judge, port,
-};
+use super::{Breaker, Ended, Expect, ID, attacking, bound, catalogue, judge, port};
 use crate::canary::Canary;
 use crate::network::faults::cut;
 use crate::network::{

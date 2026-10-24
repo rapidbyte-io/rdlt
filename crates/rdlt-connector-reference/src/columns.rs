@@ -1,6 +1,8 @@
 //! How a reference destination keeps a table's columns as schema changes arrive.
 
-use rdlt_connector::{ConnectorError, Field, LogicalType, Result, TableChange, TableSchema};
+use rdlt_connector::{
+    ConnectorError, Field, LogicalType, Result, SCHEMA_CONFLICT, TableChange, TableSchema,
+};
 
 /// The columns of a table that has `schema` once `change` applies to it; `None` is a table that
 /// does not exist yet.
@@ -78,5 +80,5 @@ fn conflict(change: &TableChange, existing: &Field) -> ConnectorError {
         existing.name(),
         existing.logical_type()
     ))
-    .with_code("schema_conflict")
+    .with_code(SCHEMA_CONFLICT)
 }

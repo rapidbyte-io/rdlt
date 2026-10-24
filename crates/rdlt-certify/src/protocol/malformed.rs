@@ -3,16 +3,13 @@
 //! refused with typed errors, and the connection serves on.
 
 use rdlt_connector::Role;
-use rdlt_connector::wire::{MALFORMED_FRAME, v1};
+use rdlt_connector::wire::{INVALID_MESSAGE, MALFORMED_FRAME, v1};
 use rdlt_host::remote::Client;
 use rdlt_wire::prost::bytes::Bytes;
 
 use super::writing::{Writing, misaligned};
 use super::{Found, Violation, first_refusal, handshaken, refused_with};
 use crate::target::Target;
-
-/// The code of a message the connector cannot read.
-const INVALID_MESSAGE: &str = "invalid_message";
 
 /// Checks `P-MALFORMED`.
 pub(super) async fn refused(target: &Target, role: Role, config: &str) -> Found {

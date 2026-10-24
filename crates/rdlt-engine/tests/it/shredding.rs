@@ -6,8 +6,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rdlt_engine::{
-    BatchPolicy, EngineConfig, ErrorKind, Nested, RetryPolicy, RunOutcome, RunStatus,
-    SchemaSettings, ShredCounts,
+    BatchPolicy, Code, EngineConfig, ErrorKind, Nested, RetryPolicy, RunOutcome, RunStatus,
+    SchemaSettings, ShredCounts, codes,
 };
 
 use crate::HEAP;
@@ -56,7 +56,7 @@ async fn run_chunked(
 
 /// Asserts the run failed with `code`, a source's limit, without the heap passing what a run
 /// on the least memory may reach.
-fn refused(outcome: &RunOutcome, peak: usize, code: &str) {
+fn refused(outcome: &RunOutcome, peak: usize, code: Code) {
     let error = outcome.error.as_ref().expect("the run fails");
     assert_eq!(
         (error.kind(), error.code()),
@@ -97,7 +97,7 @@ async fn empty_records_before_a_wide_one_are_refused_for_their_cells_unbuilt() {
     // Five thousand rows under seven thousand columns: thirty-five million cells, from 85 KB.
     let text = format!("{}{}", "{}\n".repeat(5_000), wide_object(0, 7_000, "1"));
     let (peak, outcome) = run("sparse_cells", 1 << 30, text).await;
-    refused(&outcome, peak, "limit_exceeded");
+    refused(&outcome, peak, codes::LIMIT_EXCEEDED);
 }
 
 #[tokio::test(start_paused = true)]
@@ -109,7 +109,7 @@ async fn a_list_of_empty_objects_before_a_wide_one_counts_its_items_as_rows() {
         wide_object(0, 7_000, "1")
     );
     let (peak, outcome) = run("listed_cells", 1 << 30, text).await;
-    refused(&outcome, peak, "limit_exceeded");
+    refused(&outcome, peak, codes::LIMIT_EXCEEDED);
     // Within the cells, five thousand items under nine hundred columns take more than a request
     // may of the least budget.
     let text = format!(
@@ -118,7 +118,7 @@ async fn a_list_of_empty_objects_before_a_wide_one_counts_its_items_as_rows() {
         wide_object(0, 900, "1")
     );
     let (peak, outcome) = run("listed_bytes", LEAST, text).await;
-    refused(&outcome, peak, "json_exceeds_budget");
+    refused(&outcome, peak, codes::JSON_EXCEEDS_BUDGET);
 }
 
 #[tokio::test(start_paused = true)]
@@ -129,7 +129,7 @@ async fn the_column_limit_holds_for_every_column_a_record_holds_together() {
         .collect();
     let text = format!("{{{}}}", objects.join(","));
     let (peak, outcome) = run("total_columns", 1 << 30, text).await;
-    refused(&outcome, peak, "limit_exceeded");
+    refused(&outcome, peak, codes::LIMIT_EXCEEDED);
 }
 
 #[tokio::test(start_paused = true)]
@@ -139,7 +139,7 @@ async fn records_within_the_cells_that_take_more_than_a_request_are_refused_unbu
     let wide = "123456789012345678901234567890123456789";
     let text = format!("{}{}", "{}\n".repeat(3_300), wide_object(0, 900, wide));
     let (peak, outcome) = run("wide_decimals", LEAST, text).await;
-    refused(&outcome, peak, "json_exceeds_budget");
+    refused(&outcome, peak, codes::JSON_EXCEEDS_BUDGET);
 }
 
 #[tokio::test(start_paused = true)]
@@ -149,7 +149,7 @@ async fn a_megabyte_of_records_of_one_key_among_hundreds_is_refused_unbuilt() {
         .map(|record| format!("{{\"k{}\":1}}", record % 300))
         .collect();
     let (peak, outcome) = run("one_key_each", LEAST, records.join("\n")).await;
-    refused(&outcome, peak, "json_exceeds_budget");
+    refused(&outcome, peak, codes::JSON_EXCEEDS_BUDGET);
 }
 
 #[tokio::test(start_paused = true)]
@@ -262,7 +262,7 @@ async fn wide_records_in_many_full_chunks_are_refused_charged_what_they_hold() {
     let error = outcome
         .error
         .expect("their batches take more than a request");
-    assert_eq!(error.code(), Some("json_exceeds_budget"), "{error:?}");
+    assert_eq!(error.code(), Some(codes::JSON_EXCEEDS_BUDGET), "{error:?}");
 }
 
 #[tokio::test(start_paused = true)]
@@ -361,7 +361,7 @@ async fn beside_a_build(name: &str, beside: u64) -> RunOutcome {
 async fn a_row_a_request_leaves_no_room_for_beside_its_jsons_build_is_refused_naming_both() {
     let outcome = beside_a_build("beside_build_refused", 8_000).await;
     let error = outcome.error.expect("the row is refused");
-    assert_eq!(error.code(), Some("row_exceeds_budget"), "{error:?}");
+    assert_eq!(error.code(), Some(codes::ROW_EXCEEDS_BUDGET), "{error:?}");
     let shown = error.to_string();
     assert!(shown.contains(&BUILT_BEYOND.to_string()), "{shown}");
     assert!(

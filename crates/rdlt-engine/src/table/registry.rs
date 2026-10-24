@@ -12,8 +12,8 @@ use std::sync::Arc;
 
 use parking_lot::{Mutex, RwLock};
 use rdlt_connector::{
-    ColumnKey, ConnectorError, Field, LoadId, PipelineState, StateChange, StreamName, TableChange,
-    TablePath, TableRef, TableState,
+    ColumnKey, ConnectorError, Field, LoadId, PipelineState, SCHEMA_CONFLICT, StateChange,
+    StreamName, TableChange, TablePath, TableRef, TableState,
 };
 
 use super::model::Model;
@@ -21,7 +21,7 @@ use super::resolve::{Change, Incoming, Resolution, Resolver, Route};
 use super::session::SharedSession;
 use super::{LoweringPlan, TableView};
 use crate::config::GrowthLimits;
-use crate::error::{Error, ErrorKind, Side};
+use crate::error::{Error, ErrorKind, Side, codes};
 use crate::naming::Naming;
 use crate::normalize::Shape;
 
@@ -155,7 +155,7 @@ impl Tables {
                 ErrorKind::Destination,
                 format!("reading pipeline state: two tables are recorded under the name {name}"),
             )
-            .with_code("state_invalid"));
+            .with_code(codes::STATE_INVALID));
         }
         self.taken = Mutex::new(
             state
@@ -363,7 +363,7 @@ impl Tables {
         let changes = table_changes(view, &next, &resolution.changes);
         match self.session.apply_each(&changes).await? {
             Ok(()) => Ok(Ok((next, resolution.routes))),
-            Err((index, error)) if error.code() == Some("schema_conflict") => {
+            Err((index, error)) if error.code() == Some(SCHEMA_CONFLICT) => {
                 let widened = match changes.get(index) {
                     Some(TableChange::Widen { column, .. }) => next.model.names.owner(column),
                     _ => None,

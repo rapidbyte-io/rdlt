@@ -12,7 +12,7 @@ use super::probes::Probes;
 use super::service::{Configured, Connected, Service};
 use crate::error::{ConnectorError, ConnectorErrorKind};
 use crate::spec::ConnectContext;
-use crate::wire::v1;
+use crate::wire::{CONFIGURE_REPEATED, PROTOCOL_VERSION, v1};
 
 /// What a handshake agreed: the role to configure, whether it accepted the role's probe for
 /// certification (a destination reading back what it published, a source telling where it
@@ -57,7 +57,7 @@ impl Service {
                 "protocol version {} is not this connector's {PROTOCOL_MAJOR}",
                 request.protocol_major
             );
-            return Err(unsupported(message, "protocol_version"));
+            return Err(unsupported(message, PROTOCOL_VERSION));
         }
         let (role, spec, probed) = match v1::Role::try_from(request.role) {
             Ok(v1::Role::Source) => {
@@ -231,5 +231,5 @@ fn configured() -> ConnectorError {
         ConnectorErrorKind::Internal,
         "the connection was already configured",
     )
-    .with_code("configure_repeated")
+    .with_code(CONFIGURE_REPEATED)
 }

@@ -259,8 +259,9 @@ budget before it is held, or bounded by a limit with a typed refusal.
     acknowledgement a stream, each a call of its own, and a cursor sealed late waits for the
     commit in flight and the next.
   - That kind and code are the engine's own. A read whose event waited until the deadline
-    fails as the budget's whatever error its source ends with, and no connector's error is
-    given the kind or keeps the code.
+    fails as the budget's whatever error its source ends with. No connector's error is given
+    the kind, and a code a connector's error carries stays the connector's
+    (`Error::connector_code`), never one of the engine's (`Error::code`).
   - An admission may refuse an event (`Admission::admit` returns the refusal): the send fails
     with it, and so does the read, in process and through a host. It may refuse what a read
     keeps too (`Admission::charge`).

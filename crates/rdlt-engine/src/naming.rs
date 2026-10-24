@@ -25,7 +25,7 @@ use rdlt_connector::{
     VALID_FROM_COLUMN, VALID_TO_COLUMN,
 };
 
-use crate::error::{Error, ErrorKind};
+use crate::error::{Error, ErrorKind, codes};
 
 /// Base32 digits of the hash that tells colliding identifiers apart: 13 hold its 64 bits.
 const ALPHABET: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
@@ -51,9 +51,6 @@ const METADATA: [&str; 14] = [
     ROOT_ID_COLUMN,
     IDX_COLUMN,
 ];
-
-/// The code of the error refusing a source column that asks for a metadata column's name.
-pub(crate) const COLUMN_NAME_RESERVED: &str = "column_name_reserved";
 
 /// Assigns identifiers under one destination's rules.
 #[derive(Clone, Debug)]
@@ -90,7 +87,7 @@ impl Naming {
                 ErrorKind::Destination,
                 format!("the destination's identifier rules are refused: {invalid}"),
             )
-            .with_code("capabilities_invalid")
+            .with_code(codes::CAPABILITIES_INVALID)
         })?;
         Self::build(rules.clone())
     }
@@ -192,7 +189,7 @@ impl Naming {
                     "column {} asks for the name of a metadata column the engine writes",
                     key.column()
                 ))
-                .with_code(COLUMN_NAME_RESERVED));
+                .with_code(codes::COLUMN_NAME_RESERVED));
             }
             let taken = |name: &str| names.owner(name).is_some() || self.is_metadata(name);
             let name = self.identifier(&candidate, &path_bytes(key), taken)?;
@@ -247,7 +244,7 @@ impl Naming {
             ErrorKind::Destination,
             format!("no identifier for table {path} avoids the destination's reserved prefixes"),
         )
-        .with_code("identifier_exhausted"))
+        .with_code(codes::IDENTIFIER_EXHAUSTED))
     }
 
     /// The identifier of the metadata column `column`, one of the engine's.
@@ -295,7 +292,7 @@ impl Naming {
             ErrorKind::Destination,
             format!("no free identifier for {candidate:?} under the destination's rules"),
         )
-        .with_code("identifier_exhausted"))
+        .with_code(codes::IDENTIFIER_EXHAUSTED))
     }
 
     /// Whether `name` may not be used: taken, or a reserved word.
