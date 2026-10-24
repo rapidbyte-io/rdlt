@@ -497,6 +497,14 @@ fn rows_pushed_through_the_sdk_shred_to_the_records_of_their_lines() {
     }
 }
 
+#[test]
+fn a_replay_of_rows_printed_over_several_lines_pushes_each_row() {
+    let text = "{\n  \"id\": 1\n}\n{\n  \"id\": 2,\n  \"tags\": [\n    \"a\"\n  ]\n}";
+    let pushed = rows_pushed(vec![Bytes::from(text)]);
+    let rows = shred(&pushed, CHUNK_BYTES).unwrap();
+    assert_eq!(rows.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
+}
+
 #[tokio::test]
 async fn replayed_rows_pass_through_the_engine_a_push_of_rows_each() {
     let lines = vec![
@@ -519,7 +527,7 @@ async fn replayed_rows_pass_through_the_engine_a_push_of_rows_each() {
 }
 
 #[tokio::test]
-async fn a_replay_of_rows_that_are_not_json_lines_fails_its_read() {
+async fn a_replay_of_rows_that_are_not_json_fails_its_read() {
     for text in [&b"{\"id\":1}\nnot json"[..], &[0xff, b'\n']] {
         register(
             "broken-rows",

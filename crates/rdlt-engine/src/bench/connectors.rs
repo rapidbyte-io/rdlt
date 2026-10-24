@@ -21,7 +21,7 @@ use rdlt_connector::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
-use serde_json::{Value, json};
+use serde_json::{Deserializer, Value, json};
 
 use super::tally::{Staged, tally};
 
@@ -37,7 +37,7 @@ pub enum Replayed {
     Batches(Vec<RecordBatch>),
     /// JSON records, newline-delimited, a push each.
     Json(Vec<Bytes>),
-    /// JSON records, newline-delimited, each push's records pushed as one call of
+    /// JSON records one after another, each push's records pushed as one call of
     /// [`Emitter::rows`] makes them.
     Rows(Vec<Bytes>),
 }
@@ -52,18 +52,18 @@ impl Replayed {
     }
 }
 
-/// The pushes a source makes calling [`Emitter::rows`] once with the records of each of `lines`,
-/// a push of newline-delimited JSON objects each.
+/// The pushes a source makes calling [`Emitter::rows`] once with the records of each of
+/// `records`, a push of JSON objects one after another each.
 ///
 /// # Panics
 ///
-/// Panics where a push of `lines` is not JSON a line, which no corpus's is.
-pub fn rows_pushed(lines: Vec<Bytes>) -> Vec<Bytes> {
+/// Panics where a push of `records` is not JSON values, which no corpus's is.
+pub fn rows_pushed(records: Vec<Bytes>) -> Vec<Bytes> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
         .expect("a runtime starts");
     runtime.block_on(async {
-        register("rows", Replayed::Rows(lines));
+        register("rows", Replayed::Rows(records));
         let source = connect_replay(replay_config("rows")).await;
         let (sink, mut feed) = partition_channel(NonZeroUsize::MIN);
         let request = ReadRequest::new(stream_name(0), Partition::single(), None);
@@ -77,7 +77,7 @@ pub fn rows_pushed(lines: Vec<Bytes>) -> Vec<Bytes> {
             pushes
         };
         let (read, pushes) = tokio::join!(source.read(request, sink), received);
-        read.expect("each push is JSON a line");
+        read.expect("each push is JSON values");
         pushes
     })
 }
@@ -298,10 +298,10 @@ impl ReadStream<Replay> for Events {
     }
 }
 
-/// The records of `lines`, a JSON object a line, each as its text.
-fn records(lines: &[u8]) -> Result<Vec<&RawValue>> {
-    let text = std::str::from_utf8(lines).data("reading a replay's rows")?;
-    let records = text.lines().map(serde_json::from_str);
+/// The records of `push`, JSON values one after another, each as its text.
+fn records(push: &[u8]) -> Result<Vec<&RawValue>> {
+    let text = std::str::from_utf8(push).data("reading a replay's rows")?;
+    let records = Deserializer::from_str(text).into_iter();
     records
         .collect::<std::result::Result<_, _>>()
         .data("reading a replay's rows")
