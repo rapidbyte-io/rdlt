@@ -8,7 +8,7 @@
 //! held. The exit code is 1 where the host's growth passes its limit, and 2 on a wrong call or on
 //! a host without `/proc`.
 
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU16, NonZeroUsize};
 use std::process::ExitCode;
 use std::sync::Arc;
 
@@ -27,7 +27,7 @@ const FLAG: &str = "--resident";
 const PARTITIONS: NonZeroUsize = NonZeroUsize::new(16).expect("not zero");
 
 /// Writers the served sink declares, each a call of its own.
-const WRITERS: u64 = 1;
+const WRITERS: NonZeroU16 = NonZeroU16::MIN;
 
 /// Whether this process was started to measure the served line.
 pub(crate) fn asked() -> bool {
@@ -64,6 +64,7 @@ pub(crate) fn measure() -> ExitCode {
         mode: Mode::Both,
         frames: Frames::Large,
         partitions: PARTITIONS,
+        writers: WRITERS,
     };
     let workload = Workload::new(cores, case.frames);
     let measured = run(&workload, case);
@@ -153,7 +154,7 @@ fn limit(cores: Cores, case: Case) -> u64 {
     Resident {
         memory: EngineConfig::default().memory().get(),
         push: frame.saturating_mul(partitions),
-        transport: CREDIT_FLOOR.saturating_mul(partitions + WRITERS),
+        transport: CREDIT_FLOOR.saturating_mul(partitions + u64::from(WRITERS.get())),
         threads: u64::try_from(threads).expect("a count fits in 64 bits"),
     }
     .limit()
