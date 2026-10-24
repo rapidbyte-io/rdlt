@@ -10,6 +10,7 @@ use rdlt_connector::{
     Requested, SourceEvent,
 };
 use rdlt_wire::flow::Granting;
+use rdlt_wire::limits::{MESSAGE_ROOM, count};
 use rdlt_wire::plane::{Incoming, READ};
 use rdlt_wire::prost::Message as _;
 use rdlt_wire::prost::bytes::Bytes;
@@ -280,10 +281,7 @@ impl Reader {
                 Frame::Batch(batch) => self.batch(batch, allocation)?,
                 Frame::Json(json) => {
                     self.limits.admit_json(json.data.len()).map_err(refused)?;
-                    // The bytes are a slice of the whole message: copied, the push is charged
-                    // for all it keeps alive.
-                    let json = Bytes::copy_from_slice(&json.data);
-                    Read::Event(SourceEvent::Push(Push::Json(json)))
+                    Read::Event(SourceEvent::Push(json_push(json.data, &allocation)?))
                 }
                 Frame::Checkpoint(checkpoint) => {
                     let cursor = checkpoint
@@ -368,6 +366,26 @@ impl Reader {
         };
         Ok(Read::Event(SourceEvent::Push(push)))
     }
+}
+
+/// The push of a JSON frame's `text`, a slice of the message it arrived in, `allocation`, which
+/// the push keeps alive: its charge counts [`MESSAGE_ROOM`] of the message beside the text.
+///
+/// # Errors
+///
+/// A malformed frame, where the message holds more than that beside the text: a field this end
+/// does not know, which the push would keep alive uncharged.
+fn json_push(text: Bytes, allocation: &Bytes) -> rdlt_connector::Result<Push> {
+    let beside = count(allocation.len()).saturating_sub(count(text.len()));
+    if beside > MESSAGE_ROOM {
+        let message = format!(
+            "a json frame holds {beside} bytes beside its text, beyond the {MESSAGE_ROOM} of its \
+             message's room"
+        );
+        return Err(ConnectorError::new(ConnectorErrorKind::Internal, message)
+            .with_code(rdlt_connector::wire::MALFORMED_FRAME));
+    }
+    Ok(Push::Json(text))
 }
 
 fn log_level(level: i32) -> rdlt_connector::Result<LogLevel> {
