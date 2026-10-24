@@ -161,11 +161,11 @@ fn limit(cores: Cores, case: Case) -> u64 {
 }
 
 /// The text of `/proc/<process>/status`, `self` for this one; empty where it cannot be read.
-fn status(process: &str) -> String {
+pub(crate) fn status(process: &str) -> String {
     std::fs::read_to_string(format!("/proc/{process}/status")).unwrap_or_default()
 }
 
 /// Kibibytes: the peak resident memory of `process`, where its status reads.
-fn peak_kib(process: &str) -> Option<u64> {
+pub(crate) fn peak_kib(process: &str) -> Option<u64> {
     resident_kib(&status(process), "VmHWM")
 }

@@ -8,12 +8,12 @@ use std::time::{Duration, Instant};
 
 use criterion::{BenchmarkId, Criterion, Throughput};
 use rdlt_connector::{Destination, Source};
-use rdlt_engine::bench::{Form, Merged, Readings, Replayed, Sinking, Wide, replay_config};
+use rdlt_engine::bench::{Form, Merged, Readings, Replayed, Sinking, Wide, replay_config, spread};
 use rdlt_engine::{Cores, Report};
 use rdlt_host::Options;
 
 use crate::processes::{Placed, Processes};
-use crate::{Pids, Seconds, Transport, Usage, spread};
+use crate::{Pids, Seconds, Transport, Usage};
 
 /// A workload served with both connectors in processes of their own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,7 +26,7 @@ pub(crate) enum Shaped {
 
 impl Shaped {
     /// Every workload.
-    const ALL: [Self; 2] = [Self::Wide, Self::Merge];
+    pub(crate) const ALL: [Self; 2] = [Self::Wide, Self::Merge];
     /// Columns of the wide table.
     const COLUMNS: u16 = 5_000;
 
