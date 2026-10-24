@@ -765,6 +765,11 @@ struct VaultConfig {
     /// Publishes the rows of a table that lost a column outside the pipeline without it, rather
     /// than refusing their commit.
     lose_dropped_columns: bool,
+    /// Refuses a commit whose table lost a column as a plain data error, without the
+    /// `column_missing` code.
+    uncoded_missing_columns: bool,
+    /// Publishes a commit whose table lost a column, then refuses it as `column_missing`.
+    publish_before_missing: bool,
 }
 
 #[derive(Default)]
@@ -1093,7 +1098,11 @@ impl VaultSession {
                 let column = (staged.table.clone(), field.name().clone());
                 if store.dropped.contains(&column) {
                     let message = format!("table {} lacks column {}", column.0, column.1);
-                    return Some(ConnectorError::data(message).with_code("column_missing"));
+                    let refused = ConnectorError::data(message);
+                    if self.config.uncoded_missing_columns {
+                        return Some(refused);
+                    }
+                    return Some(refused.with_code("column_missing"));
                 }
             }
         }
@@ -1402,6 +1411,9 @@ impl Session for VaultSession {
             return Err(error);
         }
         if let Some(error) = self.losing(&store, meta) {
+            if self.config.publish_before_missing {
+                self.publish(&mut store, meta);
+            }
             return Err(error);
         }
         let rows = self.publish(&mut store, meta);
@@ -2078,6 +2090,8 @@ const BROKEN: &[(&str, &[&str])] = &[
     ("session_tombstones", &["D-DELETE", "D-TRUNCATE"]),
     ("keep_replaced_tombstones", &["D-DELETE"]),
     ("lose_dropped_columns", &["D-TABLES"]),
+    ("uncoded_missing_columns", &["D-TABLES"]),
+    ("publish_before_missing", &["D-TABLES"]),
 ];
 
 #[tokio::test]
