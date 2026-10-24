@@ -838,11 +838,7 @@ async fn a_commit_names_the_records_of_child_tables_state_does_not_record_yet() 
         )),
         physical: Some("orders__items".into()),
         names,
-        sequences: None,
-        exact: BTreeSet::new(),
-        history: false,
-        key: Vec::new(),
-        change_time: None,
+        ..rdlt_connector::TableState::default()
     };
     let state = rdlt_connector::PipelineState {
         tables: BTreeMap::from([(path, recorded)]),
