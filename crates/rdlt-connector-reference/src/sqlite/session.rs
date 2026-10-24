@@ -6,12 +6,14 @@ pub(super) mod owners;
 mod tests;
 mod writer;
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::SystemTime;
 
+use parking_lot::Mutex;
 use rdlt_connector::prelude::*;
 use rdlt_connector::sqlgen::{self, SqlPlanner, Sqlite};
-use rdlt_connector::{Epoch, PipelineId, StateRecord};
+use rdlt_connector::{Epoch, GenerationId, PipelineId, SegmentId, SegmentSet, StateRecord};
 use rusqlite::types::Value;
 
 use super::database::{Database, columns, integer, query, run, run_all, text};
@@ -27,6 +29,57 @@ pub struct SqliteSession {
     planner: Arc<SqlPlanner<Sqlite>>,
     pipeline: PipelineId,
     epoch: Epoch,
+    written: Written,
+}
+
+/// The columns the session's writers staged rows with, by segment, then by table and the
+/// generation of it the rows fill.
+///
+/// A commit publishes only what its own session staged, and the catalog records no columns of
+/// it.
+#[derive(Clone, Debug, Default)]
+pub(super) struct Written(Arc<Mutex<BTreeMap<SegmentId, Columns>>>);
+
+/// The columns rows of each table, and of each generation of it, were staged with.
+pub(super) type Columns = BTreeMap<(String, Option<GenerationId>), BTreeSet<String>>;
+
+impl Written {
+    /// Notes that rows of `table` were staged in `segment` with `columns`.
+    pub(super) fn note(
+        &self,
+        table: &TableRef,
+        segment: SegmentId,
+        columns: impl IntoIterator<Item = String>,
+    ) {
+        let staging = (table.name.to_string(), table.generation);
+        let mut noted = self.0.lock();
+        let noted = noted
+            .entry(segment)
+            .or_default()
+            .entry(staging)
+            .or_default();
+        noted.extend(columns);
+    }
+
+    /// The columns noted of each table and generation in `segments`.
+    pub(super) fn of(&self, segments: &SegmentSet) -> Columns {
+        let mut columns = Columns::new();
+        let noted = self.0.lock();
+        for (_, of_segment) in noted.iter().filter(|(id, _)| segments.contains(**id)) {
+            for (staging, names) in of_segment {
+                let held = columns.entry(staging.clone()).or_default();
+                held.extend(names.iter().cloned());
+            }
+        }
+        columns
+    }
+
+    /// Forgets what was noted in `segments`, which a commit published or abandoned.
+    pub(super) fn forget(&self, segments: &SegmentSet) {
+        self.0
+            .lock()
+            .retain(|segment, _| !segments.contains(*segment));
+    }
 }
 
 impl SqliteSession {
@@ -69,6 +122,7 @@ impl SqliteSession {
                 planner,
                 pipeline,
                 epoch,
+                written: Written::default(),
             },
             epoch,
             state,
@@ -128,6 +182,7 @@ impl Session for SqliteSession {
             epoch: self.epoch,
             table: table.clone(),
             buffered: Vec::new(),
+            written: self.written.clone(),
         })
     }
 
@@ -142,8 +197,10 @@ impl Session for SqliteSession {
     async fn commit(&mut self, meta: &CommitMeta) -> Result<Receipt> {
         let (planner, pipeline, epoch) =
             (Arc::clone(&self.planner), self.pipeline.clone(), self.epoch);
-        let meta = meta.clone();
-        self.database
+        let ended = [meta.segments.clone(), meta.abandoned.clone()];
+        let (meta, noted) = (meta.clone(), self.written.of(&meta.segments));
+        let receipt = self
+            .database
             .transaction(move |transaction| {
                 let fenced =
                     meta.epoch != epoch || run(transaction, &planner.fence(&pipeline, epoch))? == 0;
@@ -161,7 +218,8 @@ impl Session for SqliteSession {
                 )? {
                     return Ok(receipt);
                 }
-                let (rows, bytes) = publish(transaction, &planner, &pipeline, epoch, &meta)?;
+                let (rows, bytes) =
+                    publish(transaction, &planner, (&pipeline, epoch), &meta, &noted)?;
                 finish(transaction, &planner, &pipeline, &meta)?;
                 drop_tables(transaction, &planner, &pipeline, &meta)?;
                 run_all(
@@ -182,7 +240,11 @@ impl Session for SqliteSession {
                 run(transaction, &planner.record_receipt(&pipeline, &receipt))?;
                 Ok(receipt)
             })
-            .await
+            .await?;
+        for segments in &ended {
+            self.written.forget(segments);
+        }
+        Ok(receipt)
     }
 
     async fn close(self) -> Result<()> {

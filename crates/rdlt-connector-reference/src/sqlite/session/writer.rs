@@ -12,6 +12,7 @@ use rusqlite::Transaction;
 
 use super::super::database::{Database, columns, run, run_all};
 use super::super::values;
+use super::Written;
 use super::owners::{changed, derived, distinct, owned};
 
 /// Readies `table`, which its pipeline created, for a writer of `pipeline`'s session: readies a
@@ -67,6 +68,7 @@ pub struct SqliteWriter {
     pub(super) epoch: Epoch,
     pub(super) table: TableRef,
     pub(super) buffered: Vec<(SegmentId, RecordBatch)>,
+    pub(super) written: Written,
 }
 
 impl TableWriter for SqliteWriter {
@@ -77,13 +79,21 @@ impl TableWriter for SqliteWriter {
 
     async fn flush(&mut self) -> Result<WriteStats> {
         let buffered = std::mem::take(&mut self.buffered);
+        let staged: Vec<(SegmentId, Vec<String>)> = buffered
+            .iter()
+            .map(|(segment, batch)| {
+                let fields = batch.schema_ref().fields().iter();
+                (*segment, fields.map(|field| field.name().clone()).collect())
+            })
+            .collect();
         let (planner, pipeline, epoch, table) = (
             Arc::clone(&self.planner),
             self.pipeline.clone(),
             self.epoch,
             self.table.clone(),
         );
-        self.database
+        let stats = self
+            .database
             .transaction(move |transaction| {
                 let mut stats = WriteStats::default();
                 // The table may have been dropped and claimed by another pipeline since the
@@ -110,6 +120,10 @@ impl TableWriter for SqliteWriter {
                 }
                 Ok(stats)
             })
-            .await
+            .await?;
+        for (segment, names) in staged {
+            self.written.note(&self.table, segment, names);
+        }
+        Ok(stats)
     }
 }

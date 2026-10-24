@@ -7,22 +7,23 @@
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
-use arrow_array::{ArrayRef, BinaryArray, Int64Array, RecordBatch};
+use arrow_array::{ArrayRef, BinaryArray, Int8Array, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field as ArrowField, Schema};
 use parking_lot::Mutex;
 use rdlt_connector::sqlgen::{SqlPlanner, Sqlite};
 use rdlt_connector::{
-    ChildTable, CommitMeta, CommitSeq, ConnectContext, Destination, Epoch, Field, LoadId,
-    LogicalType, MergeKey, OpenContext, OpenedSession, PipelineId, RootKey, SEQ_COLUMN,
-    SchemaVersion, SegmentId, Session as _, TableChange, TablePath, TableRef, TableSchema,
-    TableWriter as _, destination_factory,
+    ChangeColumns, ChangeOp, ChildTable, CommitMeta, CommitSeq, ConnectContext, ConnectorErrorKind,
+    Deletion, Destination, Epoch, Field, GenerationId, LoadId, LogicalType, MergeKey, OP_COLUMN,
+    OpenContext, OpenedSession, PipelineId, RootKey, SEQ_COLUMN, SchemaVersion, SegmentId,
+    Session as _, TableChange, TablePath, TableRef, TableSchema, TableWriter as _,
+    UNCHANGED_COLUMN, destination_factory,
 };
 use rusqlite::trace::TraceEvent;
 use serde_json::json;
 
 use super::super::database::Database;
 use super::super::{SqliteDestination, database};
-use super::SqliteSession;
+use super::{Columns, SqliteSession};
 
 fn table(name: &str, merge: Option<MergeKey>) -> TableRef {
     TableRef {
@@ -121,8 +122,8 @@ fn by_stager(name: &str) -> (String, String) {
     (planner.staged_index_name(&staging), staging)
 }
 
-/// The first commit of `load` at `epoch`: segment 1, whose rows `items`, a child table, follows.
-fn first_commit(load: LoadId, epoch: Epoch, items: &TableRef) -> CommitMeta {
+/// The first commit of `load` at `epoch`: segment 1, whose rows `children`, child tables, follow.
+fn first_commit(load: LoadId, epoch: Epoch, children: &[&TableRef]) -> CommitMeta {
     CommitMeta {
         load_id: load,
         commit_seq: CommitSeq::FIRST,
@@ -131,10 +132,13 @@ fn first_commit(load: LoadId, epoch: Epoch, items: &TableRef) -> CommitMeta {
         abandoned: rdlt_connector::SegmentSet::new(),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
-        child_tables: vec![ChildTable {
-            table: items.name.clone(),
-            merge: items.merge.clone().expect("a merge key"),
-        }],
+        child_tables: children
+            .iter()
+            .map(|child| ChildTable {
+                table: child.name.clone(),
+                merge: child.merge.clone().expect("a merge key"),
+            })
+            .collect(),
         drop_tables: Vec::new(),
         horizon: None,
     }
@@ -213,7 +217,7 @@ async fn writers_index_what_a_commit_finds_and_the_commit_changes_no_schema() {
     }
     let staged = schema_objects(&path);
     indexed_as_a_commit_finds_rows(&staged);
-    let meta = first_commit(context.load_id, opened.epoch, &items);
+    let meta = first_commit(context.load_id, opened.epoch, &[&items]);
     let receipt = opened
         .session
         .commit(&meta)
@@ -286,11 +290,16 @@ async fn a_commit_of_an_append_a_merge_and_a_child_table_runs_24_statements() {
             .expect("the write buffers");
         writer.flush().await.expect("the flush stages");
     }
-    let meta = first_commit(LoadId::from_parts(UNIX_EPOCH, 1), opened.epoch, &items);
+    let meta = first_commit(LoadId::from_parts(UNIX_EPOCH, 1), opened.epoch, &[&items]);
+    let noted = session.written.of(&meta.segments);
+    let tables: Vec<&str> = noted.keys().map(|(table, _)| table.as_str()).collect();
+    assert_eq!(tables, ["events", "items", "roots"]);
     database.trace(Some(started));
     let receipt = session.commit(&meta).await.expect("the commit lands");
     database.trace(None);
     assert_eq!(receipt.rows, 3);
+    // Nothing is kept of the columns of what the commit published.
+    assert_eq!(session.written.of(&meta.segments), Columns::new());
     // SQLite shows a program it runs within a statement, as a table-valued pragma's, as a
     // comment; the statements the destination runs are the rest.
     let started = STARTED.lock().clone();
@@ -299,4 +308,286 @@ async fn a_commit_of_an_append_a_merge_and_a_child_table_runs_24_statements() {
         .filter(|sql| !sql.starts_with("--"))
         .collect();
     assert_eq!(run.len(), 24, "{run:#?}");
+}
+
+/// Creates `table` of an `id` and a `name` in `opened`'s session and stages two rows of it in
+/// each of `segments`.
+async fn staged_names(opened: &mut OpenedSession, table: &TableRef, segments: &[u64]) {
+    let fields = vec![
+        Field::new("id", LogicalType::Int64, false),
+        Field::new("name", LogicalType::Utf8, true),
+    ];
+    let create = TableChange::Create {
+        table: table.clone(),
+        schema: TableSchema::new(fields).expect("the schema is valid"),
+    };
+    opened
+        .session
+        .apply_schema(&create)
+        .await
+        .expect("the table is created");
+    let written = RecordBatch::try_from_iter([
+        ("id", Arc::new(Int64Array::from(vec![1, 2])) as ArrayRef),
+        ("name", Arc::new(StringArray::from(vec!["a", "b"])) as _),
+    ])
+    .expect("a valid batch");
+    let mut writer = opened.session.writer(table).await.expect("a writer opens");
+    for segment in segments {
+        writer
+            .write(SegmentId(*segment), written.clone())
+            .await
+            .expect("the write buffers");
+    }
+    writer.flush().await.expect("the flush stages");
+}
+
+#[tokio::test]
+async fn a_commit_whose_table_lost_a_column_it_staged_fails_and_publishes_nothing() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let path = directory.path().join("dropped.db");
+    let (mut opened, context) = open_session(&path).await;
+    // The commit publishes `audit` before `events`, the table that loses a column.
+    for name in ["audit", "events"] {
+        staged_names(&mut opened, &table(name, None), &[1]).await;
+    }
+    let outside = rusqlite::Connection::open(&path).expect("the database opens");
+    outside
+        .execute("ALTER TABLE \"events\" DROP COLUMN \"name\"", [])
+        .expect("the column is dropped");
+    let meta = first_commit(context.load_id, opened.epoch, &[]);
+    let error = opened
+        .session
+        .commit(&meta)
+        .await
+        .expect_err("the commit is refused");
+    assert_eq!(
+        (error.kind(), error.code()),
+        (ConnectorErrorKind::Data, Some("column_missing")),
+        "{error}"
+    );
+    let count = |table: &str| -> i64 {
+        outside
+            .query_row(&format!("SELECT COUNT(*) FROM \"{table}\""), [], |row| {
+                row.get(0)
+            })
+            .expect("the table counts")
+    };
+    let planner = SqlPlanner::try_new(Sqlite).expect("a planner");
+    for table in ["audit", "events"] {
+        assert_eq!(count(table), 0, "{table} published");
+        assert_eq!(count(&planner.staging_table(table)), 2, "{table} staged");
+    }
+}
+
+/// The rows `table` publishes in the database at `path`.
+fn published(path: &std::path::Path, table: &str) -> i64 {
+    let connection = rusqlite::Connection::open(path).expect("the database opens");
+    connection
+        .query_row(&format!("SELECT COUNT(*) FROM \"{table}\""), [], |row| {
+            row.get(0)
+        })
+        .expect("the table counts")
+}
+
+/// Commit `seq` of `load` at `epoch`, of segment `segment` alone.
+fn commit_of(load: LoadId, epoch: Epoch, seq: CommitSeq, segment: u64) -> CommitMeta {
+    CommitMeta {
+        commit_seq: seq,
+        segments: [SegmentId(segment)].into_iter().collect(),
+        ..first_commit(load, epoch, &[])
+    }
+}
+
+/// The table `events` merging a change stream by `id`, and a change inserting a row of it.
+fn changed_events() -> (TableRef, RecordBatch) {
+    let key = MergeKey {
+        columns: vec!["id".into()],
+        seq: SEQ_COLUMN.into(),
+        root: None,
+        changes: Some(ChangeColumns {
+            op: OP_COLUMN.into(),
+            unchanged: Some(UNCHANGED_COLUMN.into()),
+            deletion: Deletion::Hard,
+        }),
+        history: None,
+    };
+    let change = RecordBatch::try_from_iter([
+        ("id", Arc::new(Int64Array::from(vec![1])) as ArrayRef),
+        (
+            SEQ_COLUMN,
+            Arc::new(BinaryArray::from_iter_values([[0_u8; 16]])) as _,
+        ),
+        (
+            OP_COLUMN,
+            Arc::new(Int8Array::from(vec![ChangeOp::Insert.code()])) as _,
+        ),
+        (
+            UNCHANGED_COLUMN,
+            Arc::new(BinaryArray::from(vec![None::<&[u8]>])) as _,
+        ),
+    ])
+    .expect("a valid batch");
+    (table("events", Some(key)), change)
+}
+
+#[tokio::test]
+async fn an_append_after_a_change_merge_publishes_though_its_staging_keeps_the_merge_s_flags() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let path = directory.path().join("switched.db");
+    let (mut opened, context) = open_session(&path).await;
+    let (merged, change) = changed_events();
+    opened
+        .session
+        .apply_schema(&create(&merged, "id"))
+        .await
+        .expect("the table is created");
+    let appended = table("events", None);
+    let mut seq = CommitSeq::FIRST;
+    for (segment, (written, batch)) in [(&merged, change), (&appended, batch("id"))]
+        .into_iter()
+        .enumerate()
+    {
+        let segment = u64::try_from(segment).expect("a segment") + 1;
+        let mut writer = opened
+            .session
+            .writer(written)
+            .await
+            .expect("a writer opens");
+        writer
+            .write(SegmentId(segment), batch)
+            .await
+            .expect("the write buffers");
+        writer.flush().await.expect("the flush stages");
+        let meta = commit_of(context.load_id, opened.epoch, seq, segment);
+        opened
+            .session
+            .commit(&meta)
+            .await
+            .expect("the commit lands");
+        seq = seq.next();
+    }
+    assert_eq!(published(&path, "events"), 2);
+}
+
+#[tokio::test]
+async fn an_append_after_an_abandoned_generation_publishes_though_its_staging_keeps_a_column() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let path = directory.path().join("abandoned.db");
+    let (mut opened, _) = open_session(&path).await;
+    let events = table("events", None);
+    let generation = TableRef {
+        generation: Some(GenerationId(7)),
+        ..events.clone()
+    };
+    opened
+        .session
+        .apply_schema(&create(&events, "id"))
+        .await
+        .expect("the table is created");
+    // The generation gains a column, which its table's staging gains with it, and is never
+    // committed.
+    drop(
+        opened
+            .session
+            .writer(&generation)
+            .await
+            .expect("a writer opens"),
+    );
+    let add = TableChange::AddColumn {
+        table: generation,
+        field: Field::new("extra", LogicalType::Int64, true),
+    };
+    opened
+        .session
+        .apply_schema(&add)
+        .await
+        .expect("the column is added");
+    drop(opened);
+    let (mut opened, context) = open_session(&path).await;
+    let mut writer = opened
+        .session
+        .writer(&events)
+        .await
+        .expect("a writer opens");
+    writer
+        .write(SegmentId(1), batch("id"))
+        .await
+        .expect("the write buffers");
+    writer.flush().await.expect("the flush stages");
+    let meta = first_commit(context.load_id, opened.epoch, &[]);
+    opened
+        .session
+        .commit(&meta)
+        .await
+        .expect("the commit lands");
+    assert_eq!(published(&path, "events"), 1);
+}
+
+#[tokio::test]
+async fn a_commit_into_a_generation_that_lost_a_column_it_staged_fails_and_publishes_nothing() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let path = directory.path().join("generation.db");
+    let (mut opened, context) = open_session(&path).await;
+    let generation = TableRef {
+        generation: Some(GenerationId(7)),
+        ..table("events", None)
+    };
+    opened
+        .session
+        .apply_schema(&create(&table("events", None), "id"))
+        .await
+        .expect("the table is created");
+    let mut writer = opened
+        .session
+        .writer(&generation)
+        .await
+        .expect("a writer opens");
+    writer
+        .write(SegmentId(1), batch("id"))
+        .await
+        .expect("the write buffers");
+    writer.flush().await.expect("the flush stages");
+    let planner = SqlPlanner::try_new(Sqlite).expect("a planner");
+    let target = planner.target(&generation);
+    let outside = rusqlite::Connection::open(&path).expect("the database opens");
+    let drop = format!("ALTER TABLE \"{target}\" DROP COLUMN \"{SEQ_COLUMN}\"");
+    outside.execute(&drop, []).expect("the column is dropped");
+    let meta = first_commit(context.load_id, opened.epoch, &[]);
+    let error = opened
+        .session
+        .commit(&meta)
+        .await
+        .expect_err("the commit is refused");
+    assert_eq!(
+        (error.kind(), error.code()),
+        (ConnectorErrorKind::Data, Some("column_missing")),
+        "{error}"
+    );
+    assert_eq!(published(&path, &target), 0);
+}
+
+#[tokio::test]
+async fn a_column_dropped_between_two_commits_of_a_session_fails_the_second() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let path = directory.path().join("between.db");
+    let (mut opened, context) = open_session(&path).await;
+    staged_names(&mut opened, &table("events", None), &[1, 2]).await;
+    let first = commit_of(context.load_id, opened.epoch, CommitSeq::FIRST, 1);
+    opened
+        .session
+        .commit(&first)
+        .await
+        .expect("the commit lands");
+    let outside = rusqlite::Connection::open(&path).expect("the database opens");
+    outside
+        .execute("ALTER TABLE \"events\" DROP COLUMN \"name\"", [])
+        .expect("the column is dropped");
+    let second = commit_of(context.load_id, opened.epoch, CommitSeq::FIRST.next(), 2);
+    let error = opened
+        .session
+        .commit(&second)
+        .await
+        .expect_err("the commit is refused");
+    assert_eq!(error.code(), Some("column_missing"), "{error}");
+    assert_eq!(published(&path, "events"), 2);
 }

@@ -6,6 +6,10 @@ mod history;
 mod keyed;
 mod recorded;
 mod swap;
+#[cfg(test)]
+mod tests;
+
+use std::collections::BTreeSet;
 
 pub(super) use keyed::keyless;
 use keyed::{Of, holds_key};
@@ -169,9 +173,15 @@ impl<D: SqlDialect> SqlPlanner<D> {
     }
 
     /// The statements publishing the rows of `staged`, whose table `owned` names, that its
-    /// pipeline staged at `epoch` in `segments` into its target, whose columns are `columns`,
-    /// then removing them from staging; a target without columns does not exist, which is a
-    /// `Data` error.
+    /// pipeline staged at `epoch` in `segments` with the columns `written` into its target,
+    /// whose columns are `columns`, then removing them from staging; a target without columns
+    /// does not exist, which is a `Data` error.
+    ///
+    /// A column the rows were written with that the target lacks, as one dropped outside the
+    /// pipeline, is a `Data` error coded `column_missing` that names each: the commit publishes
+    /// nothing rather than the rows without it. A change stream's op and unchanged flags direct
+    /// its merge, and no target holds them. A column the staging holds that the rows were not
+    /// written with, as one an earlier write mode left, holds none of their values.
     ///
     /// While a table's writer appends, a commit reads its own staged rows by the staging table's
     /// index of who staged them, which [`SqlPlanner::staged_index`] creates where the rows are
@@ -190,6 +200,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
         owned: &Owned<'_>,
         staged: &Staged,
         columns: &[Column],
+        written: &[&str],
         epoch: Epoch,
         segments: &SegmentSet,
     ) -> Result<Vec<Statement>> {
@@ -209,6 +220,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
                 "table {name} does not exist to publish into"
             )));
         }
+        self.holds_written(&name, staged.merge.as_ref(), columns, written)?;
         let names: Vec<String> = columns
             .iter()
             .map(|column| self.quote(&column.name))
@@ -241,6 +253,44 @@ impl<D: SqlDialect> SqlPlanner<D> {
         self.rows_of(&mut delete, staged, of.pipeline, epoch, segments);
         plan.push(delete.finish());
         self.bounded(plan)
+    }
+
+    /// Refuses the columns of `written` that `target`, the columns of the table `table` written
+    /// by `merge`, lacks, compared as the database compares names, beside a change stream's op
+    /// and unchanged flags: a `Data` error coded `column_missing` that names them.
+    fn holds_written(
+        &self,
+        table: &str,
+        merge: Option<&MergeKey>,
+        target: &[Column],
+        written: &[&str],
+    ) -> Result<()> {
+        let mut held: BTreeSet<String> = target
+            .iter()
+            .map(|column| self.dialect.folds(&column.name))
+            .collect();
+        if let Some(changes) = merge.and_then(|key| key.changes.as_ref()) {
+            let directing = [Some(&*changes.op), changes.unchanged.as_deref()];
+            held.extend(
+                directing
+                    .into_iter()
+                    .flatten()
+                    .map(|name| self.dialect.folds(name)),
+            );
+        }
+        let missing: Vec<&str> = written
+            .iter()
+            .copied()
+            .filter(|name| !held.contains(&self.dialect.folds(name)))
+            .collect();
+        if missing.is_empty() {
+            return Ok(());
+        }
+        Err(ConnectorError::data(format!(
+            "table {table} lacks columns its rows were written with: {}",
+            missing.join(", ")
+        ))
+        .with_code("column_missing"))
     }
 
     /// The statement inserting into `target` the `names` of the staged rows `of` names.
