@@ -1,21 +1,28 @@
 //! A session's writers index what a commit finds rows in, so a commit changes no table or
 //! index: an appending writer the staging by who staged its rows, which a keyed writer drops, and
 //! a keyed writer its tables by key.
+//!
+//! A commit runs a fixed count of statements for each table it publishes.
 
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
 use arrow_array::{ArrayRef, BinaryArray, Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field as ArrowField, Schema};
+use parking_lot::Mutex;
 use rdlt_connector::sqlgen::{SqlPlanner, Sqlite};
 use rdlt_connector::{
-    ChildTable, CommitMeta, CommitSeq, ConnectContext, Destination, Field, LoadId, LogicalType,
-    MergeKey, OpenContext, OpenedSession, PipelineId, RootKey, SEQ_COLUMN, SchemaVersion,
-    SegmentId, TableChange, TablePath, TableRef, TableSchema, destination_factory,
+    ChildTable, CommitMeta, CommitSeq, ConnectContext, Destination, Epoch, Field, LoadId,
+    LogicalType, MergeKey, OpenContext, OpenedSession, PipelineId, RootKey, SEQ_COLUMN,
+    SchemaVersion, SegmentId, Session as _, TableChange, TablePath, TableRef, TableSchema,
+    TableWriter as _, destination_factory,
 };
+use rusqlite::trace::TraceEvent;
 use serde_json::json;
 
+use super::super::database::Database;
 use super::super::{SqliteDestination, database};
+use super::SqliteSession;
 
 fn table(name: &str, merge: Option<MergeKey>) -> TableRef {
     TableRef {
@@ -114,6 +121,25 @@ fn by_stager(name: &str) -> (String, String) {
     (planner.staged_index_name(&staging), staging)
 }
 
+/// The first commit of `load` at `epoch`: segment 1, whose rows `items`, a child table, follows.
+fn first_commit(load: LoadId, epoch: Epoch, items: &TableRef) -> CommitMeta {
+    CommitMeta {
+        load_id: load,
+        commit_seq: CommitSeq::FIRST,
+        epoch,
+        segments: [SegmentId(1)].into_iter().collect(),
+        abandoned: rdlt_connector::SegmentSet::new(),
+        state_delta: Vec::new(),
+        finish_generations: Vec::new(),
+        child_tables: vec![ChildTable {
+            table: items.name.clone(),
+            merge: items.merge.clone().expect("a merge key"),
+        }],
+        drop_tables: Vec::new(),
+        horizon: None,
+    }
+}
+
 /// A session of the pipeline `indexes` on the database at `path`, and the context it opened in.
 async fn open_session(path: &std::path::Path) -> (OpenedSession, OpenContext) {
     let destination: Box<dyn Destination> = destination_factory::<SqliteDestination>()
@@ -187,21 +213,7 @@ async fn writers_index_what_a_commit_finds_and_the_commit_changes_no_schema() {
     }
     let staged = schema_objects(&path);
     indexed_as_a_commit_finds_rows(&staged);
-    let meta = CommitMeta {
-        load_id: context.load_id,
-        commit_seq: CommitSeq::FIRST,
-        epoch: opened.epoch,
-        segments: [SegmentId(1)].into_iter().collect(),
-        abandoned: rdlt_connector::SegmentSet::new(),
-        state_delta: Vec::new(),
-        finish_generations: Vec::new(),
-        child_tables: vec![ChildTable {
-            table: "items".into(),
-            merge: items.merge.clone().expect("a merge key"),
-        }],
-        drop_tables: Vec::new(),
-        horizon: None,
-    };
+    let meta = first_commit(context.load_id, opened.epoch, &items);
     let receipt = opened
         .session
         .commit(&meta)
@@ -233,4 +245,58 @@ fn a_catalog_that_cannot_be_read_is_an_error_where_a_table_is_read_back() {
     connection.set_limit(length, 1_000_000).expect("a limit");
     let read = super::owners::published(&connection, &planner, "orders");
     assert_eq!(read.expect("the catalog reads"), None);
+}
+
+/// The text of each statement started on a connection whose trace is [`started`].
+static STARTED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a trace is a function of this signature"
+)]
+fn started(event: TraceEvent<'_>) {
+    if let TraceEvent::Stmt(_, sql) = event {
+        STARTED.lock().push(sql.to_owned());
+    }
+}
+
+#[tokio::test]
+async fn a_commit_of_an_append_a_merge_and_a_child_table_runs_24_statements() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let database = Database::open(directory.path().join("counted.db"))
+        .await
+        .expect("the database opens");
+    let planner = Arc::new(SqlPlanner::try_new(Sqlite).expect("a planner"));
+    let pipeline = PipelineId::parse("counted").expect("a valid pipeline id");
+    let opened = SqliteSession::open(database.clone(), planner, pipeline)
+        .await
+        .expect("a session opens");
+    let mut session = opened.session;
+    let (roots, items) = roots_and_items();
+    let events = table("events", None);
+    for (table, key) in [(&events, "id"), (&roots, "id"), (&items, "root")] {
+        session
+            .apply_schema(&create(table, key))
+            .await
+            .expect("the table is created");
+        let mut writer = session.writer(table).await.expect("a writer opens");
+        writer
+            .write(SegmentId(1), batch(key))
+            .await
+            .expect("the write buffers");
+        writer.flush().await.expect("the flush stages");
+    }
+    let meta = first_commit(LoadId::from_parts(UNIX_EPOCH, 1), opened.epoch, &items);
+    database.trace(Some(started));
+    let receipt = session.commit(&meta).await.expect("the commit lands");
+    database.trace(None);
+    assert_eq!(receipt.rows, 3);
+    // SQLite shows a program it runs within a statement, as a table-valued pragma's, as a
+    // comment; the statements the destination runs are the rest.
+    let started = STARTED.lock().clone();
+    let run: Vec<&String> = started
+        .iter()
+        .filter(|sql| !sql.starts_with("--"))
+        .collect();
+    assert_eq!(run.len(), 24, "{run:#?}");
 }

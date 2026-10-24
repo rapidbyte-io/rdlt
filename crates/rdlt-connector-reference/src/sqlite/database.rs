@@ -49,6 +49,14 @@ impl Database {
         })
         .await
     }
+
+    /// Has SQLite call `traced` as each statement of the connection starts, or no longer where
+    /// it is `None`.
+    #[cfg(test)]
+    pub(super) fn trace(&self, traced: Option<fn(rusqlite::trace::TraceEvent<'_>)>) {
+        let statements = rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT;
+        self.0.lock().trace_v2(statements, traced);
+    }
 }
 
 /// A connection to the database at `path`, created when missing and private to its user, in
