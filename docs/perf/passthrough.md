@@ -744,3 +744,45 @@ Syscalls a run, both processes, spawning included: 2 343 `recvfrom`, 1 556 `writ
   6–11 % lower than the bare loop's thread, of which other cores kept busy account for 2–4 points.
 - The engine's extra CPU is mostly the 64-bit integer scan and the compute pool's jobs and idle
   spinning; both run beside the lane rather than on its path, but for the first batch.
+
+## Many tables
+
+Replicating a database of hundreds of tables follows a stream a table. No cell above has more
+than four streams, so nothing measured what such a pipeline pays a commit, what its reads keep, or
+what following it costs while its tables are quiet. The many-table cells,
+`passthrough/tables/followed/{16,64,192,256}` and `passthrough/tables/snapshot/256`, measure it;
+the served bench runs the same cells with both connectors spawned, but for 256 followed streams,
+which one served connection cannot carry ([served.md](served.md), "Many tables").
+
+- **Followed cells.** 16, 64, 192 or 256 streams, each one unbounded partition read
+  incrementally and followed (`Until::For`), from the replay source's followed mode: each stream
+  pushes five batches of 1 000 rows of the matrix's columns, a second apart on the bench's clock,
+  a checkpoint after each, then nothing until the run stops it. The run commits every two seconds
+  and follows for ten. Why these: 256 streams push 256 batches, about 22 MB, a second, about
+  1.5 % of what the production slice moves in 1 000-row frames, so the pipeline follows mostly
+  idle; the interval, a fifth of the streaming default's ten seconds, is two pushes long, so every
+  commit that carries data acknowledges every stream; and the pushes end by about five seconds
+  and their last commit by about six, so from seven seconds to ten nothing is pushed or
+  committed.
+- **Snapshot.** 256 streams of one bounded partition each, four such pushes a table, read once at
+  the engine's defaults: 256 MiB, 16 partitions read at once and the default commit policy.
+- **Engine.** A followed cell reads a partition more than its streams, as a following run must,
+  within the default 256 MiB where that admits them and otherwise within the least budget that
+  does (`EngineConfig::least_memory`): 514 MiB for 257 partitions. Every cell writes through as
+  many writers as the host has cores, so as many lanes, four on CPUs 0–3.
+- **Readings.** Over a cell's ten runs, its warm-up's left out, the median and range of: each
+  commit phase's time a commit, the flush, the horizon, the log, the commit and the
+  acknowledgement; the process's CPU seconds a wall second while the streams are quiet, from
+  seven seconds to ten, or over the snapshot's run; and the process's resident peak and how far
+  it rose above the run's base. With them, the budget the cell runs within and the least that
+  admits its partitions, the most its reads kept at once (the report's `kept_peak`) against their
+  share, a quarter of the budget, and the last run's readings, lane flushes by cause, retirements
+  among them. Reads in the engine's process keep nothing beside their events, so in-process cells
+  read zero there; served reads keep their decoders' schemas and dictionaries.
+- **Checks.** Every run checks every row its streams pushed lands.
+- **Running.** `just bench passthrough 0-3 tables`. A followed run lasts ten seconds, so each
+  followed cell takes about two minutes. As a test, each cell runs once with the same pushes 20 ms
+  apart, committed every 40 ms and followed for two seconds.
+
+No figures are recorded here yet: they are three interleaved rounds' medians and ranges, taken in
+the campaign that reads them.
