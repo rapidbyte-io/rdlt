@@ -118,12 +118,16 @@ still taken largely on trust:
     them in transport, a stream window a call. A write holds its staged bound and one decoded
     frame waiting for its writer, beside the frame it received next, which decodes once the
     writer takes the frame before it. A read holds its source's pushes as the source made them,
-    bounded by count, not bytes: the 16 events the source sends ahead, the one it waits to send,
-    the one being sent, and the frames its credit lets go, two of its largest and one more below
-    zero (ADR 0016). A JSON push is at most the host's `json push bytes`, and a batch, which the
-    read cuts to frames as it sends it, is bounded by its source alone: a read of JSON pushes
-    holds 21 at most, 617 MB at the default budget. What a connector's own process takes is the
-    operator's to bound (ADR 0043).
+    bounded by bytes: those the source sends ahead wait in a channel of 16 events whose pushes
+    keep alive at most the host's frame limit together, as `push_charge` counts them, each
+    taking the lesser of its charge and that limit, so a push beyond a frame waits until no
+    push holds any of it and then waits alone; a checkpoint, within the host's cursor limit,
+    and every other event pass free. Beside them it holds the push it waits to send, the one
+    being sent, and the frames its credit lets go, two of its largest and one more below zero
+    (ADR 0016). A JSON push is at most the host's `json push bytes`, and a batch, which the read
+    cuts to frames as it sends it, is bounded by its source alone: at the default budget a JSON
+    push at its limit is charged beyond a frame, so a read of them holds 6 at most, 176 MB. What
+    a connector's own process takes is the operator's to bound (ADR 0043).
 - **Lists are bounded and checked in linear time.** A catalog holds at most 65,536 streams and a
   plan 16,384 partitions, in every placement; a plan names each partition once and starts only
   those it names. A destination's identifier rules hold at most 4,096 reserved words and 64

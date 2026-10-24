@@ -1,8 +1,10 @@
-//! A served read: the source reads a partition into a channel, and each event it sends becomes
-//! frames sent to the host within the credit the host grants.
+//! A served read: the source reads a partition into a channel, its pushes within a window of the
+//! host's frame limit, and each event it sends becomes frames sent to the host within the credit
+//! the host grants.
 
 #[cfg(test)]
 mod tests;
+mod window;
 
 use std::collections::VecDeque;
 use std::num::NonZeroUsize;
@@ -23,9 +25,12 @@ use super::service::invalid;
 use crate::Cursor;
 use crate::error::ConnectorErrorKind;
 use crate::id::{PartitionId, StreamName};
-use crate::sink::{LogLevel, PartitionFeed, Push, SourceEvent, partition_channel};
+use crate::sink::{
+    Admission, LogLevel, PartitionFeed, Push, SourceEvent, admitted_partition_channel,
+};
 use crate::source::{Partition, ReadRequest, Source};
 use crate::wire::{Invalid, frame_error, status, v1};
+use window::Window;
 
 /// Events the source may send ahead of the frames waiting for credit.
 const EVENTS: NonZeroUsize = NonZeroUsize::new(16).expect("sixteen is not zero");
@@ -57,7 +62,8 @@ pub(super) async fn serve(
         start: request.cursor.clone(),
     };
     let (frames, answer) = mpsc::channel(EVENTS.get());
-    tokio::spawn(pump(source, request, barrier, controls, frames, host));
+    let window = Arc::new(Window::new(host));
+    tokio::spawn(pump(source, request, barrier, controls, frames, window));
     Ok((Box::pin(ReceiverStream::new(answer)), read))
 }
 
@@ -233,18 +239,19 @@ impl Drop for Reading {
 }
 
 /// Reads the partition and sends its frames within credit until the read is done, or the host
-/// goes.
+/// goes; `admission` admits what the source sends into the channel, within the host's limits.
 async fn pump(
     source: Arc<dyn Source>,
     request: ReadRequest,
     barrier: u64,
     mut controls: Incoming<v1::ReadControl>,
     frames: mpsc::Sender<Result<v1::ReadFrame, Status>>,
-    host: Limits,
+    admission: Arc<dyn Admission>,
 ) {
-    let (sink, mut feed) = partition_channel(EVENTS);
+    let mut outbox = Outbox::new(admission.limits());
+    let (sink, mut feed) = admitted_partition_channel(EVENTS, admission);
     // What the source pushes is cut to the host's frames as it is sent.
-    let sink = sink.cut().within(host);
+    let sink = sink.cut();
     // A barrier pending when the read started is the source's to answer from its first push.
     if let Some(barrier) = std::num::NonZeroU64::new(barrier) {
         feed.request_checkpoint(barrier.get());
@@ -252,7 +259,6 @@ async fn pump(
     let mut reading = Reading(tokio::spawn(
         async move { source.read(request, sink).await },
     ));
-    let mut outbox = Outbox::new(host);
     let (mut done, mut exhausted) = (false, false);
     loop {
         if !send_queued(&mut outbox, &frames).await {
