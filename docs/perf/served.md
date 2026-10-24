@@ -1120,3 +1120,53 @@ threads counted, each the median over the three rounds, main → prototype:
 - **Against the rule.** Not built: the rule, at least 5 % more MB/s on the spawned destination or
   source in small frames, was not met (destination −9.3 %, source −4.0 % at the median). Each
   frame's credit is still granted as it is taken.
+
+## A served read bounded by bytes
+
+A served read's channel held sixteen of its source's events of any size. It now admits them
+within a window of the host's frame limit: a push takes the lesser of what it keeps alive and the
+window until it leaves the channel, and every other event passes free. The host also passes a JSON
+push on in the message it arrived in rather than copying it. The question was whether bounding
+the channel by bytes costs the spawned path anything. The bench's host tells its connectors the
+wire's default limits, a 64 MiB frame, so the window holds several of its largest pushes, 6.9 MB
+each, and sixteen of every smaller frame's, as many as the channel's count lets in.
+
+The rule set before measuring: every `process/socket` case that serves the source, alone or with
+the destination, moves within 3 % of main's median MB/s.
+
+Intel Core Ultra X7 358H, mains power, 2026-10-24, main at `e99a9dc6` against the change on it,
+governor `powersave` with energy preference `performance`. Each tree's `served` bench, built with
+`cargo bench --no-run`, ran `--bench 'process/socket/(source|both)'` with the host on CPUs 0–3
+(`taskset`) and each spawned connector on 4–11. Five pairs of rounds, main and the change
+interleaved, the order alternating, under the measurement lock, then six more pairs of the two
+`source` cases alone. Each round started at a one-minute load average of 2.1–3.8, the bench's own
+threads among it.
+
+MB/s over the five pairs, the median with its range, and the change's median on main's:
+
+| Case | Main | Change | Medians |
+|---|---|---|---|
+| `source/64x80000` | 1 804 (1 767–2 272) | 1 837 (1 572–2 172) | +1.8 % |
+| `both/64x80000` | 1 551 (1 484–1 818) | 1 615 (1 335–1 932) | +4.1 % |
+| `source/512x10000` | 2 018 (1 556–2 354) | 1 669 (1 523–2 014) | −17.3 % |
+| `both/512x10000` | 2 533 (2 392–3 013) | 2 473 (2 240–2 828) | −2.4 % |
+| `both/64x80000/4-partitions` | 1 660 (1 575–1 793) | 1 652 (1 524–1 807) | −0.5 % |
+| `both/64x80000/8-partitions` | 1 608 (1 537–1 684) | 1 591 (1 459–1 697) | −1.1 % |
+| `both/64x80000/16-partitions` | 1 436 (1 387–1 528) | 1 487 (1 346–1 542) | +3.6 % |
+| `both/512x10000/4-partitions` | 2 622 (2 361–2 771) | 2 607 (2 319–2 622) | −0.6 % |
+| `both/512x10000/16-partitions` | 2 388 (2 237–2 443) | 2 355 (2 255–2 425) | −1.4 % |
+| `both/5120x1000` | 1 749 (1 723–1 762) | 1 719 (1 493–1 736) | −1.7 % |
+| `both/5120x1000/4-partitions` | 1 518 (1 404–1 537) | 1 480 (1 348–1 501) | −2.5 % |
+| `both/5120x1000/16-partitions` | 1 453 (1 412–1 468) | 1 434 (1 251–1 467) | −1.3 % |
+
+- **One case strayed, and did not hold.** After the first three pairs every median was within 3 %
+  of main's, from −2.3 % to +1.8 %. Two more pairs left `source/512x10000` 17.3 % below main's: main
+  ran it at 2 354 and 1 556 MB/s in them, the change at 1 669 and 1 614. The six pairs of the
+  `source` cases alone put it 4.1 % above main's (main 1 756, 1 610–2 005; the change 1 828,
+  1 633–1 886), and `source/64x80000` 5.5 % above. Over all eleven pairs `source/512x10000` is
+  2.1 % below main's median (main 1 851, the change 1 812; the paired changes' median −4.0 %) and
+  `source/64x80000` 0.2 % below.
+- **Within the rule.** Every median is within 3 % of main's on all the pairs each case ran, or above
+  it. Single rounds strayed 10–30 % either way, main's as much as the change's. The change adds to
+  each push only the window's admission: what the push keeps alive, counted by its buffers, and a
+  permit of a semaphore that sixteen pushes of `512x10000` never fill.
