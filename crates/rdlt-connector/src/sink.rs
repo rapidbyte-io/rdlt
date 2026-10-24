@@ -182,9 +182,8 @@ impl PartitionSink {
         self
     }
 
-    /// The sink, what is sent to it kept within `limits`, as a served read keeps what it sends
-    /// within its host's.
-    #[cfg(any(test, feature = "serve"))]
+    /// The sink, what is sent to it kept within `limits`.
+    #[cfg(test)]
     pub(crate) fn within(mut self, limits: Limits) -> Self {
         self.limits = Some(limits);
         self
