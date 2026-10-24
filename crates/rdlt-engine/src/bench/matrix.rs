@@ -42,7 +42,8 @@ pub struct Cell {
     pub sinking: Sinking,
 }
 
-const fn nonzero(count: usize) -> NonZeroUsize {
+/// `count` as a count that cannot be zero, one where it is.
+pub(super) const fn nonzero(count: usize) -> NonZeroUsize {
     match NonZeroUsize::new(count) {
         Some(count) => count,
         None => NonZeroUsize::MIN,
