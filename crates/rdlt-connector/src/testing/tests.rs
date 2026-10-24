@@ -33,8 +33,8 @@ use crate::destination::{
 use crate::emitter::Emitter;
 use crate::error::{ConnectorError, ConnectorErrorKind, Result};
 use crate::id::{
-    CommitSeq, Epoch, GenerationId, LoadId, PartitionId, PipelineId, SegmentId, StreamName,
-    TablePath,
+    CommitSeq, Epoch, GenerationId, LoadId, PartitionId, PipelineId, SchemaVersion, SegmentId,
+    StreamName, TablePath,
 };
 use crate::sink::Push;
 use crate::source::{Partition, PartitionPlan, ReadStream, SourceConnector, Streams};
@@ -792,6 +792,8 @@ struct VaultStore {
     tombstones: BTreeMap<String, changes::Tombstones>,
     /// Columns dropped outside the pipeline, by table, which reading the table leaves out.
     dropped: BTreeSet<(String, String)>,
+    /// Every column dropped outside the pipeline, by table, in the order dropped.
+    drops: Vec<(String, String)>,
 }
 
 impl VaultStore {
@@ -1903,7 +1905,9 @@ impl Probe for VaultProbe {
         column: &'a str,
     ) -> BoxFuture<'a, Result<()>> {
         let column = (table.name.to_string(), column.to_owned());
-        self.0.lock().unwrap().dropped.insert(column);
+        let mut store = self.0.lock().unwrap();
+        store.drops.push(column.clone());
+        store.dropped.insert(column);
         Box::pin(async { Ok(()) })
     }
 }
@@ -2078,37 +2082,56 @@ const BROKEN: &[(&str, &[&str])] = &[
 
 #[tokio::test]
 async fn a_probe_that_drops_no_column_passes_d_tables_on_what_it_reads_with_a_note() {
-    for (flag, probe) in [
+    for (flag, drops) in [
         (None, true),
         (None, false),
         (Some("lose_dropped_columns"), false),
     ] {
-        let name = format!("noted_{probe}_{}", flag.unwrap_or("correct"));
+        let name = format!("noted_{drops}_{}", flag.unwrap_or("correct"));
         let mut config = json!({ "store": name });
         if let Some(flag) = flag {
             config[flag] = json!(true);
         }
-        let report = if probe {
+        let report = if drops {
             certify_destination::<Vault>(config, &VaultProbe(vault(&name))).await
         } else {
             let probe = ReadingProbe(VaultProbe(vault(&name)));
             certify_destination::<Vault>(config, &probe).await
         };
         report.assert_passed();
-        assert_eq!(report.note("D-TABLES").is_some(), !probe, "{report}");
+        let noted = report.results.iter().filter(|result| result.note.is_some());
+        let noted: Vec<&str> = noted.map(|result| result.clause.id).collect();
+        let expected: &[&str] = if drops { &[] } else { &["D-TABLES"] };
+        assert_eq!(noted, expected, "{report}");
     }
-    // A column was dropped for each write mode the vault declares, its replaced table's undone.
-    let dropped = vault("noted_true_correct").lock().unwrap().dropped.clone();
-    let tables: Vec<&str> = dropped.iter().map(|(table, _)| table.as_str()).collect();
+    // A column was dropped for each write mode the vault declares, in turn.
+    let drops = vault("noted_true_correct").lock().unwrap().drops.clone();
     let modes = [
         "_dropped_append__items",
-        "_dropped_history",
         "_dropped_merge",
+        "_dropped_history",
+        "_dropped_replace",
     ];
-    assert_eq!(tables.len(), modes.len(), "{tables:?}");
-    for (table, mode) in tables.iter().zip(modes) {
-        assert!(table.ends_with(mode), "{tables:?}");
+    assert_eq!(drops.len(), modes.len(), "{drops:?}");
+    for ((table, column), mode) in drops.iter().zip(modes) {
+        assert!(table.ends_with(mode) && column == "name", "{drops:?}");
     }
+}
+
+#[tokio::test]
+async fn a_probe_drops_no_column_unless_it_says_it_does() {
+    let probe = ReadingProbe(VaultProbe(vault("undropped")));
+    assert!(!probe.drops_columns());
+    let table = TableRef {
+        path: TablePath::new(["orders"]).unwrap(),
+        name: "orders".into(),
+        version: SchemaVersion(1),
+        generation: None,
+        merge: None,
+    };
+    let error = probe.drop_column(&table, "name").await.unwrap_err();
+    assert_eq!(error.kind(), ConnectorErrorKind::Unsupported);
+    assert!(vault("undropped").lock().unwrap().drops.is_empty());
 }
 
 #[tokio::test]
