@@ -120,7 +120,7 @@ flatbuffers = "25.2.10" # the verifier's depth for IPC headers and Arrow file fo
 criterion = { version = "0.8.2", default-features = false, features = [
   "cargo_bench_support",
 ] } # throughput benchmarks
-insta = { version = "1.48.0", default-features = false } # snapshots of the certification's help and reports
+insta = { version = "1.48.0", default-features = false } # snapshots of the certification's help and reports, and of the engine's error report
 alloc_tracker = { version = "0.7.13", default-features = false } # each thread's heap and its peak, for the simulation's check that runs hold what they reserve
 peak_alloc = "0.3.0" # the heap's peak size, for the engine's memory bound
 stats_alloc = "0.1.10" # counts of a benchmark's allocations and the bytes they request, which peak_alloc does not keep

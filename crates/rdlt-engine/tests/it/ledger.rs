@@ -9,8 +9,8 @@ use rdlt_connector::{
 };
 use rdlt_connector_reference::schema;
 use rdlt_engine::{
-    CommitPolicy, EngineConfig, ErrorKind, PipelinePlan, RetryPolicy, RunStatus, SchemaPolicy,
-    SchemaSettings, StopMode, StreamPlan, WriteMode,
+    CommitPolicy, EngineConfig, ErrorKind, Origin, PipelinePlan, RetryPolicy, RunStatus,
+    SchemaPolicy, SchemaSettings, StopMode, StreamPlan, WriteMode,
 };
 use serde_json::json;
 
@@ -730,9 +730,20 @@ async fn a_destination_write_that_never_returns_fails_at_its_wait() {
     let outcome = engine(config).run(plan, source, destination).await;
     assert_eq!(outcome.report.status, RunStatus::Failed);
     let error = outcome.error.expect("the run failed");
+    // The engine's wait ended the write: the engine says so, not the destination.
     assert_eq!(
-        (error.kind(), error.code(), error.is_retryable()),
-        (ErrorKind::Destination, Some("deadline_exceeded"), true)
+        (
+            error.kind(),
+            error.origin(),
+            error.code(),
+            error.is_retryable()
+        ),
+        (
+            ErrorKind::Destination,
+            Origin::Engine,
+            Some("deadline_exceeded"),
+            true
+        )
     );
     let elapsed = started.elapsed();
     assert!(elapsed >= WAIT && elapsed < WAIT * 2, "{elapsed:?}");

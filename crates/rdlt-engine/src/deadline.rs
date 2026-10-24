@@ -4,7 +4,9 @@
 //!
 //! A read may be silent for as long as its source has nothing to send; any other call that does
 //! not return keeps a run from ending, whether the connector is served out of process, where its
-//! host's deadlines bound it too, or runs in the engine's own.
+//! host's deadlines bound it too, or runs in the engine's own. A call the wait ends fails with the
+//! engine's error, not the connector's: [`Error::connector`](crate::error::Error::connector) finds
+//! the [`Expired`] its result carries.
 
 #[cfg(test)]
 mod tests;
@@ -16,9 +18,9 @@ use std::time::Duration;
 use arrow_array::RecordBatch;
 use rdlt_connector::{
     BoxFuture, Capabilities, Catalog, CommitMeta, ConnectorError, ConnectorErrorKind, Cursor,
-    DEADLINE_EXCEEDED, Destination, DestinationSession, DestinationWriter, OpenContext,
-    OpenedSession, PartitionId, PartitionPlan, PartitionSink, ReadRequest, Receipt, Result,
-    SegmentId, Source, StreamName, StreamState, TableChange, TableRef, WriteStats,
+    Destination, DestinationSession, DestinationWriter, OpenContext, OpenedSession, PartitionId,
+    PartitionPlan, PartitionSink, ReadRequest, Receipt, Result, SegmentId, Source, StreamName,
+    StreamState, TableChange, TableRef, WriteStats,
 };
 
 use rdlt_wire::bounded::{Charge, charging};
@@ -75,19 +77,38 @@ impl Waits {
         })
     }
 
-    /// What `call`, the connector's `what`, answers, unless the wait passes first.
-    async fn within<T>(&self, what: &str, call: BoxFuture<'_, Result<T>>) -> Result<T> {
+    /// What `call`, the connector's `what`, answers, unless the wait passes first: then a
+    /// transient error whose cause is the [`Expired`] wait.
+    async fn within<T>(&self, what: &'static str, call: BoxFuture<'_, Result<T>>) -> Result<T> {
         let wait = self.wait;
         tokio::select! {
             biased;
             // An answer and the wait's end together: the answer wins.
             answer = self.charged(call) => answer,
-            () = self.env.sleep(wait) => Err(ConnectorError::new(
-                ConnectorErrorKind::Transient,
-                format!("{what} took longer than the engine's wait of {wait:?}"),
-            )
-            .with_code(DEADLINE_EXCEEDED)),
+            () = self.env.sleep(wait) => {
+                let expired = Expired { what, wait };
+                Err(ConnectorError::new(ConnectorErrorKind::Transient, expired.to_string())
+                    .with_source(expired))
+            }
         }
+    }
+}
+
+/// The engine's wait for a connector's call passed before the call answered: the engine's
+/// finding, which no connector can make, since none can name this type.
+#[derive(Clone, Copy, Debug, thiserror::Error)]
+#[error("{what} took longer than the engine's wait of {wait:?}")]
+pub(crate) struct Expired {
+    /// The call, as a context names it: "the commit".
+    what: &'static str,
+    wait: Duration,
+}
+
+impl Expired {
+    /// The wait `error` says expired, where the engine's wait ended the call it answers.
+    pub(crate) fn of(error: &ConnectorError) -> Option<Self> {
+        let cause = std::error::Error::source(error)?;
+        cause.downcast_ref::<Self>().copied()
     }
 }
 

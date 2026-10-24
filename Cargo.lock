@@ -2247,6 +2247,7 @@ dependencies = [
  "criterion",
  "fail",
  "getrandom 0.4.3",
+ "insta",
  "memchr",
  "nix",
  "parking_lot",
