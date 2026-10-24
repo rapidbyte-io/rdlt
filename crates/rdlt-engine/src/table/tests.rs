@@ -20,6 +20,7 @@ use rdlt_connector::{
 mod decimals;
 mod discards;
 mod keys;
+mod laws;
 mod limits;
 mod merged_json;
 mod unwidened;
