@@ -26,8 +26,8 @@ pub(crate) use super::writer::Owner;
 use super::writer::{Command, WalWriter};
 use crate::budget::{Denied, MemoryBudget, Reservation};
 use crate::compute::Pool;
-use crate::error::Error;
-use crate::limits::{LOG_FRAME_EXCEEDS_BUDGET, LOG_PARTS};
+use crate::error::{Error, codes};
+use crate::limits::LOG_PARTS;
 use crate::report::Tally;
 use crate::table::TableView;
 
@@ -325,8 +325,8 @@ impl LoadLog {
 ///
 /// # Errors
 ///
-/// A frame beyond the log's share is refused with [`LOG_FRAME_EXCEEDS_BUDGET`]: no wait could
-/// admit it.
+/// A frame beyond the log's share is refused with [`codes::LOG_FRAME_EXCEEDS_BUDGET`]: no wait
+/// could admit it.
 async fn reserved(budget: &MemoryBudget, bytes: u64) -> Result<Reservation, Error> {
     budget
         .acquire_log(bytes)
@@ -337,7 +337,7 @@ async fn reserved(budget: &MemoryBudget, bytes: u64) -> Result<Reservation, Erro
                 "a frame of the write-ahead log takes up to {bytes} bytes in memory, more than \
                  the memory budget's share for the log holds"
             ))
-            .with_code(LOG_FRAME_EXCEEDS_BUDGET)
+            .with_code(codes::LOG_FRAME_EXCEEDS_BUDGET)
             .with_source(large),
         })
 }

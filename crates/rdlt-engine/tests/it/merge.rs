@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use arrow_array::{ArrayRef, Decimal128Array, Int64Array, RecordBatch, StringArray};
 use rdlt_connector::WriteModes;
-use rdlt_engine::{ErrorKind, RunStatus, WriteMode};
+use rdlt_engine::{ErrorKind, RunStatus, WriteMode, codes};
 use serde_json::json;
 
 use crate::schema::{batch, ints, text};
@@ -118,7 +118,7 @@ async fn a_merge_key_other_than_the_one_a_table_was_merged_by_is_refused() {
         let error = outcome.error.expect("the run failed");
         assert_eq!(
             (error.kind(), error.code()),
-            (ErrorKind::Config, Some("table_key_mismatch"))
+            (ErrorKind::Config, Some(codes::TABLE_KEY_MISMATCH))
         );
     }
     assert_eq!(published_json("rekeyed", "events").len(), 4);
@@ -141,7 +141,7 @@ async fn a_keyed_write_by_an_empty_catalog_key_is_refused() {
         let error = outcome.error.expect("the run failed");
         assert_eq!(
             (error.kind(), error.code()),
-            (ErrorKind::Config, Some("merge_key_missing")),
+            (ErrorKind::Config, Some(codes::MERGE_KEY_MISSING)),
             "{write:?}"
         );
     }
@@ -207,8 +207,8 @@ async fn merge_streams_the_run_cannot_load_are_refused() {
         .run(pipeline("no-merge", [merging("events")]), source, appending)
         .await;
     for (outcome, code) in [
-        (no_key, "merge_key_missing"),
-        (unsupported, "write_mode_unsupported"),
+        (no_key, codes::MERGE_KEY_MISSING),
+        (unsupported, codes::WRITE_MODE_UNSUPPORTED),
     ] {
         let error = outcome.error.expect("the run fails");
         assert_eq!(
@@ -239,7 +239,7 @@ async fn merge_rows_without_a_whole_key_fail_the_stream() {
     let error = outcome.error.expect("the run fails");
     assert_eq!(
         (error.kind(), error.code()),
-        (ErrorKind::Schema, Some("merge_key_null"))
+        (ErrorKind::Schema, Some(codes::MERGE_KEY_NULL))
     );
 }
 
@@ -361,7 +361,7 @@ async fn a_key_whose_stored_rendering_its_new_type_changes_is_refused() {
     assert_eq!(second.report.status, RunStatus::Failed);
     let error = second.error.expect("the run failed");
     assert_eq!(error.kind(), ErrorKind::Schema, "{error}");
-    assert_eq!(error.code(), Some("merge_key_changed"), "{error}");
+    assert_eq!(error.code(), Some(codes::MERGE_KEY_CHANGED), "{error}");
     assert_eq!(target.json("merge_key_widened", "events").len(), 1);
 }
 
@@ -487,6 +487,10 @@ async fn an_integer_key_never_changes_on_sqlite_to_a_type_it_cannot_widen_to_or_
         );
         let second = sqlite_keyed(store, batch(vec![("k", after), ("v", ints(&[2]))])).await;
         let error = second.error.expect("the run failed");
-        assert_eq!(error.code(), Some("merge_key_changed"), "{store}: {error}");
+        assert_eq!(
+            error.code(),
+            Some(codes::MERGE_KEY_CHANGED),
+            "{store}: {error}"
+        );
     }
 }

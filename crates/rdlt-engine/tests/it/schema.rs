@@ -8,7 +8,9 @@ use arrow_array::{ArrayRef, Int32Array, Int64Array, RecordBatch, StringArray, St
 use arrow_schema::{DataType, Field as ArrowField};
 use rdlt_connector::{Field, IdentifierCase, LogicalType, TableSchema, TypeKind};
 use rdlt_connector_reference::schema;
-use rdlt_engine::{ErrorKind, OnUnsupported, RunOutcome, RunStatus, SchemaPolicy, SchemaSettings};
+use rdlt_engine::{
+    ErrorKind, OnUnsupported, RunOutcome, RunStatus, SchemaPolicy, SchemaSettings, codes,
+};
 use serde_json::json;
 
 use crate::support::batches::{BatchStream, batches};
@@ -149,8 +151,8 @@ async fn refused_changes_fail_the_run_without_retrying() {
     let freeze = SchemaSettings::new().policy(SchemaPolicy::Freeze);
     let refuse = SchemaSettings::new().on_unsupported(OnUnsupported::Refuse);
     let cases = [
-        ("frozen", freeze, "schema_frozen"),
-        ("refusing", refuse, "schema_change_unsupported"),
+        ("frozen", freeze, codes::SCHEMA_FROZEN),
+        ("refusing", refuse, codes::SCHEMA_CHANGE_UNSUPPORTED),
     ];
     for (name, settings, code) in cases {
         let source = batches(name, vec![BatchStream::new("events", changing())]).await;
@@ -330,7 +332,7 @@ async fn a_declared_schema_creates_the_table_before_any_row_and_changes_evolve_i
         .await;
     assert_eq!(
         frozen.error.expect("freeze refuses").code(),
-        Some("schema_frozen")
+        Some(codes::SCHEMA_FROZEN)
     );
     let evolved = engine
         .run(
@@ -435,7 +437,7 @@ async fn a_widen_the_destination_refuses_where_no_variant_may_take_it_is_refused
     let error = outcome.error.expect("the run fails");
     assert_eq!(
         (error.kind(), error.code()),
-        (ErrorKind::Schema, Some("schema_change_unsupported"))
+        (ErrorKind::Schema, Some(codes::SCHEMA_CHANGE_UNSUPPORTED))
     );
     assert!(!error.is_retryable());
 }

@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use rdlt_connector::{Field, LogicalType, NameMap, SchemaVersion, TableSchema, TableState};
 
-use crate::error::{Error, ErrorKind};
+use crate::error::{Error, ErrorKind, codes};
 
 /// A table's columns and names; version 0 is a table not created yet.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -53,7 +53,7 @@ impl Model {
                 ErrorKind::Destination,
                 "state records a table's schema at version 0",
             )
-            .with_code("state_invalid"));
+            .with_code(codes::STATE_INVALID));
         }
         let columns: Vec<Field> = schema.fields().iter().cloned().collect();
         if let Some(orphan) = columns
@@ -64,7 +64,7 @@ impl Model {
                 ErrorKind::Destination,
                 format!("state names no source column for column {}", orphan.name()),
             )
-            .with_code("state_invalid"));
+            .with_code(codes::STATE_INVALID));
         }
         // Only columns of 64-bit integers are exact: a widened column is no longer one.
         let exact = columns

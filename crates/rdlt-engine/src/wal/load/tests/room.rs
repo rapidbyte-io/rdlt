@@ -13,6 +13,7 @@ use rdlt_wire::limits::count;
 
 use super::{json_value, load, logged, meta, pipeline, receipt, sealed_at};
 use crate::budget::MemoryBudget;
+use crate::error::codes;
 use crate::table::testing::view;
 use crate::wal::frame::{self, Frame};
 use crate::wal::load::{LoadLog, Owner};
@@ -355,7 +356,7 @@ async fn a_load_whose_partitions_hold_more_unsealed_than_its_log_is_refused_for_
         let limit = 40 * load.frame();
         load.gaps[0] = 2 * limit / load.frame();
         let refused = interleaved(limit, &load, 1).await.expect_err("refused");
-        assert_eq!(refused.code(), Some("log_bytes_exceeded"), "{load:?}");
+        assert_eq!(refused.code(), Some(codes::LOG_BYTES_EXCEEDED), "{load:?}");
         assert!(!refused.is_retryable());
     }
 }

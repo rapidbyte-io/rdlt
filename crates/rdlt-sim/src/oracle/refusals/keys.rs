@@ -2,10 +2,10 @@
 //! schema is not frozen, and is refused otherwise.
 
 use rdlt_connector::{Capabilities, LogicalType, TypeKind};
-use rdlt_engine::{Nested, SchemaPolicy};
+use rdlt_engine::{Nested, SchemaPolicy, codes};
 use rdlt_testkit::canon::storage;
 
-use super::{Arrival, FROZEN, KEY_CHANGED, Outcome, Step, outcome, widens};
+use super::{Arrival, Outcome, Step, outcome, widens};
 use crate::workload::{Relaxed, SimStream};
 
 /// What a merge stream's key batches may meet, its settings as `relaxed` leaves them: a key
@@ -19,7 +19,11 @@ pub(super) fn key_outcome(
 ) -> Outcome {
     let resolved = stream.resolved(None, relaxed);
     let frozen = resolved.policy == SchemaPolicy::Freeze;
-    let code = if frozen { FROZEN } else { KEY_CHANGED };
+    let code = if frozen {
+        codes::SCHEMA_FROZEN
+    } else {
+        codes::MERGE_KEY_CHANGED
+    };
     let arrivals: Vec<Vec<Arrival>> = (0..=phase)
         .map(|at| {
             let mut types = Vec::new();

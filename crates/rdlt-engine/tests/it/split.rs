@@ -6,7 +6,7 @@ use std::sync::Arc;
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use bytes::Bytes;
-use rdlt_engine::{ErrorKind, Nested, RunOutcome, RunStatus, SchemaPolicy, SchemaSettings};
+use rdlt_engine::{ErrorKind, Nested, RunOutcome, RunStatus, SchemaPolicy, SchemaSettings, codes};
 use serde_json::{Value, json};
 
 use crate::support::making::{Step, Steps, making};
@@ -100,7 +100,7 @@ async fn a_frozen_table_still_refuses_a_value_its_column_does_not_hold() {
     let settings = SchemaSettings::default().policy(SchemaPolicy::Freeze);
     let outcome = load("split_frozen", settings, first, second).await;
     let error = outcome.error.expect("a frozen table refuses the string");
-    assert_eq!(error.code(), Some("schema_frozen"));
+    assert_eq!(error.code(), Some(codes::SCHEMA_FROZEN));
 }
 
 /// The rows of `store`'s `events`, each's `id` and the `column` and `variant` it holds, by id.
@@ -233,7 +233,7 @@ async fn a_string_no_text_holds_fails_its_write_before_it_is_split() {
     let outcome = arrow_amounts("split_surrogate", DataType::Float64, amounts).await;
     let error = outcome.error.expect("a lone surrogate is refused");
     assert_eq!(error.kind(), ErrorKind::Source, "{error:?}");
-    assert_eq!(error.code(), Some("json_invalid"));
+    assert_eq!(error.code(), Some(codes::JSON_INVALID));
 }
 
 #[tokio::test(start_paused = true)]

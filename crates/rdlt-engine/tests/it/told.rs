@@ -12,9 +12,10 @@ use rdlt_connector::{
     Result, SourceConnector, StreamName, StreamSpec, StreamState, Streams, source_factory,
 };
 use rdlt_engine::{
-    CommitPolicy, EngineConfig, EngineConfigBuilder, ErrorKind, LocalWal, RunOutcome, RunStatus,
-    WalStore,
+    CommitPolicy, EngineConfig, EngineConfigBuilder, ErrorKind, LocalWal, Origin, RunOutcome,
+    RunStatus, WalStore,
 };
+use rdlt_wire::limits::LIMIT_EXCEEDED;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
@@ -335,8 +336,8 @@ async fn a_table_as_wide_as_a_schema_may_be_commits_through_a_log_and_a_wider_is
     let beyond = loaded("told_wider", config(), wide_row(4_000), true).await;
     let error = beyond.error.expect("the run fails");
     assert_eq!(
-        (error.kind(), error.code()),
-        (ErrorKind::Source, Some("limit_exceeded"))
+        (error.kind(), error.origin(), error.connector_code()),
+        (ErrorKind::Source, Origin::Source, Some(LIMIT_EXCEEDED))
     );
     let said = format!("{:?}", error.report());
     assert!(said.contains("schema columns"), "{said}");

@@ -9,7 +9,7 @@ use rdlt_connector::{
 
 use super::{Measured, StateLimits, Stored};
 use crate::config::EngineConfig;
-use crate::error::ErrorKind;
+use crate::error::{ErrorKind, codes};
 
 /// Bytes: what the tests' state, and requests, may take.
 const ROOM: u64 = 768 << 10;
@@ -96,7 +96,7 @@ fn a_commit_is_admitted_while_it_fits_and_refused_a_byte_past() {
     stored.admit_all(&replacing(bytes)).unwrap();
     let error = stored.admit_all(&replacing(bytes + 1)).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Config);
-    assert_eq!(error.code(), Some("state_bytes_exceeded"));
+    assert_eq!(error.code(), Some(codes::STATE_BYTES_EXCEEDED));
     assert!(!error.is_retryable());
 }
 
@@ -112,7 +112,7 @@ fn a_commit_whose_state_passes_the_limit_is_refused_though_its_request_fits() {
     let error = full
         .admit_all(&meta(vec![StateChange::Put(record("b", 0))]))
         .unwrap_err();
-    assert_eq!(error.code(), Some("state_bytes_exceeded"));
+    assert_eq!(error.code(), Some(codes::STATE_BYTES_EXCEEDED));
     // Deleting what is stored makes room as the commit lands.
     let freeing = meta(vec![
         StateChange::Delete("a".to_owned()),
@@ -141,7 +141,7 @@ fn a_commit_that_grows_no_state_is_admitted_though_state_is_past_the_limit() {
     let error = over
         .admit_all(&meta(vec![StateChange::Put(record("a", 2001))]))
         .unwrap_err();
-    assert_eq!(error.code(), Some("state_bytes_exceeded"));
+    assert_eq!(error.code(), Some(codes::STATE_BYTES_EXCEEDED));
 }
 
 #[test]
@@ -159,7 +159,7 @@ fn past_the_limit_the_receipt_taking_a_byte_more_grows_no_state() {
     over.admit_all(&replacing(1999, 200)).unwrap();
     // Another record growing is refused, though the receipt shrinks by as much.
     let error = over.admit_all(&replacing(2001, 99)).unwrap_err();
-    assert_eq!(error.code(), Some("state_bytes_exceeded"));
+    assert_eq!(error.code(), Some(codes::STATE_BYTES_EXCEEDED));
 }
 
 #[test]
@@ -170,7 +170,7 @@ fn a_commit_whose_request_passes_the_limit_is_refused_though_its_state_fits() {
     let deleting = meta(vec![StateChange::Delete(key)]);
     assert!(commit_bytes(&deleting) > ROOM);
     let error = stored.admit_all(&deleting).unwrap_err();
-    assert_eq!(error.code(), Some("state_bytes_exceeded"));
+    assert_eq!(error.code(), Some(codes::STATE_BYTES_EXCEEDED));
 }
 
 #[test]
@@ -281,7 +281,7 @@ fn state_past_the_limit_only_with_new_child_tables_is_refused_for_them() {
         )
         .unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Schema);
-    assert_eq!(error.code(), Some("child_tables_exceeded"));
+    assert_eq!(error.code(), Some(codes::CHILD_TABLES_EXCEEDED));
     assert_eq!(error.stream(), Some(&stream));
     assert!(!error.is_retryable());
     // Without its child tables the state still passes the limit: it is the state's.
@@ -294,7 +294,7 @@ fn state_past_the_limit_only_with_new_child_tables_is_refused_for_them() {
             &born,
         )
         .unwrap_err();
-    assert_eq!(error.code(), Some("state_bytes_exceeded"));
+    assert_eq!(error.code(), Some(codes::STATE_BYTES_EXCEEDED));
     // A commit within the limit is admitted, child tables and all.
     let commit = meta(vec![StateChange::Put(record("child", 100))]);
     full.admit(&Measured::of(&commit), &born).unwrap();

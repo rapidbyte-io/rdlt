@@ -9,7 +9,7 @@
 use rdlt_connector::PipelineState;
 
 use super::Naming;
-use crate::error::{Error, ErrorKind};
+use crate::error::{Error, ErrorKind, codes};
 
 /// Checks every identifier `state` records against `naming`.
 ///
@@ -46,5 +46,5 @@ fn refused(message: impl std::fmt::Display) -> Error {
         ErrorKind::Destination,
         format!("reading pipeline state: {message}"),
     )
-    .with_code("state_invalid")
+    .with_code(codes::STATE_INVALID)
 }

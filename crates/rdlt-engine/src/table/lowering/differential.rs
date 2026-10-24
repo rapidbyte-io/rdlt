@@ -22,7 +22,7 @@ use rdlt_testkit::drawn::{Drawn, Encoding, KINDS, Scalar, Shape, array, field, n
 
 use super::reference::{Expected, lower, merged, unsuperseded, written};
 use super::{ChangeRows, LoweringPlan, Prepared, Stamp};
-use crate::error::ErrorKind;
+use crate::error::{ErrorKind, codes};
 use crate::naming::Naming;
 use crate::plan::{StreamPlan, WriteMode};
 use crate::policy::{Nested, SchemaPolicy, SchemaSettings};
@@ -410,7 +410,7 @@ fn prepared(
             prop_assert!(!expected.refused, "held a value its column cannot hold");
             Ok(Some((prepared, expected)))
         }
-        Err(error) if error.code() == Some("value_unrepresentable") => {
+        Err(error) if error.code() == Some(codes::VALUE_UNREPRESENTABLE) => {
             prop_assert!(
                 expected.refused,
                 "refused a batch the table holds: {error:?}"

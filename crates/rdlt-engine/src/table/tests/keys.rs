@@ -15,13 +15,14 @@ use arrow_schema::{DataType, Field as ArrowField, Fields};
 use rdlt_connector::{ChangeOp, LogicalType, TableSchema};
 
 use super::{batch, capabilities, created, plan, resolver, stamp, table};
+use crate::error::{Code, codes};
 use crate::table::TableView;
 use crate::table::lowering::{ChangeRows, LoweringPlan, key_values};
 use crate::table::resolve::Incoming;
 
 /// The code of the error preparing `batch` for a merge table keyed by `id`, its rows `changes`
 /// say, gives; `None` where it prepares.
-fn refusal(batch: &RecordBatch, changes: Option<&ChangeRows>) -> Option<String> {
+fn refusal(batch: &RecordBatch, changes: Option<&ChangeRows>) -> Option<Code> {
     let resolver = resolver(capabilities(), plan(), &["id"]);
     let incoming = Incoming::declared(TableSchema::from_arrow(&batch.schema()).unwrap());
     let model = created(&resolver, &[("v", LogicalType::Utf8)]);
@@ -30,7 +31,11 @@ fn refusal(batch: &RecordBatch, changes: Option<&ChangeRows>) -> Option<String> 
     LoweringPlan::new(resolver.stream.clone(), view, incoming, resolution.routes)
         .prepare(batch, None, &stamp(), changes)
         .err()
-        .map(|error| error.code().unwrap_or("uncoded").to_owned())
+        .map(|error| {
+            error
+                .code()
+                .unwrap_or_else(|| panic!("a refusal with no code: {error}"))
+        })
 }
 
 /// `values` as a dictionary whose keys are of `key`, each value once.
@@ -130,8 +135,8 @@ fn a_key_holding_nan_in_any_float_width_and_encoding_is_refused() {
         for encoded in encodings(float) {
             let kind = encoded.data_type().to_string();
             assert_eq!(
-                refusal(&keyed(encoded), None).as_deref(),
-                Some("merge_key_nan"),
+                refusal(&keyed(encoded), None),
+                Some(codes::MERGE_KEY_NAN),
                 "{kind}"
             );
         }
@@ -152,7 +157,7 @@ fn a_key_holding_nan_within_a_struct_is_refused() {
     let inner: ArrayRef = Arc::new(Float64Array::from(vec![1.0, f64::NAN]));
     let fields = Fields::from(vec![arrow_schema::Field::new("x", DataType::Float64, true)]);
     let key: ArrayRef = Arc::new(StructArray::try_new(fields, vec![inner], None).unwrap());
-    assert_eq!(refusal(&keyed(key), None).as_deref(), Some("merge_key_nan"));
+    assert_eq!(refusal(&keyed(key), None), Some(codes::MERGE_KEY_NAN));
 }
 
 #[test]
@@ -166,14 +171,11 @@ fn a_change_flagging_its_key_unchanged_is_refused_before_any_destination_sees_it
     };
     // Bit 0 is `id`, the key; bit 1 is `v`.
     let key = changes(vec![None, Some(&[0b01])]);
-    assert_eq!(
-        refusal(&rows, Some(&key)).as_deref(),
-        Some("merge_key_unchanged")
-    );
+    assert_eq!(refusal(&rows, Some(&key)), Some(codes::MERGE_KEY_UNCHANGED));
     let value = changes(vec![Some(&[0b10]), None]);
     assert_ne!(
-        refusal(&rows, Some(&value)).as_deref(),
-        Some("merge_key_unchanged")
+        refusal(&rows, Some(&value)),
+        Some(codes::MERGE_KEY_UNCHANGED)
     );
 }
 
@@ -326,8 +328,8 @@ fn a_key_holding_nan_within_a_list_is_refused_where_a_row_names_it() {
     for key in [list(vec![0, 1, 3], None), large, fixed] {
         let kind = key.data_type().to_string();
         assert_eq!(
-            refusal(&keyed(key), None).as_deref(),
-            Some("merge_key_nan"),
+            refusal(&keyed(key), None),
+            Some(codes::MERGE_KEY_NAN),
             "{kind}"
         );
     }
@@ -351,8 +353,8 @@ fn a_key_holding_nan_is_refused_in_the_fixed_size_list_row_or_map_that_names_it(
     // The second row's items hold the NaN: refused where that row names a key.
     let second = || vec![1.0, 2.0, f64::NAN, 3.0];
     assert_eq!(
-        refusal(&keyed(fixed(second())), None).as_deref(),
-        Some("merge_key_nan")
+        refusal(&keyed(fixed(second())), None),
+        Some(codes::MERGE_KEY_NAN)
     );
     // A truncate names no key, so the NaN its row holds refuses nothing.
     let truncated = ChangeRows {
@@ -373,7 +375,7 @@ fn a_key_holding_nan_is_refused_in_the_fixed_size_list_row_or_map_that_names_it(
         map.append(true).unwrap();
     }
     let map: ArrayRef = Arc::new(map.finish());
-    assert_eq!(refusal(&keyed(map), None).as_deref(), Some("merge_key_nan"));
+    assert_eq!(refusal(&keyed(map), None), Some(codes::MERGE_KEY_NAN));
 }
 
 #[test]
@@ -393,7 +395,7 @@ fn a_nested_key_is_zeroed_and_refused_for_a_nan_only_in_a_row_that_names_a_key()
     assert!(values.value(1).is_nan());
     assert_eq!(values.value(2).to_bits(), 1.0_f64.to_bits());
     let refused = key_values(&stream, "k", &column, &|_| true).unwrap_err();
-    assert_eq!(refused.code(), Some("merge_key_nan"));
+    assert_eq!(refused.code(), Some(codes::MERGE_KEY_NAN));
 }
 
 /// A key a discarding policy converted, whose negative zero keying then made the zero it
@@ -468,5 +470,5 @@ fn a_struct_key_mixing_a_float_and_an_integer_is_judged_by_its_float() {
     );
 
     let refused = key_values(&stream, "id", &key(vec![1.0, f64::NAN]), &|_| true).unwrap_err();
-    assert_eq!(refused.code(), Some("merge_key_nan"));
+    assert_eq!(refused.code(), Some(codes::MERGE_KEY_NAN));
 }

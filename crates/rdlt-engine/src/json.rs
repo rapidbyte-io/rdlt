@@ -11,7 +11,9 @@ mod number;
 mod tests;
 mod text;
 
-use rdlt_wire::limits::{LIMIT_EXCEEDED, NESTING_DEPTH, count};
+use rdlt_wire::limits::{NESTING_DEPTH, count};
+
+use crate::error::{Code, codes};
 
 #[cfg(feature = "bench")]
 pub(crate) use check::bench_field;
@@ -40,11 +42,11 @@ pub(crate) enum JsonError {
 }
 
 impl JsonError {
-    /// The machine code of the error.
-    pub(crate) fn code(&self) -> &'static str {
+    /// The engine's code for the error.
+    pub(crate) fn code(&self) -> Code {
         match self {
-            Self::Invalid(_) => "json_invalid",
-            Self::TooDeep | Self::Exponent => LIMIT_EXCEEDED,
+            Self::Invalid(_) => codes::JSON_INVALID,
+            Self::TooDeep | Self::Exponent => codes::LIMIT_EXCEEDED,
         }
     }
 }

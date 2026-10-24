@@ -9,6 +9,7 @@ use bytes::Bytes;
 use proptest::prelude::*;
 
 use super::{FRAME_BYTES, load, logged, pipeline};
+use crate::error::codes;
 use crate::wal::frame::{HEAD, PREAMBLE, payload_len};
 use crate::wal::memory::MemoryWal;
 use crate::wal::scan::{Scanned, scan};
@@ -185,7 +186,7 @@ proptest! {
                 Err(error) => {
                     prop_assert!(!whole_still, "a whole log refused: {error}, {:?}", damages);
                     prop_assert!(
-                        matches!(error.code(), Some("wal_unreadable" | "wal_foreign")),
+                        matches!(error.code(), Some(codes::WAL_UNREADABLE | codes::WAL_FOREIGN)),
                         "{error}"
                     );
                 }

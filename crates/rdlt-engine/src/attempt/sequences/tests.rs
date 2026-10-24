@@ -3,7 +3,7 @@ use rdlt_connector::{
 };
 
 use super::{Keying, to_record};
-use crate::error::ErrorKind;
+use crate::error::{ErrorKind, codes};
 use crate::plan::{StreamPlan, WriteMode};
 
 fn plan(read: ReadMode, write: WriteMode) -> StreamPlan {
@@ -67,7 +67,11 @@ fn a_change_merge_into_rows_the_engine_sequenced_is_refused() {
     for held in [Some(Sequences::Engine), None] {
         let error = recorded(&changes, Some(&table(held))).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Config, "{held:?}");
-        assert_eq!(error.code(), Some("table_sequences_mismatch"), "{held:?}");
+        assert_eq!(
+            error.code(),
+            Some(codes::TABLE_SEQUENCES_MISMATCH),
+            "{held:?}"
+        );
     }
 }
 
@@ -121,7 +125,11 @@ fn a_history_table_takes_only_history_streams_and_a_history_stream_only_its_own(
     for held in [Some(Sequences::Engine), None] {
         let error = recorded(&history, Some(&table(held))).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Config, "{held:?}");
-        assert_eq!(error.code(), Some("table_history_mismatch"), "{held:?}");
+        assert_eq!(
+            error.code(),
+            Some(codes::TABLE_HISTORY_MISMATCH),
+            "{held:?}"
+        );
     }
     let versions = kept(Some(Sequences::Engine), true);
     for other in [
@@ -130,7 +138,7 @@ fn a_history_table_takes_only_history_streams_and_a_history_stream_only_its_own(
         plan(ReadMode::Full, WriteMode::Replace),
     ] {
         let error = recorded(&other, Some(&versions)).unwrap_err();
-        assert_eq!(error.code(), Some("table_history_mismatch"));
+        assert_eq!(error.code(), Some(codes::TABLE_HISTORY_MISMATCH));
     }
 }
 
@@ -177,7 +185,7 @@ fn a_merge_by_another_key_is_refused_once_the_table_is_created() {
         let error = to_record(&merge, Some(&keyed(&["id"], None)), &other, None).unwrap_err();
         assert_eq!(
             (error.kind(), error.code()),
-            (ErrorKind::Config, Some("table_key_mismatch"))
+            (ErrorKind::Config, Some(codes::TABLE_KEY_MISMATCH))
         );
     }
     // A table not yet created holds no rows of any key.
@@ -203,7 +211,7 @@ fn a_history_stream_is_held_to_the_change_time_its_table_began_with() {
         let error = to_record(&history, Some(&table), &id, other).unwrap_err();
         assert_eq!(
             (error.kind(), error.code()),
-            (ErrorKind::Config, Some("table_change_time_mismatch")),
+            (ErrorKind::Config, Some(codes::TABLE_CHANGE_TIME_MISMATCH)),
             "{other:?}"
         );
     }

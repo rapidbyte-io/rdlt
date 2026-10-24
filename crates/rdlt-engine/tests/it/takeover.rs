@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 use rdlt_connector::{PipelineId, ReadMode};
-use rdlt_engine::{LocalWal, RunOutcome, RunStatus, WalStore};
+use rdlt_engine::{LocalWal, RunOutcome, RunStatus, WalStore, codes};
 
 use crate::support::hooked::{At, Hook, hooked};
 use crate::support::memory_wal::Memory;
@@ -75,7 +75,7 @@ async fn a_load_whose_log_another_engine_took_never_publishes_again() {
             other.error
         );
         let error = stalled.error.expect("the stalled load fails");
-        assert_eq!(error.code(), Some("wal_fenced"), "{name}: {error}");
+        assert_eq!(error.code(), Some(codes::WAL_FENCED), "{name}: {error}");
         let every: Vec<i64> = (0..30).map(|offset| id(0, offset)).collect();
         assert_eq!(published_ids(name, "events"), every, "{name}");
         // Nothing of the stalled load is left for a later run to replay.

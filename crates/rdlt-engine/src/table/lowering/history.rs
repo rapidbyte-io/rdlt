@@ -16,7 +16,7 @@ use rdlt_connector::StreamName;
 
 use super::constants::micros_of;
 use super::{ChangeRows, LoweringPlan, Source, Stamp, lower_array};
-use crate::error::Error;
+use crate::error::{Code, Error, codes};
 use crate::normalize::identity::{unread, version_hashes};
 use crate::policy::SchemaPolicy;
 use crate::table::TableView;
@@ -53,7 +53,7 @@ impl LoweringPlan {
                 return Err(Error::schema(format!(
                     "stream {stream}: a batch has no change time {column}"
                 ))
-                .with_code("change_time_missing")
+                .with_code(codes::CHANGE_TIME_MISSING)
                 .with_stream(stream));
             }
             (None, _) => None,
@@ -211,7 +211,7 @@ pub(super) struct Begins<'a> {
 /// date's midnight in UTC, and an instant between two microseconds the earlier; a row without
 /// one at `fallback`, where there is one.
 fn begins(stream: &StreamName, from: &ArrayRef, fallback: Option<i64>) -> Result<ArrayRef, Error> {
-    let refuse = |code: &str, detail: String| {
+    let refuse = |code: Code, detail: String| {
         Err(Error::schema(format!("stream {stream}: {detail}"))
             .with_code(code)
             .with_stream(stream))
@@ -219,7 +219,7 @@ fn begins(stream: &StreamName, from: &ArrayRef, fallback: Option<i64>) -> Result
     // A dictionary or run-end encoding holds its rows' times, and its rows' nulls, in its values.
     let from = decoded(from).or_else(|error| {
         refuse(
-            "change_time_invalid",
+            codes::CHANGE_TIME_INVALID,
             format!("its change time cannot be read: {error}"),
         )
     })?;
@@ -230,13 +230,13 @@ fn begins(stream: &StreamName, from: &ArrayRef, fallback: Option<i64>) -> Result
     if !time {
         let held = from.data_type();
         return refuse(
-            "change_time_invalid",
+            codes::CHANGE_TIME_INVALID,
             format!("its change time holds {held}, not a time"),
         );
     }
     if from.null_count() > 0 && fallback.is_none() {
         let detail = "a change has no change time, when its version begins".to_owned();
-        return refuse("change_time_null", detail);
+        return refuse(codes::CHANGE_TIME_NULL, detail);
     }
     let begun: Option<Vec<i64>> = (0..from.len())
         .map(|row| match fallback {
@@ -246,7 +246,7 @@ fn begins(stream: &StreamName, from: &ArrayRef, fallback: Option<i64>) -> Result
         .collect();
     let Some(begun) = begun else {
         let detail = "its change time holds a time microseconds since the epoch cannot hold";
-        return refuse("change_time_invalid", detail.to_owned());
+        return refuse(codes::CHANGE_TIME_INVALID, detail.to_owned());
     };
     Ok(Arc::new(
         TimestampMicrosecondArray::from(begun).with_timezone("UTC"),

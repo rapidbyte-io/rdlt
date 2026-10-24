@@ -12,7 +12,9 @@ use arrow_array::{
 use arrow_buffer::OffsetBuffer;
 use arrow_schema::{DataType, Field};
 use rdlt_connector::{ChangeOp, OP_COLUMN, Push, ReadMode, SEQ_COLUMN, UNCHANGED_COLUMN};
-use rdlt_engine::{ErrorKind, Nested, RunOutcome, RunStatus, SchemaSettings, WriteMode};
+use rdlt_engine::{
+    Code, ErrorKind, Nested, RunOutcome, RunStatus, SchemaSettings, WriteMode, codes,
+};
 
 use crate::change_limits::Pushing;
 use crate::changes::{changes, orders};
@@ -21,7 +23,7 @@ use crate::support::targets::Target;
 use crate::support::{commit_every, each, engine, memory, pipeline, stream};
 
 /// Checks that `outcome` failed on the engine's refusal `code`, a Schema error.
-fn refused(outcome: &RunOutcome, code: &str) {
+fn refused(outcome: &RunOutcome, code: Code) {
     assert_eq!(outcome.report.status, RunStatus::Failed);
     let error = outcome.error.as_ref().expect("the run fails");
     assert_eq!(
@@ -63,7 +65,7 @@ async fn a_nan_key_is_refused_by_the_engine_for_every_destination_and_keyed_mode
                     target.destination(&store).await,
                 )
                 .await;
-            refused(&outcome, "merge_key_nan");
+            refused(&outcome, codes::MERGE_KEY_NAN);
         }
     })
     .await;
@@ -73,8 +75,16 @@ async fn a_nan_key_is_refused_by_the_engine_for_every_destination_and_keyed_mode
 async fn a_normalized_streams_rows_without_a_whole_key_are_refused() {
     let normalized = || stream("events").schema(SchemaSettings::new().nested(Nested::normalize()));
     let cases = [
-        ("keyless", r#"{"x":1,"items":[1]}"#, "merge_key_missing"),
-        ("null_keyed", r#"{"id":null,"items":[1]}"#, "merge_key_null"),
+        (
+            "keyless",
+            r#"{"x":1,"items":[1]}"#,
+            codes::MERGE_KEY_MISSING,
+        ),
+        (
+            "null_keyed",
+            r#"{"id":null,"items":[1]}"#,
+            codes::MERGE_KEY_NULL,
+        ),
     ];
     for (store, push, code) in cases {
         let rows =
@@ -97,7 +107,7 @@ async fn a_normalized_streams_rows_without_a_whole_key_are_refused() {
             memory(store).await,
         )
         .await;
-    refused(&outcome, "merge_key_nan");
+    refused(&outcome, codes::MERGE_KEY_NAN);
 }
 
 /// A change inserting key `id`, flagging its key column unchanged.
@@ -138,7 +148,7 @@ async fn a_change_flagging_its_key_unchanged_is_refused_before_the_destination_s
                 target.destination(store).await,
             )
             .await;
-        refused(&outcome, "merge_key_unchanged");
+        refused(&outcome, codes::MERGE_KEY_UNCHANGED);
     })
     .await;
 }
@@ -268,7 +278,7 @@ async fn a_date_key_widened_to_a_zoned_timestamp_keeps_its_root_and_only_its_lat
                 .await;
             // A destination that cannot widen a key in place refuses the change.
             if outcome.error.as_ref().and_then(rdlt_engine::Error::code)
-                == Some("merge_key_changed")
+                == Some(codes::MERGE_KEY_CHANGED)
             {
                 refused = true;
                 break;

@@ -13,7 +13,7 @@ use rdlt_connector::{
 use rdlt_connector_reference::LogSource;
 use rdlt_engine::{
     CommitPolicy, EngineConfig, EngineConfigBuilder, ErrorKind, RetryPolicy, RunStatus, StopMode,
-    Until,
+    Until, codes,
 };
 use serde_json::{Value, json};
 
@@ -260,7 +260,7 @@ async fn a_following_run_with_as_many_unbounded_partitions_as_slots_is_refused_a
     let error = outcome.error.expect("the run fails");
     assert_eq!(
         (error.kind(), error.code()),
-        (ErrorKind::Config, Some("partitions_too_few"))
+        (ErrorKind::Config, Some(codes::PARTITIONS_TOO_FEW))
     );
     assert!(!error.is_retryable());
     // Refused as the read that would take the last slot starts, not after any wait.

@@ -1,6 +1,7 @@
 use rdlt_connector::{Epoch, PipelineState, StreamName, StreamState};
 
 use super::recorded;
+use crate::error::codes;
 
 fn namespaced() -> StreamName {
     StreamName::with_namespace("public", "orders").expect("a valid stream")
@@ -17,7 +18,7 @@ fn a_stream_is_reset_by_its_own_name_never_by_one_displayed_as_it_is() {
     recorded(&state, &namespaced()).expect("recorded under its own name");
     // Displayed alike, recorded nowhere: its tables are another's.
     let refused = recorded(&state, &displayed_alike()).expect_err("not recorded");
-    assert_eq!(refused.code(), Some("stream_not_found"));
+    assert_eq!(refused.code(), Some(codes::STREAM_NOT_FOUND));
     // A reset marker records a stream too.
     let mut reset = PipelineState::default();
     reset.resets.insert(namespaced(), Epoch(3));
@@ -31,6 +32,6 @@ fn a_stream_another_recorded_stream_is_displayed_as_is_refused_as_ambiguous() {
     state.resets.insert(displayed_alike(), Epoch(2));
     for stream in [namespaced(), displayed_alike()] {
         let refused = recorded(&state, &stream).expect_err("their tables are one");
-        assert_eq!(refused.code(), Some("stream_ambiguous"), "{stream}");
+        assert_eq!(refused.code(), Some(codes::STREAM_AMBIGUOUS), "{stream}");
     }
 }

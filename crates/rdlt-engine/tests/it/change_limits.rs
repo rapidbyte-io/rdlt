@@ -12,6 +12,7 @@ use rdlt_connector_reference::changes::{Change, ChangedStream, change};
 use rdlt_connector_reference::published;
 use rdlt_engine::{
     DeleteMode, ErrorKind, Nested, OnTruncate, RunStatus, SchemaSettings, StreamPlan, WriteMode,
+    codes,
 };
 
 use crate::changes::{changes, orders};
@@ -105,18 +106,18 @@ async fn a_destination_that_cannot_remove_rows_as_asked_is_refused_before_any_ro
         capabilities.delete_modes.hard = false;
     })
     .await;
-    assert_eq!(hard.code(), Some("delete_mode_unsupported"), "{hard}");
+    assert_eq!(hard.code(), Some(codes::DELETE_MODE_UNSUPPORTED), "{hard}");
     let soft = refused(merge().deletes(DeleteMode::Soft), |capabilities| {
         capabilities.delete_modes.soft = false;
     })
     .await;
-    assert_eq!(soft.code(), Some("delete_mode_unsupported"), "{soft}");
+    assert_eq!(soft.code(), Some(codes::DELETE_MODE_UNSUPPORTED), "{soft}");
     // Ignored deletes remove nothing, but applied truncates remove rows outright.
     let truncated = refused(merge().deletes(DeleteMode::Ignore), |capabilities| {
         capabilities.delete_modes.hard = false;
     })
     .await;
-    assert_eq!(truncated.code(), Some("delete_mode_unsupported"));
+    assert_eq!(truncated.code(), Some(codes::DELETE_MODE_UNSUPPORTED));
     assert_eq!(published("changes_refused", "orders").len(), 0);
 }
 
@@ -131,7 +132,11 @@ async fn a_destination_that_does_not_merge_changes_merges_no_change_stream() {
         .on_truncate(OnTruncate::Ignore);
     let error = refused(plan, |capabilities| capabilities.merge_changes = false).await;
     assert_eq!(error.kind(), ErrorKind::Config);
-    assert_eq!(error.code(), Some("change_merge_unsupported"), "{error}");
+    assert_eq!(
+        error.code(),
+        Some(codes::CHANGE_MERGE_UNSUPPORTED),
+        "{error}"
+    );
     assert_eq!(published("changes_refused", "orders").len(), 0);
     // A destination that merges changes needs no delete mode for a stream that removes nothing.
     let plan = stream("orders")
@@ -157,7 +162,11 @@ async fn updates_leaving_columns_unchanged_are_refused_where_the_destination_can
     let plan = stream("orders").read(ReadMode::Cdc).write(WriteMode::Merge);
     let error = refused(plan, |capabilities| capabilities.partial_updates = false).await;
     assert_eq!(error.kind(), ErrorKind::Config);
-    assert_eq!(error.code(), Some("partial_updates_unsupported"), "{error}");
+    assert_eq!(
+        error.code(),
+        Some(codes::PARTIAL_UPDATES_UNSUPPORTED),
+        "{error}"
+    );
 }
 
 #[tokio::test]
@@ -168,7 +177,7 @@ async fn a_change_stream_cannot_normalize_yet() {
     let error = refused(plan, |_| {}).await;
     assert_eq!(
         error.code(),
-        Some("normalize_changes_unsupported"),
+        Some(codes::NORMALIZE_CHANGES_UNSUPPORTED),
         "{error}"
     );
 }
@@ -234,7 +243,7 @@ async fn a_change_stream_pushing_rows_fails_as_the_source_s_error() {
     assert_eq!(outcome.report.status, RunStatus::Failed);
     let error = outcome.error.expect("the run failed");
     assert_eq!(error.kind(), ErrorKind::Source, "{error}");
-    assert_eq!(error.code(), Some("push_unexpected"), "{error}");
+    assert_eq!(error.code(), Some(codes::PUSH_UNEXPECTED), "{error}");
 }
 
 #[tokio::test]
@@ -250,7 +259,7 @@ async fn a_change_push_the_engine_reads_is_validated_there() {
     assert_eq!(outcome.report.status, RunStatus::Failed);
     let error = outcome.error.expect("the run failed");
     assert_eq!(error.kind(), ErrorKind::Source, "{error}");
-    assert_eq!(error.code(), Some("change_batch"), "{error}");
+    assert_eq!(error.connector_code(), Some("change_batch"), "{error}");
 }
 
 #[tokio::test]
@@ -264,7 +273,7 @@ async fn a_stream_not_read_as_changes_pushing_changes_fails_as_the_source_s_erro
     assert_eq!(outcome.report.status, RunStatus::Failed);
     let error = outcome.error.expect("the run failed");
     assert_eq!(error.kind(), ErrorKind::Source, "{error}");
-    assert_eq!(error.code(), Some("push_unexpected"), "{error}");
+    assert_eq!(error.code(), Some(codes::PUSH_UNEXPECTED), "{error}");
 }
 
 #[tokio::test]
@@ -280,7 +289,7 @@ async fn a_stream_not_read_as_changes_planned_in_phases_fails_as_the_source_s_er
     assert_eq!(outcome.report.status, RunStatus::Failed);
     let error = outcome.error.expect("the run failed");
     assert_eq!(error.kind(), ErrorKind::Source, "{error}");
-    assert_eq!(error.code(), Some("phase_unexpected"), "{error}");
+    assert_eq!(error.code(), Some(codes::PHASE_UNEXPECTED), "{error}");
 }
 
 #[tokio::test]

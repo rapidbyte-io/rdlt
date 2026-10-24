@@ -7,8 +7,7 @@ use rdlt_connector::{ColumnKey, ColumnPath, Field, LogicalType, TypeKind};
 
 use super::super::model::Model;
 use super::{Arriving, Change, Resolution, Route};
-use crate::error::Error;
-use crate::limits::SCHEMA_VERSION_EXHAUSTED;
+use crate::error::{Error, codes};
 use crate::naming::Naming;
 
 /// A resolution in progress: the model, the columns it adds and the changes decided so far.
@@ -188,6 +187,6 @@ pub(super) fn advanced(count: u32) -> Result<u32, Error> {
         Error::schema(format!(
             "the table's schema changed {count} times, the most its version counts"
         ))
-        .with_code(SCHEMA_VERSION_EXHAUSTED)
+        .with_code(codes::SCHEMA_VERSION_EXHAUSTED)
     })
 }

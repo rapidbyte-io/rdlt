@@ -9,7 +9,7 @@ use arrow_array::{Array, ArrayRef, RecordBatch};
 use arrow_schema::{DataType, TimeUnit};
 use rdlt_connector::{CommitMeta, ReadMode, WriteModes};
 use rdlt_connector_reference::changes::{ChangedStream, Version, history};
-use rdlt_engine::{DeleteMode, ErrorKind, ResetScope, RunStatus, WriteMode};
+use rdlt_engine::{DeleteMode, ErrorKind, ResetScope, RunStatus, WriteMode, codes};
 
 use crate::changes::{changes, orders};
 use crate::schema::{batch, ints, text};
@@ -290,10 +290,10 @@ async fn history_streams_the_run_cannot_keep_are_refused() {
     });
     let instantless = kept("instantless", keyed(), instantless).await;
     for (outcome, code) in [
-        (unsupported, "write_mode_unsupported"),
-        (text_time, "change_time_invalid"),
-        (normalized, "history_normalize_unsupported"),
-        (instantless, "history_validity_unsupported"),
+        (unsupported, codes::WRITE_MODE_UNSUPPORTED),
+        (text_time, codes::CHANGE_TIME_INVALID),
+        (normalized, codes::HISTORY_NORMALIZE_UNSUPPORTED),
+        (instantless, codes::HISTORY_VALIDITY_UNSUPPORTED),
     ] {
         let error = outcome.error.expect("the run fails");
         assert_eq!(
@@ -311,8 +311,8 @@ async fn history_streams_the_run_cannot_keep_are_refused() {
     )
     .await;
     for (outcome, code) in [
-        (untimed, "change_time_invalid"),
-        (missing, "change_time_missing"),
+        (untimed, codes::CHANGE_TIME_INVALID),
+        (missing, codes::CHANGE_TIME_MISSING),
     ] {
         let error = outcome.error.expect("the run fails");
         assert_eq!(
@@ -353,7 +353,7 @@ async fn a_table_keeps_history_for_history_streams_only() {
         let refused = run(then, store).await.error.expect("the second run fails");
         assert_eq!(
             (refused.kind(), refused.code()),
-            (ErrorKind::Config, Some("table_history_mismatch")),
+            (ErrorKind::Config, Some(codes::TABLE_HISTORY_MISMATCH)),
             "{store}"
         );
     }
@@ -373,7 +373,7 @@ async fn an_update_leaving_columns_unchanged_is_refused_in_a_history_stream() {
         )
         .await;
     let error = outcome.error.expect("the run fails");
-    assert_eq!(error.code(), Some("partial_updates_unsupported"));
+    assert_eq!(error.code(), Some(codes::PARTIAL_UPDATES_UNSUPPORTED));
 }
 
 #[tokio::test(start_paused = true)]
@@ -521,7 +521,7 @@ async fn a_change_time_other_than_the_one_a_history_table_began_with_is_refused(
         let error = outcome.error.expect("the run failed");
         assert_eq!(
             (error.kind(), error.code()),
-            (ErrorKind::Config, Some("table_change_time_mismatch"))
+            (ErrorKind::Config, Some(codes::TABLE_CHANGE_TIME_MISMATCH))
         );
     }
     let again = run(keyed().change_time("at")).await;

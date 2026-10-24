@@ -6,8 +6,8 @@ use tokio_util::sync::CancellationToken;
 
 use super::{TableView, Tables};
 use crate::budget::{Denied, MemoryBudget, Reservation};
-use crate::error::Error;
-use crate::limits::{RECORDED, TABLE_EXCEEDS_BUDGET};
+use crate::error::{Error, codes};
+use crate::limits::RECORDED;
 
 /// The budget a table's records are reserved from, and when a wait for room ends.
 #[derive(Debug)]
@@ -91,7 +91,7 @@ impl Tables {
                  commit, more than the {} the memory budget's share for them holds",
                 next.table.path, large.limit
             ))
-            .with_code(TABLE_EXCEEDS_BUDGET)
+            .with_code(codes::TABLE_EXCEEDS_BUDGET)
             .with_stream(stream),
         })?;
         *slot.records.lock() = Some((next.model.revision, reserved));

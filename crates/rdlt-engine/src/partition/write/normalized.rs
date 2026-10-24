@@ -21,7 +21,7 @@ use super::{
 };
 use crate::budget::Shares;
 use crate::cost::{LINEAGE_ITEM, LINEAGE_ROW, SPLIT_COPIES};
-use crate::error::Error;
+use crate::error::{Error, codes};
 use crate::limits::MIN_PIECE;
 use crate::normalize::rounding::Rounding;
 use crate::normalize::{self, Dropped, Lineage, Part, Pruned, PushKind, Shape};
@@ -411,7 +411,7 @@ fn frozen(job: &PartitionJob, path: &[Arc<str>]) -> Error {
         "stream {}: array {array}: a new array would add a child table to a frozen schema",
         job.stream
     ))
-    .with_code("schema_frozen")
+    .with_code(codes::SCHEMA_FROZEN)
     .with_stream(&job.stream)
 }
 
@@ -423,7 +423,7 @@ fn unnamable(job: &PartitionJob, path: &[Arc<str>]) -> Error {
          longer than a table path's segment may be, or holds a control character",
         job.stream
     ))
-    .with_code("table_path_invalid")
+    .with_code(codes::TABLE_PATH_INVALID)
     .with_stream(&job.stream)
 }
 
@@ -439,7 +439,7 @@ fn split(stream: &StreamName, parts: &[RecordBatch], shape: &Shape) -> Result<Ve
              keeps whole"
         );
         return Err(Error::schema(detail)
-            .with_code("merge_key_nested")
+            .with_code(codes::MERGE_KEY_NESTED)
             .with_stream(stream));
     }
     let failed =
@@ -451,7 +451,7 @@ fn split(stream: &StreamName, parts: &[RecordBatch], shape: &Shape) -> Result<Ve
         let Some(index) = batch.schema().index_of(column).ok() else {
             let detail = format!("stream {stream}: a batch has no key column {column}");
             return Err(Error::schema(detail)
-                .with_code("merge_key_missing")
+                .with_code(codes::MERGE_KEY_MISSING)
                 .with_stream(stream));
         };
         columns[index] = key_values(stream, column, batch.column(index), &|_| true)?;

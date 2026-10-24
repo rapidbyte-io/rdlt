@@ -3,8 +3,7 @@
 
 use rdlt_connector::{Epoch, LoadId, PipelineId, StateChange, StateEntry, StateKey};
 
-use crate::error::Error;
-use crate::limits::{WAL_FOREIGN, WAL_UNREADABLE};
+use crate::error::{Error, codes};
 use crate::wal::frame::Header;
 use crate::wal::scan::Logged;
 
@@ -29,7 +28,7 @@ pub(super) fn bound(
         "the write-ahead log of load {load} of pipeline {pipeline} was written for another \
          destination than this one"
     ))
-    .with_code(WAL_FOREIGN))
+    .with_code(codes::WAL_FOREIGN))
 }
 
 /// Checks `logged` is a commit logged by a session older than that of `epoch`, recording no
@@ -55,7 +54,7 @@ pub(super) fn checked(
             "the write-ahead log of load {} of pipeline {pipeline} cannot be replayed: {detail}",
             meta.load_id
         ))
-        .with_code(WAL_UNREADABLE)
+        .with_code(codes::WAL_UNREADABLE)
     };
     if meta.epoch >= epoch {
         return Err(refused(format!(

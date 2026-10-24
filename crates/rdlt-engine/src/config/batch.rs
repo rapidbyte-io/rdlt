@@ -3,7 +3,7 @@
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::time::Duration;
 
-use crate::error::Error;
+use crate::error::{Error, codes};
 
 /// How a partition coalesces pushes into batches and cuts JSON into chunks to shred in parallel.
 ///
@@ -28,7 +28,7 @@ impl BatchPolicy {
     ) -> Result<Self, Error> {
         let invalid = |name: &str| {
             Error::config(format!("batch policy: {name} must be more than zero"))
-                .with_code("batch_policy_invalid")
+                .with_code(codes::BATCH_POLICY_INVALID)
         };
         if max_latency.is_zero() {
             return Err(invalid("max_latency"));

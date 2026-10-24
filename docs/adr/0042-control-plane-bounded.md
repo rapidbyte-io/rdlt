@@ -143,7 +143,9 @@ still taken largely on trust:
     at placement; its spawn or its stream's opening or dial; its connection's setup with its
     handshake; the resolution of its configuration's secrets; and its configuration (ADR 0017).
   - The engine ends every call into a source or a destination but a read at
-    `EngineConfig::connector_wait` (30 minutes), in every placement.
+    `EngineConfig::connector_wait` (30 minutes), in every placement. The expiry is the engine's
+    own error, of origin `Engine` and coded `deadline_exceeded`, so it is never taken for a
+    connector's or its host's deadline, which are the side's.
   - A read asked to stop is dropped after `EngineConfig::stop_wait` (60 s).
   - A remote write's whole wait for credit, a flush's stats or an ending write's error is bounded
     by the write-ack deadline, however many answers arrive; a credit of no bytes is refused, and

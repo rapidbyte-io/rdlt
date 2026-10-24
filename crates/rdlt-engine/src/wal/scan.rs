@@ -19,8 +19,7 @@ use rdlt_connector::{CommitMeta, CommitSeq, LoadId, PipelineId, SegmentId};
 use self::chunk::{First, Opened, Reading};
 use super::frame::{self, BegunPhase, End, Frame, Header, Seal, Skimmed, Table};
 use super::store::{Chunk, WalStore};
-use crate::error::Error;
-use crate::limits::{WAL_FOREIGN, WAL_UNREADABLE};
+use crate::error::{Error, codes};
 
 /// Where a batch frame is, and the table it names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -100,7 +99,7 @@ fn unreadable(pipeline: &PipelineId, load: LoadId, detail: &dyn std::fmt::Displa
     Error::wal(format!(
         "the write-ahead log of load {load} of pipeline {pipeline} cannot be read: {detail}"
     ))
-    .with_code(WAL_UNREADABLE)
+    .with_code(codes::WAL_UNREADABLE)
 }
 
 /// The error for a log of load `load` of `pipeline` whose chunk says it is `found`'s, of `of`.
@@ -109,7 +108,7 @@ fn foreign(pipeline: &PipelineId, load: LoadId, of: &PipelineId, found: LoadId) 
         "the write-ahead log of load {load} of pipeline {pipeline} holds a chunk of load \
          {found} of pipeline {of}"
     ))
-    .with_code(WAL_FOREIGN)
+    .with_code(codes::WAL_FOREIGN)
 }
 
 /// A log's highest chunk as a fence read it: what it says of the log, and what it holds, which

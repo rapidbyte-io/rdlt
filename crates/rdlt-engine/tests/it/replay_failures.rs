@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use rdlt_connector::{LoadId, OpenContext, PipelineId, ReadMode, StateKey, StateRecord};
-use rdlt_engine::{LocalWal, RunStatus, WalStore};
+use rdlt_engine::{LocalWal, RunStatus, WalStore, codes};
 
 use crate::support::destinations::{Step, failing};
 use crate::support::script::{Script, ScriptStream, id};
@@ -147,7 +147,7 @@ async fn a_log_damaged_on_disk_is_refused_by_every_attempt_and_kept() {
             .run(plan(name), Arc::clone(&source), memory(name).await)
             .await;
         let error = refused.error.expect("the log is refused");
-        assert_eq!(error.code(), Some("wal_unreadable"), "{error}");
+        assert_eq!(error.code(), Some(codes::WAL_UNREADABLE), "{error}");
         let after = logs(name, &store).await;
         assert!(chunks.iter().all(|number| after[load].contains(number)));
         assert_eq!(published_ids(name, "events"), Vec::<i64>::new());

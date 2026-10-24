@@ -8,8 +8,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore, SemaphorePermit};
 
 use super::PartitionJob;
 use crate::budget::MemoryBudget;
-use crate::error::Error;
-use crate::limits::PARTITIONS_TOO_FEW;
+use crate::error::{Error, codes};
 
 /// The slots of an attempt's reads, and the places among them a followed unbounded read takes.
 ///
@@ -56,7 +55,7 @@ impl Slots {
                 job.partition.id(),
                 self.places
             ))
-            .with_code(PARTITIONS_TOO_FEW)
+            .with_code(codes::PARTITIONS_TOO_FEW)
             .with_stream(&job.stream)
         })
     }

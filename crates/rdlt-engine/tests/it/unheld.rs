@@ -13,7 +13,8 @@ use arrow_array::{
 use arrow_buffer::OffsetBuffer;
 use arrow_schema::{DataType, Field};
 use rdlt_engine::{
-    ErrorKind, Nested, RunOutcome, RunStatus, SchemaPolicy, SchemaSettings, StreamPlan, WriteMode,
+    Code, ErrorKind, Nested, RunOutcome, RunStatus, SchemaPolicy, SchemaSettings, StreamPlan,
+    WriteMode, codes,
 };
 
 use crate::schema::{batch, ints, text};
@@ -67,7 +68,7 @@ fn following(column: &str, policy: SchemaPolicy) -> StreamPlan {
 }
 
 /// Checks that `outcome` failed on `code`, a Schema error.
-fn refused(outcome: &RunOutcome, code: &str) {
+fn refused(outcome: &RunOutcome, code: Code) {
     assert_eq!(outcome.report.status, RunStatus::Failed);
     let error = outcome.error.as_ref().expect("the run fails");
     assert_eq!(
@@ -102,7 +103,7 @@ async fn a_value_its_column_cannot_hold_follows_the_columns_policy_row_by_row() 
     ] {
         refused(
             &ran(store, following("d", policy), events()).await,
-            "value_unrepresentable",
+            codes::VALUE_UNREPRESENTABLE,
         );
     }
     let dropped = ran(
@@ -191,9 +192,9 @@ async fn kept(store: &str, policy: SchemaPolicy, null: bool) -> RunOutcome {
 async fn a_change_time_no_version_can_begin_at_follows_its_columns_policy() {
     for null in [false, true] {
         let code = if null {
-            "change_time_null"
+            codes::CHANGE_TIME_NULL
         } else {
-            "change_time_invalid"
+            codes::CHANGE_TIME_INVALID
         };
         let evolve = format!("change_time_evolve_{null}");
         refused(&kept(&evolve, SchemaPolicy::Evolve, null).await, code);
@@ -239,7 +240,7 @@ async fn a_change_time_holding_no_time_is_refused_whatever_its_policy() {
             .change_time("at");
         let plan = following("at", policy).write(WriteMode::History);
         let store = format!("timeless_{policy:?}");
-        refused(&ran(&store, plan, events).await, "change_time_invalid");
+        refused(&ran(&store, plan, events).await, codes::CHANGE_TIME_INVALID);
     }
 }
 

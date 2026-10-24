@@ -7,9 +7,8 @@ use bytes::Bytes;
 use super::held::Held;
 use super::{Room, reserving};
 use crate::budget::{Reservation, TooLarge};
-use crate::error::{Error, ErrorKind};
+use crate::error::{Error, ErrorKind, codes};
 use crate::json::{self, NotJson};
-use crate::limits::JSON_EXCEEDS_BUDGET;
 use crate::partition::{PartitionContext, PartitionJob};
 use crate::report::ShredCounts;
 use crate::shred::{self, ShredError, ShredLimits};
@@ -208,7 +207,7 @@ pub(super) async fn built(
 ///
 /// # Errors
 ///
-/// [`JSON_EXCEEDS_BUDGET`] where that is more than a request may take.
+/// [`codes::JSON_EXCEEDS_BUDGET`] where that is more than a request may take.
 fn wanted(
     job: &PartitionJob,
     beside: Beside,
@@ -247,7 +246,7 @@ fn checking_beyond_a_request(job: &PartitionJob, large: &TooLarge) -> Error {
             job.stream, large.asked, large.limit
         ),
     )
-    .with_code(JSON_EXCEEDS_BUDGET)
+    .with_code(codes::JSON_EXCEEDS_BUDGET)
     .with_stream(&job.stream)
 }
 
@@ -262,7 +261,7 @@ fn beyond_a_request(job: &PartitionJob, large: &TooLarge) -> Error {
             job.stream, large.asked, large.limit
         ),
     )
-    .with_code(JSON_EXCEEDS_BUDGET)
+    .with_code(codes::JSON_EXCEEDS_BUDGET)
     .with_stream(&job.stream)
 }
 
