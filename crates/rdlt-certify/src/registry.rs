@@ -124,6 +124,11 @@ a connector the host did not start, and no process was seen to stop.
 `P-CREDIT`'s pass says beside its `pass`, and as `note` in JSON, the watch it ran under when \
 `--credit-watch` chose one other than a second.
 
+`D-TABLES` drops a column of a table outside the pipeline, for each write mode a destination \
+declares, only through a probe that alters the store, as an in-process certification's may; the \
+read-back over the wire alters nothing, so its pass says beside `pass`, and as `note` in JSON, \
+that no column was dropped.
+
 ## Exit codes
 
 | Code | When |

@@ -105,7 +105,9 @@ pub const DESTINATION_CLAUSES: &[Clause] = &[
     Clause {
         id: "D-TABLES",
         statement: "a segment may hold rows for several tables, and its commit publishes each \
-                    table's rows",
+                    table's rows whole: where a table lost a column outside the pipeline, it \
+                    publishes every column it staged, or fails as column_missing and publishes \
+                    nothing",
         unless: "",
     },
     Clause {

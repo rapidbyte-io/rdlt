@@ -223,26 +223,8 @@ impl Bench<'_> {
     /// Commits keyed rows twice: the second commit replaces the first's row of a shared key, and
     /// of two rows of one key within a commit the greater sequence wins.
     pub(super) async fn merges_keep_the_newest_row(&self) -> Result<(), Violation> {
-        let table = TableRef {
-            merge: Some(MergeKey {
-                columns: vec!["id".into()],
-                seq: SEQ.into(),
-                root: None,
-                changes: None,
-                history: None,
-            }),
-            ..self.table()
-        };
+        let (table, create) = merged(self.table());
         let mut opened = self.open(self.destination, 1).await?;
-        let create = TableChange::Create {
-            table: table.clone(),
-            schema: TableSchema::new(vec![
-                Field::new("id", LogicalType::Int64, false),
-                Field::new("name", LogicalType::Utf8, true),
-                Field::new(SEQ, LogicalType::Binary, false),
-            ])
-            .expect("the certification schema is valid"),
-        };
         bounded_call("apply_schema", opened.session.apply_schema(&create)).await?;
         let mut writer = bounded_call("writer", opened.session.writer(&table)).await?;
         write(&mut writer, 1, keyed(&[(1, "a", 1), (2, "b", 2)])).await?;
@@ -335,6 +317,31 @@ pub(super) fn unobserved(destination: &dyn Destination, id: &str) -> Option<&'st
         .then_some("the destination's identifiers are shorter than the clause's names")
 }
 
+/// `table` merging by `id`, the greatest sequence winning, and its creation with an `id`, a
+/// `name` and the sequence.
+pub(super) fn merged(table: TableRef) -> (TableRef, TableChange) {
+    let table = TableRef {
+        merge: Some(MergeKey {
+            columns: vec!["id".into()],
+            seq: SEQ.into(),
+            root: None,
+            changes: None,
+            history: None,
+        }),
+        ..table
+    };
+    let create = TableChange::Create {
+        table: table.clone(),
+        schema: TableSchema::new(vec![
+            Field::new("id", LogicalType::Int64, false),
+            Field::new("name", LogicalType::Utf8, true),
+            Field::new(SEQ, LogicalType::Binary, false),
+        ])
+        .expect("the certification schema is valid"),
+    };
+    (table, create)
+}
+
 /// The generation the replace clause fills: beyond the signed range, as the engine's often are,
 /// so a destination that narrows ids is caught.
 pub(super) const GENERATION: GenerationId = GenerationId(18_000_000_000_000_000_000);
@@ -375,7 +382,7 @@ fn with_extra(batch: &RecordBatch) -> RecordBatch {
 }
 
 /// Merge rows of `(id, name, sequence)`.
-fn keyed(rows: &[(i64, &str, u8)]) -> RecordBatch {
+pub(super) fn keyed(rows: &[(i64, &str, u8)]) -> RecordBatch {
     let ids: Arc<Int64Array> = Arc::new(rows.iter().map(|row| row.0).collect());
     let names: Arc<StringArray> = Arc::new(rows.iter().map(|row| Some(row.1)).collect());
     let seqs: BinaryArray = rows

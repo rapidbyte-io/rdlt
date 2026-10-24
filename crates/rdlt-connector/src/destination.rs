@@ -336,7 +336,10 @@ pub trait Session: Send + 'static {
     /// publishing. A commit whose epoch is older than the pipeline's fails with a fenced error.
     /// A segment this session never staged publishes nothing; the commit may instead fail. A
     /// segment may hold rows for several tables, as a stream and its child tables share their
-    /// partition's segments, and its commit publishes each table's rows (clause `D-TABLES`).
+    /// partition's segments, and its commit publishes each table's rows whole: where a table
+    /// lacks a column its rows were staged with, as one dropped outside the pipeline, the commit
+    /// fails with a `Data` error coded `column_missing` and publishes nothing (clause
+    /// `D-TABLES`).
     fn commit(&mut self, meta: &CommitMeta) -> impl Future<Output = Result<Receipt>> + Send;
 
     /// Ends the session.

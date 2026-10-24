@@ -1,8 +1,9 @@
 use arrow_array::RecordBatch;
+use rdlt_connector::sqlgen::{SqlDialect as _, Sqlite};
 use rdlt_connector::testing::{
     Outcome, Probe, Unprobed, Verdict, certify_destination, certify_source,
 };
-use rdlt_connector::{BoxFuture, Result, TableRef};
+use rdlt_connector::{BoxFuture, ConnectorError, Result, TableRef};
 use rdlt_connector_reference::{
     ChangesSource, FilesDestination, FilesSource, GeneratorSource, LogSource, MemoryDestination,
     MemorySource, SqliteDestination, files, published, sqlite,
@@ -24,6 +25,28 @@ impl Probe for SqliteProbe {
     fn published<'a>(&'a self, table: &'a TableRef) -> BoxFuture<'a, Result<Vec<RecordBatch>>> {
         let batches = sqlite::published(&self.0, &table.name);
         Box::pin(async move { batches })
+    }
+
+    fn drops_columns(&self) -> bool {
+        true
+    }
+
+    fn drop_column<'a>(
+        &'a self,
+        table: &'a TableRef,
+        column: &'a str,
+    ) -> BoxFuture<'a, Result<()>> {
+        let quoted = |name: &str| Sqlite.quote(name);
+        let sql = format!(
+            "ALTER TABLE {} DROP COLUMN {}",
+            quoted(&table.name),
+            quoted(column)
+        );
+        let dropped = rusqlite::Connection::open(&self.0)
+            .and_then(|connection| connection.execute(&sql, []))
+            .map(drop)
+            .map_err(|error| ConnectorError::internal(format!("dropping a column: {error}")));
+        Box::pin(async move { dropped })
     }
 }
 
@@ -98,6 +121,8 @@ async fn the_memory_destination_is_certified() {
     .await;
     report.assert_passed();
     assert_eq!(report.outcome("D-HIST"), Some(&Outcome::Passed), "{report}");
+    // Nothing outside the pipeline changes a table of the memory destination's.
+    assert!(report.note("D-TABLES").is_some(), "{report}");
 }
 
 #[tokio::test]
@@ -111,6 +136,8 @@ async fn the_sqlite_destination_is_certified() {
         let report = certify_destination::<SqliteDestination>(config, &probe).await;
         report.assert_passed();
         assert_eq!(report.outcome("D-HIST"), Some(&Outcome::Passed), "{report}");
+        // Its tables lost a column outside the pipeline in each write mode.
+        assert_eq!(report.note("D-TABLES"), None, "{report}");
     }
 }
 
