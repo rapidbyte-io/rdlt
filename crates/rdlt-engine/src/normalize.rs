@@ -10,9 +10,10 @@ pub(crate) mod declared;
 #[cfg(test)]
 mod encodings;
 pub(crate) mod identity;
+mod lineage;
 pub(crate) mod placement;
-#[cfg(test)]
-mod reference;
+#[cfg(any(test, feature = "bench"))]
+pub(crate) mod reference;
 pub(crate) mod rounding;
 #[cfg(test)]
 mod tests;
@@ -23,8 +24,8 @@ use std::sync::Arc;
 use arrow_array::cast::AsArray;
 use arrow_array::types::UInt32Type;
 use arrow_array::{
-    Array, ArrayRef, BinaryArray, BooleanArray, Int64Array, ListArray, RecordBatch,
-    RecordBatchOptions, UInt32Array,
+    Array, ArrayRef, BooleanArray, Int32Array, ListArray, RecordBatch, RecordBatchOptions,
+    UInt32Array,
 };
 use arrow_buffer::NullBuffer;
 use arrow_schema::{ArrowError, DataType, Field as ArrowField, FieldRef, Schema};
@@ -35,6 +36,7 @@ use rdlt_connector::ColumnPath;
 use crate::table::convert::decoded;
 
 pub(crate) use cascade::{Dropped, Pruned};
+pub(crate) use lineage::{Lineage, Parent, Received};
 
 /// How a stream's batches normalize.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -43,7 +45,8 @@ pub(crate) struct Shape {
     pub(crate) max_depth: u8,
     /// Top-level columns kept whole, which the plan stores natively or as JSON instead.
     pub(crate) whole: BTreeSet<Arc<str>>,
-    /// The top-level columns that identify a root row, in order; with none, the whole row does.
+    /// The top-level columns a merge stream's root rows are identified by, in order: its merge
+    /// key; none for a stream that does not merge, whose rows are identified by their positions.
     pub(crate) key: Vec<Arc<str>>,
 }
 
@@ -73,49 +76,15 @@ pub(crate) struct Part {
     pub(crate) lineage: Lineage,
 }
 
-/// Where the rows of a part come from.
-#[derive(Clone, Debug)]
-pub(crate) struct Lineage {
-    /// Each row's id.
-    pub(crate) id: ArrayRef,
-    /// The position of each row's root row, the row itself for a stream's own table, among the
-    /// stream's rows the batch holds: a merge table's rows take their sequence from it.
-    pub(crate) root_row: ArrayRef,
-    /// For a child table, each row's parent.
-    pub(crate) parent: Option<Parent>,
-}
-
-/// The parents of a child table's rows.
-#[derive(Clone, Debug)]
-pub(crate) struct Parent {
-    /// The id of each row's parent row.
-    pub(crate) id: ArrayRef,
-    /// The id of each row's root row.
-    pub(crate) root: ArrayRef,
-    /// Each row's position in its parent's array.
-    pub(crate) idx: ArrayRef,
-    /// The path of the parent rows' part.
-    pub(crate) path: Vec<Arc<str>>,
-    /// The position of each row's parent row among its part's rows.
-    pub(crate) row: ArrayRef,
-}
-
-/// The rows of a table whose arrays become child tables: their part's path, each row's id, and
-/// their roots where they are not roots themselves.
+/// The rows of a table whose arrays become child tables: their part's path and ordinal, and the
+/// positions of their roots among the stream's rows the batch holds where they are not roots
+/// themselves.
 #[derive(Clone, Copy)]
 struct Rows<'a> {
     path: &'a [Arc<str>],
-    ids: &'a BinaryArray,
+    part: u32,
     /// `None` for the stream's own rows, each its own root.
-    roots: Option<Roots<'a>>,
-}
-
-/// The roots of a child table's rows: each one's id, and the position of its row among the
-/// stream's rows the batch holds.
-#[derive(Clone, Copy)]
-struct Roots<'a> {
-    ids: &'a BinaryArray,
-    positions: &'a UInt32Array,
+    roots: Option<&'a UInt32Array>,
 }
 
 /// The columns and arrays one table's rows hold while a batch normalizes.
@@ -130,8 +99,15 @@ struct Table {
 
 /// `batch`'s rows, of a stream normalized as `shape`, as rows of the stream's table and of its
 /// child tables, the parents' parts before their children's.
+///
+/// A merge stream's root rows' ids are its key's hashes, which every part shares; no other row
+/// has an id until lowering builds it from its position.
 pub(crate) fn normalize(batch: &RecordBatch, shape: &Shape) -> Result<Vec<Part>, ArrowError> {
-    let ids = identity::root_ids(batch, &shape.key)?;
+    let keys = if shape.key.is_empty() {
+        None
+    } else {
+        Some(Arc::new(identity::root_ids(batch, &shape.key)?) as ArrayRef)
+    };
     let mut root = Table::default();
     for (field, column) in batch.schema().fields().iter().zip(batch.columns()) {
         let path = vec![Arc::from(field.name().as_str())];
@@ -143,23 +119,28 @@ pub(crate) fn normalize(batch: &RecordBatch, shape: &Shape) -> Result<Vec<Part>,
     }
     let mut parts = Vec::new();
     let arrays = std::mem::take(&mut root.arrays);
-    let root_rows =
-        UInt32Array::from_iter_values(0..u32::try_from(batch.num_rows()).unwrap_or(u32::MAX));
     let lineage = Lineage {
-        id: Arc::new(ids.clone()),
-        root_row: Arc::new(root_rows.clone()),
+        part: 0,
+        row: Arc::new(positions(batch.num_rows())),
+        keys: keys.clone(),
         parent: None,
     };
     parts.push(root.part(Vec::new(), batch.num_rows(), lineage)?);
-    let rows = Rows {
+    let parents = Rows {
         path: &[],
-        ids: &ids,
+        part: 0,
         roots: None,
     };
+    let normalized = (shape.max_depth, keys.as_ref());
     for (path, array, depth) in arrays {
-        expand(&path, &array, depth, rows, shape.max_depth, &mut parts)?;
+        expand(&path, &array, depth, parents, normalized, &mut parts)?;
     }
     Ok(parts)
+}
+
+/// The positions of `rows` rows, in order.
+fn positions(rows: usize) -> UInt32Array {
+    UInt32Array::from_iter_values(0..u32::try_from(rows).unwrap_or(u32::MAX))
 }
 
 impl Table {
@@ -301,7 +282,8 @@ pub(crate) fn as_list(array: &ArrayRef) -> Result<ListArray, ArrowError> {
 }
 
 /// Adds the child table at `path` holding the items of `array`, whose rows are `parents`, then its
-/// own child tables.
+/// own child tables, of a stream normalized to `max_depth` whose root rows' ids are `keys`, where
+/// a merge identifies them by key.
 ///
 /// Null and empty arrays hold no rows; a null item is a row.
 fn expand(
@@ -309,7 +291,7 @@ fn expand(
     array: &ArrayRef,
     depth: u8,
     parents: Rows<'_>,
-    max_depth: u8,
+    (max_depth, keys): (u8, Option<&ArrayRef>),
     parts: &mut Vec<Part>,
 ) -> Result<(), ArrowError> {
     let list = as_list(array)?;
@@ -317,48 +299,48 @@ fn expand(
         return Ok(());
     };
     let values = items.values(&list)?;
-    let parent_ids = arrow_select::take::take(parents.ids, &items.parents, None)?;
-    let item_rows = Arc::new(items.parents.clone()) as ArrayRef;
-    // A root's items take its id as their root's and its row as their root row.
-    let (root_ids, root_rows) = match parents.roots {
-        Some(roots) => (
-            arrow_select::take::take(roots.ids, &items.parents, None)?,
-            arrow_select::take::take(roots.positions, &items.parents, None)?,
-        ),
-        None => (Arc::clone(&parent_ids), Arc::clone(&item_rows)),
+    let parent_rows = Arc::new(items.parents.clone()) as ArrayRef;
+    // A root's items take its row as their root row.
+    let root_rows = match parents.roots {
+        Some(roots) => arrow_select::take::take(roots, &items.parents, None)?,
+        None => Arc::clone(&parent_rows),
     };
-    let root_binary = root_ids.as_binary::<i32>().clone();
     let root_positions = root_rows.as_primitive::<UInt32Type>().clone();
-    let ids = identity::child_ids(parent_ids.as_binary::<i32>(), &items.idx);
     let item = match list.data_type() {
         DataType::List(item) => Arc::clone(item),
         other => Arc::new(ArrowField::new(VALUE, other.clone(), true)),
     };
     let mut table = items_table(&item, &values, depth + 1, max_depth)?;
     let arrays = std::mem::take(&mut table.arrays);
+    let part = u32::try_from(parts.len()).unwrap_or(u32::MAX);
     let lineage = Lineage {
-        id: Arc::new(ids.clone()),
-        root_row: root_rows,
+        part,
+        row: Arc::new(positions(values.len())),
+        keys: keys.cloned(),
         parent: Some(Parent {
-            id: parent_ids,
-            root: root_ids,
-            idx: Arc::new(items.idx),
             path: parents.path.to_vec(),
-            row: item_rows,
+            part: parents.part,
+            row: parent_rows,
+            root_row: root_rows,
+            idx: Arc::new(items.idx),
         }),
     };
     parts.push(table.part(path.to_vec(), values.len(), lineage)?);
     let rows = Rows {
         path,
-        ids: &ids,
-        roots: Some(Roots {
-            ids: &root_binary,
-            positions: &root_positions,
-        }),
+        part,
+        roots: Some(&root_positions),
     };
     for (child, array, child_depth) in arrays {
         let child_path = [path, &child].concat();
-        expand(&child_path, &array, child_depth, rows, max_depth, parts)?;
+        expand(
+            &child_path,
+            &array,
+            child_depth,
+            rows,
+            (max_depth, keys),
+            parts,
+        )?;
     }
     Ok(())
 }
@@ -370,7 +352,7 @@ struct Items {
     /// first array's start on, in order, as when no null array spans any.
     taken: Option<UInt32Array>,
     parents: UInt32Array,
-    idx: Int64Array,
+    idx: Int32Array,
 }
 
 impl Items {
@@ -392,7 +374,7 @@ impl Items {
         for row in (0..list.len()).filter(|row| list.is_valid(*row)) {
             for (position, item) in span(row).enumerate() {
                 parents.push(u32::try_from(row).unwrap_or(u32::MAX));
-                idx.push(i64::try_from(position).unwrap_or(i64::MAX));
+                idx.push(i32::try_from(position).unwrap_or(i32::MAX));
                 if let Some(taken) = taken.as_mut() {
                     taken.push(u32::try_from(item).unwrap_or(u32::MAX));
                 }
@@ -401,7 +383,7 @@ impl Items {
         Some(Self {
             taken: taken.map(UInt32Array::from),
             parents: UInt32Array::from(parents),
-            idx: Int64Array::from(idx),
+            idx: Int32Array::from(idx),
         })
     }
 

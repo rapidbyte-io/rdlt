@@ -1,9 +1,9 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use arrow_array::builder::{Int64Builder, MapBuilder, StringBuilder};
 use arrow_array::cast::AsArray;
-use arrow_array::types::{Int32Type, Int64Type};
+use arrow_array::types::{Int32Type, Int64Type, UInt32Type};
 use arrow_array::{
     Array, ArrayRef, DictionaryArray, Float64Array, Int32Array, Int64Array, LargeListArray,
     ListArray, NullArray, RecordBatch, RunArray, StringArray, StringViewArray, StructArray,
@@ -14,10 +14,13 @@ use arrow_schema::{ArrowError, DataType, Field as ArrowField, Fields, UnionField
 use bytes::Bytes;
 use proptest::prelude::*;
 use rdlt_connector::cost::Allocations;
+use rdlt_connector::{Epoch, SegmentId};
 use serde_json::{Value as Json, json};
 
-use super::reference::{self, Row, canonical_text};
-use super::{Part, Shape, normalize};
+use super::identity::version_hashes;
+use super::reference::compared::{self, Cut};
+use super::reference::{self, Record};
+use super::{Part, Received, Shape, normalize};
 use crate::compute::{Pool, ready};
 use crate::shred::shred;
 use crate::table::convert::decoded;
@@ -51,109 +54,43 @@ pub(super) fn parts(records: &[Json], shape: &Shape) -> Vec<Part> {
         .collect()
 }
 
-/// The value at `row` of `array` as JSON: objects without their null fields, integral floats as
-/// integers.
-fn json_of(array: &ArrayRef, row: usize) -> Json {
-    if array.is_null(row) {
-        return Json::Null;
-    }
-    match array.data_type() {
-        DataType::Null => Json::Null,
-        DataType::Boolean => Json::from(array.as_boolean().value(row)),
-        DataType::Int64 => Json::from(array.as_primitive::<Int64Type>().value(row)),
-        DataType::Float64 => {
-            let value = array
-                .as_primitive::<arrow_array::types::Float64Type>()
-                .value(row);
-            serde_json::Number::from_f64(value).map_or(Json::Null, Json::Number)
-        }
-        DataType::Utf8 => Json::from(array.as_string::<i32>().value(row)),
-        DataType::Struct(_) => {
-            let object = array.as_struct();
-            Json::Object(
-                object
-                    .fields()
-                    .iter()
-                    .zip(object.columns())
-                    .map(|(field, column)| (field.name().clone(), json_of(column, row)))
-                    .filter(|(_, value)| !value.is_null())
-                    .collect(),
-            )
-        }
-        DataType::List(_) => {
-            let items = array.as_list::<i32>().value(row);
-            Json::Array((0..items.len()).map(|item| json_of(&items, item)).collect())
-        }
-        other => panic!("no JSON form for {other}"),
+/// A piece received first in segment 1 of epoch 1.
+fn first() -> Received {
+    Received {
+        epoch: Epoch(1),
+        segment: SegmentId(1),
+        first_row: 0,
     }
 }
 
-/// The rows of `part` as the reference writes them.
-fn rows_of(part: &Part) -> Vec<Row> {
-    let ids = part.lineage.id.as_binary::<i32>();
-    (0..part.batch.num_rows())
-        .map(|row| {
-            let parent = part.lineage.parent.as_ref().map(|parent| {
-                (
-                    parent.id.as_binary::<i32>().value(row).to_vec(),
-                    parent.root.as_binary::<i32>().value(row).to_vec(),
-                    parent.idx.as_primitive::<Int64Type>().value(row),
-                )
-            });
-            let schema = part.batch.schema();
-            let columns = part
-                .columns
-                .iter()
-                .zip(schema.fields().iter().zip(part.batch.columns()))
-                .map(|(path, (field, column))| {
-                    let value = json_of(column, row);
-                    // A column whose values mix types holds them as JSON text.
-                    let json = field
-                        .metadata()
-                        .get("ARROW:extension:name")
-                        .map(String::as_str)
-                        == Some("arrow.json");
-                    match (json, value) {
-                        (true, Json::String(text)) => (
-                            path,
-                            serde_json::from_str(&text).expect("JSON columns hold JSON"),
-                        ),
-                        (_, value) => (path, value),
-                    }
-                })
-                .filter(|(_, value)| !value.is_null())
-                .map(|(path, value)| {
-                    let path = path.segments().map(str::to_owned).collect();
-                    (path, canonical_text(&value))
-                })
-                .collect();
-            Row {
-                id: ids.value(row).to_vec(),
-                parent,
-                columns,
-            }
-        })
-        .collect()
+/// `batches`, one stream's rows in order, each a piece of segment 1, as the reference writes
+/// the tables they normalize into as `shape`.
+fn tables_of(batches: &[RecordBatch], shape: &Shape) -> reference::Tables {
+    let mut received = first();
+    let mut pieces = Vec::new();
+    for batch in batches {
+        pieces.push((batch.clone(), received));
+        received.first_row += batch.num_rows() as u64;
+    }
+    compared::tables_of(&pieces, shape).expect("the lineage names its rows")
 }
 
-/// Every table's rows, sorted, by the table's path.
-fn tables_of(parts: &[Part]) -> reference::Tables {
-    let mut tables = reference::Tables::new();
-    for part in parts {
-        let path = part.path.iter().map(ToString::to_string).collect();
-        tables.entry(path).or_default().extend(rows_of(part));
-    }
-    for rows in tables.values_mut() {
-        rows.sort();
-    }
-    tables
-}
+/// Ids, each its bytes.
+type Ids = Vec<Vec<u8>>;
 
-fn sorted(mut tables: reference::Tables) -> reference::Tables {
-    for rows in tables.values_mut() {
-        rows.sort();
-    }
-    tables
+/// The ids of the rows of `parts`' part `part`, received first in segment 1, and of their
+/// parents and roots.
+fn ids_of(parts: &[Part], part: usize) -> (Ids, Ids, Ids) {
+    let values = |array: &ArrayRef| -> Vec<Vec<u8>> {
+        let ids = array.as_binary::<i32>();
+        (0..ids.len()).map(|row| ids.value(row).to_vec()).collect()
+    };
+    let (own, parent) = parts[part].lineage.columns(&first()).unwrap();
+    let [parents, roots] = match &parent {
+        Some([parents, roots, _]) => [values(parents), values(roots)],
+        None => [Vec::new(), Vec::new()],
+    };
+    (values(&own), parents, roots)
 }
 
 fn path(segments: &[&str]) -> Vec<String> {
@@ -190,44 +127,40 @@ fn arrays_of_objects_become_child_tables_that_name_their_parents() {
             vec![Arc::from("items"), Arc::from("tags")],
         ]
     );
-    let root = parts[0].lineage.id.as_binary::<i32>().value(0).to_vec();
+    let ordinals: Vec<u32> = parts.iter().map(|part| part.lineage.part).collect();
+    assert_eq!(ordinals, [0, 1, 2]);
     let items = parts[1]
         .lineage
         .parent
         .as_ref()
         .expect("a child has parents");
-    assert!(
-        items
-            .id
-            .as_binary::<i32>()
-            .iter()
-            .all(|parent| parent == Some(root.as_slice()))
-    );
-    assert_eq!(items.idx.as_primitive::<Int64Type>().values(), &[0, 1]);
-    let second = parts[1].lineage.id.as_binary::<i32>().value(1).to_vec();
+    assert_eq!((items.part, positions(&items.row)), (0, vec![0, 0]));
+    assert_eq!(items.idx.as_primitive::<Int32Type>().values(), &[0, 1]);
     let tags = parts[2]
         .lineage
         .parent
         .as_ref()
         .expect("a grandchild has parents");
-    assert!(
-        tags.id
-            .as_binary::<i32>()
-            .iter()
-            .all(|parent| parent == Some(second.as_slice()))
-    );
-    assert!(
-        tags.root
-            .as_binary::<i32>()
-            .iter()
-            .all(|parent| parent == Some(root.as_slice()))
-    );
+    assert_eq!((tags.part, positions(&tags.row)), (1, vec![1, 1]), "item b");
+    assert_eq!(positions(&tags.root_row), [0, 0]);
+    let (roots, ..) = ids_of(&parts, 0);
+    let (items, item_parents, item_roots) = ids_of(&parts, 1);
+    let (_, tag_parents, tag_roots) = ids_of(&parts, 2);
+    assert_eq!(item_parents, [roots[0].clone(), roots[0].clone()]);
+    assert_eq!(item_roots, item_parents);
+    assert_eq!(tag_parents, [items[1].clone(), items[1].clone()]);
+    assert_eq!(tag_roots, [roots[0].clone(), roots[0].clone()]);
     let values: Vec<String> = parts[2].columns.iter().map(ToString::to_string).collect();
     assert_eq!(
         values,
         ["value"],
         "arrays of values hold them in a value column"
     );
+}
+
+/// The positions `array`, a `UInt32` array, holds.
+fn positions(array: &ArrayRef) -> Vec<u32> {
+    array.as_primitive::<UInt32Type>().values().to_vec()
 }
 
 #[test]
@@ -243,7 +176,7 @@ fn null_and_empty_arrays_hold_no_rows_and_null_items_are_rows() {
     let scores = &parts[1];
     assert_eq!(scores.batch.num_rows(), 2);
     let idx = scores.lineage.parent.as_ref().expect("child").idx.clone();
-    assert_eq!(idx.as_primitive::<Int64Type>().values(), &[0, 1]);
+    assert_eq!(idx.as_primitive::<Int32Type>().values(), &[0, 1]);
     assert!(scores.batch.column(0).is_null(0));
 }
 
@@ -301,11 +234,12 @@ fn a_sliced_batch_normalizes_as_the_rows_it_keeps() {
         json!({"id": 3, "items": [{"sku": "d", "tags": ["w"]}]}),
     ];
     let batch = shredded(&records, 1 << 20).remove(0);
-    let sliced = normalize(&batch.slice(1, 2), &shape(8)).unwrap();
+    let sliced = batch.slice(1, 2);
     assert_eq!(
-        tables_of(&sliced),
-        tables_of(&parts(&records[1..], &shape(8)))
+        tables_of(std::slice::from_ref(&sliced), &shape(8)),
+        tables_of(&shredded(&records[1..], 1 << 20), &shape(8))
     );
+    let sliced = normalize(&sliced, &shape(8)).unwrap();
     // Each table's values are the batch's own, at every depth.
     let mut held = Allocations::of(&batch);
     for part in &sliced[1..] {
@@ -317,7 +251,7 @@ fn a_sliced_batch_normalizes_as_the_rows_it_keeps() {
 }
 
 #[test]
-fn a_roots_items_name_their_root_by_their_parents_id_and_row() {
+fn a_roots_items_name_their_root_by_their_parents_row() {
     let parts = parts(
         &[
             json!({"id": 1, "items": [{"sku": "a"}, {"sku": "b"}]}),
@@ -325,20 +259,17 @@ fn a_roots_items_name_their_root_by_their_parents_id_and_row() {
         ],
         &shape(8),
     );
-    let lineage = &parts[1].lineage;
-    let parent = lineage.parent.as_ref().expect("a child has parents");
+    let parent = parts[1]
+        .lineage
+        .parent
+        .as_ref()
+        .expect("a child has parents");
     let mut held = Allocations::default();
-    held.add_array(parent.id.as_ref());
     held.add_array(parent.row.as_ref());
     assert_eq!(
-        held.add_array(parent.root.as_ref()),
+        held.add_array(parent.root_row.as_ref()),
         0,
-        "a root's id is its items' root's"
-    );
-    assert_eq!(
-        held.add_array(lineage.root_row.as_ref()),
-        0,
-        "and its row their root row"
+        "a root's row is its items' root row"
     );
 }
 
@@ -349,7 +280,7 @@ fn an_arrays_items_are_listed_in_buffers_of_exactly_their_count() {
     let items = super::Items::of(&list).expect("the list holds items");
     // 25 rows each of 0, 1, 2 and 3 items.
     assert_eq!(items.parents.values().inner().capacity(), 150 * 4);
-    assert_eq!(items.idx.values().inner().capacity(), 150 * 8);
+    assert_eq!(items.idx.values().inner().capacity(), 150 * 4);
 }
 
 #[test]
@@ -384,37 +315,43 @@ fn whole_columns_stay_whole() {
 }
 
 #[test]
-fn ids_do_not_depend_on_types_field_order_or_missing_fields() {
-    let ids = |records: &[Json]| -> Vec<Vec<u8>> {
-        parts(records, &shape(8))[0]
-            .lineage
-            .id
-            .as_binary::<i32>()
-            .iter()
-            .map(|id| id.expect("ids are set").to_vec())
-            .collect()
+fn a_versions_hash_does_not_depend_on_types_field_order_or_missing_fields() {
+    let hashes = |records: &[Json]| -> Vec<Vec<u8>> {
+        let hashes = version_hashes(&shredded(records, 1 << 20)[0]).unwrap();
+        hashes.iter().map(|hash| hash.unwrap().to_vec()).collect()
     };
-    let as_integer = ids(&[json!({"a": 1, "b": null})]);
-    let as_float = ids(&[json!({"b": null, "a": 1.0}), json!({"a": 2.5})]);
+    let as_integer = hashes(&[json!({"a": 1, "b": null})]);
+    let as_float = hashes(&[json!({"b": null, "a": 1.0}), json!({"a": 2.5})]);
     assert_eq!(as_integer[0], as_float[0]);
-    let missing = ids(&[json!({"a": 1}), json!({"a": 3, "b": "x"})]);
+    let missing = hashes(&[json!({"a": 1}), json!({"a": 3, "b": "x"})]);
     assert_eq!(as_integer[0], missing[0]);
     assert_ne!(as_float[0], as_float[1]);
 }
 
-#[test]
-fn keyed_roots_hash_their_key_and_keyless_roots_their_whole_row() {
-    let keyed = Shape {
-        key: vec![Arc::from("id")],
+/// `shape(8)`, merged by `column`.
+fn keyed(column: &str) -> Shape {
+    Shape {
+        key: vec![Arc::from(column)],
         ..shape(8)
-    };
-    let records = [json!({"id": 7, "v": 1}), json!({"id": 7, "v": 2})];
-    let parts = parts(&records, &keyed);
-    let ids = parts[0].lineage.id.as_binary::<i32>();
-    assert_eq!(ids.value(0), ids.value(1), "one key, one id");
-    let whole = normalize(&shredded(&records, 1 << 20)[0], &shape(8)).unwrap();
-    let ids = whole[0].lineage.id.as_binary::<i32>();
-    assert_ne!(ids.value(0), ids.value(1), "keyless rows differ by content");
+    }
+}
+
+#[test]
+fn a_merge_streams_roots_share_their_keys_id_and_other_streams_roots_have_none() {
+    let records = [
+        json!({"id": 7, "v": 1, "items": [1]}),
+        json!({"id": 7, "v": 2, "items": [2]}),
+    ];
+    let parts = parts(&records, &keyed("id"));
+    let (ids, ..) = ids_of(&parts, 0);
+    assert_eq!(ids[0], ids[1], "one key, one id");
+    assert_eq!(ids[0].len(), 32, "the 32 bytes of its key's hash");
+    let (_, parents, roots) = ids_of(&parts, 1);
+    assert_eq!((&parents, &roots), (&ids, &ids));
+    let positional = normalize(&shredded(&records, 1 << 20)[0], &shape(8)).unwrap();
+    assert!(positional.iter().all(|part| part.lineage.keys.is_none()));
+    let (ids, ..) = ids_of(&positional, 0);
+    assert_ne!(ids[0], ids[1], "rows apart are identified apart");
 }
 
 #[test]
@@ -447,14 +384,7 @@ fn maps_and_large_lists_normalize_like_lists() {
 #[test]
 fn numbers_hash_alike_whatever_their_type_and_apart_from_text() {
     let batch = |values: ArrayRef| RecordBatch::try_from_iter([("v", values)]).unwrap();
-    let ids = |batch: RecordBatch| {
-        normalize(&batch, &shape(8)).unwrap()[0]
-            .lineage
-            .id
-            .as_binary::<i32>()
-            .value(0)
-            .to_vec()
-    };
+    let ids = |batch: RecordBatch| ids_of(&normalize(&batch, &keyed("v")).unwrap(), 0).0;
     let integer = ids(batch(Arc::new(Int64Array::from(vec![3]))));
     let float = ids(batch(Arc::new(Float64Array::from(vec![3.0]))));
     let text = ids(batch(Arc::new(StringArray::from(vec!["3"]))));
@@ -504,13 +434,31 @@ fn array<S: Strategy<Value = Json>>(item: S, null_share: f64) -> impl Strategy<V
     })
 }
 
+/// An item of an object, with two sibling arrays.
 fn item() -> impl Strategy<Value = Json> {
     (
         text(),
         maybe((0_i64..5).prop_map(Json::from)),
         maybe(array(text(), 0.2)),
+        maybe(array((0_i64..3).prop_map(Json::from), 0.0)),
     )
-        .prop_map(|(sku, qty, tags)| object(vec![("sku", Some(sku)), ("qty", qty), ("tags", tags)]))
+        .prop_map(|(sku, qty, tags, codes)| {
+            object(vec![
+                ("sku", Some(sku)),
+                ("qty", qty),
+                ("tags", tags),
+                ("codes", codes),
+            ])
+        })
+}
+
+/// A value that is an array, an object holding one, or a scalar, from record to record.
+fn polymorphic() -> impl Strategy<Value = Json> {
+    prop_oneof![
+        array((0_i64..3).prop_map(Json::from), 0.2),
+        array(text(), 0.0).prop_map(|inner| object(vec![("x", Some(inner))])),
+        (0_i64..3).prop_map(Json::from),
+    ]
 }
 
 fn record() -> impl Strategy<Value = Json> {
@@ -520,41 +468,74 @@ fn record() -> impl Strategy<Value = Json> {
     let matrix = array(array((0_i64..3).prop_map(Json::from), 0.0), 0.0);
     let nested_key = array((0_i64..3).prop_map(Json::from), 0.0)
         .prop_map(|values| object(vec![("b", Some(values))]));
-    (
+    let scalars = (
         maybe((0_i64..4).prop_map(Json::from)),
         maybe(prop_oneof![text(), Just(Json::Null)]),
         maybe(number()),
+        maybe((0_i64..3).prop_map(Json::from)),
+        maybe(prop_oneof![(0_i64..3).prop_map(Json::from), text()]),
+    );
+    let nested = (
         maybe(meta),
         maybe(array(item(), 0.15)),
         maybe(array((0_i64..5).prop_map(Json::from), 0.2)),
         maybe(matrix),
-        maybe((0_i64..3).prop_map(Json::from)),
         maybe(nested_key),
-        maybe(prop_oneof![(0_i64..3).prop_map(Json::from), text()]),
+        maybe(polymorphic()),
+    );
+    (scalars, nested).prop_map(
+        |((id, name, amount, flat, mixed), (meta, items, scores, matrix, nested, poly))| {
+            object(vec![
+                ("mixed", mixed),
+                ("id", id),
+                ("name", name),
+                ("amount", amount),
+                ("meta", meta),
+                ("items", items),
+                ("scores", scores),
+                ("matrix", matrix),
+                ("a__b", flat),
+                ("a", nested),
+                ("poly", poly),
+            ])
+        },
     )
-        .prop_map(
-            |(id, name, amount, meta, items, scores, matrix, flat, nested, mixed)| {
-                object(vec![
-                    ("mixed", mixed),
-                    ("id", id),
-                    ("name", name),
-                    ("amount", amount),
-                    ("meta", meta),
-                    ("items", items),
-                    ("scores", scores),
-                    ("matrix", matrix),
-                    ("a__b", flat),
-                    ("a", nested),
-                ])
-            },
-        )
+}
+
+/// Where a piece begins: most often after the piece before it, in its segment.
+fn cut() -> impl Strategy<Value = Cut> {
+    prop_oneof![2 => Just(Cut::Piece), 1 => Just(Cut::Segment), 1 => Just(Cut::Session)]
+}
+
+/// `records`, shredded into `batches`, each with the fields of the batch holding it.
+fn with_fields<'a>(records: &'a [Json], batches: &'a [RecordBatch]) -> Vec<Record<'a>> {
+    let mut held = Vec::with_capacity(records.len());
+    let mut rows = records.iter();
+    for batch in batches {
+        let fields = batch.schema_ref().fields();
+        held.extend(
+            rows.by_ref()
+                .take(batch.num_rows())
+                .map(|value| Record { value, fields }),
+        );
+    }
+    held
+}
+
+/// The reference's tables of `records` shredded into `batches`, normalized as `shape`.
+fn expected(records: &[Json], batches: &[RecordBatch], shape: &Shape) -> reference::Tables {
+    let key: Vec<&str> = shape.key.iter().map(AsRef::as_ref).collect();
+    let whole: Vec<&str> = shape.whole.iter().map(AsRef::as_ref).collect();
+    let records = with_fields(records, batches);
+    reference::normalize(&records, shape.max_depth, &key, &whole)
 }
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
 
-    /// Normalizing shredded JSON agrees with the reference normalizer, ids included, however the
-    /// records chunk into batches.
+    /// Normalizing shredded JSON agrees with the reference normalizer, each row's lineage naming
+    /// exactly the rows it comes from and no id naming two rows, however the records are pushed
+    /// and chunked into pieces and the pieces into segments and sessions.
     #[test]
     fn normalizing_agrees_with_the_reference(
         records in prop::collection::vec(record(), 1..10),
@@ -562,42 +543,111 @@ proptest! {
         keyed in any::<bool>(),
         whole_meta in any::<bool>(),
         chunk_bytes in 16_usize..400,
+        pushes in prop::collection::vec(any::<bool>(), 10),
+        cuts in prop::collection::vec(cut(), 10),
     ) {
-        let key: Vec<&str> = if keyed { vec!["id"] } else { Vec::new() };
-        // A keyed stream's rows each hold a key: one lacking it is refused before it normalizes.
         let mut records = records;
         if keyed {
+            // A merge stream's rows each hold a key; distinct ones here, so each root's id
+            // names one row.
             for (index, record) in records.iter_mut().enumerate() {
-                let held = record.get("id").is_some_and(|id| !id.is_null());
-                if !held {
-                    record["id"] = Json::from(index % 4);
-                }
+                record["id"] = Json::from(index);
             }
         }
-        let whole: Vec<&str> = if whole_meta { vec!["meta"] } else { Vec::new() };
         let shape = Shape {
             max_depth,
-            whole: whole.iter().map(|column| Arc::from(*column)).collect(),
-            key: key.iter().map(|column| Arc::from(*column)).collect(),
+            whole: if whole_meta { BTreeSet::from([Arc::from("meta")]) } else { BTreeSet::new() },
+            key: if keyed { vec![Arc::from("id")] } else { Vec::new() },
         };
-        let parts: Vec<Part> = shredded(&records, chunk_bytes)
-            .iter()
-            .flat_map(|batch| normalize(batch, &shape).expect("the batch normalizes"))
-            .collect();
-        let actual: BTreeMap<_, _> = tables_of(&parts)
-            .into_iter()
-            .filter(|(_, rows)| !rows.is_empty())
-            .collect();
-        let expected = sorted(reference::normalize(&records, max_depth, &key, &whole));
-        prop_assert_eq!(actual, expected);
+        // Each record may start a push of its own, whose shapes join apart from the others'.
+        let mut batches = Vec::new();
+        let mut first = 0;
+        for (index, starts) in pushes.iter().enumerate().take(records.len()).skip(1) {
+            if *starts {
+                batches.extend(shredded(&records[first..index], chunk_bytes));
+                first = index;
+            }
+        }
+        batches.extend(shredded(&records[first..], chunk_bytes));
+        let pieces: Vec<(RecordBatch, Cut)> =
+            batches.iter().cloned().zip(cuts.iter().copied().cycle()).collect();
+        let actual = compared::tables_of(&compared::stamped(&pieces), &shape)
+            .map_err(|disagreed| TestCaseError::fail(disagreed.to_string()))?;
+        prop_assert_eq!(actual, expected(&records, &batches, &shape));
+    }
+}
+
+/// `batches`, with a column `k` numbering their rows where `keyed`, a key no two rows share.
+fn numbered(batches: Vec<RecordBatch>, keyed: bool) -> Vec<RecordBatch> {
+    if !keyed {
+        return batches;
+    }
+    let mut first = 0;
+    let mut numbered = Vec::with_capacity(batches.len());
+    for batch in batches {
+        let rows = i64::try_from(batch.num_rows()).unwrap();
+        let mut columns: Vec<(String, ArrayRef)> = vec![(
+            "k".to_owned(),
+            Arc::new(Int64Array::from_iter_values(first..first + rows)),
+        )];
+        let schema = batch.schema();
+        columns.extend(
+            schema
+                .fields()
+                .iter()
+                .map(|field| field.name().clone())
+                .zip(batch.columns().iter().cloned()),
+        );
+        numbered.push(RecordBatch::try_from_iter(columns).unwrap());
+        first += rows;
+    }
+    numbered
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(rdlt_testkit::cases(256)))]
+
+    /// Drawn Arrow batches normalize as the reference normalizes the records they hold, however
+    /// a path is an array in one batch and an object or a scalar in another.
+    #[test]
+    fn drawn_batches_normalize_as_the_reference_normalizes_their_rows(
+        drawn in rdlt_testkit::drawn::json::batches(),
+        cuts in prop::collection::vec(cut(), 4),
+        max_depth in 0_u8..4,
+        keyed in any::<bool>(),
+    ) {
+        let batches = drawn.iter().map(rdlt_testkit::drawn::json::batch).collect();
+        let pieces: Vec<(RecordBatch, Cut)> =
+            numbered(batches, keyed).into_iter().zip(cuts).collect();
+        let key = keyed.then_some("k");
+        compared::normalized_against_reference(&pieces, max_depth, key)
+            .map_err(|disagreed| TestCaseError::fail(disagreed.to_string()))?;
     }
 }
 
 #[test]
 fn the_reference_names_child_tables_by_their_arrays_paths() {
-    let tables = reference::normalize(&[json!({"a": {"b": [1]}, "a__b": [2]})], 8, &[], &[]);
+    let records = [json!({"a": {"b": [1]}, "a__b": [2]})];
+    let tables = expected(&records, &shredded(&records, 1 << 20), &shape(8));
     let paths: Vec<&Vec<String>> = tables.keys().collect();
     assert_eq!(paths, [&path(&[]), &path(&["a", "b"]), &path(&["a__b"])]);
+}
+
+#[test]
+fn a_path_that_mixes_kinds_in_a_push_is_a_column_kept_whole_and_apart_a_table() {
+    let records = [json!({"p": [1, 2]}), json!({"p": 3}), json!({"p": [4]})];
+    let together = shredded(&records, 1);
+    assert_eq!(together.len(), 3, "a chunk a record");
+    let tables = tables_of(&together, &shape(8));
+    assert_eq!(tables.len(), 1, "one push keeps p whole in every chunk");
+    assert_eq!(tables, expected(&records, &together, &shape(8)));
+    let apart: Vec<RecordBatch> = records
+        .iter()
+        .flat_map(|record| shredded(std::slice::from_ref(record), 1 << 20))
+        .collect();
+    let tables = tables_of(&apart, &shape(8));
+    assert_eq!(tables[&path(&["p"])].len(), 3, "p's arrays are a table");
+    assert_eq!(tables, expected(&records, &apart, &shape(8)));
 }
 
 #[test]
@@ -648,20 +698,20 @@ fn columns_keep_the_arrow_types_their_fields_declare() {
 }
 
 #[test]
-fn a_rows_id_does_not_depend_on_the_rows_beside_it() {
-    let alone = parts(&[json!({"id": 1, "a": 1, "o": {"b": 2}})], &shape(0));
+fn a_merge_roots_id_does_not_depend_on_the_rows_beside_it() {
+    let alone = parts(&[json!({"id": 1, "a": 1, "o": {"b": 2}})], &keyed("id"));
     let beside = parts(
         &[
             json!({"id": 1, "a": 1, "o": {"b": 2}}),
-            json!({"a": "x", "o": [3]}),
+            json!({"id": "x", "a": "x", "o": [3]}),
         ],
-        &shape(0),
+        &keyed("id"),
     );
-    let id = |parts: &[Part]| parts[0].lineage.id.as_binary::<i32>().value(0).to_vec();
+    let id = |parts: &[Part]| ids_of(parts, 0).0[0].clone();
     assert_eq!(
         id(&alone),
         id(&beside),
-        "values widened to JSON hash as themselves"
+        "a key widened to JSON hashes as itself"
     );
 }
 
@@ -671,18 +721,14 @@ fn rows_that_differ_never_encode_alike() {
     let key = format!("\u{1}bs{{{}", "x".repeat(121));
     let first = json!({"a": {}, "b": text});
     let second = json!({"a": {key: true}});
-    let ids: Vec<Vec<u8>> = [first, second]
+    let hashes: Vec<Vec<u8>> = [first, second]
         .iter()
         .map(|record| {
-            parts(std::slice::from_ref(record), &shape(0))[0]
-                .lineage
-                .id
-                .as_binary::<i32>()
-                .value(0)
-                .to_vec()
+            let batch = &shredded(std::slice::from_ref(record), 1 << 20)[0];
+            version_hashes(batch).unwrap().value(0).to_vec()
         })
         .collect();
-    assert_ne!(ids[0], ids[1]);
+    assert_ne!(hashes[0], hashes[1]);
 }
 
 /// A batch of one column `s`, objects of the field `v` holding `values`, the second row null.

@@ -479,10 +479,6 @@ fn values_crafted_to_collide_under_an_unkeyed_fast_hash_have_distinct_ids() {
         COLLIDING.iter().map(|window| blob(*window, 61)),
     )));
     assert_ne!(keyed[0], keyed[1]);
-    let parents = BinaryArray::from_iter_values(&keyed);
-    let children = super::child_ids(&parents, &Int64Array::from(vec![0, 0]));
-    assert_ne!(children.value(0), children.value(1));
-    assert_ne!(children.value(0), keyed[0].as_slice());
 }
 
 #[test]
@@ -614,12 +610,8 @@ fn ids_take_one_buffer_of_exactly_their_bytes() {
     for rows in [0_usize, 1, 1000] {
         let values = Int64Array::from_iter_values((0..i64::try_from(rows).unwrap()).take(rows));
         let batch = RecordBatch::try_from_iter([("v", Arc::new(values) as ArrayRef)]).unwrap();
-        let roots = root_ids(&batch, &[]).unwrap();
-        exact(&roots, rows);
         exact(&root_ids(&batch, &[Arc::from("v")]).unwrap(), rows);
         exact(&super::version_hashes(&batch).unwrap(), rows);
-        let idx = Int64Array::from_iter_values((0..i64::try_from(rows).unwrap()).take(rows));
-        exact(&super::child_ids(&roots, &idx), rows);
     }
 }
 

@@ -381,6 +381,7 @@ fn table(name: &str) -> TableRef {
 
 fn stamp() -> Stamp {
     Stamp {
+        epoch: rdlt_connector::Epoch(3),
         load_id: LoadId::from_parts(UNIX_EPOCH + Duration::from_secs(1_000), 5),
         loaded_at: UNIX_EPOCH + Duration::from_secs(1_000),
         received_at: UNIX_EPOCH + Duration::from_secs(1_000),
@@ -2055,7 +2056,7 @@ fn columns_a_batch_holds_nothing_in_are_nulls_as_the_destination_stores_them() {
 }
 
 #[test]
-fn a_rows_metadata_of_bytes_costs_seventy_two_bytes_a_column() {
+fn a_rows_metadata_of_bytes_costs_its_widest_value_and_as_text_its_hex_beside_it() {
     let row_bytes = |capabilities: Capabilities, lineage: bool| {
         let mut resolver = resolver(capabilities, plan(), &["id"]);
         if lineage {
@@ -2075,7 +2076,7 @@ fn a_rows_metadata_of_bytes_costs_seventy_two_bytes_a_column() {
         (plan.row_bytes(), metadata)
     };
     // A keyed table's sequence, and a normalized row's id, are bytes: seventy-two bytes a row
-    // each, at most an id's 32 as hex, its offset and its validity, rather than a value's slot.
+    // each, rather than a value's slot.
     assert_eq!(
         row_bytes(capabilities(), false),
         (72, vec![LogicalType::Binary])
@@ -2083,6 +2084,13 @@ fn a_rows_metadata_of_bytes_costs_seventy_two_bytes_a_column() {
     assert_eq!(
         row_bytes(capabilities(), true),
         (144, vec![LogicalType::Binary, LogicalType::Binary])
+    );
+    // Stored as text, an id is built as bytes and written beside them as hex.
+    let mut text = capabilities();
+    text.types.remove(&TypeKind::Binary);
+    assert_eq!(
+        row_bytes(text, true),
+        (240, vec![LogicalType::Utf8, LogicalType::Utf8])
     );
 }
 

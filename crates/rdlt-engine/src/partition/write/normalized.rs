@@ -20,7 +20,7 @@ use super::{
     schema_of, stamp,
 };
 use crate::budget::Shares;
-use crate::cost::{LINEAGE_ITEM, LINEAGE_ROW, SPLIT_COPIES};
+use crate::cost::{KEY_ID, LINEAGE_ITEM, LINEAGE_ROW, SPLIT_COPIES};
 use crate::error::Error;
 use crate::limits::MIN_PIECE;
 use crate::normalize::rounding::Rounding;
@@ -53,7 +53,7 @@ pub(super) async fn write_normalized(
     kind: PushKind,
 ) -> Result<(), Error> {
     let Units { units, room } = units;
-    let pieces = sliced(job, context, &room, units).await?;
+    let pieces = sliced(job, context, (&room, shape), units).await?;
     let mut flush = Flush::new(context, job.table, judged(job, &pieces, shape)?, kind);
     let request = room.shares(&context.budget).request;
     let last = pieces.len().saturating_sub(1);
@@ -149,14 +149,15 @@ pub(super) fn split_bounds(shares: Shares) -> (u64, u64) {
 async fn sliced(
     job: &PartitionJob,
     context: &PartitionContext,
-    room: &Room,
+    (room, shape): (&Room, &Shape),
     units: Vec<Held>,
 ) -> Result<Vec<Held>, Error> {
     let (max, limit) = split_bounds(room.shares(&context.budget));
+    let keyed = if shape.key.is_empty() { 0 } else { KEY_ID };
     let lowered = Lowered {
         rendering: context.rendering.as_ref().clone(),
         stored: Vec::new(),
-        row: LINEAGE_ROW,
+        row: LINEAGE_ROW + keyed,
         item: LINEAGE_ITEM,
         // What the split makes is measured as rows expand, and may be twice that.
         max,
@@ -475,10 +476,8 @@ pub(super) fn made(parts: &[Part], unit: &Allocations) -> u64 {
 /// that `made` did not hold yet, which then holds them too.
 pub(super) fn part_growth(part: &Part, unit: &Allocations, made: &mut Allocations) -> u64 {
     let lineage = &part.lineage;
-    let mut arrays = vec![&lineage.id, &lineage.root_row];
-    if let Some(parent) = &lineage.parent {
-        arrays.extend([&parent.id, &parent.root, &parent.idx, &parent.row]);
-    }
+    let mut arrays = lineage.arrays();
+    arrays.extend(&lineage.keys);
     let batch = made.add_beyond(&part.batch, unit);
     arrays
         .into_iter()

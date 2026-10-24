@@ -25,13 +25,17 @@ pub(crate) fn rendering(capabilities: &Capabilities) -> Rendering {
     Rendering::new(capabilities.types.iter().copied())
 }
 
-/// Bytes: what normalizing makes of each of a batch's rows beside its values: its id and its
-/// place.
-pub(crate) const LINEAGE_ROW: u64 = 48;
+/// Bytes: what normalizing makes of each of a batch's rows beside its values: its position.
+pub(crate) const LINEAGE_ROW: u64 = 4;
+
+/// Bytes: what normalizing makes of each of a merge stream's root rows beside its position: its
+/// key's hash and an offset.
+pub(crate) const KEY_ID: u64 = 36;
 
 /// Bytes: what normalizing makes of each item an array holds beside the item, which it may copy:
-/// the item's id, its parent's and its root's, and its places among them.
-pub(crate) const LINEAGE_ITEM: u64 = 144;
+/// its position, its parent's, its root's, its index in its array and where it sat among the
+/// array's values.
+pub(crate) const LINEAGE_ITEM: u64 = 20;
 
 /// Bytes: what splitting a change row holds beside its data: its op, its position as bytes and
 /// its flags, each with its offset.

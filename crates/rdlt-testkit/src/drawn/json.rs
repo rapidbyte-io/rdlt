@@ -1,12 +1,17 @@
 //! Values as a source pushes them in JSON: of the types JSON holds, so the engine infers each
 //! value's type as the type it was drawn as.
 
+use std::sync::Arc;
+
+use arrow_array::{ArrayRef, RecordBatch, RecordBatchOptions};
+use arrow_schema::Schema;
 use proptest::prelude::*;
 use rdlt_connector::{DecimalType, Field, Fields, LogicalType};
 use serde_json::{Map, Value, json};
 
-use super::Scalar;
-use super::arrays::{Encoding, Shape};
+use super::arrays::{Encoding, Shape, array, field};
+use super::values::value;
+use super::{Drawn, Scalar};
 
 fn plain(logical: LogicalType, children: Vec<Shape>) -> Shape {
     Shape {
@@ -29,14 +34,35 @@ pub fn integers() -> Shape {
 /// A type JSON holds, nested up to `depth` levels: booleans, 64-bit integers and floats, text,
 /// whole numbers of any width, and objects and arrays of them.
 pub fn shape(depth: u32) -> BoxedStrategy<Shape> {
+    shaped(depth, Width::Any)
+}
+
+/// A type JSON holds that an Arrow batch holds too, nested up to `depth` levels: as [`shape`]
+/// draws, but no whole number wider than 64 bits.
+pub fn arrow_shape(depth: u32) -> BoxedStrategy<Shape> {
+    shaped(depth, Width::Bits64)
+}
+
+/// How wide a drawn whole number may be.
+#[derive(Clone, Copy)]
+enum Width {
+    Any,
+    Bits64,
+}
+
+/// A type JSON holds, nested up to `depth` levels, its whole numbers as wide as `width` says.
+fn shaped(depth: u32, width: Width) -> BoxedStrategy<Shape> {
     use LogicalType as T;
     let scalar = proptest::sample::select(vec![T::Bool, T::Int64, T::Float64, T::Utf8])
         .prop_map(|logical| plain(logical, Vec::new()));
-    let leaf = prop_oneof![4 => scalar, 1 => Just(integers())].boxed();
+    let leaf = match width {
+        Width::Any => prop_oneof![4 => scalar, 1 => Just(integers())].boxed(),
+        Width::Bits64 => scalar.boxed(),
+    };
     if depth == 0 {
         return leaf;
     }
-    let inner = move || shape(depth - 1);
+    let inner = move || shaped(depth - 1, width);
     let object = proptest::sample::subsequence(vec!["x", "y", "z"], 1..=3)
         .prop_flat_map(move |names| {
             let count = names.len();
@@ -58,6 +84,58 @@ pub fn shape(depth: u32) -> BoxedStrategy<Shape> {
         plain(T::List(Box::new(field)), vec![item])
     });
     prop_oneof![3 => leaf, 1 => object, 1 => array].boxed()
+}
+
+/// A batch of one to three of the columns `a`, `b` and `c`, each of a type [`arrow_shape`]
+/// draws, and up to six rows.
+pub fn drawn() -> impl Strategy<Value = Drawn> {
+    proptest::sample::subsequence(vec!["a", "b", "c"], 1..=3)
+        .prop_flat_map(|names| {
+            let count = names.len();
+            (
+                Just(names),
+                proptest::collection::vec(arrow_shape(2), count),
+            )
+        })
+        .prop_flat_map(|(names, shapes)| {
+            let row: Vec<_> = shapes.iter().map(|shape| value(shape, true)).collect();
+            let columns: Vec<(String, Shape)> = names
+                .iter()
+                .map(|name| (*name).to_owned())
+                .zip(shapes)
+                .collect();
+            (Just(columns), proptest::collection::vec(row, 0..6))
+        })
+}
+
+/// One to four batches as [`drawn`] draws each: a column an array in one batch may be an object
+/// or a scalar in another, and arrays may sit beside each other.
+pub fn batches() -> impl Strategy<Value = Vec<Drawn>> {
+    proptest::collection::vec(drawn(), 1..5)
+}
+
+/// `drawn` as an Arrow batch, each column as its shape builds it.
+///
+/// # Panics
+///
+/// Where a value does not fit its column's shape, which drawn values always do.
+pub fn batch((columns, rows): &Drawn) -> RecordBatch {
+    let arrays: Vec<ArrayRef> = columns
+        .iter()
+        .enumerate()
+        .map(|(column, (_, shape))| {
+            let values: Vec<&Scalar> = rows.iter().map(|row| &row[column]).collect();
+            array(shape, &values)
+        })
+        .collect();
+    let fields: Vec<_> = columns
+        .iter()
+        .zip(&arrays)
+        .map(|((name, shape), array)| field(name, shape, array, true))
+        .collect();
+    let options = RecordBatchOptions::new().with_row_count(Some(rows.len()));
+    RecordBatch::try_new_with_options(Arc::new(Schema::new(fields)), arrays, &options)
+        .expect("a drawn batch is valid")
 }
 
 /// `value` as JSON: a float JSON cannot hold by its name, as the engine writes one.

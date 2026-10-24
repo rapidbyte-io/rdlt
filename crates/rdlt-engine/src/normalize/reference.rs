@@ -1,129 +1,212 @@
-//! A reference normalizer over JSON values, written apart from the Arrow one, for the differential
-//! test: its ids come from its own canonical encoding of the JSON values.
+//! A reference normalizer over JSON values, written apart from the Arrow one, and the comparison
+//! of the two: the same rows in the same tables, each row's lineage naming exactly one row, and no
+//! id naming two.
+//!
+//! A row is known by where it comes from: its record's position among the records, then, for a
+//! child row, its array's table and its position in the array, after its parent's. A merge
+//! stream's root rows carry their key's hash too, which the reference computes from its own
+//! canonical encoding of the JSON values.
+//!
+//! A value of a JSON push's path that mixes kinds within its chunk is a column of JSON, which
+//! normalizing keeps whole: the reference reads which from the fields of the batch each record
+//! was shredded into.
+
+pub(crate) mod compared;
 
 use std::collections::BTreeMap;
+use std::fmt::Display;
 
+use arrow_schema::{DataType, FieldRef, Fields};
 use serde_json::Value as Json;
 
-/// A normalized row: its lineage, then its non-null columns by path, each as canonical JSON text.
+/// A normalized row: where it comes from, a merge root's key hash, then its non-null columns by
+/// path, each as canonical JSON text.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) struct Row {
-    pub(super) id: Vec<u8>,
-    /// The parent's id, the root's id and the row's position in its parent's array.
-    pub(super) parent: Option<(Vec<u8>, Vec<u8>, i64)>,
-    pub(super) columns: BTreeMap<Vec<String>, String>,
+pub(crate) struct Row {
+    pub(crate) at: String,
+    pub(crate) key: Option<Vec<u8>>,
+    pub(crate) columns: BTreeMap<Vec<String>, String>,
 }
 
 /// Every table's rows, by the table's path below the stream's table.
-pub(super) type Tables = BTreeMap<Vec<String>, Vec<Row>>;
+pub(crate) type Tables = BTreeMap<Vec<String>, Vec<Row>>;
 
-/// Normalizes `records` as a stream with `max_depth` whose root rows are identified by `key`, or
-/// wholly without one, keeping the top-level columns `whole` whole.
-pub(super) fn normalize(records: &[Json], max_depth: u8, key: &[&str], whole: &[&str]) -> Tables {
+/// A record, and the fields of the batch it was shredded into or built in.
+#[derive(Clone, Copy)]
+pub(crate) struct Record<'a> {
+    pub(crate) value: &'a Json,
+    pub(crate) fields: &'a Fields,
+}
+
+/// Normalizes `records` as a stream with `max_depth` whose root rows are identified by `key`
+/// where a merge identifies them, keeping the top-level columns `whole` whole.
+pub(crate) fn normalize(
+    records: &[Record<'_>],
+    max_depth: u8,
+    key: &[&str],
+    whole: &[&str],
+) -> Tables {
     let mut tables = Tables::new();
-    for record in records {
-        let object = record.as_object().expect("records are objects");
-        let mut encoding = Vec::new();
-        if key.is_empty() {
-            encode(record, &mut encoding);
-        } else {
+    for (position, record) in records.iter().enumerate() {
+        let object = record.value.as_object().expect("records are objects");
+        let key = (!key.is_empty()).then(|| {
+            let mut encoding = Vec::new();
             for column in key {
                 encode(object.get(*column).unwrap_or(&Json::Null), &mut encoding);
             }
-        }
-        let id = hash(ROOT, &encoding);
+            hash(ROOT, &encoding)
+        });
         let mut row = Pending::default();
         for (name, value) in object {
             if whole.contains(&name.as_str()) {
                 row.column(vec![name.clone()], value);
             } else {
-                row.place(vec![name.clone()], value, 1, max_depth);
+                let field = record.fields.find(name).map(|(_, field)| field);
+                row.place(vec![name.clone()], (value, field), 1, max_depth);
             }
         }
-        row.emit(&[], &id, None, &id, max_depth, &mut tables);
+        row.emit(&[], &format!("#{position}"), key, max_depth, &mut tables);
     }
-    tables
+    sorted(tables)
+}
+
+/// Where the row at `position` of an array whose items are rows of `table`, in the row at
+/// `parent`, comes from.
+fn step(parent: &str, table: &[String], position: impl Display) -> String {
+    format!("{parent}/{table:?}[{position}]")
 }
 
 /// One row's columns and arrays while it normalizes.
 #[derive(Default)]
-struct Pending {
+struct Pending<'a> {
     columns: BTreeMap<Vec<String>, String>,
-    arrays: Vec<(Vec<String>, Vec<Json>, u8)>,
+    arrays: Vec<Items<'a>>,
 }
 
-impl Pending {
+/// An array of a row being normalized: its path in the row, its items, their field and depth.
+struct Items<'a> {
+    path: Vec<String>,
+    values: Vec<Json>,
+    field: Option<&'a FieldRef>,
+    depth: u8,
+}
+
+/// Whether `field` is a column of JSON, which holds its values whole whatever they are.
+fn json(field: Option<&FieldRef>) -> bool {
+    field.is_some_and(|field| {
+        field
+            .metadata()
+            .get("ARROW:extension:name")
+            .map(String::as_str)
+            == Some("arrow.json")
+    })
+}
+
+/// The field of `field`'s member `name`, where `field` is an object.
+fn member<'a>(field: Option<&'a FieldRef>, name: &str) -> Option<&'a FieldRef> {
+    match field?.data_type() {
+        DataType::Struct(fields) => fields.find(name).map(|(_, field)| field),
+        _ => None,
+    }
+}
+
+/// The field of `field`'s items, where `field` is an array.
+fn item(field: Option<&FieldRef>) -> Option<&FieldRef> {
+    match field?.data_type() {
+        DataType::List(item) => Some(item),
+        _ => None,
+    }
+}
+
+impl<'a> Pending<'a> {
     fn column(&mut self, path: Vec<String>, value: &Json) {
         if !value.is_null() {
             self.columns.insert(path, canonical_text(value));
         }
     }
 
-    fn place(&mut self, path: Vec<String>, value: &Json, depth: u8, max_depth: u8) {
-        if depth > max_depth {
+    /// Places `value`, of `field`, at `path`, its depth `depth`.
+    fn place(
+        &mut self,
+        path: Vec<String>,
+        (value, field): (&Json, Option<&'a FieldRef>),
+        depth: u8,
+        max_depth: u8,
+    ) {
+        if depth > max_depth || json(field) {
             return self.column(path, value);
         }
         match value {
             Json::Object(object) => {
-                for (name, field) in object {
-                    let mut field_path = path.clone();
-                    field_path.push(name.clone());
-                    self.place(field_path, field, depth + 1, max_depth);
+                for (name, inner) in object {
+                    let mut inner_path = path.clone();
+                    inner_path.push(name.clone());
+                    let inner = (inner, member(field, name));
+                    self.place(inner_path, inner, depth + 1, max_depth);
                 }
             }
-            Json::Array(items) => self.arrays.push((path, items.clone(), depth)),
+            Json::Array(items) => self.arrays.push(Items {
+                path,
+                values: items.clone(),
+                field: item(field),
+                depth,
+            }),
             _ => self.column(path, value),
         }
     }
 
-    /// Adds this row, of the table at `table`, then the rows of its arrays' child tables.
+    /// Adds this row, of the table at `table`, which comes from `at`, then the rows of its
+    /// arrays' child tables.
     fn emit(
         self,
         table: &[String],
-        id: &[u8],
-        parent: Option<(Vec<u8>, Vec<u8>, i64)>,
-        root: &[u8],
+        at: &str,
+        key: Option<Vec<u8>>,
         max_depth: u8,
         tables: &mut Tables,
     ) {
         tables.entry(table.to_vec()).or_default().push(Row {
-            id: id.to_vec(),
-            parent,
+            at: at.to_owned(),
+            key,
             columns: self.columns,
         });
-        for (path, items, depth) in self.arrays {
+        for Items {
+            path,
+            values: items,
+            field,
+            depth,
+        } in self.arrays
+        {
             let mut child_table = table.to_vec();
             child_table.extend(path);
-            for (position, item) in items.iter().enumerate() {
-                let idx = i64::try_from(position).expect("arrays are short");
-                let mut bytes = Vec::new();
-                length(&mut bytes, id);
-                bytes.extend_from_slice(&u64::try_from(idx).expect("positive").to_be_bytes());
-                let child_id = hash(CHILD, &bytes);
+            for (position, value) in items.iter().enumerate() {
                 let mut row = Pending::default();
                 let item_depth = depth + 1;
-                match item {
-                    Json::Object(object) if item_depth <= max_depth => {
-                        for (name, field) in object {
-                            row.place(vec![name.clone()], field, item_depth + 1, max_depth);
+                let whole = item_depth > max_depth || json(field);
+                match value {
+                    Json::Object(object) if !whole => {
+                        for (name, inner) in object {
+                            let inner = (inner, member(field, name));
+                            row.place(vec![name.clone()], inner, item_depth + 1, max_depth);
                         }
                     }
-                    Json::Array(inner) if item_depth <= max_depth => {
-                        row.arrays
-                            .push((vec!["value".to_owned()], inner.clone(), item_depth));
-                    }
-                    _ => row.column(vec!["value".to_owned()], item),
+                    Json::Array(inner) if !whole => row.arrays.push(Items {
+                        path: vec!["value".to_owned()],
+                        values: inner.clone(),
+                        field: item(field),
+                        depth: item_depth,
+                    }),
+                    _ => row.column(vec!["value".to_owned()], value),
                 }
-                let parent = Some((id.to_vec(), root.to_vec(), idx));
-                row.emit(&child_table, &child_id, parent, root, max_depth, tables);
+                let child_at = step(at, &child_table, position);
+                row.emit(&child_table, &child_at, None, max_depth, tables);
             }
         }
     }
 }
 
-/// The tags of a root's and a child's ids.
+/// The tag of a merge root's id.
 const ROOT: u8 = 0x01;
-const CHILD: u8 = 0x02;
 
 /// The BLAKE3 hash of `bytes` after the tag of their `domain`.
 fn hash(domain: u8, bytes: &[u8]) -> Vec<u8> {
@@ -232,7 +315,7 @@ fn unreachable_number() -> String {
 }
 
 /// `value` with its numbers in one form and its objects' null fields dropped, as text.
-pub(super) fn canonical_text(value: &Json) -> String {
+pub(crate) fn canonical_text(value: &Json) -> String {
     serde_json::to_string(&canonical(value)).expect("values render")
 }
 
@@ -256,4 +339,12 @@ fn canonical(value: &Json) -> Json {
         ),
         other => other.clone(),
     }
+}
+
+/// `tables` with each table's rows in order.
+fn sorted(mut tables: Tables) -> Tables {
+    for rows in tables.values_mut() {
+        rows.sort();
+    }
+    tables
 }

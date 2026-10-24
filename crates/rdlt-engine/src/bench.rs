@@ -37,6 +37,7 @@ use crate::shred::{self, ShredError};
 
 use connectors::sink;
 
+pub use crate::normalize::reference::compared::{Cut, Disagreement, normalized_against_reference};
 pub use connectors::{
     Replayed, SinkSession, SinkWriter, Sinking, ipc_sink, null_sink, register, replay,
     replay_config, replay_factory, rows_pushed, sink_factory, split_replay_config, stream_name,
@@ -160,8 +161,9 @@ async fn shredded(
     Ok(shred::shred(pool, pushes, chunk_bytes, limits).await?)
 }
 
-/// `batch` normalized as a stream normalized to `max_depth` whose rows `key` identifies: each
-/// table's path below the stream's table, and its rows' data columns.
+/// `batch` normalized as a stream normalized to `max_depth` and merged by `key`, where it names
+/// columns, whose root rows its key identifies: each table's path below the stream's table, and
+/// its rows' data columns.
 pub fn normalize(
     batch: &RecordBatch,
     max_depth: u8,
@@ -186,7 +188,7 @@ pub fn normalize(
 ///
 /// # Errors
 ///
-/// Where a value of a column of JSON identity cannot read.
+/// Where normalizing refuses the batch.
 pub fn pruned(
     batch: &RecordBatch,
     max_depth: u8,
