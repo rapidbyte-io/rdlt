@@ -253,6 +253,7 @@ fn observed(
             visit(bytes, RecordSeed(row), exact, &context)
         })?;
         if appended.imprecise && !exact {
+            context.meter.give_back();
             exact = true;
             continue;
         }

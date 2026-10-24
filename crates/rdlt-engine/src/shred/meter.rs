@@ -59,6 +59,11 @@ impl Beyond {
             .is_ok()
     }
 
+    /// Gives `bytes` taken before back to the room.
+    fn give(&self, bytes: u64) {
+        self.room.fetch_add(bytes, Ordering::Relaxed);
+    }
+
     /// The bytes the room had.
     pub(crate) fn limit(&self) -> u64 {
         self.limit
@@ -156,6 +161,14 @@ impl Meter {
     /// Bytes charged so far, within the room and beyond it.
     pub(crate) fn spent(&self) -> u64 {
         (self.allowance - self.room.get()).saturating_add(self.drawn.get())
+    }
+
+    /// Gives what it took beyond its room back to the flush's room, for an observation let go
+    /// before its chunk is observed again.
+    pub(crate) fn give_back(&self) {
+        if let Some(beyond) = &self.beyond {
+            beyond.give(self.drawn.replace(0));
+        }
     }
 
     /// The bytes an observation may hold beyond its chunk's allowance, for all the flush's chunks.
