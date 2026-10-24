@@ -37,7 +37,7 @@ use crate::destination::{
     Destination, DestinationConnector, DestinationFactory, DestinationSession, DestinationWriter,
     OpenContext, OpenedSession, TableChange, TableRef, destination_factory,
 };
-use crate::error::{ConnectorErrorKind, Result};
+use crate::error::{ConnectorError, ConnectorErrorKind, Result};
 use crate::id::{CommitSeq, Epoch, LoadId, PipelineId, SchemaVersion, SegmentId, TablePath};
 use crate::spec::{BoxFuture, ConnectContext};
 use crate::state::{StateChange, StateRecord};
@@ -69,7 +69,7 @@ pub trait Probe: Send + Sync {
     ) -> BoxFuture<'a, Result<()>> {
         let message = format!("the probe drops no column {column} of {}", table.name);
         Box::pin(async move {
-            Err(crate::ConnectorError::new(
+            Err(ConnectorError::new(
                 ConnectorErrorKind::Unsupported,
                 message,
             ))
@@ -86,7 +86,7 @@ impl Probe for Unprobed {
     fn published<'a>(&'a self, table: &'a TableRef) -> BoxFuture<'a, Result<Vec<RecordBatch>>> {
         let message = format!("the published data of {} cannot be read", table.name);
         Box::pin(async move {
-            Err(crate::ConnectorError::new(
+            Err(ConnectorError::new(
                 ConnectorErrorKind::Unsupported,
                 message,
             ))
