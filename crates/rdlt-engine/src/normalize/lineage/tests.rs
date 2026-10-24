@@ -110,6 +110,24 @@ fn a_merge_streams_roots_are_their_keys_ids_and_its_children_name_them_by_their_
 }
 
 #[test]
+fn a_parts_ids_take_one_buffer_of_exactly_their_bytes() {
+    let lineage = child(3, &[0, 240, 241, 70_000], (1, &[0, 0, 1, 2]), &[0, 0, 1, 2]);
+    let (own, _) = lineage.columns(&received(1, 2, 3)).unwrap();
+    let ids = own.as_binary::<i32>();
+    let bytes: usize = (0..ids.len()).map(|row| ids.value(row).len()).sum();
+    assert_eq!(
+        bytes,
+        4 * 4 + 1 + 1 + 2 + 4,
+        "a head of four bytes, then each position's"
+    );
+    assert_eq!(ids.values().capacity(), bytes);
+    assert_eq!(
+        ids.offsets().inner().inner().capacity(),
+        (ids.len() + 1) * 4
+    );
+}
+
+#[test]
 fn the_widest_id_takes_thirty_seven_bytes() {
     let lineage = Lineage {
         part: u32::MAX,

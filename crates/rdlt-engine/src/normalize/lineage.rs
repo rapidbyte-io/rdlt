@@ -16,9 +16,9 @@ mod tests;
 
 use std::sync::Arc;
 
-use arrow_array::builder::BinaryBuilder;
 use arrow_array::cast::AsArray;
 use arrow_array::{ArrayRef, BinaryArray, UInt32Array};
+use arrow_buffer::{Buffer, OffsetBuffer};
 use arrow_schema::ArrowError;
 use arrow_select::filter::FilterPredicate;
 use rdlt_connector::{Epoch, SegmentId};
@@ -156,21 +156,22 @@ impl Received {
     }
 }
 
-/// The ids of the rows at `rows` of the part `part`, of a piece whose ids begin with `prefix`.
+/// The ids of the rows at `rows` of the part `part`, of a piece whose ids begin with `prefix`:
+/// one buffer of exactly their bytes.
 fn positional(prefix: &[u8], part: u32, rows: &UInt32Array) -> BinaryArray {
-    let mut id = prefix.to_vec();
-    varint::write(part.into(), &mut id);
-    let head = id.len();
-    let bytes = rows
-        .values()
-        .iter()
-        .map(|row| head + varint::len((*row).into()))
-        .sum();
-    let mut ids = BinaryBuilder::with_capacity(rows.len(), bytes);
+    let mut head = prefix.to_vec();
+    varint::write(part.into(), &mut head);
+    let lengths = rows.values().iter();
+    let offsets = OffsetBuffer::<i32>::from_lengths(
+        lengths.map(|row| head.len() + varint::len((*row).into())),
+    );
+    let bytes = offsets
+        .last()
+        .map_or(0, |last| usize::try_from(*last).unwrap_or(0));
+    let mut values = Vec::with_capacity(bytes);
     for row in rows.values() {
-        id.truncate(head);
-        varint::write((*row).into(), &mut id);
-        ids.append_value(&id);
+        values.extend_from_slice(&head);
+        varint::write((*row).into(), &mut values);
     }
-    ids.finish()
+    BinaryArray::new(offsets, Buffer::from_vec(values), None)
 }
