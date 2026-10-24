@@ -215,10 +215,17 @@ mutants-diff base="origin/main" jobs="4":
     done
     exit "$failed"
 
-# Fuzz one target for a number of seconds, for example `just fuzz state_record 60`
+# Fuzz one target for a number of seconds, for example `just fuzz state_record 60`, from its
+# corpus, which keeps what it finds, and the seeds `fuzz/seeds/<target>` holds for it, if any
 fuzz target seconds="60":
+    #!/usr/bin/env bash
+    set -euo pipefail
     rustup toolchain install {{ nightly }} --profile minimal
-    cargo +{{ nightly }} fuzz run {{ target }} --target "$(rustc -vV | sed -n 's/host: //p')" -- -max_total_time={{ seconds }}
+    corpora=("{{ justfile_directory() }}/fuzz/corpus/{{ target }}")
+    mkdir -p "${corpora[0]}"
+    seeds="{{ justfile_directory() }}/fuzz/seeds/{{ target }}"
+    if [[ -d "$seeds" ]]; then corpora+=("$seeds"); fi
+    cargo +{{ nightly }} fuzz run {{ target }} --target "$(rustc -vV | sed -n 's/host: //p')" "${corpora[@]}" -- -max_total_time={{ seconds }}
 
 # Prove the Kani harnesses of `crate`, or of every crate that holds any, or only those of the
 # proofs of `crate`'s `module`, a path such as `budget::admits`, with Kani's release bundle as
