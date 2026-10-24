@@ -72,42 +72,65 @@ async fn a_nan_key_is_refused_by_the_engine_for_every_destination_and_keyed_mode
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_normalized_streams_rows_without_a_whole_key_are_refused() {
-    let normalized = || stream("events").schema(SchemaSettings::new().nested(Nested::normalize()));
-    let cases = [
-        (
-            "keyless",
-            r#"{"x":1,"items":[1]}"#,
-            codes::MERGE_KEY_MISSING,
-        ),
-        (
-            "null_keyed",
-            r#"{"id":null,"items":[1]}"#,
-            codes::MERGE_KEY_NULL,
-        ),
-    ];
-    for (store, push, code) in cases {
-        let rows =
-            BatchStream::json("events", &[push, r#"{"id":2,"items":[2]}"#]).primary_key(&["id"]);
+async fn a_normalized_merge_streams_rows_without_a_whole_key_are_refused() {
+    let merged = || {
+        stream("events")
+            .write(WriteMode::Merge)
+            .schema(SchemaSettings::new().nested(Nested::normalize()))
+    };
+    for (store, rows, code) in keyless_rows() {
         let outcome = engine(commit_every(10))
             .run(
-                pipeline(store, [normalized()]),
+                pipeline(store, [merged()]),
                 batches(store, vec![rows]).await,
                 memory(store).await,
             )
             .await;
         refused(&outcome, code);
     }
-    let store = "nan_keyed";
-    let rows = BatchStream::new("events", vec![floats(vec![f64::NAN])]).primary_key(&["id"]);
-    let outcome = engine(commit_every(10))
-        .run(
-            pipeline(store, [normalized()]),
-            batches(store, vec![rows]).await,
-            memory(store).await,
-        )
-        .await;
-    refused(&outcome, codes::MERGE_KEY_NAN);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_normalized_stream_that_does_not_merge_loads_rows_without_a_whole_key() {
+    let appended = || stream("events").schema(SchemaSettings::new().nested(Nested::normalize()));
+    for (store, rows, _) in keyless_rows() {
+        let outcome = engine(commit_every(10))
+            .run(
+                pipeline(store, [appended()]),
+                batches(store, vec![rows]).await,
+                memory(store).await,
+            )
+            .await;
+        assert_eq!(
+            outcome.report.status,
+            RunStatus::Succeeded,
+            "{store}: {:?}",
+            outcome.error
+        );
+        assert!(outcome.report.rows >= 2, "{store}: {}", outcome.report.rows);
+    }
+}
+
+/// Rows of the stream `events`, keyed by the source's primary key `id`, one lacking a key, one
+/// holding a null and one a NaN, each named with its store and the refusal a merge meets.
+fn keyless_rows() -> [(&'static str, BatchStream, Code); 3] {
+    let json = |push: &str| {
+        BatchStream::json("events", &[push, r#"{"id":2,"items":[2]}"#]).primary_key(&["id"])
+    };
+    let nan = BatchStream::new("events", vec![floats(vec![f64::NAN, 2.0])]).primary_key(&["id"]);
+    [
+        (
+            "keyless",
+            json(r#"{"x":1,"items":[1]}"#),
+            codes::MERGE_KEY_MISSING,
+        ),
+        (
+            "null_keyed",
+            json(r#"{"id":null,"items":[1]}"#),
+            codes::MERGE_KEY_NULL,
+        ),
+        ("nan_keyed", nan, codes::MERGE_KEY_NAN),
+    ]
 }
 
 /// A change inserting key `id`, flagging its key column unchanged.
