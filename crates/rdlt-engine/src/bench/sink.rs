@@ -1,6 +1,9 @@
 //! Destinations that cost as little as a real one can: each encodes every batch it stages as
 //! Arrow IPC into a buffer it reuses, or discards it.
 
+#[cfg(test)]
+mod tests;
+
 use std::collections::BTreeMap;
 use std::num::NonZeroU16;
 use std::sync::Arc;
