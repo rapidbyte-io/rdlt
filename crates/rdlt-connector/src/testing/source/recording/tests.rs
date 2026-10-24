@@ -7,6 +7,7 @@ use arrow_array::{
     StringArray,
 };
 use bytes::Bytes;
+use rdlt_wire::limits::MESSAGE_ROOM;
 
 use super::{Budget, Recording};
 use crate::cost::{Allocations, push_charge};
@@ -89,15 +90,17 @@ async fn each_push_is_charged_its_bytes_its_rows_and_what_holds_it_whatever_its_
         .push(&Push::Json(Bytes::from_static(b"[{\"a\":1}]")))
         .await
         .unwrap();
-    // A JSON push is charged a row for each record its text holds.
+    // A JSON push is charged three bytes a byte of its text and a message's room, and a row
+    // for each record its text holds.
+    let json = 27 + usize::try_from(MESSAGE_ROOM).unwrap();
     assert_eq!(
         left(&budget),
-        (HELD_BYTES - 27 - HELD_EVENT_BYTES, HELD_ROWS - 1)
+        (HELD_BYTES - json - HELD_EVENT_BYTES, HELD_ROWS - 1)
     );
     budget.cursor(&Cursor::new(1, b"abc").unwrap()).unwrap();
     assert_eq!(
         left(&budget),
-        (HELD_BYTES - 30 - 2 * HELD_EVENT_BYTES, HELD_ROWS - 1)
+        (HELD_BYTES - json - 3 - 2 * HELD_EVENT_BYTES, HELD_ROWS - 1)
     );
 }
 
@@ -109,23 +112,26 @@ async fn a_clause_holds_up_to_its_rows_and_its_bytes_and_nothing_once_beyond_eit
     budget.push(&nulls(1)).await.unwrap();
     budget.push(&nulls(0)).await.unwrap();
     assert!(budget.push(&nulls(1)).await.is_err());
-    // Events of no bytes are held as many as what holds them leaves room for.
+    // Events of no bytes, empty cursors, are held as many as what holds them leaves room for.
     let budget = Budget::new();
-    let empty = Push::Json(Bytes::new());
-    for _ in 0..HELD_BYTES / HELD_EVENT_BYTES {
-        budget.push(&empty).await.unwrap();
-    }
-    let beyond = budget.push(&empty).await.unwrap_err();
-    assert!(beyond.unobserved, "a source that sends more broke nothing");
-    // Beyond its bytes, a clause holds no cursor either, nor rows it had room for.
     let cursor = Cursor::new(1, &[]).unwrap();
-    assert!(budget.cursor(&cursor).is_err());
+    for _ in 0..HELD_BYTES / HELD_EVENT_BYTES {
+        budget.cursor(&cursor).unwrap();
+    }
+    let beyond = budget.cursor(&cursor).unwrap_err();
+    assert!(beyond.unobserved, "a source that sends more broke nothing");
+    // Beyond its bytes, a clause holds no push either, nor rows it had room for.
     assert!(budget.push(&nulls(1)).await.is_err());
     let budget = Budget::new();
-    // Text charged three bytes a byte, with what holds it, takes every byte a clause holds.
-    let third = Push::Json(Bytes::from(vec![b' '; (HELD_BYTES - HELD_EVENT_BYTES) / 3]));
+    // Text charged three bytes a byte and a message's room, with what holds it, leaves a clause
+    // less than a byte of text.
+    let room = usize::try_from(MESSAGE_ROOM).unwrap();
+    let third = Push::Json(Bytes::from(vec![
+        b' ';
+        (HELD_BYTES - HELD_EVENT_BYTES - room) / 3
+    ]));
     budget.push(&third).await.unwrap();
-    assert_eq!(left(&budget).0, 0);
+    assert!(left(&budget).0 < 3, "{:?}", left(&budget));
     assert!(budget.cursor(&cursor).is_err());
 }
 

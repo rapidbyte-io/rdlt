@@ -23,6 +23,7 @@ use proptest::prelude::*;
 use rdlt_connector::cost::{Allocations, Rendering};
 use rdlt_connector::{Admission, Field, LogicalType, Push, SourceEvent, TypeKind};
 use rdlt_testkit::drawn::{Drawn, KINDS, Scalar, array, field, values};
+use rdlt_wire::limits::MESSAGE_ROOM;
 
 use super::{Admitted, Charging};
 use crate::budget::MemoryBudget;
@@ -629,9 +630,9 @@ async fn a_push_is_admitted_for_what_it_keeps_alive() {
     let permit = admission.admit(&change).await.unwrap();
     assert_eq!(budget.reserved(), alive);
     drop(permit);
-    // JSON text is admitted for itself and for the batches it becomes.
+    // JSON text is admitted for itself, its message's room and the batches it becomes.
     let permit = admission.admit(&pushed_json(1_000)).await.unwrap();
-    assert_eq!(budget.reserved(), 3_000);
+    assert_eq!(budget.reserved(), 3_000 + MESSAGE_ROOM);
     let mut admitted = Admitted::of(permit.unwrap()).unwrap();
     admitted.shrink(1_200);
     assert_eq!((admitted.bytes, budget.reserved()), (1_200, 1_200));
@@ -668,15 +669,16 @@ async fn a_checkpoint_is_admitted_for_its_cursor_and_signals_for_nothing() {
 async fn a_push_or_a_cursor_beyond_what_it_may_take_is_refused_naming_the_limit() {
     // Pushes may take 2,100 bytes of this budget and cursors 100.
     let (budget, admission) = charging(6_400, 1);
-    let refused = admission.admit(&pushed_json(701)).await.err().unwrap();
+    // JSON of 615 bytes is charged 2,101, three bytes a byte and a message's room.
+    let refused = admission.admit(&pushed_json(615)).await.err().unwrap();
     assert_eq!(refused.code(), Some("push_exceeds_budget"));
     assert_eq!(refused.kind(), rdlt_connector::ConnectorErrorKind::Data);
     let limit = refused.limit().unwrap();
     assert_eq!(
         (limit.name, limit.limit, limit.actual),
-        ("push bytes", 2_100, 2_103)
+        ("push bytes", 2_100, 2_101)
     );
-    assert!(admission.admit(&pushed_json(700)).await.unwrap().is_some());
+    assert!(admission.admit(&pushed_json(614)).await.unwrap().is_some());
     let wide = arrow_array::new_null_array(&DataType::FixedSizeBinary(64), 1_000);
     let batch = RecordBatch::try_from_iter([("w", wide)]).unwrap();
     let push = SourceEvent::Push(Push::Arrow(batch));
@@ -690,7 +692,7 @@ async fn a_push_or_a_cursor_beyond_what_it_may_take_is_refused_naming_the_limit(
         ("cursor bytes", 100, 101)
     );
     // None of them waited, was reserved, or counts as the budget's failure.
-    assert_eq!((budget.reserved(), budget.peak()), (0, 2_100));
+    assert_eq!((budget.reserved(), budget.peak()), (0, 2_098));
     assert_eq!(admission.exhausted(), None);
 }
 
@@ -759,7 +761,7 @@ async fn sixteen_reads_keeping_all_they_may_leave_pushes_and_checkpoints_flowing
 #[tokio::test(start_paused = true)]
 async fn a_push_that_waits_until_the_deadline_is_refused_and_remembered_as_the_budget_s() {
     let (budget, admission) = charging(6_400, 1);
-    let held = admission.admit(&pushed_json(700)).await.unwrap();
+    let held = admission.admit(&pushed_json(614)).await.unwrap();
     assert_eq!(admission.exhausted(), None);
     let started = clock().instant();
     let refused = admission.admit(&pushed_json(1)).await.err().unwrap();
@@ -768,12 +770,15 @@ async fn a_push_that_waits_until_the_deadline_is_refused_and_remembered_as_the_b
     assert!(refused.is_retryable());
     assert_eq!(refused.code(), None);
     let exhausted = admission.exhausted().expect("the wait is remembered");
-    assert_eq!((exhausted.asked, exhausted.intake), (3, 2_100));
+    assert_eq!(
+        (exhausted.asked, exhausted.intake),
+        (3 + MESSAGE_ROOM, 2_098)
+    );
     assert_eq!(exhausted.waited, WAIT);
     assert_eq!(refused.to_string(), exhausted.to_string());
     // The request left the queue: a push is admitted at once when there is room.
     drop(held);
-    assert!(admission.admit(&pushed_json(700)).await.unwrap().is_some());
+    assert!(admission.admit(&pushed_json(614)).await.unwrap().is_some());
     assert_eq!(budget.reserved(), 0);
     // A source that carried on past the refusal fails, from then on, for its own reasons.
     assert_eq!(admission.exhausted(), None);

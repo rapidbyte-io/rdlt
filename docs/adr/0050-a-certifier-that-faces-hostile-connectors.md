@@ -164,5 +164,5 @@ things did not hold to that:
 - `ClauseResult` has a `note`, and `rdlt_host::Kills` counts the connections it cut.
 - A read-back remains the destination's own account of what it published.
 - A source clause charges a push with `cost::push_charge`, as the engine admits it (ADR 0039):
-  what it keeps alive, and JSON three times its text. What a batch expands to bounds what the
-  clause renders and compares, not what holding it is charged.
+  what it keeps alive, and JSON three times its text and `MESSAGE_ROOM`. What a batch expands to
+  bounds what the clause renders and compares, not what holding it is charged.
