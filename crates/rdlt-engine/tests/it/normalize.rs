@@ -11,8 +11,8 @@ use arrow_schema::Field;
 use rdlt_connector::{Destination, Field as RdltField, Fields, LogicalType, TableSchema};
 use rdlt_connector_reference::{published, schema};
 use rdlt_engine::{
-    BatchPolicy, ErrorKind, Nested, RunOutcome, RunStatus, SchemaPolicy, SchemaSettings,
-    StreamPlan, WriteMode,
+    BatchPolicy, ErrorKind, Nested, ResetScope, RunOutcome, RunStatus, SchemaPolicy,
+    SchemaSettings, StreamPlan, WriteMode,
 };
 use serde_json::{Value, json};
 
@@ -206,6 +206,42 @@ async fn a_merge_roots_id_is_its_keys_in_every_run_and_every_other_rows_its_posi
     );
     let item_roots = lineage("stable", "events__items", "_rdlt_root_id");
     assert_eq!(item_roots, roots);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_merge_into_roots_identified_by_position_is_refused_until_the_streams_tables_reset() {
+    let store = "identity";
+    let push = r#"{"id":1,"items":[{"sku":"x"}]}"#;
+    let pushed = || vec![BatchStream::json("events", &[push]).primary_key(&["id"])];
+    let merged = || vec![normalized("events").write(WriteMode::Merge)];
+    // A load that does not merge takes a merged table, and identifies its rows by position.
+    succeeded(&load(store, pushed(), merged()).await);
+    succeeded(&load(store, pushed(), vec![normalized("events")]).await);
+    let refused = load(store, pushed(), merged()).await;
+    assert_eq!(refused.report.status, RunStatus::Failed);
+    let error = refused.error.expect("the merge is refused");
+    assert_eq!(
+        (error.kind(), error.code()),
+        (ErrorKind::Config, Some("table_identity_mismatch"))
+    );
+    assert_eq!(published_json(store, "events").len(), 2, "nothing changed");
+    let source = batches(store, pushed()).await;
+    engine(commit_every(1))
+        .reset(
+            store,
+            &["events"],
+            ResetScope::Tables,
+            source,
+            memory(store).await,
+        )
+        .await
+        .expect("the reset commits");
+    succeeded(&load(store, pushed(), merged()).await);
+    assert_eq!(published_json(store, "events"), [json!({"id": 1})]);
+    assert_eq!(
+        published_json(store, "events__items"),
+        [json!({"sku": "x"})]
+    );
 }
 
 #[tokio::test(start_paused = true)]

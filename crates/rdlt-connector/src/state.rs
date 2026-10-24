@@ -25,7 +25,7 @@ pub use key::StateKey;
 pub use names::{NameConflict, NameMap};
 
 /// The state value format this crate writes and reads.
-const STATE_VERSION: u16 = 2;
+const STATE_VERSION: u16 = 3;
 
 /// One stored state record, opaque to the destination that keeps it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -126,7 +126,8 @@ pub enum StateEntry {
         names: NameMap,
     },
     /// Who made the sequences of the rows a table holds, whether it keeps every version of each
-    /// key, the key its rows merge by, and the column its versions begin at.
+    /// key, the key its rows merge by, the column its versions begin at, and how its root rows
+    /// are identified.
     Sequences {
         /// The table.
         table: TablePath,
@@ -140,6 +141,8 @@ pub enum StateEntry {
         /// arrive, and for a table that keeps no history.
         #[serde(deserialize_with = "Option::deserialize")]
         change_time: Option<ColumnPath>,
+        /// How the table's root rows are identified.
+        identity: Identity,
     },
     /// The last commit's receipt.
     Receipt(Receipt),
@@ -164,6 +167,22 @@ pub enum Sequences {
     Engine,
     /// A change stream's source: its positions.
     Source,
+}
+
+/// How a table's root rows are identified, which says whether a merge may replace their
+/// children.
+///
+/// A merge replaces each root's children by the root's id, the hash of its key; a load that does
+/// not merge identifies its normalized rows by their positions, which no key reproduces, so a
+/// merge into a table holding such roots would leave their children behind.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Identity {
+    /// By the hash of their merge key, where a load gave them an id.
+    #[default]
+    Key,
+    /// Some by their positions: a normalized load that does not merge wrote them.
+    Position,
 }
 
 impl StateEntry {
@@ -279,6 +298,8 @@ pub struct TableState {
     pub key: Vec<ColumnPath>,
     /// The column a history table's versions begin at, as its sequences' record says.
     pub change_time: Option<ColumnPath>,
+    /// How the table's root rows are identified, as its sequences' record says.
+    pub identity: Identity,
     /// The columns of 64-bit integers every stored value of which a 64-bit float holds exactly.
     pub exact: BTreeSet<Arc<str>>,
 }
