@@ -1,7 +1,7 @@
 //! An intruding pipeline: once a phase converges, a pipeline that created none of the
 //! destination's tables loads into one, and must be refused as `table_owned`, changing no table.
 
-use rdlt_connector::PipelineId;
+use rdlt_connector::{PipelineId, TABLE_OWNED};
 use rdlt_engine::{ErrorKind, PipelinePlan};
 
 use super::scenario::{RUN_LIMIT, start};
@@ -40,7 +40,7 @@ impl Simulation {
             .expect("every run ends within the limit of virtual time");
         crate::canary::Canary::of(&self.name).kept(world, &outcome);
         let refused = outcome.error.as_ref().is_some_and(|error| {
-            error.kind() == ErrorKind::Config && error.code() == Some("table_owned")
+            error.kind() == ErrorKind::Config && error.code() == Some(TABLE_OWNED)
         });
         assert!(
             refused,

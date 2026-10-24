@@ -7,7 +7,9 @@ use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use rdlt_connector::merge::{Merged, failed, merge_children_sparse, merge_sparse};
 use rdlt_connector::prelude::*;
-use rdlt_connector::{Deletion, Epoch, GenerationId, MergeKey, PipelineId, RootKey, SegmentId};
+use rdlt_connector::{
+    Deletion, Epoch, GenerationId, MergeKey, PipelineId, RootKey, SCHEMA_CONFLICT, SegmentId,
+};
 
 use crate::columns::changed;
 
@@ -98,7 +100,7 @@ impl Table {
             ConnectorError::data(format!(
                 "table {name} holds a row the change does not fit: {error}"
             ))
-            .with_code("schema_conflict")
+            .with_code(SCHEMA_CONFLICT)
         };
         let staged = self.staged.values().flatten().map(|(_, batch)| batch);
         let rows = self

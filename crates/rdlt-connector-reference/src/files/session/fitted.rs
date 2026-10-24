@@ -9,7 +9,7 @@ use arrow_array::RecordBatch;
 use parking_lot::Mutex;
 use rdlt_connector::merge;
 use rdlt_connector::prelude::*;
-use rdlt_connector::{ConnectorErrorKind, LogicalType, SegmentId, TableSchema};
+use rdlt_connector::{ConnectorErrorKind, LogicalType, SCHEMA_CONFLICT, SegmentId, TableSchema};
 
 use super::{Location, Shared};
 use crate::columns::changed;
@@ -166,7 +166,7 @@ pub(super) fn fits(
         ConnectorError::data(format!(
             "table {name} holds a row the change does not fit: {error}"
         ))
-        .with_code("schema_conflict")
+        .with_code(SCHEMA_CONFLICT)
     };
     for file in table
         .files
@@ -183,7 +183,7 @@ pub(super) fn fits(
             "table {name} keeps its rows as JSON lines, which hold no type: a column holding \
              them cannot become Json"
         ))
-        .with_code("schema_conflict"));
+        .with_code(SCHEMA_CONFLICT));
     }
     for file in &staged {
         let rows = manifest::read(&location.dir, &file.path, &held)?;

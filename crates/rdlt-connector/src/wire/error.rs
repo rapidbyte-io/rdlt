@@ -7,6 +7,17 @@ use crate::error::{ConnectorError, ConnectorErrorKind, LimitExceeded};
 /// The code an error a connector sent goes by when the code it chose is not one it may use.
 pub const INVALID_CODE: &str = "invalid_code";
 
+/// The code of the error for a message the protocol does not allow where it came, from a
+/// connector or a host.
+pub const INVALID_MESSAGE: &str = "invalid_message";
+
+/// The code of the error for a handshake at a major version of the protocol the other end does
+/// not speak.
+pub const PROTOCOL_VERSION: &str = "protocol_version";
+
+/// The code of the error for a configuration of a connection already configured.
+pub const CONFIGURE_REPEATED: &str = "configure_repeated";
+
 /// The codes a host gives its own findings about a connection, which no connector may claim.
 pub const HOST_CODES: &[&str] = &["connector_lost", "deadline_exceeded", "tls", "transport"];
 

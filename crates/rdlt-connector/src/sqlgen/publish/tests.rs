@@ -1,7 +1,7 @@
 use super::super::tests::{pipeline, segments};
 use super::super::{Column, SqlPlanner, Sqlite, Staged, Statement};
 use crate::destination::{ChangeColumns, Deletion, HistoryColumns, MergeKey, RootKey};
-use crate::error::{ConnectorErrorKind, Result};
+use crate::error::{COLUMN_MISSING, ConnectorErrorKind, Result};
 use crate::id::{Epoch, GenerationId};
 
 fn columns(names: &[&str]) -> Vec<Column> {
@@ -121,7 +121,7 @@ fn refused(outcome: Result<Vec<Statement>>, context: &str) {
     let error = outcome.unwrap_err();
     assert_eq!(
         (error.kind(), error.code()),
-        (ConnectorErrorKind::Data, Some("column_missing")),
+        (ConnectorErrorKind::Data, Some(COLUMN_MISSING)),
         "{context}: {error}"
     );
     assert!(!error.is_retryable(), "{context}");

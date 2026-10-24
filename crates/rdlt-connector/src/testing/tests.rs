@@ -31,7 +31,7 @@ use crate::destination::{
     TableWriter, WriteStats,
 };
 use crate::emitter::Emitter;
-use crate::error::{ConnectorError, ConnectorErrorKind, Result};
+use crate::error::{COLUMN_MISSING, ConnectorError, ConnectorErrorKind, Result};
 use crate::id::{
     CommitSeq, Epoch, GenerationId, LoadId, PartitionId, PipelineId, SchemaVersion, SegmentId,
     StreamName, TablePath,
@@ -1102,7 +1102,7 @@ impl VaultSession {
                     if self.config.uncoded_missing_columns {
                         return Some(refused);
                     }
-                    return Some(refused.with_code("column_missing"));
+                    return Some(refused.with_code(COLUMN_MISSING));
                 }
             }
         }

@@ -5,7 +5,7 @@ use sha2::{Digest as _, Sha256};
 
 use super::{Column, Owned, SqlDialect, SqlPlanner, Statement};
 use crate::destination::{TableChange, TableRef};
-use crate::error::{ConnectorError, ConnectorErrorKind, Result};
+use crate::error::{ConnectorError, ConnectorErrorKind, Result, SCHEMA_CONFLICT};
 use crate::id::GenerationId;
 use crate::types::{Field, LogicalType};
 
@@ -378,7 +378,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
                 "table {table} has column {} of a type the destination does not declare",
                 column.name
             ))
-            .with_code("schema_conflict")
+            .with_code(SCHEMA_CONFLICT)
         })
     }
 
@@ -432,7 +432,7 @@ fn conflict(table: &str, existing: &Column, logical: &LogicalType) -> ConnectorE
         "table {table} already has column {} as {}, which does not hold {logical:?}",
         existing.name, existing.declared
     ))
-    .with_code("schema_conflict")
+    .with_code(SCHEMA_CONFLICT)
 }
 
 /// `bytes` in base 32, lower case, without padding: every character one any database keeps in an

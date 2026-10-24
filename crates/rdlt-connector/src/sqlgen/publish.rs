@@ -21,7 +21,7 @@ use super::tables::STAGING_COLUMNS;
 use super::{Column, Owned, Sql, SqlDialect, SqlPlanner, SqlValue, Statement, integer};
 use crate::commit::{ChildTable, SegmentSet};
 use crate::destination::{MergeKey, RootKey, TableRef};
-use crate::error::{ConnectorError, Result};
+use crate::error::{COLUMN_MISSING, ConnectorError, Result};
 use crate::id::{Epoch, GenerationId, PipelineId, SegmentId};
 
 /// Rows staged for one table in a commit's segments: the table, the generation they fill, and how
@@ -290,7 +290,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
             "table {table} lacks columns its rows were written with: {}",
             missing.join(", ")
         ))
-        .with_code("column_missing"))
+        .with_code(COLUMN_MISSING))
     }
 
     /// The statement inserting into `target` the `names` of the staged rows `of` names.

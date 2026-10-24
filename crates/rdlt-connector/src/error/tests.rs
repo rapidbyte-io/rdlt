@@ -1,7 +1,9 @@
 use std::error::Error as _;
 use std::time::Duration;
 
-use super::{ConnectorError, ConnectorErrorKind, LimitExceeded, RETENTION_LOST, ResultExt};
+use super::{
+    ConnectorError, ConnectorErrorKind, LimitExceeded, RETENTION_LOST, ResultExt, TABLE_OWNED,
+};
 
 #[test]
 fn only_transient_and_rate_limited_errors_are_retryable() {
@@ -83,6 +85,16 @@ fn rate_limits_carry_the_requested_wait() {
         ConnectorError::internal("x").with_code("a.b").code(),
         Some("a.b")
     );
+}
+
+#[test]
+fn a_table_of_another_pipeline_is_refused_as_owned() {
+    let refused = ConnectorError::table_owned("orders", "other");
+    assert_eq!(
+        (refused.kind(), refused.code()),
+        (ConnectorErrorKind::Config, Some(TABLE_OWNED))
+    );
+    assert_eq!(TABLE_OWNED, "table_owned");
 }
 
 #[test]

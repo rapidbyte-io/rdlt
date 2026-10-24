@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use rdlt_connector::wire::{Invalid, v1};
+use rdlt_connector::wire::{INVALID_MESSAGE, Invalid, v1};
 use rdlt_connector::{
     BoxFuture, Catalog, ConnectorError, ConnectorErrorKind, Cursor, PartitionId, PartitionPlan,
     PartitionSink, ReadRequest, Source, StreamName, StreamState,
@@ -29,7 +29,7 @@ pub(super) fn invalid(invalid: &Invalid) -> ConnectorError {
         ConnectorErrorKind::Internal,
         format!("the connector sent an invalid message: {invalid}"),
     )
-    .with_code("invalid_message")
+    .with_code(INVALID_MESSAGE)
 }
 
 impl Source for RemoteSource {
