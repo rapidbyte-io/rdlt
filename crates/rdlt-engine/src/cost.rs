@@ -18,6 +18,7 @@ use rdlt_wire::limits::count;
 
 use crate::budget::{Denied, Exhausted, MemoryBudget, Reservation, TooLarge};
 use crate::limits::PUSH_EXCEEDS_BUDGET;
+use crate::normalize::Shape;
 
 /// How `capabilities`' destination renders values: the kinds it stores as they are, and every
 /// other as text.
@@ -26,11 +27,21 @@ pub(crate) fn rendering(capabilities: &Capabilities) -> Rendering {
 }
 
 /// Bytes: what normalizing makes of each of a batch's rows beside its values: its position.
-pub(crate) const LINEAGE_ROW: u64 = 4;
+const LINEAGE_ROW: u64 = 4;
 
 /// Bytes: what normalizing makes of each of a merge stream's root rows beside its position: its
 /// key's hash and an offset.
-pub(crate) const KEY_ID: u64 = 36;
+const KEY_ID: u64 = 36;
+
+/// Bytes: what normalizing makes of each of a batch's rows beside its values, as a stream
+/// normalized as `shape`: its position, and a merge root's key hash.
+pub(crate) fn lineage_row(shape: &Shape) -> u64 {
+    if shape.key.is_empty() {
+        LINEAGE_ROW
+    } else {
+        LINEAGE_ROW + KEY_ID
+    }
+}
 
 /// Bytes: what normalizing makes of each item an array holds beside the item, which it may copy:
 /// its position, its parent's, its root's, its index in its array and where it sat among the

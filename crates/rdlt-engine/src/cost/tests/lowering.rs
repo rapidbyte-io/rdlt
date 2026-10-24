@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use arrow_array::types::Int32Type;
+use arrow_array::types::{Int32Type, Int64Type};
 use arrow_array::{
     Array, ArrayRef, BinaryArray, BinaryViewArray, BooleanArray, DictionaryArray,
     FixedSizeBinaryArray, FixedSizeListArray, Int8Array, Int32Array, Int64Array, LargeBinaryArray,
@@ -485,15 +485,51 @@ fn every_column() -> Vec<(ArrowField, ArrayRef)> {
     every
 }
 
-/// What a piece of `batch` reserves before it is split: its rows as they arrive, with the
-/// lineage of each row and each item, for every copy the split may hold.
-fn split_estimate(batch: &RecordBatch) -> u64 {
-    use crate::cost::{LINEAGE_ITEM, LINEAGE_ROW, SPLIT_COPIES};
-    let measure = Rendering::native().lowering(batch, Vec::new(), LINEAGE_ROW, u64::MAX);
+/// What a piece of `batch` of a stream normalized as `shape` reserves before it is split: its
+/// rows as they arrive, with the lineage of each row and each item, for every copy the split may
+/// hold.
+fn split_estimate(batch: &RecordBatch, shape: &crate::normalize::Shape) -> u64 {
+    use crate::cost::{LINEAGE_ITEM, SPLIT_COPIES, lineage_row};
+    let row = lineage_row(shape);
+    let measure = Rendering::native().lowering(batch, Vec::new(), row, u64::MAX);
     let mut measure = measure.with_items(LINEAGE_ITEM);
     measure
         .expanded(0..batch.num_rows())
         .saturating_mul(SPLIT_COPIES)
+}
+
+#[test]
+fn a_merges_split_with_its_roots_key_ids_is_within_what_is_reserved() {
+    use crate::normalize::{Shape, normalize};
+    let rows = i64::try_from(ROWS).unwrap();
+    let ids: ArrayRef = Arc::new(Int64Array::from_iter_values(0..rows));
+    let items = (0..rows).map(|row| Some(vec![Some(row), Some(row)]));
+    let items: ArrayRef = Arc::new(ListArray::from_iter_primitive::<Int64Type, _, _>(items));
+    let batch = RecordBatch::try_from_iter([("id", ids), ("items", items)]).unwrap();
+    let keyed = Shape {
+        max_depth: 8,
+        whole: std::collections::BTreeSet::new(),
+        key: vec![Arc::from("id")],
+    };
+    let unkeyed = Shape {
+        key: Vec::new(),
+        ..keyed.clone()
+    };
+    assert_eq!(
+        (
+            crate::cost::lineage_row(&unkeyed),
+            crate::cost::lineage_row(&keyed)
+        ),
+        (4, 40),
+        "a row's position, and a merge root's 32-byte hash and offset"
+    );
+    let estimate = split_estimate(&batch, &keyed);
+    let (parts, peak) = peak(|| normalize(&batch, &keyed));
+    assert!(parts.unwrap()[0].lineage.keys.is_some());
+    assert!(
+        peak <= estimate + SLACK,
+        "reserved {estimate}, allocated {peak}"
+    );
 }
 
 in_tenths!(a_column_through_a_normalizing_plan_is_split_and_lowered_within_what_is_reserved_for_it: splits_and_lowers_within_what_is_reserved);
@@ -512,7 +548,7 @@ fn splits_and_lowers_within_what_is_reserved(tenth: usize) {
         let kind = column.data_type().clone();
         let schema = Arc::new(arrow_schema::Schema::new(vec![field]));
         let batch = RecordBatch::try_new(schema, vec![column]).unwrap();
-        let estimate = split_estimate(&batch);
+        let estimate = split_estimate(&batch, &shape);
         let (parts, peak) = peak(|| normalize(&batch, &shape));
         let parts = parts.expect("every column normalizes");
         splits += 1;
@@ -617,7 +653,7 @@ fn a_run_end_encoded_field_under_a_nullable_object_splits_within_what_is_reserve
         let fields = Fields::from(vec![field]);
         let object = StructArray::try_new(fields, vec![values], Some(nulls)).unwrap();
         let batch = RecordBatch::try_from_iter([("s", Arc::new(object) as ArrayRef)]).unwrap();
-        let estimate = split_estimate(&batch);
+        let estimate = split_estimate(&batch, &shape);
         let (parts, peak) = peak(|| normalize(&batch, &shape));
         parts.expect("the batch normalizes");
         assert!(
