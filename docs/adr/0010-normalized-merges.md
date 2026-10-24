@@ -35,8 +35,8 @@ minors.
 - **Dropped rows take their descendants.** A unit's parts are lowered parents first. A part first
   loses the rows whose parent was dropped, then meets its table's policy; every row dropped
   either way is kept, by its part and position, for the parts below. Rows are never known by
-  their ids here, since rows sharing a key share an id. Every dropped row counts in the stream's
-  `discarded_rows`, whichever table it belongs to.
+  their ids here, since a merge stream's rows sharing a key share an id. Every dropped row counts
+  in the stream's `discarded_rows`, whichever table it belongs to.
 - **A new array is a change its parents carry.** Under `discard_row`, a new array drops the rows
   holding it, with their descendants; the array's own rows are never written. A new array that
   is discarded, under either policy, takes the arrays within it along, uncounted, as part of the
