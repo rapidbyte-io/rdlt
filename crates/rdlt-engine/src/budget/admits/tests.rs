@@ -1,4 +1,5 @@
 use proptest::prelude::*;
+use rdlt_connector::cost::json_charge;
 use rdlt_wire::Limits;
 use rdlt_wire::limits::{Class, MESSAGE_ROOM, MIN_DICTIONARY_BYTES, MIN_FRAME_BYTES};
 
@@ -18,8 +19,8 @@ fn the_default_budget_admits_these_limits() {
             // a table of every column it may have: that binds, not the 80 MiB pushes may take
             // beside what a read keeps and a message's room.
             frame_bytes: 32 * MIB - 7_489 * 33 - 1_024,
-            // A third of the 84 MiB pushes may take.
-            json_push_bytes: 84 * MIB / 3,
+            // A third of the 84 MiB pushes may take, less a message's room.
+            json_push_bytes: (84 * MIB - MESSAGE_ROOM) / 3,
             // A cursor waiting and an answer for each of sixteen reads, and half the share.
             cursor_bytes: 4 * MIB / 34,
             // A read keeps 4 MiB: half for its dictionaries, half for its schema, whose
@@ -54,7 +55,7 @@ fn the_least_memory_admits_these_limits() {
             limits.schema_bytes,
             limits.schema_columns
         ),
-        (MIN_FRAME_BYTES, 3_698_142, 15_538, 264_152, 52_830, 943)
+        (MIN_FRAME_BYTES, 3_698_056, 15_538, 264_152, 52_830, 943)
     );
     // What a sixteenth of the budget holds of one answer decoded.
     assert_eq!(
@@ -109,10 +110,15 @@ fn what_each_limit_admits_all_at_once_fits_the_share_it_draws_on() {
             limits.frame_bytes == 0 || row <= shares.request / 2,
             "{what}"
         );
+        // A JSON push at its limit is charged within what pushes may take, and one a byte
+        // longer beyond it, but where the wire's own limit binds.
+        let json = limits.json_push_bytes;
         assert!(
-            limits.json_push_bytes.saturating_mul(3) <= shares.intake,
+            json_charge(json) <= shares.intake.max(MESSAGE_ROOM),
             "{what}"
         );
+        let longest = json == defaults.json_push_bytes || json_charge(json + 1) > shares.intake;
+        assert!(longest, "{what}");
         // A frame decoded fits what pushes may take, where the budget admits a peer at all, and
         // any other answer decoded the share of answers being decoded: each is charged there
         // before it is decoded.

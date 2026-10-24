@@ -14,6 +14,7 @@ use serde_json::{Map, Value, json};
 
 use super::scenario::Executed;
 use crate::seed::Seed;
+use crate::world::Largest;
 pub use trace::TRACE_VAR;
 use trace::Trace;
 pub(super) use trace::{Rise, Tracing};
@@ -27,18 +28,22 @@ const IN_PROCESS: u64 = 13 << 20;
 
 /// Bytes: as [`IN_PROCESS`], where the connectors are served apart from the engine, on the
 /// simulated network or in played processes, and their hosts share the thread; what their reads
-/// hold between the source and the engine is counted beside it, by [`QUEUED`] and the credit
-/// floor.
+/// hold between the source and the engine is counted beside it, by [`QUEUED`], [`CHANNEL`] and
+/// the credit floor.
 const NETWORK: u64 = 11 << 20;
 
-/// Events a read over the network may hold beyond the push its source is sending, each place
-/// holding at most one: the host's event waiting for the engine to admit it, the sixteen events
-/// the connector may send ahead, the batch being cut and its piece waiting for credit, and the
-/// frame sent past the credit left; an event is a push or a checkpoint, which carries its cursor.
+/// Events a read over the network may hold beyond the push its source is sending and its
+/// channel's, each place holding at most one: the host's event waiting for the engine to admit
+/// it, the batch being cut and its piece waiting for credit, and the frame sent past the credit
+/// left; an event is a push or a checkpoint, which carries its cursor.
 ///
 /// The frames credit lets go before the host takes them are counted apart: a window of two of
 /// the largest frames, or the credit floor where it is larger.
-const QUEUED: u64 = 1 + 16 + 2 + 1;
+const QUEUED: u64 = 1 + 2 + 1;
+
+/// Events the channel of a read the connector serves holds, whose pushes keep alive no more than
+/// the host's frame limit together, or one larger push alone; checkpoints pass it free.
+const CHANNEL: u64 = 16;
 
 /// Bytes: the allowance of `seed`'s attempts, where its work is `inline` on one thread and its
 /// connectors are served apart from the engine on its thread, on the network or in played
@@ -61,10 +66,23 @@ pub(super) fn allowance(seed: Seed, inline: bool, apart: bool, hostile: bool) ->
 }
 
 /// Bytes: what `reads` reads over the network hold beyond the pushes their source is sending,
-/// where the largest event is `event` and each read is granted credit of at least `floor`.
-fn queued(reads: u64, event: u64, floor: u64) -> u64 {
-    let window = event.saturating_mul(2).max(floor);
-    reads.saturating_mul(QUEUED.saturating_mul(event).saturating_add(window))
+/// where the largest events are `largest`, the host's frame limit is `frame` and each read is
+/// granted credit of at least `floor`.
+///
+/// A read's channel holds its events, or its pushes' window and every event a cursor, whichever
+/// is less.
+fn queued(reads: u64, largest: Largest, frame: u64, floor: u64) -> u64 {
+    let event = largest.event();
+    let credit = event.saturating_mul(2).max(floor);
+    let window = frame
+        .saturating_add(largest.push)
+        .saturating_add(CHANNEL.saturating_mul(largest.cursor));
+    let channel = CHANNEL.saturating_mul(event).min(window);
+    let read = QUEUED
+        .saturating_mul(event)
+        .saturating_add(channel)
+        .saturating_add(credit);
+    reads.saturating_mul(read)
 }
 
 /// What a seed's thread held over its worst attempt beyond what was charged for it, and what
@@ -157,7 +175,8 @@ impl super::Simulation {
         let started: u64 = executed.iter().map(|run| run.started).sum();
         let queued = self.placing.as_ref().map_or(0, |placing| {
             let reads = started.saturating_mul(self.partitions);
-            queued(reads, self.world.pushes.largest(), placing.read_floor())
+            let largest = self.world.pushes.largest();
+            queued(reads, largest, placing.frame_bytes(), placing.read_floor())
         });
         let attempt = Held { held, queued };
         self.held = Some(Held::worse(self.held, attempt));

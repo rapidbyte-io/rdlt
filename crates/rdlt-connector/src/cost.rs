@@ -18,7 +18,7 @@ use std::ops::Range;
 use arrow_array::cast::AsArray as _;
 use arrow_array::{Array, RecordBatch};
 use arrow_schema::DataType;
-use rdlt_wire::limits::count;
+use rdlt_wire::limits::{MESSAGE_ROOM, count};
 
 pub use held::{Allocations, schema_bytes};
 
@@ -100,13 +100,19 @@ impl Rendering {
 /// limit on cells bounds, not the budget.
 pub const JSON_CHARGE: u64 = 3;
 
+/// Bytes a JSON push of `text` bytes is charged: [`JSON_CHARGE`] for each byte, and
+/// [`MESSAGE_ROOM`] for the message a host receives it in, which the push is a slice of.
+pub const fn json_charge(text: u64) -> u64 {
+    text.saturating_mul(JSON_CHARGE)
+        .saturating_add(MESSAGE_ROOM)
+}
+
 /// The bytes holding `push` is charged, by the engine's admission and by certification alike: a
-/// batch every allocation it keeps alive, each counted once, and JSON [`JSON_CHARGE`] bytes for
-/// each byte of its text.
+/// batch every allocation it keeps alive, each counted once, and JSON its [`json_charge`].
 pub fn push_charge(push: &Push) -> u64 {
     match push {
         Push::Arrow(batch) | Push::Changes(batch) => Allocations::of(batch).bytes(),
-        Push::Json(text) => count(text.len()).saturating_mul(JSON_CHARGE),
+        Push::Json(text) => json_charge(count(text.len())),
     }
 }
 

@@ -4,10 +4,11 @@ use std::hint::black_box;
 use alloc_tracker::Session;
 
 use super::{
-    Counterweight, Held, IN_PROCESS, Kept, NETWORK, QUEUED, Rise, Tracing, Window, account,
-    allowance, charged, freed, installed, queued,
+    CHANNEL, Counterweight, Held, IN_PROCESS, Kept, NETWORK, QUEUED, Rise, Tracing, Window,
+    account, allowance, charged, freed, installed, queued,
 };
 use crate::seed::Seed;
+use crate::world::Largest;
 
 #[test]
 fn a_window_measures_the_most_its_thread_held_beyond_where_it_began() {
@@ -281,21 +282,45 @@ fn an_allowance_is_found_by_placement_where_work_is_on_one_thread() {
 }
 
 #[test]
-fn a_read_over_the_network_holds_its_queued_pushes_and_two_frames_of_credit() {
-    let push = 10 << 20;
-    assert_eq!(queued(3, push, 4 << 20), 3 * (QUEUED * push + 2 * push));
+fn a_read_of_pushes_beyond_a_frame_holds_one_in_its_channel_and_two_frames_of_credit() {
+    let (push, cursor, frame) = (10 << 20, 100, 4 << 20);
+    let largest = Largest { push, cursor };
+    assert_eq!(
+        queued(3, largest, frame, 4 << 20),
+        3 * (QUEUED * push + frame + push + CHANNEL * cursor + 2 * push)
+    );
 }
 
 #[test]
-fn a_read_of_small_pushes_holds_the_credit_floor_in_transport() {
-    let (push, floor) = (500, 4 << 20);
-    assert_eq!(queued(3, push, floor), 3 * (QUEUED * push + floor));
-    assert_eq!(queued(0, push, floor), 0);
+fn a_read_of_small_pushes_holds_its_channel_s_events_and_the_credit_floor() {
+    let (push, frame, floor) = (500, 4 << 20, 4 << 20);
+    let largest = Largest { push, cursor: 20 };
+    assert_eq!(
+        queued(3, largest, frame, floor),
+        3 * (QUEUED * push + CHANNEL * push + floor)
+    );
+    assert_eq!(queued(0, largest, frame, floor), 0);
+}
+
+#[test]
+fn a_cursor_larger_than_every_push_is_a_read_s_largest_event() {
+    let largest = Largest {
+        push: 10,
+        cursor: 1_000,
+    };
+    assert_eq!(
+        queued(1, largest, 4 << 20, 1),
+        QUEUED * 1_000 + CHANNEL * 1_000 + 2 * 1_000
+    );
 }
 
 #[test]
 fn what_reads_hold_saturates_rather_than_wrapping() {
-    assert_eq!(queued(u64::MAX, u64::MAX, 1), u64::MAX);
+    let largest = Largest {
+        push: u64::MAX,
+        cursor: u64::MAX,
+    };
+    assert_eq!(queued(u64::MAX, largest, u64::MAX, 1), u64::MAX);
 }
 
 #[test]

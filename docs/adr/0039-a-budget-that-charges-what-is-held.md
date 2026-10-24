@@ -87,7 +87,7 @@ budget before it is held, or bounded by a limit with a typed refusal.
   | Limit | Derived from | Least memory, 16 partitions | Default 256 MiB, 16 partitions | Wire default |
   |---|---|---|---|---|
   | frame bytes | what pushes may take less what a read keeps and `MESSAGE_ROOM`, and half a request less what a row of the widest table takes beside its values | 4,194,304 | 33,306,271 | 64 MiB |
-  | json push bytes | a third of what pushes may take | 3,698,142 | 29,360,128 | 64 MiB |
+  | json push bytes | a third of what pushes may take less `MESSAGE_ROOM` | 3,698,056 | 29,360,042 | 64 MiB |
   | cursor bytes | the cursors' share over twice one more than the partitions, which a quarter of the log's holds | 15,538 | 123,361 | 4 MiB |
   | dictionary bytes | half of what a read keeps | 264,152 | 2,097,152 | 64 MiB |
   | schema bytes | a fifth of the other half, for the message and the schema it decodes to | 52,830 | 419,430 | 4 MiB |
@@ -217,11 +217,12 @@ budget before it is held, or bounded by a limit with a typed refusal.
     for the budget, while it holds them.
   - A change stream's unit is judged and cut where it lies: it is split into its data and its
     change columns, and loses the rows its stream ignores, only as each piece is lowered.
-  - A JSON push reserves three times its text when it is admitted: the text, and twice it for
-    the batches it is shredded into, which are paid for before they are built. Once shredded
-    the push holds what its batches keep alive, where that is less. Parsing a record holds no
-    document of it: the fast parse streams it and the exact parse walks its tokens, each
-    holding of it no more than a string whose escapes it reads.
+  - A JSON push reserves three times its text and `MESSAGE_ROOM` when it is admitted: the text and
+    the room of the message a host receives it in, and twice the text for the batches it is shredded
+    into, which are paid for before they are built. Once shredded the push holds what its batches
+    keep alive, where that is less. Parsing a record holds no document of it: the fast parse streams
+    it and the exact parse walks its tokens, each holding of it no more than a string whose escapes
+    it reads.
   - What a JSON flush's batches take beyond twice its text is reckoned before they are built,
     reserved from the data share, holding only its pushes, and held with the batches; beyond
     one request it is refused, `json_exceeds_budget`. The partition then holds it while the
@@ -315,8 +316,8 @@ budget before it is held, or bounded by a limit with a typed refusal.
   - *How much text do these values render to?* `cost::text_bytes`, the same widths, for the
     engine's builders.
   - *What is a push charged?* `cost::push_charge`, by the engine's admission and by
-    certification's source clauses alike: what it keeps alive, and `JSON_CHARGE` (three) times
-    its text for JSON.
+    certification's source clauses alike: what it keeps alive, and for JSON `cost::json_charge`,
+    `JSON_CHARGE` (three) times its text and `MESSAGE_ROOM`.
   - *Do a schema's columns and depth fit?* The emitter counts them on the Arrow schema; the wire
     counts them on the schema's message.
 - **The engine materializes only what rows name.** Before anything converts a column, its
@@ -372,8 +373,9 @@ budget before it is held, or bounded by a limit with a typed refusal.
   read-back is admitted by what its batches expand to; a kill clause's load is charged the
   allocations each batch keeps alive.
 - **Nothing waits uncharged.**
-  - A cursor copies its bytes when it is built, and the host copies a JSON push out of its frame:
-    neither keeps the message it arrived in alive.
+  - A cursor copies its bytes when it is built, so it keeps no message alive. A JSON push is a
+    slice of the message it arrived in, which its charge's `MESSAGE_ROOM` covers beside its
+    text: the host refuses a frame whose message holds more, `malformed_frame`.
   - A checkpoint's permit stays with its seal until the commit that takes it has landed. A seal
     of no rows only moves its partition's position, so it replaces the one waiting: one cursor a
     partition, however many a source sends. A seal ending its partition done replaces none, so
@@ -468,10 +470,12 @@ admitted, and what a remote connector's calls hold in transport.
   or a row is given room while it runs. Over each attempt, the most the thread holds beyond its
   charge stays within an allowance and, where the connectors listen on the simulated network or are
   played in processes and share the thread, what the reads hold between the source and the engine:
-  for each partition each run reads, 20 of the attempt's largest event, a push or a checkpoint's
-  cursor (the host's event waiting for admission, the 16 events a source sends ahead, the batch
-  being cut and its piece waiting for credit, and a frame sent past its credit), and the frames
-  credit lets go before the host takes them, two of the largest or the host's credit floor of 4 MiB,
+  for each partition each run reads, 4 of the attempt's largest event, a push or a checkpoint's
+  cursor (the host's event waiting for admission, the batch being cut and its piece waiting for
+  credit, and a frame sent past its credit); what the connector's channel holds, 16 of the largest
+  event or, where it is less, the host's frame limit, the largest push and 16 of the largest cursor;
+  and the frames credit lets go before the host takes them, two of the largest or the host's credit
+  floor of 4 MiB,
   whichever is more. The allowance is what the world holds beside the engine and keeps uncounted,
   the runtime, its maps and builders' spare room, apart by where the connectors run, with a
   write-ahead log or without, since the log's copies count as the world's: 13 MiB in process and 11
@@ -517,10 +521,10 @@ admitted, and what a remote connector's calls hold in transport.
   is lowered in smaller pieces.
 - A unit whose every column is converted is charged for its source and what it was lowered to
   until its last piece is flushed.
-- A push that keeps alive more than pushes may take of the budget, 100 MiB of the default, is
-  refused; so is JSON text beyond a third of that, 33 MiB, though the wire carries a JSON push
-  of 64 MiB: such a push needs a budget of 492 MiB. What a push keeps alive is bounded by the
-  frame, batch-bytes and dictionary limits besides.
+- A push that keeps alive more than pushes may take of the budget, 84 MiB of the default, is
+  refused; so is JSON text beyond a third of that less a message's room, 28 MiB, though the wire
+  carries a JSON push of 64 MiB: such a push needs a budget of 586 MiB. What a push keeps alive
+  is bounded by the frame, batch-bytes and dictionary limits besides.
 - What lowering reserves is a sum, the value decoded, converted and rendered: a column stored as
   text is lowered in smaller pieces.
 - No engine runs on less than about thirty-three mebibytes, the price of a row as long as a

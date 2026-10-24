@@ -4,9 +4,13 @@ use std::sync::{Arc, Mutex};
 use arrow_array::types::Int8Type;
 use arrow_array::{ArrayRef, DictionaryArray, RecordBatch, StringArray};
 use bytes::{BufMut, Bytes, BytesMut};
-use rdlt_connector::wire::v1;
+use proptest::prelude::*;
+use rdlt_connector::cost::push_charge;
+use rdlt_connector::wire::{MALFORMED_FRAME, v1};
 use rdlt_connector::{Admission, BoxFuture, Permit, Push, SourceEvent, admitted_partition_channel};
-use rdlt_wire::limits::MESSAGE_ROOM;
+use rdlt_wire::bounded::{Bounded, Bounds};
+use rdlt_wire::limits::{Class, JSON_PUSH_BYTES, MESSAGE_ROOM, count};
+use rdlt_wire::plane::{Incoming, Outgoing};
 use rdlt_wire::prost::Message as _;
 use rdlt_wire::prost::encoding::{WireType, encode_key, encode_varint};
 use rdlt_wire::{Decoder, Encoder, Limits};
@@ -28,13 +32,25 @@ fn reader() -> Reader {
 /// `frame` as a transport receives it: one buffer holding the message, padded with a megabyte
 /// of a field this end does not know.
 fn padded(frame: &v1::ReadFrame) -> Bytes {
-    const PADDING: usize = 1 << 20;
-    let mut message = BytesMut::with_capacity(PADDING + 1024);
+    padded_by(frame, 1 << 20)
+}
+
+/// `frame` in one buffer holding the message, padded with `padding` bytes of a field this end
+/// does not know.
+fn padded_by(frame: &v1::ReadFrame, padding: usize) -> Bytes {
+    let mut message = BytesMut::with_capacity(padding + frame.encoded_len() + 16);
     frame.encode(&mut message).expect("room for the frame");
     encode_key(1000, WireType::LengthDelimited, &mut message);
-    encode_varint(PADDING as u64, &mut message);
-    message.put_bytes(0xaa, PADDING);
+    encode_varint(u64::try_from(padding).expect("a length"), &mut message);
+    message.put_bytes(0xaa, padding);
     message.freeze()
+}
+
+/// A frame of `text` as JSON.
+fn json_frame(text: Bytes) -> v1::ReadFrame {
+    v1::ReadFrame {
+        frame: Some(v1::read_frame::Frame::Json(v1::JsonFrame { data: text })),
+    }
 }
 
 /// The event `message` becomes; the frame decoded from it is dropped with the read's turn.
@@ -49,20 +65,110 @@ fn event(message: &Bytes) -> SourceEvent {
     }
 }
 
-#[test]
-fn a_json_push_does_not_keep_its_message_alive() {
-    let frame = v1::ReadFrame {
-        frame: Some(v1::read_frame::Frame::Json(v1::JsonFrame {
-            data: Bytes::from_static(b"[{\"a\":1}]"),
-        })),
+/// `frame` as the host receives it from a connector: sent as the connector's body sends it, held
+/// as the host's transport holds it, and decoded; with the allocation its bytes lie in.
+fn arrived(frame: v1::ReadFrame) -> (v1::ReadFrame, Bytes) {
+    let limits = Limits::default();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("a runtime");
+    runtime.block_on(async move {
+        let body = tonic::body::Body::new(Outgoing::request(
+            tokio_stream::iter([frame]),
+            limits.largest(),
+        ));
+        let bounds = Bounds::of(
+            &limits,
+            Class::of_answer("Read"),
+            rdlt_wire::scan::response("Read"),
+        );
+        let mut incoming = Incoming::<v1::ReadFrame>::request(Bounded::new(body, bounds, None));
+        let received = incoming
+            .arrived()
+            .await
+            .expect("the frame arrives")
+            .expect("a frame");
+        (received.message, received.allocation)
+    })
+}
+
+/// Checks that a JSON push of `length` bytes, sent and received as a host receives it, is a
+/// slice of the allocation it arrived in, whose every byte its charge counts.
+fn charged_for_all_it_keeps_alive(length: usize) {
+    let (frame, allocation) = arrived(json_frame(vec![b'x'; length].into()));
+    let Ok(Read::Event(SourceEvent::Push(push))) = reader().event(frame, allocation.clone()) else {
+        panic!("{length} bytes of JSON are a push");
     };
-    let message = padded(&frame);
-    let event = event(&message);
-    assert_eq!(
-        event,
-        SourceEvent::Push(Push::Json(Bytes::from_static(b"[{\"a\":1}]")))
+    let Push::Json(text) = &push else {
+        panic!("the push is JSON");
+    };
+    assert_eq!(text.len(), length);
+    let within = allocation.as_ptr_range();
+    assert!(
+        within.contains(&text.as_ptr()) && text.as_ptr_range().end <= within.end,
+        "{length} bytes of JSON were copied out of their message"
     );
-    assert!(message.is_unique(), "the push keeps its message alive");
+    assert!(
+        push_charge(&push) >= count(allocation.len()),
+        "{length} bytes of JSON keep {} alive, charged {}",
+        allocation.len(),
+        push_charge(&push)
+    );
+}
+
+#[test]
+fn a_json_push_is_a_slice_of_its_message_charged_for_all_it_keeps_alive() {
+    // Every short text, each length where the lengths before it take another byte, the
+    // engine's limit at the default budget, and the wire's.
+    let lengths = (1..=300).chain([
+        16_383,
+        16_384,
+        2_097_151,
+        2_097_152,
+        29_360_042,
+        usize::try_from(JSON_PUSH_BYTES).expect("a length"),
+    ]);
+    for length in lengths {
+        charged_for_all_it_keeps_alive(length);
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(rdlt_testkit::cases(8)))]
+
+    #[test]
+    fn any_json_push_up_to_the_limit_is_charged_for_all_it_keeps_alive(
+        length in 1..=usize::try_from(JSON_PUSH_BYTES).expect("a length"),
+    ) {
+        charged_for_all_it_keeps_alive(length);
+    }
+}
+
+#[test]
+fn a_json_frame_holding_more_than_its_room_beside_its_text_is_refused() {
+    let text = Bytes::from_static(b"[{\"a\":1}]");
+    let frame = json_frame(text.clone());
+    let room = usize::try_from(MESSAGE_ROOM).expect("small");
+    let message = |beside: usize| {
+        (0..room)
+            .map(|padding| padded_by(&frame, padding))
+            .find(|message| message.len() == text.len() + beside)
+            .expect("a padding gives the length")
+    };
+    let decoded = |message: &Bytes| {
+        let frame = v1::ReadFrame::decode(message.clone()).expect("a read frame");
+        reader().event(frame, message.clone())
+    };
+    let Ok(Read::Event(within)) = decoded(&message(room)) else {
+        panic!("a frame within its room is an event");
+    };
+    assert_eq!(within, SourceEvent::Push(Push::Json(text.clone())));
+    for message in [message(room + 1), padded(&frame)] {
+        let Err(refused) = decoded(&message) else {
+            panic!("a frame of {} bytes is refused", message.len());
+        };
+        assert_eq!(refused.code(), Some(MALFORMED_FRAME));
+    }
 }
 
 #[test]

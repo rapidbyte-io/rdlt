@@ -418,6 +418,11 @@ impl Networked {
         self.remote_options.read_floor
     }
 
+    /// Bytes: the frame limit the engine's host tells a connector it placed.
+    pub(crate) fn frame_bytes(&self) -> u64 {
+        self.remote_options.limits.frame_bytes
+    }
+
     /// Runs `work` while the network is disrupted as `rng` draws, then heals the network, however
     /// `work` ends.
     pub(crate) async fn disrupting<T>(&self, rng: SplitMix64, work: impl Future<Output = T>) -> T {

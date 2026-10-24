@@ -33,6 +33,7 @@ use crate::wal::SimWal;
 use crate::workload::Workload;
 use hangs::Hangs;
 pub(crate) use named::{Named, Naming};
+pub(crate) use pushes::Largest;
 use pushes::Pushes;
 pub(crate) use reports::Reports;
 pub(crate) use told::Heard;
