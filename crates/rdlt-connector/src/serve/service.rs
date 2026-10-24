@@ -27,7 +27,7 @@ use crate::error::{ConnectorError, ConnectorErrorKind};
 use crate::id::{PartitionId, PipelineId, StreamName};
 use crate::source::Source;
 use crate::state::StreamState;
-use crate::wire::{Invalid, status, v1};
+use crate::wire::{INVALID_MESSAGE, Invalid, status, v1};
 use crate::{CommitMeta, Cursor};
 
 /// The connector a handshake connected, for its role.
@@ -136,7 +136,7 @@ fn wrong_role(role: &str) -> Status {
 pub(super) fn invalid(invalid: &Invalid) -> Status {
     status(
         &ConnectorError::new(ConnectorErrorKind::Internal, invalid.to_string())
-            .with_code("invalid_message"),
+            .with_code(INVALID_MESSAGE),
     )
 }
 

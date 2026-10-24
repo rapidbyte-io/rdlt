@@ -12,11 +12,11 @@ use arrow_schema::{DataType, Field as ArrowField, Schema};
 use parking_lot::Mutex;
 use rdlt_connector::sqlgen::{SqlPlanner, Sqlite};
 use rdlt_connector::{
-    ChangeColumns, ChangeOp, ChildTable, CommitMeta, CommitSeq, ConnectContext, ConnectorErrorKind,
-    Deletion, Destination, Epoch, Field, GenerationId, LoadId, LogicalType, MergeKey, OP_COLUMN,
-    OpenContext, OpenedSession, PipelineId, RootKey, SEQ_COLUMN, SchemaVersion, SegmentId,
-    Session as _, TableChange, TablePath, TableRef, TableSchema, TableWriter as _,
-    UNCHANGED_COLUMN, destination_factory,
+    COLUMN_MISSING, ChangeColumns, ChangeOp, ChildTable, CommitMeta, CommitSeq, ConnectContext,
+    ConnectorErrorKind, Deletion, Destination, Epoch, Field, GenerationId, LoadId, LogicalType,
+    MergeKey, OP_COLUMN, OpenContext, OpenedSession, PipelineId, RootKey, SEQ_COLUMN,
+    SchemaVersion, SegmentId, Session as _, TableChange, TablePath, TableRef, TableSchema,
+    TableWriter as _, UNCHANGED_COLUMN, destination_factory,
 };
 use rusqlite::trace::TraceEvent;
 use serde_json::json;
@@ -362,7 +362,7 @@ async fn a_commit_whose_table_lost_a_column_it_staged_fails_and_publishes_nothin
         .expect_err("the commit is refused");
     assert_eq!(
         (error.kind(), error.code()),
-        (ConnectorErrorKind::Data, Some("column_missing")),
+        (ConnectorErrorKind::Data, Some(COLUMN_MISSING)),
         "{error}"
     );
     let count = |table: &str| -> i64 {
@@ -560,7 +560,7 @@ async fn a_commit_into_a_generation_that_lost_a_column_it_staged_fails_and_publi
         .expect_err("the commit is refused");
     assert_eq!(
         (error.kind(), error.code()),
-        (ConnectorErrorKind::Data, Some("column_missing")),
+        (ConnectorErrorKind::Data, Some(COLUMN_MISSING)),
         "{error}"
     );
     assert_eq!(published(&path, &target), 0);
@@ -588,6 +588,6 @@ async fn a_column_dropped_between_two_commits_of_a_session_fails_the_second() {
         .commit(&second)
         .await
         .expect_err("the commit is refused");
-    assert_eq!(error.code(), Some("column_missing"), "{error}");
+    assert_eq!(error.code(), Some(COLUMN_MISSING), "{error}");
     assert_eq!(published(&path, "events"), 2);
 }

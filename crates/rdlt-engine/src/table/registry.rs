@@ -12,8 +12,8 @@ use std::sync::Arc;
 
 use parking_lot::{Mutex, RwLock};
 use rdlt_connector::{
-    ColumnKey, ConnectorError, Field, LoadId, PipelineState, StateChange, StreamName, TableChange,
-    TablePath, TableRef, TableState,
+    ColumnKey, ConnectorError, Field, LoadId, PipelineState, SCHEMA_CONFLICT, StateChange,
+    StreamName, TableChange, TablePath, TableRef, TableState,
 };
 
 use super::model::Model;
@@ -363,7 +363,7 @@ impl Tables {
         let changes = table_changes(view, &next, &resolution.changes);
         match self.session.apply_each(&changes).await? {
             Ok(()) => Ok(Ok((next, resolution.routes))),
-            Err((index, error)) if error.code() == Some("schema_conflict") => {
+            Err((index, error)) if error.code() == Some(SCHEMA_CONFLICT) => {
                 let widened = match changes.get(index) {
                     Some(TableChange::Widen { column, .. }) => next.model.names.owner(column),
                     _ => None,

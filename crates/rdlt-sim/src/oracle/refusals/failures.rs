@@ -5,6 +5,7 @@ mod tests;
 
 use std::collections::BTreeSet;
 
+use rdlt_connector::wire::INVALID_MESSAGE;
 use rdlt_engine::{Error, ErrorKind};
 
 use super::{FROZEN, KEY_CHANGED, Prediction, UNSUPPORTED};
@@ -97,15 +98,12 @@ pub(in crate::oracle) fn unexplained<'a>(
         .find(|failure| failure.refusal(prediction).is_none())
 }
 
-/// The code of an error that says a connector or the host broke the wire protocol.
-const PROTOCOL_VIOLATION: &str = "invalid_message";
-
 /// The first of `failures` that breaks the wire protocol, which no fault excuses: a connector and
 /// a host that keep to the protocol never meet one, however the network or the connector fails.
 pub(in crate::oracle) fn violation(failures: &[Failure]) -> Option<&Failure> {
     failures
         .iter()
-        .find(|failure| failure.code.as_deref() == Some(PROTOCOL_VIOLATION))
+        .find(|failure| failure.code.as_deref() == Some(INVALID_MESSAGE))
 }
 
 /// Relaxes what refused `stream`'s runs with `code`, as an operator would: a frozen schema

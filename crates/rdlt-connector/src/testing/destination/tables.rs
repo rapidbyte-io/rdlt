@@ -10,7 +10,7 @@ use super::rows::{Row, schema};
 use super::{Bench, Probe, commit, expect_rows, meta, rows};
 use crate::commit::CommitMeta;
 use crate::destination::{TableChange, TableRef};
-use crate::error::ConnectorErrorKind;
+use crate::error::{COLUMN_MISSING, ConnectorErrorKind};
 use crate::id::{GenerationId, SchemaVersion, SegmentId, TablePath};
 use crate::testing::reason::Listed;
 use crate::testing::{Outcome, Reason, Violation, bounded, bounded_call};
@@ -183,7 +183,7 @@ impl Bench<'_> {
             }
             Err(error)
                 if error.kind() == ConnectorErrorKind::Data
-                    && error.code() == Some("column_missing") =>
+                    && error.code() == Some(COLUMN_MISSING) =>
             {
                 for (table, _) in &dropping.read {
                     let rows = self.read(table).await?.rows();

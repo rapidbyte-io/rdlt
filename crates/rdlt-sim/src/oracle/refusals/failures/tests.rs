@@ -1,6 +1,8 @@
 use std::collections::BTreeSet;
 
+use rdlt_connector::wire::INVALID_MESSAGE;
 use rdlt_engine::ErrorKind;
+use rdlt_host::CONNECTOR_LOST;
 
 use super::{Failure, unexplained, violation};
 use crate::oracle::refusals::{FROZEN, Prediction};
@@ -31,10 +33,10 @@ fn a_run_without_faults_may_meet_only_the_refusals_the_model_predicts() {
 
 #[test]
 fn a_run_that_breaks_the_wire_protocol_is_a_finding_whatever_the_faults() {
-    let lost = failure(ErrorKind::Source, Some("connector_lost"), "s0");
+    let lost = failure(ErrorKind::Source, Some(CONNECTOR_LOST), "s0");
     let injected = failure(ErrorKind::Destination, None, "s0");
     assert!(violation(&[lost.clone(), injected.clone()]).is_none());
-    let broken = failure(ErrorKind::Destination, Some("invalid_message"), "s1");
+    let broken = failure(ErrorKind::Destination, Some(INVALID_MESSAGE), "s1");
     let failures = [lost, broken, injected];
     let found = violation(&failures).map(|failure| failure.text.as_str());
     assert_eq!(found, Some(failures[1].text.as_str()));
