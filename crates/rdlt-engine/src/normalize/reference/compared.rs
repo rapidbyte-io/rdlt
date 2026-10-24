@@ -1,38 +1,59 @@
 //! The Arrow normalizer's tables as the reference writes them, each row known by following its
 //! lineage, and the comparison of the two.
 
+#[cfg(test)]
+mod tests;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use arrow_array::cast::AsArray;
 use arrow_array::types::{Float64Type, Int32Type, Int64Type};
 use arrow_array::{Array, ArrayRef, RecordBatch};
-use arrow_schema::DataType;
+use arrow_schema::{DataType, FieldRef};
 use rdlt_connector::{Epoch, SegmentId};
 use serde_json::Value as Json;
 
-use super::{Record, Row, Tables, canonical_text, normalize, sorted, step};
+use super::{Record, Row, Tables, canonical_text, json, normalize, sorted, step};
 use crate::normalize::{Part, Received, Shape};
 
 /// The tables `pieces` normalize into, each a batch of the stream's rows in order normalized as
 /// `shape` and received where its stamp says, as the reference writes them, each row known by
-/// following its lineage: its parent's id to the row it names, in a table its own extends, and
-/// its root's id to the root row it comes from.
+/// following its lineage, as [`walked`] follows it.
 ///
 /// # Errors
 ///
-/// Why a piece does not normalize, an id names two rows, or a row's lineage names no row, or one
-/// it does not come from. A merge stream's roots are known by their keys, which must be distinct.
+/// Why a piece does not normalize, or [`walked`] refuses its parts.
 pub(crate) fn tables_of(
     pieces: &[(RecordBatch, Received)],
     shape: &Shape,
 ) -> Result<Tables, Disagreement> {
+    let mut normalized = Vec::with_capacity(pieces.len());
+    for (batch, received) in pieces {
+        let parts = crate::normalize::normalize(batch, shape).map_err(Disagreement::from)?;
+        normalized.push((parts, *received));
+    }
+    walked(&normalized, !shape.key.is_empty())
+}
+
+/// The tables of `pieces`' parts, each piece's received where its stamp says, as the reference
+/// writes them, each row known by following its lineage: its parent's id to the row it names, in
+/// a table its own extends, and its root's id to the root row it comes from; a root's key is its
+/// id where `keyed`.
+///
+/// # Errors
+///
+/// Where an id names two rows, or a row's lineage names no row, or one it does not come from. A
+/// merge stream's roots are known by their keys, which must be distinct.
+pub(crate) fn walked(
+    pieces: &[(Vec<Part>, Received)],
+    keyed: bool,
+) -> Result<Tables, Disagreement> {
     let mut named: BTreeMap<Vec<u8>, (Vec<String>, String)> = BTreeMap::new();
     let mut tables = Tables::new();
     let mut first = 0;
-    for (batch, received) in pieces {
-        let parts = crate::normalize::normalize(batch, shape).map_err(Disagreement::from)?;
-        for part in &parts {
+    for (parts, received) in pieces {
+        for part in parts {
             let table: Vec<String> = part.path.iter().map(ToString::to_string).collect();
             let (ids, parent) = part.lineage.columns(received)?;
             let ids = ids.as_binary::<i32>();
@@ -60,7 +81,7 @@ pub(crate) fn tables_of(
                     }
                 };
                 let id = ids.value(row).to_vec();
-                let key = (!shape.key.is_empty() && table.is_empty()).then(|| id.clone());
+                let key = (keyed && table.is_empty()).then(|| id.clone());
                 if named.insert(id, (table.clone(), at.clone())).is_some() {
                     return Err(Disagreement(format!(
                         "the id of {at} names another row too"
@@ -73,7 +94,7 @@ pub(crate) fn tables_of(
                     .push(Row { at, key, columns });
             }
         }
-        first += batch.num_rows();
+        first += parts.first().map_or(0, |root| root.batch.num_rows());
     }
     Ok(sorted(tables))
 }
@@ -87,19 +108,7 @@ fn columns_of(part: &Part, row: usize) -> Result<BTreeMap<Vec<String>, String>, 
         .iter()
         .zip(schema.fields().iter().zip(part.batch.columns()))
     {
-        let value = json_of(column, row)?;
-        // A column whose values mix types holds them as JSON text.
-        let json = field
-            .metadata()
-            .get("ARROW:extension:name")
-            .map(String::as_str)
-            == Some("arrow.json");
-        let value = match (json, value) {
-            (true, Json::String(text)) => {
-                serde_json::from_str(&text).map_err(|error| Disagreement(error.to_string()))?
-            }
-            (_, value) => value,
-        };
+        let value = json_of(field, column, row)?;
         if !value.is_null() {
             let path = path.segments().map(str::to_owned).collect();
             columns.insert(path, canonical_text(&value));
@@ -119,16 +128,16 @@ fn records_of(batch: &RecordBatch) -> Result<Vec<Json>, Disagreement> {
         .map(|row| {
             let fields = schema.fields().iter().zip(batch.columns());
             let object = fields
-                .map(|(field, column)| Ok((field.name().clone(), json_of(column, row)?)))
+                .map(|(field, column)| Ok((field.name().clone(), json_of(field, column, row)?)))
                 .collect::<Result<_, Disagreement>>()?;
             Ok(Json::Object(object))
         })
         .collect()
 }
 
-/// The value at `row` of `array` as JSON: objects without their null fields, a float JSON cannot
-/// hold as null.
-fn json_of(array: &ArrayRef, row: usize) -> Result<Json, Disagreement> {
+/// The value at `row` of `array`, of `field`, as JSON: objects without their null fields, a float
+/// JSON cannot hold as null, and a column of JSON, at any depth, as the value its text holds.
+fn json_of(field: &FieldRef, array: &ArrayRef, row: usize) -> Result<Json, Disagreement> {
     if array.is_null(row) {
         return Ok(Json::Null);
     }
@@ -140,21 +149,25 @@ fn json_of(array: &ArrayRef, row: usize) -> Result<Json, Disagreement> {
             let value = array.as_primitive::<Float64Type>().value(row);
             serde_json::Number::from_f64(value).map_or(Json::Null, Json::Number)
         }
+        DataType::Utf8 if json(Some(field)) => {
+            let text = array.as_string::<i32>().value(row);
+            serde_json::from_str(text).map_err(|error| Disagreement(error.to_string()))?
+        }
         DataType::Utf8 => Json::from(array.as_string::<i32>().value(row)),
-        DataType::Struct(_) => {
+        DataType::Struct(fields) => {
             let object = array.as_struct();
-            let mut fields = serde_json::Map::new();
-            for (field, column) in object.fields().iter().zip(object.columns()) {
-                let value = json_of(column, row)?;
+            let mut members = serde_json::Map::new();
+            for (field, column) in fields.iter().zip(object.columns()) {
+                let value = json_of(field, column, row)?;
                 if !value.is_null() {
-                    fields.insert(field.name().clone(), value);
+                    members.insert(field.name().clone(), value);
                 }
             }
-            Json::Object(fields)
+            Json::Object(members)
         }
-        DataType::List(_) => {
+        DataType::List(item) => {
             let items = array.as_list::<i32>().value(row);
-            let items = (0..items.len()).map(|item| json_of(&items, item));
+            let items = (0..items.len()).map(|at| json_of(item, &items, at));
             Json::Array(items.collect::<Result<_, _>>()?)
         }
         other => return Err(Disagreement(format!("no JSON form for {other}"))),

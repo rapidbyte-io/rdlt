@@ -434,20 +434,22 @@ fn array<S: Strategy<Value = Json>>(item: S, null_share: f64) -> impl Strategy<V
     })
 }
 
-/// An item of an object, with two sibling arrays.
+/// An item of an object, with two sibling arrays and a field of any kind.
 fn item() -> impl Strategy<Value = Json> {
     (
         text(),
         maybe((0_i64..5).prop_map(Json::from)),
         maybe(array(text(), 0.2)),
         maybe(array((0_i64..3).prop_map(Json::from), 0.0)),
+        maybe(polymorphic()),
     )
-        .prop_map(|(sku, qty, tags, codes)| {
+        .prop_map(|(sku, qty, tags, codes, any)| {
             object(vec![
                 ("sku", Some(sku)),
                 ("qty", qty),
                 ("tags", tags),
                 ("codes", codes),
+                ("any", any),
             ])
         })
 }
@@ -482,9 +484,10 @@ fn record() -> impl Strategy<Value = Json> {
         maybe(matrix),
         maybe(nested_key),
         maybe(polymorphic()),
+        maybe(array(polymorphic(), 0.2)),
     );
     (scalars, nested).prop_map(
-        |((id, name, amount, flat, mixed), (meta, items, scores, matrix, nested, poly))| {
+        |((id, name, amount, flat, mixed), (meta, items, scores, matrix, nested, poly, kinds))| {
             object(vec![
                 ("mixed", mixed),
                 ("id", id),
@@ -497,6 +500,7 @@ fn record() -> impl Strategy<Value = Json> {
                 ("a__b", flat),
                 ("a", nested),
                 ("poly", poly),
+                ("kinds", kinds),
             ])
         },
     )
