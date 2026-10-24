@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use arrow_array::{ArrayRef, RecordBatch, RecordBatchOptions};
+use arrow_array::{ArrayRef, Int64Array, RecordBatch, RecordBatchOptions};
 use arrow_schema::Schema;
 use proptest::prelude::*;
 use rdlt_connector::{DecimalType, Field, Fields, LogicalType};
@@ -136,6 +136,32 @@ pub fn batch((columns, rows): &Drawn) -> RecordBatch {
     let options = RecordBatchOptions::new().with_row_count(Some(rows.len()));
     RecordBatch::try_new_with_options(Arc::new(Schema::new(fields)), arrays, &options)
         .expect("a drawn batch is valid")
+}
+
+/// `batches`, one stream's rows in order, each with a first column `name` numbering them across
+/// every batch: a key no two rows share.
+///
+/// # Panics
+///
+/// Where a batch already has a column `name`.
+pub fn numbered(batches: &[RecordBatch], name: &str) -> Vec<RecordBatch> {
+    let mut first = 0;
+    let mut numbered = Vec::with_capacity(batches.len());
+    for batch in batches {
+        let rows = i64::try_from(batch.num_rows()).expect("a batch's rows fit 64 bits");
+        let key: ArrayRef = Arc::new(Int64Array::from_iter_values(first..first + rows));
+        let schema = batch.schema();
+        let columns = std::iter::once((name.to_owned(), key)).chain(
+            schema
+                .fields()
+                .iter()
+                .map(|field| field.name().clone())
+                .zip(batch.columns().iter().cloned()),
+        );
+        numbered.push(RecordBatch::try_from_iter(columns).expect("the numbering is a new column"));
+        first += rows;
+    }
+    numbered
 }
 
 /// `value` as JSON: a float JSON cannot hold by its name, as the engine writes one.
