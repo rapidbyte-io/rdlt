@@ -9,9 +9,7 @@ use bytes::Bytes;
 use rdlt_connector::{DecimalType, Field, Fields, LogicalType, TableSchema};
 use serde::de::{Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
 
-/// The machine code of the error shredding fails with.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Code(pub(crate) &'static str);
+use crate::error::{Code, codes};
 
 /// A parsed JSON value, keeping objects' key order and repeated keys.
 #[derive(Clone, Debug, PartialEq)]
@@ -140,12 +138,11 @@ const JSON_WHITESPACE: [char; 4] = [' ', '\t', '\n', '\r'];
 fn records(pushes: &[Bytes]) -> Result<Vec<Json>, Code> {
     let mut records = Vec::new();
     for push in pushes {
-        let text = std::str::from_utf8(push).map_err(|_| Code("json_invalid"))?;
+        let text = std::str::from_utf8(push).map_err(|_| codes::JSON_INVALID)?;
         if text.trim_start_matches(JSON_WHITESPACE).starts_with('[') {
-            let Json::Array(items) =
-                serde_json::from_str(text).map_err(|_| Code("json_invalid"))?
+            let Json::Array(items) = serde_json::from_str(text).map_err(|_| codes::JSON_INVALID)?
             else {
-                return Err(Code("json_invalid"));
+                return Err(codes::JSON_INVALID);
             };
             records.extend(items);
         } else {
@@ -154,7 +151,7 @@ fn records(pushes: &[Bytes]) -> Result<Vec<Json>, Code> {
                 .map(|line| line.trim_matches(JSON_WHITESPACE))
                 .filter(|line| !line.is_empty())
             {
-                records.push(serde_json::from_str(line).map_err(|_| Code("json_invalid"))?);
+                records.push(serde_json::from_str(line).map_err(|_| codes::JSON_INVALID)?);
             }
         }
     }
@@ -261,13 +258,13 @@ pub(crate) fn shred(pushes: &[Bytes]) -> Result<RecordBatch, Code> {
         .iter()
         .any(|record| !matches!(record, Json::Object(_)))
     {
-        return Err(Code("json_not_object"));
+        return Err(codes::JSON_NOT_OBJECT);
     }
     if records.iter().any(|record| record.depth() > 64) {
-        return Err(Code("limit_exceeded"));
+        return Err(codes::LIMIT_EXCEEDED);
     }
     if records.iter().any(Json::repeats_a_key) {
-        return Err(Code("json_duplicate_key"));
+        return Err(codes::JSON_DUPLICATE_KEY);
     }
     let fields = fields_of(&records.iter().collect::<Vec<_>>());
     let schema = TableSchema::new(fields.clone()).expect("keys are distinct");

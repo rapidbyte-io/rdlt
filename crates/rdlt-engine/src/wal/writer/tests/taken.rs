@@ -10,7 +10,7 @@ use super::super::super::store::WalStore;
 use super::super::super::taken::{self, Taken};
 use super::super::WalWriter;
 use super::{Driving, load, owner, pipeline, table};
-use crate::error::ErrorKind;
+use crate::error::{ErrorKind, codes};
 
 /// What a scan reads frames of.
 const FRAME_BYTES: u64 = 1 << 28;
@@ -65,7 +65,7 @@ async fn stalled(store: Arc<dyn WalStore>, open: bool) {
         let answered = log.commit(2, &[2]).await;
         let error = answered.expect_err("the load is fenced");
         assert_eq!(error.kind(), ErrorKind::Fenced, "{error}");
-        assert_eq!(error.code(), Some("wal_fenced"), "{error}");
+        assert_eq!(error.code(), Some(codes::WAL_FENCED), "{error}");
         assert_eq!(replayer.loads(&pipeline()).await.expect("lists"), []);
         assert_eq!(replayer.leftovers(&pipeline()).await.expect("lists"), []);
         assert_eq!(

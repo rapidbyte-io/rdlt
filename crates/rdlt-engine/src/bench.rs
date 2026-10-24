@@ -32,6 +32,7 @@ use bytes::Bytes;
 
 use crate::compute::{Pool, ready};
 use crate::env::Env;
+use crate::error::codes;
 use crate::normalize::{self, Shape};
 use crate::shred::{self, ShredError};
 
@@ -73,7 +74,7 @@ pub struct Refused {
 impl From<ShredError> for Refused {
     fn from(error: ShredError) -> Self {
         Self {
-            code: error.code(),
+            code: error.code().as_str(),
             message: error.to_string(),
         }
     }
@@ -109,7 +110,7 @@ pub fn json_column(rows: usize, escaped: bool) -> RecordBatch {
 /// The first value that is not JSON, with its code.
 pub fn check_json(batch: &RecordBatch) -> Result<(), Refused> {
     crate::json::check_batch(batch).map_err(|refused| Refused {
-        code: refused.error.code(),
+        code: refused.error.code().as_str(),
         message: refused.error.to_string(),
     })
 }
@@ -251,8 +252,7 @@ pub fn scan_log(bytes: &[u8]) -> Result<usize, Refused> {
 fn refused(error: &crate::error::Error) -> Refused {
     Refused {
         code: match error.code() {
-            Some("wal_unreadable") => "wal_unreadable",
-            Some("wal_foreign") => "wal_foreign",
+            Some(code @ (codes::WAL_UNREADABLE | codes::WAL_FOREIGN)) => code.as_str(),
             _ => "other",
         },
         message: error.to_string(),

@@ -14,7 +14,7 @@ use arrow_schema::{ArrowError, DataType, FieldRef, Fields};
 use rdlt_connector::StreamName;
 
 use super::{ChangeRows, Source};
-use crate::error::Error;
+use crate::error::{Code, Error, codes};
 use crate::table::TableView;
 use crate::table::convert::decoded;
 
@@ -33,14 +33,14 @@ pub(super) fn keyed(
     }
     // A truncate names no key.
     let keyed = |row: usize| changes.is_none_or(|changes| !changes.truncates(row));
-    let refuse = |code: &str, detail: String| {
+    let refuse = |code: Code, detail: String| {
         Err(Error::schema(format!("stream {stream}: {detail}"))
             .with_code(code)
             .with_stream(stream))
     };
     if view.key.len() < view.key_len {
         return refuse(
-            "merge_key_missing",
+            codes::MERGE_KEY_MISSING,
             "the table has no column for part of the merge key".to_owned(),
         );
     }
@@ -51,7 +51,7 @@ pub(super) fn keyed(
         match &sources[*column] {
             Source::Nulls => {
                 return refuse(
-                    "merge_key_missing",
+                    codes::MERGE_KEY_MISSING,
                     format!("a batch has no key column {name}"),
                 );
             }
@@ -59,7 +59,7 @@ pub(super) fn keyed(
                 columns[*index] = key_values(stream, name, batch.column(*index), &keyed)?;
                 if flagged.contains(index) {
                     let detail = format!("a change flags key column {name} unchanged");
-                    return refuse("merge_key_unchanged", detail);
+                    return refuse(codes::MERGE_KEY_UNCHANGED, detail);
                 }
             }
             Source::Read(_) | Source::Rest(_) => {}
@@ -105,7 +105,7 @@ pub(crate) fn key_values(
     column: &ArrayRef,
     keyed: &dyn Fn(usize) -> bool,
 ) -> Result<ArrayRef, Error> {
-    let refuse = |code: &str, what: &str| {
+    let refuse = |code: Code, what: &str| {
         Err(
             Error::schema(format!("stream {stream}: key column {name} holds {what}"))
                 .with_code(code)
@@ -113,7 +113,7 @@ pub(crate) fn key_values(
         )
     };
     if nulls(column, keyed) {
-        return refuse("merge_key_null", "a null");
+        return refuse(codes::MERGE_KEY_NULL, "a null");
     }
     if !holds_floats(column.data_type()) {
         return Ok(Arc::clone(column));
@@ -128,7 +128,7 @@ pub(crate) fn key_values(
         .enumerate()
         .any(|(row, nan)| *nan && keyed(row))
     {
-        return refuse("merge_key_nan", "a NaN, which equals no value");
+        return refuse(codes::MERGE_KEY_NAN, "a NaN, which equals no value");
     }
     Ok(found.zeroed.unwrap_or_else(|| Arc::clone(column)))
 }

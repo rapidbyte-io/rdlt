@@ -23,7 +23,7 @@ use rdlt_connector::{
     SchemaVersion, TableRef, TableSchema,
 };
 
-use crate::error::{Error, ErrorKind};
+use crate::error::{Error, ErrorKind, codes};
 
 #[cfg(test)]
 pub(crate) use convert::normalize as plain;
@@ -154,7 +154,7 @@ fn created(table: &TableRef, physical: &[Field]) -> Result<TableSchema, Error> {
                 table.path
             ),
         )
-        .with_code("state_invalid")
+        .with_code(codes::STATE_INVALID)
     })
 }
 

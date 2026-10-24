@@ -9,7 +9,7 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use arrow_array::RecordBatch;
 use rdlt_connector::{
-    BoxFuture, Capabilities, CommitMeta, CommitSeq, ConnectorError, DEADLINE_EXCEEDED, Destination,
+    BoxFuture, Capabilities, CommitMeta, CommitSeq, ConnectorError, Destination,
     DestinationSession, DestinationWriter, Epoch, LoadId, OpenContext, OpenedSession, PipelineId,
     Receipt, Result, SchemaVersion, SegmentId, SegmentSet, TableChange, TablePath, TableRef,
     WriteStats,
@@ -18,7 +18,7 @@ use tokio::time::Instant;
 
 use super::Waits;
 use crate::env::SystemEnv;
-use crate::error::{Error, ErrorKind, Origin, Side};
+use crate::error::{Error, ErrorKind, Origin, Side, codes};
 
 const WAIT: Duration = Duration::from_secs(30);
 
@@ -201,7 +201,7 @@ fn expired(side: Side, error: ConnectorError) {
             error.code(),
             error.is_retryable()
         ),
-        (Origin::Engine, kind, Some(DEADLINE_EXCEEDED), true)
+        (Origin::Engine, kind, Some(codes::DEADLINE_EXCEEDED), true)
     );
     assert_eq!(error.retry_after(), None);
     let causes = error.report().causes;

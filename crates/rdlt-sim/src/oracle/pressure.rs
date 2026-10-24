@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use rdlt_engine::{Report, Waited, Waits};
+use rdlt_engine::{Report, Waited, Waits, codes};
 use serde_json::{Map, Value, json};
 
 use super::Held;
@@ -54,14 +54,6 @@ impl Recorded for Checked {
     }
 }
 
-/// The code of a failure that waited out the memory budget's deadline: nothing but a fault
-/// holds bytes that long.
-const MEMORY_DEADLINE: &str = "memory_budget_wait_exceeded";
-
-/// The code of a commit refused for leaving more state than an open may answer: the workload's
-/// cursors are sized so its state stays well within it.
-const STATE_BOUND: &str = "state_bytes_exceeded";
-
 impl super::Simulation {
     /// Checks that none of the runs `reports` tell of reserved more than the budget.
     pub(super) fn within_budget(&self, reports: &[Report], phase: usize) {
@@ -97,11 +89,12 @@ pub(super) fn added(total: &mut Waits, more: &Waits) {
 }
 
 /// Checks that `failures`, of runs without faults, are all refusals `prediction` explains, and
-/// that none ended on the memory budget's deadline.
+/// that none ended on the memory budget's deadline, which nothing but a fault holds bytes for, or
+/// left more state than an open may answer, which the workload's cursors are sized to stay within.
 pub(super) fn explained(failures: &[Failure], prediction: &Prediction, seed: Seed, phase: usize) {
     if let Some(waited) = failures
         .iter()
-        .find(|failure| failure.text.contains(MEMORY_DEADLINE))
+        .find(|failure| failure.is(codes::MEMORY_BUDGET_WAIT_EXCEEDED))
     {
         panic!(
             "seed {seed}: phase {phase}: a run without faults ended on the memory budget's \
@@ -111,7 +104,7 @@ pub(super) fn explained(failures: &[Failure], prediction: &Prediction, seed: See
     }
     if let Some(over) = failures
         .iter()
-        .find(|failure| failure.text.contains(STATE_BOUND))
+        .find(|failure| failure.is(codes::STATE_BYTES_EXCEEDED))
     {
         panic!(
             "seed {seed}: phase {phase}: the workload's cursors left more state than an open may \

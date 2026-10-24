@@ -13,7 +13,9 @@ use rdlt_connector::{
     PipelineState, ReadMode, ReadStream, Result, SourceConnector, StreamName, StreamSpec,
     StreamState, Streams, source_factory,
 };
-use rdlt_engine::{EngineConfig, EngineConfigBuilder, ErrorKind, LocalWal, RunOutcome, RunStatus};
+use rdlt_engine::{
+    EngineConfig, EngineConfigBuilder, ErrorKind, LocalWal, RunOutcome, RunStatus, codes,
+};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
@@ -231,7 +233,7 @@ fn refused(outcome: &RunOutcome) {
     assert_eq!(outcome.report.status, RunStatus::Failed);
     let error = outcome.error.as_ref().expect("the run fails");
     assert_eq!(error.kind(), ErrorKind::Config, "{error:?}");
-    assert_eq!(error.code(), Some("state_bytes_exceeded"), "{error:?}");
+    assert_eq!(error.code(), Some(codes::STATE_BYTES_EXCEEDED), "{error:?}");
     assert!(!error.is_retryable());
 }
 

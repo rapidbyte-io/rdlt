@@ -22,7 +22,7 @@ use rdlt_connector::cost::Allocations;
 use super::{batch, scan};
 use crate::budget::MemoryBudget;
 use crate::compute::Pool;
-use crate::error::ErrorKind;
+use crate::error::{ErrorKind, codes};
 use crate::table::TableView;
 use crate::table::testing::view;
 use crate::wal::frame::{self, BegunPhase};
@@ -563,7 +563,7 @@ async fn a_chunk_the_log_needs_that_is_missing_is_refused() {
     let error = scan(whole.as_ref(), &pipeline(), load(), FRAME_BYTES)
         .await
         .expect_err("chunk 0 holds commit 1 and its batches");
-    assert_eq!(error.code(), Some("wal_unreadable"));
+    assert_eq!(error.code(), Some(codes::WAL_UNREADABLE));
 }
 
 #[tokio::test]
@@ -585,7 +585,10 @@ async fn a_byte_changed_anywhere_in_any_chunk_or_a_chunk_cut_is_refused() {
                 .await
                 .expect_err("a published chunk is whole: damage is never a tear");
             assert!(
-                matches!(error.code(), Some("wal_unreadable" | "wal_foreign")),
+                matches!(
+                    error.code(),
+                    Some(codes::WAL_UNREADABLE | codes::WAL_FOREIGN)
+                ),
                 "chunk {} byte {at}: {error}",
                 damaged.number
             );
@@ -600,7 +603,7 @@ async fn a_byte_changed_anywhere_in_any_chunk_or_a_chunk_cut_is_refused() {
             let error = scan(&store, &pipeline(), load(), FRAME_BYTES)
                 .await
                 .expect_err("a chunk cut is refused");
-            assert_eq!(error.code(), Some("wal_unreadable"), "cut at {cut}");
+            assert_eq!(error.code(), Some(codes::WAL_UNREADABLE), "cut at {cut}");
         }
     }
 }
@@ -623,7 +626,7 @@ async fn a_frame_is_read_up_to_the_bytes_a_frame_may_hold_and_refused_beyond() {
     let error = scan(store.as_ref(), &pipeline(), load(), largest - 1)
         .await
         .expect_err("the largest frame is beyond the bound");
-    assert_eq!(error.code(), Some("wal_unreadable"));
+    assert_eq!(error.code(), Some(codes::WAL_UNREADABLE));
     assert!(error.to_string().contains("beyond the"), "{error}");
 }
 
@@ -643,7 +646,7 @@ async fn a_chunk_of_another_pipeline_or_load_is_refused_as_foreign() {
             .await
             .expect_err("not this log's");
         assert_eq!(error.kind(), ErrorKind::Wal);
-        assert_eq!(error.code(), Some("wal_foreign"));
+        assert_eq!(error.code(), Some(codes::WAL_FOREIGN));
         assert!(!error.is_retryable());
     }
 }
@@ -660,7 +663,7 @@ async fn a_log_of_another_format_is_refused() {
     let error = scan(&store, &pipeline(), load(), FRAME_BYTES)
         .await
         .expect_err("the log is of the previous format");
-    assert_eq!(error.code(), Some("wal_unreadable"));
+    assert_eq!(error.code(), Some(codes::WAL_UNREADABLE));
 }
 
 #[tokio::test]
@@ -679,7 +682,7 @@ async fn a_batch_read_past_its_frame_is_refused() {
         .await
         .err()
         .expect("more than the batch's frame");
-    assert_eq!(error.code(), Some("wal_unreadable"));
+    assert_eq!(error.code(), Some(codes::WAL_UNREADABLE));
     // Nor is the frame of another batch.
     let mut other = scanned.batches[&SegmentId(1)][0];
     other.ordinal += 1;
@@ -687,7 +690,7 @@ async fn a_batch_read_past_its_frame_is_refused() {
         .await
         .err()
         .expect("another batch");
-    assert_eq!(error.code(), Some("wal_unreadable"));
+    assert_eq!(error.code(), Some(codes::WAL_UNREADABLE));
 }
 
 /// What a piece reserved of `budget` for its frame in the log.

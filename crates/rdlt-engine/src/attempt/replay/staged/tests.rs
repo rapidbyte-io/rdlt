@@ -10,7 +10,7 @@ use rdlt_connector::{
 
 use super::Staged;
 use crate::budget::MemoryBudget;
-use crate::error::Error;
+use crate::error::{Error, codes};
 
 type Log = Arc<Mutex<Vec<String>>>;
 
@@ -202,7 +202,7 @@ async fn a_logged_batch_beyond_what_a_request_may_take_is_refused() {
         .reserve((1 << 20) / 4 + 1)
         .await
         .expect_err("beyond a request");
-    assert_eq!(error.code(), Some("replay_exceeds_budget"));
+    assert_eq!(error.code(), Some(codes::REPLAY_EXCEEDS_BUDGET));
     // What the budget refused is kept as the cause, not only told.
     let cause = std::error::Error::source(&error).expect("a cause");
     assert!(

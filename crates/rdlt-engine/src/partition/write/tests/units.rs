@@ -11,7 +11,7 @@ use crate::budget::{MemoryBudget, Reservation};
 use crate::compute::Pool;
 use crate::config::BatchPolicy;
 use crate::env::InlineEnv;
-use crate::error::Error;
+use crate::error::{Error, codes};
 use crate::partition::PartitionContext;
 use crate::partition::tests::on_pool;
 use crate::shred::{self, ShredLimits};
@@ -96,7 +96,7 @@ async fn json_whose_build_and_what_is_asked_beside_take_all_a_request_may_is_bui
     assert_eq!((built.batches.len(), beside), (1, Some(1)));
     drop(built);
     let refused = built_err(&context, &pushes, Beside::Bytes(2)).await;
-    assert_eq!(refused.code(), Some(crate::limits::JSON_EXCEEDS_BUDGET));
+    assert_eq!(refused.code(), Some(codes::JSON_EXCEEDS_BUDGET));
 }
 
 #[tokio::test(start_paused = true)]

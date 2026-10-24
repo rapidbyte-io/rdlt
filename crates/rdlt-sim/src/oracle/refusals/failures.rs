@@ -6,9 +6,9 @@ mod tests;
 use std::collections::BTreeSet;
 
 use rdlt_connector::wire::INVALID_MESSAGE;
-use rdlt_engine::{Error, ErrorKind};
+use rdlt_engine::{Code, Error, ErrorKind, Origin, codes};
 
-use super::{FROZEN, KEY_CHANGED, Prediction, UNSUPPORTED};
+use super::Prediction;
 use crate::workload::Relaxed;
 use crate::world::World;
 
@@ -16,7 +16,9 @@ use crate::world::World;
 #[derive(Clone, Debug)]
 pub(in crate::oracle) struct Failure {
     kind: ErrorKind,
-    code: Option<String>,
+    origin: Origin,
+    code: Option<Code>,
+    connector_code: Option<String>,
     stream: Option<String>,
     /// The error, printed.
     pub(in crate::oracle) text: String,
@@ -27,17 +29,28 @@ impl Failure {
     pub(in crate::oracle) fn of(error: &Error) -> Self {
         Self {
             kind: error.kind(),
-            code: error.code().map(ToOwned::to_owned),
+            origin: error.origin(),
+            code: error.code(),
+            connector_code: error.connector_code().map(ToOwned::to_owned),
             stream: error.stream().map(ToString::to_string),
             text: format!("{error:?}"),
         }
     }
 
-    /// The refusal this failure is, where `prediction` names it: its stream and code.
-    fn refusal(&self, prediction: &Prediction) -> Option<(String, &'static str)> {
-        let code = [FROZEN, UNSUPPORTED, KEY_CHANGED]
-            .into_iter()
-            .find(|code| self.code.as_deref() == Some(code))?;
+    /// Whether this failure is the engine's own, coded `code`.
+    pub(in crate::oracle) fn is(&self, code: Code) -> bool {
+        self.origin == Origin::Engine && self.code == Some(code)
+    }
+
+    /// The refusal this failure is, where `prediction` names it: its stream and code, the
+    /// engine's refusal of a schema change.
+    fn refusal(&self, prediction: &Prediction) -> Option<(String, Code)> {
+        let refusals = [
+            codes::SCHEMA_FROZEN,
+            codes::SCHEMA_CHANGE_UNSUPPORTED,
+            codes::MERGE_KEY_CHANGED,
+        ];
+        let code = refusals.into_iter().find(|code| self.is(*code))?;
         let refusal = (self.stream.clone()?, code);
         (self.kind == ErrorKind::Schema && prediction.may.contains(&refusal)).then_some(refusal)
     }
@@ -47,7 +60,7 @@ impl Failure {
 #[derive(Debug)]
 pub(in crate::oracle) struct Unpredicted {
     failure: String,
-    predicted: BTreeSet<(String, &'static str)>,
+    predicted: BTreeSet<(String, Code)>,
 }
 
 impl std::fmt::Display for Unpredicted {
@@ -68,7 +81,7 @@ impl std::fmt::Display for Unpredicted {
 pub(in crate::oracle) fn refused(
     failures: &[Failure],
     prediction: &Prediction,
-) -> Result<Option<(String, &'static str)>, Unpredicted> {
+) -> Result<Option<(String, Code)>, Unpredicted> {
     let mut met = None;
     for failure in failures
         .iter()
@@ -100,23 +113,26 @@ pub(in crate::oracle) fn unexplained<'a>(
 
 /// The first of `failures` that breaks the wire protocol, which no fault excuses: a connector and
 /// a host that keep to the protocol never meet one, however the network or the connector fails.
+///
+/// The host or the connector at either end finds it, so the failure is a side's.
 pub(in crate::oracle) fn violation(failures: &[Failure]) -> Option<&Failure> {
-    failures
-        .iter()
-        .find(|failure| failure.code.as_deref() == Some(INVALID_MESSAGE))
+    failures.iter().find(|failure| {
+        failure.origin != Origin::Engine
+            && failure.connector_code.as_deref() == Some(INVALID_MESSAGE)
+    })
 }
 
 /// Relaxes what refused `stream`'s runs with `code`, as an operator would: a frozen schema
 /// evolves; a change the destination cannot apply takes a variant column, and the destination
 /// is granted adding columns.
-pub(in crate::oracle) fn relax(world: &World, relaxed: &mut [Relaxed], stream: &str, code: &str) {
+pub(in crate::oracle) fn relax(world: &World, relaxed: &mut [Relaxed], stream: &str, code: Code) {
     let index = world
         .workload
         .streams
         .iter()
         .position(|candidate| candidate.name == stream)
         .expect("refusals name the workload's streams");
-    if code == FROZEN {
+    if code == codes::SCHEMA_FROZEN {
         relaxed[index].frozen = true;
     } else {
         relaxed[index].refused = true;

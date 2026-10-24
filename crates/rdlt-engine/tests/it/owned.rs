@@ -1,7 +1,8 @@
 //! Tables belong to the pipeline that created them: another pipeline loading into one is refused
 //! before any of its rows lands, and the owner's rows stay.
 
-use rdlt_engine::{ErrorKind, RunStatus};
+use rdlt_connector::TABLE_OWNED;
+use rdlt_engine::{ErrorKind, Origin, RunStatus};
 
 use crate::schema::{batch, ints};
 use crate::support::batches::{BatchStream, batches};
@@ -31,7 +32,11 @@ async fn a_pipeline_loading_into_another_pipeline_s_table_is_refused_and_its_row
         assert_eq!(second.report.status, RunStatus::Failed, "{target:?}");
         let error = second.error.expect("the intruding run failed");
         assert_eq!(error.kind(), ErrorKind::Config, "{target:?}: {error}");
-        assert_eq!(error.code(), Some("table_owned"), "{target:?}: {error}");
+        assert_eq!(
+            (error.origin(), error.code(), error.connector_code()),
+            (Origin::Destination, None, Some(TABLE_OWNED)),
+            "{target:?}: {error}"
+        );
         assert_eq!(target.ids("owned", "events"), [1, 2], "{target:?}");
         let again = run("owner", &[4]).await;
         assert_eq!(again.report.status, RunStatus::Succeeded, "{target:?}");

@@ -10,7 +10,7 @@ mod tests;
 use std::collections::{BTreeMap, BTreeSet};
 
 use rdlt_connector::{Capabilities, LogicalType};
-use rdlt_engine::{Nested, OnUnsupported, SchemaPolicy};
+use rdlt_engine::{Code, Nested, OnUnsupported, SchemaPolicy, codes};
 use rdlt_testkit::canon::storage;
 
 use super::arrivals::{Arrival, arrival, widest};
@@ -20,18 +20,11 @@ use crate::world::World;
 pub(super) use failures::{Failure, refused, relax, unexplained, violation};
 use keys::key_outcome;
 
-/// The code of a refused change to a frozen schema.
-pub(super) const FROZEN: &str = "schema_frozen";
-/// The code of a change the destination cannot apply and the policy refuses a variant for.
-pub(super) const UNSUPPORTED: &str = "schema_change_unsupported";
-/// The code of a merge key column whose type cannot change.
-pub(super) const KEY_CHANGED: &str = "merge_key_changed";
-
 /// The refusals a phase's runs may meet.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(super) struct Prediction {
     /// Each refusal some run may meet: its stream and code.
-    pub(super) may: BTreeSet<(String, &'static str)>,
+    pub(super) may: BTreeSet<(String, Code)>,
     /// The streams every run of which meets one, so no run loading them succeeds.
     pub(super) must: BTreeSet<String>,
 }
@@ -78,20 +71,20 @@ fn prunes(stream: &SimStream, phase: usize) -> bool {
 #[derive(Debug, Default, PartialEq, Eq)]
 struct Outcome {
     /// The code of a refusal they may meet.
-    code: Option<&'static str>,
+    code: Option<Code>,
     /// Whether they surely meet it.
     must: bool,
 }
 
 impl Outcome {
-    fn may(code: &'static str) -> Self {
+    fn may(code: Code) -> Self {
         Self {
             code: Some(code),
             must: false,
         }
     }
 
-    fn must(code: &'static str) -> Self {
+    fn must(code: Code) -> Self {
         Self {
             code: Some(code),
             must: true,
@@ -260,11 +253,11 @@ impl Rules<'_> {
     }
 
     /// The code a column's changes are refused with.
-    fn code(&self) -> &'static str {
+    fn code(&self) -> Code {
         if self.policy == SchemaPolicy::Freeze {
-            FROZEN
+            codes::SCHEMA_FROZEN
         } else {
-            UNSUPPORTED
+            codes::SCHEMA_CHANGE_UNSUPPORTED
         }
     }
 
@@ -327,7 +320,7 @@ impl Rules<'_> {
 fn outcome<S: Clone + std::fmt::Debug>(
     initial: Option<S>,
     arrivals: &[Vec<Arrival>],
-    code: &'static str,
+    code: Code,
     step: impl Fn(Option<&S>, &Arrival) -> Step<S>,
 ) -> Outcome {
     let Some((last, earlier)) = arrivals.split_last() else {

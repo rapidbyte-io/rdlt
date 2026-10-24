@@ -15,7 +15,7 @@ use self::reads::{Partitioned, Read, Sourced, read, sourced};
 use super::check::check_stream;
 use super::{Planned, RunContext, sequences, together};
 use crate::coordinator::{Cycle, Phases, StreamRun, Template};
-use crate::error::Error;
+use crate::error::{Error, codes};
 use crate::limits::PLANS_AT_ONCE;
 use crate::naming::Naming;
 use crate::normalize::{self, Shape};
@@ -290,9 +290,9 @@ fn unnormalizable(plan: &StreamPlan, normalized: bool) -> Result<(), Error> {
         return Ok(());
     }
     let (code, what) = if plan.keeps_history() {
-        ("history_normalize_unsupported", "a history stream")
+        (codes::HISTORY_NORMALIZE_UNSUPPORTED, "a history stream")
     } else {
-        ("normalize_changes_unsupported", "a change stream")
+        (codes::NORMALIZE_CHANGES_UNSUPPORTED, "a change stream")
     };
     let name = plan.name();
     Err(
@@ -375,7 +375,7 @@ pub(super) fn merge_key(plan: &StreamPlan, spec: &StreamSpec) -> Result<Vec<Colu
                 "stream {name}: merging needs a key, and neither the plan nor the source's \
                  catalog names one"
             ))
-            .with_code("merge_key_missing")
+            .with_code(codes::MERGE_KEY_MISSING)
             .with_stream(name)
         })?;
     // A plan's key names a column, as the plan checks; a catalog's may name none.
@@ -383,14 +383,14 @@ pub(super) fn merge_key(plan: &StreamPlan, spec: &StreamSpec) -> Result<Vec<Colu
         return Err(Error::config(format!(
             "stream {name}: merging needs a key, and the source's catalog names a key of no column"
         ))
-        .with_code("merge_key_missing")
+        .with_code(codes::MERGE_KEY_MISSING)
         .with_stream(name));
     }
     if key.iter().any(|column| column.segments().count() > 1) {
         return Err(Error::config(format!(
             "stream {name}: the merge key names a nested column"
         ))
-        .with_code("plan_column_nested")
+        .with_code(codes::PLAN_COLUMN_NESTED)
         .with_stream(name));
     }
     Ok(key.to_vec())

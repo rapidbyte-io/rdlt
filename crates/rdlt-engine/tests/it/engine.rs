@@ -6,7 +6,7 @@ use std::time::Duration;
 use rdlt_connector::{Checkpointing, ConnectorErrorKind, Destination, ReadMode, TypeKind};
 use rdlt_engine::{
     CommitPolicy, Cores, EngineConfig, ErrorKind, RetryPolicy, RunStatus, SchemaPolicy,
-    SchemaSettings, StopMode, WriteMode,
+    SchemaSettings, StopMode, WriteMode, codes,
 };
 
 use crate::support::destinations::limited;
@@ -398,10 +398,10 @@ async fn streams_the_run_cannot_load_are_configuration_errors() {
         )
         .await;
     for (outcome, code) in [
-        (unknown, "stream_not_found"),
-        (keyless, "merge_key_missing"),
-        (incremental, "read_mode_unsupported"),
-        (unwritable, "write_mode_unsupported"),
+        (unknown, codes::STREAM_NOT_FOUND),
+        (keyless, codes::MERGE_KEY_MISSING),
+        (incremental, codes::READ_MODE_UNSUPPORTED),
+        (unwritable, codes::WRITE_MODE_UNSUPPORTED),
     ] {
         let error = outcome.error.expect("the run fails");
         assert_eq!(error.kind(), ErrorKind::Config);
@@ -418,7 +418,11 @@ async fn streams_the_run_cannot_load_are_configuration_errors() {
 #[tokio::test(start_paused = true)]
 async fn a_frozen_table_refuses_other_types_and_takes_nulls() {
     for (kind, name, code) in [
-        (PushKind::WrongType, "wrong_type", Some("schema_frozen")),
+        (
+            PushKind::WrongType,
+            "wrong_type",
+            Some(codes::SCHEMA_FROZEN),
+        ),
         (PushKind::Nulls, "nulls", None),
     ] {
         let mut bad = ScriptStream::new("events", 1, 5, 5);
@@ -431,14 +435,7 @@ async fn a_frozen_table_refuses_other_types_and_takes_nulls() {
                 memory(name).await,
             )
             .await;
-        assert_eq!(
-            outcome
-                .error
-                .and_then(|error| error.code().map(str::to_owned))
-                .as_deref(),
-            code,
-            "{name}"
-        );
+        assert_eq!(outcome.error.and_then(|error| error.code()), code, "{name}");
         let loaded = if code.is_some() { 0 } else { 5 };
         assert_eq!(published_rows(name, "events"), loaded, "{name}");
     }
@@ -465,7 +462,7 @@ async fn a_schema_error_ends_the_run_while_the_source_waits_without_emitting() {
         )
         .await;
     let error = outcome.error.expect("the run fails");
-    assert_eq!(error.code(), Some("schema_frozen"));
+    assert_eq!(error.code(), Some(codes::SCHEMA_FROZEN));
 }
 
 #[tokio::test(start_paused = true)]
@@ -1024,7 +1021,7 @@ async fn a_plan_naming_a_partition_twice_fails_its_stream_before_anything_is_rea
     let error = outcome.error.expect("the run failed");
     assert_eq!(
         (error.kind(), error.code(), error.is_retryable()),
-        (ErrorKind::Source, Some("plan_invalid"), false)
+        (ErrorKind::Source, Some(codes::PLAN_INVALID), false)
     );
     assert_eq!(script.reads.load(Ordering::SeqCst), 0);
     assert_eq!(outcome.report.rows, 0);
@@ -1046,7 +1043,11 @@ async fn a_destination_whose_identifier_rules_pass_their_limits_is_refused() {
     let error = outcome.error.expect("the run failed");
     assert_eq!(
         (error.kind(), error.code(), error.is_retryable()),
-        (ErrorKind::Destination, Some("capabilities_invalid"), false)
+        (
+            ErrorKind::Destination,
+            Some(codes::CAPABILITIES_INVALID),
+            false
+        )
     );
 }
 
@@ -1132,7 +1133,11 @@ async fn a_refused_stream_s_source_is_never_asked_to_plan() {
         )
         .await;
     let error = outcome.error.expect("the run fails");
-    assert_eq!(error.code(), Some("read_mode_unsupported"), "{error:?}");
+    assert_eq!(
+        error.code(),
+        Some(codes::READ_MODE_UNSUPPORTED),
+        "{error:?}"
+    );
     let plans: Vec<usize> = script
         .streams
         .iter()

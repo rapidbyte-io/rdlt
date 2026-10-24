@@ -1,7 +1,7 @@
 use rdlt_connector::{ColumnPath, LogicalType, PipelineId, ReadMode, StreamName};
 
 use super::{DeleteMode, OnTruncate, PipelinePlan, StreamPlan, Until, WriteMode};
-use crate::error::ErrorKind;
+use crate::error::{ErrorKind, codes};
 use crate::policy::{Nested, SchemaPolicy, SchemaSettings};
 
 fn stream(name: &str) -> StreamPlan {
@@ -45,44 +45,44 @@ fn supported_mode_combinations_are_accepted() {
 #[test]
 fn unsupported_plans_are_configuration_errors() {
     let cases = [
-        (vec![], "plan_empty"),
-        (vec![stream("a"), stream("a")], "plan_duplicate_stream"),
+        (vec![], codes::PLAN_EMPTY),
+        (vec![stream("a"), stream("a")], codes::PLAN_DUPLICATE_STREAM),
         (
             vec![
                 stream("a")
                     .read(ReadMode::Incremental)
                     .write(WriteMode::Replace),
             ],
-            "plan_mode_invalid",
+            codes::PLAN_MODE_INVALID,
         ),
-        (vec![stream("a").key(["id"])], "plan_key_unused"),
+        (vec![stream("a").key(["id"])], codes::PLAN_KEY_UNUSED),
         (
             vec![
                 stream("a")
                     .write(WriteMode::Merge)
                     .key(Vec::<ColumnPath>::new()),
             ],
-            "plan_key_empty",
+            codes::PLAN_KEY_EMPTY,
         ),
         (
             vec![stream("a").column(nested(), SchemaSettings::new())],
-            "plan_column_nested",
+            codes::PLAN_COLUMN_NESTED,
         ),
         (
             vec![stream("a").hint(nested(), LogicalType::Int64)],
-            "plan_column_nested",
+            codes::PLAN_COLUMN_NESTED,
         ),
         (
             vec![stream("a").write(WriteMode::Merge).key([nested()])],
-            "plan_column_nested",
+            codes::PLAN_COLUMN_NESTED,
         ),
         (
             vec![stream("a").hint("n", LogicalType::Null)],
-            "plan_hint_invalid",
+            codes::PLAN_HINT_INVALID,
         ),
         (
             vec![stream("a").column("n", SchemaSettings::new().nested(Nested::normalize()))],
-            "plan_nested_normalize_column",
+            codes::PLAN_NESTED_NORMALIZE_COLUMN,
         ),
     ];
     for (streams, code) in cases {
@@ -100,7 +100,7 @@ fn streams_that_would_share_a_table_are_refused() {
     let namespaced = StreamPlan::new(StreamName::with_namespace("public", "orders").unwrap());
     let error = PipelinePlan::new(pipeline(), [dotted, namespaced]).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Config);
-    assert_eq!(error.code(), Some("plan_table_collision"));
+    assert_eq!(error.code(), Some(codes::PLAN_TABLE_COLLISION));
 }
 
 fn nested() -> ColumnPath {
@@ -186,25 +186,25 @@ fn change_streams_replace_nothing_and_only_merged_ones_take_delete_modes() {
     let cases = [
         (
             stream("a").read(ReadMode::Cdc).write(WriteMode::Replace),
-            "plan_mode_invalid",
+            codes::PLAN_MODE_INVALID,
         ),
         (
             stream("a").read(ReadMode::Cdc).deletes(DeleteMode::Soft),
-            "plan_deletes_unused",
+            codes::PLAN_DELETES_UNUSED,
         ),
         (
             stream("a")
                 .read(ReadMode::Incremental)
                 .write(WriteMode::Merge)
                 .on_truncate(OnTruncate::Ignore),
-            "plan_deletes_unused",
+            codes::PLAN_DELETES_UNUSED,
         ),
         (
             stream("a")
                 .read(ReadMode::Incremental)
                 .write(WriteMode::History)
                 .deletes(DeleteMode::Soft),
-            "plan_deletes_unused",
+            codes::PLAN_DELETES_UNUSED,
         ),
     ];
     for (stream, code) in cases {

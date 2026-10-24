@@ -3,7 +3,7 @@
 use rdlt_connector::{LogicalType, SchemaVersion, TableState};
 
 use super::{capabilities, created, plan, resolver, schema};
-use crate::error::ErrorKind;
+use crate::error::{ErrorKind, codes};
 use crate::table::model::Model;
 
 /// The state recording `model` at `version`.
@@ -33,7 +33,7 @@ fn a_schema_change_past_the_last_version_is_refused() {
     let last = Model::from_state(Some(&recorded(&model, u32::MAX))).unwrap();
     let error = resolver.resolve(&last, &wider).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Schema);
-    assert_eq!(error.code(), Some("schema_version_exhausted"));
+    assert_eq!(error.code(), Some(codes::SCHEMA_VERSION_EXHAUSTED));
     // A batch that changes nothing still fits.
     let same = schema(&[("id", LogicalType::Int64)]);
     assert_eq!(
@@ -47,7 +47,7 @@ fn a_recorded_schema_at_version_zero_is_refused() {
     let resolver = resolver(capabilities(), plan(), &[]);
     let model = created(&resolver, &[("id", LogicalType::Int64)]);
     let error = Model::from_state(Some(&recorded(&model, 0))).unwrap_err();
-    assert_eq!(error.code(), Some("state_invalid"));
+    assert_eq!(error.code(), Some(codes::STATE_INVALID));
     assert_eq!(
         Model::from_state(Some(&recorded(&model, 1)))
             .unwrap()
@@ -63,7 +63,7 @@ fn a_change_past_the_last_an_attempt_counts_is_refused() {
     model.revision = u32::MAX;
     let wider = schema(&[("id", LogicalType::Int64), ("extra", LogicalType::Utf8)]);
     let error = plain.resolve(&model, &wider).unwrap_err();
-    assert_eq!(error.code(), Some("schema_version_exhausted"));
+    assert_eq!(error.code(), Some(codes::SCHEMA_VERSION_EXHAUSTED));
     // A normalized stream's table is created by a batch of nulls alone.
     let mut normalized = resolver(capabilities(), plan(), &[]);
     normalized.meta.id = Some("_rdlt_id".into());
@@ -75,7 +75,7 @@ fn a_change_past_the_last_an_attempt_counts_is_refused() {
         ..Model::default()
     };
     let error = normalized.resolve(&counted, &nulls).unwrap_err();
-    assert_eq!(error.code(), Some("schema_version_exhausted"));
+    assert_eq!(error.code(), Some(codes::SCHEMA_VERSION_EXHAUSTED));
 }
 
 #[test]
@@ -99,13 +99,13 @@ fn a_table_is_as_wide_as_its_columns_and_their_nested_fields() {
         .resolve(&Model::default(), &schema(&columns))
         .unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Schema);
-    assert_eq!(error.code(), Some("table_columns_exceeded"));
+    assert_eq!(error.code(), Some(codes::TABLE_COLUMNS_EXCEEDED));
     // A table already wider than the limit still takes batches that change nothing.
     let same = resolver.resolve(&model, &schema(&columns)).unwrap();
     assert!(same.changes.is_empty());
     let wider = schema(&[("id", LogicalType::Int64), ("c", LogicalType::Int64)]);
     assert_eq!(
         resolver.resolve(&model, &wider).unwrap_err().code(),
-        Some("table_columns_exceeded")
+        Some(codes::TABLE_COLUMNS_EXCEEDED)
     );
 }

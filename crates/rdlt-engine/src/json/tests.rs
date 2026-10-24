@@ -5,6 +5,7 @@ use rdlt_wire::limits::NESTING_DEPTH;
 use sonic_rs::JsonValueTrait as _;
 
 use super::number::PLAIN_BYTES;
+use crate::error::codes;
 
 use super::{
     EXPONENT_DIGITS, JsonError, Reader, Text, Token, canonical_float, canonical_number,
@@ -187,9 +188,9 @@ fn an_exponent_is_read_to_its_digit_limit_beside_its_leading_zeros() {
     assert_eq!(check(&format!("1e{digits}")), Ok(()));
     assert_eq!(check(&format!("1e-000{digits}")), Ok(()));
     assert_eq!(check(&format!("1e1{digits}")), Err(JsonError::Exponent));
-    assert_eq!(JsonError::Exponent.code(), "limit_exceeded");
-    assert_eq!(JsonError::TooDeep.code(), "limit_exceeded");
-    assert_eq!(JsonError::Invalid("x").code(), "json_invalid");
+    assert_eq!(JsonError::Exponent.code(), codes::LIMIT_EXCEEDED);
+    assert_eq!(JsonError::TooDeep.code(), codes::LIMIT_EXCEEDED);
+    assert_eq!(JsonError::Invalid("x").code(), codes::JSON_INVALID);
 }
 
 #[test]

@@ -10,7 +10,7 @@ use rdlt_connector::{
 };
 
 use super::{CONFLICT_RETRIES, SharedSession, Tables};
-use crate::error::ErrorKind;
+use crate::error::{ErrorKind, codes};
 use crate::naming::Naming;
 use crate::plan::StreamPlan;
 use crate::policy::SchemaSettings;
@@ -483,7 +483,10 @@ async fn conflicts_are_named_around_a_bounded_number_of_times() {
             .fit(0, &schema(&[("id", LogicalType::Int64)]))
             .await
             .unwrap_err();
-        assert_eq!((error.kind(), error.code()), (ErrorKind::Destination, code));
+        assert_eq!(
+            (error.kind(), error.connector_code()),
+            (ErrorKind::Destination, code)
+        );
         assert_eq!(*counted.lock(), calls, "{code:?}");
         assert_eq!(
             tables.view(0).model.version,
@@ -724,7 +727,7 @@ async fn a_table_whose_records_pass_the_tables_share_is_refused_before_the_desti
         .unwrap_err();
     assert_eq!(
         (error.kind(), error.code()),
-        (ErrorKind::Schema, Some("table_exceeds_budget"))
+        (ErrorKind::Schema, Some(codes::TABLE_EXCEEDS_BUDGET))
     );
     assert!(error.to_string().contains("200"), "{error}");
     assert!(changes.lock().is_empty());
@@ -889,7 +892,7 @@ async fn a_committed_column_under_a_metadata_identifier_is_refused_not_a_panic()
         .unwrap_err();
     assert_eq!(
         (error.kind(), error.code()),
-        (ErrorKind::Destination, Some("state_invalid"))
+        (ErrorKind::Destination, Some(codes::STATE_INVALID))
     );
     assert!(changes.lock().is_empty());
 }

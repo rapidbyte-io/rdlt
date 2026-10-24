@@ -13,6 +13,7 @@ use rdlt_connector::{
 
 use super::{Harness, Setup, ended, name, partition, position, stream};
 use crate::coordinator::Coordinator;
+use crate::error::codes;
 use crate::partition::{CursorHold, Progress, Seal};
 use crate::plan::WriteMode;
 use crate::report::Trigger;
@@ -48,7 +49,11 @@ async fn a_commit_whose_state_an_open_could_not_answer_is_refused_before_it_land
     assert_eq!(commits, 1);
     let (ended, commits) = sealing(64 << 10).await;
     let refused = ended.expect_err("state beyond the bound is refused");
-    assert_eq!(refused.code(), Some("state_bytes_exceeded"), "{refused}");
+    assert_eq!(
+        refused.code(),
+        Some(codes::STATE_BYTES_EXCEEDED),
+        "{refused}"
+    );
     assert_eq!(commits, 0, "nothing of it was committed");
 }
 
@@ -74,7 +79,11 @@ async fn state_is_bounded_with_all_the_commits_before_it() {
         harness.end(partition, false);
     }
     let refused = ended(task).await.expect_err("the second commit is refused");
-    assert_eq!(refused.code(), Some("state_bytes_exceeded"), "{refused}");
+    assert_eq!(
+        refused.code(),
+        Some(codes::STATE_BYTES_EXCEEDED),
+        "{refused}"
+    );
     assert_eq!(harness.commits.lock().len(), 1, "the first landed");
 }
 
@@ -140,7 +149,11 @@ async fn done_markers_make_room_for_state_and_never_for_new_child_tables() {
     let mut meta = commit();
     let children = [(name(), born.key.clone())];
     let refused = coordinator.relieve(&mut meta, &children).unwrap_err();
-    assert_eq!(refused.code(), Some("child_tables_exceeded"), "{refused}");
+    assert_eq!(
+        refused.code(),
+        Some(codes::CHILD_TABLES_EXCEEDED),
+        "{refused}"
+    );
     assert_eq!(meta.state_delta, commit().state_delta);
     // Any other record takes the marker's room, and the commit is admitted with its delete.
     let mut meta = commit();
@@ -167,7 +180,11 @@ async fn a_relief_whose_deletes_take_the_request_past_its_limit_is_refused() {
     let (coordinator, _harness) = marked(&marker, past_by_a_byte(&marker, &born, request)).await;
     let mut meta = commit();
     let refused = coordinator.relieve(&mut meta, &[]).unwrap_err();
-    assert_eq!(refused.code(), Some("state_bytes_exceeded"), "{refused}");
+    assert_eq!(
+        refused.code(),
+        Some(codes::STATE_BYTES_EXCEEDED),
+        "{refused}"
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -183,7 +200,11 @@ async fn a_commit_whose_relief_deletes_nothing_is_refused_and_measured_once() {
     let mut meta = commit();
     MEASURES.with(|measures| measures.set(0));
     let refused = coordinator.relieve(&mut meta, &[]).unwrap_err();
-    assert_eq!(refused.code(), Some("state_bytes_exceeded"), "{refused}");
+    assert_eq!(
+        refused.code(),
+        Some(codes::STATE_BYTES_EXCEEDED),
+        "{refused}"
+    );
     assert_eq!(meta.state_delta, commit().state_delta);
     assert_eq!(MEASURES.with(std::cell::Cell::get), 1 + 1);
 }

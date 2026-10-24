@@ -1,6 +1,6 @@
 //! Normalized streams against every reference destination.
 
-use rdlt_engine::{Nested, RunStatus, SchemaPolicy, SchemaSettings, StreamPlan, WriteMode};
+use rdlt_engine::{Nested, RunStatus, SchemaPolicy, SchemaSettings, StreamPlan, WriteMode, codes};
 use serde_json::json;
 
 use crate::support::batches::{BatchStream, batches};
@@ -386,7 +386,7 @@ async fn a_merge_key_stored_as_json_on_a_normalized_stream_is_refused_before_any
     let error = outcome.error.expect("the run fails");
     assert_eq!(
         (error.kind(), error.code()),
-        (rdlt_engine::ErrorKind::Schema, Some("merge_key_json"))
+        (rdlt_engine::ErrorKind::Schema, Some(codes::MERGE_KEY_JSON))
     );
     assert_eq!(crate::support::published_rows(store, "events"), 0);
 }
@@ -408,7 +408,10 @@ async fn a_merge_key_a_normalized_stream_takes_apart_is_refused_before_any_row_l
         let error = outcome.error.expect("the run fails");
         assert_eq!(
             (error.kind(), error.code()),
-            (rdlt_engine::ErrorKind::Schema, Some("merge_key_nested")),
+            (
+                rdlt_engine::ErrorKind::Schema,
+                Some(codes::MERGE_KEY_NESTED)
+            ),
             "{store}: {error:?}"
         );
         assert_eq!(crate::support::published_rows(store, "events"), 0);

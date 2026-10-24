@@ -3,7 +3,7 @@
 use std::num::NonZeroU64;
 use std::time::Duration;
 
-use crate::error::Error;
+use crate::error::{Error, codes};
 
 /// When the engine commits: whichever threshold is reached first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -22,7 +22,7 @@ impl CommitPolicy {
         bytes: Option<u64>,
     ) -> Result<Self, Error> {
         let invalid = |what: &str| {
-            Error::config(format!("commit policy: {what}")).with_code("commit_policy_invalid")
+            Error::config(format!("commit policy: {what}")).with_code(codes::COMMIT_POLICY_INVALID)
         };
         if every.is_none() && rows.is_none() && bytes.is_none() {
             return Err(invalid("set at least one of every, rows and bytes"));

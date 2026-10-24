@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use libfuzzer_sys::fuzz_target;
+use rdlt_engine::{Code, codes};
 
 /// Makes each frame's checksum, of its kind, length and payload, match again, following its
 /// length as it now reads, from past the chunk's preamble.
@@ -52,10 +53,7 @@ fuzz_target!(|input: (bool, bool, u16, Vec<(u16, u8)>, Vec<u8>)| {
         bytes
     };
     if let Err(refused) = rdlt_engine::bench::scan_log(&log) {
-        assert!(
-            matches!(refused.code, "wal_unreadable" | "wal_foreign"),
-            "{}",
-            refused.message
-        );
+        let known = [codes::WAL_UNREADABLE, codes::WAL_FOREIGN].map(Code::as_str);
+        assert!(known.contains(&refused.code), "{}", refused.message);
     }
 });
