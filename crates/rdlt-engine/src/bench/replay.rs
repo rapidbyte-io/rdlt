@@ -1,6 +1,9 @@
 //! A source that costs as little as a real one can: it replays pushes it holds, registered by
 //! name in this process.
 
+#[cfg(test)]
+mod tests;
+
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, LazyLock};
