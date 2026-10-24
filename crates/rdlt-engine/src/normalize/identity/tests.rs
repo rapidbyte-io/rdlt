@@ -346,7 +346,7 @@ fn json_text_nested_past_the_limit_is_refused_on_a_small_stack() {
             [limit, limit + 1, 100_000].map(|depth| {
                 let batch = json_column(vec![Some(nested(depth))]);
                 (
-                    root_ids(&batch, &[]).is_ok(),
+                    super::version_hashes(&batch).is_ok(),
                     root_ids(&batch, &[Arc::from("k")]).is_ok(),
                 )
             })
@@ -412,7 +412,7 @@ fn json_text_that_is_not_json_is_refused_not_hashed_as_a_string() {
     for text in ["abc", "", "{\"a\":}", "[1,]", "\"abc"] {
         let batch = json_column(vec![Some(text.to_owned())]);
         assert!(root_ids(&batch, &[Arc::from("k")]).is_err(), "{text:?}");
-        assert!(root_ids(&batch, &[]).is_err(), "{text:?}");
+        assert!(super::version_hashes(&batch).is_err(), "{text:?}");
     }
     let string = json_ids(&["\"abc\""]);
     assert_eq!(
@@ -440,7 +440,7 @@ fn json_identity_cannot_read_is_refused_typed_for_the_stream() {
             vec![column],
         )
         .unwrap();
-        let error = root_ids(&batch, &[]).unwrap_err();
+        let error = super::version_hashes(&batch).unwrap_err();
         let error = super::unread(&stream, "hashing", &error);
         assert_eq!(
             (error.kind(), error.code()),
@@ -471,7 +471,7 @@ fn values_crafted_to_collide_under_an_unkeyed_fast_hash_have_distinct_ids() {
         let blobs: Vec<Vec<u8>> = COLLIDING.iter().map(|window| blob(*window, at)).collect();
         let column: ArrayRef = Arc::new(BinaryArray::from_iter_values(&blobs));
         let batch = RecordBatch::try_from_iter([("blob", column)]).unwrap();
-        root_ids(&batch, &[]).unwrap()
+        super::version_hashes(&batch).unwrap()
     };
     let ids = whole(54);
     assert_ne!(ids.value(0), ids.value(1));
@@ -559,19 +559,18 @@ fn a_type_no_table_holds_is_refused_not_hashed_as_its_text() {
         true,
     ));
     let object: ArrayRef = Arc::new(StructArray::from(vec![(field, intervals())]));
-    let keys: [Vec<Arc<str>>; 2] = [Vec::new(), vec![Arc::from("k")]];
     for column in [intervals(), object] {
         let kind = column.data_type().to_string();
         let batch = RecordBatch::try_from_iter([("k", column)]).unwrap();
-        for key in &keys {
-            let refused = root_ids(&batch, key).unwrap_err();
+        let keyed = root_ids(&batch, &[Arc::from("k")]).unwrap_err();
+        let whole = super::version_hashes(&batch).unwrap_err();
+        for refused in [keyed, whole] {
             assert!(super::json_refusal(&refused).is_none(), "{kind}: {refused}");
             assert!(
                 refused.to_string().contains("Interval(YearMonth)"),
                 "{kind}: {refused}"
             );
         }
-        assert!(super::version_hashes(&batch).is_err(), "{kind}");
     }
 }
 
@@ -601,7 +600,7 @@ fn a_batch_nested_deeper_than_a_table_may_be_still_hashes() {
         column = Arc::new(StructArray::from(vec![(field, column)]));
     }
     let batch = RecordBatch::try_from_iter([("k", column)]).unwrap();
-    assert_eq!(root_ids(&batch, &[]).unwrap().len(), 1);
+    assert_eq!(super::version_hashes(&batch).unwrap().len(), 1);
     assert_eq!(root_ids(&batch, &[Arc::from("k")]).unwrap().len(), 1);
 }
 
