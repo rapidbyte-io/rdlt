@@ -57,6 +57,8 @@ rdlt-testkit.workspace = true
 rdlt-connector = { workspace = true, features = ["serve", "sqlgen", "testing"] }
 rdlt-host.workspace = true
 rdlt-wire.workspace = true
+# The SQLite destination's tests count the statements a commit runs.
+rusqlite = { workspace = true, features = ["trace"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "test-util"] }
 
