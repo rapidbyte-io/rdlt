@@ -86,9 +86,14 @@ fast-path evaluation. Building M3a surfaced decisions the spec leaves open or ge
   request's instructions and allocations for shredding and normalizing, beside the engine's other
   hot paths, are counted against the base it merges into, built in the same CI job
   ([docs/perf/instructions.md](../perf/instructions.md)).
-- **`Emitter::rows` keeps `serde_json`.** The spec serializes rows with sonic-rs, but sonic-rs
-  writes `serde_json`'s private tokens (raw values, arbitrary-precision numbers) out as objects,
-  so rows holding them would be pushed as different JSON.
+- **`Emitter::rows` pushes JSON lines, written by `serde_json`.** Each row is one line, so a push
+  of rows is cut at its line ends like any JSON lines, never walked as an array. A raw value is
+  written as it was given, and a line end in it, which valid JSON holds only between tokens, is
+  written as a space; `serde_json` escapes every line end inside a string. `rows()` refuses a row
+  that is not an object, `json_not_object`, before it pushes anything, since the engine reads a
+  push that opens with an array as that array's elements. `serde_json` writes the rows, since
+  sonic-rs writes `serde_json`'s private tokens (raw values, arbitrary-precision numbers) out as
+  objects, so rows holding them would be pushed as different JSON.
 - **The simulation pushes JSON.** Streams drawn as JSON push their rows as JSON lines or arrays,
   and the oracle, which compares values, holds them to the same model as Arrow.
 

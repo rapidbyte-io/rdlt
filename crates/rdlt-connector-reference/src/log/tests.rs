@@ -6,7 +6,7 @@ use rdlt_connector::{
     SourceEvent, StreamName, StreamState, acknowledging_source_factory, partition_channel,
     source_factory,
 };
-use serde_json::{Value, json};
+use serde_json::{Deserializer, Value, json};
 
 use super::{LogSource, Logged, LoggedStream, MIN_WAIT, Offset, message};
 use crate::limits::{MAX_MESSAGE_ROWS, MAX_PARTITIONS, MAX_PER_SECOND};
@@ -89,10 +89,13 @@ fn pushed(push: &Push) -> Vec<u64> {
     let Push::Json(bytes) = push else {
         panic!("the log pushes JSON rows");
     };
-    let rows: Vec<Value> = serde_json::from_slice(bytes).expect("a JSON array");
-    rows.iter()
-        .map(|row| row["offset"].as_u64().expect("an offset"))
-        .collect()
+    let rows = Deserializer::from_slice(bytes).into_iter::<Value>();
+    rows.map(|row| {
+        row.expect("JSON rows")["offset"]
+            .as_u64()
+            .expect("an offset")
+    })
+    .collect()
 }
 
 #[tokio::test(start_paused = true)]

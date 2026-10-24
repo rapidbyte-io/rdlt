@@ -4,7 +4,7 @@ use rdlt_connector::{
     ConnectContext, Cursor, Partition, PartitionId, Push, ReadRequest, SourceEvent, StreamName,
     partition_channel, source_factory,
 };
-use serde_json::{Value, json};
+use serde_json::{Deserializer, Value, json};
 
 use super::{MemorySource, Offset};
 
@@ -28,8 +28,9 @@ async fn a_page_as_large_as_a_number_holds_reads_the_rest_from_any_row() {
         let mut ids = Vec::new();
         while let Some(event) = feed.recv().await {
             if let SourceEvent::Push(Push::Json(bytes)) = event {
-                let rows: Vec<Value> = serde_json::from_slice(&bytes).unwrap();
-                ids.extend(rows.iter().map(|row| row["id"].as_u64().unwrap()));
+                for row in Deserializer::from_slice(&bytes).into_iter::<Value>() {
+                    ids.push(row.unwrap()["id"].as_u64().unwrap());
+                }
             }
         }
         ids

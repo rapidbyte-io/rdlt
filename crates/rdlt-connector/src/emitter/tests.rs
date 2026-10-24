@@ -6,8 +6,11 @@ use arrow_array::{ArrayRef, Int64Array, ListArray, NullArray, RecordBatch, Struc
 use arrow_buffer::OffsetBuffer;
 use arrow_schema::{DataType, Field, Fields};
 use bytes::Bytes;
+use proptest::prelude::*;
 use rdlt_wire::limits::{BATCH_ROWS, BATCH_VALUES, FRAME_BYTES, JSON_PUSH_BYTES, SCHEMA_COLUMNS};
 use serde::Serialize;
+use serde_json::Value;
+use serde_json::value::RawValue;
 
 use super::Emitter;
 use crate::cursor::Cursor;
@@ -38,34 +41,117 @@ async fn drain(emitter: Emitter<u64>, mut feed: PartitionFeed) -> Vec<SourceEven
 }
 
 #[tokio::test]
-async fn rows_become_one_json_array_push() {
+async fn rows_become_one_push_of_a_json_line_each() {
     let (mut out, feed) = emitter();
     out.rows(&[Row { id: 1 }, Row { id: 2 }]).await.unwrap();
     out.rows::<Row>(&[]).await.unwrap();
     assert_eq!(
         drain(out, feed).await,
         vec![SourceEvent::Push(Push::Json(Bytes::from_static(
-            br#"[{"id":1},{"id":2}]"#
+            b"{\"id\":1}\n{\"id\":2}\n"
         )))]
     );
 }
 
 #[tokio::test]
-async fn rows_holding_raw_json_push_it_as_json() {
+async fn rows_holding_raw_json_printed_over_lines_push_it_on_their_own_line() {
     #[derive(Serialize)]
     struct Document<'a> {
         id: u8,
-        doc: &'a serde_json::value::RawValue,
+        doc: &'a RawValue,
     }
-    let raw = serde_json::value::RawValue::from_string(r#"{"a":[1,2]}"#.to_owned()).unwrap();
+    let printed = "{\n  \"a\": [1,\n2],\n  \"b\": \"x\\ny\"\n}";
+    let raw = RawValue::from_string(printed.to_owned()).unwrap();
     let (mut out, feed) = emitter();
-    out.rows(&[Document { id: 1, doc: &raw }]).await.unwrap();
+    let rows = [Document { id: 1, doc: &raw }, Document { id: 2, doc: &raw }];
+    out.rows(&rows).await.unwrap();
+    // Its line ends become spaces; the line end escaped in its string stays escaped.
+    let row = |id: u8| format!(r#"{{"id":{id},"doc":{{   "a": [1, 2],   "b": "x\ny" }}}}"#);
+    let lines = format!("{}\n{}\n", row(1), row(2));
     assert_eq!(
         drain(out, feed).await,
-        vec![SourceEvent::Push(Push::Json(Bytes::from_static(
-            br#"[{"id":1,"doc":{"a":[1,2]}}]"#
-        )))]
+        vec![SourceEvent::Push(Push::Json(Bytes::from(lines)))]
     );
+}
+
+#[tokio::test]
+async fn rows_holding_a_row_that_is_not_an_object_push_nothing_and_are_refused() {
+    let refused: [&[&str]; 5] = [
+        &[r#"[{"id":1},{"id":2}]"#],
+        &["7"],
+        &[r#""text""#],
+        &["null"],
+        &[r#"{"id":1}"#, "[1]"],
+    ];
+    for rows in refused {
+        let rows: Vec<Box<RawValue>> = rows
+            .iter()
+            .map(|row| RawValue::from_string((*row).to_owned()).unwrap())
+            .collect();
+        let (mut out, feed) = emitter();
+        let error = out.rows(&rows).await.unwrap_err();
+        assert_eq!(
+            (error.kind(), error.code()),
+            (ConnectorErrorKind::Data, Some("json_not_object")),
+            "{rows:?}"
+        );
+        assert!(drain(out, feed).await.is_empty(), "{rows:?}");
+    }
+    let object = RawValue::from_string(r#"{"id":1}"#.to_owned()).unwrap();
+    let (mut out, feed) = emitter();
+    out.rows(&[object]).await.unwrap();
+    assert_eq!(drain(out, feed).await.len(), 1);
+}
+
+/// A JSON object a few levels deep, its strings holding line ends, quotes and backslashes.
+fn object() -> impl Strategy<Value = Value> {
+    let leaf = prop_oneof![
+        Just(Value::Null),
+        any::<bool>().prop_map(Value::from),
+        any::<i64>().prop_map(Value::from),
+        "[a\n\r\t\"\\\\ \u{e9}\u{2028}]{0,6}".prop_map(Value::from),
+    ];
+    let value = leaf.prop_recursive(3, 24, 4, |inner| {
+        prop_oneof![
+            prop::collection::vec(inner.clone(), 0..4).prop_map(Value::Array),
+            prop::collection::btree_map("[a-c]", inner, 0..4)
+                .prop_map(|fields| Value::Object(fields.into_iter().collect())),
+        ]
+    });
+    prop::collection::btree_map("[a-d]", value, 0..4)
+        .prop_map(|fields| Value::Object(fields.into_iter().collect()))
+}
+
+/// The value on each line of the push `rows` makes, whose last line must end too.
+fn pushed_lines<T: Serialize>(rows: &[T]) -> Vec<Value> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let (mut out, feed) = emitter();
+    runtime.block_on(out.rows(rows)).unwrap();
+    let events = runtime.block_on(drain(out, feed));
+    let [SourceEvent::Push(Push::Json(push))] = events.as_slice() else {
+        panic!("rows make one JSON push: {events:?}");
+    };
+    let lines = push
+        .strip_suffix(b"\n")
+        .expect("the last row ends its line");
+    lines
+        .split(|byte| *byte == b'\n')
+        .map(|line| serde_json::from_slice(line).expect("a line is one JSON value"))
+        .collect()
+}
+
+proptest! {
+    #[test]
+    fn rows_are_pushed_one_record_a_line(rows in prop::collection::vec(object(), 1..6)) {
+        prop_assert_eq!(&pushed_lines(&rows), &rows);
+        let printed: Vec<Box<RawValue>> = rows
+            .iter()
+            .map(|row| RawValue::from_string(serde_json::to_string_pretty(row).unwrap()).unwrap())
+            .collect();
+        prop_assert_eq!(&pushed_lines(&printed), &rows);
+    }
 }
 
 #[tokio::test]
