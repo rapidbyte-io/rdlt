@@ -577,33 +577,6 @@ proptest! {
     }
 }
 
-/// `batches`, with a column `k` numbering their rows where `keyed`, a key no two rows share.
-fn numbered(batches: Vec<RecordBatch>, keyed: bool) -> Vec<RecordBatch> {
-    if !keyed {
-        return batches;
-    }
-    let mut first = 0;
-    let mut numbered = Vec::with_capacity(batches.len());
-    for batch in batches {
-        let rows = i64::try_from(batch.num_rows()).unwrap();
-        let mut columns: Vec<(String, ArrayRef)> = vec![(
-            "k".to_owned(),
-            Arc::new(Int64Array::from_iter_values(first..first + rows)),
-        )];
-        let schema = batch.schema();
-        columns.extend(
-            schema
-                .fields()
-                .iter()
-                .map(|field| field.name().clone())
-                .zip(batch.columns().iter().cloned()),
-        );
-        numbered.push(RecordBatch::try_from_iter(columns).unwrap());
-        first += rows;
-    }
-    numbered
-}
-
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(rdlt_testkit::cases(256)))]
 
@@ -616,9 +589,14 @@ proptest! {
         max_depth in 0_u8..4,
         keyed in any::<bool>(),
     ) {
-        let batches = drawn.iter().map(rdlt_testkit::drawn::json::batch).collect();
-        let pieces: Vec<(RecordBatch, Cut)> =
-            numbered(batches, keyed).into_iter().zip(cuts).collect();
+        let batches: Vec<RecordBatch> =
+            drawn.iter().map(rdlt_testkit::drawn::json::batch).collect();
+        let batches = if keyed {
+            rdlt_testkit::drawn::json::numbered(&batches, "k")
+        } else {
+            batches
+        };
+        let pieces: Vec<(RecordBatch, Cut)> = batches.into_iter().zip(cuts).collect();
         let key = keyed.then_some("k");
         compared::normalized_against_reference(&pieces, max_depth, key)
             .map_err(|disagreed| TestCaseError::fail(disagreed.to_string()))?;
