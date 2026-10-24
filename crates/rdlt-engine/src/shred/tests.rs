@@ -1707,6 +1707,25 @@ fn observed_shapes_are_equal_by_their_fields_whatever_objects_named_them() {
 }
 
 #[test]
+fn an_observation_made_again_exactly_takes_the_flush_s_room_once() {
+    // Six columns of long names, the last an integer beyond 64 bits, which has the chunk observed
+    // again exactly: more than half the room of ten columns' shapes.
+    let mut fields: Vec<String> = (0..5)
+        .map(|key| format!("\"{}{key}\":1", "k".repeat(399)))
+        .collect();
+    fields.push("\"n\":18446744073709551616".to_owned());
+    let records = Bytes::from(format!("{{{}}}", fields.join(",")));
+    let tight = ShredLimits {
+        admitted: 0,
+        ..ShredLimits::new(10)
+    };
+    let chunk = chunks(&[records], 1 << 20).unwrap().remove(0);
+    let observed = parse(chunk, tight, &tight.beyond()).unwrap();
+    assert!(observed.exact && observed.record.is_none());
+    assert_eq!(observed.shape.columns(), 6);
+}
+
+#[test]
 fn an_observation_past_its_chunk_s_room_and_the_flush_s_is_refused_naming_the_flush_s() {
     // Ten columns of 400-byte names take more than the room of ten columns' shapes.
     let fields: Vec<String> = (0..10)
