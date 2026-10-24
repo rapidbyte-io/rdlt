@@ -1,5 +1,6 @@
-//! Row ids held to the ids recorded before values were read where they lie: a row's id decides
-//! which row a merge replaces, so it must not change between versions of the engine.
+//! History versions' hashes held to those recorded before values were read where they lie: a
+//! version's hash decides whether a change opens a new version, so it must not change between
+//! versions of the engine.
 
 use std::sync::Arc;
 
@@ -15,7 +16,7 @@ use arrow_array::{
 use arrow_buffer::{NullBuffer, OffsetBuffer, ScalarBuffer, i256};
 use arrow_schema::{DataType, Field, Fields, TimeUnit as U};
 
-use super::super::root_ids;
+use super::super::version_hashes;
 use super::vectors::RECORDED;
 
 /// Whole numbers at the edges of every width, a null among them.
@@ -175,7 +176,7 @@ fn nested(column: &ArrayRef) -> Vec<ArrayRef> {
     vec![Arc::new(lists), Arc::new(structs)]
 }
 
-/// Every shape `column` is given an id in, by what the shape is called: whole and sliced,
+/// Every shape `column` is hashed in, by what the shape is called: whole and sliced,
 /// behind keys, as runs and nested.
 fn shapes(column: &ArrayRef) -> Vec<(&'static str, Vec<ArrayRef>)> {
     let sliced = |arrays: &[ArrayRef]| -> Vec<ArrayRef> {
@@ -190,10 +191,10 @@ fn shapes(column: &ArrayRef) -> Vec<(&'static str, Vec<ArrayRef>)> {
     ]
 }
 
-/// A digest of the ids of the rows of each of `columns`, each a batch of one column; nothing
-/// where a column has no ids.
+/// A digest of the version hashes of the rows of each of `columns`, each a batch of one column;
+/// nothing where a column has none.
 pub(super) fn digest(columns: &[ArrayRef]) -> Option<u64> {
-    // FNV-1a over each id's length and bytes, a null id as a length no id has.
+    // FNV-1a over each hash's length and bytes, a null hash as a length no hash has.
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
     let mut fold = |bytes: &[u8]| {
         for byte in bytes {
@@ -202,21 +203,21 @@ pub(super) fn digest(columns: &[ArrayRef]) -> Option<u64> {
     };
     for column in columns {
         let batch = RecordBatch::try_from_iter([("c", Arc::clone(column))]).expect("a batch");
-        let ids: BinaryArray = root_ids(&batch, &[]).ok()?;
-        for row in 0..ids.len() {
-            if ids.is_null(row) {
+        let hashes: BinaryArray = version_hashes(&batch).ok()?;
+        for row in 0..hashes.len() {
+            if hashes.is_null(row) {
                 fold(&u64::MAX.to_le_bytes());
             } else {
-                let id = ids.value(row);
-                fold(&u64::try_from(id.len()).expect("a length").to_le_bytes());
-                fold(id);
+                let hash = hashes.value(row);
+                fold(&u64::try_from(hash.len()).expect("a length").to_le_bytes());
+                fold(hash);
             }
         }
     }
     Some(hash)
 }
 
-/// Every column an id was first recorded for, by its name.
+/// Every column a hash was first recorded for, by its name.
 fn first() -> Vec<(String, ArrayRef)> {
     let mut columns: Vec<(String, ArrayRef)> = types()
         .iter()
@@ -403,7 +404,7 @@ fn later_shapes(column: &ArrayRef) -> Vec<(&'static str, Vec<ArrayRef>)> {
     ]
 }
 
-/// What each shape of each column is called and the digest of its ids, in the order they were
+/// What each shape of each column is called and the digest of its hashes, in the order they were
 /// recorded: the first columns in their first shapes, then the later columns in those, then
 /// every column in the later shapes.
 pub(super) fn every() -> Vec<(String, Option<u64>)> {
@@ -423,9 +424,13 @@ pub(super) fn every() -> Vec<(String, Option<u64>)> {
 }
 
 #[test]
-fn every_type_and_encoding_has_the_id_it_was_recorded_with() {
+fn every_type_and_encoding_has_the_version_hash_it_was_recorded_with() {
     let every = every();
-    assert_eq!(every.len(), RECORDED.len(), "every recorded id is compared");
+    assert_eq!(
+        every.len(),
+        RECORDED.len(),
+        "every recorded hash is compared"
+    );
     for ((name, digest), (label, recorded)) in every.iter().zip(RECORDED) {
         // The first labels are the types' names as they were when recorded; the order decides.
         let shape = name.rsplit(' ').next().expect("a shape");
