@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use rdlt_connector::{ConnectorError, ConnectorErrorKind, StreamName};
 
-use super::{Error, ErrorKind, Side};
+use super::{Error, ErrorKind, Origin, Side};
 use crate::scope::ScopeError;
 
 fn connector(kind: ConnectorErrorKind) -> ConnectorError {
@@ -40,6 +40,66 @@ fn connector_errors_map_to_engine_kinds_by_side() {
         assert_eq!(error.kind(), expected, "{kind:?} from {side:?}");
         assert_eq!(error.is_retryable(), retryable, "{kind:?} from {side:?}");
         assert_eq!(error.code(), Some("x.code"));
+        assert_eq!(error.origin(), side.origin(), "{kind:?} from {side:?}");
+        assert_eq!(error.report().origin, side.origin());
+    }
+}
+
+#[test]
+fn no_connector_error_has_the_engine_s_origin() {
+    use ConnectorErrorKind as K;
+    let kinds = [
+        K::Config,
+        K::Auth,
+        K::Transient,
+        K::RateLimited,
+        K::Data,
+        K::Unsupported,
+        K::Fenced,
+        K::Stopped,
+        K::Internal,
+    ];
+    let codes = [
+        None,
+        Some("x.code"),
+        Some("deadline_exceeded"),
+        Some("state_invalid"),
+    ];
+    for kind in kinds {
+        for code in codes {
+            for (side, origin) in [
+                (Side::Source, Origin::Source),
+                (Side::Destination, Origin::Destination),
+            ] {
+                let mut raised = ConnectorError::new(kind, "the connector failed");
+                if let Some(code) = code {
+                    raised = raised.with_code(code);
+                }
+                let error = Error::connector(side, "doing something", raised);
+                assert_eq!(error.origin(), origin, "{kind:?} {code:?} from {side:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_connector_error_coded_deadline_exceeded_is_the_connector_s() {
+    for (side, origin) in [
+        (Side::Source, Origin::Source),
+        (Side::Destination, Origin::Destination),
+    ] {
+        // Its words and its cause's are the engine's wait's, and it is still the connector's.
+        let said = "the commit took longer than the engine's wait of 30s";
+        let cause = Driver {
+            text: said.to_owned(),
+            source: None,
+        };
+        let late = ConnectorError::new(ConnectorErrorKind::Transient, said)
+            .with_code(rdlt_connector::DEADLINE_EXCEEDED)
+            .with_source(cause);
+        let error = Error::connector(side, "committing", late);
+        assert_eq!(error.origin(), origin, "from {side:?}");
+        assert!(error.is_retryable());
     }
 }
 
@@ -142,6 +202,8 @@ fn engine_errors_have_their_kinds_and_no_cause() {
     ];
     for (error, kind) in cases {
         assert_eq!(error.kind(), kind);
+        assert_eq!(error.origin(), Origin::Engine);
+        assert_eq!(error.report().origin, Origin::Engine);
         assert!(!error.is_retryable());
         assert!(error.source().is_none());
         assert!(error.report().causes.is_empty());
@@ -331,4 +393,23 @@ fn a_full_disk_under_the_log_is_retryable_and_says_so() {
         assert_eq!(error.code(), None, "{lasting:?}");
         assert!(!error.is_retryable(), "{lasting:?}");
     }
+}
+
+#[test]
+fn a_report_serializes_as_an_embedder_reads_it() {
+    let stream = StreamName::new("orders").unwrap();
+    let driver = Driver {
+        text: "duplicate key value violates unique constraint".to_owned(),
+        source: None,
+    };
+    let refused = ConnectorError::data("the batch was refused")
+        .with_code("pg.unique_violation")
+        .with_source(driver);
+    let destination =
+        Error::connector(Side::Destination, "writing a batch", refused).with_stream(&stream);
+    let engine = Error::schema("stream orders: column total cannot hold text")
+        .with_code("schema_frozen")
+        .with_stream(&stream);
+    let reports = [destination.report(), engine.report()];
+    insta::assert_snapshot!(serde_json::to_string_pretty(&reports).expect("reports serialize"));
 }

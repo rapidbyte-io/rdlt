@@ -9,10 +9,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rdlt_connector::limits::{MAX_ERROR_CAUSES, MAX_ERROR_TEXT_BYTES};
-use rdlt_connector::{ConnectorError, ConnectorErrorKind, StreamName};
+use rdlt_connector::{ConnectorError, ConnectorErrorKind, DEADLINE_EXCEEDED, StreamName};
 use serde::Serialize;
 
 use crate::budget::Exhausted;
+use crate::deadline::Expired;
 use crate::limits::{
     BUDGET_WAIT_EXCEEDED, WAL_FENCED, WAL_NOT_PRIVATE, WAL_RUNNING, WAL_STORAGE_FULL,
     WAL_STORE_OTHER, WAL_STRAY,
@@ -44,6 +45,18 @@ pub enum ErrorKind {
     Memory,
 }
 
+/// Who failed: the engine, or the connector on one side of it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Origin {
+    /// The engine: every error it builds, its own wait for a connector's call among them.
+    Engine,
+    /// The source connector, or the host serving it: an error it or its host raised.
+    Source,
+    /// The destination connector, or the host serving it: an error it or its host raised.
+    Destination,
+}
+
 /// Which connector a [`ConnectorError`] came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Side {
@@ -53,9 +66,28 @@ pub(crate) enum Side {
     Destination,
 }
 
-/// An engine failure: a kind, a one-line context naming its subject, and the cause.
+impl Side {
+    /// Who failed where an error came from this side's connector.
+    pub(crate) fn origin(self) -> Origin {
+        match self {
+            Self::Source => Origin::Source,
+            Self::Destination => Origin::Destination,
+        }
+    }
+
+    /// The kind of a failure of this side's that no other kind describes.
+    fn kind(self) -> ErrorKind {
+        match self {
+            Self::Source => ErrorKind::Source,
+            Self::Destination => ErrorKind::Destination,
+        }
+    }
+}
+
+/// An engine failure: a kind, who failed, a one-line context naming its subject, and the cause.
 pub struct Error {
     kind: ErrorKind,
+    origin: Origin,
     context: String,
     stream: Option<StreamName>,
     code: Option<Arc<str>>,
@@ -68,6 +100,7 @@ impl Error {
     pub(crate) fn new(kind: ErrorKind, context: impl Into<String>) -> Self {
         Self {
             kind,
+            origin: Origin::Engine,
             context: context.into(),
             stream: None,
             code: None,
@@ -196,26 +229,32 @@ impl Error {
         .with_code(WAL_STORE_OTHER)
     }
 
-    /// Classifies a connector's `error` from `side`, keeping it as the cause.
+    /// Classifies a connector's `error` from `side`, keeping it as the cause: the side failed.
     ///
     /// Configuration, credential and capability failures are [`ErrorKind::Config`]; a session a
     /// newer one fenced is [`ErrorKind::Fenced`]; everything else belongs to the side, a stop
     /// among it, since the engine knows which reads it stopped. Only transient and rate-limited
     /// failures are retryable, and only a rate limit keeps the wait it asks for. No connector's
     /// error is of the kind or code a wait on the memory budget fails with.
+    ///
+    /// A call the engine's wait ended is no connector's failure: it is the engine's, as
+    /// [`expired`](Self::expired) builds it.
     pub(crate) fn connector(side: Side, context: impl Into<String>, error: ConnectorError) -> Self {
         use ConnectorErrorKind as K;
+        if let Some(expired) = Expired::of(&error) {
+            return Self::expired(side, context, expired);
+        }
         let kind = match (error.kind(), side) {
             (K::Config | K::Auth | K::Unsupported, _) => ErrorKind::Config,
             (K::Fenced, Side::Destination) => ErrorKind::Fenced,
-            (_, Side::Source) => ErrorKind::Source,
-            (_, Side::Destination) => ErrorKind::Destination,
+            (_, side) => side.kind(),
         };
         let retry_after = error
             .retry_after()
             .filter(|_| error.kind() == K::RateLimited);
         Self {
             kind,
+            origin: side.origin(),
             context: context.into(),
             stream: None,
             // The budget's code is the engine's own: no connector's error carries it.
@@ -227,6 +266,16 @@ impl Error {
             retry_after,
             source: Some(Box::new(error)),
         }
+    }
+
+    /// The error for a call into `side`'s connector that the engine's wait ended, as `expired`
+    /// says: of the side's kind, coded `deadline_exceeded`, and retryable, since the next
+    /// attempt calls again.
+    fn expired(side: Side, context: impl Into<String>, expired: Expired) -> Self {
+        Self::new(side.kind(), context)
+            .with_code(DEADLINE_EXCEEDED)
+            .retryable()
+            .with_source(expired)
     }
 
     /// The failure, which a new attempt may mend.
@@ -260,6 +309,11 @@ impl Error {
     /// The failure's kind.
     pub fn kind(&self) -> ErrorKind {
         self.kind
+    }
+
+    /// Who failed.
+    pub fn origin(&self) -> Origin {
+        self.origin
     }
 
     /// The stream the failure belongs to, if it belongs to one.
@@ -299,6 +353,7 @@ impl Error {
         }
         ErrorReport {
             kind: self.kind,
+            origin: self.origin,
             stream: self.stream.as_ref().map(|stream| shown(stream)),
             code: self.code.as_deref().map(|code| shown(&code)),
             message: shown(&self.context),
@@ -323,6 +378,7 @@ impl fmt::Debug for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Error")
             .field("kind", &self.kind)
+            .field("origin", &self.origin)
             .field("context", &self.context)
             .field("stream", &self.stream)
             .field("code", &self.code)
@@ -350,11 +406,13 @@ impl ScopeError for Error {
     }
 }
 
-/// An [`Error`] as data: its kind, stream, code, message and causes.
+/// An [`Error`] as data: its kind, who failed, its stream, code, message and causes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ErrorReport {
     /// The failure's kind.
     pub kind: ErrorKind,
+    /// Who failed.
+    pub origin: Origin,
     /// The stream it belongs to.
     pub stream: Option<String>,
     /// Its machine code.

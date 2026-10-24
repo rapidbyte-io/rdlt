@@ -29,7 +29,7 @@ use tokio_util::sync::CancellationToken;
 use super::{Coordinator, CoordinatorParts, Cycle, PartitionRun, StreamRun};
 use crate::config::CommitPolicy;
 use crate::env::SystemEnv;
-use crate::error::{Error, ErrorKind};
+use crate::error::{Error, ErrorKind, Origin};
 use crate::lane::Lanes;
 use crate::naming::Naming;
 use crate::partition::{CursorHold, Latest, Progress, Seal};
@@ -1379,9 +1379,20 @@ async fn a_receipt_for_another_commit_fails_the_commit_before_the_log_settles_it
     harness.seal(0, 1, 3, PartitionState::Cursor(cursor(3)), None);
     harness.end(0, false);
     let error = ended(task).await.unwrap_err();
+    // The engine found the mismatch in what the destination answered.
     assert_eq!(
-        (error.kind(), error.code(), error.is_retryable()),
-        (ErrorKind::Destination, Some("receipt_mismatch"), false)
+        (
+            error.kind(),
+            error.origin(),
+            error.code(),
+            error.is_retryable()
+        ),
+        (
+            ErrorKind::Destination,
+            Origin::Engine,
+            Some("receipt_mismatch"),
+            false
+        )
     );
     assert!(harness.acks.lock().is_empty());
     assert_eq!(harness.log.lock().committed.commits, 0);
