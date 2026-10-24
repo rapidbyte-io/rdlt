@@ -7,6 +7,7 @@ mod tests;
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, LazyLock};
+use std::time::{Duration, Instant};
 
 use arrow_array::RecordBatch;
 use bytes::Bytes;
@@ -21,7 +22,13 @@ use serde::Deserialize;
 use serde_json::value::RawValue;
 use serde_json::{Deserializer, Value, json};
 
+use crate::env::{Env, InlineEnv};
+
 static REPLAYS: LazyLock<Mutex<BTreeMap<String, Replayed>>> = LazyLock::new(Mutex::default);
+
+/// The factory this process's replays connect through, made once: making one writes out its
+/// configuration's schema, work no counted run should repeat.
+static FACTORY: LazyLock<Box<dyn SourceFactory>> = LazyLock::new(replay_factory);
 
 /// What a replay pushes, in order.
 #[derive(Clone, Debug, PartialEq)]
@@ -110,6 +117,14 @@ pub(super) fn checkpointing(mut config: Value, every: NonZeroUsize) -> Value {
     config
 }
 
+/// `config`, the configuration of a replay source, following each partition as one that never
+/// ends, read incrementally: its share pushed `pace` apart on the bench's clock, then nothing until
+/// the read is stopped.
+pub(super) fn following(mut config: Value, pace: Duration) -> Value {
+    config["pace"] = json!(pace);
+    config
+}
+
 /// The factory of replay sources, to serve.
 pub fn replay_factory() -> Box<dyn SourceFactory> {
     source_factory::<Replay>()
@@ -158,7 +173,7 @@ pub(super) fn share(
 
 /// A replay source connected with `config`, whose replay is registered.
 pub(super) async fn connect_replay(config: Value) -> Arc<dyn Source> {
-    let source = replay_factory()
+    let source = FACTORY
         .connect(config, ConnectContext::new())
         .await
         .expect("the replay is registered");
@@ -167,8 +182,8 @@ pub(super) async fn connect_replay(config: Value) -> Arc<dyn Source> {
 
 /// Names the registered replay a [`Replay`] pushes, the partitions it pushes from, the streams
 /// it pushes, one of each where it names none, how many of them, the last, it cannot read again,
-/// none where it names none, and the pushes of a partition between its checkpoints, one where it
-/// names none.
+/// none where it names none, the pushes of a partition between its checkpoints, one where it
+/// names none, and the wait between a partition's pushes where it follows its partitions.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(super) struct ReplayConfig {
     name: String,
@@ -176,6 +191,7 @@ pub(super) struct ReplayConfig {
     streams: Option<NonZeroUsize>,
     unreplayable: Option<usize>,
     every: Option<NonZeroUsize>,
+    pace: Option<Duration>,
 }
 
 /// The source a replay's configuration connects.
@@ -185,6 +201,7 @@ pub(super) struct Replay {
     streams: NonZeroUsize,
     unreplayable: usize,
     every: NonZeroUsize,
+    pace: Option<Duration>,
 }
 
 impl Replay {
@@ -213,6 +230,7 @@ impl SourceConnector for Replay {
             streams: config.streams.unwrap_or(NonZeroUsize::MIN),
             unreplayable: config.unreplayable.unwrap_or(0),
             every: config.every.unwrap_or(NonZeroUsize::MIN),
+            pace: config.pace,
         })
     }
 
@@ -226,16 +244,18 @@ impl SourceConnector for Replay {
             streams.with(Events {
                 index,
                 replayable: index < replayable,
+                followed: self.pace.is_some(),
             })
         })
     }
 }
 
 /// The stream numbered `index` of a replay, named by [`stream_name`]: read in full where its
-/// source can read it again, incrementally otherwise.
+/// source can read it again and does not follow it, incrementally otherwise.
 struct Events {
     index: usize,
     replayable: bool,
+    followed: bool,
 }
 
 impl ReadStream<Replay> for Events {
@@ -243,26 +263,34 @@ impl ReadStream<Replay> for Events {
 
     fn spec(&self) -> StreamSpec {
         let spec = StreamSpec::new(stream_name(self.index));
-        if self.replayable {
-            spec.with_read_modes([ReadMode::Full])
-        } else {
-            spec.with_read_modes([ReadMode::Incremental])
-                .with_replayable(false)
+        match (self.replayable, self.followed) {
+            (true, false) => spec.with_read_modes([ReadMode::Full]),
+            (true, true) => spec.with_read_modes([ReadMode::Incremental]),
+            (false, _) => spec
+                .with_read_modes([ReadMode::Incremental])
+                .with_replayable(false),
         }
     }
 
     async fn partitions(&self, source: &Replay, _state: &StreamState) -> Result<Vec<Partition>> {
-        if source.partitions == NonZeroUsize::MIN {
-            return Ok(vec![Partition::single()]);
-        }
         let id = |index: usize| PartitionId::parse(index.to_string()).expect("a valid partition");
-        Ok((0..source.partitions.get())
-            .map(|index| Partition::new(id(index)))
-            .collect())
+        let partitions = if source.partitions == NonZeroUsize::MIN {
+            vec![Partition::single()]
+        } else {
+            (0..source.partitions.get())
+                .map(|index| Partition::new(id(index)))
+                .collect()
+        };
+        if self.followed {
+            return Ok(partitions.into_iter().map(Partition::unbounded).collect());
+        }
+        Ok(partitions)
     }
 
     /// Pushes the partition's share from `next`, the index of the push after its last
-    /// checkpoint, with a checkpoint after every `every`-th push of the share and after its last.
+    /// checkpoint, with a checkpoint after every `every`-th push of the share and after its last;
+    /// where the replay follows, its pushes `pace` apart, then, where the engine asks the read to
+    /// follow, nothing until it is stopped.
     async fn read(
         &self,
         source: &Replay,
@@ -276,7 +304,14 @@ impl ReadStream<Replay> for Events {
             _ => return Err(ConnectorError::config("no such partition")),
         };
         let share = source.share(self.index, index);
+        let mut due = InlineEnv.instant();
         for index in next.max(share.start)..share.end {
+            if let Some(pace) = source.pace {
+                if !paced(out, due).await {
+                    return Ok(());
+                }
+                due += pace;
+            }
             match &source.replayed {
                 Replayed::Batches(batches) => out.batch(batches[index].clone()).await?,
                 Replayed::Json(pushes) => out.json(pushes[index].clone()).await?,
@@ -287,7 +322,21 @@ impl ReadStream<Replay> for Events {
                 out.checkpoint(&pushed).await?;
             }
         }
+        if source.pace.is_some() && out.follows() {
+            out.stopped().await;
+        }
         Ok(())
+    }
+}
+
+/// Waits until `due` on the bench's clock: whether the read goes on, rather than being stopped.
+async fn paced(out: &Emitter<usize>, due: Instant) -> bool {
+    let wait = due.saturating_duration_since(InlineEnv.instant());
+    tokio::select! {
+        biased;
+        // A stop wins: the run is ending.
+        () = out.stopped() => false,
+        () = InlineEnv.sleep(wait) => true,
     }
 }
 

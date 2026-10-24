@@ -152,6 +152,23 @@ pub fn logical_bytes(batches: &[RecordBatch]) -> u64 {
         .sum()
 }
 
+/// The median of `samples`, the upper of the middle two of an even count, and their range, to
+/// three places; `unmeasured` where any is unknown or there are none.
+pub fn spread(samples: impl IntoIterator<Item = Option<f64>>) -> String {
+    let Some(mut samples) = samples.into_iter().collect::<Option<Vec<f64>>>() else {
+        return "unmeasured".to_owned();
+    };
+    samples.sort_by(f64::total_cmp);
+    match (
+        samples.first(),
+        samples.get(samples.len() / 2),
+        samples.last(),
+    ) {
+        (Some(low), Some(median), Some(high)) => format!("{median:.3} ({low:.3} to {high:.3})"),
+        _ => "unmeasured".to_owned(),
+    }
+}
+
 /// The 2.5th and 97.5th percentiles of `values`.
 fn interval(mut values: Vec<f64>) -> (f64, f64) {
     values.sort_by(f64::total_cmp);

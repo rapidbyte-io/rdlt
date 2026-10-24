@@ -6,7 +6,7 @@ use arrow_array::{ArrayRef, BooleanArray, Int64Array, RecordBatch, StringArray};
 use proptest::prelude::*;
 use stats_alloc::{INSTRUMENTED_SYSTEM, Stats};
 
-use super::{Allocations, Paired, counted, interval, logical_bytes};
+use super::{Allocations, Paired, counted, interval, logical_bytes, spread};
 
 #[test]
 #[expect(clippy::float_cmp, reason = "the median of these ratios is exact")]
@@ -169,4 +169,18 @@ fn allocations_render_each_count_and_the_bytes() {
         allocated.to_string(),
         "2.500 allocations, 0.250 reallocations, 312 bytes"
     );
+}
+
+#[test]
+fn a_spread_is_the_upper_median_and_the_range_or_unmeasured_where_any_sample_is_unknown() {
+    assert_eq!(
+        spread([Some(3.0), Some(1.0), Some(2.0)]),
+        "2.000 (1.000 to 3.000)"
+    );
+    assert_eq!(
+        spread([Some(4.0), Some(1.0), Some(3.0), Some(2.0)]),
+        "3.000 (1.000 to 4.000)"
+    );
+    assert_eq!(spread([Some(1.0), None]), "unmeasured");
+    assert_eq!(spread([]), "unmeasured");
 }

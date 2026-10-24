@@ -1,23 +1,25 @@
 use std::num::NonZeroUsize;
 use std::sync::Arc;
+use std::time::Duration;
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use bytes::Bytes;
 use proptest::prelude::*;
 use rdlt_connector::testing::certify_source;
 use rdlt_connector::{
-    ConnectContext, ConnectorErrorKind, Partition, PartitionId, PipelineId, ReadRequest,
+    ConnectContext, ConnectorErrorKind, Partition, PartitionId, PipelineId, ReadMode, ReadRequest,
     SourceEvent, StreamName, StreamState, partition_channel,
 };
 use serde_json::value::RawValue;
 use serde_json::{Value, json};
 
-use super::Replay;
+use super::{Replay, following};
 use crate::bench::runner::streams;
 use crate::bench::{
     CHUNK_BYTES, Corpus, Replayed, ipc_sink, null_sink, register, replay, replay_config,
     replay_factory, rows_pushed, shred, split_replay_config, stream_name,
 };
+use crate::env::{Env, InlineEnv};
 use crate::{Engine, EngineConfig, PipelinePlan, StreamPlan, SystemEnv};
 
 #[tokio::test]
@@ -341,4 +343,173 @@ async fn a_replay_of_rows_that_are_not_json_fails_its_read() {
         let error = source.read(request, sink).await.unwrap_err();
         assert_eq!(error.kind(), ConnectorErrorKind::Data);
     }
+}
+
+/// What a followed read of the first partition of `config`'s stream numbered `stream` sends,
+/// each event with when it arrived since the read started: `None` for a push, the cursor of a
+/// checkpoint; the read following where `follow` says.
+struct Followed {
+    sent: Vec<(Duration, Option<usize>)>,
+    /// Whether the read was still waiting an hour after its last event.
+    waited: bool,
+}
+
+/// Reads as [`Followed`] says, stopping the read an hour after its last event if it is still
+/// reading, and checks that it returns without an error.
+async fn read_followed(config: Value, stream: usize, follow: bool) -> Followed {
+    let source = replay_factory()
+        .connect(config, ConnectContext::new())
+        .await
+        .unwrap();
+    let (sink, mut feed) = partition_channel(NonZeroUsize::new(64).unwrap());
+    let partition = Partition::single().unbounded();
+    let request = ReadRequest::new(stream_name(stream), partition, None).following(follow);
+    let clock = InlineEnv;
+    let started = clock.instant();
+    let since = || clock.instant().saturating_duration_since(started);
+    let read = source.read(request, sink);
+    tokio::pin!(read);
+    let (mut sent, mut waited, mut ended) = (Vec::new(), false, None);
+    loop {
+        tokio::select! {
+            biased;
+            // Events first, so each the read sent is seen before its end.
+            event = feed.recv() => match event {
+                Some(SourceEvent::Push(_)) => sent.push((since(), None)),
+                Some(SourceEvent::Checkpoint { cursor, .. }) => {
+                    let cursor = serde_json::from_slice(cursor.bytes()).unwrap();
+                    sent.push((since(), Some(cursor)));
+                }
+                Some(other) => panic!("a replay sends pushes and checkpoints alone, not {other:?}"),
+                None => break,
+            },
+            read = &mut read, if ended.is_none() => ended = Some(read),
+            () = clock.sleep(Duration::from_hours(1)), if ended.is_none() => {
+                assert!(!waited, "a stopped read ends within an hour");
+                waited = true;
+                feed.stop();
+            }
+        }
+    }
+    match ended {
+        Some(read) => read.unwrap(),
+        None => read.await.unwrap(),
+    }
+    Followed { sent, waited }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_followed_replay_pushes_its_share_a_pace_apart_then_waits_until_stopped() {
+    register("followed", Replayed::Batches(ten_row_batches(6)));
+    let two = NonZeroUsize::new(2).unwrap();
+    let pace = Duration::from_secs(1);
+    let config = following(
+        split_replay_config("followed", NonZeroUsize::MIN, two),
+        pace,
+    );
+    // The second of two streams pushes the second half of six pushes.
+    let read = read_followed(config, 1, true).await;
+    let second = |seconds| Duration::from_secs(seconds);
+    let expected = [
+        (second(0), None),
+        (second(0), Some(4)),
+        (second(1), None),
+        (second(1), Some(5)),
+        (second(2), None),
+        (second(2), Some(6)),
+    ];
+    assert_eq!(read.sent, expected);
+    assert!(read.waited, "a followed read waits until it is stopped");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_followed_replay_not_asked_to_follow_returns_once_its_share_is_pushed() {
+    register("unfollowed", Replayed::Batches(ten_row_batches(3)));
+    let pace = Duration::from_secs(1);
+    let config = following(replay_config("unfollowed"), pace);
+    let read = read_followed(config, 0, false).await;
+    let checkpoints: Vec<(Duration, usize)> = read
+        .sent
+        .iter()
+        .filter_map(|(at, cursor)| cursor.map(|cursor| (*at, cursor)))
+        .collect();
+    let second = |seconds| Duration::from_secs(seconds);
+    assert_eq!(
+        checkpoints,
+        [(second(0), 1), (second(1), 2), (second(2), 3)]
+    );
+    assert!(
+        !read.waited,
+        "a read not asked to follow returns once caught up"
+    );
+}
+
+#[tokio::test]
+async fn a_followed_replay_plans_one_unbounded_partition_a_stream_read_incrementally() {
+    register("planned-followed", Replayed::Batches(ten_row_batches(4)));
+    let two = NonZeroUsize::new(2).unwrap();
+    let config = split_replay_config("planned-followed", NonZeroUsize::MIN, two);
+    let source = replay_factory()
+        .connect(
+            following(config, Duration::from_secs(1)),
+            ConnectContext::new(),
+        )
+        .await
+        .unwrap();
+    let catalog = source.discover().await.unwrap();
+    for index in 0..2 {
+        let stream = stream_name(index);
+        let spec = catalog.get(&stream).unwrap();
+        assert_eq!(spec.read_modes(), [ReadMode::Incremental]);
+        assert!(spec.is_replayable());
+        let planned = source.plan(&stream, &StreamState::default()).await.unwrap();
+        assert_eq!(planned.partitions, [Partition::single().unbounded()]);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_followed_replay_resumes_after_each_checkpoint() {
+    register("certified-followed", Replayed::Batches(ten_row_batches(5)));
+    let config = following(replay_config("certified-followed"), Duration::from_secs(1));
+    certify_source::<Replay>(config).await.assert_passed();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_followed_replay_stopped_between_its_pushes_returns_at_once() {
+    register("stopped-followed", Replayed::Batches(ten_row_batches(3)));
+    let config = following(replay_config("stopped-followed"), Duration::from_hours(1));
+    let source = replay_factory()
+        .connect(config, ConnectContext::new())
+        .await
+        .unwrap();
+    let (sink, mut feed) = partition_channel(NonZeroUsize::new(64).unwrap());
+    let partition = Partition::single().unbounded();
+    let request = ReadRequest::new(stream_name(0), partition, None).following(true);
+    let clock = InlineEnv;
+    let read = source.read(request, sink);
+    tokio::pin!(read);
+    let mut events = 0;
+    while events < 2 {
+        tokio::select! {
+            biased;
+            // The first push and its checkpoint come before the read could end.
+            event = feed.recv() => {
+                assert!(event.is_some(), "the first push and its checkpoint are sent");
+                events += 1;
+            }
+            read = &mut read => panic!("the read ended before it was stopped: {read:?}"),
+            () = clock.sleep(Duration::from_secs(1)) => panic!("the first push comes at once"),
+        }
+    }
+    feed.stop();
+    tokio::select! {
+        biased;
+        // The read's end wins: one stopped while it waits for its next push returns at once.
+        read = &mut read => read.unwrap(),
+        () = clock.sleep(Duration::from_secs(1)) => panic!("a stopped read returns at once"),
+    }
+    assert!(
+        feed.recv().await.is_none(),
+        "nothing is pushed once stopped"
+    );
 }

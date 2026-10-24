@@ -18,6 +18,7 @@ mod replay;
 mod resident;
 mod runner;
 mod sink;
+mod tables;
 mod tally;
 #[cfg(test)]
 mod tests;
@@ -46,7 +47,7 @@ pub use loading::{Load, Loading};
 pub use logged::Logged;
 pub use lowering::Lowering;
 pub use matrix::{Cadence, Cell};
-pub use measure::{Allocations, Paired, counted, logical_bytes};
+pub use measure::{Allocations, Paired, counted, logical_bytes, spread};
 pub use merged::{Merged, Staging};
 pub use mix::Mix;
 pub use mixed::Mixed;
@@ -60,6 +61,7 @@ pub use replay::{
 };
 pub use resident::{Resident, reset_peak, resident_kib};
 pub use sink::{SinkSession, SinkWriter, Sinking, ipc_sink, null_sink, sink_factory, written};
+pub use tables::{Metered, Schedule, Tables, TablesCell, phases};
 pub use tally::{Staged, staged};
 pub use wide::{Form, Wide};
 pub use zipf::Zipf;
