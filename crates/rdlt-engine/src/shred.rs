@@ -190,7 +190,10 @@ impl Shredding {
 /// what it was admitted for; a chunk whose builders would take more is observed instead.
 ///
 /// A chunk where the fast parse may have rounded an integer, or misread a vast exponent, is parsed
-/// again with its numbers exact, unless `limits` has every chunk parsed exactly from its start.
+/// again with its numbers exact, unless `limits` has every chunk parsed exactly from its start; so
+/// is one it refuses, since it stops at the first value it refuses, may have read a vast exponent
+/// before that value as zero, and checks a record is text only as far as it reads: the exact
+/// parse refuses the record as it would wherever its chunk was cut.
 fn parse(chunk: Chunk, limits: ShredLimits, beyond: &Arc<Beyond>) -> Result<Parsed, ShredError> {
     let (mut exact, mut counts) = (limits.exact, ShredCounts::default());
     let allowance = count(chunk.bytes()).saturating_mul(limits.admitted);
@@ -206,7 +209,14 @@ fn parse(chunk: Chunk, limits: ShredLimits, beyond: &Arc<Beyond>) -> Result<Pars
                 context: &context,
             };
             visit(bytes, RecordSeed(row), exact, &context)
-        })?;
+        });
+        let appended = match appended {
+            Err(_) if !exact => {
+                exact = true;
+                continue;
+            }
+            appended => appended?,
+        };
         if appended.tripped {
             drop(record);
             counts.tripped = counts.tripped.saturating_add(1);
@@ -232,7 +242,7 @@ fn parse(chunk: Chunk, limits: ShredLimits, beyond: &Arc<Beyond>) -> Result<Pars
 }
 
 /// Observes `chunk`'s values, exactly where `exact` says or where the fast parse may have misread a
-/// number, building nothing; `counts` are the passes over it before.
+/// number or refuses a record, building nothing; `counts` are the passes over it before.
 fn observed(
     chunk: Chunk,
     (mut exact, mut counts): (bool, ShredCounts),
@@ -251,7 +261,15 @@ fn observed(
                 context: &context,
             };
             visit(bytes, RecordSeed(row), exact, &context)
-        })?;
+        });
+        let appended = match appended {
+            Err(_) if !exact => {
+                context.meter.give_back();
+                exact = true;
+                continue;
+            }
+            appended => appended?,
+        };
         if appended.imprecise && !exact {
             context.meter.give_back();
             exact = true;

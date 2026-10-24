@@ -9,7 +9,6 @@ use bytes::Bytes;
 use proptest::prelude::*;
 use rdlt_connector::{DecimalType, LogicalType, TableSchema};
 
-use super::ShredLimits;
 use super::differential::shredded_within;
 use crate::error::{Code, codes};
 
@@ -258,21 +257,6 @@ fn column(batch: &RecordBatch) -> (LogicalType, Vec<String>) {
     (logical, values)
 }
 
-/// The ways a push is shredded: a chunk a record within the engine's allowance, one chunk with
-/// room for whatever it holds, and a chunk a record parsed exactly.
-fn ways() -> [(usize, ShredLimits); 3] {
-    let engine = super::tests::limits();
-    let roomy = ShredLimits {
-        admitted: 1 << 20,
-        ..engine
-    };
-    let exactly = ShredLimits {
-        exact: true,
-        ..roomy
-    };
-    [(1, engine), (1 << 20, roomy), (1, exactly)]
-}
-
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(rdlt_testkit::cases(512)))]
 
@@ -290,7 +274,7 @@ proptest! {
             .collect();
         let push = records.join("\n");
         let expected = expected(&numbers);
-        for (chunk_bytes, limits) in ways() {
+        for (chunk_bytes, limits) in super::tests::ways() {
             let shredded = shredded_within(&[Bytes::from(push.clone())], chunk_bytes, limits)
                 .map(|batch| column(&batch.expect("a record a number")));
             prop_assert_eq!(&shredded, &expected, "{} in chunks of {}", push, chunk_bytes);

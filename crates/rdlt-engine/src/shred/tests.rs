@@ -20,6 +20,21 @@ pub(crate) fn limits() -> ShredLimits {
     ShredLimits::new(SCHEMA_COLUMNS)
 }
 
+/// The ways a push is shredded whose answer must be one: a chunk a record within the engine's
+/// allowance, one chunk with room for whatever it holds, and a chunk a record parsed exactly.
+pub(super) fn ways() -> [(usize, ShredLimits); 3] {
+    let engine = limits();
+    let roomy = ShredLimits {
+        admitted: 1 << 20,
+        ..engine
+    };
+    let exactly = ShredLimits {
+        exact: true,
+        ..roomy
+    };
+    [(1, engine), (1 << 20, roomy), (1, exactly)]
+}
+
 /// The first chunk of `text`, parsed with room to build whatever it holds.
 fn parsed(text: &str) -> Parsed {
     let records = Bytes::from(text.to_owned());
@@ -501,6 +516,41 @@ fn a_number_reads_alike_whether_or_not_its_chunk_is_parsed_exactly() {
                 );
             }
             (fast, beside) => assert_eq!(fast.err(), beside.err(), "{number}"),
+        }
+    }
+}
+
+#[test]
+fn a_record_refused_for_more_than_one_reason_is_refused_alike_whichever_way_it_is_parsed() {
+    // The fast parse stops at the first value it refuses, reads a vast exponent as zero and checks
+    // text only as far as it reads; the exact parse first checks the record is text.
+    let too_deep = nested(NESTING_DEPTH + 1, "[", "]");
+    let too_deep = format!("{}{}", &too_deep[..too_deep.len() - 1], ",\"b\":\"");
+    for (record, code) in [
+        (b"1\xee".to_vec(), codes::JSON_INVALID),
+        (
+            b"{\"a\":1,\"a\":2,\"b\":\"\xff\"}".to_vec(),
+            codes::JSON_INVALID,
+        ),
+        (
+            [too_deep.as_bytes(), b"\xff\"}"].concat(),
+            codes::JSON_INVALID,
+        ),
+        (
+            b"{\"a\":1e-1234567890123456789,\"b\":1,\"b\":2}".to_vec(),
+            codes::LIMIT_EXCEEDED,
+        ),
+    ] {
+        let text = String::from_utf8_lossy(&record).into_owned();
+        let pushes = [Bytes::from(record)];
+        // And observed from the start, with no room to build anything.
+        let observed = ShredLimits {
+            admitted: 0,
+            ..limits()
+        };
+        for (chunk_bytes, limits) in ways().into_iter().chain([(1 << 20, observed)]) {
+            let refused = super::differential::shredded_within(&pushes, chunk_bytes, limits);
+            assert_eq!(refused.err(), Some(code), "{text} {limits:?}");
         }
     }
 }
