@@ -101,6 +101,10 @@ pub(crate) const TABLE_RECORDS: u64 = 4 << 10;
 /// built.
 pub(crate) const MAX_CELLS: u64 = 1 << 25;
 
+/// Bytes a JSON push is admitted for, for the batches it becomes, for each byte of its records:
+/// its charge less the text itself, which is what each chunk's speculative build may take.
+pub(crate) const JSON_ADMITTED: u64 = rdlt_connector::cost::JSON_CHARGE - 1;
+
 /// Bytes: the most of a record's content an error quotes, a key or a number, shown as text a
 /// connector sent is.
 pub(crate) const QUOTED_BYTES: usize = 128;

@@ -17,11 +17,11 @@ use serde_json::{Value, json};
 
 use super::connectors::Replay;
 use super::runner::streams;
-use super::{CHUNK_BYTES, Corpus, PUSH_BYTES};
+use super::{ADMITTED, CHUNK_BYTES, Corpus, PUSH_BYTES, Parse};
 use super::{
     Refused, Replayed, SinkWriter, Sinking, check_json, ipc_sink, json_column, normalize,
     null_sink, pruned, register, replay, replay_config, replay_factory, rows_pushed, shred,
-    shred_counted, shred_on, sink_factory, split_replay_config, stream_name,
+    shred_counted, shred_on, shred_with, sink_factory, split_replay_config, stream_name,
 };
 use crate::compute::Cores;
 use crate::env::Env;
@@ -69,6 +69,44 @@ fn counting_a_shred_counts_one_parse_a_chunk_of_plain_rows() {
     let counts = shred_counted(&pushes, CHUNK_BYTES).unwrap();
     assert_eq!(counts.parsed, 4);
     assert_eq!((counts.tripped, counts.rebuilt, counts.exact), (0, 0, 0));
+}
+
+/// `batches` as one batch.
+fn joined(batches: &[RecordBatch]) -> RecordBatch {
+    arrow_select::concat::concat_batches(&batches[0].schema(), batches).unwrap()
+}
+
+#[test]
+fn shredding_any_way_the_engine_may_gives_the_batches_it_gives() {
+    // Each cliff corpus drifts, trips its allowance or needs exact numbers, over several chunks.
+    for corpus in Corpus::CLIFFS {
+        let pushes = corpus.pushes(1 << 20);
+        let engine = joined(&shred(&pushes, 64 << 10).unwrap());
+        assert!(engine.num_rows() > 1000, "{}", corpus.name());
+        for (chunk_bytes, admitted, parse) in [
+            (64 << 10, ADMITTED, Parse::Fast),
+            (1 << 20, 1 << 20, Parse::Fast),
+            (64 << 10, 1 << 20, Parse::Exact),
+            (64 << 10, ADMITTED, Parse::Exact),
+        ] {
+            let shredded = joined(&shred_with(&pushes, chunk_bytes, admitted, parse).unwrap());
+            assert_eq!(
+                shredded,
+                engine,
+                "{} {chunk_bytes} {admitted} {parse:?}",
+                corpus.name()
+            );
+        }
+    }
+}
+
+#[test]
+fn a_way_of_shredding_takes_its_allowance_and_parse() {
+    let fast = super::limits(7, Parse::Fast);
+    assert_eq!((fast.admitted, fast.exact), (7, false));
+    let exact = super::limits(ADMITTED, Parse::Exact);
+    assert_eq!((exact.admitted, exact.exact), (ADMITTED, true));
+    assert_eq!(exact.columns, rdlt_wire::limits::SCHEMA_COLUMNS);
 }
 
 #[test]
