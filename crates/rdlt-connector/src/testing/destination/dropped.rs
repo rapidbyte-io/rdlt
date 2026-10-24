@@ -62,7 +62,7 @@ impl Bench<'_> {
     }
 
     /// The commit of `load`, in a session opened at `epoch`, that drops the clause's table.
-    fn dropping(&self, load: u8, epoch: Epoch) -> CommitMeta {
+    pub(super) fn dropping(&self, load: u8, epoch: Epoch) -> CommitMeta {
         let table = self.table();
         CommitMeta {
             drop_tables: vec![DroppedTable {

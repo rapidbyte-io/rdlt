@@ -55,14 +55,9 @@ fn some(texts: &[&str]) -> Vec<Option<String>> {
 /// Whether every array of `part`'s lineage holds a value for each of its rows.
 fn lined_up(part: &Part) -> bool {
     let rows = part.batch.num_rows();
-    let lineage = &part.lineage;
-    let parent = lineage.parent.as_ref().map_or_else(Vec::new, |parent| {
-        vec![&parent.id, &parent.root, &parent.idx, &parent.row]
-    });
-    [&lineage.id, &lineage.root_row]
-        .into_iter()
-        .chain(parent)
-        .all(|array| array.len() == rows)
+    let arrays = part.lineage.arrays();
+    arrays.len() == if part.path.is_empty() { 1 } else { 4 }
+        && arrays.iter().all(|array| array.len() == rows)
 }
 
 #[test]

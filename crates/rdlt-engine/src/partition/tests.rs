@@ -228,6 +228,7 @@ pub(super) async fn on_pool(budget: MemoryBudget, pool: Pool) -> PartitionContex
         segments: Arc::new(AtomicU64::new(1)),
         buffer: NonZeroUsize::MIN,
         load_id,
+        epoch: rdlt_connector::Epoch(1),
         clock: Arc::new(LoadClock::new(UNIX_EPOCH)),
         env: Arc::clone(&env),
         pool,

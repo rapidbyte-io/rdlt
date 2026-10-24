@@ -1,6 +1,6 @@
 //! What putting or deleting one entry of state does to a pipeline's state.
 
-use super::{Epoch, NameMap, PipelineState, StateEntry, StateKey};
+use super::{Epoch, Identity, NameMap, PipelineState, StateEntry, StateKey};
 
 impl PipelineState {
     pub(super) fn put(&mut self, entry: StateEntry) {
@@ -54,10 +54,11 @@ impl PipelineState {
                 history,
                 key,
                 change_time,
+                identity,
             } => {
                 let state = self.tables.entry(table).or_default();
                 (state.sequences, state.history) = (Some(sequences), history);
-                (state.key, state.change_time) = (key, change_time);
+                (state.key, state.change_time, state.identity) = (key, change_time, identity);
             }
             StateEntry::Receipt(receipt) => self.last_receipt = Some(receipt),
             StateEntry::Origin(origin) => self.origin = Some(origin),
@@ -111,6 +112,7 @@ impl PipelineState {
                     state.history = false;
                     state.key.clear();
                     state.change_time = None;
+                    state.identity = Identity::Key;
                 }
             }
             StateKey::Receipt => self.last_receipt = None,

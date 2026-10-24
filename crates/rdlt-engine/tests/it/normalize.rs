@@ -5,14 +5,14 @@ use std::time::Duration;
 
 use arrow_array::Array;
 use arrow_array::cast::AsArray;
-use arrow_array::types::Int64Type;
+use arrow_array::types::{Int32Type, Int64Type};
 use arrow_array::{ArrayRef, Int64Array, ListArray, RecordBatch, StringArray, StructArray};
 use arrow_schema::Field;
 use rdlt_connector::{Destination, Field as RdltField, Fields, LogicalType, TableSchema};
 use rdlt_connector_reference::{published, schema};
 use rdlt_engine::{
-    BatchPolicy, ErrorKind, Nested, RunOutcome, RunStatus, SchemaPolicy, SchemaSettings,
-    StreamPlan, WriteMode,
+    BatchPolicy, ErrorKind, Nested, ResetScope, RunOutcome, RunStatus, SchemaPolicy,
+    SchemaSettings, StreamPlan, WriteMode,
 };
 use serde_json::{Value, json};
 
@@ -91,13 +91,13 @@ async fn arrays_land_in_child_tables_whose_rows_name_their_parents() {
     assert!(tags.iter().all(|parent| items.contains(parent)));
     let tag_roots = lineage("normalized", "events__items__tags", "_rdlt_root_id");
     assert!(tag_roots.iter().all(|root| roots.contains(root)));
-    let idx: Vec<i64> = published("normalized", "events__items__tags")
+    let idx: Vec<i32> = published("normalized", "events__items__tags")
         .iter()
         .flat_map(|batch| {
             let idx = batch
                 .column_by_name("_rdlt_idx")
                 .expect("child rows have a position");
-            idx.as_primitive::<Int64Type>().values().to_vec()
+            idx.as_primitive::<Int32Type>().values().to_vec()
         })
         .collect();
     assert_eq!(idx, [0, 1]);
@@ -178,17 +178,127 @@ async fn replace_swaps_a_streams_child_tables_in_with_its_table() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn ids_are_the_same_whenever_the_same_row_loads() {
+async fn a_merge_roots_id_is_its_keys_in_every_run_and_every_other_rows_its_position() {
     let push = r#"{"id":1,"items":[{"sku":"x"}]}"#;
-    let keyed = || BatchStream::json("events", &[push]).primary_key(&["id"]);
-    succeeded(&load("stable", vec![keyed()], vec![normalized("events")]).await);
-    succeeded(&load("stable", vec![keyed()], vec![normalized("events")]).await);
+    let merged = || normalized("events").write(WriteMode::Merge).key(["id"]);
+    let pushed = || BatchStream::json("events", &[push]);
+    succeeded(&load("stable", vec![pushed()], vec![merged()]).await);
+    let first = lineage("stable", "events", "_rdlt_id");
+    let first_items = lineage("stable", "events__items", "_rdlt_id");
+    succeeded(&load("stable", vec![pushed()], vec![merged()]).await);
     let roots = lineage("stable", "events", "_rdlt_id");
-    assert_eq!(roots.len(), 2);
-    assert_eq!(roots[0], roots[1], "one key, one id, in every run");
+    assert_eq!(
+        (first.len(), roots.len()),
+        (1, 1),
+        "the merge keeps one row"
+    );
+    assert_eq!(first, roots, "one key, one id, in every run");
+    assert_eq!(
+        roots[0].len(),
+        32,
+        "a merge root's id is the 32 bytes of its key's hash"
+    );
     let items = lineage("stable", "events__items", "_rdlt_id");
-    assert_eq!(items[0], items[1]);
-    assert_eq!(roots[0].len(), 32, "ids are the 32 bytes of BLAKE3");
+    assert_eq!(items.len(), 1, "the merge replaced its root's children");
+    assert_ne!(
+        first_items, items,
+        "a child's id is its position, of its session"
+    );
+    let item_roots = lineage("stable", "events__items", "_rdlt_root_id");
+    assert_eq!(item_roots, roots);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_merge_into_roots_identified_by_position_is_refused_until_the_streams_tables_reset() {
+    let store = "identity";
+    let push = r#"{"id":1,"items":[{"sku":"x"}]}"#;
+    let pushed = || vec![BatchStream::json("events", &[push]).primary_key(&["id"])];
+    let merged = || vec![normalized("events").write(WriteMode::Merge)];
+    // A load that does not merge takes a merged table, and identifies its rows by position.
+    succeeded(&load(store, pushed(), merged()).await);
+    succeeded(&load(store, pushed(), vec![normalized("events")]).await);
+    let refused = load(store, pushed(), merged()).await;
+    assert_eq!(refused.report.status, RunStatus::Failed);
+    let error = refused.error.expect("the merge is refused");
+    assert_eq!(
+        (error.kind(), error.code()),
+        (ErrorKind::Config, Some("table_identity_mismatch"))
+    );
+    assert_eq!(published_json(store, "events").len(), 2, "nothing changed");
+    let source = batches(store, pushed()).await;
+    engine(commit_every(1))
+        .reset(
+            store,
+            &["events"],
+            ResetScope::Tables,
+            source,
+            memory(store).await,
+        )
+        .await
+        .expect("the reset commits");
+    succeeded(&load(store, pushed(), merged()).await);
+    assert_eq!(published_json(store, "events"), [json!({"id": 1})]);
+    assert_eq!(
+        published_json(store, "events__items"),
+        [json!({"sku": "x"})]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn rows_loaded_twice_without_a_merge_are_identified_apart() {
+    let push = r#"{"id":1,"items":[{"sku":"x"}]}"#;
+    let pushed = || BatchStream::json("events", &[push]).primary_key(&["id"]);
+    succeeded(&load("twice", vec![pushed()], vec![normalized("events")]).await);
+    succeeded(&load("twice", vec![pushed()], vec![normalized("events")]).await);
+    for (table, rows) in [("events", 2), ("events__items", 2)] {
+        let ids = lineage("twice", table, "_rdlt_id");
+        assert_eq!(ids.len(), rows, "{table}");
+        assert_ne!(
+            ids[0], ids[1],
+            "{table}: each load's rows have ids of their own"
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn each_version_of_a_key_appended_names_only_its_own_children() {
+    let versions = [
+        r#"{"id":7,"v":1,"items":[{"sku":"a"},{"sku":"b"}]}"#,
+        r#"{"id":7,"v":2,"items":[{"sku":"c"}]}"#,
+    ]
+    .join("\n");
+    let pushed = BatchStream::json("events", &[&versions]).primary_key(&["id"]);
+    succeeded(&load("versions", vec![pushed], vec![normalized("events")]).await);
+    let roots: Vec<(Vec<u8>, i64)> = published("versions", "events")
+        .iter()
+        .flat_map(|batch| {
+            let ids = batch.column_by_name("_rdlt_id").expect("roots have ids");
+            let ids = ids.as_binary::<i32>();
+            let v = batch.column_by_name("v").expect("a version");
+            let v = v.as_primitive::<Int64Type>();
+            (0..batch.num_rows())
+                .map(|row| (ids.value(row).to_vec(), v.value(row)))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert_eq!(roots.len(), 2);
+    assert_ne!(roots[0].0, roots[1].0, "two versions of one key, two ids");
+    let parents = lineage("versions", "events__items", "_rdlt_parent_id");
+    let skus = published_json("versions", "events__items");
+    let joined = |version: i64| -> Vec<Value> {
+        let (root, _) = roots
+            .iter()
+            .find(|(_, v)| *v == version)
+            .expect("the version");
+        parents
+            .iter()
+            .zip(&skus)
+            .filter(|(parent, _)| *parent == root)
+            .map(|(_, sku)| sku.clone())
+            .collect()
+    };
+    assert_eq!(joined(1), [json!({"sku": "a"}), json!({"sku": "b"})]);
+    assert_eq!(joined(2), [json!({"sku": "c"})]);
 }
 
 #[tokio::test(start_paused = true)]

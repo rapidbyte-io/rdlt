@@ -5,8 +5,8 @@ use bytes::Bytes;
 use proptest::prelude::*;
 
 use super::{
-    NameConflict, NameMap, PartitionState, PipelineState, Sequences, StateChange, StateEntry,
-    StateError, StateKey, StateRecord, StreamState, TableState, Writing,
+    Identity, NameConflict, NameMap, PartitionState, PipelineState, Sequences, StateChange,
+    StateEntry, StateError, StateKey, StateRecord, StreamState, TableState, Writing,
 };
 use crate::commit::Receipt;
 use crate::cursor::Cursor;
@@ -86,6 +86,7 @@ fn sample_state() -> PipelineState {
             history: true,
             key: vec![ColumnPath::from("id")],
             change_time: Some(ColumnPath::from("at")),
+            identity: Identity::Position,
             exact: ["id".into()].into(),
         },
     );
@@ -186,6 +187,7 @@ fn table_entries(path: &TablePath, table: &TableState) -> Vec<StateEntry> {
             history: table.history,
             key: table.key.clone(),
             change_time: table.change_time.clone(),
+            identity: table.identity,
         });
     }
     entries
@@ -270,6 +272,7 @@ fn deleting_a_table_s_sequences_forgets_whose_they_are() {
     assert!(!state.tables[&table].history);
     assert!(state.tables[&table].key.is_empty());
     assert_eq!(state.tables[&table].change_time, None);
+    assert_eq!(state.tables[&table].identity, Identity::Key);
     assert!(state.tables[&table].schema.is_some());
     let engine = StateEntry::Sequences {
         table: table.clone(),
@@ -277,9 +280,11 @@ fn deleting_a_table_s_sequences_forgets_whose_they_are() {
         history: false,
         key: Vec::new(),
         change_time: None,
+        identity: Identity::Position,
     };
     state.apply(&StateChange::Put(engine.to_record())).unwrap();
     assert_eq!(state.tables[&table].sequences, Some(Sequences::Engine));
+    assert_eq!(state.tables[&table].identity, Identity::Position);
 }
 
 #[test]
@@ -292,6 +297,7 @@ fn a_table_s_sequences_say_whether_it_keeps_history_and_a_record_without_it_is_r
             history,
             key: vec![ColumnPath::from("id")],
             change_time: None,
+            identity: Identity::Key,
         };
         let record = entry.to_record();
         assert_eq!(StateEntry::from_record(&record).unwrap(), entry);
@@ -336,21 +342,21 @@ fn unreadable_records_are_typed_errors() {
         (
             StateRecord {
                 key: epoch.key.clone(),
-                value: Bytes::from_static(b"{\"v\":3,\"entry\":{}}"),
+                value: Bytes::from_static(b"{\"v\":2,\"entry\":{\"epoch\":1}}"),
             },
             StateError::UnsupportedVersion {
                 key: epoch.key.clone(),
-                version: 3,
+                version: 2,
             },
         ),
         (
             StateRecord {
                 key: epoch.key.clone(),
-                value: Bytes::from_static(b"{\"v\":3,\"entry\":{\"no\":[\"such\"]}}"),
+                value: Bytes::from_static(b"{\"v\":4,\"entry\":{\"no\":[\"such\"]}}"),
             },
             StateError::UnsupportedVersion {
                 key: epoch.key.clone(),
-                version: 3,
+                version: 4,
             },
         ),
         (
@@ -650,6 +656,7 @@ fn tables() -> impl Strategy<Value = std::collections::BTreeMap<TablePath, Table
                     },
                     change_time: (sequences >= 3)
                         .then(|| ColumnPath::from(columns.first().unwrap().as_str())),
+                    identity: [Identity::Key, Identity::Position][usize::from(sequences % 2)],
                     exact,
                 };
                 (TablePath::new([path]).unwrap(), state)
@@ -1154,6 +1161,7 @@ fn a_table_s_entries() -> [StateEntry; 3] {
             history: true,
             key: vec![ColumnPath::from("id"), city.clone()],
             change_time: Some(city),
+            identity: Identity::Position,
         },
     ]
 }
@@ -1164,7 +1172,7 @@ fn a_table_s_records_are_this_json() {
         (
             r#"{"schema":["orders","lines"]}"#,
             concat!(
-                r#"{"v":2,"entry":{"schema":{"table":["orders","lines"],"version":3,"schema":"#,
+                r#"{"v":3,"entry":{"schema":{"table":["orders","lines"],"version":3,"schema":"#,
                 r#"{"fields":[[{"name":"id","nullable":false,"type":"int64"}],"#,
                 r#"[{"name":"address","nullable":true,"type":{"struct":1}},"#,
                 r#"{"name":"city","nullable":true,"type":"utf8"}],"#,
@@ -1175,7 +1183,7 @@ fn a_table_s_records_are_this_json() {
         (
             r#"{"names":["orders","lines"]}"#,
             concat!(
-                r#"{"v":2,"entry":{"names":{"table":["orders","lines"],"#,
+                r#"{"v":3,"entry":{"names":{"table":["orders","lines"],"#,
                 r#""physical":"orders__lines","names":[[{"source":["id"]},"id"],"#,
                 r#"[{"variant":{"column":["address","city"],"kind":"int64"}},"#,
                 r#""address__city__int"]]}}}"#,
@@ -1184,9 +1192,9 @@ fn a_table_s_records_are_this_json() {
         (
             r#"{"sequences":["orders","lines"]}"#,
             concat!(
-                r#"{"v":2,"entry":{"sequences":{"table":["orders","lines"],"#,
+                r#"{"v":3,"entry":{"sequences":{"table":["orders","lines"],"#,
                 r#""sequences":"source","history":true,"key":[["id"],["address","city"]],"#,
-                r#""change_time":["address","city"]}}}"#,
+                r#""change_time":["address","city"],"identity":"position"}}}"#,
             ),
         ),
     ];

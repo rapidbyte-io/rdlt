@@ -20,7 +20,7 @@ use super::{
     schema_of, stamp,
 };
 use crate::budget::Shares;
-use crate::cost::{LINEAGE_ITEM, LINEAGE_ROW, SPLIT_COPIES};
+use crate::cost::{LINEAGE_ITEM, SPLIT_COPIES, lineage_row};
 use crate::error::Error;
 use crate::limits::MIN_PIECE;
 use crate::normalize::rounding::Rounding;
@@ -53,7 +53,7 @@ pub(super) async fn write_normalized(
     kind: PushKind,
 ) -> Result<(), Error> {
     let Units { units, room } = units;
-    let pieces = sliced(job, context, &room, units).await?;
+    let pieces = sliced(job, context, (&room, shape), units).await?;
     let mut flush = Flush::new(context, job.table, judged(job, &pieces, shape)?, kind);
     let request = room.shares(&context.budget).request;
     let last = pieces.len().saturating_sub(1);
@@ -149,14 +149,14 @@ pub(super) fn split_bounds(shares: Shares) -> (u64, u64) {
 async fn sliced(
     job: &PartitionJob,
     context: &PartitionContext,
-    room: &Room,
+    (room, shape): (&Room, &Shape),
     units: Vec<Held>,
 ) -> Result<Vec<Held>, Error> {
     let (max, limit) = split_bounds(room.shares(&context.budget));
     let lowered = Lowered {
         rendering: context.rendering.as_ref().clone(),
         stored: Vec::new(),
-        row: LINEAGE_ROW,
+        row: lineage_row(shape),
         item: LINEAGE_ITEM,
         // What the split makes is measured as rows expand, and may be twice that.
         max,
@@ -445,7 +445,8 @@ fn split(stream: &StreamName, parts: &[RecordBatch], shape: &Shape) -> Result<Ve
     let failed =
         |error: ArrowError| normalize::identity::unread(stream, "normalizing a batch", &error);
     let batch = arrow_select::concat::concat_batches(&parts[0].schema(), parts).map_err(failed)?;
-    // A row is identified by its key, so every row must hold one, and one that equals itself.
+    // A merge stream's root row is identified by its key, so every row must hold one, and one
+    // that equals itself.
     let mut columns = batch.columns().to_vec();
     for column in &shape.key {
         let Some(index) = batch.schema().index_of(column).ok() else {
@@ -474,10 +475,8 @@ pub(super) fn made(parts: &[Part], unit: &Allocations) -> u64 {
 /// that `made` did not hold yet, which then holds them too.
 pub(super) fn part_growth(part: &Part, unit: &Allocations, made: &mut Allocations) -> u64 {
     let lineage = &part.lineage;
-    let mut arrays = vec![&lineage.id, &lineage.root_row];
-    if let Some(parent) = &lineage.parent {
-        arrays.extend([&parent.id, &parent.root, &parent.idx, &parent.row]);
-    }
+    let mut arrays = lineage.arrays();
+    arrays.extend(&lineage.keys);
     let batch = made.add_beyond(&part.batch, unit);
     arrays
         .into_iter()

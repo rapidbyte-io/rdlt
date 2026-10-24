@@ -604,6 +604,9 @@ async fn json_pushes_compare_by_rows_not_formatting() {
 struct VaultConfig {
     store: String,
     static_epoch: bool,
+    /// Keeps its pipeline's epoch with its state: a commit that deletes the pipeline's last state
+    /// record starts its epochs again.
+    epoch_with_state: bool,
     miscount: bool,
     republish: bool,
     forget_state: bool,
@@ -1042,6 +1045,13 @@ impl VaultSession {
                 StateChange::Delete(_) if self.config.ignore_deletes => None,
                 StateChange::Delete(key) => state.remove(key),
             };
+        }
+        let deleted = meta
+            .state_delta
+            .iter()
+            .any(|change| matches!(change, StateChange::Delete(_)));
+        if self.config.epoch_with_state && deleted && state.is_empty() {
+            shared.epochs.remove(&self.pipeline);
         }
     }
 
@@ -1918,6 +1928,7 @@ const BROKEN: &[(&str, &[&str])] = &[
     ("history_ignores_order", &["D-HIST"]),
     ("history_hashes_its_own_way", &["D-HIST"]),
     ("static_epoch", &["D-EPOCH"]),
+    ("epoch_with_state", &["D-EPOCH"]),
     ("fold_names", &["D-NAMES"]),
     ("merge_cased_names", &["D-NAMES"]),
     ("fold_simply", &["D-NAMES"]),

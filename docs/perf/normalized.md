@@ -43,6 +43,26 @@ The runs whose flushes hold two or nine units take 24–33 % less time than the 
 hold one unit, moving the same rows, and allocate 9–10 % fewer times a row for 3 % fewer bytes. A
 run keeps 1.10–1.18 CPUs busy.
 
+## Ids by role
+
+A row that a merge does not identify by its key carries its position, from which lowering builds
+its id, where every root and item was hashed with BLAKE3 before. Against its base `51f61a9c`,
+2026-10-24, same machine, `normalized/keyless/50000` alone, on core 0 (one runtime worker and one
+compute thread), three rounds, base and change interleaved with the `normalize` group's, under
+the measurement lock, the one-minute load average 3.5, 1.7 and 1.4 at the base's starts; each
+round's criterion median:
+
+| Tree | Rounds | Allocations a row | Bytes a row |
+|---|---|---|---|
+| `51f61a9c` | 139.0, 139.6, 137.1 ms | 0.033 | 128 |
+| Ids by role | 56.0, 55.4, 55.4 ms | 0.032 | 76 |
+
+60 % less time a run (59.6–60.3 %), each round's change below every round of its base. Bytes a
+row fall 41 % at 50 000 rows a push, and from 133 and 129 to 74 at 2 000 and 10 000.
+`just resident`'s normalized lines grow less than its base's: 13, 13 and 14 MiB against 20, 20
+and 23 MiB at 2, 4 and 16 cores, and 15, 16 and 19 MiB against 23, 26 and 34 MiB with glibc's
+tunables, each peak 144 MiB.
+
 ## Ids hashed across the compute pool: closed
 
 Hashing a normalized split's ids in chunks of 4 096 rows, each chunk a job joined on the compute

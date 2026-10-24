@@ -21,7 +21,7 @@ use super::reserved_times;
 use crate::budget::MemoryBudget;
 use crate::error::Error;
 use crate::limits::MAX_PIECE_BYTES;
-use crate::normalize::{Lineage, Parent};
+use crate::normalize::Lineage;
 use crate::partition::PartitionContext;
 use crate::table::LoweringPlan;
 
@@ -125,7 +125,7 @@ impl Cutter {
                     table,
                     plan: Arc::clone(&plan),
                     batch,
-                    lineage: rows(&part.lineage, first, piece.rows),
+                    lineage: part.lineage.slice(first, piece.rows),
                     bytes: piece.bytes,
                 });
                 first += piece.rows;
@@ -205,20 +205,5 @@ impl Allowance {
             taken = Arc::clone(&self.permits).acquire_many_owned(all) => taken.map_err(closed)?,
         };
         Ok(self.taken(taken, each))
-    }
-}
-
-/// The `count` rows of `lineage` from `first`.
-fn rows(lineage: &Lineage, first: usize, count: usize) -> Lineage {
-    Lineage {
-        id: lineage.id.slice(first, count),
-        root_row: lineage.root_row.slice(first, count),
-        parent: lineage.parent.as_ref().map(|parent| Parent {
-            id: parent.id.slice(first, count),
-            root: parent.root.slice(first, count),
-            idx: parent.idx.slice(first, count),
-            path: parent.path.clone(),
-            row: parent.row.slice(first, count),
-        }),
     }
 }

@@ -4,6 +4,7 @@
 
 mod cells;
 mod exact;
+mod ids;
 mod slots;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -20,6 +21,7 @@ use crate::seed::Seed;
 use crate::workload::{Relaxed, Row, SimStream};
 use crate::world::World;
 use cells::{Cell, fields, read, text};
+use ids::Ids;
 use slots::Slot;
 
 /// Checks every table of `stream` against the model: its own table holds each of `groups`, rows
@@ -51,13 +53,11 @@ pub(super) fn check(
         world,
         stream,
         path: &root,
-        parents: &[],
         capabilities: &capabilities,
         at_most: stopped,
         seed,
     };
-    let (ids, held) = table.check(&slots, &lineage);
-    lineage.insert(root.clone(), ids);
+    let held = table.check(&slots, &mut lineage);
     let held: Vec<Row> = candidates
         .iter()
         .flat_map(|(ident, row)| {
@@ -96,44 +96,29 @@ fn check_children(
             .into_iter()
             .map(|path| (path.len(), path)),
     );
-    let tables: BTreeSet<Vec<String>> = paths.iter().map(|(_, path)| path.clone()).collect();
-    // Parents come first, so each child row's parent is known when it is read. A child's id derives
-    // from its parent's and its position alone, so sibling arrays' rows share ids: each table's are
-    // kept apart.
+    // Parents come first, so each child row's parent is known when it is read.
     for (_, path) in paths.iter().filter(|(depth, _)| *depth > 1) {
         let rows = expected.get(path).map_or(&[][..], Vec::as_slice);
-        // A child's parent is a row of a table whose path its own extends: the closest one
-        // holding the parent's id, as a column may be an array in some batches and an object
-        // holding one in others.
-        let parents: Vec<Vec<String>> = (1..path.len())
-            .rev()
-            .map(|length| path[..length].to_vec())
-            .filter(|prefix| tables.contains(prefix))
-            .collect();
         let table = Table {
             world,
             stream,
             path,
-            parents: &parents,
             capabilities,
             at_most: false,
             seed,
         };
-        let (ids, _) = table.check(&Slot::each(rows), &lineage);
-        lineage.insert(path.clone(), ids);
+        table.check(&Slot::each(rows), &mut lineage);
     }
 }
 
-/// Each table's rows' identities by their lineage ids.
-type Lineage = BTreeMap<Vec<String>, BTreeMap<String, String>>;
+/// The table and identity of every row the checked tables hold, by its lineage id.
+type Lineage = BTreeMap<String, (Vec<String>, String)>;
 
 /// One table being checked.
 struct Table<'a> {
     world: &'a World,
     stream: &'a SimStream,
     path: &'a [String],
-    /// The tables a child table's rows' parents may be rows of, closest first.
-    parents: &'a [Vec<String>],
     /// What the destination stores.
     capabilities: &'a Capabilities,
     /// Whether the table may hold each slot's rows fewer times than the slot says.
@@ -142,14 +127,10 @@ struct Table<'a> {
 }
 
 impl Table<'_> {
-    /// Checks the table's rows against `slots`; returns its rows' identities by lineage id, and
-    /// how often it holds each.
-    fn check(
-        &self,
-        slots: &[Slot<'_>],
-        lineage: &Lineage,
-    ) -> (BTreeMap<String, String>, BTreeMap<String, usize>) {
-        let mut ids = BTreeMap::new();
+    /// Checks the table's rows against `slots`, each row's parent found in `lineage`, which
+    /// then holds the table's rows too; returns how often it holds each.
+    fn check(&self, slots: &[Slot<'_>], lineage: &mut Lineage) -> BTreeMap<String, usize> {
+        let mut ids = Ids::new(self.merges_by_key());
         let mut held: BTreeMap<String, usize> = BTreeMap::new();
         let path = TablePath::new(self.path.iter().map(String::as_str))
             .expect("the model's table paths are valid");
@@ -160,7 +141,7 @@ impl Table<'_> {
                 "seed {}: table {path} is missing; the model expects {expected} rows",
                 self.seed,
             );
-            return (ids, held);
+            return held;
         };
         self.check_names(&published);
         self.check_exact(&published);
@@ -170,10 +151,11 @@ impl Table<'_> {
         }
         let mut findings = Vec::new();
         for row in &published.rows {
-            let Some(ident) = self.identity(row, &published, lineage, &mut ids) else {
+            let Some((ident, own)) = self.identity(row, &published, lineage) else {
                 findings.push("a row names no known parent".to_owned());
                 continue;
             };
+            findings.extend(own.and_then(|own| ids.record(own, &ident)));
             let columns = fields(row);
             for column in names::unnamed(&columns, &published.names, self.meta()) {
                 findings.push(format!(
@@ -204,18 +186,27 @@ impl Table<'_> {
             findings.len(),
             &findings[..findings.len().min(8)]
         );
-        (ids, held)
+        for (id, ident) in ids.into_rows() {
+            lineage.insert(id, (self.path.to_vec(), ident));
+        }
+        held
+    }
+
+    /// Whether the table's rows are a merge stream's roots, whose ids are their keys' hashes: a
+    /// key's rows share one, of which the merge keeps the last.
+    fn merges_by_key(&self) -> bool {
+        self.path.len() == 1 && self.stream.write == WriteMode::Merge
     }
 
     /// The identity of `row`: its root row's id and value, then the array positions leading to
-    /// it, read from its lineage; recording its own lineage id.
+    /// it, read from its lineage, its parent's id naming a row of a table whose path its own
+    /// extends; and its own lineage id.
     fn identity(
         &self,
         row: &Stored,
         published: &Published,
         lineage: &Lineage,
-        ids: &mut BTreeMap<String, String>,
-    ) -> Option<String> {
+    ) -> Option<(String, Option<String>)> {
         let fields: Vec<String> = row
             .row
             .schema()
@@ -230,11 +221,10 @@ impl Table<'_> {
             let [own, parent, _, idx] = &fields[fields.len() - 4..] else {
                 return None;
             };
-            let parent_id = text(&cell(parent));
-            let parent = self
-                .parents
-                .iter()
-                .find_map(|table| lineage.get(table)?.get(&parent_id))?;
+            let (table, parent) = lineage.get(&text(&cell(parent)))?;
+            if table.len() >= self.path.len() || !self.path.starts_with(table) {
+                return None;
+            }
             let idx = text(&cell(idx));
             let ident = format!("{parent}/{}[{idx}]", self.path.join("."));
             (ident, Some(own.clone()))
@@ -251,10 +241,7 @@ impl Table<'_> {
                     .then(|| fields[fields.len() - 1].clone()),
             )
         };
-        if let Some(own) = own {
-            ids.insert(text(&cell(&own)), ident.clone());
-        }
-        Some(ident)
+        Some((ident, own.map(|own| text(&cell(&own)))))
     }
 
     /// Compares `row`'s values with `template`'s, the row the model expects.
