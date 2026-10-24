@@ -5,7 +5,7 @@
 mod tests;
 
 use rdlt_connector::Role;
-use rdlt_connector::wire::v1;
+use rdlt_connector::wire::{PROTOCOL_VERSION, v1};
 use rdlt_wire::PROTOCOL_MAJOR;
 
 use super::{
@@ -13,9 +13,6 @@ use super::{
     wire_role,
 };
 use crate::target::Target;
-
-/// The code of a handshake at another major version.
-const PROTOCOL_VERSION: &str = "protocol_version";
 
 /// Major versions no connector speaks: none before the first, and none so far ahead.
 const OTHER_MAJORS: [u32; 2] = [0, u32::MAX];

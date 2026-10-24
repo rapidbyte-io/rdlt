@@ -1,7 +1,7 @@
 //! `D-OWNED`: a table belongs to the pipeline that created it.
 
 use super::{Bench, commit, expect_rows, meta};
-use crate::error::{ConnectorError, ConnectorErrorKind};
+use crate::error::{ConnectorError, ConnectorErrorKind, TABLE_OWNED};
 use crate::id::{GenerationId, PipelineId};
 use crate::testing::{Violation, bounded};
 use crate::{CommitMeta, OpenContext, TableChange};
@@ -63,8 +63,7 @@ impl Bench<'_> {
 fn owned(call: &str, outcome: Result<(), ConnectorError>) -> Result<(), Violation> {
     match outcome {
         Err(error)
-            if error.kind() == ConnectorErrorKind::Config
-                && error.code() == Some("table_owned") =>
+            if error.kind() == ConnectorErrorKind::Config && error.code() == Some(TABLE_OWNED) =>
         {
             Ok(())
         }

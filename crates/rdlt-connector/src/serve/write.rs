@@ -23,7 +23,7 @@ use super::service::{Service, invalid};
 use crate::destination::{DestinationWriter, TableRef};
 use crate::error::{ConnectorError, ConnectorErrorKind};
 use crate::id::SegmentId;
-use crate::wire::{Invalid, error, frame_error, status, v1};
+use crate::wire::{INVALID_MESSAGE, Invalid, error, frame_error, status, v1};
 
 /// Starts serving the write the engine's first frame asks for.
 pub(super) async fn serve(
@@ -189,7 +189,7 @@ impl Receiving {
                     ConnectorErrorKind::Internal,
                     "a write frame other than the first started the write",
                 )
-                .with_code("invalid_message"));
+                .with_code(INVALID_MESSAGE));
             }
         };
         Ok(Staged { bytes, step })

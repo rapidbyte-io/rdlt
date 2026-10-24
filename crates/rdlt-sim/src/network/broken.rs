@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use arrow_array::{Int64Array, RecordBatch};
 use rdlt_connector::limits::ListenLimits;
-use rdlt_connector::wire::{MALFORMED_FRAME, TRANSPORT, v1};
+use rdlt_connector::wire::{INVALID_MESSAGE, MALFORMED_FRAME, PROTOCOL_VERSION, TRANSPORT, v1};
 use rdlt_connector::{
     ConnectorError, ConnectorId, Destination as _, LoadId, OpenContext, Partition, PipelineId,
     ReadRequest, Role, SchemaVersion, SegmentId, Source as _, SourceEvent, StreamName, TablePath,
@@ -43,12 +43,6 @@ const FIRST_PORT: u16 = 7500;
 
 /// The id every broken connector answers its handshake as.
 pub(super) const ID: &str = "test.fake";
-
-/// The code of a message the protocol does not allow.
-pub(super) const INVALID_MESSAGE: &str = "invalid_message";
-
-/// The code of a handshake at a major version the host does not speak.
-const PROTOCOL_VERSION: &str = "protocol_version";
 
 /// The call an attack makes on a broken connector once it is dialed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

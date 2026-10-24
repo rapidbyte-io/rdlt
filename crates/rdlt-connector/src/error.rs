@@ -22,6 +22,15 @@ pub const CURSOR_UNISSUED: &str = "cursor_unissued";
 /// deadline.
 pub const DEADLINE_EXCEEDED: &str = "deadline_exceeded";
 
+/// The code of the error a destination refuses a schema change with where its table already
+/// holds what the change would make otherwise, such as a column of another type, changing
+/// nothing: the engine resolves the change again around it.
+pub const SCHEMA_CONFLICT: &str = "schema_conflict";
+
+/// The code of the error a destination answers a pipeline with where it refers to a table another
+/// pipeline created.
+pub const TABLE_OWNED: &str = "table_owned";
+
 /// What kind of failure a [`ConnectorError`] reports; the engine decides retries from it.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -159,10 +168,10 @@ impl ConnectorError {
         }
     }
 
-    /// The [`ConnectorErrorKind::Config`] error coded `table_owned` a destination answers when a
+    /// The [`ConnectorErrorKind::Config`] error coded [`TABLE_OWNED`] a destination answers when a
     /// pipeline refers to `table`, which the pipeline `owner` created.
     pub fn table_owned(table: &str, owner: &str) -> Self {
-        Self::config(format!("table {table} belongs to pipeline {owner}")).with_code("table_owned")
+        Self::config(format!("table {table} belongs to pipeline {owner}")).with_code(TABLE_OWNED)
     }
 
     /// Attaches a stable machine code, such as `pg.permission_denied`.

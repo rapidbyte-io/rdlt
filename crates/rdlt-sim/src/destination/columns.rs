@@ -4,7 +4,9 @@
 use std::collections::BTreeMap;
 
 use arrow_array::RecordBatch;
-use rdlt_connector::{ConnectorError, LogicalType, Result, TableChange, TableSchema};
+use rdlt_connector::{
+    ConnectorError, LogicalType, Result, SCHEMA_CONFLICT, TableChange, TableSchema,
+};
 
 /// A table's columns: identifier to stored type.
 pub(crate) type Columns = BTreeMap<String, LogicalType>;
@@ -39,7 +41,7 @@ pub(crate) fn apply(columns: &mut Columns, change: &TableChange) -> Result<()> {
                     "table {} already has column {name} as {held:?}, not {to:?}: {change:?}",
                     change.table().name
                 ))
-                .with_code("schema_conflict"));
+                .with_code(SCHEMA_CONFLICT));
             }
             None => {
                 next.insert(name.to_owned(), to.clone());

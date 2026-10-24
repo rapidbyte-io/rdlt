@@ -133,7 +133,7 @@ pub use destination::{
 pub use emitter::Emitter;
 pub use error::{
     CURSOR_UNISSUED, ConnectorError, ConnectorErrorKind, DEADLINE_EXCEEDED, LimitExceeded,
-    RETENTION_LOST, Result, ResultExt,
+    RETENTION_LOST, Result, ResultExt, SCHEMA_CONFLICT, TABLE_OWNED,
 };
 pub use factory::{RoleFactory, Serve};
 pub use id::{
