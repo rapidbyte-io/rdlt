@@ -296,6 +296,10 @@ pub trait DestinationConnector: Sized + Send + Sync + 'static {
     fn check(&self) -> impl Future<Output = Result<()>> + Send;
 
     /// Atomically increments the pipeline's epoch and returns it with the committed state.
+    ///
+    /// The epoch is above every epoch an open of the pipeline returned before, whatever commits
+    /// since dropped its tables or deleted its state: rows are identified by the epoch that wrote
+    /// them (clause `D-EPOCH`).
     fn open(
         &self,
         context: &OpenContext,
