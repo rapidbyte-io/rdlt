@@ -3,9 +3,9 @@
 
 mod rows;
 
-use arrow_array::Array;
 use arrow_array::cast::AsArray;
 use arrow_array::types::Int64Type;
+use arrow_array::{Array, RecordBatch};
 use arrow_schema::DataType;
 
 use super::{Bench, commit, meta};
@@ -56,6 +56,18 @@ impl Bench<'_> {
             }),
             ..self.other_table(suffix)
         }
+    }
+
+    /// A plain history table of this clause, called `suffix` after its own, its creation, and a
+    /// batch opening a version of each of two keys.
+    pub(super) fn history_opened(&self, suffix: &str) -> (TableRef, TableChange, RecordBatch) {
+        let table = self.history_table(suffix, Kind::Plain);
+        let create = TableChange::Create {
+            table: table.clone(),
+            schema: stored(Kind::Plain),
+        };
+        let rows = [upsert(1, "a", 1, 10), upsert(2, "b", 2, 10)];
+        (table, create, written(&rows, Kind::Plain))
     }
 
     /// Commits each of `commits` in turn to a history table of `kind`, each in a session of its

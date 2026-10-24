@@ -27,6 +27,8 @@ A kill clause that passed says beside its `pass`, and as `note` in JSON, what it
 
 `P-CREDIT`'s pass says beside its `pass`, and as `note` in JSON, the watch it ran under when `--credit-watch` chose one other than a second.
 
+`D-TABLES` drops a column of a table outside the pipeline, for each write mode a destination declares, only through a probe that alters the store, as an in-process certification's may; the read-back over the wire alters nothing, so its pass says beside `pass`, and as `note` in JSON, that no column was dropped.
+
 ## Exit codes
 
 | Code | When |
@@ -85,7 +87,7 @@ A certification cut at its timeout reports what it saw: the clauses already chec
 | `D-HIST` | a history table keeps every version of each key: a change equal to the current version changes nothing, any other closes it where the next begins, a delete closes it, or opens a deleted version keeping its data, and a truncate does so to every version sequenced before it; a change stream's change applies only past its key's newest version, tombstone and bound; and a version begins no earlier than the latest instant its key's versions hold | the destination keeps no history |
 | `D-CHILDREN` | a child table of a merge table holds the children of each root's winning row only, whatever it held before | the destination cannot merge |
 | `D-ENCODING` | dictionary-encoded columns publish the values they encode | — |
-| `D-TABLES` | a segment may hold rows for several tables, and its commit publishes each table's rows | — |
+| `D-TABLES` | a segment may hold rows for several tables, and its commit publishes each table's rows whole: where a table lost a column outside the pipeline, it publishes every column it staged, or fails as column_missing and publishes nothing | — |
 | `D-NAMES` | identifiers at the edges of the destination's own rules, and names its rules keep apart though they compare alike by case, case folding or normalization, are published under their names | — |
 | `D-LANES` | writers of one table, as many as the destination runs at once, stage at the same time, and a commit publishes what each staged | the destination runs one writer at a time |
 | `D-OWNED` | a table belongs to the pipeline that created it: another pipeline's schema change or writer is refused as table_owned, its generation swap too unless it changes nothing, and the owner keeps loading it | — |

@@ -52,6 +52,29 @@ pub trait Probe: Send + Sync {
     fn reads(&self) -> bool {
         true
     }
+
+    /// Whether this probe drops a table's columns as someone outside the pipeline would: by
+    /// default it does not, and `D-TABLES` then passes on what it reads alone, with a note.
+    fn drops_columns(&self) -> bool {
+        false
+    }
+
+    /// Drops `column` from `table`, a table rows are published into, as someone outside the
+    /// pipeline would by hand; an `Unsupported` error where the probe
+    /// [drops no columns](Self::drops_columns).
+    fn drop_column<'a>(
+        &'a self,
+        table: &'a TableRef,
+        column: &'a str,
+    ) -> BoxFuture<'a, Result<()>> {
+        let message = format!("the probe drops no column {column} of {}", table.name);
+        Box::pin(async move {
+            Err(crate::ConnectorError::new(
+                ConnectorErrorKind::Unsupported,
+                message,
+            ))
+        })
+    }
 }
 
 /// The probe of a destination whose published data cannot be read, as one reached only over the
@@ -139,8 +162,8 @@ pub async fn certify_destination_factory_observed(
                 };
                 let result = ClauseResult {
                     clause: *clause,
+                    note: tables::noted(probe, clause.id, &outcome),
                     outcome,
-                    note: None,
                 };
                 observed.tell(result.clone());
                 results.push(result);

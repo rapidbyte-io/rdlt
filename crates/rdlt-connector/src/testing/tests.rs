@@ -762,6 +762,9 @@ struct VaultConfig {
     /// Widens a column by reading what it held back from its text, as the narrower type writes
     /// it, as the wider type.
     widen_through_text: bool,
+    /// Publishes the rows of a table that lost a column outside the pipeline without it, rather
+    /// than refusing their commit.
+    lose_dropped_columns: bool,
 }
 
 #[derive(Default)]
@@ -787,6 +790,8 @@ struct VaultStore {
     locked: BTreeSet<String>,
     /// Each change stream's table's tombstones.
     tombstones: BTreeMap<String, changes::Tombstones>,
+    /// Columns dropped outside the pipeline, by table, which reading the table leaves out.
+    dropped: BTreeSet<(String, String)>,
 }
 
 impl VaultStore {
@@ -1067,6 +1072,32 @@ impl VaultSession {
         })
     }
 
+    /// The refusal of a commit that publishes rows holding a column dropped from their table
+    /// outside the pipeline, unless the vault is set to lose the column; a generation keeps every
+    /// column, and replaces the table whole.
+    fn losing(&self, store: &VaultStore, meta: &CommitMeta) -> Option<ConnectorError> {
+        if self.config.lose_dropped_columns {
+            return None;
+        }
+        let segments = self.segments_to_publish(store, meta);
+        let staged = segments
+            .iter()
+            .filter_map(|segment| store.staged.get(&(self.pipeline.clone(), *segment)))
+            .flatten()
+            .filter(|staged| staged.generation.is_none());
+        for staged in staged {
+            let schema = staged.batch.schema();
+            for field in schema.fields() {
+                let column = (staged.table.clone(), field.name().clone());
+                if store.dropped.contains(&column) {
+                    let message = format!("table {} lacks column {}", column.0, column.1);
+                    return Some(ConnectorError::data(message).with_code("column_missing"));
+                }
+            }
+        }
+        None
+    }
+
     /// Drops the tables `meta` names: their rows, generations, columns and tombstones, and their
     /// owners.
     fn drop_tables(&self, store: &mut VaultStore, meta: &CommitMeta) {
@@ -1142,6 +1173,7 @@ impl VaultSession {
             if !self.config.keep_replaced_tombstones {
                 store.tombstones.remove(&table);
             }
+            store.dropped.retain(|(name, _)| *name != table);
             store.published.insert(table, rows);
         }
         rows
@@ -1365,6 +1397,9 @@ impl Session for VaultSession {
             )));
         }
         if let Some(error) = self.intruding(&store, meta) {
+            return Err(error);
+        }
+        if let Some(error) = self.losing(&store, meta) {
             return Err(error);
         }
         let rows = self.publish(&mut store, meta);
@@ -1841,15 +1876,44 @@ struct VaultProbe(SharedVault);
 
 impl Probe for VaultProbe {
     fn published<'a>(&'a self, table: &'a TableRef) -> BoxFuture<'a, Result<Vec<RecordBatch>>> {
-        let batches = self
-            .0
-            .lock()
-            .unwrap()
-            .published
-            .get(table.name.as_ref())
-            .cloned()
-            .unwrap_or_default();
+        let store = self.0.lock().unwrap();
+        let name = table.name.to_string();
+        let batches = store.published.get(&name).cloned().unwrap_or_default();
+        let kept = |batch: RecordBatch| {
+            let schema = batch.schema();
+            let kept: Vec<usize> = (0..schema.fields().len())
+                .filter(|index| {
+                    let column = (name.clone(), schema.field(*index).name().clone());
+                    !store.dropped.contains(&column)
+                })
+                .collect();
+            batch.project(&kept).expect("kept columns exist")
+        };
+        let batches: Vec<RecordBatch> = batches.into_iter().map(kept).collect();
         Box::pin(async move { Ok(batches) })
+    }
+
+    fn drops_columns(&self) -> bool {
+        true
+    }
+
+    fn drop_column<'a>(
+        &'a self,
+        table: &'a TableRef,
+        column: &'a str,
+    ) -> BoxFuture<'a, Result<()>> {
+        let column = (table.name.to_string(), column.to_owned());
+        self.0.lock().unwrap().dropped.insert(column);
+        Box::pin(async { Ok(()) })
+    }
+}
+
+/// A probe of a vault that reads it and drops no column.
+struct ReadingProbe(VaultProbe);
+
+impl Probe for ReadingProbe {
+    fn published<'a>(&'a self, table: &'a TableRef) -> BoxFuture<'a, Result<Vec<RecordBatch>>> {
+        self.0.published(table)
     }
 }
 
@@ -1972,7 +2036,7 @@ const BROKEN: &[(&str, &[&str])] = &[
     ),
     ("local_state", &["D-STATE"]),
     ("stale_writes", &["D-DISCARD"]),
-    ("replace_early", &["D-REPLACE", "D-DELETE"]),
+    ("replace_early", &["D-REPLACE", "D-DELETE", "D-TABLES"]),
     (
         "merge_appends",
         &[
@@ -2009,7 +2073,43 @@ const BROKEN: &[(&str, &[&str])] = &[
     ("skip_unkeyed", &["D-TRUNCATE", "D-HIST"]),
     ("session_tombstones", &["D-DELETE", "D-TRUNCATE"]),
     ("keep_replaced_tombstones", &["D-DELETE"]),
+    ("lose_dropped_columns", &["D-TABLES"]),
 ];
+
+#[tokio::test]
+async fn a_probe_that_drops_no_column_passes_d_tables_on_what_it_reads_with_a_note() {
+    for (flag, probe) in [
+        (None, true),
+        (None, false),
+        (Some("lose_dropped_columns"), false),
+    ] {
+        let name = format!("noted_{probe}_{}", flag.unwrap_or("correct"));
+        let mut config = json!({ "store": name });
+        if let Some(flag) = flag {
+            config[flag] = json!(true);
+        }
+        let report = if probe {
+            certify_destination::<Vault>(config, &VaultProbe(vault(&name))).await
+        } else {
+            let probe = ReadingProbe(VaultProbe(vault(&name)));
+            certify_destination::<Vault>(config, &probe).await
+        };
+        report.assert_passed();
+        assert_eq!(report.note("D-TABLES").is_some(), !probe, "{report}");
+    }
+    // A column was dropped for each write mode the vault declares, its replaced table's undone.
+    let dropped = vault("noted_true_correct").lock().unwrap().dropped.clone();
+    let tables: Vec<&str> = dropped.iter().map(|(table, _)| table.as_str()).collect();
+    let modes = [
+        "_dropped_append__items",
+        "_dropped_history",
+        "_dropped_merge",
+    ];
+    assert_eq!(tables.len(), modes.len(), "{tables:?}");
+    for (table, mode) in tables.iter().zip(modes) {
+        assert!(table.ends_with(mode), "{tables:?}");
+    }
+}
 
 #[tokio::test]
 async fn each_broken_destination_behavior_fails_exactly_its_clauses() {
