@@ -204,17 +204,20 @@ async fn a_normalized_unit_s_charge_is_released_once_the_last_of_its_pieces_on_a
     );
     context.lanes = lanes;
     // Rows holding arrays are cut into several pieces before the split, and the rows after them,
-    // holding empty arrays, into more: the last pieces go all to the first lane.
+    // holding empty arrays, into more: the last pieces go all to the first lane. Each item's
+    // text is long enough that lowering a piece's items takes no more than its allowance holds.
     let count = 88_000_i64;
-    let lists = (0..count).map(|row| {
-        Some(if row < 8_000 {
-            vec![Some(1_i64); 3]
-        } else {
-            vec![]
-        })
-    });
-    let lists =
-        arrow_array::ListArray::from_iter_primitive::<arrow_array::types::Int64Type, _, _>(lists);
+    let mut lists =
+        arrow_array::builder::ListBuilder::new(arrow_array::builder::StringBuilder::new());
+    for row in 0..count {
+        if row < 8_000 {
+            for _ in 0..3 {
+                lists.values().append_value("x".repeat(32));
+            }
+        }
+        lists.append(true);
+    }
+    let lists = lists.finish();
     let rows: ArrayRef = Arc::new(Int64Array::from_iter_values(0..count));
     let batch =
         RecordBatch::try_from_iter([("id", rows), ("items", Arc::new(lists) as ArrayRef)]).unwrap();

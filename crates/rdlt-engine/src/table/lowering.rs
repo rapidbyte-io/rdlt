@@ -25,15 +25,16 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use arrow_array::{Array, ArrayRef, BooleanArray, RecordBatch};
+use arrow_select::filter::FilterBuilder;
 use parking_lot::Mutex;
-use rdlt_connector::{Field, LoadId, LogicalType, SegmentId, StreamName};
+use rdlt_connector::{Epoch, Field, LoadId, LogicalType, SegmentId, StreamName};
 
 use super::TableView;
 use super::convert::text;
 use super::lower::{ID_TYPE, IDX_TYPE};
 use super::resolve::{Incoming, Rest, Route};
 use crate::error::Error;
-use crate::normalize::Lineage;
+use crate::normalize::{Lineage, Received};
 use crate::policy::SchemaPolicy;
 pub(crate) use changes::{ChangeRows, aligned};
 use constants::Constants;
@@ -55,6 +56,8 @@ pub(crate) struct Stamp {
     /// When the batch was received: where a history stream's versions begin without a change
     /// time, so a run that follows its source for days keeps each version's span.
     pub(crate) received_at: SystemTime,
+    /// The epoch of the session writing the batch.
+    pub(crate) epoch: Epoch,
     /// The batch's segment, and the position of its first row among the rows written to it.
     pub(crate) segment: SegmentId,
     pub(crate) first_row: u64,
@@ -276,7 +279,7 @@ impl LoweringPlan {
             columns.extend(history);
         }
         let first = columns.len();
-        columns.extend(self.lineage(lineage, kept.as_ref(), first)?);
+        columns.extend(self.lineage(lineage, kept.as_ref(), stamp, first)?);
         columns.extend(self.directives(changes.as_ref()));
         let prepared = RecordBatch::try_new(Arc::clone(&view.schema), columns).map_err(failed)?;
         Ok(Prepared {
@@ -358,22 +361,23 @@ impl LoweringPlan {
             Error::internal(format!("stream {stream}: sequencing a batch")).with_source(error)
         };
         let positions = match lineage {
-            Some(lineage) => Some(kept_rows(&lineage.root_row, kept).map_err(failed)?),
+            Some(lineage) => Some(kept_rows(lineage.root_row(), kept).map_err(failed)?),
             None => kept.map(positions),
         };
         sequence(&self.view, stamp, rows, positions.as_ref()).map_err(failed)
     }
 
-    /// The lineage columns of the plan's table, lowered, from `lineage` and the rows `kept`
-    /// keeps; the first is the table's column at `first`.
+    /// The lineage columns of the plan's table, lowered, from `lineage`, the rows `kept` keeps
+    /// and the batch's `stamp`; the first is the table's column at `first`.
     fn lineage(
         &self,
         lineage: Option<&Lineage>,
         kept: Option<&BooleanArray>,
+        stamp: &Stamp,
         first: usize,
     ) -> Result<Vec<ArrayRef>, Error> {
         let stream = &self.stream;
-        lineage_columns(&self.view, stream, lineage, kept)?
+        lineage_columns(&self.view, stream, (lineage, kept), stamp)?
             .into_iter()
             .enumerate()
             .map(|(index, (array, logical))| {
@@ -406,42 +410,43 @@ impl LoweringPlan {
     }
 }
 
-/// The lineage columns of `view`'s rows and their types: `lineage`, the rows `kept` keeps where
-/// the schema policy dropped some; none for a stream that does not normalize.
+/// The lineage columns of `view`'s rows and their types, built from `lineage` of the rows `kept`
+/// keeps where the schema policy dropped some, received as `stamp` says; none for a stream that
+/// does not normalize.
 fn lineage_columns(
     view: &TableView,
     stream: &StreamName,
-    lineage: Option<&Lineage>,
-    kept: Option<&BooleanArray>,
+    (lineage, kept): (Option<&Lineage>, Option<&BooleanArray>),
+    stamp: &Stamp,
 ) -> Result<Vec<(ArrayRef, LogicalType)>, Error> {
     if view.meta.id.is_none() {
         return Ok(Vec::new());
     }
     let missing =
         |what: &str| Error::internal(format!("stream {stream}: a {what} batch has no lineage"));
-    let lineage = lineage.ok_or_else(|| missing("normalized table's"))?;
-    let mut columns = vec![(Arc::clone(&lineage.id), ID_TYPE)];
-    if view.meta.parent.is_some() {
-        let parent = lineage
-            .parent
-            .as_ref()
-            .ok_or_else(|| missing("child table's"))?;
-        columns.push((Arc::clone(&parent.id), ID_TYPE));
-        columns.push((Arc::clone(&parent.root), ID_TYPE));
-        columns.push((Arc::clone(&parent.idx), IDX_TYPE));
-    }
-    let Some(kept) = kept else {
-        return Ok(columns);
+    let failed = |error: arrow_schema::ArrowError| {
+        Error::internal(format!("stream {stream}: building lineage: {error}"))
     };
-    columns
-        .into_iter()
-        .map(|(array, logical)| {
-            let array = arrow_select::filter::filter(array.as_ref(), kept).map_err(|error| {
-                Error::internal(format!("stream {stream}: filtering lineage: {error}"))
-            })?;
-            Ok((array, logical))
-        })
-        .collect()
+    let mut lineage = lineage
+        .ok_or_else(|| missing("normalized table's"))?
+        .clone();
+    if let Some(kept) = kept {
+        lineage = lineage
+            .filter(&FilterBuilder::new(kept).build())
+            .map_err(failed)?;
+    }
+    let received = Received {
+        epoch: stamp.epoch,
+        segment: stamp.segment,
+        first_row: stamp.first_row,
+    };
+    let (id, parent) = lineage.columns(&received).map_err(failed)?;
+    let mut columns = vec![(id, ID_TYPE)];
+    if view.meta.parent.is_some() {
+        let [parent, root, idx] = parent.ok_or_else(|| missing("child table's"))?;
+        columns.extend([(parent, ID_TYPE), (root, ID_TYPE), (idx, IDX_TYPE)]);
+    }
+    Ok(columns)
 }
 
 /// The rows both `left` and `right` keep, where either keeps fewer than every row; neither mask

@@ -6,9 +6,14 @@ use rdlt_connector::cost::Stored;
 
 use super::{LoweringPlan, Source};
 
-/// Bytes: what a row takes in a metadata column of text or bytes, at most an id's 32 bytes as
-/// hex, its offset and its validity.
+/// Bytes: what a row takes in a metadata column of bytes the destination stores: at most 64
+/// bytes, which a positional id's 37, a hash's 32 and a sequence's 16 are within, their offset
+/// and their validity.
 const META_BYTES: u64 = 72;
+
+/// Bytes: what a row takes in a metadata column of bytes the destination stores as text: those
+/// bytes as lowering builds them and their hex beside them, each with its offset, and validity.
+const META_TEXT: u64 = 120;
 
 impl LoweringPlan {
     /// The bytes the columns a batch of `rows` rows holds nothing in take once lowered: each a
@@ -54,7 +59,8 @@ impl LoweringPlan {
         let meta = self.view.physical.iter().skip(model + 2).map(|field| {
             let slot = rdlt_connector::cost::nulls(&field.logical_type().to_arrow(), 1);
             match field.logical_type() {
-                LogicalType::Utf8 | LogicalType::Binary | LogicalType::Json => META_BYTES,
+                LogicalType::Binary => META_BYTES,
+                LogicalType::Utf8 | LogicalType::Json => META_TEXT,
                 _ => slot,
             }
         });

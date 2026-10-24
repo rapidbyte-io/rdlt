@@ -283,7 +283,12 @@ async fn launch(
         stop: stop_reads.clone(),
         cancel: scope.token().clone(),
     };
-    let partition_context = shared_by_partitions(context, load_id, (&lanes, &tables, &wal), ends);
+    let partition_context = shared_by_partitions(
+        context,
+        (load_id, opened.epoch),
+        (&lanes, &tables, &wal),
+        ends,
+    );
     let (tasks, spawned) = mpsc::unbounded_channel();
     let (streams, partitions) = spawn_partitions(&mut scope, planned, &partition_context);
     let coordinator = Coordinator::new(CoordinatorParts {
@@ -328,10 +333,11 @@ struct Ends {
     cancel: CancellationToken,
 }
 
-/// What the attempt's partitions share: its `lanes`, `tables` and `wal`, and their `ends`.
+/// What the attempt's partitions share: its load and its session's epoch, its `lanes`, `tables`
+/// and `wal`, and their `ends`.
 fn shared_by_partitions(
     context: &RunContext,
-    load_id: LoadId,
+    (load_id, epoch): (LoadId, Epoch),
     (lanes, tables, wal): (&Lanes, &Arc<Tables>, &Option<LoadLog>),
     ends: Ends,
 ) -> Arc<PartitionContext> {
@@ -350,6 +356,7 @@ fn shared_by_partitions(
         segments: Arc::new(AtomicU64::new(1)),
         buffer: context.config.partition_buffer(),
         load_id,
+        epoch,
         clock: Arc::new(LoadClock::new(context.env.now())),
         env: Arc::clone(&context.env),
         pool: Pool::new(Arc::clone(&context.env), Arc::clone(&context.tally)),

@@ -132,11 +132,11 @@ impl MetaNames {
     }
 }
 
-/// The type of the lineage id columns: the 32 bytes of a row's id.
+/// The type of the lineage id columns: a row's id, a merge root's key hash or a row's position.
 pub(crate) const ID_TYPE: LogicalType = LogicalType::Binary;
 
-/// The type of the position column.
-pub(crate) const IDX_TYPE: LogicalType = LogicalType::Int64;
+/// The type of the position column: an item's position in its array, whose offsets are 32-bit.
+pub(crate) const IDX_TYPE: LogicalType = LogicalType::Int32;
 
 /// The type of the load id column: the load's UUID.
 pub(crate) const LOAD_ID_TYPE: LogicalType = LogicalType::Uuid;

@@ -106,11 +106,11 @@ fn a_split_made_where_an_earlier_split_of_its_unit_was_freed_is_charged_in_full(
     let made = |parts: &[crate::normalize::Part]| made(parts, &held.allocations);
     let first = crate::normalize::normalize(&unit, &keyless()).unwrap();
     let charged = made(&first);
-    let rows = first[0].lineage.root_row.to_data().buffers()[0].clone();
+    let rows = first[0].lineage.row.to_data().buffers()[0].clone();
     // The split's parts are written and freed, and the unit's next split is made where they were.
     drop(first);
     let mut second = crate::normalize::normalize(&unit, &keyless()).unwrap();
-    second[0].lineage.root_row = in_place_of(rows);
+    second[0].lineage.row = in_place_of(rows);
     assert_eq!(made(&second), charged);
 }
 
@@ -118,7 +118,7 @@ fn a_split_made_where_an_earlier_split_of_its_unit_was_freed_is_charged_in_full(
 fn what_holds_a_split_keeps_the_parts_it_planned_alive_until_it_goes() {
     let unit = ids(1_000);
     let parts = crate::normalize::normalize(&unit, &keyless()).unwrap();
-    let lineage = parts[0].lineage.id.to_data().buffers()[1].clone();
+    let lineage = parts[0].lineage.row.to_data().buffers()[0].clone();
     let held = kept(&parts);
     drop(parts);
     assert!(
@@ -134,23 +134,13 @@ fn a_units_parts_grow_it_by_their_lineage_and_their_schemas() {
     let unit = ids(1000);
     let held = Held::of(vec![unit.clone()], Vec::new());
     let parts = crate::normalize::normalize(&unit, &keyless()).unwrap();
-    // The roots' ids are one buffer of exactly a row's 32 bytes each.
-    let ids = parts[0].lineage.id.to_data();
-    assert_eq!(ids.buffers()[1].capacity(), 1000 * 32);
+    // The roots' positions are one buffer of exactly a row's 4 bytes each.
+    let positions = parts[0].lineage.row.to_data();
+    assert_eq!(positions.buffers()[0].capacity(), 1000 * 4);
     // The part keeps the unit's column alive, which is held already: its lineage is new.
     let lineage: usize = parts
         .iter()
-        .map(|part| {
-            let lineage = &part.lineage;
-            lineage
-                .id
-                .to_data()
-                .buffers()
-                .iter()
-                .map(Buffer::capacity)
-                .sum::<usize>()
-                + lineage.root_row.to_data().buffers()[0].capacity()
-        })
+        .map(|part| part.lineage.row.to_data().buffers()[0].capacity())
         .sum();
     // Each part's batch has a schema of its own, which it keeps alive too.
     let schemas: u64 = parts
