@@ -24,7 +24,7 @@ use crate::id::{
 };
 use crate::schema::{ColumnPath, TableSchema};
 use crate::state::{PartitionState, StateChange, StateRecord, StreamState};
-use crate::types::tests::logical_type;
+use crate::strategy::logical_type;
 use crate::types::{Field, TypeKind};
 
 /// `value` encoded to protobuf bytes as `W`, decoded, and converted back.

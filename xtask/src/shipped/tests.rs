@@ -26,7 +26,7 @@ fn each_surface_a_build_turns_on_is_reported_once() {
     let unified = "\
 rdlt-connector-reference v0.0.0 (/repo)|certify,test-connectors
 rdlt-connector v0.0.0 (/repo)|certify,default,serve,testing
-rdlt-connector v0.0.0 (/repo)|certify,default,serve,testing
+rdlt-connector v0.0.0 (/repo)|certify,default,serve,strategy,testing
 rdlt-engine v0.0.0 (/repo)|failpoints
 certify v1.0.0|certify,testing
 no features line
@@ -35,6 +35,7 @@ no features line
         surfaces("rdlt-connector-reference", unified),
         [
             surface("rdlt-connector", "certify"),
+            surface("rdlt-connector", "strategy"),
             surface("rdlt-connector", "testing"),
             surface("rdlt-connector-reference", "certify"),
             surface("rdlt-connector-reference", "test-connectors"),

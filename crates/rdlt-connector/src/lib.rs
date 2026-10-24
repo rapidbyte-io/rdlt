@@ -98,6 +98,8 @@ mod spec;
 #[cfg(feature = "sqlgen")]
 pub mod sqlgen;
 mod state;
+#[cfg(any(test, feature = "strategy"))]
+pub mod strategy;
 #[cfg(feature = "testing")]
 pub mod testing;
 pub mod text;

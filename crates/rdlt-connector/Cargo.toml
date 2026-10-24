@@ -15,6 +15,9 @@ macros = ["dep:rdlt-connector-macros"]
 # them out.
 certify = []
 testing = ["dep:arrow-cast", "dep:regex-syntax", "dep:unicase", "certify"]
+# Property-test strategies that draw logical types, for the property tests of crates built on the
+# contract.
+strategy = ["dep:proptest"]
 wire = []
 serve = [
   "wire",
@@ -49,6 +52,7 @@ arrow-select = { workspace = true, optional = true }
 base64.workspace = true
 bytes.workspace = true
 chrono.workspace = true
+proptest = { workspace = true, optional = true }
 rdlt-connector-macros = { workspace = true, optional = true }
 rdlt-wire.workspace = true
 regex-syntax = { workspace = true, optional = true }
