@@ -9,7 +9,7 @@ use std::num::{NonZeroU64, NonZeroUsize};
 
 use bytes::Bytes;
 
-use super::connectors::connect_replay;
+use super::replay::connect_replay;
 use super::runner::{Runner, streams};
 use super::{
     Corpus, PUSH_BYTES, Passthrough, Replayed, Sinking, register, sink, split_replay_config,

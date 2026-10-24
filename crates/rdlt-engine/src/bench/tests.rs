@@ -15,7 +15,7 @@ use rdlt_connector::{
 use serde_json::value::RawValue;
 use serde_json::{Value, json};
 
-use super::connectors::Replay;
+use super::replay::Replay;
 use super::runner::streams;
 use super::{ADMITTED, CHUNK_BYTES, Corpus, PUSH_BYTES, Parse};
 use super::{
