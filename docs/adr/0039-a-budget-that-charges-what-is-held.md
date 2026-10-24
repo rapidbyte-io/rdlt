@@ -373,8 +373,9 @@ budget before it is held, or bounded by a limit with a typed refusal.
   read-back is admitted by what its batches expand to; a kill clause's load is charged the
   allocations each batch keeps alive.
 - **Nothing waits uncharged.**
-  - A cursor copies its bytes when it is built, and the host copies a JSON push out of its frame:
-    neither keeps the message it arrived in alive.
+  - A cursor copies its bytes when it is built, so it keeps no message alive. A JSON push is a
+    slice of the message it arrived in, which its charge's `MESSAGE_ROOM` covers beside its
+    text: the host refuses a frame whose message holds more, `malformed_frame`.
   - A checkpoint's permit stays with its seal until the commit that takes it has landed. A seal
     of no rows only moves its partition's position, so it replaces the one waiting: one cursor a
     partition, however many a source sends. A seal ending its partition done replaces none, so
