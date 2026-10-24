@@ -145,9 +145,9 @@ fn timed(
     for _ in 0..runs {
         let (source, destination, pids) = loaded.block_on(async {
             let source = processes.source(Transport::Socket, &config, &options).await;
-            let sinking = shaped.sinking();
+            let sink = shaped.sinking().config();
             let destination = processes
-                .destination(Transport::Socket, sinking, &options)
+                .destination(Transport::Socket, &sink, &options)
                 .await;
             let Placed { connector, pid } = source;
             let pids = Pids {

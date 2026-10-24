@@ -14,7 +14,7 @@ use rdlt_connector::serve::Served;
 use rdlt_connector::{
     BoxFuture, ConnectContext, ConnectorSpec, Destination, Result, Source, SourceFactory,
 };
-use rdlt_engine::bench::{Replayed, Sinking, register, replay_factory, sink_factory};
+use rdlt_engine::bench::{Replayed, register, replay_factory, sink_factory};
 use rdlt_host::{ConnectorRef, Local, Options, Provider as _};
 use tokio::io::{AsyncBufReadExt as _, BufReader};
 use tokio::process::{Child, Command};
@@ -157,20 +157,19 @@ impl Processes {
         }
     }
 
-    /// A sink doing `sinking` with each batch, reached over `transport`.
+    /// A sink configured as `config`, reached over `transport`.
     pub(crate) async fn destination(
         &mut self,
         transport: Transport,
-        sinking: Sinking,
+        config: &serde_json::Value,
         options: &Options,
     ) -> Placed<Arc<dyn Destination>> {
         let id = sink_factory().spec().id.clone();
-        let config = sinking.config();
         match transport {
             Transport::Socket => {
                 let reference = ConnectorRef::new(id).path(&self.binary);
                 let local = self.local.clone().options(*options);
-                let placed = local.destination(&reference, &config).await;
+                let placed = local.destination(&reference, config).await;
                 let connector = Arc::from(placed.expect("the destination is spawned").connector);
                 let pid = self.spawned();
                 Placed { connector, pid }
@@ -180,7 +179,7 @@ impl Processes {
                 let (endpoint, pid) = (&listeners.destination.endpoint, listeners.destination.pid);
                 let reference = ConnectorRef::new(id).endpoint(endpoint);
                 let remote = listeners.tls.remote(options);
-                let placed = remote.destination(&reference, &config).await;
+                let placed = remote.destination(&reference, config).await;
                 let connector = Arc::from(placed.expect("the destination is placed").connector);
                 Placed { connector, pid }
             }
