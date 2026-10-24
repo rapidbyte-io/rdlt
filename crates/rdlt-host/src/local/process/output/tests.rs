@@ -506,6 +506,20 @@ fn only_a_tail_that_lost_its_beginning_is_scrubbed_of_a_secret_s_end_at_its_star
     assert_eq!(full.words(&redactions), "*** ***");
 }
 
+#[test]
+fn a_tail_that_begins_within_a_character_of_a_secret_is_scrubbed_of_the_rest_of_it() {
+    let secret = "pä55€🔑wörd";
+    let redactions = Redactions::new();
+    redactions.add(secret);
+    // Begun at every byte of the secret, within each of its characters as well as between them.
+    for from in 0..secret.len() {
+        let tail = Tail::default();
+        tail.push(secret.as_bytes());
+        tail.push(" ".repeat(TAIL_BYTES - (secret.len() - from)).as_bytes());
+        assert_eq!(tail.words(&redactions), "*** ", "begun at byte {from}");
+    }
+}
+
 #[tokio::test(start_paused = true)]
 async fn an_allowance_waits_as_long_as_its_rate_takes_to_earn_what_it_owes() {
     let owing = |rate: u64, spent: u64| {
