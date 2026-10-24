@@ -1,5 +1,5 @@
 //! Normalizing is blind to how Arrow encodes a batch's values: a batch in any encodings
-//! normalizes as the same batch in plain ones does, into the same parts, ids and values.
+//! normalizes as the same batch in plain ones does, into the same parts, lineage and values.
 //!
 //! An object or array held in a dictionary or runs is a column of its own, as one kept whole is.
 
@@ -12,10 +12,10 @@ use arrow_array::{
 };
 use arrow_schema::Schema;
 use proptest::prelude::*;
-use rdlt_connector::Field;
+use rdlt_connector::{Epoch, Field, SegmentId};
 
 use super::placement::Container;
-use super::{Part, Shape, normalize};
+use super::{Part, Received, Shape, normalize};
 use crate::table::plain;
 use rdlt_testkit::drawn::{Drawn, Encoding, Scalar, Shape as Drawing, array, field, values};
 
@@ -85,10 +85,11 @@ pub(super) fn drawn() -> impl Strategy<Value = Drawn> {
     })
 }
 
-/// A part's path, its columns' paths, its values and its lineage.
+/// A part's path, its columns' paths, its values and its lineage columns.
 type Held = (Vec<Arc<str>>, Vec<String>, Vec<ArrayRef>, Vec<ArrayRef>);
 
-/// What `parts` hold, every array in its plain type.
+/// What `parts` hold, every array in its plain type, and their lineage columns as a piece
+/// received first in segment 1 builds them.
 fn held(parts: &[Part]) -> Vec<Held> {
     parts
         .iter()
@@ -101,18 +102,14 @@ fn held(parts: &[Part]) -> Vec<Held> {
                 .zip(part.batch.columns())
                 .map(|(field, array)| plained(field, array))
                 .collect();
-            let mut lineage = vec![
-                Arc::clone(&part.lineage.id),
-                Arc::clone(&part.lineage.root_row),
-            ];
-            if let Some(parent) = &part.lineage.parent {
-                lineage.extend([
-                    Arc::clone(&parent.id),
-                    Arc::clone(&parent.root),
-                    Arc::clone(&parent.idx),
-                    Arc::clone(&parent.row),
-                ]);
-            }
+            let received = Received {
+                epoch: Epoch(1),
+                segment: SegmentId(1),
+                first_row: 0,
+            };
+            let (id, parent) = part.lineage.columns(&received).expect("lineage builds");
+            let mut lineage = vec![id];
+            lineage.extend(parent.into_iter().flatten());
             (part.path.clone(), columns, values, lineage)
         })
         .collect()

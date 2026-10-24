@@ -1,10 +1,9 @@
-//! Row identity: each row's `_rdlt_id`, the BLAKE3 hash of a canonical encoding of its key, of
-//! the whole row, or of its parent's id and its index in the parent's array, and each history
-//! version's `_rdlt_row_hash`, of its data.
+//! Hashed identity: a merge stream's root row's `_rdlt_id`, the BLAKE3 hash of a canonical
+//! encoding of its key, and each history version's `_rdlt_row_hash`, of its whole row.
 //!
-//! The hash is BLAKE3's whole 256 bits, so no two rows anyone can find share an id, however their
-//! values were chosen; each kind of id hashes its own domain's tag first, so ids of different kinds
-//! never come from one input.
+//! Record authors choose both inputs, so the hash is BLAKE3's whole 256 bits: no two rows anyone
+//! can find share one, however their values were chosen. Each kind hashes its own domain's tag
+//! first, so hashes of different kinds never come from one input.
 //!
 //! The encoding tags every value with its kind and renders every number one way, so a value hashes
 //! alike whichever batch, chunk or Arrow type carries it: integers as their digits, floats as
@@ -38,8 +37,8 @@ use std::sync::Arc;
 
 use arrow_array::cast::AsArray;
 use arrow_array::{
-    Array, ArrayRef, BinaryArray, BooleanArray, Float64Array, Int64Array, ListArray, RecordBatch,
-    StringArray, UInt64Array,
+    Array, ArrayRef, BinaryArray, BooleanArray, Float64Array, ListArray, RecordBatch, StringArray,
+    UInt64Array,
 };
 use arrow_buffer::{Buffer, NullBuffer, OffsetBuffer};
 use arrow_schema::{ArrowError, DataType, Field as ArrowField, FieldRef};
@@ -50,57 +49,51 @@ use crate::json::{JsonError, Reader, Token, write_float, write_number};
 use crate::table::convert::decoded;
 use canonical::{DIGITS, Stored, decimal_scale, digits, temporal_tag};
 
-/// The ids of `batch`'s rows as roots: of the `key` columns' values in order, or of the whole row
-/// where there is no key.
+/// The ids of `batch`'s rows as a merge stream's roots: of the `key` columns' values in order.
 ///
 /// # Errors
 ///
 /// A key column the batch lacks, which a stream's keys are checked for before, and a value of a
 /// column of JSON identity cannot read.
 pub(crate) fn root_ids(batch: &RecordBatch, key: &[Arc<str>]) -> Result<BinaryArray, ArrowError> {
-    hashes(Domain::Root, batch, key)
+    let schema = batch.schema();
+    let encoders: Vec<Encoder> = key
+        .iter()
+        .map(|column| {
+            let index = schema.index_of(column)?;
+            Encoder::new(schema.field(index), batch.column(index))
+        })
+        .collect::<Result<_, _>>()?;
+    hashes(Domain::Root, batch, &encoders)
 }
 
 /// The hashes of `batch`'s rows as history versions: of each whole row.
 pub(crate) fn version_hashes(batch: &RecordBatch) -> Result<BinaryArray, ArrowError> {
-    hashes(Domain::Version, batch, &[])
+    let schema = batch.schema();
+    let fields = schema.fields().iter().zip(batch.columns());
+    hashes(Domain::Version, batch, &[Encoder::object(None, fields)?])
 }
 
-/// What an id identifies, whose tag its input starts with.
+/// What a hash identifies, whose tag its input starts with.
 #[derive(Clone, Copy, Debug)]
 enum Domain {
-    /// A root row, by its key or whole.
+    /// A merge stream's root row, by its key.
     Root = 0x01,
-    /// A child row, by its parent's id and its index.
-    Child = 0x02,
     /// A history version, by its data.
     Version = 0x03,
 }
 
-/// The hashes in `domain` of `batch`'s rows: of the `key` columns' values in order, or of the
-/// whole row where there is no key.
+/// The hashes in `domain` of `batch`'s rows, each of what `encoders` write of it in turn.
 fn hashes(
     domain: Domain,
     batch: &RecordBatch,
-    key: &[Arc<str>],
+    encoders: &[Encoder],
 ) -> Result<BinaryArray, ArrowError> {
-    let schema = batch.schema();
-    let encoders: Vec<Encoder> = if key.is_empty() {
-        let fields = schema.fields().iter().zip(batch.columns());
-        vec![Encoder::object(None, fields)?]
-    } else {
-        key.iter()
-            .map(|column| {
-                let index = schema.index_of(column)?;
-                Encoder::new(schema.field(index), batch.column(index))
-            })
-            .collect::<Result<_, _>>()?
-    };
     let mut row = Vec::with_capacity(ROW_BYTES);
     let mut values = Vec::with_capacity(batch.num_rows() * ID_BYTES);
     for index in 0..batch.num_rows() {
         row.clear();
-        for encoder in &encoders {
+        for encoder in encoders {
             encoder.write(index, &mut row)?;
         }
         values.extend_from_slice(&hash(domain, &row));
@@ -134,21 +127,8 @@ pub(crate) fn unread(
     }
 }
 
-/// The ids of child rows: of each row's parent's id and its index in the parent's array.
-pub(crate) fn child_ids(parents: &BinaryArray, idx: &Int64Array) -> BinaryArray {
-    let mut bytes = Vec::with_capacity(ID_BYTES + 16);
-    let mut values = Vec::with_capacity(idx.len() * ID_BYTES);
-    for (parent, idx) in parents.iter().zip(idx.values()) {
-        bytes.clear();
-        length(&mut bytes, parent.unwrap_or_default());
-        bytes.extend_from_slice(&idx.to_be_bytes());
-        values.extend_from_slice(&hash(Domain::Child, &bytes));
-    }
-    ids(values)
-}
-
 /// Bytes in an id: BLAKE3's whole output.
-pub(crate) const ID_BYTES: usize = blake3::OUT_LEN;
+const ID_BYTES: usize = blake3::OUT_LEN;
 
 /// The BLAKE3 hash of `bytes` in `domain`.
 fn hash(domain: Domain, bytes: &[u8]) -> [u8; ID_BYTES] {

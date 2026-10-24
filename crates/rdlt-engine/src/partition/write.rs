@@ -545,6 +545,7 @@ pub(super) fn schema_invalid(job: &PartitionJob, error: &SchemaError) -> Error {
 /// The stamp of the next `received` rows written to `open`, which counts them.
 fn stamp(context: &PartitionContext, open: &mut OpenSegment, received: u64) -> Stamp {
     let stamp = Stamp {
+        epoch: context.epoch,
         load_id: context.load_id,
         loaded_at: context.clock.started(),
         received_at: context.clock.received(context.env.as_ref()),

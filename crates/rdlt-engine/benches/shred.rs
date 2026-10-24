@@ -205,7 +205,8 @@ fn decode(pushes: &[Bytes], schema: &SchemaRef) -> usize {
 }
 
 /// Shredding rows with arrays, alone and normalized into child tables with their lineage:
-/// keyed roots hash their key, keyless ones their whole row.
+/// keyed roots, a merge's, hash their key, and keyless ones carry their positions, from which
+/// lowering builds their ids.
 fn normalizing(c: &mut Criterion) {
     let pushes = Corpus::WithArrays.pushes(CORPUS_BYTES);
     let bytes: usize = pushes.iter().map(Bytes::len).sum();

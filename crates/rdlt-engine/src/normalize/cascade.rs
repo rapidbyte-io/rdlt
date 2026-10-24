@@ -2,8 +2,8 @@
 //! unit's parts are lowered parents first, so each part loses the rows whose parent went before the
 //! schema policy meets its own.
 //!
-//! Rows are known by their part and position, not their ids, which rows sharing a key share: a
-//! bit for each of a part's rows as normalized, set where the row went.
+//! Rows are known by their part and position: a bit for each of a part's rows as normalized, set
+//! where the row went.
 //!
 //! A part keeps only the columns a row left in it holds a value in, as a JSON field is a column
 //! only where a value holds it, so dropped rows keep no column. The stream's own part of an Arrow
@@ -20,7 +20,7 @@ use arrow_buffer::{BooleanBuffer, BooleanBufferBuilder};
 use arrow_schema::ArrowError;
 use arrow_select::filter::FilterBuilder;
 
-use super::{Lineage, Parent, Part, PushKind};
+use super::{Part, PushKind};
 
 /// The rows dropped from a unit so far: by their part's path, a bit for each of its rows as
 /// normalized, set where the row was dropped.
@@ -169,29 +169,10 @@ fn retain(part: Part, kept: &BooleanBuffer) -> Result<Part, ArrowError> {
     let predicate = FilterBuilder::new(&BooleanArray::new(kept.clone(), None))
         .optimize()
         .build();
-    let filter = |array: &ArrayRef| predicate.filter(array.as_ref());
-    let parent = part
-        .lineage
-        .parent
-        .map(|parent| {
-            Ok::<_, ArrowError>(Parent {
-                id: filter(&parent.id)?,
-                root: filter(&parent.root)?,
-                idx: filter(&parent.idx)?,
-                row: filter(&parent.row)?,
-                path: parent.path,
-            })
-        })
-        .transpose()?;
     Ok(Part {
-        path: part.path,
-        columns: part.columns,
         batch: predicate.filter_record_batch(&part.batch)?,
-        lineage: Lineage {
-            id: filter(&part.lineage.id)?,
-            root_row: filter(&part.lineage.root_row)?,
-            parent,
-        },
+        lineage: part.lineage.filter(&predicate)?,
+        ..part
     })
 }
 

@@ -60,8 +60,8 @@ fn parts_are_cut_into_pieces_within_a_piece_and_keep_their_rows_and_lineage() {
     let mut first = 0;
     for piece in &pieces {
         assert!(piece.bytes <= 16 << 10, "{}", piece.bytes);
-        assert_eq!(piece.lineage.id.len(), piece.batch.num_rows());
-        assert_eq!(piece.lineage.root_row.len(), piece.batch.num_rows());
+        assert_eq!(piece.lineage.row.len(), piece.batch.num_rows());
+        assert_eq!(piece.lineage.root_row().len(), piece.batch.num_rows());
         let ids = piece.batch.column(0);
         let ids = ids.as_any().downcast_ref::<Int64Array>().unwrap();
         assert_eq!(ids.value(0), first);
