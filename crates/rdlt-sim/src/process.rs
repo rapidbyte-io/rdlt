@@ -104,6 +104,11 @@ impl Spawning {
         self.options.read_floor
     }
 
+    /// Bytes: the frame limit the engine's host tells a connector it placed.
+    pub(crate) fn frame_bytes(&self) -> u64 {
+        self.options.limits.frame_bytes
+    }
+
     /// Runs `work` while the connectors' processes are killed, stalled and ended as `rng` draws,
     /// then lets every stalled one go on, however `work` ends.
     pub(crate) async fn disrupting<T>(&self, rng: SplitMix64, work: impl Future<Output = T>) -> T {

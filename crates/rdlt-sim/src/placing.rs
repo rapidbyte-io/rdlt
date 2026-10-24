@@ -123,6 +123,15 @@ impl Placing {
         }
     }
 
+    /// Bytes: the frame limit the engine's host tells a connector it placed, within which the
+    /// connector's reads hold the pushes their sources send ahead.
+    pub(crate) fn frame_bytes(&self) -> u64 {
+        match self {
+            Self::Network(networked) => networked.frame_bytes(),
+            Self::Process(spawning) => spawning.frame_bytes(),
+        }
+    }
+
     /// Every connection to the stalled peer the engine kept open beyond its heartbeat's patience;
     /// played processes have no stalled peer.
     pub(crate) fn stall_violations(&self) -> Vec<String> {

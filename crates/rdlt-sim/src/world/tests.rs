@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use rdlt_connector::{ConnectorErrorKind, IdentifierChars};
 
-use super::pushes::Pushes;
+use super::pushes::{Largest, Pushes};
 use super::{FaultPoint, World, capabilities};
 use crate::rng::SplitMix64;
 use crate::seed::{Seed, run};
@@ -194,20 +194,28 @@ fn some_placements_stall_where_faults_are_on_and_none_elsewhere() {
 }
 
 #[test]
-fn pushes_count_the_largest_event_since_they_restarted() {
+fn pushes_count_the_largest_push_and_cursor_since_they_restarted() {
     let pushes = Pushes::default();
     drop(pushes.hold(10));
     let held = pushes.hold(4);
-    assert_eq!(pushes.largest(), 10);
-    pushes.restart();
-    assert_eq!(pushes.largest(), 0);
-    drop((held, pushes.hold(3)));
-    assert_eq!(pushes.largest(), 3);
-    pushes.cursor(8);
+    pushes.cursor(2);
     assert_eq!(
         pushes.largest(),
-        8,
-        "a checkpoint's cursor is an event as a push is"
+        Largest {
+            push: 10,
+            cursor: 2
+        }
+    );
+    pushes.restart();
+    assert_eq!(pushes.largest(), Largest::default());
+    drop((held, pushes.hold(3)));
+    assert_eq!(pushes.largest().event(), 3);
+    pushes.cursor(8);
+    let largest = pushes.largest();
+    assert_eq!(
+        (largest.push, largest.event()),
+        (3, 8),
+        "a checkpoint's cursor is an event as a push is, not a push"
     );
 }
 
