@@ -6,17 +6,19 @@ pub const LOAD_ID_COLUMN: &str = "_rdlt_load_id";
 /// The column holding when each row's load started: `Timestamp(Microsecond, "UTC")`.
 pub const LOADED_AT_COLUMN: &str = "_rdlt_loaded_at";
 
-/// The column holding each row's id in the tables of a normalized stream: 32 bytes of `Binary`,
-/// the BLAKE3 hash of its key, of the whole row, or of its parent's id and its position.
+/// The column holding each row's id in the tables of a normalized stream, `Binary`: for a merge
+/// stream's root row the 32 bytes of the BLAKE3 hash of its key, and for every other row its
+/// position, its session's epoch, segment, piece, part and place, as numbers whose bytes compare
+/// as they do.
 pub const ID_COLUMN: &str = "_rdlt_id";
 
-/// The column holding the id of each child row's parent row: 32 bytes of `Binary`.
+/// The column holding the id of each child row's parent row: `Binary`, as `_rdlt_id` holds it.
 pub const PARENT_ID_COLUMN: &str = "_rdlt_parent_id";
 
-/// The column holding the id of each child row's root row: 32 bytes of `Binary`.
+/// The column holding the id of each child row's root row: `Binary`, as `_rdlt_id` holds it.
 pub const ROOT_ID_COLUMN: &str = "_rdlt_root_id";
 
-/// The column holding each child row's position in its parent's array: `Int64`.
+/// The column holding each child row's position in its parent's array: `Int32`.
 pub const IDX_COLUMN: &str = "_rdlt_idx";
 
 /// The column recording when a change stream's soft delete removed each row:
