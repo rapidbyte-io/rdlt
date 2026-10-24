@@ -199,6 +199,8 @@ pub(super) struct Ledger {
     reads: u64,
     control: u64,
     pub(super) peak: u64,
+    /// The most what reads keep has held at once.
+    pub(super) kept_peak: u64,
     /// The requests waiting for each share, in arrival order; reads never wait.
     waiting: [VecDeque<Waiter>; 6],
     next: u64,
@@ -243,6 +245,7 @@ impl Ledger {
             reads: 0,
             control: 0,
             peak: 0,
+            kept_peak: 0,
             waiting: Default::default(),
             next: 0,
             pressing: 0,
@@ -262,6 +265,11 @@ impl Ledger {
             observer: Some(observer),
             ..self
         }
+    }
+
+    /// Bytes what reads keep holds.
+    pub(super) fn kept(&self) -> u64 {
+        self.reads
     }
 
     /// Bytes reserved, every share together.

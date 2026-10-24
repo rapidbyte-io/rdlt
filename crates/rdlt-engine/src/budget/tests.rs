@@ -384,6 +384,20 @@ async fn an_abandoned_request_releases_what_it_was_granted() {
     assert_eq!(budget.reserved(), 0);
 }
 
+#[tokio::test]
+async fn the_most_reads_keep_at_once_is_counted_apart_from_every_other_share() {
+    let budget = budget(BUDGET);
+    let first = budget.keep(1_000).unwrap();
+    let second = budget.keep(300).unwrap();
+    drop(first);
+    let third = budget.keep(200).unwrap();
+    let pushed = budget.acquire(2_000).await.unwrap();
+    assert_eq!(budget.kept_peak(), 1_300);
+    assert_eq!(budget.peak(), 2_500);
+    drop((second, third, pushed));
+    assert_eq!(budget.kept_peak(), 1_300);
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_waiter_that_gave_up_never_counts_toward_the_peak() {
     let budget = budget(BUDGET);

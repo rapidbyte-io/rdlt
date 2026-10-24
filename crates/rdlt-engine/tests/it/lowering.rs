@@ -310,6 +310,31 @@ async fn a_read_keeping_more_than_its_part_of_the_budget_fails_at_once_naming_th
     assert!(elapsed < Duration::from_secs(1), "{elapsed:?}");
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_run_reports_the_most_its_reads_kept_at_once() {
+    // A quarter of the budget between the sixteen reads at once by default.
+    const SHARE: u64 = BUDGET / 4 / 16;
+    let source = Arc::new(Keeping {
+        source: making("lowering_kept_peak", row_and_checkpoint()).await,
+        bytes: SHARE,
+    });
+    let config = commit_every(1_000_000_000).memory(BUDGET).lanes(1);
+    let outcome = engine(config)
+        .run(
+            pipeline("lowering_kept_peak", [stream("events")]),
+            source,
+            null().await,
+        )
+        .await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    assert_eq!(outcome.report.counters.kept_peak, SHARE);
+}
+
 /// The deadline of a connector's call where it is `wait`, and the default's elsewhere.
 fn deadline(wait: Option<Duration>) -> Duration {
     wait.unwrap_or(Duration::from_mins(30))

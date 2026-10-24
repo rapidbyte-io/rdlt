@@ -25,6 +25,9 @@ pub struct Counters {
     /// Changes the run's budget sent to the tasks watching for pressure and for cursors' waits,
     /// each waking every task waiting on that value.
     pub signals: u64,
+    /// Bytes: the most the run's reads kept beside their events at once, of the budget's share
+    /// for what reads keep.
+    pub kept_peak: u64,
 }
 
 /// What a run asked of its write-ahead log store, and the bytes that moved.

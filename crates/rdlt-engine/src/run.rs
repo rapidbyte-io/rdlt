@@ -354,5 +354,6 @@ async fn drive(context: RunContext, control: RunControl) -> RunOutcome {
     report.counters = context.tally.counters();
     report.counters.waits = context.budget.waited();
     report.counters.signals = context.budget.signals();
+    report.counters.kept_peak = context.budget.kept_peak();
     RunOutcome { report, error }
 }

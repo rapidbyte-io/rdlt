@@ -173,7 +173,8 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>, threaded:
         origin: charged(),
         held: None,
     };
-    let stopped = simulation.load(&mut rng).await;
+    // Boxed: a run's report makes the load's future larger than clippy allows on the stack.
+    let stopped = Box::pin(simulation.load(&mut rng)).await;
     // What the destination holds once the workload is loaded; the checks that follow load
     // nothing more.
     let digest = simulation.world.store.lock().digest();
