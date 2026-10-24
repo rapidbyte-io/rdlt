@@ -30,6 +30,17 @@ and building them surfaced decisions the spec leaves open.
   against 2.05 s for a million rows; docs/perf/sqlite.md). A keyed writer drops the index
   (ADR 0028): a keyed commit scans its staging and finds each key's rows by its key index, a
   lookup an index by who staged a row would take.
+- **A publish keeps every column its rows were written with, or publishes nothing.** A column
+  the rows a commit publishes were written with that the table lacks, as one dropped outside the
+  pipeline, fails the commit with a `Data` error coded `column_missing` that names it, rather
+  than publishing the rows without it, as Confluent's JDBC sink fails a task with the missing
+  columns; a generation is checked as a table is. The destination says what the rows were
+  written with: the SQLite session notes the columns its writers stage each segment's rows with,
+  since a commit publishes only its own session's rows and the catalog records no columns of
+  them, and forgets a segment once a commit publishes or abandons it. A column the staging holds
+  that the rows were not written with, as a change stream's flags after the table is appended
+  to, or a column an abandoned generation added, holds none of their values and stops nothing;
+  a change stream's op and unchanged flags direct its merge, and no table holds them.
 - **Merges delete and insert.** A commit ranks its staged rows per key by sequence, deletes the
   published rows of those keys and inserts the first of each. The writer's `TableRef` decides:
   each staged segment records its merge key, so a table that switches between append and merge
