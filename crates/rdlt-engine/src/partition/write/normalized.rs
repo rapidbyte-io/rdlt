@@ -20,7 +20,7 @@ use super::{
     schema_of, stamp,
 };
 use crate::budget::Shares;
-use crate::cost::{KEY_ID, LINEAGE_ITEM, LINEAGE_ROW, SPLIT_COPIES};
+use crate::cost::{LINEAGE_ITEM, SPLIT_COPIES, lineage_row};
 use crate::error::{Error, codes};
 use crate::limits::MIN_PIECE;
 use crate::normalize::rounding::Rounding;
@@ -153,11 +153,10 @@ async fn sliced(
     units: Vec<Held>,
 ) -> Result<Vec<Held>, Error> {
     let (max, limit) = split_bounds(room.shares(&context.budget));
-    let keyed = if shape.key.is_empty() { 0 } else { KEY_ID };
     let lowered = Lowered {
         rendering: context.rendering.as_ref().clone(),
         stored: Vec::new(),
-        row: LINEAGE_ROW + keyed,
+        row: lineage_row(shape),
         item: LINEAGE_ITEM,
         // What the split makes is measured as rows expand, and may be twice that.
         max,
