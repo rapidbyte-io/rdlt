@@ -80,7 +80,8 @@ Building M2a surfaced decisions the spec leaves open or gets wrong.
   release's fat LTO and single codegen unit, and with overflow checks and debug assertions
   kept); [docs/perf/sim.md](../perf/sim.md) records how fast it runs.
 - **Reports** add `peak_memory`, the most of the memory budget the run reserved at once across
-  all its shares, so budget accounting is observable.
+  all its shares, and `counters.kept_peak`, the most its reads kept at once beside their events,
+  so budget accounting is observable.
 - **Deferred:** the loom model of the memory budget (M9); the configuration size limit, which
   needs the byte boundary of documents (M7) and the wire (M4); the simulator's JSON, change,
   manifest and WAL workloads, which arrive with those features.

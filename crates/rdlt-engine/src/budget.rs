@@ -246,6 +246,7 @@ impl MemoryBudget {
             });
         }
         ledger.reserve(Class::Read, bytes);
+        ledger.kept_peak = ledger.kept_peak.max(ledger.kept());
         Ok(Reservation::of(&self.shared, Class::Read, bytes))
     }
 
@@ -348,6 +349,11 @@ impl MemoryBudget {
     /// The most bytes ever reserved at once.
     pub(crate) fn peak(&self) -> u64 {
         self.shared.lock().peak
+    }
+
+    /// The most bytes reads ever kept at once.
+    pub(crate) fn kept_peak(&self) -> u64 {
+        self.shared.lock().kept_peak
     }
 }
 
