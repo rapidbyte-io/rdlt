@@ -88,37 +88,33 @@ impl Lineage {
 
     /// The lineage of the `count` rows from `first`.
     pub(crate) fn slice(&self, first: usize, count: usize) -> Self {
-        let parent = self.parent.as_ref().map(|parent| Parent {
-            path: parent.path.clone(),
-            part: parent.part,
-            row: parent.row.slice(first, count),
-            root_row: parent.root_row.slice(first, count),
-            idx: parent.idx.slice(first, count),
-        });
-        Self {
-            part: self.part,
-            row: self.row.slice(first, count),
-            keys: self.keys.clone(),
-            parent,
-        }
+        self.each(|array| Ok(array.slice(first, count)))
+            .expect("slicing an array within its rows fails nothing")
     }
 
     /// The lineage of the rows `predicate` keeps.
     pub(crate) fn filter(&self, predicate: &FilterPredicate) -> Result<Self, ArrowError> {
-        let filter = |array: &ArrayRef| predicate.filter(array.as_ref());
+        self.each(|array| predicate.filter(array.as_ref()))
+    }
+
+    /// This lineage with each array holding a value for each of its rows made anew by `each`.
+    fn each(
+        &self,
+        each: impl Fn(&ArrayRef) -> Result<ArrayRef, ArrowError>,
+    ) -> Result<Self, ArrowError> {
         let parent = match &self.parent {
             Some(parent) => Some(Parent {
                 path: parent.path.clone(),
                 part: parent.part,
-                row: filter(&parent.row)?,
-                root_row: filter(&parent.root_row)?,
-                idx: filter(&parent.idx)?,
+                row: each(&parent.row)?,
+                root_row: each(&parent.root_row)?,
+                idx: each(&parent.idx)?,
             }),
             None => None,
         };
         Ok(Self {
             part: self.part,
-            row: filter(&self.row)?,
+            row: each(&self.row)?,
             keys: self.keys.clone(),
             parent,
         })
