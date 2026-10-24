@@ -373,7 +373,7 @@ impl Bench<'_> {
         commit(&mut second.session, &reset).await?;
         let third = self.open(self.destination, 3).await?.epoch;
         let epochs = [first.epoch, second.epoch, third];
-        if epochs[0] < epochs[1] && epochs[1] < epochs[2] {
+        if epochs.windows(2).all(|pair| pair[0] < pair[1]) {
             Ok(())
         } else {
             Err(format!("epochs went {}, {} and {}", epochs[0], epochs[1], epochs[2]).into())
