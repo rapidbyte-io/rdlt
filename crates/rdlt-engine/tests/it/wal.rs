@@ -5,7 +5,9 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use rdlt_connector::{PipelineId, ReadMode};
-use rdlt_engine::{Chunk, ErrorKind, GrowthLimits, LocalWal, RunOutcome, RunStatus, WalStore};
+use rdlt_engine::{
+    Chunk, Code, ErrorKind, GrowthLimits, LocalWal, RunOutcome, RunStatus, WalStore, codes,
+};
 
 use crate::support::batches::{BatchStream, batches};
 use crate::support::destinations::{Step, counting, failing};
@@ -25,7 +27,7 @@ fn ids(partitions: usize, rows: u64) -> Vec<i64> {
 }
 
 /// Checks that `outcome` failed on its configuration, as `code`, before loading anything.
-fn refused(outcome: RunOutcome, code: &str) {
+fn refused(outcome: RunOutcome, code: Code) {
     assert_eq!(outcome.report.status, RunStatus::Failed);
     let error = outcome.error.expect("the run fails");
     assert_eq!(error.kind(), ErrorKind::Config);
@@ -59,7 +61,7 @@ async fn a_load_that_must_log_ahead_fails_where_the_engine_keeps_no_logs() {
             memory("wal_required").await,
         )
         .await;
-    refused(required, "wal_required");
+    refused(required, codes::WAL_REQUIRED);
     let changes = engine
         .run(
             pipeline(
@@ -70,7 +72,7 @@ async fn a_load_that_must_log_ahead_fails_where_the_engine_keeps_no_logs() {
             memory("wal_required_changes").await,
         )
         .await;
-    refused(changes, "wal_required");
+    refused(changes, codes::WAL_REQUIRED);
     let asked = engine
         .run(
             pipeline("wal-asked", incremental()).with_wal(true),
@@ -78,7 +80,7 @@ async fn a_load_that_must_log_ahead_fails_where_the_engine_keeps_no_logs() {
             memory("wal_asked").await,
         )
         .await;
-    refused(asked, "wal_store_missing");
+    refused(asked, codes::WAL_STORE_MISSING);
 }
 
 #[tokio::test(start_paused = true)]
@@ -94,7 +96,7 @@ async fn a_source_that_cannot_read_again_is_never_read_in_full() {
             memory("wal_full").await,
         )
         .await;
-    refused(full, "full_read_unreplayable");
+    refused(full, codes::FULL_READ_UNREPLAYABLE);
 }
 
 #[tokio::test(start_paused = true)]
@@ -275,7 +277,7 @@ async fn a_source_that_never_checkpoints_is_refused_before_its_log_passes_its_li
         .await;
     assert_eq!(outcome.report.status, RunStatus::Failed);
     let error = outcome.error.expect("the run fails");
-    assert_eq!(error.code(), Some("log_bytes_exceeded"), "{error:?}");
+    assert_eq!(error.code(), Some(codes::LOG_BYTES_EXCEEDED), "{error:?}");
     assert!(!error.is_retryable());
     // Nothing of the read was committed, and the source heard of nothing.
     assert!(script.acks.lock().is_empty());
@@ -299,7 +301,7 @@ async fn a_full_disk_fails_its_attempts_retryably_and_keeps_none_of_what_they_st
     assert_eq!(full.report.status, RunStatus::Failed);
     assert_eq!(full.report.attempted, 3);
     let error = full.error.expect("the disk is full");
-    assert_eq!(error.code(), Some("wal_storage_full"), "{error:?}");
+    assert_eq!(error.code(), Some(codes::WAL_STORAGE_FULL), "{error:?}");
     assert!(error.is_retryable());
     // Each attempt gave back what it staged: a disk full is not filled further by retrying.
     assert_eq!(store.staged(), 0);
@@ -381,7 +383,7 @@ async fn a_log_written_for_one_destination_is_never_replayed_into_another() {
         )
         .await;
     let error = refused.error.expect("another destination's log");
-    assert_eq!(error.code(), Some("wal_foreign"), "{error}");
+    assert_eq!(error.code(), Some(codes::WAL_FOREIGN), "{error}");
     let landed = logging_engine(retrying(1), Arc::clone(&store))
         .run(plan, Arc::clone(source), memory("wal_bound_one").await)
         .await;
@@ -425,7 +427,7 @@ async fn a_pipeline_s_destination_takes_logs_from_one_store_only() {
     let reads = script.reads.load(std::sync::atomic::Ordering::SeqCst);
     let refused = run(two.path()).await;
     let error = refused.error.expect("another store");
-    assert_eq!(error.code(), Some("wal_store_other"), "{error}");
+    assert_eq!(error.code(), Some(codes::WAL_STORE_OTHER), "{error}");
     assert!(!error.is_retryable());
     assert_eq!(
         script.reads.load(std::sync::atomic::Ordering::SeqCst),

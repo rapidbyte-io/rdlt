@@ -6,7 +6,7 @@ mod tests;
 
 use rdlt_connector::{ColumnPath, Sequences, TableState};
 
-use crate::error::Error;
+use crate::error::{Code, Error, codes};
 use crate::plan::StreamPlan;
 
 /// What state records of how a table's rows are sequenced and matched.
@@ -85,14 +85,14 @@ pub(super) fn to_record(
 /// as `table`, where that would change how its rows are sequenced or matched.
 fn refuse_change(plan: &StreamPlan, table: &TableState, keying: &Keying) -> Result<(), Error> {
     let name = plan.name();
-    let refuse = |code: &str, detail: &str| {
+    let refuse = |code: Code, detail: &str| {
         Err(Error::config(format!("stream {name}: {detail}"))
             .with_code(code)
             .with_stream(name))
     };
     if keying.sequences == Sequences::Source && table.sequences != Some(Sequences::Source) {
         return refuse(
-            "table_sequences_mismatch",
+            codes::TABLE_SEQUENCES_MISMATCH,
             "its table holds rows the engine merged, which a change stream's positions cannot \
              order; load the change stream into a table of its own",
         );
@@ -105,18 +105,18 @@ fn refuse_change(plan: &StreamPlan, table: &TableState, keying: &Keying) -> Resu
             "its table keeps the history of another stream, whose versions only a history stream \
              keeps"
         };
-        return refuse("table_history_mismatch", detail);
+        return refuse(codes::TABLE_HISTORY_MISMATCH, detail);
     }
     if !keying.key.is_empty() && !table.key.is_empty() && table.key != keying.key {
         return refuse(
-            "table_key_mismatch",
+            codes::TABLE_KEY_MISMATCH,
             "its table's rows were merged by another key; reset the stream's tables to merge by \
              this one",
         );
     }
     if keying.history && table.change_time != keying.change_time {
         return refuse(
-            "table_change_time_mismatch",
+            codes::TABLE_CHANGE_TIME_MISMATCH,
             "its table's versions began at another change time; reset the stream's tables to \
              begin them at this one",
         );

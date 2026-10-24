@@ -10,7 +10,7 @@ use std::time::{Duration, SystemTime};
 use rdlt_connector::{CommitSeq, LoadId, PartitionId, PipelineId, Receipt, StreamName};
 use serde::Serialize;
 
-use crate::error::{Error, ErrorKind, ErrorReport};
+use crate::error::{Error, ErrorKind, ErrorReport, codes};
 
 pub use counters::{
     CommitPhases, Commits, Counters, Flushes, LaneCounters, LogCounters, PoolCounters, ShredCounts,
@@ -205,7 +205,7 @@ fn total(held: u64, more: u64) -> Result<u64, Error> {
             ErrorKind::Destination,
             "the destination's receipts count more rows or bytes than a total holds",
         )
-        .with_code("receipt_overflow")
+        .with_code(codes::RECEIPT_OVERFLOW)
     })
 }
 

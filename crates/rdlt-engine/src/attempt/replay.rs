@@ -22,7 +22,7 @@ use parking_lot::Mutex;
 use super::{RunContext, open};
 use crate::budget::MemoryBudget;
 use crate::crash::crash_point;
-use crate::error::{Error, Side};
+use crate::error::{Error, Side, codes};
 use crate::report::AttemptLog;
 use crate::table::SharedSession;
 use crate::wal::frame;
@@ -269,7 +269,7 @@ fn table(scanned: &Scanned, index: u32) -> Result<&frame::Table, Error> {
         Error::wal(format!(
             "a logged batch names table {index}, which the log never describes"
         ))
-        .with_code(crate::limits::WAL_UNREADABLE)
+        .with_code(codes::WAL_UNREADABLE)
     })
 }
 

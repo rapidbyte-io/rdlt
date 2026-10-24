@@ -17,7 +17,6 @@ use rdlt_connector::{
 use rdlt_wire::limits::count;
 
 use crate::budget::{Denied, Exhausted, MemoryBudget, Reservation, TooLarge};
-use crate::limits::PUSH_EXCEEDS_BUDGET;
 
 /// How `capabilities`' destination renders values: the kinds it stores as they are, and every
 /// other as text.
@@ -102,6 +101,10 @@ impl Charging {
 
 /// The name of the limit a push beyond what pushes may take of the budget passes.
 const PUSH: &str = "push bytes";
+
+/// The code of the refusal a source is answered with for a push beyond what pushes may take of
+/// the budget, which its read then fails with as the source's own.
+const PUSH_EXCEEDS_BUDGET: &str = "push_exceeds_budget";
 
 /// The error for `name` beyond what one request may take of the budget.
 fn too_large(name: &'static str, large: TooLarge) -> ConnectorError {

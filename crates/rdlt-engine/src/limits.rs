@@ -89,51 +89,9 @@ pub(crate) const SCHEMA_KEPT: u64 = 5;
 /// JSON text in a JSON string, which escaping its quotes may double.
 pub(crate) const RECORDED: u64 = 2;
 
-/// The code of the error for a configuration whose memory admits less than the least limits the
-/// protocol lets a peer set.
-pub(crate) const MEMORY_BELOW_MINIMUM: &str = "memory_below_minimum";
-
-/// The code of the error for a followed unbounded read beyond what a run's partitions leave room
-/// for: each holds a slot as long as the run, and one slot must stay for every other read.
-pub(crate) const PARTITIONS_TOO_FEW: &str = "partitions_too_few";
-
-/// The code of the error for a table whose records take more than the tables' share.
-pub(crate) const TABLE_EXCEEDS_BUDGET: &str = "table_exceeds_budget";
-
-/// The code of the error for a change that makes a table wider than the schema columns a
-/// connector may send, its nested fields counted.
-pub(crate) const TABLE_COLUMNS_EXCEEDED: &str = "table_columns_exceeded";
-
-/// The code of the error for a child table beyond those a normalized stream may add.
-pub(crate) const CHILD_TABLES_EXCEEDED: &str = "child_tables_exceeded";
-
 /// Bytes: what the records of a child table of a few columns take in state, its schema and
 /// names, as the child tables a stream may have are derived from the stored state limit.
 pub(crate) const TABLE_RECORDS: u64 = 4 << 10;
-
-/// The code of the error for a commit that would leave more state, or send a larger request,
-/// than a message carrying state may take.
-pub(crate) const STATE_BYTES_EXCEEDED: &str = "state_bytes_exceeded";
-
-/// The code of the error for a change to a table whose schema version is the last one counts.
-pub(crate) const SCHEMA_VERSION_EXHAUSTED: &str = "schema_version_exhausted";
-
-/// The code of the error a wait on the memory budget ends with at its deadline.
-pub(crate) const BUDGET_WAIT_EXCEEDED: &str = "memory_budget_wait_exceeded";
-
-/// The code of the error for a push that keeps more alive than pushes may take of the budget.
-pub(crate) const PUSH_EXCEEDS_BUDGET: &str = "push_exceeds_budget";
-
-/// The code of the error for JSON pushes whose batches take more beyond what the pushes were
-/// admitted for than a request may take.
-pub(crate) const JSON_EXCEEDS_BUDGET: &str = "json_exceeds_budget";
-
-/// The code of the error for one row that takes more to lower than a request may take.
-pub(crate) const ROW_EXCEEDS_BUDGET: &str = "row_exceeds_budget";
-
-/// The code of the error for a seal's, commit's or table's frame that takes more than the log's
-/// share.
-pub(crate) const LOG_FRAME_EXCEEDS_BUDGET: &str = "log_frame_exceeds_budget";
 
 /// Cells: the most one shred of JSON pushes builds, a cell being a row under a column holding
 /// values, at every level of a nested column, a list's items being the rows of its items' level.
@@ -146,37 +104,6 @@ pub(crate) const MAX_CELLS: u64 = 1 << 25;
 /// Bytes: the most of a record's content an error quotes, a key or a number, shown as text a
 /// connector sent is.
 pub(crate) const QUOTED_BYTES: usize = 128;
-/// The code of the error for a directory or file of a local log that is not its user's alone:
-/// another user owns it, or its group or others may reach it, or it is a link, or of another
-/// kind than the log keeps there.
-pub(crate) const WAL_NOT_PRIVATE: &str = "wal_not_private";
-
-/// The code of the error for a name a local log's store never writes, in a directory it keeps a
-/// log's files in: such a file is refused, never read.
-pub(crate) const WAL_STRAY: &str = "wal_stray";
-
-/// The code of the error for a load whose log a replay took over: another attempt of the
-/// pipeline runs, and this one stops before it answers its commit.
-pub(crate) const WAL_FENCED: &str = "wal_fenced";
-
-/// The code of the error for an attempt whose replay found another load of the pipeline still
-/// writing its log: retryable, since the attempt waits for that load to end.
-pub(crate) const WAL_RUNNING: &str = "wal_running";
-
-/// The code of the error for an attempt whose log store is not the store its destination names
-/// for the pipeline's logs: not retryable, as the engine's configuration decides the store.
-pub(crate) const WAL_STORE_OTHER: &str = "wal_store_other";
-
-/// The code of the error for a log this engine cannot read, which an operator removes: a chunk
-/// missing, damaged, of another format, or holding a commit not all of which is there.
-pub(crate) const WAL_UNREADABLE: &str = "wal_unreadable";
-
-/// The code of the error for a log holding a chunk of another pipeline's or load's log.
-pub(crate) const WAL_FOREIGN: &str = "wal_foreign";
-
-/// The code of the error for a logged batch that takes more than one request for lowering may
-/// take of the memory budget: the log was written under more memory than replays it.
-pub(crate) const REPLAY_EXCEEDS_BUDGET: &str = "replay_exceeds_budget";
 
 /// Bytes: what a load's write-ahead log holds on disk at most by default, 4 GiB: four commits'
 /// worth at the default policy's byte threshold.
@@ -195,12 +122,3 @@ pub(crate) const PLANS_AT_ONCE: NonZeroUsize = NonZeroUsize::new(16).expect("six
 /// Bytes: what a carry reads back of a frame at a time, 256 KiB, held in the memory budget's
 /// share for logs while the log is written, so a carry of a frame of any size holds no more.
 pub(crate) const LOG_COPY_BYTES: u64 = 256 << 10;
-
-/// The code of the error for a batch whose frame would take its load's write-ahead log past
-/// what it may hold on disk: its source sent that much without a checkpoint a commit could take.
-pub(crate) const LOG_BYTES_EXCEEDED: &str = "log_bytes_exceeded";
-
-/// The code of the error for a write-ahead log whose disk is full: retryable, since the failed
-/// write gives back what its chunk staged, and the next attempt deletes what a crashed load
-/// staged before it needs room of its own: its log's directory and its fences.
-pub(crate) const WAL_STORAGE_FULL: &str = "wal_storage_full";

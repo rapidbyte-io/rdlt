@@ -27,7 +27,7 @@ use crate::compute::Pool;
 use crate::config::EngineConfig;
 use crate::coordinator::{Coordinator, CoordinatorParts, PartitionRun, StreamRun, launcher};
 use crate::env::Env;
-use crate::error::{Error, ErrorKind, Side};
+use crate::error::{Error, ErrorKind, Side, codes};
 use crate::lane::Lanes;
 use crate::limits::LOG_COPY_BYTES;
 use crate::naming::{Naming, recorded};
@@ -100,7 +100,7 @@ pub(crate) async fn run(
             "pipeline {} keeps a write-ahead log, and the engine has nowhere to keep one",
             context.plan.pipeline()
         ))
-        .with_code("wal_store_missing"));
+        .with_code(codes::WAL_STORE_MISSING));
     }
     // The load's log opens before any other is read, so a replay that starts later lists it
     // and fences it before it reads the pipeline's logs itself.
@@ -229,7 +229,7 @@ async fn open(context: &RunContext, load_id: LoadId) -> Result<Opened, Error> {
                 ErrorKind::Destination,
                 format!("reading pipeline state: {error}"),
             )
-            .with_code("state_invalid"));
+            .with_code(codes::STATE_INVALID));
         }
     };
     Ok(Opened {
@@ -258,7 +258,7 @@ pub(crate) fn within_partition_limit(partitions: usize) -> Result<(), Error> {
              {MAX_PLAN_PARTITIONS}"
         ),
     )
-    .with_code("plan_invalid"))
+    .with_code(codes::PLAN_INVALID))
 }
 
 /// Runs the lanes, the partitions and the coordinator in one scope until all of them end.

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rdlt_connector::{Destination, PipelineId, ReadMode, Source, StreamName};
-use rdlt_engine::{Engine, ResetReport, ResetScope, WriteMode};
+use rdlt_engine::{Engine, ResetReport, ResetScope, WriteMode, codes};
 
 use super::scenario::{Scenario, in_process};
 use super::{DISRUPTED, PIPELINES, Simulation};
@@ -253,7 +253,7 @@ fn scopes(stream: &SimStream) -> Vec<ResetScope> {
 
 /// Whether `error` refuses a reset of a stream the pipeline recorded nothing of.
 fn refused(error: &rdlt_engine::Error) -> bool {
-    error.code() == Some("stream_not_found")
+    error.code() == Some(codes::STREAM_NOT_FOUND)
 }
 
 /// One of `items`, drawn from `rng`.

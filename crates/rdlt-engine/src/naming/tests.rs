@@ -8,6 +8,7 @@ use rdlt_connector::{
 };
 
 use super::Naming;
+use crate::error::codes;
 
 fn rules(case: IdentifierCase, chars: IdentifierChars, max_len: u16) -> IdentifierRules {
     IdentifierRules {
@@ -203,7 +204,7 @@ fn table_identifiers_never_start_with_a_reserved_prefix() {
     let error = Naming::new(reserving)
         .table(&TablePath::new(["_x"]).unwrap(), &BTreeSet::new())
         .unwrap_err();
-    assert_eq!(error.code(), Some("identifier_exhausted"));
+    assert_eq!(error.code(), Some(codes::IDENTIFIER_EXHAUSTED));
 }
 
 fn any_rules() -> impl Strategy<Value = IdentifierRules> {
@@ -422,7 +423,7 @@ fn a_source_column_asking_for_a_metadata_name_is_refused_under_every_rule() {
                     let asks = naming.clean(&spelling) == naming.clean(column);
                     if let Err(error) = assigned {
                         assert!(asks, "{case:?} {chars:?} {spelling:?}: {error}");
-                        assert_eq!(error.code(), Some(super::COLUMN_NAME_RESERVED));
+                        assert_eq!(error.code(), Some(codes::COLUMN_NAME_RESERVED));
                         assert_eq!(error.kind(), crate::ErrorKind::Schema);
                         assert!(names.is_empty());
                     } else {
@@ -468,7 +469,7 @@ fn state_naming_a_column_as_a_metadata_column_is_refused() {
         let error = super::recorded::check(&naming, &state).unwrap_err();
         assert_eq!(
             (error.kind(), error.code()),
-            (crate::ErrorKind::Destination, Some("state_invalid")),
+            (crate::ErrorKind::Destination, Some(codes::STATE_INVALID)),
             "{column}"
         );
     }

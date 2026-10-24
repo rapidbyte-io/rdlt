@@ -2,7 +2,8 @@
 //! child tables a normalized stream adds.
 
 use rdlt_engine::{
-    EngineConfig, ErrorKind, GrowthLimits, Nested, RunOutcome, RunStatus, SchemaSettings,
+    Code, EngineConfig, ErrorKind, GrowthLimits, Nested, RunOutcome, RunStatus, SchemaSettings,
+    codes,
 };
 use serde_json::{Map, Value, json};
 
@@ -50,7 +51,7 @@ async fn load(
 }
 
 /// Checks that `outcome` failed, refused for its schema with `code`.
-fn refused(outcome: &RunOutcome, code: &str) {
+fn refused(outcome: &RunOutcome, code: Code) {
     assert_eq!(outcome.report.status, RunStatus::Failed);
     let error = outcome.error.as_ref().expect("the run fails");
     assert_eq!(error.kind(), ErrorKind::Schema, "{error:?}");
@@ -70,7 +71,7 @@ async fn a_table_at_its_column_limit_loads_and_one_column_more_is_refused() {
         outcome.error
     );
     let outcome = load(store, &[json!({ "extra": 1 })], least(), Nested::Native).await;
-    refused(&outcome, "table_columns_exceeded");
+    refused(&outcome, codes::TABLE_COLUMNS_EXCEEDED);
 }
 
 #[tokio::test(start_paused = true)]
@@ -87,7 +88,7 @@ async fn a_struct_column_whose_fields_pass_the_column_limit_is_refused() {
     );
     let second = json!({ "id": 2, "attrs": record("b", half) });
     let outcome = load(store, &[second], least(), Nested::Native).await;
-    refused(&outcome, "table_columns_exceeded");
+    refused(&outcome, codes::TABLE_COLUMNS_EXCEEDED);
 }
 
 #[tokio::test(start_paused = true)]
@@ -105,7 +106,7 @@ async fn a_stream_adding_child_tables_past_the_default_limit_is_refused() {
         Nested::normalize(),
     )
     .await;
-    refused(&outcome, "child_tables_exceeded");
+    refused(&outcome, codes::CHILD_TABLES_EXCEEDED);
 }
 
 #[tokio::test(start_paused = true)]
@@ -133,7 +134,7 @@ async fn child_tables_recorded_by_earlier_runs_count_toward_the_limit() {
         Nested::normalize(),
     )
     .await;
-    refused(&outcome, "child_tables_exceeded");
+    refused(&outcome, codes::CHILD_TABLES_EXCEEDED);
 }
 
 #[tokio::test(start_paused = true)]
@@ -158,7 +159,7 @@ async fn wide_child_tables_passing_the_state_limit_are_refused_as_child_tables()
     assert!(columns <= column_limit());
     assert!(documents.len() * 9 < limits.child_table_limit());
     let outcome = load(store, &documents, config, Nested::normalize()).await;
-    refused(&outcome, "child_tables_exceeded");
+    refused(&outcome, codes::CHILD_TABLES_EXCEEDED);
 }
 
 #[tokio::test]

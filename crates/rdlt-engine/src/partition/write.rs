@@ -31,8 +31,8 @@ use super::{ChangeMode, OpenSegment, PartitionContext, PartitionJob};
 use crate::budget::{Denied, Lent, MemoryBudget, Reservation, Shares, TooLarge};
 use crate::compute::Pool;
 use crate::cost::CHANGE_ROW;
-use crate::error::{Error, ErrorKind};
-use crate::limits::{MAX_PIECE_BYTES, ROW_EXCEEDS_BUDGET};
+use crate::error::{Error, ErrorKind, codes};
+use crate::limits::MAX_PIECE_BYTES;
 use crate::normalize::PushKind;
 use crate::table::{Incoming, LoweringPlan, Prepared, Stamp, aligned};
 
@@ -538,7 +538,7 @@ pub(super) fn schema_invalid(job: &PartitionJob, error: &SchemaError) -> Error {
         "stream {}: a batch has no table schema: {error}",
         job.stream
     ))
-    .with_code("batch_schema_invalid")
+    .with_code(codes::BATCH_SCHEMA_INVALID)
     .with_stream(&job.stream)
 }
 
@@ -575,7 +575,7 @@ fn row_too_large(job: &PartitionJob, row: &RowTooLarge) -> Error {
             job.stream, row.expanded, row.limit
         ),
     )
-    .with_code(ROW_EXCEEDS_BUDGET)
+    .with_code(codes::ROW_EXCEEDS_BUDGET)
     .with_stream(&job.stream)
 }
 

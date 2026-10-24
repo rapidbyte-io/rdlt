@@ -3,7 +3,7 @@
 use rdlt_connector::{Catalog, Field, LogicalType, ReadMode, StreamSpec, TypeKind};
 
 use super::RunContext;
-use crate::error::Error;
+use crate::error::{Code, Error, codes};
 use crate::plan::{DeleteMode, OnTruncate, RetentionLoss, StreamPlan, WriteMode};
 
 /// The stream's catalog entry, once the source can read it as planned and the destination can
@@ -14,14 +14,14 @@ pub(super) fn check_stream<'a>(
     catalog: &'a Catalog,
 ) -> Result<&'a StreamSpec, Error> {
     let name = plan.name();
-    let refuse = |code: &str, detail: &str| {
+    let refuse = |code: Code, detail: &str| {
         Error::config(format!("stream {name}: {detail}"))
             .with_code(code)
             .with_stream(name)
     };
     let spec = catalog.get(name).ok_or_else(|| {
         refuse(
-            "stream_not_found",
+            codes::STREAM_NOT_FOUND,
             "the source's catalog has no such stream",
         )
     })?;
@@ -35,11 +35,11 @@ pub(super) fn check_stream<'a>(
                       reads a partition again from its earliest after a retention loss: a full \
                       read would load its rows twice, a change stream would miss changes, and a \
                       source that cannot read again has no earliest to serve";
-        return Err(refuse("retention_reset_unsupported", detail));
+        return Err(refuse(codes::RETENTION_RESET_UNSUPPORTED, detail));
     }
     if !spec.supports(plan.read_mode()) {
         let detail = format!("the source cannot read it as {:?}", plan.read_mode());
-        return Err(refuse("read_mode_unsupported", &detail));
+        return Err(refuse(codes::READ_MODE_UNSUPPORTED, &detail));
     }
     let modes = context.destination.capabilities().write_modes;
     let writable = match plan.write_mode() {
@@ -50,12 +50,12 @@ pub(super) fn check_stream<'a>(
     };
     if !writable {
         let detail = format!("the destination cannot write {:?}", plan.write_mode());
-        return Err(refuse("write_mode_unsupported", &detail));
+        return Err(refuse(codes::WRITE_MODE_UNSUPPORTED, &detail));
     }
     if plan.keeps_history()
         && let Some(detail) = change_time_invalid(spec)
     {
-        return Err(refuse("change_time_invalid", &detail));
+        return Err(refuse(codes::CHANGE_TIME_INVALID, &detail));
     }
     let types = &context.destination.capabilities().types;
     if plan.keeps_history()
@@ -64,7 +64,7 @@ pub(super) fn check_stream<'a>(
     {
         let detail = "the destination stores neither timestamps nor 64-bit integers, one of which \
                       holds when a history table's versions begin and end";
-        return Err(refuse("history_validity_unsupported", detail));
+        return Err(refuse(codes::HISTORY_VALIDITY_UNSUPPORTED, detail));
     }
     if let Some((code, detail)) = unmergeable(context, plan) {
         return Err(refuse(code, &detail));
@@ -73,14 +73,14 @@ pub(super) fn check_stream<'a>(
 }
 
 /// Why the destination cannot merge `plan`'s change stream as planned, if it is one and cannot.
-fn unmergeable(context: &RunContext, plan: &StreamPlan) -> Option<(&'static str, String)> {
+fn unmergeable(context: &RunContext, plan: &StreamPlan) -> Option<(Code, String)> {
     if !plan.merges_changes() {
         return None;
     }
     let capabilities = context.destination.capabilities();
     if !capabilities.merge_changes {
         let detail = "the destination does not merge change streams".to_owned();
-        return Some(("change_merge_unsupported", detail));
+        return Some((codes::CHANGE_MERGE_UNSUPPORTED, detail));
     }
     let deletes = capabilities.delete_modes;
     let (hard, soft) = removals(plan);
@@ -90,7 +90,7 @@ fn unmergeable(context: &RunContext, plan: &StreamPlan) -> Option<(&'static str,
             plan.delete_mode(),
             plan.truncate_mode()
         );
-        return Some(("delete_mode_unsupported", detail));
+        return Some((codes::DELETE_MODE_UNSUPPORTED, detail));
     }
     None
 }
@@ -132,18 +132,18 @@ fn unreplayable(
     context: &RunContext,
     plan: &StreamPlan,
     spec: &StreamSpec,
-) -> Option<(&'static str, &'static str)> {
+) -> Option<(Code, &'static str)> {
     if spec.is_replayable() {
         return None;
     }
     match plan.read_mode() {
         ReadMode::Full => Some((
-            "full_read_unreplayable",
+            codes::FULL_READ_UNREPLAYABLE,
             "a full read starts again from the beginning, which its source cannot read again once \
              it acknowledged it",
         )),
         ReadMode::Incremental | ReadMode::Cdc if context.wal.is_none() => Some((
-            "wal_required",
+            codes::WAL_REQUIRED,
             "its source cannot read again what it acknowledged, so its loads keep a write-ahead \
              log, and the engine has nowhere to keep one",
         )),

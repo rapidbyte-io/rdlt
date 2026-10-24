@@ -13,8 +13,7 @@ use super::{
     reserved_times, write,
 };
 use crate::budget::Shares;
-use crate::error::{Error, ErrorKind};
-use crate::limits::ROW_EXCEEDS_BUDGET;
+use crate::error::{Error, ErrorKind, codes};
 use crate::normalize::PushKind;
 
 /// A flush's JSON pushes held with the permits they were admitted with, until their text is let
@@ -191,6 +190,6 @@ pub(super) fn row_beside_built(
             job.stream, row.limit, request, built
         ),
     )
-    .with_code(ROW_EXCEEDS_BUDGET)
+    .with_code(codes::ROW_EXCEEDS_BUDGET)
     .with_stream(&job.stream)
 }

@@ -11,8 +11,7 @@ use rdlt_connector::{DestinationWriter, GenerationId, SchemaVersion, SegmentId, 
 
 use super::failed;
 use crate::budget::{Denied, MemoryBudget, Reservation};
-use crate::error::Error;
-use crate::limits::REPLAY_EXCEEDS_BUDGET;
+use crate::error::{Error, codes};
 
 /// A destination table and the schema version a writer of it writes.
 type Key = (Arc<str>, Option<GenerationId>, SchemaVersion);
@@ -75,7 +74,7 @@ impl Staged {
                 Denied::TooLarge(large) => Error::wal(
                     "a logged batch takes more than the memory budget lets a replay hold",
                 )
-                .with_code(REPLAY_EXCEEDS_BUDGET)
+                .with_code(codes::REPLAY_EXCEEDS_BUDGET)
                 .with_source(large),
             })
     }

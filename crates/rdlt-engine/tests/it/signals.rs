@@ -14,7 +14,7 @@ use rdlt_connector::{
 use rdlt_connector_reference::LogSource;
 use rdlt_engine::{
     BatchPolicy, CommitPolicy, EngineConfig, EngineConfigBuilder, LocalWal, RetentionLoss,
-    RunStatus, Until, WalStore,
+    RunStatus, Until, WalStore, codes,
 };
 use serde_json::{Value, json};
 
@@ -148,7 +148,7 @@ async fn a_run_whose_source_dropped_where_it_would_resume_fails_as_retention_los
     let outcome = after_retention("lost", RetentionLoss::Fail).await;
     assert_eq!(outcome.report.status, RunStatus::Failed);
     let error = outcome.error.expect("the run fails");
-    assert_eq!(error.code(), Some(rdlt_connector::RETENTION_LOST));
+    assert_eq!(error.connector_code(), Some(rdlt_connector::RETENTION_LOST));
     assert!(
         !error.is_retryable(),
         "no retry finds what the source dropped"
@@ -441,7 +441,7 @@ async fn a_reset_read_whose_source_dropped_its_beginning_too_fails_as_retention_
     let outcome = after_retention_through("lost_again", RetentionLoss::Reset, lost).await;
     assert_eq!(outcome.report.status, RunStatus::Failed);
     let error = outcome.error.expect("the run fails");
-    assert_eq!(error.code(), Some(rdlt_connector::RETENTION_LOST));
+    assert_eq!(error.connector_code(), Some(rdlt_connector::RETENTION_LOST));
     // Reset once, from its committed offset; its beginning has nothing earlier to reset to.
     assert_eq!(outcome.report.streams["events"].retention_resets, 1);
 }
@@ -551,7 +551,7 @@ async fn only_a_replayable_stream_read_incrementally_may_reset_on_retention_loss
         assert_eq!(outcome.report.status, RunStatus::Failed);
         let error = outcome.error.expect("the run is refused");
         assert_eq!(error.kind(), rdlt_engine::ErrorKind::Config);
-        assert_eq!(error.code(), Some("retention_reset_unsupported"));
+        assert_eq!(error.code(), Some(codes::RETENTION_RESET_UNSUPPORTED));
     }
     assert!(published_json("reset_full", "events").is_empty());
     let replayable = resetting("reset_log", log("reset_log", &logged).await, stream_plan()).await;
@@ -589,7 +589,7 @@ async fn retention_resets_that_seal_no_rows_spend_the_retry_budget() {
     let outcome = after_retention_through("looping", RetentionLoss::Reset, looping).await;
     assert_eq!(outcome.report.status, RunStatus::Failed);
     let error = outcome.error.expect("the run fails");
-    assert_eq!(error.code(), Some(rdlt_connector::RETENTION_LOST));
+    assert_eq!(error.connector_code(), Some(rdlt_connector::RETENTION_LOST));
     assert!(
         error.is_retryable(),
         "the next attempt may find rows to seal"

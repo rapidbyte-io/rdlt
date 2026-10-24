@@ -9,8 +9,7 @@ use rdlt_connector::{
 
 use super::super::model::Model;
 use super::Tables;
-use crate::error::Error;
-use crate::limits::CHILD_TABLES_EXCEEDED;
+use crate::error::{Error, codes};
 use crate::normalize::declared::Child;
 use crate::policy::SchemaPolicy;
 
@@ -98,7 +97,7 @@ impl Tables {
         Err(Error::schema(format!(
             "stream {stream}: a child table more would pass the limit of {limit}"
         ))
-        .with_code(CHILD_TABLES_EXCEEDED)
+        .with_code(codes::CHILD_TABLES_EXCEEDED)
         .with_stream(stream))
     }
 
@@ -148,7 +147,7 @@ impl Tables {
                          would add a child table to a frozen schema",
                         path.join(".")
                     ))
-                    .with_code("schema_frozen")
+                    .with_code(codes::SCHEMA_FROZEN)
                     .with_stream(stream));
                 }
                 SchemaPolicy::DiscardRow | SchemaPolicy::DiscardValue => {}

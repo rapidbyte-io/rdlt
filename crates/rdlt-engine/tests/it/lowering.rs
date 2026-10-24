@@ -16,7 +16,8 @@ use rdlt_connector::{
     BoxFuture, Catalog, Cursor, PartitionId, PartitionPlan, PartitionSink, ReadRequest, Source,
     StreamName, StreamState,
 };
-use rdlt_engine::{ErrorKind, RetryPolicy, RunOutcome, RunStatus};
+use rdlt_engine::{ErrorKind, Origin, RetryPolicy, RunOutcome, RunStatus, codes};
+use rdlt_wire::limits::LIMIT_EXCEEDED;
 
 use crate::HEAP;
 use crate::support::destinations::{Gate, gated, null, stalling};
@@ -144,7 +145,7 @@ async fn a_row_its_table_widens_beyond_what_a_request_may_take_fails_the_run_unl
     let error = outcome.error.expect("the run fails");
     assert_eq!(
         (error.kind(), error.code()),
-        (ErrorKind::Source, Some("row_exceeds_budget"))
+        (ErrorKind::Source, Some(codes::ROW_EXCEEDS_BUDGET))
     );
     let request = (BUDGET / 4).to_string();
     assert!(error.to_string().contains(&request), "{error}");
@@ -296,8 +297,8 @@ async fn a_read_keeping_more_than_its_part_of_the_budget_fails_at_once_naming_th
     let (beyond, elapsed) = keeping("lowering_kept_beyond", SHARE + 1).await;
     let error = beyond.error.expect("the run fails");
     assert_eq!(
-        (error.kind(), error.code()),
-        (ErrorKind::Source, Some("limit_exceeded"))
+        (error.kind(), error.origin(), error.connector_code()),
+        (ErrorKind::Source, Origin::Source, Some(LIMIT_EXCEEDED))
     );
     assert!(!error.is_retryable());
     let said = format!("{:?}", error.report());
@@ -362,9 +363,10 @@ async fn a_commit_that_never_answers_fails_at_its_own_deadline_before_a_cursor_b
         let name = format!("lowering_hung_commit_{}", deadline(wait).as_secs());
         let (outcome, elapsed) = behind_a_commit(&name, &Gate::closed(), wait).await;
         let error = outcome.error.expect("the run fails");
+        // The engine's wait for the call ends it, before the budget's.
         assert_eq!(
-            error.code(),
-            Some("deadline_exceeded"),
+            (error.origin(), error.code()),
+            (Origin::Engine, Some(codes::DEADLINE_EXCEEDED)),
             "{wait:?}: {error:?}"
         );
         assert!(error.is_retryable());
@@ -428,9 +430,10 @@ async fn a_destination_that_stops_writing_fails_at_its_write_deadline_within_the
             )
             .await;
         let error = outcome.error.expect("the run fails");
+        // The engine's wait for the call ends it, before the budget's.
         assert_eq!(
-            error.code(),
-            Some("deadline_exceeded"),
+            (error.origin(), error.code()),
+            (Origin::Engine, Some(codes::DEADLINE_EXCEEDED)),
             "{wait:?}: {error:?}"
         );
         assert!(error.is_retryable());

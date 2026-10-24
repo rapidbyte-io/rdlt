@@ -29,7 +29,7 @@ use tokio_util::sync::CancellationToken;
 use super::{Coordinator, CoordinatorParts, Cycle, PartitionRun, StreamRun};
 use crate::config::CommitPolicy;
 use crate::env::SystemEnv;
-use crate::error::{Error, ErrorKind, Origin};
+use crate::error::{Error, ErrorKind, Origin, codes};
 use crate::lane::Lanes;
 use crate::naming::Naming;
 use crate::partition::{CursorHold, Latest, Progress, Seal};
@@ -1390,7 +1390,7 @@ async fn a_receipt_for_another_commit_fails_the_commit_before_the_log_settles_it
         (
             ErrorKind::Destination,
             Origin::Engine,
-            Some("receipt_mismatch"),
+            Some(codes::RECEIPT_MISMATCH),
             false
         )
     );

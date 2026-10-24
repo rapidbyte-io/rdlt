@@ -4,8 +4,7 @@
 use rdlt_connector::{Field, LogicalType};
 
 use super::super::model::Model;
-use crate::error::Error;
-use crate::limits::TABLE_COLUMNS_EXCEEDED;
+use crate::error::{Error, codes};
 
 /// Columns: `model`'s columns and the fields nested in them, counted without recursion; the
 /// metadata columns lowering adds are the engine's own, and not counted.
@@ -37,5 +36,5 @@ pub(super) fn admit(model: &Model, limit: u64) -> Result<(), Error> {
         "the table would hold {width} columns, nested fields counted, more than the limit of \
          {limit}"
     ))
-    .with_code(TABLE_COLUMNS_EXCEEDED))
+    .with_code(codes::TABLE_COLUMNS_EXCEEDED))
 }

@@ -10,8 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use rdlt_connector::{CommitMeta, PartitionId, StateChange, StateKey, StreamName};
 
 use super::Coordinator;
-use crate::error::Error;
-use crate::limits::STATE_BYTES_EXCEEDED;
+use crate::error::{Error, codes};
 use crate::stored::Measured;
 
 impl Coordinator {
@@ -39,7 +38,7 @@ impl Coordinator {
         let measured = Measured::of(meta);
         let refused = match stored.admit(&measured, born) {
             Ok(()) => return Ok((measured, BTreeMap::new())),
-            Err(refused) if refused.code() == Some(STATE_BYTES_EXCEEDED) => refused,
+            Err(refused) if refused.code() == Some(codes::STATE_BYTES_EXCEEDED) => refused,
             Err(refused) => return Err(refused),
         };
         let touched: BTreeSet<&str> = meta

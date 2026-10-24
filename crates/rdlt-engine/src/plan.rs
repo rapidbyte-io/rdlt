@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use rdlt_connector::{ColumnPath, LogicalType, PipelineId, ReadMode, StreamName};
 
-use crate::error::Error;
+use crate::error::{Code, Error, codes};
 use crate::policy::{Nested, SchemaSettings};
 
 pub use retention::RetentionLoss;
@@ -269,7 +269,7 @@ impl PipelinePlan {
         if streams.is_empty() {
             return Err(
                 Error::config(format!("pipeline {pipeline} selects no streams"))
-                    .with_code("plan_empty"),
+                    .with_code(codes::PLAN_EMPTY),
             );
         }
         let mut names = BTreeSet::new();
@@ -278,7 +278,7 @@ impl PipelinePlan {
             if !names.insert(&stream.name) {
                 return Err(
                     Error::config(format!("stream {} is selected twice", stream.name))
-                        .with_code("plan_duplicate_stream")
+                        .with_code(codes::PLAN_DUPLICATE_STREAM)
                         .with_stream(&stream.name),
                 );
             }
@@ -289,7 +289,7 @@ impl PipelinePlan {
                     "stream {} would load the same table as another selected stream",
                     stream.name
                 ))
-                .with_code("plan_table_collision")
+                .with_code(codes::PLAN_TABLE_COLLISION)
                 .with_stream(&stream.name));
             }
             check_modes(stream)?;
@@ -362,26 +362,26 @@ impl PipelinePlan {
 }
 
 fn check_modes(stream: &StreamPlan) -> Result<(), Error> {
-    let refuse = |code: &str, reason: &str| {
+    let refuse = |code: Code, reason: &str| {
         Err(Error::config(format!("stream {}: {reason}", stream.name))
             .with_code(code)
             .with_stream(&stream.name))
     };
     if stream.key.is_some() && !stream.keyed() {
         return refuse(
-            "plan_key_unused",
+            codes::PLAN_KEY_UNUSED,
             "a key is set, but only merge and history streams match rows by key",
         );
     }
     if (stream.deletes.is_some() || stream.truncates.is_some()) && !stream.merges_changes() {
         return refuse(
-            "plan_deletes_unused",
+            codes::PLAN_DELETES_UNUSED,
             "a delete or truncate mode is set, but only change streams matched by key apply them",
         );
     }
     match (stream.read, stream.write) {
         (ReadMode::Incremental | ReadMode::Cdc, WriteMode::Replace) => refuse(
-            "plan_mode_invalid",
+            codes::PLAN_MODE_INVALID,
             "replace needs a full read, since the new generation replaces every row",
         ),
         _ => Ok(()),
@@ -391,7 +391,7 @@ fn check_modes(stream: &StreamPlan) -> Result<(), Error> {
 /// Refuses column settings, hints and keys that name nested columns, which only top-level
 /// columns may have until nested columns can be normalized, and null hints.
 fn check_columns(stream: &StreamPlan) -> Result<(), Error> {
-    let refuse = |code: &str, reason: String| {
+    let refuse = |code: Code, reason: String| {
         Err(Error::config(format!("stream {}: {reason}", stream.name))
             .with_code(code)
             .with_stream(&stream.name))
@@ -404,7 +404,7 @@ fn check_columns(stream: &StreamPlan) -> Result<(), Error> {
     for column in named {
         if column.segments().count() > 1 {
             return refuse(
-                "plan_column_nested",
+                codes::PLAN_COLUMN_NESTED,
                 format!(
                     "column {column} is nested; settings, hints and keys name top-level columns"
                 ),
@@ -417,7 +417,7 @@ fn check_columns(stream: &StreamPlan) -> Result<(), Error> {
         .find(|(_, settings)| matches!(settings.nested_setting(), Some(Nested::Normalize { .. })))
     {
         return refuse(
-            "plan_nested_normalize_column",
+            codes::PLAN_NESTED_NORMALIZE_COLUMN,
             format!("column {column} is set to normalize; only pipelines and streams normalize"),
         );
     }
@@ -427,12 +427,15 @@ fn check_columns(stream: &StreamPlan) -> Result<(), Error> {
         .find(|(_, hint)| **hint == LogicalType::Null)
     {
         return refuse(
-            "plan_hint_invalid",
+            codes::PLAN_HINT_INVALID,
             format!("column {column} is hinted as null"),
         );
     }
     if stream.key.as_ref().is_some_and(Vec::is_empty) {
-        return refuse("plan_key_empty", "the merge key names no column".to_owned());
+        return refuse(
+            codes::PLAN_KEY_EMPTY,
+            "the merge key names no column".to_owned(),
+        );
     }
     Ok(())
 }

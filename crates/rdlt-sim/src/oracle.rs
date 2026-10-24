@@ -26,7 +26,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rdlt_connector::{ColumnPath, PartitionId, PipelineId, ReadMode, StreamName};
-use rdlt_engine::{Engine, Env as _, PipelinePlan, Report, StreamPlan, Until};
+use rdlt_engine::{Engine, Env as _, PipelinePlan, Report, StreamPlan, Until, codes};
 use rdlt_wire::Limits;
 
 use crate::canary::Canary;
@@ -487,7 +487,7 @@ impl Simulation {
         let mut stopped = false;
         if let Some((stream, code)) = refused {
             self.world.reach(Reach::Refused);
-            if code == refusals::KEY_CHANGED {
+            if code == codes::MERGE_KEY_CHANGED {
                 stopped = true;
             } else {
                 refusals::relax(&self.world, &mut self.relaxed, &stream, code);

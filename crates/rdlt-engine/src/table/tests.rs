@@ -32,7 +32,7 @@ use super::lowering::{LoweringPlan, Prepared, Stamp};
 use super::model::Model;
 use super::resolve::{Change, Incoming, Resolution, Resolver, Route, Settings};
 use super::{ChangeRows, TableView};
-use crate::error::ErrorKind;
+use crate::error::{Code, ErrorKind, codes};
 use crate::naming::Naming;
 use crate::plan::StreamPlan;
 use crate::policy::{Nested, OnUnsupported, SchemaPolicy, SchemaSettings};
@@ -233,10 +233,10 @@ fn incompatible_values_go_to_the_json_variant() {
 #[test]
 fn policies_refuse_or_discard_changes() {
     let incoming = schema(&[("id", LogicalType::Utf8), ("extra", LogicalType::Int64)]);
-    let cases: [(SchemaSettings, Result<[Route; 2], &str>); 4] = [
+    let cases: [(SchemaSettings, Result<[Route; 2], Code>); 4] = [
         (
             SchemaSettings::new().policy(SchemaPolicy::Freeze),
-            Err("schema_frozen"),
+            Err(codes::SCHEMA_FROZEN),
         ),
         (
             SchemaSettings::new().policy(SchemaPolicy::DiscardRow),
@@ -248,7 +248,7 @@ fn policies_refuse_or_discard_changes() {
         ),
         (
             SchemaSettings::new().on_unsupported(OnUnsupported::Refuse),
-            Err("schema_change_unsupported"),
+            Err(codes::SCHEMA_CHANGE_UNSUPPORTED),
         ),
     ];
     for (settings, expected) in cases {
@@ -323,7 +323,7 @@ fn key_columns_never_take_variants() {
     let error = resolver
         .resolve(&widened.model, &schema(&[("id", LogicalType::Utf8)]))
         .unwrap_err();
-    assert_eq!(error.code(), Some("merge_key_changed"));
+    assert_eq!(error.code(), Some(codes::MERGE_KEY_CHANGED));
     assert!(!model.columns[0].is_nullable(), "key columns hold no nulls");
 }
 
@@ -339,7 +339,7 @@ fn a_frozen_merge_key_is_refused_rather_than_widened() {
     let error = resolver
         .resolve(&model, &schema(&[("id", LogicalType::Int64)]))
         .unwrap_err();
-    assert_eq!(error.code(), Some("schema_frozen"));
+    assert_eq!(error.code(), Some(codes::SCHEMA_FROZEN));
 }
 
 #[test]
@@ -672,14 +672,14 @@ fn merge_batches_without_a_whole_key_are_refused() {
     let cases = [
         (
             batch(vec![("v", Arc::new(StringArray::from(vec!["a"])) as _)]),
-            "merge_key_missing",
+            codes::MERGE_KEY_MISSING,
         ),
         (
             batch(vec![(
                 "id",
                 Arc::new(Int64Array::from(vec![None, Some(1)])) as _,
             )]),
-            "merge_key_null",
+            codes::MERGE_KEY_NULL,
         ),
     ];
     for (batch, code) in cases {
@@ -849,7 +849,7 @@ fn models_come_from_committed_state() {
     let error = Model::from_state(Some(&orphan)).unwrap_err();
     assert_eq!(
         (error.kind(), error.code()),
-        (ErrorKind::Destination, Some("state_invalid"))
+        (ErrorKind::Destination, Some(codes::STATE_INVALID))
     );
 }
 
@@ -896,7 +896,7 @@ fn a_source_column_named_like_a_metadata_column_is_refused() {
         (error.kind(), error.code(), error.stream()),
         (
             ErrorKind::Schema,
-            Some("column_name_reserved"),
+            Some(codes::COLUMN_NAME_RESERVED),
             Some(&resolver.stream)
         )
     );
@@ -946,7 +946,7 @@ fn a_merge_table_created_without_its_key_column_refuses_batches() {
     let error = LoweringPlan::new(resolver.stream.clone(), view, incoming, resolution.routes)
         .prepare(&batch, None, &stamp(), None)
         .unwrap_err();
-    assert_eq!(error.code(), Some("merge_key_missing"));
+    assert_eq!(error.code(), Some(codes::MERGE_KEY_MISSING));
 }
 
 #[test]
@@ -1074,7 +1074,7 @@ fn a_value_its_column_cannot_represent_fails_the_batch() {
         .unwrap_err();
     assert_eq!(
         (error.kind(), error.code()),
-        (ErrorKind::Schema, Some("value_unrepresentable"))
+        (ErrorKind::Schema, Some(codes::VALUE_UNREPRESENTABLE))
     );
 }
 
@@ -1767,7 +1767,7 @@ fn a_merge_key_of_exact_integers_never_widens_to_floats() {
     let error = resolver
         .resolve(&model, &schema(&[("id", LogicalType::Float64)]))
         .unwrap_err();
-    assert_eq!(error.code(), Some("merge_key_changed"));
+    assert_eq!(error.code(), Some(codes::MERGE_KEY_CHANGED));
 }
 
 /// Capabilities storing decimals as text, as SQLite does.
@@ -1791,7 +1791,7 @@ fn a_decimal_key_stored_as_text_widens_where_its_values_render_alike() {
         .unwrap_err();
     assert_eq!(
         finer.code(),
-        Some("merge_key_changed"),
+        Some(codes::MERGE_KEY_CHANGED),
         "1.50 renders as 1.5000 once the scale grows"
     );
 }
@@ -1809,7 +1809,7 @@ fn an_integer_key_stored_as_text_widens_to_whole_decimals_and_never_to_fractions
     let fractions = resolver
         .resolve(&model, &schema(&[("id", decimal(22, 2))]))
         .unwrap_err();
-    assert_eq!(fractions.code(), Some("merge_key_changed"));
+    assert_eq!(fractions.code(), Some(codes::MERGE_KEY_CHANGED));
 }
 
 #[test]
@@ -1827,7 +1827,7 @@ fn an_integer_key_stored_by_value_never_becomes_text() {
         .unwrap_err();
     assert_eq!(
         error.code(),
-        Some("merge_key_changed"),
+        Some(codes::MERGE_KEY_CHANGED),
         "stored integers never match keys stored as text"
     );
 }

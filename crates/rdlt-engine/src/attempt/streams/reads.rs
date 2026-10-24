@@ -8,7 +8,7 @@ use rdlt_connector::{
 
 use crate::attempt::RunContext;
 use crate::coordinator::{Begun, Cycle, plan_of};
-use crate::error::{Error, ErrorKind};
+use crate::error::{Error, ErrorKind, codes};
 use crate::plan::StreamPlan;
 
 /// How an attempt reads a stream.
@@ -137,7 +137,7 @@ async fn partitions(
                 ErrorKind::Source,
                 format!("stream {name}: the source planned phase {phase} of a stream not read as changes"),
             )
-            .with_code("phase_unexpected")
+            .with_code(codes::PHASE_UNEXPECTED)
             .with_stream(name));
         }
         let begun = Begun {

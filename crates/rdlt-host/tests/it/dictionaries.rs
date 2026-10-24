@@ -445,8 +445,12 @@ async fn a_source_told_the_limits_is_refused_a_dictionary_beyond_them_before_it_
     let outcome = wide("wide_told_beyond", told_dictionary_bytes() + 1, true).await;
     let error = outcome.error.expect("the run fails");
     assert_eq!(
-        (error.kind(), error.code()),
-        (rdlt_engine::ErrorKind::Source, Some("limit_exceeded"))
+        (error.kind(), error.origin(), error.connector_code()),
+        (
+            rdlt_engine::ErrorKind::Source,
+            rdlt_engine::Origin::Source,
+            Some(rdlt_wire::limits::LIMIT_EXCEEDED)
+        )
     );
     let said = format!("{:?}", error.report());
     assert!(said.contains("dictionary bytes"), "{said}");
@@ -461,8 +465,12 @@ async fn a_read_keeping_more_than_its_part_of_the_budget_fails_naming_the_limit(
     let outcome = wide("wide_beyond", (4 << 20) + 1, false).await;
     let error = outcome.error.expect("the run fails");
     assert_eq!(
-        (error.kind(), error.code()),
-        (rdlt_engine::ErrorKind::Source, Some("limit_exceeded"))
+        (error.kind(), error.origin(), error.connector_code()),
+        (
+            rdlt_engine::ErrorKind::Source,
+            rdlt_engine::Origin::Source,
+            Some(rdlt_wire::limits::LIMIT_EXCEEDED)
+        )
     );
     let said = format!("{:?}", error.report());
     assert!(said.contains("read kept bytes"), "{said}");

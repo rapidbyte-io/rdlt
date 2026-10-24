@@ -11,8 +11,7 @@ use tokio::sync::{Notify, oneshot};
 
 use super::super::writer::Kept;
 use super::{Command, LoadLog};
-use crate::error::Error;
-use crate::limits::LOG_BYTES_EXCEEDED;
+use crate::error::{Error, codes};
 
 /// Whether a commit can free room in a full log: a checkpoint no commit has taken, or a commit
 /// under way, and the bell a batch rings when it waits for one.
@@ -236,5 +235,5 @@ fn full(limit: u64) -> Error {
         "the load's write-ahead log would hold more than {limit} bytes, what its partitions have \
          not sealed fills it, and no checkpoint since its last commit lets a commit free any of it"
     ))
-    .with_code(LOG_BYTES_EXCEEDED)
+    .with_code(codes::LOG_BYTES_EXCEEDED)
 }

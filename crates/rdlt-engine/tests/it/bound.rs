@@ -9,7 +9,9 @@ use arrow_array::{ArrayRef, Decimal256Array, Int8Array, ListArray, RecordBatch};
 use arrow_buffer::{OffsetBuffer, i256};
 use arrow_schema::{DataType, Field};
 use rdlt_connector::ReadMode;
-use rdlt_engine::{LocalWal, Nested, RunOutcome, RunStatus, SchemaSettings, StreamPlan, WalStore};
+use rdlt_engine::{
+    LocalWal, Nested, RunOutcome, RunStatus, SchemaSettings, StreamPlan, WalStore, codes,
+};
 
 use crate::HEAP;
 use crate::support::destinations::{Step as Fails, buffering, failing, null};
@@ -272,7 +274,7 @@ async fn a_row_whose_items_normalize_past_a_request_fails_unsplit_within_the_bou
     );
     let (peak, outcome) = measured(run).await;
     let error = outcome.error.expect("the row takes more than a request");
-    assert_eq!(error.code(), Some("row_exceeds_budget"), "{error:?}");
+    assert_eq!(error.code(), Some(codes::ROW_EXCEEDS_BUDGET), "{error:?}");
     assert!(peak <= bound(), "the heap held {peak} bytes");
 }
 

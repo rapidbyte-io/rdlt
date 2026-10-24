@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use rdlt_connector::{Destination, StateEntry, StateRecord};
-use rdlt_engine::{ErrorKind, ResetScope, RunOutcome, RunStatus};
+use rdlt_engine::{ErrorKind, ResetScope, RunOutcome, RunStatus, codes};
 
 use crate::support::destinations::{Restate, limited, restated};
 use crate::support::{commit_every, engine, generator, memory, pipeline, stream};
@@ -42,7 +42,7 @@ fn refused(outcome: &RunOutcome) {
     let error = outcome.error.as_ref().expect("the run fails");
     assert_eq!(
         (error.kind(), error.code(), error.is_retryable()),
-        (ErrorKind::Destination, Some("state_invalid"), false),
+        (ErrorKind::Destination, Some(codes::STATE_INVALID), false),
         "{error}"
     );
     assert_eq!(outcome.report.rows, 0);

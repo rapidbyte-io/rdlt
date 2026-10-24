@@ -9,9 +9,10 @@ use bytes::Bytes;
 use proptest::prelude::*;
 use rdlt_connector::{Field, LogicalType};
 
-use super::reference::{self, Code, Json};
+use super::reference::{self, Json};
 use super::shred;
 use crate::compute::{Pool, ready};
+use crate::error::Code;
 
 /// The batches of `pushes`, shredded in chunks of `chunk_bytes`, as one, or the error's code.
 pub(super) fn shredded(pushes: &[Bytes], chunk_bytes: usize) -> Result<Option<RecordBatch>, Code> {
@@ -24,8 +25,8 @@ pub(super) fn shredded_within(
     chunk_bytes: usize,
     limits: super::ShredLimits,
 ) -> Result<Option<RecordBatch>, Code> {
-    let batches = ready(shred(&Pool::inline(), pushes, chunk_bytes, limits))
-        .map_err(|error| Code(error.code()))?;
+    let batches =
+        ready(shred(&Pool::inline(), pushes, chunk_bytes, limits)).map_err(|error| error.code())?;
     let Some(first) = batches.first() else {
         return Ok(None);
     };

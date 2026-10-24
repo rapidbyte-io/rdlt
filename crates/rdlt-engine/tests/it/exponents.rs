@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
-use rdlt_engine::{ErrorKind, Nested, RunOutcome, SchemaSettings, StreamPlan, WriteMode};
+use rdlt_engine::{ErrorKind, Nested, RunOutcome, SchemaSettings, StreamPlan, WriteMode, codes};
 
 use crate::support::batches::{BatchStream, batches};
 use crate::support::{commit_every, engine, memory, pipeline, published_json, stream};
@@ -39,7 +39,7 @@ fn refused(name: &str, outcome: &RunOutcome) {
     let error = outcome.error.as_ref().expect("the number is refused");
     assert_eq!(
         (error.kind(), error.code()),
-        (ErrorKind::Source, Some("limit_exceeded")),
+        (ErrorKind::Source, Some(codes::LIMIT_EXCEEDED)),
         "{name}: {error:?}"
     );
     assert!(

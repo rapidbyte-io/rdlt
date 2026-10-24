@@ -8,7 +8,7 @@ use rdlt_connector::{
     TableRef,
 };
 
-use crate::error::{Error, ErrorKind, Side};
+use crate::error::{Error, ErrorKind, Side, codes};
 
 /// The destination session, shared by the coordinator's commits and the partitions' schema
 /// changes until the coordinator closes it.
@@ -101,7 +101,7 @@ pub(crate) fn answered(meta: &CommitMeta, receipt: Receipt) -> Result<Receipt, E
             receipt.load_id
         ),
     )
-    .with_code("receipt_mismatch"))
+    .with_code(codes::RECEIPT_MISMATCH))
 }
 
 fn closed() -> Error {

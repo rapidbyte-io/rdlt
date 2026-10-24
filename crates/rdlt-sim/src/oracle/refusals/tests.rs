@@ -1,10 +1,10 @@
 use std::collections::BTreeSet;
 
 use rdlt_connector::{Capabilities, DecimalType, LogicalType, SchemaChanges, TypeKind};
-use rdlt_engine::{Nested, SchemaPolicy};
+use rdlt_engine::{Code, Nested, SchemaPolicy, codes};
 
 use super::keys::{key_outcome, key_step};
-use super::{Arrival, Outcome, Own, Rules, Step, UNSUPPORTED, orders, outcome, predict, prunes};
+use super::{Arrival, Outcome, Own, Rules, Step, orders, outcome, predict, prunes};
 use crate::rng::SplitMix64;
 use crate::workload::{PHASES, Relaxed};
 use crate::world::{Registered, World};
@@ -157,17 +157,32 @@ fn a_refusal_only_some_orders_meet_may_happen_but_need_not() {
         |current: Option<&LogicalType>, arrival: &Arrival| plain(&evolving)(current, arrival);
     let both = [vec![typed(LogicalType::Int16), typed(LogicalType::Int32)]];
     assert_eq!(
-        outcome(Some(LogicalType::Int8), &both, UNSUPPORTED, step),
-        Outcome::may(UNSUPPORTED)
+        outcome(
+            Some(LogicalType::Int8),
+            &both,
+            codes::SCHEMA_CHANGE_UNSUPPORTED,
+            step
+        ),
+        Outcome::may(codes::SCHEMA_CHANGE_UNSUPPORTED)
     );
     let only = [vec![typed(LogicalType::Int32)]];
     assert_eq!(
-        outcome(Some(LogicalType::Int8), &only, UNSUPPORTED, step),
-        Outcome::must(UNSUPPORTED)
+        outcome(
+            Some(LogicalType::Int8),
+            &only,
+            codes::SCHEMA_CHANGE_UNSUPPORTED,
+            step
+        ),
+        Outcome::must(codes::SCHEMA_CHANGE_UNSUPPORTED)
     );
     let fitting = [vec![typed(LogicalType::Int16)]];
     assert_eq!(
-        outcome(Some(LogicalType::Int8), &fitting, UNSUPPORTED, step),
+        outcome(
+            Some(LogicalType::Int8),
+            &fitting,
+            codes::SCHEMA_CHANGE_UNSUPPORTED,
+            step
+        ),
         Outcome::default()
     );
 }
@@ -187,7 +202,12 @@ fn a_phase_starts_from_every_type_the_last_one_may_have_left() {
         vec![typed(LogicalType::Int32)],
     ];
     assert_eq!(
-        outcome(Some(LogicalType::Int8), &phases, UNSUPPORTED, step),
+        outcome(
+            Some(LogicalType::Int8),
+            &phases,
+            codes::SCHEMA_CHANGE_UNSUPPORTED,
+            step
+        ),
         Outcome::default()
     );
 }
@@ -325,7 +345,7 @@ fn an_integer_a_float_would_round_ends_a_column_s_exactness() {
 
 /// A world of a merge stream that surely meets a key refusal in a phase unless its rows go before
 /// their batch is resolved, which some do: the world, the stream, the phase and the code.
-fn pruned_key() -> (Registered, String, usize, &'static str) {
+fn pruned_key() -> (Registered, String, usize, Code) {
     for seed in 0..400 {
         let registered = World::register(&format!("pruned_key_{seed}"), &mut SplitMix64::new(seed));
         let capabilities = registered.world().capabilities();

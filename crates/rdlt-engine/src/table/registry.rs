@@ -21,7 +21,7 @@ use super::resolve::{Change, Incoming, Resolution, Resolver, Route};
 use super::session::SharedSession;
 use super::{LoweringPlan, TableView};
 use crate::config::GrowthLimits;
-use crate::error::{Error, ErrorKind, Side};
+use crate::error::{Error, ErrorKind, Side, codes};
 use crate::naming::Naming;
 use crate::normalize::Shape;
 
@@ -155,7 +155,7 @@ impl Tables {
                 ErrorKind::Destination,
                 format!("reading pipeline state: two tables are recorded under the name {name}"),
             )
-            .with_code("state_invalid"));
+            .with_code(codes::STATE_INVALID));
         }
         self.taken = Mutex::new(
             state
