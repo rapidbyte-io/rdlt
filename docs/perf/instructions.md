@@ -15,7 +15,7 @@ The cases are those of the engine's `allocations` bench whose names hold a `/`.
 | `commit/1024` | `bench::Passthrough::run` moving one batch of one row from each of 1,024 partitions of a replaying source, committed once, at the end, into the reference in-memory destination, a store of its own each iteration, within the same two cores |
 | `shred/nested`, `shred/with_arrays`, `shred/flat_narrow`, `shred/wide_200`, `shred/string_heavy`, `shred/array_form`, `shred/drift_json`, `shred/drift_scalar`, `shred/big_numbers` | shredding 1 MiB of the corpus in 1 MiB chunks on the calling thread |
 | `shred/rows` | shredding 1 MiB of the nested corpus as a source's one call of `Emitter::rows` with its records pushes it, in 1 MiB chunks on the calling thread |
-| `normalize/keyless/nested`, `normalize/keyless/with_arrays`, `normalize/keyed/with_arrays` | normalizing, to depth 8, keyless or keyed on `id`, the batches 1 MiB of the corpus shreds into |
+| `normalize/keyless/nested`, `normalize/keyless/with_arrays`, `normalize/keyed/with_arrays` | normalizing, to depth 8, keyless or as a merge keyed on `id`, the batches 1 MiB of the corpus shreds into |
 | `normalize/dropped/with_arrays` | normalizing the `with_arrays` batches as `normalize/keyless/with_arrays` does, then dropping every tenth root row and pruning each child table of the rows whose parent went |
 | `wide/arrow_1000` | `bench::Wide::run` of the wide bench's `arrow/1000`: 8 pushes of about 8 MiB of rows of a thousand of the passthrough workload's columns, from a replaying source to the null sink, within the same two cores |
 | `wal/encode` | `bench::sample_log` of one 8,192-row batch of the passthrough workload's columns |

@@ -41,17 +41,17 @@ trusted them in ways that broke data quietly or failed whole streams on one row:
 
 ## Decision
 
-- **Row identity is BLAKE3 of one canonical encoding.** An id is BLAKE3's whole 256-bit output;
-  128 bits would give 64 bits of collision resistance, within reach of an attacker who writes
-  both rows. Each kind of id hashes a tag of its own first: a root by its key or whole, a child
-  by its parent's id and index, a history version by its data. Every name, text, byte string and
-  number in the encoding carries its length in LEB128, so no encoding is a prefix of another.
-  Numbers are one kind, by value: integers, decimals without trailing zeros, JSON numbers by
-  their exact value and floats by the shortest text of the 64-bit float they are or widen to, so
-  a widening changes no id while two floats never share one. A Date64 is the day it is within.
-  Ids are stored, so they change once with this decision; nothing published reads the old ones.
-  The engine writes a Float32 into JSON as the 64-bit float it widens to, so its text is that of
-  the column it widens to.
+- **A hashed identity is BLAKE3 of one canonical encoding.** A hash is BLAKE3's whole 256-bit
+  output; 128 bits would give 64 bits of collision resistance, within reach of an attacker who
+  writes both rows. Each kind hashes a tag of its own first: a merge stream's root by its key, a
+  history version by its data. Every other normalized row is identified by its position, which
+  no record author chooses (ADR 0009). Every name, text, byte string and number in the encoding
+  carries its length in LEB128, so no encoding is a prefix of another. Numbers are one kind, by
+  value: integers, decimals without trailing zeros, JSON numbers by their exact value and floats
+  by the shortest text of the 64-bit float they are or widen to, so a widening changes no hash
+  while two floats never share one. A Date64 is the day it is within. Hashes are stored, so
+  recorded digests of every type and encoding hold the encoding. The engine writes a Float32
+  into JSON as the 64-bit float it widens to, so its text is that of the column it widens to.
 - **A history version is hashed by the values its table holds**, each data column converted to
   its logical type before it is lowered: JSON by the values it renders, decimals by their value,
   floats as above, however the destination stores them.
