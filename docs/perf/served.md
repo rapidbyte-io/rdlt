@@ -43,9 +43,10 @@ process or each in a process of its own.
   of 256 MiB, one commit; the results recorded at `90ce76c2` and before ran within 1 GiB. Only
   the run is timed, not its connections; every run checks every row arrives.
 - **Readings.** Each process case prints its last run's readings from the host's report, as
-  [passthrough.md](passthrough.md) defines them, a batch counted as a frame. The served sink
-  declares one writer, so every case writes through one lane whatever its partitions: its lanes
-  written say nothing of how the engine spreads partitions over lanes.
+  [passthrough.md](passthrough.md) defines them, a batch counted as a frame. In every case but
+  those named `/<n>-writers` the served sink declares one writer, so the case writes through one
+  lane whatever its partitions: its lanes written say nothing of how the engine spreads
+  partitions over lanes. Those cases are below ("Through a writer a core").
 - **CPU.** The CPUs `perf stat` counts busy over each case's runs, every thread of the process,
   the served connectors' included, a GB moved; the median and range over the rounds.
 - **CPU of each process.** In the process cases, for each run, the bench's process's user and
@@ -1170,3 +1171,55 @@ MB/s over the five pairs, the median with its range, and the change's median on 
   it. Single rounds strayed 10–30 % either way, main's as much as the change's. The change adds to
   each push only the window's admission: what the push keeps alive, counted by its buffers, and a
   permit of a semaphore that sixteen pushes of `512x10000` never fill.
+
+## Through a writer a core
+
+The production slice above writes through one lane, its sink declaring one writer, so it cannot
+tell whether the engine, the wire or the sink stops it scaling with partitions. Nine more process
+cases serve both connectors over the socket in each size of frame, 64 × 80 000, 512 × 10 000 and
+5 120 × 1 000 rows, from 1, 4 and 16 partitions, into a sink declaring as many writers as the
+host has lanes, one a core: four on CPUs 0–3. Each is named after its one-writer row with
+`/<n>-writers`, as `served/process/socket/both/64x80000/16-partitions/4-writers`. The one-writer
+rows stay, and the caveat about lanes in the method applies to them alone.
+
+- **Running.** `just bench served 0-3 process/socket/both 4-11` runs these beside the one-writer
+  rows and the many-table cells below; `just bench served 0-3 writers 4-11` runs them alone.
+- **Readings.** As the other process cases: MB/s, CPU seconds a GB of each process, the CPUs each
+  keeps busy, and the last run's readings, intake waits, lanes written and lane flushes by cause
+  among them.
+- **Checks.** Every run checks every row arrives, and fails where it wrote through fewer lanes
+  than its partitions or its sink's writers, whichever are fewer: such a run is a broken bench,
+  not a figure.
+
+No figures are recorded here yet: they are three interleaved rounds' medians and ranges, taken
+with the rest of the campaign that reads them.
+
+## Many tables
+
+The passthrough bench's many-table cells ([passthrough.md](passthrough.md), "Many tables"), with
+both connectors spawned over the socket for each run and the sink declaring a writer a core:
+`served/process/socket/both/tables/followed/{16,64,192}` and
+`served/process/socket/both/tables/snapshot/256`. The engine is configured as in process: a
+followed cell reads a partition more than its streams, within the default 256 MiB where it admits
+them and otherwise within the least budget that does, 386 MiB for 193 partitions; the snapshot runs
+at the engine's defaults.
+
+A served source reads each partition over a call of its one connection, and a followed read holds
+its call for the run. A connection carries at most 200 calls (`rdlt_wire::limits::MAX_CALLS`), the
+heartbeat among them, so 256 followed streams cannot be served: the reads past the limit wait for a
+call that never frees until starting them passes its deadline, a minute, and the attempt fails
+(`deadline_exceeded`), as a run of 256 served streams did. 192 is the largest of the in-process
+counts that one connection carries beside the heartbeat and a commit's acknowledgement.
+
+- **Running.** `just bench served 0-3 tables 4-11`. A followed run lasts its ten-second span, so
+  each followed cell takes about two minutes: a warm-up run and ten samples of one run each.
+- **Readings.** Over a cell's ten runs, the median and range of each commit phase's time a commit
+  (the flush, the horizon, the log, the commit and the acknowledgement, which is one `committed`
+  call a stream); the CPU seconds a wall second of the bench's process, the source's and the
+  destination's, while the streams are quiet, from seven seconds to ten, or over the snapshot's
+  run; the most the reads kept of their share, from the report's `kept_peak`, against the share,
+  a quarter of the budget; each process's resident peak, and the bench's above its base before
+  the run; then the last run's readings, lane flushes by cause, retirements among them.
+- **Checks.** Every run checks every row its streams pushed lands.
+
+No figures are recorded here yet, as for the rows through a writer a core.
