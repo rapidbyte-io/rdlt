@@ -46,14 +46,27 @@ impl Tail {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (front, back) = bytes.as_slices();
-        let text = String::from_utf8_lossy(&[front, back].concat()).into_owned();
+        let kept = [front, back].concat();
         // A tail that is full may start within what the connector wrote, a secret included.
         let dropped = bytes.len() >= TAIL_BYTES;
         drop(bytes);
+        let from = if dropped { torn(&kept) } else { 0 };
+        let text = String::from_utf8_lossy(&kept[from..]).into_owned();
         let scrubbed = redactions.scrubbed_end(text, dropped);
         // Cut to its end after it was scrubbed, and scrubbed where it was cut.
         redactions.scrubbed(ending(shown(scrubbed, usize::MAX), LAST_WORDS_BYTES))
     }
+}
+
+/// How many bytes at the start of `bytes` are the rest of a character a cut tore in two: each
+/// would be replaced, and hide what of a secret follows from being scrubbed.
+fn torn(bytes: &[u8]) -> usize {
+    // A character continues in at most three bytes, each of the form 0b10xx_xxxx.
+    bytes
+        .iter()
+        .take(3)
+        .take_while(|byte| **byte & 0b1100_0000 == 0b1000_0000)
+        .count()
 }
 
 /// The last `bytes` of `text`, which is shown text: from the start of a line where one starts
