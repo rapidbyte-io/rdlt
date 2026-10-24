@@ -17,6 +17,16 @@
 //! checkpoint after each, from one partition and from sixteen, into the null sink, each printing
 //! its readings and the passes shredding took. As a test, each pushes two small pushes a
 //! partition.
+//!
+//! The many-table cells follow 16, 64, 192 and 256 streams, each an unbounded partition pushing
+//! five batches of a thousand rows a second apart with a checkpoint after each, then nothing,
+//! committed every two seconds and followed for ten, reading a partition more than the streams
+//! within the default budget where it admits them and within the least that does otherwise; and
+//! read a snapshot of 256 tables of four such pushes each at the engine's defaults. Each writes
+//! through a writer a core and prints, over its runs, each commit phase's time a commit, the
+//! process's CPU seconds a wall second while the streams are quiet, from seven seconds to ten, or
+//! over the snapshot's run, the most its reads kept, its resident peak, and its last run's
+//! readings. As a test, each follows for two seconds, its pushes 20 ms apart.
 
 #![forbid(unsafe_code)]
 
@@ -31,7 +41,8 @@ use criterion::{
     criterion_main,
 };
 use rdlt_engine::bench::{
-    Cell, JsonCell, JsonPassthrough, Mixed, Paired, Passthrough, Readings, written,
+    Cell, JsonCell, JsonPassthrough, Metered, Mixed, Paired, Passthrough, Readings, Schedule,
+    Tables, TablesCell, phases, reset_peak, resident_kib, spread, written,
 };
 use rdlt_engine::{Cores, LocalWal, Report, WalStore};
 
@@ -274,5 +285,144 @@ fn json(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, passthrough, logged, json);
+/// The runs of a many-table cell its readings are of: criterion's samples, its warm-up's left out.
+const TABLE_SAMPLES: usize = 10;
+
+/// One run of a many-table cell: its report with the process's CPU time at its window's bounds,
+/// and its resident memory, in KiB, before the run and at its peak, where the platform tells them.
+struct TableRun {
+    metered: Metered<Option<Duration>>,
+    resident: Option<(u64, u64)>,
+}
+
+/// Each many-table cell, made when it first runs, its readings over its runs printed after it.
+fn tables(c: &mut Criterion) {
+    let cores = Cores::try_from_host().expect("the host says how many cores the bench may use");
+    let schedule = if timed() {
+        Schedule::TIMED
+    } else {
+        Schedule::TESTED
+    };
+    let mut group = c.benchmark_group("passthrough/tables");
+    group
+        .sample_size(TABLE_SAMPLES)
+        .sampling_mode(SamplingMode::Flat)
+        .warm_up_time(Duration::from_millis(1));
+    for cell in TablesCell::ALL {
+        let measured = match cell {
+            // A followed run lasts its span: ten samples of one run each.
+            TablesCell::Followed(_) => schedule.span * u32::try_from(TABLE_SAMPLES).unwrap_or(1),
+            TablesCell::Snapshot => Duration::from_secs(5),
+        };
+        group.measurement_time(measured);
+        let (mut made, mut runs) = (None, Vec::new());
+        group.bench_function(cell.name(), |b| {
+            let tables = made.get_or_insert_with(|| {
+                Tables::try_new(cores, cell, schedule).expect("the pool starts")
+            });
+            b.iter_custom(|iterations| {
+                let mut took = Duration::ZERO;
+                for _ in 0..iterations {
+                    let run = table_run(tables);
+                    took += run.metered.report.elapsed;
+                    runs.push(run);
+                }
+                took
+            });
+        });
+        if let Some(tables) = &made {
+            let runs = &runs[runs.len().saturating_sub(TABLE_SAMPLES)..];
+            print_tables(tables, runs, cores);
+        }
+    }
+    group.finish();
+}
+
+/// Runs `tables` once, its connectors made and the process's resident peak reset first.
+fn table_run(tables: &Tables) -> TableRun {
+    let (source, destination) = tables.block_on(tables.connectors());
+    let base = reset_peak().ok().and_then(|()| status_kib("VmRSS"));
+    let metered = tables.run(source, destination, process_cpu);
+    TableRun {
+        metered,
+        resident: base.zip(status_kib("VmHWM")),
+    }
+}
+
+/// Kibibytes: the field `field` of this process's status, where the platform keeps one.
+fn status_kib(field: &str) -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    resident_kib(&status, field)
+}
+
+/// The CPU time this process has taken so far, every thread's.
+#[cfg(unix)]
+fn process_cpu() -> Option<Duration> {
+    let time = rustix::time::clock_gettime(rustix::time::ClockId::ProcessCPUTime);
+    Duration::try_from(time).ok()
+}
+
+/// Unmeasured: only a Unix process reads its own CPU clock without `unsafe`.
+#[cfg(not(unix))]
+fn process_cpu() -> Option<Duration> {
+    None
+}
+
+/// Prints what `tables` is and its readings over `runs`.
+#[expect(
+    clippy::print_stdout,
+    reason = "criterion reports the runs' times; the readings are printed beside them"
+)]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "kibibytes of a process far below 2^52"
+)]
+fn print_tables(tables: &Tables, runs: &[TableRun], cores: Cores) {
+    let Some(last) = runs.last() else {
+        return;
+    };
+    let cell = tables.cell();
+    println!(
+        "passthrough/tables/{}: {tables}; {} runs",
+        cell.name(),
+        runs.len()
+    );
+    let reports: Vec<&Report> = runs.iter().map(|run| &run.metered.report).collect();
+    println!("  commit phases, ms a commit: {}", phases(&reports));
+    let busy = runs.iter().map(|run| {
+        let [before, after] = run.metered.readings;
+        let window = run.metered.window.as_secs_f64();
+        before
+            .zip(after)
+            .map(|(before, after)| after.saturating_sub(before).as_secs_f64() / window)
+    });
+    let window = match cell {
+        TablesCell::Followed(_) => "while its streams are quiet",
+        TablesCell::Snapshot => "over the run",
+    };
+    println!("  CPU seconds a wall second {window}: {}", spread(busy));
+    let kept = reports.iter().map(|report| report.counters.kept_peak).max();
+    let mebibytes = |kib: u64| kib as f64 / 1024.0;
+    let peaks = runs
+        .iter()
+        .map(|run| run.resident.map(|(_, peak)| mebibytes(peak)));
+    let grown = runs.iter().map(|run| {
+        run.resident
+            .map(|(base, peak)| mebibytes(peak.saturating_sub(base)))
+    });
+    println!(
+        "  reads kept at most {} KiB of their {} KiB share; resident peak, MiB: {}, above the \
+         run's base: {}",
+        kept.unwrap_or(0) >> 10,
+        tables.kept_share() >> 10,
+        spread(peaks),
+        spread(grown),
+    );
+    let report = &last.metered.report;
+    let pushes = u64::try_from(cell.pushes()).expect("pushes fit in 64 bits");
+    let readings = Readings::of(report.elapsed, &report.counters, pushes, cores.count());
+    println!("  readings: {readings}");
+}
+
+criterion_group!(benches, passthrough, logged, json, tables);
 criterion_main!(benches);
