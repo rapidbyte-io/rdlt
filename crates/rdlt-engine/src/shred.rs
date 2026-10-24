@@ -42,7 +42,7 @@ use rdlt_wire::limits::count;
 use serde::de::DeserializeSeed;
 
 use crate::compute::Pool;
-use crate::limits::MAX_CELLS;
+use crate::limits::{JSON_ADMITTED, MAX_CELLS};
 use crate::report::ShredCounts;
 
 use build::Record;
@@ -60,7 +60,7 @@ pub(crate) fn chunked(pushes: &[Bytes], chunk_bytes: usize) -> Result<usize, Shr
     Ok(chunks(pushes, chunk_bytes)?.len())
 }
 
-/// What shredding pushes may take.
+/// What shredding pushes may take, and how their chunks are parsed.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ShredLimits {
     /// The most columns the records may hold together, at any depth, a list's items counting
@@ -69,15 +69,19 @@ pub(crate) struct ShredLimits {
     /// Bytes the pushes were admitted for, for the batches they become, for each byte of their
     /// records: what a chunk's speculative build may take.
     pub(crate) admitted: u64,
+    /// Whether each chunk is parsed exactly from its first record, rather than fast with an
+    /// exact parse where a number may have been misread, as the engine parses.
+    pub(crate) exact: bool,
 }
 
 impl ShredLimits {
     /// The limits of pushes admitted as the engine admits JSON, whose records may hold at most
-    /// `columns` columns.
+    /// `columns` columns, each chunk parsed fast first.
     pub(crate) fn new(columns: u64) -> Self {
         Self {
             columns,
-            admitted: rdlt_connector::cost::JSON_CHARGE - 1,
+            admitted: JSON_ADMITTED,
+            exact: false,
         }
     }
 
@@ -184,9 +188,9 @@ impl Shredding {
 /// what it was admitted for; a chunk whose builders would take more is observed instead.
 ///
 /// A chunk where the fast parse may have rounded an integer, or misread a vast exponent, is parsed
-/// again with its numbers exact.
+/// again with its numbers exact, unless `limits` has every chunk parsed exactly from its start.
 fn parse(chunk: Chunk, limits: ShredLimits, beyond: &Arc<Beyond>) -> Result<Parsed, ShredError> {
-    let (mut exact, mut counts) = (false, ShredCounts::default());
+    let (mut exact, mut counts) = (limits.exact, ShredCounts::default());
     let allowance = count(chunk.bytes()).saturating_mul(limits.admitted);
     // The most records it may hold: blank lines among lines count too.
     let most = chunk.count();

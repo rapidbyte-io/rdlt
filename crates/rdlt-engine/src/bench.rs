@@ -116,11 +116,44 @@ pub fn check_json(batch: &RecordBatch) -> Result<(), Refused> {
     })
 }
 
-/// Shreds the JSON `pushes` on the calling thread, in chunks of `chunk_bytes`.
+/// Bytes the engine admits a JSON push for, for the batches it becomes, for each byte of its
+/// records.
+pub const ADMITTED: u64 = crate::limits::JSON_ADMITTED;
+
+/// How [`shred_with`] parses each chunk first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Parse {
+    /// Fast, and again exactly where a number may have been misread, as the engine parses.
+    Fast,
+    /// Exactly, every number read as it is written.
+    Exact,
+}
+
+/// Shreds the JSON `pushes` on the calling thread, in chunks of `chunk_bytes`, as the engine
+/// does.
 pub fn shred(pushes: &[Bytes], chunk_bytes: usize) -> Result<Vec<RecordBatch>, Refused> {
-    // One pool for every call, so a call allocates nothing for it.
-    static INLINE: LazyLock<Pool> = LazyLock::new(Pool::inline);
-    ready(shredded(&INLINE, pushes, chunk_bytes))
+    shred_with(pushes, chunk_bytes, ADMITTED, Parse::Fast)
+}
+
+/// Shreds the JSON `pushes` on the calling thread, in chunks of `chunk_bytes`, each chunk's
+/// builders taking at most `admitted` bytes for each byte of its records before it is observed
+/// instead, and each chunk parsed first as `parse` says: none of which may change the batches.
+///
+/// # Errors
+///
+/// Why the shredder refused the pushes.
+pub fn shred_with(
+    pushes: &[Bytes],
+    chunk_bytes: usize,
+    admitted: u64,
+    parse: Parse,
+) -> Result<Vec<RecordBatch>, Refused> {
+    ready(shredded(
+        inline(),
+        pushes,
+        chunk_bytes,
+        limits(admitted, parse),
+    ))
 }
 
 /// What shredding the JSON `pushes` on the calling thread, in chunks of `chunk_bytes`, took in
@@ -130,10 +163,9 @@ pub fn shred(pushes: &[Bytes], chunk_bytes: usize) -> Result<Vec<RecordBatch>, R
 ///
 /// Why the shredder refused the pushes.
 pub fn shred_counted(pushes: &[Bytes], chunk_bytes: usize) -> Result<crate::ShredCounts, Refused> {
-    static INLINE: LazyLock<Pool> = LazyLock::new(Pool::inline);
-    let limits = shred::ShredLimits::new(rdlt_wire::limits::SCHEMA_COLUMNS);
+    let limits = limits(ADMITTED, Parse::Fast);
     let shredding = ready(shred::observe(
-        &INLINE,
+        inline(),
         pushes.to_vec(),
         chunk_bytes,
         limits,
@@ -149,16 +181,32 @@ pub async fn shred_on(
     chunk_bytes: usize,
 ) -> Result<Vec<RecordBatch>, Refused> {
     let pool = Pool::new(Arc::clone(env), Arc::default());
-    shredded(&pool, pushes, chunk_bytes).await
+    shredded(&pool, pushes, chunk_bytes, limits(ADMITTED, Parse::Fast)).await
 }
 
-/// Shreds the JSON `pushes` on `pool`, in chunks of `chunk_bytes`.
+/// The pool every call on the calling thread shares, so a call allocates nothing for it.
+fn inline() -> &'static Pool {
+    static INLINE: LazyLock<Pool> = LazyLock::new(Pool::inline);
+    &INLINE
+}
+
+/// The limits of records holding as many columns as the wire's schemas, admitted for `admitted`
+/// bytes a byte and parsed first as `parse` says.
+fn limits(admitted: u64, parse: Parse) -> shred::ShredLimits {
+    shred::ShredLimits {
+        admitted,
+        exact: parse == Parse::Exact,
+        ..shred::ShredLimits::new(rdlt_wire::limits::SCHEMA_COLUMNS)
+    }
+}
+
+/// Shreds the JSON `pushes` on `pool`, in chunks of `chunk_bytes`, within `limits`.
 async fn shredded(
     pool: &Pool,
     pushes: &[Bytes],
     chunk_bytes: usize,
+    limits: shred::ShredLimits,
 ) -> Result<Vec<RecordBatch>, Refused> {
-    let limits = shred::ShredLimits::new(rdlt_wire::limits::SCHEMA_COLUMNS);
     Ok(shred::shred(pool, pushes, chunk_bytes, limits).await?)
 }
 

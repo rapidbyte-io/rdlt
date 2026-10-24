@@ -1506,10 +1506,52 @@ fn a_chunk_is_parsed_exactly_only_where_a_zero_may_be_a_vast_exponent() {
 
 /// The passes shredding `push` in one chunk takes.
 fn counted(push: &'static [u8]) -> ShredCounts {
+    counted_within(push, 1 << 20, limits())
+}
+
+/// The passes shredding `push` in chunks of `chunk_bytes` within `limits` takes.
+fn counted_within(push: &'static [u8], chunk_bytes: usize, limits: ShredLimits) -> ShredCounts {
     let pool = crate::compute::Pool::inline();
     let pushes = vec![Bytes::from_static(push)];
-    let observed = crate::compute::ready(super::observe(&pool, pushes, 1 << 20, limits()));
+    let observed = crate::compute::ready(super::observe(&pool, pushes, chunk_bytes, limits));
     observed.unwrap().counts()
+}
+
+#[test]
+fn every_pass_over_a_chunk_parsed_exactly_from_its_start_is_exact() {
+    // Room to build whatever a chunk holds, so no parse trips and is observed instead.
+    let roomy = ShredLimits {
+        admitted: 1 << 20,
+        ..limits()
+    };
+    let exactly = ShredLimits {
+        exact: true,
+        ..roomy
+    };
+    let counts = |parsed: u64, rebuilt: u64, exact: u64| ShredCounts {
+        parsed,
+        rebuilt,
+        exact,
+        ..ShredCounts::default()
+    };
+    // An integer beyond 64 bits sends a fast parse back to the start, exactly; a float in a
+    // column the next chunk makes JSON has its chunk built again, exactly.
+    let vast = b"{\"a\":123456789012345678901234567890}\n";
+    let drifted = b"{\"a\":1.5}\n{\"a\":\"x\"}\n";
+    for (push, chunk_bytes, fast, exact) in [
+        (&vast[..], 1 << 20, counts(2, 0, 1), counts(1, 0, 1)),
+        (
+            &b"{\"a\":1}\n"[..],
+            1 << 20,
+            counts(1, 0, 0),
+            counts(1, 0, 1),
+        ),
+        (&drifted[..], 1, counts(2, 1, 1), counts(2, 1, 3)),
+    ] {
+        let text = String::from_utf8_lossy(push);
+        assert_eq!(counted_within(push, chunk_bytes, roomy), fast, "{text}");
+        assert_eq!(counted_within(push, chunk_bytes, exactly), exact, "{text}");
+    }
 }
 
 #[test]
@@ -1670,8 +1712,8 @@ fn an_observation_past_its_chunk_s_room_and_the_flush_s_is_refused_naming_the_fl
         .collect();
     let records = Bytes::from(format!("{{{}}}", fields.join(",")));
     let tight = ShredLimits {
-        columns: 10,
         admitted: 0,
+        ..ShredLimits::new(10)
     };
     let chunk = chunks(&[records], 1 << 20).unwrap().remove(0);
     let error = parse(chunk, tight, &tight.beyond()).err();
