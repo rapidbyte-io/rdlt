@@ -1807,29 +1807,18 @@ fn written_string() -> impl proptest::strategy::Strategy<Value = (String, String
     })
 }
 
-/// A number, written as JSON text may write it: integers within and beyond 64 bits, `-0`, and
-/// floats.
+/// A number as JSON text may write it, other than one its record is refused for: a column of
+/// JSON holds it as it was written.
 fn written_number() -> impl proptest::strategy::Strategy<Value = Written> {
     use proptest::prelude::*;
-    prop_oneof![
-        Just("0"),
-        Just("-7"),
-        Just("9223372036854775807"),
-        Just("-9223372036854775808"),
-        Just("18446744073709551616"),
-        Just("-170141183460469231731687303715884105728"),
-        Just("1234567890123456789012345678901234567890123456789012345678901234567890123456789"),
-        Just("-0"),
-        Just("-0.0"),
-        Just("1.50"),
-        Just("1E2"),
-        Just("2.5e-3"),
-        Just("0.12345678901234567891"),
-    ]
-    .prop_map(|number| Written {
-        text: number.to_owned(),
-        rendered: Some(number.to_owned()),
-    })
+    super::numbers::number()
+        .prop_filter("a number its record is refused for", |number| {
+            !number.refused()
+        })
+        .prop_map(|number| Written {
+            rendered: Some(number.text.clone()),
+            text: number.text,
+        })
 }
 
 /// An object of up to three fields of `value`, their keys escaped or not, some repeating a key.

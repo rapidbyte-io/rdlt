@@ -20,6 +20,8 @@ mod error;
 mod exact;
 mod keys;
 mod meter;
+#[cfg(test)]
+mod numbers;
 mod observe;
 mod observing;
 mod records;
