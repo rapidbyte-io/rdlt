@@ -587,12 +587,20 @@ fn ends_in_a_start(text: &str, form: &str) -> bool {
         .any(|start| maskable(start) && text.ends_with(start))
 }
 
-/// Whether `text` begins with an end of `form`, a part of it a mask would hold.
-fn begins_with_an_end(text: &str, form: &str) -> bool {
-    form.char_indices()
-        .skip(1)
-        .map(|(at, _)| &form[at..])
+/// Whether `text` begins with `kept` or an end of it, a part a mask would hold.
+fn begins_with_an_end(text: &str, kept: &str) -> bool {
+    kept.char_indices()
+        .map(|(at, _)| &kept[at..])
         .any(|end| maskable(end) && text.starts_with(end))
+}
+
+/// The part of `said`, written from byte `at` of an output of `bytes`, that the tail keeps
+/// where it begins within `said`: from the first character it keeps whole.
+fn kept_of(said: &str, at: usize, bytes: usize) -> Option<&str> {
+    let from = bytes.saturating_sub(TAIL_BYTES).checked_sub(at)?;
+    (1..said.len())
+        .contains(&from)
+        .then(|| &said[said.ceil_char_boundary(from)..])
 }
 
 /// Whether showing `text` leaves it as it is.
@@ -614,7 +622,7 @@ proptest! {
     /// with fewer than eight characters other than whitespace may show on its own.
     ///
     /// Where a read cuts a line, no part of the form said is left but a mask, and where the tail
-    /// begins, none of it.
+    /// begins within it, none of the part the tail kept.
     #[test]
     fn nothing_said_of_a_secret_survives_scrubbing_and_what_follows_it(
         secret in secret(),
@@ -625,34 +633,90 @@ proptest! {
     ) {
         let forms = said_as(&secret);
         let said = &forms[form.index(forms.len())];
-        let output = format!("{before}{said}{after}{ending}");
-        let redactions = Redactions::new();
-        redactions.add(&secret);
-        let drained = paused().block_on(async {
-            tokio::time::timeout(Duration::from_secs(60), drained(output.as_bytes(), &redactions)).await
-        });
-        let drained = drained.expect("a drain of a few lines ends");
-        let error = rdlt_connector::ConnectorError::internal(output.clone())
-            .received(&|text| redactions.scrubbed(text));
-        let mut shown: Vec<String> = drained.lines().iter().map(|line| (*line).to_owned()).collect();
-        let words = drained.tail.words(&redactions);
-        shown.push(words.clone());
-        shown.push(error.to_string());
-        for found in forms.iter().map(|form| form.trim()).filter(|form| !form.is_empty()) {
-            for text in &shown {
-                prop_assert!(!text.contains(found), "{found:?} in {text:?}, from {output:?}");
+        nothing_said_survives(&secret, said, &before, &after, ending)?;
+    }
+}
+
+/// Fails where what a connector wrote, `said` between `before` and `after` and then `ending`,
+/// shows something of `secret` in a line the log is given, the tail's last words or an error's
+/// text.
+fn nothing_said_survives(
+    secret: &str,
+    said: &str,
+    before: &str,
+    after: &str,
+    ending: &str,
+) -> Result<(), TestCaseError> {
+    let forms = said_as(secret);
+    let output = format!("{before}{said}{after}{ending}");
+    let redactions = Redactions::new();
+    redactions.add(secret);
+    let drained = paused().block_on(async {
+        tokio::time::timeout(
+            Duration::from_secs(60),
+            drained(output.as_bytes(), &redactions),
+        )
+        .await
+    });
+    let drained = drained.expect("a drain of a few lines ends");
+    let error = rdlt_connector::ConnectorError::internal(output.clone())
+        .received(&|text| redactions.scrubbed(text));
+    let mut shown: Vec<String> = drained
+        .lines()
+        .iter()
+        .map(|line| (*line).to_owned())
+        .collect();
+    let words = drained.tail.words(&redactions);
+    shown.push(words.clone());
+    shown.push(error.to_string());
+    for found in forms
+        .iter()
+        .map(|form| form.trim())
+        .filter(|form| !form.is_empty())
+    {
+        for text in &shown {
+            prop_assert!(
+                !text.contains(found),
+                "{found:?} in {text:?}, from {output:?}"
+            );
+        }
+    }
+    // A part of a form is seen at a cut only in a form that showing leaves as it is.
+    if shown_as_it_is(said) {
+        for line in drained.lines() {
+            if let Some(cut) = line.strip_suffix(CUT)
+                && !cut.ends_with("***")
+            {
+                prop_assert!(
+                    !ends_in_a_start(cut, said),
+                    "{said:?} ends {line:?}, from {output:?}"
+                );
             }
         }
-        // A part of a form is seen at a cut only in a form that showing leaves as it is.
-        if shown_as_it_is(said) {
-            for line in drained.lines() {
-                if let Some(cut) = line.strip_suffix(CUT) && !cut.ends_with("***") {
-                    prop_assert!(!ends_in_a_start(cut, said), "{said:?} ends {line:?}, from {output:?}");
-                }
-            }
-            if !words.starts_with("***") {
-                prop_assert!(!begins_with_an_end(&words, said), "{said:?} begins {words:?}, from {output:?}");
-            }
+        // Elsewhere what begins the tail was written around the form, and may read like its end.
+        if let Some(kept) = kept_of(said, before.len(), output.len())
+            && !words.starts_with("***")
+        {
+            prop_assert!(
+                !begins_with_an_end(&words, kept),
+                "{kept:?} of {said:?} begins {words:?}, from {output:?}"
+            );
         }
+    }
+    Ok(())
+}
+
+#[test]
+fn the_start_of_a_tail_that_cut_no_secret_may_read_like_a_secret_s_end() {
+    // What follows a secret the tail kept none of, or the mask of one it kept whole, reads
+    // like the end of the form said once its spaces and line end are shown.
+    let spaces = " ".repeat(TAIL_BYTES);
+    let cases = [
+        ("0\\\\- \r", r"0\\\\- \r", "", spaces.as_str(), "\r\n"),
+        ("ab0 \\", r"ab0 \", "", spaces.as_str(), "\n"),
+        ("ab0 ***\r", r"ab0 ***\r", spaces.as_str(), "", "\r\n"),
+    ];
+    for (secret, said, before, after, ending) in cases {
+        nothing_said_survives(secret, said, before, after, ending).unwrap();
     }
 }
