@@ -279,6 +279,10 @@ pub const TABLE_EXCEEDS_BUDGET: Code = Code("table_exceeds_budget");
 /// the reverse.
 pub const TABLE_HISTORY_MISMATCH: Code = Code("table_history_mismatch");
 
+/// The code of the error for a merge into a table whose normalized roots a load that did not
+/// merge identified by their positions, whose children the merge would leave behind.
+pub const TABLE_IDENTITY_MISMATCH: Code = Code("table_identity_mismatch");
+
 /// The code of the error for a merging stream whose table's rows were merged by another key.
 pub const TABLE_KEY_MISMATCH: Code = Code("table_key_mismatch");
 

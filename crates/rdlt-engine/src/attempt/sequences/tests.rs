@@ -1,10 +1,12 @@
 use rdlt_connector::{
-    Field, LogicalType, ReadMode, SchemaVersion, Sequences, StreamName, TableSchema, TableState,
+    Field, Identity, LogicalType, ReadMode, SchemaVersion, Sequences, StreamName, TableSchema,
+    TableState,
 };
 
 use super::{Keying, to_record};
 use crate::error::{ErrorKind, codes};
 use crate::plan::{StreamPlan, WriteMode};
+use crate::table::LineageColumns;
 
 fn plan(read: ReadMode, write: WriteMode) -> StreamPlan {
     StreamPlan::new(StreamName::new("orders").unwrap())
@@ -30,6 +32,7 @@ fn kept(sequences: Option<Sequences>, history: bool) -> TableState {
         history,
         key: Vec::new(),
         change_time: None,
+        identity: Identity::Key,
         exact: std::collections::BTreeSet::new(),
     }
 }
@@ -40,7 +43,7 @@ fn recorded(
     plan: &StreamPlan,
     table: Option<&TableState>,
 ) -> Result<Option<(Sequences, bool)>, crate::error::Error> {
-    let keying = to_record(plan, table, &[], None)?;
+    let keying = to_record(plan, table, &[], None, LineageColumns::None)?;
     Ok(keying.map(|keying: Keying| (keying.sequences, keying.history)))
 }
 
@@ -163,16 +166,37 @@ fn keyed(key: &[&str], change_time: Option<&str>) -> TableState {
 fn a_merge_records_its_key_and_keeps_it_while_loads_merge_nothing() {
     let merge = plan(ReadMode::Incremental, WriteMode::Merge);
     let id = columns(&["id"]);
-    let first = to_record(&merge, Some(&keyed(&[], None)), &id, None).unwrap();
+    let first = to_record(
+        &merge,
+        Some(&keyed(&[], None)),
+        &id,
+        None,
+        LineageColumns::None,
+    )
+    .unwrap();
     assert_eq!(first.map(|keying| keying.key), Some(id.clone()));
     assert_eq!(
-        to_record(&merge, Some(&keyed(&["id"], None)), &id, None).unwrap(),
+        to_record(
+            &merge,
+            Some(&keyed(&["id"], None)),
+            &id,
+            None,
+            LineageColumns::None
+        )
+        .unwrap(),
         None
     );
     // A load that merges nothing records nothing new, and the key stays for the next merge.
     let append = plan(ReadMode::Incremental, WriteMode::Append);
     assert_eq!(
-        to_record(&append, Some(&keyed(&["id"], None)), &[], None).unwrap(),
+        to_record(
+            &append,
+            Some(&keyed(&["id"], None)),
+            &[],
+            None,
+            LineageColumns::None
+        )
+        .unwrap(),
         None
     );
 }
@@ -182,7 +206,14 @@ fn a_merge_by_another_key_is_refused_once_the_table_is_created() {
     let merge = plan(ReadMode::Incremental, WriteMode::Merge);
     let tenant = columns(&["tenant"]);
     for other in [columns(&["tenant"]), columns(&["id", "tenant"])] {
-        let error = to_record(&merge, Some(&keyed(&["id"], None)), &other, None).unwrap_err();
+        let error = to_record(
+            &merge,
+            Some(&keyed(&["id"], None)),
+            &other,
+            None,
+            LineageColumns::None,
+        )
+        .unwrap_err();
         assert_eq!(
             (error.kind(), error.code()),
             (ErrorKind::Config, Some(codes::TABLE_KEY_MISMATCH))
@@ -193,7 +224,14 @@ fn a_merge_by_another_key_is_refused_once_the_table_is_created() {
         schema: None,
         ..keyed(&["id"], None)
     };
-    let keying = to_record(&merge, Some(&uncreated), &tenant, None).unwrap();
+    let keying = to_record(
+        &merge,
+        Some(&uncreated),
+        &tenant,
+        None,
+        LineageColumns::None,
+    )
+    .unwrap();
     assert_eq!(keying.map(|keying| keying.key), Some(tenant));
 }
 
@@ -203,12 +241,13 @@ fn a_history_stream_is_held_to_the_change_time_its_table_began_with() {
     let (id, at) = (columns(&["id"]), rdlt_connector::ColumnPath::from("at"));
     let table = keyed(&["id"], Some("at"));
     assert_eq!(
-        to_record(&history, Some(&table), &id, Some(&at)).unwrap(),
+        to_record(&history, Some(&table), &id, Some(&at), LineageColumns::None).unwrap(),
         None
     );
     let created = rdlt_connector::ColumnPath::from("created");
     for other in [Some(&created), None] {
-        let error = to_record(&history, Some(&table), &id, other).unwrap_err();
+        let error =
+            to_record(&history, Some(&table), &id, other, LineageColumns::None).unwrap_err();
         assert_eq!(
             (error.kind(), error.code()),
             (ErrorKind::Config, Some(codes::TABLE_CHANGE_TIME_MISMATCH)),
@@ -219,10 +258,94 @@ fn a_history_stream_is_held_to_the_change_time_its_table_began_with() {
         schema: None,
         ..table
     };
-    let keying = to_record(&history, Some(&uncreated), &id, Some(&created)).unwrap();
+    let keying = to_record(
+        &history,
+        Some(&uncreated),
+        &id,
+        Some(&created),
+        LineageColumns::None,
+    )
+    .unwrap();
     assert_eq!(keying.and_then(|keying| keying.change_time), Some(created));
     // A stream keeping no history records no change time, whatever its catalog names.
     let merge = plan(ReadMode::Incremental, WriteMode::Merge);
-    let keying = to_record(&merge, None, &id, Some(&at)).unwrap().unwrap();
+    let keying = to_record(&merge, None, &id, Some(&at), LineageColumns::None)
+        .unwrap()
+        .unwrap();
     assert_eq!(keying.change_time, None);
+}
+
+#[test]
+fn a_normalized_load_that_does_not_merge_records_that_its_roots_are_identified_by_position() {
+    let identity = |plan: &StreamPlan, key: &[&str], lineage: LineageColumns| {
+        to_record(plan, None, &columns(key), None, lineage)
+            .unwrap()
+            .map(|keying| keying.identity)
+    };
+    let append = plan(ReadMode::Incremental, WriteMode::Append);
+    let replace = plan(ReadMode::Full, WriteMode::Replace);
+    let merge = plan(ReadMode::Incremental, WriteMode::Merge);
+    assert_eq!(
+        identity(&append, &[], LineageColumns::Root),
+        Some(Identity::Position)
+    );
+    assert_eq!(
+        identity(&replace, &[], LineageColumns::Root),
+        Some(Identity::Position)
+    );
+    assert_eq!(
+        identity(&append, &[], LineageColumns::None),
+        Some(Identity::Key)
+    );
+    assert_eq!(
+        identity(&merge, &["id"], LineageColumns::Root),
+        Some(Identity::Key)
+    );
+}
+
+/// A created table merged by `id`, whose roots are identified as `identity` says.
+fn identified(identity: Identity) -> TableState {
+    TableState {
+        identity,
+        ..keyed(&["id"], None)
+    }
+}
+
+#[test]
+fn a_merge_into_roots_identified_by_position_is_refused_once_the_table_is_created() {
+    let merge = plan(ReadMode::Incremental, WriteMode::Merge);
+    let id = columns(&["id"]);
+    for lineage in [LineageColumns::Root, LineageColumns::None] {
+        let positional = identified(Identity::Position);
+        let error = to_record(&merge, Some(&positional), &id, None, lineage).unwrap_err();
+        assert_eq!(
+            (error.kind(), error.code()),
+            (ErrorKind::Config, Some(codes::TABLE_IDENTITY_MISMATCH)),
+            "{lineage:?}"
+        );
+    }
+    let uncreated = TableState {
+        schema: None,
+        ..identified(Identity::Position)
+    };
+    let keying = to_record(&merge, Some(&uncreated), &id, None, LineageColumns::Root).unwrap();
+    assert_eq!(keying.map(|keying| keying.identity), Some(Identity::Key));
+}
+
+#[test]
+fn a_load_that_does_not_merge_takes_a_merged_table_and_records_its_positions_for_good() {
+    let append = plan(ReadMode::Incremental, WriteMode::Append);
+    let merged = identified(Identity::Key);
+    let keying = to_record(&append, Some(&merged), &[], None, LineageColumns::Root).unwrap();
+    let keying = keying.expect("the table's identity changes");
+    assert_eq!(
+        (keying.identity, keying.key),
+        (Identity::Position, columns(&["id"]))
+    );
+    // The roots stay where they are, whatever a later load that merges nothing writes.
+    let positional = identified(Identity::Position);
+    for lineage in [LineageColumns::Root, LineageColumns::None] {
+        let keying = to_record(&append, Some(&positional), &[], None, lineage).unwrap();
+        assert_eq!(keying, None, "{lineage:?}");
+    }
 }

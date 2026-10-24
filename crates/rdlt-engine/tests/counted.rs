@@ -9,8 +9,8 @@ use std::hint::black_box;
 use std::num::NonZeroU64;
 
 use rdlt_connector::{
-    ColumnPath, Field, LogicalType, NameMap, SchemaVersion, Sequences, StateEntry, TablePath,
-    TableSchema,
+    ColumnPath, Field, Identity, LogicalType, NameMap, SchemaVersion, Sequences, StateEntry,
+    TablePath, TableSchema,
 };
 use rdlt_engine::bench::counted;
 use stats_alloc::{INSTRUMENTED_SYSTEM, Region, StatsAlloc};
@@ -153,6 +153,7 @@ fn a_table_s_state_records_allocate_their_key_value_and_each_field_s_walk_alone(
                 history: true,
                 key: vec![ColumnPath::from("id")],
                 change_time: Some(ColumnPath::from("updated_at")),
+                identity: Identity::Key,
             },
             3.0,
         ),

@@ -16,6 +16,7 @@ fn recorded(model: &Model, version: u32) -> TableState {
         history: false,
         key: Vec::new(),
         change_time: None,
+        identity: rdlt_connector::Identity::Key,
         exact: model.exact.clone(),
     }
 }

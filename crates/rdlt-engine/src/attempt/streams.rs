@@ -106,7 +106,12 @@ impl<'a> Planning<'a> {
             self.table(plan, spec, &key, generation, tables, shape.is_some())?;
         // Refused before the table changes, and recorded by the attempt's first commit.
         let recorded = tables.recorded_table(&table.path);
-        let sequences = sequences::to_record(plan, recorded, &key, spec.change_time())?
+        let lineage = if shape.is_some() {
+            LineageColumns::Root
+        } else {
+            LineageColumns::None
+        };
+        let sequences = sequences::to_record(plan, recorded, &key, spec.change_time(), lineage)?
             .map(|keying| (table.path.clone(), keying));
         let index = tables.add_normalized(resolver, &table, model, shape.clone())?;
         let mut children = Vec::new();

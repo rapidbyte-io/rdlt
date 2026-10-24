@@ -171,6 +171,7 @@ impl Coordinator {
                     history: keying.history,
                     key: keying.key,
                     change_time: keying.change_time,
+                    identity: keying.identity,
                 };
                 StateChange::Put(entry.to_record())
             })
