@@ -12,7 +12,8 @@ pub const DESTINATION_CLAUSES: &[Clause] = &[
     },
     Clause {
         id: "D-EPOCH",
-        statement: "each open returns a higher epoch than the last",
+        statement: "each open returns a higher epoch than every earlier open of its pipeline, a \
+                    commit that drops its tables and deletes its state between them included",
         unless: "",
     },
     Clause {
