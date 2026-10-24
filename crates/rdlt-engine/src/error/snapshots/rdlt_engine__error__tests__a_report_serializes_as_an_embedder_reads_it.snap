@@ -1,0 +1,27 @@
+---
+source: crates/rdlt-engine/src/error/tests.rs
+expression: "serde_json::to_string_pretty(&reports).expect(\"reports serialize\")"
+---
+[
+  {
+    "kind": "destination",
+    "origin": "destination",
+    "stream": "orders",
+    "code": "pg.unique_violation",
+    "message": "writing a batch",
+    "causes": [
+      "the batch was refused",
+      "duplicate key value violates unique constraint"
+    ],
+    "retryable": false
+  },
+  {
+    "kind": "schema",
+    "origin": "engine",
+    "stream": "orders",
+    "code": "schema_frozen",
+    "message": "stream orders: column total cannot hold text",
+    "causes": [],
+    "retryable": false
+  }
+]

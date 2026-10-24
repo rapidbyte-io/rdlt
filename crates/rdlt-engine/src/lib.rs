@@ -80,7 +80,7 @@ pub use config::{
     BatchPolicy, CommitPolicy, EngineConfig, EngineConfigBuilder, GrowthLimits, RetryPolicy,
 };
 pub use env::{Env, Sleep, SystemEnv};
-pub use error::{Error, ErrorKind, ErrorReport};
+pub use error::{Error, ErrorKind, ErrorReport, Origin};
 pub use plan::{DeleteMode, OnTruncate, PipelinePlan, RetentionLoss, StreamPlan, Until, WriteMode};
 pub use policy::{Nested, OnUnsupported, SchemaPolicy, SchemaSettings};
 pub use report::{

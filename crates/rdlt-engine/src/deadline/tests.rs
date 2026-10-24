@@ -9,15 +9,16 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use arrow_array::RecordBatch;
 use rdlt_connector::{
-    BoxFuture, Capabilities, CommitMeta, CommitSeq, ConnectorErrorKind, DEADLINE_EXCEEDED,
-    Destination, DestinationSession, DestinationWriter, Epoch, LoadId, OpenContext, OpenedSession,
-    PipelineId, Receipt, Result, SchemaVersion, SegmentId, SegmentSet, TableChange, TablePath,
-    TableRef, WriteStats,
+    BoxFuture, Capabilities, CommitMeta, CommitSeq, ConnectorError, DEADLINE_EXCEEDED, Destination,
+    DestinationSession, DestinationWriter, Epoch, LoadId, OpenContext, OpenedSession, PipelineId,
+    Receipt, Result, SchemaVersion, SegmentId, SegmentSet, TableChange, TablePath, TableRef,
+    WriteStats,
 };
 use tokio::time::Instant;
 
 use super::Waits;
 use crate::env::SystemEnv;
+use crate::error::{Error, ErrorKind, Origin, Side};
 
 const WAIT: Duration = Duration::from_secs(30);
 
@@ -185,14 +186,35 @@ async fn calls(destination: &Arc<dyn Destination>) -> Vec<(Result<()>, Duration)
     taken
 }
 
+/// Checks that `error`, a call into `side`'s connector the wait ended, is the engine's own error
+/// once classified: of the side's kind, coded `deadline_exceeded`, and retryable as before.
+fn expired(side: Side, error: ConnectorError) {
+    let kind = match side {
+        Side::Source => ErrorKind::Source,
+        Side::Destination => ErrorKind::Destination,
+    };
+    let error = Error::connector(side, "calling", error);
+    assert_eq!(
+        (
+            error.origin(),
+            error.kind(),
+            error.code(),
+            error.is_retryable()
+        ),
+        (Origin::Engine, kind, Some(DEADLINE_EXCEEDED), true)
+    );
+    assert_eq!(error.retry_after(), None);
+    let causes = error.report().causes;
+    assert!(
+        causes[0].ends_with("took longer than the engine's wait of 30s"),
+        "{causes:?}"
+    );
+}
+
 #[tokio::test(start_paused = true)]
 async fn every_call_into_a_destination_but_a_read_ends_at_the_wait() {
     for (outcome, took) in calls(&waited(None)).await {
-        let error = outcome.unwrap_err();
-        assert_eq!(
-            (error.kind(), error.code()),
-            (ConnectorErrorKind::Transient, Some(DEADLINE_EXCEEDED))
-        );
+        expired(Side::Destination, outcome.unwrap_err());
         assert_eq!(took, WAIT);
     }
     for (outcome, took) in calls(&waited(Some(WAIT / 2))).await {
@@ -270,7 +292,7 @@ async fn every_call_into_a_source_but_a_read_ends_at_the_wait() {
         for outcome in outcomes {
             assert_eq!(outcome.is_ok(), answers, "{outcome:?}");
             if let Err(error) = outcome {
-                assert_eq!(error.code(), Some(DEADLINE_EXCEEDED));
+                expired(Side::Source, error);
             }
         }
         // A read is never ended by the wait.
