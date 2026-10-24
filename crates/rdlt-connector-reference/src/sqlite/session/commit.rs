@@ -8,6 +8,7 @@ use rusqlite::Transaction;
 use rusqlite::types::Value;
 
 use super::super::database::{columns, integer, query, run, run_all, text};
+use super::Columns;
 use super::owners::{owned, standing};
 
 /// The receipt stored for `(load_id, commit_seq)`, if that commit already happened.
@@ -37,13 +38,14 @@ pub(super) fn stored(
 }
 
 /// Publishes what this session staged in `meta`'s segments into each table its pipeline owns,
-/// the child tables that follow a staged root included; returns the rows and bytes published.
+/// the child tables that follow a staged root included, its rows of each table with the columns
+/// `noted` holds for it; returns the rows and bytes published.
 pub(super) fn publish(
     transaction: &Transaction<'_>,
     planner: &SqlPlanner<Sqlite>,
-    pipeline: &PipelineId,
-    epoch: Epoch,
+    (pipeline, epoch): (&PipelineId, Epoch),
     meta: &CommitMeta,
+    noted: &Columns,
 ) -> Result<(i64, i64)> {
     let (mut rows, mut bytes) = (0, 0);
     let mut staged = Vec::new();
@@ -71,10 +73,11 @@ pub(super) fn publish(
             continue;
         }
         let table = standing.owned(pipeline)?;
-        run_all(
-            transaction,
-            &planner.publish(&table, &staged, &columns, epoch, &meta.segments)?,
-        )?;
+        let staging = (staged.name.clone(), staged.generation);
+        let names = noted.get(&staging).into_iter().flatten();
+        let names: Vec<&str> = names.map(String::as_str).collect();
+        let plan = planner.publish(&table, &staged, &columns, &names, epoch, &meta.segments)?;
+        run_all(transaction, &plan)?;
     }
     run(
         transaction,

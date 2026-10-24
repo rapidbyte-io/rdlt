@@ -342,7 +342,7 @@ fn no_statement_is_planned_for_a_table_from_the_owner_check_of_another() {
             .record_segment(&orders, &users, epoch, segment, [1, 1])
             .map(drop),
         planner
-            .publish(&orders, &staged, columns, epoch, &set)
+            .publish(&orders, &staged, columns, &["id"], epoch, &set)
             .map(drop),
     ];
     for (index, outcome) in refused.into_iter().enumerate() {
@@ -515,6 +515,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
         standing.unwrap().created(pipeline).unwrap()
     }
 
+    /// The publish of `staged`, written with the columns of its target, `columns`.
     pub(in crate::sqlgen) fn publish_as(
         &self,
         staged: &Staged,
@@ -524,7 +525,8 @@ impl<D: SqlDialect> SqlPlanner<D> {
         segments: &SegmentSet,
     ) -> crate::error::Result<Vec<Statement>> {
         let owned = self.own(pipeline, &staged.name);
-        self.publish(&owned, staged, columns, epoch, segments)
+        let written: Vec<&str> = columns.iter().map(|column| column.name.as_str()).collect();
+        self.publish(&owned, staged, columns, &written, epoch, segments)
     }
 
     pub(in crate::sqlgen) fn abandon_as(
