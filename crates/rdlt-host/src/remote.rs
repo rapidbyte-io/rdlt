@@ -14,7 +14,7 @@ mod write;
 mod tests;
 
 use std::future::Future;
-use std::num::NonZeroU32;
+use std::num::{NonZeroU32, NonZeroUsize};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -22,6 +22,7 @@ use hyper_util::rt::TokioIo;
 use rdlt_connector::wire::{Invalid, error as status_error, v1};
 use rdlt_connector::{ConnectorError, ConnectorErrorKind, Role};
 use rdlt_wire::flow::Transport;
+use rdlt_wire::limits::MAX_CALLS;
 use rdlt_wire::{Limits, PROTOCOL_MAJOR};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
@@ -38,6 +39,11 @@ pub use source::RemoteSource;
 /// The code of the error a call fails with once the connector stops answering heartbeats.
 pub const CONNECTOR_LOST: &str = "connector_lost";
 
+/// The calls a connection carries for the engine at once: all it holds but its heartbeat's, which
+/// it holds for as long as the connection.
+pub(crate) const CALLS: NonZeroUsize =
+    NonZeroUsize::new(MAX_CALLS as usize - 1).expect("a connection holds more than its heartbeat");
+
 pub use rdlt_connector::DEADLINE_EXCEEDED;
 
 /// How long each kind of call may take.
@@ -46,7 +52,7 @@ pub struct Deadlines {
     /// Each step of a connector's start, each with the whole deadline: the hash of its binary
     /// at placement, its spawn with the binary's hash and any sandbox, its stream's opening or
     /// its dial, its connection's setup with its handshake, the resolution of its
-    /// configuration's secrets, and its configuration.
+    /// configuration's secrets, and its configuration; and the start of each read.
     pub connect: Duration,
     /// A check.
     pub check: Duration,

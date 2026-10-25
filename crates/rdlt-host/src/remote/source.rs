@@ -1,5 +1,6 @@
 //! The engine's source for a connector served on the other end of a connection.
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use rdlt_connector::wire::{INVALID_MESSAGE, Invalid, v1};
@@ -113,5 +114,9 @@ impl Source for RemoteSource {
                 .await?;
             Ok(())
         })
+    }
+
+    fn max_calls(&self) -> Option<NonZeroUsize> {
+        Some(super::CALLS)
     }
 }

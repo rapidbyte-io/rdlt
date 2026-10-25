@@ -1,6 +1,7 @@
 //! The engine's destination for a connector served on the other end of a connection: its
 //! sessions, and their schema changes, writers and commits.
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use rdlt_connector::wire::{INVALID_MESSAGE, v1};
@@ -94,6 +95,10 @@ impl Destination for RemoteDestination {
                 state: opened.state.into_iter().map(StateRecord::from).collect(),
             })
         })
+    }
+
+    fn max_calls(&self) -> Option<NonZeroUsize> {
+        Some(super::CALLS)
     }
 }
 

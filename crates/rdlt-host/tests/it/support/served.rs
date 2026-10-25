@@ -2,14 +2,19 @@
 
 use std::num::NonZeroUsize;
 use std::sync::Arc;
+use std::time::{Duration, Instant, SystemTime};
 
 use rdlt_connector::serve::{Served, serve_connection};
 use rdlt_connector::{Role, destination_factory, source_factory};
 use rdlt_connector_reference::{MemoryDestination, MemorySource};
-use rdlt_engine::{CommitPolicy, Cores, Engine, EngineConfig, SystemEnv};
+use rdlt_engine::{
+    CommitPolicy, ComputePool, Cores, Engine, EngineConfig, EngineConfigBuilder, Env, Job, Sleep,
+    SystemEnv,
+};
 use rdlt_host::{Connection, Options, RemoteDestination, RemoteSource};
 use rdlt_wire::Limits;
 use rdlt_wire::v1::connector_client::ConnectorClient;
+use tokio::io::DuplexStream;
 use tokio::net::UnixStream;
 use tonic::transport::{Channel, Endpoint};
 
@@ -22,6 +27,18 @@ pub(crate) fn served(served: Served) -> UnixStream {
 pub(crate) fn served_within(served: Served, limits: Limits) -> UnixStream {
     let (host, connector) = UnixStream::pair().expect("a socket pair");
     tokio::spawn(serve_connection(Arc::new(served), connector, limits));
+    host
+}
+
+/// The host's end of an in-memory pipe whose other end serves `served`: no socket, so a runtime
+/// whose clock is paused advances it only while every task waits.
+pub(crate) fn piped(served: Served) -> DuplexStream {
+    let (host, connector) = tokio::io::duplex(1 << 20);
+    tokio::spawn(serve_connection(
+        Arc::new(served),
+        connector,
+        Limits::default(),
+    ));
     host
 }
 
@@ -90,4 +107,46 @@ pub(crate) fn engine(rows: u64) -> Engine {
 pub(crate) fn system_env() -> SystemEnv {
     let cores = Cores::new(NonZeroUsize::new(4).expect("four is not zero"));
     SystemEnv::try_new(cores).expect("the compute pool starts")
+}
+
+/// An engine with `config` on the system environment, its compute jobs run on the calling thread:
+/// a runtime whose clock is paused would otherwise advance it while a job runs on another thread.
+pub(crate) fn paused_engine(config: EngineConfigBuilder) -> Engine {
+    let config = config.build().expect("the engine's configuration is valid");
+    Engine::new(config, Arc::new(Inline(system_env())))
+}
+
+/// The system environment, its compute jobs run inline.
+struct Inline(SystemEnv);
+
+impl Env for Inline {
+    fn now(&self) -> SystemTime {
+        self.0.now()
+    }
+
+    fn instant(&self) -> Instant {
+        self.0.instant()
+    }
+
+    fn sleep(&self, duration: Duration) -> Sleep {
+        self.0.sleep(duration)
+    }
+
+    fn random(&self) -> u64 {
+        self.0.random()
+    }
+
+    fn compute(&self) -> &dyn ComputePool {
+        self
+    }
+
+    fn cores(&self) -> NonZeroUsize {
+        self.0.cores()
+    }
+}
+
+impl ComputePool for Inline {
+    fn execute(&self, job: Job) {
+        job();
+    }
 }
