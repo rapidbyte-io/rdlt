@@ -35,7 +35,7 @@ fn conversions(policy: SchemaPolicy, history: bool) -> usize {
     let plan = LoweringPlan::new(resolver.stream.clone(), view, incoming, resolution.routes)
         .with_policies(vec![policy; 3]);
     CONVERSIONS.with(|conversions| conversions.set(0));
-    plan.prepare(&rows, None, &stamp(), None).unwrap();
+    plan.prepare(rows.clone(), None, &stamp(), None).unwrap();
     CONVERSIONS.with(std::cell::Cell::get)
 }
 
@@ -78,7 +78,7 @@ fn five_thousand_discarded_columns_convert_once_each() {
     let plan = LoweringPlan::new(resolver.stream.clone(), view, incoming, resolution.routes)
         .with_policies(vec![SchemaPolicy::DiscardValue; COLUMNS]);
     CONVERSIONS.with(|conversions| conversions.set(0));
-    let prepared = plan.prepare(&rows, None, &stamp(), None).unwrap();
+    let prepared = plan.prepare(rows.clone(), None, &stamp(), None).unwrap();
     assert_eq!(CONVERSIONS.with(std::cell::Cell::get), COLUMNS);
     assert_eq!(prepared.batch.num_rows(), 3);
     for column in [0, COLUMNS / 2, COLUMNS - 1] {
@@ -120,7 +120,7 @@ fn a_batch_one_row_of_which_drops_converts_each_held_column_once() {
     let plan = LoweringPlan::new(resolver.stream.clone(), view, incoming, resolution.routes)
         .with_policies(vec![SchemaPolicy::DiscardRow; 3]);
     CONVERSIONS.with(|conversions| conversions.set(0));
-    let prepared = plan.prepare(&rows, None, &stamp(), None).unwrap();
+    let prepared = plan.prepare(rows.clone(), None, &stamp(), None).unwrap();
     let total = CONVERSIONS.with(std::cell::Cell::get);
     CONVERSIONS.with(|conversions| conversions.set(0));
     refused(&at, &seconds, &nanos).unwrap();
@@ -165,7 +165,7 @@ fn rows_either_of_two_discarding_columns_refuses_are_all_dropped() {
     let view = Arc::new(TableView::new(&table("t"), resolution.model, &resolver).unwrap());
     let plan = LoweringPlan::new(resolver.stream.clone(), view, incoming, resolution.routes)
         .with_policies(vec![SchemaPolicy::DiscardRow; 2]);
-    let prepared = plan.prepare(&rows, None, &stamp(), None).unwrap();
+    let prepared = plan.prepare(rows.clone(), None, &stamp(), None).unwrap();
     assert_eq!(prepared.discarded_rows, 3);
     let a = prepared.batch.column_by_name("a").unwrap();
     assert_eq!(

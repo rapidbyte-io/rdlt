@@ -64,24 +64,38 @@ impl Converted {
         }
     }
 
-    /// Each conversion of a column of `whole`, of the rows `keep` keeps, which are `kept`: a
-    /// column that converted to itself is `kept`'s, and any other is filtered.
+    /// Forgets each conversion that is a column of `whole` as it is, which then goes with
+    /// `whole`: the places of those it forgot.
+    pub(super) fn release(&mut self, whole: &RecordBatch) -> Vec<usize> {
+        let mut own = Vec::new();
+        for (index, slot) in self.0.iter_mut().enumerate() {
+            if slot
+                .as_ref()
+                .is_some_and(|array| Arc::ptr_eq(array, whole.column(index)))
+            {
+                *slot = None;
+                own.push(index);
+            }
+        }
+        own
+    }
+
+    /// Each conversion of a batch's columns, of the rows `keep` keeps, which are `kept`: those
+    /// at `own`, which [`Converted::release`] forgot as the batch's own columns, are `kept`'s,
+    /// and any other is filtered.
     pub(super) fn filter(
         &mut self,
-        whole: &RecordBatch,
+        own: &[usize],
         kept: &RecordBatch,
         keep: &BooleanArray,
     ) -> Result<(), ArrowError> {
-        for (index, slot) in self.0.iter_mut().enumerate() {
-            let Some(array) = slot.as_ref() else {
-                continue;
-            };
-            let filtered = if Arc::ptr_eq(array, whole.column(index)) {
-                Arc::clone(kept.column(index))
-            } else {
-                arrow_select::filter::filter(array.as_ref(), keep)?
-            };
-            *slot = Some(filtered);
+        for slot in &mut self.0 {
+            if let Some(array) = slot.as_ref() {
+                *slot = Some(arrow_select::filter::filter(array.as_ref(), keep)?);
+            }
+        }
+        for index in own {
+            self.0[*index] = Some(Arc::clone(kept.column(*index)));
         }
         Ok(())
     }

@@ -358,11 +358,11 @@ impl Case {
     /// its change columns first.
     pub(crate) fn prepare(&self) -> Result<Prepared, Error> {
         match &self.pushed {
-            Pushed::Data(batch) => self.plan.prepare(batch, None, &stamp(), None),
+            Pushed::Data(batch) => self.plan.prepare(batch.clone(), None, &stamp(), None),
             Pushed::Changes(batch) => {
                 let (data, changes) = ChangeRows::split(batch)
                     .map_err(|error| Error::internal(format!("splitting changes: {error}")))?;
-                self.plan.prepare(&data, None, &stamp(), Some(&changes))
+                self.plan.prepare(data, None, &stamp(), Some(changes))
             }
         }
     }

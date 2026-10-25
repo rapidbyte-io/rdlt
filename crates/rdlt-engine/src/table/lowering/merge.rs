@@ -99,6 +99,9 @@ impl LoweringPlan {
     /// Cuts `columns`, a batch's model columns as its table stores them, `kept`, which of the
     /// rows received they are where the schema policy dropped some, and `changes`, their change
     /// rows, to the rows the table's merges keep.
+    ///
+    /// Each column is let go as its rows are copied, so columns nothing else holds are not held
+    /// twice over.
     pub(super) fn merged(
         &self,
         columns: &mut [ArrayRef],
@@ -112,9 +115,7 @@ impl LoweringPlan {
         for column in columns.iter_mut() {
             *column = predicate.filter(column.as_ref())?;
         }
-        if let Some(rows) = changes {
-            *rows = rows.filter(&keep)?;
-        }
+        *changes = changes.take().map(|rows| rows.filter(&keep)).transpose()?;
         *kept = Some(within(kept.as_ref(), &keep));
         Ok(())
     }

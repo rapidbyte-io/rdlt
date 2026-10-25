@@ -591,10 +591,10 @@ fn lower(
 ) -> Result<Prepared, Error> {
     if let Some(mode) = mode {
         let (data, changes) = split_changes(stream, mode, parts)?;
-        return plan.prepare(&data, None, stamp, Some(&changes));
+        return plan.prepare(data, None, stamp, Some(changes));
     }
     // A lone batch concatenates to itself without a copy.
     let batch = arrow_select::concat::concat_batches(&parts[0].schema(), parts)
         .map_err(|error| Error::internal(format!("coalescing batches: {error}")))?;
-    plan.prepare(&batch, None, stamp, None)
+    plan.prepare(batch, None, stamp, None)
 }

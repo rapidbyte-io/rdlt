@@ -419,7 +419,7 @@ fn prepared(resolver: &Resolver, model: &Model, batch: &RecordBatch) -> Prepared
     let resolution = resolver.resolve(model, &incoming).unwrap();
     let view = Arc::new(TableView::new(&table("t"), resolution.model, resolver).unwrap());
     LoweringPlan::new(resolver.stream.clone(), view, incoming, resolution.routes)
-        .prepare(batch, None, &stamp(), None)
+        .prepare(batch.clone(), None, &stamp(), None)
         .unwrap()
 }
 
@@ -620,7 +620,7 @@ fn prepared_dropping(resolver: &Resolver, model: &Model, batch: &RecordBatch) ->
     let policies = vec![SchemaPolicy::DiscardRow; batch.num_columns()];
     LoweringPlan::new(resolver.stream.clone(), view, incoming, resolution.routes)
         .with_policies(policies)
-        .prepare(batch, None, &stamp(), None)
+        .prepare(batch.clone(), None, &stamp(), None)
         .unwrap()
 }
 
@@ -688,7 +688,7 @@ fn merge_batches_without_a_whole_key_are_refused() {
         let resolution = resolver.resolve(&model, &incoming).unwrap();
         let view = Arc::new(TableView::new(&table("t"), resolution.model, &resolver).unwrap());
         let error = LoweringPlan::new(resolver.stream.clone(), view, incoming, resolution.routes)
-            .prepare(&batch, None, &stamp(), None)
+            .prepare(batch.clone(), None, &stamp(), None)
             .unwrap_err();
         assert_eq!(error.code(), Some(code));
     }
@@ -945,7 +945,7 @@ fn a_merge_table_created_without_its_key_column_refuses_batches() {
     let view = Arc::new(TableView::new(&table("t"), resolution.model, &resolver).unwrap());
     assert!(view.key.is_empty());
     let error = LoweringPlan::new(resolver.stream.clone(), view, incoming, resolution.routes)
-        .prepare(&batch, None, &stamp(), None)
+        .prepare(batch.clone(), None, &stamp(), None)
         .unwrap_err();
     assert_eq!(error.code(), Some(codes::MERGE_KEY_MISSING));
 }
@@ -1071,7 +1071,7 @@ fn a_value_its_column_cannot_represent_fails_the_batch() {
     );
     let view = Arc::new(TableView::new(&table("t"), resolution.model, &resolver).unwrap());
     let error = LoweringPlan::new(resolver.stream.clone(), view, incoming, resolution.routes)
-        .prepare(&batch, None, &stamp(), None)
+        .prepare(batch.clone(), None, &stamp(), None)
         .unwrap_err();
     assert_eq!(
         (error.kind(), error.code()),
@@ -1097,7 +1097,7 @@ fn constant_metadata_columns_are_built_once_and_sliced_per_batch() {
     // The keys of the load id column, and the buffer they sit in.
     let keys = |rows: i64, stamp: &Stamp| {
         let prepared = lowering
-            .prepare(&ids(rows), None, stamp, None)
+            .prepare(ids(rows), None, stamp, None)
             .unwrap()
             .batch;
         let column = prepared.column(1).as_dictionary::<Int8Type>().clone();
@@ -1122,7 +1122,7 @@ fn constant_metadata_columns_are_built_once_and_sliced_per_batch() {
     };
     let forty_one = keys(41, &stamp);
     assert_ne!(keys(41, &later), forty_one, "another load gets its own");
-    let prepared = lowering.prepare(&ids(3), None, &later, None).unwrap().batch;
+    let prepared = lowering.prepare(ids(3), None, &later, None).unwrap().batch;
     let load_ids = constant(&prepared, 1, &DataType::FixedSizeBinary(16));
     assert_eq!(
         load_ids.as_fixed_size_binary().value(2),
@@ -1178,8 +1178,8 @@ proptest! {
                 ..stamp()
             };
             let batch = ids(rows);
-            let lowered = decoded(&reused.prepare(&batch, None, &stamp, None).unwrap().batch);
-            prop_assert_eq!(&lowered, &decoded(&fresh().prepare(&batch, None, &stamp, None).unwrap().batch));
+            let lowered = decoded(&reused.prepare(batch.clone(), None, &stamp, None).unwrap().batch);
+            prop_assert_eq!(&lowered, &decoded(&fresh().prepare(batch.clone(), None, &stamp, None).unwrap().batch));
             let load_ids = lowered.column(1).as_fixed_size_binary();
             prop_assert!(load_ids.iter().all(|id| id == Some(stamp.load_id.as_bytes().as_slice())));
             let loaded_at = lowered.column(2).as_primitive::<TimestampMicrosecondType>();
@@ -2043,7 +2043,7 @@ fn columns_a_batch_holds_nothing_in_are_nulls_as_the_destination_stores_them() {
     assert_eq!(plan.null_fill(ROWS), 2 * text);
     assert!(text < 16 * 1_000);
     assert_eq!(plan.null_fill(0), 0);
-    let prepared = plan.prepare(&batch, None, &stamp(), None).unwrap();
+    let prepared = plan.prepare(batch.clone(), None, &stamp(), None).unwrap();
     for column in [1, 2] {
         let nulls = prepared.batch.column(column);
         assert_eq!(nulls.data_type(), &DataType::Utf8);
@@ -2106,7 +2106,7 @@ fn loaded_at(stamp: &Stamp) -> Result<i64, crate::error::Error> {
     let resolution = resolver.resolve(&Model::default(), &incoming).unwrap();
     let view = Arc::new(TableView::new(&table("t"), resolution.model, &resolver).unwrap());
     let lowering = LoweringPlan::new(resolver.stream.clone(), view, incoming, resolution.routes);
-    let prepared = decoded(&lowering.prepare(&ids, None, stamp, None)?.batch);
+    let prepared = decoded(&lowering.prepare(ids, None, stamp, None)?.batch);
     Ok(prepared
         .column(2)
         .as_primitive::<TimestampMicrosecondType>()
@@ -2133,7 +2133,7 @@ fn deleted_at(stamp: &Stamp) -> Result<i64, crate::error::Error> {
     let resolution = resolver.resolve(&Model::default(), &incoming).unwrap();
     let view = Arc::new(TableView::new(&table("t"), resolution.model, &resolver).unwrap());
     let lowering = LoweringPlan::new(resolver.stream.clone(), view, incoming, resolution.routes);
-    let prepared = decoded(&lowering.prepare(&ids, None, stamp, Some(&changes))?.batch);
+    let prepared = decoded(&lowering.prepare(ids, None, stamp, Some(changes))?.batch);
     let deleted = prepared
         .column_by_name(DELETED_AT_COLUMN)
         .expect("a soft-deleting table records when a row was deleted");

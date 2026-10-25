@@ -30,7 +30,7 @@ pub(crate) use convert::normalize as plain;
 pub(crate) use exact::{EXACT_IN_FLOAT, rounds_at};
 pub(crate) use lower::{ChangeLayout, LineageColumns, MetaNames};
 pub(crate) use lowering::{
-    ChangeRows, LoweringPlan, Prepared, Stamp, aligned, key_values, with_columns,
+    ChangeRows, LoweringPlan, Prepared, Stamp, aligned, filtered, key_values, with_columns,
 };
 #[cfg(test)]
 pub(crate) use lowering::{Check, nulled_at, refused, split_lowered};

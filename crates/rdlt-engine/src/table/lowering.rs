@@ -38,7 +38,8 @@ use crate::normalize::{Lineage, Received};
 use crate::policy::SchemaPolicy;
 pub(crate) use changes::{ChangeRows, aligned};
 use constants::Constants;
-use kept::{discard_rows, kept_by};
+pub(crate) use kept::filtered;
+use kept::kept_by;
 use keys::keyed;
 pub(crate) use keys::{key_values, with_columns};
 use merge::{positions, sequence};
@@ -221,13 +222,14 @@ impl LoweringPlan {
     /// Every column goes where the plan's routes send it, converted exactly and lowered to how
     /// the destination stores it; a merge table's batch then keeps the rows its merge keeps,
     /// and the metadata columns follow for those rows, `lineage` last for the tables of
-    /// normalized streams.
+    /// normalized streams. Each step that keeps some rows lets go of what it copied them from,
+    /// a column at a time, where nothing else holds it.
     pub(crate) fn prepare(
         &self,
-        batch: &RecordBatch,
+        batch: RecordBatch,
         lineage: Option<&Lineage>,
         stamp: &Stamp,
-        changes: Option<&ChangeRows>,
+        changes: Option<ChangeRows>,
     ) -> Result<Prepared, Error> {
         let stream = &self.stream;
         let view = &self.view;
@@ -240,7 +242,7 @@ impl LoweringPlan {
         converted.extend(left);
         let mut changes = match (changes, &kept) {
             (Some(changes), Some(kept)) => Some(changes.filter(kept).map_err(failed)?),
-            (changes, _) => changes.cloned(),
+            (changes, _) => changes,
         };
         if batch.num_rows() == 0 {
             return Ok(Prepared {
@@ -256,9 +258,13 @@ impl LoweringPlan {
         // A key column changed in a zero holds no longer what it converted to.
         converted.stale(&checked, &batch);
         let (mut columns, held) = self.model_columns(&batch, &fitted, &converted)?;
+        // Only a history table hashes its rows from the batch, and it keeps every row: any other
+        // lets the batch go, so a merge's compaction lets each column go as it copies it.
+        let (rows, batch) = (batch.num_rows(), held.is_some().then_some(batch));
+        drop((checked, fitted, converted));
         self.merged(&mut columns, &mut kept, &mut changes)
             .map_err(failed)?;
-        let rows = columns.first().map_or(batch.num_rows(), Array::len);
+        let rows = columns.first().map_or(rows, Array::len);
         let (constants, loaded_at) = self.constants(stamp, rows).map_err(failed)?;
         columns.extend(constants);
         if view.meta.seq.is_some() {
@@ -274,8 +280,8 @@ impl LoweringPlan {
             self.stored_changes(changes, loaded_at, &mut columns)
                 .map_err(failed)?;
         }
-        if let Some(held) = held {
-            let history = self.history(&batch, (&held, columns.len()), stamp, changes.as_ref())?;
+        if let (Some(held), Some(batch)) = (held, &batch) {
+            let history = self.history(batch, (&held, columns.len()), stamp, changes.as_ref())?;
             columns.extend(history);
         }
         let first = columns.len();
@@ -320,19 +326,20 @@ impl LoweringPlan {
     /// The rows of `batch` the schema policy keeps, which those are where it drops some, how many
     /// it drops, which values of its columns of JSON their own columns hold, and what the
     /// columns the policies decide converted to, each of the kept rows.
-    fn kept_rows(&self, batch: &RecordBatch) -> Result<Kept, arrow_schema::ArrowError> {
-        let fitted = self.splits.fit(batch, false)?;
-        let (held, mut converted) = self.held(batch)?;
+    fn kept_rows(&self, batch: RecordBatch) -> Result<Kept, arrow_schema::ArrowError> {
+        let fitted = self.splits.fit(&batch, false)?;
+        let (held, mut converted) = self.held(&batch)?;
         let split = both(self.splits.kept(&fitted, batch.num_rows()), held);
-        let (kept_batch, kept, discarded_rows) = discard_rows(batch, &self.routes, split)?;
-        let fitted = match &kept {
-            Some(keep) => {
-                converted.filter(batch, &kept_batch, keep)?;
-                fitted.filtered(keep)?
-            }
-            None => fitted,
+        let Some(keep) = kept_by(&batch, &self.routes, split) else {
+            return Ok((batch, None, 0, fitted, converted));
         };
-        Ok((kept_batch, kept, discarded_rows, fitted, converted))
+        let rows = batch.num_rows();
+        let own = converted.release(&batch);
+        let kept_batch = filtered(batch, &keep)?;
+        converted.filter(&own, &kept_batch, &keep)?;
+        let fitted = fitted.filtered(&keep)?;
+        let discarded_rows = (rows - kept_batch.num_rows()) as u64;
+        Ok((kept_batch, Some(keep), discarded_rows, fitted, converted))
     }
 
     /// The error for a value of a column of JSON that `column` holds in part that cannot be read,

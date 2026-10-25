@@ -402,9 +402,9 @@ fn prepared(
             let (data, changes) =
                 ChangeRows::split(&pushed(batch, beside, first)).expect("a change batch");
             prop_assert_eq!(data.columns(), batch.columns());
-            plan.prepare(&data, None, &stamp(), Some(&changes))
+            plan.prepare(data, None, &stamp(), Some(changes))
         }
-        Mode::Append | Mode::Merge => plan.prepare(batch, None, &stamp(), None),
+        Mode::Append | Mode::Merge => plan.prepare(batch.clone(), None, &stamp(), None),
     };
     match prepared {
         Ok(prepared) => {

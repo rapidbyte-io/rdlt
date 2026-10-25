@@ -14,6 +14,7 @@ use arrow_array::{
 };
 use arrow_buffer::{BooleanBuffer, BooleanBufferBuilder};
 use arrow_schema::{ArrowError, DataType};
+use arrow_select::filter::FilterBuilder;
 use rdlt_connector::cost::Stored;
 use rdlt_connector::{
     ChangeOp, LogicalType, OP_COLUMN, SEQ_COLUMN, UNCHANGED_COLUMN, UnchangedFlags, remap_unchanged,
@@ -99,17 +100,27 @@ impl ChangeRows {
         projected(batch, &data_ordinals(batch))
     }
 
-    /// The rows `keep` keeps.
-    pub(crate) fn filter(&self, keep: &BooleanArray) -> Result<Self, ArrowError> {
-        let filter = |array: &dyn Array| arrow_select::filter::filter(array, keep);
+    /// The rows `keep` keeps, each column let go as its rows are copied.
+    pub(crate) fn filter(self, keep: &BooleanArray) -> Result<Self, ArrowError> {
+        let predicate = FilterBuilder::new(keep).optimize().build();
+        let Self {
+            op,
+            seq,
+            unchanged,
+            ordinals,
+        } = self;
+        let taken = |array: ArrayRef| predicate.filter(array.as_ref());
+        let op = taken(Arc::new(op))?.as_primitive::<Int8Type>().clone();
+        let seq = taken(Arc::new(seq))?.as_binary::<i32>().clone();
+        let unchanged = match unchanged {
+            Some(flags) => Some(taken(Arc::new(flags))?.as_binary::<i32>().clone()),
+            None => None,
+        };
         Ok(Self {
-            op: filter(&self.op)?.as_primitive::<Int8Type>().clone(),
-            seq: filter(&self.seq)?.as_binary::<i32>().clone(),
-            unchanged: match &self.unchanged {
-                Some(flags) => Some(filter(flags)?.as_binary::<i32>().clone()),
-                None => None,
-            },
-            ordinals: Arc::clone(&self.ordinals),
+            op,
+            seq,
+            unchanged,
+            ordinals,
         })
     }
 
