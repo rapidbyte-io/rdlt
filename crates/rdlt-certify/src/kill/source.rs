@@ -5,6 +5,8 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use rdlt_connector::testing::RENDERED_BYTES;
+use rdlt_connector::testing::render::{RenderError, Rendering};
 use rdlt_connector::{
     BoxFuture, Catalog, ConnectContext, ConnectorId, Cursor, Destination, PartitionId,
     PartitionPlan, PartitionSink, PipelineId, ReadMode, ReadRequest, Source, StreamName,
@@ -20,8 +22,6 @@ use super::rows::{Parted, parted, rendered};
 use super::{Loaded, Proof, converged};
 use crate::protocol::Violation;
 use crate::target::Target;
-use rdlt_connector::testing::RENDERED_BYTES;
-use rdlt_connector::testing::render::{RenderError, Rendering};
 
 /// `K-SOURCE` against the source `target` reaches, which answers to `id`, with `config`.
 pub(crate) async fn resumed(
