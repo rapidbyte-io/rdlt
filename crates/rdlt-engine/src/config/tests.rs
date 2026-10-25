@@ -138,7 +138,7 @@ fn memory_below_what_the_protocol_s_least_limits_need_is_refused_naming_the_leas
     }
     // About thirty-two mebibytes at the default sixteen partitions, and the default is far
     // above it.
-    assert_eq!(EngineConfig::least_memory(16), Some(33_811_576));
+    assert_eq!(EngineConfig::least_memory(16), Some(33_814_488));
     // From 17 partitions their dictionaries set the least: a byte below it admits the least
     // frame, and too little for each read's dictionaries.
     let below = EngineConfig::least_memory(17).unwrap() - 1;
@@ -155,7 +155,7 @@ fn the_limits_are_the_lesser_of_those_configured_and_those_the_memory_admits() {
     assert_eq!(
         defaults,
         Limits {
-            frame_bytes: (32 << 20) - 7_489 * 33 - 1_024,
+            frame_bytes: (32 << 20) - 7_489 * 33 - 3 * 937 - 10 - 1_024,
             json_push_bytes: ((84 << 20) - MESSAGE_ROOM) / 3,
             cursor_bytes: (4 << 20) / 34,
             dictionary_bytes: 2 << 20,

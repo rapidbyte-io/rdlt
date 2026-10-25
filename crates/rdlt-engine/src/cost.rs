@@ -51,6 +51,23 @@ pub(crate) const LINEAGE_ITEM: u64 = 20;
 /// its flags, each with its offset.
 pub(crate) const CHANGE_ROW: u64 = 64;
 
+/// Bytes: what a row of a column of bytes or of text takes beside its value: its offset and its
+/// validity.
+const OFFSET_AND_VALIDITY: u64 = 5;
+
+/// Bytes: what a change row's unchanged flags take once remapped over `columns` columns of its
+/// table, a bit a column: as bytes, and where `text`, their hex text beside them.
+pub(crate) const fn flags_bytes(columns: u64, text: bool) -> u64 {
+    let width = columns.div_ceil(8);
+    let bytes = width.saturating_add(OFFSET_AND_VALIDITY);
+    if !text {
+        return bytes;
+    }
+    bytes
+        .saturating_add(width.saturating_mul(2))
+        .saturating_add(OFFSET_AND_VALIDITY)
+}
+
 /// Times what a batch's rows expand to that normalizing them may hold: the items it copies out of
 /// arrays that a null array spans between, and an array of another layout cast to a list first.
 pub(crate) const SPLIT_COPIES: u64 = 2;

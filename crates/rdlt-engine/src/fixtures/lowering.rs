@@ -3,6 +3,8 @@
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod wide;
 
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
@@ -156,15 +158,18 @@ enum Meta {
     Merged,
     /// A history table's, its versions beginning at the column `at`.
     History,
-    /// A change stream's merged by key.
-    Changes,
+    /// A change stream's, holding its changes as the layout says.
+    Changes(ChangeLayout),
 }
 
 impl Meta {
     /// The names under `naming`.
     fn names(self, naming: &Naming) -> MetaNames {
         let merged = self != Self::Plain;
-        let layout = (self == Self::Changes).then_some(ChangeLayout::Merge { soft: false });
+        let layout = match self {
+            Self::Changes(layout) => Some(layout),
+            Self::Plain | Self::Merged | Self::History => None,
+        };
         let names = MetaNames::assign_changes(naming, merged, LineageColumns::None, layout);
         match self {
             Self::History => names.with_history(naming, Some(Arc::from("at"))),
@@ -246,9 +251,11 @@ impl Case {
             }
             LoweringCase::Changes => {
                 let batch = events(0, rows, CHANGE_COLUMNS);
-                let mut made = Made::keyed(WriteMode::Merge, Meta::Changes, batch.clone());
+                let merged = Meta::Changes(ChangeLayout::Merge { soft: false });
+                let mut made = Made::keyed(WriteMode::Merge, merged, batch.clone());
                 made.stream = made.stream.read(ReadMode::Cdc);
-                made.pushed = Pushed::Changes(changed(&batch));
+                made.pushed =
+                    Pushed::Changes(changed(&batch, |row| 1 + row % (CHANGE_COLUMNS - 1)));
                 made
             }
             LoweringCase::SplitJson => {
@@ -519,8 +526,9 @@ fn json(rows: u32) -> ArrayRef {
     Arc::new(StringArray::from_iter_values((0..rows).map(value)))
 }
 
-/// `data` as a change batch of updates, each flagging one column but its key unchanged.
-fn changed(data: &RecordBatch) -> RecordBatch {
+/// `data` as a change batch of updates, each flagging one column unchanged: row `row` the column
+/// `flagged(row)` places among `data`'s.
+fn changed(data: &RecordBatch, flagged: impl Fn(usize) -> usize) -> RecordBatch {
     let rows = data.num_rows();
     let columns = data.num_columns();
     let ops = Int8Array::from(vec![ChangeOp::Update.code(); rows]);
@@ -528,9 +536,9 @@ fn changed(data: &RecordBatch) -> RecordBatch {
     let seqs = BinaryArray::from_iter_values(seqs);
     let bytes = (columns + 3).div_ceil(8);
     let flags = (0..rows).map(|row| {
-        let flagged = 1 + row % (columns - 1);
+        let column = flagged(row);
         let mut bitmap = vec![0_u8; bytes];
-        bitmap[flagged / 8] |= 1 << (flagged % 8);
+        bitmap[column / 8] |= 1 << (column % 8);
         bitmap
     });
     let flags = BinaryArray::from_iter_values(flags);
