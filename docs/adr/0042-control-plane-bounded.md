@@ -81,7 +81,32 @@ still taken largely on trust:
     alive once the call and its connection are gone. None waits on another body to finish its
     message. The room it has gathered toward its message counts in the window and comes back if
     it is dropped.
-  - A served connection holds at most 200 open calls (`MAX_CALLS`), set explicitly.
+  - A served connection holds at most 200 open calls (`MAX_CALLS`), set explicitly. The host's
+    heartbeat holds one for as long as the connection, and a source or destination over the
+    connection tells the engine it carries the other 199 at once (`Source::max_calls`,
+    `Destination::max_calls`; nothing bounds one in process). The engine keeps within them, so
+    no call of a run waits for the transport to start it: a read's start that did would wait
+    out the connect deadline and fail, retryably, attempt after attempt.
+    - It makes one other call into a source at a time while it reads, an acknowledgement or a
+      plan, so it reads at most 198 partitions of a served source at once, or
+      `EngineConfig::partitions` where that is fewer (16 by default). A followed unbounded read
+      holds its call as long as the run, and a slot stays for every other read, so a run follows
+      at most 197 unbounded partitions of a served source, or one fewer than its partitions
+      where those are fewer: one more is refused as it starts, with `source_calls_exceeded`,
+      naming the calls, where the source's calls set the slots, and with `partitions_too_few`
+      where the partitions do (ADR 0039). Bounded reads beyond the slots wait for one.
+    - A session makes one other call at a time while writers are open, a schema change, a
+      commit or a close, a writer's opening being that writer's own call, so an attempt holds at
+      most 198 of a served destination's writers open, or `GrowthLimits::writers` where that is
+      fewer (128 by default); its lanes retire writers beyond them (ADR 0041).
+    - A source or destination that carries no more calls than that other call has none left for
+      a read or a writer beside it: an attempt refuses it as it starts, before it opens the
+      destination, with `calls_too_few`, naming the calls it carries and the two a run needs.
+    - The connection's window holds every call's stream window and one more (ADR 0016), so each
+      call lets a peer that ignores its credit park 4 MiB more, 804 MiB at 200; and HTTP/2's
+      largest window, just under 2 GiB, holds the windows of 510 calls and one more, still fewer
+      than the partitions a run may read at once. The engine plans within the connection's calls
+      rather than the calls growing to what a run reads.
   - A served connector takes the state one request may carry from `--max-state-bytes`, spawned or
     listening; a host spawning a connector passes its own `state_bytes` where it raises the
     protocol's, so raising the host's limit raises both ends', and a host whose budget takes less
@@ -221,4 +246,11 @@ still taken largely on trust:
 - A connector built before the protocol's version was answered is refused; none is published.
 - A failed attempt's close waits at most the close wait, a minute by default, before the retry
   begins, for a destination that never answers it.
+- A pipeline following more than 197 unbounded partitions of one served source is refused,
+  whatever its memory and partitions, until it follows fewer, its streams split across
+  pipelines: with `source_calls_exceeded` where its partitions are more than 198, and with
+  `partitions_too_few` where they are not, as at the default 16, which follow 15. Bounded
+  partitions beyond the slots are read in turn, and an attempt with more tables than it holds
+  writers open writes them through at most 198 writers of a served destination, 128 at the
+  default `GrowthLimits::writers`, each lane retiring, and so flushing, a writer to open another.
 - H2b's state limits must fit within `state_bytes`, and its dictionary limit takes field 11.

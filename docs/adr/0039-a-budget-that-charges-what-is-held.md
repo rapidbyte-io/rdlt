@@ -57,12 +57,15 @@ budget before it is held, or bounded by a limit with a typed refusal.
   - **A read keeps a bounded part.** Each read may keep the reads' share divided by the
     partitions read at once, 4 MiB at the defaults, so all reads together never pass the share.
     Every read holds one of the partitions' slots while it reads, a followed unbounded read
-    included, so no more reads keep bytes than the share is divided among. A followed
-    unbounded read holds its slot as long as the run, so a run reads fewer of them than it has
-    slots: one more is refused as it starts, `partitions_too_few`, rather than leaving the
-    other reads no slot. A read beyond the slots waits for one until one frees, with no
-    deadline: a bounded read's end frees its slot, and the followed reads leave one, so a slot
-    always comes round. The wait is counted with the reads' share.
+    included, so no more reads keep bytes than the share is divided among. A source whose calls
+    are bounded, as a served one's are, has fewer slots where its calls, less the engine's one
+    other call into it, are fewer than the partitions (ADR 0042). A followed unbounded read
+    holds its slot as long as the run, so a run reads fewer of them than it has slots: one more
+    is refused as it starts, `partitions_too_few`, or `source_calls_exceeded` where the
+    source's calls set the slots, rather than leaving the other reads no slot. A read beyond
+    the slots waits for one until one frees, with no deadline: a bounded read's end frees its
+    slot, and the followed reads leave one, so a slot always comes round. The wait is counted
+    with the reads' share.
     A read that would keep more than its part fails at the frame that would pass it. Sixteen
     reads keeping all they may, and seventeen followed reads through eighteen slots, leave
     pushes and checkpoints flowing, which tests hold on the ledger, through the engine's
@@ -563,7 +566,10 @@ admitted, and what a remote connector's calls hold in transport.
   follows at most ⌊memory ÷ 2 MiB⌋ − 1 unbounded partitions: 127 at the default 256 MiB with
   128 partitions, and 15 at the default 16 partitions. At 2 MiB a read, a schema's message may
   take 52,428 bytes and a table 936 columns, against 419,430 bytes and 7,489 columns at the
-  defaults.
+  defaults. A served source carries the engine 199 calls at once (ADR 0042), so a run follows
+  at most 197 of its unbounded partitions, however much memory it has: beyond them it is refused
+  with `source_calls_exceeded` where its partitions are more than 198, and with
+  `partitions_too_few` where they are not. Above 396 MiB its calls bind before the memory does.
 - A table wider than the derived column limit, 7,489 at the defaults, is refused where its
   source pushes it.
 - A partition that ends where it last checkpointed seals that cursor again: the commit records
