@@ -1,23 +1,20 @@
-// Exactly-once delivery with the write-ahead log and acknowledged positions, as ADRs 0004, 0029 and
-// 0030 decide it. Each attempt of a pipeline, its load, opens a log of its own where a partition's
-// source cannot read again, then fences and replays every other log of its pipeline, in a session
-// it opens for the first commit it replays: a logged commit with no receipt is committed again
-// whole where the destination stands where its load left it, and otherwise only its seals of
-// partitions that cannot read again, each where its partition stands where the seal starts. It then
-// opens its own session, which fences every session of the pipeline opened before, reads each
-// partition from where the destination holds it, checkpoints, and commits what it sealed: logged
-// first, the source that cannot read again told the commit's position once the log holds it, then
-// the destination's commit, keyed by load and number, under the session's epoch; the source that
-// reads again is told after. An attempt may crash, its log may refuse a commit, its commit may fail
-// or land with its answer lost, a telling may fail, and an attempt may start while another of its
-// pipeline is live, as a second run's would. A retry is an attempt of its own: the model does not
-// group attempts into runs. The destination may be shared by several pipelines: `quint test` and
-// `quint run` take two, and the model checkers one.
+// Exactly-once delivery with acknowledged positions, as ADRs 0004 and 0030 decide it. Each attempt
+// of a pipeline, its load, opens a session at the destination, which fences every session of the
+// pipeline opened before, reads each partition from where the destination holds it, checkpoints,
+// and commits what it sealed under the session's epoch; once the commit lands, it tells each
+// partition's source the position the commit landed with. A source that reads again serves any
+// position; one that cannot forgets what precedes the position it was last told, refuses a read
+// from before it, and serves everything after it to every reader that asks. An attempt may crash,
+// its commit may fail or land with its answer lost, a telling may fail, and an attempt may start
+// while another of its pipeline is live, as a second run's would, both reading a partition whose
+// source cannot read again. A retry is an attempt of its own: the model does not group attempts
+// into runs. The destination may be shared by several pipelines: `quint test` and `quint run` take
+// two, and the model checkers one.
 //
 // quint main: exactly_once exactly_once_pair
 // quint steps: --step simulated --max-steps 60
 // quint run: --max-samples 2000
-// quint verify: --max-steps 7
+// quint verify: --max-steps 8
 module exactly_once_protocol {
   // ---- What a destination's pipelines read
 
@@ -27,7 +24,8 @@ module exactly_once_protocol {
   const PARTS: Set[str]
   /// The pipeline reading each partition.
   const OWNER: str -> str
-  /// The partitions whose source reads again; every other forgets what it was told is committed.
+  /// The partitions whose source reads again; every other forgets what precedes the position it
+  /// was told is committed.
   const REREADS: Set[str]
   /// The rows each partition holds, from offset 0.
   const ROWS: str -> int
@@ -38,8 +36,8 @@ module exactly_once_protocol {
   assume RowsWithinMax = rowsFit
   /// The attempts each pipeline may make, its loads 1 onward.
   const LOADS: int
-  /// Faults a behavior meets: crashes, commits a log refused, failed or lost commits, failed
-  /// tellings, and attempts started beside a live one.
+  /// Faults a behavior meets: crashes, failed or lost commits, failed tellings, and attempts
+  /// started beside a live one.
   const FAULTS: int
 
   type Pipe = str
@@ -53,60 +51,33 @@ module exactly_once_protocol {
 
   pure def partsOf(pipe: Pipe): Set[Part] = PARTS.filter(part => ownerOf(part) == pipe)
 
-  /// Whether a pipeline keeps a log: a partition of it cannot read again.
-  pure def logsAhead(pipe: Pipe): bool = partsOf(pipe).exists(part => not(rereads(part)))
-
-  // ---- What the destination, the logs and the sources hold
-
-  /// A commit's key: its load and its number; (0, 0) is none.
-  type Key = (int, int)
-
-  pure val NONE: Key = (0, 0)
+  // ---- What the destination and the sources hold
 
   /// A segment: a partition's rows from one offset to the next.
   type Seg = { part: Part, from: int, to: int }
 
-  /// A commit: whose, its key, the epoch of the session making it, its segments, and the commit
-  /// the destination last received before it, as its load knew it.
-  type Commit = { pipe: Pipe, key: Key, epoch: int, segs: Set[Seg], prev: Key }
+  /// What the destination holds of a pipeline: its newest session's epoch, and each partition's
+  /// position and how often each row of it is held.
+  type Dest = { epoch: int, cursor: Part -> int, rows: Part -> (int -> int) }
 
-  pure val NOCOMMIT: Commit = { pipe: "", key: NONE, epoch: 0, segs: Set(), prev: NONE }
+  /// Where an attempt stands: before its session opens, reading, its commit landed.
+  type Stage = | Opening | Reading | Landed
 
-  /// A load's log: open until removed, fenced once a replay took it, and its commits.
-  type Log = { open: bool, fenced: bool, commits: Set[Commit] }
-
-  pure val NOLOG: Log = { open: false, fenced: false, commits: Set() }
-
-  /// What the destination holds of a pipeline: its newest session's epoch, each partition's
-  /// position and how often each row of it is held, each commit's receipt, and the last commit
-  /// whose state it holds.
-  type Dest = { epoch: int, cursor: Part -> int, rows: Part -> (int -> int), receipts: Set[Key], last: Key }
-
-  /// Where an attempt stands: replaying other loads' logs, reading, its commit logged, the source
-  /// that cannot read again told, its commit landed.
-  type Stage = | Replaying | Reading | Logged | Told | Landed
-
-  /// An attempt: its pipeline and load, the epoch of the session it holds (0 before its first),
-  /// where it stands, each partition's rows read, sealed by a checkpoint and committed, its
-  /// commits' count, the commit in flight, and the commit the destination last received as its own
-  /// session opened.
+  /// An attempt: its pipeline, the epoch of the session it holds (0 before it opens one), where
+  /// it stands, each partition's rows read, sealed by a checkpoint and committed, and the
+  /// segments of the commit that landed and whose sources it has yet to tell.
   type Attempt = {
     pipe: Pipe,
-    load: int,
     epoch: int,
     stage: Stage,
     read: Part -> int,
     sealed: Part -> int,
     committed: Part -> int,
-    seq: int,
-    inFlight: Commit,
-    opened: Key,
+    landing: Set[Seg],
   }
 
   /// The destination, by pipeline.
   var dest: Pipe -> Dest
-  /// Each load's log, by pipeline and load.
-  var logs: (Pipe, int) -> Log
   /// Where each partition's source stands: the position it was last told is committed.
   var kept: Part -> int
   /// The attempts live, by pipeline and load.
@@ -127,44 +98,21 @@ module exactly_once_protocol {
   pure def none(part: Part): int -> int = 0.to(MAXROWS - 1).filter(o => o < rowsOf(part)).mapBy(_ => 0)
 
   pure def fresh(pipe: Pipe): Dest =
-    { epoch: 0, cursor: zero(partsOf(pipe)), rows: partsOf(pipe).mapBy(part => none(part)), receipts: Set(), last: NONE }
+    { epoch: 0, cursor: zero(partsOf(pipe)), rows: partsOf(pipe).mapBy(part => none(part)) }
 
-  /// The destination `d` once it applied `segs` of the commit `key`, the commit's state included
-  /// where `whole`.
-  pure def applied(d: Dest, key: Key, segs: Set[Seg], whole: bool): Dest = {
+  /// The destination `d` once it applied `segs`.
+  pure def applied(d: Dest, segs: Set[Seg]): Dest = {
     val rows = segs.fold(d.rows, (rs, s) =>
       rs.set(s.part, 0.to(MAXROWS - 1).filter(o => s.from <= o and o < s.to).fold(rs.get(s.part), (counts, o) => counts.set(o, counts.get(o) + 1))))
     val cursor = segs.fold(d.cursor, (c, s) => c.set(s.part, s.to))
-    { ...d, rows: rows, cursor: cursor, receipts: d.receipts.union(Set(key)), last: if (whole) key else d.last }
+    { ...d, rows: rows, cursor: cursor }
   }
 
   /// The positions `segs` land with.
   pure def positions(segs: Set[Seg]): Set[(Part, int)] = segs.map(s => (s.part, s.to))
 
-  /// What replaying the logged commit `c` stages where the destination holds `d`: the whole
-  /// commit where the destination stands as its load left it; otherwise its seals of partitions
-  /// that cannot read again, each where its partition stands where the seal starts.
-  pure def decided(d: Dest, c: Commit): Set[Seg] =
-    if (d.last == c.prev) c.segs
-    else c.segs.filter(s => not(rereads(s.part)) and d.cursor.get(s.part) == s.from)
-
-  /// The open logs of `pipe` other than `load`'s.
-  def others(pipe: Pipe, load: int): Set[int] =
-    1.to(LOADS).filter(l => l <= started.get(pipe) and l != load and logs.keys().contains((pipe, l)) and logs.get((pipe, l)).open)
-
-  /// The least of `ns`; -1 where there is none.
-  pure def least(ns: Set[int]): int = ns.fold(-1, (best, n) => if (best == -1 or n < best) n else best)
-
-  /// The highest position a log still open holds a commit of `part` at.
-  def logged(part: Part): int =
-    logs.keys().filter(k => logs.get(k).open).fold(0, (best, k) =>
-      logs.get(k).commits.fold(best, (b, c) =>
-        c.segs.filter(s => s.part == part).fold(b, (bb, s) => if (s.to > bb) s.to else bb)))
-
-  /// Whether a log still open holds a commit of `part` ending at `pos`.
-  def heldAt(part: Part, pos: int): bool =
-    logs.keys().exists(k => logs.get(k).open and logs.get(k).commits.exists(c =>
-      c.segs.exists(s => s.part == part and s.to == pos)))
+  /// The sources of `kept` once each partition of `segs` is told the position it lands with.
+  pure def told(kept: Part -> int, segs: Set[Seg]): Part -> int = segs.fold(kept, (k, s) => k.set(s.part, s.to))
 
   /// The attempts live.
   val live: Set[(Pipe, int)] = attempts.keys()
@@ -173,11 +121,10 @@ module exactly_once_protocol {
 
   /// The next state: every variable as given.
   action keepAll(
-    d: Pipe -> Dest, l: (Pipe, int) -> Log, k: Part -> int, r: (Pipe, int) -> Attempt, s: Pipe -> int, f: int,
+    d: Pipe -> Dest, k: Part -> int, r: (Pipe, int) -> Attempt, s: Pipe -> int, f: int,
     landedNow: Set[(Part, int)], fenced: bool
   ): bool = all {
     dest' = d,
-    logs' = l,
     kept' = k,
     attempts' = r,
     started' = s,
@@ -193,7 +140,6 @@ module exactly_once_protocol {
 
   action init = all {
     dest' = PIPES.mapBy(pipe => fresh(pipe)),
-    logs' = Map(),
     kept' = zero(PARTS),
     attempts' = Map(),
     started' = PIPES.mapBy(_ => 0),
@@ -202,22 +148,21 @@ module exactly_once_protocol {
     fencedLanded' = false,
   }
 
-  /// An attempt of `pipe` starts: its log opens; it holds no session yet. An attempt started while
-  /// another of the pipeline is live meets a fault.
+  /// An attempt of `pipe` starts, holding no session yet. An attempt started while another of
+  /// the pipeline is live meets a fault.
   action start(pipe: Pipe): bool = {
     val load = started.get(pipe) + 1
     val concurrent = attempts.keys().exists(k => k._1 == pipe)
     val attempt = {
-      pipe: pipe, load: load, epoch: 0, stage: Replaying,
+      pipe: pipe, epoch: 0, stage: Opening,
       read: zero(partsOf(pipe)), sealed: zero(partsOf(pipe)), committed: zero(partsOf(pipe)),
-      seq: 0, inFlight: NOCOMMIT, opened: NONE,
+      landing: Set(),
     }
     all {
       load <= LOADS,
       not(concurrent) or faults > 0,
       keepAll(
         dest,
-        if (logsAhead(pipe)) logs.put((pipe, load), { ...NOLOG, open: true }) else logs,
         kept,
         attempts.put((pipe, load), attempt),
         started.set(pipe, load),
@@ -228,84 +173,29 @@ module exactly_once_protocol {
     }
   }
 
-  /// The attempt `k` takes its next step at replaying the oldest other open log: fencing it, then
-  /// committing again each commit it holds with no receipt, meeting `outcome`, in a session it
-  /// opens for the first, then removing it; with none left, it opens its own session, which fences
-  /// every older one, and plans from where the destination holds each partition and the commit it
-  /// last received.
-  action replay(k: (Pipe, int), outcome: Outcome): bool = {
+  /// The attempt `k` opens its session, which fences every older one, and plans each partition
+  /// from where the destination holds it; a source that cannot read again refuses a read from
+  /// before where it stands, and the attempt ends.
+  action open(k: (Pipe, int)): bool = {
     val attempt = attemptOf(k)
     val d = dest.get(attempt.pipe)
-    val left = others(attempt.pipe, attempt.load)
-    val l = least(left)
-    val log = logs.get((attempt.pipe, l))
-    val unreceipted = log.commits.filter(c => not(d.receipts.contains(c.key)))
-    val c = unreceipted.fold(NOCOMMIT, (best, x) => if (best == NOCOMMIT or x.key._2 < best.key._2) x else best)
-    val segs = decided(d, c)
+    val planned = partsOf(attempt.pipe).forall(part => rereads(part) or kept.get(part) <= d.cursor.get(part))
+    val epoch = d.epoch + 1
     all {
       live.contains(k),
-      attempt.stage == Replaying,
-      if (left == Set()) {
-        // A source that cannot read again refuses a read from before where it stands, and the
-        // attempt ends.
-        val planned = partsOf(attempt.pipe).forall(part => rereads(part) or kept.get(part) <= d.cursor.get(part))
-        val at = d.cursor
-        val epoch = d.epoch + 1
-        all {
-          outcome == Ok,
-          keepAll(
-            dest.set(attempt.pipe, { ...d, epoch: epoch }), logs, kept,
-            if (planned) attempts.set(k, { ...attempt, epoch: epoch, stage: Reading, read: at, sealed: at, committed: at, opened: d.last })
-            else without(k),
-            started, faults, landed, fencedLanded,
-          ),
-        }
-      }
-      else if (not(log.fenced)) all {
-        outcome == Ok,
-        keepAll(dest, logs.set((attempt.pipe, l), { ...log, fenced: true }), kept, attempts, started, faults, landed, fencedLanded),
-      }
-      else if (unreceipted == Set()) all {
-        outcome == Ok,
-        keepAll(dest, logs.set((attempt.pipe, l), NOLOG), kept, attempts, started, faults, landed, fencedLanded),
-      }
-      // The replay's session opens as its first commit needs it.
-      else if (attempt.epoch == 0) all {
-        outcome == Ok,
-        keepAll(
-          dest.set(attempt.pipe, { ...d, epoch: d.epoch + 1 }), logs, kept,
-          attempts.set(k, { ...attempt, epoch: d.epoch + 1 }), started, faults, landed, fencedLanded,
-        ),
-      }
-      else committing(k, attempt, d, c.key, segs, d.last == c.prev, outcome),
-    }
-  }
-
-  /// The attempt `k` commits `segs` of the commit `key` at the destination, which holds `d`,
-  /// meeting `outcome`: a session the destination fenced is refused; a commit it holds the receipt
-  /// of answers with it; otherwise it lands, but where it failed, and its answer is lost where it
-  /// landed so.
-  action committing(k: (Pipe, int), attempt: Attempt, d: Dest, key: Key, segs: Set[Seg], whole: bool, outcome: Outcome): bool = {
-    val fenced = d.epoch != attempt.epoch
-    val held = d.receipts.contains(key)
-    val lands = not(fenced) and not(held) and outcome != Failed
-    val answered = not(fenced) and (held or outcome == Ok)
-    all {
-      Set(Ok, Failed, Lost).contains(outcome),
-      outcome == Ok or faults > 0,
+      attempt.stage == Opening,
       keepAll(
-        if (lands) dest.set(attempt.pipe, applied(d, key, segs, whole)) else dest,
-        logs, kept,
-        if (answered) attempts.set(k, { ...attempt, stage: if (attempt.stage == Replaying) Replaying else Landed }) else without(k),
-        started,
-        if (outcome == Ok) faults else faults - 1,
-        if (lands) landed.union(positions(segs)) else landed,
-        fencedLanded or (lands and fenced),
+        dest.set(attempt.pipe, { ...d, epoch: epoch }),
+        kept,
+        if (planned) attempts.set(k, { ...attempt, epoch: epoch, stage: Reading, read: d.cursor, sealed: d.cursor, committed: d.cursor })
+        else without(k),
+        started, faults, landed, fencedLanded,
       ),
     }
   }
 
-  /// The attempt `k` reads the next row of `part`.
+  /// The attempt `k` reads the next row of `part`, which its source serves whatever another
+  /// attempt read of it.
   action read(k: (Pipe, int), part: Part): bool = {
     val attempt = attemptOf(k)
     all {
@@ -313,7 +203,7 @@ module exactly_once_protocol {
       attempt.stage == Reading,
       partsOf(attempt.pipe).contains(part),
       attempt.read.get(part) < rowsOf(part),
-      keepAll(dest, logs, kept, attempts.set(k, { ...attempt, read: attempt.read.set(part, attempt.read.get(part) + 1) }), started, faults, landed, fencedLanded),
+      keepAll(dest, kept, attempts.set(k, { ...attempt, read: attempt.read.set(part, attempt.read.get(part) + 1) }), started, faults, landed, fencedLanded),
     }
   }
 
@@ -325,87 +215,55 @@ module exactly_once_protocol {
       attempt.stage == Reading,
       partsOf(attempt.pipe).contains(part),
       attempt.sealed.get(part) < attempt.read.get(part),
-      keepAll(dest, logs, kept, attempts.set(k, { ...attempt, sealed: attempt.sealed.set(part, attempt.read.get(part)) }), started, faults, landed, fencedLanded),
+      keepAll(dest, kept, attempts.set(k, { ...attempt, sealed: attempt.sealed.set(part, attempt.read.get(part)) }), started, faults, landed, fencedLanded),
     }
   }
 
-  /// The attempt `k` commits what it sealed: its log takes the commit first, which a log a replay
-  /// fenced refuses, meeting `outcome`; a pipeline with no log goes straight on.
-  action log(k: (Pipe, int), outcome: Outcome): bool = {
+  /// The segments the attempt `attempt` sealed since its last commit.
+  pure def sealedSegs(attempt: Attempt): Set[Seg] =
+    attempt.sealed.keys().filter(part => attempt.sealed.get(part) > attempt.committed.get(part))
+      .map(part => { part: part, from: attempt.committed.get(part), to: attempt.sealed.get(part) })
+
+  /// The attempt `k` commits what it sealed at the destination, meeting `outcome`: a session the
+  /// destination fenced is refused; otherwise the commit lands, but where it failed, and its
+  /// answer is lost where it landed so. No source is told anything yet.
+  action land(k: (Pipe, int), outcome: Outcome): bool = {
     val attempt = attemptOf(k)
-    val segs = partsOf(attempt.pipe).filter(part => attempt.sealed.get(part) > attempt.committed.get(part))
-                                .map(part => { part: part, from: attempt.committed.get(part), to: attempt.sealed.get(part) })
-    val key = (attempt.load, attempt.seq + 1)
-    val c = { pipe: attempt.pipe, key: key, epoch: attempt.epoch, segs: segs, prev: if (attempt.seq == 0) attempt.opened else (attempt.load, attempt.seq) }
-    val own = if (logsAhead(attempt.pipe)) logs.get((attempt.pipe, attempt.load)) else NOLOG
-    val refused = logsAhead(attempt.pipe) and (own.fenced or not(own.open))
-    val takes = not(refused) and outcome == Ok
+    val d = dest.get(attempt.pipe)
+    val segs = sealedSegs(attempt)
+    val fenced = d.epoch != attempt.epoch
+    val lands = not(fenced) and outcome != Failed
+    val answered = not(fenced) and outcome == Ok
     all {
       live.contains(k),
       attempt.stage == Reading,
       segs != Set(),
-      Set(Ok, Failed).contains(outcome),
       outcome == Ok or faults > 0,
       keepAll(
-        dest,
-        if (takes and logsAhead(attempt.pipe)) logs.set((attempt.pipe, attempt.load), { ...own, commits: own.commits.union(Set(c)) }) else logs,
+        if (lands) dest.set(attempt.pipe, applied(d, segs)) else dest,
         kept,
-        if (takes) attempts.set(k, { ...attempt, stage: if (logsAhead(attempt.pipe)) Logged else Told, inFlight: c }) else without(k),
+        if (answered) attempts.set(k, { ...attempt, stage: Landed, landing: segs }) else without(k),
         started,
         if (outcome == Ok) faults else faults - 1,
-        landed,
-        fencedLanded,
+        if (lands) landed.union(positions(segs)) else landed,
+        fencedLanded or (lands and fenced),
       ),
     }
   }
 
-  /// The attempt `k` tells the source of a partition that cannot read again its commit's position,
-  /// the log holding the commit, meeting `outcome`: a telling that fails may have moved the
-  /// source all the same.
-  action tellLogged(k: (Pipe, int), outcome: Outcome): bool = {
+  /// The attempt `k` tells the source of every partition its commit landed with that position,
+  /// meeting `outcome`, and reads on: a telling that fails may have moved the sources all the
+  /// same.
+  action tell(k: (Pipe, int), outcome: Outcome): bool = {
     val attempt = attemptOf(k)
-    val told = attempt.inFlight.segs.filter(s => not(rereads(s.part))).fold(kept, (kk, s) => kk.set(s.part, s.to))
-    all {
-      live.contains(k),
-      attempt.stage == Logged,
-      Set(Ok, Failed, Lost).contains(outcome),
-      outcome == Ok or faults > 0,
-      keepAll(
-        dest, logs,
-        if (outcome == Failed) kept else told,
-        if (outcome == Ok) attempts.set(k, { ...attempt, stage: Told }) else without(k),
-        started,
-        if (outcome == Ok) faults else faults - 1,
-        landed,
-        fencedLanded,
-      ),
-    }
-  }
-
-  /// The attempt `k` commits at the destination.
-  action land(k: (Pipe, int), outcome: Outcome): bool = {
-    val attempt = attemptOf(k)
-    all {
-      live.contains(k),
-      attempt.stage == Told,
-      committing(k, attempt, dest.get(attempt.pipe), attempt.inFlight.key, attempt.inFlight.segs, true, outcome),
-    }
-  }
-
-  /// The attempt `k` tells the sources of partitions that read again the positions its commit
-  /// landed with, meeting `outcome`, and reads on.
-  action tellLanded(k: (Pipe, int), outcome: Outcome): bool = {
-    val attempt = attemptOf(k)
-    val told = attempt.inFlight.segs.filter(s => rereads(s.part)).fold(kept, (kk, s) => kk.set(s.part, s.to))
     all {
       live.contains(k),
       attempt.stage == Landed,
-      Set(Ok, Failed, Lost).contains(outcome),
       outcome == Ok or faults > 0,
       keepAll(
-        dest, logs,
-        if (outcome == Failed) kept else told,
-        if (outcome == Ok) attempts.set(k, { ...attempt, stage: Reading, committed: attempt.sealed, seq: attempt.seq + 1, inFlight: NOCOMMIT }) else without(k),
+        dest,
+        if (outcome == Failed) kept else told(kept, attempt.landing),
+        if (outcome == Ok) attempts.set(k, { ...attempt, stage: Reading, committed: attempt.sealed, landing: Set() }) else without(k),
         started,
         if (outcome == Ok) faults else faults - 1,
         landed,
@@ -414,27 +272,22 @@ module exactly_once_protocol {
     }
   }
 
-  /// The attempt `k` read every partition to its end and committed all of it: it ends, its log
-  /// removed, every commit in it holding its receipt.
+  /// The attempt `k` read every partition to its end and committed all of it: it ends.
   action close(k: (Pipe, int)): bool = {
     val attempt = attemptOf(k)
     all {
       live.contains(k),
       attempt.stage == Reading,
       partsOf(attempt.pipe).forall(part => attempt.read.get(part) == rowsOf(part) and attempt.committed.get(part) == rowsOf(part)),
-      keepAll(
-        dest,
-        if (logsAhead(attempt.pipe)) logs.set((attempt.pipe, attempt.load), NOLOG) else logs,
-        kept, without(k), started, faults, landed, fencedLanded,
-      ),
+      keepAll(dest, kept, without(k), started, faults, landed, fencedLanded),
     }
   }
 
-  /// The attempt `k` crashes: what it read and staged is lost; its log and what landed stay.
+  /// The attempt `k` crashes: what it read and staged is lost; what landed stays.
   action crash(k: (Pipe, int)): bool = all {
     live.contains(k),
     faults > 0,
-    keepAll(dest, logs, kept, without(k), started, faults - 1, landed, fencedLanded),
+    keepAll(dest, kept, without(k), started, faults - 1, landed, fencedLanded),
   }
 
   /// What becomes of a commit or a telling: done and answered; failed, nothing done; or done
@@ -458,13 +311,11 @@ module exactly_once_protocol {
       nondet outcome = outcomes.oneOf()
       nondet part = PARTS.oneOf()
       any {
-        replay(k, outcome),
+        open(k),
         read(k, part),
         checkpoint(k, part),
-        log(k, outcome),
-        tellLogged(k, outcome),
         land(k, outcome),
-        tellLanded(k, outcome),
+        tell(k, outcome),
         close(k),
         crash(k),
       },
@@ -487,13 +338,11 @@ module exactly_once_protocol {
         nondet outcome = (if (rare == 1) outcomes else Set(Ok)).oneOf()
         nondet part = PARTS.oneOf()
         any {
-          replay(k, outcome),
+          open(k),
           read(k, part),
           checkpoint(k, part),
-          log(k, outcome),
-          tellLogged(k, outcome),
           land(k, outcome),
-          tellLanded(k, outcome),
+          tell(k, outcome),
           close(k),
           all { rare == 1, crash(k) },
         },
@@ -509,39 +358,34 @@ module exactly_once_protocol {
     0.to(MAXROWS - 1).filter(o => o < rowsOf(part)).forall(o => d.rows.get(part).get(o) == (if (o < d.cursor.get(part)) 1 else 0))
   }))
 
-  /// A source stands at a position only once it is safe: a source that reads again once its
-  /// commit landed, and one that cannot once a log holds the commit until it lands.
-  val Acknowledged = PARTS.forall(part => {
-    val at = dest.get(ownerOf(part)).cursor.get(part)
-    if (rereads(part)) kept.get(part) <= at
-    else kept.get(part) <= (if (logged(part) > at) logged(part) else at)
-  })
+  /// A source stands at a position only once the destination holds every row before it: no
+  /// source is told past what is committed.
+  val Acknowledged = PARTS.forall(part => kept.get(part) <= dest.get(ownerOf(part)).cursor.get(part))
 
   /// No commit lands from a session the destination fenced.
   val FencedNeverCommits = not(fencedLanded)
 
   /// A source's position moves only as it is told a committed position, and then to that one: a
-  /// position a commit landed with, or one a log holds.
+  /// position a commit landed with.
   val PositionOnlyInCommitted = PARTS.forall(part =>
-    kept.get(part) == 0 or landed.contains((part, kept.get(part))) or heldAt(part, kept.get(part)))
+    kept.get(part) == 0 or landed.contains((part, kept.get(part))))
 
-  /// Every pipeline holds every row of each of its partitions, and no log is left.
+  /// Every pipeline holds every row of each of its partitions.
   val converged = PIPES.forall(pipe => partsOf(pipe).forall(part => dest.get(pipe).cursor.get(part) == rowsOf(part)))
-    and logs.keys().forall(k => not(logs.get(k).open))
 
   /// Every variable.
-  val vars = (dest, logs, kept, attempts, started, faults, landed, fencedLanded)
+  val vars = (dest, kept, attempts, started, faults, landed, fencedLanded)
 
-  /// Once faults stop, the load converges: every row lands once, and no log is left. It need not
-  /// stay so to a behavior's end: a later attempt opens a log, which a fault ending the last
-  /// attempt the bounds start leaves open, for an attempt the engine would start next to replay.
+  /// Once faults stop, the load converges: every row lands once. A position never moves back, so
+  /// it stays so.
   temporal Converges = weakFair(step, vars).implies(eventually(converged))
 }
 
 /// The protocol at the bounds every checker explores: one pipeline reads `a`, whose source reads
-/// again, one row, and `u`, whose source does not, two rows. A fault may end two attempts, so the
-/// pipeline may start one attempt more than twice the faults: whatever the faults end, an attempt
-/// remains that meets none.
+/// again, one row, and `u`, whose source does not, two rows. A fault ends one attempt at most, so
+/// of five attempts three leave one that meets none, whatever two faults end; the others start
+/// beside a live attempt, two then reading `u` at once, the newer fencing the older, or once the
+/// load converged.
 module exactly_once {
   import exactly_once_protocol(
     PIPES = Set("p"),
@@ -566,20 +410,20 @@ module exactly_once {
   /// partitions, everything answered.
   action rowEach(load: int): bool =
     read(p(load), "a").then(checkpoint(p(load), "a")).then(read(p(load), "u")).then(checkpoint(p(load), "u"))
-      .then(log(p(load), Ok)).then(tellLogged(p(load), Ok)).then(land(p(load), Ok)).then(tellLanded(p(load), Ok))
+      .then(land(p(load), Ok)).then(tell(p(load), Ok))
 
   /// The steps an attempt takes to read, seal and commit a row of `u`, everything answered.
   action rowOfU(load: int): bool =
-    read(p(load), "u").then(checkpoint(p(load), "u"))
-      .then(log(p(load), Ok)).then(tellLogged(p(load), Ok)).then(land(p(load), Ok)).then(tellLanded(p(load), Ok))
+    read(p(load), "u").then(checkpoint(p(load), "u")).then(land(p(load), Ok)).then(tell(p(load), Ok))
 
-  /// A source told a position before the log holds the commit, which an attempt never does.
-  action toldEarly(k: (Pipe, int)): bool = {
+  /// A source told the position of what an attempt sealed before its commit lands, which an
+  /// attempt never does.
+  action toldBeforeLanding(k: (Pipe, int)): bool = {
     val attempt = attemptOf(k)
     all {
       live.contains(k),
       attempt.stage == Reading,
-      keepAll(dest, logs, kept.set("u", attempt.sealed.get("u")), attempts, started, faults, landed, fencedLanded),
+      keepAll(dest, told(kept, sealedSegs(attempt)), attempts, started, faults, landed, fencedLanded),
     }
   }
 
@@ -587,29 +431,29 @@ module exactly_once {
   action landedFenced(k: (Pipe, int)): bool = {
     val attempt = attemptOf(k)
     val d = dest.get(attempt.pipe)
+    val segs = sealedSegs(attempt)
     all {
       live.contains(k),
-      attempt.stage == Told,
+      attempt.stage == Reading,
       keepAll(
-        dest.set(attempt.pipe, applied(d, attempt.inFlight.key, attempt.inFlight.segs, true)),
-        logs, kept, attempts.set(k, { ...attempt, stage: Landed }), started, faults,
-        landed.union(positions(attempt.inFlight.segs)),
+        dest.set(attempt.pipe, applied(d, segs)),
+        kept, attempts.set(k, { ...attempt, stage: Landed, landing: segs }), started, faults,
+        landed.union(positions(segs)),
         fencedLanded or d.epoch != attempt.epoch,
       ),
     }
   }
 
-  /// A replay that commits a logged commit again though the destination holds its receipt, and
-  /// whole, which a replay never does.
-  action replayedAgain(k: (Pipe, int), l: int): bool = {
+  /// A commit that lands again rows the destination holds, which no attempt makes: each reads
+  /// from where the destination holds its partitions as its session opens.
+  action landedAgain(k: (Pipe, int), part: Part): bool = {
     val attempt = attemptOf(k)
     val d = dest.get(attempt.pipe)
-    val c = logs.get((attempt.pipe, l)).commits.fold(NOCOMMIT, (_, x) => x)
+    val segs = Set({ part: part, from: 0, to: d.cursor.get(part) })
     all {
       live.contains(k),
-      attempt.stage == Replaying,
-      keepAll(dest.set(attempt.pipe, applied(d, c.key, c.segs, true)), logs, kept, attempts, started, faults,
-              landed.union(positions(c.segs)), fencedLanded),
+      d.cursor.get(part) > 0,
+      keepAll(dest.set(attempt.pipe, applied(d, segs)), kept, attempts, started, faults, landed, fencedLanded),
     }
   }
 
@@ -621,203 +465,213 @@ module exactly_once {
       live.contains(k),
       attempt.stage == Reading,
       attempt.read.get(part) < rowsOf(part),
-      keepAll(dest, logs, kept.set(part, attempt.read.get(part) + 1),
+      keepAll(dest, kept.set(part, attempt.read.get(part) + 1),
               attempts.set(k, { ...attempt, read: attempt.read.set(part, attempt.read.get(part) + 1) }), started, faults, landed, fencedLanded),
     }
   }
 
   /// A source that stands at `pos` of `part` with no commit having given it that position.
   action movedTo(part: Part, pos: int): bool =
-    keepAll(dest, logs, kept.set(part, pos), attempts, started, faults, landed, fencedLanded)
+    keepAll(dest, kept.set(part, pos), attempts, started, faults, landed, fencedLanded)
 
-  /// An attempt reads each partition to its end and commits it a row at a time, then ends with its
-  /// log removed.
+  /// An attempt reads each partition to its end and commits it a row at a time, each source told
+  /// once its commit landed, then ends.
   run anAttemptCommitsEveryRowOnceAndEndsTest =
     init
       .then(start("p"))
-      .then(replay(p(1), Ok))
+      .then(open(p(1)))
       .then(rowEach(1))
       .then(rowOfU(1))
       .then(close(p(1)))
       .expect(all {
         dest.get("p").cursor == Map("a" -> 1, "u" -> 2),
         kept == Map("a" -> 1, "u" -> 2),
-        logs.keys().forall(k => not(logs.get(k).open)),
+        live == Set(),
         ExactlyOnce,
         Acknowledged,
         PositionOnlyInCommitted,
       })
 
-  /// A commit the log holds, whose source was told and whose attempt crashed before it landed, is
-  /// committed by the next attempt's replay, whole, and its rows land once.
-  run aLoggedCommitIsReplayedAfterACrashTest =
+  /// A commit landed and not yet told leaves every source where it stood, the one that cannot
+  /// read again included; an attempt that crashes then leaves the next to read from where the
+  /// destination holds each partition, which every source serves.
+  run aCommitThatLandedIsToldOnlyAfterTest =
     init
       .then(start("p"))
-      .then(replay(p(1), Ok))
+      .then(open(p(1)))
       .then(read(p(1), "u"))
       .then(checkpoint(p(1), "u"))
-      .then(log(p(1), Ok))
-      .then(tellLogged(p(1), Ok))
-      .expect(kept.get("u") == 1 and dest.get("p").cursor.get("u") == 0 and Acknowledged)
+      .then(land(p(1), Ok))
+      .expect(kept.get("u") == 0 and dest.get("p").cursor.get("u") == 1 and Acknowledged)
       .then(crash(p(1)))
       .then(start("p"))
-      .then(5.reps(_ => replay(p(2), Ok)))
+      .then(open(p(2)))
       .expect(all {
-        dest.get("p").cursor.get("u") == 1,
-        dest.get("p").receipts == Set((1, 1)),
-        not(logs.get(("p", 1)).open),
         attemptOf(p(2)).stage == Reading,
         attemptOf(p(2)).read.get("u") == 1,
         ExactlyOnce,
         Acknowledged,
       })
+      .then(rowOfU(2))
+      .expect(kept.get("u") == 2 and dest.get("p").rows.get("u") == Map(0 -> 1, 1 -> 1))
 
-  /// A commit that landed with its answer lost holds its receipt, so the next attempt's replay
-  /// lands nothing again.
+  /// A commit that landed with its answer lost tells no source, and the next attempt reads on
+  /// from where it landed: its rows land once.
   run aCommitWhoseAnswerWasLostLandsOnceTest =
     init
       .then(start("p"))
-      .then(replay(p(1), Ok))
+      .then(open(p(1)))
       .then(read(p(1), "u"))
       .then(checkpoint(p(1), "u"))
-      .then(log(p(1), Ok))
-      .then(tellLogged(p(1), Ok))
       .then(land(p(1), Lost))
-      .expect(not(live.contains(p(1))) and dest.get("p").cursor.get("u") == 1)
+      .expect(not(live.contains(p(1))) and dest.get("p").cursor.get("u") == 1 and kept.get("u") == 0)
       .then(start("p"))
-      .then(3.reps(_ => replay(p(2), Ok)))
-      .expect(dest.get("p").rows.get("u").get(0) == 1 and attemptOf(p(2)).stage == Reading and ExactlyOnce)
+      .then(open(p(2)))
+      .then(rowOfU(2))
+      .expect(dest.get("p").rows.get("u") == Map(0 -> 1, 1 -> 1) and kept.get("u") == 2 and ExactlyOnce)
 
-  /// An attempt's commits follow the commit the destination last received as its own session
-  /// opened, one its replay landed included: a crash after its first commit is logged leaves a
-  /// commit the next attempt's replay lands whole, its rows that read again included.
-  run aReplayedCommitPrecedesTheNextAttemptsFirstTest =
+  /// A telling that fails may move a source all the same, and only to the position its commit
+  /// landed with.
+  run aTellingLostStillMovesTheSourceOnlyToALandedPositionTest =
     init
       .then(start("p"))
-      .then(replay(p(1), Ok))
-      .then(read(p(1), "a"))
-      .then(checkpoint(p(1), "a"))
+      .then(open(p(1)))
       .then(read(p(1), "u"))
       .then(checkpoint(p(1), "u"))
-      .then(log(p(1), Ok))
-      .then(crash(p(1)))
-      .then(start("p"))
-      .then(5.reps(_ => replay(p(2), Ok)))
-      .expect(dest.get("p").last == (1, 1) and attemptOf(p(2)).stage == Reading)
-      .then(read(p(2), "u"))
-      .then(checkpoint(p(2), "u"))
-      .then(log(p(2), Ok))
-      .expect(attemptOf(p(2)).inFlight.prev == (1, 1))
-      .then(crash(p(2)))
-      .then(start("p"))
-      .then(5.reps(_ => replay(p(3), Ok)))
+      .then(land(p(1), Ok))
+      .then(tell(p(1), Lost))
       .expect(all {
-        dest.get("p").last == (2, 1),
-        dest.get("p").cursor == Map("a" -> 1, "u" -> 2),
-        attemptOf(p(3)).stage == Reading,
-        ExactlyOnce,
+        not(live.contains(p(1))),
+        kept.get("u") == 1,
+        Acknowledged,
+        PositionOnlyInCommitted,
       })
 
-  /// An attempt started beside a live one fences its log, then its session as the replay's opens:
-  /// the older attempt's commit is refused at the destination, and the newer attempt's replay lands
-  /// what the older one logged.
-  run aFencedAttemptNeverCommitsTest =
+  /// Two attempts read `u`, whose source cannot read again and serves its rows to both: the
+  /// newer's session fences the older's, whose commit the destination refuses, and the newer's
+  /// lands each row once and tells the source only once it landed.
+  run twoAttemptsReadingASourceThatCannotReadAgainLandItsRowsOnceTest =
     init
       .then(start("p"))
-      .then(replay(p(1), Ok))
-      .then(read(p(1), "a"))
-      .then(checkpoint(p(1), "a"))
-      .then(log(p(1), Ok))
-      .then(tellLogged(p(1), Ok))
+      .then(open(p(1)))
+      .then(read(p(1), "u"))
+      .then(checkpoint(p(1), "u"))
       .then(start("p"))
-      .then(2.reps(_ => replay(p(2), Ok)))
+      .then(open(p(2)))
+      .then(read(p(2), "u"))
+      .then(read(p(2), "u"))
+      .then(checkpoint(p(2), "u"))
+      .expect(attemptOf(p(1)).read.get("u") == 1 and attemptOf(p(2)).read.get("u") == 2)
       .then(land(p(1), Ok))
-      .expect(not(live.contains(p(1))) and dest.get("p").cursor.get("a") == 0 and FencedNeverCommits)
-      .then(3.reps(_ => replay(p(2), Ok)))
-      .expect(dest.get("p").cursor.get("a") == 1 and attemptOf(p(2)).stage == Reading and ExactlyOnce)
+      .expect(not(live.contains(p(1))) and dest.get("p").cursor.get("u") == 0 and kept.get("u") == 0)
+      .then(land(p(2), Ok))
+      .then(tell(p(2), Ok))
+      .expect(all {
+        dest.get("p").cursor.get("u") == 2,
+        dest.get("p").rows.get("u") == Map(0 -> 1, 1 -> 1),
+        kept.get("u") == 2,
+        faults == FAULTS - 1,
+        ExactlyOnce,
+        Acknowledged,
+        FencedNeverCommits,
+        PositionOnlyInCommitted,
+      })
 
-  /// Two attempts started together each replay the other's log, empty, and remove it, so neither
-  /// has a log to commit to: one fault ends both.
-  run anAttemptStartedBesideAnotherMayEndBothTest =
+  /// An older attempt whose commit lands before a newer one opens tells its source, which then
+  /// serves the newer attempt from that position on: the newer reads past it and fences the older,
+  /// and every row lands once.
+  run anOlderAttemptsLandedCommitIsWhereTheNewerReadsFromTest =
     init
       .then(start("p"))
+      .then(open(p(1)))
+      .then(read(p(1), "u"))
+      .then(checkpoint(p(1), "u"))
       .then(start("p"))
-      .then(replay(p(1), Ok))
-      .then(replay(p(2), Ok))
-      .then(replay(p(1), Ok))
-      .then(replay(p(2), Ok))
-      .then(replay(p(1), Ok))
-      .then(replay(p(2), Ok))
-      .then(read(p(1), "a"))
-      .then(checkpoint(p(1), "a"))
-      .then(log(p(1), Ok))
-      .then(read(p(2), "a"))
-      .then(checkpoint(p(2), "a"))
-      .then(log(p(2), Ok))
-      .expect(live == Set() and faults == FAULTS - 1 and dest.get("p").cursor.get("a") == 0)
+      .then(land(p(1), Ok))
+      .then(tell(p(1), Ok))
+      .then(open(p(2)))
+      .expect(attemptOf(p(2)).read.get("u") == 1 and kept.get("u") == 1)
+      .then(read(p(1), "u"))
+      .then(checkpoint(p(1), "u"))
+      .then(land(p(1), Ok))
+      .expect(not(live.contains(p(1))) and dest.get("p").cursor.get("u") == 1)
+      .then(rowOfU(2))
+      .expect(all {
+        dest.get("p").rows.get("u") == Map(0 -> 1, 1 -> 1),
+        kept.get("u") == 2,
+        ExactlyOnce,
+        Acknowledged,
+        FencedNeverCommits,
+      })
 
-  /// A behavior may end converged no longer: once the load converged, a fault ending the last
-  /// attempt leaves its log open, and no step is left: no attempt is live, and the bounds start no
-  /// more.
-  run aFaultEndingTheLastAttemptLeavesItsLogTest =
+  /// An attempt started once the load converged reads nothing and leaves it converged.
+  run aLoadThatConvergedStaysSoTest =
     init
       .then(start("p"))
-      .then(replay(p(1), Ok))
+      .then(open(p(1)))
       .then(rowEach(1))
       .then(rowOfU(1))
       .then(close(p(1)))
       .expect(converged)
-      .then((LOADS - 2).reps(i => start("p").then(replay(p(i + 2), Ok)).then(close(p(i + 2)))))
-      .expect(converged)
-      .then(start("p"))
-      .then(crash(p(LOADS)))
+      .then((LOADS - 1).reps(i => start("p").then(open(p(i + 2))).then(close(p(i + 2)))))
       .expect(all {
-        not(converged),
-        logs.get(("p", LOADS)).open,
-        dest.get("p").cursor == Map("a" -> 1, "u" -> 2),
+        converged,
+        live == Set(),
+        PIPES.forall(x => started.get(x) == LOADS),
         ExactlyOnce,
       })
-      .expect(live == Set() and PIPES.forall(x => started.get(x) == LOADS))
 
-  /// A source told a position before the log held its commit would stand past every copy of the
-  /// rows: the invariant refuses it.
-  run aSourceToldBeforeTheLogWouldStandPastTheRowsTest =
+  /// The negative trace `tell_before_land`: a source told the position of what an attempt sealed
+  /// before its commit lands would stand past every row the destination holds, and the invariant
+  /// refuses it.
+  run tellBeforeLandBreaksAcknowledgedTest =
     init
       .then(start("p"))
-      .then(replay(p(1), Ok))
+      .then(open(p(1)))
       .then(read(p(1), "u"))
       .then(checkpoint(p(1), "u"))
-      .then(toldEarly(p(1)))
+      .expect(Acknowledged)
+      .then(toldBeforeLanding(p(1)))
       .expect(not(Acknowledged))
+
+  /// A source told before its commit landed, whose attempt then crashed, refuses the next
+  /// attempt's read from where the destination holds its partition: the attempt ends.
+  run aSourceToldBeforeLandingRefusesTheNextReadTest =
+    init
+      .then(start("p"))
+      .then(open(p(1)))
+      .then(read(p(1), "u"))
+      .then(checkpoint(p(1), "u"))
+      .then(toldBeforeLanding(p(1)))
+      .then(crash(p(1)))
+      .then(start("p"))
+      .then(open(p(2)))
+      .expect(live == Set() and dest.get("p").cursor.get("u") == 0 and kept.get("u") == 1)
 
   /// A destination that took a fenced session's commit would land it: the invariant refuses it.
   run aDestinationTakingAFencedCommitWouldLandItTest =
     init
       .then(start("p"))
-      .then(replay(p(1), Ok))
+      .then(open(p(1)))
       .then(read(p(1), "a"))
       .then(checkpoint(p(1), "a"))
-      .then(log(p(1), Ok))
-      .then(tellLogged(p(1), Ok))
       .then(start("p"))
-      .then(2.reps(_ => replay(p(2), Ok)))
+      .then(open(p(2)))
       .then(landedFenced(p(1)))
       .expect(not(FencedNeverCommits))
 
-  /// A replay that committed again a commit whose receipt the destination holds would hold its
-  /// rows twice: the invariant refuses it.
-  run aReplayIgnoringItsReceiptWouldHoldRowsTwiceTest =
+  /// A commit landing again rows the destination holds would hold them twice: the invariant
+  /// refuses it.
+  run aCommitLandingHeldRowsAgainWouldHoldThemTwiceTest =
     init
       .then(start("p"))
-      .then(replay(p(1), Ok))
+      .then(open(p(1)))
       .then(read(p(1), "u"))
       .then(checkpoint(p(1), "u"))
-      .then(log(p(1), Ok))
-      .then(tellLogged(p(1), Ok))
       .then(land(p(1), Lost))
       .then(start("p"))
-      .then(replay(p(2), Ok))
-      .then(replayedAgain(p(2), 1))
+      .then(open(p(2)))
+      .then(landedAgain(p(2), "u"))
       .expect(not(ExactlyOnce))
 
   /// A source that moved to where it was read would stand where no commit put it: the invariant
@@ -825,20 +679,21 @@ module exactly_once {
   run aSourceMovingAsItReadsWouldStandWhereNoCommitPutItTest =
     init
       .then(start("p"))
-      .then(replay(p(1), Ok))
+      .then(open(p(1)))
       .then(readMoving(p(1), "u"))
       .expect(not(PositionOnlyInCommitted))
 
-  /// A position below the end of a commit a log holds is still one no commit gave: the invariant
+  /// A position below the end of a commit that landed is still one no commit gave: the invariant
   /// refuses it.
-  run aSourceBetweenTheEndsOfALoggedCommitWouldStandWhereNoCommitPutItTest =
+  run aSourceBetweenTheEndsOfALandedCommitWouldStandWhereNoCommitPutItTest =
     init
       .then(start("p"))
-      .then(replay(p(1), Ok))
+      .then(open(p(1)))
       .then(read(p(1), "u"))
       .then(read(p(1), "u"))
       .then(checkpoint(p(1), "u"))
-      .then(log(p(1), Ok))
+      .then(land(p(1), Ok))
+      .then(tell(p(1), Ok))
       .expect(PositionOnlyInCommitted)
       .then(movedTo("u", 1))
       .expect(not(PositionOnlyInCommitted))
@@ -865,20 +720,20 @@ module exactly_once_pair {
   run aSecondPipelineFencesNoneOfTheFirstsTest =
     init
       .then(start("p"))
-      .then(replay(("p", 1), Ok))
+      .then(open(("p", 1)))
       .then(start("q"))
-      .then(replay(("q", 1), Ok))
+      .then(open(("q", 1)))
       .then(read(("p", 1), "a")).then(checkpoint(("p", 1), "a"))
       .then(read(("p", 1), "u")).then(checkpoint(("p", 1), "u"))
-      .then(log(("p", 1), Ok)).then(tellLogged(("p", 1), Ok)).then(land(("p", 1), Ok)).then(tellLanded(("p", 1), Ok))
+      .then(land(("p", 1), Ok)).then(tell(("p", 1), Ok))
       .then(read(("q", 1), "b"))
       .then(checkpoint(("q", 1), "b"))
-      .then(log(("q", 1), Ok))
       .then(land(("q", 1), Ok))
-      .then(tellLanded(("q", 1), Ok))
+      .then(tell(("q", 1), Ok))
       .expect(all {
         dest.get("p").cursor == Map("a" -> 1, "u" -> 1),
         dest.get("q").cursor == Map("b" -> 1),
+        kept == Map("a" -> 1, "u" -> 1, "b" -> 1),
         ExactlyOnce,
         FencedNeverCommits,
       })
