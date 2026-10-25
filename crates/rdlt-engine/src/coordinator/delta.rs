@@ -8,6 +8,7 @@ use rdlt_connector::{
     StreamName, TablePath,
 };
 
+use super::waiting::Standing;
 use super::{Coordinator, KEPT_COMPLETIONS};
 use crate::partition::CursorHold;
 use crate::plan::WriteMode;
@@ -25,6 +26,29 @@ pub(super) struct Collected {
     pub(super) held: Vec<CursorHold>,
 }
 
+impl Collected {
+    /// Takes where each partition of `standing` stands once the commit lands, the cursor its
+    /// source is then told, and what holds the cursors.
+    fn stand(&mut self, standing: BTreeMap<usize, Standing>) {
+        for (partition, standing) in standing {
+            let Standing {
+                position,
+                before,
+                held,
+            } = standing;
+            let told = match &position {
+                PartitionState::Cursor(cursor) => Some(cursor.clone()),
+                PartitionState::Done => before,
+            };
+            if let Some(cursor) = told {
+                self.reported.insert(partition, cursor);
+            }
+            self.positions.insert(partition, position);
+            self.held.extend(held);
+        }
+    }
+}
+
 impl Coordinator {
     /// The sealed segments with rows, each partition's newest position, and each stream's counts,
     /// discards included.
@@ -37,9 +61,9 @@ impl Coordinator {
             held: Vec::new(),
         };
         self.due.committing();
-        let seals = self.sealed.take();
+        let (counted, standing) = self.sealed.take();
         self.sealing.clear();
-        for seal in seals {
+        for seal in counted {
             let stream = self.parts.partitions[seal.partition].stream;
             if seal.rows > 0 {
                 collected.segments.insert(seal.segment);
@@ -66,12 +90,8 @@ impl Coordinator {
                     .shred
                     .add(&seal.shred);
             }
-            if let PartitionState::Cursor(cursor) = &seal.state {
-                collected.reported.insert(seal.partition, cursor.clone());
-            }
-            collected.positions.insert(seal.partition, seal.state);
-            collected.held.push(seal.held);
         }
+        collected.stand(standing);
         // A partition done with no cursor among the seals is told the cursor it stood at: a
         // report of it that failed is not made by any later attempt, which plans it no more.
         for (partition, state) in &collected.positions {

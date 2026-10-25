@@ -1,7 +1,7 @@
-//! Seals as they wait for their commit: one cursor a partition for checkpoints of no rows, each
-//! charged until its commit lands, and a commit due once they hold their share of the budget.
+//! Seals as they wait for their commit: one cursor a partition, charged until its commit lands,
+//! and a commit due once the cursors hold their share of the budget.
 
-use rdlt_connector::{Admission, PartitionState, SegmentId, SourceEvent};
+use rdlt_connector::{Admission, Cursor, PartitionState, SegmentId, SourceEvent};
 
 use super::{Setup, cursor, ended, partition, position, stream, without_receipt};
 use crate::coordinator::waiting::WaitingSeals;
@@ -27,44 +27,88 @@ fn seal(partition: usize, segment: u64, rows: u64, next: u64, answers: Option<u6
     }
 }
 
-fn waiting(seals: &WaitingSeals) -> Vec<(usize, u64)> {
+/// Bytes: what a seal's cursor at `next` holds.
+fn cursor_bytes(next: u64) -> u64 {
+    u64::try_from(cursor(next).bytes().len()).unwrap()
+}
+
+/// The segments the waiting seals counted, by partition, in order.
+fn counted(seals: &WaitingSeals) -> Vec<(usize, u64)> {
     seals
-        .iter()
+        .counted()
         .map(|seal| (seal.partition, seal.segment.0))
         .collect()
 }
 
+/// Where each partition stands once the waiting seals are committed, and the cursor it is told.
+fn standing(seals: &WaitingSeals) -> Vec<(usize, PartitionState, Option<Cursor>)> {
+    seals
+        .standing()
+        .iter()
+        .map(|(partition, standing)| {
+            let told = standing.told().cloned();
+            (*partition, standing.position.clone(), told)
+        })
+        .collect()
+}
+
 #[test]
-fn a_seal_of_no_rows_replaces_its_partitions_last_where_that_has_none() {
+fn a_seal_at_a_cursor_takes_its_partitions_place_and_one_counting_nothing_keeps_nothing_else() {
+    let at = |next| PartitionState::Cursor(cursor(next));
     let mut seals = WaitingSeals::default();
-    let bytes = seal(0, 1, 0, 1, None).cursor_bytes();
+    let bytes = cursor_bytes(1);
     assert!(bytes > 0);
     seals.push(seal(0, 1, 0, 1, Some(2)));
     seals.push(seal(1, 2, 0, 1, None));
     seals.push(seal(0, 3, 0, 2, None));
-    assert_eq!(waiting(&seals), [(0, 3), (1, 2)]);
+    assert_eq!(counted(&seals), []);
+    assert_eq!(
+        standing(&seals),
+        [(0, at(2), Some(cursor(2))), (1, at(1), Some(cursor(1)))]
+    );
     assert_eq!(seals.cursor_bytes(), 2 * bytes);
-    // The replacement answers the barrier the replaced one did.
-    assert_eq!(seals.iter().next().unwrap().answers, Some(2));
-    // A seal with rows is kept, and so is the seal of no rows after it, which the next replaces.
+    // Seals with rows are each counted, and a partition stands at its newest cursor whatever
+    // came between.
     seals.push(seal(0, 4, 5, 3, None));
-    seals.push(seal(0, 5, 0, 4, None));
+    seals.push(seal(1, 5, 2, 2, None));
     seals.push(seal(0, 6, 0, 5, Some(1)));
-    assert_eq!(waiting(&seals), [(0, 3), (1, 2), (0, 4), (0, 6)]);
-    assert_eq!(seals.cursor_bytes(), 4 * bytes);
-    // A seal that discarded rows moves more than its position.
+    assert_eq!(counted(&seals), [(0, 4), (1, 5)]);
+    assert_eq!(
+        standing(&seals),
+        [(0, at(5), Some(cursor(5))), (1, at(2), Some(cursor(2)))]
+    );
+    assert_eq!(seals.cursor_bytes(), 2 * bytes);
+    // A seal that discarded rows counts more than its position.
     let mut discarding = seal(0, 7, 0, 6, None);
     discarding.discarded_rows = 1;
     assert!(!discarding.moves_only());
     seals.push(discarding);
-    assert_eq!(seals.iter().count(), 5);
-    let taken = seals.take();
-    assert_eq!(taken.len(), 5);
+    assert_eq!(counted(&seals), [(0, 4), (1, 5), (0, 7)]);
+    // A seal ending its partition done keeps the cursor before it, which its source is told.
+    seals.push(Seal {
+        state: PartitionState::Done,
+        ..seal(1, 8, 1, 0, None)
+    });
+    assert_eq!(
+        standing(&seals),
+        [
+            (0, at(6), Some(cursor(6))),
+            (1, PartitionState::Done, Some(cursor(2)))
+        ]
+    );
+    assert_eq!(seals.cursor_bytes(), 2 * bytes);
+    let (taken, stood) = seals.take();
+    assert_eq!((taken.len(), stood.len()), (4, 2));
     assert_eq!(seals.cursor_bytes(), 0);
     // Nothing of a taken seal is replaced.
-    seals.push(seal(0, 8, 0, 7, None));
-    assert_eq!(waiting(&seals), [(0, 8)]);
+    seals.push(seal(0, 9, 0, 7, None));
+    assert_eq!(standing(&seals), [(0, at(7), Some(cursor(7)))]);
     assert_eq!(seals.cursor_bytes(), bytes);
+    // A cursor counts its bytes, however many.
+    let far = 1 << 40;
+    assert!(cursor_bytes(far) > bytes);
+    seals.push(seal(1, 10, 0, far, None));
+    assert_eq!(seals.cursor_bytes(), bytes + cursor_bytes(far));
 }
 
 #[test]
@@ -73,8 +117,10 @@ fn a_finished_partitions_seal_holds_no_cursor() {
         state: PartitionState::Done,
         ..seal(0, 1, 0, 1, None)
     };
-    assert_eq!(done.cursor_bytes(), 0);
     assert!(done.moves_only());
+    let mut seals = WaitingSeals::default();
+    seals.push(done);
+    assert_eq!(seals.cursor_bytes(), 0);
     for counted in 0..5 {
         let mut seal = seal(0, 1, 0, 1, None);
         match counted {
@@ -117,22 +163,27 @@ async fn checkpoints_of_no_rows_commit_only_their_partitions_newest_position() {
 
 #[tokio::test(start_paused = true)]
 async fn a_commit_is_due_once_waiting_cursors_reach_their_limit() {
-    let bytes = seal(0, 1, 1, 1, None).cursor_bytes();
+    let bytes = cursor_bytes(1);
     let mut setup = Setup::new(
         vec![stream(WriteMode::Append, None, 1)],
-        vec![partition("p0", false)],
+        vec![
+            partition("p0", false),
+            partition("p1", false),
+            partition("p2", false),
+        ],
     );
     // Half the cursors' share, a 64th of the budget, is three cursors.
     setup.budget = 3 * 128 * bytes;
     let (mut coordinator, _harness) = setup.coordinator().await;
-    for segment in 1..=2 {
-        coordinator.observe(Progress::Sealed(seal(0, segment, 1, segment, None)));
+    for partition in 0..2 {
+        let segment = u64::try_from(partition).unwrap() + 1;
+        coordinator.observe(Progress::Sealed(seal(partition, segment, 1, segment, None)));
         assert!(
             coordinator.commit_due().is_none(),
             "{segment} cursors of a limit of three"
         );
     }
-    coordinator.observe(Progress::Sealed(seal(0, 3, 1, 3, None)));
+    coordinator.observe(Progress::Sealed(seal(2, 3, 1, 3, None)));
     assert_eq!(coordinator.commit_due(), Some(Trigger::Cursors));
     coordinator.sealed.take();
     assert!(coordinator.commit_due().is_none());
@@ -147,6 +198,42 @@ async fn a_commit_is_due_once_waiting_cursors_reach_their_limit() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn seals_of_one_partition_at_growing_cursors_hold_one_cursor_and_are_not_due() {
+    let budget = crate::budget::budget(1 << 20);
+    let admission = Charging::new(budget.clone().read_by(1));
+    let bytes = cursor_bytes(1);
+    let mut setup = Setup::new(
+        vec![stream(WriteMode::Append, None, 1)],
+        vec![partition("p0", false)],
+    );
+    // Half the cursors' share, a 64th of the budget, is three cursors.
+    setup.budget = 3 * 128 * bytes;
+    let (mut coordinator, _harness) = setup.coordinator().await;
+    for next in 1..=8 {
+        let checkpoint = SourceEvent::Checkpoint {
+            cursor: cursor(next),
+            answers: None,
+        };
+        let held = CursorHold::new(admission.admit(&checkpoint).await.unwrap());
+        coordinator.observe(Progress::Sealed(Seal {
+            held,
+            ..seal(0, next, 1, next, None)
+        }));
+        assert_eq!(coordinator.sealed.cursor_bytes(), bytes, "{next} seals");
+        assert_eq!(budget.reserved(), bytes, "{next} seals hold one cursor");
+        assert!(coordinator.commit_due().is_none(), "{next} seals");
+    }
+    let collected = coordinator.collect();
+    assert_eq!(collected.segments.len(), 8);
+    assert_eq!(
+        collected.positions.get(&0),
+        Some(&PartitionState::Cursor(cursor(8)))
+    );
+    drop(collected);
+    assert_eq!(budget.reserved(), 0);
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_seals_cursor_stays_charged_until_its_commit_has_it() {
     let budget = crate::budget::budget(1 << 20);
     let admission = Charging::new(budget.clone().read_by(1));
@@ -156,7 +243,7 @@ async fn a_seals_cursor_stays_charged_until_its_commit_has_it() {
     };
     let permit = admission.admit(&checkpoint).await.unwrap();
     let charged = budget.reserved();
-    assert_eq!(charged, seal(0, 1, 1, 7, None).cursor_bytes());
+    assert_eq!(charged, cursor_bytes(7));
     let (mut coordinator, _harness) = Setup::new(
         vec![stream(WriteMode::Append, None, 1)],
         vec![partition("p0", false)],
@@ -194,7 +281,7 @@ async fn what_a_partition_has_waiting_is_taken_as_its_newest() {
         partition: 0,
         epoch: 0,
     });
-    assert_eq!(coordinator.sealed.iter().count(), 1);
+    assert_eq!(coordinator.sealed.standing().len(), 1);
     assert!(
         !coordinator.parts.partitions[0].owes(6),
         "its seal answered"
@@ -205,7 +292,7 @@ async fn what_a_partition_has_waiting_is_taken_as_its_newest() {
         epoch: 0,
     });
     coordinator.observe(Progress::Signalled { partition: 0 });
-    assert_eq!(coordinator.sealed.iter().count(), 1);
+    assert_eq!(coordinator.sealed.standing().len(), 1);
     assert_eq!(harness.log.lock().behind.get(&super::name()), Some(&12));
 }
 
@@ -229,18 +316,13 @@ async fn a_commit_never_takes_a_position_past_rows_still_on_their_way() {
         epoch: first,
     });
     // A commit made now holds no position: the newest waits behind the rows before it.
-    assert_eq!(coordinator.sealed.iter().count(), 0);
+    assert!(coordinator.sealed.standing().is_empty());
     coordinator.observe(Progress::Sealed(seal(0, 2, 5, 2, None)));
     coordinator.observe(Progress::Moved {
         partition: 0,
         epoch: second,
     });
-    let segments: Vec<u64> = coordinator
-        .sealed
-        .iter()
-        .map(|seal| seal.segment.0)
-        .collect();
-    assert_eq!(segments, [2, 3]);
+    assert_eq!(counted(&coordinator.sealed), [(0, 2)]);
     let collected = coordinator.collect();
     assert_eq!(
         collected.positions.get(&0),
