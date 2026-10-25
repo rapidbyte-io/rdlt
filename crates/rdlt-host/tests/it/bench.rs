@@ -3,7 +3,8 @@
 //! loopback, in frames as large as the default coalescing target makes and in eighths of that;
 //! and both over the socket in processes of their own, as production runs them, from up to
 //! sixteen partitions, also in eightieths, into a sink declaring one writer and, from one, four and
-//! sixteen partitions, one declaring a writer a core; the wide bench's widest Arrow table and the
+//! sixteen partitions, one declaring a writer a core; large frames from sixteen partitions within
+//! 1 GiB besides the default budget; the wide bench's widest Arrow table and the
 //! normalized bench's merge of hot keys as those benches run them in process; and the passthrough
 //! bench's many-table cells.
 //!
@@ -167,8 +168,28 @@ impl Frames {
     }
 }
 
+/// The budget a run's engine runs within.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Budget {
+    /// The engine's default.
+    Default,
+    /// 1 GiB, as the passthrough bench's paired cell runs.
+    Gibibyte,
+}
+
+impl Budget {
+    /// Every budget.
+    const ALL: [Self; 2] = [Self::Default, Self::Gibibyte];
+
+    /// The budget's place in [`Budget::ALL`].
+    fn index(self) -> usize {
+        self as usize
+    }
+}
+
 /// One benchmark: where and how its connectors are served, which, the frames they move, the
-/// partitions the source reads them from, each an even share, and the writers the sink declares.
+/// partitions the source reads them from, each an even share, the writers the sink declares and
+/// the budget the engine runs within.
 #[derive(Clone, Copy, Debug)]
 struct Case {
     layout: Layout,
@@ -177,6 +198,7 @@ struct Case {
     frames: Frames,
     partitions: NonZeroUsize,
     writers: NonZeroU16,
+    budget: Budget,
 }
 
 impl Case {
@@ -188,7 +210,8 @@ impl Case {
     /// frames from sixteen, in small frames from four and sixteen, and in tiny frames from one,
     /// four and sixteen; each into a sink declaring one writer. Then both over the socket in
     /// processes of their own in each size of frame from one, four and sixteen partitions into a
-    /// sink declaring `lanes` writers, where that is more than one.
+    /// sink declaring `lanes` writers, where that is more than one. Then large frames from sixteen
+    /// partitions within 1 GiB, into a sink declaring one writer and `lanes`.
     fn all(lanes: NonZeroU16) -> Vec<Self> {
         let mut cases = Vec::new();
         for layout in [Layout::Shared, Layout::Processes] {
@@ -201,6 +224,7 @@ impl Case {
                         frames,
                         partitions: NonZeroUsize::MIN,
                         writers: NonZeroU16::MIN,
+                        budget: Budget::Default,
                     }));
                 }
             }
@@ -220,6 +244,7 @@ impl Case {
                 frames,
                 partitions: NonZeroUsize::new(partitions).expect("a count of partitions"),
                 writers: NonZeroU16::MIN,
+                budget: Budget::Default,
             }));
         }
         // On a host of one lane they would repeat the rows through one writer.
@@ -232,9 +257,22 @@ impl Case {
                     frames,
                     partitions: NonZeroUsize::new(partitions).expect("a count of partitions"),
                     writers: lanes,
+                    budget: Budget::Default,
                 }));
             }
         }
+        // Large frames from sixteen partitions again within 1 GiB, beside the default budget's.
+        let mut writers = vec![NonZeroU16::MIN];
+        writers.extend((lanes > NonZeroU16::MIN).then_some(lanes));
+        cases.extend(writers.into_iter().map(|writers| Self {
+            layout: Layout::Processes,
+            transport: Transport::Socket,
+            mode: Mode::Both,
+            frames: Frames::Large,
+            partitions: NonZeroUsize::new(16).expect("sixteen is not zero"),
+            writers,
+            budget: Budget::Gibibyte,
+        }));
         cases
     }
 
@@ -252,7 +290,8 @@ impl Case {
     }
 
     /// What the case moves: its mode, batches and rows a batch, its partitions where it has
-    /// several, and its sink's writers where it declares several.
+    /// several, its sink's writers where it declares several, and its budget where it is not the
+    /// default.
     fn shape(self) -> String {
         let (batches, rows) = self.frames.shape();
         let mode = self.mode.name();
@@ -262,6 +301,9 @@ impl Case {
         }
         if self.writers > NonZeroU16::MIN {
             shape = format!("{shape}/{}-writers", self.writers);
+        }
+        if self.budget == Budget::Gibibyte {
+            shape = format!("{shape}/1GiB");
         }
         shape
     }
@@ -620,16 +662,22 @@ struct Workload {
 }
 
 impl Workload {
-    /// The batches of `frames` and a runtime and an engine within `cores` to move them, their
-    /// replay registered.
-    fn new(cores: Cores, frames: Frames) -> Self {
+    /// The batches of `frames` and a runtime and an engine within `cores` and `budget` to move
+    /// them, their replay registered.
+    fn new(cores: Cores, frames: Frames, budget: Budget) -> Self {
         let (batches, rows) = frames.shape();
         let cell = Cell {
             rows,
             batches,
             ..Cell::PAIRED
         };
-        let passthrough = Passthrough::try_new(cores, cell).expect("the pool starts");
+        // A served case's sink declares its own writers, so the paired cell's one writer, which
+        // only the bench's own sink takes, changes nothing here.
+        let passthrough = match budget {
+            Budget::Default => Passthrough::try_new(cores, cell),
+            Budget::Gibibyte => Passthrough::paired(cores, cell),
+        };
+        let passthrough = passthrough.expect("the pool starts");
         register(
             frames.replay(),
             Replayed::Batches(passthrough.batches().to_vec()),
@@ -693,7 +741,8 @@ fn served(c: &mut Criterion) {
         .ok()
         .and_then(NonZeroU16::new)
         .unwrap_or(NonZeroU16::MAX);
-    let mut workloads: [Option<Workload>; 3] = [None, None, None];
+    let mut workloads: [[Option<Workload>; Budget::ALL.len()]; Frames::ALL.len()] =
+        Default::default();
     let mut used = Vec::new();
     let mut group = c.benchmark_group("served");
     group.sample_size(10);
@@ -707,8 +756,9 @@ fn served(c: &mut Criterion) {
         group.throughput(Throughput::Bytes(bytes));
         let (mut seconds, mut last) = (Vec::new(), None);
         group.bench_function(case.id(), |b| {
-            let slot = &mut workloads[case.frames.index()];
-            let workload = slot.get_or_insert_with(|| Workload::new(cores, case.frames));
+            let slot = &mut workloads[case.frames.index()][case.budget.index()];
+            let workload =
+                slot.get_or_insert_with(|| Workload::new(cores, case.frames, case.budget));
             b.iter_custom(|runs| {
                 let (took, a_gigabyte, report) = workload.timed(case, runs, bytes);
                 seconds.push(a_gigabyte);

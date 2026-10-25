@@ -18,7 +18,7 @@ use rdlt_host::Options;
 use rdlt_wire::limits::CREDIT_FLOOR;
 
 use crate::processes::Processes;
-use crate::{Case, Frames, Layout, Mode, Transport, Workload, connectors};
+use crate::{Budget, Case, Frames, Layout, Mode, Transport, Workload, connectors};
 
 /// The flag a call asks for the served line with, followed by the cores.
 const FLAG: &str = "--resident";
@@ -65,8 +65,9 @@ pub(crate) fn measure() -> ExitCode {
         frames: Frames::Large,
         partitions: PARTITIONS,
         writers: WRITERS,
+        budget: Budget::Default,
     };
-    let workload = Workload::new(cores, case.frames);
+    let workload = Workload::new(cores, case.frames, case.budget);
     let measured = run(&workload, case);
     let limit = limit(cores, case);
     let growth = measured
