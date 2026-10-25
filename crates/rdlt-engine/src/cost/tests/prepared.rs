@@ -119,7 +119,8 @@ fn preparing_a_child_tables_lineage_at_the_widest_stamp_allocates_no_more_than_i
         let mut measure =
             rendering.lowering(&part.batch, plan.stored(), plan.row_bytes(), u64::MAX);
         let charge = measure.expanded(0..part.batch.num_rows());
-        let (prepared, peak) = peak(|| plan.prepare(&part.batch, Some(&lineage), &stamp, None));
+        let (prepared, peak) =
+            peak(|| plan.prepare(part.batch.clone(), Some(&lineage), &stamp, None));
         assert_eq!(prepared.unwrap().batch.num_rows(), part.batch.num_rows());
         if peak > charge + SLACK {
             beyond.push(format!(

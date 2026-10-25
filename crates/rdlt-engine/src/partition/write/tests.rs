@@ -14,10 +14,10 @@ use crate::error::{ErrorKind, codes};
 use crate::partition::PartitionJob;
 use crate::shred::ShredError;
 
-mod changes;
 mod given_up;
 mod growth;
 mod units;
+mod wide;
 
 fn job() -> PartitionJob {
     PartitionJob {

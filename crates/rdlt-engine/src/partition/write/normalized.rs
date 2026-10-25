@@ -123,7 +123,7 @@ async fn lower(
 ) -> Vec<Result<Prepared, Error>> {
     let lowering = move |piece: PartPiece| {
         let lineage = Some(&piece.lineage);
-        piece.plan.prepare(&piece.batch, lineage, &stamp, None)
+        piece.plan.prepare(piece.batch, lineage, &stamp, None)
     };
     let bytes = pieces.iter().map(|piece| piece.bytes);
     if bytes.fold(0, u64::saturating_add) <= MIN_PIECE {

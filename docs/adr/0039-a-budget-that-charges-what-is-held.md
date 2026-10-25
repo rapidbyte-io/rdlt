@@ -192,7 +192,10 @@ budget before it is held, or bounded by a limit with a typed refusal.
     never grow beyond what was charged.
   - The invariant is a test here too: every numeric, temporal, decimal, text, bytes and nested
     type, plain, behind keys and as runs, is lowered into every type its table may hold it in,
-    as it is and as text, and the heap's peak is held to the charge.
+    as it is and as text, and the heap's peak is held to the charge. A piece of two batches of a
+    table of a thousand integer columns, each charged exactly what joining the batches copies,
+    holds no more a row than it reserved a row: a change stream's, as a log and merged, with
+    its flags and the deletes it ignores, a merge's of repeated keys, and one dropping rows.
   - Judging which columns of 64-bit integers a batch holds a value a float would round in reads
     each column where it lies, in any encoding, and holds nothing a row, so nothing is charged
     for it; a normalized flush is judged so before any of it is split, and tests hold its peak
@@ -207,6 +210,10 @@ budget before it is held, or bounded by a limit with a typed refusal.
     only while it holds no piece it has not handed to its lane; beside that piece it lowers as
     many more as the budget has room for at once, eight at most. How many pieces are lowered
     at once follows from what the budget admits.
+  - A piece of several batches is joined into one batch, a copy its cost counts as each
+    value decoded. A step that keeps some of its rows (those a change stream ignores, those a
+    schema policy drops, those a merge keeps) copies them a column at a time and lets each
+    column it copied from go once it has, so the piece never holds its rows twice over.
   - Once lowered a piece holds what it keeps alive beyond its unit's batches, in place of what
     was reserved, and its frame what the frame takes. The unit's batches and its own reservation
     stay with its last piece until that is written.

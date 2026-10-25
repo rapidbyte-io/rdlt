@@ -9,7 +9,7 @@ use rdlt_connector::{ChangeOp, OP_COLUMN, StreamName};
 use super::super::ChangeMode;
 use crate::error::{Error, codes};
 use crate::plan::{DeleteMode, OnTruncate};
-use crate::table::ChangeRows;
+use crate::table::{ChangeRows, filtered};
 
 /// How many rows a change stream ignores.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -62,7 +62,8 @@ pub(super) fn data(batch: &RecordBatch) -> Result<RecordBatch, Error> {
 }
 
 /// `parts`, a piece of a change stream's unit, as one batch of data and its change columns,
-/// without the deletes and truncates the stream ignores.
+/// without the deletes and truncates the stream ignores: dropping them lets go of each column
+/// the parts were joined into as its rows are copied.
 ///
 /// A merge's rows flagging columns unchanged are refused where the destination cannot keep a
 /// column's value.
@@ -73,8 +74,9 @@ pub(super) fn split_changes(
 ) -> Result<(RecordBatch, ChangeRows), Error> {
     let failed =
         |error: arrow_schema::ArrowError| Error::internal(format!("splitting changes: {error}"));
-    let batch = arrow_select::concat::concat_batches(&parts[0].schema(), parts).map_err(failed)?;
-    let (data, changes) = ChangeRows::split(&batch).map_err(failed)?;
+    let joined = arrow_select::concat::concat_batches(&parts[0].schema(), parts).map_err(failed)?;
+    let (data, changes) = ChangeRows::split(&joined).map_err(failed)?;
+    drop(joined);
     // A log stores each row's flags as data; only a merge keeps a column's value.
     let flagged = if mode.merge && !mode.partial_updates {
         changes.flagged()
@@ -106,6 +108,6 @@ pub(super) fn split_changes(
     if keep.true_count() == keep.len() {
         return Ok((data, changes));
     }
-    let data = arrow_select::filter::filter_record_batch(&data, &keep).map_err(failed)?;
+    let data = filtered(data, &keep).map_err(failed)?;
     Ok((data, changes.filter(&keep).map_err(failed)?))
 }

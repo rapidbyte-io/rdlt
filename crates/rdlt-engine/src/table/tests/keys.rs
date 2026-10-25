@@ -29,7 +29,7 @@ fn refusal(batch: &RecordBatch, changes: Option<&ChangeRows>) -> Option<Code> {
     let resolution = resolver.resolve(&model, &incoming).unwrap();
     let view = Arc::new(TableView::new(&table("t"), resolution.model, &resolver).unwrap());
     LoweringPlan::new(resolver.stream.clone(), view, incoming, resolution.routes)
-        .prepare(batch, None, &stamp(), changes)
+        .prepare(batch.clone(), None, &stamp(), changes.cloned())
         .err()
         .map(|error| {
             error
@@ -187,7 +187,7 @@ fn prepared_key(batch: &RecordBatch) -> ArrayRef {
     let resolution = resolver.resolve(&model, &incoming).unwrap();
     let view = Arc::new(TableView::new(&table("t"), resolution.model, &resolver).unwrap());
     let prepared = LoweringPlan::new(resolver.stream.clone(), view, incoming, resolution.routes)
-        .prepare(batch, None, &stamp(), None)
+        .prepare(batch.clone(), None, &stamp(), None)
         .unwrap();
     Arc::clone(prepared.batch.column_by_name("id").unwrap())
 }
@@ -415,7 +415,7 @@ fn a_negative_zero_key_a_discarding_policy_converted_is_stored_as_zero() {
     let view = Arc::new(TableView::new(&table("t"), resolution.model, &resolver).unwrap());
     let prepared = LoweringPlan::new(resolver.stream.clone(), view, incoming, resolution.routes)
         .with_policies(vec![SchemaPolicy::DiscardValue; 2])
-        .prepare(&batch, None, &stamp(), None)
+        .prepare(batch.clone(), None, &stamp(), None)
         .unwrap();
     let id = prepared.batch.column_by_name("id").unwrap();
     assert_eq!(zero_signs(id.as_ref()), [false]);
