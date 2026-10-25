@@ -23,7 +23,6 @@ use rdlt_connector::{
     PartitionPlan, PartitionSink, ReadRequest, Receipt, Result, SegmentId, Source, StreamName,
     StreamState, TableChange, TableRef, WriteStats,
 };
-
 use rdlt_wire::bounded::{Charge, charging};
 
 use crate::budget::{Decoding, MemoryBudget};

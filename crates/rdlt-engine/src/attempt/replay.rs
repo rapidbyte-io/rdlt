@@ -14,10 +14,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
+use parking_lot::Mutex;
 use rdlt_connector::cost::Allocations;
 use rdlt_connector::{Epoch, LoadId, PipelineId, SegmentSet, StreamName, TableChange};
-
-use parking_lot::Mutex;
 
 use super::{RunContext, open};
 use crate::budget::MemoryBudget;
