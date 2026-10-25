@@ -2,13 +2,13 @@ use std::future::Future;
 use std::sync::Arc;
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
+use rdlt_connector::testing::render::{RenderError, Rendering};
 
 use super::destination::{Fault, ROWS, every_row_once};
 use super::killing::Schedule;
 use super::rows::{Parted, parted, rendered};
 use super::source::{Resumed, uncompared};
 use super::{DRAWS, Loaded, Proof, drawn, proven, unproven};
-use rdlt_connector::testing::render::{RenderError, Rendering};
 
 /// The rows of `batches`, rendered with no limit.
 fn rows(batches: &[RecordBatch]) -> Vec<String> {
@@ -265,8 +265,8 @@ fn a_load_proves_something_only_once_a_kill_landed_and_interrupted_it() {
     assert_ne!(Proof::Cut.note(), Proof::Ended.note());
 }
 
-/// Runs [`proven`] over loads that `interrupts` says each draw interrupts, returning its outcome and
-/// the runs and seeds of the loads it ran.
+/// Runs [`proven`] over loads that `interrupts` says each draw interrupts, returning its outcome
+/// and the runs and seeds of the loads it ran.
 fn drew(chosen: Option<u64>, interrupts: impl Fn(usize) -> bool) -> (Loaded, Vec<(u64, u64)>) {
     let loads = std::sync::Mutex::new(Vec::new());
     let outcome = ready(proven(chosen, 100, |run, seed| {
