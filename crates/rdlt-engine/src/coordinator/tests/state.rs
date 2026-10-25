@@ -8,17 +8,15 @@ use std::time::UNIX_EPOCH;
 use rdlt_connector::wire::commit_bytes;
 use rdlt_connector::{
     CommitMeta, CommitSeq, Cursor, Epoch, LoadId, PartitionId, PartitionState, PipelineState,
-    SegmentId, SegmentSet, StateChange, StateRecord,
+    SegmentSet, StateChange, StateRecord,
 };
 
 use super::{Harness, Setup, ended, name, partition, position, stream};
 use crate::coordinator::Coordinator;
 use crate::error::codes;
-use crate::partition::{CursorHold, Progress, Seal};
+use crate::partition::Progress;
 use crate::plan::WriteMode;
-use crate::report::Trigger;
 use crate::stored::{MEASURES, StateLimits, Stored};
-use crate::wal::Positions;
 
 /// A cursor of `bytes` padding.
 fn padded(bytes: usize) -> Cursor {
@@ -121,7 +119,7 @@ async fn marked(marker: &StateRecord, limits: StateLimits) -> (Coordinator, Harn
     .coordinator()
     .await;
     let state = PipelineState::from_records(std::slice::from_ref(marker)).unwrap();
-    coordinator.parts.positions = Positions::from(state);
+    coordinator.parts.done = crate::coordinator::DoneMarkers::from(&state);
     coordinator.parts.stored = Stored::of(std::slice::from_ref(marker), limits);
     (coordinator, harness)
 }
@@ -289,36 +287,4 @@ fn a_state_record_is_written_once_into_a_buffer_of_its_length() {
         peak <= json + (4 << 10),
         "a record of {json} bytes peaked at {peak} as it was written"
     );
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_landed_commit_leaves_its_positions_on_the_cursors_its_seals_hold() {
-    let (mut coordinator, _harness) = Setup::new(
-        vec![stream(WriteMode::Append, None, 1)],
-        vec![partition("p0", false)],
-    )
-    .coordinator()
-    .await;
-    let cursor = padded(1 << 10);
-    coordinator.observe(Progress::Started { partition: 0 });
-    coordinator.observe(Progress::Sealed(Seal {
-        partition: 0,
-        segment: SegmentId(1),
-        rows: 1,
-        bytes: 8,
-        state: PartitionState::Cursor(cursor.clone()),
-        answers: None,
-        discarded_rows: 0,
-        discarded_values: 0,
-        deletes_ignored: 0,
-        truncates_ignored: 0,
-        shred: crate::report::ShredCounts::default(),
-        held: CursorHold::default(),
-    }));
-    coordinator.commit(Trigger::End).await.unwrap();
-    let id = PartitionId::parse("p0").unwrap();
-    let Some(PartitionState::Cursor(kept)) = coordinator.parts.positions.get(&name(), &id) else {
-        panic!("p0 stands at its cursor");
-    };
-    assert_eq!(kept.bytes().as_ptr(), cursor.bytes().as_ptr());
 }

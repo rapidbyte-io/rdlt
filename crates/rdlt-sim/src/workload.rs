@@ -111,7 +111,7 @@ pub struct SimStream {
     pub named_floats: bool,
     /// Whether the source can read again what it acknowledged; one that cannot forgets it.
     ///
-    /// Chosen by the stream's place, not drawn, so logging leaves a seed's workload as it was.
+    /// Chosen by the stream's place, not drawn, so forgetting leaves a seed's workload as it was.
     pub replayable: bool,
     /// Whether the stream's rows arrive as simulated time passes, so runs follow it for a while.
     pub follows: bool,
@@ -259,7 +259,9 @@ impl SimStream {
             fat: 0,
             sliced: features.sliced && rng.chance(500),
             named_floats: json && rng.chance(250),
-            replayable: !(features.wal && read == ReadMode::Incremental && index.is_multiple_of(2)),
+            replayable: !(features.forgetting
+                && read == ReadMode::Incremental
+                && index.is_multiple_of(2)),
             follows: features.streaming && read == ReadMode::Incremental,
             unbounded: features.streaming
                 && read == ReadMode::Incremental

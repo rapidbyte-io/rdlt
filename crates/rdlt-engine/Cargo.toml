@@ -26,7 +26,6 @@ arrow-schema.workspace = true
 arrow-select.workspace = true
 blake3.workspace = true
 bytes.workspace = true
-crc32c.workspace = true
 fail = { workspace = true, optional = true }
 getrandom.workspace = true
 memchr.workspace = true
@@ -35,7 +34,6 @@ rayon.workspace = true
 rdlt-connector = { workspace = true, features = ["wire"] }
 rdlt-wire.workspace = true
 ryu.workspace = true
-rustix = { workspace = true, features = ["fs", "process"] }
 schemars = { workspace = true, optional = true }
 serde.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }
@@ -76,11 +74,6 @@ tokio = { workspace = true, features = [
 
 [lints]
 workspace = true
-
-# Kani's proofs replace with a stub a function whose result no property reads, or one Kani cannot
-# run with a plainer one that computes the same; no build but Kani's reads this.
-[package.metadata.kani.unstable]
-stubbing = true
 
 [[example]]
 name = "crash_run"
@@ -123,11 +116,6 @@ required-features = ["bench"]
 
 [[bench]]
 name = "wide"
-harness = false
-required-features = ["bench"]
-
-[[bench]]
-name = "wal"
 harness = false
 required-features = ["bench"]
 

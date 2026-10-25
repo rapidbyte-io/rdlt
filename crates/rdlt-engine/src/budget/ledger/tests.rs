@@ -55,6 +55,24 @@ fn a_release_beyond_what_a_share_holds_is_a_bug() {
 }
 
 #[test]
+fn a_push_beside_what_lowering_holds_of_the_largest_budget_does_not_fit() {
+    // Lowering holds all of the data but a byte: a push of all pushes may take passes the data,
+    // and the two together pass what a `u64` holds.
+    let mut ledger = Ledger::new(u64::MAX);
+    let shares = ledger.shares;
+    let mut held = 0;
+    while held < shares.data - 1 {
+        let bytes = shares.request.min(shares.data - 1 - held);
+        ledger.reserve(Class::Work, bytes);
+        held += bytes;
+    }
+    assert!(held.checked_add(shares.intake).is_none());
+    assert!(!ledger.open(Class::Intake, shares.intake));
+    assert!(ledger.open(Class::Work, 1));
+    assert!(!ledger.open(Class::Work, 2));
+}
+
+#[test]
 fn a_release_of_what_a_share_holds_leaves_it_nothing() {
     let mut ledger = Ledger::new(BUDGET);
     ledger.reserve(Class::Work, 10);
@@ -136,11 +154,10 @@ proptest! {
 }
 
 /// Every class a request may be of.
-const CLASSES: [Class; 7] = [
+const CLASSES: [Class; 6] = [
     Class::Intake,
     Class::Work,
     Class::Cursor,
-    Class::Log,
     Class::Tables,
     Class::Read,
     Class::Control,
@@ -153,7 +170,6 @@ fn within(ledger: &Ledger) -> bool {
     ledger.intake <= shares.intake
         && u128::from(ledger.intake) + u128::from(ledger.work) <= u128::from(shares.data)
         && ledger.cursors <= shares.cursors
-        && ledger.log <= shares.log
         && ledger.tables <= shares.tables
         && ledger.reads <= shares.reads
         && ledger.control <= shares.control
@@ -259,7 +275,7 @@ proptest! {
     #[test]
     fn waiting_requests_are_admitted_only_where_they_fit(
         capacity in capacity(),
-        held in proptest::array::uniform7(0_u64..=1000),
+        held in proptest::array::uniform6(0_u64..=1000),
         waiters in proptest::collection::vec((0..WAITING.len(), 1_u64..=1000, any::<bool>()), 0..4),
         freed in (0..CLASSES.len(), 0_u64..=1000),
     ) {
@@ -272,10 +288,9 @@ proptest! {
         ledger.intake = part(shares.intake, held[0]);
         ledger.work = part(shares.data - ledger.intake, held[1]);
         ledger.cursors = part(shares.cursors, held[2]);
-        ledger.log = part(shares.log, held[3]);
-        ledger.tables = part(shares.tables, held[4]);
-        ledger.reads = part(shares.reads, held[5]);
-        ledger.control = part(shares.control, held[6]);
+        ledger.tables = part(shares.tables, held[3]);
+        ledger.reads = part(shares.reads, held[4]);
+        ledger.control = part(shares.control, held[5]);
         for (class, permille, alive) in waiters {
             let class = WAITING[class];
             let limit = ledger.too_large(class, u64::MAX).map_or(u64::MAX, |refused| refused.limit);

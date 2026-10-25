@@ -158,10 +158,9 @@ async fn execute(
             tokio::select! {
                 biased;
                 ended = run => (vec![ended], false, 1),
-                // Dropping the run is the crash, which takes what its disk had not made durable.
+                // Dropping the run is the crash.
                 () = tokio::time::sleep(after) => {
                     if let Some(world) = World::named(world) {
-                        world.crash_logs(plan.pipeline());
                         world.reach(Reach::Crashed);
                     }
                     (Vec::new(), true, 1)

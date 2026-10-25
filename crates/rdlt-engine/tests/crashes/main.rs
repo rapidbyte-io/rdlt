@@ -22,14 +22,12 @@ use scenarios::Scenario;
 /// How often a run passes a point, and so the hits the sweep crashes it at.
 #[derive(Clone, Copy)]
 enum Hits {
-    /// Many times a run: its first hit and its third.
-    Each,
     /// Once a commit: its first hit, and its third where a run makes three commits.
     Commit,
     /// Once a commit, at the destination's own commit: every hit the run reaches, so the commits
     /// where a truncate lands, and every other, crash too.
     Landing,
-    /// Once a run: as its load ends, or as a commit completes its stream.
+    /// Once a run: as a commit completes its stream.
     Once,
 }
 
@@ -41,8 +39,6 @@ const MOST_COMMITS: u64 = 100;
 enum Passed {
     /// Every run.
     Always,
-    /// Runs keeping a log.
-    Logged,
     /// Runs whose stream completes: a full read, publishing what it read.
     Completing,
 }
@@ -58,25 +54,16 @@ const fn point(name: &'static str, hits: Hits, passed: Passed) -> Point {
     Point { name, hits, passed }
 }
 
-/// Every durability step a fresh run passes, in the order a commit does, then the load's end.
-const POINTS: [Point; 16] = [
-    point("engine.wal.append", Hits::Each, Passed::Logged),
+/// Every durability step a fresh run passes, in the order a commit does.
+const POINTS: [Point; 8] = [
     point("engine.flush.before", Hits::Commit, Passed::Always),
     point("engine.flush.after", Hits::Commit, Passed::Always),
-    point("engine.wal.publish.before", Hits::Commit, Passed::Logged),
-    point("engine.wal.publish.after", Hits::Commit, Passed::Logged),
     point("engine.complete.before", Hits::Once, Passed::Completing),
     point("engine.commit.before", Hits::Landing, Passed::Always),
     point("engine.commit.after", Hits::Landing, Passed::Always),
-    point("engine.receipt.after", Hits::Commit, Passed::Logged),
     point("engine.complete.after", Hits::Once, Passed::Completing),
-    // Once the next commit's chunk records the receipt, after that commit is answered.
-    point("engine.wal.remove", Hits::Commit, Passed::Logged),
     point("engine.ack.before", Hits::Commit, Passed::Always),
     point("engine.ack.after", Hits::Commit, Passed::Always),
-    point("engine.wal.close.before", Hits::Once, Passed::Logged),
-    point("engine.wal.close.after", Hits::Once, Passed::Logged),
-    point("engine.wal.removed", Hits::Once, Passed::Logged),
 ];
 
 /// The harness binary, built beside this test.
@@ -194,17 +181,14 @@ fn failpoint(point: &str, hit: u64) -> String {
     }
 }
 
-/// Crashes `scenario` at every point its runs pass, at the hits each is passed, and in a replay
-/// where its runs keep a log.
+/// Crashes `scenario` at every point its runs pass, at the hits each is passed.
 fn sweep(scenario: &Scenario) {
     let passed = POINTS.iter().filter(|point| match point.passed {
         Passed::Always => true,
-        Passed::Logged => scenario.logged,
         Passed::Completing => scenario.completes,
     });
     for point in passed {
         let at: &[u64] = match point.hits {
-            Hits::Each => &[1, 3],
             Hits::Once => &[1],
             Hits::Commit => {
                 let first = at_commit(scenario, point.name, 1);
@@ -222,20 +206,6 @@ fn sweep(scenario: &Scenario) {
             crashes(scenario, &[failpoint(point.name, *hit)], &case);
         }
     }
-    if !scenario.logged {
-        return;
-    }
-    // A crash before a commit lands leaves it to replay, which crashes too: once it fenced the
-    // log, before and after the commit lands, and once it released the log before deleting it;
-    // the next run replays it again.
-    let replays = [
-        "engine.commit.before=return".to_owned(),
-        "engine.replay.fenced=return".to_owned(),
-        "engine.replay.before=return".to_owned(),
-        "engine.replay.after=return".to_owned(),
-        "engine.replay.released=return".to_owned(),
-    ];
-    crashes(scenario, &replays, "in replays");
 }
 
 #[test]
@@ -259,27 +229,19 @@ fn a_history_keeps_each_version_once_through_every_crash() {
 }
 
 #[test]
-fn a_full_read_without_a_log_replaces_its_table_once_through_every_crash() {
-    sweep(&scenarios::replaced().unlogged("a full read replaced without a log"));
-}
-
-#[test]
-fn a_history_without_a_log_keeps_each_version_once_through_every_crash() {
-    sweep(&scenarios::kept_history().unlogged("a history without a log"));
-}
-
-#[test]
-fn a_log_read_again_is_told_every_position_through_a_crash_either_side_of_telling_it() {
-    let scenario = scenarios::replayable_log();
-    // The commits a run makes vary with timing: telling the source crashes at each one a run
-    // reaches, its last included, until a run ends before the hit.
-    for point in ["engine.ack.before", "engine.ack.after"] {
-        let crashed = every_commit(&scenario, point);
-        assert!(
-            crashed > 1,
-            "{}: {point} crashed {crashed} runs",
-            scenario.name
-        );
+fn a_log_is_told_every_position_through_a_crash_either_side_of_telling_it() {
+    // A crash between a commit landing and its telling: the next run starts at the committed
+    // cursor, which a source that forgets serves from as one that reads again does. Every
+    // commit a run reaches crashes, its last included, as the commits vary with timing.
+    for scenario in [scenarios::replayable_log(), scenarios::forgetting_log()] {
+        for point in ["engine.ack.before", "engine.ack.after"] {
+            let crashed = every_commit(&scenario, point);
+            assert!(
+                crashed > 1,
+                "{}: {point} crashed {crashed} runs",
+                scenario.name
+            );
+        }
     }
 }
 

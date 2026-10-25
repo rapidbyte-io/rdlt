@@ -251,7 +251,6 @@ pub struct PipelinePlan {
     pipeline: PipelineId,
     streams: Vec<StreamPlan>,
     schema: SchemaSettings,
-    wal: bool,
     until: Until,
 }
 
@@ -299,7 +298,6 @@ impl PipelinePlan {
             pipeline,
             streams,
             schema: SchemaSettings::default(),
-            wal: false,
             until: Until::default(),
         })
     }
@@ -308,14 +306,6 @@ impl PipelinePlan {
     #[must_use]
     pub fn schema(mut self, settings: SchemaSettings) -> Self {
         self.schema = settings;
-        self
-    }
-
-    /// Keeps a write-ahead log of what each load writes, where `enabled`, as a stream whose source
-    /// cannot read again what it acknowledged does whatever this says.
-    #[must_use]
-    pub fn with_wal(mut self, enabled: bool) -> Self {
-        self.wal = enabled;
         self
     }
 
@@ -338,11 +328,6 @@ impl PipelinePlan {
                 .streams
                 .iter()
                 .any(|stream| stream.read_mode() == ReadMode::Cdc)
-    }
-
-    /// Whether the pipeline asks for a write-ahead log.
-    pub fn logs_ahead(&self) -> bool {
-        self.wal
     }
 
     /// The pipeline's schema settings.

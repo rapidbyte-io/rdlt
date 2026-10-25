@@ -20,8 +20,8 @@ use trace::Trace;
 pub(super) use trace::{Rise, Tracing};
 
 /// Bytes: what the thread of a seed whose connectors run in its process may hold beyond what is
-/// charged for it, whether or not it keeps a write-ahead log: the runtime's, the world's copies of
-/// what it stores and builders' spare room; ADR 0039 says how it was found.
+/// charged for it: the runtime's, the world's copies of what it stores and builders' spare room;
+/// ADR 0039 says how it was found.
 ///
 /// Fat values do not raise it: the data they add is smaller than this fixed overhead.
 const IN_PROCESS: u64 = 13 << 20;

@@ -37,9 +37,6 @@ use crate::plan::StreamPlan;
 use crate::plan::WriteMode;
 use crate::report::{AttemptEnd, AttemptLog, CommitPhases, Tally};
 use crate::table::{Incoming, MetaNames, Model, Resolver, Settings, SharedSession, Tables};
-use crate::wal::frame::Frame;
-use crate::wal::memory::MemoryWal;
-use crate::wal::{LoadLog, WalStore};
 use crate::watch;
 
 type Commits = Arc<Mutex<Vec<CommitMeta>>>;
@@ -176,8 +173,6 @@ struct Setup {
     skew_receipts: bool,
     /// A schema the first stream's table is created with before the coordinator starts.
     schema: Option<TableSchema>,
-    /// Where the load keeps its write-ahead log, if it keeps one.
-    wal: Option<Arc<MemoryWal>>,
     /// The memory budget's bytes, a quarter of which waiting cursors may hold before a commit
     /// is due.
     budget: u64,
@@ -199,7 +194,6 @@ impl Setup {
             fail_commit: false,
             skew_receipts: false,
             schema: None,
-            wal: None,
             budget: u64::MAX,
             pace: Duration::ZERO,
         }
@@ -280,7 +274,6 @@ impl Setup {
         }));
         let tables = self.tables(session).await;
         let source = Arc::new(self.listener(acks, commits, Arc::clone(&harness.heard)));
-        let wal = self.wal.as_ref().map(|store| started(Arc::clone(store)));
         let coordinator = Coordinator::new(CoordinatorParts {
             env: Arc::new(SystemEnv::one_core()),
             policy: self.policy,
@@ -288,7 +281,6 @@ impl Setup {
             lanes: lanes(&tables),
             tables,
             source,
-            pipeline: rdlt_connector::PipelineId::parse("orders").unwrap(),
             load_id: LoadId::from_parts(UNIX_EPOCH, 1),
             epoch: Epoch(3),
             streams: self.streams,
@@ -302,13 +294,11 @@ impl Setup {
             cancel: harness.cancel.clone(),
             log: Arc::clone(&harness.log),
             launcher: Box::new(|_| Err(Error::internal("the tests start no phases"))),
-            wal,
-            positions: crate::wal::Positions::default(),
+            done: super::DoneMarkers::default(),
             stored: stored(harness.budget.limits().state_bytes),
             follow: false,
             replan: Duration::from_secs(60),
             tally: Arc::clone(&harness.tally),
-            store: None,
         });
         (coordinator, harness)
     }
@@ -342,28 +332,6 @@ fn lanes(tables: &Arc<Tables>) -> Lanes {
         tokio::spawn(lane.run(CancellationToken::new()));
     }
     lanes
-}
-
-/// A log of the coordinator's load in `store`, its writer running.
-fn started(store: Arc<MemoryWal>) -> LoadLog {
-    let pipeline = rdlt_connector::PipelineId::parse("orders").unwrap();
-    store.open(&pipeline, LoadId::from_parts(UNIX_EPOCH, 1));
-    let store: Arc<dyn WalStore> = store;
-    let owner = crate::wal::Owner {
-        pipeline,
-        load: LoadId::from_parts(UNIX_EPOCH, 1),
-        epoch: Epoch(1),
-        opened: None,
-        origin: LoadId::from_parts(UNIX_EPOCH, 1),
-    };
-    let (log, writer) = LoadLog::start(
-        store,
-        owner,
-        std::num::NonZeroU64::MAX,
-        (None, Arc::default()),
-    );
-    tokio::spawn(writer);
-    log
 }
 
 impl Harness {
@@ -447,7 +415,6 @@ fn stream(write: WriteMode, cycle: Option<Cycle>, partitions: usize) -> StreamRu
         phases: None,
         sequences: None,
         named: std::collections::BTreeSet::new(),
-        replayable: true,
     }
 }
 
@@ -470,31 +437,14 @@ fn position(id: &str, state: PartitionState) -> StateChange {
     StateChange::Put(entry.to_record())
 }
 
-/// `delta` without the receipt entry every commit ends with, and the origin a first commit
-/// records.
+/// `delta` without the receipt entry every commit ends with.
 fn without_receipt(delta: &[StateChange]) -> Vec<StateChange> {
-    let ours = [StateKey::Receipt.encode(), StateKey::Origin.encode()];
+    let receipt = StateKey::Receipt.encode();
     delta
         .iter()
-        .filter(|change| !matches!(change, StateChange::Put(record) if ours.contains(&record.key)))
+        .filter(|change| !matches!(change, StateChange::Put(record) if record.key == receipt))
         .cloned()
         .collect()
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_load_s_first_commit_names_it_to_a_destination_no_commit_reached_yet() {
-    let (task, harness) = Setup::new(
-        vec![stream(WriteMode::Append, None, 1)],
-        vec![partition("p0", false)],
-    )
-    .start()
-    .await;
-    harness.seal(0, 1, 0, PartitionState::Done, None);
-    harness.end(0, false);
-    ended(task).await.unwrap();
-    let commits = harness.commits.lock();
-    let origin = StateEntry::Origin(LoadId::from_parts(UNIX_EPOCH, 1)).to_record();
-    assert!(commits[0].state_delta.contains(&StateChange::Put(origin)));
 }
 
 /// Waits until `condition` holds, failing the test after ten minutes of paused time.
@@ -1357,14 +1307,12 @@ async fn a_failed_commit_ends_the_coordinator_and_acknowledges_nothing() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_receipt_for_another_commit_fails_the_commit_before_the_log_settles_it() {
-    let store = Arc::new(MemoryWal::default());
+async fn a_receipt_for_another_commit_fails_the_commit_and_tells_the_source_nothing() {
     let mut setup = Setup::new(
         vec![stream(WriteMode::Append, None, 1)],
         vec![partition("p0", false)],
     );
     setup.skew_receipts = true;
-    setup.wal = Some(Arc::clone(&store));
     let (task, harness) = setup.start().await;
     harness.seal(0, 1, 3, PartitionState::Cursor(cursor(3)), None);
     harness.end(0, false);
@@ -1386,14 +1334,6 @@ async fn a_receipt_for_another_commit_fails_the_commit_before_the_log_settles_it
     );
     assert!(harness.acks.lock().is_empty());
     assert_eq!(harness.log.lock().committed.commits, 0);
-    // The log holds the commit and no receipt: a replay commits it again.
-    let frames = store.published_frames();
-    assert!(frames.iter().any(|frame| matches!(frame, Frame::Commit(_))));
-    assert!(
-        frames
-            .iter()
-            .all(|frame| !matches!(frame, Frame::End(end) if !end.received.is_empty()))
-    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -1507,134 +1447,6 @@ async fn a_seal_without_rows_or_discards_reports_no_stream() {
         log.committed.streams.is_empty(),
         "{:?}",
         log.committed.streams
-    );
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_source_that_cannot_read_again_hears_only_of_a_landed_commit() {
-    for fail in [false, true] {
-        let mut forgetful = stream(WriteMode::Append, None, 1);
-        forgetful.replayable = false;
-        let mut setup = Setup::new(vec![forgetful], vec![partition("p0", false)]);
-        setup.wal = Some(Arc::new(MemoryWal::default()));
-        setup.fail_commit = fail;
-        let (task, harness) = setup.start().await;
-        harness.seal(0, 1, 3, PartitionState::Cursor(cursor(3)), None);
-        harness.end(0, false);
-        let ended = ended(task).await;
-        assert_eq!(ended.is_err(), fail);
-        let heard = if fail {
-            Vec::new()
-        } else {
-            vec![(name(), vec![(PartitionId::parse("p0").unwrap(), cursor(3))])]
-        };
-        assert_eq!(*harness.acks.lock(), heard, "the commit failed: {fail}");
-    }
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_source_that_reads_again_hears_only_of_landed_commits_whatever_the_log_holds() {
-    let mut setup = Setup::new(
-        vec![stream(WriteMode::Append, None, 1)],
-        vec![partition("p0", false)],
-    );
-    setup.wal = Some(Arc::new(MemoryWal::default()));
-    setup.fail_commit = true;
-    let (task, harness) = setup.start().await;
-    harness.seal(0, 1, 3, PartitionState::Cursor(cursor(3)), None);
-    harness.end(0, false);
-    assert!(ended(task).await.is_err());
-    assert!(harness.acks.lock().is_empty());
-}
-
-#[tokio::test(start_paused = true)]
-async fn each_logged_seal_names_where_its_partition_stood_before_its_commit() {
-    let mut setup = Setup::new(
-        vec![stream(WriteMode::Append, None, 2)],
-        vec![partition("p0", false), partition("p1", false)],
-    );
-    let store = Arc::new(MemoryWal::default());
-    setup.wal = Some(Arc::clone(&store));
-    setup.policy = CommitPolicy::new(None, Some(1), None).unwrap();
-    let (task, harness) = setup.start().await;
-    let written = || {};
-    written();
-    harness.seal(0, 1, 1, PartitionState::Cursor(cursor(1)), None);
-    until(|| harness.commit_count() == 1).await;
-    // An empty segment moves its partition as much as one with rows.
-    harness.seal(0, 2, 0, PartitionState::Cursor(cursor(2)), None);
-    harness.seal(0, 3, 1, PartitionState::Cursor(cursor(3)), None);
-    written();
-    until(|| harness.commit_count() == 2).await;
-    written();
-    harness.seal(1, 4, 1, PartitionState::Done, None);
-    harness.end(0, false);
-    harness.end(1, false);
-    ended(task).await.unwrap();
-    let seals: Vec<_> = store
-        .published_frames()
-        .into_iter()
-        .filter_map(|frame| match frame {
-            Frame::Seal(seal) => Some((seal.segment.0, seal.from, seal.state)),
-            _ => None,
-        })
-        .collect();
-    let at = |next| Some(PartitionState::Cursor(cursor(next)));
-    assert_eq!(
-        seals,
-        [
-            (1, None, PartitionState::Cursor(cursor(1))),
-            (2, at(1), PartitionState::Cursor(cursor(2))),
-            (3, at(2), PartitionState::Cursor(cursor(3))),
-            (4, None, PartitionState::Done),
-        ]
-    );
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_log_that_fails_to_close_after_every_commit_landed_fails_no_attempt() {
-    let mut setup = Setup::new(
-        vec![stream(WriteMode::Append, None, 1)],
-        vec![partition("p0", false)],
-    );
-    let store = Arc::new(MemoryWal::default());
-    setup.wal = Some(Arc::clone(&store));
-    setup.policy = CommitPolicy::new(None, Some(1), None).unwrap();
-    let (task, harness) = setup.start().await;
-    harness.seal(0, 1, 3, PartitionState::Cursor(cursor(3)), None);
-    until(|| harness.commit_count() == 1).await;
-    // Every commit landed; the disk fails only as the log closes, which a replay finds received.
-    *store.failing.lock() = true;
-    harness.end(0, false);
-    ended(task)
-        .await
-        .expect("the attempt ends as its commits did");
-    assert_eq!(harness.log.lock().end, Some(AttemptEnd::Exhausted));
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_source_that_cannot_read_again_hears_nothing_of_a_commit_its_log_failed_to_hold() {
-    let mut forgetful = stream(WriteMode::Append, None, 1);
-    forgetful.replayable = false;
-    let mut setup = Setup::new(vec![forgetful], vec![partition("p0", false)]);
-    let store = Arc::new(MemoryWal::default());
-    *store.unpublishable.lock() = true;
-    setup.wal = Some(Arc::clone(&store));
-    let (task, harness) = setup.start().await;
-    harness.seal(0, 1, 3, PartitionState::Cursor(cursor(3)), None);
-    harness.end(0, false);
-    let error = ended(task)
-        .await
-        .expect_err("the commit's frame is not durable");
-    assert_eq!(error.kind(), ErrorKind::Wal);
-    assert!(
-        harness.acks.lock().is_empty(),
-        "the source still holds the rows"
-    );
-    assert_eq!(
-        harness.commit_count(),
-        0,
-        "the destination saw nothing either"
     );
 }
 

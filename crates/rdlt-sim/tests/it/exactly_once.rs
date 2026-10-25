@@ -7,37 +7,25 @@ use rdlt_sim::{
 ///
 /// A seed fails if its defect comes back, unless its comment says otherwise: such a seed keeps
 /// only the path, and its defect may come back unseen.
-const FOUND: [(u64, Reach); 20] = [
+const FOUND: [(u64, Reach); 16] = [
     // Over the network: a host whose handshake a partition cut short held its connection, and
     // its connector's stop, forever.
     (743, Reach::LinkCut),
     // A batch of a normalized merge stream whose every row a new array dropped: its key's type
     // was never resolved, so it met no refusal. The defect may not fail this seed.
     (22, Reach::Refused),
-    // Logged: a failed load's commit of a new full read, replayed in the next phase, landed rows
-    // the model had not counted, until a phase waited for every log to be replayed. The defect
-    // may not fail this seed.
-    (270, Reach::Replayed),
     // Streaming: a run that followed the source ended before the rows a refusal needed arrived,
     // and succeeded, as the model now allows.
     (2_656, Reach::Spared),
     // Streaming: reads cut batches wherever rows had arrived, so JSON pushes inferred types the
     // model never saw, until they served whole checkpoint groups.
     (4_516, Reach::Followed),
-    // Pressed: a partition that ended at its last cursor sealed it again unreserved, so a
-    // commit recording many such cursors passed the log's share of the budget. The defect may
-    // not fail this seed.
-    (884, Reach::LogWaited),
     // A column of integers made for a column of JSON as its table was created was recorded
     // exact, though the integers split into it were read only as they were lowered.
     (29_442, Reach::Widened),
     // A frozen normalized stream's declared array whose table no row had made yet was refused
     // as new to the table once a crashed attempt had created the stream's own table.
     (167_631, Reach::Crashed),
-    // Logged in a small log: eight partitions' segments each spanned several chunks, which
-    // stayed, holding committed frames beside open ones, until no batch fitted. The defect may
-    // not fail this seed.
-    (1_726, Reach::LogWaited),
     // Reset: an incremental stream whose partitions never held a row, so the pipeline recorded
     // nothing of it, was refused as no stream it knew, which the world took for a failure.
     (249_911, Reach::ResetRefused),
@@ -50,17 +38,13 @@ const FOUND: [(u64, Reach); 20] = [
     (11_754, Reach::Widened),
     (302, Reach::Widened),
     // A child table no row had reached yet was merged by its roots' commit, under no columns,
-    // which the merge refused.
-    (37_936, Reach::EmptyChild),
+    // which the merge refused. The defect may not fail this seed.
+    (86_557, Reach::EmptyChild),
     // A date written into timestamps, whose column then widens to JSON, holds a timestamp's text.
     (642_848, Reach::Widened),
-    // Logged in a small log: four partitions holding three pushes of a table and its child table
-    // unsealed held more than the whole log, and the engine refused a batch, as it may where a
-    // log is below the least it promises the load. The defect no longer fails this seed.
-    (744, Reach::LogWaited),
     // A run held more than the heap's allowance beside what it charged. The defect may not fail
     // these seeds.
-    (577_320, Reach::LogLeft),
+    (577_320, Reach::Crashed),
     (777_590, Reach::Replanned),
 ];
 
@@ -100,13 +84,15 @@ fn seeds_that_once_found_a_defect_pass() {
     });
 }
 
-/// A seed whose run acknowledged rows its destination then failed to commit, so only the
-/// write-ahead log held them: with replay disabled, the source never serves them again and every
-/// later run fails.
+/// The seed of [`a_seed_whose_rows_only_the_source_held_passes`].
+const SERVED_AGAIN: u64 = 14;
+
+/// A seed whose run read rows from a source that forgets and did not land them: the source was
+/// told nothing of them, so it serves them again to the next run, which lands them once.
 #[test]
-fn a_seed_whose_rows_only_the_log_held_passes() {
-    let checked = check_exactly_once(Seed::new(61));
-    assert!(checked.reached.has(Reach::LogLeft));
+fn a_seed_whose_rows_only_the_source_held_passes() {
+    let checked = check_exactly_once(Seed::new(SERVED_AGAIN));
+    assert!(checked.reached.has(Reach::ServedAgain));
     // What the seed's timing line records beside its outcome.
     let recorded = checked.recorded();
     assert!(recorded["digest"].is_u64(), "{recorded:?}");
@@ -114,7 +100,8 @@ fn a_seed_whose_rows_only_the_log_held_passes() {
         recorded["simulated_ms"].as_f64().is_some_and(|ms| ms > 0.0),
         "{recorded:?}"
     );
-    let drawn = Features::draw(&mut SplitMix64::new(61));
+    let drawn = Features::draw(&mut SplitMix64::new(SERVED_AGAIN));
+    assert!(drawn.forgetting, "{drawn:?}");
     assert_eq!(recorded["features"], serde_json::to_value(drawn).unwrap());
 }
 

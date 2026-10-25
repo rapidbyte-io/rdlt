@@ -2,7 +2,6 @@
 //! and each commit's horizon, whatever order partitions seal and end in.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
 use proptest::prelude::*;
 use rdlt_connector::{Cursor, PartitionId, PartitionState, StateChange, StateEntry};
@@ -11,7 +10,6 @@ use super::{Setup, cursor, ended, partition, position, stream};
 use crate::coordinator::delta::Collected;
 use crate::partition::Progress;
 use crate::plan::WriteMode;
-use crate::wal::memory::MemoryWal;
 
 /// The most partitions a case reads.
 const PARTITIONS: usize = 3;
@@ -63,22 +61,15 @@ proptest! {
     #[test]
     fn a_source_is_told_only_cursors_a_landed_commit_covers_and_horizons_only_move_on(
         partitions in 1..=PARTITIONS,
-        logged in any::<bool>(),
-        replayable in any::<bool>(),
         steps in proptest::collection::vec(step(), 0..16),
     ) {
         let ids: Vec<PartitionId> = (0..partitions)
             .map(|at| PartitionId::parse(format!("p{at}")).expect("a valid partition"))
             .collect();
-        let mut read = stream(WriteMode::Append, None, partitions);
-        read.replayable = replayable;
-        let mut setup = Setup::new(
-            vec![read],
+        let setup = Setup::new(
+            vec![stream(WriteMode::Append, None, partitions)],
             ids.iter().map(|id| partition(id.as_str(), false)).collect(),
         );
-        if logged || !replayable {
-            setup.wal = Some(Arc::new(MemoryWal::default()));
-        }
         let (commits, acks, heard, sealed) = paused().block_on(async {
             let (task, harness) = setup.start().await;
             let mut sealed: Vec<Vec<Cursor>> = vec![Vec::new(); partitions];
@@ -164,7 +155,6 @@ async fn a_commit_judged_for_progress_copies_no_cursor_it_records_again() {
         positions,
         reported: BTreeMap::new(),
         streams: BTreeMap::new(),
-        sealed: Vec::new(),
         held: Vec::new(),
     };
     let (peak, progressed) =

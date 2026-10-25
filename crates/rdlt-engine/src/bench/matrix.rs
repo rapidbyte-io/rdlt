@@ -208,7 +208,6 @@ impl Cell {
         let sink = match self.sinking {
             Sinking::Ipc => "",
             Sinking::Discard => "/null",
-            Sinking::Refuse => "/refuse",
         };
         let checkpoints = match self.checkpoints.get() {
             1 => String::new(),

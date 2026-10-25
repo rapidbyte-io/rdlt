@@ -29,14 +29,13 @@ fn readings_are_shares_of_the_run_and_counts_a_batch() {
     counters.commits.interval = 1;
     counters.commits.size = 3;
     counters.commits.cursors = 2;
-    counters.commits.log = 4;
-    counters.commits.end = 1;
+    counters.commits.end = 5;
     counters.signals = 64;
     let threads = NonZeroUsize::new(4).unwrap();
     let readings = Readings::of(Duration::from_secs(2), &counters, 16, threads);
     assert_eq!(
         readings.to_string(),
-        "commits 11 (interval 1, size 3, cursors 2, log 4, end 1), work waits 2.5 % of the run, \
+        "commits 11 (interval 1, size 3, cursors 2, end 5), work waits 2.5 % of the run, \
          intake waits 0.5 %, decode waits 1.5 %, pool idle 95.0 %, pool queue and way back 2.5 \
          %, lanes written 2, writer flushes 12 (pressure 6, commit 4, retired 2), signals 4.0 a \
          batch"
@@ -49,7 +48,7 @@ fn a_run_of_no_time_and_no_batches_reads_as_nothing_rather_than_dividing_by_zero
     let text = Readings::of(Duration::ZERO, &Counters::default(), 0, threads).to_string();
     assert_eq!(
         text,
-        "commits 0 (interval 0, size 0, cursors 0, log 0, end 0), work waits 0.0 % of the run, \
+        "commits 0 (interval 0, size 0, cursors 0, end 0), work waits 0.0 % of the run, \
          intake waits 0.0 %, decode waits 0.0 %, pool idle 0.0 %, pool queue and way back 0.0 \
          %, lanes written 0, writer flushes 0 (pressure 0, commit 0, retired 0), signals 0.0 a \
          batch"

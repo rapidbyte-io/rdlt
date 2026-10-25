@@ -7,18 +7,14 @@ use arrow_array::cast::AsArray;
 use arrow_array::types::Int64Type;
 use arrow_array::{Array, RecordBatch};
 use arrow_schema::{DataType, TimeUnit};
-use rdlt_connector::PipelineId;
 use rdlt_connector_reference::changes::{ChangedStream, Row, Version, expected, history};
 use rdlt_connector_reference::{files, sqlite};
-use rdlt_engine::{LocalWal, WalStore as _};
 use serde_json::{Value, json};
 
 /// A pipeline the sweep crashes: its harness configuration in a directory, and the check of
 /// what the directory's destination holds.
 pub(crate) struct Scenario {
     pub(crate) name: &'static str,
-    /// Whether its runs keep a write-ahead log.
-    pub(crate) logged: bool,
     /// Whether its stream completes: a full read, publishing what it read at its last commit.
     pub(crate) completes: bool,
     config: fn(&Path) -> Value,
@@ -26,32 +22,10 @@ pub(crate) struct Scenario {
 }
 
 impl Scenario {
-    /// This pipeline named `name`, run without a write-ahead log, as a replayable source runs by
-    /// default.
-    pub(crate) fn unlogged(self, name: &'static str) -> Self {
-        Self {
-            name,
-            logged: false,
-            ..self
-        }
-    }
-
-    /// The harness configuration in `dir`.
-    fn configured(&self, dir: &Path) -> Value {
-        let mut config = (self.config)(dir);
-        if !self.logged {
-            config
-                .as_object_mut()
-                .expect("a configuration is an object")
-                .remove("wal");
-        }
-        config
-    }
-
     /// Writes the harness configuration into `dir`; its path.
     pub(crate) fn write(&self, dir: &Path) -> PathBuf {
         let path = dir.join("run.json");
-        let config = serde_json::to_vec(&self.configured(dir)).expect("configurations serialize");
+        let config = serde_json::to_vec(&(self.config)(dir)).expect("configurations serialize");
         std::fs::write(&path, config).expect("the configuration is written");
         path
     }
@@ -64,7 +38,7 @@ impl Scenario {
     /// the source waits for commits, its reads in flight across them, whatever its connection
     /// could buffer.
     pub(crate) fn write_spawned(&self, dir: &Path, extra: &Value) -> PathBuf {
-        let mut config = self.configured(dir);
+        let mut config = (self.config)(dir);
         config["source"]["spawned"] = json!(true);
         config["destination"]["spawned"] = json!(true);
         config["memory"] = json!(40 << 20);
@@ -82,34 +56,17 @@ impl Scenario {
         path
     }
 
-    /// Checks what `dir`'s destination holds, and that no log is left to replay, or none was
-    /// written where the runs keep none.
+    /// Checks what `dir`'s destination holds.
     pub(crate) fn verify(&self, dir: &Path, case: &str) {
         (self.verify)(dir, &format!("{}: {case}", self.name));
-        if !self.logged {
-            assert!(
-                !dir.join("wal").exists(),
-                "{}: {case}: a log was written",
-                self.name
-            );
-            return;
-        }
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .expect("a runtime starts");
-        let pipeline = PipelineId::parse("crash").expect("a valid pipeline");
-        let loads = runtime
-            .block_on(LocalWal::new(dir.join("wal")).loads(&pipeline))
-            .expect("the logs list");
-        assert_eq!(loads, [], "{}: {case}: logs left", self.name);
     }
 }
 
 /// The harness configuration of a stream read as `read` and written as `write`, from `source`
 /// into `destination`.
-fn harness(dir: &Path, stream: &Value, source: &Value, destination: &Value) -> Value {
+fn harness(stream: &Value, source: &Value, destination: &Value) -> Value {
     json!({
-        "pipeline": "crash", "wal": dir.join("wal"), "commit_rows": 16,
+        "pipeline": "crash", "commit_rows": 16,
         "stream": stream, "source": source, "destination": destination,
     })
 }
@@ -131,7 +88,7 @@ pub(crate) fn long_forgetting_log() -> Scenario {
 }
 
 /// A log of two partitions of fifty messages that serves again what it committed, appended to
-/// SQLite without a write-ahead log: its source is told of a commit once it has landed.
+/// SQLite.
 pub(crate) fn replayable_log() -> Scenario {
     log_of::<50, true>("a log read again")
 }
@@ -141,7 +98,6 @@ pub(crate) fn replayable_log() -> Scenario {
 /// last, of the two messages no checkpoint follows, records the partition done.
 pub(crate) fn log_ending_done() -> Scenario {
     Scenario {
-        logged: false,
         completes: false,
         name: "a log whose partition ends done",
         config: |dir| {
@@ -151,7 +107,7 @@ pub(crate) fn log_ending_done() -> Scenario {
                               "batch_rows": 8, "checkpoint_batches": 2 }],
             }});
             let stream = json!({ "name": "events", "read": "incremental", "write": "append" });
-            harness(dir, &stream, &source, &sqlite_at(dir))
+            harness(&stream, &source, &sqlite_at(dir))
         },
         verify: |dir, case| {
             let batches = sqlite::published(dir.join("out.db"), "events").expect("the table reads");
@@ -172,10 +128,9 @@ pub(crate) fn log_ending_done() -> Scenario {
 }
 
 /// A log named `name` of two partitions of `MESSAGES` messages, appended to SQLite; where not
-/// `REPLAYABLE` it forgets what it committed, and its runs keep a write-ahead log.
+/// `REPLAYABLE` it forgets what it committed.
 fn log_of<const MESSAGES: i64, const REPLAYABLE: bool>(name: &'static str) -> Scenario {
     Scenario {
-        logged: !REPLAYABLE,
         completes: false,
         name,
         config: |dir| {
@@ -185,7 +140,7 @@ fn log_of<const MESSAGES: i64, const REPLAYABLE: bool>(name: &'static str) -> Sc
                               "batch_rows": 8, "replayable": REPLAYABLE }],
             }});
             let stream = json!({ "name": "events", "read": "incremental", "write": "append" });
-            harness(dir, &stream, &source, &sqlite_at(dir))
+            harness(&stream, &source, &sqlite_at(dir))
         },
         verify: |dir, case| {
             let batches = sqlite::published(dir.join("out.db"), "events").expect("the table reads");
@@ -273,14 +228,12 @@ fn forgetting_orders<const KEYS: u64, const CHANGES: u64>() -> ChangedStream {
 /// acknowledged, merged into JSON-lines files.
 fn forgetting_changes_of<const KEYS: u64, const CHANGES: u64>(name: &'static str) -> Scenario {
     Scenario {
-        logged: true,
         completes: false,
         name,
         config: |dir| {
             let stream = json!({ "name": "orders", "read": "cdc", "write": "merge" });
             let files = json!({ "kind": "files", "config": { "root": dir.join("out"), "format": "jsonl" } });
             harness(
-                dir,
                 &stream,
                 &changes_of(dir, &forgetting_orders::<KEYS, CHANGES>()),
                 &files,
@@ -313,7 +266,6 @@ fn forgetting_changes_of<const KEYS: u64, const CHANGES: u64>(name: &'static str
 /// third.
 pub(crate) fn replaced() -> Scenario {
     Scenario {
-        logged: true,
         completes: true,
         name: "a full read replaced",
         config: |dir| {
@@ -322,7 +274,7 @@ pub(crate) fn replaced() -> Scenario {
                                           "batch_rows": 8 }],
             }});
             let stream = json!({ "name": "orders", "read": "full", "write": "replace" });
-            harness(dir, &stream, &source, &sqlite_at(dir))
+            harness(&stream, &source, &sqlite_at(dir))
         },
         verify: |dir, case| {
             let batches = sqlite::published(dir.join("out.db"), "orders").expect("the table reads");
@@ -338,13 +290,11 @@ pub(crate) fn replaced() -> Scenario {
 /// A timed change stream of whole rows kept as history in SQLite.
 pub(crate) fn kept_history() -> Scenario {
     Scenario {
-        logged: true,
         completes: false,
         name: "a history",
         config: |dir| {
             let stream = json!({ "name": "orders", "read": "cdc", "write": "history" });
             harness(
-                dir,
                 &stream,
                 &changes_of(dir, &orders(true, true)),
                 &sqlite_at(dir),

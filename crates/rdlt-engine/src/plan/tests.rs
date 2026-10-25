@@ -215,14 +215,6 @@ fn change_streams_replace_nothing_and_only_merged_ones_take_delete_modes() {
 }
 
 #[test]
-fn a_pipeline_keeps_a_write_ahead_log_only_when_asked() {
-    let plan = PipelinePlan::new(pipeline(), [stream("a")]).unwrap();
-    assert!(!plan.logs_ahead());
-    assert!(plan.clone().with_wal(true).logs_ahead());
-    assert!(!plan.with_wal(true).with_wal(false).logs_ahead());
-}
-
-#[test]
 fn a_run_commits_as_a_stream_where_it_follows_its_source_or_reads_changes() {
     let plan = |read: ReadMode, until: Until| {
         let write = if read == ReadMode::Cdc {

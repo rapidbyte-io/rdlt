@@ -5,9 +5,7 @@ pub(crate) mod destinations;
 pub(crate) mod faults;
 pub(crate) mod hooked;
 pub(crate) mod listening;
-pub(crate) mod logs;
 pub(crate) mod making;
-pub(crate) mod memory_wal;
 pub(crate) mod script;
 pub(crate) mod targets;
 
@@ -28,7 +26,6 @@ use rdlt_connector_reference::{GeneratorSource, MemoryDestination, published};
 use rdlt_engine::{
     CommitPolicy, ComputePool, Cores, Engine, EngineConfig, EngineConfigBuilder, Env, Job,
     PipelinePlan, ResetReport, ResetScope, RunControl, RunOutcome, Sleep, StreamPlan, SystemEnv,
-    WalStore,
 };
 use serde_json::{Value, json};
 
@@ -76,11 +73,6 @@ pub(crate) fn counting_engine(config: EngineConfigBuilder) -> (TestEngine, Arc<A
     engine_on(config, inline_system())
 }
 
-/// An engine as [`engine`] makes it, keeping write-ahead logs in `store`.
-pub(crate) fn logging_engine(config: EngineConfigBuilder, store: Arc<dyn WalStore>) -> TestEngine {
-    engine_on(config, inline_system().with_wal(store)).0
-}
-
 fn inline_system() -> SystemEnv {
     SystemEnv::try_new(INLINE).expect("the pool starts")
 }
@@ -112,16 +104,6 @@ pub(crate) fn yielding_engine(config: EngineConfigBuilder) -> TestEngine {
 pub(crate) fn pooled_engine(config: EngineConfigBuilder, threads: usize) -> TestEngine {
     let config = config.build().expect("the test configuration is valid");
     TestEngine::new(config, Arc::new(beside_runtime(threads)))
-}
-
-/// An engine as [`pooled_engine`] makes it, keeping write-ahead logs in `store`.
-pub(crate) fn pooled_logging_engine(
-    config: EngineConfigBuilder,
-    threads: usize,
-    store: Arc<dyn WalStore>,
-) -> TestEngine {
-    let config = config.build().expect("the test configuration is valid");
-    TestEngine::new(config, Arc::new(beside_runtime(threads).with_wal(store)))
 }
 
 /// The system environment within the cores of the current runtime's workers and `threads` more.
@@ -189,10 +171,6 @@ impl Env for InlineEnv {
 
     fn cores(&self) -> NonZeroUsize {
         self.0.cores()
-    }
-
-    fn wal(&self) -> Option<Arc<dyn WalStore>> {
-        self.0.wal()
     }
 }
 

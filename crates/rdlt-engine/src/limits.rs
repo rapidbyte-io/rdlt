@@ -15,14 +15,6 @@ use std::time::Duration;
 /// larger than the share is refused. A cursor waits for no push: its share is its own.
 pub(crate) const CURSOR_SHARE: u64 = 64;
 
-/// The log's frames and what a carry reads at once: a 16th of the budget, four times the cursors'
-/// share, so a commit's frame recording a full share of cursors fits beside a carry's read.
-///
-/// Seal, commit and table frames hold it from before they are encoded until they are appended,
-/// a cursor they record reserved as `RECORDED` bytes for each of its bytes; while a log is
-/// open, what a carry reads at once holds it too.
-pub(crate) const LOG_SHARE: u64 = 16;
-
 /// What commits record of tables, each table's schema and names, from the schema change that
 /// makes a record until the commit recording it lands: a 32nd of the budget.
 ///
@@ -84,11 +76,6 @@ pub(crate) const BUDGET_WAIT: Duration = Duration::from_secs(3600);
 /// it, which takes up to four times as much where its fields are many and their names short.
 pub(crate) const SCHEMA_KEPT: u64 = 5;
 
-/// Bytes a frame of the log takes for each byte of a cursor or state record it records, at
-/// most: a cursor is base64 text, a third longer; a record's value is the JSON it is, and its key
-/// JSON text in a JSON string, which escaping its quotes may double.
-pub(crate) const RECORDED: u64 = 2;
-
 /// Bytes: what the records of a child table of a few columns take in state, its schema and
 /// names, as the child tables a stream may have are derived from the stored state limit.
 pub(crate) const TABLE_RECORDS: u64 = 4 << 10;
@@ -109,23 +96,10 @@ pub(crate) const JSON_ADMITTED: u64 = rdlt_connector::cost::JSON_CHARGE - 1;
 /// connector sent is.
 pub(crate) const QUOTED_BYTES: usize = 128;
 
-/// Bytes: what a load's write-ahead log holds on disk at most by default, 4 GiB: four commits'
-/// worth at the default policy's byte threshold.
-pub(crate) const LOG_BYTES: u64 = 4 << 30;
-
-/// Parts of what a load's write-ahead log may hold that each of these takes, 8: the room a batch
-/// keeps for a carry, which gathers many small chunks into one, and the least it keeps for a
-/// commit.
-pub(crate) const LOG_PARTS: u64 = 8;
-
 /// Source plans of an attempt's streams awaited at once, at most: far fewer than the calls a
 /// served connection holds open (ADR 0042), and each answer is charged to the share of answers
 /// being decoded before it is decoded, so more at once would only wait there.
 pub(crate) const PLANS_AT_ONCE: NonZeroUsize = NonZeroUsize::new(16).expect("sixteen is not zero");
-
-/// Bytes: what a carry reads back of a frame at a time, 256 KiB, held in the memory budget's
-/// share for logs while the log is written, so a carry of a frame of any size holds no more.
-pub(crate) const LOG_COPY_BYTES: u64 = 256 << 10;
 
 /// Calls the engine has in flight at once into a source beside its reads, and into a destination
 /// beside its open writers: the coordinator's plan or acknowledgement, and a session's schema

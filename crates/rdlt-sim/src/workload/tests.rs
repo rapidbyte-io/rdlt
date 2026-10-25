@@ -498,7 +498,7 @@ const NONE: Features = Features {
     perturb: false,
     network: false,
     process: false,
-    wal: false,
+    forgetting: false,
     streaming: false,
     churn: false,
     reset: false,

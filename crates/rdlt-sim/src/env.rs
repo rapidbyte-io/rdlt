@@ -4,12 +4,11 @@
 mod tests;
 
 use std::num::NonZeroUsize;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use parking_lot::Mutex;
-use rdlt_engine::{ComputePool, Cores, Env, Job, RayonPool, Sleep, WalStore};
+use rdlt_engine::{ComputePool, Cores, Env, Job, RayonPool, Sleep};
 
 use crate::rng::SplitMix64;
 use crate::seed::Seed;
@@ -31,8 +30,6 @@ pub struct SimEnv {
     rng: Mutex<SplitMix64>,
     start: tokio::time::Instant,
     compute: SimPool,
-    /// Where the engine keeps write-ahead logs, once the simulation's world gives it one.
-    wal: Mutex<Option<Arc<dyn WalStore>>>,
 }
 
 impl SimEnv {
@@ -46,13 +43,7 @@ impl SimEnv {
                 perturbed: AtomicBool::new(false),
                 threads: None,
             },
-            wal: Mutex::new(None),
         }
-    }
-
-    /// Keeps the engine's write-ahead logs in `store` from now on.
-    pub fn keep_logs(&self, store: Arc<dyn WalStore>) {
-        *self.wal.lock() = Some(store);
     }
 
     /// Creates an environment seeded by `seed` whose compute jobs run on a pool of a thread for
@@ -105,10 +96,6 @@ impl Env for SimEnv {
 
     fn cores(&self) -> NonZeroUsize {
         CORES
-    }
-
-    fn wal(&self) -> Option<Arc<dyn WalStore>> {
-        self.wal.lock().clone()
     }
 
     fn charged(&self, change: i64) {

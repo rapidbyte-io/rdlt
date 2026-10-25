@@ -6,7 +6,8 @@ use super::Shares;
 /// and a piece is within a request.
 ///
 /// Each share's bytes beside one request of its class add up without wrapping, so checking
-/// that a request fits never overflows.
+/// that a request fits never overflows; the data beside a push, which can, is added saturating,
+/// and the data share is less than what a `u64` holds.
 ///
 /// Bound: none; every capacity.
 #[kani::proof]
@@ -15,7 +16,6 @@ fn a_budget_s_shares_add_up_to_it() {
     let capacity: u64 = kani::any();
     let shares = Shares::of(capacity);
     let parts = u128::from(shares.cursors)
-        + u128::from(shares.log)
         + u128::from(shares.tables)
         + u128::from(shares.reads)
         + u128::from(shares.control)
@@ -26,12 +26,11 @@ fn a_budget_s_shares_add_up_to_it() {
         u128::from(shares.data)
     );
     assert!(shares.piece <= shares.request);
+    assert!(shares.data < u64::MAX);
     let sums = [
         (shares.intake, shares.intake),
-        (shares.data, shares.intake),
         (shares.data, shares.request),
         (shares.cursors, shares.cursors),
-        (shares.log, shares.log),
         (shares.tables, shares.tables),
         (shares.reads, shares.reads),
         (shares.control, shares.control),

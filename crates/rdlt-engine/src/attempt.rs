@@ -2,7 +2,6 @@
 
 mod check;
 mod lanes;
-mod replay;
 mod sequences;
 mod streams;
 #[cfg(test)]
@@ -22,14 +21,16 @@ use rdlt_connector::{
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::budget::{Denied, MemoryBudget, Reservation};
+use crate::budget::MemoryBudget;
 use crate::compute::Pool;
 use crate::config::EngineConfig;
-use crate::coordinator::{Coordinator, CoordinatorParts, PartitionRun, StreamRun, launcher};
+use crate::coordinator::{
+    Coordinator, CoordinatorParts, DoneMarkers, PartitionRun, StreamRun, launcher,
+};
 use crate::env::Env;
 use crate::error::{Error, ErrorKind, Side, codes};
 use crate::lane::Lanes;
-use crate::limits::{LEAST_CALLS, LOG_COPY_BYTES};
+use crate::limits::LEAST_CALLS;
 use crate::naming::{Naming, recorded};
 use crate::partition::{
     self, ChangeMode, Latest, LoadClock, PartitionContext, PartitionJob, Progress, Slots,
@@ -39,7 +40,6 @@ use crate::report::{AttemptEnd, AttemptLog, Tally};
 use crate::scope::TaskScope;
 use crate::stored::{StateLimits, Stored};
 use crate::table::{SharedSession, Tables};
-use crate::wal::{LoadLog, Owner, Positions, WalStore};
 use crate::watch;
 
 use lanes::start_lanes;
@@ -56,9 +56,6 @@ pub(crate) struct RunContext {
     pub(crate) budget: MemoryBudget,
     /// Where the run's work counts what it waits for and spends its time on.
     pub(crate) tally: Arc<Tally>,
-    /// Where the engine keeps write-ahead logs, each request counted into the tally; none
-    /// where it keeps none.
-    pub(crate) wal: Option<Arc<dyn WalStore>>,
     /// Fires when the run is asked to stop after committing.
     pub(crate) stop: CancellationToken,
     /// The generation of each full read this run started or resumed, so a retry after the read
@@ -96,29 +93,14 @@ pub(crate) async fn run(
     load_id: LoadId,
     log: Arc<Mutex<AttemptLog>>,
 ) -> Result<AttemptEnd, Error> {
-    if context.plan.logs_ahead() && context.wal.is_none() {
-        return Err(Error::config(format!(
-            "pipeline {} keeps a write-ahead log, and the engine has nowhere to keep one",
-            context.plan.pipeline()
-        ))
-        .with_code(codes::WAL_STORE_MISSING));
-    }
     within_calls(context)?;
-    // The load's log opens before any other is read, so a replay that starts later lists it
-    // and fences it before it reads the pipeline's logs itself.
-    let Some(store) = context.wal.clone() else {
-        return logged_run(context, load_id, &log).await;
-    };
-    let pipeline = context.plan.pipeline();
-    let identity = crate::wal::taken::open_own(store.as_ref(), pipeline, load_id).await?;
-    log.lock().store = Some(identity);
-    let ran = logged_run(context, load_id, &log).await;
-    // A failed attempt that published nothing leaves no log behind: nothing of it is replayed.
-    // The failure matters more than one of removing it, which a later replay retries.
-    if ran.is_err()
-        && matches!(store.chunks(pipeline, load_id).await, Ok(chunks) if chunks.is_empty())
-    {
-        drop(store.remove_log(pipeline, load_id).await);
+    let opened = open(context, load_id).await?;
+    let session = Arc::clone(&opened.session);
+    let ran = opened_run(context, load_id, opened, &log).await;
+    if ran.is_err() {
+        // A failed attempt's session releases what it holds now; the failure matters more than
+        // any error from closing, and a session the coordinator closed stays closed.
+        closed_within(context, session.close()).await;
     }
     ran
 }
@@ -148,28 +130,9 @@ fn within_calls(context: &RunContext) -> Result<(), Error> {
     Ok(())
 }
 
-/// Runs the attempt as [`run`] does, its log opened where the engine keeps one.
-async fn logged_run(
-    context: &RunContext,
-    load_id: LoadId,
-    log: &Arc<Mutex<AttemptLog>>,
-) -> Result<AttemptEnd, Error> {
-    // What earlier loads logged and never saw committed lands before this one plans.
-    replay::replay(context, load_id, log).await?;
-    let opened = open(context, load_id).await?;
-    let session = Arc::clone(&opened.session);
-    let ran = opened_run(context, load_id, opened, log).await;
-    if ran.is_err() {
-        // A failed attempt's session releases what it holds now; the failure matters more than
-        // any error from closing, and a session the coordinator closed stays closed.
-        closed_within(context, session.close()).await;
-    }
-    ran
-}
-
 /// Waits for `closing`, a close after a failure, no longer than the close wait: the failure is
 /// what the run reports, and the next attempt should not wait on a destination that is stuck.
-pub(super) async fn closed_within<T>(context: &RunContext, closing: impl Future<Output = T>) {
+async fn closed_within<T>(context: &RunContext, closing: impl Future<Output = T>) {
     tokio::select! {
         biased;
         _ = closing => {}
@@ -184,17 +147,11 @@ async fn opened_run(
     opened: Opened,
     log: &Arc<Mutex<AttemptLog>>,
 ) -> Result<AttemptEnd, Error> {
-    {
-        let mut log = log.lock();
-        log.opened = opened
-            .state
-            .last_receipt
-            .as_ref()
-            .map(|receipt| (receipt.load_id, receipt.commit_seq));
-        log.origin = opened.state.origin;
-        log.log_store = opened.state.log_store;
-        crate::wal::taken::one_store(log.store, opened.state.log_store)?;
-    }
+    log.lock().opened = opened
+        .state
+        .last_receipt
+        .as_ref()
+        .map(|receipt| (receipt.load_id, receipt.commit_seq));
     let catalog = context
         .source
         .discover()
@@ -299,7 +256,6 @@ async fn launch(
 ) -> Result<(), Error> {
     let mut scope = TaskScope::new(&CancellationToken::new());
     let lanes = start_lanes(context, &tables, &mut scope);
-    let wal = start_log(context, load_id, &opened, &planned, &mut scope).await?;
     let ((progress, progress_feed), (barrier, barrier_feed)) =
         (mpsc::unbounded_channel(), watch::channel(0));
     let (stop_reads, latest) = (CancellationToken::new(), Arc::new(Latest::default()));
@@ -310,12 +266,8 @@ async fn launch(
         stop: stop_reads.clone(),
         cancel: scope.token().clone(),
     };
-    let partition_context = shared_by_partitions(
-        context,
-        (load_id, opened.epoch),
-        (&lanes, &tables, &wal),
-        ends,
-    );
+    let partition_context =
+        shared_by_partitions(context, (load_id, opened.epoch), (&lanes, &tables), ends);
     let (tasks, spawned) = mpsc::unbounded_channel();
     let (streams, partitions) = spawn_partitions(&mut scope, planned, &partition_context);
     let coordinator = Coordinator::new(CoordinatorParts {
@@ -324,7 +276,6 @@ async fn launch(
         barrier_wait: context.config.barrier_wait(),
         tables,
         source: Arc::clone(&context.source),
-        pipeline: context.plan.pipeline().clone(),
         lanes,
         load_id,
         epoch: opened.epoch,
@@ -339,13 +290,11 @@ async fn launch(
         cancel: scope.token().clone(),
         log,
         launcher: launcher(partition_context, tasks),
-        wal,
-        positions: Positions::from(opened.state),
+        done: DoneMarkers::from(&opened.state),
         stored: opened.stored,
         follow: context.plan.until().follows(),
         replan: context.config.replan(),
         tally: Arc::clone(&context.tally),
-        store: context.wal.clone(),
     });
     scope.spawn(coordinator.run());
     scope.join_spawning(spawned).await
@@ -360,12 +309,12 @@ struct Ends {
     cancel: CancellationToken,
 }
 
-/// What the attempt's partitions share: its load and its session's epoch, its `lanes`, `tables`
-/// and `wal`, and their `ends`.
+/// What the attempt's partitions share: its load and its session's epoch, its `lanes` and
+/// `tables`, and their `ends`.
 fn shared_by_partitions(
     context: &RunContext,
     (load_id, epoch): (LoadId, Epoch),
-    (lanes, tables, wal): (&Lanes, &Arc<Tables>, &Option<LoadLog>),
+    (lanes, tables): (&Lanes, &Arc<Tables>),
     ends: Ends,
 ) -> Arc<PartitionContext> {
     Arc::new(PartitionContext {
@@ -389,69 +338,7 @@ fn shared_by_partitions(
         pool: Pool::new(Arc::clone(&context.env), Arc::clone(&context.tally)),
         batch: *context.config.batch(),
         stop_wait: context.config.stop_wait(),
-        wal: wal.clone(),
     })
-}
-
-/// The load's write-ahead log, started in `scope`, where the pipeline asks for one or a stream's
-/// source cannot read again what it acknowledged; `opened` is the session the attempt opened.
-///
-/// The log opened for a load that needs none is removed in `scope`.
-async fn start_log(
-    context: &RunContext,
-    load_id: LoadId,
-    opened: &Opened,
-    planned: &[Planned],
-    scope: &mut TaskScope<Error>,
-) -> Result<Option<LoadLog>, Error> {
-    let needed =
-        context.plan.logs_ahead() || planned.iter().any(|stream| !stream.stream.replayable);
-    let Some(store) = context.wal.clone() else {
-        return Ok(None);
-    };
-    if !needed {
-        let pipeline = context.plan.pipeline().clone();
-        scope.spawn(async move {
-            store
-                .remove_log(&pipeline, load_id)
-                .await
-                .map_err(Error::from_wal)
-        });
-        return Ok(None);
-    }
-    let carry = carried(&context.budget).await?;
-    let owner = Owner {
-        pipeline: context.plan.pipeline().clone(),
-        load: load_id,
-        epoch: opened.epoch,
-        opened: opened
-            .state
-            .last_receipt
-            .as_ref()
-            .map(|receipt| (receipt.load_id, receipt.commit_seq)),
-        origin: opened.state.origin.unwrap_or(load_id),
-    };
-    let bound = context.config.growth().log_bytes();
-    let tally = Arc::clone(&context.tally);
-    let (log, task) = LoadLog::start(store, owner, bound, (Some(carry), tally));
-    scope.spawn(task);
-    Ok(Some(log))
-}
-
-/// What a carry reads back at once, reserved from `budget`'s share for the log for as long as the
-/// log is written.
-async fn carried(budget: &MemoryBudget) -> Result<Reservation, Error> {
-    budget
-        .acquire_log(LOG_COPY_BYTES)
-        .await
-        .map_err(|denied| match denied {
-            Denied::Exhausted(exhausted) => Error::memory(exhausted),
-            // The least memory a configuration admits gives the log's share more than this.
-            Denied::TooLarge(large) => Error::internal(
-                "the memory budget's share for the log holds less than what a carry reads at once",
-            )
-            .with_source(large),
-        })
 }
 
 /// Starts a task per partition to read, and returns the streams and partitions as the

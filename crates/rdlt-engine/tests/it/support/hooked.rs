@@ -3,18 +3,14 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use arrow_array::RecordBatch;
 use rdlt_connector::{
     BoxFuture, Capabilities, CommitMeta, ConnectorErrorKind, Destination, DestinationSession,
-    DestinationWriter, OpenContext, OpenedSession, Receipt, Result, SegmentId, TableChange,
-    TableRef, WriteStats,
+    DestinationWriter, OpenContext, OpenedSession, Receipt, Result, TableChange, TableRef,
 };
 
 /// When a [`Hooked`] destination calls its hook.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum At {
-    /// Before the first flush of a writer: before a commit is logged or reported.
-    Flush,
     /// Once the first commit has landed, before it is reported.
     Landed,
     /// At every close of a session, which then fails.
@@ -97,16 +93,7 @@ impl DestinationSession for HookedSession {
         &'a mut self,
         table: &'a TableRef,
     ) -> BoxFuture<'a, Result<Box<dyn DestinationWriter>>> {
-        Box::pin(async move {
-            let inner = self.inner.writer(table).await?;
-            let flushing = (self.at == At::Flush).then(|| Arc::clone(&self.hook));
-            let writer = HookedWriter {
-                inner,
-                hook: flushing,
-                called: Arc::clone(&self.called),
-            };
-            Ok(Box::new(writer) as Box<dyn DestinationWriter>)
-        })
+        self.inner.writer(table)
     }
 
     fn commit<'a>(&'a mut self, meta: &'a CommitMeta) -> BoxFuture<'a, Result<Receipt>> {
@@ -131,27 +118,6 @@ impl DestinationSession for HookedSession {
                 ));
             }
             Ok(())
-        })
-    }
-}
-
-struct HookedWriter {
-    inner: Box<dyn DestinationWriter>,
-    hook: Option<Hook>,
-    called: Arc<AtomicBool>,
-}
-
-impl DestinationWriter for HookedWriter {
-    fn write(&mut self, segment: SegmentId, batch: RecordBatch) -> BoxFuture<'_, Result<()>> {
-        self.inner.write(segment, batch)
-    }
-
-    fn flush(&mut self) -> BoxFuture<'_, Result<WriteStats>> {
-        Box::pin(async move {
-            if let Some(hook) = &self.hook {
-                once(&self.called, hook).await;
-            }
-            self.inner.flush().await
         })
     }
 }

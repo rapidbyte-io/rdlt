@@ -44,7 +44,7 @@ pub(super) async fn read_resetting(
             .with_stream(&job.stream);
             return Err(if stalled { failed.retryable() } else { failed });
         }
-        abandon(job.index, &ingested.open, context).await?;
+        abandon(job.index, &ingested.open, context)?;
         context.report(Progress::RetentionReset {
             partition: job.index,
         })?;

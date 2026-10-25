@@ -1,5 +1,6 @@
 //! The simulated source: serves the world's workload, with faults.
 
+mod forgets;
 mod plans;
 mod push;
 #[cfg(test)]
@@ -10,9 +11,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rdlt_connector::{
-    Checkpointing, ConnectContext, ConnectorError, ConnectorErrorKind, Cursor, Emitter, Field,
-    LogicalType, Partition, PartitionId, PartitionPlan, ReadMode, ReadStream, Result,
-    SourceConnector, StreamName, StreamSpec, StreamState, Streams, TableSchema,
+    Checkpointing, ConnectContext, ConnectorError, Cursor, Emitter, Field, LogicalType, Partition,
+    PartitionId, PartitionPlan, ReadMode, ReadStream, Result, SourceConnector, StreamName,
+    StreamSpec, StreamState, Streams, TableSchema,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -232,14 +233,7 @@ impl ReadStream<SimSource> for SimStreamReader {
         let reading = source.plans.read(self.index, index);
         if !stream.replayable {
             let key = (stream.name.clone(), partition.id().to_string());
-            let forgotten = world.acknowledged.lock().get(&key).copied();
-            // Rows it acknowledged are gone; a read from before them waits for them to land.
-            if forgotten.is_some_and(|forgotten| cursor.next < forgotten) {
-                return Err(ConnectorError::new(
-                    ConnectorErrorKind::Transient,
-                    "the rows before the acknowledged offset are gone",
-                ));
-            }
+            forgets::admit(world, &key, cursor.next)?;
         }
         let given = out.resumes().then_some(&cursor);
         world.reports.started(&stream.name, partition.id(), given);
@@ -316,6 +310,13 @@ impl SimStreamReader {
             PartitionId::parse(format!("p{}", reading.partition())).expect("valid partition id");
         let stream = self.stream(source);
         source.world.reports.note(&stream.name, &id, &cursor);
+        if !stream.replayable {
+            forgets::sent(
+                &source.world,
+                (stream.name.clone(), id.to_string()),
+                cursor.next,
+            );
+        }
         let encoded = aside(|| serde_json::to_vec(&cursor).map_or(0, |bytes| bytes.len()));
         source.world.pushes.cursor(encoded);
         out.checkpoint(&cursor).await?;
@@ -434,13 +435,12 @@ fn committed(
             .reports
             .hear(&stream.name, partition, cursor, cursor.next)?;
         if !stream.replayable {
-            // It hears once the engine's log holds the rows, before they land; the oracle
-            // checks they did once the phase is over.
+            // It forgets the rows before what it hears; the oracle checks they landed once the
+            // phase is over.
             let key = (stream.name.clone(), partition.to_string());
             let mut acknowledged = world.acknowledged.lock();
             let furthest = acknowledged.entry(key).or_default();
             *furthest = (*furthest).max(cursor.next);
-            continue;
         }
         // Told late, it may hear of a commit after a newer one restarted or reset the partition.
         let committed = world.store.lock().landed(&name, partition);

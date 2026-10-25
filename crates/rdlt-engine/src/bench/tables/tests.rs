@@ -137,8 +137,8 @@ fn each_phase_is_a_commit_s_share_of_its_time_over_the_runs() {
     let runs = [report(2, 4, 1), report(4, 4, 6), report(1, 3, 0)];
     assert_eq!(
         phases(&runs.iter().collect::<Vec<_>>()),
-        "flush 2.000 (1.000 to 3.000), horizon 0.000 (0.000 to 0.000), log 0.000 (0.000 to \
-         0.000), commit 0.000 (0.000 to 0.000), acknowledgement 0.500 (0.000 to 1.500)"
+        "flush 2.000 (1.000 to 3.000), commit 0.000 (0.000 to 0.000), acknowledgement 0.500 \
+         (0.000 to 1.500)"
     );
     let none = phases(&[&report(0, 0, 0)]);
     assert!(none.starts_with("flush unmeasured"), "{none}");

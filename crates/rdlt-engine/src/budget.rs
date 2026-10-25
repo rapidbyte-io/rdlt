@@ -27,15 +27,14 @@ use crate::watch;
 /// - **Never exceeded.** A request is reserved only when it fits its share. One that asks for
 ///   more than a request of its share may take is refused, since no wait could admit it; none
 ///   is cut down to fit, and nothing is reserved without asking.
-/// - **Shares.** The cursors of seals waiting for a commit, the log's frames and what reads keep
-///   each have a share no push can use, so a checkpoint never waits behind data. The rest holds
-///   pushes waiting to be lowered and what lowering makes of them; pushes never take all of it,
-///   so a request for lowering fits once the pieces before it are written.
-/// - **No hold and wait.** Whoever holds what lowering reserved, a piece on the compute pool, on
-///   its lane or in the log's writer, needs no budget to release it. A partition waits for
-///   lowering while it holds pushes, and nothing waits for pushes while it holds anything; while
-///   it holds lowering's bytes it lowers inside what it reserved with them, a [`Lent`] it waits
-///   on for its own pieces.
+/// - **Shares.** The cursors of seals waiting for a commit, tables' records, answers being decoded
+///   and what reads keep each have a share no push can use, so a checkpoint never waits behind
+///   data. The rest holds pushes waiting to be lowered and what lowering makes of them; pushes
+///   never take all of it, so a request for lowering fits once the pieces before it are written.
+/// - **No hold and wait.** Whoever holds what lowering reserved, a piece on the compute pool or on
+///   its lane, needs no budget to release it. A partition waits for lowering while it holds
+///   pushes, and nothing waits for pushes while it holds anything; while it holds lowering's bytes
+///   it lowers inside what it reserved with them, a [`Lent`] it waits on for its own pieces.
 /// - **No wait for bytes is for ever.** A request's wait ends at the budget's deadline with what
 ///   held the budget, and a request nobody waits for any more leaves the queue at once.
 ///
@@ -198,16 +197,6 @@ impl MemoryBudget {
     /// As [`MemoryBudget::acquire`], for a cursor larger than the share.
     pub(crate) async fn acquire_cursor(&self, bytes: u64) -> Result<Reservation, Denied> {
         self.request(Wait::Of(Class::Cursor), bytes).await
-    }
-
-    /// Reserves the `bytes` of a frame on its way into the log, or of what a carry reads at once,
-    /// from the log's own share.
-    ///
-    /// # Errors
-    ///
-    /// As [`MemoryBudget::acquire`], for a request larger than the share.
-    pub(crate) async fn acquire_log(&self, bytes: u64) -> Result<Reservation, Denied> {
-        self.request(Wait::Of(Class::Log), bytes).await
     }
 
     /// Reserves the `bytes` a commit will record of a table, from the tables' share: only a

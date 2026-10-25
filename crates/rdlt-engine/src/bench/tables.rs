@@ -399,7 +399,7 @@ fn mebibytes(bytes: u64) -> f64 {
 }
 
 /// Each commit phase's time a commit over `reports`, in milliseconds: the median of the runs and
-/// their range, for the flush, the horizon, the log, the commit and the acknowledgement.
+/// their range, for the flush, the commit and the acknowledgement.
 pub fn phases(reports: &[&Report]) -> String {
     let phase = |name: &str, of: fn(&crate::CommitPhases) -> Duration| {
         let each = reports.iter().map(|report| {
@@ -412,8 +412,6 @@ pub fn phases(reports: &[&Report]) -> String {
     };
     [
         phase("flush", |phases| phases.flush),
-        phase("horizon", |phases| phases.horizon),
-        phase("log", |phases| phases.log),
         phase("commit", |phases| phases.commit),
         phase("acknowledgement", |phases| phases.ack),
     ]

@@ -9,10 +9,9 @@ use rdlt_connector::{
 };
 
 use super::{Coordinator, KEPT_COMPLETIONS};
-use crate::partition::{CursorHold, Seal};
+use crate::partition::CursorHold;
 use crate::plan::WriteMode;
 use crate::report::{ShredCounts, StreamReport};
-use crate::wal::Sealed;
 
 /// What the sealed segments of a commit add up to.
 pub(super) struct Collected {
@@ -22,35 +21,24 @@ pub(super) struct Collected {
     /// partition that ends done after its last checkpoint is still told that checkpoint.
     pub(super) reported: BTreeMap<usize, Cursor>,
     pub(super) streams: BTreeMap<usize, StreamReport>,
-    /// Every seal, as the load's log records them before their commit: empty segments move
-    /// their partitions too.
-    pub(super) sealed: Vec<Sealed>,
     /// What holds the seals' cursors in the budget.
     pub(super) held: Vec<CursorHold>,
 }
 
 impl Coordinator {
     /// The sealed segments with rows, each partition's newest position, and each stream's counts,
-    /// discards included; `begun` is the phases the commit begins, which its log records first.
-    pub(super) fn collect(&mut self, begun: &[StateChange]) -> Collected {
+    /// discards included.
+    pub(super) fn collect(&mut self) -> Collected {
         let mut collected = Collected {
             segments: SegmentSet::new(),
             positions: BTreeMap::new(),
             reported: BTreeMap::new(),
             streams: BTreeMap::new(),
-            sealed: Vec::new(),
             held: Vec::new(),
         };
         self.due.committing();
         let seals = self.sealed.take();
-        if let Some(log) = &self.parts.wal {
-            // Only seals with rows were counted as their partitions sealed them.
-            log.took(seals.iter().filter(|seal| !seal.moves_only()).count());
-        }
         self.sealing.clear();
-        if self.parts.wal.is_some() {
-            collected.sealed = self.logged(&seals, begun);
-        }
         for seal in seals {
             let stream = self.parts.partitions[seal.partition].stream;
             if seal.rows > 0 {
@@ -95,35 +83,6 @@ impl Coordinator {
             }
         }
         collected
-    }
-
-    /// `seals` as the load's log records them: each with its stream's phase and where its partition
-    /// stood before it, as the commit's changes reach it, the phase it begins, `begun`, first.
-    fn logged(&self, seals: &[Seal], begun: &[StateChange]) -> Vec<Sealed> {
-        let mut positions = self.parts.positions.clone();
-        positions.apply(begun);
-        seals
-            .iter()
-            .map(|seal| {
-                let partition = &self.parts.partitions[seal.partition];
-                let stream = &self.parts.streams[partition.stream];
-                let from = positions.get(&stream.name, &partition.id).cloned();
-                positions.set(
-                    stream.name.clone(),
-                    partition.id.clone(),
-                    seal.state.clone(),
-                );
-                Sealed {
-                    segment: seal.segment,
-                    stream: stream.name.clone(),
-                    partition: partition.id.clone(),
-                    replayable: stream.replayable,
-                    phase: positions.phase(&stream.name),
-                    from,
-                    state: seal.state.clone(),
-                }
-            })
-            .collect()
     }
 
     /// What each stream contributes to a commit that ends the cycles of `completing`, by name.

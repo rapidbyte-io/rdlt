@@ -13,12 +13,12 @@ use rdlt_connector::{
 };
 use rdlt_connector_reference::LogSource;
 use rdlt_engine::{
-    BatchPolicy, CommitPolicy, EngineConfig, EngineConfigBuilder, LocalWal, RetentionLoss,
-    RunStatus, Until, WalStore, codes,
+    BatchPolicy, CommitPolicy, EngineConfig, EngineConfigBuilder, RetentionLoss, RunStatus, Until,
+    codes,
 };
 use serde_json::{Value, json};
 
-use crate::support::{engine, logging_engine, memory, pipeline, published_json, stream};
+use crate::support::{engine, memory, pipeline, published_json, stream};
 
 async fn log(group: &str, stream: &Value) -> Arc<dyn Source> {
     let config = json!({ "seed": 5, "group": group, "streams": [stream] });
@@ -353,63 +353,6 @@ async fn a_stream_s_lag_leaves_out_partitions_its_source_retired() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_read_reset_after_rows_it_never_sealed_holds_no_log_chunk_back() {
-    // Each poll of the partition reads its new messages, then fails as retention lost and is
-    // reset: the rows it read before failing sit in a segment no checkpoint seals.
-    let logged = json!({
-        "name": "events", "partitions": 1, "messages": 2, "per_second": 20, "bounded": true,
-    });
-    let source = Arc::new(Reshaped {
-        inner: log("dropping", &logged).await,
-        shape: Shape::Dropping,
-    });
-    let base = tempfile::tempdir().expect("a temporary directory");
-    let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(base.path()));
-    let events = stream_plan().on_retention_loss(RetentionLoss::Reset);
-    let plan = pipeline("dropping", [events])
-        .with_until(Until::For(Duration::from_secs(2)))
-        .with_wal(true);
-    // Each push is written, and logged, at once: the failed reads' rows reach the log unsealed.
-    let batch = BatchPolicy::new(1 << 20, 1, Duration::from_millis(10), 64 << 10)
-        .expect("a valid batch policy");
-    let every = CommitPolicy::new(Some(Duration::from_millis(100)), None, None)
-        .expect("an interval is valid");
-    let config = config()
-        .replan(Duration::from_millis(200))
-        .commit(every)
-        .batch(batch);
-    let run =
-        logging_engine(config, Arc::clone(&store)).run(plan, source, memory("dropping").await);
-    let pipeline_id = rdlt_connector::PipelineId::parse("dropping").expect("a valid id");
-    let watch = async {
-        tokio::time::sleep(Duration::from_millis(1800)).await;
-        let mut chunks = 0;
-        for load in store
-            .loads(&pipeline_id)
-            .await
-            .expect("the store lists loads")
-        {
-            chunks += store
-                .chunks(&pipeline_id, load)
-                .await
-                .expect("the store lists chunks")
-                .len();
-        }
-        chunks
-    };
-    let (outcome, chunks) = tokio::join!(run, watch);
-    assert_eq!(
-        outcome.report.status,
-        RunStatus::Succeeded,
-        "{:?}",
-        outcome.error
-    );
-    assert!(outcome.report.streams["events"].retention_resets > 1);
-    // The chunk it is writing, and at most one whose commit awaits its receipt.
-    assert!(chunks <= 2, "{chunks} chunks held");
-}
-
-#[tokio::test(start_paused = true)]
 async fn a_stream_s_lag_leaves_out_the_partitions_of_a_phase_it_finished() {
     let source = Arc::new(Reshaped {
         inner: crate::changes::changes(8, &crate::changes::orders(&[])).await,
@@ -519,10 +462,8 @@ async fn resetting(
     source: Arc<dyn Source>,
     stream: rdlt_engine::StreamPlan,
 ) -> rdlt_engine::RunOutcome {
-    let base = tempfile::tempdir().expect("a temporary directory");
-    let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(base.path()));
     let plan = pipeline(group, [stream.on_retention_loss(RetentionLoss::Reset)]);
-    logging_engine(config(), store)
+    engine(config())
         .run(plan, source, memory(group).await)
         .await
 }

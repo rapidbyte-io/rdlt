@@ -9,8 +9,8 @@ mod acks;
 mod barrier;
 mod commit;
 mod delta;
+mod done;
 mod due;
-mod horizon;
 mod phases;
 mod pressure;
 mod replan;
@@ -25,8 +25,8 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use rdlt_connector::{
-    CommitMeta, CommitSeq, Epoch, GenerationId, LoadId, PartitionId, PartitionState, PipelineId,
-    Receipt, SegmentSet, Source, StreamName, TablePath,
+    CommitMeta, CommitSeq, Epoch, GenerationId, LoadId, PartitionId, PartitionState, Receipt,
+    SegmentSet, Source, StreamName, TablePath,
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -43,8 +43,9 @@ use crate::plan::WriteMode;
 use crate::report::{AttemptEnd, AttemptLog, CommitRecord, Tally, Trigger};
 use crate::stored::{Measured, Stored};
 use crate::table::Tables;
-use crate::wal::{LoadLog, Positions, Recorded, WalStore};
 use crate::watch;
+pub(crate) use done::DoneMarkers;
+use done::Recorded;
 pub(crate) use phases::{Begun, Launcher, Phases, Template, launcher, plan_of};
 use waiting::WaitingSeals;
 
@@ -69,9 +70,6 @@ pub(crate) struct StreamRun {
     /// Every partition the stream's latest plan names: the done ones it leaves unread among
     /// them, whose markers stay under state pressure.
     pub(crate) named: BTreeSet<PartitionId>,
-    /// Whether the stream's source can read again what it acknowledged; one that cannot learns
-    /// its position once the load's log holds it, before the destination commits.
-    pub(crate) replayable: bool,
 }
 
 /// A full read of a stream, from its first partition to its last; a replace stream fills the
@@ -158,8 +156,6 @@ pub(crate) struct CoordinatorParts {
     /// The tables, and through them the destination session.
     pub(crate) tables: Arc<Tables>,
     pub(crate) source: Arc<dyn Source>,
-    /// The pipeline, whose logs bound the commits a replay may repeat.
-    pub(crate) pipeline: PipelineId,
     pub(crate) lanes: Lanes,
     pub(crate) load_id: LoadId,
     pub(crate) epoch: Epoch,
@@ -168,8 +164,8 @@ pub(crate) struct CoordinatorParts {
     pub(crate) progress: mpsc::UnboundedReceiver<Progress>,
     /// What each partition last said of which only the newest matters.
     pub(crate) latest: Arc<Latest>,
-    /// The memory budget: the log's frames are charged to it until they are written, and the
-    /// cursors of waiting seals make a commit due once they hold their share of it.
+    /// The memory budget, whose cursors of waiting seals make a commit due once they hold their
+    /// share of it.
     pub(crate) budget: MemoryBudget,
     pub(crate) barrier: watch::Sender<u64>,
     /// Asks every partition to stop reading.
@@ -181,10 +177,8 @@ pub(crate) struct CoordinatorParts {
     pub(crate) log: Arc<Mutex<AttemptLog>>,
     /// Starts the partitions of a stream's next phase.
     pub(crate) launcher: Launcher,
-    /// The load's write-ahead log, where it keeps one.
-    pub(crate) wal: Option<LoadLog>,
-    /// The partitions' positions as the destination holds them, through the commits that landed.
-    pub(crate) positions: Positions,
+    /// The partitions the destination holds done, through the commits that landed.
+    pub(crate) done: DoneMarkers,
     /// What the destination's stored state takes, through the commits that landed.
     pub(crate) stored: Stored,
     /// Whether the run follows its source: it reads until stopped, and plans its streams again
@@ -193,9 +187,6 @@ pub(crate) struct CoordinatorParts {
     pub(crate) replan: Duration,
     /// Where the commits count what made each due and the time their phases took.
     pub(crate) tally: Arc<Tally>,
-    /// Where the engine keeps write-ahead logs, whose listing bounds what a replay may repeat;
-    /// none where it keeps none.
-    pub(crate) store: Option<Arc<dyn WalStore>>,
 }
 
 pub(crate) struct Coordinator {
@@ -266,11 +257,6 @@ impl Coordinator {
         // Writes of rows no commit took, as an unbounded partition's after its last checkpoint,
         // finish before the session closes; the next session discards them.
         self.parts.lanes.flush().await?;
-        if let Some(log) = &self.parts.wal {
-            // Every commit landed: a log that fails to close stays, and a replay finds each of its
-            // commits received, which the destination answers with its stored receipt.
-            drop(log.close().await);
-        }
         self.parts.tables.session().close().await?;
         self.parts.log.lock().end = Some(end);
         Ok(())
@@ -314,11 +300,6 @@ impl Coordinator {
                         timer = self.commit_now(trigger).await?;
                     }
                 }
-                // A batch that finds the log full waits for a commit, which is then due; every
-                // progress sent before it, its seals among them, is seen first.
-                () = log_full(self.parts.wal.as_ref()) => {
-                    timer = self.commit_now(Trigger::Log).await?;
-                }
             }
         }
         Ok(())
@@ -331,23 +312,18 @@ impl Coordinator {
         self.commit(trigger).await?;
         self.advance_phases().await?;
         self.cursors_may_free = false;
-        if let Some(log) = &self.parts.wal {
-            log.passed();
-        }
         Ok(self.timer())
     }
 
-    /// What makes a commit due, where something does: the policy's rows and bytes, the cursors
-    /// of the seals waiting, which hold budget only a commit releases, once they take half their
-    /// share, or what the load's log holds on disk, which only a commit lets go.
+    /// What makes a commit due, where something does: the policy's rows and bytes, or the
+    /// cursors of the seals waiting, which hold budget only a commit releases, once they take
+    /// half their share.
     fn commit_due(&self) -> Option<Trigger> {
         let cursors = (self.parts.budget.shares().cursors / 2).max(1);
         if self.parts.policy.is_due(self.due.rows(), self.due.bytes()) {
             Some(Trigger::Size)
         } else if self.sealed.cursor_bytes() >= cursors {
             Some(Trigger::Cursors)
-        } else if self.parts.wal.as_ref().is_some_and(LoadLog::due) {
-            Some(Trigger::Log)
         } else {
             None
         }
@@ -450,7 +426,7 @@ impl Coordinator {
     }
 
     /// Commits `meta`, whose state changes are `measured` and whose partitions stand at
-    /// `positions`, in the destination's session, and records its receipt in the log.
+    /// `positions`, in the destination's session.
     async fn committed(
         &mut self,
         meta: &CommitMeta,
@@ -479,14 +455,11 @@ impl Coordinator {
             load: self.parts.load_id,
             states: &states,
         };
-        self.parts.positions.landed(&meta.state_delta, &recorded);
-        if let Some(log) = &self.parts.wal {
-            log.committed(&receipt).await?;
-        }
+        self.parts.done.landed(&meta.state_delta, &recorded);
         Ok(receipt)
     }
 
-    /// Advances past a landed commit: what state now records, and the commit in the log.
+    /// Advances past a landed commit: what state now records.
     ///
     /// # Errors
     ///
@@ -517,12 +490,4 @@ impl Coordinator {
 
 fn cancelled() -> Error {
     Error::cancelled("the attempt was cancelled")
-}
-
-/// Completes once a batch finds `log` full and waits for a commit; never where there is none.
-async fn log_full(log: Option<&LoadLog>) {
-    match log {
-        Some(log) => log.full().await,
-        None => std::future::pending().await,
-    }
 }

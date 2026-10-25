@@ -23,7 +23,7 @@ use rdlt_connector::{ConnectContext, Destination, Source, destination_factory, s
 use rdlt_connector_reference::{
     ChangesSource, FilesDestination, GeneratorSource, LogSource, SqliteDestination,
 };
-use rdlt_engine::{Cores, Engine, LocalWal, RunStatus, SystemEnv};
+use rdlt_engine::{Cores, Engine, RunStatus, SystemEnv};
 use rdlt_host::{ConnectorRef, Kills, Local, Options, Provider as _};
 
 use config::{Config, Victim};
@@ -120,10 +120,7 @@ async fn run(config: &Config) -> Result<(), String> {
     let watch = Arc::new(Watch::new(kill, config.pause));
     let source = watch::source(source, Arc::clone(&watch));
     let destination = watch::destination(destination, watch);
-    let mut env = SystemEnv::try_from_host().map_err(|error| error.to_string())?;
-    if let Some(wal) = &config.wal {
-        env = env.with_wal(Arc::new(LocalWal::new(wal)));
-    }
+    let env = SystemEnv::try_from_host().map_err(|error| error.to_string())?;
     let engine = Engine::new(config.engine()?, Arc::new(env));
     let outcome = engine.run(config.plan()?, source, destination).await;
     let report = serde_json::to_string(&outcome.report).map_err(|error| error.to_string())?;

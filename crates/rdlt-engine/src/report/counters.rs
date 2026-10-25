@@ -20,61 +20,12 @@ pub struct Counters {
     pub phases: CommitPhases,
     /// What each lane of the run waited for and spent its time on, by the lane's place.
     pub lanes: Vec<LaneCounters>,
-    /// What the run asked of its write-ahead log store, and the bytes it wrote and read.
-    pub log: LogCounters,
     /// Changes the run's budget sent to the tasks watching for pressure and for cursors' waits,
     /// each waking every task waiting on that value.
     pub signals: u64,
     /// Bytes: the most the run's reads kept beside their events at once, of the budget's share
     /// for what reads keep.
     pub kept_peak: u64,
-}
-
-/// What a run asked of its write-ahead log store, and the bytes that moved.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
-pub struct LogCounters {
-    /// Bytes appended to chunks staged, the carried among them.
-    pub appended: u64,
-    /// Bytes of open segments' frames that completed carries copied out of older chunks into the
-    /// chunk staged.
-    pub carried: u64,
-    /// Bytes read from published chunks: a replay's, and a carry's.
-    pub read: u64,
-    /// Chunks a full log published between commits to hold less.
-    pub reliefs: u64,
-    /// The requests made of the store, by operation.
-    pub requests: StoreRequests,
-}
-
-/// Requests made of a write-ahead log store, by operation.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
-pub struct StoreRequests {
-    /// Asks for the store's identity.
-    pub identity: u64,
-    /// Logs opened.
-    pub open_log: u64,
-    /// Chunks staged.
-    pub stage: u64,
-    /// Appends to chunks staged.
-    pub append: u64,
-    /// Chunks published.
-    pub publish: u64,
-    /// Chunks staged and discarded.
-    pub discard: u64,
-    /// Listings of a pipeline's logs.
-    pub loads: u64,
-    /// Listings of what removed logs left behind.
-    pub leftovers: u64,
-    /// Listings of a log's chunks.
-    pub chunks: u64,
-    /// Reads of a published chunk.
-    pub read: u64,
-    /// Deletions of what a log staged.
-    pub remove_staged: u64,
-    /// Deletions of a published chunk.
-    pub remove: u64,
-    /// Removals of a whole log.
-    pub remove_log: u64,
 }
 
 /// Jobs on the compute pool, and how long they waited to start, ran and took to come back.
@@ -106,8 +57,6 @@ pub struct Commits {
     pub size: u64,
     /// Made due by checkpoints' cursors, waiting for room or holding half their share.
     pub cursors: u64,
-    /// Made due by the load's log, full or holding what a commit should let go.
-    pub log: u64,
     /// Of what was sealed once every partition reading had ended.
     pub end: u64,
 }
@@ -117,10 +66,6 @@ pub struct Commits {
 pub struct CommitPhases {
     /// Flushing the lanes, so the destination holds every write the commit publishes.
     pub flush: Duration,
-    /// Listing the logs of the pipeline for the oldest commit a replay may repeat.
-    pub horizon: Duration,
-    /// Writing the commit into the load's log, where it keeps one.
-    pub log: Duration,
     /// The destination's commit.
     pub commit: Duration,
     /// Acknowledging the committed cursors to the source.
@@ -133,7 +78,6 @@ pub(crate) enum Trigger {
     Interval,
     Size,
     Cursors,
-    Log,
     End,
 }
 
@@ -230,8 +174,6 @@ pub struct Waits {
     pub work: Waited,
     /// Checkpoints' cursors waiting for a commit to make room for them.
     pub cursors: Waited,
-    /// The log's frames and staging waiting for room.
-    pub log: Waited,
     /// Tables' records waiting for a commit to make room for them.
     pub tables: Waited,
     /// Connectors' answers waiting for room to be decoded.
@@ -264,7 +206,6 @@ impl Commits {
             Trigger::Interval => &mut self.interval,
             Trigger::Size => &mut self.size,
             Trigger::Cursors => &mut self.cursors,
-            Trigger::Log => &mut self.log,
             Trigger::End => &mut self.end,
         };
         *count = count.saturating_add(1);
@@ -304,8 +245,6 @@ impl CommitPhases {
     /// Adds what `other` took.
     pub(crate) fn add(&mut self, other: &Self) {
         self.flush = self.flush.saturating_add(other.flush);
-        self.horizon = self.horizon.saturating_add(other.horizon);
-        self.log = self.log.saturating_add(other.log);
         self.commit = self.commit.saturating_add(other.commit);
         self.ack = self.ack.saturating_add(other.ack);
     }

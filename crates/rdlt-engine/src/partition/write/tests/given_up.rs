@@ -13,17 +13,17 @@ use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use arrow_buffer::Buffer;
 use bytes::Bytes;
 use parking_lot::Mutex;
-use rdlt_connector::{Epoch, LoadId, Permit, PipelineId, SchemaVersion, TablePath, TableRef};
+use rdlt_connector::{Permit, SchemaVersion, TablePath, TableRef};
 
 use super::super::super::coalesce::{Flushed, Unit};
 use super::super::super::{OpenSegment, PartitionContext};
-use super::super::{Schemas, queue::queue, write_flushed};
+use super::super::{Schemas, write_flushed};
 use super::job;
 use crate::budget::{MemoryBudget, Reservation};
 use crate::compute::{ComputePool, Job, Pool};
 use crate::env::{Env, InlineEnv, Sleep};
 use crate::partition::tests::on_pool;
-use crate::table::{Model, Prepared, testing};
+use crate::table::{Model, testing};
 
 /// Bounds every wait of a check; a request waits on the budget far longer.
 const WAIT: Duration = Duration::from_secs(1);
@@ -353,84 +353,4 @@ async fn a_json_write_given_up_waiting_for_room_frees_its_text_before_its_charge
     };
     given_up(&context, flushed).await;
     assert_eq!(*order.lock(), ["text", "charge"]);
-}
-
-/// A log of the load holding at most `limit` bytes, and its writer's task, which is never run: a
-/// batch logged waits for room in it, or for its writer once the writer's queue is full.
-fn stalled_log(
-    limit: std::num::NonZeroU64,
-) -> (
-    crate::wal::LoadLog,
-    impl Future<Output = Result<(), crate::Error>>,
-) {
-    let store: Arc<dyn crate::wal::WalStore> = Arc::new(crate::wal::memory::MemoryWal::default());
-    let load = LoadId::from_parts(std::time::UNIX_EPOCH, 1);
-    let owner = crate::wal::Owner {
-        pipeline: PipelineId::parse("events").unwrap(),
-        load,
-        epoch: Epoch(1),
-        opened: None,
-        origin: load,
-    };
-    crate::wal::LoadLog::start(store, owner, limit, (None, Arc::default()))
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_batch_given_up_while_it_waits_for_the_log_is_freed_before_its_charge() {
-    let mut context = context(budget(), Pool::inline(), None).await;
-    let (log, _writer) = stalled_log(std::num::NonZeroU64::MIN);
-    context.wal = Some(log);
-    let batch = ids(0, 1_000);
-    let (permit, freed) = charge(std::slice::from_ref(&batch));
-    let prepared = Prepared {
-        batch,
-        view: testing::view("events"),
-        discarded_rows: 0,
-        discarded_values: 0,
-    };
-    let (job, mut open) = (job(), OpenSegment::default());
-    let frame: Permit = Box::new(());
-    let queued = queue(
-        &job,
-        &context,
-        &mut open,
-        0,
-        prepared,
-        (permit, Some(frame)),
-    );
-    let waited = tokio::time::timeout(WAIT, queued).await;
-    assert!(waited.is_err(), "the batch was queued: {waited:?}");
-    assert_eq!(*freed.lock(), Some(true));
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_batch_given_up_while_its_frame_waits_for_the_pool_lets_the_job_go_first() {
-    let deferring = Arc::new(Deferring::default());
-    let pool = Pool::new(Arc::clone(&deferring) as Arc<dyn Env>, Arc::default());
-    let mut context = context(budget(), pool, None).await;
-    let (log, _writer) = stalled_log(std::num::NonZeroU64::MAX);
-    context.wal = Some(log);
-    let batch = ids(0, 1_000);
-    let (permit, freed) = charge(std::slice::from_ref(&batch));
-    let prepared = Prepared {
-        batch,
-        view: testing::view("events"),
-        discarded_rows: 0,
-        discarded_values: 0,
-    };
-    let (job, mut open) = (job(), OpenSegment::default());
-    let frame: Permit = Box::new(());
-    let queued = queue(
-        &job,
-        &context,
-        &mut open,
-        0,
-        prepared,
-        (permit, Some(frame)),
-    );
-    let waited = tokio::time::timeout(WAIT, queued).await;
-    assert!(waited.is_err(), "the batch was queued: {waited:?}");
-    assert_eq!(*freed.lock(), Some(true));
-    // The pool finds the job let go, and runs nothing.
-    deferring.run();
 }

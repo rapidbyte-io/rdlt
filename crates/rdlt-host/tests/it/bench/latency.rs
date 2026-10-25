@@ -2,8 +2,8 @@
 //! following pipeline whose source pushes at half the throughput the cell first measures.
 //!
 //! The source pushes rows that hold the instant of their push, from a stream it can read again
-//! and from one it cannot, whose rows the engine logs ahead on the disk beside the build, for the
-//! three commit intervals a run follows it. The destination reads the clock as the commit holding
+//! and from one it cannot, each told its cursor once its commit lands, for the three commit
+//! intervals a run follows it. The destination reads the clock as the commit holding
 //! a row returns, the source as a reported cursor covers it. Each case runs in process and with
 //! both connectors spawned, as production places them, committing on the streaming default's
 //! thresholds at their interval, 10 s, and at 1 s. It prints, for each stream, p50, p99 and the
@@ -33,8 +33,8 @@ use criterion::{BenchmarkId, Criterion, SamplingMode, criterion_group};
 use rdlt_connector::serve::Served;
 use rdlt_connector::{ConnectContext, Destination, PipelineId, ReadMode, Source, StreamName};
 use rdlt_engine::{
-    CommitPolicy, Cores, Engine, EngineConfig, LocalWal, PipelinePlan, Report, RunHandle,
-    RunOutcome, StopMode, StreamPlan, SystemEnv, Until,
+    CommitPolicy, Cores, Engine, EngineConfig, PipelinePlan, Report, RunHandle, RunOutcome,
+    StopMode, StreamPlan, SystemEnv, Until,
 };
 use rdlt_host::{ConnectorRef, Local, Provider as _};
 use tokio::runtime::Runtime;
@@ -373,9 +373,7 @@ impl Cell {
         let bytes = CommitPolicy::streaming().bytes().map(NonZeroU64::get);
         let policy = CommitPolicy::new(Some(every), None, bytes).expect("a valid policy");
         let config = EngineConfig::builder().commit(policy).build();
-        let log = Arc::new(LocalWal::new(dir.path().join("log")));
-        let env = SystemEnv::try_new(self.cores).expect("the pool starts");
-        let env = Arc::new(env.with_wal(log));
+        let env = Arc::new(SystemEnv::try_new(self.cores).expect("the pool starts"));
         let engine = Engine::new(config.expect("a valid configuration"), env);
         let streams = STREAMS.map(|name| {
             let name = StreamName::new(name).expect("the streams' names are valid");
@@ -506,8 +504,8 @@ fn print(case: Case, measured: f64, runs: &[Run]) {
     println!(
         "latency/{}/{}: {} runs at {:.0} pushes a second of {ROWS} rows, half what it landed \
          unpaced; the last made {} attempts, was run again {} times, and made {} commits, {} on \
-         the interval, {} at the end, {} on size, cursors or the log; a commit's flush {:.1} ms, \
-         log {:.1} ms, commit {:.1} ms, ack {:.1} ms",
+         the interval, {} at the end, {} on size or cursors; a commit's flush {:.1} ms, commit \
+         {:.1} ms, ack {:.1} ms",
         case.placement.name(),
         case.parameter(),
         runs.len(),
@@ -517,9 +515,8 @@ fn print(case: Case, measured: f64, runs: &[Run]) {
         last.commits,
         commits.interval,
         commits.end,
-        commits.size + commits.cursors + commits.log,
+        commits.size + commits.cursors,
         each(phases.flush),
-        each(phases.log),
         each(phases.commit),
         each(phases.ack),
     );

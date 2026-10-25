@@ -37,7 +37,6 @@ mod phases;
 mod placement;
 mod recorded;
 mod replanning;
-mod replay_failures;
 mod reserved;
 mod reset;
 mod schema;
@@ -46,12 +45,9 @@ mod signals;
 mod split;
 mod stored;
 mod support;
-mod takeover;
 mod told;
 mod unbounded;
 mod unheld;
-mod wal;
-mod wal_changes;
 mod widened;
 
 /// Tracks the heap's peak, for the memory bound.

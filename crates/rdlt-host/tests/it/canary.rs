@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use rdlt_connector::{BoxFuture, PipelineId, Secret, StreamName};
 use rdlt_engine::{
-    CommitPolicy, Engine, EngineConfig, LocalWal, PipelinePlan, RetryPolicy, RunStatus, StreamPlan,
+    CommitPolicy, Engine, EngineConfig, PipelinePlan, RetryPolicy, RunStatus, StreamPlan,
 };
 use rdlt_host::{
     Local, Provider as _, Registry, SecretFault, SecretKind, SecretReference, SecretResolver,
@@ -275,7 +275,7 @@ async fn no_secret_an_in_process_connector_says_back_is_in_its_errors() {
 #[test]
 fn no_secret_is_in_a_runs_report_its_log_its_state_or_what_its_destination_keeps() {
     let dir = tempfile::tempdir().expect("a temporary directory");
-    let (wal, out) = (dir.path().join("wal"), dir.path().join("out"));
+    let out = dir.path().join("out");
     // The source says its secrets as it connects, fails a read once saying them again, and
     // is told a path it may keep its mark of that in.
     let script = serde_json::json!({
@@ -299,11 +299,10 @@ fn no_secret_is_in_a_runs_report_its_log_its_state_or_what_its_destination_keeps
             .await
             .expect("the destination connects")
             .connector;
-        let engine = engine(&wal);
+        let engine = engine();
         let stream = StreamPlan::new(StreamName::new("rows").expect("a valid stream name"));
         let plan = PipelinePlan::new(PipelineId::parse("canary").unwrap(), [stream])
-            .expect("a valid plan")
-            .with_wal(true);
+            .expect("a valid plan");
         let outcome = engine
             .run(plan, Arc::from(source), Arc::from(destination))
             .await;
@@ -322,7 +321,7 @@ fn no_secret_is_in_a_runs_report_its_log_its_state_or_what_its_destination_keeps
     clean("the report as text", &format!("{:?}", outcome.report), true);
     clean("the run's error", &error_texts, false);
     clean("the log", &logged.text(), true);
-    // The write-ahead log, the state the destination keeps, and every file it published.
+    // The state the destination keeps, and every file it published.
     let kept = files(dir.path());
     assert!(
         kept.contains("manifest") || kept.contains("rows"),
@@ -331,9 +330,8 @@ fn no_secret_is_in_a_runs_report_its_log_its_state_or_what_its_destination_keeps
     clean("what the run kept on disk", &kept, false);
 }
 
-/// An engine that commits every fifty rows, retries a failed attempt at once, and keeps its
-/// write-ahead logs in `wal`.
-fn engine(wal: &Path) -> Engine {
+/// An engine that commits every fifty rows and retries a failed attempt at once.
+fn engine() -> Engine {
     let policy = CommitPolicy::new(None, Some(50), None).expect("a row threshold is valid");
     let retry = RetryPolicy::default()
         .max_attempts(5)
@@ -344,8 +342,7 @@ fn engine(wal: &Path) -> Engine {
         .lanes(2)
         .build()
         .expect("the engine's configuration is valid");
-    let env = crate::support::system_env().with_wal(Arc::new(LocalWal::new(wal)));
-    Engine::new(config, Arc::new(env))
+    Engine::new(config, Arc::new(crate::support::system_env()))
 }
 
 /// The reference to the files destination.

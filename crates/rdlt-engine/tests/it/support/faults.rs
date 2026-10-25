@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use rdlt_connector::{
     BoxFuture, Capabilities, CommitMeta, ConnectorError, ConnectorErrorKind, Destination,
     DestinationSession, DestinationWriter, OpenContext, OpenedSession, Receipt, Result,
-    StateChange, StateEntry, TableChange, TableRef,
+    TableChange, TableRef,
 };
 
 /// How a commit fails.
@@ -32,17 +32,6 @@ pub(crate) fn failing_commits(
         inner,
         rule,
         commits: Arc::new(AtomicUsize::new(0)),
-    })
-}
-
-/// The phase a commit with `meta` begins, if it begins one.
-pub(crate) fn begins(meta: &CommitMeta) -> Option<u16> {
-    meta.state_delta.iter().find_map(|change| match change {
-        StateChange::Put(record) => match StateEntry::from_record(record) {
-            Ok(StateEntry::Phase { phase, .. }) => Some(phase),
-            _ => None,
-        },
-        StateChange::Delete(_) => None,
     })
 }
 

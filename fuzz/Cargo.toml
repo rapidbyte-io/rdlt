@@ -13,7 +13,6 @@ arrow-array = "59.2"
 arrow-schema = "59.2"
 arrow-select = "59.2"
 bytes = "1.12.1"
-crc32c = "0.6"
 http-body = "1.1.0"
 libfuzzer-sys = "0.4.13"
 peak_alloc = "0.3.0"
@@ -56,13 +55,6 @@ bench = false
 [[bin]]
 name = "normalize"
 path = "fuzz_targets/normalize.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "wal_log"
-path = "fuzz_targets/wal_log.rs"
 test = false
 doc = false
 bench = false

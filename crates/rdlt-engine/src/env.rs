@@ -9,13 +9,11 @@ mod tests;
 use std::future::Future;
 use std::num::NonZeroUsize;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use rdlt_connector::LoadId;
 
 use crate::compute::ComputePool;
-use crate::wal::WalStore;
 
 #[cfg(any(test, feature = "bench"))]
 pub(crate) use inline::InlineEnv;
@@ -24,11 +22,10 @@ pub use system::SystemEnv;
 /// A future that completes after a duration measured on an [`Env`]'s clock.
 pub type Sleep = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 
-/// Every source of nondeterminism the engine may use, the cores it may use, and where it keeps
-/// write-ahead logs.
+/// Every source of nondeterminism the engine may use, and the cores it may use.
 ///
 /// Production code uses [`SystemEnv`]. Deterministic simulation substitutes a virtual clock, a
-/// seeded random source, an inline compute pool, a fixed count of cores and logs in memory.
+/// seeded random source, an inline compute pool and a fixed count of cores.
 pub trait Env: Send + Sync + 'static {
     /// Wall-clock time, for timestamps that are persisted or reported.
     fn now(&self) -> SystemTime;
@@ -47,12 +44,6 @@ pub trait Env: Send + Sync + 'static {
 
     /// The cores the engine may use: lanes default to one per core.
     fn cores(&self) -> NonZeroUsize;
-
-    /// Where write-ahead logs are kept; none by default, so a pipeline that needs one fails to
-    /// plan.
-    fn wal(&self) -> Option<Arc<dyn WalStore>> {
-        None
-    }
 
     /// Told each change of what a memory budget holds reserved: `change` bytes more, or fewer
     /// where it is negative.

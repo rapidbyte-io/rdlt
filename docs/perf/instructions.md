@@ -18,9 +18,7 @@ The cases are those of the engine's `allocations` bench whose names hold a `/`.
 | `normalize/keyless/nested`, `normalize/keyless/with_arrays`, `normalize/keyed/with_arrays` | normalizing, to depth 8, keyless or as a merge keyed on `id`, the batches 1 MiB of the corpus shreds into |
 | `normalize/dropped/with_arrays` | normalizing the `with_arrays` batches as `normalize/keyless/with_arrays` does, then dropping every tenth root row and pruning each child table of the rows whose parent went |
 | `wide/arrow_1000` | `bench::Wide::run` of the wide bench's `arrow/1000`: 8 pushes of about 8 MiB of rows of a thousand of the passthrough workload's columns, from a replaying source to the null sink, within the same two cores |
-| `wal/encode` | `bench::sample_log` of one 8,192-row batch of the passthrough workload's columns |
-| `wal/scan` | `bench::scan_log` of that log |
-| `ipc/roundtrip` | `rdlt_wire`'s `Encoder` and `Decoder` over that batch: its schema and its frames encoded, then decoded |
+| `ipc/roundtrip` | `rdlt_wire`'s `Encoder` and `Decoder` over one 8,192-row batch of the passthrough workload's columns: its schema and its frames encoded, then decoded |
 | `json/check` | `bench::check_json` over a column of 8,192 escaped JSON values, the string-heavy corpus's rows |
 | `lowering/append_text`, `lowering/merge_unique`, `lowering/merge_duplicates`, `lowering/history`, `lowering/changes`, `lowering/split_json`, `lowering/one_bad_value`, `lowering/one_dropped_row`, `lowering/temporal_widening` | preparing the lowering bench's batch of that name, of 8,192 rows, on the calling thread, as [lowering.md](lowering.md) describes it |
 
@@ -75,8 +73,6 @@ instructions move between runs of one tree, as below:
 | `shred/string_heavy` | 35,802,719 | 4,830 |
 | `shred/wide_200` | 47,633,638 | 1,851 |
 | `shred/with_arrays` | 48,369,600 | 10,871 |
-| `wal/encode` | 4,775,577 | 142 |
-| `wal/scan` | 5,072,218 | 179 |
 
 ## Counts of the ground-truth cases
 

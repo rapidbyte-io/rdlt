@@ -6,9 +6,9 @@ type Flag = fn(&Features) -> bool;
 
 #[test]
 fn every_feature_is_drawn_on_and_off_and_now_and_then_all_at_once() {
-    // Every feature at once is one seed in 16 384: one in eight, by one in four for each of the
-    // network, the log, streaming and resetting, and one in two for each of a hostile host, churn
-    // and broken connectors.
+    // Every feature at once is about one seed in 21 845: one in eight, by one in four for each of
+    // the network, sources that forget, streaming and resetting, three in four for no fat values,
+    // and one in two for each of a hostile host, churn and broken connectors.
     let drawn: Vec<Features> = (0..256_000)
         .map(|seed| Features::draw(&mut SplitMix64::new(seed)))
         .collect();
@@ -28,7 +28,7 @@ fn every_feature_is_drawn_on_and_off_and_now_and_then_all_at_once() {
         ("perturb", |features| features.perturb),
         ("network", |features| features.network),
         ("process", |features| features.process),
-        ("wal", |features| features.wal),
+        ("forgetting", |features| features.forgetting),
         ("streaming", |features| features.streaming),
         ("churn", |features| features.churn),
         ("reset", |features| features.reset),
@@ -81,12 +81,12 @@ fn features_that_exclude_or_need_one_another_never_clash() {
 }
 
 #[test]
-fn fat_values_keep_no_log_and_change_nothing_else_a_workload_draws() {
-    let mut any = false;
+fn fat_values_change_nothing_else_a_workload_draws() {
+    let (mut any, mut forgetting) = (false, false);
     for seed in 0..1000 {
         let mut rng = SplitMix64::new(seed);
         let features = Features::draw(&mut rng);
-        assert!(!(features.fat && features.wal), "seed {seed}");
+        forgetting |= features.fat && features.forgetting;
         let lean = Features {
             fat: false,
             ..features
@@ -103,6 +103,42 @@ fn fat_values_keep_no_log_and_change_nothing_else_a_workload_draws() {
         assert_eq!(format!("{fat:?}"), format!("{plain:?}"), "seed {seed}");
     }
     assert!(any, "some stream has fat values");
+    assert!(
+        forgetting,
+        "some seed has fat values and sources that forget"
+    );
+}
+
+#[test]
+fn sources_that_forget_are_drawn_apart_and_change_nothing_a_workload_draws_but_whether_they_forget()
+{
+    let mut forgot = 0;
+    for seed in 0..1000 {
+        let mut rng = SplitMix64::new(seed);
+        let features = Features::draw(&mut rng);
+        let remembering = Features {
+            forgetting: false,
+            ..features
+        };
+        let mut forgetting = crate::workload::Workload::generate(&mut rng.clone(), features);
+        let plain = crate::workload::Workload::generate(&mut rng, remembering);
+        for (index, stream) in forgetting.streams.iter_mut().enumerate() {
+            let incremental = stream.read == rdlt_connector::ReadMode::Incremental;
+            let forgets = features.forgetting && incremental && index % 2 == 0;
+            assert_eq!(stream.replayable, !forgets, "seed {seed}: stream {index}");
+            forgot += usize::from(forgets);
+            stream.replayable = true;
+        }
+        forgetting.features = remembering;
+        // Drawn floats include NaN, which is not equal to itself, so the workloads are compared
+        // by what they print.
+        assert_eq!(
+            format!("{forgetting:?}"),
+            format!("{plain:?}"),
+            "seed {seed}"
+        );
+    }
+    assert!(forgot > 0, "some stream forgets");
 }
 
 #[test]

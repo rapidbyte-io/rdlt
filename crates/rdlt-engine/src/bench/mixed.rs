@@ -1,20 +1,19 @@
 //! The passthrough workload from streams of two kinds in one pipeline: those whose source can
-//! read them again and the last, which it cannot, so that each load logs every stream's batches
-//! ahead; and the same pipeline with every stream readable again, which logs nothing.
+//! read them again and the last, which it cannot, every stream told its cursor once its commit
+//! lands; and the same pipeline with every stream readable again.
 
 #[cfg(test)]
 mod tests;
 
 use std::num::NonZeroUsize;
-use std::sync::Arc;
 
 use arrow_array::RecordBatch;
 use rdlt_connector::ReadMode;
 
-use super::replay::{mixed_replay, share};
+use super::replay::mixed_replay;
 use super::runner::{Runner, streams};
-use super::{Cadence, Cell, Passthrough, Replayed, Sinking, batch_frame, sink};
-use crate::{ComputePoolError, Cores, EngineConfig, GrowthLimits, Report, WalStore};
+use super::{Cadence, Cell, Passthrough, Replayed, Sinking, sink};
+use crate::{ComputePoolError, Cores, EngineConfig, Report};
 
 /// The batches of a cell read from streams of two kinds, and an engine to move them.
 #[derive(Debug)]
@@ -36,9 +35,8 @@ impl Mixed {
         Sinking::Ipc,
     );
 
-    /// The batches of `cell`, the last of whose streams its source cannot read again, so that
-    /// each load logs every batch into `store`; on a runtime of `cores`' workers and an engine
-    /// within `cores` and the default budget.
+    /// The batches of `cell`, the last of whose streams its source cannot read again; on a
+    /// runtime of `cores`' workers and an engine within `cores` and the default budget.
     ///
     /// # Errors
     ///
@@ -47,11 +45,7 @@ impl Mixed {
     /// # Panics
     ///
     /// Panics where `cell` has a single stream, which leaves no stream of the other kind.
-    pub fn logged(
-        cores: Cores,
-        cell: Cell,
-        store: Arc<dyn WalStore>,
-    ) -> Result<Self, ComputePoolError> {
+    pub fn new(cores: Cores, cell: Cell) -> Result<Self, ComputePoolError> {
         assert!(
             cell.streams.get() > 1,
             "a mix of streams needs two at least"
@@ -60,19 +54,18 @@ impl Mixed {
         if let Some(last) = plans.pop() {
             plans.push(last.read(ReadMode::Incremental));
         }
-        let log = (store, GrowthLimits::default().log_bytes());
         let memory = EngineConfig::default().memory().get();
-        let runner = Runner::mixed(cores, ("mixed", plans), cell.commit_rows(), memory, log)?;
+        let runner = Runner::within(cores, "mixed", plans, cell.commit_rows(), memory)?;
         Ok(Self::of(runner, cell, 1))
     }
 
-    /// The batches of `cell` as [`Mixed::logged`] makes them, from streams its source can each
-    /// read again, so that no load logs anything.
+    /// The batches of `cell` as [`Mixed::new`] makes them, from streams its source can each
+    /// read again.
     ///
     /// # Errors
     ///
     /// When the compute pool's threads do not start.
-    pub fn unlogged(cores: Cores, cell: Cell) -> Result<Self, ComputePoolError> {
+    pub fn replayable(cores: Cores, cell: Cell) -> Result<Self, ComputePoolError> {
         let memory = EngineConfig::default().memory().get();
         let runner = Runner::within(
             cores,
@@ -115,25 +108,5 @@ impl Mixed {
         let rows: usize = self.batches.iter().map(RecordBatch::num_rows).sum();
         assert_eq!(report.rows, rows as u64);
         report
-    }
-
-    /// Bytes: the batch frames of every stream but the last, which the source of a logged run
-    /// can read again, and of every stream, each batch's frame as a load logs it.
-    ///
-    /// # Panics
-    ///
-    /// Panics where a frame does not encode, which a valid batch always does.
-    pub fn frame_bytes(&self) -> (u64, u64) {
-        let (partitions, streams) = (self.cell.partitions, self.cell.streams);
-        let of = |stream: usize| -> u64 {
-            (0..partitions.get())
-                .flat_map(|partition| {
-                    share(self.batches.len(), (partitions, streams), stream, partition)
-                })
-                .map(|index| batch_frame(self.batches[index].clone()).len() as u64)
-                .sum()
-        };
-        let last = streams.get() - 1;
-        ((0..last).map(of).sum(), (0..=last).map(of).sum())
     }
 }

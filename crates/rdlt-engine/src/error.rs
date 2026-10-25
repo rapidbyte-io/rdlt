@@ -36,8 +36,6 @@ pub enum ErrorKind {
     Cancelled,
     /// A bug in the engine.
     Internal,
-    /// The write-ahead log could not be written or read.
-    Wal,
     /// The memory budget had no room for what the run holds, for as long as a request waits.
     Memory,
 }
@@ -130,10 +128,6 @@ impl Error {
         Self::new(ErrorKind::Internal, context)
     }
 
-    pub(crate) fn wal(context: impl Into<String>) -> Self {
-        Self::new(ErrorKind::Wal, context)
-    }
-
     /// The error for a request that waited on the memory budget until its deadline, `exhausted`
     /// saying what held the budget: retryable, since another attempt holds other bytes.
     pub(crate) fn memory(exhausted: Exhausted) -> Self {
@@ -142,96 +136,6 @@ impl Error {
         memory.retryable = true;
         memory.source = Some(Box::new(exhausted));
         memory
-    }
-
-    /// The error for `error`, from the write-ahead log's store: retryable where the operation may
-    /// succeed if tried again.
-    ///
-    /// What a local log's store refused, as no user's alone or as a name it never writes, is
-    /// `wal_not_private` or `wal_stray`; a full disk or quota is `wal_storage_full`.
-    pub(crate) fn from_wal(error: std::io::Error) -> Self {
-        use std::io::ErrorKind as Io;
-        // A full disk is no end: the failed write gave back what it staged, and the next
-        // attempt frees what a crashed load staged before it needs room of its own.
-        let full = matches!(error.kind(), Io::StorageFull | Io::QuotaExceeded);
-        let transient = full
-            || matches!(
-                error.kind(),
-                Io::Interrupted | Io::TimedOut | Io::WouldBlock | Io::ResourceBusy
-            );
-        let refused = error
-            .get_ref()
-            .and_then(|inner| inner.downcast_ref::<crate::wal::Refusal>())
-            .map(|refusal| match refusal {
-                crate::wal::Refusal::NotPrivate { .. } => codes::WAL_NOT_PRIVATE,
-                crate::wal::Refusal::Stray { .. } => codes::WAL_STRAY,
-            });
-        let mut wal = Self::wal(format!("the write-ahead log failed: {error}"));
-        wal.retryable = transient;
-        wal.code = refused
-            .or(full.then_some(codes::WAL_STORAGE_FULL))
-            .map(Coded::Engine);
-        wal.source = Some(Box::new(error));
-        wal
-    }
-
-    /// The error for a write-ahead log an earlier failure, `failure`, left unknown: of its kind
-    /// and code, and retryable as it was, since the next attempt writes a log of its own.
-    pub(crate) fn wal_failed_before(failure: &Self) -> Self {
-        let mut wal = Self::new(
-            failure.kind,
-            format!("the write-ahead log failed before: {failure}"),
-        );
-        wal.code = failure.code().map(Coded::Engine);
-        wal.retryable = failure.retryable;
-        wal
-    }
-
-    /// The error for a load whose log a replay took over, publishing the chunk the load was to
-    /// publish next: another attempt runs, which fences this one.
-    pub(crate) fn wal_fenced(load: rdlt_connector::LoadId) -> Self {
-        Self::new(
-            ErrorKind::Fenced,
-            format!("the write-ahead log of load {load} was taken over by a replay"),
-        )
-        .with_code(codes::WAL_FENCED)
-    }
-
-    /// The error for a replay that could not fence `load`'s log, which its load kept publishing
-    /// chunks to: another attempt of the pipeline runs, and this one waits for it, retryably.
-    pub(crate) fn wal_running(load: rdlt_connector::LoadId) -> Self {
-        let mut running = Self::wal(format!(
-            "load {load} of the pipeline is still writing its write-ahead log"
-        ))
-        .with_code(codes::WAL_RUNNING);
-        running.retryable = true;
-        running
-    }
-
-    /// The error for an attempt whose log another attempt's replay removed as it was being opened:
-    /// another attempt of the pipeline begins, and this one waits for it, retryably.
-    pub(crate) fn wal_opening_taken(load: rdlt_connector::LoadId) -> Self {
-        let mut taken = Self::wal(format!(
-            "another attempt of the pipeline removed the write-ahead log of load {load} as it \
-             was opened"
-        ))
-        .with_code(codes::WAL_RUNNING);
-        taken.retryable = true;
-        taken
-    }
-
-    /// The error for an attempt whose log store, `ours`, is not `named`, the store the
-    /// destination names for the pipeline's logs: its runs must keep their logs in one store.
-    pub(crate) fn wal_store_other(
-        ours: rdlt_connector::LoadId,
-        named: rdlt_connector::LoadId,
-    ) -> Self {
-        Self::config(format!(
-            "the pipeline's logs at this destination are kept in store {named}, and this \
-             engine's is store {ours}: its runs keep their logs in one store, whose identity \
-             file moves with it"
-        ))
-        .with_code(codes::WAL_STORE_OTHER)
     }
 
     /// Classifies a connector's `error` from `side`, keeping it as the cause: the side failed.

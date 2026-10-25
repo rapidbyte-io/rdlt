@@ -11,7 +11,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use rdlt_connector::{ConnectorId, ReadMode, Source};
-use rdlt_engine::{ErrorKind, LocalWal, RunStatus, WalStore};
+use rdlt_engine::{ErrorKind, RunStatus};
 use rdlt_host::{ConnectorRef, Identity, Provider as _, Remote};
 use rdlt_testkit::tls::Pki;
 use tokio::io::{AsyncBufReadExt as _, BufReader};
@@ -21,8 +21,7 @@ use crate::support::destinations::{Step, failing};
 use crate::support::hooked::{At, Hook, hooked};
 use crate::support::script::{Script, ScriptStream, id, reconnect};
 use crate::support::{
-    commit_every, engine, logging_engine, memory, pipeline, published_ids, published_json,
-    retrying, stream,
+    commit_every, engine, memory, pipeline, published_ids, published_json, retrying, stream,
 };
 
 /// The log source's configuration: one stream, `events`, of one partition holding `messages`
@@ -150,8 +149,7 @@ async fn a_run_with_nothing_new_from_a_served_source_completes_in_one_attempt() 
             let base = tempfile::tempdir().expect("a temporary directory");
             let group = base.path().join("events.group");
             let config = log(50, replayable, &group);
-            let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(base.path().join("wal")));
-            let engine = logging_engine(retrying(3), store);
+            let engine = engine(retrying(3));
             let listening = Listening::start().await;
             let place = || async {
                 if listens {
@@ -231,7 +229,6 @@ async fn every_partition_a_commit_covers_is_reported_whether_it_moved_or_not() {
 
 #[tokio::test(start_paused = true)]
 async fn a_report_refused_in_one_attempt_is_made_again_by_the_next_though_nothing_moves() {
-    let base = tempfile::tempdir().expect("a temporary directory");
     for replayable in [true, false] {
         let name = format!("ack_again_{replayable}");
         let mut events = ScriptStream::new("events", 1, 10, 5);
@@ -239,8 +236,7 @@ async fn a_report_refused_in_one_attempt_is_made_again_by_the_next_though_nothin
         let (script, source) = Script::new(vec![events]).connect(&name).await;
         // The first report is refused, as one lost on its way is.
         script.limited_acks.store(1, Ordering::SeqCst);
-        let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(base.path().join(&name)));
-        let engine = logging_engine(retrying(3).commit(commit_all()), store);
+        let engine = engine(retrying(3).commit(commit_all()));
         let plan = || incremental(&name.replace('_', "-"));
         let first = engine
             .run(plan(), Arc::clone(&source), memory(&name).await)
@@ -274,13 +270,12 @@ fn commit_all() -> rdlt_engine::CommitPolicy {
 
 #[tokio::test]
 async fn a_connector_started_again_before_it_hears_of_a_commit_costs_one_attempt_and_no_row() {
-    // A source that reads again is told after the destination's commit; one that forgets, once
-    // the commit is logged and before the destination has it.
-    for (replayable, at) in [(true, At::Landed), (false, At::Flush)] {
+    // Each source is told once the destination's commit has landed, whether it reads again or
+    // forgets: the connector is started again just before.
+    for replayable in [true, false] {
         let name = format!("restarted-{replayable}");
         let base = tempfile::tempdir().expect("a temporary directory");
         let group = base.path().join("events.group");
-        let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(base.path().join("wal")));
         // One commit, once the read has ended: the connector is idle when it is started again.
         let config = commit_every(1000).retry(
             rdlt_engine::RetryPolicy::default()
@@ -288,14 +283,14 @@ async fn a_connector_started_again_before_it_hears_of_a_commit_costs_one_attempt
                 .initial(Duration::from_millis(10))
                 .max_delay(Duration::from_millis(100)),
         );
-        let engine = logging_engine(config, store);
+        let engine = engine(config);
         let listening = Listening::start().await;
         let restarting = Arc::clone(&listening);
         let hook: Hook = Arc::new(move || {
             let listening = Arc::clone(&restarting);
             Box::pin(async move { listening.restart().await })
         });
-        let destination = hooked(memory(&name).await, at, hook);
+        let destination = hooked(memory(&name).await, At::Landed, hook);
         let source = listening.source(&log(50, replayable, &group)).await;
         let loaded = engine.run(incremental(&name), source, destination).await;
         assert_eq!(loaded.report.status, RunStatus::Succeeded, "{name}");
@@ -322,24 +317,21 @@ async fn a_connector_started_again_before_it_hears_of_a_commit_costs_one_attempt
 
 #[tokio::test(start_paused = true)]
 async fn a_source_that_refuses_every_report_fails_the_run_once_no_attempt_is_left() {
-    let base = tempfile::tempdir().expect("a temporary directory");
     for replayable in [true, false] {
         let name = format!("ack_refused_{replayable}");
         let mut events = ScriptStream::new("events", 1, 10, 5);
         events.replayable = replayable;
         let (script, source) = Script::new(vec![events]).connect(&name).await;
         script.limited_acks.store(usize::MAX, Ordering::SeqCst);
-        let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(base.path().join(&name)));
-        let engine = logging_engine(retrying(3).commit(commit_all()), store);
+        let engine = engine(retrying(3).commit(commit_all()));
         let plan = incremental(&name.replace('_', "-"));
         let running = engine.run(plan, source, memory(&name).await);
         // Bounded on the paused clock: a run that retried without end would fail here at once.
         let outcome = tokio::time::timeout(Duration::from_secs(600), running).await;
         let outcome = outcome.expect("the run ends once no attempt is left");
         // Every attempt reported the rows' position and was refused, and none that landed
-        // nothing reset the count of failures. A source that forgets is told before the rows
-        // land: the second attempt landed them from the log, so one more was made.
-        let attempts = if replayable { 3 } else { 4 };
+        // nothing reset the count of failures, whether the source reads again or forgets.
+        let attempts = 3;
         assert_eq!(outcome.report.status, RunStatus::Failed, "{name}");
         assert_eq!(outcome.report.attempted, attempts, "{name}");
         assert!(script.acks.lock().is_empty(), "{name}");
@@ -387,7 +379,6 @@ fn ending_past_its_checkpoint(replayable: bool) -> ScriptStream {
 
 #[tokio::test(start_paused = true)]
 async fn a_report_refused_is_made_again_though_its_partition_then_ends_done() {
-    let base = tempfile::tempdir().expect("a temporary directory");
     for replayable in [true, false] {
         let name = format!("ack_done_{replayable}");
         let events = ending_past_its_checkpoint(replayable);
@@ -395,8 +386,7 @@ async fn a_report_refused_is_made_again_though_its_partition_then_ends_done() {
         // The report of the checkpoint at ten is refused.
         script.limited_acks.store(1, Ordering::SeqCst);
         let each = rdlt_engine::CommitPolicy::new(None, Some(1), None).expect("a valid policy");
-        let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(base.path().join(&name)));
-        let engine = logging_engine(retrying(3).commit(each), store);
+        let engine = engine(retrying(3).commit(each));
         let plan = incremental(&name.replace('_', "-"));
         let outcome = engine.run(plan, source, memory(&name).await).await;
         assert_eq!(outcome.report.status, RunStatus::Succeeded, "{name}");
@@ -428,26 +418,6 @@ async fn a_run_whose_partition_ends_done_succeeds_though_its_source_refused_ever
     assert_eq!(outcome.report.rows, 15);
     assert!(script.acks.lock().is_empty());
     assert_eq!(script.limited_acks.load(Ordering::SeqCst), usize::MAX - 2);
-}
-
-#[tokio::test(start_paused = true)]
-async fn rows_an_attempt_lands_from_the_log_an_earlier_one_left_are_progress() {
-    let base = tempfile::tempdir().expect("a temporary directory");
-    let mut events = ScriptStream::new("events", 1, 15, 5);
-    events.replayable = false;
-    let (script, source) = Script::new(vec![events]).connect("ack_replayed").await;
-    // The first two reports are refused, each before its commit lands: the attempt after
-    // lands it from the log, and reads on.
-    script.limited_acks.store(2, Ordering::SeqCst);
-    let each = rdlt_engine::CommitPolicy::new(None, Some(1), None).expect("a valid policy");
-    let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(base.path().join("ack_replayed")));
-    let engine = logging_engine(retrying(2).commit(each), store);
-    let plan = incremental("ack-replayed");
-    let outcome = engine.run(plan, source, memory("ack_replayed").await).await;
-    // Two failed attempts are as many as the run allows, were the rows the second landed not
-    // counted: it lands the first's, so the third is made.
-    assert_eq!(outcome.report.status, RunStatus::Succeeded);
-    assert_eq!((outcome.report.attempted, outcome.report.rows), (3, 15));
 }
 
 #[tokio::test(start_paused = true)]

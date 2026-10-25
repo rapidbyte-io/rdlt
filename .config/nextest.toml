@@ -88,12 +88,6 @@ slow-timeout = { period = "30s", terminate-after = 2 }
 filter = "package(rdlt-engine) & binary(it) & test(=shredding::sparse_json_of_any_number_of_partitions_loads_under_any_budget)"
 slow-timeout = { period = "30s", terminate-after = 2 }
 
-# The log's tests of partitions loading at once run every load of a matrix through every way
-# receipts may come, one of them on the real clock.
-[[profile.mutants.overrides]]
-filter = "package(rdlt-engine) & test(/^wal::load::tests::concurrent::/)"
-slow-timeout = { period = "30s", terminate-after = 2 }
-
 # The certifier's command-line and spawned tests run the binary against real connectors and kill
 # processes, more slowly beside other tests.
 [[profile.mutants.overrides]]
@@ -114,9 +108,9 @@ slow-timeout = { period = "60s", terminate-after = 3 }
 filter = "package(rdlt-connector-reference)"
 slow-timeout = { period = "30s", terminate-after = 2 }
 
-# The engine's tests of a table that changes with every push load and replay hundreds of schema
-# versions through a spawned destination: up to eight seconds alone, more beside other mutants'
-# tests. They wait long enough that only a hang times out.
+# The engine's test of a table that changes with every push loads hundreds of schema versions
+# through a spawned destination: up to eight seconds alone, more beside other mutants' tests. It
+# waits long enough that only a hang times out.
 [[profile.mutants.overrides]]
 filter = "package(rdlt-engine) & test(/through_a_served_destination$/)"
 slow-timeout = { period = "30s", terminate-after = 2 }

@@ -142,8 +142,8 @@ impl Local {
     }
 
     /// Names `dir`, an absolute path, as a directory the host keeps its own files in, as its
-    /// write-ahead log, its state, or secrets it reads itself: no root grants may write within
-    /// may hold it or lie within it.
+    /// state or secrets it reads itself: no root grants may write within may hold it or lie
+    /// within it.
     #[must_use]
     pub fn guarded_dir(mut self, dir: impl Into<PathBuf>) -> Self {
         self.guarded_dirs.push(dir.into());

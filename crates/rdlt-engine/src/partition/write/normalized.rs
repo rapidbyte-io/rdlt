@@ -103,11 +103,10 @@ pub(super) async fn write_normalized(
             let tables: Vec<usize> = pieces.iter().map(|piece| piece.table).collect();
             let prepared = lower(context, pieces, stamp).await;
             for ((prepared, taken), table) in prepared.into_iter().zip(taken).zip(tables) {
-                // The piece on its lane and its frame in the log each hold their part of the
-                // allowance, and with it what the piece reserved, until they are written.
-                let part = |taken| Box::new((taken, Arc::clone(&hold))) as Permit;
-                let permits = (part(taken.piece), taken.frame.map(part));
-                queue(job, context, open, table, prepared?, permits).await?;
+                // The piece on its lane holds its part of the allowance, and with it what the
+                // piece reserved, until it is written.
+                let permit = Box::new((taken, Arc::clone(&hold))) as Permit;
+                queue(job, context, open, table, prepared?, permit).await?;
             }
         }
     }

@@ -57,7 +57,7 @@ pub struct ChangeStream {
     /// sent, and one whose source can read it again.
     pub replay: Option<Range<usize>>,
     /// Whether the source can read again what it acknowledged; one that cannot forgets it, as a
-    /// replication slot does, and its pipeline's write-ahead log holds what it has not landed.
+    /// replication slot does.
     pub replayable: bool,
     /// Whether a merge stream keeps every version of each key instead: its changes carry their
     /// position as their change time, and set whole rows.
@@ -125,8 +125,8 @@ impl Event {
 
 impl ChangeWorkload {
     /// A workload drawn from `rng`: one to three streams, merged or logged, with every delete and
-    /// truncate mode; where pipelines keep write-ahead logs, every other one's source cannot read
-    /// again what it acknowledged.
+    /// truncate mode; where sources forget, every other one's source cannot read again what it
+    /// was told.
     ///
     /// `apart` draws which merge streams keep history instead, and what their events send again,
     /// so every other draw falls as it did before they did.
@@ -137,7 +137,7 @@ impl ChangeWorkload {
     ) -> Self {
         let streams = (0..=rng.below(3))
             .map(|index| {
-                let replayable = !(features.wal && index.is_multiple_of(2));
+                let replayable = !(features.forgetting && index.is_multiple_of(2));
                 let mut stream = ChangeStream::generate(rng, format!("c{index}"), replayable);
                 stream.history = apart.chance(400) && stream.write == WriteMode::Merge;
                 if stream.history {

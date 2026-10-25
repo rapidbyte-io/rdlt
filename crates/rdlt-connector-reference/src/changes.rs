@@ -73,7 +73,7 @@ pub struct ChangedStream {
     #[serde(default)]
     pub captured: u64,
     /// Whether the source serves again the changes its slot acknowledged; one that does not
-    /// forgets them, as a replication slot does, and a read from before them waits; its source
+    /// forgets them, as a replication slot does, and refuses a read from before them; its source
     /// names its `slot` or `slot_path`.
     #[serde(default = "yes")]
     pub replayable: bool,
@@ -297,7 +297,8 @@ impl ReadStream<ChangesSource> for Changed {
         let id = partition.id().as_str();
         if id == CHANGES_PARTITION {
             let forgotten = source.slot.position(&self.0.name, partition.id());
-            // The changes it acknowledged are gone; a read from before them waits for them to land.
+            // The changes it acknowledged are gone: a read from before them means the destination
+            // lost a commit it answered, and is refused as a transient error.
             if !self.0.replayable && forgotten.is_some_and(|forgotten| cursor.next < forgotten.next)
             {
                 return Err(ConnectorError::new(

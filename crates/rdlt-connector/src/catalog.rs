@@ -92,13 +92,17 @@ impl StreamSpec {
 
     /// Declares whether the stream can be re-read from any committed cursor.
     ///
-    /// A stream that cannot is read incrementally or as changes, and each load keeps a
-    /// write-ahead log of it, since the source is acknowledged before the destination commits.
-    /// Such a source serves each row to at most one reader: rows one load read and was
-    /// acknowledged for are not served to another, which the log could not tell apart from rows
-    /// it holds. It refuses, as a transient error, a read from before a position it acknowledged
-    /// rather than starting after it, so a read the log has yet to catch up with waits, and one
-    /// it cannot fails, instead of skipping rows.
+    /// A stream that cannot is read incrementally or as changes, and is told a cursor only once
+    /// the commit that holds the rows before it has landed. A source that reads by position
+    /// never serves, from a cursor it issued, a row from before that cursor, whether or not it
+    /// was told it. It serves again everything after the last cursor it was told, refuses as a
+    /// transient error a read from before that cursor, and may drop what precedes it. A source
+    /// that leases messages instead settles a message with its broker only once told a cursor
+    /// past it, renews the lease until then where the broker allows and stops when its read
+    /// stops, and treats a settlement refused for an expired lease as done. Its stream is
+    /// at-least-once: each row carries an id the broker keeps across redeliveries, or the
+    /// publisher's where the broker keeps none, never a receipt handle, ack id, lock token or
+    /// delivery tag, and the stream merges on it.
     #[must_use]
     pub fn with_replayable(mut self, replayable: bool) -> Self {
         self.replayable = replayable;

@@ -40,10 +40,10 @@ fn callgrind_output_without_a_total_is_an_error() {
 #[test]
 fn the_cases_are_the_listed_tests_whose_names_hold_a_slash() {
     let list = "shred: test\npassthrough: test\npassthrough/null_sink: test\n\
-        shred/nested: test\nwal/scan: test\n";
+        shred/nested: test\njson/check: test\n";
     assert_eq!(
         listed_cases(list),
-        ["passthrough/null_sink", "shred/nested", "wal/scan"]
+        ["passthrough/null_sink", "shred/nested", "json/check"]
     );
 }
 
@@ -142,12 +142,12 @@ fn each_count_comes_to_its_verdict() {
 
 #[test]
 fn trailers_name_one_case_a_line() {
-    let named = accepted("normalize/keyless/nested\n\n  wal/encode \n\n");
+    let named = accepted("normalize/keyless/nested\n\n  json/check \n\n");
     assert_eq!(
         named,
         BTreeSet::from([
             "normalize/keyless/nested".to_owned(),
-            "wal/encode".to_owned()
+            "json/check".to_owned()
         ])
     );
     assert!(accepted("\n\n").is_empty());
@@ -161,13 +161,13 @@ fn a_trailer_naming_no_case_is_found() {
             Some(counts(1, 1)),
             Some(counts(1, 1)),
         ),
-        counted("wal/scan", None, Some(counts(1, 1))),
+        counted("json/check", None, Some(counts(1, 1))),
     ];
     let named: BTreeSet<String> =
-        ["passthrough/null_sink".to_owned(), "wal/scna".to_owned()].into();
-    assert_eq!(unknown(&named, &cases), Some("wal/scna"));
+        ["passthrough/null_sink".to_owned(), "json/chek".to_owned()].into();
+    assert_eq!(unknown(&named, &cases), Some("json/chek"));
     let named: BTreeSet<String> =
-        ["passthrough/null_sink".to_owned(), "wal/scan".to_owned()].into();
+        ["passthrough/null_sink".to_owned(), "json/check".to_owned()].into();
     assert_eq!(unknown(&named, &cases), None);
 }
 
@@ -184,7 +184,7 @@ fn the_table_gives_each_case_its_counts_changes_and_verdict() {
             Some(counts(100, 40)),
             Some(counts(166, 40)),
         ),
-        counted("wal/scan", None, Some(counts(7, 1))),
+        counted("json/check", None, Some(counts(7, 1))),
     ];
     assert_eq!(
         table(&cases, 2.0, &BTreeSet::new()),
@@ -192,7 +192,7 @@ fn the_table_gives_each_case_its_counts_changes_and_verdict() {
          |---|---:|---:|---:|---:|---|\n\
          | `ipc/roundtrip` | 200 → 200 | +0.00% | 10 → 10 | +0.00% | within |\n\
          | `passthrough/null_sink` | 100 → 166 | +66.00% | 40 → 40 | +0.00% | more than 2% above the base |\n\
-         | `wal/scan` | 7 | - | 1 | - | new |\n"
+         | `json/check` | 7 | - | 1 | - | new |\n"
     );
 }
 

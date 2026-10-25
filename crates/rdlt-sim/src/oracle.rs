@@ -41,7 +41,7 @@ use crate::swarm::{FRAMING, Features, HOSTILE};
 use crate::workload::{Level, PHASES, Relaxed, Row, Workload};
 use crate::world::World;
 pub use changes::check_changes;
-use config::{config, endless, growth, pressed, small_log, waited};
+use config::{config, endless, growth, pressed, waited};
 use expected::Discards;
 use faulty::Faulty;
 use ledger::Ledger;
@@ -143,19 +143,18 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>, threaded:
         world.without_hangs();
     }
     env.perturb(world.workload.features.perturb);
-    world.keep_logs(&env);
     let config = config(
         &mut rng,
         world.workload.features.streaming,
         endless(&world.workload),
-        |partitions| growth(seed, Some(&world.workload), partitions),
+        growth(seed),
         waited(seed, !threaded && world.workload.features.faults),
     );
     let (limits, budget) = (config.limits(), config.memory().get());
     let partitions = u64::try_from(config.partitions().get()).unwrap_or(u64::MAX);
     let buffer = config.partition_buffer().get();
     let (allowance, placing) = placed(seed, &world, env.inline(), net, &mut rng, limits, &canary);
-    world.press(pressed(seed, &config, &world.workload, small_log(&config)));
+    world.press(pressed(seed, &config, &world.workload));
     let mut simulation = Simulation {
         seed,
         engine: Engine::new(config, env),
@@ -186,11 +185,7 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>, threaded:
     violations.extend(logged.leaks());
     drop(registered);
     assert!(violations.is_empty(), "seed {seed}: {violations:#?}");
-    let reached = reached(
-        &simulation.world,
-        simulation.placing.as_ref(),
-        &simulation.ledger.waits,
-    );
+    let reached = reached(&simulation.world, simulation.placing.as_ref());
     simulation.checked(digest, clock.instant() - started, reached)
 }
 
@@ -286,10 +281,10 @@ impl Simulation {
     /// Runs `phase` until it converges, or a refusal no operator can relax stops it short; the
     /// reports of its runs that ended, and whether it stopped.
     ///
-    /// A phase converges once a run of each pipeline has succeeded, no full read is left half
-    /// done, and no write-ahead log is left to replay, so each full read the model counts is
-    /// complete and none lands in a later phase. The first four to sixteen runs have faults and
-    /// disruptions where the seed has them, the rest none.
+    /// A phase converges once a run of each pipeline has succeeded and no full read is left half
+    /// done, so each full read the model counts is complete and none lands in a later phase. The
+    /// first four to sixteen runs have faults and disruptions where the seed has them, the rest
+    /// none.
     async fn converge(&mut self, phase: usize, rng: &mut SplitMix64) -> (Vec<Report>, bool) {
         let (seed, features) = (self.seed, self.world.workload.features);
         self.world.set_phase(phase);
@@ -302,15 +297,7 @@ impl Simulation {
         }
         loop {
             let pending = succeeded.contains(&false) || reads_in_progress(&self.world);
-            let logged = self.world.holds_logs();
-            if logged {
-                self.world.reach(if pending {
-                    Reach::LogLeft
-                } else {
-                    // Nothing else is left: this run replays what the runs before it logged.
-                    Reach::Replayed
-                });
-            } else if !pending {
+            if !pending {
                 break;
             }
             let disrupted = faults.faulty(runs);
@@ -512,16 +499,11 @@ fn kept_to_the_protocol(failures: &[refusals::Failure], seed: Seed, phase: usize
     }
 }
 
-/// The paths a simulation of `world` reached, its network's where `placing` places on one, and a
-/// wait on the log's share where `waits` holds one.
-fn reached(world: &World, placing: Option<&Placing>, waits: &rdlt_engine::Waits) -> Reached {
-    let mut reached = world
+/// The paths a simulation of `world` reached, and its network's where `placing` places on one.
+fn reached(world: &World, placing: Option<&Placing>) -> Reached {
+    world
         .reached()
-        .with(placing.map_or_else(Reached::default, Placing::reached));
-    if waits.log.count > 0 {
-        reached.add(Reach::LogWaited);
-    }
-    reached
+        .with(placing.map_or_else(Reached::default, Placing::reached))
 }
 
 /// How one scenario's runs went.
@@ -572,11 +554,11 @@ fn plan(workload: &Workload, relaxed: &[Relaxed], pipeline: usize) -> PipelinePl
     PipelinePlan::new(id, streams)
         .expect("the simulated plan is valid")
         .schema(workload.pipeline.engine())
-        .with_wal(workload.features.wal)
 }
 
-/// Checks that every offset acknowledged to a stream that cannot read again landed: it was
-/// heard before its commit, so only the write-ahead log could see it through a failure.
+/// Checks that every offset acknowledged to a stream that cannot read again landed: a source is
+/// told an offset only once the commit holding the rows before it has landed, so the destination
+/// holds every row a forgetting source let go.
 fn check_acknowledged(world: &World, stopped: bool, seed: Seed) {
     if stopped {
         return;

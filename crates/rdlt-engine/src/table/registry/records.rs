@@ -7,7 +7,6 @@ use tokio_util::sync::CancellationToken;
 use super::{TableView, Tables};
 use crate::budget::{Denied, MemoryBudget, Reservation};
 use crate::error::{Error, codes};
-use crate::limits::RECORDED;
 
 /// The budget a table's records are reserved from, and when a wait for room ends.
 #[derive(Debug)]
@@ -36,7 +35,7 @@ pub(super) fn records(view: &TableView) -> [StateChange; 2] {
     ]
 }
 
-/// Bytes: what `changes` take in a commit's frame in the log, at most twice each record's bytes.
+/// Bytes: what `changes` take in state, each record's key and value.
 pub(super) fn recorded_bytes(changes: &[StateChange]) -> u64 {
     let record = |change: &StateChange| match change {
         StateChange::Put(record) => record.key.len().saturating_add(record.value.len()),
@@ -46,7 +45,7 @@ pub(super) fn recorded_bytes(changes: &[StateChange]) -> u64 {
         .iter()
         .map(record)
         .fold(0_usize, usize::saturating_add);
-    RECORDED.saturating_mul(u64::try_from(bytes).unwrap_or(u64::MAX))
+    u64::try_from(bytes).unwrap_or(u64::MAX)
 }
 
 impl Tables {
