@@ -16,8 +16,8 @@ still taken largely on trust:
 - names took any character but controls, and destination identifiers from the wire none at all;
 - some waits had no deadline: a call into a connector in process, a read asked to stop, a write
   whose credit trickled in, and a served connection whose peer took nothing;
-- what a connector said could change what was committed, or how the engine retried: a receipt
-  for another commit settled the log, a catalog's new key re-keyed a merge table, a connector's
+- what a connector said could change what was committed, or how the engine retried: a receipt for
+  another commit was taken as its answer, a catalog's new key re-keyed a merge table, a connector's
   error claimed a fence or set any wait, and a partition that lost its place looped without end;
 - tonic panicked on status details that were not base64.
 
@@ -131,8 +131,8 @@ still taken largely on trust:
     129 KiB at the least.
   - An open's answer is the engine's own committed state echoed back, so the engine keeps it
     within the bound: a commit after which the state would hold more decoded than the state
-    limit, as the scan of an open's answer carrying it counts it, is refused before it is logged
-    or sent, with `state_bytes_exceeded`. A pipeline can always open what it committed. This check
+    limit, as the scan of an open's answer carrying it counts it, is refused before it is sent,
+    with `state_bytes_exceeded`. A pipeline can always open what it committed. This check
     and the stored state's are one, measured decoded (ADR 0041).
   - A charge waits as any request of the budget does, in turn, and fails its call at the
     budget's deadline; one larger than its share fails it at once. No charge is held while
@@ -181,8 +181,8 @@ still taken largely on trust:
     a writer whose flush went unanswered takes no more calls.
   - A served connection whose writes make no progress for its send wait (60 s) is closed, and a
     stopping connector's drain ends at its drain wait (30 minutes), both `ListenLimits` fields.
-  - A failed attempt, and a failed replay, close the session they opened, waiting for the close
-    no longer than `EngineConfig::close_wait` (60 s).
+  - A failed attempt closes the session it opened, waiting for the close no longer than
+    `EngineConfig::close_wait` (60 s).
 - **What a connector says cannot silently change what was committed.**
   - A receipt must answer its own commit, by load and sequence, or the commit fails as
     `receipt_mismatch`; receipt counters are summed with checked arithmetic.

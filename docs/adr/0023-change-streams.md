@@ -4,13 +4,12 @@ Status: accepted, 2026-09-28.
 
 ## Context
 
-M5 (§22) brings CDC, the WAL, continuous runs and history: change streams merged with deletes,
-partial updates and truncates (§9.3, §9.4), the WAL (§15.6), `until` (§9.6), SCD2 (§9.5), and the
-clauses and failpoints that check them. That is too much for one plan, so it is split. The owner
-confirmed two streaming directions for M5 (2026-09-28): continuous runs re-plan their partitions,
-and a source's lost retention is a typed error by default, with an opt-in reset that is counted.
-The owner also ruled on the WAL (2026-09-28): a local store is enough, since in the worst case the
-data is replayed from the source.
+M5 (§22) brings CDC, sources that cannot read again, continuous runs and history: change streams
+merged with deletes, partial updates and truncates (§9.3, §9.4), `until` (§9.6), SCD2 (§9.5), and
+the clauses and failpoints that check them. That is too much for one plan, so it is split. The
+owner confirmed two streaming directions for M5 (2026-09-28): continuous runs re-plan their
+partitions, and a source's lost retention is a typed error by default, with an opt-in reset that
+is counted.
 
 ## Decision
 
@@ -22,20 +21,17 @@ data is replayed from the source.
     simulated CDC workload checked against a model.
   - **M5b**, change streams for the SQL destinations (`sqlgen`, SQLite), and the clauses
     `S-ACK`, `D-DELETE`, `D-PARTIAL`, `D-TRUNCATE`, and `D-MERGE`'s seq guard.
-  - **M5c**, the WAL: `WalStore`, `LocalWal`, replay, and acknowledging non-replayable sources
-    once their seal is durable.
+  - **M5c**, sources that cannot read again, each told a cursor once the commit holding the rows
+    before it lands (ADR 0030).
   - **M5d**, continuous runs (`until`) and the owner's streaming items 1–4, and `S-PARTITION`.
   - **M5e**, history (SCD2) and `D-HIST`. ADR 0035 leaves history
     for normalized streams and updates leaving columns unchanged to M5e2.
   - **M5f**, the failpoint sweep, the kill matrix with spawned connectors, and M5's exit
     criterion (ADR 0036).
-- **The WAL's store is a trait.** `WalStore` keeps a load's log: `LocalWal` in a local
-  directory. A worker that loses a local log's disk replays from the source, which every
-  replayable source can do.
 - **Truncate is op 3 in `_rdlt_op`**, in band and ordered by `_rdlt_seq`, and its rows name no
   key. A truncate at seq `s` removes every row whose seq is below `s`, or soft-deletes it, even
   rows staged earlier in the same commit. §9.4's "deletes all rows" is refined this way so that a
-  replayed truncate cannot remove rows that changes after it wrote.
+  truncate sent again cannot remove rows that changes after it wrote.
 - **A destination learns the merge semantics from `MergeKey.changes`**:
   `Option<ChangeColumns { op, unchanged, deletion: Hard | Soft { at } }>`, a compatible addition
   to the proto. When it is set, seq is compared across commits: a row applies only if its seq is
@@ -131,6 +127,3 @@ data is replayed from the source.
   reading another's state refuses it (ADR 0041).
 - Switching an existing merge table to CDC needs a new table; a reset that clears a stream's
   table and state is owed with M5d's retention reset.
-- A log kept in a local directory does not survive the loss of a worker's disk. That costs a
-  re-read from the source, or, for a source that cannot read again, the changes the lost log
-  held.

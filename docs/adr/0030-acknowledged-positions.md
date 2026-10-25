@@ -7,12 +7,34 @@ Status: accepted, 2026-09-30.
 Spec §20.8 lists `S-ACK`, "CDC position advanced only in `committed`", among the source clauses.
 Exactly-once delivery depends on it: a replication slot or consumer group that moves as the source
 reads, or moves anywhere other than the cursor the engine committed, loses rows when a load fails
-before the destination commits. It matters most for a source that cannot read again (ADR 0029),
-where that position is the only record of what was delivered. The engine cannot see the position,
-because the source keeps it outside the engine. ADR 0029 moved the clause and its probe to M5c2.
+before the destination commits. It matters most for a source that cannot read again, where that
+position is the only record of what was delivered. The engine cannot see the position, because
+the source keeps it outside the engine.
 
 ## Decision
 
+- **A source is told only what has landed.** The engine tells every stream a cursor once the
+  commit holding the rows before it has landed and is recorded, and never before, whatever the
+  stream's source; so no source stands past what the destination holds (`Acknowledged` in
+  `specs/exactly_once.qnt`), and the destination is the only record of what was delivered. The
+  source contract (`StreamSpec::with_replayable`) states what that asks of a stream that cannot
+  be read again:
+
+  > A stream that cannot be read again is told a cursor only once the commit that holds the
+  > rows before it has landed. A source that reads by position never serves, from a cursor it
+  > issued, a row from before that cursor, whether or not it was told it. It serves again
+  > everything after the last cursor it was told, refuses as a transient error a read from
+  > before that cursor, and may drop what precedes it. A source that leases messages instead
+  > settles a message with its broker only once told a cursor past it, renews the lease until
+  > then where the broker allows and stops when its read stops, and treats a settlement refused
+  > for an expired lease as done. Its stream is at-least-once: each row carries an id the
+  > broker keeps across redeliveries, or the publisher's where the broker keeps none, never a
+  > receipt handle, ack id, lock token or delivery tag, and the stream merges on it.
+
+  Since what a source was told never passes what is committed, a refusal of a read from before
+  it means the destination lost a commit it had answered; it stays transient. Two loads may read
+  one partition at once, as racing runs do: the newer's session fences the older's at the
+  destination, so only one commit of the rows lands, and the source serves both.
 - **The probe.** `ReadStream::acknowledged(source, partition)` answers where the stream stands for
   a partition outside the engine: the cursor it was last told is committed, as it keeps that
   cursor beyond a connection (a slot's confirmed position, a group's committed offset). It
@@ -42,10 +64,10 @@ because the source keeps it outside the engine. ADR 0029 moved the clause and it
   commits, as a slot's position is read apart from the connection that moved it. What it answers
   is therefore what the source keeps beyond a connection. A served read the host leaves is
   aborted, so a read that waits for data does not hold the source after its host is gone.
-- **The clause** statement: a change stream's position outside the engine moves only when the
-  engine tells it a cursor is committed, and then to that cursor. Where the source does not
-  answer, or reads no stream as changes, the clause is skipped. Otherwise it takes the first
-  stream read as changes, and:
+- **The clause** statement: a change stream's position outside the engine moves only when the engine
+  tells it a cursor is committed, and then to that cursor, and a read from a later cursor it issued
+  starts there. Where the source does not answer, or reads no stream as changes, the clause is
+  skipped. Otherwise it takes the first stream read as changes, and:
   - before any clause reads, records where each partition of the stream's first phase stands;
   - runs last, so its commits disturb no other clause's reads (a source that cannot read again
     refuses reads from before its position), and first checks that those reads moved no
@@ -61,6 +83,10 @@ because the source keeps it outside the engine. ADR 0029 moved the clause and it
     the first two checkpoints ahead are committed, checks the partition stands at each and every
     other partition where it stood, and reads on from each without committing, which must move
     nothing;
+  - told a checkpoint, reads from the next checkpoint the source issued, as the engine reads from
+    a commit whose telling a crash lost: the read must be accepted, move nothing and send none of
+    the checkpoints up to the last told, since a source that starts elsewhere than its cursor
+    first sends where it starts;
   - where nothing lies ahead of a partition that stands somewhere, reads it again from where its
     phase starts (only for a stream that can read again), which must move nothing;
   - asks a stream that checkpoints on demand for a checkpoint as each read starts and after each
@@ -69,11 +95,11 @@ because the source keeps it outside the engine. ADR 0029 moved the clause and it
     without one, whatever else it sends. A read asked to stop that is still quiet five seconds
     later waits for data, and is dropped. Any violation stops the read at once.
 
-  The phase read last decides. The clause passes where each partition told a checkpoint there
-  stands at the last it was told. It fails where a partition moved while read, stood elsewhere
-  once told, or keeps no position there. It also fails where, in any phase, some partitions keep
-  what they were told and others keep nothing. It is skipped where nothing lay ahead in the last
-  phase.
+  The phase read last decides. The clause passes where each partition told a checkpoint there stands
+  at the last it was told. It fails where a partition moved while read, stood elsewhere once told,
+  refused or started elsewhere than a later checkpoint it issued, or keeps no position there. It
+  also fails where, in any phase, some partitions keep what they were told and others keep nothing.
+  It is skipped where nothing lay ahead in the last phase.
 - **The reference change source** keeps a slot: named by its `slot` configuration, shared by the
   sources of the process that name it, moving only in `committed` and never back. It passes
   `S-ACK` in process and served through the protocol. A slot of its process is not one a spawned

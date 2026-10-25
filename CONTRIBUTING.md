@@ -88,7 +88,8 @@ The default is no comment. Names, types and structure carry the meaning. Write a
 
 1. A contract the type system cannot express ("re-committing the same key returns the stored
    receipt").
-2. An ordering or durability invariant ("fsync the log before the destination commit").
+2. An ordering or durability invariant ("tell the source only once the destination's commit
+   lands").
 3. A non-obvious reason, in one line.
 4. A workaround for an upstream bug, with a link to the issue.
 5. `// SAFETY:` on any `unsafe` block.

@@ -67,7 +67,7 @@ decision they implement.
   hosts named to it, not every certificate its CA signed.
 - **A production build has no test or development surface**: no read-back of published tables,
   no crash points, no test connectors.
-- **Persistent state is checked when it is read.** State records, logs and manifests are bound to
+- **Persistent state is checked when it is read.** State records and manifests are bound to
   their pipeline, validated beyond their shape, and never written in a form their reader cannot
   read back.
 - **What an untrusted connector can still do is stated.** A source can send wrong data. A
@@ -84,10 +84,6 @@ Rejected:
   go wrong. A `Sandbox` is a trait: another launcher can be plugged in.
 - **Refusing local placement of untrusted connectors altogether.** A sandboxed process is how a
   self-hosted deployment without containers runs them.
-- **Authenticating the write-ahead log with a key.** Whoever can write the log's directory as the
-  engine's user can already change the engine's state. The log is bound to its pipeline, private
-  to its user, and validated against the destination when it is replayed; a sandboxed connector
-  cannot reach it.
 
 ## Consequences
 

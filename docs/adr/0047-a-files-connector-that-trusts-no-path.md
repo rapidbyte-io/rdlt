@@ -142,10 +142,9 @@ when it is read and never written in a form its reader refuses.
   the file or read other rows. JSON lines hold a dictionary's rows as the values they stand for,
   null where the key is null or the value it stands for is.
 - **Lists stay short.** A table's catalog keeps 8 versions behind the latest, as manifests do. A
-  manifest keeps the receipt of every commit the engine may still repeat: a commit repeated
-  however far back is answered with its receipt. The engine declares with each commit the oldest
-  it may repeat, its horizon, and the manifest forgets the receipts before it, of whichever
-  load; a commit that declares none forgets none (ADR 0045). An append table's commit merges
+  manifest keeps the receipts no commit's horizon has passed: the engine declares each commit
+  its own horizon (ADR 0004), and the manifest forgets the receipts before it, of whichever
+  load; a commit that declares none forgets none. An append table's commit merges
   the files it adds with each other, whatever rows each holds, and a file listed before them with
   those after it while it holds at most twice their rows, never reading more than 64 MiB into
   one file and keeping row order. Every two files next to each other in a list then either at

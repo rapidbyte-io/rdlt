@@ -16,8 +16,7 @@ four ways:
 - Computing it allocates a vector a value.
 - Much of what the engine holds is not charged by it: the decoder's dictionaries, the cursors of
   checkpoints waiting as seals, signals queued while a commit is in flight, the ranges of a JSON
-  push's records, the copies row identity made, the log's seal and commit frames, and what a
-  served destination stages.
+  push's records, the copies row identity made, and what a served destination stages.
 
 ADR 0037 has the engine survive any connector: everything a connector sends is charged to a
 budget before it is held, or bounded by a limit with a typed refusal.
@@ -32,11 +31,10 @@ budget before it is held, or bounded by a limit with a typed refusal.
   | Share | Of the budget | At the default 256 MiB | Holds |
   |---|---|---|---|
   | cursors | 1/64 | 4 MiB | the cursors of seals waiting for a commit |
-  | log | 1/16 | 16 MiB | seal, commit and table frames from before they are encoded until they are appended, and, while a log is open, what a carry reads at once |
   | tables | 1/32 | 8 MiB | what a commit records of each changed table, its schema and names, from the change until the commit lands |
   | reads | 1/4 | 64 MiB | what reads keep beside their events: a decoder's schema and dictionaries |
   | answers | 1/16 | 16 MiB | what decoding a remote connector's answers holds, but a read's frames, from before each is decoded until it is (ADR 0042) |
-  | data | the rest, 37/64 | 148 MiB | pushes waiting to be lowered, and what lowering makes of them; a read's frame from before it is decoded until it is |
+  | data | the rest, 41/64 | 164 MiB | pushes waiting to be lowered, and what lowering makes of them; a read's frame from before it is decoded until it is |
 
   - Within the data, one request for lowering takes a quarter of the budget at most, and
     pushes never take the last quarter: a request for lowering always fits once the pieces
@@ -45,9 +43,7 @@ budget before it is held, or bounded by a limit with a typed refusal.
     pushes may take fails its read with `push_exceeds_budget`; one row that takes more to lower
     than a request may fails its write with `row_exceeds_budget`; a cursor beyond the cursors'
     share and what a read keeps beyond its part fail the read with `limit_exceeded`, naming
-    `cursor bytes` and `read kept bytes`; a seal's or commit's frame beyond the log's share
-    fails the commit, and a table's frame the write that logs it, with
-    `log_frame_exceeds_budget`; a table whose records pass the tables' share
+    `cursor bytes` and `read kept bytes`; a table whose records pass the tables' share
     fails its schema change with `table_exceeds_budget`, before the destination or any commit
     sees it.
   - **Control never waits behind data.** A checkpoint's cursor is reserved from the cursors'
@@ -73,7 +69,7 @@ budget before it is held, or bounded by a limit with a typed refusal.
   - **No hold and wait.** A task waits on the budget only while it holds nothing that only
     its own progress releases. A partition waits for lowering's bytes while it holds pushes,
     and nothing waits for pushes while it holds anything; whoever holds what lowering reserved,
-    a piece on the compute pool, on its lane or in the log's writer, needs no budget to release
+    a piece on the compute pool or on its lane, needs no budget to release
     it. A partition lowers and hands to its lane whatever it reserved before it waits for more.
     What lowering reserves that a partition holds while it lowers, the batches a JSON flush is
     built to beyond its pushes and a normalized piece's split, is reserved together with room
@@ -90,40 +86,36 @@ budget before it is held, or bounded by a limit with a typed refusal.
   | Limit | Derived from | Least memory, 16 partitions | Default 256 MiB, 16 partitions | Wire default |
   |---|---|---|---|---|
   | frame bytes | what pushes may take less what a read keeps and `MESSAGE_ROOM`, and half a request less what a row of the widest table takes beside its values | 4,194,304 | 28,505,370 | 64 MiB |
-  | json push bytes | a third of what pushes may take less `MESSAGE_ROOM` | 4,325,207 | 29,360,042 | 64 MiB |
-  | cursor bytes | the cursors' share over twice one more than the partitions, which a quarter of the log's holds | 18,173 | 123,361 | 4 MiB |
+  | json push bytes | a third of what pushes may take less `MESSAGE_ROOM` | 5,149,072 | 34,952,448 | 64 MiB |
+  | cursor bytes | the cursors' share over twice one more than the partitions | 18,173 | 123,361 | 4 MiB |
   | dictionary bytes | half of what a read keeps | 308,949 | 2,097,152 | 64 MiB |
   | schema bytes | a fifth of the other half, for the message and the schema it decodes to | 61,789 | 419,430 | 4 MiB |
-  | schema columns | the tables' share over a kilobyte a column, and schema bytes over 56 a column | 1,103 | 7,489 | 10,000 |
+  | schema columns | the tables' share over half a kilobyte a column, and schema bytes over 56 a column | 1,103 | 7,489 | 10,000 |
   | catalog bytes | the answers' share over sixteen, what a catalog may hold decoded for each byte | 154,474 | 1,048,576 | 4 MiB |
   | state bytes | the answers' share: state is bounded on what it holds decoded, and a commit leaves no more | 2,471,595 | 16,777,216 | 16 MiB |
   | control message bytes | the answers' share over sixteen | 154,474 | 262,144 | 256 KiB |
 
   - **Cursors.** Every partition may hold a cursor waiting for a commit and a barrier's answer
     at once, with room for one more: a barrier's answers always fit, so a source that keeps to
-    its cursor limit never waits on a barrier for room. A commit's frame takes at most twice
-    each cursor's bytes, so a quarter of the log's share holds it.
-  - **Rows.** A row as long as a frame lowers within half a request for lowering, its nulls a
-    column and its metadata beside it, unchanged flags over every column as text among it, and
-    the arrays of the piece it is alone, two a column and sixteen of metadata, so it lowers with
-    or without a log: a row within the frame limit is never `row_exceeds_budget`. That refusal
-    is left to a row its table widens beyond what it arrived as, and to one of a JSON flush
-    whose batches take more than half a request beyond their text, which leaves the row less of
-    the request beside them.
-  - **Tables.** A table as wide as a schema may be records its schema and names within the
-    tables' share, at names of up to a hundred and fifty bytes; a schema message carries that
-    many columns of short names. What a commit records of the tables is reserved from that
-    share at each schema change, the latest change of a table in place of the one before, and
-    held until a commit records it: the commit's frame reserves the rest from the log's share.
-    A table's first frame in the log, its schema, is reserved from the log's share until the
-    log appends it. A table wider than a schema may be is refused where the source pushes it,
-    and, across pushes, at the schema change that would make it so (ADR 0041).
+    its cursor limit never waits on a barrier for room.
+  - **Rows.** A frame is at most half a request less a row's null in each column, unchanged
+    flags over every column as text, the metadata lowering adds and the arrays of the piece the
+    row is alone, two a column and sixteen of metadata, so its decode, twice its bytes, is charged
+    within a request, and a row as long as a frame lowers within one: a row within the frame
+    limit is never `row_exceeds_budget`. That refusal is left to a row its table widens beyond
+    what it arrived as, and to one of a JSON flush whose batches take more than half a request
+    beyond their text, which leaves the row less of the request beside them.
+  - **Tables.** A table as wide as a schema may be records its schema and names within the tables'
+    share, at names of up to a hundred and fifty bytes; a schema message carries that many columns
+    of short names. What a commit records of the tables is reserved from that share at each schema
+    change, the latest change of a table in place of the one before, and held until a commit records
+    it. A table wider than a schema may be is refused where the source pushes it, and, across
+    pushes, at the schema change that would make it so (ADR 0041).
   - **Dictionaries.** The sender and the decoder hold dictionaries to the limit by one count of
     the wire crate: a dictionary's frame, header and body, and `MESSAGE_ROOM` beside it, at least
     the allocation a receiver holds it in. The sender counts what its receiver holds from every
     batch since the last schema, and a batch whose dictionaries would pass it is refused before
-    it is sent. A log frame's dictionaries, which lie in the frame a replay reserves whole, count
-    their frames alone.
+    it is sent.
 
   Rows, values and nesting are not the budget's: a batch is lowered a piece at a time,
   whatever it holds. Where a wire default is above what the budget admits, the derived value is
@@ -135,20 +127,18 @@ budget before it is held, or bounded by a limit with a typed refusal.
   them is still refused where it becomes more than one request may take: a row its table widens
   (`row_exceeds_budget`, Rows above) and JSON whose batches take more than a request beyond
   twice its text (`json_exceeds_budget`, ADR 0040). A megabyte of JSON records, each naming one
-  of three hundred keys, is refused at 40 MiB, where a JSON push may be 4.6 MB.
+  of three hundred keys, is refused at 40 MiB, where a JSON push may be 5.5 MB.
 - **The least memory.** A budget whose derived frame limit is below the protocol's least frame
   (`MIN_FRAME_BYTES`, 4 MiB), or whose dictionary limit is below the protocol's least
   (`MIN_DICTIONARY_BYTES`, 256 KiB), is refused when the engine's configuration is built, with
   `memory_below_minimum` naming the least memory from which every memory up admits it:
-  39,545,528 bytes at the default sixteen partitions and 53,690,341 at one
+  39,545,528 bytes at the default sixteen partitions and 50,060,952 at one
   (`EngineConfig::least_memory`). Half a request for lowering must hold a frame and the row
-  beside it, so the least is about nine frames at sixteen partitions; fewer partitions each
-  keep more, so a schema may have more columns and the row beside a frame takes more, which
-  raises the least to 40,213,528 from two to fourteen partitions; a read of one partition
-  keeps up to the whole reads' share, and a frame beside it must fit what pushes may take, which
-  sets its least. From 19 partitions their dictionaries set it, 2 MiB for each, twice the least
-  dictionary in a quarter of the memory; from 2^43 partitions no memory admits a peer, and the
-  configuration is refused saying so.
+  beside it, so the least is about nine frames at sixteen partitions; fewer partitions each keep
+  more, so a schema may have more columns and the row beside a frame takes more, which raises the
+  least to 50,060,952 from one to seven partitions. From 19 partitions their dictionaries set it,
+  2 MiB for each, twice the least dictionary in a quarter of the memory; from 2^43 partitions no
+  memory admits a peer, and the configuration is refused saying so.
 - **A peer's dictionary limit has a least.** A handshake whose limits set a dictionary limit
   below `MIN_DICTIONARY_BYTES`, none included, is refused at either end with
   `limit_below_minimum`, as any limit below its least is; a handshake that sets no limits at
@@ -222,8 +212,7 @@ budget before it is held, or bounded by a limit with a typed refusal.
 - **What is lowered at once is what was reserved.** A unit's plan is found first, and the unit
   is then cut by that cost, a piece at a time.
   - A piece is at most a sixteenth of the budget, or one row where a row takes more, up to the
-    quarter a request may take. Where the load keeps a log a piece is half as large, and
-    reserves as much again for its frame there.
+    quarter a request may take.
   - Each piece reserves its cost before it is lowered. A partition waits for one piece's bytes
     only while it holds no piece it has not handed to its lane; beside that piece it lowers as
     many more as the budget has room for at once, eight at most. How many pieces are lowered
@@ -408,10 +397,10 @@ budget before it is held, or bounded by a limit with a typed refusal.
   - A cursor copies its bytes when it is built, so it keeps no message alive. A JSON push is a
     slice of the message it arrived in, which its charge's `MESSAGE_ROOM` covers beside its
     text: the host refuses a frame whose message holds more, `malformed_frame`.
-  - A checkpoint's permit stays with its seal until the commit that takes it has landed. A seal
-    of no rows only moves its partition's position, so it replaces the one waiting: one cursor a
-    partition, however many a source sends. A seal ending its partition done replaces none, so
-    the source is still told the cursor before it. A seal with rows starts a new epoch of its partition,
+  - A checkpoint's permit stays with its seal until the commit that takes it has landed, or until
+    a later seal of its partition at a cursor takes its place, which frees the cursor and then its
+    permit: one cursor a partition, however many a source sends, whatever rows come between. A
+    seal ending its partition done keeps the cursor before it, so the source is still told it. A seal with rows starts a new epoch of its partition,
     and a waiting seal reaches the coordinator only through a message queued in its own epoch,
     so no commit records a position past rows still on their way.
   - A commit is due once waiting cursors hold half the cursors' share, and once one waits for
@@ -425,11 +414,7 @@ budget before it is held, or bounded by a limit with a typed refusal.
   - A JSON push is cut into chunks that keep a span of each push and, of an array, how many
     elements it holds, not a range a record; each chunk's job finds its records again.
   - Row identity reads integers, temporal values and decimals where they lie.
-  - A state record's value is the JSON it is wherever the record is JSON, and the log's seal
-    and commit frames are reserved from the log's share before they are encoded, at most twice
-    the cursors and state they record, and hold what they take until they are appended
-    (ADR 0029). A frame larger than what was reserved for it reserves the rest before it waits
-    to be appended.
+  - A state record's value is the JSON it is wherever the record is JSON.
   - A served write refuses more than four frames' bytes between two flushes, and the host's
     writer flushes before it would send more. The connector decodes a frame only once its
     writer has taken the frame before it, so a write holds its staged bound and one decoded
@@ -446,19 +431,18 @@ budget before it is held, or bounded by a limit with a typed refusal.
     with its admission while it waits for it, a lowered batch with what holds it on its lane.
   - A unit's pieces share what holds the unit, each holder of a piece's rows declaring its share
     last: the unit's permits go once the last piece is written or let go, wherever it is, on the
-    compute pool, in the window being lowered, on its lane or waiting for the log.
+    compute pool, in the window being lowered or on its lane.
   - No job on the compute pool outlives the caller waiting for it: a caller that stops waiting
     drops its jobs not yet started, and waits for those running to end, so what a job reads and
     makes goes before what the caller holds.
-  - Tests let go of writes at each of their waits, for room, for the pool, for the log and for a
-    lane, of an Arrow, a JSON and a normalized flush, and of a send waiting for its admission,
-    and hold that what each charge covers was freed by the time it was released.
+  - Tests let go of writes at each of their waits, for room, for the pool and for a lane, of an
+    Arrow, a JSON and a normalized flush, and of a send waiting for its admission, and hold that
+    what each charge covers was freed by the time it was released.
 - **The bound is tested as the system runs.** Every run of the engine's integration tests fails
-  where it reserved more than its budget. Loads that widen columns, fill wide tables and
-  normalize into several tables run with sixteen partitions on a compute pool of four threads,
-  which takes turns between pieces, one of them logged and replayed after a commit its
-  destination missed: each holds its heap's peak to the bound below. Schedules on a paused
-  clock hold the deadline, for every share that waits.
+  where it reserved more than its budget. Loads that widen columns, fill wide tables and normalize
+  into several tables run with sixteen partitions on a compute pool of four threads, which takes
+  turns between pieces: each holds its heap's peak to the bound below. Schedules on a paused clock
+  hold the deadline, for every share that waits.
 
 ## The bound
 
@@ -497,8 +481,8 @@ admitted, and what a remote connector's calls hold in transport.
   written whose size falls as the charge rises, makes what the thread counts what it holds beyond
   what is charged at that moment: what the budgets hold reserved and what the source holds of pushes
   made and not yet sent on. What the simulated world keeps of what it stores counts beside the
-  charge, exactly, as the world's: a stored row as much as freeing a first making of it gives back,
-  and a chunk the log store stages or publishes by its buffer. The world's own work building a push
+  charge, exactly, as the world's: a stored row as much as freeing a first making of it gives
+  back. The world's own work building a push
   or a row is given room while it runs. Over each attempt, the most the thread holds beyond its
   charge stays within an allowance and, where the connectors listen on the simulated network or are
   played in processes and share the thread, what the reads hold between the source and the engine:
@@ -509,19 +493,17 @@ admitted, and what a remote connector's calls hold in transport.
   and the frames credit lets go before the host takes them, two of the largest or the host's credit
   floor of 4 MiB,
   whichever is more. The allowance is what the world holds beside the engine and keeps uncounted,
-  the runtime, its maps and builders' spare room, apart by where the connectors run, with a
-  write-ahead log or without, since the log's copies count as the world's: 13 MiB in process and 11
-  MiB over the network or in played processes. Beyond their charge, seeds 0 to 99 999 hold at most
-  12.5 MB in process (10.6 MB with a log) and 4.3 MB over the network (3.1 MB with a log), the
-  network's beyond what its reads hold. Over the network the allowance is the next whole mebibyte
-  above five quarters of the most a seed without a log holds among the four network seeds, not
+  the runtime, its maps and builders' spare room, apart by where the connectors run: 13 MiB in
+  process and 11 MiB over the network or in played processes. Beyond their charge, seeds 0 to
+  99 999 hold at most 12.5 MB in process and 4.3 MB over the network, the network's beyond what
+  its reads hold. Over the network the allowance is the next whole mebibyte above five quarters
+  of the most a seed holds among the four network seeds, not
   hostile, that hold the most the nightly has measured, replayed under these faults: 8.9 MB on seed
   732369, twice the most of seeds 0 to 99 999. No sweep of the nightly's million has measured the
   network's tail, so the allowance rests on those four seeds and the nightly is what tests it
   further. Played processes share it without a measure of their own: no sweep has taken their tail
-  either. In process five quarters of the most, 15.6 MB, would pass a replay's scan that keeps every
-  commit it reads, its received ones too, which holds 14.5 MB on seed 241570; the allowance is the
-  next whole mebibyte above a mebibyte more than the most seeds 0 to 99 999 hold. A failing seed
+  either. In process the allowance is the next whole mebibyte above a mebibyte more than the most
+  seeds 0 to 99 999 hold. A failing seed
   names its phase; replayed with `RDLT_SIM_TRACE` set, it names the change of the charge after which
   its thread held too much, and the code that made it. The world is one of fat values: a wide object
   of JSON on every eighth record of a stream pushing JSON, a sixteenth of the least push, and spaces
@@ -553,9 +535,9 @@ admitted, and what a remote connector's calls hold in transport.
   is lowered in smaller pieces.
 - A unit whose every column is converted is charged for its source and what it was lowered to
   until its last piece is flushed.
-- A push that keeps alive more than pushes may take of the budget, 84 MiB of the default, is
-  refused; so is JSON text beyond a third of that less a message's room, 28 MiB, though the wire
-  carries a JSON push of 64 MiB: such a push needs a budget of 586 MiB. What a push keeps alive
+- A push that keeps alive more than pushes may take of the budget, 100 MiB of the default, is
+  refused; so is JSON text beyond a third of that less a message's room, 33 MiB, though the wire
+  carries a JSON push of 64 MiB: such a push needs a budget of 492 MiB. What a push keeps alive
   is bounded by the frame, batch-bytes and dictionary limits besides.
 - What lowering reserves is a sum, the value decoded, converted and rendered: a column stored as
   text is lowered in smaller pieces.
@@ -564,7 +546,7 @@ admitted, and what a remote connector's calls hold in transport.
   several are joined into as much again, so a unit of many small batches of a wide table is
   lowered in more pieces, and a frame at the defaults is at most 28.5 MB.
 - No engine runs on less than about thirty-eight mebibytes, the price of a row as long as a
-  frame lowering with a log beside it. The simulator draws budgets between the least for one
+  frame lowering within half a request. The simulator draws budgets between the least for one
   partition and twice that, and gives a run one slot more than the unbounded partitions it
   follows. Its in-process sources press on them, in three worlds of four: pushes keeping alive
   a fifth to nine tenths of a frame, and cursors of half to all a cursor may be, so over two
@@ -643,9 +625,9 @@ admitted, and what a remote connector's calls hold in transport.
   wire's weigher can stop within a row, but only for the wire crate's own cut, so one row
   whose list views nest and name the same items is weighed to its end before it is refused.
 - Not bounded here: how much one push may expand to in total, which costs CPU and destination
-  storage in proportion. What replay stages is reserved (ADR 0045), and so are the nulls of a
-  nested column's fields the shredder builds and what a JSON push of sparse records becomes
-  beyond three times its text, before they are built (ADR 0040). Nor are two things a JSON
+  storage in proportion. The nulls of a nested column's fields the shredder builds, and what a
+  JSON push of sparse records becomes beyond three times its text, are reserved before they are
+  built (ADR 0040). Nor are two things a JSON
   push builds beyond what it was admitted or reserved for: the document the exact parse builds
   of a record, up to twelve times its text, and what reading a part held as JSON renders, up
   to ten times its text beyond its piece's reservation.

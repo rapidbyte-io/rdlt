@@ -8,36 +8,26 @@ Spec §20.6 asks for two tests of real crashes, and the M5 exit gate names them:
 sweep, crashing a run at every durability step and checking the run after it loads every row
 once, and a kill matrix, killing the process running a pipeline or its spawned connectors as it
 loads, then checking every row landed once and no connector outlived its run. ADR 0023 planned
-them as M5f. The simulation models crashes with torn logs (ADR 0014, 0029); these crash real
-processes, with real files, sockets and child processes.
+them as M5f. The simulation models crashes (ADR 0014); these crash real processes, with real
+files, sockets and child processes.
 
 ## Decision
 
 - **Crash points.** The engine's `failpoints` feature (the `fail` crate, never in a release)
   names a point at each durability step:
-  - before each frame is appended to the chunk the log stages (`engine.wal.append`);
-  - either side of the lanes' flush (`engine.flush.*`), and either side of a chunk's publish, a
-    commit's chunk among them (`engine.wal.publish.*`);
-  - before a source that forgets hears of a logged commit (`engine.ack.early`);
+  - either side of the lanes' flush (`engine.flush.*`);
   - either side of the destination's commit (`engine.commit.*`), and of the commit completing a
     stream, where a replace publishes its generation (`engine.complete.*`);
-  - once the log hears a commit landed, before it notes the receipt (`engine.receipt.after`),
-    and after it deletes each chunk it leaves unneeded (`engine.wal.remove`);
-  - either side of a source hearing of a landed commit (`engine.ack.before`, `engine.ack.after`);
-  - either side of the closing chunk's publish (`engine.wal.close.*`), and after the log is
-    removed (`engine.wal.removed`);
-  - in a replay: once it fenced the log (`engine.replay.fenced`), either side of the replayed
-    commit (`engine.replay.before`, `engine.replay.after`), and once it released the log before
-    deleting it (`engine.replay.released`).
+  - either side of a source hearing of a landed commit (`engine.ack.before`, `engine.ack.after`).
 
   A point configured through `FAILPOINTS` aborts the process there: no unwinding, no flush, no
   goodbye to a connector. The harness turns its core dumps off before it runs, so an abort costs
   the system's dump handler nothing, and each process a test starts is killed with its group
   when the test's own process ends.
 - **The harness stands for the CLI** until M7 has one: the engine's `crash_run` example runs one
-  pipeline from a configuration file, its source and destination in its process or spawned, its
-  log in a local directory where it keeps one, tells each read and commit as it happens, and
-  exits 0 once the run succeeded. When the CLI exists, the sweep and the matrix run it instead.
+  pipeline from a configuration file, its source and destination in its process or spawned, tells
+  each read and commit as it happens, and exits 0 once the run succeeded. When the CLI exists, the
+  sweep and the matrix run it instead.
 - **State outlives a process only on disk.** The reference change source keeps its slot, and the
   log source its group, in a file where configured (`slot_path`, `group_path`), written whole
   beside it and renamed over it, so a crash leaves it as it was or as it is; a damaged file is
@@ -45,21 +35,21 @@ processes, with real files, sockets and child processes.
   or `*.group`, and a source with a stream that forgets names its slot or group (ADR 0049); how
   the file is opened and written is ADR 0047's. A source that forgets what it acknowledged can
   then be crashed, killed and spawned again as a replication slot or a consumer group would.
-- **The sweep** crashes four pipelines with a log: a log that forgets appended to SQLite, a
-  change stream that forgets merged into JSON-lines files, a full read replacing a SQLite table,
-  and a timed change stream kept as history in SQLite; the full read and the history run again
-  without a log, as a replayable source does by default, recovering by reading again from
+- **The sweep** crashes four pipelines: a log that forgets appended to SQLite, a change stream
+  that forgets merged into JSON-lines files, a full read replacing a SQLite table, and a timed
+  change stream kept as history in SQLite. Each recovers by reading from the destination's
   committed state.
   - Every point a pipeline's runs pass must crash them: points passed many times at their first
     hit and their third, those passed once at their only one.
   - The destination's commit crashes at every hit a run reaches, ending once a run makes fewer
     commits than the hit, since the commits a run makes vary with timing; the commits where a
     phase begins or a truncate lands crash with the rest.
-  - A commit left by a crash is replayed through more crashes: once the replay fenced the log,
-    before and after the commit lands, and once it released the log before deleting it.
+  - A source is told a landed commit through a crash either side of the telling, at every commit
+    a run reaches, for a log that forgets and one that reads again: the next run starts at the
+    committed cursor, which a source that forgets serves from as one that reads again does.
 
-  The next run must load the table exactly as the reference models say, with no log left, or
-  none written. A point that no longer crashes a run fails the sweep.
+  The next run must load the table exactly as the reference models say. A point that no longer
+  crashes a run fails the sweep.
 - **The kill matrix** runs the harness in a process group of its own, holding a kilobyte of
   batches so its source waits for commits, its reads in flight across them.
   - It kills the harness where it waits after a read or commit drawn from a seed
@@ -88,8 +78,8 @@ processes, with real files, sockets and child processes.
 - A crash anywhere a commit is written, sent or heard of loses and doubles nothing, and a killed
   run leaves no connector behind, checked on real processes on every change.
 - A killed process keeps what it wrote in the page cache, so real crashes cannot see a missing or
-  reordered fsync, or an acknowledgement sent before the log holds its commit: the simulation's
-  torn logs find those (ADR 0014, 0029).
+  reordered fsync. The engine writes nothing that must outlive it: the destination's commit and a
+  source's slot or group file are theirs to sync, and no gate here sees a sync they miss.
 - A spawned connector outlives its host only until it reads the end of its standard input or, on
   Linux, its parent's death signal; spawning happens on the runtime's worker threads, which live as
   long as the runtime, so that signal never fires early.

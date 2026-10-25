@@ -111,8 +111,8 @@ anything runs; none is ignored.
 - A resolved secret is replaced by `***` in that connector's errors, its last words and its
   logged output, whichever start of it said it, in an engine's report of them, and in
   `rdlt-certify`'s reports, and so is each line of a secret that holds line ends and at least 8
-  characters other than whitespace, wherever it is found. It is not written to the write-ahead log or to state by the engine. A literal
-  value in a configuration is not a secret and is not scrubbed.
+  characters other than whitespace, wherever it is found. It is not written to state by the
+  engine. A literal value in a configuration is not a secret and is not scrubbed.
 - A text is scrubbed until nothing of a secret is left in it: where a `***` completes a secret,
   or the part of one at a cut, with what is around it, that is replaced too. It is scrubbed in
   at most 4 steps, each a pass over the text, the last finding nothing; a text that 4 steps do
@@ -236,12 +236,11 @@ not is refused before Arrow reads it, and nothing is copied to align one.
 Whatever a connector sends is reserved from the memory budget before the engine holds it, or
 bounded by a limit with a typed refusal (ADR 0039):
 
-- The budget is never passed. It is divided into shares, for the cursors of checkpoints, the
-  log's frames and what a carry reads at once, what commits record of tables, what reads keep,
-  what decoding answers holds, and data, and a reservation is made only where it fits its share.
-  One that could never fit is refused: `push_exceeds_budget`, `row_exceeds_budget`,
-  `log_frame_exceeds_budget`, `table_exceeds_budget`, and `limit_exceeded` naming
-  `cursor bytes` or `read kept bytes`.
+- The budget is never passed. It is divided into shares, for the cursors of checkpoints, what
+  commits record of tables, what reads keep, what decoding answers holds, and data, and a
+  reservation is made only where it fits its share. One that could never fit is refused:
+  `push_exceeds_budget`, `row_exceeds_budget`, `table_exceeds_budget`, and `limit_exceeded`
+  naming `cursor bytes` or `read kept bytes`.
 - A push reserves what it keeps alive, its schema included; JSON text reserves three times
   itself, for the batches it becomes, and what its batches take beyond that is reckoned and
   reserved before any of it is built, or refused, `json_exceeds_budget` (ADR 0040). The
@@ -274,8 +273,8 @@ bounded by a limit with a typed refusal (ADR 0039):
   long as it hangs.
 - A batch pushed in process meets the limits a frame meets on the wire: its nesting, its values,
   the bytes its views name and the bytes it keeps alive.
-- A checkpoint's cursor is charged until its commit lands, and checkpoints that seal no rows keep
-  one cursor a partition. Signals are kept as state, not queued.
+- A checkpoint's cursor is charged until its commit lands or a later checkpoint of its partition
+  takes its place: one cursor a partition waits. Signals are kept as state, not queued.
 - A decoder's dictionaries and what a served write stages between flushes have limits of their
   own, `dictionary bytes` and `staged bytes`.
 
@@ -288,73 +287,29 @@ What a pipeline keeps from one push and one run to the next is bounded as a whol
 in forms its readers read back (ADR 0041):
 
 - A stored type nests no deeper however deep the type, and a schema nested beyond the nesting
-  limit cannot be built: state, the write-ahead log and the files destination's catalog read
-  back every schema written. Stored records name their format and refuse fields their reader
+  limit cannot be built: state and the files destination's catalog read back every schema
+  written. Stored records name their format and refuse fields their reader
   does not know.
 - A table's columns, nested fields counted, are held to the schema columns the budget admits
   (`table_columns_exceeded`), a stream's child tables to `GrowthLimits` and the stored state
   limit (`child_tables_exceeded`), and a schema version to what it counts
   (`schema_version_exhausted`).
 - Stored state, as an open's answer carrying it holds it decoded, and a commit's request are
-  held to the advertised state limit: a commit beyond either is refused before it is
-  logged or acknowledged (`state_bytes_exceeded`), unless state was past the limit already and
+  held to the advertised state limit: a commit beyond either is refused before it is sent or
+  acknowledged (`state_bytes_exceeded`), unless state was past the limit already and
   the commit does not grow it. A plan never forgets a partition's
   position; a commit that would pass the limit deletes the done markers of partitions no plan
   names, oldest first, each reported, and a reset of the stream clears the rest.
 - State that records two tables under one identifier is refused (`state_invalid`); a reset never
   drops such a table.
-- A lane holds a bounded share of open destination writers and retires superseded ones; the log
-  forgets superseded schema frames, and an open segment keeps at most as much of the log as it
-  holds itself.
+- A lane holds a bounded share of open destination writers and retires superseded ones.
 
-## The write-ahead log
+## State the engine keeps
 
-A load's log holds rows its source may have been told were committed, and replay applies it with
-the engine's authority, so it is bound, private and checked (ADR 0045):
-
-- The local store reaches its base once, from the root, one directory at a time, each opened
-  without following a link and checked on that descriptor: the user's or root's, and writable by
-  no other unless sticky; a link is read only out of a directory that passed, and out of one
-  others may write only where it is the user's or root's. It then keeps the
-  base open, and refuses one removed rather than make it again. The base must be the engine's
-  user's and writable by no other; every directory and file below it must be the user's alone,
-  of the kind expected, on the base's file system, checked on the descriptor used
-  (`wal_not_private`). A name the store never writes is refused, never read (`wal_stray`); one
-  beginning with a dot, which NFS and file browsers make, is passed over. Each pipeline's
-  directory is its own, also where a file system folds case.
-- A chunk is published whole, never appended to, so any damage, a chunk of another format, a
-  chunk missing, or a chunk naming another pipeline, load or destination is refused
-  (`wal_unreadable`, `wal_foreign`) rather than read in part. Frames are bounded before they are
-  read, a batch frame read 64 KiB at a time, and batches decoded within the memory budget's
-  limits.
-- A logged commit applies only whole and only as the engine writes one: older than the
-  replaying session, its seals, batches and rows all there, recording no reset, no receipt but
-  its own, no position its seals did not set and no load but its own as the destination's
-  first, dropping no table. A replay that fails keeps the log for the next attempt.
-- What replay reads and decodes is reserved from the memory budget before it is held
-  (`replay_exceeds_budget`). A load's log holds at most `GrowthLimits::log_bytes` on disk, 4 GiB
-  by default, every frame counted before it is written, and a commit larger than the room kept
-  for it the only frames that pass it, by at most its own: a batch that would pass it has the
-  log publish a chunk that frees what is committed, waits in line for a commit to free room, and
-  is refused (`log_bytes_exceeded`) only where the frames of segments not yet checkpointed leave
-  it none. A chunk holds at most an eighth of the bound, but a chunk of one batch frame or of
-  frames carried out of one chunk, beside the frames of the commit that ends it, and frames are
-  copied out of old chunks 256 KiB at a time, so neither a frame's size nor a slow commit keeps
-  a chunk from being freed. The copy's buffer is reserved from the budget's share for logs. A
-  full disk is retried (`wal_storage_full`): a failed write gives back what it staged, and the
-  next attempt deletes what a crashed load staged, which needs no room, before it needs a
-  directory's block and a few hundred bytes of its own.
-- A load opens its log before it reads any other. A replay or a reset fences a running load by
-  publishing its log's next chunk, and its load can publish nothing once the log is removed, so
-  the two never both write; a load that keeps publishing fails the other attempt
-  (`wal_running`), as every race between attempts ends typed and retryable.
-- A pipeline's destination takes logs from one store: the store's identity is kept in its base
-  and recorded by the pipeline's first commit there, and an engine with another store is refused
-  (`wal_store_other`) before it reads anything.
-
-A log is not signed: whoever can write as the engine's user holds its authority already. A log
-that cannot be read stops its pipeline's runs until an operator removes it, since setting it
-aside would drop rows its source was told were committed.
+None outlives a run: the destination is the only record of what loaded. A source is told a
+cursor only once the commit holding the rows before it has landed, so a source that forgets what
+it was told forgets only rows the destination holds, and a worker's disk holds nothing a later run
+needs. Acknowledged rows are as safe as the destination that holds them.
 
 ## What a value is held to
 

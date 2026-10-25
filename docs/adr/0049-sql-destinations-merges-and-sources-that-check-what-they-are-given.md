@@ -261,13 +261,10 @@ generated sources were written before it, and each took something as given:
     over a key's upserts find what each column was last set to: a commit of flagged updates
     costs its rows times its columns.
 - **Receipts are kept.** A SQL destination and the memory destination store a receipt for every
-  commit the engine may still repeat and answer a repeated commit from it, however far back in its
-  load and however many loads ago. The engine's log can hold a commit's frame after the frames of
-  many later commits are gone, so a destination that forgot receipts by a rule of its own would
-  refuse a replay the engine may make, or apply a commit twice. Which loads and commits can still be
-  repeated is the engine's knowledge: a commit declares the oldest it may repeat, its horizon, and a
-  SQL destination and the memory destination forget the receipts before it within that commit; a
-  commit that declares none forgets none (ADR 0045).
+  commit the engine may still repeat and answer a repeated commit from it. Which commits can still
+  be repeated is the engine's knowledge, not a rule of the destination's: a commit declares the
+  oldest it may repeat, its horizon, and a SQL destination and the memory destination forget the
+  receipts before it within that commit; a commit that declares none forgets none (ADR 0004).
 - **Tombstones are kept** by the rules of ADR 0027 and no other. A delete of a key the table
   never held leaves one too: its insert may be sent again alone. A merge pays nothing for a
   tombstone it leaves as it was. A history table's upsert lifts its key's
@@ -334,7 +331,7 @@ generated sources were written before it, and each took something as given:
 - A stream holding a float that is no number, or negative zero, does not load into SQLite.
 - `_rdlt_receipts` grows by a row a commit, and a change table's tombstones by a row a key
   hard-deleted; receipts are forgotten before the horizon each commit declares, and tombstones
-  are not, as no commit horizon shows one unneeded (ADR 0045).
+  are not, as no commit horizon shows one unneeded (ADR 0004).
 - A growing log whose group is kept nowhere accepts a start past its head and fails the read
   to be tried again until the head is there: a host that wants a forged start refused keeps
   the group in a file. A group file's beginning is the calendar's: a clock set back between

@@ -97,11 +97,9 @@ the whole engine on a paused clock from a seed, with connectors in the engine's 
   registry of groups, a command past its checks, and bubblewrap; the soak and the host's own tests
   run those, ADR 0052), three files the seeds reach in under half their lines (`local/process.rs`,
   `kills.rs` and `local/grants/opened.rs`), a served binary's entry points, certification (the
-  certify crate and the host's connections it uses), the local and in-memory log stores (the
-  simulation keeps logs in a store of its own), and test and bench code, modules built only for
-  tests or benches among it: references and their comparisons, property-test strategies, the log
-  stores' conformance suite, generated numbers, counts of serving tasks and an inline
-  environment. The data plane
+  certify crate and the host's connections it uses), and test and bench code, modules built only
+  for tests or benches among it: references and their comparisons, property-test strategies,
+  generated numbers, counts of serving tasks and an inline environment. The data plane
   (`rdlt_wire::plane`) is hand-written, not generated, and every simulated served read and write
   runs it, so it counts. In-process seeds place their connectors through the host's registry, as an
   embedder does, so its resolution of secrets and its scrubbing of what connectors say run in every
@@ -131,8 +129,7 @@ the whole engine on a paused clock from a seed, with connectors in the engine's 
   simulation still reaches little of:
   - certification's probes;
   - the scan's refusals of messages it cannot walk or whose decoded count passes its bound;
-  - secrets read from files and the environment;
-  - refusals of a log a store garbled.
+  - secrets read from files and the environment.
 
 ## Consequences
 

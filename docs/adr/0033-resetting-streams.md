@@ -12,10 +12,9 @@ state and, for `replace` streams, starts a new generation". Two earlier decision
 - ADR 0025: a table belongs to the pipeline that created it, and "handing a table over waits for
   reset".
 
-ADR 0031 and 0032 planned M5d3 as this reset plus change streams whose source cannot read again
-(ADR 0029, `change_read_unreplayable`). This ADR splits them. M5d3 is the reset. The change
-streams, which need the write-ahead log to know phases, are **M5d4**: the M5 exit gate
-("simulation with CDC and non-replayable sources green") requires them.
+ADR 0031 and 0032 planned M5d3 as this reset plus change streams whose source cannot read again.
+This ADR splits them. M5d3 is the reset. The change streams are **M5d4** (ADR 0034): the M5 exit
+gate ("simulation with CDC and non-replayable sources green") requires them.
 
 ## Decision
 
@@ -33,7 +32,7 @@ streams, which need the write-ahead log to know phases, are **M5d4**: the M5 exi
   - A stream the pipeline recorded nothing of is refused as `stream_not_found`, so a typo in a
     command that deletes never passes silently. The source's catalog decides nothing here: a stream
     the source no longer serves can be reset. A stream is recorded only by state keyed by its own
-    name, never by a table path its displayed name begins (ADR 0045), and one whose displayed name
+    name, never by a table path its displayed name begins, and one whose displayed name
     another recorded stream shares is refused as `stream_ambiguous`. An incremental stream that no
     earlier reset marked and none of whose partitions has had a position committed is recorded
     nowhere, though a run may have created its table, and its reset is refused alike; a partition
@@ -41,33 +40,23 @@ streams, which need the write-ahead log to know phases, are **M5d4**: the M5 exi
     The simulation requires the refusal exactly where the pipeline's state at the destination
     records nothing of the stream.
   - A stream whose source cannot read again is refused as `reset_unreplayable`. Read from its
-    beginning, it would wait for rows its source forgot. The simulation found that a source
-    starting such a read where it last acknowledged instead is unsafe: a commit it acknowledged
-    may still wait in a crashed load's log, and a racing run would move past it for good.
-    A stream its source does not list, or calls one it reads again, is refused as
-    `reset_unreplayable` too while a log holds rows of it that its source was told were committed
-    and no commit received; a run of the pipeline lands them first (ADR 0045). This refusal
-    comes after the reset's session opens, which fences any load still running, and after each
-    log is fenced, so no load logs rows once the reset read them.
+    beginning, it would wait for rows its source forgot.
   - A destination that does not declare `drop_tables` refuses a `Tables` reset as
     `drop_unsupported`, and a reset naming no streams is refused as `no_streams`.
-  - These refusals, and `reset_unreplayable` of a stream its source says it cannot read again,
-    come before the destination opens, fencing nothing. `stream_not_found`, and
-    `reset_unreplayable` of rows a log holds, can only come after: the pipeline's state is read
-    by opening the destination, which fences its older sessions as any reset does. A state read
-    that fences nothing lands with M7.
+  - These refusals, and `reset_unreplayable`, come before the destination opens, fencing
+    nothing. `stream_not_found` can only come after: the pipeline's state is read by opening the
+    destination, which fences its older sessions as any reset does. A state read that fences
+    nothing lands with M7.
   - A full read a run began before the stream was reset is over: a retry of that run, which the
     reset fenced, starts a new read in a generation of its own rather than resuming the one it
     remembered, whose rows were the stream's before the reset. The run keeps each read's
     generation with the epoch of the stream's last reset when it began.
   - A connector that panics fails the reset as an internal error, as it fails an attempt.
 - **The reset marker.** The reset commit puts `StateKey::Reset(stream)`, the epoch of its session.
-  Replay skips every logged seal of a reset stream whose commit's session is older than the
-  marker. Opening the reset's session fences every older session, so a run still loading fails
-  its next commit, and what it or a crashed load logged before the reset never lands after it.
-  Epochs are the destination's, ordered per pipeline: no clocks. Replay already leaves replayable
-  streams to the next load once another commit landed, so the marker guards what nothing else
-  does: a stream the source no longer serves, or one whose replayability changed.
+  Opening the reset's session fences every older session, so a run still loading fails its next
+  commit, and nothing it read before the reset lands after it; a full read it began before the
+  reset is over, by the marker (above). Epochs are the destination's, ordered per pipeline: no
+  clocks.
 - **Drops ride the commit: `CommitMeta::drop_tables: Vec<DroppedTable { path, name }>`**, wire
   `CommitMeta.drop_tables = 8`, capability `drop_tables` (catalog field 12). A drop is not a
   `TableChange`: schema changes take effect at once in every destination, so a drop there and a

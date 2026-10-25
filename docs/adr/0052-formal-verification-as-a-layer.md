@@ -55,7 +55,7 @@ A formal layer is added to the layers of its class, never in place of one.
   sonic-rs and stacker among them. Each module's proofs are a part of their own, which compiles for
   seconds when warm, so verification and not compilation is the time, as the bullets below give it
   harness by harness. Warm on a laptop, `rdlt-wire`'s nine harnesses take about 460 seconds, 319 of
-  them `flow`'s credit harness, and `rdlt-engine`'s ten about 1,000 to 1,250 seconds. A crate's
+  them `flow`'s credit harness, and `rdlt-engine`'s three about 250 seconds. A crate's
   proofs check its own code, in the crate. Kani's output is not clean: its toolchain warns of the
   `register_tool` feature it forces and of deprecated methods in the engine, and it drops the
   arguments of an `unreachable!`, which warns of an unused variable; none comes from a proof.
@@ -91,30 +91,28 @@ A formal layer is added to the layers of its class, never in place of one.
   was sent. Their bounds are on thousands of strings, up to 4096 reserved words of up to 256
   bytes each, past any useful Kani bound.
 - The memory budget is proved where it takes no lock and held by property tests where it does.
-  `rdlt-engine/src/budget/ledger/proofs.rs` proves, for every capacity, that a budget's shares
-  add up to it, its data is what pushes and one request take, a piece is within a request, and a
-  share's bytes beside one request of its class never wrap (18 seconds).
-  `budget/admits/proofs.rs` proves, for every capacity and 1 to 24 reads at once, that each limit
-  the budget admits fits the share it draws on (94 seconds), and that every budget from the least
-  up admits a peer while the one a byte below does not (165 seconds). What a budget admits does
-  not grow with it byte by byte, since its shares' rounding moves a frame by a few bytes: with
-  one read, a budget of 53,690,302 bytes admits a peer and one of 53,690,314 does not. So halving
-  for the least ends beside whichever change its steps meet: over budgets up to 2^40 it meets the
-  last for up to 24 reads, which the proof holds, and over every `u64` it would end at 53,690,299
-  for one read. 24 reads hold both of what sets the least budget, a frame up to 16 reads and the
-  dictionaries from 17, and keep the proofs within the 15 minutes of their part of the
-  `formal` check; past them each read keeps less, which leaves a frame no less, so `least`
-  halves for at most 24 and takes the larger of that and what the reads' dictionaries need, twice
-  the least dictionary for each in a quarter of the budget, exact as what a read keeps grows with
-  the budget; from 2^43 reads no budget holds that, and there is no least. The proof of the same
-  for any count of reads above 24 ran 20 minutes without an answer, since what a read keeps is
-  the reads' share divided by a count the proof leaves free, a product the solver must undo; a
-  property test in `budget/admits/tests.rs` holds it instead, drawing counts up to 2^43 and
-  budgets from the least to far above it. The ledger's own properties
-  are property tests in `budget/ledger/tests.rs`, since each of its paths takes its
-  `parking_lot` lock: every share stays within it through any asks, lets and presses, and none
-  is held once all is let go; waiting requests are admitted in turn only where they fit, with
-  abandoned ones given back; and a lent reservation gives back all it held, in any order.
+  `rdlt-engine/src/budget/ledger/proofs.rs` proves, for every capacity, that a budget's shares add
+  up to it, its data is what pushes and one request take, a piece is within a request, and a share's
+  bytes beside one request of its class never wrap, but the data beside a push, which the ledger
+  adds saturating (7 seconds). `budget/admits/proofs.rs` proves, for every capacity and 1 to 24
+  reads at once, that each limit the budget admits fits the share it draws on (69 seconds), and that
+  every budget from the least up admits a peer while the one a byte below does not (175 seconds).
+  What a budget admits does not grow with it byte by byte, since its shares' rounding moves a frame
+  by a few bytes, so halving for the least could end beside such a step: over budgets up to 2^40 it
+  ends at the least for up to 24 reads, which the proof holds. 24 reads hold both of what sets the
+  least budget, a frame up to 18 reads and the dictionaries from 19, and keep the proofs within the
+  15 minutes of their part of the `formal` check; past them each read keeps less, which leaves a
+  frame no less, so `least` halves for at most 24 and takes the larger of that and what the reads'
+  dictionaries need, twice the least dictionary for each in a quarter of the budget, exact as what a
+  read keeps grows with the budget; from 2^43 reads no budget holds that, and there is no least. The
+  proof of the same for any count of reads above 24 ran 20 minutes without an answer, since what a
+  read keeps is the reads' share divided by a count the proof leaves free, a product the solver must
+  undo; a property test in `budget/admits/tests.rs` holds it instead, drawing counts up to 2^43 and
+  budgets from the least to far above it. The ledger's own properties are property tests in
+  `budget/ledger/tests.rs`, since each of its paths takes its `parking_lot` lock: every share stays
+  within it through any asks, lets and presses, and none is held once all is let go; waiting
+  requests are admitted in turn only where they fit, with abandoned ones given back; and a lent
+  reservation gives back all it held, in any order.
 - A bounded body's length prefix is proved (`rdlt-wire/src/bounded/proofs.rs`), and its property
   test of the same name stays beside it (`rdlt-wire/src/bounded/tests.rs`): from any bytes up to 16
   and any wire bound, a prefix is read as nothing until it is whole, then as the length it declares
@@ -144,47 +142,15 @@ A formal layer is added to the layers of its class, never in place of one.
   budget, a thread-local whose value has a destructor, and Kani 0.68 stops with an internal
   error on any such thread-local, at the `catch_unwind` intrinsic. A harness that takes and
   gives back room without waiting compiles, and took past 10 GB in about 7 minutes.
-- A log frame's length is proved (`rdlt-engine/src/wal/frame/len/proofs.rs`): a frame is its
-  payload and its head, saturating at the largest length rather than wrapping, for every payload
-  length (under a second). What `listed` counts of a list of numbers is held by tests in
-  `wal/frame/tests.rs` instead: `an_end_frame_s_length_counts_every_width_of_number` checks a
-  number at both ends of every width a `u64` takes, and the property test
-  `an_end_frame_s_length_is_what_it_encodes_to` draws lists of up to 19 numbers, commas included.
-  Its proof within a bound of one number took 424 to 595 seconds on a laptop and 786 on GitHub's
-  runner, its job 833 of the 900 seconds it may take; over two numbers it took 627 seconds and
-  over three 640, past the 10 minutes a part may take on a laptop.
-- A log frame's preamble and head are proved (`rdlt-engine/src/wal/frame/proofs.rs`): from any bytes
-  up to 16, a head's length is nothing until its five bytes have arrived, then the little-endian
-  length they announce (under a second), and a chunk is accepted only where the bytes start with
-  this format's own preamble (8 to 10 seconds); summing a frame's checksum in two pieces cut
-  anywhere accepts exactly the frames of up to four bytes of payload that reading it whole accepts
-  (163 to 306 seconds). A refusal's message is formatted as nothing in these proofs, by stubbing,
-  which `rdlt-engine`'s manifest turns on, as no property reads it. The checksum is a bitwise
-  CRC-32C, proved in a part of its own (`wal/frame/crc/proofs.rs`) to give the algorithm's standard
-  check value and to sum in pieces as it does whole (293 to 410 seconds), stubbed in for the
-  crate's, whose CPU detection is inline assembly, which Kani does not run. That a frame reads back
-  as framed, and that bytes near it, cut or with a byte changed, read only where they are a frame's
-  framing, is a property test (`a_frame_reads_back_as_framed_and_no_other_bytes_read` in
-  `wal/frame/tests.rs`, payloads of up to 63 bytes). Its proof does not fit: with the reader beside
-  the writer the harness took past 10 GB in 41 to 304 seconds in every form tried, even one byte of
-  payload of a given length, as the writer's and the reader's bitwise checksums must be shown equal;
-  the writer alone verifies in 4 seconds.
-- A commit's horizon is proved (`rdlt-engine/src/coordinator/horizon/proofs.rs`). With up to
-  three loads listed, any of them the load itself, and the load's oldest commit among its first
-  four, the horizon is the earlier of that oldest commit and another listed load's first, and no
-  later than any of them (190 to 270 seconds). A later commit's horizon is never earlier, where
-  the later listing holds only loads listed before or loads newer than the load itself
-  (15 to 23 seconds). The ids are drawn at any of the first 256 milliseconds: ids order by their
-  time first, so these order, tie and differ as any ids do. Acknowledgement and positions are
-  property tests, not proofs, because Kani does not run the one and does not usefully bound the
-  other. That a source is told only cursors a landed commit covers is an order of the async
-  coordinator's calls (`coordinator/tests/acks.rs`), and that a log's positions are exactly what
-  commits record is a property of maps of JSON-keyed records (`wal/positions/tests.rs`).
+- Acknowledgement and done markers are property tests, not proofs, because Kani does not run
+  the one and does not usefully bound the other. That a source is told only cursors a landed
+  commit covers is an order of the async coordinator's calls (`coordinator/tests/acks.rs`), and
+  that the done markers are exactly what commits record is a property of maps of JSON-keyed
+  records (`coordinator/done/tests.rs`).
 - Where a property is over strings, sets, files or draining, a property test holds it, beside
   the code: a name map stays injective and append-only, tables named in turn and salted naming
-  never share an identifier, a local log's names read back only as written, each one plain name,
-  nothing said of a secret, `*` and all, survives scrubbing and what follows it, and a torn local
-  log is replayed exactly or refused with a typed error.
+  never share an identifier, and nothing said of a secret, `*` and all, survives scrubbing and
+  what follows it.
 
 ### Specifications: Quint over the design
 
@@ -327,12 +293,8 @@ A formal layer is added to the layers of its class, never in place of one.
   the `formal` job, the check the ruleset requires, passes once every part has, or where the
   change needs none, so it always reports.
 - On GitHub's runners `rdlt-wire`'s `flow` part took 276 to 481 seconds over four runs, nearly all
-  of it its credit harness (271 to 450 seconds), beside a setup of about 25 seconds. `rdlt-engine`'s
-  five harnesses took 838 seconds in one job, against a limit of 900: `budget::admits`'s two 228 and
-  95 seconds, `budget::ledger`'s one 22, and `coordinator::horizon`'s two 28 and 394, beside about
-  70 seconds of compiling and setup. As parts of their own, `coordinator::horizon`'s takes about 8
-  minutes, `budget::admits`'s about 7 and `budget::ledger`'s about 2. `wal::frame`'s three harnesses
-  took 201 seconds in a job of 252, and `wal::frame::crc`'s one 545 in a job of 589.
+  of it its credit harness (271 to 450 seconds), beside a setup of about 25 seconds.
+  `rdlt-engine`'s `budget::admits` part takes about 7 minutes and `budget::ledger`'s about 2.
 - A part that comes near its limit is split further, by module: its harnesses are divided
   between modules, each with proofs of its own and so a part of its own. Only a harness that
   alone would pass the limit becomes a property test.
