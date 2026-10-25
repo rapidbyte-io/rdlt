@@ -12,6 +12,7 @@
 mod tests;
 
 use std::future::Future;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -149,6 +150,10 @@ impl Source for WaitedSource {
         let call = self.inner.committed(stream, cursors);
         Box::pin(self.waits.within("the committed report", call))
     }
+
+    fn max_calls(&self) -> Option<NonZeroUsize> {
+        self.inner.max_calls()
+    }
 }
 
 struct WaitedDestination {
@@ -179,6 +184,10 @@ impl Destination for WaitedDestination {
                 ..opened
             })
         })
+    }
+
+    fn max_calls(&self) -> Option<NonZeroUsize> {
+        self.inner.max_calls()
     }
 }
 

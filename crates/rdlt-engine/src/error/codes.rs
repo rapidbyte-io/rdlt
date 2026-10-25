@@ -43,6 +43,10 @@ pub const BATCH_SCHEMA_INVALID: Code = Code("batch_schema_invalid");
 /// The code of the error for identifier rules of a destination's that the engine refuses.
 pub const CAPABILITIES_INVALID: Code = Code("capabilities_invalid");
 
+/// The code of the error for a source or destination that carries no more calls at once than the
+/// engine's other call into it, which leaves it none for a read or a writer.
+pub const CALLS_TOO_FEW: Code = Code("calls_too_few");
+
 /// The code of the error for a change stream merged by key into a destination that does not
 /// merge change streams.
 pub const CHANGE_MERGE_UNSUPPORTED: Code = Code("change_merge_unsupported");
@@ -247,6 +251,11 @@ pub const SCHEMA_VERSION_EXHAUSTED: Code = Code("schema_version_exhausted");
 
 /// The code of the error for a bug in the shredder.
 pub const SHRED_INTERNAL: Code = Code("shred_internal");
+
+/// The code of the error for a followed unbounded read beyond what its source's calls leave room
+/// for: each holds a call as long as the run, and one must stay for the engine's other call and
+/// a slot for every other read.
+pub const SOURCE_CALLS_EXCEEDED: Code = Code("source_calls_exceeded");
 
 /// The code of the error for a commit that would leave more state, or send a larger request,
 /// than a message carrying state may take.

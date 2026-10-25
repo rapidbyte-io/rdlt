@@ -29,7 +29,7 @@ use crate::coordinator::{Coordinator, CoordinatorParts, PartitionRun, StreamRun,
 use crate::env::Env;
 use crate::error::{Error, ErrorKind, Side, codes};
 use crate::lane::Lanes;
-use crate::limits::LOG_COPY_BYTES;
+use crate::limits::{self, LEAST_CALLS, LOG_COPY_BYTES};
 use crate::naming::{Naming, recorded};
 use crate::partition::{
     self, ChangeMode, Latest, LoadClock, PartitionContext, PartitionJob, Progress, Slots,
@@ -102,6 +102,7 @@ pub(crate) async fn run(
         ))
         .with_code(codes::WAL_STORE_MISSING));
     }
+    within_calls(context)?;
     // The load's log opens before any other is read, so a replay that starts later lists it
     // and fences it before it reads the pipeline's logs itself.
     let Some(store) = context.wal.clone() else {
@@ -119,6 +120,31 @@ pub(crate) async fn run(
         drop(store.remove_log(pipeline, load_id).await);
     }
     ran
+}
+
+/// Refuses an attempt whose source or destination carries too few calls at once for a read or a
+/// writer beside the engine's other call into it, before it opens the destination.
+///
+/// # Errors
+///
+/// A `Config` error coded `calls_too_few`, naming the connector, the calls it carries and those a
+/// run needs.
+fn within_calls(context: &RunContext) -> Result<(), Error> {
+    let sides = [
+        ("source", context.source.max_calls(), "a read"),
+        ("destination", context.destination.max_calls(), "a writer"),
+    ];
+    for (side, calls, held) in sides {
+        let Some(calls) = calls.filter(|calls| calls.get() < LEAST_CALLS) else {
+            continue;
+        };
+        return Err(Error::config(format!(
+            "the {side} carries {calls} at once, fewer calls than the {LEAST_CALLS} a run needs: \
+             {held} and the engine's other call beside it"
+        ))
+        .with_code(codes::CALLS_TOO_FEW));
+    }
+    Ok(())
 }
 
 /// Runs the attempt as [`run`] does, its log opened where the engine keeps one.
@@ -352,7 +378,7 @@ fn shared_by_partitions(
         barrier: ends.barrier,
         stop: ends.stop,
         cancel: ends.cancel,
-        slots: Slots::new(context.config.partitions()),
+        slots: Slots::new(context.config.partitions(), context.source.max_calls()),
         segments: Arc::new(AtomicU64::new(1)),
         buffer: context.config.partition_buffer(),
         load_id,
@@ -373,7 +399,7 @@ fn start_lanes(context: &RunContext, tables: &Arc<Tables>, scope: &mut TaskScope
         context.env.cores(),
         context.destination.as_ref(),
     );
-    let writers = context.config.growth().writers();
+    let writers = held_writers(&context.config, context.destination.as_ref());
     let (lanes, tasks) = Lanes::new(
         (count, writers),
         tables,
@@ -502,6 +528,17 @@ fn lane_count(
     let lanes = config
         .lanes()
         .map_or(cores.get(), |lanes| usize::from(lanes.get()));
-    let lanes = lanes.min(limit).min(config.growth().writers().get());
+    let lanes = lanes
+        .min(limit)
+        .min(held_writers(config, destination).get());
     NonZeroUsize::new(lanes).unwrap_or(NonZeroUsize::MIN)
+}
+
+/// The writers an attempt holds open at once: the growth limit's, or fewer where `destination`
+/// carries fewer calls at once beside a session's other call.
+fn held_writers(config: &EngineConfig, destination: &dyn Destination) -> NonZeroUsize {
+    let writers = config.growth().writers();
+    destination
+        .max_calls()
+        .map_or(writers, |calls| writers.min(limits::carried(calls)))
 }

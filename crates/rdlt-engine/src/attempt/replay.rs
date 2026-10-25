@@ -167,7 +167,7 @@ async fn begin(
         origin,
         session: opened.session,
         epoch: opened.epoch,
-        writers: context.config.growth().writers(),
+        writers: super::held_writers(&context.config, context.destination.as_ref()),
         budget: context.budget.clone(),
     })
 }

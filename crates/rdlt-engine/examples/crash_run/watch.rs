@@ -3,6 +3,7 @@
 //! a source before a chosen write.
 
 use std::io::Write as _;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
@@ -185,6 +186,10 @@ impl Source for Watched<dyn Source> {
     ) -> BoxFuture<'a, Result<()>> {
         self.inner.committed(stream, cursors)
     }
+
+    fn max_calls(&self) -> Option<NonZeroUsize> {
+        self.inner.max_calls()
+    }
 }
 
 impl Destination for Watched<dyn Destination> {
@@ -207,6 +212,10 @@ impl Destination for Watched<dyn Destination> {
                 ..opened
             })
         })
+    }
+
+    fn max_calls(&self) -> Option<NonZeroUsize> {
+        self.inner.max_calls()
     }
 }
 
