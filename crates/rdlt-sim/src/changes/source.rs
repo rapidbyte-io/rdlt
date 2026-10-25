@@ -183,7 +183,7 @@ impl ReadStream<SimChangeSource> for Reader {
         if !stream.replayable {
             let key = (stream.name.clone(), partition.id().to_string());
             let forgotten = world.acknowledged.lock().get(&key).copied();
-            // What it acknowledged is gone; a read from before it waits for it to land.
+            // What it acknowledged is gone, refused to a read from before it.
             if forgotten.is_some_and(|forgotten| cursor.next < forgotten) {
                 return Err(ConnectorError::new(
                     ConnectorErrorKind::Transient,
@@ -222,13 +222,12 @@ impl ReadStream<SimChangeSource> for Reader {
                 .reports
                 .hear(&stream.name, partition, cursor, cursor.next)?;
             if !stream.replayable {
-                // It hears once the engine's log holds the changes, before they land; the oracle
-                // checks they did once the round is over.
+                // It forgets the changes before what it hears; the oracle checks they landed once
+                // the round is over.
                 let key = (stream.name.clone(), partition.to_string());
                 let mut acknowledged = world.acknowledged.lock();
                 let furthest = acknowledged.entry(key).or_default();
                 *furthest = (*furthest).max(cursor.next);
-                continue;
             }
             let committed = world.store.lock().landed(&name, partition);
             if committed.is_none_or(|committed| cursor.next > committed) {

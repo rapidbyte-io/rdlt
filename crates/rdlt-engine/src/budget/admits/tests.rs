@@ -5,7 +5,7 @@ use rdlt_wire::limits::{Class, MESSAGE_ROOM, MIN_DICTIONARY_BYTES, MIN_FRAME_BYT
 
 use super::{HALVED, admitted, kept, least, row_overhead};
 use crate::budget::Shares;
-use crate::limits::{COLUMN_RECORD, RECORDED};
+use crate::limits::COLUMN_RECORD;
 
 const MIB: u64 = 1 << 20;
 
@@ -17,10 +17,10 @@ fn the_default_budget_admits_these_limits() {
         Limits {
             // Half the 64 MiB a request takes, less a row's nulls, flags (937 bytes and their
             // hex), metadata and its piece's arrays (320 bytes each, two a column and sixteen),
-            // in a table of every column: that binds, not what pushes may take.
+            // in a table of every column: that binds, not the 96 MiB pushes may take.
             frame_bytes: 32 * MIB - 7_489 * 33 - 3 * 937 - 10 - 1_024 - (2 * 7_489 + 16) * 320,
-            // A third of the 84 MiB pushes may take, less a message's room.
-            json_push_bytes: (84 * MIB - MESSAGE_ROOM) / 3,
+            // A third of the 100 MiB pushes may take, less a message's room.
+            json_push_bytes: (100 * MIB - MESSAGE_ROOM) / 3,
             // A cursor waiting and an answer for each of sixteen reads, and half the share.
             cursor_bytes: 4 * MIB / 34,
             // A read keeps 4 MiB: half for its dictionaries, half for its schema, whose
@@ -28,7 +28,7 @@ fn the_default_budget_admits_these_limits() {
             dictionary_bytes: 2 * MIB,
             schema_bytes: 2 * MIB / 5,
             // What the 0.4 MiB of a schema's message carries of short names, fewer than the
-            // 8,192 that 8 MiB of tables' records holds at a kilobyte a column.
+            // 16,384 that 8 MiB of tables' records holds at half a kilobyte a column.
             schema_columns: 7_489,
             // What the 16 MiB of answers being decoded holds of one decoded: a catalog at
             // sixteen times its bytes; state, bounded decoded, the protocol's, as is any other
@@ -37,14 +37,17 @@ fn the_default_budget_admits_these_limits() {
             ..Limits::default()
         }
     );
+    // Read alone, a read keeps the whole share, whose schema's message carries more columns
+    // than the protocol allows, and 8 MiB of tables' records holds as many.
+    assert_eq!(admitted(Shares::of(256 * MIB), 1).schema_columns, 10_000);
 }
 
 #[test]
 fn the_least_memory_admits_these_limits() {
     assert_eq!(least(16), Some(39_545_528));
-    // One read keeps all of the reads' share, and a frame and its message's room beside it fit
-    // what pushes may take.
-    assert_eq!(least(1), Some(53_690_341));
+    // One read keeps all of the reads' share, so a table may have more columns, whose nulls,
+    // flags and arrays a row of a frame takes beside it.
+    assert_eq!(least(1), Some(50_060_952));
     let limits = admitted(Shares::of(least(16).unwrap()), 16);
     assert_eq!(
         (
@@ -55,7 +58,7 @@ fn the_least_memory_admits_these_limits() {
             limits.schema_bytes,
             limits.schema_columns
         ),
-        (MIN_FRAME_BYTES, 4_325_207, 18_173, 308_949, 61_789, 1_103)
+        (MIN_FRAME_BYTES, 5_149_072, 18_173, 308_949, 61_789, 1_103)
     );
     // What a sixteenth of the budget holds of one answer decoded.
     assert_eq!(
@@ -96,8 +99,8 @@ fn what_each_limit_admits_all_at_once_fits_the_share_it_draws_on() {
         let defaults = Limits::default();
         assert_eq!(limits.lesser(&defaults), limits, "{what}");
         // A frame's message, at most its frame and MESSAGE_ROOM, beside what a read keeps, fits
-        // what pushes may take; one row of it, with a null in each column and the metadata, fits
-        // what a row may take where the load keeps a log.
+        // what pushes may take; the frame, with a row's null in each column and the metadata,
+        // fits a request over what a data message holds decoded for each of its bytes.
         let message = limits.frame_bytes.saturating_add(MESSAGE_ROOM);
         assert!(
             limits.frame_bytes == 0 || message.saturating_add(kept) <= shares.intake.max(kept),
@@ -132,13 +135,6 @@ fn what_each_limit_admits_all_at_once_fits_the_share_it_draws_on() {
         let readers = u64::try_from(readers).expect("a count");
         let cursors = limits.cursor_bytes.saturating_mul(2 * (readers + 1));
         assert!(cursors <= shares.cursors, "{what}");
-        // A seal's frame records two cursors, each at most twice over; a commit's every cursor
-        // waiting, each at most twice over.
-        assert!(
-            limits.cursor_bytes.saturating_mul(4) <= shares.log,
-            "{what}"
-        );
-        assert!(shares.cursors.saturating_mul(3) <= shares.log, "{what}");
         // A schema's message, the schema decoded from it and the dictionaries fit what a read
         // keeps.
         let schema = limits.schema_bytes.saturating_mul(5);
@@ -147,9 +143,7 @@ fn what_each_limit_admits_all_at_once_fits_the_share_it_draws_on() {
             "{what}"
         );
         // A table of every column a schema may have records within the tables' share.
-        let records = limits
-            .schema_columns
-            .saturating_mul(RECORDED * COLUMN_RECORD);
+        let records = limits.schema_columns.saturating_mul(COLUMN_RECORD);
         assert!(records <= shares.tables, "{what}");
         // What the budget does not bound is the protocol's.
         assert_eq!(

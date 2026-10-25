@@ -1,18 +1,15 @@
 //! SQLite: rows loaded through the engine into the reference SQLite destination, on disk beside
 //! the build: appends at one commit and at a commit every 10k rows, a million rows at a commit
-//! every 10k from a source that cannot read them again, so the engine logs them ahead into a
-//! local log on the same disk, and a million rows merged by key into a million, a tenth of them
-//! updates.
+//! every 10k from a source that cannot read them again, each told its cursor once its commit
+//! lands, and a million rows merged by key into a million, a tenth of them updates.
 //!
 //! Each append prints the time its last run's commits took, phase by phase. The database's files
-//! are `loaded.db` and SQLite's beside it, and a log's are under `wal`, so a run's syncs of each
-//! tell apart by path.
+//! are `loaded.db` and SQLite's beside it, so a run's syncs tell apart by path.
 
 #![forbid(unsafe_code)]
 
 use std::num::NonZeroU64;
 use std::path::Path;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use criterion::{
@@ -21,7 +18,7 @@ use criterion::{
 use rdlt_connector::destination_factory;
 use rdlt_connector_reference::SqliteDestination;
 use rdlt_engine::bench::{Load, Loading};
-use rdlt_engine::{Cores, LocalWal, Report, WalStore};
+use rdlt_engine::{Cores, Report};
 use serde_json::json;
 use tempfile::TempDir;
 
@@ -34,7 +31,7 @@ const COMMIT_ROWS: NonZeroU64 = NonZeroU64::new(10_000).expect("not zero");
 /// Rows of the merge, and of the table it merges into.
 const MERGED: u64 = 1_000_000;
 
-/// Whether an append's source can read its rows again, or cannot, so the engine logs them ahead.
+/// Whether an append's source can read its rows again, or cannot.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Source {
     Replayable,
@@ -73,24 +70,11 @@ fn load(loading: &Loading, path: &Path) -> (Duration, Report) {
     (started.elapsed(), report)
 }
 
-/// The loading of `rows` appended rows committed every `commit` rows or once, from `source`; and
-/// the directory of the log it keeps, under `wal` in it, where its source cannot read again.
-fn appends(
-    cores: Cores,
-    rows: u64,
-    commit: Option<NonZeroU64>,
-    source: Source,
-) -> (Loading, Option<TempDir>) {
+/// The loading of `rows` appended rows committed every `commit` rows or once, from `source`.
+fn appends(cores: Cores, rows: u64, commit: Option<NonZeroU64>, source: Source) -> Loading {
     let made = match source {
-        Source::Replayable => Loading::try_new(cores, Load::Append, rows, APPEND_BATCH, commit)
-            .map(|loading| (loading, None)),
-        Source::Unreplayable => {
-            let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR"))
-                .expect("a directory beside the build");
-            let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(dir.path().join("wal")));
-            Loading::logged(cores, rows, APPEND_BATCH, commit, store)
-                .map(|loading| (loading, Some(dir)))
-        }
+        Source::Replayable => Loading::try_new(cores, Load::Append, rows, APPEND_BATCH, commit),
+        Source::Unreplayable => Loading::unreplayable(cores, rows, APPEND_BATCH, commit),
     };
     made.expect("the pool starts")
 }
@@ -102,12 +86,9 @@ fn phases(report: &Report) -> String {
     let commits = report.commits.max(1) as f64;
     let each = |phase: Duration| phase.as_secs_f64() * 1e3 / commits;
     format!(
-        "commits {}; a commit's phases: flush {:.3} ms, horizon {:.3} ms, log {:.3} ms, commit \
-         {:.3} ms, ack {:.3} ms",
+        "commits {}; a commit's phases: flush {:.3} ms, commit {:.3} ms, ack {:.3} ms",
         report.commits,
         each(phases.flush),
-        each(phases.horizon),
-        each(phases.log),
         each(phases.commit),
         each(phases.ack),
     )
@@ -148,8 +129,7 @@ fn appending(c: &mut Criterion) {
         let (mut loading, mut reported) = (None, None);
         group.throughput(Throughput::Elements(rows));
         group.bench_function(BenchmarkId::new("append", &name), |b| {
-            let (loading, _log) =
-                loading.get_or_insert_with(|| appends(cores, rows, commit, source));
+            let loading = loading.get_or_insert_with(|| appends(cores, rows, commit, source));
             b.iter_custom(|runs| {
                 let mut took = Duration::ZERO;
                 for _ in 0..runs {

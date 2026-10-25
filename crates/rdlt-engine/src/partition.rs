@@ -34,7 +34,6 @@ use crate::error::{Error, ErrorKind, Side, codes};
 use crate::lane::Lanes;
 use crate::report::ShredCounts;
 use crate::table::Tables;
-use crate::wal::LoadLog;
 use crate::watch;
 
 use barriers::Barriers;
@@ -122,8 +121,6 @@ pub(crate) struct PartitionContext {
     pub(crate) batch: BatchPolicy,
     /// How long a read asked to stop may take to end.
     pub(crate) stop_wait: std::time::Duration,
-    /// The load's write-ahead log, where it keeps one.
-    pub(crate) wal: Option<LoadLog>,
 }
 
 impl PartitionContext {
@@ -188,10 +185,9 @@ async fn read(mut job: PartitionJob, context: &PartitionContext) -> Result<(), E
             // A cursor the read ended at waits for its commit as a checkpoint's does.
             let held = CursorHold::reserve(&context.budget, &context.cancel, &state).await;
             let seal = ingested.open.seal(job.index, state, None, held?);
-            checkpointed(context, &seal);
             context.report(Progress::Sealed(seal))?;
         }
-        None => abandon(job.index, &ingested.open, context).await?,
+        None => abandon(job.index, &ingested.open, context)?,
     }
     context.report(Progress::Ended {
         partition: job.index,
@@ -199,21 +195,12 @@ async fn read(mut job: PartitionJob, context: &PartitionContext) -> Result<(), E
     })
 }
 
-/// Lets `open` go uncommitted: its rows no longer make a commit due, and the write-ahead log may
-/// drop what it holds of it.
-async fn abandon(
-    partition: usize,
-    open: &OpenSegment,
-    context: &PartitionContext,
-) -> Result<(), Error> {
+/// Lets `open` go uncommitted: its rows no longer make a commit due.
+fn abandon(partition: usize, open: &OpenSegment, context: &PartitionContext) -> Result<(), Error> {
     context.report(Progress::Abandoned {
         partition,
         segment: open.id,
-    })?;
-    if let Some(log) = &context.wal {
-        log.abandon(open.id).await?;
-    }
-    Ok(())
+    })
 }
 
 /// Reads `job` while ingesting what the read emits, until both end or the attempt is cancelled:
@@ -501,16 +488,7 @@ fn seal_segment(
     }
     // The position it carries is newer than a waiting seal's of no rows, which it replaces.
     seal.answers = seal.answers.max(context.latest.superseded(partition));
-    checkpointed(context, &seal);
     context.report(Progress::Sealed(seal))
-}
-
-/// Tells the load's log of `seal` before the coordinator hears of it, where a commit taking it
-/// frees any of the log: a seal of no rows frees nothing, and is not counted.
-fn checkpointed(context: &PartitionContext, seal: &Seal) {
-    if let Some(log) = context.wal.as_ref().filter(|_| !seal.moves_only()) {
-        log.checkpointed();
-    }
 }
 
 /// The error for a push the stream's read mode does not take: `what` it pushed, and why not.

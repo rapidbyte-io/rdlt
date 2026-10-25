@@ -13,14 +13,12 @@ use rdlt_connector::{
     PipelineState, ReadMode, ReadStream, Result, SourceConnector, StreamName, StreamSpec,
     StreamState, Streams, source_factory,
 };
-use rdlt_engine::{
-    EngineConfig, EngineConfigBuilder, ErrorKind, LocalWal, RunOutcome, RunStatus, codes,
-};
+use rdlt_engine::{EngineConfig, EngineConfigBuilder, ErrorKind, RunOutcome, RunStatus, codes};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::support::{commit_every, engine, logging_engine, memory, pipeline, stream};
+use crate::support::{commit_every, engine, memory, pipeline, stream};
 
 /// What a test's source plans and sends: the ids of the partitions its plans name, the bytes of
 /// the cursor each checkpoints after its one row, whether it can read again what it
@@ -195,34 +193,6 @@ async fn stored(destination: &dyn Destination, name: &str) -> PipelineState {
     PipelineState::from_records(&opened.state).expect("the state reads")
 }
 
-/// The kinds of the frames `name`'s log holds in `store`, of every load.
-async fn logged(store: &dyn rdlt_engine::WalStore, name: &str) -> Vec<u8> {
-    let pipeline = PipelineId::parse(name).expect("a valid pipeline");
-    let mut kinds = Vec::new();
-    for load in store.loads(&pipeline).await.expect("loads list") {
-        for (number, len) in store.chunks(&pipeline, load).await.expect("chunks list") {
-            let chunk = rdlt_engine::Chunk { load, number };
-            let bytes = store
-                .read(&pipeline, chunk, 0, len)
-                .await
-                .expect("the chunk reads");
-            // Past the chunk's preamble.
-            let mut at = 14;
-            while at + 9 <= bytes.len() {
-                kinds.push(bytes[at]);
-                let len = u32::from_le_bytes([
-                    bytes[at + 1],
-                    bytes[at + 2],
-                    bytes[at + 3],
-                    bytes[at + 4],
-                ]);
-                at += 9 + usize::try_from(len).expect("a length");
-            }
-        }
-    }
-    kinds
-}
-
 /// Cursors of `bytes` fit a budget this large: a 64th of it is the cursors' share.
 fn roomy() -> EngineConfigBuilder {
     commit_every(1_000_000).memory(4 << 30)
@@ -238,7 +208,7 @@ fn refused(outcome: &RunOutcome) {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_commit_whose_state_would_pass_the_limit_is_refused_before_it_is_logged() {
+async fn a_commit_whose_state_would_pass_the_limit_is_refused_before_it_is_sent() {
     let name = "stored-one-commit";
     let cursor = usize::try_from(roomy().build().expect("valid").limits().cursor_bytes)
         .expect("a size")
@@ -249,9 +219,7 @@ async fn a_commit_whose_state_would_pass_the_limit_is_refused_before_it_is_logge
         replayable: false,
         again: false,
     };
-    let base = tempfile::tempdir().expect("a temporary directory");
-    let store: Arc<dyn rdlt_engine::WalStore> = Arc::new(LocalWal::new(base.path()));
-    let outcome = logging_engine(roomy(), Arc::clone(&store))
+    let outcome = engine(roomy())
         .run(
             pipeline(name, [stream("events").read(ReadMode::Incremental)]),
             source(name, shape).await,
@@ -259,11 +227,8 @@ async fn a_commit_whose_state_would_pass_the_limit_is_refused_before_it_is_logge
         )
         .await;
     refused(&outcome);
-    // Nothing was logged as committed, and the source heard of no position: what was staged of
-    // the log is published with a commit alone.
+    // Nothing was committed, and the source heard of no position.
     assert_eq!(acks(name), 0);
-    let kinds = logged(store.as_ref(), name).await;
-    assert!(!kinds.contains(&5), "a commit was logged: {kinds:?}");
     let state = stored(memory(name).await.as_ref(), name).await;
     assert!(state.streams.is_empty(), "{state:?}");
 }

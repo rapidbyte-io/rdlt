@@ -12,8 +12,7 @@ use rdlt_connector::{
     Result, SourceConnector, StreamName, StreamSpec, StreamState, Streams, source_factory,
 };
 use rdlt_engine::{
-    CommitPolicy, EngineConfig, EngineConfigBuilder, ErrorKind, LocalWal, Origin, RunOutcome,
-    RunStatus, WalStore,
+    CommitPolicy, EngineConfig, EngineConfigBuilder, ErrorKind, Origin, RunOutcome, RunStatus,
 };
 use rdlt_wire::limits::LIMIT_EXCEEDED;
 use schemars::JsonSchema;
@@ -21,7 +20,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::support::making::{Step, Steps, making};
-use crate::support::{engine, logging_engine, memory, pipeline, retrying, stream};
+use crate::support::{engine, memory, pipeline, retrying, stream};
 
 /// What an [`Asked`] source reads.
 #[derive(Clone, Copy, Debug)]
@@ -240,21 +239,12 @@ fn one_long_row(bytes: usize) -> Steps {
     })
 }
 
-/// Loads what `steps` makes as `name` under `config`, through a log where `logged`.
-async fn loaded(name: &str, config: EngineConfigBuilder, steps: Steps, logged: bool) -> RunOutcome {
+/// Loads what `steps` makes as `name` under `config`.
+async fn loaded(name: &str, config: EngineConfigBuilder, steps: Steps) -> RunOutcome {
     let source = making(name, steps).await;
     let destination = memory(name).await;
     let plan = pipeline(name, [stream("events").read(ReadMode::Incremental)]);
-    if !logged {
-        return engine(config).run(plan, source, destination).await;
-    }
-    let base = tempfile::tempdir().expect("a directory");
-    let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(base.path()));
-    let outcome = logging_engine(config, store)
-        .run(plan.with_wal(true), source, destination)
-        .await;
-    drop(base);
-    outcome
+    engine(config).run(plan, source, destination).await
 }
 
 /// The bytes of a text value a one-row batch may hold within `frame`: its offsets, validity and
@@ -264,17 +254,11 @@ fn value_within(frame: u64) -> usize {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_row_as_long_as_a_frame_loads_at_the_least_memory_and_at_the_default_with_a_log() {
+async fn a_row_as_long_as_a_frame_loads_at_the_least_memory_and_at_the_default() {
     let least = EngineConfig::least_memory(16).expect("a memory admits 16 partitions");
     let config = retrying(1).memory(least).partitions(16);
     let frame = config.clone().build().expect("valid").limits().frame_bytes;
-    let outcome = loaded(
-        "told_row_least",
-        config,
-        one_long_row(value_within(frame)),
-        true,
-    )
-    .await;
+    let outcome = loaded("told_row_least", config, one_long_row(value_within(frame))).await;
     assert_eq!(
         outcome.report.status,
         RunStatus::Succeeded,
@@ -287,7 +271,6 @@ async fn a_row_as_long_as_a_frame_loads_at_the_least_memory_and_at_the_default_w
         "told_row_default",
         config,
         one_long_row(value_within(frame)),
-        true,
     )
     .await;
     assert_eq!(
@@ -317,14 +300,14 @@ fn wide_row(columns: usize) -> Steps {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_table_as_wide_as_a_schema_may_be_commits_through_a_log_and_a_wider_is_refused_first() {
+async fn a_table_as_wide_as_a_schema_may_be_commits_and_a_wider_is_refused_first() {
     let least = EngineConfig::least_memory(16).expect("a memory admits 16 partitions");
     let config = || retrying(3).memory(least);
     let limits = config().build().expect("valid").limits();
     let columns = usize::try_from(limits.schema_columns).expect("a count");
     // As wide as a schema may be: the commit records its schema and names, which its change
-    // reserved, in its frame.
-    let within = loaded("told_wide", config(), wide_row(columns), true).await;
+    // reserved.
+    let within = loaded("told_wide", config(), wide_row(columns)).await;
     assert_eq!(
         within.report.status,
         RunStatus::Succeeded,
@@ -333,7 +316,7 @@ async fn a_table_as_wide_as_a_schema_may_be_commits_through_a_log_and_a_wider_is
     );
     // Four thousand columns pass what a schema may hold: refused where the source pushes them,
     // before any table changes or any commit.
-    let beyond = loaded("told_wider", config(), wide_row(4_000), true).await;
+    let beyond = loaded("told_wider", config(), wide_row(4_000)).await;
     let error = beyond.error.expect("the run fails");
     assert_eq!(
         (error.kind(), error.origin(), error.connector_code()),
@@ -461,7 +444,7 @@ async fn a_cursor_waiting_for_room_commits_without_waiting_on_a_barrier_slow_to_
     let config = || {
         EngineConfig::builder()
             .commit(CommitPolicy::new(None, Some(1_000_000), None).expect("a policy"))
-            .memory(40 << 20)
+            .memory(48 << 20)
             .partitions(3)
             .lanes(1)
             .barrier_wait(Duration::from_secs(20))

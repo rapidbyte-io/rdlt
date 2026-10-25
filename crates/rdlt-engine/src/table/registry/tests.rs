@@ -699,18 +699,19 @@ async fn a_tables_records_are_reserved_at_its_change_until_a_commit_records_them
         .fit(0, &schema(&[("id", LogicalType::Int64)]))
         .await
         .unwrap();
+    let records = |delta: &super::TablesDelta| super::records::recorded_bytes(&delta.changes);
     let first = tables.delta();
-    assert_eq!(budget.reserved(), first.prepaid);
+    assert_eq!(budget.reserved(), records(&first));
     assert!(budget.reserved() > 0);
     // A wider table reserves its records in place of the narrower one's.
     let wider = schema(&[("id", LogicalType::Int64), ("note", LogicalType::Utf8)]);
     tables.fit(0, &wider).await.unwrap();
     let second = tables.delta();
-    assert!(second.prepaid > first.prepaid);
-    assert_eq!(budget.reserved(), second.prepaid);
+    assert!(records(&second) > records(&first));
+    assert_eq!(budget.reserved(), records(&second));
     // A commit recording an older revision releases nothing; a commit recording the latest does.
     tables.recorded(&first.revisions);
-    assert_eq!(budget.reserved(), second.prepaid);
+    assert_eq!(budget.reserved(), records(&second));
     tables.recorded(&second.revisions);
     assert_eq!(budget.reserved(), 0);
 }

@@ -11,17 +11,9 @@ use rdlt_connector::{Destination, PipelineId, Source};
 use tokio::runtime::Runtime;
 
 use crate::{
-    CommitPolicy, ComputePoolError, Cores, Engine, EngineConfig, GrowthLimits, PipelinePlan,
-    Report, RetryPolicy, RunOutcome, StreamPlan, SystemEnv, WalStore,
+    CommitPolicy, ComputePoolError, Cores, Engine, EngineConfig, PipelinePlan, Report, RunOutcome,
+    StreamPlan, SystemEnv,
 };
-
-/// Where a runner's loads keep their logs, holding at most `bytes` on disk, and whether every
-/// load keeps one, or only one with a stream whose source cannot read again.
-struct Log {
-    store: Arc<dyn WalStore>,
-    bytes: NonZeroU64,
-    always: bool,
-}
 
 /// A runtime, and an engine on it with the plan it loads.
 #[derive(Debug)]
@@ -52,49 +44,7 @@ impl Runner {
         stream: StreamPlan,
         commit: Option<NonZeroU64>,
     ) -> Result<Self, ComputePoolError> {
-        Self::build(cores, pipeline, vec![stream], commit, Self::MEMORY, None)
-    }
-
-    /// A runner as [`Runner::try_new`] makes it whose loads are each logged ahead into `store`,
-    /// holding at most `log_bytes` on disk, one attempt a run, so a run whose commit fails leaves
-    /// its log.
-    pub(super) fn logging(
-        cores: Cores,
-        pipeline: &str,
-        stream: StreamPlan,
-        commit: Option<NonZeroU64>,
-        (store, log_bytes): (Arc<dyn WalStore>, NonZeroU64),
-    ) -> Result<Self, ComputePoolError> {
-        let log = Log {
-            store,
-            bytes: log_bytes,
-            always: true,
-        };
-        Self::build(
-            cores,
-            pipeline,
-            vec![stream],
-            commit,
-            Self::MEMORY,
-            Some(log),
-        )
-    }
-
-    /// A runner as [`Runner::within`] makes it whose loads are logged as [`Runner::logging`]'s
-    /// are, a load logging ahead only where a stream's source cannot read again.
-    pub(super) fn mixed(
-        cores: Cores,
-        (pipeline, streams): (&str, Vec<StreamPlan>),
-        commit: Option<NonZeroU64>,
-        memory: u64,
-        (store, log_bytes): (Arc<dyn WalStore>, NonZeroU64),
-    ) -> Result<Self, ComputePoolError> {
-        let log = Log {
-            store,
-            bytes: log_bytes,
-            always: false,
-        };
-        Self::build(cores, pipeline, streams, commit, memory, Some(log))
+        Self::within(cores, pipeline, vec![stream], commit, Self::MEMORY)
     }
 
     /// A runtime and an engine as [`Runner::try_new`] makes them that load `streams`, within a
@@ -114,7 +64,19 @@ impl Runner {
         commit: Option<NonZeroU64>,
         memory: u64,
     ) -> Result<Self, ComputePoolError> {
-        Self::build(cores, pipeline, streams, commit, memory, None)
+        let policy = match commit {
+            Some(rows) => CommitPolicy::new(None, Some(rows.get()), None),
+            None => CommitPolicy::new(None, None, Some(1 << 40)),
+        };
+        let config = EngineConfig::builder()
+            .memory(memory)
+            .commit(policy.expect("a valid policy"))
+            .build()
+            .expect("a valid configuration");
+        let pipeline = PipelineId::parse(pipeline).expect("a valid id");
+        let env = SystemEnv::try_new(cores)?;
+        let plan = PipelinePlan::new(pipeline, streams).expect("a valid plan");
+        Ok(Self::assemble(cores, config, env, plan))
     }
 
     /// A runtime of `cores`' workers, and an engine within `cores` configured as `config` that
@@ -133,38 +95,6 @@ impl Runner {
         plan: PipelinePlan,
     ) -> Result<Self, ComputePoolError> {
         let env = SystemEnv::try_new(cores)?;
-        Ok(Self::assemble(cores, config, env, plan))
-    }
-
-    fn build(
-        cores: Cores,
-        pipeline: &str,
-        streams: Vec<StreamPlan>,
-        commit: Option<NonZeroU64>,
-        memory: u64,
-        log: Option<Log>,
-    ) -> Result<Self, ComputePoolError> {
-        let policy = match commit {
-            Some(rows) => CommitPolicy::new(None, Some(rows.get()), None),
-            None => CommitPolicy::new(None, None, Some(1 << 40)),
-        };
-        let mut builder = EngineConfig::builder()
-            .memory(memory)
-            .commit(policy.expect("a valid policy"));
-        if let Some(log) = &log {
-            let growth = GrowthLimits::default().with_log_bytes(log.bytes.get());
-            builder = builder
-                .retry(RetryPolicy::default().max_attempts(1))
-                .growth(growth.expect("a limit of more than zero"));
-        }
-        let config = builder.build().expect("a valid configuration");
-        let pipeline = PipelineId::parse(pipeline).expect("a valid id");
-        let mut env = SystemEnv::try_new(cores)?;
-        let mut plan = PipelinePlan::new(pipeline, streams).expect("a valid plan");
-        if let Some(log) = log {
-            env = env.with_wal(log.store);
-            plan = plan.with_wal(log.always);
-        }
         Ok(Self::assemble(cores, config, env, plan))
     }
 

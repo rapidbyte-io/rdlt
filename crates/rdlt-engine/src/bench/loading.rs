@@ -1,6 +1,6 @@
 //! Loads of mixed rows through the engine into a destination the caller connects: appends, and
 //! merges of updates into the rows a load before them wrote, committing every so many rows or
-//! once; and appends from a source that cannot read its rows again, logged ahead.
+//! once; and appends from a source that cannot read its rows again.
 
 #[cfg(test)]
 mod tests;
@@ -16,7 +16,7 @@ use super::Replayed;
 use super::replay::mixed_replay;
 use super::runner::{Runner, stream};
 use crate::fixtures::events_of;
-use crate::{ComputePoolError, Cores, GrowthLimits, Report, WalStore, WriteMode};
+use crate::{ComputePoolError, Cores, Report, WriteMode};
 
 /// Columns of each row a load writes.
 const COLUMNS: usize = 10;
@@ -72,8 +72,8 @@ impl Loading {
     }
 
     /// `rows` rows appended in batches of `per_batch`, committed every `commit` rows or once,
-    /// from a source that cannot read them again, so the engine logs each load ahead into
-    /// `store`; and a runtime of `cores`' workers and an engine within `cores` to load them.
+    /// from a source that cannot read them again, so each is told its cursor once its commit
+    /// lands; and a runtime of `cores`' workers and an engine within `cores` to load them.
     ///
     /// # Errors
     ///
@@ -82,20 +82,17 @@ impl Loading {
     /// # Panics
     ///
     /// Panics where the runtime does not start, or the rows do not fit in 63 bits.
-    pub fn logged(
+    pub fn unreplayable(
         cores: Cores,
         rows: u64,
         per_batch: NonZeroU64,
         commit: Option<NonZeroU64>,
-        store: Arc<dyn WalStore>,
     ) -> Result<Self, ComputePoolError> {
         let stream = stream()
             .write(WriteMode::Append)
             .read(ReadMode::Incremental);
-        let log = (store, GrowthLimits::default().log_bytes());
-        let streams = ("loading", vec![stream]);
         Ok(Self {
-            runner: Runner::mixed(cores, streams, commit, Runner::MEMORY, log)?,
+            runner: Runner::try_new(cores, "loading", stream, commit)?,
             batches: batches(Load::Append, rows, per_batch),
             unreplayable: 1,
         })

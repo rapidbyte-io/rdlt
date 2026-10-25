@@ -14,7 +14,6 @@ use tokio::sync::mpsc;
 use super::{Coordinator, PartitionRun};
 use crate::error::{Error, ErrorKind, Side, codes};
 use crate::partition::{self, ChangeMode, PartitionContext, PartitionJob};
-use crate::wal::frame::BegunPhase;
 
 /// A phased stream's place in its phases.
 #[derive(Debug)]
@@ -286,14 +285,14 @@ impl Coordinator {
         }
     }
 
-    /// The phases the next commit begins, each with the state changes recording it: the stream's
-    /// stale partition entries deleted, where its partitions start, then the phase.
+    /// The state changes recording the phases the next commit begins, stream by stream: each
+    /// stream's stale partition entries deleted, where its partitions start, then the phase.
     ///
     /// A commit that fails ends the attempt, so the commit that takes a phase's changes records
     /// it. A partition that begins its phase is recorded at its start, so an attempt that ends
     /// before the partition's first checkpoint resumes it there.
-    pub(super) fn phase_delta(&mut self) -> Vec<BegunPhase> {
-        let mut begun_phases = Vec::new();
+    pub(super) fn phase_delta(&mut self) -> Vec<StateChange> {
+        let mut changes = Vec::new();
         let load = self.parts.load_id;
         for stream in &mut self.parts.streams {
             let Some(phases) = stream.phases.as_mut() else {
@@ -302,7 +301,6 @@ impl Coordinator {
             let Some(begun) = phases.begun.take() else {
                 continue;
             };
-            let mut changes = Vec::new();
             for partition in begun.stale {
                 let key = StateKey::Partition(stream.name.clone(), partition);
                 changes.push(StateChange::Delete(key.encode()));
@@ -323,12 +321,7 @@ impl Coordinator {
                 phase: phases.phase,
             };
             changes.push(StateChange::Put(entry.to_record()));
-            begun_phases.push(BegunPhase {
-                stream: stream.name.clone(),
-                phase: phases.phase,
-                changes,
-            });
         }
-        begun_phases
+        changes
     }
 }

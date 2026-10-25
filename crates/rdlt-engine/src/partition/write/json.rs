@@ -9,8 +9,7 @@ use super::held::{self, Held};
 use super::pieces::{Pieces, RowTooLarge};
 use super::units::{self, Beside, Built, Units};
 use super::{
-    OpenSegment, PartitionContext, PartitionJob, Planned, Room, Schemas, lowered, planned,
-    reserved_times, write,
+    OpenSegment, PartitionContext, PartitionJob, Planned, Room, Schemas, lowered, planned, write,
 };
 use crate::budget::Shares;
 use crate::error::{Error, ErrorKind, codes};
@@ -126,8 +125,7 @@ async fn measured(
     let mut planned = planned(job, context, open, schemas, unheld.collect(), shares).await?;
     let refused = |row: RowTooLarge| row_beside_built(job, &row, excess, request);
     let largest = cut(context, &mut planned, refused).await?;
-    let needed = largest.saturating_mul(reserved_times(context));
-    Ok((planned, needed))
+    Ok((planned, largest))
 }
 
 /// `shares` as lowering takes them beside batches whose building took `excess` beyond their

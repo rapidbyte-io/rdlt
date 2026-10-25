@@ -27,7 +27,6 @@ use crate::destination::Stored;
 use crate::env::SimEnv;
 use crate::network::{Net, Peers, Serving, run_networked};
 use crate::placing::Placing;
-use crate::reached::Reach;
 use crate::rng::SplitMix64;
 use crate::seed::{Seed, run};
 use crate::swarm::Features;
@@ -97,18 +96,17 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>) -> Checke
     let world = Arc::clone(registered.world());
     let features = world.workload.features;
     env.perturb(features.perturb);
-    world.keep_logs(&env);
     let config = config(
         &mut rng,
         false,
         0,
-        |partitions| growth(seed, None, partitions),
+        growth(seed),
         waited(seed, features.faults),
     );
     let limits = config.limits();
     let engine = Engine::new(config, env);
     let placing = placed(seed, &world, net, &mut rng, limits, &canary);
-    let plan = plan(&world.changes.streams).with_wal(features.wal);
+    let plan = plan(&world.changes.streams);
     let mut changing = Changing {
         engine: &engine,
         plan: &plan,
@@ -136,7 +134,7 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>) -> Checke
         simulated: clock.instant() - started,
         features,
         held: None,
-        reached: super::reached(&world, placing.as_ref(), &changing.ledger.waits),
+        reached: super::reached(&world, placing.as_ref()),
     }
 }
 
@@ -188,8 +186,8 @@ impl Changing<'_> {
         reported.check(self.seed).await;
     }
 
-    /// Runs `round` until a run succeeds and no write-ahead log is left to replay: the first four
-    /// to sixteen runs with faults and disruptions where the seed has them, the rest without.
+    /// Runs `round` until a run succeeds: the first four to sixteen runs with faults and
+    /// disruptions where the seed has them, the rest without.
     async fn converge(&mut self, round: usize, rng: &mut SplitMix64) {
         let (seed, features) = (self.seed, self.world.workload.features);
         let mut faults = Faulty::draw(seed.value() ^ CHANGES, round);
@@ -226,11 +224,7 @@ impl Changing<'_> {
                 );
             }
             if executed.iter().all(|executed| executed.succeeded) {
-                if !self.world.holds_logs() {
-                    return;
-                }
-                // The next run replays what this one logged.
-                self.world.reach(Reach::Replayed);
+                return;
             }
             assert!(runs < 32, "seed {seed}: round {round} did not converge");
         }
@@ -326,11 +320,9 @@ fn check(world: &World, stream: &ChangeStream, round: usize, seed: Seed) {
     );
 }
 
-/// Checks that every position acknowledged to a stream that cannot read again landed after
-/// `round`.
+/// Checks that every position told to a stream that cannot read again landed after `round`.
 ///
-/// It was heard before its commit, so only the write-ahead log could see it through a failure. A
-/// snapshot partition's position is gone once its stream reads its changes, which counts as
+/// A snapshot partition's position is gone once its stream reads its changes, which counts as
 /// landed.
 fn check_acknowledged(world: &World, round: usize, seed: Seed) {
     let entries: Vec<StateEntry> = world

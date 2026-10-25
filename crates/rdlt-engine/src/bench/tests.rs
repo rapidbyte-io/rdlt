@@ -1,19 +1,18 @@
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
+use arrow_array::RecordBatch;
 use arrow_array::cast::AsArray;
-use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use bytes::Bytes;
-use rdlt_connector::PipelineId;
 
 use super::{ADMITTED, CHUNK_BYTES, Corpus, PUSH_BYTES, Parse};
 use super::{
     Refused, check_json, json_column, normalize, pruned, shred, shred_counted, shred_on, shred_with,
 };
+use crate::SystemEnv;
 use crate::compute::Cores;
 use crate::env::Env;
 use crate::error::codes;
-use crate::{EngineConfig, SystemEnv};
 
 #[test]
 fn shredding_inline_and_on_a_pool_gives_the_same_batches() {
@@ -139,85 +138,6 @@ fn pruning_a_normalized_batch_drops_each_dropped_roots_children_with_it() {
     assert_eq!(
         pruned(&batches[0], 8, NonZeroUsize::new(2).unwrap()).unwrap(),
         4
-    );
-}
-
-#[test]
-fn a_sample_log_is_the_frames_each_encoded_alone_after_the_preamble() {
-    use crate::wal::frame::{frames, limits, preamble};
-
-    let ids: ArrayRef = Arc::new(Int64Array::from(vec![1, 2, 3]));
-    let batch = RecordBatch::try_from_iter([("id", ids)]).expect("a valid batch");
-    let log = super::sample_log(batch);
-    let limits = limits(EngineConfig::default().memory().get());
-    let mut expected = preamble().to_vec();
-    for frame in frames(&log, limits).expect("the log's frames read") {
-        expected.extend_from_slice(&frame.encode().expect("the frame encodes"));
-    }
-    assert_eq!(log, expected);
-}
-
-#[test]
-fn a_sample_log_reads_back_with_its_one_commit_and_a_garbled_one_is_refused() {
-    let ids: ArrayRef = Arc::new(Int64Array::from(vec![1, 2, 3]));
-    let batch = RecordBatch::try_from_iter([("id", ids)]).expect("a valid batch");
-    let log = super::sample_log(batch);
-    assert_eq!(super::scan_log(&log), Ok(1));
-    // Garble the commit frame's payload, then make its checksum match, as a bug would.
-    let mut garbled = log.clone();
-    // Past the chunk's preamble.
-    let mut offset = 14;
-    let mut frames = Vec::new();
-    while offset + 9 <= garbled.len() {
-        let len = u32::from_le_bytes(
-            garbled[offset + 1..offset + 5]
-                .try_into()
-                .expect("four bytes"),
-        );
-        frames.push((
-            garbled[offset],
-            offset,
-            usize::try_from(len).expect("a length"),
-        ));
-        offset += 9 + usize::try_from(len).expect("a length");
-    }
-    let (_, at, len) = *frames
-        .iter()
-        .find(|(kind, _, _)| *kind == 5)
-        .expect("a commit frame");
-    garbled[at + 9] = b'!';
-    // The checksum covers the frame's kind and length too.
-    let crc = crc32c::crc32c_append(
-        crc32c::crc32c(&garbled[at..at + 5]),
-        &garbled[at + 9..at + 9 + len],
-    );
-    garbled[at + 5..at + 9].copy_from_slice(&crc.to_le_bytes());
-    let refused = super::scan_log(&garbled).expect_err("the commit does not decode");
-    assert_eq!(refused.code, codes::WAL_UNREADABLE.as_str());
-}
-
-#[test]
-fn a_log_another_load_wrote_is_refused_as_foreign() {
-    use crate::wal::frame::{self, End, Frame, Header};
-    let other = rdlt_connector::LoadId::from_parts(std::time::UNIX_EPOCH, 2);
-    let header = Frame::Header(Header {
-        pipeline: PipelineId::parse("fuzzed").expect("a valid pipeline"),
-        load: other,
-        chunk: 0,
-        epoch: rdlt_connector::Epoch(1),
-        opened: None,
-        origin: other,
-    });
-    let mut log = frame::preamble().to_vec();
-    for frame in [header, Frame::End(End::default())] {
-        log.extend_from_slice(&frame.encode().expect("the frame encodes"));
-    }
-    let refused = super::scan_log(&log).expect_err("another load's log");
-    assert_eq!(
-        refused.code,
-        codes::WAL_FOREIGN.as_str(),
-        "{}",
-        refused.message
     );
 }
 

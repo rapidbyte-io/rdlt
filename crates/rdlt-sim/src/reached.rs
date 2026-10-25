@@ -13,16 +13,10 @@ pub enum Reach {
     Crashed,
     /// A run met a refusal the model predicts.
     Refused,
-    /// A run ran only to replay a log the runs before it left.
-    Replayed,
-    /// A run began with a log the runs before it left, while others were still to run.
-    LogLeft,
     /// A run that follows the source was spared a refusal every other run must meet.
     Spared,
     /// A run followed the source for a while.
     Followed,
-    /// A run waited for room in the log's share of the budget.
-    LogWaited,
     /// A merge table's column widened over values written as another type.
     Widened,
     /// The destination's commit met a child table no row had reached.
@@ -41,20 +35,20 @@ pub enum Reach {
     Replanned,
     /// A connector that breaks the protocol was met as its fault says, on a healed network.
     Framing,
+    /// A source that cannot read again served again rows a checkpoint had already sent, never
+    /// told they were committed.
+    ServedAgain,
 }
 
 impl Reach {
     /// Every path, in the order a timing line names them.
-    const ALL: [Self; 18] = [
+    const ALL: [Self; 16] = [
         Self::ConnectorStopped,
         Self::LinkCut,
         Self::Crashed,
         Self::Refused,
-        Self::Replayed,
-        Self::LogLeft,
         Self::Spared,
         Self::Followed,
-        Self::LogWaited,
         Self::Widened,
         Self::EmptyChild,
         Self::ResetRefused,
@@ -64,6 +58,7 @@ impl Reach {
         Self::LineSaid,
         Self::Replanned,
         Self::Framing,
+        Self::ServedAgain,
     ];
 
     fn bit(self) -> u32 {

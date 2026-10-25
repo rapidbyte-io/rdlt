@@ -7,7 +7,7 @@ use rdlt_wire::limits::{Class, MESSAGE_ROOM};
 
 use super::{HALVED, admitted, kept, least, row_overhead};
 use crate::budget::Shares;
-use crate::limits::{COLUMN_RECORD, RECORDED, SCHEMA_KEPT};
+use crate::limits::{COLUMN_RECORD, SCHEMA_KEPT};
 
 /// Any count of reads at once, from one to `HALVED`, the most whose least budget is found by
 /// halving.
@@ -20,9 +20,9 @@ fn any_readers() -> usize {
 /// request; JSON text, its message's room and the batches it becomes within what pushes take,
 /// at the longest text that fits but where the wire's own limit binds; where the budget
 /// admits a peer, a frame decoded within what pushes take; any other answer decoded within the
-/// answers' share; every read's cursor and answer within the cursors' share, and a seal's
-/// within the log's; a schema, its decoding and the dictionaries within what a read keeps; and a
-/// table's records within the tables' share.
+/// answers' share; every read's cursor and answer within the cursors' share; a schema, its
+/// decoding and the dictionaries within what a read keeps; and a table's records within the
+/// tables' share.
 ///
 /// Bound: every capacity, read by 1 to `HALVED` reads at once.
 #[kani::proof]
@@ -50,13 +50,9 @@ fn what_each_admitted_limit_admits_fits_the_share_it_draws_on() {
     }
     let reads = u64::try_from(readers).unwrap_or(u64::MAX);
     assert!(limits.cursor_bytes.saturating_mul(2 * (reads + 1)) <= shares.cursors);
-    assert!(limits.cursor_bytes.saturating_mul(4) <= shares.log);
-    assert!(shares.cursors.saturating_mul(3) <= shares.log);
     let schema = limits.schema_bytes.saturating_mul(SCHEMA_KEPT);
     assert!(schema.saturating_add(limits.dictionary_bytes) <= kept);
-    let records = limits
-        .schema_columns
-        .saturating_mul(RECORDED * COLUMN_RECORD);
+    let records = limits.schema_columns.saturating_mul(COLUMN_RECORD);
     assert!(records <= shares.tables);
     assert_eq!(
         (limits.batch_rows, limits.batch_values, limits.nesting_depth),

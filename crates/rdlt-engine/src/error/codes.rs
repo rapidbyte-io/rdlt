@@ -122,14 +122,6 @@ pub const JSON_NOT_OBJECT: Code = Code("json_not_object");
 /// or its cells; the wire's refusals of a value beyond a limit share the text.
 pub const LIMIT_EXCEEDED: Code = Code(rdlt_wire::limits::LIMIT_EXCEEDED);
 
-/// The code of the error for a batch whose frame would take its load's write-ahead log past what
-/// it may hold on disk: its source sent that much without a checkpoint a commit could take.
-pub const LOG_BYTES_EXCEEDED: Code = Code("log_bytes_exceeded");
-
-/// The code of the error for a seal's, commit's or table's frame that takes more than the log's
-/// share of the memory budget.
-pub const LOG_FRAME_EXCEEDS_BUDGET: Code = Code("log_frame_exceeds_budget");
-
 /// The code of the error for a configuration whose memory admits less than the least limits the
 /// protocol lets a peer set.
 pub const MEMORY_BELOW_MINIMUM: Code = Code("memory_below_minimum");
@@ -223,12 +215,8 @@ pub const RECEIPT_MISMATCH: Code = Code("receipt_mismatch");
 /// The code of the error for receipts that count more rows or bytes than a total holds.
 pub const RECEIPT_OVERFLOW: Code = Code("receipt_overflow");
 
-/// The code of the error for a logged batch that takes more than one request for lowering may
-/// take of the memory budget: the log was written under more memory than replays it.
-pub const REPLAY_EXCEEDS_BUDGET: Code = Code("replay_exceeds_budget");
-
 /// The code of the error for a reset of a stream whose source cannot read it again from its
-/// beginning, or whose log holds rows that never landed.
+/// beginning.
 pub const RESET_UNREPLAYABLE: Code = Code("reset_unreplayable");
 
 /// The code of the error for reading a partition again from its earliest after a retention loss,
@@ -304,43 +292,6 @@ pub const TABLE_SEQUENCES_MISMATCH: Code = Code("table_sequences_mismatch");
 
 /// The code of the error for a value of a batch that its column cannot hold.
 pub const VALUE_UNREPRESENTABLE: Code = Code("value_unrepresentable");
-
-/// The code of the error for a load whose log a replay took over: another attempt of the pipeline
-/// runs, and this one stops before it answers its commit.
-pub const WAL_FENCED: Code = Code("wal_fenced");
-
-/// The code of the error for a log holding a chunk of another pipeline's or load's log.
-pub const WAL_FOREIGN: Code = Code("wal_foreign");
-
-/// The code of the error for a directory or file of a local log that is not its user's alone:
-/// another user owns it, or its group or others may reach it, or it is a link, or of another kind
-/// than the log keeps there.
-pub const WAL_NOT_PRIVATE: Code = Code("wal_not_private");
-
-/// The code of the error for an attempt whose replay found another load of the pipeline still
-/// writing its log: retryable, since the attempt waits for that load to end.
-pub const WAL_RUNNING: Code = Code("wal_running");
-
-/// The code of the error for a write-ahead log whose disk is full: retryable, since the failed
-/// write gives back what its chunk staged, and the next attempt deletes what a crashed load
-/// staged before it needs room of its own.
-pub const WAL_STORAGE_FULL: Code = Code("wal_storage_full");
-
-/// The code of the error for a pipeline that keeps a write-ahead log, where the engine has nowhere
-/// to keep one.
-pub const WAL_STORE_MISSING: Code = Code("wal_store_missing");
-
-/// The code of the error for an attempt whose log store is not the store its destination names
-/// for the pipeline's logs: not retryable, as the engine's configuration decides the store.
-pub const WAL_STORE_OTHER: Code = Code("wal_store_other");
-
-/// The code of the error for a name a local log's store never writes, in a directory it keeps a
-/// log's files in: such a file is refused, never read.
-pub const WAL_STRAY: Code = Code("wal_stray");
-
-/// The code of the error for a log this engine cannot read, which an operator removes: a chunk
-/// missing, damaged, of another format, or holding a commit not all of which is there.
-pub const WAL_UNREADABLE: Code = Code("wal_unreadable");
 
 /// The code of the error for a stream its destination cannot write in the plan's write mode.
 pub const WRITE_MODE_UNSUPPORTED: Code = Code("write_mode_unsupported");

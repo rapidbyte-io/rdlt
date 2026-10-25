@@ -1,5 +1,5 @@
-//! The horizon each commit declares: never past a commit a replay may still repeat, and moving
-//! on as the log lets its commits go, so a destination keeps no receipt for ever.
+//! The horizon each commit declares: itself, since nothing commits it again once it lands, so a
+//! destination keeps no receipt of an earlier commit.
 
 use std::sync::Arc;
 
@@ -8,11 +8,10 @@ use rdlt_connector::{
     BoxFuture, Capabilities, CommitMeta, Destination, DestinationSession, DestinationWriter,
     Horizon, OpenContext, OpenedSession, ReadMode, Receipt, Result, TableChange, TableRef,
 };
-use rdlt_engine::{LocalWal, RunStatus, WalStore};
+use rdlt_engine::RunStatus;
 
-use crate::support::destinations::{Step, failing};
 use crate::support::script::{Script, ScriptStream};
-use crate::support::{commit_every, engine, logging_engine, memory, pipeline, retrying, stream};
+use crate::support::{commit_every, engine, memory, pipeline, stream};
 
 /// Every commit a [`Recording`] destination was sent, in order.
 type Sent = Arc<Mutex<Vec<CommitMeta>>>;
@@ -99,89 +98,27 @@ async fn events(name: &str, readable: bool) -> Arc<dyn rdlt_connector::Source> {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_load_without_a_log_declares_each_commit_its_own_horizon() {
-    let (destination, sent) = recording(memory("horizon_unlogged").await);
-    let plan = pipeline(
-        "horizon-unlogged",
-        [stream("events").read(ReadMode::Incremental)],
-    );
-    let outcome = engine(commit_every(10))
-        .run(plan, events("horizon_unlogged", true).await, destination)
-        .await;
-    assert_eq!(
-        outcome.report.status,
-        RunStatus::Succeeded,
-        "{:?}",
-        outcome.error
-    );
-    let sent = sent.lock();
-    assert!(sent.len() > 2, "{} commits", sent.len());
-    for meta in sent.iter() {
-        assert_eq!(meta.horizon, Some(itself(meta)));
+async fn every_commit_declares_itself_its_horizon_whatever_its_source() {
+    for readable in [true, false] {
+        let name = format!("horizon_{readable}");
+        let (destination, sent) = recording(memory(&name).await);
+        let plan = pipeline(
+            &name.replace('_', "-"),
+            [stream("events").read(ReadMode::Incremental)],
+        );
+        let outcome = engine(commit_every(10))
+            .run(plan, events(&name, readable).await, destination)
+            .await;
+        assert_eq!(
+            outcome.report.status,
+            RunStatus::Succeeded,
+            "{name}: {:?}",
+            outcome.error
+        );
+        let sent = sent.lock();
+        assert!(sent.len() > 2, "{name}: {} commits", sent.len());
+        for meta in sent.iter() {
+            assert_eq!(meta.horizon, Some(itself(meta)), "{name}");
+        }
     }
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_logged_load_s_horizon_never_passes_a_commit_its_log_holds_and_moves_on() {
-    let base = tempfile::tempdir().expect("a temporary directory");
-    let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(base.path()));
-    let (destination, sent) = recording(memory("horizon_logged").await);
-    let plan = pipeline(
-        "horizon-logged",
-        [stream("events").read(ReadMode::Incremental)],
-    );
-    let outcome = logging_engine(commit_every(10), store)
-        .run(plan, events("horizon_logged", false).await, destination)
-        .await;
-    assert_eq!(
-        outcome.report.status,
-        RunStatus::Succeeded,
-        "{:?}",
-        outcome.error
-    );
-    let sent = sent.lock();
-    assert!(sent.len() > 2, "{} commits", sent.len());
-    let mut last = None;
-    for meta in sent.iter() {
-        let horizon = meta.horizon.expect("every commit declares one");
-        assert_eq!(horizon.load_id, meta.load_id);
-        assert!(horizon <= itself(meta), "{horizon:?} past {meta:?}");
-        assert!(last <= Some(horizon), "the horizon went back");
-        last = Some(horizon);
-    }
-    // The log lets received commits go, and the horizon follows.
-    let first = itself(&sent[0]);
-    assert!(last > Some(first), "{last:?}");
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_replayed_commit_declares_no_horizon() {
-    let base = tempfile::tempdir().expect("a temporary directory");
-    let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(base.path()));
-    let lost = failing(memory("horizon_replayed").await, Step::LoseResponse);
-    let (destination, sent) = recording(lost);
-    let plan = pipeline(
-        "horizon-replayed",
-        [stream("events").read(ReadMode::Incremental)],
-    );
-    let outcome = logging_engine(retrying(3), store)
-        .run(plan, events("horizon_replayed", false).await, destination)
-        .await;
-    assert_eq!(
-        outcome.report.status,
-        RunStatus::Succeeded,
-        "{:?}",
-        outcome.error
-    );
-    let sent = sent.lock();
-    // The commit whose answer was lost is sent again by the replay, which repeats it as the
-    // log holds it and lets no receipt go.
-    let lost = &sent[0];
-    let again: Vec<&CommitMeta> = sent[1..]
-        .iter()
-        .filter(|meta| itself(meta) == itself(lost))
-        .collect();
-    assert_eq!(again.len(), 1, "{sent:?}");
-    assert_eq!(lost.horizon, Some(itself(lost)));
-    assert_eq!(again[0].horizon, None);
 }

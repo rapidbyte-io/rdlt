@@ -9,9 +9,9 @@
 //! The chosen cells run unless an argument names `full`, which runs every cell. As a test, each
 //! cell runs once in two small batches for each partition of each stream.
 //!
-//! The logged cells move a pipeline of two streams, the second of which its source cannot read
-//! again, so that each load logs both streams' batches ahead, on tmpfs and on the disk beside the
-//! build; beside them, the same pipeline with both streams readable again logs nothing.
+//! The mixed cells move a pipeline of two streams, the second of which its source cannot read
+//! again, every stream told its cursor once its commit lands; beside them, the same pipeline with
+//! both streams readable again.
 //!
 //! The JSON cells push nested rows and rows of 200 columns, sixteen pushes of about 8 MiB a run, a
 //! checkpoint after each, from one partition and from sixteen, into the null sink, each printing
@@ -31,8 +31,6 @@
 #![forbid(unsafe_code)]
 
 use std::hint::black_box;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use criterion::measurement::WallTime;
@@ -44,7 +42,7 @@ use rdlt_engine::bench::{
     Cell, JsonCell, JsonPassthrough, Metered, Mixed, Paired, Passthrough, Readings, Schedule,
     Tables, TablesCell, phases, reset_peak, resident_kib, spread, written,
 };
-use rdlt_engine::{Cores, LocalWal, Report, WalStore};
+use rdlt_engine::{Cores, Report};
 
 /// Samples the paired group takes, each the ratio of the blocks it ran.
 const SAMPLES: usize = 30;
@@ -158,86 +156,42 @@ fn matrix(group: &mut BenchmarkGroup<'_, WallTime>, cores: Cores) {
     }
 }
 
-/// The roots logs are kept under: tmpfs where the host has one, and the disk beside the build.
-#[expect(clippy::print_stderr, reason = "a skipped cell is said once")]
-fn roots() -> Vec<(&'static str, PathBuf)> {
-    let mut roots = Vec::new();
-    let shm = Path::new("/dev/shm");
-    if shm.is_dir() {
-        roots.push(("tmpfs", shm.to_path_buf()));
-    } else {
-        eprintln!("passthrough: no /dev/shm, so no tmpfs cell");
-    }
-    roots.push(("disk", PathBuf::from(env!("CARGO_TARGET_TMPDIR"))));
-    roots
-}
-
-/// The mixed cell logged under each root, then unlogged, each made when it first runs and its
-/// log counters printed after it.
+/// The mixed cell, then the same pipeline with both streams readable again, each made when it
+/// first runs and its readings printed after it.
 #[expect(
     clippy::print_stdout,
-    reason = "the log counters are printed beside criterion's times"
+    reason = "criterion reports the engine's time; the readings are printed beside it"
 )]
-fn logged(c: &mut Criterion) {
+fn mixed(c: &mut Criterion) {
     let cores = Cores::try_from_host().expect("the host says how many cores the bench may use");
     let cell = sized(Mixed::CELL);
-    let mut group = c.benchmark_group("passthrough/logged");
+    let mut group = c.benchmark_group("passthrough/mixed");
     group.sample_size(10).sampling_mode(SamplingMode::Flat);
     group.throughput(Throughput::Bytes(Passthrough::bytes(cell)));
-    let mut cases: Vec<(&str, Option<PathBuf>)> = roots()
-        .into_iter()
-        .map(|(root, path)| (root, Some(path)))
-        .collect();
-    cases.push(("unlogged", None));
-    for (name, root) in cases {
+    for (name, replayable) in [("mixed", false), ("replayable", true)] {
         let (mut bench, mut last) = (None, None);
         // Named by the whole cell, so a listing and a timed run name it alike.
         group.bench_function(BenchmarkId::new(name, Mixed::CELL.name()), |b| {
-            let (_, mixed) = bench.get_or_insert_with(|| {
-                let Some(root) = &root else {
-                    return (None, Mixed::unlogged(cores, cell).expect("the pool starts"));
+            let mixed = bench.get_or_insert_with(|| {
+                let made = if replayable {
+                    Mixed::replayable(cores, cell)
+                } else {
+                    Mixed::new(cores, cell)
                 };
-                let dir = tempfile::tempdir_in(root).expect("a directory of the bench's own");
-                let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(dir.path()));
-                let mixed = Mixed::logged(cores, cell, store).expect("the pool starts");
-                (Some(dir), mixed)
+                made.expect("the pool starts")
             });
             b.iter(|| last = Some(mixed.run()));
         });
-        if let (Some((_, mixed)), Some(report)) = (&bench, &last) {
+        if let Some(report) = &last {
+            let batches = u64::from(cell.batches);
+            let readings = Readings::of(report.elapsed, &report.counters, batches, cores.count());
             println!(
-                "passthrough/logged/{name}/{}: {}",
-                Mixed::CELL.name(),
-                counted(report, mixed.frame_bytes())
+                "passthrough/mixed/{name}/{}: {readings}",
+                Mixed::CELL.name()
             );
         }
     }
     group.finish();
-}
-
-/// What a run of a mixed cell logged: its bytes a commit, the share of them that the batch
-/// frames of the stream its source can read again take, and the log phase a commit; `frames`
-/// that stream's batch frames' bytes and every stream's.
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "ratios and means printed to three places"
-)]
-fn counted(report: &Report, (replayable, frames): (u64, u64)) -> String {
-    let commits = report.commits.max(1);
-    let log = &report.counters.log;
-    let phase = report.counters.phases.log.as_secs_f64() * 1e3 / commits as f64;
-    let share = if log.appended == 0 {
-        0.0
-    } else {
-        replayable as f64 / log.appended as f64
-    };
-    format!(
-        "commits {}, logged {:.3} MiB a commit, {:.3} of the frames, of which the stream that \
-         reads again {share:.3}, log phase {phase:.3} ms a commit",
-        report.commits,
-        log.appended as f64 / f64::from(1 << 20) / commits as f64,
-        log.appended as f64 / frames as f64,
-    )
 }
 
 /// Each JSON cell, made when it first runs, its readings and the passes shredding took printed
@@ -424,5 +378,5 @@ fn print_tables(tables: &Tables, runs: &[TableRun], cores: Cores) {
     println!("  readings: {readings}");
 }
 
-criterion_group!(benches, passthrough, logged, json, tables);
+criterion_group!(benches, passthrough, mixed, json, tables);
 criterion_main!(benches);

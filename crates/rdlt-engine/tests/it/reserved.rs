@@ -7,13 +7,12 @@ use std::sync::Arc;
 use arrow_array::{ArrayRef, BinaryArray, Int64Array, RecordBatch};
 use rdlt_connector::{Destination, IdentifierCase, ReadMode};
 use rdlt_engine::{
-    ErrorKind, LocalWal, Nested, RunOutcome, RunStatus, SchemaSettings, StreamPlan, WalStore,
-    WriteMode, codes,
+    ErrorKind, Nested, RunOutcome, RunStatus, SchemaSettings, StreamPlan, WriteMode, codes,
 };
 
 use crate::support::batches::{BatchStream, batches};
 use crate::support::destinations::limited;
-use crate::support::{commit_every, logging_engine, memory, pipeline, stream};
+use crate::support::{commit_every, engine, memory, pipeline, stream};
 
 /// Checks that `outcome` failed on a column asking for a metadata column's name, loading
 /// nothing.
@@ -82,8 +81,6 @@ async fn a_column_asking_for_a_metadata_name_is_refused_before_any_mode_switch()
     ];
     for name in names {
         let store = format!("reserved_{name}");
-        let base = tempfile::tempdir().expect("a temporary directory");
-        let wal: Arc<dyn WalStore> = Arc::new(LocalWal::new(base.path()));
         let mut outcomes = Vec::new();
         for (mode, plan) in modes() {
             let source = batches(
@@ -91,12 +88,8 @@ async fn a_column_asking_for_a_metadata_name_is_refused_before_any_mode_switch()
                 vec![BatchStream::new("events", vec![binary(name, 1)]).primary_key(&["id"])],
             )
             .await;
-            let outcome = logging_engine(commit_every(1), Arc::clone(&wal))
-                .run(
-                    pipeline(&store, [plan]).with_wal(true),
-                    source,
-                    memory(&store).await,
-                )
+            let outcome = engine(commit_every(1))
+                .run(pipeline(&store, [plan]), source, memory(&store).await)
                 .await;
             outcomes.push((mode, outcome));
         }
@@ -125,9 +118,7 @@ async fn a_json_key_asking_for_a_metadata_name_is_refused_under_every_case_rule(
     for (case, push) in cases {
         let store = format!("reserved_json_{case:?}");
         let source = batches(&store, vec![BatchStream::json("events", &[push])]).await;
-        let base = tempfile::tempdir().expect("a temporary directory");
-        let wal: Arc<dyn WalStore> = Arc::new(LocalWal::new(base.path()));
-        let outcome = logging_engine(commit_every(1), wal)
+        let outcome = engine(commit_every(1))
             .run(
                 pipeline(&store, [stream("events")]),
                 source,
@@ -143,9 +134,7 @@ async fn a_key_differing_from_a_metadata_name_only_in_case_loads_where_case_is_k
     let store = "reserved_kept_case";
     let push = r#"{"id":1,"_RDLT_ID":"x"}"#;
     let source = batches(store, vec![BatchStream::json("events", &[push])]).await;
-    let base = tempfile::tempdir().expect("a temporary directory");
-    let wal: Arc<dyn WalStore> = Arc::new(LocalWal::new(base.path()));
-    let outcome = logging_engine(commit_every(1), wal)
+    let outcome = engine(commit_every(1))
         .run(
             pipeline(store, [stream("events")]),
             source,

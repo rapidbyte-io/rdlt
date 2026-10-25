@@ -75,7 +75,6 @@ pub(super) fn added(total: &mut Waits, more: &Waits) {
         (&mut total.decode, more.decode),
         (&mut total.work, more.work),
         (&mut total.cursors, more.cursors),
-        (&mut total.log, more.log),
         (&mut total.tables, more.tables),
         (&mut total.control, more.control),
         (&mut total.reads, more.reads),

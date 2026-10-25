@@ -34,8 +34,6 @@ pub enum Sinking {
     Ipc,
     /// Counts its rows and drops it, so a run measures the engine alone.
     Discard,
-    /// Counts its rows and drops it, and refuses every commit, so a logged run leaves its log.
-    Refuse,
 }
 
 impl Sinking {
@@ -179,11 +177,6 @@ impl Session for SinkSession {
     }
 
     async fn commit(&mut self, meta: &CommitMeta) -> Result<Receipt> {
-        if self.sinking == Sinking::Refuse {
-            return Err(ConnectorError::internal(
-                "the bench sink refuses every commit",
-            ));
-        }
         let mut staged = self.staged.lock();
         let rows = meta
             .segments
@@ -259,7 +252,7 @@ impl TableWriter for SinkWriter {
         WRITTEN.fetch_add(1, Ordering::Relaxed);
         let bytes = match self.sinking {
             Sinking::Ipc => self.encode(&batch)?.len() as u64,
-            Sinking::Discard | Sinking::Refuse => 0,
+            Sinking::Discard => 0,
         };
         let rows = batch.num_rows() as u64;
         *self.staged.lock().entry(segment).or_default() += rows;

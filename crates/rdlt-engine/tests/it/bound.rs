@@ -9,16 +9,12 @@ use arrow_array::{ArrayRef, Decimal256Array, Int8Array, ListArray, RecordBatch};
 use arrow_buffer::{OffsetBuffer, i256};
 use arrow_schema::{DataType, Field};
 use rdlt_connector::ReadMode;
-use rdlt_engine::{
-    LocalWal, Nested, RunOutcome, RunStatus, SchemaSettings, StreamPlan, WalStore, codes,
-};
+use rdlt_engine::{Nested, RunOutcome, RunStatus, SchemaSettings, StreamPlan, codes};
 
 use crate::HEAP;
 use crate::support::destinations::{Step as Fails, buffering, failing, null};
 use crate::support::making::{Step, Steps, making, making_parts};
-use crate::support::{
-    commit_every, engine, pipeline, pooled_engine, pooled_logging_engine, retrying, stream,
-};
+use crate::support::{commit_every, engine, pipeline, pooled_engine, retrying, stream};
 
 const BUDGET: u64 = 40 << 20;
 
@@ -211,25 +207,22 @@ async fn sixteen_partitions_widening_on_a_pool_stay_within_the_budget() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_logged_load_replayed_and_read_by_sixteen_partitions_stays_within_the_budget() {
+async fn a_load_whose_first_commit_fails_read_again_by_sixteen_partitions_stays_within_the_budget()
+{
     const PARTS: usize = 16;
-    let base = tempfile::tempdir().expect("a temporary directory");
-    let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(base.path()));
-    // The first commit fails before it lands: the next attempt replays it from the log, then
-    // reads every partition again, each batch logged before it is written.
+    // The first commit fails before it lands: the next attempt reads every partition again.
     let config = retrying(3)
         .commit(rdlt_engine::CommitPolicy::new(None, Some(100_000), None).expect("a policy"))
         .memory(BUDGET)
         .partitions(PARTS)
         .lanes(2);
-    let source = making_parts("bound_logged", nested(), PARTS).await;
+    let source = making_parts("bound_read_again", nested(), PARTS).await;
     let plan = pipeline(
-        "bound-logged",
+        "bound-read-again",
         [normalized("events").read(ReadMode::Incremental)],
-    )
-    .with_wal(true);
+    );
     let destination = failing(null().await, Fails::CommitOnce);
-    let run = pooled_logging_engine(config, 4, store).run(plan, source, destination);
+    let run = pooled_engine(config, 4).run(plan, source, destination);
     let (peak, outcome) = measured(run).await;
     assert_eq!(
         outcome.report.status,
@@ -299,12 +292,10 @@ async fn list_views_naming_shared_items_normalize_within_the_bound() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_logged_commit_replayed_into_writers_that_buffer_stays_within_the_budget() {
+async fn a_commit_that_fails_staged_again_into_writers_that_buffer_stays_within_the_budget() {
     const BATCHES: usize = 120;
-    let base = tempfile::tempdir().expect("a temporary directory");
-    let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(base.path()));
     // One commit takes every batch, about four times the budget; it fails before it lands, and
-    // the next attempt stages it again from the log through writers that hold every batch until
+    // the next attempt reads and stages it again through writers that hold every batch until
     // they flush.
     let blob = |_: usize| -> ArrayRef {
         Arc::new(arrow_array::BinaryArray::from_iter_values([vec![
@@ -325,10 +316,9 @@ async fn a_logged_commit_replayed_into_writers_that_buffer_stays_within_the_budg
     let plan = pipeline(
         "bound-buffered",
         [stream("events").read(ReadMode::Incremental)],
-    )
-    .with_wal(true);
+    );
     let destination = failing(buffering().await, Fails::CommitOnce);
-    let run = pooled_logging_engine(config, 4, store).run(plan, source, destination);
+    let run = pooled_engine(config, 4).run(plan, source, destination);
     let (peak, outcome) = measured(run).await;
     assert_eq!(outcome.report.attempts.len(), 2, "{:?}", outcome.error);
     within(&outcome, BATCHES as u64, peak, bound());

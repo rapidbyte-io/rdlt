@@ -156,7 +156,7 @@ fn the_limits_are_the_lesser_of_those_configured_and_those_the_memory_admits() {
         defaults,
         Limits {
             frame_bytes: (32 << 20) - 7_489 * 33 - 3 * 937 - 10 - 1_024 - (2 * 7_489 + 16) * 320,
-            json_push_bytes: ((84 << 20) - MESSAGE_ROOM) / 3,
+            json_push_bytes: ((100 << 20) - MESSAGE_ROOM) / 3,
             cursor_bytes: (4 << 20) / 34,
             dictionary_bytes: 2 << 20,
             schema_bytes: (2 << 20) / 5,

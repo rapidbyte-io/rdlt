@@ -234,7 +234,6 @@ pub(super) async fn on_pool(budget: MemoryBudget, pool: Pool) -> PartitionContex
         pool,
         batch: BatchPolicy::default(),
         stop_wait: Duration::from_secs(60),
-        wal: None,
     }
 }
 

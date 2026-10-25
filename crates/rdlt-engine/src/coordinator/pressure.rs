@@ -28,7 +28,7 @@ impl Coordinator {
     /// `state_bytes_exceeded` where the commit's request, its deletes included, or the state it
     /// leaves would pass what a message carrying state may take, `child_tables_exceeded` where
     /// the state would fit but for the child tables it records first: nothing of the commit is
-    /// logged, acknowledged or sent.
+    /// acknowledged or sent.
     pub(super) fn relieve(
         &self,
         meta: &mut CommitMeta,
@@ -57,8 +57,8 @@ impl Coordinator {
             .collect();
         let unplanned: Vec<(StreamName, PartitionId, String)> = self
             .parts
-            .positions
-            .done()
+            .done
+            .listed()
             .into_iter()
             .filter(|(_, stream, id)| named.get(stream).is_some_and(|named| !named.contains(*id)))
             .map(|(_, stream, id)| {

@@ -29,7 +29,6 @@ use crate::report::{
     AttemptEnd, AttemptLog, AttemptRecord, CommitRecord, Report, RunStatus, Tally,
 };
 use crate::scope::contained;
-use crate::wal::{CountedStore, WalStore};
 
 pub use reset::{ResetReport, ResetScope};
 
@@ -94,9 +93,6 @@ impl Engine {
             source: waits.source(source),
             destination: waits.destination(destination),
             budget,
-            wal: self.env.wal().map(|store| {
-                Arc::new(CountedStore::new(store, Arc::clone(&tally))) as Arc<dyn WalStore>
-            }),
             tally,
             stop: control.after_commit.clone(),
             cycles: Mutex::new(BTreeMap::new()),

@@ -13,8 +13,8 @@ use serde::Serialize;
 use crate::error::{Error, ErrorKind, ErrorReport, codes};
 
 pub use counters::{
-    CommitPhases, Commits, Counters, Flushes, LaneCounters, LogCounters, PoolCounters, ShredCounts,
-    StoreRequests, Waited, Waits,
+    CommitPhases, Commits, Counters, Flushes, LaneCounters, PoolCounters, ShredCounts, Waited,
+    Waits,
 };
 pub(crate) use counters::{Flush, Tally, Trigger};
 
@@ -229,21 +229,13 @@ impl StreamReport {
 pub(crate) struct AttemptLog {
     pub(crate) committed: Committed,
     /// Whether a commit of the attempt moved the load on: published a row, or recorded anything
-    /// but a partition where it already stood; or the attempt landed rows an earlier one logged.
+    /// but a partition where it already stood.
     pub(crate) progressed: bool,
     pub(crate) end: Option<AttemptEnd>,
     /// The commit in flight, whose response has not arrived.
     pub(crate) pending: Option<CommitRecord>,
     /// The receipt state recorded when the attempt opened, naming the last commit that landed.
     pub(crate) opened: Option<(LoadId, CommitSeq)>,
-    /// The first load whose commit reached the pipeline at the destination, as the attempt
-    /// opened; none where none had, so the attempt's first commit records its own.
-    pub(crate) origin: Option<LoadId>,
-    /// The write-ahead log store the attempt keeps its log in, where the engine keeps logs.
-    pub(crate) store: Option<LoadId>,
-    /// The store the destination named for the pipeline's logs as the attempt opened; none
-    /// where it named none, so the attempt's first commit records its own.
-    pub(crate) log_store: Option<LoadId>,
     /// How many records each stream's reads were last behind their source's newest.
     pub(crate) behind: BTreeMap<StreamName, u64>,
     /// Each stream's reads that started again from their earliest after a retention loss.

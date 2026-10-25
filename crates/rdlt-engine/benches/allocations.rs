@@ -2,8 +2,8 @@
 //! workload allocates, a row and a batch, and each case the instruction counts run.
 //!
 //! The workloads are the shred bench's single-core groups, both sides of the passthrough pairs
-//! and its JSON cells, each batch the lowering bench prepares, each run of the normalized and
-//! wide benches, and the wal bench's load logged into memory; the timed benches keep the system
+//! and its JSON cells, each batch the lowering bench prepares, and each run of the normalized and
+//! wide benches; the timed benches keep the system
 //! allocator, since counting every call slows the runs that allocate most. An argument, the name
 //! of one of those benches, counts only its workloads. The workloads run at the benches' full
 //! sizes only when `--bench` is among the arguments, as `just bench` passes it; otherwise, as a
@@ -28,9 +28,9 @@ use rdlt_connector::{ConnectContext, destination_factory};
 use rdlt_connector_reference::MemoryDestination;
 use rdlt_engine::Cores;
 use rdlt_engine::bench::{
-    CHUNK_BYTES, CORPUS_BYTES, Cell, Corpus, Form, JsonCell, JsonPassthrough, Logged, Lowering,
-    Normalized, Passthrough, Replayed, Wide, check_json, counted, json_column, memory_wal,
-    normalize, null_sink, pruned, replay, rows_pushed, sample_log, scan_log, shred,
+    CHUNK_BYTES, CORPUS_BYTES, Cell, Corpus, Form, JsonCell, JsonPassthrough, Lowering, Normalized,
+    Passthrough, Replayed, Wide, check_json, counted, json_column, normalize, null_sink, pruned,
+    replay, rows_pushed, shred,
 };
 use rdlt_wire::{Decoder, Encoder, Limits};
 use stats_alloc::{INSTRUMENTED_SYSTEM, StatsAlloc};
@@ -39,13 +39,12 @@ use stats_alloc::{INSTRUMENTED_SYSTEM, StatsAlloc};
 static HEAP: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
 
 /// The benches whose workloads this counts, each with what counts them.
-const COUNTED: [(&str, fn()); 6] = [
+const COUNTED: [(&str, fn()); 5] = [
     ("shred", shredding),
     ("passthrough", passing_through),
     ("lowering", lowering),
     ("normalized", normalizing),
     ("wide", widening),
-    ("wal", logging),
 ];
 
 /// Bytes of JSON each shredding and normalizing case reads.
@@ -72,7 +71,7 @@ const COMMITTED: NonZeroUsize = NonZeroUsize::new(1_024).expect("not zero");
 type Case = (&'static str, fn(usize));
 
 /// Every case the instruction counts run.
-const CASES: [Case; 30] = [
+const CASES: [Case; 28] = [
     ("passthrough/null_sink", passed_through),
     ("commit/1024", committed),
     ("shred/nested", |times| shredded(Corpus::Nested, times)),
@@ -114,8 +113,6 @@ const CASES: [Case; 30] = [
         dropped(Corpus::WithArrays, times);
     }),
     ("wide/arrow_1000", widened),
-    ("wal/encode", log_encoded),
-    ("wal/scan", log_scanned),
     ("ipc/roundtrip", round_tripped),
     ("json/check", json_checked),
     ("lowering/history", |times| lowered("history", times)),
@@ -357,23 +354,6 @@ fn widened_once(id: &str, bench: &Wide, pushes: u32) {
     });
 }
 
-/// The wal bench's load logged ahead, its log in memory and a commit each batch: what one run
-/// allocates, a row and a batch of those it loads.
-fn logging() {
-    let every = NonZeroU64::new(1).expect("one is not zero");
-    let cores = Cores::try_from_host().expect("the host says how many cores the bench may use");
-    let logged =
-        Logged::try_new(cores, memory_wal(), BATCHES, ROWS, Some(every)).expect("the pool starts");
-    let rows = usize::try_from(BATCHES * ROWS).expect("rows fit in usize");
-    report("wal/engine/memory/each", || {
-        black_box(logged.run());
-        (
-            rows,
-            usize::try_from(BATCHES).expect("batches fit in usize"),
-        )
-    });
-}
-
 /// The rows and the count of `batches`.
 fn moved(batches: &[RecordBatch]) -> (usize, usize) {
     (
@@ -497,22 +477,6 @@ fn lowered(name: &str, times: usize) {
         .expect("the lowering bench prepares a batch of each name a case gives");
     for _ in 0..times {
         black_box(lowering.prepare());
-    }
-}
-
-/// A log's frames for one batch of [`ROWS`] rows.
-fn log_encoded(times: usize) {
-    let batch = Passthrough::batch(0, ROWS);
-    for _ in 0..times {
-        black_box(sample_log(batch.clone()));
-    }
-}
-
-/// The scan of that log.
-fn log_scanned(times: usize) {
-    let log = sample_log(Passthrough::batch(0, ROWS));
-    for _ in 0..times {
-        black_box(scan_log(&log).expect("the log reads back"));
     }
 }
 

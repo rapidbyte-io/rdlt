@@ -181,24 +181,6 @@ async fn shredded_batches_hold_what_was_reserved_beyond_their_pushes_for_what_th
     assert_eq!(budget.reserved(), 0);
 }
 
-#[tokio::test]
-async fn a_piece_reserved_twice_over_gives_half_to_its_frame_in_the_log() {
-    let budget = crate::budget::budget(1 << 20);
-    let mut piece = budget.acquire_working(1_000).await.unwrap();
-    assert!(super::frame_part(&mut piece, 1).is_none());
-    assert_eq!(piece.bytes(), 1_000);
-    let frame = super::frame_part(&mut piece, 2).unwrap();
-    assert_eq!(
-        (piece.bytes(), frame.bytes(), budget.reserved()),
-        (500, 500, 1_000)
-    );
-    // Each is released by whoever holds it: the lane its piece, the log's writer its frame.
-    drop(piece);
-    assert_eq!(budget.reserved(), 500);
-    drop(frame);
-    assert_eq!(budget.reserved(), 0);
-}
-
 #[test]
 fn a_row_beyond_what_a_request_may_take_is_a_source_error_naming_its_stream() {
     let row = super::pieces::RowTooLarge {
@@ -328,11 +310,10 @@ fn a_unit_whose_every_row_its_stream_ignores_is_counted_and_dropped() {
 }
 
 #[test]
-fn a_piece_and_a_row_take_their_shares_over_what_is_reserved_for_them() {
+fn a_piece_and_a_row_take_their_shares() {
     let shares = crate::budget::Shares::of(64 << 20);
     assert_eq!((shares.piece, shares.request), (4 << 20, 16 << 20));
-    assert_eq!(super::piece_bounds(shares, 1), (4 << 20, 16 << 20));
-    assert_eq!(super::piece_bounds(shares, 2), (2 << 20, 8 << 20));
+    assert_eq!(super::piece_bounds(shares), (4 << 20, 16 << 20));
     // Before its split, a piece's rows as they arrive take half a piece, and a row a quarter of
     // a request: the split makes twice that.
     assert_eq!(super::normalized::split_bounds(shares), (2 << 20, 4 << 20));
@@ -479,14 +460,9 @@ fn a_piece_and_a_row_lower_no_more_text_than_a_text_array_s_offsets_reach() {
     let reach = u64::try_from(i32::MAX).unwrap();
     let shares = crate::budget::Shares::of(64 << 30);
     assert!(shares.piece > reach && shares.request > reach);
-    for times in [1, 2] {
-        let (piece, row) = super::piece_bounds(shares, times);
-        assert!(
-            piece <= reach && row <= reach,
-            "{piece} and {row}, {times} times"
-        );
-    }
-    let cutter = super::allowance::Cutter::new(shares.request, shares.piece, 1);
+    let (piece, row) = super::piece_bounds(shares);
+    assert!(piece <= reach && row <= reach, "{piece} and {row}");
+    let cutter = super::allowance::Cutter::new(shares.request, shares.piece);
     assert!(cutter.bounds().0 <= reach && cutter.bounds().1 <= reach);
     // One row of 400 million booleans renders to more text than offsets reach: it is refused
     // before it is lowered, rather than overflowing them.
@@ -526,7 +502,7 @@ fn flags_as_text(items: usize, shares: crate::budget::Shares) -> super::pieces::
         text: true,
         read: false,
     };
-    let (max, limit) = super::piece_bounds(shares, 1);
+    let (max, limit) = super::piece_bounds(shares);
     let lowered = super::pieces::Lowered {
         rendering: rdlt_connector::cost::Rendering::text(),
         stored: vec![Some(stored)],

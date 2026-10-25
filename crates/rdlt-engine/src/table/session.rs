@@ -84,8 +84,7 @@ impl SharedSession {
 /// # Errors
 ///
 /// A receipt of another load or sequence is `receipt_mismatch`, a Destination error that no
-/// retry mends: the write-ahead log would settle a commit the destination never made, and
-/// leave pending the commit it made.
+/// retry mends: its sources would be told positions of a commit the destination never made.
 pub(crate) fn answered(meta: &CommitMeta, receipt: Receipt) -> Result<Receipt, Error> {
     if receipt.answers(meta) {
         return Ok(receipt);

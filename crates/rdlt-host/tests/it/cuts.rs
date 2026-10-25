@@ -14,8 +14,8 @@ use rdlt_connector::{
 };
 use rdlt_connector_reference::published;
 use rdlt_engine::{
-    CommitPolicy, Engine, EngineConfig, LocalWal, PipelinePlan, RetryPolicy, RunControl,
-    RunOutcome, RunStatus, StopMode, StreamPlan, WalStore,
+    CommitPolicy, Engine, EngineConfig, PipelinePlan, RetryPolicy, RunControl, RunOutcome,
+    RunStatus, StopMode, StreamPlan,
 };
 use rdlt_host::{Connect, Connection, ConnectorRef, Kills, Options, Provider as _, RemoteSource};
 use rdlt_wire::Limits;
@@ -71,8 +71,8 @@ async fn destination(hook: &'static Hook, store: &str, kills: &Kills) -> Arc<dyn
     Arc::from(placed.expect("the destination is reached").connector)
 }
 
-/// An engine that tries a failed attempt again at once, keeping logs in `wal` where given.
-fn engine(wal: Option<Arc<dyn WalStore>>) -> Engine {
+/// An engine that tries a failed attempt again at once.
+fn engine() -> Engine {
     let retry = RetryPolicy::default()
         .max_attempts(3)
         .initial(Duration::from_millis(10))
@@ -80,12 +80,7 @@ fn engine(wal: Option<Arc<dyn WalStore>>) -> Engine {
     let commit = CommitPolicy::new(None, Some(100), None).expect("a row threshold is valid");
     let config = EngineConfig::builder().commit(commit).retry(retry).lanes(2);
     let config = config.build().expect("the configuration is valid");
-    let env = crate::support::system_env();
-    let env = match wal {
-        Some(wal) => env.with_wal(wal),
-        None => env,
-    };
-    Engine::new(config, Arc::new(env))
+    Engine::new(config, Arc::new(crate::support::system_env()))
 }
 
 fn plan(pipeline: &str) -> PipelinePlan {
@@ -130,9 +125,7 @@ async fn a_write_that_fails_between_a_batchs_pieces_loads_every_row_once() {
     });
     let destination = destination(&HOOK, "cuts_failed", &Kills::new()).await;
     let source = Arc::new(ticks(&Options::default()).await);
-    let outcome = engine(None)
-        .run(plan("cuts-failed"), source, destination)
-        .await;
+    let outcome = engine().run(plan("cuts-failed"), source, destination).await;
     succeeded(&outcome, 2);
     // The first piece of the failed attempt was staged and never published.
     assert_eq!(ids("cuts_failed"), every_row());
@@ -152,9 +145,7 @@ async fn a_connector_lost_between_a_batchs_pieces_loads_every_row_once() {
     });
     let destination = destination(&HOOK, "cuts_killed", &kills).await;
     let source = Arc::new(ticks(&Options::default()).await);
-    let outcome = engine(None)
-        .run(plan("cuts-killed"), source, destination)
-        .await;
+    let outcome = engine().run(plan("cuts-killed"), source, destination).await;
     succeeded(&outcome, 2);
     assert_eq!(kills.count(), 1);
     assert_eq!(ids("cuts_killed"), every_row());
@@ -171,7 +162,7 @@ async fn a_run_stopped_between_a_batchs_pieces_publishes_none_of_them_and_the_ne
     let kills = Kills::new();
     let destination = destination(&HOOK, "cuts_stopped", &kills).await;
     let source = Arc::new(ticks(&Options::default()).await);
-    let run = engine(None).run(plan("cuts-stopped"), source, Arc::clone(&destination));
+    let run = engine().run(plan("cuts-stopped"), source, Arc::clone(&destination));
     CONTROL.set(run.control()).ok();
     let outcome = tokio::time::timeout(Duration::from_secs(30), run)
         .await
@@ -180,39 +171,11 @@ async fn a_run_stopped_between_a_batchs_pieces_publishes_none_of_them_and_the_ne
     assert!(HOOK.writes() < PIECES, "{} writes", HOOK.writes());
     assert_eq!(ids("cuts_stopped"), Vec::<i64>::new());
     let source = Arc::new(ticks(&Options::default()).await);
-    let outcome = engine(None)
+    let outcome = engine()
         .run(plan("cuts-stopped"), source, destination)
         .await;
     succeeded(&outcome, 1);
     assert_eq!(ids("cuts_stopped"), every_row());
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn a_logged_batch_whose_replay_fails_between_its_pieces_is_replayed_and_cut_again() {
-    // The first commit is lost once every piece was staged; its replay stages two pieces and
-    // fails; the replay after it stages all nine and commits.
-    static HOOK: Hook = Hook::at(PIECES + 2);
-    HOOK.failing_commit.store(true, Ordering::SeqCst);
-    HOOK.then(|| {
-        Err(ConnectorError::new(
-            ConnectorErrorKind::Transient,
-            "the replay's second piece was refused",
-        ))
-    });
-    let logs = tempfile::tempdir().expect("a temporary directory");
-    let wal: Arc<dyn WalStore> = Arc::new(LocalWal::new(logs.path()));
-    let destination = destination(&HOOK, "cuts_replayed", &Kills::new()).await;
-    let source = Arc::new(tagged("cuts_replayed", &Options::default()).await);
-    let outcome = engine(Some(wal))
-        .run(plan("cuts-replayed").with_wal(true), source, destination)
-        .await;
-    succeeded(&outcome, 3);
-    assert_eq!(ids("cuts_replayed"), every_row());
-    // The rows came from the log, uncut there, and were cut for the destination each time:
-    // the source sent them once, and the destination staged nine pieces, two, then nine.
-    assert_eq!(HOOK.writes(), PIECES + 2 + PIECES);
-    let sent = FLAGGED.lock().expect("the lock is not poisoned");
-    assert_eq!(sent.get("cuts_replayed"), Some(&ROWS));
 }
 
 /// A connection that fails once the host has read `left` bytes of it.
@@ -293,9 +256,7 @@ async fn a_source_lost_between_a_batchs_pieces_commits_none_of_them_and_the_next
     let source: Arc<dyn rdlt_connector::Source> =
         Arc::from(placed.expect("the source is reached").connector);
     let destination = destination(&HOOK, "cuts_lost", &Kills::new()).await;
-    let outcome = engine(None)
-        .run(plan("cuts-lost"), source, destination)
-        .await;
+    let outcome = engine().run(plan("cuts-lost"), source, destination).await;
     succeeded(&outcome, 2);
     // The source sent the rows twice, and each is published once: nothing of the reading that
     // was cut off was committed. The pieces it gathered are written when its read ends, racing

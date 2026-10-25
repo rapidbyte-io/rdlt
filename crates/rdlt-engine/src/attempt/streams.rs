@@ -147,7 +147,6 @@ impl<'a> Planning<'a> {
             partitioned,
         );
         planned.stream.sequences = sequences;
-        planned.stream.replayable = spec.is_replayable();
         Ok(planned)
     }
 
@@ -279,7 +278,6 @@ fn planned(
             phases,
             sequences: None,
             named: partitioned.named,
-            replayable: true,
         },
         on_demand,
         changes,

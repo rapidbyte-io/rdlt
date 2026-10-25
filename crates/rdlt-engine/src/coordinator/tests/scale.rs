@@ -170,7 +170,6 @@ async fn positions_of_many_partitions_are_recorded_and_weighed_in_linear_time() 
         positions,
         reported: BTreeMap::new(),
         streams: BTreeMap::new(),
-        sealed: Vec::new(),
         held: Vec::new(),
     };
     assert!(!coordinator.progresses(&collected, &delta));

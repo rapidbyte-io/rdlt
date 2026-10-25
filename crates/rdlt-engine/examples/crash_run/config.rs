@@ -1,4 +1,4 @@
-//! What a crash run loads: one stream, its source and destination, where each runs, and the log.
+//! What a crash run loads: one stream, its source and destination, and where each runs.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -17,9 +17,6 @@ use serde_json::Value;
 pub(crate) struct Config {
     /// The pipeline's id.
     pub(crate) pipeline: String,
-    /// Where the engine keeps its write-ahead logs, where its loads keep one.
-    #[serde(default)]
-    pub(crate) wal: Option<PathBuf>,
     /// The stream loaded.
     pub(crate) stream: Stream,
     /// Where its rows come from.
@@ -116,7 +113,7 @@ pub(crate) enum Victim {
 }
 
 impl Config {
-    /// The pipeline the run loads, keeping a write-ahead log where the configuration names one.
+    /// The pipeline the run loads.
     pub(crate) fn plan(&self) -> Result<PipelinePlan, String> {
         let stream = &self.stream;
         let name = StreamName::new(&stream.name).map_err(|error| error.to_string())?;
@@ -141,8 +138,7 @@ impl Config {
             Some(other) => return Err(format!("no delete mode {other}")),
         };
         let pipeline = PipelineId::parse(&self.pipeline).map_err(|error| error.to_string())?;
-        let plan = PipelinePlan::new(pipeline, [plan]).map_err(|error| error.to_string())?;
-        Ok(plan.with_wal(self.wal.is_some()))
+        PipelinePlan::new(pipeline, [plan]).map_err(|error| error.to_string())
     }
 
     /// The engine's configuration: commits of `commit_rows` rows, the memory given, and retries

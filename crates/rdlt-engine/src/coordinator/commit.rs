@@ -15,8 +15,6 @@ use crate::env::Env;
 use crate::error::Error;
 use crate::partition::CursorHold;
 use crate::report::{CommitPhases, CommitRecord, StreamReport, Trigger};
-use crate::wal::LoadLog;
-use crate::wal::frame::BegunPhase;
 
 impl Coordinator {
     /// Commits every sealed segment with the state that goes with it, then acknowledges the
@@ -25,13 +23,9 @@ impl Coordinator {
     /// Commits nothing when there is nothing to publish or record; a commit that lands is
     /// counted as `trigger` made it due, with the time its phases took.
     pub(super) async fn commit(&mut self, trigger: Trigger) -> Result<(), Error> {
-        // A batch waiting for room in the log waits for this commit to end.
-        let _committing = self.parts.wal.as_ref().map(LoadLog::committing);
-        // A new phase's stale entries go before its partitions' positions, which may reuse ids;
-        // the log records its partitions' seals from where the phase starts them.
-        let begun = self.phase_delta();
-        let mut delta = begun_changes(&begun);
-        let mut collected = self.collect(&delta);
+        // A new phase's stale entries go before its partitions' positions, which may reuse ids.
+        let mut delta = self.phase_delta();
+        let mut collected = self.collect();
         // The seals' cursors stay charged until the commit that takes them has landed.
         let _held: Vec<CursorHold> = std::mem::take(&mut collected.held);
         let completing: Vec<usize> = (0..self.parts.streams.len())
@@ -54,13 +48,8 @@ impl Coordinator {
         self.parts.lanes.flush().await?;
         crash_point!("engine.flush.after");
         phases.flush = laps.lap();
-        let horizon = self.horizon().await?;
-        phases.horizon = laps.lap();
-        let mut meta = self.meta(collected.segments, delta, finish_generations, horizon);
+        let mut meta = self.meta(collected.segments, delta, finish_generations);
         let (measured, forgotten) = self.relieve(&mut meta, &tables.born)?;
-        self.log_commit(&meta, &tables, collected.sealed, begun)
-            .await?;
-        phases.log = laps.lap();
         // The commit completing a stream publishes it: a replace swaps its generation in.
         crash_point!("engine.complete.before", !completing.is_empty());
         let receipt = self
@@ -84,15 +73,21 @@ impl Coordinator {
         Ok(())
     }
 
-    /// The commit of `segments` with `delta`, finishing `finish_generations`, whose horizon is
-    /// `horizon`; it removes the staging of the segments abandoned since the last.
+    /// The commit of `segments` with `delta`, finishing `finish_generations`; it removes the
+    /// staging of the segments abandoned since the last.
+    ///
+    /// Nothing commits it again once it lands, so it is its own horizon: the destination may
+    /// forget the receipts of every commit before it.
     fn meta(
         &mut self,
         segments: SegmentSet,
         delta: Vec<StateChange>,
         finish_generations: Vec<(TablePath, GenerationId)>,
-        horizon: Horizon,
     ) -> CommitMeta {
+        let horizon = Horizon {
+            load_id: self.parts.load_id,
+            commit_seq: self.seq,
+        };
         CommitMeta {
             load_id: self.parts.load_id,
             commit_seq: self.seq,
@@ -114,20 +109,6 @@ impl Coordinator {
         streams: &BTreeMap<StreamName, StreamReport>,
         delta: &mut Vec<StateChange>,
     ) {
-        // A destination no commit of the pipeline reached yet learns the load whose commit
-        // reaches it first, which names it to the logs of the loads after.
-        let log = self.parts.log.lock();
-        if self.seq == rdlt_connector::CommitSeq::FIRST && log.origin.is_none() {
-            let origin = StateEntry::Origin(self.parts.load_id);
-            delta.push(StateChange::Put(origin.to_record()));
-        }
-        // And a destination that names no store for the pipeline's logs learns this load's.
-        if let (rdlt_connector::CommitSeq::FIRST, None, Some(store)) =
-            (self.seq, log.log_store, log.store)
-        {
-            delta.push(StateChange::Put(StateEntry::LogStore(store).to_record()));
-        }
-        drop(log);
         let marker = self.marker(streams);
         delta.push(StateChange::Put(
             StateEntry::Receipt(marker.clone()).to_record(),
@@ -161,12 +142,4 @@ impl<'a> Laps<'a> {
         self.last = now;
         lap
     }
-}
-
-/// The state changes the phases in `begun` record, in order.
-fn begun_changes(begun: &[BegunPhase]) -> Vec<StateChange> {
-    begun
-        .iter()
-        .flat_map(|begun| begun.changes.iter().cloned())
-        .collect()
 }

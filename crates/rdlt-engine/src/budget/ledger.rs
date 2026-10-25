@@ -14,8 +14,7 @@ use tokio::sync::oneshot;
 
 use super::Reservation;
 use crate::limits::{
-    CONTROL_SHARE, CURSOR_SHARE, LOG_SHARE, MIN_PIECE, PIECE_SHARE, READ_SHARE, REQUEST_SHARE,
-    TABLE_SHARE,
+    CONTROL_SHARE, CURSOR_SHARE, MIN_PIECE, PIECE_SHARE, READ_SHARE, REQUEST_SHARE, TABLE_SHARE,
 };
 use crate::report::Waits;
 use crate::watch;
@@ -29,9 +28,6 @@ pub(crate) enum Class {
     Work,
     /// The cursor of a seal waiting for its commit.
     Cursor,
-    /// The log's seal, commit and table frames on their way into it, and, while a log is open,
-    /// what a carry reads at once.
-    Log,
     /// What a commit records of a table's schema and names, from the schema change that makes
     /// it until the commit recording it lands.
     Tables,
@@ -48,7 +44,6 @@ impl Class {
             Self::Intake => "a push",
             Self::Work => "lowering",
             Self::Cursor => "a cursor",
-            Self::Log => "the log's frames or a carry's read",
             Self::Tables => "a table's records",
             Self::Read => "what reads keep",
             Self::Control => "decoding an answer",
@@ -79,9 +74,6 @@ impl Wait {
 pub(crate) struct Shares {
     /// The cursors of seals waiting for a commit.
     pub(crate) cursors: u64,
-    /// The log's seal, commit and table frames, and, while a log is open, what a carry reads at
-    /// once.
-    pub(crate) log: u64,
     /// What commits record of tables' schemas and names.
     pub(crate) tables: u64,
     /// What all reads keep together.
@@ -102,18 +94,16 @@ pub(crate) struct Shares {
 impl Shares {
     /// The shares of a budget of `capacity` bytes.
     pub(crate) fn of(capacity: u64) -> Self {
-        let (cursors, log, tables, reads, control) = (
+        let (cursors, tables, reads, control) = (
             capacity / CURSOR_SHARE,
-            capacity / LOG_SHARE,
             capacity / TABLE_SHARE,
             capacity / READ_SHARE,
             capacity / CONTROL_SHARE,
         );
-        let data = capacity - cursors - log - tables - reads - control;
+        let data = capacity - cursors - tables - reads - control;
         let request = (capacity / REQUEST_SHARE).min(data);
         Self {
             cursors,
-            log,
             tables,
             reads,
             control,
@@ -136,9 +126,9 @@ struct Waiter {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[error(
     "{asked} bytes for {what} waited {waited:?} for room in a memory budget of {capacity}: \
-     pushes hold {intake} bytes, lowering {work}, cursors waiting for a commit {cursors}, the \
-     log's frames {log}, tables' records waiting for a commit {tables}, answers being decoded \
-     {control}, and {reads} are kept by reads"
+     pushes hold {intake} bytes, lowering {work}, cursors waiting for a commit {cursors}, \
+     tables' records waiting for a commit {tables}, answers being decoded {control}, and \
+     {reads} are kept by reads"
 )]
 pub(crate) struct Exhausted {
     /// What the request was for.
@@ -153,8 +143,6 @@ pub(crate) struct Exhausted {
     pub(crate) work: u64,
     /// Bytes the cursors of seals waiting for a commit hold.
     pub(crate) cursors: u64,
-    /// Bytes the log's frames and a carry's read hold.
-    pub(crate) log: u64,
     /// Bytes tables' records waiting for a commit hold.
     pub(crate) tables: u64,
     /// Bytes reads keep.
@@ -194,7 +182,6 @@ pub(super) struct Ledger {
     intake: u64,
     work: u64,
     cursors: u64,
-    log: u64,
     tables: u64,
     reads: u64,
     control: u64,
@@ -202,7 +189,7 @@ pub(super) struct Ledger {
     /// The most what reads keep has held at once.
     pub(super) kept_peak: u64,
     /// The requests waiting for each share, in arrival order; reads never wait.
-    waiting: [VecDeque<Waiter>; 6],
+    waiting: [VecDeque<Waiter>; 5],
     next: u64,
     /// How many holders of pieces queued for a write wait for them to be written.
     pressing: usize,
@@ -220,12 +207,11 @@ pub(super) struct Ledger {
     observer: Option<Arc<dyn crate::env::Env>>,
 }
 
-/// The classes that wait, in the order their waiters are admitted: cursors, the log's frames,
-/// tables' records and answers being decoded first, which no push holds up, then lowering, which
-/// releases bytes, then pushes.
-const WAITING: [Class; 6] = [
+/// The classes that wait, in the order their waiters are admitted: cursors, tables' records and
+/// answers being decoded first, which no push holds up, then lowering, which releases bytes, then
+/// pushes.
+const WAITING: [Class; 5] = [
     Class::Cursor,
-    Class::Log,
     Class::Tables,
     Class::Control,
     Class::Work,
@@ -240,7 +226,6 @@ impl Ledger {
             intake: 0,
             work: 0,
             cursors: 0,
-            log: 0,
             tables: 0,
             reads: 0,
             control: 0,
@@ -274,7 +259,7 @@ impl Ledger {
 
     /// Bytes reserved, every share together.
     pub(super) fn reserved(&self) -> u64 {
-        self.intake + self.work + self.cursors + self.log + self.tables + self.reads + self.control
+        self.intake + self.work + self.cursors + self.tables + self.reads + self.control
     }
 
     fn queue(&mut self, class: Class) -> Option<&mut VecDeque<Waiter>> {
@@ -287,7 +272,6 @@ impl Ledger {
             Class::Intake => &mut self.intake,
             Class::Work => &mut self.work,
             Class::Cursor => &mut self.cursors,
-            Class::Log => &mut self.log,
             Class::Tables => &mut self.tables,
             Class::Read => &mut self.reads,
             Class::Control => &mut self.control,
@@ -300,7 +284,6 @@ impl Ledger {
             Class::Intake => self.shares.intake,
             Class::Work => self.shares.request,
             Class::Cursor => self.shares.cursors,
-            Class::Log => self.shares.log,
             Class::Tables => self.shares.tables,
             Class::Read => self.shares.reads,
             Class::Control => self.shares.control,
@@ -318,15 +301,18 @@ impl Ledger {
     }
 
     /// Whether `bytes` of `class` fit their share beside what it holds.
+    ///
+    /// The data beside a push is added saturating: of a budget past 15.5 EiB the two pass what a
+    /// `u64` holds, and the data share is less than that.
     fn fits(&self, class: Class, bytes: u64) -> bool {
         let data = self.intake + self.work;
         match class {
             Class::Intake => {
-                self.intake + bytes <= self.shares.intake && data + bytes <= self.shares.data
+                self.intake + bytes <= self.shares.intake
+                    && data.saturating_add(bytes) <= self.shares.data
             }
             Class::Work => data + bytes <= self.shares.data,
             Class::Cursor => self.cursors + bytes <= self.shares.cursors,
-            Class::Log => self.log + bytes <= self.shares.log,
             Class::Tables => self.tables + bytes <= self.shares.tables,
             Class::Read => self.reads + bytes <= self.shares.reads,
             Class::Control => self.control + bytes <= self.shares.control,
@@ -402,7 +388,6 @@ impl Ledger {
             Wait::Of(Class::Intake) => &mut self.waited.intake,
             Wait::Of(Class::Work) => &mut self.waited.work,
             Wait::Of(Class::Cursor) => &mut self.waited.cursors,
-            Wait::Of(Class::Log) => &mut self.waited.log,
             Wait::Of(Class::Tables) => &mut self.waited.tables,
             Wait::Of(Class::Read) => &mut self.waited.reads,
             Wait::Of(Class::Control) => &mut self.waited.control,
@@ -426,7 +411,6 @@ impl Ledger {
             intake: self.intake,
             work: self.work,
             cursors: self.cursors,
-            log: self.log,
             tables: self.tables,
             reads: self.reads,
             control: self.control,

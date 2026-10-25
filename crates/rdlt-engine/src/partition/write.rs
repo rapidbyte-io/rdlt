@@ -167,12 +167,6 @@ async fn reserving(
     })
 }
 
-/// How many times what lowering a piece takes is reserved for it: once, and once more where the
-/// load keeps a log, for the frame the lowered batch is logged as.
-fn reserved_times(context: &PartitionContext) -> u64 {
-    1 + u64::from(context.wal.is_some())
-}
-
 /// Lowers `units`, each some batches of one schema and the memory they hold, written from pushes
 /// of `kind`, into the partition's table and queues them on its lane, in order.
 ///
@@ -228,7 +222,7 @@ async fn planned(
         .iter()
         .flat_map(|unit| unit.incoming.rounding.iter().cloned())
         .collect();
-    let (max, limit) = piece_bounds(shares, reserved_times(context));
+    let (max, limit) = piece_bounds(shares);
     let mut planned = Vec::with_capacity(judged.len());
     for mut unit in judged {
         unit.incoming.rounding.clone_from(&rounding);
@@ -276,12 +270,10 @@ async fn lowered(
     planned: Vec<Planned>,
     room: Room,
 ) -> Result<(), Error> {
-    let times = reserved_times(context);
     let mut window = Window::new(room);
     for Planned { plan, mut pieces } in planned {
         while let Some(piece) = next(job, context, &mut pieces).await? {
-            let bytes = piece.bytes.saturating_mul(times);
-            let reserved = window.reserved(job, context, open, bytes).await?;
+            let reserved = window.reserved(job, context, open, piece.bytes).await?;
             let ignored = job.changes.map_or_else(Ignored::default, |mode| {
                 changes::ignored(mode, &piece.parts)
             });
@@ -309,12 +301,13 @@ async fn lowered(
     window.lower(job, context, open).await
 }
 
-/// Bytes: the most a piece's rows take to lower, and a row's alone, where what lowering takes is
-/// reserved `times` over: a piece's and a request's share of `shares`, within what a text array's
-/// offsets reach.
-fn piece_bounds(shares: Shares, times: u64) -> (u64, u64) {
-    let bound = |bytes: u64| (bytes / times).min(MAX_PIECE_BYTES);
-    (bound(shares.piece), bound(shares.request))
+/// Bytes: the most a piece's rows take to lower, and a row's alone: a piece's and a request's
+/// share of `shares`, within what a text array's offsets reach.
+fn piece_bounds(shares: Shares) -> (u64, u64) {
+    (
+        shares.piece.min(MAX_PIECE_BYTES),
+        shares.request.min(MAX_PIECE_BYTES),
+    )
 }
 
 /// Whether lowering `piece` as `plan` lowers it for the load `stamp` names copies no value: a
@@ -454,51 +447,32 @@ impl Window {
     }
 
     /// Lowers the window's pieces and queues them, in order: each then holds what it was lowered
-    /// to beyond its unit's batches, where that is less than was reserved for lowering it, and
-    /// its frame in the log what the frame takes.
+    /// to beyond its unit's batches, where that is less than was reserved for lowering it.
     async fn lower(
         &mut self,
         job: &PartitionJob,
         context: &PartitionContext,
         open: &mut OpenSegment,
     ) -> Result<(), Error> {
-        let times = reserved_times(context);
         let lowered: Vec<_> = self
             .lowered(&context.pool)
             .await
             .into_iter()
             .map(|(prepared, mut lowering)| {
                 prepared.map(|prepared| {
-                    let frame = frame_part(&mut lowering.reserved, times);
-                    let frame = frame.map(|frame| Box::new(frame) as Permit);
                     let fresh = prepared.growth(&lowering.allocations);
                     lowering.reserved.shrink(fresh);
-                    (prepared, lowering, frame)
+                    (prepared, lowering)
                 })
             })
             .collect();
         for lowered in lowered {
-            let (prepared, lowering, frame) = lowered?;
+            let (prepared, lowering) = lowered?;
             let reservation: Permit = Box::new((lowering.reserved, lowering.unit));
-            queue(
-                job,
-                context,
-                open,
-                job.table,
-                prepared,
-                (reservation, frame),
-            )
-            .await?;
+            queue(job, context, open, job.table, prepared, reservation).await?;
         }
         Ok(())
     }
-}
-
-/// The part of `reserved`, what a piece reserved `times` times over, that holds its frame in the
-/// log: all but one of them, where it was reserved more than once.
-fn frame_part(reserved: &mut Reservation, times: u64) -> Option<Reservation> {
-    let logged = reserved.bytes() - reserved.bytes() / times.max(1);
-    (times > 1).then(|| reserved.split(logged))
 }
 
 /// A unit with rows and its columns as they arrive.

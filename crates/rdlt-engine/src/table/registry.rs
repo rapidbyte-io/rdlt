@@ -105,8 +105,6 @@ pub(crate) struct TablesDelta {
     pub(crate) revisions: Vec<(usize, u32)>,
     /// The keys of the records of child tables state does not record yet, with their streams.
     pub(crate) born: Vec<(StreamName, String)>,
-    /// Bytes: what the changes take in a commit's frame, which their schema changes reserved.
-    pub(crate) prepaid: u64,
 }
 
 impl Tables {
@@ -457,7 +455,6 @@ impl Tables {
             delta.changes.extend(records);
             delta.revisions.push((index, view.model.revision));
         }
-        delta.prepaid = records::recorded_bytes(&delta.changes);
         delta
     }
 

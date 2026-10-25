@@ -132,7 +132,7 @@ fn a_connector_cannot_claim_a_stop_or_a_fence_but_a_session_s_fence() {
             assert!(
                 !matches!(
                     mapped,
-                    ErrorKind::Cancelled | ErrorKind::Internal | ErrorKind::Wal | ErrorKind::Memory
+                    ErrorKind::Cancelled | ErrorKind::Internal | ErrorKind::Memory
                 ),
                 "{kind:?} from {side:?} is {mapped:?}"
             );
@@ -325,7 +325,6 @@ fn the_budget_s_error_says_what_held_it_and_may_be_tried_again() {
         intake: 40,
         work: 0,
         cursors: 0,
-        log: 0,
         tables: 0,
         reads: 25,
         control: 0,
@@ -347,49 +346,6 @@ fn the_budget_s_error_says_what_held_it_and_may_be_tried_again() {
         )
     );
     assert!(memory.to_string().contains("waited 3600s"), "{memory}");
-}
-
-#[test]
-fn a_log_another_load_still_writes_is_waited_for_and_a_taken_one_is_not() {
-    let load = rdlt_connector::LoadId::from_parts(std::time::UNIX_EPOCH, 3);
-    let running = Error::wal_running(load);
-    assert_eq!(running.code(), Some(codes::WAL_RUNNING));
-    assert!(running.is_retryable(), "another attempt may end");
-    let raced = Error::wal_opening_taken(load);
-    assert_eq!(raced.code(), Some(codes::WAL_RUNNING));
-    assert!(raced.is_retryable(), "another attempt begins");
-    let fenced = Error::wal_fenced(load);
-    assert_eq!(fenced.kind(), ErrorKind::Fenced);
-    assert!(
-        !fenced.is_retryable(),
-        "another attempt took the load's place"
-    );
-}
-
-#[test]
-fn a_full_disk_under_the_log_is_retryable_and_says_so() {
-    use std::io::{Error as Io, ErrorKind as Kind};
-    for full in [Kind::StorageFull, Kind::QuotaExceeded] {
-        let error = Error::from_wal(Io::from(full));
-        assert_eq!(error.kind(), ErrorKind::Wal);
-        assert_eq!(error.code(), Some(codes::WAL_STORAGE_FULL), "{full:?}");
-        assert!(error.is_retryable(), "{full:?}");
-    }
-    for transient in [
-        Kind::Interrupted,
-        Kind::TimedOut,
-        Kind::WouldBlock,
-        Kind::ResourceBusy,
-    ] {
-        let error = Error::from_wal(Io::from(transient));
-        assert_eq!(error.code(), None, "{transient:?}");
-        assert!(error.is_retryable(), "{transient:?}");
-    }
-    for lasting in [Kind::PermissionDenied, Kind::InvalidData, Kind::Other] {
-        let error = Error::from_wal(Io::from(lasting));
-        assert_eq!(error.code(), None, "{lasting:?}");
-        assert!(!error.is_retryable(), "{lasting:?}");
-    }
 }
 
 #[test]

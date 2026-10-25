@@ -6,7 +6,7 @@ use arrow_array::types::Int64Type;
 
 use super::{Load, Loading, ids};
 use crate::Cores;
-use crate::bench::{Sinking, memory_wal, sink_factory};
+use crate::bench::{Sinking, sink_factory};
 
 fn loading(load: Load, rows: u64, commit: Option<u64>) -> Loading {
     let cores = Cores::new(NonZeroUsize::new(2).unwrap());
@@ -78,20 +78,16 @@ fn an_update_s_rows_change_every_value_but_their_key() {
 }
 
 #[test]
-fn an_append_its_source_cannot_read_again_is_logged_ahead_as_it_loads() {
+fn an_append_its_source_cannot_read_again_loads_its_rows_once() {
     let cores = Cores::new(NonZeroUsize::new(2).unwrap());
     let (per_batch, commit) = (NonZeroU64::new(10).unwrap(), NonZeroU64::new(20));
-    let logged = Loading::logged(cores, 55, per_batch, commit, memory_wal()).unwrap();
+    let unreplayable = Loading::unreplayable(cores, 55, per_batch, commit).unwrap();
     assert_eq!(
-        logged.batches(),
+        unreplayable.batches(),
         loading(Load::Append, 55, Some(20)).batches()
     );
-    let sink = logged.connect(sink_factory().as_ref(), Sinking::Discard.config());
-    let report = logged.run(sink);
+    let sink = unreplayable.connect(sink_factory().as_ref(), Sinking::Discard.config());
+    let report = unreplayable.run(sink);
     assert_eq!((report.rows, report.attempted), (55, 1));
     assert!(report.commits >= 3, "{} commits", report.commits);
-    assert!(report.counters.log.appended > 0);
-    let replayed = loading(Load::Append, 55, Some(20));
-    let sink = replayed.connect(sink_factory().as_ref(), Sinking::Discard.config());
-    assert_eq!(replayed.run(sink).counters.log.appended, 0);
 }

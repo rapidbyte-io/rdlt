@@ -13,20 +13,18 @@ use rdlt_connector::{
 use rdlt_connector_reference::LogSource;
 use rdlt_connector_reference::changes::expected;
 use rdlt_engine::{
-    ErrorKind, LocalWal, Nested, ResetReport, ResetScope, RunStatus, SchemaSettings, WalStore,
-    WriteMode, codes,
+    ErrorKind, Nested, ResetReport, ResetScope, RunStatus, SchemaSettings, WriteMode, codes,
 };
 use serde_json::json;
 
 use crate::changes::{changes, orders, rows};
 use crate::support::batches::{BatchStream, batches};
 use crate::support::destinations::{Step, failing, limited};
-use crate::support::hooked::{At, Hook, hooked};
-use crate::support::script::{Script, ScriptStream, id, reconnect};
+use crate::support::script::{Script, ScriptStream};
 use crate::support::targets::Target;
 use crate::support::{
-    commit_every, each, engine, every_id, generator, logging_engine, memory, pipeline,
-    published_ids, published_json, retrying, stream,
+    commit_every, each, engine, every_id, generator, memory, pipeline, published_ids,
+    published_json, retrying, stream,
 };
 
 /// A log of four messages in one partition, read by `group`.
@@ -275,323 +273,6 @@ async fn a_merge_table_reset_with_its_stream_takes_a_change_stream() {
         outcome.error
     );
     assert_eq!(rows(store, "orders"), expected(13, &orders(&[])));
-}
-
-#[tokio::test(start_paused = true)]
-async fn rows_a_load_logged_before_its_stream_was_reset_never_land_after_it() {
-    let base = tempfile::tempdir().expect("a temporary directory");
-    let wal: Arc<dyn WalStore> = Arc::new(LocalWal::new(base.path()));
-    // p1 holds nothing at first and records no position, so its first seals start from nowhere.
-    let mut events = ScriptStream::new("events", 2, 20, 5);
-    events.replayable = false;
-    events.final_checkpoint = false;
-    events.rows[1].store(0, Ordering::SeqCst);
-    let (script, source) = Script::new(vec![events]).connect("reset_logged").await;
-    let plan = pipeline(
-        "reset-logged",
-        [stream("events").read(ReadMode::Incremental)],
-    )
-    .with_wal(true);
-    let run = |destination| {
-        logging_engine(retrying(1), Arc::clone(&wal)).run(
-            plan.clone(),
-            Arc::clone(&source),
-            destination,
-        )
-    };
-    let loaded = run(memory("reset_logged").await).await;
-    assert_eq!(
-        loaded.report.status,
-        RunStatus::Succeeded,
-        "{:?}",
-        loaded.error
-    );
-    // The next load logs p1's rows, which the source then forgets, but never commits them.
-    script.streams[0].rows[1].store(10, Ordering::SeqCst);
-    let logged = run(failing(memory("reset_logged").await, Step::Commit)).await;
-    assert_eq!(logged.report.status, RunStatus::Failed);
-    let acknowledged = script
-        .acks
-        .lock()
-        .iter()
-        .filter(|(_, partition, _)| partition == "p1")
-        .map(|(_, _, next)| *next)
-        .max()
-        .expect("the source acknowledged p1's logged rows");
-    // The stream is reset through a source that no longer serves it, which cannot say whether
-    // it reads again: the reset's epoch alone keeps what the failed load logged from landing.
-    engine(commit_every(16))
-        .reset(
-            "reset-logged",
-            &["events"],
-            ResetScope::Positions,
-            generator(&[("other", 1, 1, 1)]).await,
-            memory("reset_logged").await,
-        )
-        .await
-        .expect("the reset commits");
-    let after = run(memory("reset_logged").await).await;
-    // Read from their beginning, both partitions wait for rows their source forgot.
-    assert_eq!(after.report.status, RunStatus::Failed);
-    let expected: Vec<i64> = (0..20).map(|offset| id(0, offset)).collect();
-    assert_eq!(published_ids("reset_logged", "events"), expected);
-    assert!(acknowledged > 0);
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_log_whose_epochs_were_forged_past_a_reset_is_refused_not_replayed() {
-    let base = tempfile::tempdir().expect("a temporary directory");
-    let wal: Arc<dyn WalStore> = Arc::new(LocalWal::new(base.path()));
-    let mut events = ScriptStream::new("events", 2, 20, 5);
-    events.replayable = false;
-    events.final_checkpoint = false;
-    events.rows[1].store(0, Ordering::SeqCst);
-    let (script, source) = Script::new(vec![events]).connect("reset_forged").await;
-    let plan = pipeline(
-        "reset-forged",
-        [stream("events").read(ReadMode::Incremental)],
-    )
-    .with_wal(true);
-    let run = |destination| {
-        logging_engine(retrying(1), Arc::clone(&wal)).run(
-            plan.clone(),
-            Arc::clone(&source),
-            destination,
-        )
-    };
-    let loaded = run(memory("reset_forged").await).await;
-    assert_eq!(loaded.report.status, RunStatus::Succeeded);
-    script.streams[0].rows[1].store(10, Ordering::SeqCst);
-    let logged = run(failing(memory("reset_forged").await, Step::Commit)).await;
-    assert_eq!(logged.report.status, RunStatus::Failed);
-    engine(commit_every(16))
-        .reset(
-            "reset-forged",
-            &["events"],
-            ResetScope::Positions,
-            generator(&[("other", 1, 1, 1)]).await,
-            memory("reset_forged").await,
-        )
-        .await
-        .expect("the reset commits");
-    // Whoever can write the logs' directory says the load's session opened after the reset.
-    let forged = crate::support::logs::rewritten(base.path(), &|kind| match kind {
-        1 => Some((&["epoch"], json!(u64::MAX))),
-        5 => Some((&["meta", "epoch"], json!(u64::MAX))),
-        _ => None,
-    });
-    assert!(forged > 0, "the failed load left a log");
-    let after = run(memory("reset_forged").await).await;
-    assert_eq!(after.report.status, RunStatus::Failed);
-    let error = after.error.expect("the replay is refused");
-    assert_eq!(error.code(), Some(codes::WAL_UNREADABLE), "{error:?}");
-    // Refused for its session, not for frames the forging garbled.
-    assert!(
-        error.to_string().contains("not older than this one"),
-        "{error:?}"
-    );
-    let expected: Vec<i64> = (0..20).map(|offset| id(0, offset)).collect();
-    assert_eq!(published_ids("reset_forged", "events"), expected);
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_stream_whose_acknowledged_rows_wait_in_a_log_is_not_reset_until_they_land() {
-    let base = tempfile::tempdir().expect("a temporary directory");
-    let wal: Arc<dyn WalStore> = Arc::new(LocalWal::new(base.path()));
-    let mut events = ScriptStream::new("events", 2, 20, 5);
-    events.replayable = false;
-    let (script, source) = Script::new(vec![events]).connect("reset_waiting").await;
-    let plan = pipeline(
-        "reset-waiting",
-        [stream("events").read(ReadMode::Incremental)],
-    );
-    let run = |destination| {
-        logging_engine(retrying(1), Arc::clone(&wal)).run(
-            plan.clone(),
-            Arc::clone(&source),
-            destination,
-        )
-    };
-    let logged = run(failing(memory("reset_waiting").await, Step::Commit)).await;
-    assert_eq!(logged.report.status, RunStatus::Failed);
-    assert!(
-        !script.acks.lock().is_empty(),
-        "the source forgot what it was told of"
-    );
-    // The source no longer lists the stream, or calls it one it reads again: the log decides.
-    let refused = logging_engine(commit_every(16), Arc::clone(&wal))
-        .reset(
-            "reset-waiting",
-            &["events"],
-            ResetScope::Positions,
-            generator(&[("other", 1, 1, 1)]).await,
-            memory("reset_waiting").await,
-        )
-        .await
-        .expect_err("the log holds rows nothing else does");
-    assert_eq!(refused.code(), Some(codes::RESET_UNREPLAYABLE));
-    // A run lands them from the log, after which the stream may be reset.
-    let landed = run(memory("reset_waiting").await).await;
-    assert_eq!(
-        landed.report.status,
-        RunStatus::Succeeded,
-        "{:?}",
-        landed.error
-    );
-    logging_engine(commit_every(16), Arc::clone(&wal))
-        .reset(
-            "reset-waiting",
-            &["events"],
-            ResetScope::Positions,
-            generator(&[("other", 1, 1, 1)]).await,
-            memory("reset_waiting").await,
-        )
-        .await
-        .expect("nothing waits in a log");
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_reset_fences_the_log_of_a_load_still_running_before_it_reads_it() {
-    let base = tempfile::tempdir().expect("a temporary directory");
-    let wal: Arc<dyn WalStore> = Arc::new(LocalWal::new(base.path()));
-    let mut events = ScriptStream::new("events", 1, 30, 5);
-    events.replayable = false;
-    let (_, source) = Script::new(vec![events]).connect("reset_racing").await;
-    let plan = pipeline(
-        "reset-racing",
-        [stream("events").read(ReadMode::Incremental)],
-    );
-    let refused = Arc::new(parking_lot::Mutex::new(None));
-    let hook: Hook = {
-        let (wal, refused) = (Arc::clone(&wal), Arc::clone(&refused));
-        Arc::new(move || {
-            let (wal, refused) = (Arc::clone(&wal), Arc::clone(&refused));
-            Box::pin(async move {
-                let reset = logging_engine(commit_every(16), wal)
-                    .reset(
-                        "reset-racing",
-                        &["events"],
-                        ResetScope::Positions,
-                        generator(&[("other", 1, 1, 1)]).await,
-                        memory("reset_racing").await,
-                    )
-                    .await;
-                *refused.lock() = reset.err().and_then(|error| error.code());
-            })
-        })
-    };
-    // The load's first commit lands; while it is answered, the stream is reset.
-    let destination = hooked(memory("reset_racing").await, At::Landed, hook);
-    let running = logging_engine(commit_every(10), Arc::clone(&wal))
-        .run(plan.clone(), Arc::clone(&source), destination)
-        .await;
-    assert_eq!(*refused.lock(), Some(codes::RESET_UNREPLAYABLE));
-    // The reset read the log only once it was fenced: the load logs nothing more after it.
-    let error = running.error.expect("the load is fenced");
-    assert_eq!(error.code(), Some(codes::WAL_FENCED), "{error}");
-    // A run lands what the log holds, and the rest, once each.
-    let landed = logging_engine(commit_every(10), Arc::clone(&wal))
-        .run(
-            plan,
-            reconnect("reset_racing").await,
-            memory("reset_racing").await,
-        )
-        .await;
-    assert_eq!(
-        landed.report.status,
-        RunStatus::Succeeded,
-        "{:?}",
-        landed.error
-    );
-    let every: Vec<i64> = (0..30).map(|offset| id(0, offset)).collect();
-    assert_eq!(published_ids("reset_racing", "events"), every);
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_stream_its_source_reads_again_is_reset_whatever_a_log_holds_of_it() {
-    let base = tempfile::tempdir().expect("a temporary directory");
-    let wal: Arc<dyn WalStore> = Arc::new(LocalWal::new(base.path()));
-    let (script, source) = Script::new(vec![ScriptStream::new("events", 1, 10, 5)])
-        .connect("reset_replayable")
-        .await;
-    let plan = pipeline(
-        "reset-replayable",
-        [stream("events").read(ReadMode::Incremental)],
-    )
-    .with_wal(true);
-    let run = |destination| {
-        logging_engine(retrying(1), Arc::clone(&wal)).run(
-            plan.clone(),
-            Arc::clone(&source),
-            destination,
-        )
-    };
-    let loaded = run(memory("reset_replayable").await).await;
-    assert_eq!(
-        loaded.report.status,
-        RunStatus::Succeeded,
-        "{:?}",
-        loaded.error
-    );
-    // The next load logs more rows and never commits them; the source can read them again.
-    script.streams[0].grow(10);
-    let logged = run(failing(memory("reset_replayable").await, Step::Commit)).await;
-    assert_eq!(logged.report.status, RunStatus::Failed);
-    logging_engine(commit_every(16), Arc::clone(&wal))
-        .reset(
-            "reset-replayable",
-            &["events"],
-            ResetScope::Positions,
-            Arc::clone(&source),
-            memory("reset_replayable").await,
-        )
-        .await
-        .expect("the log holds no rows only it holds");
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_reset_through_another_log_store_than_the_pipeline_s_is_refused() {
-    let (one, two) = (
-        tempfile::tempdir().expect("a temporary directory"),
-        tempfile::tempdir().expect("a temporary directory"),
-    );
-    let mut events = ScriptStream::new("events", 1, 10, 5);
-    events.replayable = false;
-    let (_, source) = Script::new(vec![events]).connect("reset_stores").await;
-    let plan = pipeline(
-        "reset-stores",
-        [stream("events").read(ReadMode::Incremental)],
-    );
-    let store = |base: &std::path::Path| -> Arc<dyn WalStore> { Arc::new(LocalWal::new(base)) };
-    let loaded = logging_engine(commit_every(10), store(one.path()))
-        .run(plan, source, memory("reset_stores").await)
-        .await;
-    assert_eq!(
-        loaded.report.status,
-        RunStatus::Succeeded,
-        "{:?}",
-        loaded.error
-    );
-    let reset = |base: &std::path::Path| {
-        let engine = logging_engine(commit_every(16), store(base));
-        async move {
-            engine
-                .reset(
-                    "reset-stores",
-                    &["events"],
-                    ResetScope::Positions,
-                    generator(&[("other", 1, 1, 1)]).await,
-                    memory("reset_stores").await,
-                )
-                .await
-        }
-    };
-    // Another store may hold logs of the pipeline that no reset through this one reads.
-    let refused = reset(two.path())
-        .await
-        .expect_err("another store than the pipeline's");
-    assert_eq!(refused.code(), Some(codes::WAL_STORE_OTHER), "{refused}");
-    reset(one.path()).await.expect("the pipeline's own store");
 }
 
 #[tokio::test]
@@ -985,7 +666,7 @@ fn trailed(records: &mut Vec<StateRecord>) {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_destination_s_state_value_that_is_not_json_is_refused_before_it_is_logged() {
+async fn a_destination_s_state_value_that_is_not_json_is_refused_before_anything_loads() {
     let store = "trailed_state";
     load(Target::Memory, store, store).await;
     let trailed: Arc<dyn Destination> =
@@ -997,10 +678,7 @@ async fn a_destination_s_state_value_that_is_not_json_is_refused_before_it_is_lo
     assert_eq!(outcome.report.status, RunStatus::Failed);
     let error = outcome.error.expect("the run fails");
     assert_eq!(error.code(), Some(codes::STATE_INVALID), "{error:?}");
-    assert_eq!(
-        outcome.report.counters.log.appended, 0,
-        "nothing was logged"
-    );
+    assert_eq!(outcome.report.rows, 0, "nothing loaded");
 }
 
 /// `records` with the table of stream `b` recorded under the identifier of stream `a`'s.

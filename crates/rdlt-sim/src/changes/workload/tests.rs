@@ -2,10 +2,10 @@ use super::ChangeWorkload;
 use crate::rng::SplitMix64;
 use crate::swarm::Features;
 
-/// The workload `seed` draws, with pipelines keeping write-ahead logs or not.
-fn drawn(seed: u64, wal: bool) -> ChangeWorkload {
+/// The workload `seed` draws, with sources that forget or not.
+fn drawn(seed: u64, forgetting: bool) -> ChangeWorkload {
     let features = Features {
-        wal,
+        forgetting,
         ..Features::ALL
     };
     ChangeWorkload::generate(
@@ -16,26 +16,26 @@ fn drawn(seed: u64, wal: bool) -> ChangeWorkload {
 }
 
 #[test]
-fn every_other_change_stream_forgets_only_where_pipelines_keep_logs() {
+fn every_other_change_stream_forgets_only_where_the_seed_draws_sources_that_forget() {
     let mut forgetting = 0;
     for seed in 0..500 {
-        let unlogged = drawn(seed, false);
-        let logged = drawn(seed, true);
-        assert!(unlogged.streams.iter().all(|stream| stream.replayable));
-        assert_eq!(logged.streams.len(), unlogged.streams.len());
-        for (index, (logged, unlogged)) in logged.streams.iter().zip(&unlogged.streams).enumerate()
-        {
-            assert_eq!(logged.replayable, index % 2 == 1, "seed {seed}");
+        let remembering = drawn(seed, false);
+        let forgetful = drawn(seed, true);
+        assert!(remembering.streams.iter().all(|stream| stream.replayable));
+        assert_eq!(forgetful.streams.len(), remembering.streams.len());
+        let streams = forgetful.streams.iter().zip(&remembering.streams);
+        for (index, (forgetful, remembering)) in streams.enumerate() {
+            assert_eq!(forgetful.replayable, index % 2 == 1, "seed {seed}");
             // A source that forgets sends nothing again; every other draw falls alike.
-            let mut alike = logged.clone();
+            let mut alike = forgetful.clone();
             alike.replayable = true;
-            if logged.replayable {
-                assert_eq!(&alike, unlogged, "seed {seed}");
+            if forgetful.replayable {
+                assert_eq!(&alike, remembering, "seed {seed}");
             } else {
                 forgetting += 1;
-                assert_eq!(logged.replay, None, "seed {seed}");
-                alike.replay.clone_from(&unlogged.replay);
-                assert_eq!(&alike, unlogged, "seed {seed}");
+                assert_eq!(forgetful.replay, None, "seed {seed}");
+                alike.replay.clone_from(&remembering.replay);
+                assert_eq!(&alike, remembering, "seed {seed}");
             }
         }
     }

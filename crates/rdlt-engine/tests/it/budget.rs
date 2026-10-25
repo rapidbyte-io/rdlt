@@ -557,7 +557,6 @@ fn waited(waits: &rdlt_engine::Waits) -> u64 {
         waits.intake,
         waits.work,
         waits.cursors,
-        waits.log,
         waits.tables,
         waits.control,
         waits.reads,

@@ -47,8 +47,6 @@ pub mod bench;
 mod budget;
 mod compute;
 mod config;
-#[cfg(test)]
-mod conformance;
 mod coordinator;
 mod cost;
 mod crash;
@@ -72,7 +70,6 @@ mod scope;
 mod shred;
 mod stored;
 mod table;
-mod wal;
 mod watch;
 
 pub use compute::{ComputePool, ComputePoolError, Cores, Job, RayonPool};
@@ -84,9 +81,8 @@ pub use error::{Code, Error, ErrorKind, ErrorReport, Origin, codes};
 pub use plan::{DeleteMode, OnTruncate, PipelinePlan, RetentionLoss, StreamPlan, Until, WriteMode};
 pub use policy::{Nested, OnUnsupported, SchemaPolicy, SchemaSettings};
 pub use report::{
-    AttemptReport, CommitPhases, Commits, Counters, Flushes, Forgotten, LaneCounters, LogCounters,
-    PoolCounters, REPORTED_ATTEMPTS, REPORTED_FORGOTTEN, Report, RunStatus, ShredCounts,
-    StoreRequests, StreamReport, Waited, Waits,
+    AttemptReport, CommitPhases, Commits, Counters, Flushes, Forgotten, LaneCounters, PoolCounters,
+    REPORTED_ATTEMPTS, REPORTED_FORGOTTEN, Report, RunStatus, ShredCounts, StreamReport, Waited,
+    Waits,
 };
 pub use run::{Engine, ResetReport, ResetScope, RunControl, RunHandle, RunOutcome, StopMode};
-pub use wal::{Chunk, LocalWal, StagedChunk, WalStore};

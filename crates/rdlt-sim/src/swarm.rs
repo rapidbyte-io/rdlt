@@ -9,8 +9,8 @@ use crate::rng::SplitMix64;
 /// What the network's draw mixes into the seed's generator: "network" in ASCII.
 const NETWORK: u64 = 0x006e_6574_776f_726b;
 
-/// What the write-ahead log's draw mixes into the seed's generator: "wal" in ASCII.
-const WAL: u64 = 0x0077_616c;
+/// What the draw of sources that forget mixes into the seed's generator: "forget" in ASCII.
+const FORGET: u64 = 0x666f_7267_6574;
 
 /// What streaming's draw mixes into the seed's generator: "stream" in ASCII.
 const STREAMING: u64 = 0x7374_7265_616d;
@@ -83,9 +83,9 @@ pub struct Features {
     /// its output, and with faults they are killed, stall and end by themselves; never beside
     /// the network, which places them otherwise.
     pub process: bool,
-    /// Pipelines that keep write-ahead logs, whose incremental and change streams, every other
-    /// one, cannot read again what they acknowledged; crashes tear the logs' unsynced tails.
-    pub wal: bool,
+    /// Incremental and change streams, every other one, whose source forgets what it was told is
+    /// committed: it no longer serves the rows before it, and refuses a read from before it.
+    pub forgetting: bool,
     /// Incremental streams whose rows arrive as simulated time passes, which runs follow for a
     /// while before a run reads them to their end; every other one's partitions never end, and
     /// the rest are read again as they grow.
@@ -98,8 +98,7 @@ pub struct Features {
     /// beginning or with its tables, while runs of every pipeline load, and they converge again.
     pub reset: bool,
     /// Streams pushing JSON whose every eighth record carries a wide object of JSON, declared
-    /// as JSON, so most of what a run holds is data; never with a log, whose store in memory
-    /// would hold the data too.
+    /// as JSON, so most of what a run holds is data.
     pub fat: bool,
     /// Where the connectors are on the network, a hostile host beside the runs that attacks their
     /// serving, and connectors that now and then start again under a version named after a secret
@@ -130,7 +129,7 @@ impl Features {
         perturb: true,
         network: true,
         process: false,
-        wal: true,
+        forgetting: true,
         streaming: true,
         churn: true,
         reset: true,
@@ -140,25 +139,24 @@ impl Features {
     };
 
     /// The features one seed exercises: every feature one time in eight, else each on or off by
-    /// a coin, drift more often than not, the network, the write-ahead log, streaming and
-    /// resetting one time in four each, churn one time in two of the streaming seeds, process
-    /// placement one time in four of the seeds the network leaves, a hostile host one time in two,
-    /// broken connectors one time in two of the hostile seeds, and fat values one time in four
-    /// where no log is kept.
+    /// a coin, drift more often than not, the network, sources that forget, streaming, resetting
+    /// and fat values one time in four each, churn one time in two of the streaming seeds,
+    /// process placement one time in four of the seeds the network leaves, a hostile host one
+    /// time in two, and broken connectors one time in two of the hostile seeds.
     ///
-    /// The network, process placement, the log, streaming, churn, resetting, fat values, a hostile
-    /// host and broken connectors are drawn apart from the rest, from the value the next draw takes
-    /// but without taking it, so a seed's workload is the same over either transport, logged or
-    /// not, streamed or not, churned or not, reset or not, and with fat values or without but for
-    /// those values.
+    /// The network, process placement, sources that forget, streaming, churn, resetting, fat
+    /// values, a hostile host and broken connectors are drawn apart from the rest, from the value
+    /// the next draw takes but without taking it, so a seed's workload is the same over either
+    /// transport, its sources forgetting or not, streamed or not, churned or not, reset or not,
+    /// and with fat values or without but for those values.
     pub fn draw(rng: &mut SplitMix64) -> Self {
         let next = rng.clone().next_u64();
         let network = SplitMix64::new(next ^ NETWORK).chance(250);
-        let wal = SplitMix64::new(next ^ WAL).chance(250);
+        let forgetting = SplitMix64::new(next ^ FORGET).chance(250);
         let streaming = SplitMix64::new(next ^ STREAMING).chance(250);
         let churn = streaming && SplitMix64::new(next ^ CHURN).chance(500);
         let reset = SplitMix64::new(next ^ RESET).chance(250);
-        let fat = !wal && SplitMix64::new(next ^ FAT).chance(250);
+        let fat = SplitMix64::new(next ^ FAT).chance(250);
         let hostile = SplitMix64::new(next ^ HOSTILE).chance(500);
         let framing = hostile && SplitMix64::new(next ^ FRAMING).chance(500);
         let process = !network && SplitMix64::new(next ^ PROCESS).chance(250);
@@ -166,7 +164,7 @@ impl Features {
             return Self {
                 network,
                 process,
-                wal,
+                forgetting,
                 streaming,
                 churn,
                 reset,
@@ -193,7 +191,7 @@ impl Features {
             perturb: rng.chance(500),
             network,
             process,
-            wal,
+            forgetting,
             streaming,
             churn,
             reset,

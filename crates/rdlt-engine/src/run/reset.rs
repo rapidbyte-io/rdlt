@@ -13,7 +13,6 @@ use crate::deadline::Waits;
 use crate::error::{Error, ErrorKind, Side, codes};
 use crate::naming::Naming;
 use crate::scope::contained;
-use crate::wal::taken::{self, Taken};
 
 /// What a reset clears of each stream.
 #[non_exhaustive]
@@ -37,8 +36,8 @@ pub struct ResetReport {
     pub streams: Vec<StreamName>,
     /// The tables dropped.
     pub dropped: Vec<TablePath>,
-    /// The epoch of the reset's session: what a session older than it logged of the streams
-    /// never applies to them.
+    /// The epoch of the reset's session: no session older than it commits anything more, and a
+    /// full read of the streams begun before it ends.
     pub epoch: Epoch,
 }
 
@@ -48,8 +47,8 @@ impl Engine {
     ///
     /// Opening the destination fences every session of the pipeline opened before, so a run
     /// still loading fails its next commit and, retried, reads the streams from their beginning;
-    /// the commit marks each stream with the reset's epoch, so rows such a run logged before it
-    /// are never replayed into them. A stream the pipeline recorded nothing of is refused as
+    /// the commit marks each stream with the reset's epoch, so a full read such a run began
+    /// before it ends rather than resuming. A stream the pipeline recorded nothing of is refused as
     /// `stream_not_found`, and one whose source cannot read again as `reset_unreplayable`; one
     /// reset before is not, so a reset retried is harmless.
     ///
@@ -115,17 +114,7 @@ impl Engine {
         } = destination.open(&context).await.map_err(|error| {
             Error::connector(Side::Destination, "opening the destination", error)
         })?;
-        // The session fences every load opened before it at the destination; the logs are read
-        // only after, each fenced too, so no load adds rows to one once it is read.
-        let checked = self.one_store(&state, load_id).await;
-        let checked = match checked {
-            Ok(()) => self.logged_unreplayable(pipeline, streams).await,
-            Err(error) => Err(error),
-        };
-        let reset = match checked {
-            Ok(()) => cleared(&state, &naming, streams, scope, epoch),
-            Err(error) => Err(error),
-        };
+        let reset = cleared(&state, &naming, streams, scope, epoch);
         let committed = match reset {
             Ok(cleared) => self.commit(&mut *session, load_id, epoch, cleared).await,
             Err(error) => Err(error),
@@ -184,76 +173,11 @@ impl Engine {
     }
 }
 
-impl Engine {
-    /// Refuses a reset whose engine keeps logs in another store than `records`, the pipeline's
-    /// state, names: the logs that hold its rows are elsewhere.
-    async fn one_store(&self, records: &[StateRecord], load_id: LoadId) -> Result<(), Error> {
-        let Some(store) = self.env.wal() else {
-            return Ok(());
-        };
-        let named = PipelineState::from_records(records)
-            .ok()
-            .and_then(|state| state.log_store);
-        let ours = store.identity(load_id).await.map_err(Error::from_wal)?;
-        taken::one_store(Some(ours), named)
-    }
-
-    /// Refuses `streams` of `pipeline` a log holds rows of that their source was told were
-    /// committed and that never landed, as `reset_unreplayable`: the reset would discard the only
-    /// copy of them, whatever the source says of the stream now.
-    ///
-    /// Each log is fenced before it is read, so its load, if it still runs, logs nothing more; a
-    /// log whose load keeps publishing is refused as `wal_running`. A run of the pipeline replays
-    /// the logs, landing their rows, after which the reset may go ahead.
-    async fn logged_unreplayable(
-        &self,
-        pipeline: &PipelineId,
-        streams: &[StreamName],
-    ) -> Result<(), Error> {
-        let Some(store) = self.env.wal() else {
-            return Ok(());
-        };
-        let frame_bytes = crate::wal::frame::limits(self.config.memory().get()).frame_bytes;
-        for load in store.loads(pipeline).await.map_err(Error::from_wal)? {
-            let last = match taken::take(store.as_ref(), pipeline, load, frame_bytes).await? {
-                Taken::Finished => {
-                    store
-                        .remove_log(pipeline, load)
-                        .await
-                        .map_err(Error::from_wal)?;
-                    continue;
-                }
-                Taken::Fenced { last, .. } => *last,
-                Taken::Running => return Err(Error::wal_running(load)),
-                // Another replay removed the log since it was listed, having replayed it.
-                Taken::Gone => continue,
-            };
-            let scanned =
-                crate::wal::scan::fenced(store.as_ref(), pipeline, load, frame_bytes, last).await?;
-            let unlanded = scanned
-                .commits
-                .iter()
-                .flat_map(|logged| &logged.seals)
-                .find(|seal| !seal.replayable && streams.contains(&seal.stream));
-            if let Some(seal) = unlanded {
-                let stream = &seal.stream;
-                return Err(Error::config(format!(
-                    "stream {stream}: the log of load {load} holds rows its source was told \
-                     were committed and that never landed; a run of the pipeline lands them"
-                ))
-                .with_code(codes::RESET_UNREPLAYABLE)
-                .with_stream(stream));
-            }
-        }
-        Ok(())
-    }
-}
-
 /// Refuses `streams` whose source cannot read again what it acknowledged, as
 /// `reset_unreplayable`: read from its beginning, it would wait for rows it no longer holds.
 ///
-/// A stream the source no longer serves is not refused; what a load logged of it before the
-/// reset never lands after it, so the reset keeps its word however the stream was read.
+/// A stream the source no longer serves is not refused: no session older than the reset
+/// commits after it, so the reset keeps its word however the stream was read.
 async fn readable_again(source: &dyn Source, streams: &[StreamName]) -> Result<(), Error> {
     let catalog = source.discover().await.map_err(|error| {
         Error::connector(Side::Source, "discovering the source's streams", error)

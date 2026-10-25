@@ -3,40 +3,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use rdlt_connector::{CommitMeta, Cursor, PartitionId, PartitionState, StateChange, StateKey};
+use rdlt_connector::{Cursor, PartitionId, PartitionState, StateChange, StateKey};
 
 use super::Coordinator;
 use super::delta::Collected;
 use crate::error::{Error, Side};
-use crate::table::TablesDelta;
-use crate::wal::Sealed;
-use crate::wal::frame::BegunPhase;
 
 impl Coordinator {
-    /// Logs the commit `meta` of `sealed`, beginning the phases `begun`, where the load keeps a
-    /// log.
-    ///
-    /// What the commit records of `tables` was reserved as each table changed.
-    ///
-    /// # Errors
-    ///
-    /// The log's failure.
-    pub(super) async fn log_commit(
-        &self,
-        meta: &CommitMeta,
-        tables: &TablesDelta,
-        sealed: Vec<Sealed>,
-        begun: Vec<BegunPhase>,
-    ) -> Result<(), Error> {
-        let Some(log) = &self.parts.wal else {
-            return Ok(());
-        };
-        // Every batch of the commit's segments was queued for the log before its partition
-        // sealed it: the commit's frame, queued now, follows them all.
-        log.commit(&self.parts.budget, sealed, begun, meta, tables.prepaid)
-            .await
-    }
-
     /// Whether the commit of `collected`, whose state changes before its receipt are `delta`,
     /// is progress: it publishes a row, or records anything but a partition where it stood.
     ///

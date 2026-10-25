@@ -23,13 +23,11 @@ use tokio::sync::Notify;
 
 use crate::changes::ChangeWorkload;
 use crate::destination::Store;
-use crate::env::SimEnv;
 use crate::owners::Owners;
 use crate::reached::{Reach, Reached};
 use crate::rng::SplitMix64;
 use crate::source::Plans;
 use crate::swarm::Features;
-use crate::wal::SimWal;
 use crate::workload::Workload;
 use hangs::Hangs;
 pub(crate) use named::{Named, Naming};
@@ -96,11 +94,12 @@ pub struct World {
     hangs: Mutex<Hangs>,
     pub(crate) store: Mutex<Store>,
     violations: Mutex<Vec<String>>,
-    /// Where the engine keeps its write-ahead logs, which outlive runs as a disk does.
-    pub(crate) wal: Arc<SimWal>,
     /// The furthest offset acknowledged to each partition of a stream that cannot read again,
     /// by stream and partition: what it no longer holds.
     pub(crate) acknowledged: Mutex<BTreeMap<(String, String), u64>>,
+    /// The furthest offset a checkpoint sent of each partition of a stream that cannot read
+    /// again, by stream and partition.
+    pub(crate) served: Mutex<BTreeMap<(String, String), u64>>,
     /// The streams a reset is clearing while runs race it, whose committed positions move back:
     /// a row may land below where its partition was held.
     pub(crate) reset: Mutex<BTreeSet<String>>,
@@ -251,8 +250,8 @@ impl World {
             rng: Mutex::new(SplitMix64::new(rng.next_u64())),
             store: Mutex::new(Store::default()),
             violations: Mutex::new(Vec::new()),
-            wal: Arc::default(),
             acknowledged: Mutex::default(),
+            served: Mutex::default(),
             reset: Mutex::default(),
             reports: Reports::default(),
             produced: Mutex::new(None),
@@ -316,8 +315,8 @@ impl World {
             rng: Mutex::new(SplitMix64::new(rng.next_u64())),
             store: Mutex::new(Store::default()),
             violations: Mutex::new(Vec::new()),
-            wal: Arc::default(),
             acknowledged: Mutex::default(),
+            served: Mutex::default(),
             reset: Mutex::default(),
             reports: Reports::default(),
             produced: Mutex::new(None),
@@ -390,23 +389,9 @@ impl World {
         self.phase.store(phase, Ordering::SeqCst);
     }
 
-    /// Turns fault injection on or off, the write-ahead log's disk's included.
+    /// Turns fault injection on or off.
     pub fn set_faulty(&self, faulty: bool) {
         self.faulty.store(faulty, Ordering::SeqCst);
-        // Drawn only where logs are kept, so every other seed's faults fall as they did.
-        let logged = faulty && self.workload.features.wal;
-        let draws = logged.then(|| SplitMix64::new(self.rng.lock().next_u64()));
-        self.wal.set_faults(draws);
-    }
-
-    /// Gives `env` the world's write-ahead logs.
-    pub(crate) fn keep_logs(&self, env: &SimEnv) {
-        env.keep_logs(Arc::clone(&self.wal) as _);
-    }
-
-    /// Whether the logs hold any log: an open one, or what a removal left.
-    pub(crate) fn holds_logs(&self) -> bool {
-        self.wal.holds_logs()
     }
 
     /// Records that a run reached `reach`.
@@ -423,12 +408,6 @@ impl World {
     /// The paths its runs reached.
     pub(crate) fn reached(&self) -> Reached {
         *self.reached.lock()
-    }
-
-    /// Crashes the worker running `pipeline`: every chunk its logs staged and did not publish is
-    /// lost.
-    pub(crate) fn crash_logs(&self, pipeline: &rdlt_connector::PipelineId) {
-        self.wal.crash(pipeline);
     }
 
     /// A failure at `point`, when faults are on and the draw says so: mostly transient or
