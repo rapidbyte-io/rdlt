@@ -297,13 +297,6 @@ A formal layer is added to the layers of its class, never in place of one.
   retirement. `a_partition_a_replan_drops_keeps_its_position_across_runs` holds that a run records
   a dropped partition's position where it committed it, and that the next run reads on from there
   with no row loaded twice.
-- Traces tie a specification to the code through a driver among the tests that replays each of
-  them against the code, step by step. A spec's header names each trace by name, seed and the
-  goal its run reaches; `just quint` writes each from its seed, which reproduces it exactly, and
-  fails where it differs from the one `specs/traces/<spec>/` holds, so a trace cannot drift from
-  its spec; `just quint write` rewrites them, and `just quint-seed` finds a seed reaching a goal.
-  No spec names a trace, so none has a driver: each is tied to the code by its invariants' names
-  until it has one, or this record says it is a design alone.
 
 ### Tools
 
@@ -375,9 +368,6 @@ what no bound names.
 - **Quint runs its TypeScript simulator,** for the reason given under *Specifications*.
   Cost: simulation is slower, so `just quint` samples fewer runs than a faster evaluator would
   allow.
-- **A spec's traces are committed,** so a driver replays them in every test run, on Linux and
-  macOS, with no Quint, and every change to the code meets them. Cost: generated JSON, rewritten
-  when the spec changes.
 - **The exactly-once spec is tied to the code by its invariants' names alone,** each named with its
   check under *Specifications*. Checking the simulation's runs against it was tried: a seed's
   sessions, commits and positions told, written as observations a checker searches the spec for. It
