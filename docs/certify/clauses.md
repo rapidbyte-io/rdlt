@@ -65,7 +65,7 @@ A certification cut at its timeout reports what it saw: the clauses already chec
 | `S-PARTITION` | a stream's planned partitions cover it exactly once, and those planned again from where they stood cover what is left exactly once | every stream plans a partition that never ends |
 | `S-STOP` | a read asked to stop ends promptly and cleanly, a following read of a partition that never ends too, while it waits for data | — |
 | `S-BARRIER` | an on-demand stream answers a pending barrier with a checkpoint | no stream checkpoints on demand |
-| `S-ACK` | a stream's position outside the engine moves only when the engine tells it a cursor is committed, and then to that cursor | the source does not tell where it stands, or reads no stream as changes or incrementally |
+| `S-ACK` | a stream's position outside the engine moves only when the engine tells it a cursor is committed, and then to that cursor, and a read from a later cursor it issued starts there | the source does not tell where it stands, or reads no stream as changes or incrementally |
 
 ## Destination (`D`)
 

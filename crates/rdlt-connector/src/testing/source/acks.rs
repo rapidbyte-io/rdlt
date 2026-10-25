@@ -6,7 +6,9 @@
 //! phases as the engine does, each partition of a phase to its end, then plans again from where
 //! they ended, so it reaches the changes a snapshot precedes. In each partition it reads on from
 //! where the source says the partition stands, asking at every checkpoint where every partition it
-//! has seen stands, and tells the source the first checkpoints ahead are committed.
+//! has seen stands, and tells the source the first checkpoints ahead are committed. Told one, a
+//! source must accept a read from the next it issued, as the engine reads from a commit whose
+//! telling a crash lost: the read moves nothing and starts there, not where the source stands.
 //!
 //! The phase it reads last decides: each partition told a checkpoint there must stand at it. In
 //! every phase, the partitions told checkpoints either all keep them or all keep none, as a
@@ -268,9 +270,40 @@ impl<'a> Probed<'a> {
             // No other partition moved with it, and reading on without committing moves nothing.
             self.unmoved().await?;
             self.watched(partition, Some(cursor.clone())).await?;
+            if let Some(ahead) = read.checkpoints.get(index + 1) {
+                self.started_ahead(partition, ahead, &read.checkpoints[..=index])
+                    .await
+                    .map_err(|violation| {
+                        violation.of(format_args!(
+                            "a read from checkpoint {} while told checkpoint {}",
+                            index + 2,
+                            index + 1
+                        ))
+                    })?;
+            }
             keeps = Some(kept);
         }
         Ok(Probe { end, keeps })
+    }
+
+    /// A violation unless a read of `partition` from `ahead`, a checkpoint the source issued past
+    /// the last it was told, is accepted and starts there: a source that starts elsewhere than
+    /// its cursor first sends a checkpoint of where it starts, so the read sends none of
+    /// `before`, the checkpoints up to the last told.
+    async fn started_ahead(
+        &self,
+        partition: &Partition,
+        ahead: &Cursor,
+        before: &[Cursor],
+    ) -> Result<(), Violation> {
+        let read = self.watched(partition, Some(ahead.clone())).await?;
+        if read.checkpoints.iter().any(|sent| before.contains(sent)) {
+            return Err(self.violation(
+                partition.id(),
+                "it started at or before the checkpoint it was told",
+            ));
+        }
+        Ok(())
     }
 
     /// Where `partition` stands.
