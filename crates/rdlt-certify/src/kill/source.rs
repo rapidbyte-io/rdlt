@@ -1,6 +1,7 @@
 //! `K-SOURCE`: the source, loaded into memory as an engine loads it and killed at random points of
 //! the load, converges on the tables a load it was never killed in publishes.
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -170,6 +171,10 @@ impl Source for Resumed {
         cursors: &'a [(PartitionId, Cursor)],
     ) -> BoxFuture<'a, rdlt_connector::Result<()>> {
         self.source.committed(stream, cursors)
+    }
+
+    fn max_calls(&self) -> Option<NonZeroUsize> {
+        self.source.max_calls()
     }
 }
 

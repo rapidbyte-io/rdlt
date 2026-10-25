@@ -386,7 +386,7 @@ fn every_stream_an_engine_reads_is_loaded_as_it_reads_it() {
 #[test]
 fn a_load_proves_a_source_resumes_only_once_a_read_of_it_starts_after_a_kill() {
     let kills = rdlt_host::Kills::new();
-    let resumed = Resumed::new(Arc::new(Cursors { bytes: 1 }), &kills);
+    let resumed = Resumed::new(Arc::new(Cursors::of(1)), &kills);
     let read = || {
         let (sink, _feed) =
             rdlt_connector::partition_channel(std::num::NonZeroUsize::new(1).expect("not zero"));
@@ -411,10 +411,28 @@ fn a_load_proves_a_source_resumes_only_once_a_read_of_it_starts_after_a_kill() {
     assert!(resumed.unproven(9).is_none());
 }
 
+#[test]
+fn a_resumed_source_carries_the_calls_its_source_carries() {
+    let kills = rdlt_host::Kills::new();
+    for calls in [None, std::num::NonZeroUsize::new(7)] {
+        let source = Cursors { bytes: 1, calls };
+        let resumed = Resumed::new(Arc::new(source), &kills);
+        assert_eq!(rdlt_connector::Source::max_calls(&resumed), calls);
+    }
+}
+
 /// A source of one partition that checkpoints once, with a cursor of the bytes its
-/// configuration says, and ends.
+/// configuration says, and ends; it carries `calls` at once.
 struct Cursors {
     bytes: usize,
+    calls: Option<std::num::NonZeroUsize>,
+}
+
+impl Cursors {
+    /// A source of cursors of `bytes`, whose calls nothing bounds.
+    fn of(bytes: usize) -> Self {
+        Self { bytes, calls: None }
+    }
 }
 
 impl rdlt_connector::Source for Cursors {
@@ -459,6 +477,10 @@ impl rdlt_connector::Source for Cursors {
     ) -> rdlt_connector::BoxFuture<'a, rdlt_connector::Result<()>> {
         Box::pin(async { Ok(()) })
     }
+
+    fn max_calls(&self) -> Option<std::num::NonZeroUsize> {
+        self.calls
+    }
 }
 
 /// Connects [`Cursors`] from `{ "bytes": n }`.
@@ -480,7 +502,7 @@ impl rdlt_connector::SourceFactory for CursorsFactory {
                 .as_u64()
                 .and_then(|bytes| usize::try_from(bytes).ok());
             let bytes = bytes.ok_or_else(|| rdlt_connector::ConnectorError::config("no bytes"))?;
-            Ok(Box::new(Cursors { bytes }) as Box<dyn rdlt_connector::Source>)
+            Ok(Box::new(Cursors::of(bytes)) as Box<dyn rdlt_connector::Source>)
         })
     }
 }

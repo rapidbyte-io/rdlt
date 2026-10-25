@@ -4,6 +4,7 @@
 #[cfg(test)]
 mod tests;
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -102,6 +103,10 @@ impl Destination for Bounded {
                 ..opened
             })
         })
+    }
+
+    fn max_calls(&self) -> Option<NonZeroUsize> {
+        self.destination.max_calls()
     }
 }
 
