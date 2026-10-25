@@ -29,10 +29,6 @@ pub enum StateKey {
     Sequences(TablePath),
     /// The last commit's receipt.
     Receipt,
-    /// The first load whose commit reached the pipeline.
-    Origin,
-    /// The write-ahead log store of the pipeline's loads.
-    LogStore,
 }
 
 impl StateKey {

@@ -61,8 +61,6 @@ impl PipelineState {
                 (state.key, state.change_time, state.identity) = (key, change_time, identity);
             }
             StateEntry::Receipt(receipt) => self.last_receipt = Some(receipt),
-            StateEntry::Origin(origin) => self.origin = Some(origin),
-            StateEntry::LogStore(store) => self.log_store = Some(store),
         }
     }
 
@@ -116,8 +114,6 @@ impl PipelineState {
                 }
             }
             StateKey::Receipt => self.last_receipt = None,
-            StateKey::Origin => self.origin = None,
-            StateKey::LogStore => self.log_store = None,
         }
     }
 }

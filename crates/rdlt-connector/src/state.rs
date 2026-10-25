@@ -25,7 +25,7 @@ pub use key::StateKey;
 pub use names::{NameConflict, NameMap};
 
 /// The state value format this crate writes and reads.
-const STATE_VERSION: u16 = 3;
+const STATE_VERSION: u16 = 4;
 
 /// One stored state record, opaque to the destination that keeps it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -97,7 +97,7 @@ pub enum StateEntry {
         /// The generations of the completed reads, oldest first.
         generations: Vec<GenerationId>,
     },
-    /// A stream's last reset: nothing logged by a session older than it applies to the stream.
+    /// A stream's last reset: a full read a session older than it began is over.
     Reset {
         /// The stream.
         stream: StreamName,
@@ -146,12 +146,6 @@ pub enum StateEntry {
     },
     /// The last commit's receipt.
     Receipt(Receipt),
-    /// The first load whose commit reached the pipeline at this destination, which names the
-    /// destination to the loads after it.
-    Origin(LoadId),
-    /// The write-ahead log store of the loads that commit the pipeline here, which the first
-    /// logging load's commit records: loads with another store are refused.
-    LogStore(LoadId),
 }
 
 /// Who made the `_rdlt_seq` values a table's rows hold, which says whether a later load may
@@ -201,8 +195,6 @@ impl StateEntry {
             Self::Names { table, .. } => StateKey::Names(table.clone()),
             Self::Sequences { table, .. } => StateKey::Sequences(table.clone()),
             Self::Receipt(_) => StateKey::Receipt,
-            Self::Origin(_) => StateKey::Origin,
-            Self::LogStore(_) => StateKey::LogStore,
         }
     }
 
@@ -316,17 +308,13 @@ pub struct PipelineState {
     pub streams: BTreeMap<StreamName, StreamState>,
     /// Each table's schema and names.
     pub tables: BTreeMap<TablePath, TableState>,
-    /// The epoch of the session that last reset each stream reset: what a session older than it
-    /// logged never applies to the stream.
+    /// The epoch of the session that last reset each stream reset: a full read a session older
+    /// than it began is over.
     pub resets: BTreeMap<StreamName, Epoch>,
     /// The last commit's receipt.
     pub last_receipt: Option<Receipt>,
     /// The load whose commit recorded each partition's position, by stream and partition.
     pub recorded_by: BTreeMap<(StreamName, PartitionId), LoadId>,
-    /// The first load whose commit reached the pipeline at this destination, once one did.
-    pub origin: Option<LoadId>,
-    /// The write-ahead log store the pipeline's loads keep their logs in here, once one did.
-    pub log_store: Option<LoadId>,
 }
 
 impl PipelineState {
