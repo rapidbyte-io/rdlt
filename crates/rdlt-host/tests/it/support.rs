@@ -5,6 +5,6 @@ pub(crate) mod raw;
 pub(crate) mod served;
 
 pub(crate) use served::{
-    engine, memory_destination, memory_source, plane_client, raw_channel, raw_client, served,
-    served_within, system_env,
+    engine, memory_destination, memory_source, paused_engine, piped, plane_client, raw_channel,
+    raw_client, served, served_within, system_env,
 };

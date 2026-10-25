@@ -1,5 +1,6 @@
 //! A spawned destination, whose transport errors carry the connector's last words.
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use rdlt_connector::{
@@ -9,7 +10,7 @@ use rdlt_connector::{
 
 use super::session::SupervisedSession;
 use super::{Supervisor, Words};
-use crate::remote::RemoteDestination;
+use crate::remote::{CALLS, RemoteDestination};
 
 /// A spawned destination, respawned when lost; its capabilities are those it first declared.
 pub(crate) struct SupervisedDestination {
@@ -58,5 +59,9 @@ impl Destination for SupervisedDestination {
                 ..opened
             })
         })
+    }
+
+    fn max_calls(&self) -> Option<NonZeroUsize> {
+        Some(CALLS)
     }
 }

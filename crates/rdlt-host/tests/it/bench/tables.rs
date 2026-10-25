@@ -2,7 +2,8 @@
 //!
 //! As production runs them: 16, 64 and 192 followed streams and a snapshot of 256 tables, each run
 //! as that bench runs it in process, through a writer a core. A served source reads each followed
-//! stream over a call of its one connection, which carries 200 at most, so 256 cannot be served.
+//! stream over a call of its one connection, which carries the engine 199, so a run follows at most
+//! 197 streams of it and 256 cannot be served.
 
 use std::sync::Arc;
 use std::time::Duration;

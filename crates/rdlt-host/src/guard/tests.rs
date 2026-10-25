@@ -97,6 +97,87 @@ impl rdlt_connector::DestinationSession for TellingSession {
     }
 }
 
+/// A connector, as source and as destination, that carries seven calls at once and is never
+/// called.
+struct Carrying;
+
+impl rdlt_connector::Source for Carrying {
+    fn check(&self) -> rdlt_connector::BoxFuture<'_, rdlt_connector::Result<()>> {
+        unreachable!("no test asks")
+    }
+
+    fn discover(
+        &self,
+    ) -> rdlt_connector::BoxFuture<'_, rdlt_connector::Result<rdlt_connector::Catalog>> {
+        unreachable!("no test asks")
+    }
+
+    fn plan<'a>(
+        &'a self,
+        _stream: &'a rdlt_connector::StreamName,
+        _state: &'a rdlt_connector::StreamState,
+    ) -> rdlt_connector::BoxFuture<'a, rdlt_connector::Result<rdlt_connector::PartitionPlan>> {
+        unreachable!("no test asks")
+    }
+
+    fn read(
+        &self,
+        _request: rdlt_connector::ReadRequest,
+        _sink: rdlt_connector::PartitionSink,
+    ) -> rdlt_connector::BoxFuture<'_, rdlt_connector::Result<()>> {
+        unreachable!("no test asks")
+    }
+
+    fn committed<'a>(
+        &'a self,
+        _stream: &'a rdlt_connector::StreamName,
+        _cursors: &'a [(rdlt_connector::PartitionId, rdlt_connector::Cursor)],
+    ) -> rdlt_connector::BoxFuture<'a, rdlt_connector::Result<()>> {
+        unreachable!("no test asks")
+    }
+
+    fn max_calls(&self) -> Option<std::num::NonZeroUsize> {
+        std::num::NonZeroUsize::new(7)
+    }
+}
+
+impl rdlt_connector::Destination for Carrying {
+    fn capabilities(&self) -> &rdlt_connector::Capabilities {
+        unreachable!("no test asks")
+    }
+
+    fn check(&self) -> rdlt_connector::BoxFuture<'_, rdlt_connector::Result<()>> {
+        unreachable!("no test asks")
+    }
+
+    fn open<'a>(
+        &'a self,
+        _context: &'a rdlt_connector::OpenContext,
+    ) -> rdlt_connector::BoxFuture<'a, rdlt_connector::Result<rdlt_connector::OpenedSession>> {
+        unreachable!("no test asks")
+    }
+
+    fn max_calls(&self) -> Option<std::num::NonZeroUsize> {
+        std::num::NonZeroUsize::new(7)
+    }
+}
+
+#[test]
+fn a_guarded_connector_carries_the_calls_its_connector_carries() {
+    use rdlt_connector::{Destination, Source};
+    let carried = std::num::NonZeroUsize::new(7);
+    let source = super::Guarded {
+        inner: Box::new(Carrying) as Box<dyn Source>,
+        redactions: Redactions::new(),
+    };
+    assert_eq!(source.max_calls(), carried);
+    let destination = super::Guarded {
+        inner: Box::new(Carrying) as Box<dyn Destination>,
+        redactions: Redactions::new(),
+    };
+    assert_eq!(destination.max_calls(), carried);
+}
+
 #[tokio::test]
 async fn a_session_a_guarded_destination_opens_is_guarded_too() {
     use rdlt_connector::Destination as _;

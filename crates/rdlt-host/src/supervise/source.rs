@@ -1,5 +1,6 @@
 //! A spawned source, whose transport errors carry the connector's last words.
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use rdlt_connector::{
@@ -8,7 +9,7 @@ use rdlt_connector::{
 };
 
 use super::{Supervisor, Words};
-use crate::remote::RemoteSource;
+use crate::remote::{CALLS, RemoteSource};
 
 /// A spawned source, respawned when lost.
 pub(crate) struct SupervisedSource(pub(crate) Arc<Supervisor>);
@@ -66,5 +67,9 @@ impl Source for SupervisedSource {
             let (source, words) = self.source().await?;
             words.explain(source.committed(stream, cursors).await).await
         })
+    }
+
+    fn max_calls(&self) -> Option<NonZeroUsize> {
+        Some(CALLS)
     }
 }

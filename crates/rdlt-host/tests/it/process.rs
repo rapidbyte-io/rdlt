@@ -1,6 +1,7 @@
 //! Connectors spawned in processes of their own: found, started with their socket on file
 //! descriptor 3, their output drained, stopped, respawned when lost, and never orphaned.
 
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -95,6 +96,26 @@ async fn a_spawned_connector_is_placed_with_its_spec_and_the_digest_of_its_binar
     // Reported where the file that was hashed is the file that is executed, and nowhere else.
     assert_eq!(placed.digest, cfg!(target_os = "linux").then_some(digest));
     placed.connector.check().await.expect("the check passes");
+}
+
+#[tokio::test]
+async fn a_spawned_connector_carries_the_engine_every_call_of_its_connection_but_the_heartbeats() {
+    let calls = usize::try_from(rdlt_wire::limits::MAX_CALLS).expect("calls fit a usize");
+    let carried = NonZeroUsize::new(calls - 1);
+    let source = local()
+        .source(&scripted(), &serde_json::json!({}))
+        .await
+        .expect("the source starts")
+        .connector;
+    assert_eq!(source.max_calls(), carried);
+    let id = ConnectorId::parse("io.rapidbyte.memory").expect("a valid id");
+    let reference = ConnectorRef::new(id).path(example("crashing_destination"));
+    let destination = local()
+        .destination(&reference, &serde_json::json!({ "store": "carried" }))
+        .await
+        .expect("the destination starts")
+        .connector;
+    assert_eq!(destination.max_calls(), carried);
 }
 
 #[tokio::test]

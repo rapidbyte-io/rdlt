@@ -1,6 +1,8 @@
 //! A connector placed in process, whose errors reach the engine as a host keeps a
 //! connector's: scrubbed of the secrets it was sent, shown, and bounded, causes included.
 
+use std::num::NonZeroUsize;
+
 use arrow_array::RecordBatch;
 use rdlt_connector::{
     BoxFuture, Capabilities, Catalog, CommitMeta, ConnectorError, Cursor, Destination,
@@ -61,6 +63,10 @@ impl Source for Guarded<Box<dyn Source>> {
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move { self.kept(self.inner.committed(stream, cursors).await) })
     }
+
+    fn max_calls(&self) -> Option<NonZeroUsize> {
+        self.inner.max_calls()
+    }
 }
 
 impl Destination for Guarded<Box<dyn Destination>> {
@@ -83,6 +89,10 @@ impl Destination for Guarded<Box<dyn Destination>> {
                 ..opened
             })
         })
+    }
+
+    fn max_calls(&self) -> Option<NonZeroUsize> {
+        self.inner.max_calls()
     }
 }
 
