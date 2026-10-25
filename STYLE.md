@@ -80,7 +80,7 @@ forever, `#[non_exhaustive]` everywhere) are adapted below.
   data. Clone a shared pointer with `Arc::clone(&x)`, so it reads differently from a deep copy.
 - **Borrow before cloning.** `.clone()` is for a copy the code needs. Cloning an Arrow array or a
   `Bytes` copies a handle, not the data; cloning a `Vec`, `String` or `BTreeMap` copies it all.
-  The shredder's, the lowering's and the write-ahead log's hot paths are measured by
+  The shredder's and the lowering's hot paths are measured by
   `just instructions`, which fails a change that adds more than 2% instructions or allocations
   unless its commit names the case in an `Instructions-Accepted` trailer (AGENTS.md).
 - **Byte payloads are `Bytes`.** Pushes, cursors and state that cross tasks are sliced, not
@@ -125,7 +125,7 @@ forever, `#[non_exhaustive]` everywhere) are adapted below.
   `new_without_default`).
 - **Generics or `dyn`.** Per-row and per-value code is concrete or generic, so it inlines. A
   boundary that holds implementations chosen at run time is `dyn`: connectors and their sessions,
-  log stores, `Env`. These are called once per batch or per operation, and `dyn` keeps the engine
+  `Env`. These are called once per batch or per operation, and `dyn` keeps the engine
   compiled once rather than once per connector.
 - **A trait needs a reason:** generic code, a `dyn` boundary (a simulation or test double counts),
   or an extension trait. Don't define a trait to organize methods; use an inherent `impl`.

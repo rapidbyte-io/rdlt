@@ -54,8 +54,7 @@ takes the rest of what a streaming source must be able to tell a run:
     re-snapshot is M5d3's `reset(streams)`), and a source that cannot read again has no earliest
     to serve.
   - The failed read's open segment is abandoned, as a stopped partition's is: no checkpoint
-    seals its rows, and the write-ahead log must not hold them for the rest of a load that may
-    run for months. An abandoned segment's rows do not count toward the commit policy's
+    seals its rows. An abandoned segment's rows do not count toward the commit policy's
     thresholds (`Progress::Abandoned`), so a long run's abandoned rows never keep a commit due.
 - **The reference offset-log source** gains `retention` (messages each partition keeps). A read
   from before its earliest offset fails as `retention_lost`; a read with no cursor starts at the
@@ -87,4 +86,4 @@ takes the rest of what a streaming source must be able to tell a run:
 - `S-PARTITION` completes the source clauses ADR 0021 named, so certification now checks that
   re-planning neither skips nor repeats rows.
 - M5d3 remains: `reset(streams)` (ADR 0023, 0025) and change streams whose source cannot read
-  again (ADR 0029).
+  again.

@@ -4,65 +4,44 @@ Status: accepted, 2026-09-30.
 
 ## Context
 
-ADR 0029 refused a change stream whose source cannot read again what it acknowledged
-(`change_read_unreplayable`): replay goes by partitions' positions, and a change stream's phases
-move them other than forward. A commit that begins a phase deletes the previous phase's partition
-positions and puts the new phase's start cursors. Four things kept the log from replaying such a
-commit:
-
-- A seal's `from`, the position its partition stood at before the commit, was taken before the
-  commit's own phase transition, so a new phase's first seal named the previous phase's position.
-- A replay that could not land the commit whole kept only partition positions, dropping the
-  transition: the new phase's positions would be recorded under the old phase, with the old
-  phase's positions left behind.
-- The positions replay compared knew no phases, and partition ids may recur across phases, so
-  `from` could not tell a new phase's partition from an old one of the same id.
-- Nothing said which phase a seal belonged to.
-
-ADR 0033 moved these streams to M5d4. The M5 exit gate asks for a simulation with change sources
-and sources that cannot read again.
+A change stream's phases move its partitions' positions other than forward. A commit that
+begins a phase deletes the previous phase's partition positions and puts the new phase's start
+cursors, and partition ids may recur across phases. A source that cannot read again, a
+replication slot or a queue, drops what it was told was committed. Such a stream has to load a
+snapshot and then its changes exactly once through crashes, failed commits and racing runs. The
+M5 exit gate asks for a simulation with change sources and sources that cannot read again.
 
 ## Decision
 
-- **Logs know phases.** A seal frame names its stream's phase (`phase`, 0 where an older frame
-  has none). A commit that begins a phase logs the transition in a `Begun` frame (kind 8): the
-  stream, the phase, and the state changes the commit's delta makes for it (the old phase's
-  positions deleted, the new phase's start cursors put, the phase put). The `Begun` frames precede
-  their commit frame in one append, and count only once that commit frame is read: a log torn
-  between them holds no transition.
-- **`from` follows the transition.** A seal's `from` is where its partition stands once its
-  commit's own transition applies: the new phase's start cursor, or none.
-- **Replay applies a logged transition.** Replaying a commit the destination missed, the engine
-  applies a logged transition where the destination still stands before its phase and holds each
-  position the transition deletes; otherwise the destination already moved past it. A seal then
-  lands only where its phase is the stream's phase after the transitions applied and its `from`
-  is where the destination stands. A reset stream's transitions from before the reset are skipped,
-  as its seals are (ADR 0033).
-- **The source contract grows two clauses** (`StreamSpec::with_replayable`, `ReadStream::plan`).
-  - A phase's start cursors come from the stream's state alone, never from what the source
-    acknowledged: a load that begins the phase again after a fenced or failed one begins it where
-    that one did, so the seals it logged still match. A start taken from the acknowledged position
-    would move past them, and their changes would be lost.
-  - A source that cannot read again refuses, as transient, a read from before a position it
-    acknowledged, rather than starting after it: the engine reads from there only while a logged
-    commit waits to be replayed, or where the destination moved on without the log's transition
-    (another load read the phase before it), and a refusal fails the run where starting later
-    would lose the changes between.
-- **`change_read_unreplayable` is lifted.** A change stream from a source that cannot read again
-  loads through the log. It needs a log store (`wal_required`); a full read stays refused
-  (`full_read_unreplayable`).
+- **Told only what landed.** Like every stream (ADR 0030), a change stream is told a cursor only
+  once the commit holding the rows before it has landed, phase transition included. What its
+  source was told is never ahead of what the destination recorded, so every load starts from the
+  destination's state: its phase, and each partition's position in it.
+- **The source contract has two clauses for these streams** (`StreamSpec::with_replayable`,
+  `ReadStream::plan`).
+  - A phase's start cursors come from the stream's state alone, never from what the source was
+    told: that trails what landed after a crash between a commit landing and its telling, and a
+    start from there would land rows twice. A load that begins the phase again after a fenced or
+    failed one begins it where that one did.
+  - A source that cannot read again serves again everything after the last cursor it was told,
+    refuses, as transient, a read from before that cursor, and accepts one from a cursor it
+    issued at or after it. A refusal means the destination lost a commit it had answered; it
+    fails the run where starting later would lose the rows between.
+- **No read in full.** A full read of such a stream starts from its beginning, which its source
+  dropped, and is refused as `full_read_unreplayable`.
 - **The reference change source can forget.** `replayable: false` makes it refuse, as transient,
-  a read of its changes from before the position its slot acknowledged, as a replication slot
-  does. It passes certification, `S-ACK` included.
-- **The simulation.** Where pipelines keep logs, every other change stream's source forgets what it
-  acknowledged, on every partition, and never sends changes again: the at-least-once changes are
-  drawn and dropped, so every other draw falls as it did. The change oracle keeps the logs, crashes
-  tear them, a round converges only once no log is left to replay, and every acknowledged
-  position must have landed; a snapshot partition's position is gone once its stream reads its
-  changes, which counts as landed.
+  a read of its changes from before the position its slot was told, as a replication slot does. It
+  passes certification, `S-ACK` included.
+- **The simulation.** Every other incremental and change stream's source forgets what it was told,
+  on every partition, and never serves it again, independently of the other drawn features. Racing
+  runs give two readers to one such partition. The oracles check that every position a source was
+  told landed; a snapshot partition's position is gone once its stream reads its changes, which
+  counts as landed.
 
 ## Consequences
 
-- A source that cannot read again, a replication slot or a queue, can load a snapshot then its
+- A source that cannot read again, a replication slot or a queue, loads a snapshot then its
   changes exactly once through crashes and failed commits.
-- Such a stream still cannot be reset (ADR 0033): what its source acknowledged is gone.
+- Its source is told one destination commit later than the rows were read, and a slot keeps that
+  much more of its database's log.
+- Such a stream still cannot be reset (ADR 0033): what its source was told is gone.

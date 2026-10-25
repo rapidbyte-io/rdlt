@@ -30,8 +30,7 @@ M5d is split by what each part needs:
 - **M5d2:** the source's re-plan signal (the rest of item 1), `S-PARTITION`, the lag hook (item 3)
   and retention loss (item 4). `S-PARTITION` needs re-planning for a truth to compare with
   (ADR 0021).
-- **M5d3:** `reset(streams)` (ADR 0023, 0025) and change streams whose source cannot read again
-  (ADR 0029).
+- **M5d3:** `reset(streams)` (ADR 0023, 0025) and change streams whose source cannot read again.
 
 Item 4's reset and a stream reset share only the clearing of state entries. The first acts on one
 partition inside a run; the second is an operator's command between runs. So they are built apart.
@@ -92,10 +91,6 @@ partition inside a run; the second is an operator's command between runs. So the
   - 60 s or 1 GiB otherwise.
 
   A policy that is set is kept. `EngineConfig::commit` is an `Option`.
-- **A bounded write-ahead log.** A partition that ends without sealing its open segment (a
-  stopped one, or an unbounded one with rows after its last checkpoint) tells the log, which
-  settles the segment, so it holds no chunk back. The writer forgets a settled segment once no
-  chunk holds it, so a load that commits for months keeps a bounded set.
 - **`S-STOP` certifies the follow contract.** Beside the read stopped before it starts, it reads
   each unbounded partition following it, reached through the stream's phases as the engine
   reaches them. It drains the read until it goes quiet, as one caught up waiting for data does,

@@ -63,8 +63,8 @@ under the seq guard, with deletes hard, soft or ignored; a truncate, which names
 marks deleted every row sequenced before it. A change log appends every change instead.
 The memory budget is never passed: a push reserves what it keeps alive and is lowered a piece at
 a time, each piece reserving what its table stores it as before it is lowered, while checkpoints,
-the log, what commits record of tables and what reads keep have shares of the budget no push can
-use, and what a connector is told it may send fits them;
+what commits record of tables, connectors' answers and what reads keep have shares of the budget no
+push can use, and what a connector is told it may send fits them;
 JSON integers load exactly at any width, as decimals within 76 digits and as JSON text beyond; a
 merge key keeps matching its stored rows or refuses to change type, and a table keeps the merge key
 and change time it was loaded by; and an unbounded partition, as
@@ -81,13 +81,12 @@ never brings one back. The simulation checks every merged table and log against 
 seeded change workload, through faults, crashes, racing runs and changes sent again.
 The SQLite destination refuses a batch holding a float that is no number, or negative zero, which
 SQLite does not keep as they are (`float_unstorable`).
-A source that forgets what it acknowledged, as a message queue does, loads exactly once through a
-write-ahead log: each load logs its batches and commits to a local directory, the source hears once
-a commit's frame is durable, and the next attempt commits again whatever the destination missed,
-leaving to newer loads the partitions they moved since. A change stream's move from its snapshot to
-its changes is logged too, so a replication slot that forgets what it acknowledged loads its
-snapshot and changes exactly once. The simulation crashes loads mid-write and tears their logs, with
-sources and change sources that refuse to serve again what they acknowledged.
+A source that forgets what it acknowledged, as a message queue or a replication slot does, loads
+exactly once with no state of the engine's own: every source hears of a cursor only once the
+commit holding the rows before it has landed, so the destination holds whatever the source let go,
+and an attempt that fails leaves the source serving again everything after what it last heard. The
+simulation crashes loads and races them, with sources and change sources that refuse to serve again
+what they acknowledged.
 A source that keeps its position outside the engine, as a replication slot or a consumer group
 does, says where it stands when certification asks, in process and through the protocol, and
 `S-ACK` checks that the position moves only to the cursors the engine says are committed, through

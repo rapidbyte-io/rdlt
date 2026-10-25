@@ -54,8 +54,8 @@ given. The host did not enforce it:
     granted.
   - **A root that may be written holds nothing that decides what the host runs or keeps.** It
     may neither hold nor lie within a connector directory, the directory of the host's
-    executable, a directory the host keeps its own files in (`Local::guarded_dir`: its
-    write-ahead log, its state, secrets it reads itself), or a directory a secret resolver
+    executable, a directory the host keeps its own files in (`Local::guarded_dir`: its state,
+    secrets it reads itself), or a directory a secret resolver
     reads from (`SecretResolver::directories`); and it may not hold a binary a placement runs,
     the directory that binary is in, a script's interpreter, or the sandbox's launcher, nor
     lie on the file system of a binary, interpreter or launcher with a second name

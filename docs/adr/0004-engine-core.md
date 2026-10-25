@@ -58,7 +58,10 @@ Building M2a surfaced decisions the spec leaves open or gets wrong.
   generation `replace` writes fill, and the contract gains `StateKey::Completed`.
 - **Every commit records its own receipt** in state. A run credits a commit whose response was lost
   to the attempt that made it once a later attempt reads that receipt back, so the report matches
-  what the destination published.
+  what the destination published. Nothing commits a commit again once it lands, so each declares
+  itself its horizon (`CommitMeta::horizon`): a destination forgets the receipt of every commit
+  before it within the commit that declares it, and a commit that declares none, a reset's,
+  forgets none.
 - **The report's counters are written, never read.** What a run waited for and spent its time on
   is counted as it happens and summed into its report; no decision of the engine reads a
   counter, so measuring a run never changes what it does.
@@ -83,8 +86,8 @@ Building M2a surfaced decisions the spec leaves open or gets wrong.
   all its shares, and `counters.kept_peak`, the most its reads kept at once beside their events,
   so budget accounting is observable.
 - **Deferred:** the loom model of the memory budget (M9); the configuration size limit, which
-  needs the byte boundary of documents (M7) and the wire (M4); the simulator's JSON, change,
-  manifest and WAL workloads, which arrive with those features.
+  needs the byte boundary of documents (M7) and the wire (M4); the simulator's JSON, change and
+  manifest workloads, which arrive with those features.
 
 ## Consequences
 

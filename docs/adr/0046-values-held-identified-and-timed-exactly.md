@@ -135,7 +135,7 @@ trusted them in ways that broke data quietly or failed whole streams on one row:
   brought an item yet; an array deeper than the stream normalizes is stored whole and has none.
 - **A commit removes the staging of the segments the load abandoned since the last one**
   (`CommitMeta::abandoned`, field 10 of the wire's commit message), which is never among those it
-  publishes; a replayed commit abandons nothing, its load's staging being gone with its session.
+  publishes.
   `D-DISCARD` requires that a segment a commit abandons is never published after.
 - **Identifier case is documented as folded**: `Lower` and `Upper` are Unicode's lower- and
   upper-case mappings and no further fold. A destination whose identifiers compare alike more

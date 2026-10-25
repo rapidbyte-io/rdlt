@@ -135,10 +135,9 @@ than the model ADR 0037 now sets:
     position after that: a report by the commit that records it done which fails is not made
     again, as a full read that completed is not read again by the next attempt.
   - A commit that publishes no row and records nothing but partitions where they stood is no
-    progress: it does not reset the count of failed attempts. Rows an attempt lands from the
-    write-ahead log an earlier attempt left are progress, as rows it commits itself are. Positions are compared byte for
-    byte. A source whose every attempt moves a position still retries without end; a limit
-    on such resets is the control plane's to add.
+    progress: it does not reset the count of failed attempts. Positions are compared byte for
+    byte. A source whose every attempt moves a position still retries without end; a limit on
+    such resets is the control plane's to add.
 - **The pipeline id stays the key of ownership and state.** The host's identity does not scope
   it: state lives in the destination, and must be found from every placement and after a host's
   certificate changes. The hosts named to one connector are one trust domain. Two of them using
@@ -207,7 +206,7 @@ Rejected:
   rows, so none counts against the run, and once the partition is recorded done state holds no
   cursor for it and the next attempt has nothing to report. No row is lost or doubled, and
   the position that trails is the refusing source's own. Failing such a run needs the report
-  that is owed kept in state, which belongs with the design of the log and its replay.
+  that is owed kept in state, which a commit that publishes nothing would have to clear.
 - A source that accepts a cursor it did not issue, and acts on reports, can be moved there by
   a host named to it. The rule is the connector author's to keep; certification does not yet
   check it.

@@ -22,8 +22,7 @@ panic was printed.
 
 ADR 0037 (untrusted connectors) makes everything a connector sends hostile input, bounded before
 it is held. This ADR is that rule for Arrow frames, on every receiver: the host reading from a
-connector, a served connector reading from a host, certification's read-back and the write-ahead
-log.
+connector, a served connector reading from a host, and certification's read-back.
 
 ## Decision
 
@@ -60,11 +59,9 @@ log.
   not lie at the alignment their types need.**
   - Every sender lays a frame's body at a 64-byte offset of the allocation it arrives in, each
     buffer padded to 64 within it, as Arrow's writer pads them: a batch's message carries `padding`
-    before `data_body` (ADR 0015), and the log pads each message's header in its frame (ADR 0045).
-    Every receiver holds what arrives from a first byte at a 64-byte address: `Bounded`'s room (ADR
-    0042), the files reader's blocks, and the log's reads, each in an allocation of its own: the
-    local log reads into one. A log frame a store hands over elsewhere, or as a slice of what it
-    keeps, as the in-memory log does, is copied once into one of its own.
+    before `data_body` (ADR 0015). Every receiver holds what arrives from a first byte at a 64-byte
+    address: `Bounded`'s room (ADR 0042) and the files reader's blocks, each in an allocation of
+    its own.
   - Each buffer must lie, in memory, at a multiple of its type's alignment and of eight bytes. One
     that does not is refused as `BufferUnaligned`, `malformed_frame`, before Arrow reads anything:
     every sender rdlt ships aligns, so a peer that does not is broken. The decoder copies no buffer
@@ -81,15 +78,13 @@ log.
       beside the block's message and body. A block that holds more, as one whose metadata a
       writer padded far does, has its body copied into an allocation of its own, and a block laid
       out again is the frame it is decoded as.
-    - A log batch keeps alive the log frame it was read in, every message of it, and less than
-      64 bytes beside it, which replay reserves whole (ADR 0045).
   - `Decoder::shaped` returns a frame's `Shape` beside its batch: its values, the bytes its views
     name, and `held_bytes`, the allocation's bytes, for whoever charges the batch to a budget.
     `held_bytes` leaves out the dictionaries its keys name: they arrived in frames of their own
     and are held by the decoder, and by each batch that names them.
 - **A sender cuts a batch a frame at a time, to the lesser of its receiver's limits and its
   own.** A served connector does so for what its source pushes, and the host for what the engine
-  writes; the write-ahead log, whose limits are lifted, encodes a batch whole.
+  writes.
   - Each end cuts to the lesser, limit by limit (`Limits::lesser`), of what its peer advertised
     at the handshake and what it was configured with. A peer advertising more than a sender's
     transport carries, or than the sender may hold, then gets frames the sender can send.
@@ -165,8 +160,7 @@ log.
     piece went; the host's controls wait for the credit window or the batch's end, both bounded.
     On a write they are writes of the batch's segment. Neither a push nor a write is a unit to a
     checkpoint or a commit: a segment is. A write that fails, a connection lost or a run stopped
-    between pieces ends the attempt, whose staging the next attempt discards; a logged batch is
-    logged uncut, and cut again when its commit is replayed.
+    between pieces ends the attempt, whose staging the next attempt discards.
   - One row beyond a limit, or a dictionary beyond one, cannot be cut: its sender refuses it with
     `limit_exceeded` naming the limit, where the cut reaches it, after the pieces before it went.
     - A refused write leaves the rows of the pieces before it staged under the batch's segment.
@@ -189,7 +183,7 @@ log.
   logical type: fixed-width values, `Utf8`, `Binary`, structs and lists, with list views cast to
   lists, views to offsets, and dictionaries and run-end encodings decoded. Its two constant
   metadata columns are dictionaries of one entry under sliced keys. Batches of no rows are
-  dropped before they are queued or logged. So the host's writer meets no view, list view,
+  dropped before they are queued. So the host's writer meets no view, list view,
   union or run-end column and no empty batch from the engine, though it does meet slices that
   share their parent's buffers, all of layouts that go as they are. The writer is a public
   trait all the same, and a served connector and read-back send whatever a source built, so
@@ -227,10 +221,6 @@ log.
   run ending at zero for a run-end column sliced to nothing, as under a list whose rows are all
   empty, and Arrow's reader refuses that. The walk checks those children's buffers as any
   others, counts none of their values, and hands Arrow empty ones.
-- **The write-ahead log lifts the numeric limits and keeps the rest.** Its batches are the
-  engine's own and may exceed what a connector may send, so frame bytes, rows, values, columns,
-  schema bytes and name lengths are unlimited there. Order, disjointness, counts, buffer lengths
-  and views within their buffers hold for a log as for a connector.
 
 ## Consequences
 
@@ -244,10 +234,10 @@ log.
 - rdlt's senders never send the first two: they cut a batch to its receiver's limits (above).
 - A cut batch crosses at its logical size: bytes its rows share are sent for each piece that
   names them.
-- A frame on the wire or in the local log costs no copy beyond its transport's: a decoded batch
-  holds the allocation its message arrived in, header and room included. A sender padding to eight
-  bytes is refused; a files block so padded is copied once, as is one whose metadata is padded
-  beyond a message's room. The in-memory log copies each batch frame read once.
+- A frame on the wire costs no copy beyond its transport's: a decoded batch holds the allocation
+  its message arrived in, header and room included. A sender padding to eight bytes is refused; a
+  files block so padded is copied once, as is one whose metadata is padded beyond a message's
+  room.
 - The wire does not bound what a dictionary or a run-end encoding multiplies: keys or runs that
   each name a large value. What a batch expands to is the cost model's to charge.
 - Left for the cost model, which charges what is held:

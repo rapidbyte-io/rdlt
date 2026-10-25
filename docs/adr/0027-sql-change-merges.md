@@ -41,8 +41,8 @@ the spec's `D-MERGE` names the seq guard, which the clause never exercised.
     that is the cost of hard deletes, and a hard truncate prunes them. No rule prunes them by
     age or count, and a delete of a key the table never held leaves one too (ADR 0049). The
     horizon a commit declares for receipts prunes no tombstone, since a source sends a change
-    before a delete again whenever it resumes past it, not only a replay (ADR 0045). A table
-    replaced whole, by a generation, forgets them.
+    before a delete again whenever it resumes past it. A table replaced whole, by a generation,
+    forgets them.
   - Changes the snapshot holds are never sent again: a source resumes past its position, so
     tombstones start with the changes, not the snapshot.
 - **SQL change merges** (`sqlgen`, and the SQLite destination through it).
@@ -88,8 +88,7 @@ the spec's `D-MERGE` names the seq guard, which the clause never exercised.
   `ON CONFLICT`, row values, DDL out of the commit, and the child table's root index name
   `{target}__rdlt_root`, which a user table of that name collides with, move to M5b2. `S-ACK`, a
   source advancing its position only in `committed`, needs a probe of what a source acknowledged,
-  across the wire as read-back is; it moves to M5c, whose write-ahead log changes when a position
-  may be acknowledged.
+  across the wire as read-back is; it moves to M5c.
 
 ## Consequences
 
@@ -99,4 +98,4 @@ the spec's `D-MERGE` names the seq guard, which the clause never exercised.
   merges into it until it declares them.
 - Destinations store tombstones: a hard delete costs a row that stays until a later change of the
   key or a hard truncate.
-- A changed stream's replayed change cannot bring back a removed row, in any destination.
+- A change sent again cannot bring back a removed row, in any destination.

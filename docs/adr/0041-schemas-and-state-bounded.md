@@ -10,24 +10,21 @@ one run to the next, broke both:
 
 - Stored forms that their readers refused. A table schema was stored as derived JSON, three levels
   of nesting a struct, which a JSON reader stops reading at 128: a document nested 42 levels deep,
-  within the limit of 64, left state no later run could open, a log no replay could read and a
-  catalog no change could follow. The wire's encoder could not send a schema nested past about
+  within the limit of 64, left state no later run could open and a catalog no change could
+  follow. The wire's encoder could not send a schema nested past about
   fifteen levels at all. Records read a field they did not know as nothing, and fields with
   meaning had been added under one format number.
 - Growth with no limit on the whole. Limits held one push: a table's columns and a struct's
   fields grew by thousands a push for as long as pushes came, a normalized stream added a child
   table for every array path, a lane kept a destination writer open for every schema version,
-  the log kept every version's schema frame, and the entries of partitions no plan named stayed
-  in state for good.
+  and the entries of partitions no plan named stayed in state for good.
 - State no message could carry. An open answers with all of a pipeline's state, a commit's
   request carries its changes, a plan's request a stream's positions. Cursors within their limit,
   long column names and abandoned partitions grew state past what any of these could take, and a
-  commit too large for its request was logged, and the source told its positions were committed,
-  before the send failed: every later run failed the same way.
+  commit too large for its request failed at its send: every later run failed the same way.
 - Recorded values taken on trust: a schema version of `u32::MAX` wrapped to "not created", and
   two tables recorded under one identifier wrote into one table.
-- One open segment kept every chunk of the log, all partitions' committed data with it, and a
-  widen the destination refused was retried unchanged until the load failed.
+- A widen the destination refused was retried unchanged until the load failed.
 
 ## Decision
 
@@ -37,16 +34,16 @@ one run to the next, broke both:
   serialized without recursion and read with recursion bounded by the nesting limit, counting a
   top-level column as the first level; nodes left over, missing, half-named or of a field the
   reader does not know are refused. `TableSchema::new` refuses a schema nested deeper than the
-  limit (`TypeError::TooDeep`), so every schema that exists is one every reader of state, of the
-  log and of the files catalog reads back, and writing a record cannot fail. The wire's encoder
-  verifies the schema message it reads back to the schema's own depth.
+  limit (`TypeError::TooDeep`), so every schema that exists is one every reader of state and of
+  the files catalog reads back, and writing a record cannot fail. The wire's encoder verifies
+  the schema message it reads back to the schema's own depth.
 - **Persisted forms are versioned and strict.** Every persisted struct refuses a field it does not
   know, and fields that defaulted for records written before them are required. A member that may
   hold nothing is written as `null` and required on read too: a record lacking it is refused, not
-  read as holding nothing. State records are format 2 and the log is of format 6 (ADR 0045); the
-  files destination's manifests and catalog versions, and the merge key a SQL destination's staged
-  segment records, carry a format, 1, checked on read. What an earlier build wrote is refused, as
-  `state_invalid`, `wal_unreadable`, `manifest_invalid`, `catalog_invalid` or an internal error for
+  read as holding nothing. State records are of format 4; the files destination's manifests and
+  catalog versions, and the merge key a SQL destination's staged segment records, carry a format,
+  1, checked on read. What an earlier build wrote is refused, as `state_invalid`,
+  `manifest_invalid`, `catalog_invalid` or an internal error for
   a staged key; nothing is published, so nothing earlier needs reading. A stream or table name a
   later build refuses (ADR 0042) therefore never reaches the engine from state written before it.
 - **A table is never wider than a schema.** A change that would make a table's columns, every
@@ -81,44 +78,23 @@ one run to the next, broke both:
   attempt's tables from state refuses an identifier recorded for two tables as `state_invalid`;
   a reset, which recovers a pipeline and so reads state it may not trust, forgets such a table's
   records and never drops it. A plan names new tables outside every recorded identifier.
-- **Writers retire.** A lane flushes and closes a table's writers of older versions when it writes
-  a newer one, and holds at most its share of `writers` open, one at least, closing the one
-  written longest ago; a batch of an older version reopens that version's writer. An attempt runs
-  no more lanes than writers. Replay stages a logged commit's batches in their logged order by
-  the same rule, holding at most `writers` open: a commit holds every version its attempt
-  described. A served connection carries at most 200 calls, and every open writer is one, so an
-  attempt holds at most 198 of a served destination's writers open, and fewer where `writers` is
-  lower, 128 by default (ADR 0042).
-- **The log keeps a version's schema frame while a batch of it may come.** The log notes every
-  view a table version's batches were logged for: a resolution that only rounds a column makes a
-  new view of the same version. Before each commit the versions all of whose views are gone,
-  every batch of which was logged before, are retired: the writer forgets their frames and the
-  log their indexes. A batch of such a version is described again, under an index never used.
-- **An open segment is carried out of settled chunks in a relief.** A settled chunk that an open
-  segment shares stays until the segment settles or a relief carries it out, so the log fills
-  toward its bound (ADR 0045) before any carry, and an open segment may keep more of others'
-  data than of its own meanwhile. A relief appends the open segments' batch frames of old chunks
-  holding only settled segments and open ones, none taken by a commit still waiting, and each
-  table's schema frame read from the chunk, to the chunk it publishes, then removes the old
-  chunks. Replay
-  stages only the segments of commits without receipts, all logged after the carry, so copies a
-  crash leaves are never staged; a freed chunk's removal is durable before any later frame is
-  written: at once after a publish between commits, and after the commit's answer where a commit
-  frees it. Each batch frame carries its ordinal among the load's batches, and
-  replay stages a segment's batches in that order wherever a carry left them: a change stream's
-  rows of one key and one sequence apply in the order they were written, so a crash never changes
-  which wins.
+- **Writers retire.** A lane flushes and closes a table's writers of older versions when it writes a
+  newer one, and holds at most its share of `writers` open, one at least, closing the one written
+  longest ago; a batch of an older version reopens that version's writer. An attempt runs no more
+  lanes than writers. A served connection carries at most 200 calls, and every open writer is one,
+  so an attempt holds at most 198 of a served destination's writers open, and fewer where
+  `writers` is lower, 128 by default (ADR 0042).
 - **Stored state stays what a message can carry.** The engine measures what an open's answer
   carrying the stored state holds decoded, as the host's scan counts it, from the records it
   opened on and each commit that lands, and a commit's request alike. A commit whose request, or
   whose state once landed, would pass the state limit is refused as `state_bytes_exceeded`, a
-  non-retryable `Config` error, before it is logged or any source hears of a position: one
-  refusal, which the control plane's own commit-time check folded into (ADR 0042). A plan's
-  request and a report of committed positions carry less of a stream than its stored records.
-  A commit is never split: its segments and positions land together or not at all. State past
-  the limit, stored before the memory was lowered or by a replayed commit logged under a larger
-  one, takes a commit that does not grow it, the receipt left out of that measure since every
-  commit replaces it and its numbers gain digits, so a pipeline whose limit fell keeps loading.
+  non-retryable `Config` error, before any source hears of a position: one refusal, which the
+  control plane's own commit-time check folded into (ADR 0042). A plan's request and a report of
+  committed positions carry less of a stream than its stored records. A commit is never split:
+  its segments and positions land together or not at all. State past the limit, stored before
+  the memory was lowered, takes a commit that does not grow it, the receipt left out of that
+  measure since every commit replaces it and its numbers gain digits, so a pipeline whose limit
+  fell keeps loading.
 - **A plan never forgets a position; state pressure forgets done markers.** A partition a plan
   omits keeps its entry, running or `Done`: a plan may omit a partition for a moment, a listing
   that failed in part, and a partition planned again without its entry is read again from its
@@ -147,9 +123,6 @@ Rejected:
   A schema that cannot be stored cannot be built, which holds for every writer.
 - **Paging state at open, or splitting a commit across requests**: a protocol change for what a
   limit on the whole bounds, and a commit's atomicity given up.
-- **Refusing a load whose open segment keeps chunks**, or a chunk series for each partition: the
-  first fails an honest source holding a long transaction open, the second changes the log's
-  format.
 - **Routing a table's columns to JSON beyond its width**: values of one column would change where
   they go in the middle of a stream, without a word.
 - **Forgetting the positions of partitions a plan omits**, at an attempt's first plan, or the done
@@ -162,7 +135,7 @@ Rejected:
 
 - A document nested to the limit loads and opens again; one nested deeper is refused where it
   arrives. The wire carries schemas nested to the limit in frames too.
-- State, logs and files catalogs of another format are refused and must be cleared; a reset reads
+- State and files catalogs of another format are refused and must be cleared; a reset reads
   the state it resets, so it cannot clear state it cannot read.
 - A stream whose table would pass the schema columns stops at its change, typed, until its table
   is reset or its policy discards new columns; more memory raises the limit.
@@ -189,10 +162,8 @@ Rejected:
   cursor in an incremental stream keeps every cursor and stops at `state_bytes_exceeded` until
   its stream is reset. Certification does not check that finished
   partitions end done: a read that ends at a checkpoint is also how a polled table is read.
-- `LocalWal` makes a chunk's removal durable with a sync of the load's directory.
 - The simulation holds one to three writers open in a quarter of its worlds, drawn apart from
-  the rest of the seed, so lanes close writers, and its faulty disk fails a chunk's removal as it
-  fails appends and syncs.
+  the rest of the seed, so lanes close writers.
 - One measure, one limit and one refusal hold state: what an open's answer holds decoded, the
   advertised `state_bytes`, and `state_bytes_exceeded`. `GrowthLimits` sets no state limit of
   its own, and the code `state_exceeds_budget` is gone. Two tables recorded under one
