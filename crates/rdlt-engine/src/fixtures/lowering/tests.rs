@@ -10,8 +10,7 @@ use rdlt_connector::{DecimalType, LoadId, LogicalType, TimeUnit};
 
 use super::{Case, Kept, LoweringCase, Made, Storage, events, stamp, with_column};
 use crate::cost::CHANGE_ROW;
-use crate::table::Stamp;
-use crate::table::aligned;
+use crate::table::{ChangeLayout, Stamp, aligned};
 
 const ROWS: u32 = 64;
 
@@ -214,6 +213,26 @@ fn a_change_batch_is_charged_its_change_columns_and_what_splitting_a_row_holds()
         .rendering
         .lowering(append.batch(), stored, row, u64::MAX);
     assert_eq!(append.charge(), measure.expanded(0..64));
+}
+
+#[test]
+fn a_change_row_is_charged_its_flags_over_the_columns_its_plan_writes() {
+    // Beside a row's sequence, 72 bytes as bytes and 120 as text, and a log's op, 3 bytes
+    // natively and 120 as text: flags over nine columns, 2 bytes with an offset and validity,
+    // and their hex text beside them where a log stores them as text; a merge's are bytes.
+    for (layout, storage, row) in [
+        (ChangeLayout::Log, Storage::Native, 72 + 3 + 7),
+        (ChangeLayout::Log, Storage::Text, 120 + 120 + 7 + 9),
+        (ChangeLayout::Merge { soft: false }, Storage::Native, 72 + 7),
+        (ChangeLayout::Merge { soft: false }, Storage::Text, 120 + 7),
+    ] {
+        let case = Case::wide_changes(ROWS, 9, layout, storage);
+        assert_eq!(
+            case.plan().row_bytes(),
+            row,
+            "{layout:?} stored {storage:?}"
+        );
+    }
 }
 
 #[test]

@@ -86,25 +86,26 @@ budget before it is held, or bounded by a limit with a typed refusal.
 
   | Limit | Derived from | Least memory, 16 partitions | Default 256 MiB, 16 partitions | Wire default |
   |---|---|---|---|---|
-  | frame bytes | what pushes may take less what a read keeps and `MESSAGE_ROOM`, and half a request less what a row of the widest table takes beside its values | 4,194,304 | 33,306,271 | 64 MiB |
-  | json push bytes | a third of what pushes may take less `MESSAGE_ROOM` | 3,698,056 | 29,360,042 | 64 MiB |
-  | cursor bytes | the cursors' share over twice one more than the partitions, which a quarter of the log's holds | 15,538 | 123,361 | 4 MiB |
-  | dictionary bytes | half of what a read keeps | 264,152 | 2,097,152 | 64 MiB |
-  | schema bytes | a fifth of the other half, for the message and the schema it decodes to | 52,830 | 419,430 | 4 MiB |
+  | frame bytes | what pushes may take less what a read keeps and `MESSAGE_ROOM`, and half a request less what a row of the widest table takes beside its values | 4,194,304 | 33,303,450 | 64 MiB |
+  | json push bytes | a third of what pushes may take less `MESSAGE_ROOM` | 3,698,375 | 29,360,042 | 64 MiB |
+  | cursor bytes | the cursors' share over twice one more than the partitions, which a quarter of the log's holds | 15,539 | 123,361 | 4 MiB |
+  | dictionary bytes | half of what a read keeps | 264,175 | 2,097,152 | 64 MiB |
+  | schema bytes | a fifth of the other half, for the message and the schema it decodes to | 52,835 | 419,430 | 4 MiB |
   | schema columns | the tables' share over a kilobyte a column, and schema bytes over 56 a column | 943 | 7,489 | 10,000 |
-  | catalog bytes | the answers' share over sixteen, what a catalog may hold decoded for each byte | 132,076 | 1,048,576 | 4 MiB |
-  | state bytes | the answers' share: state is bounded on what it holds decoded, and a commit leaves no more | 2,113,223 | 16,777,216 | 16 MiB |
-  | control message bytes | the answers' share over sixteen | 132,076 | 262,144 | 256 KiB |
+  | catalog bytes | the answers' share over sixteen, what a catalog may hold decoded for each byte | 132,087 | 1,048,576 | 4 MiB |
+  | state bytes | the answers' share: state is bounded on what it holds decoded, and a commit leaves no more | 2,113,405 | 16,777,216 | 16 MiB |
+  | control message bytes | the answers' share over sixteen | 132,087 | 262,144 | 256 KiB |
 
   - **Cursors.** Every partition may hold a cursor waiting for a commit and a barrier's answer
     at once, with room for one more: a barrier's answers always fit, so a source that keeps to
     its cursor limit never waits on a barrier for room. A commit's frame takes at most twice
     each cursor's bytes, so a quarter of the log's share holds it.
   - **Rows.** A row as long as a frame lowers within half a request for lowering, its nulls a
-    column and its metadata beside it, so it lowers with or without a log: a row within the
-    frame limit is never `row_exceeds_budget`. That refusal is left to a row its table widens
-    beyond what it arrived as, and to one of a JSON flush whose batches take more than half a
-    request beyond their text, which leaves the row less of the request beside them.
+    column and its metadata beside it, unchanged flags over every column as text among it, so
+    it lowers with or without a log: a row within the frame limit is never
+    `row_exceeds_budget`. That refusal is left to a row its table widens beyond what it arrived
+    as, and to one of a JSON flush whose batches take more than half a request beyond their
+    text, which leaves the row less of the request beside them.
   - **Tables.** A table as wide as a schema may be records its schema and names within the
     tables' share, at names of up to a hundred and fifty bytes; a schema message carries that
     many columns of short names. What a commit records of the tables is reserved from that
@@ -135,7 +136,7 @@ budget before it is held, or bounded by a limit with a typed refusal.
   (`MIN_FRAME_BYTES`, 4 MiB), or whose dictionary limit is below the protocol's least
   (`MIN_DICTIONARY_BYTES`, 256 KiB), is refused when the engine's configuration is built, with
   `memory_below_minimum` naming the least memory from which every memory up admits it:
-  33,811,576 bytes at the default sixteen partitions and 53,690,341 at one
+  33,814,488 bytes at the default sixteen partitions and 53,690,341 at one
   (`EngineConfig::least_memory`). Half a request for lowering must hold a frame and the row
   beside it, so the least is about eight frames at sixteen partitions; a read of one partition
   keeps up to the whole reads' share, and a frame beside it must fit what pushes may take, which
@@ -182,6 +183,11 @@ budget before it is held, or bounded by a limit with a typed refusal.
   - A conversion between dates, times and instants holds its result beside the value: one slot
     a value, as its column's type takes.
   - Every row costs the nulls of the table's columns the batch holds nothing in.
+  - A change stream's row costs its unchanged flags as its table keeps or merges by them,
+    remapped over the table's columns: a bit a column as far as the furthest the batch writes,
+    with an offset and its validity, and their hex text beside them where the destination
+    stores bytes as text. The remap takes room for every row's flags at once, so it never grows
+    past that.
   - The engine's text builders reserve what the model says the text takes at most, so they
     never grow beyond what was charged.
   - The invariant is a test here too: every numeric, temporal, decimal, text, bytes and nested
