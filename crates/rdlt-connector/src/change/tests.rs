@@ -184,3 +184,21 @@ proptest! {
         }
     }
 }
+
+#[test]
+fn a_remap_takes_room_for_each_row_as_long_as_its_furthest_target_needs_at_once() {
+    // Each row flags field 0, written as field 999: 125 bytes a row.
+    let flags = BinaryArray::from_iter_values(vec![[1_u8]; 300]);
+    let remapped = remap_unchanged(&flags, &[Some(999), Some(3)]);
+    assert!(
+        remapped
+            .iter()
+            .all(|bitmap| bitmap.map(<[u8]>::len) == Some(125))
+    );
+    // Taken once, never grown: a builder that grew would hold a doubled buffer.
+    let capacity = remapped.values().capacity();
+    assert!(
+        capacity <= (300 * 125_usize).next_multiple_of(64),
+        "{capacity} bytes for the flags"
+    );
+}

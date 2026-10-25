@@ -68,10 +68,16 @@ impl<'a> UnchangedFlags<'a> {
 /// at `to[i]`, or dropped where that is `None` or `i` is past `to`.
 ///
 /// A null row stays null; a row with flags stays a row, empty where none of its flags is kept,
-/// and as long as its last kept flag needs. Only the bytes holding ordinals `to` maps are read,
-/// however long a bitmap is.
+/// and as long as its last kept flag needs. Room for every row as long as the furthest target
+/// in `to` needs is taken at once, and the bitmaps never take more. Only the bytes holding
+/// ordinals `to` maps are read, however long a bitmap is.
 pub fn remap_unchanged(flags: &BinaryArray, to: &[Option<usize>]) -> BinaryArray {
-    let mut remapped = BinaryBuilder::with_capacity(flags.len(), flags.len());
+    let width = to
+        .iter()
+        .flatten()
+        .max()
+        .map_or(0, |furthest| furthest / 8 + 1);
+    let mut remapped = BinaryBuilder::with_capacity(flags.len(), flags.len().saturating_mul(width));
     let mut out: Vec<u8> = Vec::new();
     for bitmap in flags {
         let Some(bitmap) = bitmap else {
