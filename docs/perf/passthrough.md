@@ -192,8 +192,7 @@ measurement lock. Nothing here changed the engine.
   left out; the share with them in is given in brackets.
 - **A driver.** A program outside the repository, built against this tree's `rdlt_engine::bench`,
   ran what no bench does: the passthrough on sixteen lanes, its pool's jobs a batch, normalized
-  JSON from several partitions within the default budget, the core layouts, and logged loads with
-  a patch timing each wait for the lock `LocalWal` walks its base under. Neither is kept.
+  JSON from several partitions within the default budget, and the core layouts. It is not kept.
 - **Shares past 100 %** are summed over tasks, as the readings above are. Where a verdict rests
   on such a sum, it also gives a cell of one task, or the share each task has on average.
 
@@ -209,7 +208,6 @@ measurement lock. Nothing here changed the engine.
 | Release held lane writes at a watermark | Prototyped: the waits stay, not built |
 | Count each batch's progress instead of sending it | Built: the cost fell by a quarter |
 | Cut a unit's pieces in one job | Built as cutting and lowering where nothing is copied |
-| Walk the log's base outside its lock | Not built: the measurement shows no cost |
 
 Each change's rule and readings; a profile's share in brackets puts back the samples the method
 leaves out:
@@ -280,9 +278,6 @@ leaves out:
   partition, at least 16 % of the run with two jobs a batch. Production slice, frames of 1 000
   rows: 60.6 % to 82.2 %. Built in another shape: a plain Arrow batch's cut and lowering read and
   write no value, so they take no trip at all ("Cutting and lowering where nothing is copied").
-- **Walk the log's base outside its lock.** Rule: with 4 or more partitions logging, the waits for
-  that lock at least 2 % of the commits' time. Driver: 0.004 % [0.002–0.027] from 4 partitions,
-  0.002 % [0.001–0.321] from 16.
 
 Notes on the readings:
 
@@ -296,10 +291,6 @@ Notes on the readings:
 - **Normalized partitions.** The driver loads the first 200 000 rows of the orders corpus in pushes
   of 10 000 rows into the null sink within the default 256 MiB, five runs each from 4 and 16
   partitions: 180–196 ms a run, pushes waiting for room 24.1–26.1 % and 34.9–48.3 % of the run.
-- **The log's base.** The driver logs `8000x640` on the disk from 4 and 16 partitions, committing
-  every 320 000 rows, through one writer, five runs each: 75 calls taking the lock a run, 17
-  commits, the commits' phases summed 301–486 ms a run. The waits are summed over every call, the
-  commits' included, so they never understate.
 - **The core layouts and the normalized scaling** are below.
 - **Not decided here.** Charging a served push frame once needs the resident memory of served
   placements, which the resident check does not measure (it runs in process only), so its rule
@@ -432,67 +423,35 @@ and 2 915 from one, 9.96 and 2 940 from sixteen.
 - Sixteen partitions keep the pool busy, idle 2.4 % of the run for `nested` on `0-3`, and their
   pushes' waits sum to 561–635 % of the run.
 
-## A pipeline of both stream kinds, logged
+## A pipeline of both stream kinds
 
-A load keeps a write-ahead log where a selected stream's source cannot read again what it
-acknowledged, and then logs every stream's batches, those of streams that can read again
-included (ADR 0029). p4-log-nonreplayable would log only the streams that cannot read again; the
-owner decides it on the share of logged bytes the others take. These cells measure that share
-and what the log costs on one pipeline that mixes the kinds. Bench code only: nothing here changed
-the engine.
+One pipeline that mixes a stream its source can read again with one it cannot: every stream is
+told its cursor once the commit holding its rows lands, so the second costs what the first does.
 
 ### Method
 
-- **Cells.** `passthrough/logged/<root>/8000x640/1p/2s/16th`: the matrix's 640 batches of 8 000
-  rows from one partition of each of two streams, 320 each, committed every sixteenth of the
-  rows, into the IPC sink, within the engine's default budget. The replay source reads the first
-  stream in full and can read it again; it declares the second one it cannot read again
-  (`replayable: false`), read incrementally, so every load logs ahead, under `tmpfs`
-  (`/dev/shm`) or `disk` (the build's target directory), with the default log bound. Beside them,
-  `passthrough/logged/unlogged/...` moves the same pipeline with both streams readable again,
-  which logs nothing. No `PipelinePlan::with_wal` is set: the stream that cannot read again turns
-  the log on.
-- **Readings.** After each cell, from its last run's report: commits, the bytes the log appended a
-  commit, those bytes over the batch frames' bytes, the replayable share (the batch frames of the
-  stream that can read again over the bytes the log appended), and the log phase a commit. A
-  batch frame's bytes are its encoding as a load logs it (`bench::batch_frame`).
-- **Running it.** `just bench passthrough 0-3 logged` runs these cells alone.
+- **Cells.** `passthrough/mixed/mixed/8000x640/1p/2s/16th`: the matrix's 640 batches of 8 000 rows
+  from one partition of each of two streams, 320 each, committed every sixteenth of the rows, into
+  the IPC sink, within the engine's default budget. The replay source reads the first stream in
+  full and can read it again; it declares the second one it cannot read again
+  (`replayable: false`), read incrementally. Beside it, `passthrough/mixed/replayable/...` moves
+  the same pipeline with both streams readable again.
+- **Readings.** After each cell, its last run's readings, as the matrix's.
+- **Running it.** `just bench passthrough 0-3 mixed` runs these cells alone.
 
 ### Results
 
-This change on `main` at `223b7f6a`, 2026-10-15, the machine above, CPUs 0–3. Three rounds,
-each under the timed lock, at one-minute load averages of 0.9 to 4.5. Each figure is the median
-of the three rounds' point estimates, their range in brackets; the counts were the same in every
-round.
+`main` at `a5cb0617` with this change, 2026-10-26, the machine above, CPUs 0–3. Three rounds in one
+hold of the timed lock, at one-minute load averages of 1.9 to 2.5. Each figure is the median of
+the three rounds' point estimates, their range in brackets.
 
-| Cell | Time a run | Log phase a commit |
-|---|---|---|
-| `logged/tmpfs` | 183.8 ms [183.3–189.2] | 4.01 ms [3.68–4.09] |
-| `logged/disk` | 360.9 ms [350.2–362.9] | 15.13 ms [13.98–15.13] |
-| `logged/unlogged` | 33.1 ms [32.5–33.4] | 0.01 ms |
-
-| Reading, both logged cells | Value |
+| Cell | Time a run |
 |---|---|
-| Commits a run | 17 |
-| Logged a commit | 25.85 MiB |
-| Appended over the batch frames | 1.028 |
-| Replayable share of the logged bytes | 0.487 |
+| `mixed/mixed` | 27.23 ms [26.46–27.39] |
+| `mixed/replayable` | 26.75 ms [26.74–26.98] |
 
-### What it means for p4-log-nonreplayable
-
-- **The share.** With one stream of each kind moving equal batches, the stream that can read
-  again takes 0.487 of the bytes the log appends; the rest is the other stream's frames and the
-  log's own headers, seals, commits and ends. In a production pipeline the share is the bytes of
-  its replayable streams over all its bytes, so it is 0 where every stream is a queue or CDC,
-  which this cell cannot tell.
-- **The cost.** Logging takes the run from 33 ms to 184 ms on tmpfs and to 361 ms on disk: on
-  this cell the log, not the destination, bounds the run, at 151 ms and 328 ms a run.
-- **The gain, *derived*.** Logging only the stream that cannot read again would take its
-  per-byte part, the encode, checksum, write and the budget its frames hold, down by the share.
-  If all of the logging cost were per byte, that is at most 0.487 × 151 ≈ 73 ms a run on tmpfs,
-  40 % of the logged run, and 0.487 × 328 ≈ 160 ms on disk, 44 %. The fsyncs a commit stay, so
-  on disk the gain is less. It is an upper bound until a prototype measures it, and it applies
-  only to pipelines that mix the kinds, in proportion to their replayable share.
+- The mixed pipeline takes 1.018 times the readable one's time. Both make 17 commits and sync no
+  file.
 
 ## Cutting and lowering where nothing is copied
 
@@ -655,7 +614,7 @@ more. The run report's counters, medians over 195 runs:
 | Lane writing (the sink's `write` calls) | 27.50 ms |
 | Partitions blocked on the lane's full queue | 15.88 ms |
 | Lane flushing | 0.002 ms |
-| Commit phases: flush, horizon, log, destination commit, ack | 1.03, 0.0003, 0.014, 0.019, 0.006 ms |
+| Commit phases: flush, destination commit, ack | 1.03, 0.019, 0.006 ms |
 | Pool jobs; queued and running, summed | 128; 1.01 and 1.43 ms |
 | Budget waits | one, of the intake share, 0.29 ms |
 
