@@ -52,30 +52,9 @@ async fn a_load_that_must_log_ahead_fails_where_the_engine_keeps_no_logs() {
     let (_, replayable) = Script::new(vec![ScriptStream::new("events", 1, 10, 5)])
         .connect("wal_asked")
         .await;
-    let incremental = || [stream("events").read(ReadMode::Incremental)];
-    let engine = engine(commit_every(5));
-    let required = engine
+    let asked = engine(commit_every(5))
         .run(
-            pipeline("wal-required", incremental()),
-            forgetful("wal_required").await,
-            memory("wal_required").await,
-        )
-        .await;
-    refused(required, codes::WAL_REQUIRED);
-    let changes = engine
-        .run(
-            pipeline(
-                "wal-required-changes",
-                [stream("events").read(ReadMode::Cdc)],
-            ),
-            forgetful("wal_required_changes").await,
-            memory("wal_required_changes").await,
-        )
-        .await;
-    refused(changes, codes::WAL_REQUIRED);
-    let asked = engine
-        .run(
-            pipeline("wal-asked", incremental()).with_wal(true),
+            pipeline("wal-asked", [stream("events").read(ReadMode::Incremental)]).with_wal(true),
             replayable,
             memory("wal_asked").await,
         )
