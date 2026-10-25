@@ -172,6 +172,11 @@ impl EngineConfig {
     /// 127 at the default 256 MiB with 128 partitions, and 15 at the default 16. At 2 MiB a
     /// read, a schema's message may take 52,428 bytes and a table 936 columns, against 7,489 at
     /// the defaults.
+    ///
+    /// A source whose calls are bounded ([`Source::max_calls`](rdlt_connector::Source::max_calls))
+    /// is read no more at once than its calls less one, where those are fewer, each read's part
+    /// still the shares divided by this: a served source, 198 at once, of which 197 followed
+    /// unbounded partitions.
     pub fn partitions(&self) -> NonZeroUsize {
         self.partitions
     }

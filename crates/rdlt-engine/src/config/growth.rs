@@ -74,8 +74,9 @@ impl GrowthLimits {
     /// Writers: the most destination writers an attempt holds open at once, across its lanes,
     /// each lane an equal share of them and one at least.
     ///
-    /// A served destination's connection carries each open writer as a call, among at most 200,
-    /// so the default leaves room for every other call of the session.
+    /// A destination whose calls are bounded
+    /// ([`Destination::max_calls`](rdlt_connector::Destination::max_calls)) holds no more open
+    /// than its calls less one, where those are fewer: a served destination, 198.
     pub fn writers(&self) -> NonZeroUsize {
         self.writers
     }

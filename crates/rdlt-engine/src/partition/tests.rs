@@ -224,7 +224,7 @@ pub(super) async fn on_pool(budget: MemoryBudget, pool: Pool) -> PartitionContex
         barrier,
         stop: CancellationToken::new(),
         cancel: CancellationToken::new(),
-        slots: Slots::new(NonZeroUsize::MIN),
+        slots: Slots::new(NonZeroUsize::MIN, None),
         segments: Arc::new(AtomicU64::new(1)),
         buffer: NonZeroUsize::MIN,
         load_id,
