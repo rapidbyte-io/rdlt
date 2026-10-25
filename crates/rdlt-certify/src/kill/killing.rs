@@ -5,6 +5,7 @@
 #[cfg(test)]
 mod tests;
 
+use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -131,6 +132,10 @@ impl Destination for Killing {
                 ..opened
             })
         })
+    }
+
+    fn max_calls(&self) -> Option<NonZeroUsize> {
+        self.destination.max_calls()
     }
 }
 

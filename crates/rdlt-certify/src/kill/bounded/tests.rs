@@ -10,7 +10,8 @@ use rdlt_connector::{
 use super::{BEYOND, Bounded};
 use crate::limits::{LOADED_BYTES, LOADED_ROWS};
 
-/// A destination that takes every write, and counts the rows it took.
+/// A destination that takes every write, and counts the rows it took; it carries seven calls at
+/// once.
 struct Sink(Capabilities, Arc<std::sync::atomic::AtomicUsize>);
 
 struct SinkSession(Arc<std::sync::atomic::AtomicUsize>);
@@ -32,6 +33,10 @@ impl Destination for Sink {
                 state: Vec::new(),
             })
         })
+    }
+
+    fn max_calls(&self) -> Option<std::num::NonZeroUsize> {
+        std::num::NonZeroUsize::new(7)
     }
 }
 
@@ -97,6 +102,7 @@ async fn written(batches: Vec<RecordBatch>) -> (usize, Vec<bool>, bool) {
     let bounded = Bounded::new(Arc::new(sink));
     let beyond = bounded.witness();
     assert_eq!(bounded.capabilities(), &Capabilities::minimal());
+    assert_eq!(bounded.max_calls(), std::num::NonZeroUsize::new(7));
     bounded.check().await.expect("the destination checks");
     let context = OpenContext {
         pipeline: PipelineId::parse("bounded").expect("a valid id"),

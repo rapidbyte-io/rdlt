@@ -11,7 +11,7 @@ use rdlt_host::{CONNECTOR_LOST, Kills};
 
 use super::{Killing, Schedule};
 
-/// A destination that takes every call and publishes nothing.
+/// A destination that takes every call and publishes nothing; it carries seven calls at once.
 struct Taking(Capabilities);
 
 struct TakingSession;
@@ -35,6 +35,10 @@ impl Destination for Taking {
                 state: Vec::new(),
             })
         })
+    }
+
+    fn max_calls(&self) -> Option<std::num::NonZeroUsize> {
+        std::num::NonZeroUsize::new(7)
     }
 }
 
@@ -108,6 +112,23 @@ fn batch() -> RecordBatch {
         Arc::new(Int64Array::from(vec![1])) as arrow_array::ArrayRef,
     )])
     .expect("a valid batch")
+}
+
+#[test]
+fn a_killing_destination_carries_the_calls_its_destination_carries() {
+    let schedule = Schedule {
+        settled: 0,
+        commit: 1,
+        answer: None,
+    };
+    let taking = Arc::new(Taking(Capabilities::minimal()));
+    let killing = Killing::new(
+        Arc::clone(&taking) as Arc<dyn Destination>,
+        &Kills::new(),
+        schedule,
+    );
+    assert_eq!(killing.max_calls(), taking.max_calls());
+    assert!(killing.max_calls().is_some());
 }
 
 #[tokio::test]
