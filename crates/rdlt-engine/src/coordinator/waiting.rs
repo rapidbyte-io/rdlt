@@ -2,46 +2,119 @@
 
 use std::collections::BTreeMap;
 
-use crate::partition::Seal;
+use rdlt_connector::{Cursor, PartitionState, SegmentId};
 
-/// Seals in the order they arrived, until a commit takes them.
+use crate::partition::{CursorHold, Seal};
+use crate::report::ShredCounts;
+
+/// Seals as they arrive, until a commit takes them: what each sealed segment counts, and where
+/// each partition stands once they are committed.
 ///
-/// A seal of no rows only moves its partition's position, so the next seal of no rows at a
-/// cursor of the same partition replaces it where no other seal came between: however many
-/// checkpoints a source sends without rows, one cursor a partition waits. A seal that ends a
-/// partition done replaces nothing, so its source is still told the cursor before it.
+/// A seal at a cursor takes its partition's place and releases the cursor before it, so however
+/// many checkpoints a source sends, one cursor a partition waits; a seal that counts nothing
+/// keeps nothing else. A seal that ends a partition done keeps the cursor before it, which its
+/// source is still told.
 #[derive(Debug, Default)]
 pub(super) struct WaitingSeals {
-    seals: Vec<Seal>,
-    /// Where each partition's last seal lies, where that seal has no rows.
-    moves: BTreeMap<usize, usize>,
-    /// Bytes: the cursors of the seals.
+    counted: Vec<Counted>,
+    standing: BTreeMap<usize, Standing>,
+    /// Bytes: the cursors the partitions stand at and are still to be told.
     cursor_bytes: u64,
 }
 
-impl WaitingSeals {
-    /// Adds `seal`: in place of its partition's last where both seal no rows and `seal` is at a
-    /// cursor, keeping the barrier either answers.
-    pub(super) fn push(&mut self, mut seal: Seal) {
-        let moves_only =
-            seal.moves_only() && matches!(seal.state, rdlt_connector::PartitionState::Cursor(_));
-        self.cursor_bytes = self.cursor_bytes.saturating_add(seal.cursor_bytes());
-        match self.moves.get(&seal.partition) {
-            Some(&at) if moves_only => {
-                let replaced = &mut self.seals[at];
-                self.cursor_bytes = self.cursor_bytes.saturating_sub(replaced.cursor_bytes());
-                seal.answers = seal.answers.max(replaced.answers);
-                *replaced = seal;
-            }
-            _ => {
-                if moves_only {
-                    self.moves.insert(seal.partition, self.seals.len());
-                } else {
-                    self.moves.remove(&seal.partition);
-                }
-                self.seals.push(seal);
-            }
+/// What a sealed segment adds to its stream's counts.
+#[derive(Debug, PartialEq)]
+pub(super) struct Counted {
+    pub(super) partition: usize,
+    pub(super) segment: SegmentId,
+    pub(super) rows: u64,
+    pub(super) bytes: u64,
+    pub(super) discarded_rows: u64,
+    pub(super) discarded_values: u64,
+    pub(super) deletes_ignored: u64,
+    pub(super) truncates_ignored: u64,
+    pub(super) shred: ShredCounts,
+}
+
+/// Where a partition stands once the seals waiting are committed.
+#[derive(Debug)]
+pub(super) struct Standing {
+    pub(super) position: PartitionState,
+    /// The cursor before a position of done, which the partition's source is told.
+    pub(super) before: Option<Cursor>,
+    /// What holds the cursors in the budget, declared after them so they are freed first.
+    pub(super) held: Vec<CursorHold>,
+}
+
+impl Standing {
+    /// The cursor the partition's source is told once the seals are committed.
+    pub(super) fn told(&self) -> Option<&Cursor> {
+        match &self.position {
+            PartitionState::Cursor(cursor) => Some(cursor),
+            PartitionState::Done => self.before.as_ref(),
         }
+    }
+}
+
+impl WaitingSeals {
+    /// Adds `seal`: its counts, unless it counts nothing, and its position in place of its
+    /// partition's.
+    pub(super) fn push(&mut self, seal: Seal) {
+        let counts = !seal.moves_only() || seal.shred != ShredCounts::default();
+        let Seal {
+            partition,
+            segment,
+            rows,
+            bytes,
+            state,
+            answers: _,
+            discarded_rows,
+            discarded_values,
+            deletes_ignored,
+            truncates_ignored,
+            shred,
+            held,
+        } = seal;
+        if counts {
+            self.counted.push(Counted {
+                partition,
+                segment,
+                rows,
+                bytes,
+                discarded_rows,
+                discarded_values,
+                deletes_ignored,
+                truncates_ignored,
+                shred,
+            });
+        }
+        let earlier = self.standing.remove(&partition);
+        if let Some(told) = earlier.as_ref().and_then(Standing::told) {
+            self.cursor_bytes = self.cursor_bytes.saturating_sub(bytes_of(told));
+        }
+        let standing = match (state, earlier) {
+            (PartitionState::Done, Some(mut earlier)) => {
+                let before = match earlier.position {
+                    PartitionState::Cursor(cursor) => Some(cursor),
+                    PartitionState::Done => earlier.before.take(),
+                };
+                earlier.held.push(held);
+                Standing {
+                    position: PartitionState::Done,
+                    before,
+                    held: earlier.held,
+                }
+            }
+            (position, _) => Standing {
+                position,
+                before: None,
+                held: vec![held],
+            },
+        };
+        if let Some(told) = standing.told() {
+            self.cursor_bytes = self.cursor_bytes.saturating_add(bytes_of(told));
+        }
+        self.standing.insert(partition, standing);
     }
 
     /// Bytes: the cursors of the seals waiting.
@@ -49,16 +122,29 @@ impl WaitingSeals {
         self.cursor_bytes
     }
 
-    /// The seals waiting, in order.
+    /// What the seals waiting counted, in order.
     #[cfg(test)]
-    pub(super) fn iter(&self) -> impl Iterator<Item = &Seal> {
-        self.seals.iter()
+    pub(super) fn counted(&self) -> impl Iterator<Item = &Counted> {
+        self.counted.iter()
     }
 
-    /// Takes every seal waiting, in order.
-    pub(super) fn take(&mut self) -> Vec<Seal> {
-        self.moves.clear();
-        self.cursor_bytes = 0;
-        std::mem::take(&mut self.seals)
+    /// Where each partition stands once the seals waiting are committed.
+    #[cfg(test)]
+    pub(super) fn standing(&self) -> &BTreeMap<usize, Standing> {
+        &self.standing
     }
+
+    /// Takes every seal waiting: what each counted, in order, and where each partition stands.
+    pub(super) fn take(&mut self) -> (Vec<Counted>, BTreeMap<usize, Standing>) {
+        self.cursor_bytes = 0;
+        (
+            std::mem::take(&mut self.counted),
+            std::mem::take(&mut self.standing),
+        )
+    }
+}
+
+/// Bytes: what `cursor` holds.
+fn bytes_of(cursor: &Cursor) -> u64 {
+    u64::try_from(cursor.bytes().len()).unwrap_or(u64::MAX)
 }

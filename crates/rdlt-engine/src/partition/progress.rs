@@ -109,16 +109,6 @@ impl Seal {
         ];
         counts == [0; 6]
     }
-
-    /// The bytes of the cursor the seal resumes from.
-    pub(crate) fn cursor_bytes(&self) -> u64 {
-        match &self.state {
-            PartitionState::Cursor(cursor) => {
-                u64::try_from(cursor.bytes().len()).unwrap_or(u64::MAX)
-            }
-            PartitionState::Done => 0,
-        }
-    }
 }
 
 /// What holds a seal's cursor in the budget while the seal waits: the permit that admitted its
