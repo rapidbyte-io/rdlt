@@ -11,6 +11,7 @@ mod sent;
 mod tests;
 
 use std::future::Future;
+use std::num::NonZeroUsize;
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -282,6 +283,16 @@ pub trait Source: Send + Sync {
         stream: &'a StreamName,
         cursors: &'a [(PartitionId, Cursor)],
     ) -> BoxFuture<'a, Result<()>>;
+
+    /// The most calls into the source that may be in flight at once, a read each; none where
+    /// nothing bounds them, as in process.
+    ///
+    /// The engine keeps within it: it makes one other call into the source at a time while it
+    /// reads, so it reads fewer partitions at once than this, and refuses a run of a source that
+    /// carries no more than that other call.
+    fn max_calls(&self) -> Option<NonZeroUsize> {
+        None
+    }
 }
 
 /// Creates connected sources from JSON configuration.

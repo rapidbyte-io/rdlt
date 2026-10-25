@@ -9,6 +9,7 @@ mod readable;
 mod tests;
 
 use std::future::Future;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -383,6 +384,16 @@ pub trait Destination: Send + Sync {
 
     /// Opens a session: fences older sessions, discards unpublished staging and returns state.
     fn open<'a>(&'a self, context: &'a OpenContext) -> BoxFuture<'a, Result<OpenedSession>>;
+
+    /// The most calls into the destination that may be in flight at once, an open writer each;
+    /// none where nothing bounds them, as in process.
+    ///
+    /// The engine keeps within it: a session makes one other call at a time while writers are
+    /// open, a writer's opening being that writer's, so it holds fewer writers open than this,
+    /// and refuses a run into a destination that carries no more than that other call.
+    fn max_calls(&self) -> Option<NonZeroUsize> {
+        None
+    }
 }
 
 /// An open session, as the engine drives it.
