@@ -11,7 +11,8 @@
 //! wire path's CPU alone; or each in a process of its own, as in production, the bench's binary
 //! serving as the connector, on the cores [`connector::CORES`] names. Each benchmark prints the
 //! CPU time a gigabyte its runs moved: the bench's process's, and each connector process's; each
-//! in processes of their own also prints its last run's readings.
+//! in processes of their own also prints the share of each process's CPU time spent in user mode
+//! and its last run's readings.
 //! The bench lives beside the integration tests to serve connectors as they do.
 
 #![forbid(unsafe_code)]
@@ -355,12 +356,64 @@ impl Listener {
 
 /// The process's user and system time so far.
 fn cpu() -> Duration {
+    let split = split();
+    Duration::from_micros(split.user + split.system)
+}
+
+/// The process's user and system time so far, in microseconds.
+fn split() -> Split {
     let usage = nix::sys::resource::getrusage(nix::sys::resource::UsageWho::RUSAGE_SELF)
         .expect("the process's usage reads");
-    let seconds = |time: nix::sys::time::TimeVal| {
-        Duration::from_micros(u64::try_from(time.num_microseconds()).unwrap_or(0))
-    };
-    seconds(usage.user_time()) + seconds(usage.system_time())
+    let micros =
+        |time: nix::sys::time::TimeVal| u64::try_from(time.num_microseconds()).unwrap_or(0);
+    Split {
+        user: micros(usage.user_time()),
+        system: micros(usage.system_time()),
+    }
+}
+
+/// A process's CPU time as user and system time, in the unit of what read it: microseconds or
+/// clock ticks.
+#[derive(Clone, Copy, Debug, Default)]
+struct Split {
+    user: u64,
+    system: u64,
+}
+
+impl Split {
+    /// What was taken from `before` to `self`.
+    fn since(self, before: Self) -> Self {
+        Self {
+            user: self.user.saturating_sub(before.user),
+            system: self.system.saturating_sub(before.system),
+        }
+    }
+
+    /// `self` and `more` together.
+    fn plus(self, more: Self) -> Self {
+        Self {
+            user: self.user + more.user,
+            system: self.system + more.system,
+        }
+    }
+
+    /// The user time's share of the whole; none where nothing was taken.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "CPU time far below 2^52 of any unit"
+    )]
+    fn user_share(self) -> Option<f64> {
+        let all = self.user + self.system;
+        (all > 0).then(|| self.user as f64 / all as f64)
+    }
+}
+
+/// Each process's user and system time, where the platform tells it.
+#[derive(Clone, Copy, Debug, Default)]
+struct Splits {
+    host: Option<Split>,
+    source: Option<Split>,
+    destination: Option<Split>,
 }
 
 /// The connector processes of a run, for those that have one.
@@ -371,12 +424,13 @@ struct Pids {
 }
 
 /// CPU time: the bench's process, which hosts the engine and every connector served in it, and
-/// each connector process's, where the platform tells it.
+/// each connector process's, where the platform tells it; and each one's user and system time.
 #[derive(Clone, Copy, Debug, Default)]
 struct Usage {
     host: Duration,
     source: Option<Duration>,
     destination: Option<Duration>,
+    split: Splits,
 }
 
 impl Usage {
@@ -386,6 +440,11 @@ impl Usage {
             host: cpu(),
             source: pids.source.and_then(processes::cpu),
             destination: pids.destination.and_then(processes::cpu),
+            split: Splits {
+                host: Some(split()),
+                source: pids.source.and_then(processes::split),
+                destination: pids.destination.and_then(processes::split),
+            },
         }
     }
 
@@ -403,11 +462,22 @@ impl Usage {
         sum.host += self.host.saturating_sub(before.host);
         sum.source = plus(sum.source, since(self.source, before.source));
         sum.destination = plus(sum.destination, since(self.destination, before.destination));
+        let added = |sum: Option<Split>, after: Option<Split>, before: Option<Split>| {
+            let taken = after.zip(before).map(|(after, before)| after.since(before));
+            match (sum, taken) {
+                (Some(sum), Some(taken)) => Some(sum.plus(taken)),
+                (sum, taken) => sum.or(taken),
+            }
+        };
+        let (now, then) = (self.split, before.split);
+        sum.split.host = added(sum.split.host, now.host, then.host);
+        sum.split.source = added(sum.split.source, now.source, then.source);
+        sum.split.destination = added(sum.split.destination, now.destination, then.destination);
     }
 }
 
 /// One sample's CPU seconds a gigabyte: every process's together, the bench's, and each
-/// connector process's.
+/// connector process's; with the CPUs each kept busy and each one's user and system time.
 #[derive(Clone, Copy, Debug)]
 struct Seconds {
     total: f64,
@@ -415,6 +485,7 @@ struct Seconds {
     source: Option<f64>,
     destination: Option<f64>,
     busy: Busy,
+    split: Splits,
 }
 
 /// The CPUs each process kept busy over a sample's runs: its CPU time over theirs.
@@ -445,6 +516,7 @@ impl Seconds {
                 source: usage.source.map(busy),
                 destination: usage.destination.map(busy),
             },
+            split: usage.split,
         }
     }
 }
@@ -690,7 +762,7 @@ fn print(cores: Cores, used: &[(Case, Vec<Seconds>, Option<Report>)]) {
     }
 }
 
-/// Prints each process's CPU time a gigabyte and the CPUs it kept busy.
+/// Prints each process's CPU time a gigabyte, the CPUs it kept busy and its user time's share.
 #[expect(
     clippy::print_stdout,
     reason = "each process's CPU time is printed beside criterion's times"
@@ -717,6 +789,19 @@ fn print_sides(case: Case, seconds: &[Seconds]) {
     println!(
         "  CPUs busy: the bench's process {host}; source {source_busy}; destination \
          {destination_busy}"
+    );
+    let host = side(true, &|sample| {
+        sample.split.host.and_then(Split::user_share)
+    });
+    let source_user = side(source, &|sample| {
+        sample.split.source.and_then(Split::user_share)
+    });
+    let destination_user = side(destination, &|sample| {
+        sample.split.destination.and_then(Split::user_share)
+    });
+    println!(
+        "  user share of CPU time: the bench's process {host}; source {source_user}; \
+         destination {destination_user}"
     );
 }
 

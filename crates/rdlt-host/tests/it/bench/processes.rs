@@ -1,5 +1,6 @@
 //! Served connectors in processes of their own, as in production: spawned by the host over a
-//! socket pair, or listening for it over mutual TLS on loopback; and each process's CPU time.
+//! socket pair, or listening for it over mutual TLS on loopback; and each process's CPU time, whole
+//! and as user and system time.
 //!
 //! Each process is the bench's own binary, which serves the replay source and the IPC sink when
 //! started as a connector, held to the connectors' cores where the bench's environment names them.
@@ -21,7 +22,7 @@ use tokio::process::{Child, Command};
 
 use crate::connector::CORES;
 use crate::shaped::Shaped;
-use crate::{Frames, Tls, Transport};
+use crate::{Frames, Split, Tls, Transport};
 
 /// How long a listening connector has to say where it listens.
 const STARTING: Duration = Duration::from_secs(60);
@@ -293,5 +294,25 @@ pub(crate) fn cpu(pid: u32) -> Option<Duration> {
 /// None: only Linux tells one process another's CPU time without `unsafe`.
 #[cfg(not(target_os = "linux"))]
 pub(crate) fn cpu(_pid: u32) -> Option<Duration> {
+    None
+}
+
+/// The user and system time, in clock ticks, that the process `pid` has taken so far; none where
+/// the platform does not tell one process another's, or its stat cannot be read.
+#[cfg(target_os = "linux")]
+pub(crate) fn split(pid: u32) -> Option<Split> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // After the command's name, which may hold spaces, the state is the first field, the user
+    // time the twelfth and the system time the thirteenth.
+    let (_, fields) = stat.rsplit_once(')')?;
+    let mut fields = fields.split_whitespace().skip(11);
+    let user = fields.next()?.parse().ok()?;
+    let system = fields.next()?.parse().ok()?;
+    Some(Split { user, system })
+}
+
+/// None: the platform does not tell one process another's CPU time.
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn split(_pid: u32) -> Option<Split> {
     None
 }
