@@ -766,6 +766,27 @@ async fn a_directory_above_the_base_swapped_once_it_was_passed_is_refused_all_th
     assert!(not_private(&refused), "{refused}");
 }
 
+#[test]
+fn every_directory_the_base_lies_in_is_checked_up_to_the_root() {
+    let base = tempfile::tempdir().expect("a temporary directory");
+    let shared = base.path().join("shared");
+    let inner = shared.join("inner");
+    std::fs::create_dir_all(inner.join("wal")).expect("creates");
+    for dir in [&shared, &inner, &inner.join("wal")] {
+        set_mode(dir, 0o700);
+    }
+    // Once the base is opened, the directory above its parent becomes one others may write.
+    *super::dir::OPENED.lock() = Some(Box::new({
+        let shared = shared.clone();
+        move |_: &Path| set_mode(&shared, 0o777)
+    }));
+    let opened = super::dir::Dir::base(&inner.join("wal"));
+    *super::dir::OPENED.lock() = None;
+    set_mode(&shared, 0o700);
+    let refused = opened.expect_err("a directory above the base's parent is refused");
+    assert!(not_private(&refused), "{refused}");
+}
+
 #[tokio::test]
 async fn a_link_on_the_way_to_the_base_is_followed_only_through_directories_that_pass() {
     let base = tempfile::tempdir().expect("a temporary directory");
