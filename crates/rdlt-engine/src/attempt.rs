@@ -1,6 +1,7 @@
 //! One attempt of a run: open the destination, plan the streams, and load until done.
 
 mod check;
+mod lanes;
 mod replay;
 mod sequences;
 mod streams;
@@ -10,7 +11,6 @@ mod together;
 
 use std::collections::BTreeMap;
 use std::future::Future;
-use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
@@ -29,7 +29,7 @@ use crate::coordinator::{Coordinator, CoordinatorParts, PartitionRun, StreamRun,
 use crate::env::Env;
 use crate::error::{Error, ErrorKind, Side, codes};
 use crate::lane::Lanes;
-use crate::limits::{self, LEAST_CALLS, LOG_COPY_BYTES};
+use crate::limits::{LEAST_CALLS, LOG_COPY_BYTES};
 use crate::naming::{Naming, recorded};
 use crate::partition::{
     self, ChangeMode, Latest, LoadClock, PartitionContext, PartitionJob, Progress, Slots,
@@ -42,6 +42,7 @@ use crate::table::{SharedSession, Tables};
 use crate::wal::{LoadLog, Owner, Positions, WalStore};
 use crate::watch;
 
+use lanes::start_lanes;
 pub(crate) use sequences::Keying;
 use streams::Planning;
 
@@ -392,30 +393,6 @@ fn shared_by_partitions(
     })
 }
 
-/// The attempt's lanes, their tasks started in `scope`.
-fn start_lanes(context: &RunContext, tables: &Arc<Tables>, scope: &mut TaskScope<Error>) -> Lanes {
-    let count = lane_count(
-        &context.config,
-        context.env.cores(),
-        context.destination.as_ref(),
-    );
-    let writers = held_writers(&context.config, context.destination.as_ref());
-    let (lanes, tasks) = Lanes::new(
-        (count, writers),
-        tables,
-        context.config.lane_window(),
-        &context.budget,
-        (&context.env, &context.tally),
-    );
-    let cancel = scope.token().clone();
-    // A change of a table's schema reserves what its commit records, until the attempt ends.
-    tables.charge(context.budget.clone(), cancel.clone());
-    for lane in tasks {
-        scope.spawn(lane.run(cancel.clone()));
-    }
-    lanes
-}
-
 /// The load's write-ahead log, started in `scope`, where the pipeline asks for one or a stream's
 /// source cannot read again what it acknowledged; `opened` is the session the attempt opened.
 ///
@@ -515,30 +492,4 @@ fn spawn_partitions(
         streams.push(stream.stream);
     }
     (streams, partitions)
-}
-
-/// The configured lanes, or one per core of `cores`, never more than the destination's parallel
-/// writers, nor than the writers an attempt holds open: each lane holds one at least.
-fn lane_count(
-    config: &EngineConfig,
-    cores: NonZeroUsize,
-    destination: &dyn Destination,
-) -> NonZeroUsize {
-    let limit = usize::from(destination.capabilities().max_parallel_writers.get());
-    let lanes = config
-        .lanes()
-        .map_or(cores.get(), |lanes| usize::from(lanes.get()));
-    let lanes = lanes
-        .min(limit)
-        .min(held_writers(config, destination).get());
-    NonZeroUsize::new(lanes).unwrap_or(NonZeroUsize::MIN)
-}
-
-/// The writers an attempt holds open at once: the growth limit's, or fewer where `destination`
-/// carries fewer calls at once beside a session's other call.
-fn held_writers(config: &EngineConfig, destination: &dyn Destination) -> NonZeroUsize {
-    let writers = config.growth().writers();
-    destination
-        .max_calls()
-        .map_or(writers, |calls| writers.min(limits::carried(calls)))
 }
