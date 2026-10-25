@@ -53,6 +53,11 @@ struct QueueConfig {
     at: Option<u64>,
     /// Forgets what it acknowledged: a read from before the position fails, as the stream says.
     forgets: bool,
+    /// Refuses a read from past where it stands, as though it could start nowhere else.
+    refuses_ahead: bool,
+    /// Starts every read where it stands, whatever cursor it is given, sending a checkpoint of
+    /// where it starts first.
+    starts_where_it_stands: bool,
     /// Never says where it stands.
     silent: bool,
     /// Keeps what it was told in the connection, not beyond it.
@@ -164,6 +169,19 @@ impl ReadStream<Queue> for Messages {
                 "the queue no longer holds what it acknowledged",
             ));
         }
+        if source.config.refuses_ahead && position.is_some_and(|position| cursor > position) {
+            return Err(ConnectorError::new(
+                ConnectorErrorKind::Transient,
+                "the queue reads only from where it stands",
+            ));
+        }
+        let cursor = match position {
+            Some(position) if source.config.starts_where_it_stands && position != cursor => {
+                out.checkpoint(&position).await?;
+                position
+            }
+            _ => cursor,
+        };
         let messages = match source.config.messages {
             0 => 4,
             messages => messages,
@@ -232,6 +250,25 @@ async fn a_queue_that_moves_but_where_it_was_told_fails_s_ack() {
     ];
     for config in flawed {
         // A violation stops the read rather than waiting out the clause's bound.
+        let certified = certify_source::<Queue>(config.clone());
+        let report = tokio::time::timeout(PROMPTLY, certified)
+            .await
+            .expect("the clause ends promptly");
+        assert!(
+            matches!(outcome(&report), Outcome::Failed(_)),
+            "{config}: {:?}",
+            outcome(&report)
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_queue_that_cannot_start_past_where_it_was_told_fails_s_ack() {
+    let flawed = [
+        json!({ "name": "refuses_ahead", "forgets": true, "refuses_ahead": true }),
+        json!({ "name": "starts_where_it_stands", "forgets": true, "starts_where_it_stands": true }),
+    ];
+    for config in flawed {
         let certified = certify_source::<Queue>(config.clone());
         let report = tokio::time::timeout(PROMPTLY, certified)
             .await

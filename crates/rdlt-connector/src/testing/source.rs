@@ -72,7 +72,8 @@ pub const SOURCE_CLAUSES: &[Clause] = &[
     Clause {
         id: "S-ACK",
         statement: "a stream's position outside the engine moves only when the engine \
-                    tells it a cursor is committed, and then to that cursor",
+                    tells it a cursor is committed, and then to that cursor, and a read from \
+                    a later cursor it issued starts there",
         unless: "the source does not tell where it stands, or reads no stream as changes or incrementally",
     },
 ];
