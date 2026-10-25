@@ -270,17 +270,16 @@ proving:
         echo "$module"
     done
 
-# Check every spec under `specs/`: typecheck it, run its tests, simulate it against its
+# Check every spec under `specs/`: typecheck it, run its tests, and simulate it against its
 # invariants (each a `val` whose name begins with a capital letter) as its `// quint steps:` and
-# `// quint run:` lines say, and write the traces its `// quint trace:` lines name, each from its
-# seed, which must be those `specs/traces/<spec>/` holds; `just quint write` writes them there. It
-# runs Quint's TypeScript simulator, and fails if Quint fetched anything
-quint mode="check":
+# `// quint run:` lines say. It runs Quint's TypeScript simulator, and fails if Quint fetched
+# anything
+quint:
     #!/usr/bin/env bash
     set -euo pipefail
     export QUINT_HOME="$PWD/target/quint-home"
     rm -rf "$QUINT_HOME"
-    mkdir -p "$QUINT_HOME/traces"
+    mkdir -p "$QUINT_HOME"
     for spec in specs/*.qnt; do
         name=$(basename "$spec" .qnt)
         steps=$(sed -n 's|^// quint steps: ||p' "$spec")
@@ -298,66 +297,12 @@ quint mode="check":
             # shellcheck disable=SC2086
             quint run --backend typescript --main "$main" "$spec" $steps ${samples:---max-samples 10000} --invariants $invariants
         done
-        written="$QUINT_HOME/traces/$name"
-        mkdir -p "$written"
-        sed -n 's|^// quint trace: ||p' "$spec" | while read -r trace seed goal; do
-            invariant=true
-            [[ $goal == - ]] || invariant="not($goal)"
-            log="$QUINT_HOME/traces/$name-$trace.log"
-            status=0
-            # shellcheck disable=SC2086
-            quint run --backend typescript "$spec" $steps --max-samples 1 --seed "$seed" --mbt \
-                --invariant "$invariant" --out-itf "$written/$trace.raw.json" > "$log" 2>&1 || status=$?
-            if [[ $goal == - ]]; then reached=$(( status == 0 )); else reached=$(grep -c '\[violation\]' "$log" || true); fi
-            if [[ $reached -eq 0 ]]; then
-                echo "$spec: the run from seed $seed does not reach $goal; just quint-seed $name $goal finds one that does" >&2
-                exit 1
-            fi
-            # The trace's header holds the moment it was written, and nothing else that varies.
-            sed -E 's/^\{"#meta":\{[^}]*\}/{"#meta":{}/' "$written/$trace.raw.json" > "$written/$trace.itf.json"
-            rm "$written/$trace.raw.json"
-        done
-        kept="specs/traces/$name"
-        if [[ {{ mode }} == write ]]; then
-            rm -rf "$kept"
-            if compgen -G "$written/*.itf.json" > /dev/null; then
-                mkdir -p "$kept"
-                cp "$written"/*.itf.json "$kept"/
-            fi
-        elif { [[ -d $kept ]] || compgen -G "$written/*.itf.json" > /dev/null; } && ! diff -r "$written" "$kept" > /dev/null 2>&1; then
-            echo "$spec: specs/traces/$name differs from the traces its seeds give; just quint write writes them" >&2
-            exit 1
-        fi
     done
-    fetched=$(find "$QUINT_HOME" -mindepth 1 -maxdepth 1 ! -name traces)
-    if [ -n "$fetched" ]; then
-        echo "quint fetched a tool into $QUINT_HOME: $fetched" >&2
-        exit 1
-    fi
-
-# Find the seed of a run of `specs/<spec>.qnt` that reaches `goal`, a `val` of it, for a
-# `// quint trace:` line: up to `samples` runs, as the spec's `// quint steps:` line says; fails
-# if Quint fetched anything
-quint-seed spec goal samples="20000":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    export QUINT_HOME="$PWD/target/quint-home"
-    rm -rf "$QUINT_HOME"
-    mkdir -p "$QUINT_HOME"
-    file="specs/{{ spec }}.qnt"
-    steps=$(sed -n 's|^// quint steps: ||p' "$file")
-    # shellcheck disable=SC2086
-    found=$(quint run --backend typescript "$file" $steps --max-samples {{ samples }} --invariant "not({{ goal }})" --verbosity 2 2>&1 || true)
     fetched=$(find "$QUINT_HOME" -mindepth 1 -maxdepth 1)
     if [ -n "$fetched" ]; then
         echo "quint fetched a tool into $QUINT_HOME: $fetched" >&2
         exit 1
     fi
-    if ! grep -q '\[violation\]' <<< "$found"; then
-        echo "no run of {{ samples }} reaches {{ goal }}" >&2
-        exit 1
-    fi
-    grep -oE -- '--seed=0x[0-9a-f]+' <<< "$found"
 
 # The names of `spec`'s invariants (`kind` val) or temporal properties (`kind` temporal): each
 # definition of that kind whose name begins with a capital letter, its type given or not; fails
