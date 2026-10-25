@@ -12,7 +12,9 @@
 //! `transient-<n>` adds the cases whose destination fails one commit in n `Transient` before it
 //! lands, and `refused-<n>` those whose source refuses one report in n.
 //!
-//! As a test, every case commits every 200 ms, and every push must land and be acknowledged.
+//! A run follows its source on past its intervals until a push of each stream has landed, as a
+//! loaded host may spend them starting the run. As a test, every case commits every 200 ms, and
+//! every push must land and be acknowledged.
 
 #![forbid(unsafe_code)]
 
@@ -31,8 +33,8 @@ use criterion::{BenchmarkId, Criterion, SamplingMode, criterion_group};
 use rdlt_connector::serve::Served;
 use rdlt_connector::{ConnectContext, Destination, PipelineId, ReadMode, Source, StreamName};
 use rdlt_engine::{
-    CommitPolicy, Cores, Engine, EngineConfig, LocalWal, PipelinePlan, Report, StreamPlan,
-    SystemEnv, Until,
+    CommitPolicy, Cores, Engine, EngineConfig, LocalWal, PipelinePlan, Report, RunHandle,
+    RunOutcome, StopMode, StreamPlan, SystemEnv, Until,
 };
 use rdlt_host::{ConnectorRef, Local, Provider as _};
 use tokio::runtime::Runtime;
@@ -50,6 +52,12 @@ const TESTED: Duration = Duration::from_millis(200);
 
 /// The most times a run a fault ended is run again, one commit interval each.
 const RUNS_AGAIN: usize = 10;
+
+/// The most a run follows its source past its intervals for a push of every stream to land.
+const LANDING: Duration = Duration::from_secs(30);
+
+/// The wait between looks for a push of every stream landed, once a run's intervals are past.
+const LOOKING: Duration = Duration::from_millis(10);
 
 /// Whether criterion times the benchmarks, rather than running each once as a test.
 fn timed() -> bool {
@@ -239,6 +247,48 @@ impl Run {
     }
 }
 
+/// Awaits `run`, stopping it after a commit once it has followed its source for `least` and a
+/// push of every stream has landed under `dir` since it started, or [`LANDING`] after `least`
+/// regardless.
+async fn stopped(mut run: RunHandle, least: Duration, dir: &Path) -> RunOutcome {
+    let control = run.control();
+    // A run made again after a fault waits for pushes it lands, not those the run before it did.
+    let before = landed(dir).await;
+    let landing = async {
+        tokio::time::sleep(least).await;
+        let limit = Instant::now() + LANDING;
+        while Instant::now() < limit {
+            let now = landed(dir).await;
+            if now.iter().zip(&before).all(|(now, before)| now > before) {
+                break;
+            }
+            tokio::time::sleep(LOOKING).await;
+        }
+    };
+    tokio::select! {
+        biased;
+        // A run that ends by itself, as a failing one may, is not stopped.
+        outcome = &mut run => return outcome,
+        () = landing => {}
+    }
+    control.stop(StopMode::AfterCommit);
+    run.await
+}
+
+/// How many landed pushes of each stream the destination has recorded under `dir`.
+async fn landed(dir: &Path) -> [usize; STREAMS.len()] {
+    let path = dir.join("landed");
+    let read = tokio::task::spawn_blocking(move || std::fs::read_to_string(path)).await;
+    // The destination creates its record as its first commit lands.
+    let text = read.ok().and_then(Result::ok).unwrap_or_default();
+    STREAMS.map(|stream| {
+        let records = text
+            .lines()
+            .filter(|line| line.split(' ').next() == Some(stream));
+        records.count()
+    })
+}
+
 /// p50, p99 and the maximum of `values`, by nearest rank; none of no values.
 #[expect(
     clippy::cast_possible_truncation,
@@ -333,10 +383,10 @@ impl Cell {
         });
         let pipeline = PipelineId::parse("latency").expect("a valid id");
         let plan = PipelinePlan::new(pipeline, streams).expect("a valid plan");
-        let run = |until: Duration| {
-            let plan = plan.clone().with_until(Until::For(until));
+        let run = |least: Duration| {
+            let plan = plan.clone().with_until(Until::Forever);
             let run = engine.run(plan, Arc::clone(&source), Arc::clone(&destination));
-            self.runtime.block_on(run)
+            self.runtime.block_on(stopped(run, least, dir.path()))
         };
         let outcome = run(every * 3);
         let (mut error, mut again) = (outcome.error, 0);
