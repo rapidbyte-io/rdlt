@@ -7,7 +7,6 @@ use rdlt_connector::{CommitMeta, Cursor, PartitionId, PartitionState, StateChang
 
 use super::Coordinator;
 use super::delta::Collected;
-use crate::crash::crash_point;
 use crate::error::{Error, Side};
 use crate::table::TablesDelta;
 use crate::wal::Sealed;
@@ -15,7 +14,7 @@ use crate::wal::frame::BegunPhase;
 
 impl Coordinator {
     /// Logs the commit `meta` of `sealed`, beginning the phases `begun`, where the load keeps a
-    /// log: whether it did.
+    /// log.
     ///
     /// What the commit records of `tables` was reserved as each table changed.
     ///
@@ -28,16 +27,14 @@ impl Coordinator {
         tables: &TablesDelta,
         sealed: Vec<Sealed>,
         begun: Vec<BegunPhase>,
-    ) -> Result<bool, Error> {
+    ) -> Result<(), Error> {
         let Some(log) = &self.parts.wal else {
-            return Ok(false);
+            return Ok(());
         };
         // Every batch of the commit's segments was queued for the log before its partition
         // sealed it: the commit's frame, queued now, follows them all.
         log.commit(&self.parts.budget, sealed, begun, meta, tables.prepaid)
-            .await?;
-        crash_point!("engine.ack.early");
-        Ok(true)
+            .await
     }
 
     /// Whether the commit of `collected`, whose state changes before its receipt are `delta`,
@@ -75,23 +72,18 @@ impl Coordinator {
         self.parts.log.lock().progressed |= progressed;
     }
 
-    /// Tells the source the cursors in `reported` are committed, per stream, for the streams
-    /// that can read again what they acknowledged where `replayable`, the others otherwise.
+    /// Tells the source the cursors in `reported`, which a commit that landed holds, are
+    /// committed, per stream.
     ///
     /// Every partition a commit covers is told, moved or not: a report that failed or was lost
-    /// is so made again by the next attempt, though its partition is sent nothing more. A source
-    /// that cannot read again always has a log, which is where it is told before the commit.
+    /// is so made again by the next attempt, though its partition is sent nothing more.
     pub(super) async fn acknowledge(
         &mut self,
         reported: &BTreeMap<usize, Cursor>,
-        replayable: bool,
     ) -> Result<(), Error> {
         let mut cursors: BTreeMap<usize, Vec<(PartitionId, Cursor)>> = BTreeMap::new();
         for (partition, cursor) in reported {
             let partition = &self.parts.partitions[*partition];
-            if self.parts.streams[partition.stream].replayable != replayable {
-                continue;
-            }
             cursors
                 .entry(partition.stream)
                 .or_default()
