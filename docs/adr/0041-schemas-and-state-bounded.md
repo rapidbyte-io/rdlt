@@ -86,7 +86,9 @@ one run to the next, broke both:
   written longest ago; a batch of an older version reopens that version's writer. An attempt runs
   no more lanes than writers. Replay stages a logged commit's batches in their logged order by
   the same rule, holding at most `writers` open: a commit holds every version its attempt
-  described. A served connection carries at most 200 calls, and every open writer is one.
+  described. A served connection carries at most 200 calls, and every open writer is one, so an
+  attempt holds at most 198 of a served destination's writers open, and fewer where `writers` is
+  lower, 128 by default (ADR 0042).
 - **The log keeps a version's schema frame while a batch of it may come.** The log notes every
   view a table version's batches were logged for: a resolution that only rounds a column makes a
   new view of the same version. Before each commit the versions all of whose views are gone,

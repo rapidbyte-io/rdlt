@@ -83,8 +83,9 @@ partition inside a run; the second is an operator's command between runs. So the
 - **Read slots.** In a following run an unbounded partition's read holds a read slot for as long
   as the run, as every read holds one, so what reads keep stays within the share the slots divide
   (ADR 0039). A run follows fewer unbounded partitions than it has slots: one more is refused as it
-  starts, `partitions_too_few`. Bounded partitions share the slots left, each waiting for one until
-  one frees.
+  starts, `partitions_too_few`, or `source_calls_exceeded` where a served source's calls leave it
+  fewer slots than its partitions (ADR 0042). Bounded partitions share the slots left, each
+  waiting for one until one frees.
 - **The commit default.** An unset commit policy resolves per run:
   - `CommitPolicy::streaming()` (every 10 s, or 1 GiB) where the run follows its source or reads
     changes;

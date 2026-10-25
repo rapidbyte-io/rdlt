@@ -63,7 +63,7 @@ socket will be.
   - A host cannot tell a connector that overran its credit from one that did not, because it
     grants credit back as it consumes. So the protection is HTTP/2's flow control, which the
     receiver enforces: each call's stream window is `CREDIT_FLOOR`, and the connection's window
-    holds every call's and one more (`MAX_CALLS`, 200, and the heartbeat's: 804 MiB), so a peer
+    holds every call's and one more (`MAX_CALLS`, 200, the heartbeat among them: 804 MiB), so a peer
     that ignores its credit parks at most a stream window a call, and never starves the
     connection's other streams, the heartbeat among them. Frames that carry no event are bounded
     by count between events instead (ADR 0042).
