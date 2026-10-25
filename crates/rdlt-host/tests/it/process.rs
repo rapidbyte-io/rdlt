@@ -7,8 +7,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rdlt_connector::{ConnectorErrorKind, ConnectorId, PipelineId, StreamName};
-use rdlt_engine::{CommitPolicy, Engine, EngineConfig, RetryPolicy, RunStatus};
-use rdlt_engine::{PipelinePlan, StreamPlan};
+use rdlt_engine::{
+    CommitPolicy, Engine, EngineConfig, PipelinePlan, RetryPolicy, RunStatus, StreamPlan,
+};
 use rdlt_host::{ConnectorRef, Digest, LastWords, Local, Placement, Provider as _, ProviderError};
 use sha2::Digest as _;
 

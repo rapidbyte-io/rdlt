@@ -461,8 +461,8 @@ pub(crate) fn exceeded(what: &str, deadline: Duration) -> ConnectorError {
     .with_code(DEADLINE_EXCEEDED)
 }
 
-/// Sends a heartbeat `every` interval, and cancels `lost` once `missed` sent are unanswered when the
-/// next is due, the heartbeat stream does not open within as many intervals, or it fails.
+/// Sends a heartbeat `every` interval, and cancels `lost` once `missed` sent are unanswered when
+/// the next is due, the heartbeat stream does not open within as many intervals, or it fails.
 ///
 /// A connector that ends the stream is stopping: it finishes the calls in flight, and `retired` is
 /// cancelled.
