@@ -58,12 +58,8 @@ impl Coordinator {
         phases.horizon = laps.lap();
         let mut meta = self.meta(collected.segments, delta, finish_generations, horizon);
         let (measured, forgotten) = self.relieve(&mut meta, &tables.born)?;
-        if self
-            .log_commit(&meta, &tables, collected.sealed, begun)
-            .await?
-        {
-            self.acknowledge(&collected.reported, false).await?;
-        }
+        self.log_commit(&meta, &tables, collected.sealed, begun)
+            .await?;
         phases.log = laps.lap();
         // The commit completing a stream publishes it: a replace swaps its generation in.
         crash_point!("engine.complete.before", !completing.is_empty());
@@ -78,7 +74,7 @@ impl Coordinator {
         self.record_positions(&collected.positions);
         self.landed(&collected.positions, progressed);
         crash_point!("engine.ack.before");
-        self.acknowledge(&collected.reported, true).await?;
+        self.acknowledge(&collected.reported).await?;
         crash_point!("engine.ack.after");
         phases.ack = laps.lap();
         self.parts.tally.add(|counters| {

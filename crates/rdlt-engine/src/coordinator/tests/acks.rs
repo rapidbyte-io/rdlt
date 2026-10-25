@@ -64,16 +64,19 @@ proptest! {
     fn a_source_is_told_only_cursors_a_landed_commit_covers_and_horizons_only_move_on(
         partitions in 1..=PARTITIONS,
         logged in any::<bool>(),
+        replayable in any::<bool>(),
         steps in proptest::collection::vec(step(), 0..16),
     ) {
         let ids: Vec<PartitionId> = (0..partitions)
             .map(|at| PartitionId::parse(format!("p{at}")).expect("a valid partition"))
             .collect();
+        let mut read = stream(WriteMode::Append, None, partitions);
+        read.replayable = replayable;
         let mut setup = Setup::new(
-            vec![stream(WriteMode::Append, None, partitions)],
+            vec![read],
             ids.iter().map(|id| partition(id.as_str(), false)).collect(),
         );
-        if logged {
+        if logged || !replayable {
             setup.wal = Some(Arc::new(MemoryWal::default()));
         }
         let (commits, acks, heard, sealed) = paused().block_on(async {

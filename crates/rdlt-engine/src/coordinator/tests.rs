@@ -105,8 +105,6 @@ struct Listener {
     acks: Acks,
     commits: Commits,
     heard: Heard,
-    /// Streams that cannot read again, which hear before their commit lands.
-    early: Vec<StreamName>,
     /// How long hearing of a commit takes.
     pace: Duration,
 }
@@ -141,7 +139,7 @@ impl Source for Listener {
             let landed = self.commits.lock().len();
             tokio::time::sleep(self.pace).await;
             assert!(
-                self.early.contains(stream) || !self.commits.lock().is_empty(),
+                !self.commits.lock().is_empty(),
                 "acknowledged before any commit landed"
             );
             self.acks.lock().push((stream.clone(), cursors.to_vec()));
@@ -317,20 +315,12 @@ impl Setup {
 }
 
 impl Setup {
-    /// The source hearing of commits, into `acks`, which checks they follow `commits` but for
-    /// streams that cannot read again.
+    /// The source hearing of commits, into `acks`, which checks they follow `commits`.
     fn listener(&self, acks: Acks, commits: Commits, heard: Heard) -> Listener {
-        let early = self
-            .streams
-            .iter()
-            .filter(|stream| !stream.replayable)
-            .map(|stream| stream.name.clone())
-            .collect();
         Listener {
             acks,
             commits,
             heard,
-            early,
             pace: self.pace * 2,
         }
     }
@@ -1521,37 +1511,24 @@ async fn a_seal_without_rows_or_discards_reports_no_stream() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_source_that_cannot_read_again_hears_once_the_log_holds_its_commit() {
+async fn a_source_that_cannot_read_again_hears_only_of_a_landed_commit() {
     for fail in [false, true] {
         let mut forgetful = stream(WriteMode::Append, None, 1);
         forgetful.replayable = false;
         let mut setup = Setup::new(vec![forgetful], vec![partition("p0", false)]);
-        let store = Arc::new(MemoryWal::default());
-        setup.wal = Some(Arc::clone(&store));
+        setup.wal = Some(Arc::new(MemoryWal::default()));
         setup.fail_commit = fail;
         let (task, harness) = setup.start().await;
         harness.seal(0, 1, 3, PartitionState::Cursor(cursor(3)), None);
         harness.end(0, false);
         let ended = ended(task).await;
         assert_eq!(ended.is_err(), fail);
-        // Heard once, whether or not the destination took the commit: the log holds it.
-        assert_eq!(
-            *harness.acks.lock(),
-            [(name(), vec![(PartitionId::parse("p0").unwrap(), cursor(3))])]
-        );
-        let pipeline = rdlt_connector::PipelineId::parse("orders").unwrap();
-        let kept = store.stored(&pipeline);
-        if fail {
-            assert!(
-                !kept.is_empty(),
-                "the commit's chunk outlives the failed commit"
-            );
+        let heard = if fail {
+            Vec::new()
         } else {
-            assert!(
-                kept.is_empty(),
-                "a closed log with every receipt is removed"
-            );
-        }
+            vec![(name(), vec![(PartitionId::parse("p0").unwrap(), cursor(3))])]
+        };
+        assert_eq!(*harness.acks.lock(), heard, "the commit failed: {fail}");
     }
 }
 

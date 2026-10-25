@@ -59,13 +59,12 @@ const fn point(name: &'static str, hits: Hits, passed: Passed) -> Point {
 }
 
 /// Every durability step a fresh run passes, in the order a commit does, then the load's end.
-const POINTS: [Point; 17] = [
+const POINTS: [Point; 16] = [
     point("engine.wal.append", Hits::Each, Passed::Logged),
     point("engine.flush.before", Hits::Commit, Passed::Always),
     point("engine.flush.after", Hits::Commit, Passed::Always),
     point("engine.wal.publish.before", Hits::Commit, Passed::Logged),
     point("engine.wal.publish.after", Hits::Commit, Passed::Logged),
-    point("engine.ack.early", Hits::Commit, Passed::Logged),
     point("engine.complete.before", Hits::Once, Passed::Completing),
     point("engine.commit.before", Hits::Landing, Passed::Always),
     point("engine.commit.after", Hits::Landing, Passed::Always),
