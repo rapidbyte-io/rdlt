@@ -171,8 +171,8 @@ writer and not the budget ([served.md](served.md), "Through a writer a core").
   served, with what each commit stages: [normalized.md](normalized.md). Recorded; the change's
   rule compares itself with it.
 - **The latency cell**, both placements at both commit policies: [latency.md](latency.md).
-- **The log's cost** on a durable destination, beside `LocalWal` on the same disk, with syncs by
-  file: [sqlite.md](sqlite.md).
+- **The log's cost** on a durable destination, with syncs by file: [sqlite.md](sqlite.md), "A
+  source that cannot read again".
 - **`commit/1024`**, `shred/rows` and `wide/arrow_1000`, counted: [instructions.md](instructions.md).
 - **The many-table cells**, in process and served: [passthrough.md](passthrough.md) and
   [served.md](served.md), "Many tables".
