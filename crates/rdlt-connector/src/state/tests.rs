@@ -47,8 +47,6 @@ fn sample_state() -> PipelineState {
     let mut state = PipelineState {
         epoch: Epoch(4),
         last_receipt: Some(receipt()),
-        origin: Some(load(1)),
-        log_store: Some(load(9)),
         ..PipelineState::default()
     };
     let orders = state.streams.entry(stream("orders")).or_default();
@@ -126,12 +124,6 @@ fn records_of(state: &PipelineState) -> Vec<StateRecord> {
     }
     if let Some(receipt) = &state.last_receipt {
         entries.push(StateEntry::Receipt(receipt.clone()));
-    }
-    if let Some(origin) = state.origin {
-        entries.push(StateEntry::Origin(origin));
-    }
-    if let Some(store) = state.log_store {
-        entries.push(StateEntry::LogStore(store));
     }
     entries.iter().map(StateEntry::to_record).collect()
 }
@@ -342,21 +334,21 @@ fn unreadable_records_are_typed_errors() {
         (
             StateRecord {
                 key: epoch.key.clone(),
-                value: Bytes::from_static(b"{\"v\":2,\"entry\":{\"epoch\":1}}"),
+                value: Bytes::from_static(b"{\"v\":3,\"entry\":{\"epoch\":1}}"),
             },
             StateError::UnsupportedVersion {
                 key: epoch.key.clone(),
-                version: 2,
+                version: 3,
             },
         ),
         (
             StateRecord {
                 key: epoch.key.clone(),
-                value: Bytes::from_static(b"{\"v\":4,\"entry\":{\"no\":[\"such\"]}}"),
+                value: Bytes::from_static(b"{\"v\":5,\"entry\":{\"no\":[\"such\"]}}"),
             },
             StateError::UnsupportedVersion {
                 key: epoch.key.clone(),
-                version: 4,
+                version: 5,
             },
         ),
         (
@@ -588,8 +580,6 @@ fn states() -> impl Strategy<Value = PipelineState> {
                 .collect(),
             last_receipt: with_receipt.then(receipt),
             recorded_by: std::collections::BTreeMap::new(),
-            origin: with_receipt.then(|| load(epoch % (1 << 40))),
-            log_store: with_receipt.then(|| load(epoch % (1 << 30))),
         })
         .prop_flat_map(|state| (Just(state), tables(), any::<u64>()))
         .prop_map(|(mut state, tables, first)| {
@@ -861,13 +851,13 @@ fn a_state_record_of_the_previous_format_is_refused() {
         let value: serde_json::Value = serde_json::from_slice(&record.value).unwrap();
         let previous = StateRecord {
             key: record.key.clone(),
-            value: versioned(1, &value["entry"]),
+            value: versioned(super::STATE_VERSION - 1, &value["entry"]),
         };
         assert_eq!(
             StateEntry::from_record(&previous),
             Err(StateError::UnsupportedVersion {
                 key: record.key.clone(),
-                version: 1
+                version: super::STATE_VERSION - 1
             })
         );
     }
@@ -1104,7 +1094,6 @@ fn a_record_holds_the_json_its_entry_writes() {
             stream: stream("ü \"quoted\""),
             phase: 2,
         },
-        StateEntry::Origin(LoadId::from_parts(UNIX_EPOCH, 3)),
     ];
     for entry in entries {
         let written = serde_json::to_vec(&Writing {
@@ -1172,7 +1161,7 @@ fn a_table_s_records_are_this_json() {
         (
             r#"{"schema":["orders","lines"]}"#,
             concat!(
-                r#"{"v":3,"entry":{"schema":{"table":["orders","lines"],"version":3,"schema":"#,
+                r#"{"v":4,"entry":{"schema":{"table":["orders","lines"],"version":3,"schema":"#,
                 r#"{"fields":[[{"name":"id","nullable":false,"type":"int64"}],"#,
                 r#"[{"name":"address","nullable":true,"type":{"struct":1}},"#,
                 r#"{"name":"city","nullable":true,"type":"utf8"}],"#,
@@ -1183,7 +1172,7 @@ fn a_table_s_records_are_this_json() {
         (
             r#"{"names":["orders","lines"]}"#,
             concat!(
-                r#"{"v":3,"entry":{"names":{"table":["orders","lines"],"#,
+                r#"{"v":4,"entry":{"names":{"table":["orders","lines"],"#,
                 r#""physical":"orders__lines","names":[[{"source":["id"]},"id"],"#,
                 r#"[{"variant":{"column":["address","city"],"kind":"int64"}},"#,
                 r#""address__city__int"]]}}}"#,
@@ -1192,7 +1181,7 @@ fn a_table_s_records_are_this_json() {
         (
             r#"{"sequences":["orders","lines"]}"#,
             concat!(
-                r#"{"v":3,"entry":{"sequences":{"table":["orders","lines"],"#,
+                r#"{"v":4,"entry":{"sequences":{"table":["orders","lines"],"#,
                 r#""sequences":"source","history":true,"key":[["id"],["address","city"]],"#,
                 r#""change_time":["address","city"],"identity":"position"}}}"#,
             ),
