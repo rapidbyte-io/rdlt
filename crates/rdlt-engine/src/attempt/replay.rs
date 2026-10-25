@@ -166,7 +166,7 @@ async fn begin(
         origin,
         session: opened.session,
         epoch: opened.epoch,
-        writers: super::held_writers(&context.config, context.destination.as_ref()),
+        writers: super::lanes::held_writers(&context.config, context.destination.as_ref()),
         budget: context.budget.clone(),
     })
 }
