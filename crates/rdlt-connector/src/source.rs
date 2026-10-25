@@ -131,10 +131,10 @@ pub trait ReadStream<S: SourceConnector>: Send + Sync + 'static {
     /// from there again by the next plan that names it, as a table polled for new rows is. In a
     /// stream read incrementally, ending finished partitions at a checkpoint keeps a cursor for
     /// every partition the source ever planned, which grows stored state until commits are
-    /// refused as `state_bytes_exceeded`; a full read's next cycle clears its partitions. A read the engine asks to follow ([`Emitter::follows`]) and a
-    /// partition that never ends ([`Partition::unbounded`]) keep their cursors. An on-demand
-    /// stream answers a barrier pending before its last push with a checkpoint before that
-    /// push.
+    /// refused as `state_bytes_exceeded`; a full read's next cycle clears its partitions. A read
+    /// the engine asks to follow ([`Emitter::follows`]) and a partition that never ends
+    /// ([`Partition::unbounded`]) keep their cursors. An on-demand stream answers a barrier
+    /// pending before its last push with a checkpoint before that push.
     fn read(
         &self,
         source: &S,
