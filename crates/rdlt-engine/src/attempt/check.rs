@@ -25,8 +25,10 @@ pub(super) fn check_stream<'a>(
             "the source's catalog has no such stream",
         )
     })?;
-    if let Some((code, detail)) = unreplayable(context, plan, spec) {
-        return Err(refuse(code, detail));
+    if plan.read_mode() == ReadMode::Full && !spec.is_replayable() {
+        let detail = "a full read starts again from the beginning, which a source that cannot \
+                      read again no longer holds once it was told a cursor past it";
+        return Err(refuse(codes::FULL_READ_UNREPLAYABLE, detail));
     }
     if plan.retention_loss() == RetentionLoss::Reset
         && (plan.read_mode() != ReadMode::Incremental || !spec.is_replayable())
@@ -123,30 +125,5 @@ fn removals(plan: &StreamPlan) -> (bool, bool) {
         DeleteMode::Soft => (false, true),
         DeleteMode::Ignore => (truncates, false),
         _ => (true, false),
-    }
-}
-
-/// Why a stream whose source cannot read again what it acknowledged cannot load as planned: replay
-/// goes by partitions' positions, which a full read does not keep, and needs a log.
-fn unreplayable(
-    context: &RunContext,
-    plan: &StreamPlan,
-    spec: &StreamSpec,
-) -> Option<(Code, &'static str)> {
-    if spec.is_replayable() {
-        return None;
-    }
-    match plan.read_mode() {
-        ReadMode::Full => Some((
-            codes::FULL_READ_UNREPLAYABLE,
-            "a full read starts again from the beginning, which its source cannot read again once \
-             it acknowledged it",
-        )),
-        ReadMode::Incremental | ReadMode::Cdc if context.wal.is_none() => Some((
-            codes::WAL_REQUIRED,
-            "its source cannot read again what it acknowledged, so its loads keep a write-ahead \
-             log, and the engine has nowhere to keep one",
-        )),
-        ReadMode::Incremental | ReadMode::Cdc => None,
     }
 }

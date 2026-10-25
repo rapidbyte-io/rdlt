@@ -17,10 +17,12 @@ use rdlt_testkit::tls::Pki;
 use tokio::io::{AsyncBufReadExt as _, BufReader};
 use tokio::process::{Child, Command};
 
+use crate::support::destinations::{Step, failing};
 use crate::support::hooked::{At, Hook, hooked};
-use crate::support::script::{Script, ScriptStream, reconnect};
+use crate::support::script::{Script, ScriptStream, id, reconnect};
 use crate::support::{
-    commit_every, engine, logging_engine, memory, pipeline, published_json, retrying, stream,
+    commit_every, engine, logging_engine, memory, pipeline, published_ids, published_json,
+    retrying, stream,
 };
 
 /// The log source's configuration: one stream, `events`, of one partition holding `messages`
@@ -446,6 +448,27 @@ async fn rows_an_attempt_lands_from_the_log_an_earlier_one_left_are_progress() {
     // counted: it lands the first's, so the third is made.
     assert_eq!(outcome.report.status, RunStatus::Succeeded);
     assert_eq!((outcome.report.attempted, outcome.report.rows), (3, 15));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_source_that_cannot_read_again_serves_again_what_a_failed_commit_held() {
+    let mut events = ScriptStream::new("events", 2, 30, 7);
+    events.replayable = false;
+    let (script, source) = Script::new(vec![events]).connect("unheard_retried").await;
+    let destination = failing(memory("unheard_retried").await, Step::CommitOnce);
+    let outcome = engine(retrying(3))
+        .run(incremental("unheard-retried"), source, destination)
+        .await;
+    assert!(outcome.error.is_none(), "{:?}", outcome.error);
+    assert_eq!(outcome.report.attempts.len(), 2);
+    // The failed commit's rows were never acknowledged: the source serves them again, and they
+    // land once.
+    let mut ids: Vec<i64> = (0..2)
+        .flat_map(|partition| (0..30).map(move |offset| id(partition, offset)))
+        .collect();
+    ids.sort_unstable();
+    assert_eq!(published_ids("unheard_retried", "events"), ids);
+    assert_eq!(script.early_reads.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test(start_paused = true)]

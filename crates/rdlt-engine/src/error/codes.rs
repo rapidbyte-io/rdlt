@@ -317,10 +317,6 @@ pub const WAL_FOREIGN: Code = Code("wal_foreign");
 /// than the log keeps there.
 pub const WAL_NOT_PRIVATE: Code = Code("wal_not_private");
 
-/// The code of the error for a stream whose source cannot read again what it acknowledged, where
-/// the engine has nowhere to keep the write-ahead log its loads need.
-pub const WAL_REQUIRED: Code = Code("wal_required");
-
 /// The code of the error for an attempt whose replay found another load of the pipeline still
 /// writing its log: retryable, since the attempt waits for that load to end.
 pub const WAL_RUNNING: Code = Code("wal_running");
