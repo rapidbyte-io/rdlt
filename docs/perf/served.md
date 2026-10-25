@@ -1206,10 +1206,12 @@ at the engine's defaults.
 
 A served source reads each partition over a call of its one connection, and a followed read holds
 its call for the run. A connection carries at most 200 calls (`rdlt_wire::limits::MAX_CALLS`), the
-heartbeat among them, so 256 followed streams cannot be served: the reads past the limit wait for a
-call that never frees until starting them passes its deadline, a minute, and the attempt fails
-(`deadline_exceeded`), as a run of 256 served streams did. 192 is the largest of the in-process
-counts that one connection carries beside the heartbeat and a commit's acknowledgement.
+heartbeat among them; the engine keeps one of the rest for its other call into the source and a
+slot for every other read, so a run follows at most 197 unbounded partitions of a served source and
+refuses one more as it starts: with `source_calls_exceeded` where its partitions are more than 198,
+as in a cell of 256 streams, which reads a partition more than its streams, and with
+`partitions_too_few` where they are not (ADR 0042). 256 followed streams cannot be served; 192 is
+the largest of the in-process counts within that.
 
 - **Running.** `just bench served 0-3 tables 4-11`. A followed run lasts its ten-second span, so
   each followed cell takes about two minutes: a warm-up run and ten samples of one run each.
