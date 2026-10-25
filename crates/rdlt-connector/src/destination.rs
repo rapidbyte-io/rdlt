@@ -12,10 +12,9 @@ use std::future::Future;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
-
 use arrow_array::RecordBatch;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 
 use crate::capabilities::Capabilities;
 use crate::commit::{CommitMeta, Receipt};
