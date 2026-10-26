@@ -34,8 +34,7 @@ are ratios measured on one machine, so this record keeps the method with the fig
   shredded alone as a partition shreds one. The bench runs every N its cores allow in one process,
   pinned to the cores `just bench` was given, of one type, since this machine mixes them.
   The bench builds each compute pool through `SystemEnv::try_new` beside a runtime of one worker,
-  which only waits: the pool has N − 1 threads, one at N = 1. The bound compares N cores, the
-  waiting worker included, with one.
+  which only waits: the pool has a thread a core, N threads. The bound compares N cores with one.
 - **Allocations.** The `allocations` bench, whose global allocator is `stats_alloc`'s counting
   system allocator, runs each one-core workload once and prints its allocations, reallocations
   and bytes requested, a row and a batch of what it shredded. The timed bench keeps the system
@@ -111,7 +110,7 @@ invocation started at a one-minute load average of at most 1.0 with its cores id
 and each round of every engine figure lies within 3 % of the median. A third round ran later under
 other load on the machine and is left out (the owner's ruling of 2026-10-10).
 
-The One core, Columns of JSON and Normalizing tables come from the change on `3c0260b2`,
+The Columns of JSON and Normalizing tables come from the change on `3c0260b2`,
 2026-10-12, on core 0: four rounds of `shred/nested`, `shred/wide_200`, `shred/string_heavy` and
 `normalize/keyless`, and two of every other benchmark, the first two of the four. The rounds started
 at one-minute load averages of 2.81, 2.52, 2.92 and 6.21. Each figure is the median of every run of
@@ -129,62 +128,60 @@ average of 0.38 to 0.97, the median with its range in brackets.
 
 ### One core
 
-This change on `3c0260b2`, 2026-10-12, rounds as above.
+`main` at `6365cc13` with the served bench's readings (`d2fc0f95`; the engine's code is
+`main`'s), 2026-10-25 and -26, core `0`: three rounds, interleaved with the other benches' rounds
+([campaign.md](campaign.md)), each started once no other build ran; the median, with the range in
+brackets. Instructions a cycle are not recorded on this tree.
 
-| Corpus | Throughput | Instructions a cycle |
-|---|---|---|
-| `nested` | 591 MiB/s [589–606] | 6.05 |
-| `sparse` | 575 MiB/s [570–580] | 6.04 |
-| `flat_narrow` | 454 MiB/s [452–457] | 5.24 |
-| `wide_200` | 461 MiB/s [436–471] | 5.41 |
-| `string_heavy` | 530 MiB/s [508–543] | 4.86 |
+| Corpus | Throughput |
+|---|---|
+| `nested` | 596 MiB/s [589–605] |
+| `sparse` | 587 MiB/s [572–587] |
+| `flat_narrow` | 469 MiB/s [461–469] |
+| `wide_200` | 454 MiB/s [448–460] |
+| `string_heavy` | 548 MiB/s [547–558] |
 
 ### More cores
 
-The record scan of this change alone on `3c0260b2`, 2026-10-12, cores `0-3` (performance), three
-rounds interleaved with the merge-base in alternating orders, started at one-minute load averages of
-2.65, 3.96 and 1.79 (the merge-base's 2.95, 2.78 and 1.22); the median, with the range in brackets.
-Each 8 MiB push is a call. The process was pinned to cores `0-3` for all three rows, so the pools of
-N = 1 and 2 had cores to spare. Efficient cores were not run in this record.
+`shred_cores` in the same three rounds and tree: on the performance cores (`0-3`) and on the
+efficient ones (`4-11`), a compute thread a core, so the pool for N has N threads beside the one
+runtime worker, which only waits. The median, with the range in brackets.
 
 | Cores | N | tokio workers + compute threads | Throughput | Against N = 1 | Spec's bound |
 |---|---|---|---|---|---|
-| performance (`0-3`) | 1 | 1 + 1 | 597 MiB/s [534–600] | 1 | |
-| performance (`0-3`) | 2 | 1 + 1 | 583 MiB/s [520–595] | 0.98× | ≥ 1.4×, not met |
-| performance (`0-3`) | 4 | 1 + 3 | 1402 MiB/s [1337–1406] | 2.35× [2.35–2.50] | ≥ 2.8×, not met |
+| performance (`0-3`) | 1 | 1 + 1 | 593 MiB/s [565–597] | 1 | |
+| performance (`0-3`) | 2 | 1 + 2 | 1 068 MiB/s [1 058–1 069] | 1.80× | ≥ 1.4×, met |
+| performance (`0-3`) | 4 | 1 + 4 | 1 699 MiB/s [1 495–1 733] | 2.87× | ≥ 2.8×, met |
+| efficient (`4-11`) | 1 | 1 + 1 | 461 MiB/s [456–463] | 1 | |
+| efficient (`4-11`) | 2 | 1 + 2 | 898 MiB/s [891–903] | 1.95× | ≥ 1.4×, met |
+| efficient (`4-11`) | 4 | 1 + 4 | 1 605 MiB/s [1 605–1 609] | 3.48× | ≥ 2.8×, met |
+| efficient (`4-11`) | 8 | 1 + 8 | 2 120 MiB/s [2 066–2 145] | 4.60× | ≥ 5.6×, not met |
 
-The bound of 0.7·N at N = 4 is 2.8×, which this change does not reach.
+The bound of 0.7·N holds up to four cores of either kind; at eight efficient cores it is 5.6×,
+which the pool does not reach.
 
 ### Cliffs
 
-Where the shredder parses a chunk again, observes it, or reads its numbers exactly, on one core
-(`0`), `shred_cliffs` with this change on `0ab7edde`, 2026-10-13: two rounds interleaved with
-`0ab7edde` in alternating orders, started at one-minute load averages of 1.28 and 0.43 (`0ab7edde`'s
-1.04 and 0.92), with `int_arrays` in two more pairs. Each figure is the median of the rounds, the
-range in brackets; instructions a cycle come from one `just bench shred 0 shred_cliffs` after them.
-The pass counts are the same in every round, over 32 MiB in 1 MiB chunks.
+`shred_cliffs` on core `0` in the same three rounds and tree, the median with the range in
+brackets. The pass counts are the same in every round, over 32 MiB in 1 MiB chunks.
 
-| Corpus | Throughput | `0ab7edde` | Instructions a cycle | Parsed | Tripped | Observed | Rebuilt | Exact |
-|---|---|---|---|---|---|---|---|---|
-| `array_form` | 397 MiB/s [391–404] | 390 MiB/s | 5.87 | 32 | 0 | 0 | 0 | 0 |
-| `drift_json` | 214 MiB/s [211–217] | 178 MiB/s | 5.70 | 32 | 0 | 0 | 32 | 32 |
-| `drift_scalar` | 590 MiB/s [586–593] | 300 MiB/s | 6.02 | 32 | 0 | 0 | 0 | 0 |
-| `int_arrays` | 70 MiB/s [67–73] | 71 MiB/s | 5.94 | 32 | 32 | 32 | 32 | 0 |
-| `big_numbers` | 240 MiB/s [240–241] | 200 MiB/s | 5.05 | 64 | 0 | 0 | 0 | 32 |
-| `pretty` | 392 MiB/s [392–392] | 388 MiB/s | 5.48 | 32 | 0 | 0 | 0 | 0 |
+| Corpus | Throughput | Parsed | Tripped | Observed | Rebuilt | Exact |
+|---|---|---|---|---|---|---|
+| `array_form` | 353 MiB/s [351–367] | 32 | 0 | 0 | 0 | 0 |
+| `drift_json` | 194 MiB/s [188–206] | 32 | 0 | 0 | 32 | 32 |
+| `drift_scalar` | 548 MiB/s [533–553] | 32 | 0 | 0 | 0 | 0 |
+| `int_arrays` | 60 MiB/s [59–62] | 32 | 32 | 32 | 32 | 0 |
+| `big_numbers` | 232 MiB/s [229–234] | 64 | 0 | 0 | 0 | 32 |
+| `pretty` | 366 MiB/s [353–373] | 32 | 0 | 0 | 0 | 0 |
 
-`shred/nested` ran in the same rounds at 639 MiB/s [622–656], `0ab7edde` 620 MiB/s. `int_arrays`
-moved within its rounds' spread (67–73 MiB/s on both sides), and its instructions under `perf
-stat` differ by 0.02 %.
-
-What each row of this change does, and the rule it was held to:
+The exact parse's changes on `0ab7edde`, 2026-10-13, each held to its rule:
 
 - **The exact parse walks its containers in place.** It walked each object and array through a
   vector of its entries and copied each number's text into a `String`; it now walks sonic-rs's
   iterators and borrows the text. Callgrind (`just instructions`): `shred/drift_json` 8.8 % fewer
   instructions and 57 % fewer allocations, `shred/big_numbers` 10.2 % and 54 %, no case more.
   Wall time in three rounds of this row alone: `drift_json` 1.19× (178 to 212 MiB/s),
-  `big_numbers` 1.16× (199 to 231 MiB/s); the whole change gives the table's 214 and 240. The
+  `big_numbers` 1.16× (199 to 231 MiB/s); the whole change gave 214 and 240 MiB/s on its tree. The
   roadmap's 1.5× on `drift_json` is not met.
 - **The large tier is not built.** It was to be prototyped if `drift_json` stayed below half of
   `shred/nested`. This row alone left it at 0.34 of it (212 against 620 MiB/s), and the tier is
@@ -210,6 +207,27 @@ What each row of this change does, and the rule it was held to:
 - **The visitor trees share their rules.** One record seed refuses a record that is not an
   object for the building and the observing parse, and the depth check and an integer's digits
   are one function each; no case moves by more than 0.35 % of instructions.
+
+### Where one core's time goes
+
+A per-function profile of five corpora on the same tree: `just profiling shred`,
+`perf record -e cpu_core/cycles/u -F 999` over ten seconds of `--profile-time` on core `0`, about
+11 000 samples each; each function's own samples, grouped. The fast parse is the shredder's visit
+over sonic-rs's deserializer and sonic-rs's own parser; the exact parse is `json::Reader` and the
+token walk over it.
+
+| Corpus | Fast parse | Exact parse | Building columns | libc: copies, compares, allocation | UTF-8 checks and scans | Big numbers | Other |
+|---|---|---|---|---|---|---|---|
+| `nested` | 58.6 % | 0 | 9.5 % | 7.6 % | 9.3 % | 0 | 6.1 % |
+| `wide_200` | 54.4 % | 0 | 11.2 % | 16.9 % | 3.6 % | 0 | 5.2 % |
+| `string_heavy` | 46.6 % | 0 | 1.7 % | 23.4 % | 9.9 % | 0 | 10.4 % |
+| `drift_json` | 20.9 % | 38.9 % | 6.0 % | 8.6 % | 6.9 % | 0 | 11.5 % |
+| `big_numbers` | 1.7 % | 60.7 % | 1.9 % | 4.3 % | 3.3 % | 12.9 % | 6.5 % |
+
+Functions under 0.5 % of a profile's samples are left out, so a row sums to under 100 %. In
+`string_heavy`, sonic-rs's escaped-string parse takes 35.3 % alone; in `drift_json`, every chunk
+is parsed fast first and again exactly; `big_numbers` parses exactly throughout, Arrow's
+big-integer parse 12.9 % of it.
 
 ### Rows pushed as lines
 
