@@ -70,8 +70,12 @@ never sees.
   worked out by hand; the certification fake fails it for each of six broken behaviors.
 - **The simulation.** Drawn apart from the seed's generator (`seed ^ HISTORY`), some of the change
   world's merge streams keep history instead: their changes carry their position as their change
-  time, set whole rows, and now and then send their key's live data again. The change oracle
-  checks every version against a model of the chain.
+  time, set whole rows, and now and then send their key's live data again. Each row carries a
+  float of its counter and a JSON document of its data, written as its position and key pick:
+  numbers plain or scientific, with zeros or without, beyond 64 bits and beyond what plain
+  notation keeps short; names and strings escaped or not; members in either order, a null one
+  written or left out; spaces or none. Data sent again in other text must open no version. The
+  change oracle checks every version against a model of the chain.
 
 ## Consequences
 
