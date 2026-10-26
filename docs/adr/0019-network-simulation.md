@@ -43,6 +43,10 @@ the whole engine on a paused clock from a seed, with connectors in the engine's 
   - The feature is drawn apart from the others, so a seed's workload is the same over either
     transport, and seeds found before keep their workload.
   - Each seed draws its messages' latency, and the host's heartbeat, patience and connect deadline.
+    The patience is a second or more: the slowest link, 20 ms of latency with turmoil's 64
+    segments in flight, carries about 1 MiB every 20 ms, and an echo waits behind a transport frame
+    of each call with data queued on its connection (ADR 0016), so a shorter one loses connectors
+    that answer every beat while reads fill the link.
   - With faults, a fault driver disrupts the network while each faulty run of a phase lasts, each
     run that follows a streaming source, and each reset with the runs it races: partitions both ways
     and one way, messages held and released late, and connectors that crash, dropping their listener

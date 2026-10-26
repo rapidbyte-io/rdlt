@@ -7,7 +7,7 @@ use rdlt_sim::{
 ///
 /// A seed fails if its defect comes back, unless its comment says otherwise: such a seed keeps
 /// only the path, and its defect may come back unseen.
-const FOUND: [(u64, Reach); 16] = [
+const FOUND: [(u64, Reach); 17] = [
     // Over the network: a host whose handshake a partition cut short held its connection, and
     // its connector's stop, forever.
     (743, Reach::LinkCut),
@@ -46,6 +46,10 @@ const FOUND: [(u64, Reach); 16] = [
     // these seeds.
     (577_320, Reach::Crashed),
     (777_590, Reach::Replanned),
+    // Over the network: a heartbeat drawn to wait 102 ms for its echoes lost a source whose reads'
+    // transport frames, queued ahead of the echoes, took longer than that to cross the link, so a
+    // run with nothing new took two attempts. The defect may not fail this seed.
+    (583_907, Reach::Framing),
 ];
 
 #[test]
