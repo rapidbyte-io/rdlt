@@ -302,6 +302,29 @@ fn a_batch_rebuilt_around_its_keys_keeps_its_rows_with_no_column() {
 }
 
 #[test]
+fn a_batch_rebuilt_around_its_keys_keeps_every_field_whose_column_keeps_its_type() {
+    let floats: ArrayRef = Arc::new(Float64Array::from(vec![-0.0, 1.0]));
+    let names: ArrayRef = Arc::new(StringArray::from(vec!["a", "b"]));
+    let rows = RecordBatch::try_from_iter([("k", floats), ("name", names)]).unwrap();
+    // Every column as it is: the batch's own schema.
+    let same = crate::table::with_columns(&rows, rows.columns().to_vec()).unwrap();
+    assert!(Arc::ptr_eq(&same.schema(), &rows.schema()));
+    // A key column in another encoding: its field is built again, and the other is the batch's.
+    let keys = Int8Array::from(vec![0, 1]);
+    let values: ArrayRef = Arc::new(Float64Array::from(vec![0.0, 1.0]));
+    let keyed: ArrayRef = Arc::new(DictionaryArray::try_new(keys, values).unwrap());
+    let columns = vec![keyed, Arc::clone(rows.column(1))];
+    let retyped = crate::table::with_columns(&rows, columns).unwrap();
+    let (fields, before) = (retyped.schema(), rows.schema());
+    assert_eq!(fields.field(0).name(), "k");
+    assert!(matches!(
+        fields.field(0).data_type(),
+        DataType::Dictionary(..)
+    ));
+    assert!(Arc::ptr_eq(&fields.fields()[1], &before.fields()[1]));
+}
+
+#[test]
 fn a_key_holding_nan_within_a_list_is_refused_where_a_row_names_it() {
     let item = Arc::new(arrow_schema::Field::new("item", DataType::Float64, true));
     let items: ArrayRef = Arc::new(Float64Array::from(vec![1.0, f64::NAN, 2.0]));

@@ -74,7 +74,7 @@ pub(super) fn split_changes(
 ) -> Result<(RecordBatch, ChangeRows), Error> {
     let failed =
         |error: arrow_schema::ArrowError| Error::internal(format!("splitting changes: {error}"));
-    let joined = arrow_select::concat::concat_batches(&parts[0].schema(), parts).map_err(failed)?;
+    let joined = super::joined(parts).map_err(failed)?;
     let (data, changes) = ChangeRows::split(&joined).map_err(failed)?;
     drop(joined);
     // A log stores each row's flags as data; only a merge keeps a column's value.

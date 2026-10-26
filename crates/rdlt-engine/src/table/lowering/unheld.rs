@@ -44,10 +44,12 @@ impl Converted {
         self.0[index] = Some(array);
     }
 
-    /// Forgets the conversion of the incoming column at `index`.
-    fn forget(&mut self, index: usize) {
-        if let Some(slot) = self.0.get_mut(index) {
-            *slot = None;
+    /// Forgets the conversion of each incoming column at `indices`.
+    pub(super) fn forget(&mut self, indices: impl IntoIterator<Item = usize>) {
+        for index in indices {
+            if let Some(slot) = self.0.get_mut(index) {
+                *slot = None;
+            }
         }
     }
 
@@ -99,16 +101,6 @@ impl Converted {
         }
         Ok(())
     }
-
-    /// Forgets the conversion of each column of `before` that `after`, the same batch, holds
-    /// changed: what it converted to is no longer what lowering takes.
-    pub(super) fn stale(&mut self, before: &RecordBatch, after: &RecordBatch) {
-        for (index, slot) in self.0.iter_mut().enumerate() {
-            if slot.is_some() && !Arc::ptr_eq(before.column(index), after.column(index)) {
-                *slot = None;
-            }
-        }
-    }
 }
 
 impl LoweringPlan {
@@ -147,7 +139,7 @@ impl LoweringPlan {
                 None => unheld.push((index, rows)),
             }
             // The column changes, so what it converted to is not what lowering takes.
-            checked.converted.forget(index);
+            checked.converted.forget([index]);
         }
         Ok(checked)
     }

@@ -11,7 +11,7 @@ use arrow_array::{
     Array, ArrayRef, BinaryArray, BooleanArray, RecordBatch, TimestampMicrosecondArray,
 };
 use arrow_buffer::{BooleanBuffer, NullBuffer};
-use arrow_schema::{DataType, TimeUnit};
+use arrow_schema::{DataType, FieldRef, TimeUnit};
 use rdlt_connector::StreamName;
 
 use super::constants::micros_of;
@@ -46,7 +46,12 @@ impl LoweringPlan {
                 "stream {stream}: lowering history columns: {error}"
             ))
         };
-        let data = self.data(batch.num_rows(), held).map_err(failed)?;
+        let data: Vec<_> = self
+            .hashed
+            .iter()
+            .zip(held)
+            .filter_map(|(field, array)| Some((field.as_ref()?, array)))
+            .collect();
         let from = match (&names.change_time, self.change_time) {
             (Some(_), Some(index)) => Some(batch.column(index)),
             (Some(column), None) => {
@@ -74,7 +79,7 @@ impl LoweringPlan {
             received: stamp.received_at,
             fallback,
         };
-        let history = history_columns(stream, &data, begun, &deleting)?;
+        let history = history_columns(stream, (&data, batch.num_rows()), begun, &deleting)?;
         let logical = [
             loaded_at_type(),
             loaded_at_type(),
@@ -95,42 +100,29 @@ impl LoweringPlan {
             })
             .collect()
     }
+}
 
-    /// The rows' data columns, from `held`, as the model's types hold them, as a batch of `rows`
-    /// rows, without the column the stream's change time fills: when a change happened is not
-    /// what it changed.
-    fn data(
-        &self,
-        rows: usize,
-        held: &[ArrayRef],
-    ) -> Result<RecordBatch, arrow_schema::ArrowError> {
-        let timed = |source: &Source| match source {
-            Source::Incoming(index, _) => Some(*index) == self.change_time,
-            Source::Read(_) | Source::Rest(_) | Source::Nulls => false,
-        };
-        // Each column keeps its type's metadata, which says, for one, that its text is JSON.
-        let data: Vec<_> = self
-            .view
-            .model
-            .columns
-            .iter()
-            .zip(held)
-            .zip(&self.sources)
-            .filter(|(_, source)| !timed(source))
-            .map(|((column, array), _)| (column, array))
-            .collect();
-        let fields: Vec<_> = data
-            .iter()
-            .map(|(column, array)| {
-                arrow_schema::Field::new(column.name(), array.data_type().clone(), true)
-                    .with_metadata(column.to_arrow().metadata().clone())
-            })
-            .collect();
-        let arrays = data.iter().map(|(_, array)| Arc::clone(array)).collect();
-        let options = arrow_array::RecordBatchOptions::new().with_row_count(Some(rows));
-        let schema = Arc::new(arrow_schema::Schema::new(fields));
-        RecordBatch::try_new_with_options(schema, arrays, &options)
+/// The field of each of `view`'s columns a version's hash covers, in the view's order, where its
+/// table keeps history: its name, and its type's metadata, which says, for one, that its text is
+/// JSON.
+///
+/// None for the column the stream's change time fills, whose values come from the incoming column
+/// `change_time` places as `sources` say: when a change happened is not what it changed.
+pub(super) fn hashed(
+    view: &TableView,
+    sources: &[Source],
+    change_time: Option<usize>,
+) -> Vec<Option<FieldRef>> {
+    if view.meta.history.is_none() {
+        return Vec::new();
     }
+    let columns = view.model.columns.iter().zip(sources);
+    columns
+        .map(|(column, source)| {
+            let timed = matches!(source, Source::Incoming(index, _) if Some(*index) == change_time);
+            (!timed).then(|| Arc::new(column.to_arrow()))
+        })
+        .collect()
 }
 
 /// The incoming column holding the change times of `view`'s history table, by its position
@@ -144,10 +136,10 @@ pub(super) fn change_time(view: &TableView, incoming: &Incoming) -> Option<usize
         .position(|field| field.name() == column)
 }
 
-/// The history columns of rows holding `data`, the table's data columns as stored: when each
-/// version begins, from `from`, the stream's change time, or `received`, when its batch arrived,
-/// where the stream names none; no end; current; and the hash of its data, null where `deleting`
-/// says the row deletes.
+/// The history columns of `rows` rows holding `data`, the table's data columns as stored, each
+/// beside its field: when each version begins, from `from`, the stream's change time, or
+/// `received`, when its batch arrived, where the stream names none; no end; current; and the hash
+/// of its data, null where `deleting` says the row deletes.
 ///
 /// A row's hash encodes its data as one object of its non-null columns by name, so a column
 /// added since, null in the row, a wider type or another encoding of the same values hashes
@@ -160,11 +152,10 @@ pub(super) fn change_time(view: &TableView, incoming: &Incoming) -> Option<usize
 /// no version can begin at an unknown time.
 pub(super) fn history_columns(
     stream: &StreamName,
-    data: &RecordBatch,
+    (data, rows): (&[(&FieldRef, &ArrayRef)], usize),
     begun: Begins<'_>,
     deleting: &dyn Fn(usize) -> bool,
 ) -> Result<[ArrayRef; 4], Error> {
-    let rows = data.num_rows();
     let micros = DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()));
     let arrived = || {
         micros_of(begun.received).map_err(|error| {
@@ -187,7 +178,7 @@ pub(super) fn history_columns(
     };
     let valid_to = arrow_array::new_null_array(&micros, rows);
     let current = Arc::new(BooleanArray::from(vec![true; rows]));
-    let hashes = version_hashes(data)
+    let hashes = version_hashes(data.iter().copied(), rows)
         .map_err(|error| unread(stream, "preparing history columns", &error))?;
     let (offsets, values, nulls) = hashes.into_parts();
     let kept = NullBuffer::new(BooleanBuffer::collect_bool(rows, |row| !deleting(row)));

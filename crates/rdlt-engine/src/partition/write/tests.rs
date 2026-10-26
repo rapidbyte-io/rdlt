@@ -97,6 +97,16 @@ fn ids(rows: i64) -> RecordBatch {
     RecordBatch::try_from_iter([("id", ids)]).unwrap()
 }
 
+#[test]
+fn a_lone_part_is_lowered_as_it_is_and_several_are_joined() {
+    let part = ids(3);
+    let lone = super::joined(std::slice::from_ref(&part)).unwrap();
+    assert!(Arc::ptr_eq(lone.column(0), part.column(0)));
+    let joined = super::joined(&[part.slice(0, 2), part.slice(2, 1)]).unwrap();
+    assert_eq!(joined.num_rows(), 3);
+    assert!(!Arc::ptr_eq(joined.column(0), part.column(0)));
+}
+
 /// What admitted a JSON push of `bytes` of text under `budget`.
 async fn json(budget: &MemoryBudget, bytes: usize) -> Permit {
     json_text(budget, bytes::Bytes::from(vec![b' '; bytes])).await

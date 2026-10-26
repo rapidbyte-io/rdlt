@@ -17,7 +17,7 @@ use rdlt_connector::cost::Allocations;
 use rdlt_connector::{Epoch, SegmentId};
 use serde_json::{Value as Json, json};
 
-use super::identity::version_hashes;
+use super::identity::batch_version_hashes;
 use super::reference::compared::{self, Cut};
 use super::reference::{self, Record};
 use super::{Part, Received, Shape, normalize};
@@ -317,7 +317,7 @@ fn whole_columns_stay_whole() {
 #[test]
 fn a_versions_hash_does_not_depend_on_types_field_order_or_missing_fields() {
     let hashes = |records: &[Json]| -> Vec<Vec<u8>> {
-        let hashes = version_hashes(&shredded(records, 1 << 20)[0]).unwrap();
+        let hashes = batch_version_hashes(&shredded(records, 1 << 20)[0]).unwrap();
         hashes.iter().map(|hash| hash.unwrap().to_vec()).collect()
     };
     let as_integer = hashes(&[json!({"a": 1, "b": null})]);
@@ -707,7 +707,7 @@ fn rows_that_differ_never_encode_alike() {
         .iter()
         .map(|record| {
             let batch = &shredded(std::slice::from_ref(record), 1 << 20)[0];
-            version_hashes(batch).unwrap().value(0).to_vec()
+            batch_version_hashes(batch).unwrap().value(0).to_vec()
         })
         .collect();
     assert_ne!(hashes[0], hashes[1]);

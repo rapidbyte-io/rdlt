@@ -18,18 +18,18 @@ use crate::error::{Code, Error, codes};
 use crate::table::TableView;
 use crate::table::convert::decoded;
 
-/// `batch`, a merge table's, with each key column's negative zeros the zero they equal; refused
-/// where it lacks a key column, holds a null or NaN key, or its changes flag a key column
-/// unchanged, since no row could be matched by such a key.
+/// `batch`, a merge table's, with each key column's negative zeros the zero they equal, and the
+/// columns that changed so; refused where it lacks a key column, holds a null or NaN key, or its
+/// changes flag a key column unchanged, since no row could be matched by such a key.
 pub(super) fn keyed(
     stream: &StreamName,
     view: &TableView,
     batch: RecordBatch,
     sources: &[Source],
     changes: Option<&ChangeRows>,
-) -> Result<RecordBatch, Error> {
+) -> Result<(RecordBatch, Vec<usize>), Error> {
     if view.table.merge.is_none() {
-        return Ok(batch);
+        return Ok((batch, Vec::new()));
     }
     // A truncate names no key.
     let keyed = |row: usize| changes.is_none_or(|changes| !changes.truncates(row));
@@ -45,7 +45,7 @@ pub(super) fn keyed(
         );
     }
     let flagged = changes.map(ChangeRows::flagged).unwrap_or_default();
-    let mut columns = batch.columns().to_vec();
+    let mut zeroed = Vec::new();
     for column in &view.key {
         let name = view.model.columns[*column].name();
         match &sources[*column] {
@@ -56,41 +56,64 @@ pub(super) fn keyed(
                 );
             }
             Source::Incoming(index, _) => {
-                columns[*index] = key_values(stream, name, batch.column(*index), &keyed)?;
+                let values = key_values(stream, name, batch.column(*index), &keyed)?;
                 if flagged.contains(index) {
                     let detail = format!("a change flags key column {name} unchanged");
                     return refuse(codes::MERGE_KEY_UNCHANGED, detail);
+                }
+                if !Arc::ptr_eq(&values, batch.column(*index)) {
+                    zeroed.push((*index, values));
                 }
             }
             Source::Read(_) | Source::Rest(_) => {}
         }
     }
-    with_columns(&batch, columns).map_err(|error| {
+    if zeroed.is_empty() {
+        return Ok((batch, Vec::new()));
+    }
+    let mut columns = batch.columns().to_vec();
+    let places = zeroed.iter().map(|(index, _)| *index).collect();
+    for (index, values) in zeroed {
+        columns[index] = values;
+    }
+    let batch = with_columns(&batch, columns).map_err(|error| {
         Error::internal(format!("stream {stream}: keeping a batch's keys: {error}"))
-    })
+    })?;
+    Ok((batch, places))
 }
 
 /// `batch` holding `columns`, each under its field's name, as the type it is: a key column
 /// whose zeros changed is no longer in the encoding it arrived in.
+///
+/// Each field whose column keeps its type is the batch's own, and so is the schema where every
+/// column keeps its type: no field is built again.
 pub(crate) fn with_columns(
     batch: &RecordBatch,
     columns: Vec<ArrayRef>,
 ) -> Result<RecordBatch, ArrowError> {
-    let fields: Vec<_> = batch
-        .schema()
-        .fields()
-        .iter()
-        .zip(&columns)
-        .map(|(field, column)| {
-            field
-                .as_ref()
-                .clone()
-                .with_data_type(column.data_type().clone())
-        })
-        .collect();
-    let schema = arrow_schema::Schema::new_with_metadata(fields, batch.schema().metadata().clone());
+    let schema = batch.schema();
+    let retyped = |(field, column): (&FieldRef, &ArrayRef)| field.data_type() != column.data_type();
+    let schema = if schema.fields().iter().zip(&columns).any(retyped) {
+        let fields: Fields = schema
+            .fields()
+            .iter()
+            .zip(&columns)
+            .map(|(field, column)| {
+                if retyped((field, column)) {
+                    let typed = field.as_ref().clone();
+                    Arc::new(typed.with_data_type(column.data_type().clone()))
+                } else {
+                    Arc::clone(field)
+                }
+            })
+            .collect();
+        let metadata = schema.metadata().clone();
+        Arc::new(arrow_schema::Schema::new_with_metadata(fields, metadata))
+    } else {
+        schema
+    };
     let rows = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
-    RecordBatch::try_new_with_options(Arc::new(schema), columns, &rows)
+    RecordBatch::try_new_with_options(schema, columns, &rows)
 }
 
 /// `stream`'s key column `name`, `column`, with each negative zero in it, at any depth and in any

@@ -13,7 +13,7 @@ use arrow_schema::DataType;
 use rdlt_connector::testing::denoted;
 use rdlt_connector::{DecimalType, LogicalType, TimeUnit};
 
-use crate::normalize::identity::{root_ids, version_hashes};
+use crate::normalize::identity::{batch_version_hashes, root_ids};
 use crate::table::convert::convert;
 
 const UNITS: [TimeUnit; 4] = [
@@ -120,7 +120,7 @@ fn values(logical: &LogicalType) -> ArrayRef {
 fn identities(array: &ArrayRef) -> Vec<(Vec<u8>, Vec<u8>)> {
     let batch = RecordBatch::try_from_iter([("v", Arc::clone(array))]).unwrap();
     let ids = root_ids(&batch, &[Arc::from("v")]).unwrap();
-    let hashes = version_hashes(&batch).unwrap();
+    let hashes = batch_version_hashes(&batch).unwrap();
     ids.iter()
         .zip(hashes.iter())
         .map(|(id, hash)| (id.unwrap().to_vec(), hash.unwrap().to_vec()))

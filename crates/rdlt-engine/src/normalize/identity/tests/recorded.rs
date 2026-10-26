@@ -16,7 +16,7 @@ use arrow_array::{
 use arrow_buffer::{NullBuffer, OffsetBuffer, ScalarBuffer, i256};
 use arrow_schema::{DataType, Field, Fields, TimeUnit as U};
 
-use super::super::version_hashes;
+use super::super::batch_version_hashes;
 use super::vectors::RECORDED;
 
 /// Whole numbers at the edges of every width, a null among them.
@@ -203,7 +203,7 @@ pub(super) fn digest(columns: &[ArrayRef]) -> Option<u64> {
     };
     for column in columns {
         let batch = RecordBatch::try_from_iter([("c", Arc::clone(column))]).expect("a batch");
-        let hashes: BinaryArray = version_hashes(&batch).ok()?;
+        let hashes: BinaryArray = batch_version_hashes(&batch).ok()?;
         for row in 0..hashes.len() {
             if hashes.is_null(row) {
                 fold(&u64::MAX.to_le_bytes());
