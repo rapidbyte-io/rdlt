@@ -2,7 +2,7 @@
 //! read from, checked once a workload has converged.
 
 use rdlt_connector::{PartitionId, ReadMode, StreamName};
-use rdlt_engine::{Engine, PipelinePlan, Until};
+use rdlt_engine::{Engine, ErrorReport, PipelinePlan, RunStatus, Until};
 
 use super::scenario::{Executed, Scenario, execute_all};
 use super::{Simulation, plan, settled};
@@ -50,11 +50,18 @@ impl Reported<'_> {
     pub(super) async fn check(&self, seed: Seed) {
         for executed in self.run_again().await {
             let attempted: Vec<u64> = executed.reports.iter().map(|run| run.attempted).collect();
+            let ended: Vec<RunStatus> = executed.reports.iter().map(|run| run.status).collect();
+            // A run that succeeded carries no error: its attempts say why it took more than one.
+            let failed: Vec<&ErrorReport> = executed
+                .reports
+                .iter()
+                .flat_map(|run| &run.attempts)
+                .filter_map(|attempt| attempt.error.as_ref())
+                .collect();
             assert!(
                 executed.succeeded && attempted == [1],
-                "seed {seed}: a run with nothing new took {attempted:?} attempts and failed with \
-                 {:?}",
-                executed.failures.last().map(|failure| &failure.text)
+                "seed {seed}: a run with nothing new ended {ended:?} after {attempted:?} attempts, \
+                 which failed with {failed:#?}"
             );
         }
         settled(seed, self.world, self.placing).await;
