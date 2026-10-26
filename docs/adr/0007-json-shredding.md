@@ -107,7 +107,8 @@ fast-path evaluation. Building M3a surfaced decisions the spec leaves open or ge
   sonic-rs writes `serde_json`'s private tokens (raw values, arbitrary-precision numbers) out as
   objects, so rows holding them would be pushed as different JSON.
 - **The simulation pushes JSON.** Streams drawn as JSON push their rows as JSON lines or arrays,
-  and the oracle, which compares values, holds them to the same model as Arrow.
+  and every fourth push of a stream without fat values through `Emitter::rows`, each row a raw
+  value; the oracle, which compares values, holds them to the same model as Arrow.
 
 ## Consequences
 

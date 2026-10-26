@@ -19,8 +19,8 @@ use serde::{Deserialize, Serialize};
 
 use plans::PlannedRead;
 pub(crate) use plans::{Findings, Plans};
-use push::batch;
 pub(crate) use push::json_push;
+use push::{batch, json_rows};
 
 use crate::oracle::aside;
 use crate::owners::Live;
@@ -343,7 +343,16 @@ impl SimStreamReader {
             }
             let end = (*next + usize::try_from(stream.batch_rows).unwrap_or(1)).min(available);
             let rows = &rows[*next..end];
-            if stream.json {
+            if stream.json && stream.fat == 0 && *batches % 4 == 2 {
+                // As a source holding its rows as JSON values pushes them.
+                let (objects, _held) = aside(|| {
+                    let objects = json_rows(stream, rows);
+                    let lines = objects.iter().map(|object| object.get().len() + 1).sum();
+                    let held = world.pushes.hold(lines);
+                    (objects, held)
+                });
+                out.rows(&objects).await?;
+            } else if stream.json {
                 let spaces = world.pressure().spaces;
                 let (push, _held) = aside(|| {
                     let push = json_push(stream, rows, *batches % 2 == 1, spaces);
