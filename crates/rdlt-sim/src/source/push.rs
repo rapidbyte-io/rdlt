@@ -8,6 +8,7 @@ use arrow_schema::{DataType, Field as ArrowField, Schema};
 use bytes::Bytes;
 use rdlt_testkit::drawn::json::text;
 use rdlt_testkit::drawn::{Encoding, Scalar, Shape, array, field};
+use serde_json::value::RawValue;
 use serde_json::{Value, json};
 
 use crate::fat;
@@ -87,6 +88,29 @@ fn whole(stream: &SimStream, rows: &[Row], ballast: usize) -> RecordBatch {
 /// `array`, else JSON lines; where the stream has fat values and a row is spaced, `spaces` spaces
 /// after them.
 pub(crate) fn json_push(stream: &SimStream, rows: &[Row], array: bool, spaces: usize) -> Bytes {
+    let objects = objects(stream, rows);
+    let mut text = if array {
+        format!("[{}]", objects.join(","))
+    } else {
+        objects.join("\n")
+    };
+    if stream.fat > 0 && rows.iter().any(fat::spaced) {
+        text.extend(std::iter::repeat_n(' ', spaces));
+    }
+    Bytes::from(text)
+}
+
+/// `rows` of `stream` as JSON values with the columns a batch of them has, each an object as
+/// [`json_push`] writes it, for a source to push as rows.
+pub(crate) fn json_rows(stream: &SimStream, rows: &[Row]) -> Vec<Box<RawValue>> {
+    objects(stream, rows)
+        .into_iter()
+        .map(|object| RawValue::from_string(object).expect("an object is JSON"))
+        .collect()
+}
+
+/// Each of `rows` of `stream` as the text of a JSON object.
+fn objects(stream: &SimStream, rows: &[Row]) -> Vec<String> {
     // Each object is written as text, so an integer beyond 64 bits pushes as the integer it is.
     let objects = rows.iter().map(|row| {
         let mut fields = vec![
@@ -117,14 +141,5 @@ pub(crate) fn json_push(stream: &SimStream, rows: &[Row], array: bool, spaces: u
             .collect();
         format!("{{{}}}", fields.join(","))
     });
-    let objects: Vec<String> = objects.collect();
-    let mut text = if array {
-        format!("[{}]", objects.join(","))
-    } else {
-        objects.join("\n")
-    };
-    if stream.fat > 0 && rows.iter().any(fat::spaced) {
-        text.extend(std::iter::repeat_n(' ', spaces));
-    }
-    Bytes::from(text)
+    objects.collect()
 }
