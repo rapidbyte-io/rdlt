@@ -2,7 +2,8 @@
 
 The reference SQLite destination stages a commit's rows, then publishes and deletes them by the
 staging predicate of ADR 0006. This record keeps what an append costs at one commit and at many,
-and what a merge into a table of a million rows costs.
+what it costs when its source cannot read the rows again, so the engine logs them ahead, and what
+a merge into a table of a million rows costs.
 
 ## Method
 
@@ -57,3 +58,41 @@ of three rounds and their range.
 
 `perf stat` cannot difference runs of several seconds; the appends keep 0.82–0.89 CPUs busy at
 4.4–4.6 instructions a cycle.
+
+## Logged ahead
+
+`append/1000000/10000/unreplayable` loads `append/1000000/10000`'s rows, committed every 10 000,
+from a source that cannot read them again, so the engine logs each load ahead with `LocalWal` in a
+directory of its own beside the database's, on the same btrfs disk, within the four cores (2
+runtime workers and a compute thread a core) and a budget of 1 GiB; it is the baseline a commit
+that keeps no log of its own is held to.
+
+- **Phases.** Each append prints its last run's commit phases a commit: the flush, the horizon,
+  the log, the destination's commit and the acknowledgement.
+- **Syncs by file.** One run of each case in criterion's test mode under
+  `strace -f -y -e trace=fsync,fdatasync`, which names the file each sync reaches, as `just bench`
+  takes them: SQLite's files (`loaded.db` and its `-wal`) apart from the log's (`wal/...`), though
+  both run in the engine's process.
+- **Running.** `just bench sqlite 0-3`, three rounds of the two appends of a million rows
+  committed every 10 000, interleaved with the other benches' rounds ([campaign.md](campaign.md)),
+  each started once no other build ran, the one-minute load average 1.25 to 2.15 at their starts;
+  `main` at `6365cc13` with the served bench's readings (`d2fc0f95`; the engine's code is
+  `main`'s), 2026-10-25 and -26. The median of the three rounds and their range.
+
+| Case | Time a run | Rows a second | Commits | Flush | Horizon | Log | Commit | Ack |
+|---|---|---|---|---|---|---|---|---|
+| `append/1000000/10000` | 2.836 s (2.805–2.851) | 353 k | 101 | 13.60 ms | 0.000 ms | 0.008 ms | 13.80 ms | 0.011 ms |
+| `append/1000000/10000/unreplayable` | 3.068 s (3.007–3.086) | 326 k | 101 | 13.52 ms | 0.149 ms | 1.804 ms | 14.09 ms | 0.006 ms |
+
+Syncs by file, one run of each in test mode, its setup included (`strace -f -y`):
+
+| Case | `loaded.db` | `loaded.db-wal` | `loaded.db-journal` | The directory holding both | The log (`wal/...`) | All syncs | `openat` |
+|---|---|---|---|---|---|---|---|
+| `append/1000000/10000` | 57 | 226 | 2 | 2 | – | 287 | 34 |
+| `append/1000000/10000/unreplayable` | 57 | 225 | 2 | 3 | 313 | 600 | 5 703 |
+
+SQLite syncs its files alike in both, about 2.8 times a commit; the log adds 313 syncs of its own,
+about 3.1 a commit, and the logged run makes 5 669 more `openat` calls.
+
+Logging the load ahead takes the run 8.2 % longer at the median, the log's phase 1.8 ms of each
+commit's 29.6 ms.
