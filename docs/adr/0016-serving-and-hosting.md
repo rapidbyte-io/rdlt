@@ -77,6 +77,10 @@ socket will be.
     `connector_lost` error. A heartbeat its queue has no room for counts as unanswered: the
     heartbeat never waits on its transport. That lets the engine retry the attempt, and M4c's
     supervision respawn the connector.
+  - An echo is a frame of a call like any other: it waits its turn behind a transport frame of
+    each call with data queued on its connection. A patience shorter than the link takes to carry
+    those loses a connector that answers every beat; the default's 30 s carries a transport frame
+    of all 199 calls on any link of 7 MiB a second or more.
   - Each call has its deadline from §12.6, and fails past it with a transient
     `deadline_exceeded` error. The connect deadline bounds a connection's setup, HTTP/2's
     preface and settings, and the handshake's answer together; the configuration has a connect
