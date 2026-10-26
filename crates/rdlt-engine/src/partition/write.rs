@@ -593,8 +593,16 @@ fn lower(
         let (data, changes) = split_changes(stream, mode, parts)?;
         return plan.prepare(data, None, stamp, Some(changes));
     }
-    // A lone batch concatenates to itself without a copy.
-    let batch = arrow_select::concat::concat_batches(&parts[0].schema(), parts)
-        .map_err(|error| Error::internal(format!("coalescing batches: {error}")))?;
+    let batch =
+        joined(parts).map_err(|error| Error::internal(format!("coalescing batches: {error}")))?;
     plan.prepare(batch, None, stamp, None)
+}
+
+/// `parts`, batches of one schema, as one batch: a lone batch as it is, and several
+/// concatenated.
+fn joined(parts: &[RecordBatch]) -> Result<RecordBatch, arrow_schema::ArrowError> {
+    match parts {
+        [part] => Ok(part.clone()),
+        _ => arrow_select::concat::concat_batches(&parts[0].schema(), parts),
+    }
 }

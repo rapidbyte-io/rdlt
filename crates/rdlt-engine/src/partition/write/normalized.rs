@@ -444,7 +444,7 @@ fn split(stream: &StreamName, parts: &[RecordBatch], shape: &Shape) -> Result<Ve
     }
     let failed =
         |error: ArrowError| normalize::identity::unread(stream, "normalizing a batch", &error);
-    let batch = arrow_select::concat::concat_batches(&parts[0].schema(), parts).map_err(failed)?;
+    let batch = super::joined(parts).map_err(failed)?;
     // A merge stream's root row is identified by its key, so every row must hold one, and one
     // that equals itself.
     let mut columns = batch.columns().to_vec();

@@ -36,13 +36,28 @@ fn stream() -> StreamName {
     StreamName::new("orders").unwrap()
 }
 
+/// The history columns of `data`'s rows, versions beginning as `begun` says and deleting where
+/// `deleting` says.
+fn history(
+    data: &RecordBatch,
+    begun: Begins<'_>,
+    deleting: &dyn Fn(usize) -> bool,
+) -> Result<[ArrayRef; 4], crate::error::Error> {
+    let columns: Vec<_> = data
+        .schema_ref()
+        .fields()
+        .iter()
+        .zip(data.columns())
+        .collect();
+    history_columns(&stream(), (&columns, data.num_rows()), begun, deleting)
+}
+
 fn batch(columns: Vec<(&str, ArrayRef)>) -> RecordBatch {
     RecordBatch::try_from_iter(columns).unwrap()
 }
 
 fn hashes(data: &RecordBatch) -> Vec<Option<Vec<u8>>> {
-    let [_, _, _, hash] =
-        history_columns(&stream(), data, arrived(UNIX_EPOCH), &|_| false).unwrap();
+    let [_, _, _, hash] = history(data, arrived(UNIX_EPOCH), &|_| false).unwrap();
     hash.as_binary::<i32>()
         .iter()
         .map(|hash| hash.map(<[u8]>::to_vec))
@@ -90,8 +105,7 @@ fn a_hash_ignores_null_columns_the_order_of_columns_their_width_and_their_encodi
 fn a_version_begins_when_its_batch_arrived_unless_the_stream_names_its_change_time() {
     let data = batch(vec![("id", Arc::new(Int64Array::from(vec![1, 2])))]);
     let received = UNIX_EPOCH + Duration::from_micros(1_500);
-    let [from, to, current, _] =
-        history_columns(&stream(), &data, arrived(received), &|_| false).unwrap();
+    let [from, to, current, _] = history(&data, arrived(received), &|_| false).unwrap();
     let from = from.as_primitive::<TimestampMicrosecondType>();
     assert_eq!(from.values().to_vec(), [1_500, 1_500]);
     assert_eq!(from.timezone(), Some("UTC"));
@@ -109,8 +123,7 @@ fn a_version_begins_when_its_batch_arrived_unless_the_stream_names_its_change_ti
     ];
     let expected = [[7, 9_000], [0, 9_000]];
     for (time, expected) in times.iter().zip(expected) {
-        let [from, ..] =
-            history_columns(&stream(), &data, changed(time, received), &|_| false).unwrap();
+        let [from, ..] = history(&data, changed(time, received), &|_| false).unwrap();
         let from = from.as_primitive::<TimestampMicrosecondType>();
         assert_eq!(from.values().to_vec(), expected);
         assert_eq!(from.timezone(), Some("UTC"));
@@ -179,9 +192,8 @@ fn a_change_time_of_every_time_type_and_encoding_begins_its_version_at_its_insta
     let data = batch(vec![("id", Arc::new(Int64Array::from(vec![1, 2, 3])))]);
     for plain in times() {
         for time in encodings(&plain) {
-            let [from, ..] =
-                history_columns(&stream(), &data, changed(&time, UNIX_EPOCH), &|_| false)
-                    .unwrap_or_else(|error| panic!("{}: {error}", time.data_type()));
+            let [from, ..] = history(&data, changed(&time, UNIX_EPOCH), &|_| false)
+                .unwrap_or_else(|error| panic!("{}: {error}", time.data_type()));
             let from = from.as_primitive::<TimestampMicrosecondType>();
             assert_eq!(
                 from.values().to_vec(),
@@ -203,7 +215,7 @@ fn a_change_time_missing_in_any_encoding_is_refused() {
         Some(TWO_DAYS),
     ]));
     for time in encodings(&missing) {
-        let refused = history_columns(&stream(), &data, changed(&time, UNIX_EPOCH), &|_| false)
+        let refused = history(&data, changed(&time, UNIX_EPOCH), &|_| false)
             .expect_err("a change without its time");
         assert_eq!(
             refused.code(),
@@ -219,7 +231,7 @@ fn a_change_time_holding_no_time_in_any_encoding_is_refused() {
     let data = batch(vec![("id", Arc::new(Int64Array::from(vec![1, 2, 3])))]);
     let numbers: ArrayRef = Arc::new(Int64Array::from(vec![2, 0, 2]));
     for time in encodings(&numbers) {
-        let refused = history_columns(&stream(), &data, changed(&time, UNIX_EPOCH), &|_| false)
+        let refused = history(&data, changed(&time, UNIX_EPOCH), &|_| false)
             .expect_err("a change time holding numbers");
         assert_eq!(
             refused.code(),
@@ -233,8 +245,7 @@ fn a_change_time_holding_no_time_in_any_encoding_is_refused() {
 #[test]
 fn a_delete_carries_no_hash_and_a_change_without_its_time_is_refused() {
     let three = batch(vec![("id", Arc::new(Int64Array::from(vec![1, 2, 3])))]);
-    let [.., hash] =
-        history_columns(&stream(), &three, arrived(UNIX_EPOCH), &|row| row == 1).unwrap();
+    let [.., hash] = history(&three, arrived(UNIX_EPOCH), &|row| row == 1).unwrap();
     let hash = hash.as_binary::<i32>();
     assert_eq!(
         (
@@ -246,12 +257,11 @@ fn a_delete_carries_no_hash_and_a_change_without_its_time_is_refused() {
         (1, true, 32, 32)
     );
     // Without a delete the column has no nulls at all.
-    let [.., kept] = history_columns(&stream(), &three, arrived(UNIX_EPOCH), &|_| false).unwrap();
+    let [.., kept] = history(&three, arrived(UNIX_EPOCH), &|_| false).unwrap();
     assert!(kept.nulls().is_none());
     let data = batch(vec![("id", Arc::new(Int64Array::from(vec![1, 2])))]);
     let time: ArrayRef = Arc::new(TimestampNanosecondArray::from(vec![Some(1), None]));
-    let refused =
-        history_columns(&stream(), &data, changed(&time, UNIX_EPOCH), &|_| false).unwrap_err();
+    let refused = history(&data, changed(&time, UNIX_EPOCH), &|_| false).unwrap_err();
     assert_eq!(refused.kind(), ErrorKind::Schema);
     assert_eq!(refused.code(), Some(codes::CHANGE_TIME_NULL));
 }
@@ -260,8 +270,7 @@ fn a_delete_carries_no_hash_and_a_change_without_its_time_is_refused() {
 fn a_change_time_that_is_no_time_is_refused() {
     let data = batch(vec![("id", Arc::new(Int64Array::from(vec![1])))]);
     let time: ArrayRef = Arc::new(StringArray::from(vec!["2026-09-30T00:00:00Z"]));
-    let refused =
-        history_columns(&stream(), &data, changed(&time, UNIX_EPOCH), &|_| false).unwrap_err();
+    let refused = history(&data, changed(&time, UNIX_EPOCH), &|_| false).unwrap_err();
     assert_eq!(refused.kind(), ErrorKind::Schema);
     assert_eq!(refused.code(), Some(codes::CHANGE_TIME_INVALID));
 }
@@ -270,15 +279,14 @@ fn a_change_time_that_is_no_time_is_refused() {
 fn a_change_time_beyond_what_microseconds_hold_is_refused() {
     let data = batch(vec![("id", Arc::new(Int64Array::from(vec![1])))]);
     let far: ArrayRef = Arc::new(TimestampSecondArray::from(vec![i64::MAX]));
-    let refused =
-        history_columns(&stream(), &data, changed(&far, UNIX_EPOCH), &|_| false).unwrap_err();
+    let refused = history(&data, changed(&far, UNIX_EPOCH), &|_| false).unwrap_err();
     assert_eq!(refused.kind(), ErrorKind::Schema);
     assert_eq!(refused.code(), Some(codes::CHANGE_TIME_INVALID));
 }
 
 /// When each version of `data`'s rows begins, by its change time `time`.
 fn begins(data: &RecordBatch, time: &ArrayRef) -> Result<Vec<i64>, crate::Error> {
-    let [from, ..] = history_columns(&stream(), data, changed(time, UNIX_EPOCH), &|_| false)?;
+    let [from, ..] = history(data, changed(time, UNIX_EPOCH), &|_| false)?;
     Ok(from
         .as_primitive::<TimestampMicrosecondType>()
         .values()
@@ -330,7 +338,7 @@ fn a_change_time_a_microsecond_cannot_hold_is_refused_never_wrapped() {
 fn a_version_received_before_the_epoch_begins_at_its_microsecond_and_one_beyond_is_refused() {
     let data = batch(vec![("id", Arc::new(Int64Array::from(vec![1])))]);
     let begun = |received| {
-        let [from, ..] = history_columns(&stream(), &data, arrived(received), &|_| false)?;
+        let [from, ..] = history(&data, arrived(received), &|_| false)?;
         Ok::<_, crate::Error>(from.as_primitive::<TimestampMicrosecondType>().value(0))
     };
     let before = |nanos| UNIX_EPOCH - Duration::from_nanos(nanos);

@@ -25,6 +25,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use arrow_array::{Array, ArrayRef, BooleanArray, RecordBatch};
+use arrow_schema::FieldRef;
 use arrow_select::filter::FilterBuilder;
 use parking_lot::Mutex;
 use rdlt_connector::{Epoch, Field, LoadId, LogicalType, SegmentId, StreamName};
@@ -95,6 +96,9 @@ pub(crate) struct LoweringPlan {
     /// The incoming column holding a history table's change times, where the table names one
     /// and the batches carry it.
     change_time: Option<usize>,
+    /// The field of each of the view's columns a history table's versions hash, in the view's
+    /// order; empty for another table.
+    hashed: Vec<Option<FieldRef>>,
     /// The incoming columns whose values the schema policy discards.
     discarded: Vec<usize>,
     /// The incoming columns of JSON whose values their own columns hold in part.
@@ -156,6 +160,7 @@ impl LoweringPlan {
             .collect();
         let written = changes::written(&sources, incoming.schema.fields().len());
         let change_time = history::change_time(&view, &incoming);
+        let hashed = history::hashed(&view, &sources, change_time);
         let mut plan = Self {
             splits: Splits::of(&routes, &types),
             stream,
@@ -165,6 +170,7 @@ impl LoweringPlan {
             sources,
             written,
             change_time,
+            hashed,
             discarded,
             constants: Mutex::new(None),
             policies: Vec::new(),
@@ -253,15 +259,14 @@ impl LoweringPlan {
             });
         }
         let discarded_values = self.discarded_values(&batch, &fitted) + nulled;
-        let checked = batch.clone();
-        let batch = keyed(stream, view, batch, &self.sources, changes.as_ref())?;
+        let (batch, zeroed) = keyed(stream, view, batch, &self.sources, changes.as_ref())?;
         // A key column changed in a zero holds no longer what it converted to.
-        converted.stale(&checked, &batch);
+        converted.forget(zeroed);
         let (mut columns, held) = self.model_columns(&batch, &fitted, &converted)?;
         // Only a history table hashes its rows from the batch, and it keeps every row: any other
         // lets the batch go, so a merge's compaction lets each column go as it copies it.
         let (rows, batch) = (batch.num_rows(), held.is_some().then_some(batch));
-        drop((checked, fitted, converted));
+        drop((fitted, converted));
         self.merged(&mut columns, &mut kept, &mut changes)
             .map_err(failed)?;
         let rows = columns.first().map_or(rows, Array::len);

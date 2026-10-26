@@ -64,14 +64,23 @@ pub(crate) fn root_ids(batch: &RecordBatch, key: &[Arc<str>]) -> Result<BinaryAr
             Encoder::new(schema.field(index), batch.column(index))
         })
         .collect::<Result<_, _>>()?;
-    hashes(Domain::Root, batch, &encoders)
+    hashes(Domain::Root, batch.num_rows(), &encoders)
 }
 
-/// The hashes of `batch`'s rows as history versions: of each whole row.
-pub(crate) fn version_hashes(batch: &RecordBatch) -> Result<BinaryArray, ArrowError> {
-    let schema = batch.schema();
-    let fields = schema.fields().iter().zip(batch.columns());
-    hashes(Domain::Version, batch, &[Encoder::object(None, fields)?])
+/// The hashes of `rows` rows as history versions: of each whole row, its values in `columns`,
+/// each column beside its field.
+pub(crate) fn version_hashes<'a>(
+    columns: impl Iterator<Item = (&'a FieldRef, &'a ArrayRef)>,
+    rows: usize,
+) -> Result<BinaryArray, ArrowError> {
+    hashes(Domain::Version, rows, &[Encoder::object(None, columns)?])
+}
+
+/// The hashes of `batch`'s rows as history versions.
+#[cfg(test)]
+pub(crate) fn batch_version_hashes(batch: &RecordBatch) -> Result<BinaryArray, ArrowError> {
+    let columns = batch.schema_ref().fields().iter().zip(batch.columns());
+    version_hashes(columns, batch.num_rows())
 }
 
 /// What a hash identifies, whose tag its input starts with.
@@ -83,15 +92,11 @@ enum Domain {
     Version = 0x03,
 }
 
-/// The hashes in `domain` of `batch`'s rows, each of what `encoders` write of it in turn.
-fn hashes(
-    domain: Domain,
-    batch: &RecordBatch,
-    encoders: &[Encoder],
-) -> Result<BinaryArray, ArrowError> {
+/// The hashes in `domain` of `rows` rows, each of what `encoders` write of it in turn.
+fn hashes(domain: Domain, rows: usize, encoders: &[Encoder]) -> Result<BinaryArray, ArrowError> {
     let mut row = Vec::with_capacity(ROW_BYTES);
-    let mut values = Vec::with_capacity(batch.num_rows() * ID_BYTES);
-    for index in 0..batch.num_rows() {
+    let mut values = Vec::with_capacity(rows * ID_BYTES);
+    for index in 0..rows {
         row.clear();
         for encoder in encoders {
             encoder.write(index, &mut row)?;
