@@ -1,10 +1,11 @@
 use proptest::prelude::*;
-use rdlt_connector::cost::json_charge;
+use rdlt_connector::cost::{Allocations, batch_charge, json_charge};
 use rdlt_wire::Limits;
 use rdlt_wire::limits::{Class, MESSAGE_ROOM, MIN_DICTIONARY_BYTES, MIN_FRAME_BYTES};
 
-use super::{HALVED, admitted, kept, least, row_overhead};
+use super::{HALVED, admitted, kept, least, pushed_arrays, row_overhead};
 use crate::budget::Shares;
+use crate::fixtures::lowering::wide::{dictionaries, integers};
 use crate::limits::COLUMN_RECORD;
 
 const MIB: u64 = 1 << 20;
@@ -40,6 +41,21 @@ fn the_default_budget_admits_these_limits() {
     // Read alone, a read keeps the whole share, whose schema's message carries more columns
     // than the protocol allows, and 8 MiB of tables' records holds as many.
     assert_eq!(admitted(Shares::of(256 * MIB), 1).schema_columns, 10_000);
+}
+
+#[test]
+fn a_push_s_arrays_are_at_most_two_a_column_of_its_schema() {
+    // Columns of dictionaries hold the most arrays a column a push may: their keys' and their
+    // values'. Integers hold one a column.
+    for columns in [1, 100, 7_489] {
+        let keyed = dictionaries(1, columns);
+        let arrays = batch_charge(&keyed) - Allocations::of(&keyed).bytes();
+        let columns = u64::try_from(columns).unwrap();
+        assert_eq!(arrays, pushed_arrays(columns));
+        let plain = integers(1, columns.try_into().unwrap(), |row| row);
+        let arrays = batch_charge(&plain) - Allocations::of(&plain).bytes();
+        assert_eq!(arrays * 2, pushed_arrays(columns));
+    }
 }
 
 #[test]
@@ -98,12 +114,13 @@ fn what_each_limit_admits_all_at_once_fits_the_share_it_draws_on() {
         let what = format!("{capacity} bytes read by {readers}");
         let defaults = Limits::default();
         assert_eq!(limits.lesser(&defaults), limits, "{what}");
-        // A frame's message, at most its frame and MESSAGE_ROOM, beside what a read keeps, fits
-        // what pushes may take; the frame, with a row's null in each column and the metadata,
-        // fits a request over what a data message holds decoded for each of its bytes.
+        // A frame's message, at most its frame and MESSAGE_ROOM, beside what a read keeps and a
+        // batch's arrays, fits what pushes may take; the frame, with a row's null in each column
+        // and the metadata, fits a request over what a data message holds decoded for each byte.
         let message = limits.frame_bytes.saturating_add(MESSAGE_ROOM);
+        let pushed = message + kept + pushed_arrays(limits.schema_columns);
         assert!(
-            limits.frame_bytes == 0 || message.saturating_add(kept) <= shares.intake.max(kept),
+            limits.frame_bytes == 0 || pushed <= shares.intake.max(kept),
             "{what}"
         );
         let row = limits

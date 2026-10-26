@@ -2,11 +2,11 @@
 //! row takes in the columns the batch does not hold.
 
 use rdlt_connector::LogicalType;
-use rdlt_connector::cost::Stored;
+use rdlt_connector::cost::{Stored, arrays};
 use rdlt_wire::limits::count;
 
 use super::{LoweringPlan, Source};
-use crate::cost::{arrays, flags_bytes};
+use crate::cost::flags_bytes;
 
 /// Bytes: what a row takes in a metadata column of bytes the destination stores: at most 64
 /// bytes, which a positional id's 37, a hash's 32 and a sequence's 16 are within, their offset

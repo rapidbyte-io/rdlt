@@ -1,9 +1,9 @@
 //! What a batch costs whoever holds it: the memory it keeps alive, and the memory it becomes
 //! once its encodings are decoded and its values rendered as the destination stores them.
 //!
-//! A push is charged what it keeps alive ([`push_charge`]); what it becomes bounds what is
-//! lowered, read back or compared at once. What a frame of its rows would hold on the wire is not
-//! measured here: `rdlt_wire::Weigher` weighs that.
+//! A push is charged what it keeps alive and its arrays ([`push_charge`]); what it becomes bounds
+//! what is lowered, read back or compared at once. What a frame of its rows would hold on the
+//! wire is not measured here: `rdlt_wire::Weigher` weighs that.
 
 mod expanded;
 mod held;
@@ -17,7 +17,7 @@ use std::ops::Range;
 
 use arrow_array::cast::AsArray as _;
 use arrow_array::{Array, RecordBatch};
-use arrow_schema::DataType;
+use arrow_schema::{DataType, Field, Fields};
 use rdlt_wire::limits::{MESSAGE_ROOM, count};
 
 pub use held::{Allocations, schema_bytes};
@@ -94,6 +94,59 @@ impl Rendering {
     }
 }
 
+/// Bytes: what an array takes beside the bytes of its buffers: itself, a handle on each of its
+/// buffers and its place among its batch's columns, as much as a column of text with its
+/// validity takes.
+const ARRAY: u64 = 320;
+
+/// Bytes: what the arrays of `arrays` fields take beside the bytes of their buffers.
+pub const fn array_bytes(arrays: u64) -> u64 {
+    arrays.saturating_mul(ARRAY)
+}
+
+/// Bytes: what the arrays of a batch of `fields` take beside the bytes of their buffers, an
+/// array a field at every depth, as a slice of the batch or a batch built of its rows holds them.
+pub fn arrays(fields: &Fields) -> u64 {
+    array_bytes(counted(fields, false))
+}
+
+/// The arrays of a batch of `fields`: one a field at every depth, and, where `values`, one more
+/// for each dictionary's values, which a batch holds beside its keys and a slice shares.
+fn counted(fields: &Fields, values: bool) -> u64 {
+    let mut arrays = 0_u64;
+    // A stack of the nested fields still to count, which a flat schema never fills.
+    let mut nested: Vec<&Field> = Vec::new();
+    for field in fields {
+        let (own, data_type) = own_arrays(field.data_type(), values);
+        arrays = arrays.saturating_add(own);
+        nested.extend(rdlt_wire::child_fields(data_type));
+        while let Some(child) = nested.pop() {
+            let (own, data_type) = own_arrays(child.data_type(), values);
+            arrays = arrays.saturating_add(own);
+            nested.extend(rdlt_wire::child_fields(data_type));
+        }
+    }
+    arrays
+}
+
+/// The arrays a field of `data_type` is itself, as [`counted`] counts them where `values`, and
+/// the type its nested fields hang off, behind its dictionaries.
+fn own_arrays(mut data_type: &DataType, values: bool) -> (u64, &DataType) {
+    let mut arrays = 1_u64;
+    while let DataType::Dictionary(_, keyed) = data_type {
+        arrays = arrays.saturating_add(u64::from(values));
+        data_type = keyed;
+    }
+    (arrays, data_type)
+}
+
+/// The bytes holding `batch` is charged: every allocation it keeps alive, each counted once, and
+/// its arrays, a dictionary's values among them.
+pub fn batch_charge(batch: &RecordBatch) -> u64 {
+    let arrays = array_bytes(counted(batch.schema_ref().fields(), true));
+    Allocations::of(batch).bytes().saturating_add(arrays)
+}
+
 /// Bytes a JSON push is charged for each byte of its text: the text, and twice it for the
 /// batches the engine shreds it into, which are paid for before they are built.
 ///
@@ -109,10 +162,10 @@ pub const fn json_charge(text: u64) -> u64 {
 }
 
 /// The bytes holding `push` is charged, by the engine's admission and by certification alike: a
-/// batch every allocation it keeps alive, each counted once, and JSON its [`json_charge`].
+/// batch its [`batch_charge`], and JSON its [`json_charge`].
 pub fn push_charge(push: &Push) -> u64 {
     match push {
-        Push::Arrow(batch) | Push::Changes(batch) => Allocations::of(batch).bytes(),
+        Push::Arrow(batch) | Push::Changes(batch) => batch_charge(batch),
         Push::Json(text) => json_charge(count(text.len())),
     }
 }

@@ -4,7 +4,7 @@
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
-mod wide;
+pub(crate) mod wide;
 
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
@@ -15,7 +15,7 @@ use arrow_array::{
 };
 use arrow_schema::{Field as ArrowField, Schema};
 #[cfg(test)]
-use rdlt_connector::cost::Rendering;
+use rdlt_connector::cost::{Rendering, arrays};
 use rdlt_connector::{
     Capabilities, ChangeOp, ColumnPath, Epoch, Field, LoadId, LogicalType, OP_COLUMN, ReadMode,
     SEQ_COLUMN, SchemaVersion, SegmentId, StreamName, TablePath, TableRef, TableSchema, TimeUnit,
@@ -24,7 +24,7 @@ use rdlt_connector::{
 
 use super::events;
 #[cfg(test)]
-use crate::cost::{CHANGE_ROW, arrays, rendering};
+use crate::cost::{CHANGE_ROW, rendering};
 use crate::error::Error;
 use crate::naming::Naming;
 use crate::plan::{StreamPlan, WriteMode};

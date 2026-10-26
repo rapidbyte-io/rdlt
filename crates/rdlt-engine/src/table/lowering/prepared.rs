@@ -3,9 +3,8 @@
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
-use rdlt_connector::cost::Allocations;
+use rdlt_connector::cost::{Allocations, arrays};
 
-use crate::cost::arrays;
 use crate::table::TableView;
 
 /// A batch ready for its table, and what the schema policy discarded from it.

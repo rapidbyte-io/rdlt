@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
-use rdlt_connector::cost::Allocations;
+use rdlt_connector::cost::{Allocations, batch_charge};
 use rdlt_connector::{LogicalType, Partition, Permit, StreamName};
 use rdlt_wire::limits::MESSAGE_ROOM;
 
@@ -129,7 +129,8 @@ async fn shredded_batches_hold_what_they_keep_alive_of_what_their_pushes_were_ad
     let admitted = 3 * 42_000 + 2 * MESSAGE_ROOM;
     assert_eq!(budget.reserved(), admitted);
     let batches = [ids(10), ids(1000)];
-    let alive = allocated(&batches[0]) + allocated(&batches[1]);
+    // What a push of each would be charged: what it keeps alive and its array.
+    let alive = batch_charge(&batches[0]) + batch_charge(&batches[1]);
     assert!(alive > 8_000 && alive < 3 * 40_000);
     let held = shredded(pushed, None, batches.to_vec());
     // The text is gone: the pushes hold what the batches keep alive, and nothing was asked of
@@ -152,7 +153,7 @@ async fn shredded_batches_keeping_more_alive_than_was_admitted_hold_what_was_adm
     let pushed = vec![json(&budget, 100).await, json(&budget, 100).await];
     let admitted = 2 * (300 + MESSAGE_ROOM);
     let batch = ids(1000);
-    assert!(allocated(&batch) > admitted);
+    assert!(batch_charge(&batch) > admitted);
     let held = shredded(pushed, None, vec![batch.clone()]);
     assert_eq!((budget.reserved(), budget.peak()), (admitted, admitted));
     drop(held);
@@ -169,7 +170,7 @@ async fn shredded_batches_hold_what_was_reserved_beyond_their_pushes_for_what_th
     let budget = crate::budget::budget(1 << 24);
     let pushed = vec![json(&budget, 100).await];
     let batch = ids(1000);
-    let alive = allocated(&batch);
+    let alive = batch_charge(&batch);
     let beyond = budget.acquire_working(alive).await.unwrap();
     assert_eq!(budget.reserved(), 300 + MESSAGE_ROOM + alive);
     let held = shredded(pushed, Some(beyond), vec![batch]);

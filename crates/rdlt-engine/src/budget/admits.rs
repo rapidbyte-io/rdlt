@@ -6,12 +6,12 @@ mod proofs;
 #[cfg(test)]
 mod tests;
 
-use rdlt_connector::cost::JSON_CHARGE;
+use rdlt_connector::cost::{JSON_CHARGE, array_bytes};
 use rdlt_wire::Limits;
 use rdlt_wire::limits::{Class, MESSAGE_ROOM, MIN_DICTIONARY_BYTES};
 
 use super::Shares;
-use crate::cost::{array_bytes, flags_bytes};
+use crate::cost::flags_bytes;
 use crate::limits::{COLUMN_RECORD, READ_SHARE, SCHEMA_KEPT};
 
 /// The limits on what a read sends that a budget of `shares`, read by `readers` reads at once at
@@ -23,8 +23,9 @@ use crate::limits::{COLUMN_RECORD, READ_SHARE, SCHEMA_KEPT};
 /// - What a read keeps is half its dictionaries and half its schema: the schema's message is a
 ///   fifth of that half, since the schema decoded from it takes up to four times the message.
 /// - A frame's batch keeps alive the message it arrived in, its own bytes and at most
-///   `MESSAGE_ROOM` beside them, the dictionaries its keys name and its schema, so a frame is at
-///   most what pushes may take less what a read may keep and that room.
+///   `MESSAGE_ROOM` beside them, the dictionaries its keys name and its schema, and holds its
+///   arrays, two a column where every column is a dictionary's keys beside its values, so a frame
+///   is at most what pushes may take less what a read may keep, that room and those arrays.
 /// - A frame is charged, before it is decoded, what its scan counts decoding it holds, at most
 ///   twice its bytes and the fields around them, to what pushes may take: a frame is at most a
 ///   request over what a data message holds decoded for each of its bytes, less a row's null in
@@ -69,6 +70,7 @@ pub(crate) fn admitted(shares: Shares, readers: usize) -> Limits {
             .intake
             .saturating_sub(kept)
             .saturating_sub(MESSAGE_ROOM)
+            .saturating_sub(pushed_arrays(columns))
             .min(row),
         catalog_bytes: decoded(Class::Catalog),
         state_bytes: decoded(Class::State),
@@ -112,6 +114,12 @@ pub(crate) fn row_overhead(columns: u64) -> u64 {
         .saturating_add(flags_bytes(columns, true))
         .saturating_add(META_ROW)
         .saturating_add(array_bytes(arrays))
+}
+
+/// Bytes: the most a push's arrays take beside its buffers, in a batch of `columns` columns at
+/// most: two a column, where each is a dictionary's keys beside its values.
+pub(crate) fn pushed_arrays(columns: u64) -> u64 {
+    array_bytes(columns.saturating_mul(2))
 }
 
 /// Bytes: what one of `readers` reads may keep beside its events of a budget of `shares`.

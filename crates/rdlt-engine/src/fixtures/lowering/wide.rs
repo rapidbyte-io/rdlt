@@ -1,10 +1,13 @@
 //! Cases of a wide table of 64-bit integers, each column charged what concatenating it copies:
-//! what the heap tests hold a piece to, of a row or two, or of many rows in several parts.
+//! what the heap tests hold a piece to, of a row or two, or of many rows in several parts; and
+//! the wide batches a source pushes, which the heap tests hold to what a push is charged.
 
 use std::sync::Arc;
 
+use arrow_array::types::Int32Type;
 use arrow_array::{
-    ArrayRef, Int64Array, RecordBatch, TimestampNanosecondArray, TimestampSecondArray,
+    ArrayRef, DictionaryArray, Int32Array, Int64Array, RecordBatch, StringArray,
+    TimestampNanosecondArray, TimestampSecondArray,
 };
 use rdlt_connector::{ReadMode, TimeUnit};
 
@@ -84,7 +87,7 @@ impl Case {
 
 /// `rows` rows of `columns` columns of 64-bit integers, `id` first, its row `row` holding
 /// `key(row)`, then `c1` on.
-fn integers(rows: u32, columns: usize, key: impl Fn(i64) -> i64) -> RecordBatch {
+pub(crate) fn integers(rows: u32, columns: usize, key: impl Fn(i64) -> i64) -> RecordBatch {
     let ids: ArrayRef = Arc::new(Int64Array::from_iter_values((0..i64::from(rows)).map(key)));
     let named = (1..columns).map(|column| {
         let factor = i64::try_from(column).expect("a column's place fits in 64 bits");
@@ -94,4 +97,18 @@ fn integers(rows: u32, columns: usize, key: impl Fn(i64) -> i64) -> RecordBatch 
     });
     RecordBatch::try_from_iter(std::iter::once(("id".to_owned(), ids)).chain(named))
         .expect("columns of one length")
+}
+
+/// `rows` rows of `columns` columns of text behind 32-bit keys, `c0` on, each column's keys naming
+/// a dictionary of a word of its own.
+pub(crate) fn dictionaries(rows: u32, columns: usize) -> RecordBatch {
+    let rows = usize::try_from(rows).expect("a row count");
+    let named = (0..columns).map(|column| {
+        let words = Arc::new(StringArray::from(vec![format!("word {column}")]));
+        let keys = Int32Array::from(vec![0; rows]);
+        let keyed = DictionaryArray::<Int32Type>::try_new(keys, words);
+        let keyed: ArrayRef = Arc::new(keyed.expect("keys within the dictionary"));
+        (format!("c{column}"), keyed)
+    });
+    RecordBatch::try_from_iter(named).expect("columns of one length")
 }

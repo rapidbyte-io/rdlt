@@ -9,8 +9,9 @@ use std::sync::Arc;
 use arrow_array::RecordBatch;
 use arrow_schema::ArrowError;
 use parking_lot::Mutex;
-use rdlt_connector::cost::Allocations;
+use rdlt_connector::cost::{Allocations, array_bytes, arrays};
 use rdlt_connector::{Permit, StreamName};
+use rdlt_wire::limits::count;
 
 use super::allowance::{Cutter, PartPiece};
 use super::pieces::{self, Lowered};
@@ -61,7 +62,7 @@ pub(super) async fn write_normalized(
         let mut reserved = reserve(job, context, &room, request).await?;
         let (shape, stream, parts) = (Arc::clone(shape), job.stream.clone(), held.batches.clone());
         let parts = on_pool(context, move || split(&stream, &parts, &shape)).await?;
-        let made = made(&parts, &held.allocations);
+        let made = made(&held.batches, &parts, &held.allocations);
         let received = parts.first().map_or(0, |part| part.batch.num_rows() as u64);
         if received == 0 {
             continue;
@@ -433,7 +434,11 @@ fn unnamable(job: &PartitionJob, path: &[Arc<str>]) -> Error {
 const PATH_SHOWN: usize = 256;
 
 /// `parts`, one batch once concatenated, normalized as `shape`.
-fn split(stream: &StreamName, parts: &[RecordBatch], shape: &Shape) -> Result<Vec<Part>, Error> {
+pub(super) fn split(
+    stream: &StreamName,
+    parts: &[RecordBatch],
+    shape: &Shape,
+) -> Result<Vec<Part>, Error> {
     if let Some(key) = keys::taken_apart(&parts[0].schema(), shape) {
         let detail = format!(
             "stream {stream}: the merge key {key} holds objects or arrays, which normalizing \
@@ -463,14 +468,24 @@ fn split(stream: &StreamName, parts: &[RecordBatch], shape: &Shape) -> Result<Ve
     normalize::normalize(&batch, shape).map_err(failed)
 }
 
-/// The bytes of the allocations `parts`, a split of a piece of a unit, keep alive beyond those
-/// `unit` holds, each counted once.
-pub(super) fn made(parts: &[Part], unit: &Allocations) -> u64 {
+/// Bytes: what splitting `piece`, slices of a unit, into `parts` holds beyond what `unit` holds
+/// until the last of their pieces is written: the allocations of the parts' batches and lineage
+/// that `unit` does not hold, each counted once, and the arrays of `piece`'s batches, of the
+/// parts' and of their lineage.
+pub(super) fn made(piece: &[RecordBatch], parts: &[Part], unit: &Allocations) -> u64 {
     let mut made = Allocations::default();
+    let sliced = piece
+        .iter()
+        .map(|batch| arrays(batch.schema_ref().fields()));
+    let mut held = sliced.fold(0, u64::saturating_add);
     for part in parts {
         part_growth(part, unit, &mut made);
+        let lineage = part.lineage.arrays().len() + usize::from(part.lineage.keys.is_some());
+        held = held
+            .saturating_add(arrays(part.batch.schema_ref().fields()))
+            .saturating_add(array_bytes(count(lineage)));
     }
-    made.bytes()
+    made.bytes().saturating_add(held)
 }
 
 /// The bytes of the allocations `part`'s batch and lineage keep alive beyond those `unit` holds

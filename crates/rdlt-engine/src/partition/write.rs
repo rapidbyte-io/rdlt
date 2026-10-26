@@ -17,7 +17,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
-use rdlt_connector::cost::{Allocations, Rendering};
+use rdlt_connector::cost::{Allocations, Rendering, arrays};
 use rdlt_connector::{ColumnPath, Permit, SchemaError, TableSchema};
 
 use self::changes::{Ignored, split_changes};
@@ -30,7 +30,7 @@ use super::coalesce::{Flushed, Unit};
 use super::{ChangeMode, OpenSegment, PartitionContext, PartitionJob};
 use crate::budget::{Denied, Lent, MemoryBudget, Reservation, Shares, TooLarge};
 use crate::compute::Pool;
-use crate::cost::{CHANGE_ROW, arrays};
+use crate::cost::CHANGE_ROW;
 use crate::error::{Error, ErrorKind, codes};
 use crate::limits::MAX_PIECE_BYTES;
 use crate::normalize::PushKind;

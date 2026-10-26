@@ -21,8 +21,8 @@ use proptest::prelude::*;
 use rdlt_wire::limits::MESSAGE_ROOM;
 
 use super::{
-    Allocations, JSON_CHARGE, Piece, Rendering, Stored, json_charge, nulls, push_charge,
-    schema_bytes,
+    Allocations, JSON_CHARGE, Piece, Rendering, Stored, array_bytes, arrays, batch_charge,
+    json_charge, nulls, push_charge, schema_bytes,
 };
 use crate::sink::Push;
 use crate::types::{self, LogicalType, TypeKind};
@@ -473,7 +473,8 @@ fn a_batch_holds_every_allocation_it_pins_once() {
     let held = bytes + schema_bytes(&shared.schema());
     assert_eq!(schema_bytes(&shared.schema()), 2 * 129);
     assert_eq!(Allocations::of(&shared).bytes(), held);
-    assert_eq!(push_charge(&Push::Arrow(shared)), held);
+    // A push holds its two arrays beside, 320 bytes each.
+    assert_eq!(push_charge(&Push::Arrow(shared)), held + 2 * 320);
 }
 
 #[test]
@@ -497,7 +498,8 @@ fn a_push_is_charged_what_it_keeps_alive_and_json_three_bytes_a_byte_and_its_mes
             .unwrap(),
     );
     let keyed = batch(keyed);
-    let held = Allocations::of(&keyed).bytes();
+    // Beside what it keeps alive a push holds its arrays: the dictionary's keys and its values.
+    let held = Allocations::of(&keyed).bytes() + 2 * 320;
     assert!(native().expanded(&keyed, 0..1024, u64::MAX) > held);
     assert_eq!(push_charge(&Push::Arrow(keyed.clone())), held);
     assert_eq!(push_charge(&Push::Changes(keyed)), held);
@@ -1000,4 +1002,32 @@ fn a_scalar_stored_as_text_holds_its_value_and_its_text_beside() {
     };
     // Each row its eight bytes, and its text: twenty bytes at most, and an offset.
     assert_eq!(lowered(&ids, stored), 3 * (8 + 20 + 8));
+}
+
+#[test]
+fn a_batch_s_arrays_are_counted_a_field_at_every_depth_and_a_push_s_dictionary_values_beside() {
+    let item = Arc::new(Field::new("item", DataType::Utf8, true));
+    let object = Fields::from(vec![
+        Field::new("a", DataType::Int32, true),
+        Field::new("l", DataType::List(item), true),
+    ]);
+    let keyed = DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8));
+    let fields = Fields::from(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("o", DataType::Struct(object), true),
+        Field::new("d", keyed, true),
+    ]);
+    // An id, an object, its two fields, its list's items and a dictionary: 320 bytes each.
+    assert_eq!(arrays(&fields), 6 * 320);
+    assert_eq!(arrays(&Fields::empty()), 0);
+    assert_eq!(array_bytes(u64::MAX), u64::MAX);
+    // A batch holds a dictionary's values beside its keys, which a slice of it shares.
+    let words: ArrayRef = Arc::new(StringArray::from(vec!["w"]));
+    let keys = Int32Array::from(vec![0, 0]);
+    let keyed: ArrayRef = Arc::new(DictionaryArray::<Int32Type>::try_new(keys, words).unwrap());
+    let ids: ArrayRef = Arc::new(Int64Array::from(vec![1, 2]));
+    let pushed = RecordBatch::try_from_iter([("id", ids), ("d", keyed)]).unwrap();
+    let held = Allocations::of(&pushed).bytes();
+    assert_eq!(arrays(pushed.schema_ref().fields()), 2 * 320);
+    assert_eq!(batch_charge(&pushed), held + 3 * 320);
 }
