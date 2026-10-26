@@ -787,9 +787,10 @@ which one served connection cannot carry ([served.md](served.md), "Many tables")
 - **Snapshot.** 256 streams of one bounded partition each, four such pushes a table, read once at
   the engine's defaults: 256 MiB, 16 partitions read at once and the default commit policy.
 - **Engine.** A followed cell reads a partition more than its streams, as a following run must,
-  within the default 256 MiB where that admits them and otherwise within the least budget that
-  does (`EngineConfig::least_memory`): 514 MiB for 257 partitions. Every cell writes through as
-  many writers as the host has cores, so as many lanes, four on CPUs 0–3.
+  within the default 256 MiB: followed reads keep what they keep from the parts of the reads'
+  share no other read holds, so the memory bounds what they keep, not how many a run follows
+  (ADR 0039). Every cell writes through as many writers as the host has cores, so as many lanes,
+  four on CPUs 0–3.
 - **Readings.** Over a cell's ten runs, its warm-up's left out, the median and range of: each
   commit phase's time a commit, the flush, the horizon, the log, the commit and the
   acknowledgement; the process's CPU seconds a wall second while the streams are quiet, from
@@ -804,8 +805,10 @@ which one served connection cannot carry ([served.md](served.md), "Many tables")
   followed cell takes about two minutes. As a test, each cell runs once with the same pushes 20 ms
   apart, committed every 40 ms and followed for two seconds.
 
-Measured in the three rounds of the chosen cells above, on their tree and cores; the medians of
-each cell's ten runs in each round, then the median of the rounds and their range. A commit's
+Measured in the three rounds of the chosen cells above, on their tree and cores, where each read
+took a part of its own, so the cells of 192 and 256 streams ran within the least budget that
+admitted their partitions; the medians of each cell's ten runs in each round, then the median of
+the rounds and their range. A commit's
 phases are its flush, its log and its commit (the horizon reads 0.000 throughout) and the
 acknowledgement; idle CPU is the process's CPU seconds a wall second while the streams are quiet,
 or over the snapshot's run.
@@ -826,3 +829,22 @@ or over the snapshot's run.
   1 251 flushes at 256 streams. Every cell writes through two of the four lanes.
 - The process's resident peak, the bench's batches of every other cell among it, is 1.2–1.4 GiB,
   and no run raised it more than 2.3 MiB above its base.
+
+### Within the default budget
+
+Followed reads keep what they keep in the parts of the reads' share no other read holds, so a
+run's memory bounds what they keep, not how many it follows (ADR 0039). `main` at `7b946d75`
+against the change on it, 2026-10-26, on the cores above: three rounds of
+`passthrough/tables/followed/256`, interleaved with the served cell's ([served.md](served.md),
+"Within the default budget") and the production slice, the order reversed between rounds, each
+round started at a one-minute load under 3.0; the load was 0.8 to 7.3 at the runs' starts, the
+highest right after a run of the slice. The medians of each run's ten samples, then the median of
+the rounds and their range.
+
+| `followed/256` | Budget | Flush | Commit | Acknowledgement | Idle CPU | Resident peak |
+|---|---|---|---|---|---|---|
+| `main` | 514 MiB | 2.16 ms (2.16–3.43) | 0.27 ms (0.25–0.34) | 0.17 ms (0.17–0.19) | 0.001 | 163.7 MiB (163.5–164.0) |
+| The change | 256 MiB | 2.11 ms (2.11–2.62) | 0.26 ms (0.23–0.28) | 0.17 ms (0.17–0.18) | 0.001 | 162.0 MiB (161.0–162.7) |
+
+- 256 followed streams run within the default 256 MiB, every row landing and no read refused, at
+  the commit phases and idle CPU they took within 514 MiB.

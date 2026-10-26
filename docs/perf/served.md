@@ -1250,9 +1250,8 @@ The passthrough bench's many-table cells ([passthrough.md](passthrough.md), "Man
 both connectors spawned over the socket for each run and the sink declaring a writer a core:
 `served/process/socket/both/tables/followed/{16,64,192}` and
 `served/process/socket/both/tables/snapshot/256`. The engine is configured as in process: a
-followed cell reads a partition more than its streams, within the default 256 MiB where it admits
-them and otherwise within the least budget that does, 386 MiB for 193 partitions; the snapshot runs
-at the engine's defaults.
+followed cell reads a partition more than its streams, within the default 256 MiB; the snapshot
+runs at the engine's defaults.
 
 A served source reads each partition over a call of its one connection, and a followed read holds
 its call for the run. A connection carries at most 200 calls (`rdlt_wire::limits::MAX_CALLS`), the
@@ -1274,8 +1273,9 @@ the largest of the in-process counts within that.
   the run; then the last run's readings, lane flushes by cause, retirements among them.
 - **Checks.** Every run checks every row its streams pushed lands.
 
-Measured in the same three rounds as the production slice above; the medians of each cell's ten
-runs in each round, then the median of the rounds and their range. A commit's phases are its
+Measured in the same three rounds as the production slice above, where each read took a part of
+its own, so the cell of 192 streams ran within the least budget that admitted its partitions; the
+medians of each cell's ten runs in each round, then the median of the rounds and their range. A commit's phases are its
 flush, its log and its commit (the horizon reads 0.000 throughout) and the acknowledgement, one
 `committed` call a stream; idle CPU is each process's CPU seconds a wall second while the streams
 are quiet, or over the snapshot's run.
@@ -1291,12 +1291,54 @@ are quiet, or over the snapshot's run.
   stream, one round trip each, in turn. At 192 streams it is the largest phase, 61 % of a commit's
   11.2 ms.
 - Followed reads keep their decoders' schemas and dictionaries alone: 352 KiB at 192 streams, 0.36 %
-  of the reads' share at the least budget that admits them, which charges each read 2 MiB.
+  of the reads' share at the least budget that admitted them, which charged each read 2 MiB.
 - Quiet, the pipeline takes 0.008 of a core at 192 streams, nearly all of it the host's.
 - At 192 streams the run's 193 tables outnumber its 128 writers, so writers retire: 832 of its
   960 flushes. Every cell writes through two of the four lanes.
 - Each process's resident peak at 192 streams: the host's process 2.2 GiB, the bench's batches of
   every other case among it; the spawned source 124 MiB and the destination 35 MiB.
+
+### Within the default budget
+
+`main` at `7b946d75` against the change on it, 2026-10-26, the same layout and cores: three rounds
+of `served/process/socket/both/tables/followed/192`, interleaved with the in-process cell
+([passthrough.md](passthrough.md), "Within the default budget"), the order reversed between
+rounds; the medians of each run's ten samples, then the median of the rounds and their range.
+
+| `followed/192` | Budget | Flush | Commit | Acknowledgement | Idle CPU: bench / source / destination | Reads kept at most | Resident peak: bench / source / destination |
+|---|---|---|---|---|---|---|---|
+| `main` | 386 MiB | 3.68 ms (3.64–4.07) | 0.79 ms (0.75–0.80) | 6.94 ms (6.85–7.04) | 0.006 / 0.001 / 0.000 | 352 KiB of 96.5 MiB | 96.3 / 124.9 / 35.4 MiB |
+| The change | 256 MiB | 3.79 ms (3.44–4.24) | 0.75 ms (0.73–0.79) | 7.19 ms (7.00–7.27) | 0.006 / 0.001 / 0.000 | 352 KiB of 64 MiB | 94.0 / 124.9 / 35.8 MiB |
+
+- 192 followed streams served within the default memory, every row landing: what their reads keep
+  takes one of the 127 parts of 512 KiB followed reads may hold there.
+
+The production slice against the same `main`: five rounds of its ten cases
+(`served/process/socket/both/{64x80000,512x10000,5120x1000}` from 1, 4, 8 and 16 partitions,
+through one writer), the order reversed between rounds, each started at a one-minute load under
+3.0; the third round's run of the change and the fourth's of `main` ran beside other work on the
+machine, the one-minute load reaching 7.3 and 6.2 by their ends. The median of the rounds and
+their range, in MB/s.
+
+| Case | `main` | The change | Change | Within `main`'s range |
+|---|---|---|---|---|
+| 64×80 000 | 1 637 [1 311–1 706] | 1 440 [1 411–1 692] | −12.0 % | yes |
+| 512×10 000 | 2 749 [2 483–2 924] | 2 493 [1 326–3 002] | −9.3 % | yes |
+| 64×80 000, 4 partitions | 1 644 [1 435–1 775] | 1 613 [1 419–1 741] | −1.8 % | yes |
+| 64×80 000, 8 partitions | 1 524 [1 350–1 617] | 1 610 [1 183–1 693] | +5.6 % | yes |
+| 64×80 000, 16 partitions | 1 392 [1 306–1 482] | 1 424 [1 053–1 560] | +2.3 % | yes |
+| 512×10 000, 4 partitions | 2 613 [1 531–2 653] | 2 578 [1 390–2 629] | −1.4 % | yes |
+| 512×10 000, 16 partitions | 2 331 [1 643–2 412] | 2 287 [1 378–2 440] | −1.9 % | yes |
+| 5 120×1 000 | 1 761 [1 376–1 818] | 1 707 [1 209–1 765] | −3.0 % | yes |
+| 5 120×1 000, 4 partitions | 1 450 [1 279–1 557] | 1 526 [1 196–1 548] | +5.3 % | yes |
+| 5 120×1 000, 16 partitions | 1 443 [1 120–1 479] | 1 472 [1 047–1 490] | +2.0 % | yes |
+
+- Every case's median lies within `main`'s range. The change adds no work a frame: a read that is
+  not followed takes its part once, as it takes its slot.
+- The two cases from one partition, whose medians lie lowest, ran again on their own, `main` and
+  the change alternating six times in one hold of the machine, under more load than the rounds:
+  1 096 MB/s [939–1 227] against 1 127 [1 095–1 270] in large frames, +2.8 %, and 1 307
+  [1 250–1 710] against 1 438 [1 285–1 676] in small ones, +10.0 %.
 
 ## The boundary's copies
 
