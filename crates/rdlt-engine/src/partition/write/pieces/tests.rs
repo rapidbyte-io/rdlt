@@ -50,6 +50,8 @@ fn unplanned(max: u64, limit: u64) -> Lowered {
         stored: Vec::new(),
         row: 0,
         item: 0,
+        piece: 0,
+        part: 0,
         max,
         limit,
     }
@@ -207,6 +209,47 @@ fn a_row_expanding_beyond_what_a_row_may_take_is_refused_and_one_within_it_is_it
             limit: row - 1
         })
     );
+}
+
+#[test]
+fn a_piece_reserves_its_arrays_and_its_parts_whatever_their_rows() {
+    // Batches of ten 8-byte integers, a piece's batch taking a thousand bytes whatever its rows
+    // and each part a hundred: once more where parts are joined.
+    let plain = |first: i64| {
+        let ids: Vec<i64> = (first..first + 10).collect();
+        RecordBatch::try_from_iter([("id", Arc::new(Int64Array::from(ids)) as ArrayRef)]).unwrap()
+    };
+    let lowered = |max: u64, limit: u64| Lowered {
+        piece: 1_000,
+        part: 100,
+        ..unplanned(max, limit)
+    };
+    let cut = |batches: Vec<RecordBatch>, max: u64, limit: u64| {
+        let mut pieces = Pieces::new(uncharged(batches), lowered(max, limit));
+        let mut cut = Vec::new();
+        while let Some(piece) = pieces.next()? {
+            cut.push((piece.parts.len(), piece.rows, piece.bytes));
+        }
+        Ok::<_, RowTooLarge>(cut)
+    };
+    let three = || vec![plain(0), plain(10), plain(20)];
+    assert_eq!(cut(three(), u64::MAX, u64::MAX), Ok(vec![(3, 30, 1_640)]));
+    assert_eq!(
+        cut(vec![plain(0)], u64::MAX, u64::MAX),
+        Ok(vec![(1, 10, 1_180)])
+    );
+    // A second part needs 280 bytes more: the parts are pieces of their own.
+    let one = vec![(1, 10, 1_180); 3];
+    assert_eq!(cut(three(), 1_459, u64::MAX), Ok(one));
+    assert_eq!(cut(three(), 1_460, u64::MAX).unwrap()[0], (2, 20, 1_460));
+    // A row beside what its piece takes whatever its rows passes the piece and fits a row.
+    let rows = cut(vec![plain(0)], 1_107, 1_108).unwrap();
+    assert_eq!(rows, vec![(1, 1, 1_108); 10]);
+    let refused = RowTooLarge {
+        expanded: 1_108,
+        limit: 1_107,
+    };
+    assert_eq!(cut(vec![plain(0)], 1_107, 1_107), Err(refused));
 }
 
 /// A million small integers in one column.

@@ -136,13 +136,13 @@ fn memory_below_what_the_protocol_s_least_limits_need_is_refused_naming_the_leas
             "{said}"
         );
     }
-    // About thirty-two mebibytes at the default sixteen partitions, and the default is far
+    // About thirty-eight mebibytes at the default sixteen partitions, and the default is far
     // above it.
-    assert_eq!(EngineConfig::least_memory(16), Some(33_814_488));
-    // From 17 partitions their dictionaries set the least: a byte below it admits the least
+    assert_eq!(EngineConfig::least_memory(16), Some(39_545_528));
+    // From 19 partitions their dictionaries set the least: a byte below it admits the least
     // frame, and too little for each read's dictionaries.
-    let below = EngineConfig::least_memory(17).unwrap() - 1;
-    let limits = admitted(Shares::of(below), 17);
+    let below = EngineConfig::least_memory(19).unwrap() - 1;
+    let limits = admitted(Shares::of(below), 19);
     assert!(limits.frame_bytes >= MIN_FRAME_BYTES, "{limits:?}");
     assert!(limits.dictionary_bytes < MIN_DICTIONARY_BYTES, "{limits:?}");
     assert!(EngineConfig::builder().build().is_ok());
@@ -155,7 +155,7 @@ fn the_limits_are_the_lesser_of_those_configured_and_those_the_memory_admits() {
     assert_eq!(
         defaults,
         Limits {
-            frame_bytes: (32 << 20) - 7_489 * 33 - 3 * 937 - 10 - 1_024,
+            frame_bytes: (32 << 20) - 7_489 * 33 - 3 * 937 - 10 - 1_024 - (2 * 7_489 + 16) * 320,
             json_push_bytes: ((84 << 20) - MESSAGE_ROOM) / 3,
             cursor_bytes: (4 << 20) / 34,
             dictionary_bytes: 2 << 20,
@@ -247,7 +247,7 @@ fn every_partition_read_at_once_takes_two_mebibytes_of_memory_at_least() {
             .build()
     };
     let least = EngineConfig::least_memory(16).unwrap();
-    for memory in [least, 34 << 20, 256 << 20, 1 << 30] {
+    for memory in [least, 40 << 20, 256 << 20, 1 << 30] {
         let most = memory / (2 << 20);
         assert!(build(memory, most).is_ok(), "{memory}");
         let refused = build(memory, most + 1).unwrap_err();

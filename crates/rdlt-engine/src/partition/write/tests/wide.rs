@@ -1,24 +1,65 @@
-//! A piece of a wide table is lowered within what its rows reserved, however many parts it
-//! joins: a change stream's flags remapped over the table's columns, and every row a filter keeps
-//! copied as what it was copied from goes.
+//! A piece of a wide table is lowered within what it reserved, however few its rows and however
+//! many parts it joins: a change stream's flags remapped over the table's columns, every row a
+//! filter keeps copied as what it was copied from goes, and the arrays of each batch lowering
+//! holds of the piece; once lowered, it keeps no more than it is charged.
 
 use std::sync::Arc;
 
 use arrow_array::{Int8Array, RecordBatch};
+use rdlt_connector::cost::Allocations;
 use rdlt_connector::{ChangeOp, OP_COLUMN, StreamName};
 
-use crate::cost::tests::lowering::SLACK;
-use crate::cost::tests::peak_alone;
+use super::super::Held;
+use super::super::pieces::Pieces;
+use crate::cost::tests::{held_alone, peak_alone};
 use crate::fixtures::lowering::{Case, Storage, stamp};
 use crate::partition::ChangeMode;
 use crate::plan::{DeleteMode, OnTruncate};
 use crate::table::ChangeLayout;
 
-/// Columns of the wide table: a row's flags over them take 125 bytes.
+/// Columns of a wide table: a row's flags over them take 125 bytes.
 const COLUMNS: usize = 1_000;
 
-/// Rows of the piece measured.
-const ROWS: u32 = 2_048;
+/// Columns of the widest table a schema may have at the default budget.
+const WIDEST: usize = 7_489;
+
+/// A piece measured: the columns of its table, its rows, and how many parts they are cut into.
+#[derive(Clone, Copy, Debug)]
+struct Cut {
+    columns: usize,
+    rows: u32,
+    parts: usize,
+}
+
+/// The pieces measured: many rows of a wide table in two parts, and a row in one part and two
+/// rows in two, of a wide table and of the widest.
+const PIECES: [Cut; 5] = [
+    Cut {
+        columns: COLUMNS,
+        rows: 2_048,
+        parts: 2,
+    },
+    Cut {
+        columns: COLUMNS,
+        rows: 1,
+        parts: 1,
+    },
+    Cut {
+        columns: COLUMNS,
+        rows: 2,
+        parts: 2,
+    },
+    Cut {
+        columns: WIDEST,
+        rows: 1,
+        parts: 1,
+    },
+    Cut {
+        columns: WIDEST,
+        rows: 2,
+        parts: 2,
+    },
+];
 
 /// How a stream reads changes into a table that holds them as `layout` says: as a log, or
 /// merged by key into a destination that keeps a column an update flags unchanged, ignoring
@@ -48,51 +89,81 @@ fn with_deletes(batch: &RecordBatch) -> RecordBatch {
     RecordBatch::try_new(batch.schema(), columns).unwrap()
 }
 
-/// What lowering `batch`, `case`'s rows, as a piece of two parts read as `mode` holds at its
-/// peak, and the rows it makes.
-fn lowered(case: &Case, batch: &RecordBatch, mode: Option<ChangeMode>) -> (u64, usize) {
-    let half = batch.num_rows() / 2;
-    let parts = [
-        batch.slice(0, half),
-        batch.slice(half, batch.num_rows() - half),
-    ];
-    let stream = StreamName::new("events").unwrap();
-    let (peak, prepared) =
-        peak_alone(|| super::super::lower(&stream, mode, &parts, case.plan(), &stamp()));
-    (peak, prepared.unwrap().batch.num_rows())
+/// `batch` cut into `parts` slices of as many rows each, the last of what is left.
+fn sliced(batch: &RecordBatch, parts: usize) -> Vec<RecordBatch> {
+    let rows = batch.num_rows();
+    let each = rows.div_ceil(parts);
+    let firsts = (0..rows).step_by(each);
+    firsts
+        .map(|first| batch.slice(first, each.min(rows - first)))
+        .collect()
 }
 
-/// The rows lowering the case `wide` makes of `ROWS` rows, each batch as `pushed` makes it and
-/// read as `mode`, where what it holds a row is within what its rows reserved, and how far it
-/// is not otherwise: a piece of a row a part holds what a piece's arrays and schema take
-/// whatever its rows, which is left out.
+/// What the write path reserves for `parts`, rows of `case`'s table read as `mode` says, as one
+/// piece.
+fn reserved(case: &Case, parts: &[RecordBatch], mode: Option<ChangeMode>) -> u64 {
+    let bounds = (u64::MAX, u64::MAX);
+    let lowered = super::super::measured(case.plan(), case.rendering(), &parts[0], mode, bounds);
+    let mut pieces = Pieces::new(Held::of(parts.to_vec(), Vec::new()), lowered);
+    let piece = pieces.next().unwrap().expect("the parts have rows");
+    let rows: usize = parts.iter().map(RecordBatch::num_rows).sum();
+    assert_eq!((piece.rows, piece.parts.len()), (rows, parts.len()));
+    piece.bytes
+}
+
+/// The rows `case`'s plan makes of `batch` cut into `parts` parts and read as `mode` says, where
+/// lowering them holds no more at its peak than the piece reserved, slicing them included, and
+/// keeps no more beyond `batch` than it is charged once lowered; how far it passes either
+/// otherwise.
 fn within(
-    wide: impl Fn(u32) -> Case,
-    pushed: impl Fn(&RecordBatch) -> RecordBatch,
+    case: &Case,
+    batch: &RecordBatch,
+    parts: usize,
     mode: Option<ChangeMode>,
 ) -> Result<usize, String> {
-    let (whole, least) = (wide(ROWS), wide(2));
-    let (peak, rows) = lowered(&whole, &pushed(whole.batch()), mode);
-    let (fixed, _) = lowered(&least, &pushed(least.batch()), mode);
-    let (held, reserved) = (peak.saturating_sub(fixed), whole.charge() - least.charge());
-    if held > reserved + SLACK {
-        return Err(format!("{reserved} reserved for {rows} rows, {held} held"));
+    let stream = StreamName::new("events").unwrap();
+    let lower = || {
+        let parts = sliced(batch, parts);
+        super::super::lower(&stream, mode, &parts, case.plan(), &stamp()).unwrap()
+    };
+    let unit = Allocations::of(batch);
+    let reserved = reserved(case, &sliced(batch, parts), mode);
+    // What the piece keeps once lowered is counted while it holds what it reserved.
+    let (peak, (prepared, charged)) = peak_alone(|| {
+        let prepared = lower();
+        let charged = prepared.growth(&unit);
+        (prepared, charged)
+    });
+    let rows = prepared.batch.num_rows();
+    if peak > reserved {
+        return Err(format!("{reserved} reserved for {rows} rows, {peak} held"));
+    }
+    let (kept, _) = held_alone(lower);
+    if kept > charged {
+        return Err(format!(
+            "{charged} charged for {rows} rows lowered, {kept} kept"
+        ));
     }
     Ok(rows)
 }
 
 #[test]
-fn a_wide_change_piece_holds_no_more_a_row_than_it_reserved_a_row() {
+fn a_wide_change_piece_holds_no_more_than_it_reserved() {
     let mut found = Vec::new();
     for layout in [ChangeLayout::Log, ChangeLayout::Merge { soft: false }] {
         for storage in [Storage::Native, Storage::Text] {
-            let wide = |rows| Case::wide_changes(rows, COLUMNS, layout, storage);
-            let all = within(wide, RecordBatch::clone, Some(mode(layout)));
-            // Rows the stream ignores are dropped from the parts joined into one batch.
-            let deletes = within(wide, with_deletes, Some(mode(layout)));
-            for (what, within) in [("updates", all), ("updates and deletes", deletes)] {
-                if let Err(beyond) = within {
-                    found.push(format!("{layout:?} stored {storage:?}, {what}: {beyond}"));
+            for piece in PIECES {
+                let case = Case::wide_changes(piece.rows, piece.columns, layout, storage);
+                // Rows the stream ignores are dropped from the parts joined into one batch.
+                let pushed = [
+                    ("updates", case.batch().clone()),
+                    ("updates and deletes", with_deletes(case.batch())),
+                ];
+                for (what, batch) in pushed {
+                    if let Err(beyond) = within(&case, &batch, piece.parts, Some(mode(layout))) {
+                        let at = format!("{layout:?} stored {storage:?}, {what}, {piece:?}");
+                        found.push(format!("{at}: {beyond}"));
+                    }
                 }
             }
         }
@@ -101,15 +172,31 @@ fn a_wide_change_piece_holds_no_more_a_row_than_it_reserved_a_row() {
 }
 
 #[test]
-fn a_wide_merge_of_several_parts_keeps_the_last_row_of_each_key_within_what_its_rows_reserved() {
-    let wide = |rows| Case::wide_merge(rows, COLUMNS);
-    let kept = wide(ROWS).kept().rows;
-    assert_eq!(within(wide, RecordBatch::clone, None), Ok(kept));
+fn a_wide_merge_keeps_the_last_row_of_each_key_within_what_it_reserved() {
+    for piece in PIECES {
+        let case = Case::wide_merge(piece.rows, piece.columns);
+        let kept = case.kept().rows;
+        let within = within(&case, case.batch(), piece.parts, None);
+        assert_eq!(within, Ok(kept), "{piece:?}");
+    }
 }
 
 #[test]
-fn a_wide_piece_of_several_parts_drops_rows_within_what_its_rows_reserved() {
-    let wide = |rows| Case::wide_dropped_rows(rows, COLUMNS);
-    let kept = wide(ROWS).kept().rows;
-    assert_eq!(within(wide, RecordBatch::clone, None), Ok(kept));
+fn a_wide_piece_drops_rows_within_what_it_reserved() {
+    for piece in PIECES {
+        let case = Case::wide_dropped_rows(piece.rows, piece.columns);
+        let kept = case.kept().rows;
+        let within = within(&case, case.batch(), piece.parts, None);
+        assert_eq!(within, Ok(kept), "{piece:?}");
+    }
+}
+
+#[test]
+fn a_wide_history_piece_hashes_its_versions_within_what_it_reserved() {
+    for piece in PIECES {
+        let case = Case::wide_history(piece.rows, piece.columns);
+        let kept = case.kept().rows;
+        let within = within(&case, case.batch(), piece.parts, None);
+        assert_eq!(within, Ok(kept), "{piece:?}");
+    }
 }

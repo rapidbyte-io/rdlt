@@ -461,7 +461,7 @@ async fn a_cursor_waiting_for_room_commits_without_waiting_on_a_barrier_slow_to_
     let config = || {
         EngineConfig::builder()
             .commit(CommitPolicy::new(None, Some(1_000_000), None).expect("a policy"))
-            .memory(34 << 20)
+            .memory(40 << 20)
             .partitions(3)
             .lanes(1)
             .barrier_wait(Duration::from_secs(20))

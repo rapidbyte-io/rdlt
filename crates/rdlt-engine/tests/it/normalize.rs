@@ -1213,7 +1213,7 @@ async fn a_destination_that_cannot_add_columns_refuses_one_only_a_later_chunk_of
 }
 
 /// Loads two hundred thousand rows of one Arrow batch into a new table of a frozen normalized
-/// stream at `destination`, under a budget of 34 MiB, which lowers the flush in several pieces:
+/// stream at `destination`, under a budget of 40 MiB, which lowers the flush in several pieces:
 /// only the last row's item holds `z`.
 async fn in_pieces(store: &str, destination: Arc<dyn Destination>) -> RunOutcome {
     const ROWS: usize = 200_000;
@@ -1233,7 +1233,7 @@ async fn in_pieces(store: &str, destination: Arc<dyn Destination>) -> RunOutcome
             .policy(SchemaPolicy::Freeze),
     );
     let source = batches(store, vec![BatchStream::new("events", vec![batch])]).await;
-    let config = commit_every(1_000_000_000).memory(34 << 20).lanes(1);
+    let config = commit_every(1_000_000_000).memory(40 << 20).lanes(1);
     engine(config)
         .run(pipeline(store, [plan]), source, destination)
         .await

@@ -15,10 +15,10 @@ fn the_default_budget_admits_these_limits() {
     assert_eq!(
         limits,
         Limits {
-            // Half the 64 MiB a request for lowering takes, less a row's nulls, flags (937 bytes,
-            // and their hex text) and metadata in a table of every column it may have: that
-            // binds, not the 80 MiB pushes may take beside what a read keeps and a message's room.
-            frame_bytes: 32 * MIB - 7_489 * 33 - 3 * 937 - 10 - 1_024,
+            // Half the 64 MiB a request takes, less a row's nulls, flags (937 bytes and their
+            // hex), metadata and its piece's arrays (320 bytes each, two a column and sixteen),
+            // in a table of every column: that binds, not what pushes may take.
+            frame_bytes: 32 * MIB - 7_489 * 33 - 3 * 937 - 10 - 1_024 - (2 * 7_489 + 16) * 320,
             // A third of the 84 MiB pushes may take, less a message's room.
             json_push_bytes: (84 * MIB - MESSAGE_ROOM) / 3,
             // A cursor waiting and an answer for each of sixteen reads, and half the share.
@@ -41,7 +41,7 @@ fn the_default_budget_admits_these_limits() {
 
 #[test]
 fn the_least_memory_admits_these_limits() {
-    assert_eq!(least(16), Some(33_814_488));
+    assert_eq!(least(16), Some(39_545_528));
     // One read keeps all of the reads' share, and a frame and its message's room beside it fit
     // what pushes may take.
     assert_eq!(least(1), Some(53_690_341));
@@ -55,7 +55,7 @@ fn the_least_memory_admits_these_limits() {
             limits.schema_bytes,
             limits.schema_columns
         ),
-        (MIN_FRAME_BYTES, 3_698_375, 15_539, 264_175, 52_835, 943)
+        (MIN_FRAME_BYTES, 4_325_207, 18_173, 308_949, 61_789, 1_103)
     );
     // What a sixteenth of the budget holds of one answer decoded.
     assert_eq!(
@@ -64,7 +64,7 @@ fn the_least_memory_admits_these_limits() {
             limits.state_bytes,
             limits.control_message_bytes
         ),
-        (132_087, 2_113_405, 132_087)
+        (154_474, 2_471_595, 154_474)
     );
 }
 
@@ -226,7 +226,7 @@ fn the_least_budget_admits_the_protocol_s_least_limits_and_a_byte_less_does_not(
     }
     // Many reads each keep little: their dictionaries' least then sets the budget's, two least
     // dictionaries for each read in a quarter of it.
-    assert_eq!(least(17), Some(17 * 8 * MIN_DICTIONARY_BYTES));
+    assert_eq!(least(19), Some(19 * 8 * MIN_DICTIONARY_BYTES));
     assert_eq!(least(600_000), Some(600_000 * 8 * MIN_DICTIONARY_BYTES));
     // From 2^43 reads not even the largest budget does.
     for readers in [1 << 43, usize::MAX] {

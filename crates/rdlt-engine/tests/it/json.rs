@@ -184,7 +184,7 @@ async fn a_record_the_shredder_refuses_fails_every_run_that_reads_it() {
 
 #[tokio::test(start_paused = true)]
 async fn a_json_push_beyond_what_the_budget_admits_is_refused_where_it_is_emitted() {
-    // Six megabytes of JSON, where a budget of thirty-four admits a push of four and a half.
+    // Six megabytes of JSON, where a budget of forty admits a push of four and a half.
     let rows: Vec<String> = (0..2000)
         .map(|id| format!(r#"{{"id":{id},"pad":"{}"}}"#, "x".repeat(3_000)))
         .collect();
@@ -194,7 +194,7 @@ async fn a_json_push_beyond_what_the_budget_admits_is_refused_where_it_is_emitte
         vec![BatchStream::json("events", &[&push, &push])],
     )
     .await;
-    let config = commit_every(1000).memory(34 << 20);
+    let config = commit_every(1000).memory(40 << 20);
     let limit = config
         .clone()
         .build()
@@ -309,7 +309,7 @@ async fn a_small_budget_never_holds_gathered_pushes_until_their_latency() {
         vec![BatchStream::json("events", &pushes).one_segment()],
     )
     .await;
-    let run = engine(commit_every(1000).memory(34 << 20)).run(
+    let run = engine(commit_every(1000).memory(40 << 20)).run(
         pipeline("small_budget", [stream("events")]),
         source,
         memory("small_budget").await,

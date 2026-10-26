@@ -861,3 +861,22 @@ mod found {
         }
     }
 }
+
+#[test]
+fn a_batch_s_arrays_are_counted_a_field_at_every_depth() {
+    let item = Arc::new(ArrowField::new("item", DataType::Utf8, true));
+    let object = Fields::from(vec![
+        ArrowField::new("a", DataType::Int32, true),
+        ArrowField::new("l", DataType::List(item), true),
+    ]);
+    let keyed = DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8));
+    let fields = Fields::from(vec![
+        ArrowField::new("id", DataType::Int64, false),
+        ArrowField::new("o", DataType::Struct(object), true),
+        ArrowField::new("d", keyed, true),
+    ]);
+    // An id, an object, its two fields, its list's items and a dictionary: 320 bytes each.
+    assert_eq!(super::arrays(&fields), 6 * 320);
+    assert_eq!(super::arrays(&Fields::empty()), 0);
+    assert_eq!(super::array_bytes(u64::MAX), u64::MAX);
+}

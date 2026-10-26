@@ -67,7 +67,7 @@ Arrow columns and the rows normalizing makes of both escaped that in several way
   `json_exceeds_budget` (`ErrorKind::Source`). Shredding is two steps, `observe` and `build`, and
   the partition reserves between them.
 - **Columns and cells are counted where they are built.** The shredder's column limit is the
-  engine's derived `schema_columns` (7,489 at the default budget, 943 at the least), counted as
+  engine's derived `schema_columns` (7,489 at the default budget, 1,103 at the least), counted as
   the emitter counts a schema: every field at any depth, and every list's items. It holds while a
   chunk is parsed, and again for the joined shape. Cells are counted a level at a time, the rows
   of the level times its leaves, a list's items being the rows of its items' level, and bounded

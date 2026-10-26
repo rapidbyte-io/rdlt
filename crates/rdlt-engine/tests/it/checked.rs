@@ -53,7 +53,7 @@ async fn run(name: &str, budget: u64, batch: RecordBatch) -> (usize, RunOutcome)
 
 #[tokio::test(start_paused = true)]
 async fn a_run_naming_sixty_million_items_is_checked_within_the_least_memory() {
-    const BUDGET: u64 = 34 << 20;
+    const BUDGET: u64 = 40 << 20;
     const ITEMS: i32 = 60 << 20;
     // 452 bytes: one row whose list names one run of sixty million items of JSON.
     let one: ArrayRef = Arc::new(StringArray::from(vec!["1"]));

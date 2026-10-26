@@ -5,6 +5,7 @@ use std::sync::Arc;
 use arrow_array::RecordBatch;
 use rdlt_connector::cost::Allocations;
 
+use crate::cost::arrays;
 use crate::table::TableView;
 
 /// A batch ready for its table, and what the schema policy discarded from it.
@@ -21,10 +22,10 @@ pub(crate) struct Prepared {
 
 impl Prepared {
     /// The bytes of the allocations the batch keeps alive beyond those `unit` holds, each counted
-    /// once, `unit` left as it is.
+    /// once, `unit` left as it is, and what its arrays take beside them.
     ///
-    /// The load's constant columns count for nothing: they are built once and every batch
-    /// shares them.
+    /// The buffers of the load's constant columns count for nothing: they are built once and
+    /// every batch shares them.
     pub(crate) fn growth(&self, unit: &Allocations) -> u64 {
         let constants = self.view.model.columns.len();
         let mut grown = Allocations::default();
@@ -33,6 +34,8 @@ impl Prepared {
                 grown.add_array_beyond(column.as_ref(), unit);
             }
         }
-        grown.bytes()
+        grown
+            .bytes()
+            .saturating_add(arrays(self.batch.schema_ref().fields()))
     }
 }

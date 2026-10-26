@@ -8,6 +8,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use arrow_schema::{Field, Fields};
 use parking_lot::Mutex;
 use rdlt_connector::cost::{Rendering, push_charge};
 use rdlt_connector::{
@@ -66,6 +67,33 @@ pub(crate) const fn flags_bytes(columns: u64, text: bool) -> u64 {
     bytes
         .saturating_add(width.saturating_mul(2))
         .saturating_add(OFFSET_AND_VALIDITY)
+}
+
+/// Bytes: what an array takes beside the bytes of its buffers: itself, a handle on each of its
+/// buffers and its place among its batch's columns, as much as a column of text with its
+/// validity takes, the most of the columns lowering builds.
+const ARRAY: u64 = 320;
+
+/// Bytes: what the arrays of `arrays` fields take beside the bytes of their buffers.
+pub(crate) const fn array_bytes(arrays: u64) -> u64 {
+    arrays.saturating_mul(ARRAY)
+}
+
+/// Bytes: what the arrays of a batch of `fields` take beside the bytes of their buffers, an
+/// array a field at every depth.
+pub(crate) fn arrays(fields: &Fields) -> u64 {
+    let mut arrays = 0_u64;
+    // A stack of the nested fields still to count, which a flat schema never fills.
+    let mut nested: Vec<&Field> = Vec::new();
+    for field in fields {
+        arrays = arrays.saturating_add(1);
+        nested.extend(rdlt_wire::child_fields(field.data_type()));
+        while let Some(child) = nested.pop() {
+            arrays = arrays.saturating_add(1);
+            nested.extend(rdlt_wire::child_fields(child.data_type()));
+        }
+    }
+    array_bytes(arrays)
 }
 
 /// Times what a batch's rows expand to that normalizing them may hold: the items it copies out of

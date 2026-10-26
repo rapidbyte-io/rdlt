@@ -24,7 +24,7 @@ use crate::support::destinations::{Gate, gated, null, stalling};
 use crate::support::making::{Step, Steps, making};
 use crate::support::{commit_every, engine, pipeline, stream};
 
-const BUDGET: u64 = 34 << 20;
+const BUDGET: u64 = 40 << 20;
 
 /// About the least budget an engine reading one partition at once takes.
 const ONE_READ: u64 = 54 << 20;

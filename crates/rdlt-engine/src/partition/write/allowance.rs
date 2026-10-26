@@ -19,6 +19,7 @@ use super::normalized::PlannedParts;
 use super::pieces::{Lowered, Pieces, RowTooLarge};
 use super::reserved_times;
 use crate::budget::MemoryBudget;
+use crate::cost::arrays;
 use crate::error::Error;
 use crate::limits::MAX_PIECE_BYTES;
 use crate::normalize::Lineage;
@@ -114,6 +115,8 @@ impl Cutter {
                 stored: plan.stored(),
                 row: plan.row_bytes(),
                 item: 0,
+                piece: plan.piece_bytes(),
+                part: arrays(part.batch.schema_ref().fields()),
                 max: self.piece.min(self.row),
                 limit: self.row,
             };
