@@ -39,9 +39,10 @@ process or each in a process of its own.
   in small frames, at the credit the protocol grants: a window that opens at 4 MiB and grows to
   two of the largest frames taken, over HTTP/2 stream windows of 4 MiB and transport frames of
   1 MiB.
-- **Engine.** Within the four cores (2 runtime workers and 2 compute threads), the default budget
-  of 256 MiB, one commit; the results recorded at `90ce76c2` and before ran within 1 GiB. Only
-  the run is timed, not its connections; every run checks every row arrives.
+- **Engine.** Within the four cores (2 runtime workers and a compute thread a core), the default
+  budget of 256 MiB, one commit; the cases named `/1GiB` run within 1 GiB, as did the results
+  recorded at `90ce76c2` and before. Only the run is timed, not its connections; every run checks
+  every row arrives.
 - **Readings.** Each process case prints its last run's readings from the host's report, as
   [passthrough.md](passthrough.md) defines them, a batch counted as a frame. In every case but
   those named `/<n>-writers` the served sink declares one writer, so the case writes through one
@@ -58,6 +59,9 @@ process or each in a process of its own.
   stat`'s figures for these cases are not recorded: a spawned source makes its batches inside
   the window `perf stat` counts, and a listening connector killed as the bench ends takes its
   counts with it.
+  Each process's user and system time are read alike, the bench's from `getrusage` and a
+  connector process's from its `/proc/<pid>/stat`, and printed as the share of its CPU time spent
+  in user mode.
 - **Partitions.** Most cases read the batches from one partition. Eleven process cases read the
   same batches from several partitions, each an even share in order
   (`rdlt_engine::bench::split_replay_config`): both connectors served over the socket, as
@@ -250,35 +254,39 @@ each process kept busy.
 
 ### The production slice
 
-This change on `90ce76c2`, 2026-10-13, the same layout and cores: both connectors served over the
-socket in processes of their own, the engine within the default 256 MiB. Three rounds of
-`just bench served 0-3 process/socket/both 4-11`, each taking 391 to 412 s, the one-minute load
-average 2.0 to 2.8 at their starts. The table gives the median of the three rounds, the range of
-the throughput in brackets, and the medians of the host's readings, as
-[passthrough.md](passthrough.md) defines them; every case writes through one lane, the served
-sink declaring one writer, and makes one commit, at the end, with no wait for room for lowering.
+`main` at `6365cc13` with the bench's readings (`d2fc0f95`), 2026-10-25 and -26, the same layout
+and cores: both connectors served over the socket in processes of their own, the engine within
+the default 256 MiB. Three rounds of `just bench served 0-3 process/socket/both 4-11`, interleaved
+with the other benches' rounds ([campaign.md](campaign.md)), each started once no other build ran;
+the one-minute load average was 1.15, 2.69 and 2.22 at their starts and 1.05, 1.55 and 0.93 at
+their ends. The table gives the median of the three rounds, the throughput's range in brackets,
+and the medians of each process's CPU seconds a GB, the CPUs each kept busy, the waits of frames
+for their decode charge and the lane's flushes of its writer by cause, as
+[passthrough.md](passthrough.md) defines them. Every case writes through one lane, the served
+sink declaring one writer, and makes one commit, at the end.
 
-| Frames | Partitions | MB/s | CPU s a GB, all | Intake | Pool idle | Queue and way back | Signals a frame |
+| Frames | Partitions | MB/s | CPU s a GB: all | Host's, source's, destination's | CPUs busy: host / source / destination | Decode waits | Flushes: pressure + commit |
 |---|---|---|---|---|---|---|---|
-| 64×80 000 | 1 | 1 524 [1 497–1 591] | 2.29 | 8.4 % | 99.2 % | 2.3 % | 15.2 |
-| 64×80 000 | 4 | 1 456 [1 424–1 479] | 2.45 | 12.9 % | 99.3 % | 9.8 % | 15.9 |
-| 64×80 000 | 8 | 1 407 [1 333–1 456] | 2.50 | 33.0 % | 99.1 % | 6.6 % | 17.0 |
-| 64×80 000 | 16 | 1 128 [1 108–1 164] | 2.48 | 884 % | 99.4 % | 4.3 % | 30.2 |
-| 512×10 000 | 1 | 3 085 [2 639–3 095] | 1.65 | 1.1 % | 96.2 % | 16.2 % | 14.1 |
-| 512×10 000 | 4 | 2 937 [2 755–2 949] | 1.72 | 4.9 % | 91.2 % | 21.2 % | 14.3 |
-| 512×10 000 | 16 | 2 580 [2 287–2 595] | 1.83 | 3.5 % | 95.6 % | 25.9 % | 14.5 |
-| 5 120×1 000 | 1 | 1 684 [1 292–1 710] | 3.59 | 0.2 % | 91.7 % | 61.9 % | 14.0 |
-| 5 120×1 000 | 4 | 1 502 [1 415–1 524] | 3.74 | 0.3 % | 91.7 % | 81.0 % | 14.0 |
-| 5 120×1 000 | 16 | 1 401 [1 338–1 416] | 3.82 | 0.3 % | 92.0 % | 79.3 % | 14.0 |
+| 64×80 000 | 1 | 1 524 [1 479–1 627] | 2.11 | 0.92, 0.56, 0.62 | 1.41 / 0.84 / 0.98 | 3.8 % | 5 + 1 |
+| 64×80 000 | 4 | 1 588 [1 547–1 595] | 2.13 | 0.89, 0.60, 0.63 | 1.43 / 0.96 / 1.01 | 9.1 % | 5 + 1 |
+| 64×80 000 | 8 | 1 493 [1 488–1 566] | 2.19 | 0.92, 0.67, 0.62 | 1.37 / 0.99 / 0.92 | 10.5 % | 5 + 1 |
+| 64×80 000 | 16 | 1 449 [1 413–1 523] | 2.27 | 0.91, 0.72, 0.64 | 1.30 / 1.05 / 0.90 | 29.0 % | 9 + 1 |
+| 512×10 000 | 1 | 2 690 [2 570–2 733] | 1.58 | 0.62, 0.50, 0.44 | 1.63 / 1.32 / 1.16 | 2.1 % | 5 + 1 |
+| 512×10 000 | 4 | 2 532 [2 393–2 586] | 1.66 | 0.61, 0.56, 0.49 | 1.55 / 1.39 / 1.21 | 2.0 % | 5 + 1 |
+| 512×10 000 | 16 | 2 361 [2 130–2 381] | 1.72 | 0.64, 0.61, 0.47 | 1.50 / 1.43 / 1.12 | 1.8 % | 5 + 1 |
+| 5 120×1 000 | 1 | 1 758 [1 734–1 760] | 2.77 | 1.06, 0.79, 0.91 | 1.85 / 1.38 / 1.61 | 2.7 % | 5 + 1 |
+| 5 120×1 000 | 4 | 1 516 [1 481–1 523] | 3.11 | 1.20, 0.96, 0.95 | 1.82 / 1.46 / 1.45 | 2.4 % | 5 + 1 |
+| 5 120×1 000 | 16 | 1 459 [1 451–1 461] | 3.13 | 1.24, 0.94, 0.94 | 1.81 / 1.38 / 1.38 | 2.6 % | 6 + 1 |
 
-- Throughput falls as partitions are added at every size of frame: 1 524 to 1 128 MB/s in large
-  frames, 3 085 to 2 580 in small and 1 684 to 1 401 in frames of 1 000 rows.
-- Large frames from sixteen partitions wait for room as the in-process cell does: their pushes'
-  waits sum to 884 % of the run. Frames of 1 000 rows barely wait.
-- Frames of 1 000 rows take about twice the CPU a GB of small frames, 3.6–3.8 against 1.7–1.8.
-- The rounds ran under other load on the machine: the 1 000-row case from one partition read
-  1 292 MB/s in one round, 23 % below its median, and small frames from sixteen partitions 11 %
-  below.
+- Throughput falls from 1 to 16 partitions at every size of frame: 1 524 to 1 449 MB/s in large
+  frames, 2 690 to 2 361 in small and 1 758 to 1 459 in frames of 1 000 rows.
+- The pipeline's CPU a GB rises with partitions, the source's most: 0.56 to 0.72 CPU seconds a GB
+  in large frames and 0.50 to 0.61 in small.
+- Only large frames from sixteen partitions wait on the budget: their pushes' intake waits sum to
+  2.6 % of the run and their frames' decode waits to 29.0 %. No other case's intake waits pass
+  0.1 %.
+- The share of each process's CPU time spent in user mode, in `both/64x80000`: the host's 0.38,
+  the source's 0.40 and the destination's 0.58; in frames of 1 000 rows 0.70, 0.62 and 0.65.
 
 ### What the production slice decides
 
@@ -1191,8 +1199,50 @@ rows stay, and the caveat about lanes in the method applies to them alone.
   than its partitions or its sink's writers, whichever are fewer: such a run is a broken bench,
   not a figure.
 
-No figures are recorded here yet: they are three interleaved rounds' medians and ranges, taken
-with the rest of the campaign that reads them.
+Measured in the same three rounds as the production slice above, with it, on the same tree
+and cores; the medians of the rounds, the throughput's range in brackets. A run that wrote through
+fewer lanes than its partitions and writers allow would have failed; none did.
+
+| Frames | Partitions | MB/s | CPU s a GB: all | Host's, source's, destination's | CPUs busy: host / source / destination | Lanes written | Flushes: pressure + commit |
+|---|---|---|---|---|---|---|---|
+| 64×80 000 | 1 | 1 612 [1 559–1 875] | 2.05 | 0.87, 0.55, 0.63 | 1.41 / 0.88 / 1.02 | 1 | 5 + 1 |
+| 64×80 000 | 4 | 1 576 [1 523–1 758] | 2.17 | 0.89, 0.60, 0.69 | 1.39 / 0.99 / 1.08 | 4 | 20 + 4 |
+| 64×80 000 | 16 | 1 358 [1 261–1 374] | 2.46 | 1.02, 0.70, 0.75 | 1.31 / 0.96 / 0.99 | 4 | 27 + 3 |
+| 512×10 000 | 1 | 2 937 [2 772–3 050] | 1.50 | 0.57, 0.50, 0.43 | 1.68 / 1.48 / 1.30 | 1 | 5 + 1 |
+| 512×10 000 | 4 | 2 217 [2 150–2 442] | 1.75 | 0.65, 0.55, 0.55 | 1.45 / 1.23 / 1.23 | 4 | 20 + 4 |
+| 512×10 000 | 16 | 1 997 [1 969–2 000] | 1.91 | 0.73, 0.61, 0.56 | 1.41 / 1.20 / 1.13 | 4 | 20 + 4 |
+| 5 120×1 000 | 1 | 1 746 [1 698–1 756] | 2.77 | 1.06, 0.80, 0.92 | 1.85 / 1.38 / 1.60 | 1 | 5 + 1 |
+| 5 120×1 000 | 4 | 1 697 [1 682–1 708] | 3.01 | 1.16, 0.89, 0.96 | 1.95 / 1.49 / 1.62 | 4 | 19 + 4 |
+| 5 120×1 000 | 16 | 1 690 [1 674–1 692] | 3.05 | 1.15, 0.96, 0.94 | 1.94 / 1.62 / 1.59 | 4 | 21 + 4 |
+
+**Why throughput falls with partitions.** Writers do not stop it: through a writer a core, as
+through one, throughput falls from 1 to 16 partitions, by 16 %, 32 % and 3 % in large, small and
+1 000-row frames, against 5 %, 12 % and 17 % through one writer. Nor does the budget: intake waits
+stay under 3 % of the run, and the same large frames from sixteen partitions within 1 GiB move no
+more (below). What rises with partitions is CPU a GB while the CPUs each process keeps busy fall:
+through one writer the source's, 0.56 to 0.72 CPU seconds a GB in large frames and 0.50 to 0.61
+in small, the host's and the destination's within 0.03; through a writer a core every process's,
+by 0.11 to 0.16 in both. The decline is work done a partition, in the source above all, and a
+writer, in the host and the destination; not the sink's single writer.
+
+**One partition over four writers.** Four partitions through four writers move 1 576 MB/s
+[1 523–1 758] against 1 612 [1 559–1 875] from one partition through the same sink, 0.98 times,
+the ranges overlapping: spreading one partition's writes over more lanes has no throughput to
+reach on this path.
+
+**Within 1 GiB.** Large frames from sixteen partitions, run again with the engine within 1 GiB in
+the same rounds (`/1GiB`):
+
+| Sink's writers | Budget | MB/s | CPU s a GB | Decode waits | Flushes: pressure + commit |
+|---|---|---|---|---|---|
+| 1 | 256 MiB | 1 449 [1 413–1 523] | 2.27 | 29.0 % | 9 + 1 |
+| 1 | 1 GiB | 1 346 [1 304–1 348] | 2.32 | 0.7 % | 1 + 1 |
+| 4 | 256 MiB | 1 358 [1 261–1 374] | 2.46 | 32.0 % | 27 + 3 |
+| 4 | 1 GiB | 1 298 [1 280–1 351] | 2.43 | 0.1 % | 4 + 4 |
+
+The larger budget removes nearly every pressure flush and decode wait, and the runs are 7.1 % and
+4.4 % slower at the median, not faster: the pressure flushes of served lanes are not what this
+case pays.
 
 ## Many tables
 
@@ -1224,4 +1274,68 @@ the largest of the in-process counts within that.
   the run; then the last run's readings, lane flushes by cause, retirements among them.
 - **Checks.** Every run checks every row its streams pushed lands.
 
-No figures are recorded here yet, as for the rows through a writer a core.
+Measured in the same three rounds as the production slice above; the medians of each cell's ten
+runs in each round, then the median of the rounds and their range. A commit's phases are its
+flush, its log and its commit (the horizon reads 0.000 throughout) and the acknowledgement, one
+`committed` call a stream; idle CPU is each process's CPU seconds a wall second while the streams
+are quiet, or over the snapshot's run.
+
+| Cell | Budget | Flush | Commit | Acknowledgement | Idle CPU: bench / source / destination | Reads kept at most, of their share | Flushes: commit + retired |
+|---|---|---|---|---|---|---|---|
+| `followed/16` | 256 MiB | 0.83 ms (0.80–0.83) | 0.26 ms (0.23–0.27) | 0.82 ms (0.79–0.82) | 0.006 / 0.000 / 0.000 | 29 KiB of 64 MiB | 32 + 0 |
+| `followed/64` | 256 MiB | 2.37 ms (2.28–2.44) | 0.39 ms (0.37–0.41) | 3.10 ms (3.05–3.18) | 0.006 / 0.001 / 0.000 | 117 KiB of 64 MiB | 128 + 0 |
+| `followed/192` | 386 MiB | 3.48 ms (3.30–3.64) | 0.77 ms (0.74–0.80) | 6.88 ms (6.69–7.20) | 0.006 / 0.002 / 0.000 | 352 KiB of 96.5 MiB | 128 + 832 |
+| `snapshot/256` | 256 MiB | 0.79 ms (0.78–0.85) | 1.95 ms (1.89–2.09) | 10.86 ms (10.85–10.98) | 1.955 / 0.822 / 1.219 | 29 KiB of 64 MiB | 28 + 176, and 64 for pressure |
+
+- Acknowledgement grows with the streams, 0.82 to 6.88 ms a commit from 16 to 192: about 36 µs a
+  stream, one round trip each, in turn. At 192 streams it is the largest phase, 61 % of a commit's
+  11.2 ms.
+- Followed reads keep their decoders' schemas and dictionaries alone: 352 KiB at 192 streams, 0.36 %
+  of the reads' share at the least budget that admits them, which charges each read 2 MiB.
+- Quiet, the pipeline takes 0.008 of a core at 192 streams, nearly all of it the host's.
+- At 192 streams the run's 193 tables outnumber its 128 writers, so writers retire: 832 of its
+  960 flushes. Every cell writes through two of the four lanes.
+- Each process's resident peak at 192 streams: the host's process 2.2 GiB, the bench's batches of
+  every other case among it; the spawned source 124 MiB and the destination 35 MiB.
+
+## The boundary's copies
+
+How much of a spawned pipeline's CPU the boundary's two user-space copies take: each receiver
+gathering a frame's transport chunks into one aligned allocation that doubles as it fills
+(`Bounded::arrive`), and each sender copying every buffer of a batch into a fresh allocation to
+encode it (`Encoder::encoded`, Arrow IPC's `write_array_data`). Measured on the tree of the
+production slice above, `served/process/socket/both/64x80000`.
+
+- **Profile.** The profiling build (`just profiling served`), host on CPUs 0–3 and connectors on
+  4–11, `perf record -e cycles:u -F 999 --call-graph fp` over the bench's process and every
+  process it spawned, 30 seconds of `--profile-time`: 42 636 samples, one host and 23 runs'
+  sources and destinations. Each process is told by its frames: the host by the bench's own,
+  a source by the served read's pump, a destination by the served write's receive stage.
+- **Left out.** Samples outside the runs: the host hashing the connector's binary as each run
+  spawns it (3 443 samples) and making the bench's batches (960), and each source making its
+  batches before its run (16 663, 75 % of the sources' samples).
+- **The gather.** Samples under `Bounded::arrive`, and samples in libc's `memmove` whose call site
+  is where `Incoming::arrived` calls `Bounded::poll_arrived`: `memmove` keeps no frame, so
+  frame-pointer unwinding loses its caller, and these samples are recognised by their return
+  address, the one samples inside `poll_arrived` itself show.
+- **The encode copies.** Samples in libc's copy routines with `Encoder::encoded` in their stack.
+- **Weighting.** A profile samples user mode alone, so each process's share of its samples is
+  weighted by its user share of CPU time and its CPU seconds a GB, both read by the bench in each
+  of the production slice's three rounds; the figure is their sum over the pipeline's CPU seconds a
+  GB, computed for each round.
+
+| Process | Samples kept | Gather | Encode copies | User share | CPU s a GB | Copies, CPU s a GB |
+|---|---|---|---|---|---|---|
+| Host | 8 563 | 33.0 % | 39.5 % | 0.375 (0.352–0.398) | 0.915 (0.849–0.930) | 0.231–0.268 |
+| Source | 5 700 | 0.0 % | 71.0 % | 0.400 (0.385–0.409) | 0.559 (0.498–0.575) | 0.145–0.159 |
+| Destination | 7 307 | 39.4 % | – | 0.577 (0.571–0.593) | 0.619 (0.591–0.651) | 0.135–0.147 |
+
+The gathers and the encode copies take 26.3 % of the pipeline's CPU seconds a GB (25.7–26.5 % over
+the three rounds): the gathers 12.4 % and the encode copies 14.0 %. Counting only the gather's
+samples seen inside `Bounded::arrive`, without the copies whose caller unwinding loses, they take
+15.5–16.0 %.
+
+- Every host and connector thread that copies is a runtime worker: the host's samples are 99.6 %
+  its workers', the partition's read and the lane's writes among them.
+- Kernel time is not sampled: 38 % of the host's kept samples are taken at a kernel entry, a page
+  fault or a system call, and counted with the user frames that made it.
