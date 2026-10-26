@@ -3,7 +3,7 @@
 A normalized stream's flush is shredded into a unit a chunk of JSON, and each unit split into its
 table and child tables before it is lowered. A flush of several units is judged across all of
 them before any is written. This record keeps the write path's cost for flushes of one unit and of
-several.
+several, from one partition and from many, and of a merge of hot keys.
 
 ## Method
 
@@ -15,33 +15,76 @@ several.
   flush: 2 000 rows fit one chunk of 1 MiB, one unit a flush; 10 000 rows make two units a flush
   and 50 000 rows nine. The bench prints the units it counts with the shredder's own cut.
 - **Engine.** `Engine::run` from the replay source into a sink that counts rows and drops them,
-  within the cores the bench may use (2 runtime workers and 2 compute threads on four cores), a
-  budget of 1 GiB and one commit at the end, as the review's ablation ran.
+  within the cores the bench may use (2 runtime workers and a compute thread a core on four
+  cores; one of each on one), a budget of 1 GiB and one commit at the end, as the review's
+  ablation ran.
 - **Throughput.** Rows a second of the three tables.
-- **Running.** `just bench normalized 0-3`, five rounds on the performance cores, each started at
-  a one-minute load average under 1.0 under the measurement lock; release profile.
+- **Running.** `just bench normalized 0-3`, five rounds on the performance cores, and
+  `just bench normalized 0 keyless` on one, each under the measurement lock; release profile.
 
 ## Results
 
-Intel Core Ultra X7 358H, mains power, 2026-10-11, commit `a40d359e0741`, governor `powersave`
-with energy preference `performance`, one-minute load average 0.37–0.97 before the runs; the
-median of five rounds and their range.
+`main` at `6365cc13` with the served bench's readings (`d2fc0f95`; the engine's code is `main`'s),
+2026-10-25 and -26: five rounds on the performance cores, interleaved with the other benches'
+rounds ([campaign.md](campaign.md)), each started once no other build ran, the one-minute load
+average 1.15 to 2.33 at their starts; then the same cases on core `0` alone (one runtime worker
+and one compute thread) in the same holds. The median of the five rounds and their range.
 
-| Rows a push | Units a flush | Time a run | Rounds within ±3 % | Rows a second | JSON | CPUs busy |
+| Rows a push | Units a flush | Four cores (`0-3`) | Rows a second | JSON | One core (`0`) | Four cores against one |
 |---|---|---|---|---|---|---|
-| 2 000 | 1 | 165.7 ms (163.8–168.2 ms) | 5 of 5 | 3.32 M | 113 MB/s | 1.10 |
-| 10 000 | 2 | 126.4 ms (125.6–127.9 ms) | 5 of 5 | 4.35 M | 148 MB/s | 1.18 |
-| 50 000 | 9 | 111.8 ms (111.0–112.8 ms) | 5 of 5 | 4.92 M | 167 MB/s | 1.17 |
+| 2 000 | 1 | 71.0 ms (70.7–73.2) | 7.74 M | 263 MB/s | 58.8 ms (58.4–60.5) | 0.83× |
+| 10 000 | 2 | 38.5 ms (38.2–39.7) | 14.3 M | 485 MB/s | 54.8 ms (54.6–55.8) | 1.42× |
+| 50 000 | 9 | 26.2 ms (25.9–28.6) | 21.0 M | 713 MB/s | 53.4 ms (53.3–54.3) | 2.04× |
+
+The more units a flush holds, the more four cores gain: none at one unit, where the run on four
+is slower than on one, and twice one core's rate at nine.
+
+**Where four cores' time goes.** A 15-second profile of `normalized/keyless/50000` on four cores
+(`just profiling normalized`, `perf record -e cycles:u -F 999 --call-graph fp`, 30 229 samples):
+the four compute threads hold 28.1 %, 24.1 %, 23.7 % and 20.0 % of the samples and the runtime's
+workers 3.7 %. The split jobs, each unit's concatenation, merge-key check and normalizing, hold
+3.7 % of the samples; lowering the parts holds most of the rest.
+
+### From many partitions
+
+200 000 orders in pushes of 10 000 rows read from 4 or 16 partitions, an even share each, within
+256 MiB and within 1 GiB, in the same five rounds: the median and range, and the last run's
+readings' medians, the waits summed over the run's tasks.
+
+| Partitions | Budget | Time a run | Rows a second | Intake waits | Work waits | Pressure flushes | Peak memory |
+|---|---|---|---|---|---|---|---|
+| 4 | 256 MiB | 68.0 ms (66.5–74.9) | 16.2 M | 154 % | 153 % | 110 | 147 MiB |
+| 4 | 1 GiB | 45.0 ms (43.5–48.9) | 24.5 M | 94 % | 155 % | 111 | 590 MiB |
+| 16 | 256 MiB | 49.8 ms (48.5–51.5) | 22.1 M | 504 % | 465 % | 111 | 147 MiB |
+| 16 | 1 GiB | 45.3 ms (44.5–52.2) | 24.3 M | 378 % | 435 % | 111 | 590 MiB |
+
+Within the default budget four partitions take 51 % longer than within 1 GiB, and sixteen 9.9 %
+longer.
+
+### A merge of hot keys
+
+`normalized/merge/zipf`: 200 000 orders merged by `id`, their ids drawn from 100 000 keys by a Zipf
+distribution of θ = 0.99, YCSB's default constant, 50 000 rows a push, a checkpoint after each,
+into the IPC sink, one commit at the end; in process on the performance cores, and served with
+both connectors spawned (`served/process/socket/both/normalized/merge/zipf`, [served.md](served.md)),
+in the production slice's three rounds.
+
+| Placement | Time a run | Rows a second | CPU s a GB of JSON |
+|---|---|---|---|
+| In process | 111.7 ms (111.4–112.1) | 1.79 M | |
+| Spawned | 129.1 ms (125.0–130.2) | 1.55 M | 8.86 (8.77–8.99): host 6.68, source 0.29, destination 1.84 |
+
+Each run's commit stages 98 776 root rows and 900 000 child rows for 39 099 distinct keys, the same
+in every round: the root rows keep each key's last row within a push, and every row's children
+are staged.
+
+The `allocations` bench's counts of one run of each, on the same tree and cores:
 
 | Rows a push | Allocations a row | Bytes a row | Allocations a flush |
 |---|---|---|---|
-| 2 000 | 0.541 | 155 | 5 953 |
-| 10 000 | 0.490 | 150 | 26 962 |
-| 50 000 | 0.486 | 150 | 133 662 |
-
-The runs whose flushes hold two or nine units take 24–33 % less time than the run whose flushes
-hold one unit, moving the same rows, and allocate 9–10 % fewer times a row for 3 % fewer bytes. A
-run keeps 1.10–1.18 CPUs busy.
+| 2 000 | 0.089 | 74 | 978 |
+| 10 000 | 0.036 | 74 | 1 973 |
+| 50 000 | 0.032 | 76 | 8 687 |
 
 ## Ids by role
 
