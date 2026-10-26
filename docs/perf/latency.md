@@ -38,57 +38,57 @@ acknowledgement to state their latency rules against.
   the median of three rounds and their range. The commit phases are a commit's mean in each
   round's last run, the median of the three.
 - **Running.** `just bench latency 0-3 "" 4-11`: the bench and an in-process run's connectors on
-  the four performance cores, spawned connectors on the eight efficient ones. Three rounds in one
-  hold of the measurement lock, started once no other heavy work ran; release profile.
+  the four performance cores, spawned connectors on the eight efficient ones. Three rounds, each
+  in a hold of the measurement lock of its own, started once no other heavy work ran; release
+  profile.
 
 ## Results
 
-Intel Core Ultra X7 358H, 2026-10-24, governor `powersave` with energy preference `performance`;
-`main` at `fbef9f4b` with the bench and the log's commit estimate fixed (below). The one-minute
-load was 1.9 as the first round began and 4.6–6.5 between rounds, the bench's own processes
-beside three idle virtual machines of the owner's; no other heavy work ran.
+Intel Core Ultra X7 358H, 2026-10-25 and -26, governor `powersave` with energy preference
+`performance`; `main` at `6365cc13` with the served bench's readings (`d2fc0f95`; the engine's
+code is `main`'s). Three rounds, each one hold of the measurement lock, interleaved with the other
+benches' rounds ([campaign.md](campaign.md)) and started once no other build ran. The one-minute
+load was 0.77, 1.12 and 2.15 as the rounds began and 4.5–5.7 as they ended, the bench's own
+processes beside three idle virtual machines of the owner's.
 
-The rate each placement pushed, half what it landed unpaced: `in-process` 18 028 pushes a second
-(16 961–20 294), 18 million rows a second; `process` 14 663 (13 252–14 712).
+The rate each placement pushed, half what it landed unpaced: `in-process` 17 193 pushes a second
+(16 985–20 508), 17 million rows a second; `process` 14 221 (11 993–14 289).
 
 Push to landed and push to acknowledged, seconds:
 
 | Case | Stream | Landed p50 | Landed p99 | Landed max | Acknowledged p50 | Acknowledged p99 | Acknowledged max |
 |---|---|---|---|---|---|---|---|
-| `in-process/10s` | `replayable` | 3.84 (3.55–4.03) | 6.74 (6.11–7.06) | 6.82 (6.19–7.18) | 4.14 (3.82–4.25) | 7.05 (6.46–7.34) | 7.16 (6.56–7.49) |
-| `in-process/10s` | `unreplayable` | 3.84 (3.55–4.03) | 6.74 (6.11–7.06) | 6.82 (6.19–7.18) | 3.81 (3.53–4.00) | 6.72 (6.09–7.04) | 6.80 (6.17–7.16) |
-| `in-process/1s` | `replayable` | 0.70 (0.69–0.73) | 1.48 (1.45–1.56) | 1.51 (1.48–1.59) | 0.74 (0.73–0.78) | 1.55 (1.51–1.65) | 1.58 (1.54–1.68) |
-| `in-process/1s` | `unreplayable` | 0.70 (0.69–0.73) | 1.48 (1.45–1.56) | 1.51 (1.48–1.59) | 0.70 (0.69–0.73) | 1.48 (1.45–1.56) | 1.50 (1.48–1.59) |
-| `process/10s` | `replayable` | 4.45 (4.43–4.82) | 8.12 (8.10–8.83) | 8.22 (8.21–8.96) | 4.72 (4.72–5.00) | 8.39 (8.39–9.07) | 8.52 (8.50–9.20) |
-| `process/10s` | `unreplayable` | 4.45 (4.43–4.82) | 8.12 (8.10–8.83) | 8.22 (8.21–8.96) | 4.43 (4.42–4.80) | 8.10 (8.09–8.82) | 8.20 (8.19–8.94) |
-| `process/1s` | `replayable` | 0.67 (0.66–0.67) | 1.42 (1.37–1.43) | 1.45 (1.40–1.46) | 0.70 (0.68–0.70) | 1.48 (1.40–1.48) | 1.50 (1.43–1.51) |
-| `process/1s` | `unreplayable` | 0.67 (0.66–0.67) | 1.42 (1.37–1.43) | 1.45 (1.40–1.46) | 0.67 (0.66–0.67) | 1.42 (1.37–1.43) | 1.44 (1.40–1.46) |
+| `in-process/10s` | `replayable` | 3.97 (3.56–4.05) | 7.01 (6.06–7.06) | 7.11 (6.14–7.16) | 4.26 (3.88–4.28) | 7.29 (6.41–7.36) | 7.43 (6.54–7.48) |
+| `in-process/10s` | `unreplayable` | 3.97 (3.56–4.05) | 7.01 (6.06–7.06) | 7.11 (6.14–7.16) | 3.95 (3.54–4.02) | 6.98 (6.03–7.04) | 7.08 (6.11–7.13) |
+| `in-process/1s` | `replayable` | 0.72 (0.70–0.74) | 1.57 (1.47–1.61) | 1.60 (1.50–1.64) | 0.77 (0.73–0.80) | 1.62 (1.53–1.71) | 1.65 (1.55–1.74) |
+| `in-process/1s` | `unreplayable` | 0.72 (0.70–0.74) | 1.57 (1.47–1.61) | 1.60 (1.50–1.64) | 0.72 (0.69–0.74) | 1.56 (1.46–1.60) | 1.59 (1.49–1.63) |
+| `process/10s` | `replayable` | 4.68 (4.67–4.77) | 8.36 (8.36–9.67) | 8.55 (8.46–9.79) | 4.97 (4.95–4.99) | 8.65 (8.64–9.89) | 8.81 (8.80–10.02) |
+| `process/10s` | `unreplayable` | 4.68 (4.67–4.77) | 8.36 (8.36–9.67) | 8.55 (8.46–9.79) | 4.66 (4.66–4.75) | 8.34 (8.34–9.65) | 8.53 (8.44–9.78) |
+| `process/1s` | `replayable` | 0.68 (0.65–0.68) | 1.43 (1.35–1.44) | 1.46 (1.38–1.47) | 0.70 (0.67–0.71) | 1.47 (1.37–1.48) | 1.50 (1.40–1.51) |
+| `process/1s` | `unreplayable` | 0.68 (0.65–0.68) | 1.43 (1.35–1.44) | 1.46 (1.38–1.47) | 0.68 (0.65–0.68) | 1.43 (1.35–1.44) | 1.45 (1.38–1.47) |
 
 The most a push was acknowledged after it landed, milliseconds, and the last run's commits:
 
 | Case | `replayable` | `unreplayable` | Commits a run | Flush | Log | Commit | Ack |
 |---|---|---|---|---|---|---|---|
-| `in-process/10s` | 347 (323–399) | −18 (−20 to −8) | 5–6: one at the end, the rest on size, cursors or the log | 5.1 ms | 978 ms | 276 ms | 4.7 ms |
-| `in-process/1s` | 65 (56–95) | −3 (−4 to −3) | 3: two on the interval, one at the end | 2.7 ms | 196 ms | 37 ms | 0.9 ms |
-| `process/10s` | 293 (265–319) | −4 (−12 to −4) | 4–5: one at the end, the rest on size, cursors or the log | 4.5 ms | 967 ms | 217 ms | 5.2 ms |
-| `process/1s` | 51 (37–53) | −2 (−2 to −2) | 3: two on the interval, one at the end | 2.7 ms | 163 ms | 26 ms | 1.2 ms |
+| `in-process/10s` | 326 (315–419) | −21 (−23 to −7) | 5–6: one at the end, the rest on size, cursors or the log | 9.9 ms | 1 013 ms | 300 ms | 5.1 ms |
+| `in-process/1s` | 85 (60–94) | −3 (−3 to −3) | 3: two on the interval, one at the end | 5.5 ms | 220 ms | 56 ms | 1.2 ms |
+| `process/10s` | 326 (261–333) | −4 (−8 to −3) | 4–5: one at the end, the rest on size, cursors or the log | 7.0 ms | 993 ms | 234 ms | 4.8 ms |
+| `process/1s` | 48 (30–52) | −2 (−2 to −2) | 3: two on the interval, one at the end | 4.3 ms | 165 ms | 29 ms | 1.1 ms |
 
-- Every push landed and was acknowledged in every run; the last run of each round took one attempt.
+- Every push landed and was acknowledged in every run; the last run of each round took one
+  attempt and was not run again.
 - At the streaming default the 10 s interval is not what commits: at half the rate, the policy's
   1 GiB of these rows arrives in about 7 s in process and 9 s spawned (**computed**: 1 GiB over
   8 kB a push at the rate pushed), and p99 is that wait and the commit's phases. At 1 s the
   interval governs, and p99 is the interval plus the phases.
-- The log's phase is most of each commit: about 1 s of a 10 s case's, writing tens of thousands of
-  seal frames, and 0.16–0.2 s at 1 s. The commit phase holds the destination's commit and the
-  log's record of its receipt.
-- The stream that cannot read again is acknowledged as its rows are logged, up to 20 ms before
+- The log's phase is most of each commit: about 1 s of a 10 s case's, and 0.17–0.22 s at 1 s.
+  The commit phase holds the destination's commit and the log's record of its receipt.
+- The stream that cannot read again is acknowledged as its rows are logged, up to 23 ms before
   they land; the other is acknowledged after the commit phase and the log's receipt, up to about
   0.4 s after it lands.
-- The in-process 10 s case spreads most: its rounds pushed at 17 000–20 300 a second, as the
-  placement's unpaced run measured it.
-- `perf stat` cannot difference the 10 s cases; the 1 s cases keep 1.35–1.57 CPUs busy in process
-  and 2.50–2.63 spawned, the connector processes counted, at 1.41–1.62 instructions a cycle. One
-  run in test mode makes 34–40 `fsync`s, its setup included.
+- The in-process 10 s case spreads most: one round pushed at 20 500 a second and landed at
+  p99 6.06 s, the other two at 17 000–17 200 and 7.01–7.06 s.
 
 ## A logged commit of many segments
 
