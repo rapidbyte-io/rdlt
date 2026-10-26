@@ -95,16 +95,16 @@ A formal layer is added to the layers of its class, never in place of one.
   up to it, its data is what pushes and one request take, a piece is within a request, and a share's
   bytes beside one request of its class never wrap, but the data beside a push, which the ledger
   adds saturating (7 seconds). `budget/admits/proofs.rs` proves, for every capacity and 1 to 24
-  reads at once, that each limit the budget admits fits the share it draws on (69 seconds), and that
-  every budget from the least up admits a peer while the one a byte below does not (175 seconds).
-  What a budget admits does not grow with it byte by byte, since its shares' rounding moves a frame
-  by a few bytes, so halving for the least could end beside such a step: over budgets up to 2^40 it
-  ends at the least for up to 24 reads, which the proof holds. 24 reads hold both of what sets the
-  least budget, a frame up to 18 reads and the dictionaries from 19, and keep the proofs within the
-  15 minutes of their part of the `formal` check; past them each read keeps less, which leaves a
-  frame no less, so `least` halves for at most 24 and takes the larger of that and what the reads'
-  dictionaries need, twice the least dictionary for each in a quarter of the budget, exact as what a
-  read keeps grows with the budget; from 2^43 reads no budget holds that, and there is no least. The
+  reads at once, that each limit the budget admits fits the share it draws on, and that the parts
+  what reads keep is divided into fit the reads' share, each twice the least dictionary wherever the
+  share holds one (96 seconds); and that every budget from the least up admits a peer while the one
+  a byte below does not (198 seconds). What a budget admits does not grow with it byte by byte,
+  since its shares' rounding moves a frame by a few bytes, so halving for the least could end
+  beside such a step: over budgets up to 2^40 it ends at the least for up to 24 reads, which the
+  proof holds. A frame sets the least for any count of reads, since a part never holds less than
+  twice the least dictionary where the share holds one; from 18 reads the share holds 18 parts at
+  the least, and more reads each keep no more, which leaves a frame no less, so `least` halves for
+  at most 24, which keeps the proofs within the 15 minutes of their part of the `formal` check. The
   proof of the same for any count of reads above 24 ran 20 minutes without an answer, since what a
   read keeps is the reads' share divided by a count the proof leaves free, a product the solver must
   undo; a property test in `budget/admits/tests.rs` holds it instead, drawing counts up to 2^43 and
