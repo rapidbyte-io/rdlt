@@ -9,12 +9,13 @@ mod tests;
 
 use std::fmt;
 use std::future::Future;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 
-pub(crate) use self::admits::{admitted, kept, least};
+pub(crate) use self::admits::{admitted, least};
 pub(crate) use self::decoding::Decoding;
 pub(crate) use self::ledger::{Class, Denied, Exhausted, Shares, TooLarge};
 use self::ledger::{Ledger, Wait, admit_waiting};
@@ -49,7 +50,7 @@ pub(crate) struct MemoryBudget {
     env: Arc<dyn Env>,
     /// How long a request waits at most.
     wait: Duration,
-    /// How many reads share what reads may keep.
+    /// The reads at once that what the budget admits is derived for.
     readers: usize,
     /// The limits on what a read sends, where they are fewer than what the budget admits.
     limits: Option<rdlt_wire::Limits>,
@@ -124,15 +125,21 @@ impl MemoryBudget {
         }
     }
 
-    /// The budget, what its reads may keep divided among `readers` reads at once at most.
+    /// The budget, read by `readers` reads at once at most, among whom what its reads keep is
+    /// divided into parts.
     pub(crate) fn read_by(mut self, readers: usize) -> Self {
         self.readers = readers.max(1);
         self
     }
 
-    /// How many reads share what reads may keep.
-    pub(crate) fn readers(&self) -> usize {
-        self.readers
+    /// The parts what reads keep is divided into.
+    pub(crate) fn parts(&self) -> NonZeroUsize {
+        admits::parts(self.shares, self.readers)
+    }
+
+    /// Bytes: a part of what reads keep, the most one read keeps beside its events.
+    pub(crate) fn part(&self) -> u64 {
+        admits::kept(self.shares, self.readers)
     }
 
     /// The budget, its reads held to `limits` on what they send.

@@ -30,8 +30,10 @@ pub(crate) const COLUMN_RECORD: u64 = 512;
 /// What reads keep beside their events for as long as they last, as a remote read's decoder
 /// keeps its dictionaries and its schema: a quarter of the budget for all reads together.
 ///
-/// Each read may keep the share divided by the partitions read at once, 4 MiB at the defaults,
-/// and a read that would keep more fails with `limit_exceeded` at the frame that would pass it.
+/// It is divided into a part for each partition read at once, or into as many parts of twice the
+/// protocol's least dictionary as it holds where those are fewer, 4 MiB at the defaults. A read
+/// may keep a part, and one that would keep more fails with `limit_exceeded` at the frame that
+/// would pass it; followed unbounded reads keep theirs together in the parts no other read holds.
 pub(crate) const READ_SHARE: u64 = 4;
 
 /// What decoding a connector's answers holds, from before a message is decoded until it is: a

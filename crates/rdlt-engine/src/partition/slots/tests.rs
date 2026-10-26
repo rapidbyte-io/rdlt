@@ -15,6 +15,11 @@ fn count(value: usize) -> NonZeroUsize {
     NonZeroUsize::new(value).unwrap()
 }
 
+/// A budget of `memory` bytes read by `partitions` at once, whose waits end after a minute.
+fn budget(memory: u64, partitions: usize) -> MemoryBudget {
+    MemoryBudget::new(memory, Arc::new(InlineEnv), Duration::from_secs(60)).read_by(partitions)
+}
+
 /// A job reading partition `index`, unbounded and followed where `followed` says.
 fn job(index: usize, followed: bool) -> PartitionJob {
     let id = PartitionId::parse(format!("p{index}")).unwrap();
@@ -48,7 +53,8 @@ fn followed_reads_beyond_the_slots_less_one_are_refused_by_whatever_sets_the_slo
         (300, Some(199), 197, codes::SOURCE_CALLS_EXCEEDED),
         (2, Some(1), 0, codes::SOURCE_CALLS_EXCEEDED),
     ] {
-        let slots = Slots::new(count(partitions), calls.map(count));
+        let budget = budget(256 << 20, partitions);
+        let slots = Slots::new(count(partitions), calls.map(count), &budget);
         let held: Vec<_> = (0..places)
             .map(|index| slots.endless(&job(index, true)).unwrap())
             .collect();
@@ -69,15 +75,44 @@ fn followed_reads_beyond_the_slots_less_one_are_refused_by_whatever_sets_the_slo
     reason = "the test bounds its waits on tokio's paused clock directly"
 )]
 async fn reads_beyond_what_the_source_carries_wait_for_a_slot_until_one_frees() {
-    let budget = MemoryBudget::new(64 << 20, Arc::new(InlineEnv), Duration::from_secs(60));
-    let slots = Slots::new(count(16), Some(count(5)));
+    let budget = budget(64 << 20, 16);
+    let slots = Slots::new(count(16), Some(count(5)), &budget);
+    let read = job(0, false);
     let mut held = Vec::new();
     for _ in 0..4 {
-        held.push(slots.read(&budget).await.unwrap());
+        held.push(slots.read(&read, &budget).await.unwrap());
     }
-    let waiting = tokio::time::timeout(Duration::from_secs(3600), slots.read(&budget)).await;
+    let waiting = tokio::time::timeout(Duration::from_secs(3600), slots.read(&read, &budget)).await;
     assert!(waiting.is_err(), "a fifth read found a slot");
     drop(held.pop());
-    let freed = tokio::time::timeout(Duration::from_secs(1), slots.read(&budget)).await;
+    let freed = tokio::time::timeout(Duration::from_secs(1), slots.read(&read, &budget)).await;
     assert!(freed.is_ok(), "a freed slot was not taken");
+}
+
+#[tokio::test(start_paused = true)]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the test bounds its waits on tokio's paused clock directly"
+)]
+async fn reads_that_are_not_followed_beyond_the_parts_wait_for_one_while_followed_reads_read() {
+    // Four slots, and a share of what reads keep holding two parts of twice the least dictionary.
+    let budget = budget(4 << 20, 4);
+    assert_eq!((budget.parts().get(), budget.part()), (2, 512 << 10));
+    let slots = Slots::new(count(4), None, &budget);
+    let (once, followed) = (job(0, false), job(1, true));
+    let mut held = Vec::new();
+    for _ in 0..2 {
+        held.push(slots.read(&once, &budget).await.unwrap());
+    }
+    let waiting = tokio::time::timeout(Duration::from_secs(3600), slots.read(&once, &budget)).await;
+    assert!(
+        waiting.is_err(),
+        "a third read that is not followed found a part"
+    );
+    let reading =
+        tokio::time::timeout(Duration::from_secs(1), slots.read(&followed, &budget)).await;
+    assert!(reading.is_ok(), "a followed read waited for a part");
+    drop(held.pop());
+    let freed = tokio::time::timeout(Duration::from_secs(1), slots.read(&once, &budget)).await;
+    assert!(freed.is_ok(), "a freed part was not taken");
 }

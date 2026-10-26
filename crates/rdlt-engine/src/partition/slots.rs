@@ -1,6 +1,7 @@
-//! The slots partitions read in: every read holds one, so no more reads keep bytes than what
-//! reads keep is divided among, and no more read at once than their source carries.
+//! The slots partitions read in: every read holds one, so no more read at once than their source
+//! carries, and a read that is not followed holds a part of what reads keep beside it.
 
+mod parts;
 #[cfg(test)]
 mod tests;
 
@@ -9,15 +10,19 @@ use std::sync::Arc;
 
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, SemaphorePermit};
 
+pub(crate) use self::parts::Parts;
 use super::PartitionJob;
 use crate::budget::MemoryBudget;
+use crate::cost::Keeping;
 use crate::error::{Error, codes};
 use crate::limits;
 
-/// The slots of an attempt's reads, and the places among them a followed unbounded read takes.
+/// The slots of an attempt's reads, the places among them a followed unbounded read takes, and
+/// the parts of what reads keep.
 ///
 /// A followed unbounded read holds its slot for as long as the run, so fewer of them than slots
-/// read at once: the other reads always have a slot to take in turn.
+/// read at once: the other reads always have a slot to take in turn, and a part, which followed
+/// reads never all hold.
 #[derive(Clone, Debug)]
 pub(crate) struct Slots {
     reads: Arc<Semaphore>,
@@ -26,6 +31,14 @@ pub(crate) struct Slots {
     places: usize,
     /// What sets how many slots there are.
     bound: Bound,
+    /// One for each read that is not followed, the rest drawn on by the followed ones together.
+    parts: Arc<Parts>,
+}
+
+/// A read's slot, and the part of what reads keep a read that is not followed holds with it.
+pub(super) struct Slot<'a> {
+    _slot: SemaphorePermit<'a>,
+    _part: Option<OwnedSemaphorePermit>,
 }
 
 /// What sets an attempt's read slots.
@@ -39,8 +52,13 @@ enum Bound {
 
 impl Slots {
     /// The slots of `partitions` reads at once, or of fewer where a source carrying `calls` at
-    /// once leaves fewer reads beside the engine's other call.
-    pub(crate) fn new(partitions: NonZeroUsize, calls: Option<NonZeroUsize>) -> Self {
+    /// once leaves fewer reads beside the engine's other call, and the parts of what `budget`'s
+    /// reads keep.
+    pub(crate) fn new(
+        partitions: NonZeroUsize,
+        calls: Option<NonZeroUsize>,
+        budget: &MemoryBudget,
+    ) -> Self {
         let (slots, bound) = match calls {
             Some(calls) if limits::carried(calls) < partitions => {
                 (limits::carried(calls), Bound::Calls(calls))
@@ -52,6 +70,17 @@ impl Slots {
             endless: Arc::new(Semaphore::new(slots.get() - 1)),
             places: slots.get() - 1,
             bound,
+            parts: Arc::new(Parts::new(budget.parts(), budget.part())),
+        }
+    }
+
+    /// Where `job`'s read keeps what it keeps beside its events: in the part it holds, or for a
+    /// followed unbounded read, in the parts no other read holds.
+    pub(super) fn keeping(&self, job: &PartitionJob) -> Keeping {
+        if job.followed() {
+            Keeping::Pooled(Arc::clone(&self.parts))
+        } else {
+            Keeping::Part
         }
     }
 
@@ -66,7 +95,7 @@ impl Slots {
         &self,
         job: &PartitionJob,
     ) -> Result<Option<OwnedSemaphorePermit>, Error> {
-        if !(job.follow && job.partition.is_unbounded()) {
+        if !job.followed() {
             return Ok(None);
         }
         let place = Arc::clone(&self.endless).try_acquire_owned();
@@ -93,15 +122,33 @@ impl Slots {
         refused.with_stream(stream)
     }
 
-    /// A slot, at once where one is free, or once one frees, the wait counted by `budget`.
+    /// A slot for `job`, and for a read that is not followed a part of what reads keep, each at
+    /// once where one is free, or once one frees, the waits counted by `budget`.
     ///
-    /// No deadline ends the wait: a bounded read's end frees its slot, and the followed unbounded
-    /// reads leave one, so a slot always comes round.
-    pub(super) async fn read(&self, budget: &MemoryBudget) -> Result<SemaphorePermit<'_>, Error> {
-        if let Ok(slot) = self.reads.try_acquire() {
-            return Ok(slot);
-        }
-        let slot = budget.read_slot(self.reads.acquire()).await;
-        slot.map_err(|_| Error::internal("partition slots closed"))
+    /// No deadline ends a wait: a read that is not followed ends, freeing its slot and its part,
+    /// and the followed unbounded reads leave a slot and a part, so each always comes round.
+    pub(super) async fn read(
+        &self,
+        job: &PartitionJob,
+        budget: &MemoryBudget,
+    ) -> Result<Slot<'_>, Error> {
+        let slot = match self.reads.try_acquire() {
+            Ok(slot) => slot,
+            Err(_) => budget
+                .read_slot(self.reads.acquire())
+                .await
+                .map_err(|_| Error::internal("partition slots closed"))?,
+        };
+        let part = if job.followed() {
+            None
+        } else if let Some(part) = self.parts.try_take() {
+            Some(part)
+        } else {
+            Some(budget.read_slot(self.parts.take()).await)
+        };
+        Ok(Slot {
+            _slot: slot,
+            _part: part,
+        })
     }
 }

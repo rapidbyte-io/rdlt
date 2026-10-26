@@ -28,7 +28,7 @@ pub(super) fn config(
     growth: GrowthLimits,
     wait: Option<Duration>,
 ) -> EngineConfig {
-    let least = EngineConfig::least_memory(1).expect("a memory admits one partition");
+    let least = EngineConfig::least_memory(1);
     let every = rng
         .chance(700)
         .then(|| Duration::from_millis(100 + rng.below(3000)));

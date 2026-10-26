@@ -38,8 +38,9 @@ impl EngineConfig {
 
     /// Bytes: the least memory from which every memory upward admits what the protocol lets no
     /// peer go below, for a configuration reading `partitions` partitions at once, while the
-    /// memory a byte below does not; none where no memory does, from 2^43 partitions.
-    pub fn least_memory(partitions: usize) -> Option<u64> {
+    /// memory a byte below does not: the same from eighteen partitions up, as the reads that are
+    /// not followed read no more at once than the parts what reads keep is divided into.
+    pub fn least_memory(partitions: usize) -> u64 {
         least(partitions)
     }
 
@@ -48,18 +49,17 @@ impl EngineConfig {
     ///
     /// # Errors
     ///
-    /// A `Config` error coded `memory_below_minimum`, naming the least memory that does where one
-    /// does.
+    /// A `Config` error coded `memory_below_minimum`, naming the least memory that does.
     pub(super) fn admit_memory(&self) -> Result<(), Error> {
         let (memory, partitions) = (self.memory.get(), self.partitions.get());
-        let least = match least(partitions) {
-            Some(least) if memory >= least => return Ok(()),
-            Some(least) => format!("the least memory that does is {least} bytes"),
-            None => "no memory does".to_owned(),
-        };
+        let least = least(partitions);
+        if memory >= least {
+            return Ok(());
+        }
         Err(Error::config(format!(
             "memory of {memory} bytes admits less than the least limits the protocol lets a peer \
-             set with {partitions} partitions read at once: {least}"
+             set with {partitions} partitions read at once: the least memory that does is {least} \
+             bytes"
         ))
         .with_code(codes::MEMORY_BELOW_MINIMUM))
     }

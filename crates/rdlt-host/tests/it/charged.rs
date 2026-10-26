@@ -47,7 +47,7 @@ async fn catalog_bytes(count: usize) -> usize {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_catalog_at_the_least_budget_s_limit_is_charged_before_it_is_decoded_and_taken() {
     let config = EngineConfig::builder()
-        .memory(EngineConfig::least_memory(16).expect("a memory admits 16 partitions"))
+        .memory(EngineConfig::least_memory(16))
         .commit(CommitPolicy::new(None, Some(1), None).expect("a row threshold"))
         .build()
         .expect("the least memory is valid");

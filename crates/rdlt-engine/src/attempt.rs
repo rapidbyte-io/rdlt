@@ -329,7 +329,11 @@ fn shared_by_partitions(
         barrier: ends.barrier,
         stop: ends.stop,
         cancel: ends.cancel,
-        slots: Slots::new(context.config.partitions(), context.source.max_calls()),
+        slots: Slots::new(
+            context.config.partitions(),
+            context.source.max_calls(),
+            &context.budget,
+        ),
         segments: Arc::new(AtomicU64::new(1)),
         buffer: context.config.partition_buffer(),
         load_id,

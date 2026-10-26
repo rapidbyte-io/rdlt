@@ -15,6 +15,7 @@ use rdlt_engine::{
     CommitPolicy, EngineConfig, EngineConfigBuilder, ErrorKind, RetryPolicy, RunStatus, StopMode,
     Until, codes,
 };
+use rdlt_wire::limits::LIMIT_EXCEEDED;
 use serde_json::{Value, json};
 
 use crate::support::{engine, memory, pipeline, published_json, stream};
@@ -238,6 +239,53 @@ async fn seventeen_followed_reads_each_keeping_all_its_part_read_at_once() {
     );
     assert!(outcome.report.peak_memory >= 17 * part);
     assert_eq!(exactly_once("kept_parts", "kept_parts", 17).await, [3; 17]);
+}
+
+/// A following run of 256 unbounded partitions, read by 257 partitions within the default memory,
+/// each read keeping `bytes` beside its events.
+async fn followed_within_the_default_memory(name: &str, bytes: u64) -> rdlt_engine::RunOutcome {
+    let source = Arc::new(crate::lowering::Keeping {
+        source: log(
+            name,
+            json!({ "name": "events", "partitions": 256, "messages": 3 }),
+        )
+        .await,
+        bytes,
+    });
+    let plan = pipeline(name, [incremental()]).with_until(Until::For(Duration::from_secs(1)));
+    let config = following()
+        .partitions(257)
+        .retry(RetryPolicy::default().max_attempts(1));
+    engine(config).run(plan, source, memory(name).await).await
+}
+
+#[tokio::test(start_paused = true)]
+async fn two_hundred_and_fifty_six_followed_reads_keep_what_they_keep_within_the_default_memory() {
+    // The reads' share holds 128 parts of 512 KiB, of which followed reads may hold 127.
+    let kept = 200 << 10;
+    let outcome = followed_within_the_default_memory("pooled", kept).await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    assert!(outcome.report.counters.kept_peak >= 256 * kept);
+    assert_eq!(exactly_once("pooled", "pooled", 256).await, [3; 256]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn followed_reads_keeping_more_than_the_parts_they_may_hold_fail_naming_the_limit() {
+    // 256 reads of 300 KiB each would take 150 parts of the 127 followed reads may hold.
+    let outcome = followed_within_the_default_memory("pooled_beyond", 300 << 10).await;
+    let error = outcome.error.expect("the run fails");
+    assert_eq!(
+        (error.kind(), error.connector_code()),
+        (ErrorKind::Source, Some(LIMIT_EXCEEDED))
+    );
+    assert!(!error.is_retryable());
+    let said = format!("{:?}", error.report());
+    assert!(said.contains("followed reads kept bytes"), "{said}");
 }
 
 #[tokio::test(start_paused = true)]
