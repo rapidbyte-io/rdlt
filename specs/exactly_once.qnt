@@ -5,11 +5,12 @@
 // partition's source the position the commit landed with. A source that reads again serves any
 // position; one that cannot forgets what precedes the position it was last told, refuses a read
 // from before it, and serves everything after it to every reader that asks. An attempt may crash,
-// its commit may fail or land with its answer lost, a telling may fail, and an attempt may start
-// while another of its pipeline is live, as a second run's would, both reading a partition whose
-// source cannot read again. A retry is an attempt of its own: the model does not group attempts
-// into runs. The destination may be shared by several pipelines: `quint test` and `quint run` take
-// two, and the model checkers one.
+// its commit may fail or land with its answer lost, and a telling may fail or lose its answer: the
+// attempt then reads on, owing what it carried to its next telling, which a commit with nothing to
+// publish makes too. An attempt may start while another of its pipeline is live, as a second run's
+// would, both reading a partition whose source cannot read again. A retry is an attempt of its
+// own: the model does not group attempts into runs. The destination may be shared by several
+// pipelines: `quint test` and `quint run` take two, and the model checkers one.
 //
 // quint main: exactly_once exactly_once_pair
 // quint steps: --step simulated --max-steps 60
@@ -64,8 +65,9 @@ module exactly_once_protocol {
   type Stage = | Opening | Reading | Landed
 
   /// An attempt: its pipeline, the epoch of the session it holds (0 before it opens one), where
-  /// it stands, each partition's rows read, sealed by a checkpoint and committed, and the
-  /// segments of the commit that landed and whose sources it has yet to tell.
+  /// it stands, each partition's rows read, sealed by a checkpoint and committed, the segments
+  /// of the commit that landed and whose sources it has yet to tell, and the position each
+  /// partition's source is owed by a telling that failed, 0 where none is.
   type Attempt = {
     pipe: Pipe,
     epoch: int,
@@ -74,6 +76,7 @@ module exactly_once_protocol {
     sealed: Part -> int,
     committed: Part -> int,
     landing: Set[Seg],
+    owed: Part -> int,
   }
 
   /// The destination, by pipeline.
@@ -113,6 +116,17 @@ module exactly_once_protocol {
 
   /// The sources of `kept` once each partition of `segs` is told the position it lands with.
   pure def told(kept: Part -> int, segs: Set[Seg]): Part -> int = segs.fold(kept, (k, s) => k.set(s.part, s.to))
+
+  /// What a telling carries: the position each partition of `segs` lands with, and of every other
+  /// partition the position `owed`, 0 where none is.
+  pure def reportOf(owed: Part -> int, segs: Set[Seg]): Part -> int = segs.fold(owed, (r, s) => r.set(s.part, s.to))
+
+  /// The sources of `kept` once each partition `report` holds a position of is told it.
+  pure def toldOf(kept: Part -> int, report: Part -> int): Part -> int =
+    report.keys().fold(kept, (k, part) => if (report.get(part) > 0) k.set(part, report.get(part)) else k)
+
+  /// Whether `owed` holds a position of any partition.
+  pure def owes(owed: Part -> int): bool = owed.keys().exists(part => owed.get(part) > 0)
 
   /// The attempts live.
   val live: Set[(Pipe, int)] = attempts.keys()
@@ -156,7 +170,7 @@ module exactly_once_protocol {
     val attempt = {
       pipe: pipe, epoch: 0, stage: Opening,
       read: zero(partsOf(pipe)), sealed: zero(partsOf(pipe)), committed: zero(partsOf(pipe)),
-      landing: Set(),
+      landing: Set(), owed: zero(partsOf(pipe)),
     }
     all {
       load <= LOADS,
@@ -252,18 +266,44 @@ module exactly_once_protocol {
   }
 
   /// The attempt `k` tells the source of every partition its commit landed with that position,
-  /// meeting `outcome`, and reads on: a telling that fails may have moved the sources all the
-  /// same.
+  /// and of every other partition it owes a position that one, meeting `outcome`, and reads on.
+  /// A telling that fails leaves every source as it was, and one whose answer is lost has moved
+  /// them all the same; either leaves the attempt owing what it carried.
   action tell(k: (Pipe, int), outcome: Outcome): bool = {
     val attempt = attemptOf(k)
+    val report = reportOf(attempt.owed, attempt.landing)
     all {
       live.contains(k),
       attempt.stage == Landed,
       outcome == Ok or faults > 0,
       keepAll(
         dest,
-        if (outcome == Failed) kept else told(kept, attempt.landing),
-        if (outcome == Ok) attempts.set(k, { ...attempt, stage: Reading, committed: attempt.sealed, landing: Set() }) else without(k),
+        if (outcome == Failed) kept else toldOf(kept, report),
+        attempts.set(k, {
+          ...attempt, stage: Reading, committed: attempt.sealed, landing: Set(),
+          owed: if (outcome == Ok) zero(partsOf(attempt.pipe)) else report,
+        }),
+        started,
+        if (outcome == Ok) faults else faults - 1,
+        landed,
+        fencedLanded,
+      ),
+    }
+  }
+
+  /// The attempt `k`, reading, tells the sources it owes a position that one, as a commit with
+  /// nothing to publish does, meeting `outcome` as a telling after a commit does.
+  action tellOwed(k: (Pipe, int), outcome: Outcome): bool = {
+    val attempt = attemptOf(k)
+    all {
+      live.contains(k),
+      attempt.stage == Reading,
+      owes(attempt.owed),
+      outcome == Ok or faults > 0,
+      keepAll(
+        dest,
+        if (outcome == Failed) kept else toldOf(kept, attempt.owed),
+        if (outcome == Ok) attempts.set(k, { ...attempt, owed: zero(partsOf(attempt.pipe)) }) else attempts,
         started,
         if (outcome == Ok) faults else faults - 1,
         landed,
@@ -316,6 +356,7 @@ module exactly_once_protocol {
         checkpoint(k, part),
         land(k, outcome),
         tell(k, outcome),
+        tellOwed(k, outcome),
         close(k),
         crash(k),
       },
@@ -343,6 +384,7 @@ module exactly_once_protocol {
           checkpoint(k, part),
           land(k, outcome),
           tell(k, outcome),
+          tellOwed(k, outcome),
           close(k),
           all { rare == 1, crash(k) },
         },
@@ -369,6 +411,13 @@ module exactly_once_protocol {
   /// position a commit landed with.
   val PositionOnlyInCommitted = PARTS.forall(part =>
     kept.get(part) == 0 or landed.contains((part, kept.get(part))))
+
+  /// A position an attempt owes a source is one a commit landed with, so telling it later moves
+  /// the source to no other.
+  val OwedOnlyLanded = attempts.keys().forall(k => {
+    val owed = attempts.get(k).owed
+    owed.keys().forall(part => owed.get(part) == 0 or landed.contains((part, owed.get(part))))
+  })
 
   /// Every pipeline holds every row of each of its partitions.
   val converged = PIPES.forall(pipe => partsOf(pipe).forall(part => dest.get(pipe).cursor.get(part) == rowsOf(part)))
@@ -424,6 +473,20 @@ module exactly_once {
       live.contains(k),
       attempt.stage == Reading,
       keepAll(dest, told(kept, sealedSegs(attempt)), attempts, started, faults, landed, fencedLanded),
+    }
+  }
+
+  /// An attempt owing the positions of what it sealed before its commit lands, which an attempt
+  /// never does.
+  action owedBeforeLanding(k: (Pipe, int)): bool = {
+    val attempt = attemptOf(k)
+    all {
+      live.contains(k),
+      attempt.stage == Reading,
+      keepAll(
+        dest, kept, attempts.set(k, { ...attempt, owed: reportOf(attempt.owed, sealedSegs(attempt)) }),
+        started, faults, landed, fencedLanded,
+      ),
     }
   }
 
@@ -530,8 +593,8 @@ module exactly_once {
       .then(rowOfU(2))
       .expect(dest.get("p").rows.get("u") == Map(0 -> 1, 1 -> 1) and kept.get("u") == 2 and ExactlyOnce)
 
-  /// A telling that fails may move a source all the same, and only to the position its commit
-  /// landed with.
+  /// A telling whose answer is lost may move a source all the same, and only to the position its
+  /// commit landed with; the attempt reads on, owing it.
   run aTellingLostStillMovesTheSourceOnlyToALandedPositionTest =
     init
       .then(start("p"))
@@ -541,11 +604,73 @@ module exactly_once {
       .then(land(p(1), Ok))
       .then(tell(p(1), Lost))
       .expect(all {
-        not(live.contains(p(1))),
+        attemptOf(p(1)).stage == Reading,
+        attemptOf(p(1)).owed.get("u") == 1,
         kept.get("u") == 1,
         Acknowledged,
         PositionOnlyInCommitted,
+        OwedOnlyLanded,
       })
+
+  /// A telling that fails leaves every source and the destination as they were, and the attempt
+  /// reads on owing the position; its next commit's telling carries the newer position in its
+  /// place.
+  run aFailedTellingLeavesStateAsItWasAndTheNextCommitTellsItTest =
+    init
+      .then(start("p"))
+      .then(open(p(1)))
+      .then(read(p(1), "u"))
+      .then(checkpoint(p(1), "u"))
+      .then(land(p(1), Ok))
+      .then(tell(p(1), Failed))
+      .expect(all {
+        live.contains(p(1)),
+        attemptOf(p(1)).stage == Reading,
+        attemptOf(p(1)).owed == Map("a" -> 0, "u" -> 1),
+        kept == Map("a" -> 0, "u" -> 0),
+        dest.get("p").cursor == Map("a" -> 0, "u" -> 1),
+        Acknowledged,
+        OwedOnlyLanded,
+      })
+      .then(rowOfU(1))
+      .expect(all {
+        kept.get("u") == 2,
+        not(owes(attemptOf(p(1)).owed)),
+        ExactlyOnce,
+        Acknowledged,
+        PositionOnlyInCommitted,
+      })
+
+  /// A position owed is told with nothing more to publish, as an interval's commit tells it.
+  run anOwedTellingIsMadeWithNothingToPublishTest =
+    init
+      .then(start("p"))
+      .then(open(p(1)))
+      .then(read(p(1), "a"))
+      .then(checkpoint(p(1), "a"))
+      .then(land(p(1), Ok))
+      .then(tell(p(1), Failed))
+      .then(tellOwed(p(1), Failed))
+      .expect(kept.get("a") == 0 and owes(attemptOf(p(1)).owed) and faults == FAULTS - 2)
+      .then(tellOwed(p(1), Ok))
+      .expect(all {
+        kept.get("a") == 1,
+        not(owes(attemptOf(p(1)).owed)),
+        dest.get("p").cursor.get("a") == 1,
+        Acknowledged,
+        PositionOnlyInCommitted,
+      })
+
+  /// An attempt that owed a position of a commit that never landed would move its source past
+  /// the destination once it told it: the invariant refuses it.
+  run aPositionOwedBeforeItsCommitLandedIsRefusedTest =
+    init
+      .then(start("p"))
+      .then(open(p(1)))
+      .then(read(p(1), "u"))
+      .then(checkpoint(p(1), "u"))
+      .then(owedBeforeLanding(p(1)))
+      .expect(not(OwedOnlyLanded))
 
   /// Two attempts read `u`, whose source cannot read again and serves its rows to both: the
   /// newer's session fences the older's, whose commit the destination refuses, and the newer's

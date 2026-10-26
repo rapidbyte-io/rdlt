@@ -189,16 +189,20 @@ A formal layer is added to the layers of its class, never in place of one.
   only once the commit lands. A source that reads again serves any position; one that cannot
   forgets what precedes the position it was last told, refuses a read from before it, and serves
   what follows it to every reader that asks. Attempts crash, commits fail or lose their answer,
-  tellings fail, and attempts start beside one another, two of them reading one partition whose
-  source cannot read again; a retry is an attempt of its own, and the model does not group
-  attempts into runs. Its invariants, each with the check in the code it stands for: every row a
-  partition's position lies past is held once and none past it (`ExactlyOnce`, the contents and
-  cursor checks of the simulation's `check_exactly_once`); no source stands past the position the
-  destination holds (`Acknowledged`, the simulation's `check_acknowledged` and its source's check
-  that no acknowledged offset lies beyond the committed one); a source stands only where it was
-  told, at a position a commit landed with (`PositionOnlyInCommitted`, ADR 0030's `S-ACK` clause
-  as `rdlt-certify` checks it); no commit lands from a fenced session (`FencedNeverCommits`, the
-  destination's fence, which the model's destination enforces and no simulation check covers).
+  tellings fail or lose theirs and leave the attempt reading, owing what they carried to its next
+  telling, which a commit with nothing to publish makes too, and attempts start beside one another,
+  two of them reading one partition whose source cannot read again; a retry is an attempt of its
+  own, and the model does not group attempts into runs. Its invariants, each with the check in the
+  code it stands for: every row a partition's position lies past is held once and none past it
+  (`ExactlyOnce`, the contents and cursor checks of the simulation's `check_exactly_once`); no
+  source stands past the position the destination holds (`Acknowledged`, the simulation's
+  `check_acknowledged` and its source's check that no acknowledged offset lies beyond the committed
+  one); a source stands only where it was told, at a position a commit landed with
+  (`PositionOnlyInCommitted`, ADR 0030's `S-ACK` clause as `rdlt-certify` checks it); a position an
+  attempt owes a source is one a commit landed with (`OwedOnlyLanded`, the acknowledgement property
+  test's check that every report, made again or not, carries only cursors a landed commit covers);
+  no commit lands from a fenced session (`FencedNeverCommits`, the destination's fence, which the
+  model's destination enforces and no simulation check covers).
   Each has a test that breaks its rule: `Acknowledged`'s tells a source the position of what it
   sealed before its commit lands. Once faults stop, every row lands once (`Converges`), which TLC
   checks under weak fairness of every step; a position never moves back, so the load stays so. The
@@ -207,13 +211,13 @@ A formal layer is added to the layers of its class, never in place of one.
   ends one attempt at most, so three leave one that meets none, and the others start beside a live
   one or once the load converged. The checkers are held to 20 minutes for TLC and 10 for Apalache
   on the nightly runner, and half that on four workers of a developer's machine: TLC checks every
-  state, 289,393 of them, in about 20 seconds there, and Apalache every run of up to eight steps
-  in about 130 seconds, where nine take past 5 minutes. Two rows of each partition take TLC
-  3,765,464 states and about 6 minutes there. A second pipeline sharing the destination with a
+  state, 298,944 of them, in about 25 seconds there, and Apalache every run of up to eight steps
+  in about 235 seconds, where nine take past 5 minutes. Two rows of each partition take TLC
+  3,846,313 states and about 6 minutes there. A second pipeline sharing the destination with a
   partition of its own is the module `exactly_once_pair`, which `just quint` tests and simulates
   and no checker explores; a test shows that its sessions fence none of the first pipeline's.
   `just quint` simulates 2,000 runs of 60 steps of each module, and its tests and runs of this
-  spec take about 25 seconds on a developer's machine.
+  spec take about 22 seconds on a developer's machine.
 - Re-planning in a continuous run is specified (`specs/replan.qnt`, ADR 0031): partitions the source
   names appear, change between bounded and unbounded, and disappear between plans, a read keeping
   the kind its partition had when it started; a running read the plan drops stops, and a later
