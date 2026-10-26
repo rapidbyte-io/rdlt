@@ -2,7 +2,8 @@
 //!
 //! It tracks every partition's sealed segments, decides when a commit is due, asks on-demand
 //! partitions to checkpoint (a barrier), flushes the lanes, commits the sealed segments with their
-//! state, and acknowledges the committed cursors to the source. At most one commit is in flight;
+//! state, and acknowledges the committed cursors to the source, owing it those of a report that
+//! failed until a later commit's report carries them. At most one commit is in flight;
 //! partitions keep reading while it runs.
 
 mod acks;
@@ -20,6 +21,7 @@ mod tests;
 mod waiting;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -187,6 +189,9 @@ pub(crate) struct CoordinatorParts {
     pub(crate) replan: Duration,
     /// Where the commits count what made each due and the time their phases took.
     pub(crate) tally: Arc<Tally>,
+    /// The attempts the run makes: as many failed reports in a row of a partition's cursor end
+    /// the attempt, or give up the cursor of a partition recorded done.
+    pub(crate) attempts: NonZeroU32,
 }
 
 pub(crate) struct Coordinator {
@@ -215,6 +220,8 @@ pub(crate) struct Coordinator {
     /// The segments partitions abandoned since the last commit, whose staging the next commit
     /// removes.
     abandoned: SegmentSet,
+    /// The cursors the source has yet to be told are committed.
+    owed: acks::Owed,
 }
 
 impl Coordinator {
@@ -235,6 +242,7 @@ impl Coordinator {
             sealing: BTreeSet::new(),
             retired: BTreeSet::new(),
             abandoned: SegmentSet::new(),
+            owed: acks::Owed::default(),
         }
     }
 
@@ -249,6 +257,7 @@ impl Coordinator {
                 break;
             }
         }
+        self.settle().await?;
         let end = if self.stopping {
             AttemptEnd::Stopped
         } else {

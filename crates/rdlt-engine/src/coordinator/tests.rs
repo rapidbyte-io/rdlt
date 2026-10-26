@@ -11,7 +11,8 @@ mod scale;
 mod seals;
 mod state;
 
-use std::num::NonZeroUsize;
+use std::collections::VecDeque;
+use std::num::{NonZeroU32, NonZeroUsize};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, UNIX_EPOCH};
@@ -41,8 +42,20 @@ use crate::watch;
 
 type Commits = Arc<Mutex<Vec<CommitMeta>>>;
 type Acks = Arc<Mutex<Vec<(StreamName, Vec<(PartitionId, Cursor)>)>>>;
-/// How many commits had landed when each acknowledgement was made, in order.
-type Heard = Arc<Mutex<Vec<usize>>>;
+/// Every report made, accepted or not, with how many commits had landed when it was, in order.
+type Asked = Arc<Mutex<Vec<(Vec<(PartitionId, Cursor)>, usize)>>>;
+/// How the source answers its next reports, in order; it accepts every report past them.
+type Answers = Arc<Mutex<VecDeque<Answer>>>;
+
+/// How the source answers a report of committed cursors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Answer {
+    Accept,
+    /// Refused as a transient failure, as a lost report is.
+    Refuse,
+    /// Refused as holding a position the source never sent, as a source started again does.
+    Unsent,
+}
 
 struct Recorder {
     commits: Commits,
@@ -101,7 +114,8 @@ impl DestinationSession for Recorder {
 struct Listener {
     acks: Acks,
     commits: Commits,
-    heard: Heard,
+    answers: Answers,
+    asked: Asked,
     /// How long hearing of a commit takes.
     pace: Duration,
 }
@@ -134,16 +148,28 @@ impl Source for Listener {
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             let landed = self.commits.lock().len();
+            self.asked.lock().push((cursors.to_vec(), landed));
             tokio::time::sleep(self.pace).await;
             assert!(
                 !self.commits.lock().is_empty(),
                 "acknowledged before any commit landed"
             );
+            match self.answers.lock().pop_front().unwrap_or(Answer::Accept) {
+                Answer::Accept => {}
+                Answer::Refuse => return Err(transient("the report was lost")),
+                Answer::Unsent => {
+                    let error = transient("a position this host was never sent");
+                    return Err(error.with_code(rdlt_connector::POSITION_UNSENT));
+                }
+            }
             self.acks.lock().push((stream.clone(), cursors.to_vec()));
-            self.heard.lock().push(landed);
             Ok(())
         })
     }
+}
+
+fn transient(message: &str) -> ConnectorError {
+    ConnectorError::new(rdlt_connector::ConnectorErrorKind::Transient, message)
 }
 
 /// A coordinator and the handles a test drives it through.
@@ -155,7 +181,8 @@ struct Harness {
     cancel: CancellationToken,
     commits: Commits,
     acks: Acks,
-    heard: Heard,
+    answers: Answers,
+    asked: Asked,
     log: Arc<Mutex<AttemptLog>>,
     closed: Arc<AtomicBool>,
     latest: Arc<Latest>,
@@ -178,6 +205,8 @@ struct Setup {
     budget: u64,
     /// How long the destination takes to commit; the source takes twice as long to hear of it.
     pace: Duration,
+    /// The attempts the run makes.
+    attempts: NonZeroU32,
 }
 
 impl Setup {
@@ -196,6 +225,7 @@ impl Setup {
             schema: None,
             budget: u64::MAX,
             pace: Duration::ZERO,
+            attempts: crate::config::RetryPolicy::default().attempts(),
         }
     }
 
@@ -258,7 +288,8 @@ impl Setup {
             cancel: CancellationToken::new(),
             commits: Arc::clone(&commits),
             acks: Arc::clone(&acks),
-            heard: Heard::default(),
+            answers: Answers::default(),
+            asked: Asked::default(),
             log: Arc::default(),
             closed: Arc::default(),
             latest: Arc::default(),
@@ -273,7 +304,7 @@ impl Setup {
             pace: self.pace,
         }));
         let tables = self.tables(session).await;
-        let source = Arc::new(self.listener(acks, commits, Arc::clone(&harness.heard)));
+        let source = Arc::new(self.listener(acks, commits, &harness));
         let coordinator = Coordinator::new(CoordinatorParts {
             env: Arc::new(SystemEnv::one_core()),
             policy: self.policy,
@@ -299,18 +330,21 @@ impl Setup {
             follow: false,
             replan: Duration::from_secs(60),
             tally: Arc::clone(&harness.tally),
+            attempts: self.attempts,
         });
         (coordinator, harness)
     }
 }
 
 impl Setup {
-    /// The source hearing of commits, into `acks`, which checks they follow `commits`.
-    fn listener(&self, acks: Acks, commits: Commits, heard: Heard) -> Listener {
+    /// The source hearing of commits, into `acks`, which checks they follow `commits` and
+    /// answers as `harness` says.
+    fn listener(&self, acks: Acks, commits: Commits, harness: &Harness) -> Listener {
         Listener {
             acks,
             commits,
-            heard,
+            answers: Arc::clone(&harness.answers),
+            asked: Arc::clone(&harness.asked),
             pace: self.pace * 2,
         }
     }

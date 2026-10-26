@@ -81,8 +81,8 @@ pub use error::{Code, Error, ErrorKind, ErrorReport, Origin, codes};
 pub use plan::{DeleteMode, OnTruncate, PipelinePlan, RetentionLoss, StreamPlan, Until, WriteMode};
 pub use policy::{Nested, OnUnsupported, SchemaPolicy, SchemaSettings};
 pub use report::{
-    AttemptReport, CommitPhases, Commits, Counters, Flushes, Forgotten, LaneCounters, PoolCounters,
-    REPORTED_ATTEMPTS, REPORTED_FORGOTTEN, Report, RunStatus, ShredCounts, StreamReport, Waited,
-    Waits,
+    Acks, AttemptReport, CommitPhases, Commits, Counters, Flushes, Forgotten, LaneCounters,
+    PoolCounters, REPORTED_ATTEMPTS, REPORTED_FORGOTTEN, Report, RunStatus, ShredCounts,
+    StreamReport, Waited, Waits,
 };
 pub use run::{Engine, ResetReport, ResetScope, RunControl, RunHandle, RunOutcome, StopMode};
