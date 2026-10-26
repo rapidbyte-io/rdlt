@@ -9,7 +9,7 @@ use rdlt_connector::cost::Stored;
 use rdlt_connector::{DecimalType, LoadId, LogicalType, TimeUnit};
 
 use super::{Case, Kept, LoweringCase, Made, Storage, events, stamp, with_column};
-use crate::cost::CHANGE_ROW;
+use crate::cost::{CHANGE_ROW, arrays};
 use crate::table::{ChangeLayout, Stamp, aligned};
 
 const ROWS: u32 = 64;
@@ -199,20 +199,22 @@ fn a_row_holding_an_instant_its_column_cannot_hold_is_dropped_and_its_integers_w
 }
 
 #[test]
-fn a_change_batch_is_charged_its_change_columns_and_what_splitting_a_row_holds() {
+fn a_batch_is_charged_its_change_columns_what_splitting_a_row_holds_and_its_arrays() {
     let changes = Case::new(LoweringCase::Changes, ROWS);
     let stored = aligned(changes.batch(), &changes.plan().stored());
     let row = changes.plan().row_bytes() + CHANGE_ROW;
     let mut measure = changes
         .rendering
         .lowering(changes.batch(), stored, row, u64::MAX);
-    assert_eq!(changes.charge(), measure.expanded(0..64));
+    let beside = changes.plan().piece_bytes() + arrays(changes.batch().schema_ref().fields());
+    assert_eq!(changes.charge(), measure.expanded(0..64) + beside);
     let append = Case::new(LoweringCase::AppendNative, ROWS);
     let (stored, row) = (append.plan().stored(), append.plan().row_bytes());
     let mut measure = append
         .rendering
         .lowering(append.batch(), stored, row, u64::MAX);
-    assert_eq!(append.charge(), measure.expanded(0..64));
+    let beside = append.plan().piece_bytes() + arrays(append.batch().schema_ref().fields());
+    assert_eq!(append.charge(), measure.expanded(0..64) + beside);
 }
 
 #[test]

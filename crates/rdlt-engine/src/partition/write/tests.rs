@@ -532,6 +532,8 @@ fn flags_as_text(items: usize, shares: crate::budget::Shares) -> super::pieces::
         stored: vec![Some(stored)],
         row: 0,
         item: 0,
+        piece: 0,
+        part: 0,
         max,
         limit,
     };

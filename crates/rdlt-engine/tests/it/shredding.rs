@@ -16,7 +16,7 @@ use crate::support::making::{Step, Steps, making, making_parts};
 use crate::support::{commit_every, engine, pipeline, stream, yielding_engine};
 
 /// About the least memory an engine runs on.
-const LEAST: u64 = 34 << 20;
+const LEAST: u64 = 40 << 20;
 
 /// The heap a run may reach under `budget`, as the engine documents it.
 fn bound(budget: u64) -> usize {
@@ -368,7 +368,8 @@ async fn a_row_a_request_leaves_no_room_for_beside_its_jsons_build_is_refused_na
         shown.contains(&(BUILT_BEYOND + 8_000).to_string()),
         "{shown}"
     );
-    let outcome = beside_a_build("beside_build_loaded", 200_000).await;
+    // A row of a table of 1,500 columns, and the arrays of its piece, two a column.
+    let outcome = beside_a_build("beside_build_loaded", 1_200_000).await;
     assert!(outcome.error.is_none(), "{:?}", outcome.error);
     assert_eq!(outcome.report.rows, 1_500);
 }

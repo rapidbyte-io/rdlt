@@ -24,7 +24,7 @@ use rdlt_connector::{
 
 use super::events;
 #[cfg(test)]
-use crate::cost::{CHANGE_ROW, rendering};
+use crate::cost::{CHANGE_ROW, arrays, rendering};
 use crate::error::Error;
 use crate::naming::Naming;
 use crate::plan::{StreamPlan, WriteMode};
@@ -354,6 +354,12 @@ impl Case {
         &self.plan
     }
 
+    /// How the case's destination stores its columns.
+    #[cfg(test)]
+    pub(crate) fn rendering(&self) -> &Rendering {
+        &self.rendering
+    }
+
     /// The batch prepared as the write path prepares it: a change batch split into its data and
     /// its change columns first.
     pub(crate) fn prepare(&self) -> Result<Prepared, Error> {
@@ -367,7 +373,7 @@ impl Case {
         }
     }
 
-    /// Bytes: what the write path reserves for lowering the batch, as one piece.
+    /// Bytes: what the write path reserves for lowering the batch, as a piece of one part.
     #[cfg(test)]
     pub(crate) fn charge(&self) -> u64 {
         let (stored, beside) = match &self.pushed {
@@ -376,7 +382,11 @@ impl Case {
         };
         let row = self.plan.row_bytes().saturating_add(beside);
         let mut measure = self.rendering.lowering(self.batch(), stored, row, u64::MAX);
-        measure.expanded(0..self.rows())
+        let part = arrays(self.batch().schema_ref().fields());
+        measure
+            .expanded(0..self.rows())
+            .saturating_add(self.plan.piece_bytes())
+            .saturating_add(part)
     }
 }
 

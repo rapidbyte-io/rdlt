@@ -1,5 +1,5 @@
 //! Cases of a wide table of 64-bit integers, each column charged what concatenating it copies:
-//! what the heap tests hold a piece of several parts to.
+//! what the heap tests hold a piece to, of a row or two, or of many rows in several parts.
 
 use std::sync::Arc;
 
@@ -48,6 +48,17 @@ impl Case {
         let mut built = Self::planned(Storage::Native.capabilities(), made);
         built.kept.rows = usize::try_from(half).expect("a row count");
         built
+    }
+
+    /// A history table keyed by `id` of `rows` rows of a table of `columns` integer columns and
+    /// the instant `at` its versions begin at.
+    pub(crate) fn wide_history(rows: u32, columns: usize) -> Self {
+        let batch = integers(rows, columns, |row| row);
+        let at = TimestampSecondArray::from_iter_values(0..i64::from(rows));
+        let at = Arc::new(at.with_timezone("UTC"));
+        let batch = with_column(&batch, "at", instant(TimeUnit::Second), at);
+        let made = Made::keyed(WriteMode::History, Meta::History, batch);
+        Self::planned(Storage::Native.capabilities(), made)
     }
 
     /// An append of `rows` rows of a table of `columns` integer columns and an instant in

@@ -17,7 +17,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
-use rdlt_connector::cost::Allocations;
+use rdlt_connector::cost::{Allocations, Rendering};
 use rdlt_connector::{ColumnPath, Permit, SchemaError, TableSchema};
 
 use self::changes::{Ignored, split_changes};
@@ -30,7 +30,7 @@ use super::coalesce::{Flushed, Unit};
 use super::{ChangeMode, OpenSegment, PartitionContext, PartitionJob};
 use crate::budget::{Denied, Lent, MemoryBudget, Reservation, Shares, TooLarge};
 use crate::compute::Pool;
-use crate::cost::CHANGE_ROW;
+use crate::cost::{CHANGE_ROW, arrays};
 use crate::error::{Error, ErrorKind, codes};
 use crate::limits::MAX_PIECE_BYTES;
 use crate::normalize::PushKind;
@@ -233,22 +233,38 @@ async fn planned(
     for mut unit in judged {
         unit.incoming.rounding.clone_from(&rounding);
         let plan = context.tables.plan(job.table, unit.incoming).await?;
-        let (stored, changes) = match job.changes {
-            Some(_) => (aligned(&unit.held.batches[0], &plan.stored()), CHANGE_ROW),
-            None => (plan.stored(), 0),
-        };
-        let lowered = Lowered {
-            rendering: context.rendering.as_ref().clone(),
-            stored,
-            row: plan.row_bytes().saturating_add(changes),
-            item: 0,
-            max,
-            limit,
-        };
+        let batch = &unit.held.batches[0];
+        let lowered = measured(&plan, &context.rendering, batch, job.changes, (max, limit));
         let pieces = Pieces::new(unit.held, lowered);
         planned.push(Planned { plan, pieces });
     }
     Ok(planned)
+}
+
+/// How the batches of a unit like `batch`, read as `mode` says, are measured as `plan` lowers
+/// them for a destination rendering as `rendering` says, cut into pieces of `max` bytes at most,
+/// each row within `limit`.
+fn measured(
+    plan: &LoweringPlan,
+    rendering: &Rendering,
+    batch: &RecordBatch,
+    mode: Option<ChangeMode>,
+    (max, limit): (u64, u64),
+) -> Lowered {
+    let (stored, changes) = match mode {
+        Some(_) => (aligned(batch, &plan.stored()), CHANGE_ROW),
+        None => (plan.stored(), 0),
+    };
+    Lowered {
+        rendering: rendering.clone(),
+        stored,
+        row: plan.row_bytes().saturating_add(changes),
+        item: 0,
+        piece: plan.piece_bytes(),
+        part: arrays(batch.schema_ref().fields()),
+        max,
+        limit,
+    }
 }
 
 /// Lowers the pieces of `planned`, each reserving what it takes from `room`, and queues them on

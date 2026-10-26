@@ -124,7 +124,7 @@ async fn two_partitions_whose_pushes_do_not_fit_together_make_progress() {
     // Each push of a hundred thousand rows keeps about three megabytes alive, where pushes may
     // take four and a half of this budget.
     let source = generator(&[("orders", 400_000, 2, 100_000)]).await;
-    let config = commit_every(4_000).memory(34 << 20).lanes(1).lane_window(1);
+    let config = commit_every(4_000).memory(40 << 20).lanes(1).lane_window(1);
     let run = engine(config).run(
         pipeline("l1", [stream("orders")]),
         source,
@@ -338,7 +338,7 @@ async fn receipts_counting_past_a_total_fail_the_run_typed() {
 /// is far slower than the source and every partition reads at once with the default buffers.
 #[tokio::test(start_paused = true)]
 async fn memory_stays_within_the_budget() {
-    const BUDGET: u64 = 34 << 20;
+    const BUDGET: u64 = 40 << 20;
     const PARTITIONS: u64 = 16;
     const ROWS: u64 = 2_000_000;
     let source = generator(&[("orders", ROWS, PARTITIONS, 20_000)]).await;
@@ -369,7 +369,7 @@ async fn memory_stays_within_the_budget() {
 async fn encoded_pushes_stay_within_the_budget_once_decoded() {
     use arrow_array::types::Int32Type;
     use arrow_array::{ArrayRef, DictionaryArray, Int32Array, Int64Array, RunArray, StringArray};
-    const BUDGET: u64 = 34 << 20;
+    const BUDGET: u64 = 40 << 20;
     const ROWS: i32 = 50_000;
     let value = "x".repeat(2_000);
     let pushes = |id: i64| {
@@ -424,7 +424,7 @@ async fn encoded_pushes_stay_within_the_budget_once_decoded() {
 async fn one_encoded_push_stays_within_the_budget_into_writers_that_buffer() {
     use arrow_array::types::Int32Type;
     use arrow_array::{ArrayRef, Int32Array, Int64Array, RunArray, StringArray};
-    const BUDGET: u64 = 34 << 20;
+    const BUDGET: u64 = 40 << 20;
     const ROWS: i32 = 50_000;
     let runs = RunArray::<Int32Type>::try_new(
         &Int32Array::from(vec![ROWS]),

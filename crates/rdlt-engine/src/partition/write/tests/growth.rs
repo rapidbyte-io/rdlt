@@ -1,5 +1,6 @@
 //! A piece is charged for the allocations it keeps alive beyond its unit's batches, each once,
-//! however earlier pieces of the unit were freed and wherever the allocator placed it.
+//! however earlier pieces of the unit were freed and wherever the allocator placed it, and for
+//! its arrays.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -12,21 +13,23 @@ use rdlt_connector::cost::Allocations;
 use super::super::Held;
 use super::super::normalized::{kept, made, part_growth};
 use super::{allocated, buffers, ids};
+use crate::cost::arrays;
 use crate::table::Prepared;
 
 #[test]
-fn the_loads_constant_columns_and_the_units_batches_count_for_no_growth() {
+fn the_loads_constant_columns_and_the_units_batches_count_for_no_growth_but_their_arrays() {
     let rows = ids(100);
     let prepared = lowered(Arc::clone(rows.column(0)));
+    let arrays = arrays(prepared.batch.schema_ref().fields());
     assert_eq!(
         prepared.growth(&Allocations::default()),
-        buffers(&rows),
-        "the constant columns count nothing"
+        buffers(&rows) + arrays,
+        "the constant columns' buffers count nothing"
     );
     // What the unit's batches keep alive is no growth, however many pieces keep it alive.
     let unit = Held::of(vec![rows.clone()], Vec::new());
-    assert_eq!(prepared.growth(&unit.allocations), 0);
-    assert_eq!(prepared.growth(&unit.allocations), 0);
+    assert_eq!(prepared.growth(&unit.allocations), arrays);
+    assert_eq!(prepared.growth(&unit.allocations), arrays);
     assert_eq!(unit.allocations.bytes(), allocated(&rows));
 }
 
@@ -79,6 +82,7 @@ fn a_piece_allocated_where_an_earlier_piece_of_its_unit_was_freed_is_charged_in_
     let values = first.to_data().buffers()[0].clone();
     let address = values.as_ptr();
     let piece = lowered(first);
+    let bytes = bytes + arrays(piece.batch.schema_ref().fields());
     assert_eq!(piece.growth(&held.allocations), bytes);
     // The piece is written and freed, and the next piece of the unit is lowered where it was.
     drop(piece);
@@ -218,9 +222,9 @@ fn afresh(unit: &[RecordBatch], columns: &[ArrayRef]) -> u64 {
 }
 
 proptest! {
-    /// Each piece of a unit is charged the allocations it keeps alive beyond the unit's batches,
-    /// counted afresh: whatever it shares with the unit or repeats, and wherever it was made,
-    /// in the very allocation a piece written before it held among them.
+    /// Each piece of a unit is charged its arrays and the allocations it keeps alive beyond the
+    /// unit's batches, counted afresh: whatever it shares with the unit or repeats, and wherever
+    /// it was made, in the very allocation a piece written before it held among them.
     #[test]
     fn each_piece_s_growth_is_its_allocations_beyond_its_unit_counted_afresh(
         unit in proptest::collection::vec(1_500_usize..2_000, 1..4),
@@ -262,7 +266,8 @@ proptest! {
                 made.push(array);
             }
             let piece = lowered_all(made.clone());
-            prop_assert_eq!(piece.growth(&held.allocations), afresh(&unit, &made));
+            let arrays = arrays(piece.batch.schema_ref().fields());
+            prop_assert_eq!(piece.growth(&held.allocations), afresh(&unit, &made) + arrays);
             if written {
                 // Written and freed: what it made alone may be handed out again.
                 drop((piece, made));

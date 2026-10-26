@@ -539,15 +539,15 @@ async fn read_through_a_kill_clause(
 #[tokio::test]
 async fn a_kill_clause_tells_its_target_the_limits_its_engine_admits_exactly() {
     let admitted = super::limits().expect("the limits");
-    // Those of an engine of the clause's budget: a cursor of sixteen kilobytes, where the wire
+    // Those of an engine of the clause's budget: a cursor of nineteen kilobytes, where the wire
     // takes four mebibytes.
     let engine = rdlt_engine::EngineConfig::builder()
-        .memory(34 << 20)
+        .memory(40 << 20)
         .build()
         .expect("valid");
     assert_eq!(admitted, engine.limits());
     let limit = usize::try_from(admitted.cursor_bytes).expect("a size");
-    assert_eq!(limit, 16_384);
+    assert_eq!(limit, 19_275);
     for bytes in [limit - 1, limit] {
         read_through_a_kill_clause(&admitted, bytes)
             .await

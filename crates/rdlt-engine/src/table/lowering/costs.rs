@@ -6,7 +6,7 @@ use rdlt_connector::cost::Stored;
 use rdlt_wire::limits::count;
 
 use super::{LoweringPlan, Source};
-use crate::cost::flags_bytes;
+use crate::cost::{arrays, flags_bytes};
 
 /// Bytes: what a row takes in a metadata column of bytes the destination stores: at most 64
 /// bytes, which a positional id's 37, a hash's 32 and a sequence's 16 are within, their offset
@@ -78,6 +78,11 @@ impl LoweringPlan {
             self.null_fill(1).saturating_add(directed),
             u64::saturating_add,
         )
+    }
+
+    /// The bytes lowering a piece takes whatever its rows: the arrays of the batch it becomes.
+    pub(crate) fn piece_bytes(&self) -> u64 {
+        arrays(self.view.schema.fields())
     }
 
     /// The bytes a row's unchanged flags take once remapped over the table's columns as far as

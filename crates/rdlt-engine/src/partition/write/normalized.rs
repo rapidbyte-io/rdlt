@@ -158,6 +158,9 @@ async fn sliced(
         stored: Vec::new(),
         row: lineage_row(shape),
         item: LINEAGE_ITEM,
+        // What a split holds whatever its rows is within the whole request each reserves.
+        piece: 0,
+        part: 0,
         // What the split makes is measured as rows expand, and may be twice that.
         max,
         limit,

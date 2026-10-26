@@ -89,26 +89,27 @@ budget before it is held, or bounded by a limit with a typed refusal.
 
   | Limit | Derived from | Least memory, 16 partitions | Default 256 MiB, 16 partitions | Wire default |
   |---|---|---|---|---|
-  | frame bytes | what pushes may take less what a read keeps and `MESSAGE_ROOM`, and half a request less what a row of the widest table takes beside its values | 4,194,304 | 33,303,450 | 64 MiB |
-  | json push bytes | a third of what pushes may take less `MESSAGE_ROOM` | 3,698,375 | 29,360,042 | 64 MiB |
-  | cursor bytes | the cursors' share over twice one more than the partitions, which a quarter of the log's holds | 15,539 | 123,361 | 4 MiB |
-  | dictionary bytes | half of what a read keeps | 264,175 | 2,097,152 | 64 MiB |
-  | schema bytes | a fifth of the other half, for the message and the schema it decodes to | 52,835 | 419,430 | 4 MiB |
-  | schema columns | the tables' share over a kilobyte a column, and schema bytes over 56 a column | 943 | 7,489 | 10,000 |
-  | catalog bytes | the answers' share over sixteen, what a catalog may hold decoded for each byte | 132,087 | 1,048,576 | 4 MiB |
-  | state bytes | the answers' share: state is bounded on what it holds decoded, and a commit leaves no more | 2,113,405 | 16,777,216 | 16 MiB |
-  | control message bytes | the answers' share over sixteen | 132,087 | 262,144 | 256 KiB |
+  | frame bytes | what pushes may take less what a read keeps and `MESSAGE_ROOM`, and half a request less what a row of the widest table takes beside its values | 4,194,304 | 28,505,370 | 64 MiB |
+  | json push bytes | a third of what pushes may take less `MESSAGE_ROOM` | 4,325,207 | 29,360,042 | 64 MiB |
+  | cursor bytes | the cursors' share over twice one more than the partitions, which a quarter of the log's holds | 18,173 | 123,361 | 4 MiB |
+  | dictionary bytes | half of what a read keeps | 308,949 | 2,097,152 | 64 MiB |
+  | schema bytes | a fifth of the other half, for the message and the schema it decodes to | 61,789 | 419,430 | 4 MiB |
+  | schema columns | the tables' share over a kilobyte a column, and schema bytes over 56 a column | 1,103 | 7,489 | 10,000 |
+  | catalog bytes | the answers' share over sixteen, what a catalog may hold decoded for each byte | 154,474 | 1,048,576 | 4 MiB |
+  | state bytes | the answers' share: state is bounded on what it holds decoded, and a commit leaves no more | 2,471,595 | 16,777,216 | 16 MiB |
+  | control message bytes | the answers' share over sixteen | 154,474 | 262,144 | 256 KiB |
 
   - **Cursors.** Every partition may hold a cursor waiting for a commit and a barrier's answer
     at once, with room for one more: a barrier's answers always fit, so a source that keeps to
     its cursor limit never waits on a barrier for room. A commit's frame takes at most twice
     each cursor's bytes, so a quarter of the log's share holds it.
   - **Rows.** A row as long as a frame lowers within half a request for lowering, its nulls a
-    column and its metadata beside it, unchanged flags over every column as text among it, so
-    it lowers with or without a log: a row within the frame limit is never
-    `row_exceeds_budget`. That refusal is left to a row its table widens beyond what it arrived
-    as, and to one of a JSON flush whose batches take more than half a request beyond their
-    text, which leaves the row less of the request beside them.
+    column and its metadata beside it, unchanged flags over every column as text among it, and
+    the arrays of the piece it is alone, two a column and sixteen of metadata, so it lowers with
+    or without a log: a row within the frame limit is never `row_exceeds_budget`. That refusal
+    is left to a row its table widens beyond what it arrived as, and to one of a JSON flush
+    whose batches take more than half a request beyond their text, which leaves the row less of
+    the request beside them.
   - **Tables.** A table as wide as a schema may be records its schema and names within the
     tables' share, at names of up to a hundred and fifty bytes; a schema message carries that
     many columns of short names. What a commit records of the tables is reserved from that
@@ -134,16 +135,18 @@ budget before it is held, or bounded by a limit with a typed refusal.
   them is still refused where it becomes more than one request may take: a row its table widens
   (`row_exceeds_budget`, Rows above) and JSON whose batches take more than a request beyond
   twice its text (`json_exceeds_budget`, ADR 0040). A megabyte of JSON records, each naming one
-  of three hundred keys, is refused at 34 MiB, where a JSON push may be 3.9 MB.
+  of three hundred keys, is refused at 40 MiB, where a JSON push may be 4.6 MB.
 - **The least memory.** A budget whose derived frame limit is below the protocol's least frame
   (`MIN_FRAME_BYTES`, 4 MiB), or whose dictionary limit is below the protocol's least
   (`MIN_DICTIONARY_BYTES`, 256 KiB), is refused when the engine's configuration is built, with
   `memory_below_minimum` naming the least memory from which every memory up admits it:
-  33,814,488 bytes at the default sixteen partitions and 53,690,341 at one
+  39,545,528 bytes at the default sixteen partitions and 53,690,341 at one
   (`EngineConfig::least_memory`). Half a request for lowering must hold a frame and the row
-  beside it, so the least is about eight frames at sixteen partitions; a read of one partition
+  beside it, so the least is about nine frames at sixteen partitions; fewer partitions each
+  keep more, so a schema may have more columns and the row beside a frame takes more, which
+  raises the least to 40,213,528 from two to fourteen partitions; a read of one partition
   keeps up to the whole reads' share, and a frame beside it must fit what pushes may take, which
-  sets its least. From 17 partitions their dictionaries set it, 2 MiB for each, twice the least
+  sets its least. From 19 partitions their dictionaries set it, 2 MiB for each, twice the least
   dictionary in a quarter of the memory; from 2^43 partitions no memory admits a peer, and the
   configuration is refused saying so.
 - **A peer's dictionary limit has a least.** A handshake whose limits set a dictionary limit
@@ -186,6 +189,14 @@ budget before it is held, or bounded by a limit with a typed refusal.
   - A conversion between dates, times and instants holds its result beside the value: one slot
     a value, as its column's type takes.
   - Every row costs the nulls of the table's columns the batch holds nothing in.
+  - A piece costs, whatever its rows, the arrays of each batch lowering holds of it: its parts,
+    each a slice of a batch of its unit; where it has several, the batch they are joined into;
+    and the batch it is lowered to, the table's columns and their metadata. An array is charged
+    `ARRAY`, 320 bytes, at every depth of its batch's fields: itself, a handle on each of its
+    buffers and its place among its batch's columns, as much as a column of text with its
+    validity takes. Lowering builds no other batch of a piece's columns: a lone part is lowered
+    as it is, a merge's batch keeps its own schema where no key column changes, and a history
+    table's versions hash its columns under fields built once with its plan.
   - A change stream's row costs its unchanged flags as its table keeps or merges by them,
     remapped over the table's columns: a bit a column as far as the furthest the batch writes,
     with an offset and its validity, and their hex text beside them where the destination
@@ -195,10 +206,14 @@ budget before it is held, or bounded by a limit with a typed refusal.
     never grow beyond what was charged.
   - The invariant is a test here too: every numeric, temporal, decimal, text, bytes and nested
     type, plain, behind keys and as runs, is lowered into every type its table may hold it in,
-    as it is and as text, and the heap's peak is held to the charge. A piece of two batches of a
-    table of a thousand integer columns, each charged exactly what joining the batches copies,
-    holds no more a row than it reserved a row: a change stream's, as a log and merged, with
-    its flags and the deletes it ignores, a merge's of repeated keys, and one dropping rows.
+    as it is and as text, and the heap's peak is held to the charge. A piece of a table of
+    integer columns, each charged exactly what joining its batches copies, holds no more than
+    it reserved, slicing its parts included, and keeps no more once lowered than it is charged:
+    two thousand rows in two parts of a table of a thousand columns, and one row in one part and
+    two in two of a table of a thousand and of the widest a schema may have at the defaults,
+    7,489: a change stream's, as a log and merged, stored as it is and as text, with its flags
+    and the deletes it ignores, a merge's of repeated keys, a history table's, and one dropping
+    rows.
   - Judging which columns of 64-bit integers a batch holds a value a float would round in reads
     each column where it lies, in any encoding, and holds nothing a row, so nothing is charged
     for it; a normalized flush is judged so before any of it is split, and tests hold its peak
@@ -217,9 +232,9 @@ budget before it is held, or bounded by a limit with a typed refusal.
     value decoded. A step that keeps some of its rows (those a change stream ignores, those a
     schema policy drops, those a merge keeps) copies them a column at a time and lets each
     column it copied from go once it has, so the piece never holds its rows twice over.
-  - Once lowered a piece holds what it keeps alive beyond its unit's batches, in place of what
-    was reserved, and its frame what the frame takes. The unit's batches and its own reservation
-    stay with its last piece until that is written.
+  - Once lowered a piece holds what it keeps alive beyond its unit's batches and its batch's
+    arrays, in place of what was reserved, and its frame what the frame takes. The unit's
+    batches and its own reservation stay with its last piece until that is written.
   - **Normalized streams follow the same rule.** A unit's tables are known only once it is
     split, so it is measured twice. It is first cut, as it arrives, into pieces whose split makes
     no more than a piece: each row with its lineage, each item an array holds with its own, for
@@ -352,9 +367,9 @@ budget before it is held, or bounded by a limit with a typed refusal.
   before it waits: a push by what it keeps alive, a checkpoint by its cursor's bytes. The wait
   borrows nothing of the event, which the sink holds beside it.
 - **A unit's pieces share what is charged.** A piece lowered from a unit is charged for the
-  allocations it keeps alive beyond the unit's batches, each once; the pieces share what holds
-  the unit, so its batches and permits hold until its last piece is flushed. The constant columns
-  of a load count for none.
+  allocations it keeps alive beyond the unit's batches, each once, and for its batch's arrays;
+  the pieces share what holds the unit, so its batches and permits hold until its last piece is
+  flushed. The constant columns' buffers of a load count for none.
 - **A set of allocations names only what is alive.** `cost::Allocations` tells allocations
   apart by where they start, and the allocator hands a freed address out again, so a set is kept
   only while its holder keeps alive what it names. A unit's set is built once from its batches,
@@ -544,13 +559,17 @@ admitted, and what a remote connector's calls hold in transport.
   is bounded by the frame, batch-bytes and dictionary limits besides.
 - What lowering reserves is a sum, the value decoded, converted and rendered: a column stored as
   text is lowered in smaller pieces.
-- No engine runs on less than about thirty-three mebibytes, the price of a row as long as a
+- A piece of a wide table costs its arrays whatever its rows: a row alone of the widest table at
+  the defaults reserves 4.8 MB beside its values, each part of a piece of it 2.4 MB and the batch
+  several are joined into as much again, so a unit of many small batches of a wide table is
+  lowered in more pieces, and a frame at the defaults is at most 28.5 MB.
+- No engine runs on less than about thirty-eight mebibytes, the price of a row as long as a
   frame lowering with a log beside it. The simulator draws budgets between the least for one
   partition and twice that, and gives a run one slot more than the unbounded partitions it
   follows. Its in-process sources press on them, in three worlds of four: pushes keeping alive
   a fifth to nine tenths of a frame, and cursors of half to all a cursor may be, so over two
   thousand seeds pushes wait for lowering's room in 783 and cursors wait for a commit in 474.
-  The crash tests and certification's kill clauses run with 34 MiB, about the least.
+  The crash tests and certification's kill clauses run with 40 MiB, about the least.
 - A simulated network's source sends cursors no larger than its workload's. Cursors as large
   as a cursor may be fill a socket whose peer vanished without the close reaching it: the
   served connector's writes to it, its HTTP/2 pings among them, then wait without end, so its

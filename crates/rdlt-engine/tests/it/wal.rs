@@ -720,7 +720,7 @@ async fn frames_larger_than_the_log_s_memory_are_carried_a_piece_at_a_time() {
     // in pieces, so the slow partition's frames still leave the chunks the fast one settles.
     let (rows, frame, every) = (256_000, 2_600_000, 24);
     let name = "wal_large_frames";
-    let memory_bytes = 34 << 20;
+    let memory_bytes = 39 << 20;
     assert!(
         frame > memory_bytes / 16,
         "a frame larger than the log's share"
