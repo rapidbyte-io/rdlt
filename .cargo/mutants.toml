@@ -26,14 +26,11 @@ all_features = true
 # (read-only is none, on Linux and macOS alike), with `^` for `|`; and one that takes every widen a
 # destination refuses for a column not yet kept from widening: the resolver widens no column kept
 # from it on any path, so a refusal never names one, and the guard only bounds the loop were that to
-# change. So is one that opens a database to write with neither the flag that creates it nor the one
-# that spares SQLite's own lock, by `&` for the second `|`: the database was created, private,
-# before SQLite opens it, in a directory no one else writes, and a connection is used by one thread
-# at a time, so that lock never holds anything up. A JSON lines reader's `Debug` names the type and
-# nothing else, since its decoder has none, and so does that of the function a host is told each
-# spawned connector's process id through and the one that plays a simulated one's; a file writer's
-# names its path only for a failing test's message, and a resolver of the environment's secrets its
-# scope only for a person to read: what they write is no behaviour a test can hold.
+# change. A JSON lines reader's `Debug` names the type and nothing else, since its decoder has none,
+# and so does that of the function a host is told each spawned connector's process id through and
+# the one that plays a simulated one's; a file writer's names its path only for a failing test's
+# message, and a resolver of the environment's secrets its scope only for a person to read: what
+# they write is no behaviour a test can hold.
 # The engine's inline test env has one core, which a mutant answering one also has. A mutant that
 # judges a plain column of 64-bit integers through the rows it names reads what the plain arm reads,
 # which spares only the mapping; and one that has a normalized flush's walk read every column for
@@ -97,8 +94,7 @@ exclude_re = [
   "crates/rdlt-connector-reference/src/files/format\\.rs:.*replace <impl std::fmt::Debug for Writer<'_>>::fmt -> std::fmt::Result with Ok\\(Default::default\\(\\)\\)",
   "crates/rdlt-connector/src/merge/history\\.rs:.*replace > with >= in History::hold$",
   "crates/rdlt-connector-reference/src/rooted\\.rs:.*replace \\| with \\^ in Dir::(resolved|dir|opened|create)$",
-  "crates/rdlt-connector-reference/src/sqlite/database\\.rs:.*replace \\| with \\^ in (connect_waiting|reading)$",
-  "crates/rdlt-connector-reference/src/sqlite/database\\.rs:72:9: replace \\| with & in connect_waiting$",
+  "crates/rdlt-connector-reference/src/sqlite/database\\.rs:.*replace \\| with \\^ in (opened|reading)$",
   "crates/rdlt-connector-reference/src/sqlite/session/owners\\.rs:.*replace distinct -> Result<\\(\\)> with Ok\\(\\(\\)\\)$",
   "crates/rdlt-connector-reference/src/sqlite/session/writer\\.rs:.*replace && with \\|\\| in ready$",
   "crates/rdlt-connector/src/cost/expanded/named\\.rs:.*replace < with <= in Meter::keyed$",

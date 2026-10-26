@@ -9,7 +9,7 @@ use rusqlite::limits::Limit;
 use rusqlite::types::Value;
 use rusqlite::{Connection, TransactionBehavior, ffi};
 
-use super::{connect, connect_waiting, failed, query, run};
+use super::{connect, connect_waiting, failed, opened, query, run};
 use crate::limits::JOURNAL_BYTES;
 
 fn refusal<T: std::fmt::Debug>(
@@ -136,6 +136,15 @@ fn a_database_others_can_reach_is_refused() {
     assert_eq!(kind, ConnectorErrorKind::Config);
     let (kind, _) = refusal(connect(&directory.path().join("missing").join("x.db")));
     assert_eq!(kind, ConnectorErrorKind::Config);
+}
+
+#[test]
+fn a_database_gone_since_its_place_was_checked_is_refused_and_not_made_again() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let path = directory.path().join("gone.db");
+    let (kind, _) = refusal(opened(&path, Duration::ZERO));
+    assert_eq!(kind, ConnectorErrorKind::Config);
+    assert!(!path.exists(), "no database was made");
 }
 
 #[test]
