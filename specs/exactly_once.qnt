@@ -2,7 +2,12 @@
 // of a pipeline, its load, opens a session at the destination, which fences every session of the
 // pipeline opened before, reads each partition from where the destination holds it, checkpoints,
 // and commits what it sealed under the session's epoch; once the commit lands, it tells each
-// partition's source the position the commit landed with. A source that reads again serves any
+// partition's source the position the commit landed with. Each commit is keyed by its session's
+// epoch and its place among the session's commits, and names the key it expects the destination
+// to hold landed; the destination keeps the last key that landed, answers a key it holds with its
+// receipt, refuses a commit of another epoch or one expecting another key, and applies the rest.
+// An attempt whose commit's answer it never heard credits it to the run once the next open finds
+// its key landed. A source that reads again serves any
 // position; one that cannot forgets what precedes the position it was last told, refuses a read
 // from before it, and serves everything after it to every reader that asks. An attempt may crash,
 // its commit may fail or land with its answer lost, and a telling may fail or lose its answer: the
@@ -57,17 +62,46 @@ module exactly_once_protocol {
   /// A segment: a partition's rows from one offset to the next.
   type Seg = { part: Part, from: int, to: int }
 
-  /// What the destination holds of a pipeline: its newest session's epoch, and each partition's
-  /// position and how often each row of it is held.
-  type Dest = { epoch: int, cursor: Part -> int, rows: Part -> (int -> int) }
+  /// A commit's key: its session's epoch and its place among the session's commits, from 1.
+  type Key = (int, int)
+
+  /// No key: before the first commit lands.
+  pure val NONE: Key = (0, 0)
+
+  /// Whether `key` comes after `other`: of a later epoch, or later in one epoch.
+  pure def above(key: Key, other: Key): bool =
+    key._1 > other._1 or (key._1 == other._1 and key._2 > other._2)
+
+  /// What the destination holds of a pipeline: its newest session's epoch, each partition's
+  /// position and how often each row of it is held, the key of the last commit that landed, and
+  /// whether a commit ever applied a key that is not above the one landed before it, as a key
+  /// applying twice must.
+  type Dest = { epoch: int, cursor: Part -> int, rows: Part -> (int -> int), landed: Key, again: bool }
+
+  /// How the destination answers a commit: the commit landed already, and its receipt is the
+  /// answer; a newer session fenced it; it expects a key other than the one landed; it applies.
+  type Answer = AlreadyLanded | FencedEpoch | StaleAfter | Apply
+
+  /// How the destination `d` answers the commit keyed `key` that expects `after` landed.
+  pure def answer(d: Dest, key: Key, after: Key): Answer =
+    if (d.landed == key) AlreadyLanded
+    else if (d.epoch != key._1) FencedEpoch
+    else if (d.landed != after) StaleAfter
+    else Apply
+
+  /// What a run knows of a pipeline's commit whose answer it never heard: its key, none where no
+  /// commit is in flight; whether it landed, which the run does not know; whether the last open
+  /// credited one to the run; and whether an open ever credited one that had not landed.
+  type Ledger = { inFlight: Key, applied: bool, credited: bool, miscredited: bool }
 
   /// Where an attempt stands: before its session opens, reading, its commit landed.
   type Stage = | Opening | Reading | Landed
 
   /// An attempt: its pipeline, the epoch of the session it holds (0 before it opens one), where
   /// it stands, each partition's rows read, sealed by a checkpoint and committed, the segments
-  /// of the commit that landed and whose sources it has yet to tell, and the position each
-  /// partition's source is owed by a telling that failed, 0 where none is.
+  /// of the commit that landed and whose sources it has yet to tell, the position each
+  /// partition's source is owed by a telling that failed, 0 where none is, its next commit's
+  /// place among its session's, and the key it expects landed.
   type Attempt = {
     pipe: Pipe,
     epoch: int,
@@ -77,6 +111,8 @@ module exactly_once_protocol {
     committed: Part -> int,
     landing: Set[Seg],
     owed: Part -> int,
+    seq: int,
+    after: Key,
   }
 
   /// The destination, by pipeline.
@@ -93,6 +129,8 @@ module exactly_once_protocol {
   var landed: Set[(Part, int)]
   /// Whether a commit landed from a session the destination had fenced.
   var fencedLanded: bool
+  /// What each pipeline's run knows of the commit whose answer it never heard.
+  var ledger: Pipe -> Ledger
 
   // ---- Helpers
 
@@ -100,16 +138,30 @@ module exactly_once_protocol {
 
   pure def none(part: Part): int -> int = 0.to(MAXROWS - 1).filter(o => o < rowsOf(part)).mapBy(_ => 0)
 
-  pure def fresh(pipe: Pipe): Dest =
-    { epoch: 0, cursor: zero(partsOf(pipe)), rows: partsOf(pipe).mapBy(part => none(part)) }
+  pure def fresh(pipe: Pipe): Dest = {
+    epoch: 0, cursor: zero(partsOf(pipe)), rows: partsOf(pipe).mapBy(part => none(part)),
+    landed: NONE, again: false,
+  }
 
-  /// The destination `d` once it applied `segs`.
-  pure def applied(d: Dest, segs: Set[Seg]): Dest = {
+  /// The destination `d` once it applied `segs`, the commit keyed `key`.
+  pure def applied(d: Dest, segs: Set[Seg], key: Key): Dest = {
     val rows = segs.fold(d.rows, (rs, s) =>
       rs.set(s.part, 0.to(MAXROWS - 1).filter(o => s.from <= o and o < s.to).fold(rs.get(s.part), (counts, o) => counts.set(o, counts.get(o) + 1))))
     val cursor = segs.fold(d.cursor, (c, s) => c.set(s.part, s.to))
-    { ...d, rows: rows, cursor: cursor }
+    { ...d, rows: rows, cursor: cursor, landed: key, again: d.again or not(above(key, d.landed)) }
   }
+
+  /// No commit in flight.
+  pure val SETTLED: Ledger = { inFlight: NONE, applied: false, credited: false, miscredited: false }
+
+  /// The ledger `l` once an open finds `register` landed: the commit in flight is credited where
+  /// its key is the one landed, and is in flight no longer either way.
+  pure def resolved(l: Ledger, register: Key): Ledger =
+    if (l.inFlight == NONE) { ...l, credited: false }
+    else {
+      val credits = l.inFlight == register
+      { ...SETTLED, credited: credits, miscredited: l.miscredited or (credits and not(l.applied)) }
+    }
 
   /// The positions `segs` land with.
   pure def positions(segs: Set[Seg]): Set[(Part, int)] = segs.map(s => (s.part, s.to))
@@ -133,10 +185,16 @@ module exactly_once_protocol {
 
   def attemptOf(k: (Pipe, int)): Attempt = attempts.get(k)
 
-  /// The next state: every variable as given.
+  /// The next state: every variable as given, the ledger as it was.
   action keepAll(
     d: Pipe -> Dest, k: Part -> int, r: (Pipe, int) -> Attempt, s: Pipe -> int, f: int,
     landedNow: Set[(Part, int)], fenced: bool
+  ): bool = keepAllWith(d, k, r, s, f, landedNow, fenced, ledger)
+
+  /// The next state: every variable as given.
+  action keepAllWith(
+    d: Pipe -> Dest, k: Part -> int, r: (Pipe, int) -> Attempt, s: Pipe -> int, f: int,
+    landedNow: Set[(Part, int)], fenced: bool, l: Pipe -> Ledger
   ): bool = all {
     dest' = d,
     kept' = k,
@@ -145,6 +203,7 @@ module exactly_once_protocol {
     faults' = f,
     landed' = landedNow,
     fencedLanded' = fenced,
+    ledger' = l,
   }
 
   /// The attempts without `k`.
@@ -160,6 +219,7 @@ module exactly_once_protocol {
     faults' = FAULTS,
     landed' = Set(),
     fencedLanded' = false,
+    ledger' = PIPES.mapBy(_ => SETTLED),
   }
 
   /// An attempt of `pipe` starts, holding no session yet. An attempt started while another of
@@ -170,7 +230,7 @@ module exactly_once_protocol {
     val attempt = {
       pipe: pipe, epoch: 0, stage: Opening,
       read: zero(partsOf(pipe)), sealed: zero(partsOf(pipe)), committed: zero(partsOf(pipe)),
-      landing: Set(), owed: zero(partsOf(pipe)),
+      landing: Set(), owed: zero(partsOf(pipe)), seq: 1, after: NONE,
     }
     all {
       load <= LOADS,
@@ -187,9 +247,10 @@ module exactly_once_protocol {
     }
   }
 
-  /// The attempt `k` opens its session, which fences every older one, and plans each partition
-  /// from where the destination holds it; a source that cannot read again refuses a read from
-  /// before where it stands, and the attempt ends.
+  /// The attempt `k` opens its session, which fences every older one, credits the commit its
+  /// run never heard the answer of where the key landed is its key, and plans each partition from
+  /// where the destination holds it, its first commit expecting that key landed; a source that
+  /// cannot read again refuses a read from before where it stands, and the attempt ends.
   action open(k: (Pipe, int)): bool = {
     val attempt = attemptOf(k)
     val d = dest.get(attempt.pipe)
@@ -198,12 +259,13 @@ module exactly_once_protocol {
     all {
       live.contains(k),
       attempt.stage == Opening,
-      keepAll(
+      keepAllWith(
         dest.set(attempt.pipe, { ...d, epoch: epoch }),
         kept,
-        if (planned) attempts.set(k, { ...attempt, epoch: epoch, stage: Reading, read: d.cursor, sealed: d.cursor, committed: d.cursor })
+        if (planned) attempts.set(k, { ...attempt, epoch: epoch, stage: Reading, read: d.cursor, sealed: d.cursor, committed: d.cursor, after: d.landed })
         else without(k),
         started, faults, landed, fencedLanded,
+        ledger.set(attempt.pipe, resolved(ledger.get(attempt.pipe), d.landed)),
       ),
     }
   }
@@ -238,29 +300,34 @@ module exactly_once_protocol {
     attempt.sealed.keys().filter(part => attempt.sealed.get(part) > attempt.committed.get(part))
       .map(part => { part: part, from: attempt.committed.get(part), to: attempt.sealed.get(part) })
 
-  /// The attempt `k` commits what it sealed at the destination, meeting `outcome`: a session the
-  /// destination fenced is refused; otherwise the commit lands, but where it failed, and its
-  /// answer is lost where it landed so. No source is told anything yet.
+  /// The attempt `k` commits what it sealed at the destination under its next key, meeting
+  /// `outcome`: the destination answers as `answer` does, and a commit it applies lands, but where
+  /// it failed, and its answer is lost where it landed so. An attempt that hears no landing ends,
+  /// its commit in flight for its run. No source is told anything yet.
   action land(k: (Pipe, int), outcome: Outcome): bool = {
     val attempt = attemptOf(k)
     val d = dest.get(attempt.pipe)
     val segs = sealedSegs(attempt)
-    val fenced = d.epoch != attempt.epoch
-    val lands = not(fenced) and outcome != Failed
-    val answered = not(fenced) and outcome == Ok
+    val key = (attempt.epoch, attempt.seq)
+    val answered = answer(d, key, attempt.after)
+    val lands = answered == Apply and outcome != Failed
+    val heard = outcome == Ok and (answered == Apply or answered == AlreadyLanded)
     all {
       live.contains(k),
       attempt.stage == Reading,
       segs != Set(),
       outcome == Ok or faults > 0,
-      keepAll(
-        if (lands) dest.set(attempt.pipe, applied(d, segs)) else dest,
+      keepAllWith(
+        if (lands) dest.set(attempt.pipe, applied(d, segs, key)) else dest,
         kept,
-        if (answered) attempts.set(k, { ...attempt, stage: Landed, landing: segs }) else without(k),
+        if (heard) attempts.set(k, { ...attempt, stage: Landed, landing: segs, seq: attempt.seq + 1, after: key })
+        else without(k),
         started,
         if (outcome == Ok) faults else faults - 1,
         if (lands) landed.union(positions(segs)) else landed,
-        fencedLanded or (lands and fenced),
+        fencedLanded or (lands and d.epoch != attempt.epoch),
+        if (heard) ledger
+        else ledger.set(attempt.pipe, { ...ledger.get(attempt.pipe), inFlight: key, applied: lands }),
       ),
     }
   }
@@ -407,6 +474,13 @@ module exactly_once_protocol {
   /// No commit lands from a session the destination fenced.
   val FencedNeverCommits = not(fencedLanded)
 
+  /// No key a commit applies is at or below the key landed before it, so a landed key never
+  /// applies twice.
+  val LandedKeyAppliesOnce = PIPES.forall(pipe => not(dest.get(pipe).again))
+
+  /// A run credits only a commit that landed.
+  val CreditedOnlyLanded = PIPES.forall(pipe => not(ledger.get(pipe).miscredited))
+
   /// A source's position moves only as it is told a committed position, and then to that one: a
   /// position a commit landed with.
   val PositionOnlyInCommitted = PARTS.forall(part =>
@@ -423,7 +497,7 @@ module exactly_once_protocol {
   val converged = PIPES.forall(pipe => partsOf(pipe).forall(part => dest.get(pipe).cursor.get(part) == rowsOf(part)))
 
   /// Every variable.
-  val vars = (dest, kept, attempts, started, faults, landed, fencedLanded)
+  val vars = (dest, kept, attempts, started, faults, landed, fencedLanded, ledger)
 
   /// Once faults stop, the load converges: every row lands once. A position never moves back, so
   /// it stays so.
@@ -499,7 +573,7 @@ module exactly_once {
       live.contains(k),
       attempt.stage == Reading,
       keepAll(
-        dest.set(attempt.pipe, applied(d, segs)),
+        dest.set(attempt.pipe, applied(d, segs, (attempt.epoch, attempt.seq))),
         kept, attempts.set(k, { ...attempt, stage: Landed, landing: segs }), started, faults,
         landed.union(positions(segs)),
         fencedLanded or d.epoch != attempt.epoch,
@@ -516,7 +590,7 @@ module exactly_once {
     all {
       live.contains(k),
       d.cursor.get(part) > 0,
-      keepAll(dest.set(attempt.pipe, applied(d, segs)), kept, attempts, started, faults, landed, fencedLanded),
+      keepAll(dest.set(attempt.pipe, applied(d, segs, (attempt.epoch, attempt.seq))), kept, attempts, started, faults, landed, fencedLanded),
     }
   }
 
@@ -822,6 +896,193 @@ module exactly_once {
       .expect(PositionOnlyInCommitted)
       .then(movedTo("u", 1))
       .expect(not(PositionOnlyInCommitted))
+
+  /// The destination's answer to the commit keyed `key` were it never to compare the key landed
+  /// with the one the commit expects, which it always does.
+  pure def answerWithoutAfter(d: Dest, key: Key): Answer =
+    if (d.landed == key) AlreadyLanded else if (d.epoch != key._1) FencedEpoch else Apply
+
+  /// A copy of the commit of `segs` keyed `key`, expecting `after` landed, that the attempt `k`
+  /// sent before arrives at the destination again, which compares the key landed with `after` or,
+  /// where `compares` is false, does not: no attempt sends a commit twice, but a transport may
+  /// deliver one late.
+  action copyArrives(k: (Pipe, int), segs: Set[Seg], key: Key, after: Key, compares: bool): bool = {
+    val attempt = attemptOf(k)
+    val d = dest.get(attempt.pipe)
+    val answered = if (compares) answer(d, key, after) else answerWithoutAfter(d, key)
+    all {
+      live.contains(k),
+      keepAll(
+        if (answered == Apply) dest.set(attempt.pipe, applied(d, segs, key)) else dest,
+        kept, attempts, started, faults,
+        if (answered == Apply) landed.union(positions(segs)) else landed,
+        fencedLanded,
+      ),
+    }
+  }
+
+  /// A run that credits its commit in flight wherever a commit of the same session landed, which
+  /// no run does: it credits only the key that landed.
+  action creditedByEpoch(pipe: Pipe): bool = {
+    val l = ledger.get(pipe)
+    all {
+      l.inFlight != NONE,
+      l.inFlight._1 == dest.get(pipe).landed._1,
+      keepAllWith(
+        dest, kept, attempts, started, faults, landed, fencedLanded,
+        ledger.set(pipe, { ...SETTLED, credited: true, miscredited: l.miscredited or not(l.applied) }),
+      ),
+    }
+  }
+
+  /// The first segment of `u`, as the first commit of an attempt reading it a row at a time holds
+  /// it.
+  pure val FIRST_OF_U: Set[Seg] = Set({ part: "u", from: 0, to: 1 })
+
+  /// The destination answers a key it holds landed with its receipt, then refuses another epoch,
+  /// then a commit expecting another key landed, and applies the rest.
+  run theDestinationAnswersInTheOrderOfItsChecksTest = {
+    val d = { ...fresh("p"), epoch: 2, landed: (1, 3) }
+    init.expect(all {
+      answer(d, (1, 3), (1, 2)) == AlreadyLanded,
+      answer(d, (1, 4), (1, 3)) == FencedEpoch,
+      answer(d, (2, 1), (1, 2)) == StaleAfter,
+      answer(d, (2, 1), NONE) == StaleAfter,
+      answer(d, (2, 1), (1, 3)) == Apply,
+      answer(fresh("p"), (0, 1), NONE) == Apply,
+    })
+  }
+
+  /// Each commit of an attempt expects the one before it landed: the first the key its session
+  /// found landed, the next the first's.
+  run anAttemptsCommitsEachExpectTheOneBeforeTest =
+    init
+      .then(start("p"))
+      .then(open(p(1)))
+      .expect(attemptOf(p(1)).after == NONE and attemptOf(p(1)).seq == 1)
+      .then(rowOfU(1))
+      .expect(all {
+        dest.get("p").landed == (1, 1),
+        attemptOf(p(1)).after == (1, 1),
+        attemptOf(p(1)).seq == 2,
+      })
+      .then(rowOfU(1))
+      .expect(dest.get("p").landed == (1, 2) and LandedKeyAppliesOnce)
+      .then(start("p"))
+      .then(open(p(2)))
+      .expect(attemptOf(p(2)).after == (1, 2) and attemptOf(p(2)).seq == 1)
+
+  /// A copy of the commit the destination holds landed is answered with its receipt and applies
+  /// nothing.
+  run aCopyOfTheLandedCommitAppliesNothingTest =
+    init
+      .then(start("p"))
+      .then(open(p(1)))
+      .then(rowOfU(1))
+      .then(copyArrives(p(1), FIRST_OF_U, (1, 1), NONE, true))
+      .expect(all {
+        dest.get("p").rows.get("u") == Map(0 -> 1, 1 -> 0),
+        dest.get("p").landed == (1, 1),
+        ExactlyOnce,
+        LandedKeyAppliesOnce,
+      })
+
+  /// A copy of a commit that a later commit of its session overtook expects a key other than the
+  /// one landed: the destination refuses it, and every row stays held once.
+  run aCopyALaterCommitOvertookIsRefusedTest =
+    init
+      .then(start("p"))
+      .then(open(p(1)))
+      .then(rowOfU(1))
+      .then(rowOfU(1))
+      .then(copyArrives(p(1), FIRST_OF_U, (1, 1), NONE, true))
+      .expect(all {
+        dest.get("p").cursor.get("u") == 2,
+        dest.get("p").landed == (1, 2),
+        ExactlyOnce,
+        Acknowledged,
+        LandedKeyAppliesOnce,
+        PositionOnlyInCommitted,
+      })
+
+  /// The negative trace `commit_without_after`: a destination that never compared the key landed
+  /// with the one a commit expects would apply that copy again, moving the partition back below
+  /// where its source was told it stands and holding its row twice; the source was told no
+  /// position of the copy, so it still stands where a commit landed.
+  run commitWithoutAfterTest =
+    init
+      .then(start("p"))
+      .then(open(p(1)))
+      .then(rowOfU(1))
+      .then(rowOfU(1))
+      .then(copyArrives(p(1), FIRST_OF_U, (1, 1), NONE, false))
+      .expect(all {
+        dest.get("p").cursor.get("u") == 1,
+        not(LandedKeyAppliesOnce),
+        not(ExactlyOnce),
+        not(Acknowledged),
+        PositionOnlyInCommitted,
+      })
+
+  /// A commit that landed with its answer lost is credited to the run once the next open finds
+  /// its key landed.
+  run aLostAnswerIsCreditedOnceTheNextOpenFindsItsKeyTest =
+    init
+      .then(start("p"))
+      .then(open(p(1)))
+      .then(read(p(1), "u"))
+      .then(checkpoint(p(1), "u"))
+      .then(land(p(1), Lost))
+      .expect(ledger.get("p") == { ...SETTLED, inFlight: (1, 1), applied: true })
+      .then(start("p"))
+      .then(open(p(2)))
+      .expect(all {
+        ledger.get("p") == { ...SETTLED, credited: true },
+        CreditedOnlyLanded,
+      })
+
+  /// A commit that failed is not credited: the next open finds another key landed.
+  run aFailedCommitIsNotCreditedTest =
+    init
+      .then(start("p"))
+      .then(open(p(1)))
+      .then(rowOfU(1))
+      .then(read(p(1), "u"))
+      .then(checkpoint(p(1), "u"))
+      .then(land(p(1), Failed))
+      .expect(ledger.get("p") == { ...SETTLED, inFlight: (1, 2) })
+      .then(start("p"))
+      .then(open(p(2)))
+      .expect(ledger.get("p") == SETTLED and CreditedOnlyLanded)
+
+  /// A commit a newer session fenced is not credited: the key landed is the newer session's.
+  run aFencedCommitIsNotCreditedTest =
+    init
+      .then(start("p"))
+      .then(open(p(1)))
+      .then(read(p(1), "u"))
+      .then(checkpoint(p(1), "u"))
+      .then(start("p"))
+      .then(open(p(2)))
+      .then(rowOfU(2))
+      .then(land(p(1), Ok))
+      .expect(ledger.get("p") == { ...SETTLED, inFlight: (1, 1) } and dest.get("p").landed == (2, 1))
+      .then(start("p"))
+      .then(open(p(3)))
+      .expect(ledger.get("p") == SETTLED and CreditedOnlyLanded)
+
+  /// A run crediting its commit in flight wherever a commit of the same session landed would
+  /// credit one that failed after another landed: the invariant refuses it.
+  run creditingByEpochWouldCreditAFailedCommitTest =
+    init
+      .then(start("p"))
+      .then(open(p(1)))
+      .then(rowOfU(1))
+      .then(read(p(1), "u"))
+      .then(checkpoint(p(1), "u"))
+      .then(land(p(1), Failed))
+      .then(creditedByEpoch("p"))
+      .expect(not(CreditedOnlyLanded))
 }
 
 /// The protocol with a second pipeline sharing the destination, which only `quint test` and
