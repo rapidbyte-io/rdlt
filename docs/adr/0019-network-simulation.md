@@ -107,7 +107,7 @@ the whole engine on a paused clock from a seed, with connectors in the engine's 
   embedder does, so its resolution of secrets and its scrubbing of what connectors say run in every
   seed. Played seeds place their connectors through `Local`, so its placement and supervision, the
   output drains with their scrubbing and the witness run in them, and so do the host's digest and
-  grant checks. The coverage's floor is what 1 000 seeds reach, 80 % of lines and 71 % of branches.
+  grant checks. The coverage's floor is what 1 000 seeds reach, 81 % of lines and 71 % of branches.
   A hostile host, in one networked seed in two, reaches the code that refuses a host breaking the
   protocol. Beside the runs it:
   - calls before the handshake and the configuration;
