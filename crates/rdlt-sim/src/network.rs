@@ -533,6 +533,14 @@ fn host(side: Side, stalled: bool) -> &'static str {
     if stalled { STALLED } else { side.host() }
 }
 
+/// The least a drawn heartbeat waits for its echoes before its connector counts as lost.
+///
+/// An echo waits its turn behind a transport frame of every call with data queued on its
+/// connection. The slowest simulated link, 20 ms of latency with turmoil's 64 segments of up to a
+/// TLS record in flight, carries about 1 MiB every 20 ms, so in a second a transport frame of each
+/// of dozens of calls crosses it, more than a simulated run holds open on one connection.
+const LEAST_PATIENCE: Duration = Duration::from_secs(1);
+
 /// How long the engine's heartbeat waits before it counts a connector lost: its interval, times
 /// the beats it may miss.
 fn patience(options: &Options) -> Duration {
@@ -540,13 +548,20 @@ fn patience(options: &Options) -> Duration {
 }
 
 /// The options the engine's connections run with, drawn from `rng`: heartbeats between 50 ms and
-/// a second apart, two to five of them missed before a connector counts as lost, and between
-/// 200 ms and 3 s to connect; its connectors are told `limits`, those the engine admits within.
+/// a second apart, two to five of them missed before a connector counts as lost, the beats
+/// further apart where those would leave less than [`LEAST_PATIENCE`], and between 200 ms and 3 s
+/// to connect; its connectors are told `limits`, those the engine admits within.
 pub(crate) fn options(rng: &mut SplitMix64, limits: Limits) -> Options {
+    let drawn = Duration::from_millis(50 + rng.below(950));
+    let missed =
+        NonZeroU32::new(2 + u32::try_from(rng.below(4)).unwrap_or(0)).unwrap_or(NonZeroU32::MIN);
+    let least = LEAST_PATIENCE
+        .as_millis()
+        .div_ceil(u128::from(missed.get()));
+    let least = Duration::from_millis(u64::try_from(least).unwrap_or(u64::MAX));
     Options {
-        heartbeat: Duration::from_millis(50 + rng.below(950)),
-        missed: NonZeroU32::new(2 + u32::try_from(rng.below(4)).unwrap_or(0))
-            .unwrap_or(NonZeroU32::MIN),
+        heartbeat: drawn.max(least),
+        missed,
         deadlines: Deadlines {
             connect: Duration::from_millis(200 + rng.below(2800)),
             ..Deadlines::default()

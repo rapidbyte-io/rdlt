@@ -7,7 +7,10 @@ use rdlt_connector::{
     StreamName, partition_channel,
 };
 
-use super::{DRAIN, ENGINE, Networked, Peers, Serving, Side, options, run_networked};
+use super::{
+    DRAIN, ENGINE, LEAST_PATIENCE, Networked, Peers, Serving, Side, options, patience,
+    run_networked,
+};
 use crate::canary::Canary;
 use crate::rng::SplitMix64;
 use crate::seed::Seed;
@@ -194,6 +197,17 @@ fn a_connector_whose_peer_stalls_is_lost_within_the_heartbeat_s_patience() {
     );
     assert!(violations.is_empty(), "{violations:?}");
     assert_eq!(judged, 1, "the stalled connection is judged once it closes");
+}
+
+#[test]
+fn no_drawn_heartbeat_waits_less_than_the_least_patience_for_echoes() {
+    let mut rng = SplitMix64::new(3);
+    for _ in 0..10_000 {
+        let options = options(&mut rng, rdlt_wire::Limits::default());
+        assert!(patience(&options) >= LEAST_PATIENCE, "{options:?}");
+        assert!(options.heartbeat < Duration::from_secs(1), "{options:?}");
+        assert!((2..=5).contains(&options.missed.get()), "{options:?}");
+    }
 }
 
 #[test]
