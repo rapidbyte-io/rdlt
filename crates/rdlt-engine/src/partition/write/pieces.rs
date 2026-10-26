@@ -63,23 +63,68 @@ struct Run {
     bytes: u64,
 }
 
+impl Lowered {
+    /// A measure of what lowering rows of `batch` holds, up to `limit` bytes: it borrows the
+    /// batch and how its table stores each column, and copies neither.
+    fn measure<'b>(&'b self, batch: &'b RecordBatch, limit: u64) -> Measure<'b> {
+        let measure = self
+            .rendering
+            .lowering(batch, &self.stored, self.row, limit);
+        measure.with_items(self.item)
+    }
+
+    /// Bytes: what a piece of one part takes whatever its rows.
+    fn beside(&self) -> u64 {
+        self.piece.saturating_add(self.part)
+    }
+
+    /// Bytes: the most the rows of a piece of one part may take, and a row's alone, beside what
+    /// the piece takes whatever its rows.
+    fn rows_within(&self) -> (u64, u64) {
+        let beside = self.beside();
+        (
+            self.max.saturating_sub(beside),
+            self.limit.saturating_sub(beside),
+        )
+    }
+
+    /// The next run of `batch` from its row `row`, as `measure` cuts it against what a piece's
+    /// rows may take: one row beyond a piece is measured again against what a row may take, each
+    /// value it names once.
+    fn run(
+        &self,
+        measure: &mut Measure<'_>,
+        batch: &RecordBatch,
+        row: usize,
+    ) -> Result<Run, RowTooLarge> {
+        let ((max, limit), beside) = (self.rows_within(), self.beside());
+        let cut = measure.piece(row);
+        let (rows, mut bytes) = (cut.end - row, cut.bytes);
+        if bytes > max {
+            bytes = self.measure(batch, limit).expanded(row..cut.end);
+            if bytes > limit {
+                return Err(RowTooLarge {
+                    expanded: bytes.saturating_add(beside),
+                    limit: self.limit,
+                });
+            }
+        }
+        Ok(Run { rows, bytes })
+    }
+}
+
 /// A unit's batches being cut into pieces, in order.
 pub(super) struct Pieces {
     lowered: Lowered,
-    /// The batch being cut, the row its next run starts at, and its measures: against a piece's
-    /// bytes, and against the budget for a row beyond a piece.
+    /// The batch being cut and the row its next run starts at.
     part: usize,
     row: usize,
-    measures: Option<(Measure, Measure)>,
     /// The run cut last that the piece before it had no room for.
     cut: Option<Run>,
     /// Pieces cut ahead, in order, before any of them is lowered.
     ready: VecDeque<Piece>,
-    /// The unit's batches, which what holds the unit keeps too: the allocations it counts each
-    /// piece's growth beyond stay alive until its last piece goes.
-    parts: Vec<RecordBatch>,
-    /// What holds the unit, which each of its pieces shares: last, so the batches and the pieces
-    /// cut ahead of them go before it.
+    /// What holds the unit, its batches among it, which each of its pieces shares: last, so the
+    /// pieces cut ahead go before it.
     unit: Share,
 }
 
@@ -90,10 +135,8 @@ impl Pieces {
             lowered,
             part: 0,
             row: 0,
-            measures: None,
             cut: None,
             ready: VecDeque::new(),
-            parts: unit.batches.clone(),
             unit: Arc::new(Mutex::new(unit)),
         }
     }
@@ -122,7 +165,7 @@ impl Pieces {
 
     /// Whether every row has been cut into a piece.
     fn cut_all(&self) -> bool {
-        self.part >= self.parts.len()
+        self.part >= self.unit.lock().batches.len()
     }
 
     /// The allocations the unit's batches keep alive, which its pieces share.
@@ -132,7 +175,6 @@ impl Pieces {
 
     /// Holds `unit`, the same batches, in place of what held them.
     pub(super) fn held_by(&mut self, unit: Held) {
-        self.parts.clone_from(&unit.batches);
         self.unit = Arc::new(Mutex::new(unit));
     }
 
@@ -164,7 +206,8 @@ impl Pieces {
     /// or one row where a row alone takes more; nothing once every row was cut.
     ///
     /// Pieces keep the rows' order, and a batch within a piece's bytes is not cut. Pieces cut
-    /// ahead are not among them.
+    /// ahead are not among them. What measuring a batch learns of the values its keys and runs
+    /// name is kept while the piece is cut, and goes with its measure once it is.
     ///
     /// # Errors
     ///
@@ -175,15 +218,20 @@ impl Pieces {
             rows: 0,
             bytes: self.lowered.piece,
         };
-        while !self.cut_all() {
-            let rows = self.parts[self.part].num_rows();
-            if self.row >= rows {
-                (self.part, self.row, self.measures) = (self.part + 1, 0, None);
+        let unit = Arc::clone(&self.unit);
+        let unit = unit.lock();
+        let max = self.lowered.rows_within().0;
+        let mut measure = None;
+        while let Some(batch) = unit.batches.get(self.part) {
+            if self.row >= batch.num_rows() {
+                (self.part, self.row, measure) = (self.part + 1, 0, None);
                 continue;
             }
-            let run = match self.cut.take() {
-                Some(run) => run,
-                None => self.run()?,
+            let run = if let Some(run) = self.cut.take() {
+                run
+            } else {
+                let measure = measure.get_or_insert_with(|| self.lowered.measure(batch, max));
+                self.lowered.run(measure, batch, self.row)?
             };
             // A second part joins the first into a batch of their own.
             let parts = if piece.parts.len() == 1 { 2 } else { 1 };
@@ -194,9 +242,7 @@ impl Pieces {
                 self.cut = Some(run);
                 break;
             }
-            piece
-                .parts
-                .push(self.parts[self.part].slice(self.row, run.rows));
+            piece.parts.push(batch.slice(self.row, run.rows));
             piece.rows += run.rows;
             piece.bytes = piece.bytes.saturating_add(bytes);
             self.row += run.rows;
@@ -206,65 +252,10 @@ impl Pieces {
 
     /// Whether cutting the batches left reads their values, or measures them by their rows and
     /// offsets alone: the unit's batches are of one schema, so the batch being cut says.
-    pub(super) fn reads_values(&mut self) -> bool {
-        self.measures()
-            .is_some_and(|(pieces, _)| pieces.reads_values())
-    }
-
-    /// The measures of the batch being cut: against what a piece's rows may take, and against
-    /// what a row's may; none once every batch is cut.
-    fn measures(&mut self) -> Option<&mut (Measure, Measure)> {
-        let lowered = &self.lowered;
-        let (max, limit) = self.rows_within();
-        let batch = self.parts.get(self.part)?;
-        Some(self.measures.get_or_insert_with(|| {
-            let measure = |limit| {
-                let stored = lowered.stored.clone();
-                let measure = lowered
-                    .rendering
-                    .lowering(batch, stored, lowered.row, limit);
-                measure.with_items(lowered.item)
-            };
-            (measure(max), measure(limit))
-        }))
-    }
-
-    /// Bytes: what a piece of one part takes whatever its rows.
-    fn beside(&self) -> u64 {
-        self.lowered.piece.saturating_add(self.lowered.part)
-    }
-
-    /// Bytes: the most the rows of a piece of one part may take, and a row's alone, beside what
-    /// the piece takes whatever its rows.
-    fn rows_within(&self) -> (u64, u64) {
-        let beside = self.beside();
-        (
-            self.lowered.max.saturating_sub(beside),
-            self.lowered.limit.saturating_sub(beside),
-        )
-    }
-
-    /// The next run of the batch being cut, from its row `self.row`.
-    fn run(&mut self) -> Result<Run, RowTooLarge> {
-        let row = self.row;
-        let ((max, limit), beside) = (self.rows_within(), self.beside());
-        let (pieces, alone) = self
-            .measures()
-            .expect("a run is cut only from a batch left to cut");
-        let cut = pieces.piece(row);
-        let (rows, mut bytes) = (cut.end - row, cut.bytes);
-        if bytes > max {
-            // One row beyond a piece: measured against what a row may take, each value it names
-            // once.
-            bytes = alone.expanded(row..cut.end);
-            if bytes > limit {
-                return Err(RowTooLarge {
-                    expanded: bytes.saturating_add(beside),
-                    limit: self.lowered.limit,
-                });
-            }
-        }
-        Ok(Run { rows, bytes })
+    pub(super) fn reads_values(&self) -> bool {
+        let unit = self.unit.lock();
+        let batch = unit.batches.get(self.part);
+        batch.is_some_and(|batch| self.lowered.measure(batch, 0).reads_values())
     }
 }
 

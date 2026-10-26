@@ -56,9 +56,9 @@ const REMEMBERED_LEAST: u64 = 64;
 /// The levels a value may nest before measuring stops: more than any batch the limits admit.
 const DEPTH: u32 = 256;
 
-/// Adds up what rows expand to, up to a limit.
-pub(super) struct Meter {
-    rendering: Rendering,
+/// Adds up what rows expand to, up to a limit, as the rendering it borrows says they render.
+pub(super) struct Meter<'r> {
+    rendering: &'r Rendering,
     /// Bytes: what a value is measured against, and what is remembered of it.
     limit: u64,
     /// Bytes: where measuring stops now, the limit at most.
@@ -159,11 +159,11 @@ pub(super) const JSON: Within<'static> = Within {
     reach: Reach::Converted,
 };
 
-impl Meter {
-    pub(super) fn new(rendering: &Rendering, limit: u64) -> Self {
+impl<'r> Meter<'r> {
+    pub(super) fn new(rendering: &'r Rendering, limit: u64) -> Self {
         let room = (limit / REMEMBERED_SHARE / REMEMBERED_BYTES).max(REMEMBERED_LEAST);
         Self {
-            rendering: rendering.clone(),
+            rendering,
             limit,
             stop: limit,
             spent: 0,

@@ -51,7 +51,7 @@ fn direct(data_type: &DataType, within: Within<'_>) -> bool {
     }
 }
 
-impl Meter {
+impl Meter<'_> {
     pub(super) fn list<O: OffsetSizeTrait>(
         &mut self,
         array: &dyn Array,

@@ -389,7 +389,8 @@ fn reserved(texts: &StringArray, column: &LogicalType) -> u64 {
         text: false,
         read: true,
     };
-    let mut measure = Rendering::native().lowering(&batch, vec![Some(stored)], 0, u64::MAX);
+    let (rendering, stored) = (Rendering::native(), [Some(stored)]);
+    let mut measure = rendering.lowering(&batch, &stored, 0, u64::MAX);
     measure.expanded(0..batch.num_rows())
 }
 

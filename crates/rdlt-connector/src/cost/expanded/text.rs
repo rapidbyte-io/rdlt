@@ -22,7 +22,7 @@ enum Text {
     Hex,
 }
 
-impl Meter {
+impl Meter<'_> {
     /// Whether bytes measured `within` are rendered as hex: inside a nested value, in a column
     /// stored as text, or, where no table is known yet, for a destination that stores no bytes
     /// as they are.

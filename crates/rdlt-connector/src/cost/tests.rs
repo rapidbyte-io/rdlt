@@ -422,7 +422,8 @@ fn cuts_fall_where_the_rows_own_values_say() {
 fn every_row_costs_what_the_table_holds_nothing_of_it_in() {
     let ids = batch(Arc::new(Int64Array::from(vec![7; 1_000])));
     // A hundred bytes of nulls a row beside its eight: ten rows to a piece.
-    let mut measure = native().lowering(&ids, Vec::new(), 100, 1_080);
+    let rendering = native();
+    let mut measure = rendering.lowering(&ids, &[], 100, 1_080);
     assert_eq!(measure.expanded(0..10), 1_080);
     let cuts = measure.cuts();
     assert_eq!(cuts.len(), 100);
@@ -624,7 +625,8 @@ fn a_schema_counts_its_names_and_metadata_at_any_depth() {
 fn a_piece_is_found_in_a_stretch_for_each_doubling_and_halving() {
     let ids = batch(Arc::new(Int64Array::from(vec![7; 1_000])));
     // Eight bytes a row: 135 rows to a piece of 1080 bytes.
-    let mut measure = native().measure(&ids, 1_080);
+    let rendering = native();
+    let mut measure = rendering.measure(&ids, 1_080);
     let cuts = measure.cuts();
     assert_eq!(ends(&cuts)[..7], [135, 270, 405, 540, 675, 810, 945]);
     // Each piece is found in a stretch for each doubling and each halving, about fifteen, and
@@ -645,8 +647,9 @@ fn only_views_and_nested_or_encoded_columns_are_measured_by_their_values() {
     let columns = flat().into_iter().map(|column| (viewed(&column), column));
     let columns = columns.chain(nested_types().into_iter().map(|column| (true, column)));
     for (reads, column) in columns {
+        let one = batch(Arc::clone(&column));
         for rendering in [native(), Rendering::text()] {
-            let measure = rendering.measure(&batch(Arc::clone(&column)), u64::MAX);
+            let measure = rendering.measure(&one, u64::MAX);
             assert_eq!(measure.reads_values(), reads, "{:?}", column.data_type());
         }
     }
@@ -663,12 +666,9 @@ fn a_column_converted_to_json_or_read_from_it_is_measured_by_its_values() {
         (stored(LogicalType::Json, false, false), true),
         (stored(LogicalType::Int64, false, true), true),
     ] {
-        let measured = native().lowering(
-            &batch(Arc::clone(&text)),
-            vec![Some(stored.clone())],
-            0,
-            u64::MAX,
-        );
+        let (rendering, one) = (native(), batch(Arc::clone(&text)));
+        let columns = [Some(stored.clone())];
+        let measured = rendering.lowering(&one, &columns, 0, u64::MAX);
         assert_eq!(measured.reads_values(), reads, "{stored:?}");
     }
 }
@@ -879,7 +879,8 @@ fn a_string_view_outside_a_nested_value_costs_its_view_and_its_bytes_however_sto
 /// What lowering every row of `column` into a table column stored as `stored` says holds at once.
 fn lowered(column: &ArrayRef, stored: Stored) -> u64 {
     let batch = batch(Arc::clone(column));
-    let mut measure = Rendering::native().lowering(&batch, vec![Some(stored)], 0, u64::MAX);
+    let (rendering, stored) = (Rendering::native(), [Some(stored)]);
+    let mut measure = rendering.lowering(&batch, &stored, 0, u64::MAX);
     measure.expanded(0..column.len())
 }
 
