@@ -16,6 +16,9 @@ pub struct Counters {
     pub pool: PoolCounters,
     /// The run's commits, by what made each due.
     pub commits: Commits,
+    /// The run's reports to its source of the cursors its commits landed with that failed, and
+    /// the cursors it gave up.
+    pub acks: Acks,
     /// The time the run's commits took, phase by phase.
     pub phases: CommitPhases,
     /// What each lane of the run waited for and spent its time on, by the lane's place.
@@ -47,8 +50,7 @@ pub struct PoolCounters {
 
 /// Commits that landed, by what made each due.
 ///
-/// A commit counts once its cursors are acknowledged, so one whose acknowledgement fails is not
-/// counted.
+/// A commit counts once it lands, whatever becomes of the report of its cursors.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct Commits {
     /// Made due by the commit policy's interval.
@@ -59,6 +61,17 @@ pub struct Commits {
     pub cursors: u64,
     /// Of what was sealed once every partition reading had ended.
     pub end: u64,
+}
+
+/// Reports of committed cursors to the source that failed, and owed cursors given up.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct Acks {
+    /// Reports the source refused, or whose answer was lost: each leaves the cursors it carried
+    /// owed to the next commit's report.
+    pub failed: u64,
+    /// Owed cursors of partitions recorded done that no report told: no later attempt reads
+    /// such a partition, so its source trails where the destination holds it.
+    pub dropped: u64,
 }
 
 /// The time commits that landed took, phase by phase, summed.

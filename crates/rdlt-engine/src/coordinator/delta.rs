@@ -80,8 +80,8 @@ impl Coordinator {
             counts.shred.add(&seal.shred);
         }
         collected.stand(standing);
-        // A partition done with no cursor among the seals is told the cursor it stood at: a
-        // report of it that failed is not made by any later attempt, which plans it no more.
+        // A partition done with no cursor among the seals is told the cursor it stood at: no
+        // later attempt reads it, to be told where its read starts.
         for (partition, state) in &collected.positions {
             let stood = &self.parts.partitions[*partition].stands;
             if let (PartitionState::Done, Some(PartitionState::Cursor(cursor))) = (state, stood)

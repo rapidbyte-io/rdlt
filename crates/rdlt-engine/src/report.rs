@@ -13,8 +13,8 @@ use serde::Serialize;
 use crate::error::{Error, ErrorKind, ErrorReport, codes};
 
 pub use counters::{
-    CommitPhases, Commits, Counters, Flushes, LaneCounters, PoolCounters, ShredCounts, Waited,
-    Waits,
+    Acks, CommitPhases, Commits, Counters, Flushes, LaneCounters, PoolCounters, ShredCounts,
+    Waited, Waits,
 };
 pub(crate) use counters::{Flush, Tally, Trigger};
 

@@ -1,5 +1,6 @@
 //! What the engine tells a source is committed: the position of every partition a commit covers,
-//! moved or not, so a report that failed is made again by the next attempt.
+//! moved or not, so a report that failed is made again by the next commit, else by the next
+//! attempt.
 //!
 //! A served source hears a host for what it sent that host and for where the host reads from,
 //! so a partition that is sent nothing is still reported where its read started.
@@ -11,7 +12,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use rdlt_connector::{ConnectorId, ReadMode, Source};
-use rdlt_engine::{ErrorKind, RunStatus};
+use rdlt_engine::{Acks, ErrorKind, RunStatus, Until};
 use rdlt_host::{ConnectorRef, Identity, Provider as _, Remote};
 use rdlt_testkit::tls::Pki;
 use tokio::io::{AsyncBufReadExt as _, BufReader};
@@ -385,14 +386,13 @@ async fn a_report_refused_is_made_again_though_its_partition_then_ends_done() {
         let (script, source) = Script::new(vec![events]).connect(&name).await;
         // The report of the checkpoint at ten is refused.
         script.limited_acks.store(1, Ordering::SeqCst);
-        let each = rdlt_engine::CommitPolicy::new(None, Some(1), None).expect("a valid policy");
-        let engine = engine(retrying(3).commit(each));
+        let engine = engine(retrying(3).commit(each_seal()));
         let plan = incremental(&name.replace('_', "-"));
         let outcome = engine.run(plan, source, memory(&name).await).await;
         assert_eq!(outcome.report.status, RunStatus::Succeeded, "{name}");
-        assert_eq!(outcome.report.attempted, 2, "{name}");
+        assert_eq!(outcome.report.attempted, 1, "{name}");
         // The commit that ends the partition has no checkpoint of its own to report, and tells
-        // the source the position it stood at, which the refused report was of.
+        // the source the position it stood at, which the refused report owed it.
         assert_eq!(heard(&script), [("p0".to_owned(), 10)], "{name}");
     }
 }
@@ -402,22 +402,127 @@ async fn a_run_whose_partition_ends_done_succeeds_though_its_source_refused_ever
     let events = ending_past_its_checkpoint(true);
     let (script, source) = Script::new(vec![events]).connect("ack_done_refused").await;
     script.limited_acks.store(usize::MAX, Ordering::SeqCst);
-    let each = rdlt_engine::CommitPolicy::new(None, Some(1), None).expect("a valid policy");
-    let running = engine(retrying(3).commit(each)).run(
+    let running = engine(retrying(3).commit(each_seal())).run(
         incremental("ack-done-refused"),
         source,
         memory("ack_done_refused").await,
     );
     let outcome = tokio::time::timeout(Duration::from_secs(600), running).await;
     let outcome = outcome.expect("the run ends");
-    // The first attempt reports the checkpoint and the second, which ends the partition, where
-    // it stood: both are refused and fail. Each landed rows, so neither is counted against the
-    // run, and the third finds the partition done, which state holds no cursor for.
+    // Refused are the checkpoint's report, the done commit's of where it stood, and the last
+    // commit's, which publishes nothing else: the attempt reads on, then gives the done
+    // partition's cursor up, as no later attempt reads the partition.
     assert_eq!(outcome.report.status, RunStatus::Succeeded);
-    assert_eq!(outcome.report.attempted, 3);
+    assert_eq!(outcome.report.attempted, 1);
     assert_eq!(outcome.report.rows, 15);
     assert!(script.acks.lock().is_empty());
-    assert_eq!(script.limited_acks.load(Ordering::SeqCst), usize::MAX - 2);
+    assert_eq!(script.limited_acks.load(Ordering::SeqCst), usize::MAX - 3);
+    assert_eq!(
+        outcome.report.counters.acks,
+        Acks {
+            failed: 3,
+            dropped: 1
+        }
+    );
+}
+
+/// A commit policy that commits each seal.
+fn each_seal() -> rdlt_engine::CommitPolicy {
+    rdlt_engine::CommitPolicy::new(None, Some(1), None).expect("a row threshold is valid")
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_report_refused_mid_run_is_made_by_the_next_commit_of_the_same_attempt() {
+    for replayable in [true, false] {
+        let name = format!("ack_mid_{replayable}");
+        let mut events = ScriptStream::new("events", 1, 15, 5);
+        events.replayable = replayable;
+        let (script, source) = Script::new(vec![events]).connect(&name).await;
+        // The report of the first checkpoint, at five, is refused.
+        script.limited_acks.store(1, Ordering::SeqCst);
+        let engine = engine(retrying(3).commit(each_seal()));
+        let plan = incremental(&name.replace('_', "-"));
+        let outcome = engine.run(plan, source, memory(&name).await).await;
+        assert_eq!(outcome.report.status, RunStatus::Succeeded, "{name}");
+        assert_eq!(outcome.report.attempted, 1, "{name}");
+        let acks = outcome.report.counters.acks;
+        assert_eq!(
+            acks,
+            Acks {
+                failed: 1,
+                dropped: 0
+            },
+            "{name}"
+        );
+        // The next commit tells the partition its own checkpoint, in place of the cursor refused,
+        // and every later commit where it stands.
+        let told: Vec<u64> = script.acks.lock().iter().map(|ack| ack.2).collect();
+        assert_eq!(told[..2], [10, 15], "{name}");
+        assert!(told[2..].iter().all(|next| *next == 15), "{name}: {told:?}");
+        let ids: Vec<i64> = (0..15).map(|offset| id(0, offset)).collect();
+        assert_eq!(published_ids(&name, "events"), ids, "{name}");
+        assert_eq!(script.early_reads.load(Ordering::SeqCst), 0, "{name}");
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_idle_partition_whose_report_failed_is_told_by_the_next_interval_commit() {
+    const EVERY: Duration = Duration::from_secs(10);
+    let mut events = ScriptStream::new("events", 1, 10, 5);
+    events.idle = true;
+    let (script, source) = Script::new(vec![events]).connect("ack_idle").await;
+    script.limited_acks.store(1, Ordering::SeqCst);
+    let policy = rdlt_engine::CommitPolicy::new(Some(EVERY), None, None).expect("a valid policy");
+    let plan = incremental("ack-idle").with_until(Until::For(Duration::from_secs(60)));
+    let outcome = engine(retrying(3).commit(policy))
+        .run(plan, source, memory("ack_idle").await)
+        .await;
+    assert_eq!(outcome.report.status, RunStatus::Succeeded);
+    // One commit landed the rows, and its report was refused; the partition sealed nothing
+    // after it, and the next interval told it again.
+    assert_eq!((outcome.report.attempted, outcome.report.commits), (1, 1));
+    assert_eq!(heard(&script), [("p0".to_owned(), 10)]);
+    let (refused, told) = (script.refused_at.lock(), script.told_at.lock());
+    let [refused] = refused[..] else {
+        panic!("one report is refused: {refused:?}");
+    };
+    let [told] = told[..] else {
+        panic!("one report is told: {told:?}");
+    };
+    assert!(
+        told.duration_since(refused) <= EVERY,
+        "told {:?} after it was refused",
+        told.duration_since(refused)
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_report_failed_at_the_last_commit_ends_the_attempt_once_every_stream_is_told() {
+    let streams = vec![
+        ScriptStream::new("events", 1, 10, 5),
+        ScriptStream::new("orders", 1, 10, 5),
+    ];
+    let (script, source) = Script::new(streams).connect("ack_streams").await;
+    script.limited_acks.store(1, Ordering::SeqCst);
+    let plan = pipeline(
+        "ack-streams",
+        [
+            stream("events").read(ReadMode::Incremental),
+            stream("orders").read(ReadMode::Incremental),
+        ],
+    );
+    let outcome = engine(retrying(3).commit(commit_all()))
+        .run(plan, source, memory("ack_streams").await)
+        .await;
+    assert_eq!(outcome.report.status, RunStatus::Succeeded);
+    assert_eq!(outcome.report.attempted, 2);
+    // The first attempt's last commit tells one stream though the other's report was refused,
+    // and the second attempt, which reads nothing, tells both.
+    let told: Vec<String> = script.acks.lock().iter().map(|ack| ack.0.clone()).collect();
+    assert_eq!(told.len(), 3, "{told:?}");
+    for stream in ["events", "orders"] {
+        assert!(told.iter().any(|told| told == stream), "{told:?}");
+    }
 }
 
 #[tokio::test(start_paused = true)]

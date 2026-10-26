@@ -1,5 +1,5 @@
 //! A commit: every sealed segment with the state that goes with it, then the committed cursors
-//! acknowledged to the source.
+//! acknowledged to the source, with those owed to it.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -18,10 +18,11 @@ use crate::report::{CommitPhases, CommitRecord, StreamReport, Trigger};
 
 impl Coordinator {
     /// Commits every sealed segment with the state that goes with it, then acknowledges the
-    /// committed cursors to the source.
+    /// committed cursors to the source, with those owed to it.
     ///
-    /// Commits nothing when there is nothing to publish or record; a commit that lands is
-    /// counted as `trigger` made it due, with the time its phases took.
+    /// Commits nothing when there is nothing to publish or record, and still tells the source
+    /// the cursors owed to it; a commit that lands is counted as `trigger` made it due, with the
+    /// time its phases took.
     pub(super) async fn commit(&mut self, trigger: Trigger) -> Result<(), Error> {
         // A new phase's stale entries go before its partitions' positions, which may reuse ids.
         let mut delta = self.phase_delta();
@@ -37,7 +38,10 @@ impl Coordinator {
         delta.append(&mut tables.changes);
         let finish_generations = self.finish_generations(&completing);
         if collected.segments.is_empty() && delta.is_empty() {
-            return Ok(());
+            let turn = self.turn(trigger);
+            return self
+                .acknowledge(collected.reported, &collected.positions, turn)
+                .await;
         }
         let progressed = self.progresses(&collected, &delta);
         let streams = self.stream_reports(collected.streams, &completing);
@@ -62,14 +66,22 @@ impl Coordinator {
         self.forgot(forgotten);
         self.record_positions(&collected.positions);
         self.landed(&collected.positions, progressed);
-        crash_point!("engine.ack.before");
-        self.acknowledge(&collected.reported).await?;
-        crash_point!("engine.ack.after");
-        phases.ack = laps.lap();
         self.parts.tally.add(|counters| {
             counters.commits.add(trigger);
             counters.phases.add(&phases);
         });
+        crash_point!("engine.ack.before");
+        let turn = self.turn(trigger);
+        let acknowledged = self
+            .acknowledge(collected.reported, &collected.positions, turn)
+            .await;
+        let ack = CommitPhases {
+            ack: laps.lap(),
+            ..CommitPhases::default()
+        };
+        self.parts.tally.add(|counters| counters.phases.add(&ack));
+        acknowledged?;
+        crash_point!("engine.ack.after");
         Ok(())
     }
 

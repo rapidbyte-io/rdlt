@@ -2,11 +2,12 @@
 //! committed, from what it committed, until a plan names no new phase.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use parking_lot::Mutex;
 use rdlt_connector::{
-    BoxFuture, Catalog, ConnectorError, Cursor, PartitionId, PartitionPlan, PartitionSink,
-    PartitionState, ReadMode, ReadRequest, Result, Source, StreamName, StreamState,
+    BoxFuture, Catalog, ConnectorError, ConnectorErrorKind, Cursor, PartitionId, PartitionPlan,
+    PartitionSink, PartitionState, ReadMode, ReadRequest, Result, Source, StreamName, StreamState,
 };
 use rdlt_connector_reference::changes::{CHANGES, ChangedStream, SNAPSHOT, expected};
 use rdlt_engine::{RunControl, RunOutcome, RunStatus, StopMode, WriteMode};
@@ -32,6 +33,8 @@ struct Recorded {
     stop: Mutex<Option<(Stop, RunControl)>>,
     /// The plan of a stream that fails, if one does.
     fails: Option<usize>,
+    /// How many of the next reports of committed cursors it refuses.
+    refusals: AtomicUsize,
 }
 
 /// When [`Recorded`] stops its run.
@@ -55,6 +58,7 @@ impl Recorded {
             plans: Mutex::new(Vec::new()),
             stop: Mutex::new(None),
             fails,
+            refusals: AtomicUsize::new(0),
         })
     }
 
@@ -155,6 +159,15 @@ impl Source for Recorded {
         cursors: &'a [(PartitionId, Cursor)],
     ) -> BoxFuture<'a, Result<()>> {
         self.stop_at(Stop::Acknowledged);
+        let refused = self
+            .refusals
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                left.checked_sub(1)
+            });
+        if refused.is_ok() {
+            let error = ConnectorError::new(ConnectorErrorKind::Transient, "the report was lost");
+            return Box::pin(async move { Err(error) });
+        }
         self.inner.committed(stream, cursors)
     }
 }
@@ -353,5 +366,55 @@ async fn a_phase_a_new_run_begins_starts_where_its_plan_said() {
     assert_eq!(
         crate::changes::logged("phases_new_run", "orders"),
         crate::changes::log(12, &stream_spec)
+    );
+}
+
+#[tokio::test]
+async fn a_report_refused_as_a_phase_ends_is_made_by_the_next_phase_s_commit() {
+    // The snapshot commits once, at its end, and its report is refused: the changes follow in
+    // the same attempt, and their commit carries the snapshot's cursors.
+    let stream_spec = orders(&[]);
+    let source = Recorded::new(changes_of(12, std::slice::from_ref(&stream_spec)).await);
+    source.refusals.store(1, Ordering::SeqCst);
+    let outcome = source.run("phases_refused", None).await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    assert_eq!(outcome.report.attempted, 1);
+    assert_eq!(outcome.report.counters.acks.failed, 1);
+    assert_eq!(
+        source.plans("orders"),
+        vec![(SNAPSHOT, Vec::new()), snapshot_read(3), changes_read()]
+    );
+    assert_eq!(
+        crate::changes::rows("phases_refused", "orders"),
+        expected(12, &stream_spec)
+    );
+}
+
+#[tokio::test]
+async fn cursors_still_owed_once_no_phase_follows_end_the_attempt_at_its_last_report() {
+    // The snapshot's report, the changes' and the last one the attempt makes once planning names
+    // no further phase are refused: the next attempt reads the changes from where they stand and
+    // tells them.
+    let stream_spec = orders(&[]);
+    let source = Recorded::new(changes_of(13, std::slice::from_ref(&stream_spec)).await);
+    source.refusals.store(3, Ordering::SeqCst);
+    let outcome = source.run("phases_refused_last", None).await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    assert_eq!(outcome.report.attempted, 2);
+    assert_eq!(outcome.report.counters.acks.failed, 3);
+    assert_eq!(source.refusals.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        crate::changes::rows("phases_refused_last", "orders"),
+        expected(13, &stream_spec)
     );
 }

@@ -143,6 +143,10 @@ pub(crate) struct Script {
     batches: AtomicU64,
     /// Every acknowledged cursor: stream, partition and resume offset.
     pub(crate) acks: Mutex<Vec<(String, String, u64)>>,
+    /// When each report of committed cursors was refused, on tokio's clock.
+    pub(crate) refused_at: Mutex<Vec<tokio::time::Instant>>,
+    /// When each report of committed cursors was accepted, on tokio's clock.
+    pub(crate) told_at: Mutex<Vec<tokio::time::Instant>>,
     /// Whether any read was ever asked for a checkpoint.
     pub(crate) asked: AtomicBool,
     reading: AtomicUsize,
@@ -326,6 +330,11 @@ impl ReadStream<ScriptSource> for Scripted {
                     left.checked_sub(1)
                 });
         if limited.is_ok() {
+            source
+                .script
+                .refused_at
+                .lock()
+                .push(tokio::time::Instant::now());
             let wait = source
                 .script
                 .limited_wait
@@ -343,6 +352,11 @@ impl ReadStream<ScriptSource> for Scripted {
         for (partition, offset) in cursors {
             acks.push((self.name.clone(), partition.to_string(), offset.next));
         }
+        source
+            .script
+            .told_at
+            .lock()
+            .push(tokio::time::Instant::now());
         Ok(())
     }
 }
