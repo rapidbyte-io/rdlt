@@ -1,16 +1,21 @@
 //! History change streams: which merge streams keep history, their whole-row events,
 //! and the versions their changes leave.
 
+mod document;
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use arrow_array::builder::{Float64Builder, StringBuilder};
 use arrow_array::cast::AsArray;
-use arrow_array::{Array, RecordBatch, TimestampMicrosecondArray};
+use arrow_array::types::Int64Type;
+use arrow_array::{Array, ArrayRef, RecordBatch, TimestampMicrosecondArray};
 use rdlt_connector::{ChangeOp, Field, LogicalType, SEQ_COLUMN, StreamSpec, TableSchema, TimeUnit};
 use rdlt_engine::{DeleteMode, OnTruncate};
 
 use super::workload::{ChangeStream, Event};
 use crate::rng::SplitMix64;
+use document::{document, ratio};
 
 /// One version of a key in a history table: its key, when it began (its change's position, as
 /// its change time holds it in microseconds), value, counter, when a later change closed it,
@@ -139,30 +144,73 @@ impl Chain {
 /// The column a history stream's rows carry their change time in.
 const AT: &str = "at";
 
+/// The column a history stream's rows carry a JSON document of their data in.
+const DOCUMENT: &str = "document";
+
+/// The column a history stream's rows carry a float of their counter in.
+const RATIO: &str = "ratio";
+
 /// `spec` of a history stream: its rows also carry their change time, which begins their
-/// versions.
+/// versions, and a document and a float of their data.
 pub(super) fn timed_spec(spec: StreamSpec, schema: &TableSchema) -> StreamSpec {
     let mut fields: Vec<Field> = schema.fields().iter().cloned().collect();
-    let micros = LogicalType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()));
-    fields.push(Field::new(AT, micros, true));
+    fields.extend(extra_fields());
     let schema = TableSchema::new(fields).expect("the change schema has distinct names");
     spec.with_schema(schema).with_change_time(AT)
 }
 
-/// `batch`, a change batch, with each row's change time after its data: its position, from its
-/// sequence's last eight bytes, in microseconds.
+/// The fields a history stream's rows carry after their data: the change time, the document and
+/// the float.
+fn extra_fields() -> [Field; 3] {
+    let micros = LogicalType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()));
+    [
+        Field::new(AT, micros, true),
+        Field::new(DOCUMENT, LogicalType::Json, true),
+        Field::new(RATIO, LogicalType::Float64, true),
+    ]
+}
+
+/// `batch`, a change batch, with each row's change time after its data, its position from its
+/// sequence's last eight bytes in microseconds, then its document, written as its position and
+/// key pick, and its float; none for a row without data.
 pub(super) fn timed(batch: &RecordBatch) -> RecordBatch {
-    let seqs = batch
+    let positions: Vec<u64> = batch
         .column_by_name(SEQ_COLUMN)
         .expect("change rows carry a sequence")
-        .as_fixed_size_binary();
-    let at = seqs.iter().map(|seq| {
-        let position = seq.map_or(0, |seq| {
-            u64::from_be_bytes(seq[8..].try_into().expect("sequences are 16 bytes"))
-        });
-        i64::try_from(position).unwrap_or(i64::MAX)
-    });
+        .as_fixed_size_binary()
+        .iter()
+        .map(|seq| {
+            seq.map_or(0, |seq| {
+                u64::from_be_bytes(seq[8..].try_into().expect("sequences are 16 bytes"))
+            })
+        })
+        .collect();
+    let at = positions
+        .iter()
+        .map(|position| i64::try_from(*position).unwrap_or(i64::MAX));
     let at = TimestampMicrosecondArray::from_iter_values(at).with_timezone("UTC");
+    let column = |name: &str| {
+        batch
+            .column_by_name(name)
+            .unwrap_or_else(|| panic!("change rows carry {name}"))
+    };
+    let keys = column("id").as_primitive::<Int64Type>();
+    let values = column("value").as_string::<i32>();
+    let counters = column("n").as_primitive::<Int64Type>();
+    let mut documents = StringBuilder::new();
+    let mut ratios = Float64Builder::new();
+    for (row, position) in positions.iter().enumerate() {
+        if counters.is_null(row) {
+            documents.append_null();
+            ratios.append_null();
+            continue;
+        }
+        let n = counters.value(row).unsigned_abs();
+        let value = values.is_valid(row).then(|| values.value(row));
+        let way = position.wrapping_add(keys.value(row).unsigned_abs().wrapping_mul(7));
+        documents.append_value(document(value, n, way));
+        ratios.append_value(ratio(n));
+    }
     let data = batch
         .schema()
         .index_of("n")
@@ -170,11 +218,15 @@ pub(super) fn timed(batch: &RecordBatch) -> RecordBatch {
         + 1;
     let mut fields: Vec<_> = batch.schema().fields().iter().cloned().collect();
     let mut columns = batch.columns().to_vec();
-    fields.insert(
-        data,
-        Arc::new(arrow_schema::Field::new(AT, at.data_type().clone(), true)),
-    );
-    columns.insert(data, Arc::new(at));
+    let extra: [ArrayRef; 3] = [
+        Arc::new(at),
+        Arc::new(documents.finish()),
+        Arc::new(ratios.finish()),
+    ];
+    for (offset, (field, array)) in extra_fields().iter().zip(extra).enumerate() {
+        fields.insert(data + offset, Arc::new(field.to_arrow()));
+        columns.insert(data + offset, array);
+    }
     RecordBatch::try_new(Arc::new(arrow_schema::Schema::new(fields)), columns)
         .expect("a valid change batch")
 }
