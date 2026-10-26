@@ -21,11 +21,13 @@ machine, so this record keeps the method with the figures.
   or 6.9 MB each); 1, 4 or 16 partitions of each stream; 1 or 4 streams; and a commit at the end
   or every sixteenth of the rows. Its id is
   `passthrough/matrix/<rows>x<batches>/<P>p/<S>s/<end|16th>`, `/null` after it for the null
-  sink. By default the bench runs the chosen cells: the paired cell, each axis moved alone from
-  it, 8 000 and 1 000 rows at 16 partitions, 1 000 rows at 16 partitions committed every
-  sixteenth, and 1 000 and 8 000 rows into the null sink. With `full` as the filter
-  (`just bench passthrough 0-3 full`) it runs every cell, 36 into the IPC sink and the two null
-  ones, under `passthrough/full/`.
+  sink and `/k<n>` for a source that checkpoints each partition after every n-th push and after
+  its last. By default the bench runs the chosen cells: the paired cell, each axis moved alone
+  from it, 8 000 and 1 000 rows at 16 partitions, 1 000 rows at 16 partitions committed every
+  sixteenth, 1 000 and 8 000 rows into the null sink, and 1 000 rows from 1 and 16 partitions
+  checkpointed every 6th and every 97th push. With `full` as the filter
+  (`just bench passthrough 0-3 full`) it runs every cell, 36 into the IPC sink, the two null ones
+  and the four checkpointed ones, under `passthrough/full/`.
 - **Destination.** `Sinking::Ipc` from the `bench` feature, which encodes each staged batch as an
   Arrow IPC stream into a buffer it reuses: the least a real destination does with a batch. The
   engine's sink declares sixteen writers, so a run has a lane a core up to sixteen. The two
@@ -33,12 +35,12 @@ machine, so this record keeps the method with the figures.
 - **Bare loop.** The paired cell's batches written to the sink's writer one after another, on one
   thread.
 - **Engine.** `Engine::run` with the `Replay` source pushing each partition of each stream an even
-  share of the batches in order, a checkpoint after each push, so each push is a flush of its
-  own. The budget is the engine's default, 256 MiB. A cell committed at the `end` sets no
-  threshold, so only the end of the read, or the budget, makes a commit due; one committed every
-  `16th` commits every 320 000 rows. The bench takes the cores it is pinned to as a process
-  that builds its own runtime does, through `Cores::try_from_host`: half of them, and two at
-  least, for its tokio workers, and a compute thread for every core (`SystemEnv::try_new`).
+  share of the batches in order, a checkpoint after each push, so each push is a flush of its own,
+  but in the `/k<n>` cells. The budget is the engine's default, 256 MiB. A cell committed at the
+  `end` sets no threshold, so only the end of the read, or the budget, makes a commit due; one
+  committed every `16th` commits every 320 000 rows. The bench takes the cores it is pinned to as a
+  process that builds its own runtime does, through `Cores::try_from_host`: half of them, and two
+  at least, for its tokio workers, and a compute thread for every core (`SystemEnv::try_new`).
 - **Readings.** After each cell, one line from its last run's report: commits by what made each
   due; the time pushes, requests for lowering and served frames waiting to be decoded waited for
   room, each summed over the run's tasks, over the run's wall time; the compute pool's idle
@@ -109,43 +111,57 @@ The allocations of one run of each side:
 
 ### The chosen cells
 
-On `90ce76c2`, 2026-10-13: three rounds of `just bench passthrough 0-3`, the one-minute load average
-0.9 to 2.1 at their starts; each round took 414 to 418 s. Each figure is the median of the three
-rounds, the range of the throughput in brackets; every cell's throughput lies within 3 % of its
-median but `8000x640/1p/1s/end` (one round 8.3 % below) and the 80 000-row cells of four and sixteen
-partitions (one round 11 to 12 % off). The readings are the last run's of each round; their medians:
-commits made due by size and by the end, the work and intake waits and the pool's queue and way back
-as percentages of the run summed over its tasks, the pool idle, the lanes written and the budget's
-signals a batch.
+`main` at `6365cc13` with the served bench's readings (`d2fc0f95`; the engine's code is
+`main`'s), 2026-10-25 and -26: three rounds of the chosen cells, the checkpointed ones among
+them, interleaved with the other benches' rounds ([campaign.md](campaign.md)), each started once
+no other build ran; the one-minute load average was 1.17, 1.17 and 1.73 at their starts and 0.68,
+0.66 and 0.37 at their ends. Each figure is the median of the three rounds, the range of the
+throughput in brackets; the readings are the last run's of each round, their medians: the intake
+waits and the pool's queue and way back as percentages of the run summed over its tasks, the pool
+idle, the lanes written, the lanes' flushes of their writers by cause, the budget's signals a
+batch, and the sink's writes a run. Every cell makes one commit, at the end, but those committed
+every sixteenth, which make 17.
 
-| Cell | MB/s | Engine a run | Commits (size + end) | Work | Intake | Pool idle | Queue and way back | Lanes | Signals |
+| Cell | MB/s | Engine a run | Intake | Pool idle | Queue and way back | Lanes | Flushes: pressure + commit | Signals | Sink writes |
 |---|---|---|---|---|---|---|---|---|---|
-| `80000x64/1p/1s/end` | 14 768 [14 546–14 791] | 29.9 ms | 0 + 1 | 0 % | 66.7 % | 97.4 % | 20.8 % | 1 | 9.6 |
-| `8000x640/1p/1s/end` | 13 890 [12 743–13 945] | 31.7 ms | 0 + 1 | 0 % | 0.7 % | 91.7 % | 31.5 % | 1 | 8.0 |
-| `1000x5120/1p/1s/end` | 3 172 [3 107–3 183] | 139.0 ms | 0 + 1 | 0 % | 0.1 % | 86.5 % | 32.7 % | 1 | 8.0 |
-| `80000x64/4p/1s/end` | 15 896 [15 857–17 813] | 27.7 ms | 0 + 1 | 0 % | 285 % | 95.0 % | 265 % | 4 | 11.4 |
-| `80000x64/16p/1s/end` | 17 346 [15 419–17 988] | 25.4 ms | 0 + 1 | 0 % | 948 % | 95.2 % | 497 % | 4 | 11.8 |
-| `80000x64/1p/4s/end` | 15 815 [15 796–16 048] | 27.9 ms | 0 + 1 | 0 % | 284 % | 94.3 % | 273 % | 4 | 11.5 |
-| `80000x64/1p/1s/16th` | 14 945 [14 506–14 960] | 29.5 ms | 16 + 1 | 0 % | 62.7 % | 97.2 % | 13.8 % | 1 | 9.4 |
-| `8000x640/16p/1s/end` | 14 844 [14 656–14 895] | 29.7 ms | 0 + 1 | 0 % | 1 137 % | 90.6 % | 1 398 % | 4 | 11.3 |
-| `1000x5120/16p/1s/end` | 4 696 [4 635–4 702] | 93.9 ms | 0 + 1 | 0 % | 6.2 % | 79.2 % | 1 276 % | 4 | 8.0 |
-| `1000x5120/16p/1s/16th` | 4 656 [4 641–4 689] | 94.7 ms | 16 + 1 | 0 % | 0 % | 79.3 % | 1 248 % | 4 | 8.0 |
-| `1000x5120/1p/1s/end/null` | 3 261 [3 256–3 289] | 135.2 ms | 0 + 1 | 0 % | 0 % | 86.9 % | 30.2 % | 1 | 8.0 |
-| `8000x640/1p/1s/end/null` | 13 303 [13 187–13 338] | 33.1 ms | 0 + 1 | 0 % | 0.3 % | 92.5 % | 32.5 % | 1 | 8.0 |
+| `80000x64/1p/1s/end` | 14 201 [14 005–14 581] | 31.1 ms | 77.9 % | 99.9 % | 0.8 % | 1 | 15 + 1 | 0.5 | 64 |
+| `8000x640/1p/1s/end` | 13 036 [11 926–13 419] | 33.8 ms | 2.0 % | 100.0 % | 0.1 % | 1 | 5 + 1 | 0.0 | 640 |
+| `1000x5120/1p/1s/end` | 4 113 [3 628–4 128] | 107.2 ms | 0.2 % | 100.0 % | 0.0 % | 1 | 5 + 1 | 0.0 | 5 120 |
+| `80000x64/4p/1s/end` | 15 351 [14 124–17 339] | 28.7 ms | 314 % | 99.9 % | 0.3 % | 4 | 39 + 3 | 0.8 | 64 |
+| `80000x64/16p/1s/end` | 16 307 [15 030–16 785] | 27.0 ms | 925 % | 99.9 % | 2.8 % | 4 | 52 + 3 | 0.0 | 64 |
+| `80000x64/1p/4s/end` | 15 955 [14 560–17 960] | 27.6 ms | 291 % | 99.6 % | 8.8 % | 2 | 36 + 2 | 0.6 | 64 |
+| `80000x64/1p/1s/16th` | 13 121 [12 520–13 204] | 33.6 ms | 62.1 % | 99.9 % | 0.2 % | 1 | 18 + 10 | 0.6 | 64 |
+| `8000x640/16p/1s/end` | 14 933 [13 906–15 263] | 29.5 ms | 745 % | 99.9 % | 17.8 % | 4 | 376 + 3 | 0.4 | 640 |
+| `1000x5120/16p/1s/end` | 4 565 [4 449–4 571] | 96.6 ms | 8.5 % | 100.0 % | 3.2 % | 4 | 19 + 2 | 0.0 | 5 120 |
+| `1000x5120/16p/1s/16th` | 4 546 [4 188–4 576] | 97.0 ms | 0.0 % | 100.0 % | 1.7 % | 4 | 0 + 64 | 0.0 | 5 120 |
+| `1000x5120/1p/1s/end/null` | 4 068 [3 988–4 076] | 108.4 ms | 0.2 % | 100.0 % | 0.2 % | 1 | 5 + 1 | 0.0 | 5 120 |
+| `8000x640/1p/1s/end/null` | 16 021 [15 999–16 021] | 27.5 ms | 0.2 % | 100.0 % | 0.4 % | 1 | 5 + 1 | 0.0 | 640 |
+| `1000x5120/1p/1s/end/k6` | 3 183 [3 172–3 187] | 138.5 ms | 1.9 % | 91.8 % | 16.1 % | 1 | 5 + 1 | 0.0 | 854 |
+| `1000x5120/1p/1s/end/k97` | 3 562 [3 545–3 572] | 123.8 ms | 0.0 % | 90.2 % | 4.9 % | 1 | 6 + 1 | 0.0 | 105 |
+| `1000x5120/16p/1s/end/k6` | 6 677 [6 676–6 683] | 66.0 ms | 29.2 % | 82.8 % | 995 % | 4 | 28 + 3 | 0.0 | 881 |
+| `1000x5120/16p/1s/end/k97` | 5 729 [5 414–5 830] | 77.0 ms | 271 % | 79.5 % | 191 % | 4 | 64 + 3 | 0.0 | 186 |
 
-On these four cores a cell of four or sixteen partitions, or of four streams, writes through
-four lanes. No run waited for room for lowering, and no commit was made due by the
+On these four cores a cell of four or sixteen partitions writes through four lanes, and one of
+four streams through two. No run waited for room for lowering, and no commit was made due by the
 budget's cursors or tables.
 
 **Pushes of 80 000 rows wait for room within the default budget.** Within 256 MiB the paired
-cell's pushes wait for room for 66.7 % [62.8–70.1] of the run, one partition's pushes waiting
-nearly two-thirds of the time: its 442 MB of batches, 6.9 MB each, do not fit the pushes' share
-of the budget at once, so the source waits for writes to release room. With four partitions or
-streams the waits sum to 284–285 % of the run, about three pushes waiting at every moment, and
-with sixteen partitions to 948 %. At 8 000 rows a batch from sixteen partitions they sum to
-1 137 %; at 1 000 rows to 6.2 %, and to under 1 % from one partition at 1 000 or 8 000 rows. The
-same cell within 1 GiB is the paired cell above. This record states the waits; it does not
-change the budget.
+cell's pushes wait for room for 77.9 % [77.7–78.6] of the run, one partition's pushes waiting
+most of the time: its 442 MB of batches, 6.9 MB each, do not fit the pushes' share of the budget
+at once, so the source waits for writes to release room, and the lane flushes its writer for
+pressure 15 times a run. With four partitions or streams the waits sum to 291–314 % of the run,
+and with sixteen partitions to 925 %. At 8 000 rows a batch from sixteen partitions they sum to
+745 %, with 376 pressure flushes a run; at 1 000 rows to 8.5 %, and to 2 % or less from one
+partition. The same cell within 1 GiB is the paired cell above. This record states the waits; it
+does not change the budget.
+
+**Checkpoints every k pushes.** The 1 000-row cells checkpointed every 6th or 97th push (`/k6`,
+`/k97`) let the coalescer build units of up to 6 or 97 pushes before a checkpoint flushes them,
+about a sixteenth of the coalescing target and all of it: the sink's writes fall from 5 120 to 854
+and 105 from one partition. From one partition that is slower: 3 183 MB/s at k = 6 and 3 562 at
+k = 97, against 4 113 with a checkpoint after each push (0.77 and 0.87 times), with the compute
+pool busier (idle 91.8 % and 90.2 % against 100 %). From sixteen partitions it is faster: 6 677
+and 5 729 against 4 565 (1.46 and 1.25 times), each range apart from the others.
 
 ## What the matrix decides
 
@@ -370,6 +386,51 @@ one; 9 units a flush), rounds on one core, four, four and one: 3.77, 3.99, 3.93 
 rows a second: four cores 1.06 and 1.15 times as fast as one, round against round. In a profile
 on four cores the two compute threads hold 57.0 % and 41.4 % of the samples, the first's
 shredding and normalizing 54.5 % of them all, and the runtime's workers 1.3 %.
+
+## JSON through the engine
+
+What JSON costs the engine from push to the null sink, whole flushes of it, from one partition and
+from many: the baseline that sizing the shredder's jobs by rows and cores is measured against.
+
+### Method
+
+- **Cells.** `passthrough/json/<corpus>/<P>p`: the shred bench's `nested` corpus (rows of about
+  180 bytes) and `wide_200` (200 columns, integers and short strings by turns), sixteen pushes of
+  whole lines of about 8 MiB each, 134 MB a run, a checkpoint after each push, read from one
+  partition or from sixteen, an even share each.
+- **Engine.** Within the default budget, one commit at the end, into a sink that drops each batch
+  and declares sixteen writers; the bench takes its cores as the matrix's cells do: on `0-3` two
+  runtime workers and four compute threads, on `4-11` four and eight.
+- **Readings.** The matrix's readings after each cell, and the shredder's passes: chunks parsed,
+  tripped, observed, rebuilt and read exactly. Every run checks it loads the pushes' lines.
+- **Running.** `just bench passthrough 0-3 json` and `just bench passthrough 4-11 json`.
+
+### Results
+
+The chosen cells' three rounds and tree (above) on `0-3`, and three rounds on `4-11` interleaved
+with the shredding bench's in the same campaign; the median and range, the readings' medians.
+Every pass count is the same in every run: 128 chunks parsed, none tripped, observed, rebuilt or
+read exactly.
+
+| Cell | Cores | Time a run | Rows a second | MB a second | Intake waits | Pool idle | Lanes | Flushes: pressure + commit |
+|---|---|---|---|---|---|---|---|---|
+| `nested/1p` | `0-3` | 124.9 ms (124.1–130.6) | 5.92 M | 1 075 | 79 % | 27.4 % | 1 | 96 + 1 |
+| `nested/1p` | `4-11` | 99.5 ms (99.2–100.3) | 7.42 M | 1 348 | 79 % | 43.8 % | 1 | 96 + 1 |
+| `nested/16p` | `0-3` | 95.1 ms (94.1–95.2) | 7.77 M | 1 411 | 563 % | 2.4 % | 4 | 64 + 4 |
+| `nested/16p` | `4-11` | 60.7 ms (60.5–63.1) | 12.2 M | 2 212 | 561 % | 6.0 % | 8 | 64 + 6 |
+| `wide_200/1p` | `0-3` | 158.2 ms (154.3–160.8) | 0.32 M | 849 | 80 % | 49.6 % | 1 | 74 + 1 |
+| `wide_200/1p` | `4-11` | 134.9 ms (134.8–136.3) | 0.37 M | 995 | 81 % | 61.1 % | 1 | 72 + 1 |
+| `wide_200/16p` | `0-3` | 103.4 ms (102.8–128.5) | 0.49 M | 1 298 | 634 % | 14.2 % | 4 | 96 + 4 |
+| `wide_200/16p` | `4-11` | 76.8 ms (76.0–77.3) | 0.65 M | 1 748 | 635 % | 27.4 % | 8 | 96 + 4 |
+
+The `allocations` bench's counts of one run of each cell, on the same tree: `nested` 0.072
+allocations and 260 bytes a row from one partition, 0.073 and 261 from sixteen; `wide_200` 9.65
+and 2 915 from one, 9.96 and 2 940 from sixteen.
+
+- One partition keeps the compute pool idle a quarter to three fifths of the run while its pushes
+  wait for room for 79–81 % of it: a flush offers its 8 MiB as eight 1 MiB jobs.
+- Sixteen partitions keep the pool busy, idle 2.4 % of the run for `nested` on `0-3`, and their
+  pushes' waits sum to 561–635 % of the run.
 
 ## A pipeline of both stream kinds, logged
 
@@ -784,5 +845,25 @@ which one served connection cannot carry ([served.md](served.md), "Many tables")
   followed cell takes about two minutes. As a test, each cell runs once with the same pushes 20 ms
   apart, committed every 40 ms and followed for two seconds.
 
-No figures are recorded here yet: they are three interleaved rounds' medians and ranges, taken in
-the campaign that reads them.
+Measured in the three rounds of the chosen cells above, on their tree and cores; the medians of
+each cell's ten runs in each round, then the median of the rounds and their range. A commit's
+phases are its flush, its log and its commit (the horizon reads 0.000 throughout) and the
+acknowledgement; idle CPU is the process's CPU seconds a wall second while the streams are quiet,
+or over the snapshot's run.
+
+| Cell | Budget | Flush | Commit | Acknowledgement | Idle CPU | Flushes: commit + retired + pressure |
+|---|---|---|---|---|---|---|
+| `followed/16` | 256 MiB | 0.26 ms (0.25–0.28) | 0.04 ms (0.04–0.04) | 0.03 ms (0.03–0.03) | 0.000 | 32 + 0 + 0 |
+| `followed/64` | 256 MiB | 0.84 ms (0.76–0.90) | 0.10 ms (0.09–0.10) | 0.06 ms (0.06–0.06) | 0.001 | 128 + 0 + 0 |
+| `followed/192` | 386 MiB | 1.47 ms (1.39–1.73) | 0.23 ms (0.20–0.24) | 0.14 ms (0.13–0.15) | 0.001 | 128 + 816 + 0 |
+| `followed/256` | 514 MiB | 2.16 ms (2.16–2.49) | 0.30 ms (0.27–0.30) | 0.20 ms (0.18–0.21) | 0.001 | 128 + 1 123 + 0 |
+| `snapshot/256` | 256 MiB | 0.58 ms (0.58–0.71) | 0.50 ms (0.49–0.51) | 0.16 ms (0.16–0.17) | 2.257 (2.250–2.268) | 49 + 179 + 32 |
+
+- In process, acknowledging 256 streams takes 0.20 ms a commit, under a microsecond a stream;
+  served, every stream's acknowledgement is a round trip ([served.md](served.md), "Many tables").
+- Reads in the engine's process keep nothing beside their events, so every cell reads 0 KiB of
+  the reads' share.
+- From 192 streams the run's tables outnumber its 128 writers, so writers retire: 1 123 of the
+  1 251 flushes at 256 streams. Every cell writes through two of the four lanes.
+- The process's resident peak, the bench's batches of every other cell among it, is 1.2–1.4 GiB,
+  and no run raised it more than 2.3 MiB above its base.
