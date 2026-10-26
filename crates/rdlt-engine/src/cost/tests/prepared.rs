@@ -116,8 +116,8 @@ fn preparing_a_child_tables_lineage_at_the_widest_stamp_allocates_no_more_than_i
         }
         let plan = child_plan(part, &capabilities);
         let rendering = crate::cost::rendering(&capabilities);
-        let mut measure =
-            rendering.lowering(&part.batch, plan.stored(), plan.row_bytes(), u64::MAX);
+        let stored = plan.stored();
+        let mut measure = rendering.lowering(&part.batch, &stored, plan.row_bytes(), u64::MAX);
         let charge = measure.expanded(0..part.batch.num_rows());
         let (prepared, peak) =
             peak(|| plan.prepare(part.batch.clone(), Some(&lineage), &stamp, None));

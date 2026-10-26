@@ -1,7 +1,10 @@
-//! A piece of a wide table is lowered within what it reserved, however few its rows and however
-//! many parts it joins: a change stream's flags remapped over the table's columns, every row a
-//! filter keeps copied as what it was copied from goes, and the arrays of each batch lowering
-//! holds of the piece; once lowered, it keeps no more than it is charged.
+//! What a wide table's rows hold, however few, is within what was charged for them.
+//!
+//! Cutting keeps nothing a column beside the unit it cuts; and a piece holds no more than it
+//! reserved, however many parts it joins: a change stream's flags remapped over the table's
+//! columns, every row a filter keeps copied as what it was copied from goes, and the arrays of
+//! each batch lowering holds of the piece. Once lowered, a piece keeps no more than it is
+//! charged.
 
 use std::sync::Arc;
 
@@ -206,5 +209,34 @@ fn a_wide_history_piece_hashes_its_versions_within_what_it_reserved() {
         let kept = case.kept().rows;
         let within = within(&case, case.batch(), piece.parts, None);
         assert_eq!(within, Ok(kept), "{piece:?}");
+    }
+}
+
+#[test]
+fn cutting_a_wide_unit_keeps_nothing_of_it_beside_it_between_its_pieces() {
+    let layout = ChangeLayout::Log;
+    for columns in [COLUMNS, WIDEST] {
+        let case = Case::wide_changes(4, columns, layout, Storage::Native);
+        let batch = case.batch();
+        let measured = |bounds| {
+            let mode = Some(mode(layout));
+            super::super::measured(case.plan(), case.rendering(), batch, mode, bounds)
+        };
+        // Pieces of a row each: a piece's rows may take a byte.
+        let whole = measured((u64::MAX, u64::MAX));
+        let lowered = measured((whole.piece + whole.part + 1, u64::MAX));
+        let unit = || Held::of(vec![batch.clone()], Vec::new());
+        let (alone, _) = held_alone(|| (unit(), lowered.clone()));
+        let (cutting, _) = held_alone(|| {
+            let mut pieces = Pieces::new(unit(), lowered.clone());
+            let piece = pieces.next().unwrap().expect("the unit has rows");
+            assert_eq!(piece.rows, 1);
+            pieces
+        });
+        let beside = cutting.saturating_sub(alone);
+        assert!(
+            beside < 1_024,
+            "{columns} columns: cutting keeps {beside} bytes"
+        );
     }
 }

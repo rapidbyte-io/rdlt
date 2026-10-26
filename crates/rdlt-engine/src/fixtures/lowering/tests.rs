@@ -205,14 +205,14 @@ fn a_batch_is_charged_its_change_columns_what_splitting_a_row_holds_and_its_arra
     let row = changes.plan().row_bytes() + CHANGE_ROW;
     let mut measure = changes
         .rendering
-        .lowering(changes.batch(), stored, row, u64::MAX);
+        .lowering(changes.batch(), &stored, row, u64::MAX);
     let beside = changes.plan().piece_bytes() + arrays(changes.batch().schema_ref().fields());
     assert_eq!(changes.charge(), measure.expanded(0..64) + beside);
     let append = Case::new(LoweringCase::AppendNative, ROWS);
     let (stored, row) = (append.plan().stored(), append.plan().row_bytes());
     let mut measure = append
         .rendering
-        .lowering(append.batch(), stored, row, u64::MAX);
+        .lowering(append.batch(), &stored, row, u64::MAX);
     let beside = append.plan().piece_bytes() + arrays(append.batch().schema_ref().fields());
     assert_eq!(append.charge(), measure.expanded(0..64) + beside);
 }

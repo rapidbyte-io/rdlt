@@ -68,24 +68,25 @@ impl Rendering {
 
     /// A measure of what rows of `batch` expand to, up to `limit`, for measuring many stretches
     /// of them: a value many rows name is measured once for all of them.
-    pub fn measure(&self, batch: &RecordBatch, limit: u64) -> Measure {
-        self.lowering(batch, Vec::new(), 0, limit)
+    pub fn measure<'b>(&'b self, batch: &'b RecordBatch, limit: u64) -> Measure<'b> {
+        self.lowering(batch, &[], 0, limit)
     }
 
     /// A measure of what lowering rows of `batch` into their table holds at once, up to `limit`.
     ///
     /// `stored` says, for each column of the batch in order, how its table stores it; a column
     /// it says nothing of is measured as [`Rendering::measure`] measures it. Every row costs
-    /// `row` bytes beside its columns: the columns of the table the batch holds nothing in.
-    pub fn lowering(
-        &self,
-        batch: &RecordBatch,
-        stored: Vec<Option<Stored>>,
+    /// `row` bytes beside its columns: the columns of the table the batch holds nothing in. The
+    /// measure borrows the batch, `stored` and the rendering, and copies none of them.
+    pub fn lowering<'b>(
+        &'b self,
+        batch: &'b RecordBatch,
+        stored: &'b [Option<Stored>],
         row: u64,
         limit: u64,
-    ) -> Measure {
+    ) -> Measure<'b> {
         Measure {
-            batch: batch.clone(),
+            batch,
             stored,
             row,
             meter: Meter::new(self, limit),
@@ -116,7 +117,7 @@ pub fn push_charge(push: &Push) -> u64 {
     }
 }
 
-impl Measure {
+impl Measure<'_> {
     /// The measure, each item a list names, at any depth, costing `bytes` beside itself: for
     /// whoever makes a row of each item, as normalizing does.
     #[must_use]
@@ -151,21 +152,21 @@ pub struct Piece {
 }
 
 /// Measures what stretches of one batch's rows expand to, up to a limit.
-pub struct Measure {
-    batch: RecordBatch,
-    stored: Vec<Option<Stored>>,
+pub struct Measure<'b> {
+    batch: &'b RecordBatch,
+    stored: &'b [Option<Stored>],
     /// Bytes: what every row costs beside its columns.
     row: u64,
-    meter: Meter,
+    meter: Meter<'b>,
 }
 
-impl fmt::Debug for Measure {
+impl fmt::Debug for Measure<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Measure").finish_non_exhaustive()
     }
 }
 
-impl Measure {
+impl Measure<'_> {
     /// What `rows` expand to: beyond the limit, some value beyond it, where measuring stopped.
     pub fn expanded(&mut self, rows: Range<usize>) -> u64 {
         let limit = self.meter.limit();
@@ -303,7 +304,8 @@ pub fn text_bytes(array: &dyn Array, json: bool) -> u64 {
             length.saturating_mul(2).saturating_add(quotes)
         }
         _ => {
-            let mut meter = Meter::new(&Rendering::native(), u64::MAX);
+            let native = Rendering::native();
+            let mut meter = Meter::new(&native, u64::MAX);
             meter.inside(array);
             meter.spent()
         }

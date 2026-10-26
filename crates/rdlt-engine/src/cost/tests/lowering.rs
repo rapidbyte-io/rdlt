@@ -313,7 +313,8 @@ fn lowered(
         text: as_text,
         read: false,
     };
-    let mut measure = Rendering::native().lowering(&batch, vec![Some(stored)], 0, u64::MAX);
+    let (rendering, stored) = (Rendering::native(), [Some(stored)]);
+    let mut measure = rendering.lowering(&batch, &stored, 0, u64::MAX);
     let charge = measure.expanded(0..column.len());
     let (made, peak) = peak(|| {
         let converted = convert(column, from, to)?;
@@ -491,7 +492,8 @@ fn every_column() -> Vec<(ArrowField, ArrayRef)> {
 fn split_estimate(batch: &RecordBatch, shape: &crate::normalize::Shape) -> u64 {
     use crate::cost::{LINEAGE_ITEM, SPLIT_COPIES, lineage_row};
     let row = lineage_row(shape);
-    let measure = Rendering::native().lowering(batch, Vec::new(), row, u64::MAX);
+    let rendering = Rendering::native();
+    let measure = rendering.lowering(batch, &[], row, u64::MAX);
     let mut measure = measure.with_items(LINEAGE_ITEM);
     measure
         .expanded(0..batch.num_rows())
@@ -739,7 +741,8 @@ fn reads_within_its_charge(tenth: usize, half: usize, as_text: bool) {
                 text: as_text,
                 read: true,
             };
-            let mut measure = Rendering::native().lowering(&batch, vec![Some(stored)], 0, u64::MAX);
+            let (rendering, stored) = (Rendering::native(), [Some(stored)]);
+            let mut measure = rendering.lowering(&batch, &stored, 0, u64::MAX);
             let charge = measure.expanded(0..column.len());
             let (made, peak) = peak(|| crate::table::split_lowered(&column, to, as_text));
             made.unwrap();
@@ -804,7 +807,8 @@ fn a_column_discarded_value_by_value_allocates_no_more_than_its_charge() {
                 text: false,
                 read: false,
             };
-            let mut measure = Rendering::native().lowering(&batch, vec![Some(stored)], 0, u64::MAX);
+            let (rendering, stored) = (Rendering::native(), [Some(stored)]);
+            let mut measure = rendering.lowering(&batch, &stored, 0, u64::MAX);
             let charge = measure.expanded(0..encoded.len());
             let (lowered, peak) = peak(|| {
                 let Check::Refused(rows) = refused(&encoded, &from, &to)? else {

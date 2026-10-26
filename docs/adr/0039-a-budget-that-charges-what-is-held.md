@@ -203,7 +203,7 @@ budget before it is held, or bounded by a limit with a typed refusal.
     two in two of a table of a thousand and of the widest a schema may have at the defaults,
     7,489: a change stream's, as a log and merged, stored as it is and as text, with its flags
     and the deletes it ignores, a merge's of repeated keys, a history table's, and one dropping
-    rows.
+    rows. Cutting a unit keeps nothing a column beside it between its pieces.
   - Judging which columns of 64-bit integers a batch holds a value a float would round in reads
     each column where it lies, in any encoding, and holds nothing a row, so nothing is charged
     for it; a normalized flush is judged so before any of it is split, and tests hold its peak
@@ -316,6 +316,11 @@ budget before it is held, or bounded by a limit with a typed refusal.
     and offsets alone (a scalar, or strings and bytes as they are, converted to no JSON and read
     from none), a piece takes as many steps however many rows it has, and is cut on the
     partition's task.
+  - A measure borrows the batch it measures, how its table stores each column and the
+    rendering, and copies none of them. The cutter builds one for each piece it cuts, and one
+    for a row beyond a piece, and reads the unit's batches through what holds the unit: what
+    measuring learns of the values keys and runs name lasts the piece, and cutting keeps nothing
+    a column beside the unit between its pieces.
   - No more values are remembered than take an eighth of the limit measured against; a value
     beyond those is measured each time it is named.
   - Tests count the steps and the values remembered for dictionaries of every key type, nested

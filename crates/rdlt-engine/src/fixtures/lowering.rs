@@ -381,7 +381,9 @@ impl Case {
             Pushed::Changes(batch) => (aligned(batch, &self.plan.stored()), CHANGE_ROW),
         };
         let row = self.plan.row_bytes().saturating_add(beside);
-        let mut measure = self.rendering.lowering(self.batch(), stored, row, u64::MAX);
+        let mut measure = self
+            .rendering
+            .lowering(self.batch(), &stored, row, u64::MAX);
         let part = arrays(self.batch().schema_ref().fields());
         measure
             .expanded(0..self.rows())
