@@ -5,7 +5,7 @@ use rdlt_connector::cost::json_charge;
 use rdlt_wire::Limits;
 use rdlt_wire::limits::{Class, MESSAGE_ROOM};
 
-use super::{HALVED, admitted, kept, least, row_overhead};
+use super::{HALVED, admitted, kept, least, pushed_arrays, row_overhead};
 use crate::budget::Shares;
 use crate::limits::{COLUMN_RECORD, SCHEMA_KEPT};
 
@@ -16,11 +16,11 @@ fn any_readers() -> usize {
 }
 
 /// Each limit a budget admits, all at once, fits the share it draws on: a frame beside what a
-/// read keeps and its message's room within what pushes take, and one row of it within half a
-/// request; JSON text, its message's room and the batches it becomes within what pushes take,
-/// at the longest text that fits but where the wire's own limit binds; where the budget
-/// admits a peer, a frame decoded within what pushes take; any other answer decoded within the
-/// answers' share; every read's cursor and answer within the cursors' share; a schema, its
+/// read keeps, its message's room and its arrays within what pushes take, and one row of it
+/// within half a request; JSON text, its message's room and the batches it becomes within what
+/// pushes take, at the longest text that fits but where the wire's own limit binds; where the
+/// budget admits a peer, a frame decoded within what pushes take; any other answer decoded within
+/// the answers' share; every read's cursor and answer within the cursors' share; a schema, its
 /// decoding and the dictionaries within what a read keeps; and a table's records within the
 /// tables' share.
 ///
@@ -35,7 +35,9 @@ fn what_each_admitted_limit_admits_fits_the_share_it_draws_on() {
     let defaults = Limits::default();
     assert_eq!(limits.lesser(&defaults), limits);
     let message = limits.frame_bytes.saturating_add(MESSAGE_ROOM);
-    assert!(limits.frame_bytes == 0 || message.saturating_add(kept) <= shares.intake.max(kept));
+    let arrays = pushed_arrays(limits.schema_columns);
+    let pushed = message.saturating_add(kept).saturating_add(arrays);
+    assert!(limits.frame_bytes == 0 || pushed <= shares.intake.max(kept));
     let row = limits
         .frame_bytes
         .saturating_add(row_overhead(limits.schema_columns));

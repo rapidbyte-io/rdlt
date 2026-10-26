@@ -145,7 +145,8 @@ async fn a_push_is_charged_what_it_keeps_alive_not_what_it_expands_to() {
             .unwrap(),
     );
     let pushed = batch(keyed);
-    let held = usize::try_from(Allocations::of(&pushed).bytes()).unwrap();
+    // What it keeps alive, and its arrays: the dictionary's keys and its values.
+    let held = usize::try_from(Allocations::of(&pushed).bytes() + 2 * 320).unwrap();
     let budget = Budget::new();
     budget.push(&Push::Arrow(pushed)).await.unwrap();
     assert_eq!(

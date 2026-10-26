@@ -1,21 +1,29 @@
 //! What a wide table's rows hold, however few, is within what was charged for them.
 //!
-//! Cutting keeps nothing a column beside the unit it cuts; and a piece holds no more than it
-//! reserved, however many parts it joins: a change stream's flags remapped over the table's
-//! columns, every row a filter keeps copied as what it was copied from goes, and the arrays of
-//! each batch lowering holds of the piece. Once lowered, a piece keeps no more than it is
-//! charged.
+//! A push holds no more than it is admitted for, in its source's process or decoded from its
+//! frame, and a JSON push's batches no more than they keep charged; a normalized split no more
+//! than it keeps charged once its parts are planned; cutting keeps nothing a column beside the
+//! unit it cuts; and a piece holds no more than it reserved, however many parts it joins: a
+//! change stream's flags remapped over the table's columns, every row a filter keeps copied as
+//! what it was copied from goes, and the arrays of each batch lowering holds of the piece. Once
+//! lowered, a piece keeps no more than it is charged.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use arrow_array::{Int8Array, RecordBatch};
-use rdlt_connector::cost::Allocations;
-use rdlt_connector::{ChangeOp, OP_COLUMN, StreamName};
+use rdlt_connector::cost::{Allocations, push_charge};
+use rdlt_connector::{ChangeOp, OP_COLUMN, Push, StreamName};
+use rdlt_wire::{Decoder, Encoder, Limits};
 
 use super::super::Held;
+use super::super::held::shredded;
+use super::super::normalized::{kept, made, split};
 use super::super::pieces::Pieces;
 use crate::cost::tests::{held_alone, peak_alone};
+use crate::fixtures::lowering::wide::{dictionaries, integers};
 use crate::fixtures::lowering::{Case, Storage, stamp};
+use crate::normalize::Shape;
 use crate::partition::ChangeMode;
 use crate::plan::{DeleteMode, OnTruncate};
 use crate::table::ChangeLayout;
@@ -210,6 +218,95 @@ fn a_wide_history_piece_hashes_its_versions_within_what_it_reserved() {
         let within = within(&case, case.batch(), piece.parts, None);
         assert_eq!(within, Ok(kept), "{piece:?}");
     }
+}
+
+/// What `batch` holds once decoded from the frame it is sent in, the frame's allocation among it,
+/// and the batch: its schema and dictionaries are the decoder's, which its read keeps.
+fn decoded_alone(batch: &RecordBatch) -> (u64, RecordBatch) {
+    let mut encoder = Encoder::default();
+    let mut decoder = Decoder::new(Limits::default());
+    decoder
+        .schema(&encoder.schema(&batch.schema()).unwrap())
+        .unwrap();
+    let mut frames = encoder.batch(batch).unwrap();
+    let own = frames.pop().expect("a batch's own frame");
+    for dictionary in frames {
+        decoder.shaped(&dictionary.aligned()).unwrap();
+    }
+    held_alone(|| decoder.shaped(&own.aligned()).unwrap().0.expect("a batch"))
+}
+
+#[test]
+fn a_wide_push_holds_no_more_than_it_is_admitted_for() {
+    let mut found = Vec::new();
+    for columns in [COLUMNS, WIDEST] {
+        let pushes: [(&str, &dyn Fn() -> RecordBatch); 2] = [
+            ("integers", &|| integers(1, columns, |row| row)),
+            ("dictionaries", &|| dictionaries(1, columns)),
+        ];
+        for (what, make) in pushes {
+            let (held, built) = held_alone(make);
+            let (decoded, read) = decoded_alone(&built);
+            for (how, held, batch) in [("in process", held, built), ("decoded", decoded, read)] {
+                let charged = push_charge(&Push::Arrow(batch));
+                if held > charged {
+                    let at = format!("{columns} columns of {what}, {how}");
+                    found.push(format!("{at}: {charged} admitted, {held} held"));
+                }
+            }
+        }
+    }
+    assert!(found.is_empty(), "{}", found.join("\n"));
+}
+
+#[tokio::test]
+async fn a_wide_json_push_s_batches_hold_no_more_than_they_keep_charged_once_shredded() {
+    for columns in [COLUMNS, WIDEST] {
+        let budget = crate::budget::budget(1 << 30);
+        let (held, batch) = held_alone(|| integers(1, columns, |row| row));
+        // Text of as many bytes as the batch holds, admitted for three times them.
+        let text = usize::try_from(held).unwrap();
+        let pushed = vec![super::json(&budget, text).await];
+        let shredded = shredded(pushed, None, vec![batch]);
+        let charged = budget.reserved();
+        assert!(
+            held <= charged,
+            "{columns} columns: {charged} charged, {held} held"
+        );
+        drop(shredded);
+    }
+}
+
+#[test]
+fn a_wide_split_keeps_no_more_than_it_is_charged_once_its_parts_are_planned() {
+    let stream = StreamName::new("events").unwrap();
+    let mut found = Vec::new();
+    for columns in [COLUMNS, WIDEST] {
+        for key in [None, Some("id")] {
+            let shape = Shape {
+                max_depth: 8,
+                whole: BTreeSet::new(),
+                key: key.into_iter().map(Arc::from).collect(),
+            };
+            let batch = integers(2, columns, |row| row);
+            let unit = Allocations::of(&batch);
+            for parts in [1, 2] {
+                // The piece cut before the split, its slices of the unit, and what the split's
+                // parts keep once they are planned, while their pieces are lowered.
+                let (held, (_, _, charged)) = held_alone(|| {
+                    let piece = sliced(&batch, parts);
+                    let split = split(&stream, &piece, &shape).unwrap();
+                    let charged = made(&piece, &split, &unit);
+                    (piece, kept(&split), charged)
+                });
+                if held > charged {
+                    let at = format!("{columns} columns keyed by {key:?} in {parts} parts");
+                    found.push(format!("{at}: {charged} charged, {held} held"));
+                }
+            }
+        }
+    }
+    assert!(found.is_empty(), "{}", found.join("\n"));
 }
 
 #[test]

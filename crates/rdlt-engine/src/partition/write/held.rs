@@ -6,7 +6,7 @@ use std::sync::Arc;
 use arrow_array::RecordBatch;
 use parking_lot::Mutex;
 use rdlt_connector::Permit;
-use rdlt_connector::cost::Allocations;
+use rdlt_connector::cost::{Allocations, batch_charge};
 
 use crate::budget::Reservation;
 use crate::cost::Admitted;
@@ -61,8 +61,8 @@ impl Held {
 ///
 /// A JSON push is admitted for its text and for the batches it becomes, and what the batches take
 /// beyond was reserved before they were built: the permits and the reservation give back what
-/// the batches do not keep alive, now that the text is gone, and the batches share them until
-/// the last is written.
+/// the batches do not hold, now that the text is gone, keeping what a push of them would be
+/// charged, and the batches share them until the last is written.
 pub(super) fn shredded(
     mut permits: Vec<Permit>,
     beyond: Option<Reservation>,
@@ -70,7 +70,7 @@ pub(super) fn shredded(
 ) -> Vec<Held> {
     let mut alive = batches
         .iter()
-        .map(|batch| Allocations::of(batch).bytes())
+        .map(batch_charge)
         .fold(0, u64::saturating_add);
     for permit in &mut permits {
         if let Some(admitted) = permit.downcast_mut::<Admitted>() {

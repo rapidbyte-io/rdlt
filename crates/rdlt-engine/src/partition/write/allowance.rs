@@ -10,7 +10,7 @@ mod tests;
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
-use rdlt_connector::cost::Rendering;
+use rdlt_connector::cost::{Rendering, arrays};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 
@@ -18,7 +18,6 @@ use super::held::Held;
 use super::normalized::PlannedParts;
 use super::pieces::{Lowered, Pieces, RowTooLarge};
 use crate::budget::MemoryBudget;
-use crate::cost::arrays;
 use crate::error::Error;
 use crate::limits::MAX_PIECE_BYTES;
 use crate::normalize::Lineage;

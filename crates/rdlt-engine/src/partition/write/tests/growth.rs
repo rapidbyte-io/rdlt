@@ -8,12 +8,11 @@ use std::sync::Arc;
 use arrow_array::{Array, ArrayRef, Int64Array, RecordBatch};
 use arrow_buffer::{Buffer, NullBuffer, ScalarBuffer};
 use proptest::prelude::*;
-use rdlt_connector::cost::Allocations;
+use rdlt_connector::cost::{Allocations, arrays};
 
 use super::super::Held;
 use super::super::normalized::{kept, made, part_growth};
 use super::{allocated, buffers, ids};
-use crate::cost::arrays;
 use crate::table::Prepared;
 
 #[test]
@@ -107,7 +106,8 @@ fn keyless() -> crate::normalize::Shape {
 fn a_split_made_where_an_earlier_split_of_its_unit_was_freed_is_charged_in_full() {
     let unit = ids(1_000);
     let held = Held::of(vec![unit.clone()], Vec::new());
-    let made = |parts: &[crate::normalize::Part]| made(parts, &held.allocations);
+    let piece = std::slice::from_ref(&unit);
+    let made = |parts: &[crate::normalize::Part]| made(piece, parts, &held.allocations);
     let first = crate::normalize::normalize(&unit, &keyless()).unwrap();
     let charged = made(&first);
     let rows = first[0].lineage.row.to_data().buffers()[0].clone();
@@ -134,7 +134,7 @@ fn what_holds_a_split_keeps_the_parts_it_planned_alive_until_it_goes() {
 }
 
 #[test]
-fn a_units_parts_grow_it_by_their_lineage_and_their_schemas() {
+fn a_units_parts_grow_it_by_their_lineage_their_schemas_and_their_arrays() {
     let unit = ids(1000);
     let held = Held::of(vec![unit.clone()], Vec::new());
     let parts = crate::normalize::normalize(&unit, &keyless()).unwrap();
@@ -163,9 +163,33 @@ fn a_units_parts_grow_it_by_their_lineage_and_their_schemas() {
         .map(|part| part_growth(part, &held.allocations, &mut piece))
         .sum();
     assert_eq!(again, 0);
-    // None of it joined the unit's set, which holds only the unit's batches.
-    assert_eq!(made(&parts, &held.allocations), grown);
+    // None of it joined the unit's set, which holds only the unit's batches. Beside it the split
+    // holds the arrays of the piece it was made of, of its part and of the part's positions.
+    let piece = std::slice::from_ref(&unit);
+    assert_eq!(parts.len(), 1);
+    assert_eq!(made(piece, &parts, &held.allocations), grown + 3 * 320);
     assert_eq!(held.allocations.bytes(), allocated(&unit));
+}
+
+#[test]
+fn each_part_of_a_merge_s_split_holds_the_keys_array_beside_its_lineage() {
+    let unit = ids(1_000);
+    let held = Held::of(vec![unit.clone()], Vec::new());
+    let keyed = crate::normalize::Shape {
+        key: vec![Arc::from("id")],
+        ..keyless()
+    };
+    let parts = crate::normalize::normalize(&unit, &keyed).unwrap();
+    assert_eq!(parts.len(), 1);
+    assert!(parts[0].lineage.keys.is_some());
+    let mut grown = Allocations::default();
+    for part in &parts {
+        part_growth(part, &held.allocations, &mut grown);
+    }
+    // The piece's array, the part's column, its positions and the keys the parts share.
+    let piece = std::slice::from_ref(&unit);
+    let made = made(piece, &parts, &held.allocations);
+    assert_eq!(made, grown.bytes() + 4 * 320);
 }
 
 /// What one column of a piece is.

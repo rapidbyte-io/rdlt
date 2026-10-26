@@ -599,13 +599,13 @@ fn checkpoint(bytes: usize) -> SourceEvent {
 }
 
 #[tokio::test]
-async fn a_push_is_admitted_for_what_it_keeps_alive() {
+async fn a_push_is_admitted_for_what_it_keeps_alive_and_its_arrays() {
     let (budget, admission) = charging(1 << 30, 1);
-    // A slice of three rows keeps its whole buffer alive.
+    // A slice of three rows keeps its whole buffer alive, and holds its array beside.
     let whole = Int64Array::from(vec![7; 100_000]);
     let slice = RecordBatch::try_from_iter([("n", Arc::new(whole.slice(0, 3)) as ArrayRef)]);
     let slice = slice.unwrap();
-    let alive = Allocations::of(&slice).bytes();
+    let alive = Allocations::of(&slice).bytes() + 320;
     assert!(alive >= 800_000, "{alive}");
     let permit = admission
         .admit(&SourceEvent::Push(Push::Arrow(slice)))
@@ -624,7 +624,8 @@ async fn a_push_is_admitted_for_what_it_keeps_alive() {
     );
     let expanding = RecordBatch::try_from_iter([("s", Arc::new(keyed.unwrap()) as ArrayRef)]);
     let expanding = expanding.unwrap();
-    let alive = Allocations::of(&expanding).bytes();
+    // Its keys' array and its values' beside what it keeps alive.
+    let alive = Allocations::of(&expanding).bytes() + 2 * 320;
     assert!(alive < 100_000, "{alive}");
     let change = SourceEvent::Push(Push::Changes(expanding));
     let permit = admission.admit(&change).await.unwrap();
@@ -860,23 +861,4 @@ mod found {
             }
         }
     }
-}
-
-#[test]
-fn a_batch_s_arrays_are_counted_a_field_at_every_depth() {
-    let item = Arc::new(ArrowField::new("item", DataType::Utf8, true));
-    let object = Fields::from(vec![
-        ArrowField::new("a", DataType::Int32, true),
-        ArrowField::new("l", DataType::List(item), true),
-    ]);
-    let keyed = DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8));
-    let fields = Fields::from(vec![
-        ArrowField::new("id", DataType::Int64, false),
-        ArrowField::new("o", DataType::Struct(object), true),
-        ArrowField::new("d", keyed, true),
-    ]);
-    // An id, an object, its two fields, its list's items and a dictionary: 320 bytes each.
-    assert_eq!(super::arrays(&fields), 6 * 320);
-    assert_eq!(super::arrays(&Fields::empty()), 0);
-    assert_eq!(super::array_bytes(u64::MAX), u64::MAX);
 }

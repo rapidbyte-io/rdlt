@@ -85,7 +85,7 @@ budget before it is held, or bounded by a limit with a typed refusal.
 
   | Limit | Derived from | Least memory, 16 partitions | Default 256 MiB, 16 partitions | Wire default |
   |---|---|---|---|---|
-  | frame bytes | what pushes may take less what a read keeps and `MESSAGE_ROOM`, and half a request less what a row of the widest table takes beside its values | 4,194,304 | 28,505,370 | 64 MiB |
+  | frame bytes | what pushes may take less what a read keeps, `MESSAGE_ROOM` and the arrays of a batch of every column, two a column, and half a request less what a row of the widest table takes beside its values | 4,194,304 | 28,505,370 | 64 MiB |
   | json push bytes | a third of what pushes may take less `MESSAGE_ROOM` | 5,149,072 | 34,952,448 | 64 MiB |
   | cursor bytes | the cursors' share over twice one more than the partitions | 18,173 | 123,361 | 4 MiB |
   | dictionary bytes | half of what a read keeps | 308,949 | 2,097,152 | 64 MiB |
@@ -165,10 +165,12 @@ budget before it is held, or bounded by a limit with a typed refusal.
     Schemas that only compare equal are not shared: they may name their dictionaries by other
     ids.
 - **A push is admitted for what it holds, and lowered for what it becomes.** A push of Arrow
-  batches reserves what it keeps alive when it is admitted, before its table is known. Once
-  its plan is found the cost model takes, for each column, the type of the table's column and
-  whether the destination stores it as text, and measures what lowering holds at once, which
-  each piece reserves before it is lowered.
+  batches reserves what it keeps alive when it is admitted, before its table is known, and its
+  arrays: `ARRAY` (below) for each, a field at every depth and a dictionary's values beside its
+  keys, which a batch holds and a slice of it shares. Once its plan is found the cost model
+  takes, for each column, the type of the table's column and whether the destination stores it
+  as text, and measures what lowering holds at once, which each piece reserves before it is
+  lowered.
   - A value costs itself decoded, itself converted where the column's type differs, and its
     text where the column is stored as text: a byte of an 8-bit integer is 33 in a column of
     256-bit decimals.
@@ -203,7 +205,11 @@ budget before it is held, or bounded by a limit with a typed refusal.
     two in two of a table of a thousand and of the widest a schema may have at the defaults,
     7,489: a change stream's, as a log and merged, stored as it is and as text, with its flags
     and the deletes it ignores, a merge's of repeated keys, a history table's, and one dropping
-    rows. Cutting a unit keeps nothing a column beside it between its pieces.
+    rows. At both widths a push of a row of integers or of dictionaries holds no more than it is
+    admitted for, built in its source's process or decoded from its frame; a JSON push's batches
+    no more than they keep charged once shredded; a normalized split, in one part and in two,
+    keyed or not, no more than it keeps charged once its parts are planned; and cutting a unit
+    keeps nothing a column beside it between its pieces.
   - Judging which columns of 64-bit integers a batch holds a value a float would round in reads
     each column where it lies, in any encoding, and holds nothing a row, so nothing is charged
     for it; a normalized flush is judged so before any of it is split, and tests hold its peak
@@ -231,18 +237,19 @@ budget before it is held, or bounded by a limit with a typed refusal.
     request may take, is split, and each of its parts is cut by its own table: its columns as
     the table stores them, the nulls of the columns it lacks and the metadata lowering adds.
     What the piece asked for beyond what its split made and an allowance for two of its parts'
-    pieces is given back. What the split made is counted beyond the unit's batches, and the
-    parts it planned are held until the last of their pieces is written. Its parts' pieces are
-    lowered inside the allowance: the partition waits for its own pieces to be written, never
-    for the budget, while it holds them.
+    pieces is given back. What the split made is counted beyond the unit's batches, with the
+    arrays of the piece's slices of them, of its parts' batches and of their lineage, and the
+    piece and the parts it planned are held until the last of their pieces is written. Its
+    parts' pieces are lowered inside the allowance: the partition waits for its own pieces to be
+    written, never for the budget, while it holds them.
   - A change stream's unit is judged and cut where it lies: it is split into its data and its
     change columns, and loses the rows its stream ignores, only as each piece is lowered.
   - A JSON push reserves three times its text and `MESSAGE_ROOM` when it is admitted: the text and
     the room of the message a host receives it in, and twice the text for the batches it is shredded
-    into, which are paid for before they are built. Once shredded the push holds what its batches
-    keep alive, where that is less. Parsing a record holds no document of it: the fast parse streams
-    it and the exact parse walks its tokens, each holding of it no more than a string whose escapes
-    it reads.
+    into, which are paid for before they are built. Once shredded the push holds what a push of its
+    batches would be charged, where that is less. Parsing a record holds no document of it: the
+    fast parse streams it and the exact parse walks its tokens, each holding of it no more than a
+    string whose escapes it reads.
   - What a JSON flush's batches take beyond twice its text is reckoned before they are built,
     reserved from the data share, holding only its pushes, and held with the batches; beyond
     one request it is refused, `json_exceeds_budget`. The partition then holds it while the
@@ -342,8 +349,9 @@ budget before it is held, or bounded by a limit with a typed refusal.
   - *How much text do these values render to?* `cost::text_bytes`, the same widths, for the
     engine's builders.
   - *What is a push charged?* `cost::push_charge`, by the engine's admission and by
-    certification's source clauses alike: what it keeps alive, and for JSON `cost::json_charge`,
-    `JSON_CHARGE` (three) times its text and `MESSAGE_ROOM`.
+    certification's source clauses alike: a batch what it keeps alive and its arrays
+    (`cost::batch_charge`), and JSON `cost::json_charge`, `JSON_CHARGE` (three) times its text and
+    `MESSAGE_ROOM`.
   - *Do a schema's columns and depth fit?* The emitter counts them on the Arrow schema; the wire
     counts them on the schema's message.
 - **The engine materializes only what rows name.** Before anything converts a column, its

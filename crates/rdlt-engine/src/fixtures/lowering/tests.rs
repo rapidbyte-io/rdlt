@@ -5,11 +5,11 @@ use arrow_array::cast::AsArray;
 use arrow_array::types::{Int64Type, TimestampMicrosecondType};
 use arrow_array::{Array, ArrayRef, Decimal128Array, Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field as ArrowField, Schema};
-use rdlt_connector::cost::Stored;
+use rdlt_connector::cost::{Stored, arrays};
 use rdlt_connector::{DecimalType, LoadId, LogicalType, TimeUnit};
 
 use super::{Case, Kept, LoweringCase, Made, Storage, events, stamp, with_column};
-use crate::cost::{CHANGE_ROW, arrays};
+use crate::cost::CHANGE_ROW;
 use crate::table::{ChangeLayout, Stamp, aligned};
 
 const ROWS: u32 = 64;
