@@ -74,11 +74,18 @@ fn connect_waiting(path: &Path, wait: Duration) -> Result<Connection> {
             "a database asked for was not created",
         ));
     };
-    let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
-        | OpenFlags::SQLITE_OPEN_CREATE
-        | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    opened(&path, wait)
+}
+
+/// The database at `path`, which the check of its place found or created, opened as [`connect`]
+/// says, each statement waiting `wait` for another connection's write to finish.
+///
+/// SQLite is not let create it: a database gone since the check is refused, never made again
+/// with the mode the process's mask leaves, which SQLite would give its log and index too.
+fn opened(path: &Path, wait: Duration) -> Result<Connection> {
+    let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX;
     let connection =
-        Connection::open_with_flags(&path, flags).map_err(failed("opening the database"))?;
+        Connection::open_with_flags(path, flags).map_err(failed("opening the database"))?;
     let configuring = failed("configuring the database");
     harden(&connection).map_err(&configuring)?;
     connection.busy_timeout(wait).map_err(&configuring)?;

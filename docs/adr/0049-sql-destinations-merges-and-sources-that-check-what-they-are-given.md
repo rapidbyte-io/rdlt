@@ -123,11 +123,13 @@ generated sources were written before it, and each took something as given:
     transaction, whenever a second session, a check or a read-back came in the same process.
     A missing database is created through the directory, exclusively, mode 0600, with the
     place checked and the descriptor closed one at a time in a process, so no connection has
-    locked the file by then; SQLite gives the files it creates beside it that mode. The locks
-    the files connectors take, on a table and on a keeper, are on the open file, not the
-    process (`flock`, on Linux and macOS alike), and no other open or close releases them.
-    SQLite adopts a log that is already there as it is, and whoever can read the lock file can
-    hold every writer out, which is why the rule covers more than the database.
+    locked the file by then; SQLite gives the files it creates beside it that mode. SQLite is
+    never let create the database itself: one gone between the check and the open is refused,
+    not made again with the mode the process's mask leaves. The locks the files connectors
+    take, on a table and on a keeper, are on the open file, not the process (`flock`, on Linux
+    and macOS alike), and no other open or close releases them. SQLite adopts a log that is
+    already there as it is, and whoever can read the lock file can hold every writer out,
+    which is why the rule covers more than the database.
   - A statement waits thirty seconds for another connection's write, then fails as transient. A
     full disk is transient too, coded `disk_full`.
   - Links above the database's directory are followed, as the files connectors follow them
