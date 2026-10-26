@@ -1,6 +1,7 @@
 use std::num::NonZeroU32;
 use std::time::Duration;
 
+use rdlt_connector::limits::MAX_PLAN_PARTITIONS;
 use rdlt_wire::limits::{MESSAGE_ROOM, MIN_DICTIONARY_BYTES, MIN_FRAME_BYTES};
 
 use super::{BatchPolicy, CommitPolicy, EngineConfig, RetryPolicy};
@@ -113,8 +114,8 @@ fn the_builder_applies_defaults_and_settings() {
 
 #[test]
 fn memory_below_what_the_protocol_s_least_limits_need_is_refused_naming_the_least() {
-    for partitions in [1, 4, 16, 17, 600_000] {
-        let least = EngineConfig::least_memory(partitions).unwrap();
+    for partitions in [1, 4, 16, 17, MAX_PLAN_PARTITIONS] {
+        let least = EngineConfig::least_memory(partitions);
         let build = |memory| {
             EngineConfig::builder()
                 .memory(memory)
@@ -137,14 +138,16 @@ fn memory_below_what_the_protocol_s_least_limits_need_is_refused_naming_the_leas
         );
     }
     // About thirty-eight mebibytes at the default sixteen partitions, and the default is far
-    // above it.
-    assert_eq!(EngineConfig::least_memory(16), Some(39_545_528));
-    // From 19 partitions their dictionaries set the least: a byte below it admits the least
-    // frame, and too little for each read's dictionaries.
-    let below = EngineConfig::least_memory(19).unwrap() - 1;
+    // above it. A frame sets it: a byte below, each of more partitions' reads still keeps twice
+    // the least dictionary.
+    assert_eq!(EngineConfig::least_memory(16), 39_545_528);
+    let below = EngineConfig::least_memory(19) - 1;
     let limits = admitted(Shares::of(below), 19);
-    assert!(limits.frame_bytes >= MIN_FRAME_BYTES, "{limits:?}");
-    assert!(limits.dictionary_bytes < MIN_DICTIONARY_BYTES, "{limits:?}");
+    assert!(limits.frame_bytes < MIN_FRAME_BYTES, "{limits:?}");
+    assert!(
+        limits.dictionary_bytes >= MIN_DICTIONARY_BYTES,
+        "{limits:?}"
+    );
     assert!(EngineConfig::builder().build().is_ok());
 }
 
@@ -196,13 +199,8 @@ fn reading_more_partitions_at_once_lowers_what_each_read_may_send() {
             .build()
     };
     let mut prev_limits = build(1).unwrap().limits();
-    let mut partitions = 2;
-    // The most partitions the default memory admits is far below this.
-    while partitions <= 4_096 {
-        let Ok(config) = build(partitions) else {
-            break;
-        };
-        let limits = config.limits();
+    for partitions in 2..=4_096 {
+        let limits = build(partitions).unwrap().limits();
         assert!(
             limits.cursor_bytes <= prev_limits.cursor_bytes,
             "{partitions}"
@@ -220,16 +218,14 @@ fn reading_more_partitions_at_once_lowers_what_each_read_may_send() {
             "{partitions}"
         );
         prev_limits = limits;
-        partitions += 1;
     }
-    assert!((17..4_096).contains(&partitions), "{partitions}");
-    let refused = build(partitions).unwrap_err();
-    assert_eq!(refused.code(), Some(codes::MEMORY_BELOW_MINIMUM));
-    let least = EngineConfig::least_memory(partitions).unwrap();
-    assert!(least > memory, "{least}");
-    assert!(
-        refused.to_string().contains(&format!("is {least} bytes")),
-        "{refused}"
+    // From as many partitions as the reads' share holds parts of twice the least dictionary, 128
+    // of the default memory, each read keeps such a part.
+    let most = build(128).unwrap().limits();
+    assert_eq!(most.dictionary_bytes, MIN_DICTIONARY_BYTES);
+    assert_eq!(
+        (prev_limits.dictionary_bytes, prev_limits.schema_columns),
+        (most.dictionary_bytes, most.schema_columns)
     );
     // Sixteen and sixty-four partitions: a cursor is the cursors' share over twice one more
     // than the partitions.
@@ -239,33 +235,52 @@ fn reading_more_partitions_at_once_lowers_what_each_read_may_send() {
 }
 
 #[test]
-fn every_partition_read_at_once_takes_two_mebibytes_of_memory_at_least() {
-    let build = |memory: u64, partitions: u64| {
-        EngineConfig::builder()
-            .memory(memory)
-            .partitions(usize::try_from(partitions).unwrap())
-            .build()
-    };
-    let least = EngineConfig::least_memory(16).unwrap();
-    for memory in [least, 40 << 20, 256 << 20, 1 << 30] {
-        let most = memory / (2 << 20);
-        assert!(build(memory, most).is_ok(), "{memory}");
-        let refused = build(memory, most + 1).unwrap_err();
-        assert_eq!(
-            refused.code(),
-            Some(codes::MEMORY_BELOW_MINIMUM),
-            "{memory}"
-        );
+fn partitions_beyond_the_parts_the_memory_holds_need_no_more_memory() {
+    let most = EngineConfig::least_memory(18);
+    assert_eq!(most, 38_780_592);
+    for partitions in [19, 128, 129, 257, MAX_PLAN_PARTITIONS] {
+        assert_eq!(EngineConfig::least_memory(partitions), most, "{partitions}");
     }
-    // A run follows one unbounded partition fewer than its partitions: 127 at the default
-    // memory, read by 128 partitions, each of which keeps a schema of 936 columns at most.
-    let many = build(256 << 20, 128).unwrap().limits();
-    assert_eq!((many.schema_bytes, many.schema_columns), (52_428, 936));
+    // 257 partitions, as a run following 256 unbounded ones reads, within the default memory:
+    // each read keeps twice the least dictionary, a schema of 936 columns at most.
+    let many = EngineConfig::builder()
+        .partitions(257)
+        .build()
+        .unwrap()
+        .limits();
+    assert_eq!(
+        (
+            many.dictionary_bytes,
+            many.schema_bytes,
+            many.schema_columns
+        ),
+        (MIN_DICTIONARY_BYTES, 52_428, 936)
+    );
+    assert_eq!(many.admit_peer(), Ok(()));
     let defaults = EngineConfig::default().limits();
     assert_eq!(
         (defaults.schema_bytes, defaults.schema_columns),
         (419_430, 7_489)
     );
+}
+
+#[test]
+fn partitions_beyond_what_an_attempt_reads_at_once_are_refused() {
+    let build = |partitions| {
+        EngineConfig::builder()
+            .memory(1 << 40)
+            .partitions(partitions)
+            .build()
+    };
+    assert!(build(MAX_PLAN_PARTITIONS).is_ok());
+    for partitions in [MAX_PLAN_PARTITIONS + 1, usize::MAX] {
+        let refused = build(partitions).unwrap_err();
+        assert_eq!(
+            (refused.kind(), refused.code()),
+            (ErrorKind::Config, Some(codes::CONFIG_INVALID)),
+            "{partitions}"
+        );
+    }
 }
 
 #[test]

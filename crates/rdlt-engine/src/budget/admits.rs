@@ -6,13 +6,15 @@ mod proofs;
 #[cfg(test)]
 mod tests;
 
+use std::num::NonZeroUsize;
+
 use rdlt_connector::cost::{JSON_CHARGE, array_bytes};
 use rdlt_wire::Limits;
 use rdlt_wire::limits::{Class, MESSAGE_ROOM, MIN_DICTIONARY_BYTES};
 
 use super::Shares;
 use crate::cost::flags_bytes;
-use crate::limits::{COLUMN_RECORD, READ_SHARE, SCHEMA_KEPT};
+use crate::limits::{COLUMN_RECORD, SCHEMA_KEPT};
 
 /// The limits on what a read sends that a budget of `shares`, read by `readers` reads at once at
 /// most, admits: a connector that keeps to them is refused nothing for the budget's sake but
@@ -122,35 +124,39 @@ pub(crate) fn pushed_arrays(columns: u64) -> u64 {
     array_bytes(columns.saturating_mul(2))
 }
 
-/// Bytes: what one of `readers` reads may keep beside its events of a budget of `shares`.
-pub(crate) fn kept(shares: Shares, readers: usize) -> u64 {
-    shares.reads / u64::try_from(readers).unwrap_or(u64::MAX).max(1)
+/// The parts what reads keep of a budget of `shares` is divided into for `readers` reads at once:
+/// a part a read, or as many parts of twice the protocol's least dictionary as the share holds
+/// where those are fewer, and one at least.
+pub(crate) fn parts(shares: Shares, readers: usize) -> NonZeroUsize {
+    let held = shares.reads / (2 * MIN_DICTIONARY_BYTES);
+    let held = usize::try_from(held).unwrap_or(usize::MAX);
+    NonZeroUsize::new(readers.min(held)).unwrap_or(NonZeroUsize::MIN)
 }
 
-/// Reads at once up to which the least budget is found by halving: a frame sets it for up to 18
-/// reads, and the dictionaries do from 19.
+/// Bytes: a part of what reads keep of a budget of `shares` read by `readers` reads at once, the
+/// most one read may keep beside its events.
+pub(crate) fn kept(shares: Shares, readers: usize) -> u64 {
+    shares.reads / u64::try_from(parts(shares, readers).get()).unwrap_or(u64::MAX)
+}
+
+/// Reads at once up to which the least budget is found by halving: a frame sets it, and from
+/// eighteen reads the share holds eighteen parts at it.
 pub(crate) const HALVED: usize = 24;
 
 /// Bytes: the least budget from which every budget upward admits what the protocol lets no peer
 /// go below, a frame of [`rdlt_wire::limits::MIN_FRAME_BYTES`] among them, read by `readers`
-/// reads at once, while the budget a byte below does not; none where no budget does: from 2^43
-/// reads, the reads' quarter of the largest budget holds less than twice the least dictionary for
-/// each.
+/// reads at once, while the budget a byte below does not.
 ///
-/// It is the larger of two. A read's dictionaries may take half what it keeps, which grows with
-/// the budget, so the least budget whose reads' share holds twice the least dictionary for each
-/// read is exact.
-/// What a frame may take does not grow with the budget byte by byte: it is what pushes may take
-/// less what a read keeps, or half a request less what a row of the widest table takes beside
-/// its values, and each falls where the share it subtracts, or the columns a schema may have,
-/// grows by its rounding. So a budget may admit a peer where one a few bytes larger does not,
-/// and halving ends beside whichever of those changes its steps meet: up to [`HALVED`] reads at
-/// once it meets the last.
-/// More reads each keep less, which leaves a frame no less, and their dictionaries alone need
-/// more.
-pub(crate) fn least(readers: usize) -> Option<u64> {
-    let readers = readers.max(1);
-    let halved = readers.min(HALVED);
+/// A part holds twice the least dictionary wherever the share holds one, so the dictionaries
+/// never set it: a frame does. What a frame may take does not grow with the budget byte by byte:
+/// it is what pushes may take less what a read keeps, or half a request less what a row of the
+/// widest table takes beside its values, and each falls where the share it subtracts, or the
+/// columns a schema may have, grows by its rounding. So a budget may admit a peer where one a few
+/// bytes larger does not, and halving ends beside whichever of those changes its steps meet: up
+/// to [`HALVED`] reads at once it meets the last. More reads each keep no more, which leaves a
+/// frame no less.
+pub(crate) fn least(readers: usize) -> u64 {
+    let halved = readers.clamp(1, HALVED);
     let admits = |capacity: u64| admitted(Shares::of(capacity), halved).admit_peer().is_ok();
     let (mut low, mut high) = (0_u64, 1_u64 << 40);
     while low < high {
@@ -161,8 +167,5 @@ pub(crate) fn least(readers: usize) -> Option<u64> {
             low = middle + 1;
         }
     }
-    let dictionaries = u64::try_from(readers)
-        .ok()?
-        .checked_mul(READ_SHARE * 2 * MIN_DICTIONARY_BYTES)?;
-    Some(low.max(dictionaries))
+    low
 }

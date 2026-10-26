@@ -10,6 +10,8 @@ mod tests;
 use std::num::{NonZeroU16, NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::time::Duration;
 
+use rdlt_connector::limits::MAX_PLAN_PARTITIONS;
+
 use crate::error::{Error, codes};
 use crate::limits::BUDGET_WAIT;
 
@@ -161,22 +163,25 @@ impl EngineConfig {
         self.lane_window
     }
 
-    /// Partitions read at once.
+    /// Partitions read at once, at most [`MAX_PLAN_PARTITIONS`], the most an attempt reads.
     ///
-    /// Each read is held to an equal part of the shares reads draw on, so the cursor, schema,
-    /// column and dictionary limits [`EngineConfig::limits`] gives fall as this rises; past the
-    /// most the memory admits, [`EngineConfig::least_memory`] says how much it needs.
+    /// What reads keep beside their events, a quarter of the memory, is divided into a part a
+    /// partition, or into as many parts of twice the protocol's least dictionary as it holds where
+    /// those are fewer: 4 MiB a part at the defaults, and 512 KiB from 128 partitions up at the
+    /// default memory. The cursor, schema, column and dictionary limits [`EngineConfig::limits`]
+    /// gives fall as this rises, to a schema's message of 52,428 bytes and a table of 936 columns
+    /// at the default memory, against 419,430 bytes and 7,489 columns at the default 16.
     ///
-    /// Each partition read at once takes 2 MiB of memory at least, and a following run follows
-    /// fewer unbounded partitions than this, so it follows at most ⌊memory ÷ 2 MiB⌋ − 1 of them:
-    /// 127 at the default 256 MiB with 128 partitions, and 15 at the default 16. At 2 MiB a
-    /// read, a schema's message may take 52,428 bytes and a table 936 columns, against 7,489 at
-    /// the defaults.
+    /// A read that is not followed holds a whole part while it reads, so no more of them read at
+    /// once than the parts. A following run follows fewer unbounded partitions than this, however
+    /// much memory it has: their reads hold no part of their own, but keep what they keep in the
+    /// parts no other read holds, all but one, and fail with `limit_exceeded` where that needs a
+    /// part none is free for.
     ///
     /// A source whose calls are bounded ([`Source::max_calls`](rdlt_connector::Source::max_calls))
-    /// is read no more at once than its calls less one, where those are fewer, each read's part
-    /// still the shares divided by this: a served source, 198 at once, of which 197 followed
-    /// unbounded partitions.
+    /// is read no more at once than its calls less one, where those are fewer, the parts still
+    /// divided as for this: a served source, 198 at once, of which 197 followed unbounded
+    /// partitions.
     pub fn partitions(&self) -> NonZeroUsize {
         self.partitions
     }
@@ -327,8 +332,8 @@ impl EngineConfigBuilder {
         self
     }
 
-    /// Partitions read at once (default 16); more lower what each read may send, as
-    /// [`EngineConfig::partitions`] says.
+    /// Partitions read at once (default 16), at most [`MAX_PLAN_PARTITIONS`]; more lower what
+    /// each read may send, as [`EngineConfig::partitions`] says.
     #[must_use]
     pub fn partitions(mut self, partitions: usize) -> Self {
         self.partitions = Some(partitions);
@@ -409,9 +414,10 @@ impl EngineConfigBuilder {
         self
     }
 
-    /// Validates the settings: every count and size is more than zero, the retry policy's first
-    /// delay is no longer than its longest, and the memory is at least what
-    /// [`EngineConfig::least_memory`] says its partitions need.
+    /// Validates the settings: every count and size is more than zero, the partitions read at
+    /// once are no more than [`MAX_PLAN_PARTITIONS`], the retry policy's first delay is no longer
+    /// than its longest, and the memory is at least what [`EngineConfig::least_memory`] says its
+    /// partitions need.
     pub fn build(self) -> Result<EngineConfig, Error> {
         let defaults = EngineConfig::default();
         let invalid = |name: &str| {
@@ -431,8 +437,7 @@ impl EngineConfigBuilder {
             },
             lane_window: nonzero(self.lane_window, defaults.lane_window, NonZeroUsize::new)
                 .ok_or_else(|| invalid("lane_window"))?,
-            partitions: nonzero(self.partitions, defaults.partitions, NonZeroUsize::new)
-                .ok_or_else(|| invalid("partitions"))?,
+            partitions: read_at_once(self.partitions, defaults.partitions)?,
             partition_buffer: nonzero(
                 self.partition_buffer,
                 defaults.partition_buffer,
@@ -459,6 +464,21 @@ impl EngineConfigBuilder {
         config.admit_memory()?;
         Ok(config)
     }
+}
+
+/// The partitions read at once, `partitions` or `default` when unset: more than zero, and no more
+/// than an attempt reads at once.
+fn read_at_once(partitions: Option<usize>, default: NonZeroUsize) -> Result<NonZeroUsize, Error> {
+    let read = nonzero(partitions, default, NonZeroUsize::new).ok_or_else(|| {
+        Error::config("partitions must be more than zero").with_code(codes::CONFIG_INVALID)
+    })?;
+    if read.get() > MAX_PLAN_PARTITIONS {
+        return Err(Error::config(format!(
+            "partitions must be at most {MAX_PLAN_PARTITIONS}, the most an attempt reads at once"
+        ))
+        .with_code(codes::CONFIG_INVALID));
+    }
+    Ok(read)
 }
 
 /// `value`, or `default` when unset; `None` when `value` is zero.

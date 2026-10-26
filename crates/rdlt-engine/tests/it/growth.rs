@@ -13,8 +13,7 @@ use crate::support::{commit_every, engine, memory, pipeline, stream};
 /// The least memory an engine reading sixteen partitions may have, whose derived column limit is
 /// small enough to reach.
 fn least() -> rdlt_engine::EngineConfigBuilder {
-    commit_every(1000)
-        .memory(EngineConfig::least_memory(16).expect("a memory admits 16 partitions"))
+    commit_every(1000).memory(EngineConfig::least_memory(16))
 }
 
 /// The most columns a table may hold under [`least`], nested fields counted.

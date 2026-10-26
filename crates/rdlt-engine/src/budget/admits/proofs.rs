@@ -3,9 +3,9 @@
 
 use rdlt_connector::cost::json_charge;
 use rdlt_wire::Limits;
-use rdlt_wire::limits::{Class, MESSAGE_ROOM};
+use rdlt_wire::limits::{Class, MESSAGE_ROOM, MIN_DICTIONARY_BYTES};
 
-use super::{HALVED, admitted, kept, least, pushed_arrays, row_overhead};
+use super::{HALVED, admitted, kept, least, parts, pushed_arrays, row_overhead};
 use crate::budget::Shares;
 use crate::limits::{COLUMN_RECORD, SCHEMA_KEPT};
 
@@ -21,8 +21,9 @@ fn any_readers() -> usize {
 /// pushes take, at the longest text that fits but where the wire's own limit binds; where the
 /// budget admits a peer, a frame decoded within what pushes take; any other answer decoded within
 /// the answers' share; every read's cursor and answer within the cursors' share; a schema, its
-/// decoding and the dictionaries within what a read keeps; and a table's records within the
-/// tables' share.
+/// decoding and the dictionaries within what a read keeps, every part of what reads keep within
+/// their share, and each twice the least dictionary where the share holds one; and a table's
+/// records within the tables' share.
 ///
 /// Bound: every capacity, read by 1 to `HALVED` reads at once.
 #[kani::proof]
@@ -54,6 +55,14 @@ fn what_each_admitted_limit_admits_fits_the_share_it_draws_on() {
     assert!(limits.cursor_bytes.saturating_mul(2 * (reads + 1)) <= shares.cursors);
     let schema = limits.schema_bytes.saturating_mul(SCHEMA_KEPT);
     assert!(schema.saturating_add(limits.dictionary_bytes) <= kept);
+    let parts = parts(shares, readers).get();
+    assert!(parts <= readers);
+    let all = u64::try_from(parts)
+        .unwrap_or(u64::MAX)
+        .saturating_mul(kept);
+    assert!(all <= shares.reads);
+    let twice = 2 * MIN_DICTIONARY_BYTES;
+    assert!(shares.reads < twice || kept >= twice);
     let records = limits.schema_columns.saturating_mul(COLUMN_RECORD);
     assert!(records <= shares.tables);
     assert_eq!(
@@ -76,7 +85,7 @@ fn what_each_admitted_limit_admits_fits_the_share_it_draws_on() {
 fn every_budget_from_the_least_up_admits_a_peer() {
     let (capacity, readers) = (kani::any::<u64>(), any_readers());
     let admits = |capacity| admitted(Shares::of(capacity), readers).admit_peer();
-    let least = least(readers).expect("a budget admits a peer");
+    let least = least(readers);
     kani::assume(capacity >= least);
     assert_eq!(admits(capacity), Ok(()));
     assert!(admits(least - 1).is_err());

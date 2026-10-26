@@ -10,6 +10,7 @@ use super::held::shredded;
 use super::queue::written_bytes;
 use super::units::{not_json, shred_failed};
 use crate::budget::MemoryBudget;
+use crate::cost::{Charging, Keeping};
 use crate::error::{ErrorKind, codes};
 use crate::partition::PartitionJob;
 use crate::shred::ShredError;
@@ -114,7 +115,7 @@ async fn json(budget: &MemoryBudget, bytes: usize) -> Permit {
 
 /// What admitted the JSON push `text` under `budget`.
 async fn json_text(budget: &MemoryBudget, text: bytes::Bytes) -> Permit {
-    let admission = crate::cost::Charging::new(budget.clone().read_by(1));
+    let admission = Charging::new(budget.clone().read_by(1), Keeping::Part);
     let push = rdlt_connector::SourceEvent::Push(rdlt_connector::Push::Json(text));
     let admitted = rdlt_connector::Admission::admit(&admission, &push).await;
     admitted.unwrap().unwrap()

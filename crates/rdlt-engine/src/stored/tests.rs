@@ -234,7 +234,7 @@ fn a_commit_is_measured_once_for_its_admission_its_relief_and_its_landing() {
 #[test]
 fn stored_state_and_requests_are_held_to_the_state_limit_the_engine_advertises() {
     let config = |memory: u64| EngineConfig::builder().memory(memory).build().unwrap();
-    for memory in [EngineConfig::least_memory(16).unwrap(), 64 << 20, 4 << 30] {
+    for memory in [EngineConfig::least_memory(16), 64 << 20, 4 << 30] {
         let config = config(memory);
         let advertised = config.limits().state_bytes;
         assert_eq!(config.state_limit(), advertised);

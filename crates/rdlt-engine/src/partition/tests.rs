@@ -213,6 +213,7 @@ pub(super) async fn on_pool(budget: MemoryBudget, pool: Pool) -> PartitionContex
     );
     let (progress, _) = tokio::sync::mpsc::unbounded_channel();
     let (_, barrier) = watch::channel(0);
+    let slots = Slots::new(NonZeroUsize::MIN, None, &budget);
     PartitionContext {
         source: Arc::from(source),
         lanes,
@@ -224,7 +225,7 @@ pub(super) async fn on_pool(budget: MemoryBudget, pool: Pool) -> PartitionContex
         barrier,
         stop: CancellationToken::new(),
         cancel: CancellationToken::new(),
-        slots: Slots::new(NonZeroUsize::MIN, None),
+        slots,
         segments: Arc::new(AtomicU64::new(1)),
         buffer: NonZeroUsize::MIN,
         load_id,

@@ -21,12 +21,11 @@
 //! The many-table cells follow 16, 64, 192 and 256 streams, each an unbounded partition pushing
 //! five batches of a thousand rows a second apart with a checkpoint after each, then nothing,
 //! committed every two seconds and followed for ten, reading a partition more than the streams
-//! within the default budget where it admits them and within the least that does otherwise; and
-//! read a snapshot of 256 tables of four such pushes each at the engine's defaults. Each writes
-//! through a writer a core and prints, over its runs, each commit phase's time a commit, the
-//! process's CPU seconds a wall second while the streams are quiet, from seven seconds to ten, or
-//! over the snapshot's run, the most its reads kept, its resident peak, and its last run's
-//! readings. As a test, each follows for two seconds, its pushes 20 ms apart.
+//! within the default budget; and read a snapshot of 256 tables of four such pushes each at the
+//! engine's defaults. Each writes through a writer a core and prints, over its runs, each commit
+//! phase's time a commit, the process's CPU seconds a wall second while the streams are quiet, from
+//! seven seconds to ten, or over the snapshot's run, the most its reads kept, its resident peak,
+//! and its last run's readings. As a test, each follows for two seconds, its pushes 20 ms apart.
 
 #![forbid(unsafe_code)]
 

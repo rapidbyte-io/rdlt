@@ -255,7 +255,7 @@ fn value_within(frame: u64) -> usize {
 
 #[tokio::test(start_paused = true)]
 async fn a_row_as_long_as_a_frame_loads_at_the_least_memory_and_at_the_default() {
-    let least = EngineConfig::least_memory(16).expect("a memory admits 16 partitions");
+    let least = EngineConfig::least_memory(16);
     let config = retrying(1).memory(least).partitions(16);
     let frame = config.clone().build().expect("valid").limits().frame_bytes;
     let outcome = loaded("told_row_least", config, one_long_row(value_within(frame))).await;
@@ -301,7 +301,7 @@ fn wide_row(columns: usize) -> Steps {
 
 #[tokio::test(start_paused = true)]
 async fn a_table_as_wide_as_a_schema_may_be_commits_and_a_wider_is_refused_first() {
-    let least = EngineConfig::least_memory(16).expect("a memory admits 16 partitions");
+    let least = EngineConfig::least_memory(16);
     let config = || retrying(3).memory(least);
     let limits = config().build().expect("valid").limits();
     let columns = usize::try_from(limits.schema_columns).expect("a count");

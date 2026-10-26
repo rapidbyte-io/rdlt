@@ -5,7 +5,7 @@ use rdlt_connector::{Admission, Cursor, PartitionState, SegmentId, SourceEvent};
 
 use super::{Setup, cursor, ended, partition, position, stream, without_receipt};
 use crate::coordinator::waiting::WaitingSeals;
-use crate::cost::Charging;
+use crate::cost::{Charging, Keeping};
 use crate::partition::{CursorHold, Progress, Seal};
 use crate::plan::WriteMode;
 use crate::report::Trigger;
@@ -200,7 +200,7 @@ async fn a_commit_is_due_once_waiting_cursors_reach_their_limit() {
 #[tokio::test(start_paused = true)]
 async fn seals_of_one_partition_at_growing_cursors_hold_one_cursor_and_are_not_due() {
     let budget = crate::budget::budget(1 << 20);
-    let admission = Charging::new(budget.clone().read_by(1));
+    let admission = Charging::new(budget.clone().read_by(1), Keeping::Part);
     let bytes = cursor_bytes(1);
     let mut setup = Setup::new(
         vec![stream(WriteMode::Append, None, 1)],
@@ -236,7 +236,7 @@ async fn seals_of_one_partition_at_growing_cursors_hold_one_cursor_and_are_not_d
 #[tokio::test(start_paused = true)]
 async fn a_seals_cursor_stays_charged_until_its_commit_has_it() {
     let budget = crate::budget::budget(1 << 20);
-    let admission = Charging::new(budget.clone().read_by(1));
+    let admission = Charging::new(budget.clone().read_by(1), Keeping::Part);
     let checkpoint = SourceEvent::Checkpoint {
         cursor: cursor(7),
         answers: None,

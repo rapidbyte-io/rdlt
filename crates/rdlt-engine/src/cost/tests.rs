@@ -25,10 +25,11 @@ use rdlt_connector::{Admission, Field, LogicalType, Push, SourceEvent, TypeKind}
 use rdlt_testkit::drawn::{Drawn, KINDS, Scalar, array, field, values};
 use rdlt_wire::limits::MESSAGE_ROOM;
 
-use super::{Admitted, Charging};
+use super::{Admitted, Charging, Keeping};
 use crate::budget::MemoryBudget;
 use crate::env::Env;
 use crate::normalize::as_list;
+use crate::partition::Parts;
 use crate::table::convert::{convert, decoded, json, normalize, text};
 
 /// Counts what this crate's tests allocate, for those that hold a peak to a charge: each runs in
@@ -578,11 +579,26 @@ fn clock() -> Arc<dyn Env> {
 }
 
 /// A budget of `capacity` bytes whose requests wait an hour at most, and an admission charging
-/// it for one of `reads` reads.
+/// it for one of `reads` reads, not followed.
 fn charging(capacity: u64, reads: usize) -> (MemoryBudget, Charging) {
-    let budget = MemoryBudget::new(capacity, clock(), WAIT);
-    let admission = Charging::new(budget.clone().read_by(reads));
+    let budget = MemoryBudget::new(capacity, clock(), WAIT).read_by(reads);
+    let admission = Charging::new(budget.clone(), Keeping::Part);
     (budget, admission)
+}
+
+/// A budget of `capacity` bytes read by `reads` at once, the parts of what its reads keep, and
+/// admissions charging it for `followed` followed reads.
+fn pooled(
+    capacity: u64,
+    reads: usize,
+    followed: usize,
+) -> (MemoryBudget, Arc<Parts>, Vec<Charging>) {
+    let budget = MemoryBudget::new(capacity, clock(), WAIT).read_by(reads);
+    let parts = Arc::new(Parts::new(budget.parts(), budget.part()));
+    let admissions = (0..followed)
+        .map(|_| Charging::new(budget.clone(), Keeping::Pooled(Arc::clone(&parts))))
+        .collect();
+    (budget, parts, admissions)
 }
 
 const WAIT: Duration = Duration::from_secs(3600);
@@ -699,46 +715,112 @@ async fn a_push_or_a_cursor_beyond_what_it_may_take_is_refused_naming_the_limit(
 
 #[tokio::test(start_paused = true)]
 async fn a_read_keeps_no_more_than_its_part_of_what_reads_may_keep() {
-    // Reads may keep 1,600 bytes of this budget together: 100 each of sixteen.
-    let (budget, admission) = charging(6_400, 16);
-    let first = admission.charge(60).unwrap();
-    let second = admission.charge(40).unwrap();
-    assert_eq!(budget.reserved(), 100);
+    // Reads may keep 8 MiB of this budget together: 512 KiB each of sixteen.
+    const PART: u64 = 512 << 10;
+    let (budget, admission) = charging(32 << 20, 16);
+    let first = admission.charge(PART - 100).unwrap();
+    let second = admission.charge(100).unwrap();
+    assert_eq!(budget.reserved(), PART);
     let refused = admission.charge(1).err().unwrap();
     assert_eq!(refused.code(), Some("limit_exceeded"));
     let limit = refused.limit().unwrap();
     assert_eq!(
         (limit.name, limit.limit, limit.actual),
-        ("read kept bytes", 100, 101)
+        ("read kept bytes", PART, PART + 1)
     );
-    assert_eq!(budget.reserved(), 100, "a refused charge holds nothing");
+    assert_eq!(budget.reserved(), PART, "a refused charge holds nothing");
     // What the read lets go of it may keep again.
     drop(first);
-    assert_eq!(budget.reserved(), 40);
-    let third = admission.charge(60).unwrap();
+    assert_eq!(budget.reserved(), 100);
+    let third = admission.charge(PART - 100).unwrap();
     assert!(admission.charge(1).is_err());
     drop((second, third));
     assert_eq!(budget.reserved(), 0);
     // Another read's part is its own.
-    let other = Charging::new(budget.clone().read_by(16));
-    let kept = (admission.charge(100).unwrap(), other.charge(100).unwrap());
-    assert_eq!(budget.reserved(), 200);
+    let other = Charging::new(budget.clone(), Keeping::Part);
+    let kept = (admission.charge(PART).unwrap(), other.charge(PART).unwrap());
+    assert_eq!(budget.reserved(), 2 * PART);
     drop(kept);
     // More reads than the share was divided for never pass it.
     let reads: Vec<_> = (0..20)
-        .map(|_| Charging::new(budget.clone().read_by(16)))
+        .map(|_| Charging::new(budget.clone(), Keeping::Part))
         .collect();
-    let kept: Vec<_> = reads.iter().map(|read| read.charge(100)).collect();
+    let kept: Vec<_> = reads.iter().map(|read| read.charge(PART)).collect();
     assert_eq!(kept.iter().filter(|kept| kept.is_ok()).count(), 16);
-    assert_eq!((budget.reserved(), budget.peak()), (1_600, 1_600));
+    assert_eq!((budget.reserved(), budget.peak()), (16 * PART, 16 * PART));
+}
+
+#[tokio::test(start_paused = true)]
+async fn followed_reads_keep_together_from_the_parts_no_other_read_holds() {
+    // 257 reads at once within the default budget: 128 parts of 512 KiB, the followed reads
+    // holding as many as what they keep together takes, all but one at most.
+    const PART: u64 = 512 << 10;
+    let (budget, parts, followed) = pooled(256 << 20, 257, 256);
+    assert_eq!((budget.parts().get(), budget.part()), (128, PART));
+    // Half a part each: two reads take a part between them.
+    let mut kept: Vec<_> = followed[..254]
+        .iter()
+        .map(|read| read.charge(PART / 2).unwrap())
+        .collect();
+    assert_eq!(budget.reserved(), 127 * PART);
+    // No followed read keeps more than a part, nor do they all take the last.
+    let refused = followed[0].charge(PART / 2 + 1).err().unwrap();
+    assert_eq!(refused.limit().unwrap().name, "read kept bytes");
+    let refused = followed[254].charge(1).err().unwrap();
+    assert_eq!(refused.code(), Some("limit_exceeded"));
+    let limit = refused.limit().unwrap();
+    assert_eq!(
+        (limit.name, limit.limit, limit.actual),
+        ("followed reads kept bytes", 127 * PART, 127 * PART + 1)
+    );
+    assert_eq!(
+        budget.reserved(),
+        127 * PART,
+        "a refused charge holds nothing"
+    );
+    // What one gives back another may keep, and every part is back once all let go.
+    kept.truncate(252);
+    let again = followed[254].charge(PART).unwrap();
+    assert_eq!(budget.reserved(), 127 * PART);
+    drop((again, kept));
+    let all: Vec<_> = (0..128).map_while(|_| parts.try_take()).collect();
+    assert_eq!((all.len(), budget.reserved()), (128, 0));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_read_that_is_not_followed_keeps_its_whole_part_while_followed_reads_fill_the_rest() {
+    let (budget, parts, followed) = pooled(256 << 20, 257, 256);
+    let part = budget.part();
+    let mut kept = Vec::new();
+    for read in &followed {
+        match read.charge(part / 2) {
+            Ok(held) => kept.push(held),
+            Err(refused) => {
+                assert_eq!(refused.limit().unwrap().name, "followed reads kept bytes");
+                break;
+            }
+        }
+    }
+    assert_eq!(kept.len(), 254, "followed reads hold all but one part");
+    // The read that is not followed holds the last part, and keeps all of it at once.
+    let own = parts
+        .try_take()
+        .expect("a part for the read that is not followed");
+    let read = Charging::new(budget.clone(), Keeping::Part);
+    let whole = read.charge(part).unwrap();
+    assert_eq!(budget.reserved(), budget.shares().reads);
+    assert!(followed[255].charge(1).is_err());
+    drop((whole, own, kept));
+    assert_eq!(budget.reserved(), 0);
 }
 
 #[tokio::test(start_paused = true)]
 async fn sixteen_reads_keeping_all_they_may_leave_pushes_and_checkpoints_flowing() {
     // The default budget and the default sixteen partitions read at once.
     let budget = crate::budget::budget(256 << 20);
+    let budget = budget.read_by(16);
     let reads: Vec<_> = (0..16)
-        .map(|_| Charging::new(budget.clone().read_by(16)))
+        .map(|_| Charging::new(budget.clone(), Keeping::Part))
         .collect();
     let kept: Vec<_> = reads
         .iter()

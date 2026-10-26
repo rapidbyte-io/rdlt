@@ -43,7 +43,7 @@ use due::Due;
 pub(crate) use latest::Latest;
 pub(crate) use progress::{CursorHold, Progress, Seal};
 use retention::read_resetting;
-pub(crate) use slots::Slots;
+pub(crate) use slots::{Parts, Slots};
 use write::write_flushed;
 
 /// One partition to read.
@@ -72,6 +72,13 @@ pub(crate) struct PartitionJob {
     /// Whether the partition reads again from its source's earliest where the source's retention
     /// dropped where it would resume, rather than failing.
     pub(crate) reset_retention: bool,
+}
+
+impl PartitionJob {
+    /// Whether the read follows its unbounded partition for as long as the run.
+    pub(crate) fn followed(&self) -> bool {
+        self.follow && self.partition.is_unbounded()
+    }
 }
 
 /// How a change stream's pushes load.
@@ -147,9 +154,9 @@ impl PartitionContext {
 
 /// Reads `job` to its end, or until the attempt stops or is cancelled.
 pub(crate) async fn run(job: PartitionJob, context: Arc<PartitionContext>) -> Result<(), Error> {
-    // Every read holds a slot, so no more reads keep bytes than the reads' share is divided
-    // among. A followed unbounded read holds one for as long as the run; fewer of them than
-    // slots run at once, so the other reads always have a slot to take in turn.
+    // Every read holds a slot, and one that is not followed a part of what reads keep. A followed
+    // unbounded read holds a slot for as long as the run; fewer of them than slots run at once,
+    // so the other reads always have a slot to take in turn.
     let _endless = context.slots.endless(&job)?;
     let _slot = tokio::select! {
         biased;
@@ -157,8 +164,8 @@ pub(crate) async fn run(job: PartitionJob, context: Arc<PartitionContext>) -> Re
         () = context.cancel.cancelled() => return Err(Error::cancelled("the attempt was cancelled")),
         // A stop request comes next: a partition still waiting for a slot ends without reading.
         () = job.stop.cancelled() => None,
-        // Otherwise the read waits for a slot until one frees.
-        slot = context.slots.read(&context.budget) => Some(slot?),
+        // Otherwise the read waits for a slot, and for its part, until each frees.
+        slot = context.slots.read(&job, &context.budget) => Some(slot?),
     };
     if job.stop.is_cancelled() {
         return context.report(Progress::Ended {
@@ -211,7 +218,8 @@ async fn read_and_ingest(
 ) -> Result<(Ingested, rdlt_connector::Result<()>), Error> {
     // Each push and checkpoint reserves what it costs before it enters the channel, so a source
     // buffers nothing outside the budget.
-    let admission = Arc::new(Charging::new(context.budget.clone()));
+    let keeping = context.slots.keeping(job);
+    let admission = Arc::new(Charging::new(context.budget.clone(), keeping));
     let charging = Arc::clone(&admission) as Arc<dyn rdlt_connector::Admission>;
     let (sink, feed) = admitted_partition_channel(context.buffer, charging);
     let request = ReadRequest::new(

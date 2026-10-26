@@ -3,7 +3,7 @@ use rdlt_connector::cost::{Allocations, batch_charge, json_charge};
 use rdlt_wire::Limits;
 use rdlt_wire::limits::{Class, MESSAGE_ROOM, MIN_DICTIONARY_BYTES, MIN_FRAME_BYTES};
 
-use super::{HALVED, admitted, kept, least, pushed_arrays, row_overhead};
+use super::{HALVED, admitted, kept, least, parts, pushed_arrays, row_overhead};
 use crate::budget::Shares;
 use crate::fixtures::lowering::wide::{dictionaries, integers};
 use crate::limits::COLUMN_RECORD;
@@ -60,11 +60,11 @@ fn a_push_s_arrays_are_at_most_two_a_column_of_its_schema() {
 
 #[test]
 fn the_least_memory_admits_these_limits() {
-    assert_eq!(least(16), Some(39_545_528));
+    assert_eq!(least(16), 39_545_528);
     // One read keeps all of the reads' share, so a table may have more columns, whose nulls,
     // flags and arrays a row of a frame takes beside it.
-    assert_eq!(least(1), Some(50_060_952));
-    let limits = admitted(Shares::of(least(16).unwrap()), 16);
+    assert_eq!(least(1), 50_060_952);
+    let limits = admitted(Shares::of(least(16)), 16);
     assert_eq!(
         (
             limits.frame_bytes,
@@ -87,14 +87,41 @@ fn the_least_memory_admits_these_limits() {
     );
 }
 
+#[test]
+fn what_reads_keep_is_a_part_a_read_or_twice_the_least_dictionary_where_it_holds_fewer() {
+    let least = 2 * MIN_DICTIONARY_BYTES;
+    // The default budget: sixteen parts of 4 MiB, a part a read up to 128 reads, each then twice
+    // the least dictionary, and no smaller for more.
+    let shares = Shares::of(256 * MIB);
+    assert_eq!(kept(shares, 16), 4 * MIB);
+    assert_eq!(kept(shares, 128), least);
+    let kept_limits = |limits: Limits| {
+        (
+            limits.frame_bytes,
+            limits.dictionary_bytes,
+            limits.schema_bytes,
+            limits.schema_columns,
+        )
+    };
+    let most = kept_limits(admitted(shares, 128));
+    assert_eq!(most, (most.0, MIN_DICTIONARY_BYTES, 52_428, 936));
+    for readers in [129, 257, 16_384, usize::MAX] {
+        assert_eq!(kept(shares, readers), least, "{readers} reads");
+        assert_eq!(kept_limits(admitted(shares, readers)), most, "{readers}");
+    }
+    // A share of fewer bytes than one such part is one part.
+    let small = Shares::of(MIB);
+    assert_eq!(kept(small, 16), small.reads);
+}
+
 /// Budgets of every size from a few kilobytes up, each read by as few and as many reads.
 fn budgets() -> impl Iterator<Item = (u64, usize)> {
     let capacities = [
         64 * 1024,
         MIB,
         16 * MIB,
-        least(16).unwrap(),
-        least(16).unwrap() + 1,
+        least(16),
+        least(16) + 1,
         64 * MIB,
         256 * MIB,
         4_096 * MIB,
@@ -149,8 +176,8 @@ fn what_each_limit_admits_all_at_once_fits_the_share_it_draws_on() {
             assert!(decoded(class) <= shares.control, "{what}: {class:?}");
         }
         // Every read's waiting cursor and answer, and half the share, fit the cursors' share.
-        let readers = u64::try_from(readers).expect("a count");
-        let cursors = limits.cursor_bytes.saturating_mul(2 * (readers + 1));
+        let reads = u64::try_from(readers).expect("a count");
+        let cursors = limits.cursor_bytes.saturating_mul(2 * (reads + 1));
         assert!(cursors <= shares.cursors, "{what}");
         // A schema's message, the schema decoded from it and the dictionaries fit what a read
         // keeps.
@@ -176,13 +203,27 @@ fn what_each_limit_admits_all_at_once_fits_the_share_it_draws_on() {
 }
 
 #[test]
+fn every_part_of_what_reads_keep_fits_their_share_and_holds_twice_the_least_dictionary() {
+    let twice = 2 * MIN_DICTIONARY_BYTES;
+    for (capacity, readers) in budgets().chain([(256 * MIB, 257), (256 * MIB, usize::MAX)]) {
+        let shares = Shares::of(capacity);
+        let (parts, kept) = (parts(shares, readers).get(), kept(shares, readers));
+        let what = format!("{capacity} bytes read by {readers}");
+        assert!(parts <= readers, "{what}");
+        let all = u64::try_from(parts).unwrap().saturating_mul(kept);
+        assert!(all <= shares.reads, "{what}");
+        assert!(shares.reads < twice || kept >= twice, "{what}");
+    }
+}
+
+#[test]
 fn every_budget_from_the_least_up_admits_a_peer() {
     // Each byte of a band above the least for thousands of counts of reads, and a stride a
     // million bytes up for a few.
     let band = (1..=4_000).step_by(7).map(|readers| (readers, 3_000, 1));
     let stride = [1, 2, 4, 16, 64, 1_000].map(|readers| (readers, 1_000_000, 997));
     for (readers, above, step) in band.chain(stride) {
-        let least = least(readers).unwrap();
+        let least = least(readers);
         for capacity in (least..least + above).step_by(step) {
             let limits = admitted(Shares::of(capacity), readers);
             assert_eq!(
@@ -211,7 +252,7 @@ proptest! {
         readers in any_readers(),
         above in prop_oneof![0..1_u64 << 12, any::<u64>()],
     ) {
-        let least = least(readers).unwrap();
+        let least = least(readers);
         let admits = |capacity: u64| admitted(Shares::of(capacity), readers).admit_peer();
         prop_assert_eq!(admits(least.saturating_add(above)), Ok(()));
         prop_assert!(admits(least - 1).is_err());
@@ -222,7 +263,7 @@ proptest! {
 fn the_least_budget_admits_the_protocol_s_least_limits_and_a_byte_less_does_not() {
     let many = [524_289, 600_000, 1 << 30, (1 << 43) - 1];
     for readers in [1, 2, 4, 16, 64, 1_000].into_iter().chain(many) {
-        let least = least(readers).unwrap();
+        let least = least(readers);
         let admits = |capacity: u64| admitted(Shares::of(capacity), readers);
         assert!(
             admits(least).frame_bytes >= MIN_FRAME_BYTES,
@@ -235,14 +276,16 @@ fn the_least_budget_admits_the_protocol_s_least_limits_and_a_byte_less_does_not(
         assert_eq!(admits(least).admit_peer(), Ok(()), "{readers} readers");
         assert!(admits(least - 1).admit_peer().is_err(), "{readers} readers");
     }
-    // Many reads each keep little: their dictionaries' least then sets the budget's, two least
-    // dictionaries for each read in a quarter of it.
-    assert_eq!(least(19), Some(19 * 8 * MIN_DICTIONARY_BYTES));
-    assert_eq!(least(600_000), Some(600_000 * 8 * MIN_DICTIONARY_BYTES));
-    // From 2^43 reads not even the largest budget does.
-    for readers in [1 << 43, usize::MAX] {
-        assert_eq!(least(readers), None, "{readers} readers");
-        let limits = admitted(Shares::of(u64::MAX), readers);
-        assert!(limits.admit_peer().is_err(), "{readers} readers");
+    // Many reads each keep a part of twice the least dictionary at least: a frame sets their
+    // least, the same from eighteen reads up, whose share holds eighteen parts there.
+    assert_eq!(least(18), 38_780_592);
+    for readers in [19, HALVED, HALVED + 1, 128, 600_000, 1 << 43, usize::MAX] {
+        assert_eq!(least(readers), least(18), "{readers} readers");
+        let limits = admitted(Shares::of(least(18) - 1), readers);
+        assert!(limits.frame_bytes < MIN_FRAME_BYTES, "{readers} readers");
+        assert!(
+            limits.dictionary_bytes >= MIN_DICTIONARY_BYTES,
+            "{readers} readers"
+        );
     }
 }

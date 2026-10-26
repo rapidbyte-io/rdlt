@@ -183,9 +183,8 @@ pub struct Tables {
 
 impl Tables {
     /// `cell` on a runtime of `cores`' workers and an engine within `cores`: a followed cell
-    /// reading a partition more than its streams, within the default budget where it admits them
-    /// and within the least that does otherwise, committing on `schedule`'s interval and following
-    /// for its span; the snapshot at the engine's defaults.
+    /// reading a partition more than its streams within the default budget, committing on
+    /// `schedule`'s interval and following for its span; the snapshot at the engine's defaults.
     ///
     /// # Errors
     ///
@@ -203,13 +202,9 @@ impl Tables {
         let (config, plan) = match cell {
             TablesCell::Followed(count) => {
                 let partitions = count.saturating_add(1);
-                let memory = EngineConfig::least_memory(partitions.get())
-                    .expect("a few hundred partitions have a least budget")
-                    .max(EngineConfig::default().memory().get());
                 let bytes = CommitPolicy::streaming().bytes().map(NonZeroU64::get);
                 let policy = CommitPolicy::new(Some(schedule.interval), None, bytes);
                 let config = EngineConfig::builder()
-                    .memory(memory)
                     .partitions(partitions.get())
                     .commit(policy.expect("a valid policy"))
                     .build();
@@ -251,13 +246,8 @@ impl Tables {
     }
 
     /// Bytes: the least budget that admits the partitions the cell reads at once.
-    ///
-    /// # Panics
-    ///
-    /// Panics where no budget does, which takes 2^43 partitions.
     pub fn least_memory(&self) -> u64 {
         EngineConfig::least_memory(self.partitions().get())
-            .expect("the cell's partitions have a least budget")
     }
 
     /// Bytes: the share of the cell's budget for what reads keep.

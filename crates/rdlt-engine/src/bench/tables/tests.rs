@@ -25,18 +25,15 @@ fn followed(streams: usize) -> TablesCell {
 }
 
 #[test]
-fn a_followed_cell_reads_a_partition_beyond_its_streams_within_a_budget_that_admits_them() {
+fn a_followed_cell_reads_a_partition_beyond_its_streams_within_the_default_budget() {
     let default = EngineConfig::default().memory().get();
-    // 257 partitions each take 2 MiB of the budget at least.
-    let least = EngineConfig::least_memory(257).unwrap();
-    assert_eq!(least, 514 << 20);
-    for (streams, memory) in [(16, default), (64, default), (256, least)] {
+    for streams in [16, 64, 192, 256] {
         let tables = Tables::try_new(cores(), followed(streams), Schedule::TESTED).unwrap();
         assert_eq!(tables.partitions().get(), streams + 1, "{streams}");
-        assert_eq!(tables.memory(), memory, "{streams}");
-        let least = EngineConfig::least_memory(streams + 1).unwrap();
+        assert_eq!(tables.memory(), default, "{streams}");
+        let least = EngineConfig::least_memory(streams + 1);
         assert_eq!(tables.least_memory(), least, "{streams}");
-        assert_eq!(tables.kept_share(), memory / 4, "{streams}");
+        assert_eq!(tables.kept_share(), default / 4, "{streams}");
         assert_eq!(tables.writers().get(), 2, "a writer a core");
     }
 }
@@ -146,17 +143,20 @@ fn each_phase_is_a_commit_s_share_of_its_time_over_the_runs() {
 
 #[test]
 fn a_cell_says_what_it_reads_and_within_what_budget() {
+    #[expect(clippy::cast_precision_loss, reason = "a budget far below 2^52")]
+    let mebibytes = |partitions| EngineConfig::least_memory(partitions) as f64 / f64::from(1 << 20);
+    let least = mebibytes(257);
     let followed = Tables::try_new(cores(), followed(256), Schedule::TIMED).unwrap();
     assert_eq!(
         followed.to_string(),
-        "256 streams of an unbounded partition each, 5 pushes of 1000 rows a stream 1s apart, \
+        format!(
+            "256 streams of an unbounded partition each, 5 pushes of 1000 rows a stream 1s apart, \
          committed every 2s, followed for 10s, quiet from 7s; 257 partitions read at once within \
-         514.0 MiB, the least that admits them 514.0 MiB; 2 writers"
+         256.0 MiB, the least that admits them {least:.1} MiB; 2 writers"
+        )
     );
     let snapshot = Tables::try_new(cores(), TablesCell::Snapshot, Schedule::TIMED).unwrap();
-    let least = EngineConfig::least_memory(16).unwrap();
-    #[expect(clippy::cast_precision_loss, reason = "a budget far below 2^52")]
-    let least = least as f64 / f64::from(1 << 20);
+    let least = mebibytes(16);
     assert_eq!(
         snapshot.to_string(),
         format!(

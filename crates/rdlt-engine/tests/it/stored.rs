@@ -335,7 +335,7 @@ async fn a_partition_a_plan_omits_keeps_its_position() {
 #[tokio::test(start_paused = true)]
 async fn state_at_the_least_memory_stops_at_its_share_of_the_budget_and_still_opens() {
     let name = "stored-least";
-    let least = EngineConfig::least_memory(16).expect("a memory admits 16 partitions");
+    let least = EngineConfig::least_memory(16);
     let config = || commit_every(1).memory(least);
     let cursor = usize::try_from(config().build().expect("valid").limits().cursor_bytes)
         .expect("a size")
@@ -363,7 +363,7 @@ async fn state_at_the_least_memory_stops_at_its_share_of_the_budget_and_still_op
 #[tokio::test(start_paused = true)]
 async fn state_past_a_lowered_limit_keeps_loading_while_it_shrinks() {
     let name = "stored-lowered";
-    let least = EngineConfig::least_memory(16).expect("a memory admits 16 partitions");
+    let least = EngineConfig::least_memory(16);
     let config = |memory| commit_every(1).memory(memory);
     let cursor = usize::try_from(config(least).build().expect("valid").limits().cursor_bytes)
         .expect("a size")
@@ -507,7 +507,7 @@ async fn done_markers_of_partitions_no_plan_names_stay_while_state_fits() {
 #[tokio::test(start_paused = true)]
 async fn churning_done_partitions_keep_state_bounded_and_loading_at_the_least_memory() {
     let name = "stored-churned";
-    let least = EngineConfig::least_memory(16).expect("a memory admits 16 partitions");
+    let least = EngineConfig::least_memory(16);
     let config = || commit_every(1).memory(least);
     let limit = config().build().expect("valid").state_limit();
     // The oldest done partitions, named to sort after the later ones, then a stream of cursors
@@ -601,7 +601,7 @@ async fn churning_files_keep_state_bounded_at_the_least_memory() {
     };
     let config = || {
         commit_every(10)
-            .memory(EngineConfig::least_memory(16).expect("a memory admits 16 partitions"))
+            .memory(EngineConfig::least_memory(16))
             .limits(limits)
     };
     let limit = config().build().expect("valid").state_limit();

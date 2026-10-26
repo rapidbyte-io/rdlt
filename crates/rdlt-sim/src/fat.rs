@@ -25,7 +25,7 @@ const EVERY: i64 = 8;
 
 static LEAST: LazyLock<Limits> = LazyLock::new(|| {
     EngineConfig::builder()
-        .memory(EngineConfig::least_memory(1).expect("a memory admits one partition"))
+        .memory(EngineConfig::least_memory(1))
         .partitions(1)
         .build()
         .expect("the least memory makes a configuration")

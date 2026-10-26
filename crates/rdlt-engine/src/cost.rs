@@ -18,6 +18,7 @@ use rdlt_wire::limits::count;
 
 use crate::budget::{Denied, Exhausted, MemoryBudget, Reservation, TooLarge};
 use crate::normalize::Shape;
+use crate::partition::Parts;
 
 /// How `capabilities`' destination renders values: the kinds it stores as they are, and every
 /// other as text.
@@ -72,27 +73,37 @@ pub(crate) const fn flags_bytes(columns: u64, text: bool) -> u64 {
 /// arrays that a null array spans between, and an array of another layout cast to a list first.
 pub(crate) const SPLIT_COPIES: u64 = 2;
 
+/// Where a read keeps what it keeps beside its events.
+pub(crate) enum Keeping {
+    /// In the part of what reads keep it holds while it reads: a read that is not followed.
+    Part,
+    /// In the parts no other read holds, which followed unbounded reads draw on together.
+    Pooled(Arc<Parts>),
+}
+
 /// Admits one partition's events into its channel: a push by what it keeps alive, a checkpoint
 /// by its cursor's bytes, which wait with its seal for a commit, and what the read keeps beside
-/// its events up to a read's part of the share reads have.
+/// its events up to a part of the share reads have.
 pub(crate) struct Charging {
     budget: MemoryBudget,
     /// Bytes: the most the read may keep beside its events.
     read_share: u64,
     /// Bytes the read keeps now.
     kept: Arc<AtomicU64>,
+    keeping: Keeping,
     /// The wait on the budget that failed an admission, where one did.
     exhausted: Mutex<Option<Exhausted>>,
 }
 
 impl Charging {
-    /// An admission charging `budget` for the events of one of the reads that share what its
-    /// reads may keep.
-    pub(crate) fn new(budget: MemoryBudget) -> Self {
+    /// An admission charging `budget` for the events of one of its reads, which keeps what it
+    /// keeps beside them as `keeping` says.
+    pub(crate) fn new(budget: MemoryBudget, keeping: Keeping) -> Self {
         Self {
-            read_share: crate::budget::kept(budget.shares(), budget.readers()),
+            read_share: budget.part(),
             budget,
             kept: Arc::new(AtomicU64::new(0)),
+            keeping,
             exhausted: Mutex::new(None),
         }
     }
@@ -177,41 +188,72 @@ impl Admission for Charging {
     }
 
     fn charge(&self, bytes: u64) -> rdlt_connector::Result<Permit> {
-        // What a read keeps beside its events no write releases: it has a part of a share of its
-        // own, and a read that would keep more is refused where it would.
+        let refused = |name, limit, actual| {
+            ConnectorError::exceeds(LimitExceeded {
+                name,
+                limit,
+                actual,
+            })
+        };
+        // What a read keeps beside its events no write releases: a read that is not followed
+        // holds a part of a share of its own, and a read that would keep more is refused where it
+        // would.
         let kept = self
             .kept
             .fetch_add(bytes, Ordering::SeqCst)
             .saturating_add(bytes);
-        // Within its part, a read always finds room: the parts together are the share.
-        if kept <= self.read_share
-            && let Ok(reservation) = self.budget.keep(bytes)
-        {
-            return Ok(Box::new(Kept {
-                bytes,
-                total: Arc::clone(&self.kept),
-                _reservation: reservation,
-            }));
+        if kept > self.read_share {
+            self.kept.fetch_sub(bytes, Ordering::SeqCst);
+            return Err(refused(READ_KEPT, self.read_share, kept));
         }
-        self.kept.fetch_sub(bytes, Ordering::SeqCst);
-        Err(ConnectorError::exceeds(LimitExceeded {
-            name: "read kept bytes",
-            limit: self.read_share,
-            actual: kept,
+        let pooled = match &self.keeping {
+            Keeping::Part => None,
+            Keeping::Pooled(parts) => Some(parts),
+        };
+        if let Some(parts) = pooled
+            && let Err(full) = parts.draw(bytes)
+        {
+            self.kept.fetch_sub(bytes, Ordering::SeqCst);
+            return Err(refused("followed reads kept bytes", full.room, full.kept));
+        }
+        // The parts together are the share, so a read within its part, or within the parts
+        // followed reads drew, always finds room.
+        let Ok(reservation) = self.budget.keep(bytes) else {
+            self.kept.fetch_sub(bytes, Ordering::SeqCst);
+            if let Some(parts) = pooled {
+                parts.give_back(bytes);
+            }
+            return Err(refused(READ_KEPT, self.read_share, kept));
+        };
+        Ok(Box::new(Kept {
+            bytes,
+            total: Arc::clone(&self.kept),
+            pooled: pooled.map(Arc::clone),
+            reservation,
         }))
     }
 }
+
+/// The name of the limit what one read keeps beyond its part passes.
+const READ_KEPT: &str = "read kept bytes";
 
 /// What a read keeps beside its events, released when dropped.
 struct Kept {
     bytes: u64,
     total: Arc<AtomicU64>,
-    _reservation: Reservation,
+    /// The parts followed reads draw on, where the read is one of them.
+    pooled: Option<Arc<Parts>>,
+    reservation: Reservation,
 }
 
 impl Drop for Kept {
     fn drop(&mut self) {
         self.total.fetch_sub(self.bytes, Ordering::SeqCst);
+        // The bytes go back before the part does, so a read that draws the part finds them.
+        self.reservation.shrink(0);
+        if let Some(parts) = &self.pooled {
+            parts.give_back(self.bytes);
+        }
     }
 }
 
