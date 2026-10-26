@@ -78,6 +78,27 @@ instructions move between runs of one tree, as below:
 | `wal/encode` | 4,775,577 | 142 |
 | `wal/scan` | 5,072,218 | 179 |
 
+## Counts of the ground-truth cases
+
+On `main` at `6365cc13` with the served bench's readings (`d2fc0f95`; the engine's code is
+`main`'s), 2026-10-26, as `just instructions` counts them: the release build's `allocations`
+bench under `valgrind --tool=callgrind --fair-sched=yes` at one and three iterations, valgrind
+3.25.1 and Rust 1.98.1, per iteration.
+
+| Case | Instructions | Allocations |
+|---|---:|---:|
+| `commit/1024` | 234,576,902 | 279,856 |
+| `shred/rows` | 38,846,245 | 190 |
+| `wide/arrow_1000` | 171,708,380 | 164,671 |
+| `passthrough/null_sink` | 4,004,977 | 2,863 |
+
+Where `commit/1024`'s instructions go, from callgrind's inclusive counts at three iterations less
+one, over two: its 1,024 partitions' reads and writes 75.4 %; the coordinator's commit 12.3 %,
+which holds turning the commit's state into records (`StateEntry::to_record`, 2.9 %), applying
+the positions (`Positions::applied`, 4.2 %, each partition's state key parsed among it) and the
+destination's commit (1.7 %). Encoding and decoding positions take at most the commit's 12.3 %,
+under a quarter of the case.
+
 ## What was measured of it
 
 On the change that added the gate (#77), on an Intel Core Ultra X7 358H, valgrind 3.25.1, Rust
