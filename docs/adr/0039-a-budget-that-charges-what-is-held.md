@@ -50,22 +50,37 @@ budget before it is held, or bounded by a limit with a typed refusal.
     share, which no push can use. A commit is due once the waiting cursors take half of it, and
     as soon as a cursor waits for room in it; a barrier raised for that commit ends its wait for
     answers then, and the commit takes what is sealed.
-  - **A read keeps a bounded part.** Each read may keep the reads' share divided by the
-    partitions read at once, 4 MiB at the defaults, so all reads together never pass the share.
-    Every read holds one of the partitions' slots while it reads, a followed unbounded read
-    included, so no more reads keep bytes than the share is divided among. A source whose calls
-    are bounded, as a served one's are, has fewer slots where its calls, less the engine's one
-    other call into it, are fewer than the partitions (ADR 0042). A followed unbounded read
-    holds its slot as long as the run, so a run reads fewer of them than it has slots: one more
-    is refused as it starts, `partitions_too_few`, or `source_calls_exceeded` where the
-    source's calls set the slots, rather than leaving the other reads no slot. A read beyond
-    the slots waits for one until one frees, with no deadline: a bounded read's end frees its
-    slot, and the followed reads leave one, so a slot always comes round. The wait is counted
-    with the reads' share.
-    A read that would keep more than its part fails at the frame that would pass it. Sixteen
-    reads keeping all they may, and seventeen followed reads through eighteen slots, leave
-    pushes and checkpoints flowing, which tests hold on the ledger, through the engine's
-    admission and through a host's read of a served source.
+  - **A read keeps a bounded part.** The reads' share is divided into a part for each
+    partition read at once, or into as many parts of twice the protocol's least dictionary as it
+    holds where those are fewer: 4 MiB a part at the defaults, and 512 KiB from 128 partitions
+    up at the default memory. No read keeps more than a part.
+    - A read that is not followed holds a whole part while it reads, so it is refused nothing
+      its limits admit, and all reads together never pass the share. One beyond the parts waits
+      for one until one frees, with no deadline.
+    - Followed unbounded reads hold no part of their own. What they keep, together, holds as
+      many of the parts no other read holds as it takes, a part more as they keep more and
+      fewer as they keep less, and never the last, so a read that is not followed always comes
+      to hold one. A followed read whose frame would need a part where none is free fails at
+      that frame, `limit_exceeded` naming `followed reads kept bytes`. Where the share holds a
+      part for each partition, followed reads that keep to their limits never meet it: they
+      hold no more parts than slots, and the other reads no more than the slots left.
+    - Every read holds one of the partitions' slots while it reads, a followed unbounded read
+      included, so the cursors' share is divided among them. A source whose calls are bounded,
+      as a served one's are, has fewer slots where its calls, less the engine's one other call
+      into it, are fewer than the partitions (ADR 0042). A followed unbounded read holds its
+      slot as long as the run, so a run reads fewer of them than it has slots: one more is
+      refused as it starts, `partitions_too_few`, or `source_calls_exceeded` where the source's
+      calls set the slots, rather than leaving the other reads no slot. A read beyond the slots
+      waits for one until one frees, with no deadline: a bounded read's end frees its slot, and
+      the followed reads leave one, so a slot always comes round. The waits for a slot and a
+      part are counted with the reads' share.
+    - A read that would keep more than a part fails at the frame that would pass it. Sixteen
+      reads keeping all they may, and seventeen followed reads through eighteen slots, leave
+      pushes and checkpoints flowing, which tests hold on the ledger, through the engine's
+      admission and through a host's read of a served source. Tests hold followed reads to the
+      parts they may hold, on the parts and through the engine's admission, beside a read that
+      is not followed keeping its whole part, and run 256 followed reads through 257 slots
+      within the default memory.
   - **No hold and wait.** A task waits on the budget only while it holds nothing that only
     its own progress releases. A partition waits for lowering's bytes while it holds pushes,
     and nothing waits for pushes while it holds anything; whoever holds what lowering reserved,
@@ -132,13 +147,16 @@ budget before it is held, or bounded by a limit with a typed refusal.
   (`MIN_FRAME_BYTES`, 4 MiB), or whose dictionary limit is below the protocol's least
   (`MIN_DICTIONARY_BYTES`, 256 KiB), is refused when the engine's configuration is built, with
   `memory_below_minimum` naming the least memory from which every memory up admits it:
-  39,545,528 bytes at the default sixteen partitions and 50,060,952 at one
-  (`EngineConfig::least_memory`). Half a request for lowering must hold a frame and the row
-  beside it, so the least is about nine frames at sixteen partitions; fewer partitions each keep
-  more, so a schema may have more columns and the row beside a frame takes more, which raises the
-  least to 50,060,952 from one to seven partitions. From 19 partitions their dictionaries set it,
-  2 MiB for each, twice the least dictionary in a quarter of the memory; from 2^43 partitions no
-  memory admits a peer, and the configuration is refused saying so.
+  39,545,528 bytes at the default sixteen partitions, 38,780,592 from eighteen up and 50,060,952
+  at one (`EngineConfig::least_memory`). Half a request for lowering must hold a frame and the
+  row beside it, so the least is about nine frames at sixteen partitions; fewer partitions each
+  keep more, so a schema may have more columns and the row beside a frame takes more, which
+  raises the least to 50,060,952 from one to seven partitions. A part holds twice the least
+  dictionary wherever the share holds one, so the dictionaries never set it, and more partitions
+  need no more memory: at the least, the share holds eighteen parts, and the reads that are not
+  followed read no more at once than the parts. Partitions above 16,384, the most an attempt
+  reads at once (`MAX_PLAN_PARTITIONS`), are refused when the configuration is built, with
+  `config_invalid`.
 - **A peer's dictionary limit has a least.** A handshake whose limits set a dictionary limit
   below `MIN_DICTIONARY_BYTES`, none included, is refused at either end with
   `limit_below_minimum`, as any limit below its least is; a handshake that sets no limits at
@@ -573,17 +591,21 @@ admitted, and what a remote connector's calls hold in transport.
   retransmission timeout ends such a socket in minutes; the simulator's never does. A deadline
   on a stopping connector's drain would bound it.
 - A source may keep 2 MiB of dictionaries a read at the defaults, where a frame may hold
-  32 MiB. More memory or fewer partitions raise it.
+  27 MiB. More memory or fewer partitions raise it.
 - A following run needs more partitions than the unbounded partitions it follows, and is
-  refused with `partitions_too_few` where it has too few. Each partition read at once takes
-  2 MiB of budget at least, twice the least dictionary in a quarter of the memory, so a run
-  follows at most ⌊memory ÷ 2 MiB⌋ − 1 unbounded partitions: 127 at the default 256 MiB with
-  128 partitions, and 15 at the default 16 partitions. At 2 MiB a read, a schema's message may
-  take 52,428 bytes and a table 936 columns, against 419,430 bytes and 7,489 columns at the
-  defaults. A served source carries the engine 199 calls at once (ADR 0042), so a run follows
-  at most 197 of its unbounded partitions, however much memory it has: beyond them it is refused
-  with `source_calls_exceeded` where its partitions are more than 198, and with
-  `partitions_too_few` where they are not. Above 396 MiB its calls bind before the memory does.
+  refused with `partitions_too_few` where it has too few. Its memory does not bound how many it
+  follows, only what they keep together: 256 followed partitions read by 257 partitions run
+  within the default 256 MiB. Each read then keeps a part of twice the least dictionary, so a
+  schema's message may take 52,428 bytes and a table 936 columns, against 419,430 bytes and
+  7,489 columns at the defaults. Followed reads that would keep more than the parts no other
+  read holds, less one, fail with `limit_exceeded`: within the default memory, 63.5 MiB
+  together, about 250 KiB each of 256. A served source carries the engine 199 calls at once (ADR 0042), so
+  a run follows at most 197 of its unbounded partitions, however much memory it has: beyond them
+  it is refused with `source_calls_exceeded` where its partitions are more than 198, and with
+  `partitions_too_few` where they are not.
+- Where the reads' share holds fewer parts of twice the least dictionary than the partitions,
+  the reads that are not followed read no more at once than the parts, each waiting for one: at
+  the default memory, 128.
 - A table wider than the derived column limit, 7,489 at the defaults, is refused where its
   source pushes it.
 - A partition that ends where it last checkpointed seals that cursor again: the commit records
