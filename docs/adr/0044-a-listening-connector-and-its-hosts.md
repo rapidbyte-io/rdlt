@@ -125,15 +125,28 @@ than the model ADR 0037 now sets:
     reference log and change sources refuse a cursor no read of theirs was sent.
   - The engine reports the committed position of every partition a commit covers, moved or
     not. A partition whose read was sent nothing is sealed where it started, and reported
-    there: so a report that failed, or was lost with the process, is made again by the next
-    attempt, and the source's kept position reaches the committed one though the partition
-    never moves again. A source that refuses every report fails the run once no attempt is
-    left.
+    there: so the source's kept position reaches the committed one though the partition never
+    moves again.
+  - A report that fails, refused or lost, leaves its cursors owed, in the coordinator's memory,
+    and every later commit's report carries them, a commit with nothing to publish included, so
+    the commit interval bounds how late they are told. A newer cursor of a partition takes the
+    place of the cursor owed, so no report carries a cursor older than one before it. The
+    attempt's last commit is the commit made once every partition has ended and no phase follows;
+    the commit of a phase's end that another phase follows is not, and its owed cursors go on to
+    the next phase's commits. A partition at a cursor still owed at the attempt's last commit,
+    or owed by as many failed reports in a row as the run makes attempts, ends the attempt with
+    the report's error once every stream's report is made, and the next tells it from where its
+    read starts. A source that refuses every report therefore fails the run once no attempt is
+    left. Each failed report is counted in the run report's `acks.failed`.
   - A partition that ends done is told its last position with the commit that records it
     done: the last checkpoint among the commit's seals, or with none there the cursor the
-    partition stood at, so a report of that cursor that failed earlier is still made. It has no
-    position after that: a report by the commit that records it done which fails is not made
-    again, as a full read that completed is not read again by the next attempt.
+    partition stood at, so a report of that cursor that failed in an earlier attempt is still
+    made. No later attempt reads the partition, so a cursor of it still owed is given up, and
+    counted in `acks.dropped`, at the attempt's last commit, after as many failed reports in a
+    row as the run makes attempts, or at once where its source refuses it as `position_unsent`,
+    which a source started again does for ever. Nothing owed is kept across attempts, in state
+    or in memory: a durable entry would need a commit that publishes nothing to clear it, and
+    a source started again would refuse it for ever.
   - A commit that publishes no row and records nothing but partitions where they stood is no
     progress: it does not reset the count of failed attempts. Positions are compared byte for
     byte. A source whose every attempt moves a position still retries without end; a limit on
@@ -159,6 +172,11 @@ Rejected:
 - **Reporting to a source only the positions a commit moved.** A report that failed once was
   then never made again while its partition stayed idle, and a source that refused every
   report gave runs that succeeded.
+- **Failing the attempt for a report that fails.** A report lost, or refused by a source that
+  forgot it, then cost a reopen, the discard of everything staged since the commit, and its
+  read again, though the next commit's report carries it.
+- **Retrying a report in place.** The next commit is at most an interval away, and a wait on
+  the coordinator would only delay it.
 - **Hearing a host only for checkpoints.** An idle partition's position is one some earlier
   process sent: a connector started again would refuse it on every retry.
 - **Scoping pipelines by the host's certificate name.** A renamed or replaced host would lose its
@@ -194,19 +212,17 @@ Rejected:
   affected, by any flood.
 - A process that may open fewer than about 1,200 files serves fewer sessions, by
   `--max-sessions`, or does not listen.
-- A connector started again between a checkpoint and its report fails that attempt as
-  transient. The next attempt reads on from the committed positions, which the new process
-  hears it for, and reports them.
+- A connector started again between a checkpoint and its report refuses it as transient. A
+  partition at a cursor stays owed, and fails the attempt at its last commit where its reads
+  have not failed it already; the next attempt reads on from the committed positions, which
+  the new process hears it for, and reports them.
 - A host that reads from a position it never committed, which the source issued and accepts,
   can then report that position: it is one of the hosts named to the connector, which may
   already read and write through it. It cannot report a position the source refuses to read
   from, so a source that follows the rule is never moved beyond what it holds.
 - A source that refuses every report can still see a run succeed where its partition ends
-  done. Each attempt that has a position to report is refused and fails; each of them landed
-  rows, so none counts against the run, and once the partition is recorded done state holds no
-  cursor for it and the next attempt has nothing to report. No row is lost or doubled, and
-  the position that trails is the refusing source's own. Failing such a run needs the report
-  that is owed kept in state, which a commit that publishes nothing would have to clear.
+  done: the attempt gives the done partition's cursor up and counts it in `acks.dropped`. No
+  row is lost or doubled, and the position that trails is the refusing source's own.
 - A source that accepts a cursor it did not issue, and acts on reports, can be moved there by
   a host named to it. The rule is the connector author's to keep; certification does not yet
   check it.
