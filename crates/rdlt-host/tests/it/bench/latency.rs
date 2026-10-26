@@ -501,11 +501,12 @@ fn print(case: Case, measured: f64, runs: &[Run]) {
         (phase / commits).as_secs_f64() * 1e3
     };
     let (commits, phases) = (&last.counters.commits, &last.counters.phases);
+    let acks = &last.counters.acks;
     println!(
         "latency/{}/{}: {} runs at {:.0} pushes a second of {ROWS} rows, half what it landed \
          unpaced; the last made {} attempts, was run again {} times, and made {} commits, {} on \
          the interval, {} at the end, {} on size or cursors; a commit's flush {:.1} ms, commit \
-         {:.1} ms, ack {:.1} ms",
+         {:.1} ms, ack {:.1} ms; {} reports failed and {} owed cursors were given up",
         case.placement.name(),
         case.parameter(),
         runs.len(),
@@ -519,6 +520,8 @@ fn print(case: Case, measured: f64, runs: &[Run]) {
         each(phases.flush),
         each(phases.commit),
         each(phases.ack),
+        acks.failed,
+        acks.dropped,
     );
     for stream in STREAMS {
         let readings: Vec<Readings> = runs.iter().map(|run| run.readings(stream)).collect();
