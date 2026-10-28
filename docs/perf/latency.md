@@ -29,7 +29,8 @@ acknowledgement to state their latency rules against.
 - **Faults.** `just bench latency <cores> transient-<n>` adds the cases whose destination answers
   one commit in n, drawn, `Transient` before it lands, and `refused-<n>` those whose source refuses
   one report in n. A run a fault ended is run again on the same connectors, a commit interval each
-  time, until what it read lands, as its next run would land it. Neither is recorded here.
+  time, until what it read lands, as its next run would land it. The refused cases are recorded
+  below, under their own heading.
 - **Readings.** For each stream, p50, p99 and the maximum by nearest rank over a run's pushes, of
   push to landed and of push to acknowledged; the most a push was acknowledged after it landed; the
   pushes landed and never acknowledged. Each is the median of a round's ten runs; the tables give
@@ -84,3 +85,43 @@ commit's mean in each round's last run, the median of the three:
 - `perf stat` cannot difference the 10 s cases; the 1 s cases keep 1.03–1.08 CPUs busy in process
   and 2.21–2.41 spawned, the connector processes counted, at 1.48–1.95 instructions a cycle. No
   run syncs a file.
+
+## Refused reports
+
+The `refused-10` cases, whose source refuses one report of committed cursors in ten, drawn, on
+`main` at `ed6d230c` and with a refused report owed to the next commit's report rather than ending
+the attempt. Intel Core Ultra X7 358H, 2026-10-28, three rounds interleaved (base, branch; branch,
+base; base, branch), each tree's cases run as `taskset -c 0-3` with spawned connectors on CPUs
+4-11, the first started at a one-minute load of 1.32, the bench lifting it to 2-3, beside the
+owner's idle virtual machines. Seconds; the median of three rounds and their range, each round's
+figure the median of its ten runs; "latest after landing" is a run's most a push was acknowledged
+after it landed, and "highest" the most of any run.
+
+| Case | Stream | Landed p99, `main` | Landed p99, owed | Latest after landing, `main` | Latest after landing, owed | Highest, `main` | Highest, owed |
+|---|---|---|---|---|---|---|---|
+| `in-process/10s` | `replayable` | 1.161 (1.136–1.162) | 1.138 (1.137–1.199) | 2.033 (1.530–2.074) | 1.219 (1.157–2.303) | 3.829 | 3.640 |
+| `in-process/10s` | `unreplayable` | 1.161 (1.134–1.164) | 1.141 (1.140–1.203) | 3.069 (2.093–3.416) | 1.163 (1.161–1.224) | 6.211 | 2.436 |
+| `in-process/1s` | `replayable` | 1.009 (1.008–1.011) | 1.011 (1.009–1.013) | 0.005 (0.005–0.968) | 0.006 (0.005–0.006) | 1.817 | 2.070 |
+| `in-process/1s` | `unreplayable` | 1.010 (1.009–1.010) | 1.012 (1.012–1.014) | 0.011 (0.011–1.528) | 0.011 (0.010–0.012) | 3.028 | 1.056 |
+| `process/10s` | `replayable` | 4.303 (4.289–4.331) | 4.292 (4.289–4.349) | 4.561 (0.010–5.011) | 0.010 (0.010–3.729) | 10.602 | 8.777 |
+| `process/10s` | `unreplayable` | 4.303 (4.289–4.331) | 4.292 (4.289–4.349) | 5.147 (4.769–5.232) | 0.024 (0.020–4.399) | 10.618 | 12.985 |
+| `process/1s` | `replayable` | 1.004 (1.004–1.005) | 1.004 (1.004–1.004) | 0.003 (0.002–0.003) | 0.003 (0.003–0.003) | 1.493 | 1.028 |
+| `process/1s` | `unreplayable` | 1.004 (1.004–1.005) | 1.004 (1.004–1.004) | 0.004 (0.004–0.004) | 0.005 (0.005–1.019) | 2.046 | 2.009 |
+
+- On `main` a refused report ends its attempt: the last run of a round made two to seven attempts
+  in the 10 s cases and two in process at 1 s. Owed, every last run made one attempt, and saw up to
+  seven reports fail.
+- The rule: a refused cursor's push to acknowledged is at most one commit interval above its push
+  to landed, and p99 push to landed is not above `main`'s.
+  - At 10 s the policy's 1 GiB commits every 1.1 s in process and 4.4 s spawned, and the next of
+    them tells a refused cursor: the latest after landing, 1.2 s in process and up to 4.4 s
+    spawned, against `main`'s 2.0–5.1 s. The highest, up to 13.0 s spawned, are runs whose cursor
+    two or three reports in a row refused, each draw one in ten, or whose last commit's report was
+    refused, which ends the attempt for the next run to tell; the readings do not tell them apart.
+  - At 1 s a refused cursor is told 1.018–1.056 s after it landed: the interval and 18–56 ms, the
+    refused report's own time and the next commit's flush, commit and report, whose mean is
+    14.5–31.8 ms a commit. The rule holds within that time, not within the interval alone. The
+    2.0 s and 2.1 s are cursors two reports in a row refused.
+  - Landed p99 is lower than `main`'s at 10 s and equal spawned at 1 s. In process at 1 s it is
+    2 ms (0.2 %) higher, in every round for the stream that cannot read again (1.012–1.014 s
+    against 1.009–1.010 s): there the rule's second half misses by 2 ms.
