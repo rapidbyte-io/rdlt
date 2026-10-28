@@ -1,10 +1,10 @@
 //! A table as the engine models it: its columns by identifier with their logical types, and the
 //! source column each one holds.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use rdlt_connector::{Field, LogicalType, NameMap, SchemaVersion, TableSchema, TableState};
+use rdlt_connector::{Field, NameMap, SchemaVersion, TableSchema, TableState};
 
 use crate::error::{Error, ErrorKind, codes};
 
@@ -13,15 +13,12 @@ use crate::error::{Error, ErrorKind, codes};
 pub(crate) struct Model {
     /// The schema's version, which each change to the destination's table advances.
     pub(crate) version: u32,
-    /// How many changes this attempt made to the model, of the schema or of which columns are
-    /// exact, which state has recorded when it records the model.
+    /// How many changes this attempt made to the model, which state has recorded when it
+    /// records the model.
     pub(crate) revision: u32,
     /// The columns in order, metadata columns aside: identifiers, logical types and nullability.
     pub(crate) columns: Vec<Field>,
     pub(crate) names: NameMap,
-    /// The columns of 64-bit integers every stored value of which a 64-bit float holds exactly,
-    /// which floats may join without loss.
-    pub(crate) exact: BTreeSet<Arc<str>>,
 }
 
 /// Whether a batch's table takes every column, as one being created does.
@@ -66,18 +63,11 @@ impl Model {
             )
             .with_code(codes::STATE_INVALID));
         }
-        // Only columns of 64-bit integers are exact: a widened column is no longer one.
-        let exact = columns
-            .iter()
-            .filter(|field| *field.logical_type() == LogicalType::Int64)
-            .filter_map(|field| state.exact.get(field.name()).cloned())
-            .collect();
         Ok(Self {
             version: *version,
             revision: 0,
             columns,
             names,
-            exact,
         })
     }
 

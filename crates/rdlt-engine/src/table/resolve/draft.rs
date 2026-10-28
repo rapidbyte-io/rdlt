@@ -17,11 +17,7 @@ pub(super) struct Draft {
     positions: BTreeMap<Arc<str>, usize>,
     /// Added columns, before they have identifiers: key, type and nullability.
     adds: Vec<(ColumnKey, LogicalType, bool)>,
-    /// The added columns of 64-bit integers every value of which a 64-bit float holds exactly.
-    exact_adds: BTreeSet<ColumnKey>,
     changes: Vec<Change>,
-    /// Whether a column stopped being exact, which changes the model but not the table.
-    rounded: bool,
 }
 
 impl Draft {
@@ -30,9 +26,7 @@ impl Draft {
             model: model.clone(),
             positions: model.positions(),
             adds: Vec::new(),
-            exact_adds: BTreeSet::new(),
             changes: Vec::new(),
-            rounded: false,
         }
     }
 
@@ -48,19 +42,6 @@ impl Draft {
             LogicalType::Float64
         } else {
             current.join(arriving.logical)
-        }
-    }
-
-    /// Notes that the table's column at `column` now holds an integer a float would round,
-    /// whether the table has it or this resolution adds it.
-    pub(super) fn round(&mut self, column: usize) {
-        if let Some(field) = self.model.columns.get(column) {
-            self.rounded |= self.model.exact.remove(field.name());
-        } else if let Some((key, ..)) = column
-            .checked_sub(self.model.columns.len())
-            .and_then(|added| self.adds.get(added))
-        {
-            self.exact_adds.remove(key);
         }
     }
 
@@ -96,36 +77,19 @@ impl Draft {
         }
     }
 
-    /// Adds the column for `key`, exact where it is one of 64-bit integers and `exact`; returns
-    /// its position.
-    pub(super) fn add(
-        &mut self,
-        key: ColumnKey,
-        logical: LogicalType,
-        nullable: bool,
-        exact: bool,
-    ) -> usize {
-        if exact && logical == LogicalType::Int64 {
-            self.exact_adds.insert(key.clone());
-        }
+    /// Adds the column for `key`; returns its position.
+    pub(super) fn add(&mut self, key: ColumnKey, logical: LogicalType, nullable: bool) -> usize {
         self.adds.push((key.clone(), logical, nullable));
         self.changes.push(Change::Add { key });
         self.model.columns.len() + self.adds.len() - 1
     }
 
-    /// Widens the table's column at `column` to `to`: exact where it becomes one of 64-bit
-    /// integers from narrower ones and the values arriving are `exact`.
+    /// Widens the table's column at `column` to `to`.
     ///
     /// Only existing columns widen: a column this resolution adds takes its final type when added.
-    pub(super) fn widen(&mut self, column: usize, to: LogicalType, exact: bool) {
+    pub(super) fn widen(&mut self, column: usize, to: LogicalType) {
         let field = &mut self.model.columns[column];
         let from = field.logical_type().clone();
-        let name: Arc<str> = field.name().into();
-        if to == LogicalType::Int64 && exact {
-            self.model.exact.insert(name);
-        } else {
-            self.model.exact.remove(&name);
-        }
         *field = Field::new(field.name(), to, field.is_nullable());
         self.changes.push(Change::Widen { column, from });
     }
@@ -145,15 +109,10 @@ impl Draft {
                 .get(&key)
                 .expect("every added column was just named")
                 .to_owned();
-            if self.exact_adds.contains(&key) {
-                self.model.exact.insert(name.as_str().into());
-            }
             self.model.columns.push(Field::new(name, logical, nullable));
         }
         if !self.changes.is_empty() {
             self.model.version = advanced(self.model.version)?;
-        }
-        if !self.changes.is_empty() || self.rounded {
             self.model.revision = advanced(self.model.revision)?;
         }
         Ok(Resolution {

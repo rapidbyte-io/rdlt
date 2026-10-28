@@ -95,11 +95,6 @@ impl Arrival {
         }
     }
 
-    /// Whether it holds an integer a 64-bit float would round.
-    pub(super) fn rounds(&self) -> bool {
-        *self == Self::Typed(LogicalType::Int64)
-    }
-
     /// The arrival of 64-bit integers `values`, exact where every one is.
     fn integers(mut values: impl Iterator<Item = i64>) -> Self {
         if values.all(|value| value.unsigned_abs() <= EXACT_IN_FLOAT) {

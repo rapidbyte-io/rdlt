@@ -33,7 +33,6 @@ fn kept(sequences: Option<Sequences>, history: bool) -> TableState {
         key: Vec::new(),
         change_time: None,
         identity: Identity::Key,
-        exact: std::collections::BTreeSet::new(),
     }
 }
 

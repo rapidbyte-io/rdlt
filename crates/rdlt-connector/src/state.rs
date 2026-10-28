@@ -25,7 +25,7 @@ pub use key::StateKey;
 pub use names::{NameConflict, NameMap};
 
 /// The state value format this crate writes and reads.
-const STATE_VERSION: u16 = 4;
+const STATE_VERSION: u16 = 5;
 
 /// One stored state record, opaque to the destination that keeps it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,9 +112,6 @@ pub enum StateEntry {
         version: SchemaVersion,
         /// The schema.
         schema: TableSchema,
-        /// The columns of 64-bit integers every stored value of which a 64-bit float holds
-        /// exactly.
-        exact: BTreeSet<Arc<str>>,
     },
     /// A table's destination identifier and its columns' identifiers.
     Names {
@@ -282,8 +279,6 @@ pub struct TableState {
     pub change_time: Option<ColumnPath>,
     /// How the table's root rows are identified, as its sequences' record says.
     pub identity: Identity,
-    /// The columns of 64-bit integers every stored value of which a 64-bit float holds exactly.
-    pub exact: BTreeSet<Arc<str>>,
 }
 
 /// Everything a pipeline has committed: epoch, cursors, schemas, names and the last receipt.

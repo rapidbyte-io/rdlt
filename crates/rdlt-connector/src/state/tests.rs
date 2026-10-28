@@ -85,7 +85,6 @@ fn sample_state() -> PipelineState {
             key: vec![ColumnPath::from("id")],
             change_time: Some(ColumnPath::from("at")),
             identity: Identity::Position,
-            exact: ["id".into()].into(),
         },
     );
     state
@@ -162,7 +161,6 @@ fn table_entries(path: &TablePath, table: &TableState) -> Vec<StateEntry> {
             table: path.clone(),
             version: *version,
             schema: schema.clone(),
-            exact: table.exact.clone(),
         });
     }
     if let Some(physical) = &table.physical {
@@ -196,33 +194,6 @@ fn state_round_trips_through_records() {
         PipelineState::from_records(&[]).unwrap(),
         PipelineState::default()
     );
-}
-
-#[test]
-fn a_schema_record_without_its_exact_columns_is_refused_and_deleting_it_forgets_them() {
-    let mut state = sample_state();
-    let table = TablePath::new(["orders"]).unwrap();
-    let key = StateKey::Schema(table.clone()).encode();
-    let record = records_of(&state)
-        .into_iter()
-        .find(|record| record.key == key)
-        .expect("the schema is recorded");
-    let mut json: serde_json::Value = serde_json::from_slice(&record.value).unwrap();
-    json["entry"]["schema"]
-        .as_object_mut()
-        .expect("a schema entry")
-        .remove("exact")
-        .expect("the exact columns are recorded");
-    let lacking = StateRecord {
-        key: record.key.clone(),
-        value: versioned(super::STATE_VERSION, &json["entry"]),
-    };
-    assert!(matches!(
-        sample_state().apply(&StateChange::Put(lacking)),
-        Err(StateError::MalformedValue { .. })
-    ));
-    state.apply(&StateChange::Delete(key)).unwrap();
-    assert!(state.tables[&table].exact.is_empty());
 }
 
 #[test]
@@ -321,6 +292,7 @@ fn record_keys_are_stable_text() {
 #[test]
 fn unreadable_records_are_typed_errors() {
     let epoch = StateEntry::Epoch(Epoch(1)).to_record();
+    let (older, newer) = (super::STATE_VERSION - 1, super::STATE_VERSION + 1);
     let cases = [
         (
             StateRecord {
@@ -334,21 +306,21 @@ fn unreadable_records_are_typed_errors() {
         (
             StateRecord {
                 key: epoch.key.clone(),
-                value: Bytes::from_static(b"{\"v\":3,\"entry\":{\"epoch\":1}}"),
+                value: Bytes::from(format!(r#"{{"v":{older},"entry":{{"epoch":1}}}}"#)),
             },
             StateError::UnsupportedVersion {
                 key: epoch.key.clone(),
-                version: 3,
+                version: older,
             },
         ),
         (
             StateRecord {
                 key: epoch.key.clone(),
-                value: Bytes::from_static(b"{\"v\":5,\"entry\":{\"no\":[\"such\"]}}"),
+                value: Bytes::from(format!(r#"{{"v":{newer},"entry":{{"no":["such"]}}}}"#)),
             },
             StateError::UnsupportedVersion {
                 key: epoch.key.clone(),
-                version: 5,
+                version: newer,
             },
         ),
         (
@@ -616,12 +588,6 @@ fn tables() -> impl Strategy<Value = std::collections::BTreeMap<TablePath, Table
                     names.insert(key, "v__json").unwrap();
                     fields.push(Field::new("v__json", LogicalType::Json, true));
                 }
-                // Every other column is exact.
-                let exact = columns
-                    .iter()
-                    .step_by(2)
-                    .map(|column| Arc::from(column.as_str()))
-                    .collect();
                 let state = TableState {
                     schema: Some((SchemaVersion(version), TableSchema::new(fields).unwrap())),
                     physical: Some(path.replace('.', "_").into()),
@@ -647,7 +613,6 @@ fn tables() -> impl Strategy<Value = std::collections::BTreeMap<TablePath, Table
                     change_time: (sequences >= 3)
                         .then(|| ColumnPath::from(columns.first().unwrap().as_str())),
                     identity: [Identity::Key, Identity::Position][usize::from(sequences % 2)],
-                    exact,
                 };
                 (TablePath::new([path]).unwrap(), state)
             })
@@ -756,7 +721,6 @@ fn a_schema_nested_to_the_limit_is_stored_and_read_back() {
             table: TablePath::new(["deep"]).unwrap(),
             version: SchemaVersion(1),
             schema,
-            exact: ["id".into()].into(),
         };
         let record = entry.to_record();
         assert_eq!(
@@ -1137,7 +1101,6 @@ fn a_table_s_entries() -> [StateEntry; 3] {
             table: table.clone(),
             version: SchemaVersion(3),
             schema,
-            exact: ["id".into()].into(),
         },
         StateEntry::Names {
             table: table.clone(),
@@ -1161,18 +1124,18 @@ fn a_table_s_records_are_this_json() {
         (
             r#"{"schema":["orders","lines"]}"#,
             concat!(
-                r#"{"v":4,"entry":{"schema":{"table":["orders","lines"],"version":3,"schema":"#,
+                r#"{"v":5,"entry":{"schema":{"table":["orders","lines"],"version":3,"schema":"#,
                 r#"{"fields":[[{"name":"id","nullable":false,"type":"int64"}],"#,
                 r#"[{"name":"address","nullable":true,"type":{"struct":1}},"#,
                 r#"{"name":"city","nullable":true,"type":"utf8"}],"#,
                 r#"[{"name":"tags","nullable":true,"type":"list"},"#,
-                r#"{"name":"item","nullable":true,"type":"utf8"}]]},"exact":["id"]}}}"#,
+                r#"{"name":"item","nullable":true,"type":"utf8"}]]}}}}"#,
             ),
         ),
         (
             r#"{"names":["orders","lines"]}"#,
             concat!(
-                r#"{"v":4,"entry":{"names":{"table":["orders","lines"],"#,
+                r#"{"v":5,"entry":{"names":{"table":["orders","lines"],"#,
                 r#""physical":"orders__lines","names":[[{"source":["id"]},"id"],"#,
                 r#"[{"variant":{"column":["address","city"],"kind":"int64"}},"#,
                 r#""address__city__int"]]}}}"#,
@@ -1181,7 +1144,7 @@ fn a_table_s_records_are_this_json() {
         (
             r#"{"sequences":["orders","lines"]}"#,
             concat!(
-                r#"{"v":4,"entry":{"sequences":{"table":["orders","lines"],"#,
+                r#"{"v":5,"entry":{"sequences":{"table":["orders","lines"],"#,
                 r#""sequences":"source","history":true,"key":[["id"],["address","city"]],"#,
                 r#""change_time":["address","city"],"identity":"position"}}}"#,
             ),

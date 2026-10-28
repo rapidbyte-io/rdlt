@@ -35,10 +35,8 @@ impl PipelineState {
                 table,
                 version,
                 schema,
-                exact,
             } => {
-                let state = self.tables.entry(table).or_default();
-                (state.schema, state.exact) = (Some((version, schema)), exact);
+                self.tables.entry(table).or_default().schema = Some((version, schema));
             }
             StateEntry::Names {
                 table,
@@ -95,7 +93,6 @@ impl PipelineState {
             StateKey::Schema(table) => {
                 if let Some(state) = self.tables.get_mut(table) {
                     state.schema = None;
-                    state.exact.clear();
                 }
             }
             StateKey::Names(table) => {

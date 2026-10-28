@@ -1,5 +1,5 @@
-//! Which columns of 64-bit integers hold a value a 64-bit float would round: a table's column of
-//! integers every one of which a float holds exactly takes floats without loss.
+//! Which columns of 64-bit integers hold a value a 64-bit float would round: a column of 64-bit
+//! floats takes the others' integers cast, without loss.
 //!
 //! A column is read where it lies, in any encoding: a dictionary's values through the keys its
 //! rows hold, a run's through the runs they fall in. Only values rows hold are read, and nothing

@@ -3,7 +3,6 @@
 //! column whose type holds the value's and is stored as the destination's capabilities say.
 
 mod cells;
-mod exact;
 mod ids;
 mod slots;
 
@@ -144,7 +143,6 @@ impl Table<'_> {
             return held;
         };
         self.check_names(&published);
-        self.check_exact(&published);
         let mut templates: BTreeMap<&str, &Expected> = BTreeMap::new();
         for row in slots.iter().flat_map(|slot| &slot.rows) {
             templates.insert(&row.ident, row);
@@ -362,19 +360,6 @@ impl Table<'_> {
         let expected = sent.meaning(logical);
         (cell.value != expected)
             .then(|| format!("{physical} holds {:?}, not {expected:?}", cell.value))
-    }
-
-    /// Checks that no column state records exact holds an integer a float would round.
-    fn check_exact(&self, published: &Published) {
-        let rounded = exact::findings(published);
-        assert!(
-            rounded.is_empty(),
-            "seed {}: table {:?}: {} findings, the first {:?}",
-            self.seed,
-            self.path,
-            rounded.len(),
-            &rounded[..rounded.len().min(3)]
-        );
     }
 
     /// Checks the table's identifiers against the destination's rules, and each distinct.

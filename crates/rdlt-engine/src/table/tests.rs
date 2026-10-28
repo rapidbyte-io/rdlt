@@ -818,7 +818,6 @@ fn models_come_from_committed_state() {
         physical: Some("t".into()),
         names: model.names.clone(),
         sequences: None,
-        exact: model.exact.clone(),
         history: false,
         ..TableState::default()
     };
@@ -1563,6 +1562,21 @@ fn floats_after_64_bit_integers_take_a_float_variant_whatever_the_integers() {
 }
 
 #[test]
+fn integers_a_float_would_round_change_nothing_in_a_column_of_integers() {
+    let resolver = resolver(int_to_float(true), plan(), &[]);
+    let model = created(&resolver, &[("amount", LogicalType::Int64)]);
+    let rounded = resolver
+        .resolve(
+            &model,
+            &inexact(&[("amount", LogicalType::Int64)], &["amount"]),
+        )
+        .unwrap();
+    assert_eq!(rounded.routes, [Route::Column(0)]);
+    assert!(rounded.changes.is_empty(), "{:?}", rounded.changes);
+    assert_eq!(rounded.model, model);
+}
+
+#[test]
 fn floats_go_to_a_variant_of_the_column_that_holds_them_where_one_exists() {
     let resolver = resolver(capabilities(), plan(), &[]);
     let model = created(&resolver, &[("amount", LogicalType::Int64)]);
@@ -1581,13 +1595,10 @@ fn floats_go_to_a_variant_of_the_column_that_holds_them_where_one_exists() {
 }
 
 #[test]
-fn json_whose_integers_an_integer_column_reads_ends_its_exactness() {
+fn json_at_a_column_of_integers_splits_over_it_and_its_json_variant() {
     use super::resolve::Rest;
-    // The plan reads the integers only once it lowers them, past where the model records which
-    // columns hold only integers a float holds exactly.
     let resolver = resolver(capabilities(), plan(), &[]);
     let model = created(&resolver, &[("amount", LogicalType::Int64)]);
-    assert!(model.exact.contains("amount"), "{:?}", model.exact);
     let json = resolver
         .resolve(&model, &schema(&[("amount", LogicalType::Json)]))
         .unwrap();
@@ -1598,7 +1609,6 @@ fn json_whose_integers_an_integer_column_reads_ends_its_exactness() {
             rest: Rest::Column(1)
         }]
     );
-    assert!(json.model.exact.is_empty(), "{:?}", json.model.exact);
 }
 
 #[test]
@@ -1705,41 +1715,6 @@ fn a_column_of_nulls_arriving_at_a_typed_column_is_charged_as_the_nulls_it_fills
         lowering.null_fill(2),
         rdlt_connector::cost::nulls(&DataType::Int64, 2)
     );
-}
-
-#[test]
-fn json_an_integer_column_created_for_it_reads_leaves_it_not_exact() {
-    // A hint makes the column of JSON a column of integers as the table is created: its integers
-    // are read only as the plan lowers them.
-    let stream = plan().hint("amount", LogicalType::Int64);
-    let resolver = resolver(capabilities(), stream, &[]);
-    let created = resolver
-        .resolve(&Model::default(), &schema(&[("amount", LogicalType::Json)]))
-        .unwrap();
-    assert_eq!(
-        columns(&created.model)[0],
-        ("amount".to_owned(), LogicalType::Int64)
-    );
-    assert!(created.model.exact.is_empty(), "{:?}", created.model.exact);
-}
-
-#[test]
-fn a_column_created_from_integers_a_float_would_round_is_not_exact() {
-    let resolver = resolver(int_to_float(true), plan(), &[]);
-    let model = resolver
-        .resolve(
-            &Model::default(),
-            &inexact(
-                &[
-                    ("amount", LogicalType::Int64),
-                    ("count", LogicalType::Int64),
-                ],
-                &["amount"],
-            ),
-        )
-        .unwrap()
-        .model;
-    assert_eq!(model.exact, BTreeSet::from(["count".into()]));
 }
 
 #[test]
@@ -1938,61 +1913,6 @@ fn a_list_view_of_maps_normalizes_as_the_list_it_views() {
     let field = Field::from_arrow(&ArrowField::new("m", list.data_type().clone(), true)).unwrap();
     let normalize = |array| super::convert::normalize(array, field.logical_type()).unwrap();
     assert_eq!(normalize(&view).as_ref(), normalize(&list).as_ref());
-}
-
-#[test]
-fn a_column_widened_to_64_bit_integers_is_exact_only_where_its_integers_are() {
-    for (rounding, exact) in [(false, true), (true, false)] {
-        for key in [&[][..], &["n"][..]] {
-            let resolver = resolver(capabilities(), plan(), key);
-            let model = created(&resolver, &[("n", LogicalType::Int32)]);
-            let incoming = if rounding {
-                inexact(&[("n", LogicalType::Int64)], &["n"])
-            } else {
-                schema(&[("n", LogicalType::Int64)])
-            };
-            let widened = resolver.resolve(&model, &incoming).unwrap();
-            assert_eq!(columns(&widened.model)[0].1, LogicalType::Int64);
-            assert_eq!(
-                widened.model.exact.contains("n"),
-                exact,
-                "{rounding} {key:?}"
-            );
-        }
-    }
-    // A column widened to decimals holds no 64-bit integers to be exact.
-    let resolver = resolver(capabilities(), plan(), &[]);
-    let model = created(&resolver, &[("n", LogicalType::Int32)]);
-    let decimals = resolver
-        .resolve(&model, &schema(&[("n", decimal(20, 2))]))
-        .unwrap();
-    assert_eq!(columns(&decimals.model)[0].1, decimal(20, 2));
-    assert!(decimals.model.exact.is_empty());
-}
-
-#[test]
-fn a_variant_of_64_bit_integers_is_exact_only_where_its_integers_are() {
-    let mut fixed = capabilities();
-    fixed.schema_changes.widenings.clear();
-    for (rounding, exact) in [(false, true), (true, false)] {
-        let resolver = resolver(fixed.clone(), plan(), &[]);
-        let model = created(&resolver, &[("n", LogicalType::Int32)]);
-        let incoming = if rounding {
-            inexact(&[("n", LogicalType::Int64)], &["n"])
-        } else {
-            schema(&[("n", LogicalType::Int64)])
-        };
-        let variant = resolver.resolve(&model, &incoming).unwrap();
-        assert_eq!(
-            columns(&variant.model)[1],
-            ("n__int64".to_owned(), LogicalType::Int64)
-        );
-        assert_eq!(
-            variant.model.exact.contains("n__int64"),
-            exact,
-            "{rounding}"
-        );
-    }
 }
 
 /// The plan lowering `batch` into `model`, as a partition finds it.
