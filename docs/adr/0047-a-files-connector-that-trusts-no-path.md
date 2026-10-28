@@ -117,7 +117,7 @@ when it is read and never written in a form its reader refuses.
   discard of what older sessions staged makes the latest manifest's name durable before it
   removes anything: a manifest a power loss could take back decides nothing.
 - **Every durable step is ordered.** A file is synced before it is linked or renamed into
-  place, and its directory after; a commit answered from its receipt syncs its manifests'
+  place, and its directory after; a commit answered as the landed one syncs its manifests'
   directory again before it answers, since the commit it repeats may have failed between the
   link and the sync, and removes nothing where that sync fails. Tests record each step once it
   has taken place and assert the order, and die at each step in turn of every kind of commit,
@@ -142,9 +142,8 @@ when it is read and never written in a form its reader refuses.
   the file or read other rows. JSON lines hold a dictionary's rows as the values they stand for,
   null where the key is null or the value it stands for is.
 - **Lists stay short.** A table's catalog keeps 8 versions behind the latest, as manifests do. A
-  manifest keeps the receipts no commit's horizon has passed: the engine declares each commit
-  its own horizon (ADR 0004), and the manifest forgets the receipts before it, of whichever
-  load; a commit that declares none forgets none. An append table's commit merges
+  manifest keeps one receipt, the last commit's that landed (ADR 0004). An append table's commit
+  merges
   the files it adds with each other, whatever rows each holds, and a file listed before them with
   those after it while it holds at most twice their rows, never reading more than 64 MiB into
   one file and keeping row order. Every two files next to each other in a list then either at
@@ -162,8 +161,8 @@ when it is read and never written in a form its reader refuses.
   is not written as its values, and files that hold one merge with none. A merge that fails
   leaves the list as it was and removes what it wrote; the commit goes on, and the next
   commit tries again, at the cost of opening and reading those files once more. Each commit
-  opens the files it may merge to compare their schemas, and a commit answered from its
-  receipt walks its session's staged tree: both are bounded by the list.
+  opens the files it may merge to compare their schemas, and a commit answered as the landed
+  one walks its session's staged tree: both are bounded by the list.
 - **A merge table's files hold the columns their rows hold.** A merge gives the destination
   its rows as batches of the columns they hold, as ADR 0049 says, and each is written under
   those columns: JSON lines, which name their own columns, as one file, and Arrow, where a
@@ -209,7 +208,7 @@ What remains by design:
 - A staged batch is its own file in its own directories until its commit merges or publishes it.
 - The manifest lists one file per 64 MiB of an append table, and is rewritten at each commit.
 - A reader holding one of the 8 older manifests finds the manifest but may find its files gone:
-  older manifests are kept for their receipts and their lists, not their data.
+  older manifests are kept for their lists, not their data.
 - The mount-point rule compares file systems, so a destination root may not hold a mount or a
   subvolume, which has a device number of its own, and a bind mount of the same file system is
   not seen.

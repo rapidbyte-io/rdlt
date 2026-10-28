@@ -19,8 +19,8 @@ gate ("simulation with CDC and non-replayable sources green") requires them.
 ## Decision
 
 - **`Engine::reset(pipeline, streams, scope, source, destination) -> ResetReport`** (engine API,
-  §16.2; the facade's and the CLI's `state reset` are M7's). One admin commit: a fresh load id,
-  commit 1, no segments.
+  §16.2; the facade's and the CLI's `state reset` are M7's). One admin commit: the first of a
+  session of its own, expecting the key the open found landed, with no segments.
   - **`ResetScope::Positions`**, the spec's reset, deletes each stream's phase, partition
     positions, full read in progress and completed reads. The next run reads the stream from its
     beginning into the tables it has; a replace stream fills a new generation, swapped in when

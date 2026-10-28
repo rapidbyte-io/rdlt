@@ -7,8 +7,9 @@ Status: accepted, 2026-09-24.
 M3 of the spec makes JSON pushes load. It was split: M3a shreds JSON pushes end to end,
 coalescing pushes, shredding them in parallel on the compute pool and holding the shredder to a
 reference implementation, fuzzing and the throughput gate; M3b brings `normalize` with child
-tables and lineage ids, the `LoweringPlan`, the dictionary-encoded load id and the `arrow-json`
-fast-path evaluation. Building M3a surfaced decisions the spec leaves open or gets wrong.
+tables and lineage ids, the `LoweringPlan`, the dictionary-encoded constant columns and the
+`arrow-json` fast-path evaluation. Building M3a surfaced decisions the spec leaves open or gets
+wrong.
 
 ## Decision
 

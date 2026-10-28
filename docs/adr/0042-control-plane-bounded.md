@@ -184,7 +184,7 @@ still taken largely on trust:
   - A failed attempt closes the session it opened, waiting for the close no longer than
     `EngineConfig::close_wait` (60 s).
 - **What a connector says cannot silently change what was committed.**
-  - A receipt must answer its own commit, by load and sequence, or the commit fails as
+  - A receipt must answer its own commit, by its key, or the commit fails as
     `receipt_mismatch`; receipt counters are summed with checked arithmetic.
   - A table's state records the merge key and change time it was loaded by; a keyed write by
     another key or change time, or by an empty catalog key, is refused until the table is reset.

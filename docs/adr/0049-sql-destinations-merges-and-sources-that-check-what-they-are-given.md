@@ -260,11 +260,13 @@ generated sources were written before it, and each took something as given:
     bytes, one a column, read at a position (`SqlDialect::byte_at`), and two aggregate passes
     over a key's upserts find what each column was last set to: a commit of flagged updates
     costs its rows times its columns.
-- **Receipts are kept.** A SQL destination and the memory destination store a receipt for every
-  commit the engine may still repeat and answer a repeated commit from it. Which commits can still
-  be repeated is the engine's knowledge, not a rule of the destination's: a commit declares the
-  oldest it may repeat, its horizon, and a SQL destination and the memory destination forget the
-  receipts before it within that commit; a commit that declares none forgets none (ADR 0004).
+- **The landed key is kept in the fence row.** A SQL destination keeps the key, time, rows and
+  bytes of the last commit that landed beside the pipeline's epoch in `_rdlt_epochs`. A commit
+  reads the row under the transaction's write lock (`SqlDialect::lock_clause`: `FOR UPDATE`, or
+  nothing in SQLite, whose transactions begin `IMMEDIATE`), answers by `answer` (ADR 0004), and
+  where it applies writes its key in one `UPDATE` of the row before the transaction commits: two
+  statements a commit for the fence and the key. The memory destination keeps the same receipt
+  in its pipeline's store.
 - **Tombstones are kept** by the rules of ADR 0027 and no other. A delete of a key the table
   never held leaves one too: its insert may be sent again alone. A merge pays nothing for a
   tombstone it leaves as it was. A history table's upsert lifts its key's
@@ -329,9 +331,7 @@ generated sources were written before it, and each took something as given:
   column is retyped.
 - Dialects with identifiers under 63 bytes are unsupported.
 - A stream holding a float that is no number, or negative zero, does not load into SQLite.
-- `_rdlt_receipts` grows by a row a commit, and a change table's tombstones by a row a key
-  hard-deleted; receipts are forgotten before the horizon each commit declares, and tombstones
-  are not, as no commit horizon shows one unneeded (ADR 0004).
+- A change table's tombstones grow by a row a key hard-deleted, and are not pruned (ADR 0027).
 - A growing log whose group is kept nowhere accepts a start past its head and fails the read
   to be tried again until the head is there: a host that wants a forged start refused keeps
   the group in a file. A group file's beginning is the calendar's: a clock set back between

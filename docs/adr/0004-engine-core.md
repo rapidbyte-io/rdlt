@@ -56,12 +56,18 @@ Building M2a surfaced decisions the spec leaves open or gets wrong.
   failed acknowledgement) does not read the stream again, even when another run completed a cycle
   in between. Without this, `full` + `append` appended a second copy. `TableRef` carries the
   generation `replace` writes fill, and the contract gains `StateKey::Completed`.
-- **Every commit records its own receipt** in state. A run credits a commit whose response was lost
-  to the attempt that made it once a later attempt reads that receipt back, so the report matches
-  what the destination published. Nothing commits a commit again once it lands, so each declares
-  itself its horizon (`CommitMeta::horizon`): a destination forgets the receipt of every commit
-  before it within the commit that declares it, and a commit that declares none, a reset's,
-  forgets none.
+- **Every commit is keyed and expects the key landed before it.** A commit's key is its
+  session's epoch and its place among the session's commits, from 1, and it names `after`, the
+  key it expects the destination to hold landed: the open's landed key for a session's first
+  commit, the commit before it for the rest. The destination keeps the landed key with its time,
+  rows and bytes in the pipeline's fence row, which every commit reads under its write lock, and
+  answers by one decision (`rdlt_connector::answer`): the landed key with its receipt, publishing
+  nothing; a commit of another epoch fenced; one whose `after` is not the landed key fenced and
+  coded `commit_stale`, publishing nothing; the rest applied, writing their key in the same
+  transaction (clause `D-LANDED`). The open returns the landed key's receipt, so a run credits a
+  commit whose answer was lost to the attempt that made it once the next open finds its key
+  landed, and the report matches what the destination published; an attempt is named in the
+  report by its epoch.
 - **The report's counters are written, never read.** What a run waited for and spent its time on
   is counted as it happens and summed into its report; no decision of the engine reads a
   counter, so measuring a run never changes what it does.

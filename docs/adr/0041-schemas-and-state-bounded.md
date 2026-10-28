@@ -40,11 +40,11 @@ one run to the next, broke both:
 - **Persisted forms are versioned and strict.** Every persisted struct refuses a field it does not
   know, and fields that defaulted for records written before them are required. A member that may
   hold nothing is written as `null` and required on read too: a record lacking it is refused, not
-  read as holding nothing. State records are of format 5; the files destination's manifests and
-  catalog versions, and the merge key a SQL destination's staged segment records, carry a format,
-  1, checked on read. What an earlier build wrote is refused, as `state_invalid`,
-  `manifest_invalid`, `catalog_invalid` or an internal error for
-  a staged key; nothing is published, so nothing earlier needs reading. A stream or table name a
+  read as holding nothing. State records are of format 6; the files destination's manifests and
+  catalog versions carry a format, 2, and the merge key a SQL destination's staged segment
+  records a format, 1, each checked on read. What an earlier build wrote is refused, as
+  `state_invalid`, `manifest_invalid`, `catalog_invalid` or an internal error for a staged key;
+  nothing is published, so nothing earlier needs reading. A stream or table name a
   later build refuses (ADR 0042) therefore never reaches the engine from state written before it.
 - **A table is never wider than a schema.** A change that would make a table's columns, every
   nested field counted, more than the schema columns `EngineConfig::limits` derives from the
@@ -85,16 +85,15 @@ one run to the next, broke both:
   so an attempt holds at most 198 of a served destination's writers open, and fewer where
   `writers` is lower, 128 by default (ADR 0042).
 - **Stored state stays what a message can carry.** The engine measures what an open's answer
-  carrying the stored state holds decoded, as the host's scan counts it, from the records it
-  opened on and each commit that lands, and a commit's request alike. A commit whose request, or
-  whose state once landed, would pass the state limit is refused as `state_bytes_exceeded`, a
+  carrying the stored state holds decoded, as the host's scan counts it, from the records it opened
+  on and each commit that lands, and a commit's request alike. A commit whose request, or whose
+  state once landed, would pass the state limit is refused as `state_bytes_exceeded`, a
   non-retryable `Config` error, before any source hears of a position: one refusal, which the
   control plane's own commit-time check folded into (ADR 0042). A plan's request and a report of
-  committed positions carry less of a stream than its stored records. A commit is never split:
-  its segments and positions land together or not at all. State past the limit, stored before
-  the memory was lowered, takes a commit that does not grow it, the receipt left out of that
-  measure since every commit replaces it and its numbers gain digits, so a pipeline whose limit
-  fell keeps loading.
+  committed positions carry no more of a stream than an open's answer carrying its stored records. A
+  commit is never split: its segments and positions land together or not at all. State past the
+  limit, stored before the memory was lowered, takes a commit that does not grow it, so a pipeline
+  whose limit fell keeps loading.
 - **A plan never forgets a position; state pressure forgets done markers.** A partition a plan
   omits keeps its entry, running or `Done`: a plan may omit a partition for a moment, a listing
   that failed in part, and a partition planned again without its entry is read again from its
