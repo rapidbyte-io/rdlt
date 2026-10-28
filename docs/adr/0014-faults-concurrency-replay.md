@@ -85,10 +85,10 @@ The owner chose to keep all of this in one milestone.
   - `just stress` runs it; the nightly workflow runs 200 seeds, as many at once as the runner's
     cores hold, eight cores to a seed. The contention between them is intended.
 - **Same-seed replay.** `check_exactly_once` and `check_changes` return a digest of everything the
-  destination holds at the end (its tables' columns and rows, each pipeline's state, and the
-  receipts), a trace (every report and failure of the phases' runs, in the order the runs ended,
-  hashed; not those of the runs that then check the engine's reports, whose times h2 moves over the
-  network, ADR 0019), and the simulated time they took. A test runs each seed of both twice, one run
+  destination holds at the end (its tables' columns and rows, and each pipeline's state and last
+  commit that landed), a trace (every report and failure of the phases' runs, in the order the
+  runs ended, hashed; not those of the runs that then check the engine's reports, whose times h2
+  moves over the network, ADR 0019), and the simulated time they took. A test runs each seed of both twice, one run
   after the other, and requires the same digests, traces, waits, features, reached paths and
   simulated time (the end time of a networked seed, or of one whose connectors are played in
   processes, apart, ADR 0019). The test job runs twenty seeds, and the nightly workflow a thousand

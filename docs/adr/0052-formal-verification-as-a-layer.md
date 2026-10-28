@@ -51,11 +51,12 @@ A formal layer is added to the layers of its class, never in place of one.
   refuses an aborting build with `#[cfg(all(panic = "abort", not(kani)))] compile_error!(..)`:
   Kani's build runs nothing it compiles, so no caught panic is at stake in it, and every other
   aborting build is still refused. `cargo xtask lint`'s unwinding rule reads `kani` as false.
-- Kani's compiler builds `rdlt-wire` and `rdlt-engine` with their default features, Arrow, tonic,
-  sonic-rs and stacker among them. Each module's proofs are a part of their own, which compiles for
-  seconds when warm, so verification and not compilation is the time, as the bullets below give it
-  harness by harness. Warm on a laptop, `rdlt-wire`'s nine harnesses take about 460 seconds, 319 of
-  them `flow`'s credit harness, and `rdlt-engine`'s three about 250 seconds. A crate's
+- Kani's compiler builds `rdlt-wire`, `rdlt-connector` and `rdlt-engine` with their default
+  features, Arrow, tonic, sonic-rs and stacker among them. Each module's proofs are a part of their
+  own, which compiles for seconds when warm, so verification and not compilation is the time, as
+  the bullets below give it harness by harness. Warm on a laptop, `rdlt-wire`'s nine harnesses take
+  about 460 seconds, 319 of them `flow`'s credit harness, `rdlt-connector`'s two under a second,
+  and `rdlt-engine`'s three about 250 seconds. A crate's
   proofs check its own code, in the crate. Kani's output is not clean: its toolchain warns of the
   `register_tool` feature it forces and of deprecated methods in the engine, and it drops the
   arguments of an `unreachable!`, which warns of an unused variable; none comes from a proof.
@@ -142,6 +143,14 @@ A formal layer is added to the layers of its class, never in place of one.
   budget, a thread-local whose value has a destructor, and Kani 0.68 stops with an internal
   error on any such thread-local, at the `catch_unwind` intrinsic. A harness that takes and
   gives back room without waiting compiles, and took past 10 GB in about 7 minutes.
+- How a destination answers a commit is proved (`rdlt-connector/src/landed/proofs.rs`) for
+  every epoch and place of the fence row's landed key, the commit's key and the key it expects
+  landed: a commit applies only where its key is not the landed key, its epoch is the fence
+  row's and the key it expects landed is the landed key, so neither a landed key, a stale
+  expected key nor a fenced epoch ever applies; a landed key is answered with the receipt the
+  row holds, whichever session sends it; and each refusal is its reason, fenced for another
+  epoch and stale for another expected key. The decision has no loop, so no bound narrows it;
+  the two harnesses take under a second together.
 - Acknowledgement and done markers are property tests, not proofs, because Kani does not run
   the one and does not usefully bound the other. That a source is told only cursors a landed
   commit covers is an order of the async coordinator's calls (`coordinator/tests/acks.rs`), and
@@ -186,38 +195,49 @@ A formal layer is added to the layers of its class, never in place of one.
   orders it: an attempt, its load, opens a session, which fences every session of its pipeline
   opened before, reads each partition from where the destination holds it, commits what it sealed
   under the session's epoch, and tells each partition's source the position its commit landed with
-  only once the commit lands. A source that reads again serves any position; one that cannot
-  forgets what precedes the position it was last told, refuses a read from before it, and serves
-  what follows it to every reader that asks. Attempts crash, commits fail or lose their answer,
-  tellings fail or lose theirs and leave the attempt reading, owing what they carried to its next
-  telling, which a commit with nothing to publish makes too, and attempts start beside one another,
-  two of them reading one partition whose source cannot read again; a retry is an attempt of its
-  own, and the model does not group attempts into runs. Its invariants, each with the check in the
-  code it stands for: every row a partition's position lies past is held once and none past it
-  (`ExactlyOnce`, the contents and cursor checks of the simulation's `check_exactly_once`); no
-  source stands past the position the destination holds (`Acknowledged`, the simulation's
-  `check_acknowledged` and its source's check that no acknowledged offset lies beyond the committed
-  one); a source stands only where it was told, at a position a commit landed with
-  (`PositionOnlyInCommitted`, ADR 0030's `S-ACK` clause as `rdlt-certify` checks it); a position an
-  attempt owes a source is one a commit landed with (`OwedOnlyLanded`, the acknowledgement property
-  test's check that every report, made again or not, carries only cursors a landed commit covers);
-  no commit lands from a fenced session (`FencedNeverCommits`, the destination's fence, which the
-  model's destination enforces and no simulation check covers).
-  Each has a test that breaks its rule: `Acknowledged`'s tells a source the position of what it
-  sealed before its commit lands. Once faults stop, every row lands once (`Converges`), which TLC
-  checks under weak fairness of every step; a position never moves back, so the load stays so. The
-  protocol is a module of constants. The checkers explore one pipeline reading a partition that
-  reads again, of one row, and one that does not, of two; five attempts and two faults: a fault
-  ends one attempt at most, so three leave one that meets none, and the others start beside a live
-  one or once the load converged. The checkers are held to 20 minutes for TLC and 10 for Apalache
-  on the nightly runner, and half that on four workers of a developer's machine: TLC checks every
-  state, 298,944 of them, in about 25 seconds there, and Apalache every run of up to eight steps
-  in about 235 seconds, where nine take past 5 minutes. Two rows of each partition take TLC
-  3,846,313 states and about 6 minutes there. A second pipeline sharing the destination with a
-  partition of its own is the module `exactly_once_pair`, which `just quint` tests and simulates
-  and no checker explores; a test shows that its sessions fence none of the first pipeline's.
-  `just quint` simulates 2,000 runs of 60 steps of each module, and its tests and runs of this
-  spec take about 22 seconds on a developer's machine.
+  only once the commit lands. Each commit is keyed by its session's epoch and its place among the
+  session's commits and expects a key landed: the destination keeps the last key that landed, and
+  answers by the decision `rdlt_connector::answer` makes, the landed key with its receipt, another
+  epoch fenced, another expected key stale, the rest applied; an attempt that never heard its
+  commit's answer leaves it in flight for its run, which credits it once the next open finds its key
+  landed. A source that reads again serves any position; one that cannot forgets what precedes the
+  position it was last told, refuses a read from before it, and serves what follows it to every
+  reader that asks. Attempts crash, commits fail or lose their answer, tellings fail or lose theirs
+  and leave the attempt reading, owing what they carried to its next telling, which a commit with
+  nothing to publish makes too, and attempts start beside one another, two of them reading one
+  partition whose source cannot read again; a retry is an attempt of its own, and the model does not
+  group attempts into runs. Its invariants, each with the check in the code it stands for: every row
+  a partition's position lies past is held once and none past it (`ExactlyOnce`, the contents and
+  cursor checks of the simulation's `check_exactly_once`); no source stands past the position the
+  destination holds (`Acknowledged`, the simulation's `check_acknowledged` and its source's check
+  that no acknowledged offset lies beyond the committed one); a source stands only where it was
+  told, at a position a commit landed with (`PositionOnlyInCommitted`, ADR 0030's `S-ACK` clause as
+  `rdlt-certify` checks it); a position an attempt owes a source is one a commit landed with
+  (`OwedOnlyLanded`, the acknowledgement property test's check that every report, made again or not,
+  carries only cursors a landed commit covers); no commit lands from a fenced session
+  (`FencedNeverCommits`, the destination's fence, which the model's destination enforces and no
+  simulation check covers); no key a commit applies is at or below the key landed before it, so a
+  landed key never applies twice (`LandedKeyAppliesOnce`, the destination's `answer` and
+  certification's `D-LANDED`); and a run credits only a commit that landed (`CreditedOnlyLanded`,
+  the run's ledger and the kill matrix's lost answers). Each has a test that breaks its rule:
+  `Acknowledged`'s tells a source the position of what it sealed before its commit lands;
+  `commit_without_after` sends a copy of a commit a later one overtook to a destination that never
+  compares the key it expects, which applies it again and breaks `LandedKeyAppliesOnce`,
+  `ExactlyOnce` and `Acknowledged`; and a run crediting by epoch alone credits a commit that failed.
+  Once faults stop, every row lands once (`Converges`), which TLC checks under weak fairness of
+  every step; a position never moves back, so the load stays so. The protocol is a module of
+  constants. The checkers explore one pipeline reading a partition that reads again, of one row, and
+  one that does not, of two; five attempts and two faults: a fault ends one attempt at most, so
+  three leave one that meets none, and the others start beside a live one or once the load
+  converged. The checkers are held to 20 minutes for TLC and 10 for Apalache on the nightly runner,
+  and half that on four workers of a developer's machine: TLC checks every state, 365,230 of them,
+  in about 30 seconds there, and Apalache every run of up to eight steps in about 260 seconds, where
+  nine take past 5 minutes. Two rows of each partition take TLC 4,921,542 states and about 9 minutes
+  there. A second pipeline sharing the destination with a partition of its own is the module
+  `exactly_once_pair`, which `just quint` tests and simulates and no checker explores; a test shows
+  that its sessions fence none of the first pipeline's. `just quint` simulates 2,000 runs of 60
+  steps of each module, and its tests and runs of this spec take about 25 seconds on a developer's
+  machine.
 - Re-planning in a continuous run is specified (`specs/replan.qnt`, ADR 0031): partitions the source
   names appear, change between bounded and unbounded, and disappear between plans, a read keeping
   the kind its partition had when it started; a running read the plan drops stops, and a later

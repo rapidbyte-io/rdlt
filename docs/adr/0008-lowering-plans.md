@@ -6,8 +6,9 @@ Status: accepted, 2026-09-24; the per-value differential it defers is ADR 0011's
 
 M3 of the spec was split three ways: M3a shreds JSON (ADR 0007); M3b makes lowering a plan
 computed once per table view and incoming schema, runs it off the runtime, dictionary-encodes
-the load id, and evaluates `arrow-json` as a fast path for flat JSON; M3c brings `normalize`,
-child tables and lineage ids. Building M3b surfaced decisions the spec leaves open.
+the constant metadata columns, and evaluates `arrow-json` as a fast path for flat JSON; M3c
+brings `normalize`, child tables and lineage ids. Building M3b surfaced decisions the spec leaves
+open.
 
 ## Decision
 
@@ -39,12 +40,10 @@ child tables and lineage ids. Building M3b surfaced decisions the spec leaves op
     way back; every other lowering costs in proportion to its rows. The rule follows from the
     plan and the batch's types, so no threshold is tuned: a load's first piece, which builds the
     constant columns, goes to the pool, and its next pieces do not.
-- **Constant metadata columns are dictionaries.** `_rdlt_load_id` and `_rdlt_loaded_at` hold one
-  value per load, so each is a dictionary of one value with an `Int8` key per row (spec §8.5
-  names the load id; the load start is constant alike). A plan builds them once and slices them
-  per batch, building them again only for a new load or a batch of more rows than they hold.
-  Their logical types stay `Uuid` and `Timestamp`, and `Field::from_arrow` keeps an extension type
-  under a dictionary or run-end encoding.
+- **Constant metadata columns are dictionaries.** `_rdlt_load_epoch` and `_rdlt_loaded_at` hold
+  one value per session, so each is a dictionary of one value with an `Int8` key per row. A plan
+  builds them once and slices them per batch, building them again only for a new session or a
+  batch of more rows than they hold. Their logical types stay `Int64` and `Timestamp`.
 - **Destinations take dictionary-encoded columns.** The writer contract says a column may be
   dictionary-encoded and its values are what the column stores; clause `D-ENCODING` checks it.
   The SQLite destination decodes them; the memory and files destinations already store them.

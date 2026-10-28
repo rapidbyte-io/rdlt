@@ -61,12 +61,12 @@ contract M2b settles. Building M2b surfaced decisions the spec leaves open or ge
   type inside them is native; otherwise they, and `Json`, become `Json`, or JSON text where the
   destination has no JSON type. The `json` nested policy only lowers: the logical type stays a
   struct or list.
-- **Metadata columns.** Every row carries `_rdlt_load_id` (the load's UUID) and
-  `_rdlt_loaded_at` (the attempt's start, microseconds, UTC); merge rows carry `_rdlt_seq`, 16
-  bytes of `Binary`: the segment id then the row's index in the segment, big-endian. Every
-  metadata column's identifier is fixed by the rules alone, whatever columns a table has, and a
-  source column asking for one is refused (`column_name_reserved`). The spec's
-  dictionary-encoded load id arrives with the lowering plan (M3).
+- **Metadata columns.** Every row carries `_rdlt_load_epoch` (the epoch of the session that
+  wrote it, `Int64`) and `_rdlt_loaded_at` (the attempt's start, microseconds, UTC); merge rows
+  carry `_rdlt_seq`, 16 bytes of `Binary`: the segment id then the row's index in the segment,
+  big-endian. Every metadata column's identifier is fixed by the rules alone, whatever columns a
+  table has, and a source column asking for one is refused (`column_name_reserved`). The two
+  constant columns are dictionary-encoded by the lowering plan (ADR 0008).
 - **Merge.** The key comes from the plan or the catalog's primary key. `TableRef::merge` names the
   key columns and the sequence column; the engine keeps the last row of each key within a batch,
   and the destination keeps one row per key: the newest commit's, and within a commit the

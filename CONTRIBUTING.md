@@ -61,7 +61,7 @@ Use only these words for these concepts, in code, docs, logs and errors.
 |---|---|
 | pipeline | A named configuration of one source, one destination, selected streams and their policies |
 | run / attempt | One `start()` of a pipeline / one try within it; each retry is a new attempt |
-| load | The work of one attempt, identified by a `LoadId` |
+| load | The work of one attempt, identified by the epoch of the session it opened |
 | stream | A source-side named sequence of records |
 | partition | A source-defined slice of a stream; the unit of parallel reading and of cursor state |
 | push | One delivery from a source into the engine: an Arrow batch, JSON bytes or a change batch |

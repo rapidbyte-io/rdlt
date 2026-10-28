@@ -13,11 +13,12 @@ and building them surfaced decisions the spec leaves open.
 
 - **`sqlgen` plans; destinations run.** A dialect gives quoting, placeholders, column types, when
   a declared type holds a logical type, an optional in-place widen and its catalog query;
-  `SqlPlanner` turns them into parameterized statements for the catalog (epochs, state,
-  receipts, registered tables and generations, staged segments), schema changes, staging,
-  publishing and generation swaps. The destination runs them in its own transactions. The SQLite
-  dialect ships with `sqlgen`, so its tests run every statement against SQLite through a
-  development dependency on `rusqlite`; Postgres brings its own dialect in `rdlt-connectors`.
+  `SqlPlanner` turns them into parameterized statements for the catalog (each pipeline's fence
+  row of its epoch and landed key, state, registered tables and generations, staged segments),
+  schema changes, staging, publishing and generation swaps. The destination runs them in its own
+  transactions. The SQLite dialect ships with `sqlgen`, so its tests run every statement against
+  SQLite through a development dependency on `rusqlite`; Postgres brings its own dialect in
+  `rdlt-connectors`.
 - **Staged rows carry who staged them.** Every table has a staging table beside it whose rows
   record the pipeline, epoch, segment and generation. A commit publishes only its own epoch's
   rows, so a fenced writer's late rows are never published, and `discard_staged` removes only
@@ -68,16 +69,16 @@ and building them surfaced decisions the spec leaves open.
   epoch. Each pipeline's directory is `_rdlt/pipelines/<id>-<hash>`, so ids that differ only in
   case never share one, and a manifest names its files by their paths beneath it. Directories
   are created 0700 and files 0600, the destination's user's alone (ADR 0047). A segment's files
-  are staged at `staging/<epoch>/<load>/<segment>/<table>/<generation>/<part>.<ext>` beneath the
+  are staged at `staging/<epoch>/<segment>/<table>/<generation>/<part>.<ext>` beneath the
   pipeline's directory. A commit's own files, a merge table's rewrite, its tombstones and a
   compaction, are staged there too, with `merged`, `tombstones` or `compacted` and a name unique
-  to the commit's try (`<load>-<commit>-<random>`) in place of the segment. Files are published
-  where they are. A commit, once its manifest is durable, removes the files that manifest no
-  longer lists, and opening removes what older epochs staged or wrote that the latest manifest
-  does not list. A merge table's commit rewrites the whole table: JSON lines as one
+  to the commit's try (`<epoch>-<seq>-<random>`, its key) in place of the segment. Files are
+  published where they are. A commit, once its manifest is durable, removes the files that
+  manifest no longer lists, and opening removes what older epochs staged or wrote that the latest
+  manifest does not list. A merge table's commit rewrites the whole table: JSON lines as one
   file, Arrow as a file for each set of columns its rows hold, the smallest sets joined where
-  there are more than 16. The manifest keeps the receipts no commit's horizon has passed, and the
-  8 versions before the latest stay on disk.
+  there are more than 16. The manifest keeps the receipt of the last commit that landed, its key
+  answering that commit sent again, and the 8 versions before the latest stay on disk.
 - **Formats decide types.** Arrow IPC files keep every type; JSON lines keep scalars, structs and
   lists, and the engine stores the rest as text. A table's columns live in a catalog under the
   root, which schema changes update with the rules the memory destination follows; each change
@@ -99,7 +100,7 @@ and building them surfaced decisions the spec leaves open.
 
 ## Consequences
 
-SQL destinations inherit publishing, fencing and idempotence from `sqlgen` and test them against
-SQLite. The files destination runs on local filesystems; object storage replaces the hard link
-with its conditional put. Readers of the files destination follow the latest manifest; a
+SQL destinations inherit publishing, fencing and the landed key from `sqlgen` and test them
+against SQLite. The files destination runs on local filesystems; object storage replaces the hard
+link with its conditional put. Readers of the files destination follow the latest manifest; a
 consumer-facing layout is the connector's business and can be built from the manifest.

@@ -99,7 +99,7 @@ partition inside a run; the second is an operator's command between runs. So the
 - **Bounded reports.** An attempt folds each commit into running totals rather than keeping every
   commit record. A run keeps only its latest two attempts unfolded, since a later attempt may
   credit a commit in flight to the one before it. A credit that finds its attempt already folded
-  goes to the report, by the load its receipt names. The report lists the latest 128 attempts
+  goes to the report, by the epoch its key names. The report lists the latest 128 attempts
   (`REPORTED_ATTEMPTS`) and counts them all (`Report::attempted`).
 - **`S-ACK` probes incremental streams too:** the first stream read as changes, else the first
   read incrementally. An offset log's consumer group keeps its committed offsets outside the

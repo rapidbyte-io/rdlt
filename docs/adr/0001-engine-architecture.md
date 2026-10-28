@@ -5,7 +5,7 @@ Status: accepted, 2026-09-23.
 ## Context
 
 rdlt is a from-scratch rewrite of an earlier engine whose core idea held up (cursors committed in
-the same destination transaction as the data, idempotent on `(load_id, commit_seq)`) but whose
+the same destination transaction as the data, each commit applied once) but whose
 implementation had silent correctness bugs, a serial data path and inconsistent code.
 
 ## Decision

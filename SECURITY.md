@@ -211,9 +211,9 @@ are (ADR 0042):
   hide or reorder text, and an error's code must be a token that is none of the host's own;
 - every call into a connector has a deadline in every placement, a read asked to stop is
   dropped after its wait, and a failed attempt closes its session;
-- a receipt must answer its own commit, a table keeps the merge key and change time it was
-  loaded by, and opened state must hold each key once and only names its destination's rules
-  could have given; a reset recovers a pipeline whatever names its state records, and drops no
+- a receipt must answer its own commit by its key, a table keeps the merge key and change time
+  it was loaded by, and opened state must hold each key once and only names its destination's
+  rules could have given; a reset recovers a pipeline whatever names its state records, and drops no
   table under a name its destination reserves;
 - a connector's error neither sets a wait outside the retry policy nor claims a fence or a stop
   the engine did not see, and a read that keeps losing its place spends the retry budget.

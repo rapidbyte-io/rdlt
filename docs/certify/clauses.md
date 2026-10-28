@@ -75,7 +75,7 @@ A certification cut at its timeout reports what it saw: the clauses already chec
 | `D-EPOCH` | each open returns a higher epoch than every earlier open of its pipeline, a commit that drops its tables and deletes its state between them included | — |
 | `D-STAGING` | staged segments are invisible until committed | — |
 | `D-COMMIT` | a commit publishes exactly its segments and reports their rows | — |
-| `D-IDEMPOTENT` | re-committing a commit no horizon of its pipeline has passed returns its receipt and publishes nothing | — |
+| `D-LANDED` | the commit whose key landed last, sent again from its session or a newer one, returns its receipt and publishes nothing; a commit expecting another key landed fails fenced, coded commit_stale, and publishes nothing | — |
 | `D-STATE` | committed state records are returned by the next open | — |
 | `D-DISCARD` | segments staged by an earlier session, or that a commit abandons, are never published | — |
 | `D-REPLACE` | a replace generation stays hidden until the commit that finishes it swaps it in | the destination cannot replace |

@@ -39,10 +39,9 @@ the spec's `D-MERGE` names the seq guard, which the clause never exercised.
     bound is a row naming no key.
   - Tombstones are kept for as long as the table is merged, one per key a hard delete removed:
     that is the cost of hard deletes, and a hard truncate prunes them. No rule prunes them by
-    age or count, and a delete of a key the table never held leaves one too (ADR 0049). The
-    horizon a commit declares for receipts prunes no tombstone, since a source sends a change
-    before a delete again whenever it resumes past it. A table replaced whole, by a generation,
-    forgets them.
+    age or count, and a delete of a key the table never held leaves one too (ADR 0049), since a
+    source sends a change before a delete again whenever it resumes past it. A table replaced
+    whole, by a generation, forgets them.
   - Changes the snapshot holds are never sent again: a source resumes past its position, so
     tombstones start with the changes, not the snapshot.
 - **SQL change merges** (`sqlgen`, and the SQLite destination through it).
