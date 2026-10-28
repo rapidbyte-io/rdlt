@@ -1126,6 +1126,51 @@ async fn discards_are_reported_with_the_commit_that_publishes_their_segment() {
     );
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_segment_left_without_rows_publishes_nothing_and_counts_only_what_it_dropped() {
+    let (task, harness) = Setup::new(
+        vec![stream(WriteMode::Append, None, 1)],
+        vec![partition("p0", false)],
+    )
+    .start()
+    .await;
+    harness.send(Progress::Sealed(Seal {
+        partition: 0,
+        segment: SegmentId(1),
+        rows: 0,
+        bytes: 0,
+        state: PartitionState::Cursor(cursor(6)),
+        answers: None,
+        discarded_rows: 2,
+        discarded_values: 0,
+        deletes_ignored: 3,
+        truncates_ignored: 1,
+        shred: crate::report::ShredCounts::default(),
+        held: CursorHold::default(),
+    }));
+    harness.end(0, false);
+    ended(task).await.unwrap();
+    let commits = harness.commits.lock();
+    assert_eq!(commits.len(), 1);
+    assert!(commits[0].segments.is_empty());
+    assert_eq!(
+        without_receipt(&commits[0].state_delta),
+        [position("p0", PartitionState::Cursor(cursor(6)))]
+    );
+    let log = harness.log.lock();
+    let report = &log.committed.streams[&name()];
+    assert_eq!(
+        (
+            report.commits,
+            report.rows,
+            report.discarded_rows,
+            report.deletes_ignored,
+            report.truncates_ignored
+        ),
+        (0, 0, 2, 3, 1)
+    );
+}
+
 fn new_cycle(generation: u64, stale: &[&str]) -> Cycle {
     Cycle {
         generation: GenerationId(generation),
