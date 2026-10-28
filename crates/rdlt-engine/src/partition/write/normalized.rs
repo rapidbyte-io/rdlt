@@ -18,9 +18,9 @@ use super::pieces::{self, Lowered};
 use super::units::Units;
 use super::{
     Held, OpenSegment, PartitionContext, PartitionJob, Room, full, queue, reserve, schema_invalid,
-    schema_of, stamp,
+    schema_of, stamp, taking,
 };
-use crate::budget::Shares;
+use crate::budget::{Shares, TooLarge};
 use crate::cost::{LINEAGE_ITEM, SPLIT_COPIES, lineage_row};
 use crate::error::{Error, codes};
 use crate::limits::MIN_PIECE;
@@ -39,8 +39,9 @@ use crate::table::{
 ///   an allowance for lowering its parts. It is split on the compute pool, its parts' tables and
 ///   plans are found in order, parents first, and each part is cut by what lowering it into its
 ///   own table holds. What the piece asked for beyond what it needs is given back.
-/// - The parts' pieces are lowered inside the allowance: the partition waits for its own pieces
-///   to be written, never for the budget, while it holds any of them.
+/// - The allowance is lent to the parts' pieces, each taking what lowering it holds and giving it
+///   back as it is written: the partition waits for its own pieces to be written, never for the
+///   budget, while it holds any of them.
 ///
 /// The units are one flush, so each table's integers are judged over all of them where they lie,
 /// before any is split, and a table the flush finds not yet created takes every column and array
@@ -76,26 +77,27 @@ pub(super) async fn write_normalized(
         let rendering = context.rendering.as_ref().clone();
         let cut = on_pool(context, move || cutter.cut(&rendering, unit)).await;
         let cut = cut.map_err(|row| room.refusal(job, &context.budget, &row))?;
-        // The allowance is as much as the pieces lowered at once take: the rest is given back.
-        let allowance = cutter.for_pieces(&cut);
-        reserved.shrink(made.saturating_add(allowance.bytes));
+        // The allowance is as much as the pieces lowered at once take: the rest is given back,
+        // and the allowance is lent to the pieces.
+        let allowance = cutter.allowance(&cut);
+        reserved.shrink(made.saturating_add(allowance));
+        let lent = reserved.split(allowance).lend();
         if piece == last {
             // No piece asks for more: what the room has left goes back to the budget.
             room.close();
         }
         // The piece's parts on their lanes share what holds them, the piece's batches and what
-        // it reserved until the last of them is written: the parts go first, then the piece's
-        // rows and with them its share of the unit, then what the split made.
+        // its split made, until the last of them is written: the parts go first, then the
+        // piece's rows and with them its share of the unit, then what the split made.
         let hold = Arc::new(Mutex::new((kept, held, reserved)));
         let mut cut = cut.into_iter().peekable();
         while let Some(piece) = cut.next() {
             // The partition waits for its allowance only while it holds no piece it has not
             // handed to its lane; the pieces the allowance has room for are lowered together.
-            let taken = allowance.take(&context.budget, &context.cancel, &piece);
-            let taken = taken.await?;
+            let taken = taking(&context.cancel, &lent, piece.bytes, unfit).await?;
             let mut window = vec![(piece, taken)];
             while !full(window.len()) {
-                let Some(taken) = cut.peek().and_then(|next| allowance.try_take(next)) else {
+                let Some(taken) = cut.peek().and_then(|next| lent.try_take(next.bytes)) else {
                     break;
                 };
                 window.extend(cut.next().map(|piece| (piece, taken)));
@@ -104,8 +106,8 @@ pub(super) async fn write_normalized(
             let tables: Vec<usize> = pieces.iter().map(|piece| piece.table).collect();
             let prepared = lower(context, pieces, stamp).await;
             for ((prepared, taken), table) in prepared.into_iter().zip(taken).zip(tables) {
-                // The piece on its lane holds its part of the allowance, and with it what the
-                // piece reserved, until it is written.
+                // The piece on its lane holds its part of the allowance, which goes back to it
+                // as the piece is written, and with it what holds the piece's parts.
                 let permit = Box::new((taken, Arc::clone(&hold))) as Permit;
                 queue(job, context, open, table, prepared?, permit).await?;
             }
@@ -131,6 +133,15 @@ async fn lower(
     }
     let lowerings = pieces.into_iter().map(|piece| move || lowering(piece));
     context.pool.run_all(lowerings).await
+}
+
+/// The error for a part's piece that takes more than the allowance it is lowered in, which holds
+/// every piece whole.
+fn unfit(large: TooLarge) -> Error {
+    Error::internal(format!(
+        "a part's piece takes {} bytes, more than its allowance of {}",
+        large.asked, large.limit
+    ))
 }
 
 /// Bytes: the most the rows of a piece cut before its split may take as they arrive, and a row's

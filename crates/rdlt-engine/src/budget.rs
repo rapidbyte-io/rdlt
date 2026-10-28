@@ -308,11 +308,10 @@ impl MemoryBudget {
         Signal(self.shared.lock().cursor_waits.subscribe())
     }
 
-    /// Presses whoever holds queued pieces to write them, for as long as what is returned lives:
-    /// for a holder of an allowance waiting for its own pieces to be written.
+    /// Presses whoever holds queued pieces to write them, for as long as what is returned lives.
+    #[cfg(test)]
     pub(crate) fn pressing(&self) -> Pressing {
-        self.shared.lock().pressing(true);
-        Pressing(Arc::clone(&self.shared))
+        Pressing::on(&self.shared)
     }
 
     /// The bytes the budget holds.
@@ -375,6 +374,14 @@ impl fmt::Debug for MemoryBudget {
 
 /// Pressure on the holders of queued pieces, lifted when dropped.
 pub(crate) struct Pressing(Arc<Mutex<Ledger>>);
+
+impl Pressing {
+    /// Pressure on the holders of the queued pieces of the budget whose ledger is `shared`.
+    fn on(shared: &Arc<Mutex<Ledger>>) -> Self {
+        shared.lock().pressing(true);
+        Self(Arc::clone(shared))
+    }
+}
 
 impl Drop for Pressing {
     fn drop(&mut self) {
@@ -564,10 +571,7 @@ impl Lent {
         if let Some(taken) = self.try_take(bytes) {
             return Ok(taken);
         }
-        let _pressing = self.0.ledger.as_ref().map(|shared| {
-            shared.lock().pressing(true);
-            Pressing(Arc::clone(shared))
-        });
+        let _pressing = self.0.ledger.as_ref().map(Pressing::on);
         loop {
             // A part that went back since the last try left its notice.
             self.0.returned.notified().await;

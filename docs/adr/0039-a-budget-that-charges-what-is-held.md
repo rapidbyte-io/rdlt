@@ -257,9 +257,10 @@ budget before it is held, or bounded by a limit with a typed refusal.
     What the piece asked for beyond what its split made and an allowance for two of its parts'
     pieces is given back. What the split made is counted beyond the unit's batches, with the
     arrays of the piece's slices of them, of its parts' batches and of their lineage, and the
-    piece and the parts it planned are held until the last of their pieces is written. Its
-    parts' pieces are lowered inside the allowance: the partition waits for its own pieces to be
-    written, never for the budget, while it holds them.
+    piece and the parts it planned are held until the last of their pieces is written. The
+    allowance is lent to its parts' pieces: each takes the bytes lowering it holds and gives
+    them back as it is written, so the partition waits for its own pieces to be written, never
+    for the budget, while it holds them, and the allowance goes back with the last of them.
   - A change stream's unit is judged and cut where it lies: it is split into its data and its
     change columns, and loses the rows its stream ignores, only as each piece is lowered.
   - A JSON push reserves three times its text and `MESSAGE_ROOM` when it is admitted: the text and
@@ -312,9 +313,9 @@ budget before it is held, or bounded by a limit with a typed refusal.
     with it, and so does the read, in process and through a host. It may refuse what a read
     keeps too (`Admission::charge`).
   - A request nobody waits for any more leaves the queue at once.
-  - A partition waiting for its own pieces to be written, for room in what it was lent or in a
-    normalized piece's allowance, waits on its lanes, not on the budget: no deadline of the
-    budget's ends it, as none ends a wait for a lane.
+  - A partition waiting for its own pieces to be written, for room in what it was lent, a JSON
+    flush's room or a normalized piece's allowance, waits on its lanes, not on the budget: no
+    deadline of the budget's ends it, as none ends a wait for a lane.
   - A read's schema and dictionaries are released before their replacement is charged, and
     however the read ends: returned, failed, stopped or dropped.
 - **A measure bounded by the rows and by what they name once.** What rows expand to is measured
