@@ -12,7 +12,7 @@ use super::waiting::Standing;
 use super::{Coordinator, KEPT_COMPLETIONS};
 use crate::partition::CursorHold;
 use crate::plan::WriteMode;
-use crate::report::{ShredCounts, StreamReport};
+use crate::report::StreamReport;
 
 /// What the sealed segments of a commit add up to.
 pub(super) struct Collected {
@@ -65,31 +65,19 @@ impl Coordinator {
         self.sealing.clear();
         for seal in counted {
             let stream = self.parts.partitions[seal.partition].stream;
+            // Each seal taken counts something of its stream's: rows, drops or shredding.
+            let counts = collected.streams.entry(stream).or_default();
             if seal.rows > 0 {
                 collected.segments.insert(seal.segment);
-                let counts = collected.streams.entry(stream).or_default();
-                counts.rows += seal.rows;
-                counts.bytes += seal.bytes;
                 counts.commits = 1;
             }
-            if seal.discarded_rows > 0 || seal.discarded_values > 0 {
-                let counts = collected.streams.entry(stream).or_default();
-                counts.discarded_rows += seal.discarded_rows;
-                counts.discarded_values += seal.discarded_values;
-            }
-            if seal.deletes_ignored > 0 || seal.truncates_ignored > 0 {
-                let counts = collected.streams.entry(stream).or_default();
-                counts.deletes_ignored += seal.deletes_ignored;
-                counts.truncates_ignored += seal.truncates_ignored;
-            }
-            if seal.shred != ShredCounts::default() {
-                collected
-                    .streams
-                    .entry(stream)
-                    .or_default()
-                    .shred
-                    .add(&seal.shred);
-            }
+            counts.rows += seal.rows;
+            counts.bytes += seal.bytes;
+            counts.discarded_rows += seal.discarded_rows;
+            counts.discarded_values += seal.discarded_values;
+            counts.deletes_ignored += seal.deletes_ignored;
+            counts.truncates_ignored += seal.truncates_ignored;
+            counts.shred.add(&seal.shred);
         }
         collected.stand(standing);
         // A partition done with no cursor among the seals is told the cursor it stood at: a
