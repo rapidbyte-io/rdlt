@@ -393,8 +393,8 @@ impl Resolver {
 
     /// Whether `column`'s values widen its column of `current` in place to `joined`.
     ///
-    /// Only the lattice's joins do: a column of integers joined to floats by its values takes a
-    /// variant, since a partition's plan made before may still write it integers.
+    /// Only the lattice's joins do: a float rounds 64-bit integers beyond 2⁵³, so floats meeting a
+    /// column of them take a variant.
     fn widens_in_place(
         &self,
         column: &Arriving<'_>,

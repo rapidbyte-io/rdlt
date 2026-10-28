@@ -36,27 +36,15 @@ impl Draft {
         }
     }
 
-    /// Whether every value of the table's column at `column` is exact as a 64-bit float.
-    ///
-    /// A column this resolution adds takes its values from the batch, whose column never meets
-    /// another type in it, so only the table's columns are asked.
-    pub(super) fn is_exact(&self, column: usize) -> bool {
-        self.model
-            .columns
-            .get(column)
-            .is_some_and(|field| self.model.exact.contains(field.name()))
-    }
-
     /// The type a column at `column` takes to hold `arriving`'s values too: the lattice's join,
-    /// except that floats joining 64-bit integers every one of which a float holds exactly join
-    /// them as floats.
+    /// except that floats join 64-bit integers as floats, which a variant of floats holds.
     pub(super) fn join(&self, column: usize, arriving: &Arriving<'_>) -> LogicalType {
         let current = self.column_type(column);
         let floats = matches!(
             arriving.logical,
             LogicalType::Float32 | LogicalType::Float64
         );
-        if current == LogicalType::Int64 && floats && self.is_exact(column) {
+        if current == LogicalType::Int64 && floats {
             LogicalType::Float64
         } else {
             current.join(arriving.logical)
