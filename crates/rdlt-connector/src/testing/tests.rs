@@ -31,11 +31,11 @@ use crate::destination::{
     TableWriter, WriteStats,
 };
 use crate::emitter::Emitter;
-use crate::error::{COLUMN_MISSING, ConnectorError, ConnectorErrorKind, Result};
+use crate::error::{COLUMN_MISSING, COMMIT_STALE, ConnectorError, ConnectorErrorKind, Result};
 use crate::id::{
-    CommitSeq, Epoch, GenerationId, LoadId, PartitionId, PipelineId, SchemaVersion, SegmentId,
-    StreamName, TablePath,
+    Epoch, GenerationId, PartitionId, PipelineId, SchemaVersion, SegmentId, StreamName, TablePath,
 };
+use crate::landed::{Answer, Fence, answer};
 use crate::sink::Push;
 use crate::source::{Partition, PartitionPlan, ReadStream, SourceConnector, Streams};
 use crate::spec::{BoxFuture, ConnectContext};
@@ -617,11 +617,16 @@ struct VaultConfig {
     /// Refuses a commit, or a claim of a table, by a session a newer one fenced as a data error.
     wrong_fence_kind: bool,
     refuse_connect: bool,
-    forget_receipts: bool,
-    /// Forgets the receipt of the commit a horizon names, with those of the commits before it.
-    forget_at_horizon: bool,
-    /// Forgets the receipts before a horizon of every pipeline's, not the committing one's alone.
-    forget_others: bool,
+    /// Applies a commit expecting another key landed than the landed key.
+    ignore_after: bool,
+    /// Refuses a commit expecting another key landed than the landed key as fenced, uncoded.
+    uncoded_stale: bool,
+    /// Answers the landed key with a receipt counting a row more than the receipt it keeps.
+    recount_landed: bool,
+    /// Keeps the landed key in this connection's memory, not the store.
+    local_landed: bool,
+    /// Keeps one landed key for every pipeline.
+    shared_landed: bool,
     publish_all: bool,
     /// Publishes, for each segment a commit lists, one it staged and the commit does not list.
     publish_other: bool,
@@ -779,7 +784,8 @@ struct VaultConfig {
 struct VaultStore {
     epochs: BTreeMap<PipelineId, u64>,
     state: BTreeMap<PipelineId, BTreeMap<String, StateRecord>>,
-    receipts: BTreeMap<(PipelineId, LoadId, CommitSeq), Receipt>,
+    /// The receipt of each pipeline's last commit that landed.
+    landed: BTreeMap<PipelineId, Receipt>,
     staged: BTreeMap<(PipelineId, SegmentId), Vec<Staged>>,
     published: BTreeMap<String, Vec<RecordBatch>>,
     /// Committed rows of replace generations, by table and generation.
@@ -869,6 +875,28 @@ impl VaultConfig {
         }
     }
 
+    /// What the vault answers `meta` with before it publishes, as `fence` and its flags say; none
+    /// for a commit it goes on with.
+    fn answered(&self, fence: &Fence, meta: &CommitMeta) -> Option<Result<Receipt>> {
+        match answer(fence, meta.key, meta.after) {
+            Answer::Landed(receipt) if !self.republish => Some(Ok(Receipt {
+                rows: receipt.rows + u64::from(self.recount_landed),
+                ..receipt.clone()
+            })),
+            Answer::Stale if self.uncoded_stale => Some(Err(ConnectorError::fenced("stale"))),
+            Answer::Stale if !self.ignore_after => {
+                Some(Err(ConnectorError::fenced("stale").with_code(COMMIT_STALE)))
+            }
+            _ => None,
+        }
+    }
+
+    /// The epoch an open reports for the session it opened at `epoch`: always the first under
+    /// `static_epoch`.
+    fn reported(&self, epoch: u64) -> Epoch {
+        Epoch(if self.static_epoch { 1 } else { epoch })
+    }
+
     /// The pipeline's current epoch, from the store this configuration keeps epochs in.
     fn epoch(&self, shared: &VaultStore, stores: &VaultStores, pipeline: &PipelineId) -> u64 {
         let epochs = |store: &VaultStore| store.epochs.get(pipeline).copied().unwrap_or_default();
@@ -884,6 +912,48 @@ impl VaultConfig {
             &stores.local
         } else {
             &stores.shared
+        }
+    }
+
+    /// The pipeline the landed key of `pipeline` is kept under: one for all under
+    /// `shared_landed`.
+    fn landing(&self, pipeline: &PipelineId) -> PipelineId {
+        if self.shared_landed {
+            PipelineId::parse("every").expect("a valid pipeline id")
+        } else {
+            pipeline.clone()
+        }
+    }
+
+    /// The receipt of `pipeline`'s last commit that landed, from the store this configuration
+    /// keeps it in.
+    fn landed(
+        &self,
+        shared: &VaultStore,
+        stores: &VaultStores,
+        pipeline: &PipelineId,
+    ) -> Option<Receipt> {
+        let landed = |store: &VaultStore| store.landed.get(&self.landing(pipeline)).cloned();
+        if self.local_landed {
+            landed(&stores.local.lock().unwrap())
+        } else {
+            landed(shared)
+        }
+    }
+
+    /// Keeps `receipt` as `pipeline`'s last commit that landed.
+    fn land(
+        &self,
+        shared: &mut VaultStore,
+        stores: &VaultStores,
+        pipeline: &PipelineId,
+        receipt: Receipt,
+    ) {
+        let key = self.landing(pipeline);
+        if self.local_landed {
+            stores.local.lock().unwrap().landed.insert(key, receipt);
+        } else {
+            shared.landed.insert(key, receipt);
         }
     }
 }
@@ -1007,11 +1077,7 @@ impl DestinationConnector for Vault {
             .get(&context.pipeline)
             .map(|state| state.values().cloned().collect())
             .unwrap_or_default();
-        let reported = if self.config.static_epoch {
-            Epoch(1)
-        } else {
-            Epoch(epoch)
-        };
+        let reported = self.config.reported(epoch);
         let session = VaultSession {
             config: Arc::clone(&self.config),
             stores: self.stores.clone(),
@@ -1019,9 +1085,14 @@ impl DestinationConnector for Vault {
             epoch,
             tombstones: Mutex::default(),
         };
+        let landed = {
+            let shared = self.stores.shared.lock().unwrap();
+            self.config.landed(&shared, &self.stores, &context.pipeline)
+        };
         Ok(Opened {
             session,
             epoch: reported,
+            landed,
             state,
         })
     }
@@ -1404,13 +1475,16 @@ impl Session for VaultSession {
     async fn commit(&mut self, meta: &CommitMeta) -> Result<Receipt> {
         let mut store = self.stores.shared.lock().unwrap();
         let current = self.config.epoch(&store, &self.stores, &self.pipeline);
-        if !self.config.no_fence && current != self.epoch {
-            return Err(self.config.fenced("stale"));
+        let fence = Fence {
+            epoch: self.config.reported(current),
+            landed: self.config.landed(&store, &self.stores, &self.pipeline),
+        };
+        if let Some(answered) = self.config.answered(&fence, meta) {
+            return answered;
         }
-        let key = (self.pipeline.clone(), meta.load_id, meta.commit_seq);
-        let recall = !self.config.republish && !self.config.forget_receipts;
-        if let Some(receipt) = store.receipts.get(&key).filter(|_| recall) {
-            return Ok(receipt.clone());
+        let session = self.config.reported(self.epoch);
+        if !self.config.no_fence && (current != self.epoch || meta.key.epoch != session) {
+            return Err(self.config.fenced("stale"));
         }
         if let Some(segment) = self.refused_segment(&store, meta) {
             return Err(ConnectorError::data(format!(
@@ -1438,22 +1512,14 @@ impl Session for VaultSession {
         }
         let rows = if self.config.miscount { rows + 1 } else { rows };
         let receipt = Receipt {
-            load_id: meta.load_id,
-            commit_seq: meta.commit_seq,
+            key: meta.key,
             committed_at: UNIX_EPOCH,
             rows,
             bytes: 0,
         };
-        if let Some(horizon) = &meta.horizon {
-            let (past, others) = (self.config.forget_at_horizon, self.config.forget_others);
-            let pipeline = &self.pipeline;
-            store.receipts.retain(|(of, load, seq), _| {
-                (of != pipeline && !others)
-                    || horizon.keeps(*load, *seq)
-                        && !(past && (*load, *seq) == (horizon.load_id, horizon.commit_seq))
-            });
-        }
-        store.receipts.insert(key, receipt.clone());
+        let pipeline = self.pipeline.clone();
+        self.config
+            .land(&mut store, &self.stores, &pipeline, receipt.clone());
         Ok(receipt)
     }
 
@@ -2021,22 +2087,24 @@ const BROKEN: &[(&str, &[&str])] = &[
     ("swap_others", &["D-OWNED"]),
     ("stale_claims", &["D-DROP"]),
     ("miscount", &["D-COMMIT"]),
-    ("republish", &["D-IDEMPOTENT"]),
+    ("republish", &["D-LANDED"]),
+    ("ignore_after", &["D-LANDED"]),
+    ("uncoded_stale", &["D-LANDED"]),
+    ("recount_landed", &["D-LANDED"]),
+    ("local_landed", &["D-LANDED"]),
+    ("shared_landed", &["D-LANDED"]),
     ("forget_state", &["D-STATE"]),
     ("ignore_deletes", &["D-STATE"]),
     ("keep_staging", &["D-DISCARD"]),
     ("keep_abandoned", &["D-DISCARD"]),
     ("no_fence", &["D-FENCE"]),
     ("wrong_fence_kind", &["D-DROP", "D-FENCE"]),
-    ("forget_receipts", &["D-IDEMPOTENT"]),
-    ("forget_at_horizon", &["D-IDEMPOTENT"]),
-    ("forget_others", &["D-IDEMPOTENT"]),
     ("publish_all", &["D-COMMIT", "D-DISCARD"]),
     (
         "blank_names",
         &[
             "D-COMMIT",
-            "D-IDEMPOTENT",
+            "D-LANDED",
             "D-DISCARD",
             "D-REPLACE",
             "D-MERGE",
@@ -2267,7 +2335,7 @@ async fn visible_staging_fails_every_clause_that_reads_published_data() {
         [
             "D-STAGING",
             "D-COMMIT",
-            "D-IDEMPOTENT",
+            "D-LANDED",
             "D-DISCARD",
             "D-REPLACE",
             "D-SCHEMA",

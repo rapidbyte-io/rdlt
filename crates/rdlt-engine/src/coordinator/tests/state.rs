@@ -3,12 +3,11 @@
 
 use std::collections::BTreeMap;
 use std::io;
-use std::time::UNIX_EPOCH;
 
 use rdlt_connector::wire::commit_bytes;
 use rdlt_connector::{
-    CommitMeta, CommitSeq, Cursor, Epoch, LoadId, PartitionId, PartitionState, PipelineState,
-    SegmentSet, StateChange, StateRecord,
+    CommitKey, CommitMeta, Cursor, Epoch, PartitionId, PartitionState, PipelineState, SegmentSet,
+    StateChange, StateRecord,
 };
 
 use super::{Harness, Setup, ended, name, partition, position, stream};
@@ -96,16 +95,17 @@ fn done(id: &str) -> StateRecord {
 /// A commit of the first load whose state changes are `delta`.
 fn committing(delta: Vec<StateChange>) -> CommitMeta {
     CommitMeta {
-        load_id: LoadId::from_parts(UNIX_EPOCH, 1),
-        commit_seq: CommitSeq::FIRST,
-        epoch: Epoch(3),
+        key: CommitKey {
+            epoch: Epoch(3),
+            seq: 1,
+        },
+        after: None,
         segments: SegmentSet::new(),
         abandoned: SegmentSet::new(),
         state_delta: delta,
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
-        horizon: None,
     }
 }
 

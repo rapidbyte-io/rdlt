@@ -7,9 +7,8 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field as ArrowField};
 use rdlt_connector::{
-    CommitSeq, ConnectContext, ConnectorErrorKind, Partition, PartitionId, PublishedRows,
-    ReadRequest, SegmentId, StreamName, TableChange, TableSchema, partition_channel,
-    source_factory,
+    ConnectContext, ConnectorErrorKind, Partition, PartitionId, PublishedRows, ReadRequest,
+    SegmentId, StreamName, TableChange, TableSchema, partition_channel, source_factory,
 };
 use rdlt_connector_reference::{FilesDestination, FilesSource, files};
 use serde_json::json;
@@ -21,10 +20,10 @@ async fn a_new_session_removes_what_older_sessions_staged_and_never_published() 
     let root = crate::fixtures::tempdir().unwrap();
     let destination = connect(root.path(), "jsonl").await;
     let (schema, batch) = ids(&[1, 2]);
-    let mut first = open(destination.as_ref(), 1).await;
+    let mut first = open(destination.as_ref()).await;
     stage(&mut first, &table("rows"), &schema, batch.clone(), 1).await;
     stage(&mut first, &table("rows"), &schema, batch, 2).await;
-    let committed = meta(&first, 1, CommitSeq::FIRST, &[1]);
+    let committed = meta(&first, 1, &[1]);
     first.session.commit(&committed).await.unwrap();
     let staging = root.path().join("_rdlt").join("pipelines");
     let data = || -> Vec<_> {
@@ -37,7 +36,7 @@ async fn a_new_session_removes_what_older_sessions_staged_and_never_published() 
             .collect()
     };
     assert_eq!(data().len(), 2, "both staged files are on disk");
-    let _second = open(destination.as_ref(), 2).await;
+    let _second = open(destination.as_ref()).await;
     let data: Vec<_> = files_under(&staging)
         .into_iter()
         .filter(|path| {
@@ -57,15 +56,13 @@ async fn a_new_session_removes_what_older_sessions_staged_and_never_published() 
 async fn only_the_most_recent_manifests_are_kept() {
     let root = crate::fixtures::tempdir().unwrap();
     let destination = connect(root.path(), "arrow").await;
-    let mut opened = open(destination.as_ref(), 1).await;
-    let mut seq = CommitSeq::FIRST;
-    for _ in 0..12 {
+    let mut opened = open(destination.as_ref()).await;
+    for seq in 1..=12 {
         opened
             .session
-            .commit(&meta(&opened, 1, seq, &[]))
+            .commit(&meta(&opened, seq, &[]))
             .await
             .unwrap();
-        seq = seq.next();
     }
     let manifests = files_under(&root.path().join("_rdlt").join("pipelines"));
     assert_eq!(manifests.len(), 9, "{manifests:?}");
@@ -76,12 +73,12 @@ async fn nested_values_and_times_read_back_as_they_were_written() {
     for format in ["jsonl", "arrow"] {
         let root = crate::fixtures::tempdir().unwrap();
         let destination = connect(root.path(), format).await;
-        let mut opened = open(destination.as_ref(), 1).await;
+        let mut opened = open(destination.as_ref()).await;
         let (schema, batch) = nested(format);
         stage(&mut opened, &table("rows"), &schema, batch.clone(), 1).await;
         opened
             .session
-            .commit(&meta(&opened, 1, CommitSeq::FIRST, &[1]))
+            .commit(&meta(&opened, 1, &[1]))
             .await
             .unwrap();
         let published = files::published(root.path(), "rows").unwrap();
@@ -163,7 +160,7 @@ async fn a_partition_the_source_does_not_list_is_never_opened() {
 async fn a_files_writer_s_flush_counts_the_bytes_of_the_files_it_staged() {
     let root = crate::fixtures::tempdir().expect("a temporary directory");
     let destination = connect(root.path(), "jsonl").await;
-    let mut opened = open(destination.as_ref(), 1).await;
+    let mut opened = open(destination.as_ref()).await;
     let (schema, batch) = ids(&[1, 2, 3]);
     let create = TableChange::Create {
         table: table("rows"),
@@ -212,10 +209,10 @@ async fn the_files_destination_reads_back_what_it_published() {
         .connect_reading(json!({ "root": root.path() }), ConnectContext::new())
         .await
         .expect("the destination connects");
-    let mut opened = open(destination.as_ref(), 1).await;
+    let mut opened = open(destination.as_ref()).await;
     let (schema, batch) = ids(&[4, 5, 6]);
     stage(&mut opened, &table("rows"), &schema, batch, 1).await;
-    let meta = meta(&opened, 1, CommitSeq::FIRST, &[1]);
+    let meta = meta(&opened, 1, &[1]);
     opened
         .session
         .commit(&meta)

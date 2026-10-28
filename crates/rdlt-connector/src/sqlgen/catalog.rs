@@ -1,4 +1,5 @@
-//! The catalog tables: epochs, state records, receipts, and the tables and generations written.
+//! The catalog tables: each pipeline's fence row, its state records, and the tables and
+//! generations written.
 
 use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -8,15 +9,14 @@ use bytes::Bytes;
 use super::owned::OWNERS;
 use super::upsert::Row;
 use super::{Owned, SqlDialect, SqlPlanner, SqlValue, Statement, integer};
-use crate::commit::{Horizon, Receipt};
+use crate::commit::{CommitKey, Receipt};
 use crate::destination::TableRef;
 use crate::error::{ConnectorError, ConnectorErrorKind, Result};
-use crate::id::{CommitSeq, Epoch, LoadId, PipelineId, TablePath};
+use crate::id::{Epoch, PipelineId, TablePath};
 use crate::state::StateChange;
 
 const EPOCHS: &str = "_rdlt_epochs";
 const STATE: &str = "_rdlt_state";
-const RECEIPTS: &str = "_rdlt_receipts";
 const TABLES: &str = "_rdlt_tables";
 pub(super) const GENERATIONS: &str = "_rdlt_generations";
 pub(super) const SEGMENTS: &str = "_rdlt_segments";
@@ -26,15 +26,7 @@ pub(super) const SEGMENTS: &str = "_rdlt_segments";
 const SEGMENTS_STAGED: &str = "_rdlt_segments_staged";
 
 /// Every table of the catalog.
-pub(super) const CATALOG: [&str; 7] = [
-    EPOCHS,
-    STATE,
-    RECEIPTS,
-    TABLES,
-    OWNERS,
-    GENERATIONS,
-    SEGMENTS,
-];
+pub(super) const CATALOG: [&str; 6] = [EPOCHS, STATE, TABLES, OWNERS, GENERATIONS, SEGMENTS];
 
 impl<D: SqlDialect> SqlPlanner<D> {
     /// Creates the catalog tables, and the index commits find their segments by, where they are
@@ -42,16 +34,14 @@ impl<D: SqlDialect> SqlPlanner<D> {
     pub fn bootstrap(&self) -> Vec<Statement> {
         let (text, integer, blob) = (&self.text, &self.integer, &self.blob);
         [
-            format!("{EPOCHS} (pipeline {text} PRIMARY KEY, epoch {integer} NOT NULL)"),
+            format!(
+                "{EPOCHS} (pipeline {text} PRIMARY KEY, epoch {integer} NOT NULL, \
+                 landed_epoch {integer}, landed_seq {integer}, landed_at {integer}, \
+                 landed_rows {integer}, landed_bytes {integer})"
+            ),
             format!(
                 "{STATE} (pipeline {text} NOT NULL, key {text} NOT NULL, value {blob} NOT NULL, \
                  PRIMARY KEY (pipeline, key))"
-            ),
-            format!(
-                "{RECEIPTS} (pipeline {text} NOT NULL, load_id {text} NOT NULL, \
-                 commit_seq {integer} NOT NULL, committed_at {integer} NOT NULL, \
-                 rows {integer} NOT NULL, bytes {integer} NOT NULL, \
-                 PRIMARY KEY (pipeline, load_id, commit_seq))"
             ),
             format!(
                 "{TABLES} (pipeline {text} NOT NULL, path {text} NOT NULL, name {text} NOT NULL, \
@@ -83,7 +73,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
         .collect()
     }
 
-    /// Increments `pipeline`'s epoch, starting it at 1; read it back with [`SqlPlanner::epoch`].
+    /// Increments `pipeline`'s epoch, starting it at 1; read it back with [`SqlPlanner::fence`].
     pub fn open(&self, pipeline: &PipelineId) -> Vec<Statement> {
         let key = [("pipeline", SqlValue::Text(pipeline.to_string()))];
         let values = [("epoch", integer(0))];
@@ -102,24 +92,43 @@ impl<D: SqlDialect> SqlPlanner<D> {
         plan
     }
 
-    /// The query returning `pipeline`'s epoch.
-    pub fn epoch(&self, pipeline: &PipelineId) -> Statement {
+    /// The query reading `pipeline`'s fence row, whatever its epoch, under the transaction's
+    /// write lock until the transaction ends.
+    ///
+    /// Its row holds the epoch, then the landed key's epoch, place, commit time, rows and bytes,
+    /// null before the first commit lands; read it with [`receipt`] into a
+    /// [`Fence`](crate::Fence), which answers a commit.
+    pub fn fence(&self, pipeline: &PipelineId) -> Statement {
         let mut sql = self.sql();
         let name = sql.bind(SqlValue::Text(pipeline.to_string()));
         sql.push(&format!(
-            "SELECT epoch FROM {EPOCHS} WHERE pipeline = {name}"
+            "SELECT epoch, landed_epoch, landed_seq, landed_at, landed_rows, landed_bytes \
+             FROM {EPOCHS} WHERE pipeline = {name}{}",
+            self.dialect.lock_clause()
         ));
         sql.finish()
     }
 
-    /// The statement that changes one row exactly when `epoch` is still `pipeline`'s, locking it
-    /// until the transaction ends; zero rows changed means a newer session fenced this one.
-    pub fn fence(&self, pipeline: &PipelineId, epoch: Epoch) -> Statement {
+    /// The statement writing `landed`, the receipt of the commit that applies, into
+    /// `pipeline`'s fence row, in the commit's own transaction; commit times are kept to the
+    /// microsecond, so build the receipt with [`receipt`] to answer the commit sent again with
+    /// the same one.
+    pub fn land(&self, pipeline: &PipelineId, landed: &Receipt) -> Statement {
         let mut sql = self.sql();
+        let values = [
+            integer(landed.key.epoch.0),
+            integer(landed.key.seq),
+            integer(micros(landed.committed_at)),
+            integer(landed.rows),
+            integer(landed.bytes),
+        ]
+        .map(|value| sql.bind(value));
         let name = sql.bind(SqlValue::Text(pipeline.to_string()));
-        let epoch = sql.bind(integer(epoch.0));
+        let [epoch, seq, at, rows, bytes] = values;
         sql.push(&format!(
-            "UPDATE {EPOCHS} SET epoch = epoch WHERE pipeline = {name} AND epoch = {epoch}"
+            "UPDATE {EPOCHS} SET landed_epoch = {epoch}, landed_seq = {seq}, \
+             landed_at = {at}, landed_rows = {rows}, landed_bytes = {bytes} \
+             WHERE pipeline = {name}"
         ));
         sql.finish()
     }
@@ -186,63 +195,6 @@ impl<D: SqlDialect> SqlPlanner<D> {
             plan.push(sql.finish());
         }
         plan
-    }
-
-    /// The query returning the receipt of `(load_id, commit_seq)` as a row of commit time, rows
-    /// and bytes; read it with [`receipt`].
-    pub fn receipt(
-        &self,
-        pipeline: &PipelineId,
-        load_id: LoadId,
-        commit_seq: CommitSeq,
-    ) -> Statement {
-        let mut sql = self.sql();
-        let name = sql.bind(SqlValue::Text(pipeline.to_string()));
-        let load = sql.bind(SqlValue::Text(load_id.to_string()));
-        let seq = sql.bind(integer(commit_seq.get()));
-        sql.push(&format!(
-            "SELECT committed_at, rows, bytes FROM {RECEIPTS} WHERE pipeline = {name} \
-             AND load_id = {load} AND commit_seq = {seq}"
-        ));
-        sql.finish()
-    }
-
-    /// The statement storing `receipt`; commit times are kept to the microsecond, so build
-    /// receipts with [`receipt`] to return the same one again.
-    pub fn record_receipt(&self, pipeline: &PipelineId, receipt: &Receipt) -> Statement {
-        let mut sql = self.sql();
-        let values = [
-            SqlValue::Text(pipeline.to_string()),
-            SqlValue::Text(receipt.load_id.to_string()),
-            integer(receipt.commit_seq.get()),
-            integer(micros(receipt.committed_at)),
-            integer(receipt.rows),
-            integer(receipt.bytes),
-        ]
-        .map(|value| sql.bind(value));
-        sql.push(&format!(
-            "INSERT INTO {RECEIPTS} (pipeline, load_id, commit_seq, committed_at, rows, bytes) \
-             VALUES ({})",
-            values.join(", ")
-        ));
-        sql.finish()
-    }
-
-    /// The statement forgetting `pipeline`'s receipts of the commits before `horizon`, which the
-    /// engine never repeats: of loads ordered before its load, and of its load before its commit.
-    ///
-    /// A load id is stored as its hyphenated lower-case text, which orders as its bytes do.
-    pub fn forget_receipts(&self, pipeline: &PipelineId, horizon: &Horizon) -> Statement {
-        let mut sql = self.sql();
-        let name = sql.bind(SqlValue::Text(pipeline.to_string()));
-        let load = sql.bind(SqlValue::Text(horizon.load_id.to_string()));
-        let same = sql.bind(SqlValue::Text(horizon.load_id.to_string()));
-        let seq = sql.bind(integer(horizon.commit_seq.get()));
-        sql.push(&format!(
-            "DELETE FROM {RECEIPTS} WHERE pipeline = {name} \
-             AND (load_id < {load} OR (load_id = {same} AND commit_seq < {seq}))"
-        ));
-        sql.finish()
     }
 
     /// The statements recording that `table`, which `owned` names, exists at its path for its
@@ -369,18 +321,16 @@ pub fn micros(at: SystemTime) -> u64 {
     u64::try_from(since.as_micros()).unwrap_or(u64::MAX)
 }
 
-/// The receipt a [`SqlPlanner::receipt`] row describes.
-pub fn receipt(
-    load_id: LoadId,
-    commit_seq: CommitSeq,
-    committed_at: i64,
-    rows: i64,
-    bytes: i64,
-) -> Receipt {
+/// The receipt of the commit keyed `epoch` and `seq` that a [`SqlPlanner::fence`] row, or the
+/// time of a commit and the rows and bytes it published, describe: values as the planner stores
+/// them.
+pub fn receipt(epoch: i64, seq: i64, committed_at: i64, rows: i64, bytes: i64) -> Receipt {
     let count = |value: i64| u64::try_from(value).unwrap_or_default();
     Receipt {
-        load_id,
-        commit_seq,
+        key: CommitKey {
+            epoch: Epoch(super::unsigned(epoch)),
+            seq: super::unsigned(seq),
+        },
         committed_at: UNIX_EPOCH + Duration::from_micros(count(committed_at)),
         rows: count(rows),
         bytes: count(bytes),

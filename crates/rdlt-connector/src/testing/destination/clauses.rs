@@ -27,8 +27,10 @@ pub const DESTINATION_CLAUSES: &[Clause] = &[
         unless: "",
     },
     Clause {
-        id: "D-IDEMPOTENT",
-        statement: "re-committing a commit no horizon of its pipeline has passed returns its receipt and publishes nothing",
+        id: "D-LANDED",
+        statement: "the commit whose key landed last, sent again from its session or a newer \
+                    one, returns its receipt and publishes nothing; a commit expecting another \
+                    key landed fails fenced, coded commit_stale, and publishes nothing",
         unless: "",
     },
     Clause {
@@ -151,7 +153,7 @@ pub const DESTINATION_CLAUSES: &[Clause] = &[
 pub(super) const PROBED: [&str; 17] = [
     "D-STAGING",
     "D-COMMIT",
-    "D-IDEMPOTENT",
+    "D-LANDED",
     "D-DISCARD",
     "D-REPLACE",
     "D-SCHEMA",

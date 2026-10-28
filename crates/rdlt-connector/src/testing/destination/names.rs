@@ -43,7 +43,7 @@ impl Bench<'_> {
             "the destination reserves every form of a name its identifiers are long enough for",
         )?;
         let (schema, rows) = table_of(&names);
-        let mut opened = self.open(self.destination, 1).await?;
+        let mut opened = self.open(self.destination).await?;
         opened
             .session
             .apply_schema(&TableChange::Create {
@@ -65,11 +65,7 @@ impl Bench<'_> {
             .flush()
             .await
             .map_err(|error| Violation::from(format!("flush: {error}")))?;
-        commit(
-            &mut opened.session,
-            &meta(self.load_id(1), opened.epoch, &[1], Vec::new()),
-        )
-        .await?;
+        commit(&mut opened, meta(&[1], Vec::new())).await?;
         let published = self.read(&table).await?;
         let rows = published.rows();
         if rows != 3 {

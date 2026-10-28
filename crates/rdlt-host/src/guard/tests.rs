@@ -60,6 +60,7 @@ impl rdlt_connector::Destination for Telling {
             Ok(rdlt_connector::OpenedSession {
                 session: Box::new(TellingSession),
                 epoch: rdlt_connector::Epoch(1),
+                landed: None,
                 state: Vec::new(),
             })
         })
@@ -189,7 +190,6 @@ async fn a_session_a_guarded_destination_opens_is_guarded_too() {
     };
     let context = rdlt_connector::OpenContext {
         pipeline: rdlt_connector::PipelineId::parse("guarded").expect("a valid id"),
-        load_id: rdlt_connector::LoadId::from_parts(std::time::SystemTime::UNIX_EPOCH, 0),
     };
     let opened = guarded.open(&context).await.expect("it opens");
     assert_eq!(opened.epoch, rdlt_connector::Epoch(1));

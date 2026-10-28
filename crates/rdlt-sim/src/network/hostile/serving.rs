@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use rdlt_connector::limits::ListenLimits;
 use rdlt_connector::wire::{CONFIGURE_REPEATED, v1};
-use rdlt_connector::{LoadId, SchemaVersion, TablePath, TableRef};
+use rdlt_connector::{SchemaVersion, TablePath, TableRef};
 use rdlt_host::remote::Client;
 use rdlt_wire::Limits;
 use rdlt_wire::limits::LIMIT_EXCEEDED;
@@ -122,13 +122,13 @@ impl Attacker<'_> {
         for _ in 0..=rng.below(3) {
             let mut abandoned = client.rpc.clone();
             // Given up on a quarter of the way through its destination's pause.
-            tokio::time::timeout(opening / 4, abandoned.open(open(rng)))
+            tokio::time::timeout(opening / 4, abandoned.open(open()))
                 .await
                 .ok();
         }
         let mut opened = Vec::new();
         for _ in 0..held + 1 + usize::try_from(rng.below(3)).unwrap_or(0) {
-            let answered = answer(client.rpc.open(open(rng))).await;
+            let answered = answer(client.rpc.open(open())).await;
             if let Some(answered) = self.answered("open", answered) {
                 opened.push(answered.session);
             }
@@ -143,9 +143,9 @@ impl Attacker<'_> {
                 self.answered("close of a session held", closed);
             }
         }
-        self.in_flight(&mut client, held, opening, rng).await;
+        self.in_flight(&mut client, held, opening).await;
         let at_once = (0..=held).map(|_| {
-            let (mut rpc, request) = (client.rpc.clone(), open(rng));
+            let (mut rpc, request) = (client.rpc.clone(), open());
             async move { answer(rpc.open(request)).await }
         });
         for answered in futures_util::future::join_all(at_once).await {
@@ -156,17 +156,10 @@ impl Attacker<'_> {
     /// A session beyond the `held` a connection holds, opened while a call is in flight on its
     /// oldest: serving closes the oldest only once that call ends, so the destination never holds
     /// more than `held`, and the open is answered after the call.
-    async fn in_flight(
-        &self,
-        client: &mut Client,
-        held: usize,
-        opening: Duration,
-        rng: &mut SplitMix64,
-    ) {
+    async fn in_flight(&self, client: &mut Client, held: usize, opening: Duration) {
         let mut opened = Vec::new();
         for _ in 0..held {
-            if let Some(answered) = self.answered("open", answer(client.rpc.open(open(rng))).await)
-            {
+            if let Some(answered) = self.answered("open", answer(client.rpc.open(open())).await) {
                 opened.push(answered.session);
             }
         }
@@ -188,7 +181,7 @@ impl Attacker<'_> {
                 .is_ok()
         };
         let mut beyond = client.rpc.clone();
-        let request = open(rng);
+        let request = open();
         let open_beyond = async move {
             // Sent once the write's call has reached serving and holds the oldest.
             tokio::time::sleep(opening / 4).await;
@@ -224,13 +217,10 @@ impl Attacker<'_> {
     }
 }
 
-/// An open of a session for [`PIPELINE`], under a load drawn from `rng`.
-fn open(rng: &mut SplitMix64) -> v1::OpenRequest {
-    let at = std::time::UNIX_EPOCH + Duration::from_secs(1);
-    let load = LoadId::from_parts(at, u128::from(rng.next_u64()));
+/// An open of a session for [`PIPELINE`].
+fn open() -> v1::OpenRequest {
     v1::OpenRequest {
         pipeline: PIPELINE.to_owned(),
-        load_id: load.as_bytes().to_vec().into(),
     }
 }
 

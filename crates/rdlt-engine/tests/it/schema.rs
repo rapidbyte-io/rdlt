@@ -71,7 +71,7 @@ async fn a_stream_without_a_declared_schema_creates_its_table_from_its_first_bat
         .map(Field::name)
         .filter(|name| name.starts_with("_rdlt_"))
         .collect();
-    assert_eq!(meta, ["_rdlt_load_id", "_rdlt_loaded_at"]);
+    assert_eq!(meta, ["_rdlt_load_epoch", "_rdlt_loaded_at"]);
     assert_eq!(
         published_json("created", "events"),
         [json!({"id": 1, "name": "a"}), json!({"id": 2, "name": "b"})]

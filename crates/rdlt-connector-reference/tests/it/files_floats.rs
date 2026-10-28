@@ -7,7 +7,7 @@ use arrow_array::cast::AsArray;
 use arrow_array::types::{Float32Type, Float64Type};
 use arrow_array::{ArrayRef, Float32Array, Float64Array, Int64Array, RecordBatch, StructArray};
 use arrow_schema::{DataType, Field as ArrowField};
-use rdlt_connector::{CommitSeq, PublishedRows, TableSchema};
+use rdlt_connector::{PublishedRows, TableSchema};
 use serde_json::json;
 
 use crate::fixtures::{connect_with, merge_table, meta, open, stage, table};
@@ -90,7 +90,7 @@ async fn non_finite_floats_read_back_as_they_were_written() {
                 let root = crate::fixtures::tempdir().unwrap();
                 let (destination, reader) =
                     connect_with(root.path(), json!({ "format": format })).await;
-                let mut opened = open(destination.as_ref(), 1).await;
+                let mut opened = open(destination.as_ref()).await;
                 let (schema, batch) = floats(nullable);
                 let rows = if merge {
                     let mut rows = merge_table("rows");
@@ -104,7 +104,7 @@ async fn non_finite_floats_read_back_as_they_were_written() {
                 stage(&mut opened, &rows, &schema, batch.clone(), 1).await;
                 opened
                     .session
-                    .commit(&meta(&opened, 1, CommitSeq::FIRST, &[1]))
+                    .commit(&meta(&opened, 1, &[1]))
                     .await
                     .expect(&case);
                 let published = PublishedRows::gather(&*reader, &rows).await;

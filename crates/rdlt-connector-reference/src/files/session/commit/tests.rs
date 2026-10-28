@@ -14,21 +14,21 @@ fn touch(root: &Path, path: &str) {
 fn a_removed_file_takes_the_directories_of_its_own_it_left_empty() {
     let root = crate::scratch::tempdir().unwrap();
     let dir = Dir::ambient(root.path()).unwrap();
-    let gone = "staging/7/load/3/rows/table/1.jsonl".to_owned();
-    let sibling = "staging/7/load/3/other/table/1.jsonl".to_owned();
-    let alone = "staging/7/load/4/rows/table/1.jsonl".to_owned();
+    let gone = "staging/7/3/rows/table/1.jsonl".to_owned();
+    let sibling = "staging/7/3/other/table/1.jsonl".to_owned();
+    let alone = "staging/7/4/rows/table/1.jsonl".to_owned();
     for path in [&gone, &sibling, &alone] {
         touch(root.path(), path);
     }
     remove(&dir, [&gone].into_iter());
     let exists = |path: &str| root.path().join(path).exists();
-    assert!(!exists("staging/7/load/3/rows"), "its directories stay");
+    assert!(!exists("staging/7/3/rows"), "its directories stay");
     assert!(exists(&sibling) && exists(&alone));
     // The last file of a segment takes the segment's directory, and no directory writers of
-    // the session share: the load's, the epoch's and the staging directory stay.
+    // the session share: the epoch's and the staging directory stay.
     remove(&dir, [&sibling, &alone].into_iter());
-    assert!(!exists("staging/7/load/3") && !exists("staging/7/load/4"));
-    assert!(exists("staging/7/load"));
+    assert!(!exists("staging/7/3") && !exists("staging/7/4"));
+    assert!(exists("staging/7"));
 }
 
 #[test]
@@ -37,11 +37,11 @@ fn a_path_that_cannot_be_removed_is_left_and_the_others_still_go() {
     let outside = crate::scratch::tempdir().unwrap();
     std::fs::write(outside.path().join("kept"), b"x").unwrap();
     let dir = Dir::ambient(root.path()).unwrap();
-    let real = "staging/7/load/3/rows/table/1.jsonl".to_owned();
+    let real = "staging/7/3/rows/table/1.jsonl".to_owned();
     touch(root.path(), &real);
     std::os::unix::fs::symlink(outside.path(), root.path().join("staging").join("link")).unwrap();
     let paths = [
-        "staging/7/load/9/rows/table/1.jsonl".to_owned(),
+        "staging/7/9/rows/table/1.jsonl".to_owned(),
         "staging/link/kept".to_owned(),
         format!("{}/kept", outside.path().display()),
         "../kept".to_owned(),
@@ -62,8 +62,8 @@ fn a_path_that_cannot_be_removed_is_left_and_the_others_still_go() {
 fn only_what_the_latest_manifest_does_not_list_is_pruned() {
     let root = crate::scratch::tempdir().unwrap();
     let dir = Dir::ambient(root.path()).unwrap();
-    let listed = "staging/7/load/1/rows/table/1.jsonl".to_owned();
-    let unlisted = "staging/7/load/2/rows/table/1.jsonl".to_owned();
+    let listed = "staging/7/1/rows/table/1.jsonl".to_owned();
+    let unlisted = "staging/7/2/rows/table/1.jsonl".to_owned();
     for path in [&listed, &unlisted] {
         touch(root.path(), path);
     }
@@ -155,7 +155,7 @@ mod steps {
         let table = table(merge);
         sessions.create(&table, &schema());
         sessions.stage(&table, 1, rows(&[1, 2]));
-        sessions.commit(&sessions.meta(1, 1, &[1])).unwrap();
+        sessions.commit(&sessions.meta(1, &[1])).unwrap();
         sessions.stage(&table, 2, rows(&[3]));
         sessions
     }
@@ -220,7 +220,7 @@ mod steps {
                 let sessions = pending(format, merge);
                 let before = sessions.data_files();
                 trace::clear();
-                sessions.commit(&sessions.meta(1, 2, &[2])).unwrap();
+                sessions.commit(&sessions.meta(2, &[2])).unwrap();
                 let removed = ordered(&trace::steps());
                 // Both files the commit read went, and the file it wrote stays, alone.
                 let base = sessions.location.dir.path();
@@ -258,7 +258,7 @@ mod steps {
                 let mut died = 0;
                 for step in 0.. {
                     let mut sessions = pending(format, merge);
-                    let meta = sessions.meta(1, 2, &[2]);
+                    let meta = sessions.meta(2, &[2]);
                     trace::crash_at(step);
                     drop(sessions.commit(&meta));
                     let crashed = trace::refused();
@@ -267,17 +267,28 @@ mod steps {
                         break;
                     }
                     died += 1;
-                    // The next attempt opens the pipeline and finds every published row.
-                    sessions.open(2);
+                    // The next attempt opens the pipeline and finds every published row, and the
+                    // crashed commit's key landed exactly where its rows are.
+                    sessions.open();
                     let found = sessions.ids("rows");
                     assert!(
                         found == [1, 2] || found == [1, 2, 3],
                         "{format:?} {merge} step {step}: {found:?}"
                     );
-                    // It stages the segment again and repeats the commit as it was logged.
+                    let landed = sessions.landed.as_ref().map(|landed| landed.key);
+                    assert_eq!(
+                        landed == Some(meta.key),
+                        found == [1, 2, 3],
+                        "{format:?} {merge} step {step}"
+                    );
+                    // It stages the segment again, and sends the crashed commit again where it
+                    // landed, which answers it, or commits it anew.
                     sessions.stage(&table(merge), 2, rows(&[3]));
-                    let mut again = sessions.meta(1, 2, &[2]);
-                    again.epoch = sessions.location.epoch;
+                    let again = if landed == Some(meta.key) {
+                        meta
+                    } else {
+                        sessions.meta(1, &[2])
+                    };
                     sessions.commit(&again).unwrap();
                     assert_eq!(
                         sessions.ids("rows"),
@@ -295,12 +306,12 @@ mod steps {
     fn a_commit_whose_manifest_was_linked_and_not_synced_is_made_durable_when_repeated() {
         let twin = pending(FileFormat::Jsonl, true);
         trace::clear();
-        twin.commit(&twin.meta(1, 2, &[2])).unwrap();
+        twin.commit(&twin.meta(2, &[2])).unwrap();
         let steps = trace::steps();
         let link = at(&steps, |step| matches!(step, Step::Link(_)));
         // The same commit, refused the sync that makes its manifest's name durable.
         let sessions = pending(FileFormat::Jsonl, true);
-        let meta = sessions.meta(1, 2, &[2]);
+        let meta = sessions.meta(2, &[2]);
         trace::fail_at(link + 1);
         sessions.commit(&meta).expect_err("the sync is refused");
         trace::clear();
@@ -333,14 +344,14 @@ mod steps {
         use crate::files::destination::discard;
         let twin = pending(FileFormat::Jsonl, true);
         trace::clear();
-        twin.commit(&twin.meta(1, 2, &[2])).unwrap();
+        twin.commit(&twin.meta(2, &[2])).unwrap();
         let link = at(&trace::steps(), |step| matches!(step, Step::Link(_)));
         // A commit whose manifest is linked and whose name is not durable: a power loss brings
         // back the manifest before it, which lists the files this one superseded.
         let sessions = pending(FileFormat::Jsonl, true);
         trace::fail_at(link + 1);
         sessions
-            .commit(&sessions.meta(1, 2, &[2]))
+            .commit(&sessions.meta(2, &[2]))
             .expect_err("the sync is refused");
         let before = sessions.data_files();
         let dir = &sessions.location.dir;
@@ -367,7 +378,7 @@ mod steps {
         let mut died = 0;
         for step in 0.. {
             let mut sessions = pending(FileFormat::Jsonl, false);
-            let mut meta = sessions.meta(1, 2, &[]);
+            let mut meta = sessions.meta(2, &[]);
             let table = table(false);
             meta.drop_tables = vec![DroppedTable {
                 path: table.path.clone(),
@@ -382,7 +393,7 @@ mod steps {
                 break;
             }
             died += 1;
-            sessions.open(2);
+            sessions.open();
             let manifest = manifest::latest(&sessions.location.dir).unwrap().unwrap();
             assert!(manifest.dropped.is_empty(), "step {step}");
             if manifest.tables.contains_key("rows") {
@@ -412,13 +423,13 @@ mod steps {
             ..table(false)
         };
         let catalog = |name: &str| sessions.root.path().join("tables").join(name);
-        let mut meta = sessions.meta(1, 2, &[]);
+        let mut meta = sessions.meta(2, &[]);
         meta.drop_tables = vec![dropping(&rows)];
         sessions.commit(&meta).unwrap();
         assert!(!catalog("rows").exists());
         sessions.create(&rows, &schema());
         sessions.create(&other, &schema());
-        let mut meta = sessions.meta(1, 3, &[]);
+        let mut meta = sessions.meta(3, &[]);
         meta.drop_tables = vec![dropping(&other)];
         sessions.commit(&meta).unwrap();
         let manifest = manifest::latest(&sessions.location.dir).unwrap().unwrap();
@@ -430,7 +441,7 @@ mod steps {
     #[test]
     fn a_table_the_session_created_stays_dropped_by_the_commit_that_drops_it() {
         let sessions = pending(FileFormat::Jsonl, false);
-        let mut meta = sessions.meta(1, 2, &[]);
+        let mut meta = sessions.meta(2, &[]);
         meta.drop_tables = vec![dropping(&table(false))];
         sessions.commit(&meta).unwrap();
         let manifest = manifest::latest(&sessions.location.dir).unwrap().unwrap();
@@ -441,7 +452,7 @@ mod steps {
     #[test]
     fn a_release_moves_the_catalog_away_durably_before_it_removes_it() {
         let sessions = pending(FileFormat::Jsonl, false);
-        let mut meta = sessions.meta(1, 2, &[]);
+        let mut meta = sessions.meta(2, &[]);
         let table = table(false);
         meta.drop_tables = vec![DroppedTable {
             path: table.path.clone(),

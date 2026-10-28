@@ -197,7 +197,7 @@ fn an_append_table_of_batches_and_remainders_lists_few_files_and_rewrites_few_ro
             next += 5;
             let segments = [2 * commit + 1, 2 * commit + 2];
             sessions
-                .commit(&sessions.meta(1, commit + 1, &segments))
+                .commit(&sessions.meta(commit + 1, &segments))
                 .unwrap();
             let files = published(&sessions);
             // What a merge wrote is every listed file no commit before listed.

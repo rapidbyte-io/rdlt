@@ -10,8 +10,8 @@
 //!
 //! let planner = SqlPlanner::try_new(Sqlite)?;
 //! let pipeline = PipelineId::parse("orders").expect("valid pipeline id");
-//! let fence = planner.fence(&pipeline, rdlt_connector::Epoch(3));
-//! assert!(fence.sql.starts_with("UPDATE"));
+//! let fence = planner.fence(&pipeline);
+//! assert!(fence.sql.starts_with("SELECT"));
 //! # Ok::<(), rdlt_connector::ConnectorError>(())
 //! ```
 
@@ -179,6 +179,12 @@ pub trait SqlDialect: Send + Sync {
     fn drop_index(&self, name: &str, table: &str) -> String {
         let _ = table;
         format!("DROP INDEX IF EXISTS {name}")
+    }
+
+    /// What a `SELECT` ends with to hold the rows it reads under the transaction's write lock
+    /// until the transaction ends: ` FOR UPDATE` in standard SQL by default.
+    fn lock_clause(&self) -> &'static str {
+        " FOR UPDATE"
     }
 
     /// The table a `SELECT` of bound values alone reads, as Oracle's `DUAL`, where the database

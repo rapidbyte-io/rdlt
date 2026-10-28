@@ -574,7 +574,6 @@ async fn a_following_run_reads_a_full_stream_to_its_end_and_swaps_it_in() {
 async fn recorded(store: &str, pipeline: &str) -> Vec<u64> {
     let context = rdlt_connector::OpenContext {
         pipeline: rdlt_connector::PipelineId::parse(pipeline).expect("a valid pipeline"),
-        load_id: rdlt_connector::LoadId::from_parts(std::time::UNIX_EPOCH, 1),
     };
     let opened = memory(store)
         .await

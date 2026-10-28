@@ -10,7 +10,7 @@ use crate::commit::{ChildTable, CommitMeta};
 use crate::destination::{
     DestinationSession, DestinationWriter, MergeKey, RootKey, TableChange, TableRef,
 };
-use crate::id::{CommitSeq, SegmentId};
+use crate::id::SegmentId;
 use crate::schema::TableSchema;
 use crate::testing::reason::Listed;
 use crate::testing::{Violation, bounded_call};
@@ -35,7 +35,7 @@ impl Bench<'_> {
     /// second child table, which it lists, and which loses the tags of root 1 all the same.
     pub(super) async fn children_follow_their_roots(&self) -> Result<(), Violation> {
         let [roots, items, tags] = self.family();
-        let mut opened = self.open(self.destination, 1).await?;
+        let mut opened = self.open(self.destination).await?;
         create(&mut opened.session, &roots, &[&items, &tags]).await?;
         let mut writers = Vec::new();
         for table in [&roots, &items, &tags] {
@@ -43,13 +43,12 @@ impl Bench<'_> {
         }
         stage(&mut writers).await?;
         let child_tables: Vec<ChildTable> = [&items, &tags].into_iter().map(child_table).collect();
-        for (seq, segment) in [(CommitSeq::FIRST, 1), (CommitSeq::FIRST.next(), 2)] {
+        for segment in [1, 2] {
             let commit_meta = CommitMeta {
-                commit_seq: seq,
                 child_tables: child_tables.clone(),
-                ..meta(self.load_id(1), opened.epoch, &[segment], Vec::new())
+                ..meta(&[segment], Vec::new())
             };
-            commit(&mut opened.session, &commit_meta).await?;
+            commit(&mut opened, commit_meta).await?;
         }
         let roots = self.read(&roots).await?.rows();
         if roots != 4 {

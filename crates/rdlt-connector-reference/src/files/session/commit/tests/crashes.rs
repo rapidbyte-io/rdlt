@@ -112,8 +112,9 @@ fn dies_at_every_step(dying: &Dying<'_>, before: &[&str], after: &[&str]) -> usi
         for step in 0.. {
             let mut sessions = (dying.prepared)(format);
             (dying.stage)(&sessions);
+            let meta = (dying.meta)(&sessions);
             trace::crash_at(step);
-            drop(sessions.commit(&(dying.meta)(&sessions)));
+            drop(sessions.commit(&meta));
             let crashed = trace::refused();
             trace::clear();
             if !crashed {
@@ -121,14 +122,23 @@ fn dies_at_every_step(dying: &Dying<'_>, before: &[&str], after: &[&str]) -> usi
                 break;
             }
             died += 1;
-            sessions.open(2);
+            // The next session finds the commit's key landed exactly where its rows are, and
+            // sends it again, which answers it, or commits anew.
+            sessions.open();
             let found = (dying.published)(&sessions);
             assert!(
                 found == before || found == after,
                 "{format:?} step {step}: {found:?}"
             );
+            let landed = sessions.landed.as_ref().map(|landed| landed.key) == Some(meta.key);
+            assert_eq!(landed, found == after, "{format:?} step {step}");
             (dying.stage)(&sessions);
-            sessions.commit(&(dying.meta)(&sessions)).unwrap();
+            let again = if landed {
+                meta
+            } else {
+                (dying.meta)(&sessions)
+            };
+            sessions.commit(&again).unwrap();
             let found = (dying.published)(&sessions);
             assert_eq!(found, after, "{format:?} step {step}");
             assert_eq!(sessions.data_files(), listed(&sessions), "step {step}");
@@ -151,7 +161,7 @@ fn a_generation_s_finish_that_dies_at_any_step_replaces_the_table_whole_or_not_a
                 let sessions = Sessions::new(format);
                 sessions.create(&rows, &schema);
                 sessions.stage(&rows, 1, ids(&[1, 2]));
-                sessions.commit(&sessions.meta(1, 1, &[1])).unwrap();
+                sessions.commit(&sessions.meta(1, &[1])).unwrap();
                 sessions
             },
             stage: &|sessions| {
@@ -159,7 +169,7 @@ fn a_generation_s_finish_that_dies_at_any_step_replaces_the_table_whole_or_not_a
                 sessions.stage(&filling, 3, ids(&[5]));
             },
             meta: &|sessions| {
-                let mut meta = sessions.meta(1, 2, &[2, 3]);
+                let mut meta = sessions.meta(2, &[2, 3]);
                 meta.finish_generations = vec![(rows.path.clone(), GenerationId(1))];
                 meta
             },
@@ -213,7 +223,7 @@ fn a_child_table_s_rewrite_that_dies_at_any_step_lands_with_its_root_s_rows_or_n
         sessions.create(table, &TableSchema::from_arrow(&batch.schema()).unwrap());
     };
     let meta = |sessions: &Sessions, seq| {
-        let mut meta = sessions.meta(1, seq, &[seq]);
+        let mut meta = sessions.meta(seq, &[seq]);
         meta.child_tables = vec![ChildTable {
             table: Arc::clone(&item_table.name),
             merge: item_table.merge.clone().unwrap(),
@@ -284,7 +294,7 @@ fn a_delete_that_dies_at_any_step_lands_with_its_tombstone_or_not_at_all() {
         let sessions = Sessions::new(format);
         sessions.create(&rows, &schema);
         sessions.stage(&rows, 1, changes(&[(1, 1, Insert), (2, 2, Insert)]));
-        sessions.commit(&sessions.meta(1, 1, &[1])).unwrap();
+        sessions.commit(&sessions.meta(1, &[1])).unwrap();
         sessions
     };
     let died = dies_at_every_step(
@@ -293,7 +303,7 @@ fn a_delete_that_dies_at_any_step_lands_with_its_tombstone_or_not_at_all() {
             stage: &|sessions| {
                 sessions.stage(&rows, 2, changes(&[(1, 5, Delete), (3, 6, Insert)]));
             },
-            meta: &|sessions| sessions.meta(1, 2, &[2]),
+            meta: &|sessions| sessions.meta(2, &[2]),
             published: &rows_published,
         },
         &["1", "2"],
@@ -303,9 +313,9 @@ fn a_delete_that_dies_at_any_step_lands_with_its_tombstone_or_not_at_all() {
     // The tombstone the commit left holds: the deleted row's insert, sent again, changes nothing.
     let sessions = prepared(FileFormat::Jsonl);
     sessions.stage(&rows, 2, changes(&[(1, 5, Delete), (3, 6, Insert)]));
-    sessions.commit(&sessions.meta(1, 2, &[2])).unwrap();
+    sessions.commit(&sessions.meta(2, &[2])).unwrap();
     sessions.stage(&rows, 3, changes(&[(1, 1, Insert)]));
-    sessions.commit(&sessions.meta(1, 3, &[3])).unwrap();
+    sessions.commit(&sessions.meta(3, &[3])).unwrap();
     assert_eq!(rows_published(&sessions), ["2", "3"]);
 }
 
@@ -343,7 +353,7 @@ fn abandoned() -> Sessions {
     let schema = TableSchema::new(vec![Field::new("id", LogicalType::Int64, false)]).unwrap();
     sessions.create(&rows, &schema);
     sessions.stage(&rows, 1, ids(&[1, 2]));
-    sessions.commit(&sessions.meta(1, 1, &[1])).unwrap();
+    sessions.commit(&sessions.meta(1, &[1])).unwrap();
     sessions.stage(&rows, 2, ids(&[3]));
     sessions
 }
@@ -359,7 +369,7 @@ fn an_open_that_dies_at_any_step_leaves_every_published_row_and_the_next_open_cl
     let died = work_dies_at_every_step(&abandoned, &open, &|sessions, step| {
         assert_eq!(sessions.ids("rows"), [1, 2], "step {step}");
         // The next open, whole, discards what the abandoned session staged.
-        sessions.open(2);
+        sessions.open();
         assert_eq!(sessions.ids("rows"), [1, 2], "step {step}");
         assert_eq!(sessions.data_files(), listed(sessions), "step {step}");
     });

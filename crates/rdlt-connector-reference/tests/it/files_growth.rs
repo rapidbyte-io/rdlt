@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use rdlt_connector::{
-    CommitSeq, ConnectorErrorKind, Field, GenerationId, LogicalType, PublishedReader,
-    PublishedRows, TableChange, TableRef,
+    ConnectorErrorKind, Field, GenerationId, LogicalType, PublishedReader, PublishedRows,
+    TableChange, TableRef,
 };
 use serde_json::json;
 
@@ -30,9 +30,8 @@ async fn a_merge_commit_removes_the_copy_it_replaced() {
     for format in ["jsonl", "arrow"] {
         let root = crate::fixtures::tempdir().unwrap();
         let (destination, reader) = connect_with(root.path(), json!({ "format": format })).await;
-        let mut opened = open(destination.as_ref(), 1).await;
+        let mut opened = open(destination.as_ref()).await;
         let rows = merge_table("rows");
-        let mut seq = CommitSeq::FIRST;
         for commit in 1..=12_u8 {
             let (schema, batch) = if commit == 1 {
                 keyed(&(0..500).collect::<Vec<_>>(), 1)
@@ -42,10 +41,9 @@ async fn a_merge_commit_removes_the_copy_it_replaced() {
             stage(&mut opened, &rows, &schema, batch, u64::from(commit)).await;
             opened
                 .session
-                .commit(&meta(&opened, 1, seq, &[u64::from(commit)]))
+                .commit(&meta(&opened, u64::from(commit), &[u64::from(commit)]))
                 .await
                 .unwrap();
-            seq = seq.next();
             let files = data_files(root.path(), format);
             assert_eq!(files.len(), 1, "{format} commit {commit}: {files:?}");
         }
@@ -60,9 +58,8 @@ async fn a_merge_commit_removes_the_copy_it_replaced() {
 async fn a_finished_generation_removes_the_files_it_replaced() {
     let root = crate::fixtures::tempdir().unwrap();
     let (destination, reader) = connect_with(root.path(), json!({})).await;
-    let mut opened = open(destination.as_ref(), 1).await;
+    let mut opened = open(destination.as_ref()).await;
     let rows = table("rows");
-    let mut seq = CommitSeq::FIRST;
     for generation in 1..=6_u64 {
         let filling = TableRef {
             generation: Some(GenerationId(generation)),
@@ -70,10 +67,9 @@ async fn a_finished_generation_removes_the_files_it_replaced() {
         };
         let (schema, batch) = ids(&[i64::try_from(generation).unwrap()]);
         stage(&mut opened, &filling, &schema, batch, generation).await;
-        let mut finishing = meta(&opened, 1, seq, &[generation]);
+        let mut finishing = meta(&opened, generation, &[generation]);
         finishing.finish_generations = vec![(rows.path.clone(), GenerationId(generation))];
         opened.session.commit(&finishing).await.unwrap();
-        seq = seq.next();
         assert_eq!(data_files(root.path(), "jsonl").len(), 1, "{generation}");
     }
     assert_eq!(published_ids(reader.as_ref(), &rows).await, [6]);
@@ -84,9 +80,8 @@ async fn an_append_table_lists_a_bounded_number_of_files_and_keeps_every_row_in_
     for format in ["jsonl", "arrow"] {
         let root = crate::fixtures::tempdir().unwrap();
         let (destination, reader) = connect_with(root.path(), json!({ "format": format })).await;
-        let mut opened = open(destination.as_ref(), 1).await;
+        let mut opened = open(destination.as_ref()).await;
         let rows = table("rows");
-        let mut seq = CommitSeq::FIRST;
         let mut expected = Vec::new();
         // Enough commits to tell a list that grows with them from one that grows with their
         // logarithm, and no more: each takes a dozen syncs, which some file systems make slowly.
@@ -101,12 +96,12 @@ async fn an_append_table_lists_a_bounded_number_of_files_and_keeps_every_row_in_
                 segments.push(segment);
                 expected.push(id);
             }
+            let seq = u64::try_from(commit).unwrap() + 1;
             opened
                 .session
-                .commit(&meta(&opened, 1, seq, &segments))
+                .commit(&meta(&opened, seq, &segments))
                 .await
                 .unwrap();
-            seq = seq.next();
         }
         assert_eq!(
             published_ids(reader.as_ref(), &rows).await,
@@ -135,9 +130,8 @@ async fn an_append_table_lists_a_bounded_number_of_files_and_keeps_every_row_in_
 async fn an_append_table_whose_schema_changed_keeps_every_row() {
     let root = crate::fixtures::tempdir().unwrap();
     let (destination, reader) = connect_with(root.path(), json!({ "format": "arrow" })).await;
-    let mut opened = open(destination.as_ref(), 1).await;
+    let mut opened = open(destination.as_ref()).await;
     let rows = table("rows");
-    let mut seq = CommitSeq::FIRST;
     for commit in 0..40_i64 {
         let (schema, batch) = ids(&[commit]);
         let segment = u64::try_from(commit).unwrap() + 1;
@@ -162,12 +156,12 @@ async fn an_append_table_whose_schema_changed_keeps_every_row() {
                 .unwrap();
             writer.flush().await.unwrap();
         }
+        // Each segment is its own commit, its place among the session's.
         opened
             .session
-            .commit(&meta(&opened, 1, seq, &[segment]))
+            .commit(&meta(&opened, segment, &[segment]))
             .await
             .unwrap();
-        seq = seq.next();
     }
     let all: Vec<i64> = (0..40).collect();
     assert_eq!(published_ids(reader.as_ref(), &rows).await, all);
@@ -175,30 +169,37 @@ async fn an_append_table_whose_schema_changed_keeps_every_row() {
 }
 
 #[tokio::test]
-async fn a_commit_repeated_however_far_back_in_its_load_is_answered_with_its_receipt() {
-    // A replay repeats a commit whose frame its log still holds, however many commits its load
-    // made since: each is answered, none refused and none published again.
+async fn the_landed_commit_sent_again_is_answered_and_an_overtaken_one_refused_writing_nothing() {
     let root = crate::fixtures::tempdir().unwrap();
     let (destination, reader) = connect_with(root.path(), json!({})).await;
-    let mut opened = open(destination.as_ref(), 1).await;
+    let mut opened = open(destination.as_ref()).await;
     let rows = table("rows");
-    let mut seq = CommitSeq::FIRST;
-    let mut receipts = Vec::new();
+    let mut sent = Vec::new();
     for commit in 0..40_i64 {
         let (schema, batch) = ids(&[commit]);
         let segment = u64::try_from(commit).unwrap() + 1;
         stage(&mut opened, &rows, &schema, batch, segment).await;
-        let committing = meta(&opened, 1, seq, &[segment]);
-        receipts.push((
+        let seq = segment;
+        let committing = meta(&opened, seq, &[segment]);
+        sent.push((
             committing.clone(),
             opened.session.commit(&committing).await.unwrap(),
         ));
-        seq = seq.next();
     }
     let version = latest_manifest(root.path()).1["version"].clone();
-    for (committing, receipt) in &receipts {
-        let again = opened.session.commit(committing).await.unwrap();
-        assert_eq!(&again, receipt);
+    let (last, receipt) = sent.last().unwrap();
+    assert_eq!(&opened.session.commit(last).await.unwrap(), receipt);
+    for (committing, _) in &sent[..sent.len() - 1] {
+        let refused = opened.session.commit(committing).await.unwrap_err();
+        assert_eq!(
+            (refused.kind(), refused.code()),
+            (
+                ConnectorErrorKind::Fenced,
+                Some(rdlt_connector::COMMIT_STALE)
+            ),
+            "{:?}",
+            committing.key
+        );
     }
     assert_eq!(latest_manifest(root.path()).1["version"], version);
     let all: Vec<i64> = (0..40).collect();
@@ -209,7 +210,7 @@ async fn a_commit_repeated_however_far_back_in_its_load_is_answered_with_its_rec
 async fn superseded_catalog_versions_are_removed() {
     let root = crate::fixtures::tempdir().unwrap();
     let (destination, _) = connect_with(root.path(), json!({})).await;
-    let mut opened = open(destination.as_ref(), 1).await;
+    let mut opened = open(destination.as_ref()).await;
     let (schema, batch) = ids(&[1]);
     stage(&mut opened, &table("t"), &schema, batch, 1).await;
     for column in 0..40 {
@@ -241,13 +242,13 @@ async fn a_published_arrow_file_whose_block_lies_outside_it_is_refused() {
     for (field, value) in poisons() {
         let root = crate::fixtures::tempdir().unwrap();
         let (destination, reader) = connect_with(root.path(), json!({ "format": "arrow" })).await;
-        let mut opened = open(destination.as_ref(), 1).await;
+        let mut opened = open(destination.as_ref()).await;
         let rows = merge_table("rows");
         let (schema, batch) = keyed(&[1, 2, 3], 1);
         stage(&mut opened, &rows, &schema, batch.clone(), 1).await;
         opened
             .session
-            .commit(&meta(&opened, 1, CommitSeq::FIRST, &[1]))
+            .commit(&meta(&opened, 1, &[1]))
             .await
             .unwrap();
         let files = data_files(root.path(), "arrow");
@@ -259,10 +260,7 @@ async fn a_published_arrow_file_whose_block_lies_outside_it_is_refused() {
             "{field} {value}"
         );
         stage(&mut opened, &rows, &schema, batch, 2).await;
-        let commit = opened
-            .session
-            .commit(&meta(&opened, 1, CommitSeq::FIRST.next(), &[2]))
-            .await;
+        let commit = opened.session.commit(&meta(&opened, 2, &[2])).await;
         assert_eq!(
             commit.unwrap_err().kind(),
             ConnectorErrorKind::Data,
@@ -277,7 +275,7 @@ async fn a_commit_that_fails_leaves_no_file_it_wrote_and_its_retry_lands() {
     for format in ["jsonl", "arrow"] {
         let root = crate::fixtures::tempdir().unwrap();
         let (destination, reader) = connect_with(root.path(), json!({ "format": format })).await;
-        let mut opened = open(destination.as_ref(), 1).await;
+        let mut opened = open(destination.as_ref()).await;
         let rows = merge_table("rows");
         let (schema, batch) = keyed(&[1, 2], 1);
         stage(&mut opened, &rows, &schema, batch, 1).await;
@@ -290,7 +288,7 @@ async fn a_commit_that_fails_leaves_no_file_it_wrote_and_its_retry_lands() {
             mode(0o700).unwrap();
             return;
         }
-        let committing = meta(&opened, 1, CommitSeq::FIRST, &[1]);
+        let committing = meta(&opened, 1, &[1]);
         let failed = opened.session.commit(&committing).await;
         mode(0o700).unwrap();
         failed.expect_err("the manifest cannot be written");
@@ -312,21 +310,19 @@ async fn a_commit_that_fails_leaves_no_file_it_wrote_and_its_retry_lands() {
 async fn a_table_written_in_both_formats_reads_back_whole_and_is_merged_in_neither() {
     let root = crate::fixtures::tempdir().unwrap();
     let rows = table("rows");
-    let mut seq = CommitSeq::FIRST;
     let mut expected = Vec::new();
-    for (load, format) in [(1, "jsonl"), (2, "arrow"), (3, "jsonl")] {
+    for (session, format) in [(1, "jsonl"), (2, "arrow"), (3, "jsonl")] {
         let (destination, _) = connect_with(root.path(), json!({ "format": format })).await;
-        let mut opened = open(destination.as_ref(), load).await;
+        let mut opened = open(destination.as_ref()).await;
         for id in 0..4_u64 {
-            let value = i64::try_from(u64::try_from(load).unwrap() * 10 + id).unwrap();
+            let value = i64::try_from(session * 10 + id).unwrap();
             let (schema, batch) = ids(&[value]);
             stage(&mut opened, &rows, &schema, batch, id + 1).await;
             opened
                 .session
-                .commit(&meta(&opened, load, seq, &[id + 1]))
+                .commit(&meta(&opened, id + 1, &[id + 1]))
                 .await
                 .unwrap();
-            seq = seq.next();
             expected.push(value);
         }
     }
@@ -338,66 +334,18 @@ async fn a_table_written_in_both_formats_reads_back_whole_and_is_merged_in_neith
     assert_eq!(data_files(root.path(), "arrow").len(), 2);
 }
 
-/// As a replay does: one session commits the pending commits of two dead loads, each its
-/// load's first commit, under the load and number each was logged with.
 #[tokio::test]
-async fn two_loads_commits_of_one_number_in_one_session_keep_every_row() {
-    for format in ["jsonl", "arrow"] {
-        let root = crate::fixtures::tempdir().unwrap();
-        let (destination, reader) = connect_with(root.path(), json!({ "format": format })).await;
-        let mut opened = open(destination.as_ref(), 9).await;
-        let rows = table("rows");
-        for (load, base) in [(1_u128, 0_i64), (2, 10)] {
-            let mut segments = Vec::new();
-            for part in 0..2_i64 {
-                let (schema, batch) = ids(&[base + part]);
-                let segment = u64::try_from(base + part).unwrap() + 1;
-                stage(&mut opened, &rows, &schema, batch, segment).await;
-                segments.push(segment);
-            }
-            opened
-                .session
-                .commit(&meta(&opened, load, CommitSeq::FIRST, &segments))
-                .await
-                .expect("the commit lands");
-        }
-        assert_eq!(
-            published_ids(reader.as_ref(), &rows).await,
-            [0, 1, 10, 11],
-            "{format}"
-        );
-        // A merge table's rewrite is named for its commit too.
-        let merged = merge_table("merged");
-        for (load, id) in [(3_u128, 1_i64), (4, 2)] {
-            let (schema, batch) = keyed(&[id], 1);
-            let segment = u64::try_from(id).unwrap() + 100;
-            stage(&mut opened, &merged, &schema, batch, segment).await;
-            opened
-                .session
-                .commit(&meta(&opened, load, CommitSeq::FIRST, &[segment]))
-                .await
-                .expect("the commit lands");
-        }
-        assert_eq!(
-            published_ids(reader.as_ref(), &merged).await,
-            [1, 2],
-            "{format}"
-        );
-    }
-}
-
-#[tokio::test]
-async fn a_failed_commit_of_a_reused_number_publishes_nothing() {
+async fn a_failed_merge_commit_after_another_publishes_nothing() {
     use std::os::unix::fs::PermissionsExt as _;
     let root = crate::fixtures::tempdir().unwrap();
     let (destination, reader) = connect_with(root.path(), json!({})).await;
-    let mut opened = open(destination.as_ref(), 9).await;
+    let mut opened = open(destination.as_ref()).await;
     let rows = merge_table("rows");
     let (schema, batch) = keyed(&[1, 2], 1);
     stage(&mut opened, &rows, &schema, batch, 1).await;
     opened
         .session
-        .commit(&meta(&opened, 1, CommitSeq::FIRST, &[1]))
+        .commit(&meta(&opened, 1, &[1]))
         .await
         .unwrap();
     assert_eq!(published_ids(reader.as_ref(), &rows).await, [1, 2]);
@@ -406,10 +354,7 @@ async fn a_failed_commit_of_a_reused_number_publishes_nothing() {
     let manifests = pipeline_dir(root.path()).join("manifests");
     let mode = |mode| std::fs::set_permissions(&manifests, std::fs::Permissions::from_mode(mode));
     mode(0o500).unwrap();
-    let failed = opened
-        .session
-        .commit(&meta(&opened, 2, CommitSeq::FIRST, &[2]))
-        .await;
+    let failed = opened.session.commit(&meta(&opened, 2, &[2])).await;
     mode(0o700).unwrap();
     failed.expect_err("the manifest cannot be written");
     // The commit failed: nothing of it is published.
@@ -421,14 +366,13 @@ async fn an_arrow_append_table_of_batches_with_dictionaries_stays_short_and_whol
     use arrow_array::{DictionaryArray, Int8Array, types::Int8Type};
     let root = crate::fixtures::tempdir().unwrap();
     let (destination, reader) = connect_with(root.path(), json!({ "format": "arrow" })).await;
-    let mut opened = open(destination.as_ref(), 1).await;
+    let mut opened = open(destination.as_ref()).await;
     let rows = table("rows");
     let schema = rdlt_connector::TableSchema::new(vec![
         Field::new("id", LogicalType::Int64, false),
         Field::new("load", LogicalType::Int64, false),
     ])
     .unwrap();
-    let mut seq = CommitSeq::FIRST;
     for commit in 0..100_i64 {
         // As the engine prepares a batch: its per-load constant column is a dictionary.
         let constant = DictionaryArray::<Int8Type>::try_new(
@@ -443,12 +387,12 @@ async fn an_arrow_append_table_of_batches_with_dictionaries_stays_short_and_whol
         .unwrap();
         let segment = u64::try_from(commit).unwrap() + 1;
         stage(&mut opened, &rows, &schema, batch, segment).await;
+        // Each segment is its own commit, its place among the session's.
         opened
             .session
-            .commit(&meta(&opened, 1, seq, &[segment]))
+            .commit(&meta(&opened, segment, &[segment]))
             .await
             .unwrap();
-        seq = seq.next();
     }
     let files = data_files(root.path(), "arrow");
     assert!(files.len() <= 10, "{} files", files.len());
@@ -477,17 +421,16 @@ async fn an_arrow_append_table_of_batches_with_dictionaries_stays_short_and_whol
 async fn a_table_created_again_after_its_drop_keeps_its_catalog() {
     let root = crate::fixtures::tempdir().unwrap();
     let (destination, reader) = connect_with(root.path(), json!({})).await;
-    let mut opened = open(destination.as_ref(), 1).await;
+    let mut opened = open(destination.as_ref()).await;
     let rows = table("rows");
     let (schema, batch) = ids(&[1]);
     stage(&mut opened, &rows, &schema, batch, 1).await;
-    let seq1 = CommitSeq::FIRST;
     opened
         .session
-        .commit(&meta(&opened, 1, seq1, &[1]))
+        .commit(&meta(&opened, 1, &[1]))
         .await
         .unwrap();
-    let mut dropping = meta(&opened, 1, seq1.next(), &[]);
+    let mut dropping = meta(&opened, 2, &[]);
     dropping.drop_tables = vec![rdlt_connector::DroppedTable {
         path: rows.path.clone(),
         name: rows.name.clone(),
@@ -496,10 +439,9 @@ async fn a_table_created_again_after_its_drop_keeps_its_catalog() {
     // The same session creates the table again and publishes a row.
     let (schema, batch) = ids(&[2]);
     stage(&mut opened, &rows, &schema, batch, 2).await;
-    let seq3 = seq1.next().next();
     opened
         .session
-        .commit(&meta(&opened, 1, seq3, &[2]))
+        .commit(&meta(&opened, 3, &[2]))
         .await
         .unwrap();
     let catalog = root.path().join("_rdlt").join("tables").join("rows");
@@ -509,8 +451,7 @@ async fn a_table_created_again_after_its_drop_keeps_its_catalog() {
     assert_eq!(published_ids(reader.as_ref(), &rows).await, [2]);
     // Dropped again, its catalog goes again; created again and not yet written, its catalog
     // stays through another table's commit.
-    let seq4 = seq3.next();
-    let mut dropping = meta(&opened, 1, seq4, &[]);
+    let mut dropping = meta(&opened, 4, &[]);
     dropping.drop_tables = vec![rdlt_connector::DroppedTable {
         path: rows.path.clone(),
         name: rows.name.clone(),
@@ -526,7 +467,7 @@ async fn a_table_created_again_after_its_drop_keeps_its_catalog() {
     stage(&mut opened, &table("other"), &schema, batch, 3).await;
     opened
         .session
-        .commit(&meta(&opened, 1, seq4.next(), &[3]))
+        .commit(&meta(&opened, 5, &[3]))
         .await
         .unwrap();
     assert!(

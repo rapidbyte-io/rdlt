@@ -14,7 +14,7 @@ use crate::destination::{
     Destination, DestinationSession, DestinationWriter, MergeKey, TableChange, TableRef,
 };
 use crate::error::{ConnectorErrorKind, SCHEMA_CONFLICT};
-use crate::id::{CommitSeq, GenerationId, SchemaVersion, SegmentId, TablePath};
+use crate::id::{GenerationId, SchemaVersion, SegmentId, TablePath};
 use crate::schema::TableSchema;
 use crate::testing::reason::Listed;
 use crate::testing::{Violation, bounded, bounded_call};
@@ -47,7 +47,7 @@ impl Bench<'_> {
             generation: Some(GENERATION),
             ..other.clone()
         };
-        let mut opened = self.staged(self.destination, 1, &[1]).await?;
+        let mut opened = self.staged(self.destination, &[1]).await?;
         let mut writer = bounded_call("writer", opened.session.writer(&generation)).await?;
         write(&mut writer, 2, rows(2)).await?;
         write(&mut writer, 3, rows(3)).await?;
@@ -56,22 +56,17 @@ impl Bench<'_> {
             .writer_of(&mut opened.session, &other_generation)
             .await?;
         write(&mut other_writer, 2, rows(2)).await?;
-        commit(
-            &mut opened.session,
-            &meta(self.load_id(1), opened.epoch, &[1, 2], Vec::new()),
-        )
-        .await?;
+        commit(&mut opened, meta(&[1, 2], Vec::new())).await?;
         expect_rows(&self.published_rows().await?, &[1])?;
         expect_rows(&self.rows_of(&other).await?, &[])?;
         let finish = CommitMeta {
-            commit_seq: CommitSeq::FIRST.next(),
             finish_generations: vec![
                 (base.path.clone(), GENERATION),
                 (other.path.clone(), GENERATION),
             ],
-            ..meta(self.load_id(1), opened.epoch, &[3], Vec::new())
+            ..meta(&[3], Vec::new())
         };
-        commit(&mut opened.session, &finish).await?;
+        commit(&mut opened, finish).await?;
         expect_rows(&self.published_rows().await?, &[2, 3])?;
         expect_rows(&self.rows_of(&other).await?, &[2])
     }
@@ -80,31 +75,19 @@ impl Bench<'_> {
     /// and widens a column of each pair of kinds the destination widens in place.
     pub(super) async fn schema_changes_apply(&self) -> Result<(), Violation> {
         let changes = self.destination.capabilities().schema_changes.clone();
-        let mut opened = self.staged(self.destination, 1, &[1]).await?;
-        commit(
-            &mut opened.session,
-            &meta(self.load_id(1), opened.epoch, &[1], Vec::new()),
-        )
-        .await?;
-        let mut seq = CommitSeq::FIRST;
+        let mut opened = self.staged(self.destination, &[1]).await?;
+        commit(&mut opened, meta(&[1], Vec::new())).await?;
         if changes.add_column {
-            seq = seq.next();
-            self.add_column(&mut opened, seq).await?;
+            self.add_column(&mut opened).await?;
         }
         if changes.widens(TypeKind::Int32, TypeKind::Int64) {
-            seq = seq.next();
-            self.widen_column(&mut opened, seq).await?;
+            self.widen_column(&mut opened).await?;
         }
-        self.widenings_keep_every_value(&mut opened, seq).await?;
-        Ok(())
+        self.widenings_keep_every_value(&mut opened).await
     }
 
-    /// Adds a column to the clause's table and commits rows that fill it as commit `seq`.
-    async fn add_column(
-        &self,
-        opened: &mut OpenedSession,
-        seq: CommitSeq,
-    ) -> Result<(), Violation> {
+    /// Adds a column to the clause's table and commits rows that fill it.
+    async fn add_column(&self, opened: &mut OpenedSession) -> Result<(), Violation> {
         let table = self.table();
         let add = TableChange::AddColumn {
             table: table.clone(),
@@ -113,11 +96,7 @@ impl Bench<'_> {
         apply_twice(&mut opened.session, &add).await?;
         let mut writer = bounded_call("writer", opened.session.writer(&table)).await?;
         write(&mut writer, 2, with_extra(&rows(2))).await?;
-        let second = CommitMeta {
-            commit_seq: seq,
-            ..meta(self.load_id(1), opened.epoch, &[2], Vec::new())
-        };
-        commit(&mut opened.session, &second).await?;
+        commit(opened, meta(&[2], Vec::new())).await?;
         let values = self.values(&table, "extra").await?;
         if values.iter().flatten().count() != 3 || values.len() != 6 {
             return Err(Violation::from(format_args!(
@@ -156,12 +135,8 @@ impl Bench<'_> {
         }
     }
 
-    /// Widens an Int32 column of another table to Int64 between two writes, committed as `seq`.
-    async fn widen_column(
-        &self,
-        opened: &mut OpenedSession,
-        seq: CommitSeq,
-    ) -> Result<(), Violation> {
+    /// Widens an Int32 column of another table to Int64 between two writes, and commits them.
+    async fn widen_column(&self, opened: &mut OpenedSession) -> Result<(), Violation> {
         let table = self.other_table("widen");
         let create = TableChange::Create {
             table: table.clone(),
@@ -204,11 +179,7 @@ impl Bench<'_> {
             RecordBatch::try_from_iter([("small", Arc::new(Int32Array::from(vec![3])) as _)])
                 .expect("the certification batch is valid");
         write(&mut writer, 4, narrow).await?;
-        let widened = CommitMeta {
-            commit_seq: seq,
-            ..meta(self.load_id(1), opened.epoch, &[3, 4], Vec::new())
-        };
-        commit(&mut opened.session, &widened).await?;
+        commit(opened, meta(&[3, 4], Vec::new())).await?;
         let mut values = self.values(&table, "small").await?;
         values.sort_unstable();
         if values == [Some(3), Some(7), Some(1 << 40)] {
@@ -225,7 +196,7 @@ impl Bench<'_> {
     /// of two rows of one key within a commit the greater sequence wins.
     pub(super) async fn merges_keep_the_newest_row(&self) -> Result<(), Violation> {
         let (table, create) = merged(self.table());
-        let mut opened = self.open(self.destination, 1).await?;
+        let mut opened = self.open(self.destination).await?;
         bounded_call("apply_schema", opened.session.apply_schema(&create)).await?;
         let mut writer = bounded_call("writer", opened.session.writer(&table)).await?;
         write(&mut writer, 1, keyed(&[(1, "a", 1), (2, "b", 2)])).await?;
@@ -233,16 +204,8 @@ impl Bench<'_> {
         // Key 2's newest row comes first, and key 3's last: neither the first nor the last row
         // of a key is its newest, and only its sequence says which is.
         write(&mut writer, 3, keyed(&[(2, "early", 4), (3, "newer", 8)])).await?;
-        commit(
-            &mut opened.session,
-            &meta(self.load_id(1), opened.epoch, &[1], Vec::new()),
-        )
-        .await?;
-        let second = CommitMeta {
-            commit_seq: CommitSeq::FIRST.next(),
-            ..meta(self.load_id(1), opened.epoch, &[2, 3], Vec::new())
-        };
-        commit(&mut opened.session, &second).await?;
+        commit(&mut opened, meta(&[1], Vec::new())).await?;
+        commit(&mut opened, meta(&[2, 3], Vec::new())).await?;
         let published = self.rows_of(&table).await?;
         let expected = [
             (1, Some("a".to_owned())),

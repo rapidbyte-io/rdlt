@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use parking_lot::{Mutex, RwLock};
 use rdlt_connector::{
-    ColumnKey, ConnectorError, Field, LoadId, PipelineState, SCHEMA_CONFLICT, StateChange,
+    ColumnKey, ConnectorError, Epoch, Field, PipelineState, SCHEMA_CONFLICT, StateChange,
     StreamName, TableChange, TablePath, TableRef, TableState,
 };
 
@@ -123,11 +123,11 @@ impl Tables {
         }
     }
 
-    /// The same tables, naming around conflicts with hashes seeded from the load `load`.
+    /// The same tables, naming around conflicts with hashes seeded from the session's `epoch`.
     #[must_use]
-    pub(crate) fn salted(self, load: LoadId) -> Self {
+    pub(crate) fn salted(self, epoch: Epoch) -> Self {
         Self {
-            salt: xxhash_rust::xxh3::xxh3_64(load.as_bytes()),
+            salt: xxhash_rust::xxh3::xxh3_64(&epoch.0.to_le_bytes()),
             ..self
         }
     }

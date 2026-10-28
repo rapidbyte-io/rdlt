@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use rdlt_connector::{
     ColumnKey, DELETED_AT_COLUMN, ID_COLUMN, IDX_COLUMN, IS_CURRENT_COLUMN, IdentifierCase,
-    IdentifierChars, IdentifierRules, LOAD_ID_COLUMN, LOADED_AT_COLUMN, NameMap, OP_COLUMN,
+    IdentifierChars, IdentifierRules, LOAD_EPOCH_COLUMN, LOADED_AT_COLUMN, NameMap, OP_COLUMN,
     PARENT_ID_COLUMN, ROOT_ID_COLUMN, ROW_HASH_COLUMN, SEQ_COLUMN, TablePath, UNCHANGED_COLUMN,
     VALID_FROM_COLUMN, VALID_TO_COLUMN,
 };
@@ -36,7 +36,7 @@ const HASH_DIGITS: usize = 6;
 /// Every metadata column the engine writes, in the order their identifiers are assigned: each
 /// takes the first identifier the ones before it leave free.
 const METADATA: [&str; 14] = [
-    LOAD_ID_COLUMN,
+    LOAD_EPOCH_COLUMN,
     LOADED_AT_COLUMN,
     SEQ_COLUMN,
     OP_COLUMN,

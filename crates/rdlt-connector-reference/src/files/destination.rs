@@ -130,12 +130,12 @@ impl DestinationConnector for FilesDestination {
             dir: Arc::new(dir),
             format: self.format,
             epoch: manifest.epoch,
-            load_id: context.load_id,
             lock_wait: self.lock_wait,
         };
         Ok(Opened {
             state: manifest.records()?,
             epoch: manifest.epoch,
+            landed: manifest.fence().landed,
             session: FilesSession::new(location),
         })
     }
@@ -242,7 +242,7 @@ fn discard_settled(dir: &Dir, epoch: Epoch) -> Result<()> {
     Ok(())
 }
 
-/// The directories, beside a load's segments, that hold what the load's commits wrote.
+/// The directories, beside a session's segments, that hold what the session's commits wrote.
 const WRITTEN: [&str; 3] = ["merged", "compacted", "tombstones"];
 
 /// Removes what commits of the session at `epoch` of the pipeline whose directory `dir` is, and
@@ -262,23 +262,17 @@ pub(super) fn discard_superseded(dir: &Dir, epoch: Epoch) -> Result<()> {
         return Ok(());
     };
     let listing = io::failed("listing", staged.path());
-    for (load, kind) in staged.entries().map_err(&listing)? {
-        let Some(load) = load.to_str().filter(|_| kind == Kind::Dir) else {
-            continue;
-        };
-        let loaded = staged.dir(load).map_err(&listing)?;
-        for written in WRITTEN {
-            if loaded.kind(written).map_err(&listing)? == Some(Kind::Dir) {
-                let path = format!("{}/{load}/{written}", own.join("/"));
-                remove_unlisted(
-                    &loaded,
-                    written.as_ref(),
-                    Kind::Dir,
-                    &path,
-                    &listed,
-                    TREE_DEPTH,
-                )?;
-            }
+    for written in WRITTEN {
+        if staged.kind(written).map_err(&listing)? == Some(Kind::Dir) {
+            let path = format!("{}/{written}", own.join("/"));
+            remove_unlisted(
+                &staged,
+                written.as_ref(),
+                Kind::Dir,
+                &path,
+                &listed,
+                TREE_DEPTH,
+            )?;
         }
     }
     Ok(())

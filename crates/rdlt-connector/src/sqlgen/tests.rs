@@ -1,7 +1,5 @@
 mod staging;
 
-use std::time::SystemTime;
-
 use bytes::Bytes;
 use proptest::prelude::*;
 use rusqlite::Connection;
@@ -10,12 +8,10 @@ use rusqlite::types::Value;
 use super::{
     Column, Owned, SqlDialect, SqlPlanner, SqlValue, Sqlite, Staged, Statement, micros, receipt,
 };
-use crate::commit::{Horizon, SegmentSet};
+use crate::commit::SegmentSet;
 use crate::destination::{MergeKey, RootKey, TableChange, TableRef};
 use crate::error::ConnectorErrorKind;
-use crate::id::{
-    CommitSeq, Epoch, GenerationId, LoadId, PipelineId, SchemaVersion, SegmentId, TablePath,
-};
+use crate::id::{Epoch, GenerationId, PipelineId, SchemaVersion, SegmentId, TablePath};
 use crate::schema::TableSchema;
 use crate::state::{StateChange, StateRecord};
 use crate::types::{Field, LogicalType};
@@ -834,7 +830,6 @@ fn the_catalog_bootstraps_again_without_change() {
     let catalog = [
         "_rdlt_epochs",
         "_rdlt_state",
-        "_rdlt_receipts",
         "_rdlt_tables",
         "_rdlt_owners",
         "_rdlt_generations",
@@ -1031,28 +1026,86 @@ proptest! {
     }
 }
 
+/// What `pipeline`'s fence row holds: its epoch, then the landed key's epoch, place, commit time,
+/// rows and bytes.
+fn fence_row(
+    connection: &Connection,
+    planner: &SqlPlanner<Sqlite>,
+    pipeline: &PipelineId,
+) -> Vec<Value> {
+    let rows = query(connection, &planner.fence(pipeline));
+    let [row] = &rows[..] else { panic!("{rows:?}") };
+    row.clone()
+}
+
 #[test]
-fn each_open_increments_the_epoch_and_only_the_latest_epoch_fences_through() {
+fn each_open_increments_the_epoch_and_keeps_the_landed_key_of_each_pipeline_apart() {
     let (connection, planner) = database();
     let orders = pipeline("orders");
     for expected in 1..=2 {
         run_all(&connection, &planner.open(&orders));
-        let epoch = query(&connection, &planner.epoch(&orders));
-        assert_eq!(epoch, [[Value::Integer(expected)]]);
+        let row = fence_row(&connection, &planner, &orders);
+        assert_eq!(row[0], Value::Integer(expected));
+        assert!(
+            row[1..].iter().all(|value| *value == Value::Null),
+            "{row:?}"
+        );
     }
-    assert_eq!(run(&connection, &planner.fence(&orders, Epoch(1))), 0);
-    assert_eq!(run(&connection, &planner.fence(&orders, Epoch(2))), 1);
+    let landed = receipt(2, 3, 1_234_567, 5, 40);
+    run(&connection, &planner.land(&orders, &landed));
+    let row = fence_row(&connection, &planner, &orders);
+    let integers: Vec<i64> = row
+        .iter()
+        .map(|value| match value {
+            Value::Integer(integer) => *integer,
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(integers, [2, 2, 3, 1_234_567, 5, 40]);
     assert_eq!(
-        run(&connection, &planner.fence(&pipeline("other"), Epoch(2))),
-        0
+        receipt(
+            integers[1],
+            integers[2],
+            integers[3],
+            integers[4],
+            integers[5]
+        ),
+        landed
     );
     run_all(&connection, &planner.open(&pipeline("other")));
-    let epoch = query(&connection, &planner.epoch(&pipeline("other")));
+    let other = fence_row(&connection, &planner, &pipeline("other"));
     assert_eq!(
-        epoch,
-        [[Value::Integer(1)]],
+        other[0],
+        Value::Integer(1),
         "each pipeline counts its own epochs"
     );
+    assert!(
+        other[1..].iter().all(|value| *value == Value::Null),
+        "{other:?}"
+    );
+    run_all(&connection, &planner.open(&orders));
+    let reopened = fence_row(&connection, &planner, &orders);
+    assert_eq!(reopened[0], Value::Integer(3));
+    assert_eq!(reopened[1..], row[1..], "an open keeps the landed key");
+}
+
+#[test]
+fn the_fence_row_is_read_whatever_its_epoch_and_locked_where_the_dialect_locks_a_read() {
+    let planner = SqlPlanner::try_new(Sqlite).unwrap();
+    let read = planner.fence(&pipeline("orders"));
+    assert!(
+        read.sql.starts_with("SELECT") && !read.sql.contains("epoch ="),
+        "{}",
+        read.sql
+    );
+    assert!(
+        !read.sql.contains("FOR UPDATE"),
+        "SQLite's transactions hold the write lock"
+    );
+    let standard = SqlPlanner::try_new(Widening)
+        .unwrap()
+        .fence(&pipeline("orders"));
+    assert!(standard.sql.ends_with(" FOR UPDATE"), "{}", standard.sql);
 }
 
 #[test]
@@ -1149,84 +1202,6 @@ fn the_last_change_of_a_key_in_a_commit_is_the_one_kept() {
     assert_eq!(state, [[text("a"), Value::Blob(b"2".to_vec())]]);
     let plan = planner.state_changes(&mine, &[put("a", b"1"), delete("a"), put("a", b"2")]);
     assert_eq!(plan.len(), 2, "one delete and one insert for one key");
-}
-
-#[test]
-fn receipts_before_a_horizon_are_forgotten_and_every_other_kept() {
-    let at = |seconds| std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds);
-    // Loads whose ids differ where a byte's hex digits cross from numerals to letters.
-    let mut loads: Vec<LoadId> = [0, 1, 1_000]
-        .into_iter()
-        .flat_map(|seconds| {
-            [0, 9, 10, 15, 16, 0x9f, 0xa0, 0xff, u128::MAX]
-                .map(|random| LoadId::from_parts(at(seconds), random))
-        })
-        .collect();
-    loads.sort();
-    let seqs = [CommitSeq::FIRST, CommitSeq::FIRST.next()];
-    for (index, horizon) in loads.iter().enumerate() {
-        let (connection, planner) = database();
-        let (orders, other) = (pipeline("orders"), pipeline("other"));
-        for (load, seq) in loads.iter().flat_map(|load| seqs.map(|seq| (*load, seq))) {
-            for pipeline in [&orders, &other] {
-                run(
-                    &connection,
-                    &planner.record_receipt(pipeline, &receipt(load, seq, 0, 0, 0)),
-                );
-            }
-        }
-        let horizon = Horizon {
-            load_id: *horizon,
-            commit_seq: seqs[index % 2],
-        };
-        run(&connection, &planner.forget_receipts(&orders, &horizon));
-        for (load, seq) in loads.iter().flat_map(|load| seqs.map(|seq| (*load, seq))) {
-            let kept = !query(&connection, &planner.receipt(&orders, load, seq)).is_empty();
-            assert_eq!(
-                kept,
-                horizon.keeps(load, seq),
-                "{load} {seq:?} at {horizon:?}"
-            );
-            let other = query(&connection, &planner.receipt(&other, load, seq));
-            assert!(!other.is_empty(), "another pipeline's receipts stay");
-        }
-    }
-}
-
-#[test]
-fn a_stored_receipt_is_found_by_its_load_and_commit_and_reads_back_equal() {
-    let (connection, planner) = database();
-    let orders = pipeline("orders");
-    let load = LoadId::from_parts(SystemTime::now(), 7);
-    let micros = i64::try_from(micros(SystemTime::now())).unwrap();
-    let stored = receipt(load, CommitSeq::FIRST, micros, 3, 40);
-    run(&connection, &planner.record_receipt(&orders, &stored));
-    let rows = query(
-        &connection,
-        &planner.receipt(&orders, load, CommitSeq::FIRST),
-    );
-    let [row] = &rows[..] else { panic!("{rows:?}") };
-    let [
-        Value::Integer(at),
-        Value::Integer(count),
-        Value::Integer(bytes),
-    ] = &row[..]
-    else {
-        panic!("{row:?}")
-    };
-    assert_eq!(receipt(load, CommitSeq::FIRST, *at, *count, *bytes), stored);
-    let missing = [
-        planner.receipt(&orders, load, CommitSeq::FIRST.next()),
-        planner.receipt(&pipeline("other"), load, CommitSeq::FIRST),
-        planner.receipt(
-            &orders,
-            LoadId::from_parts(SystemTime::now(), 8),
-            CommitSeq::FIRST,
-        ),
-    ];
-    for statement in &missing {
-        assert!(query(&connection, statement).is_empty());
-    }
 }
 
 #[test]
@@ -2469,15 +2444,14 @@ fn commit_times_are_kept_to_the_microsecond() {
     use std::time::{Duration, UNIX_EPOCH};
     let at = UNIX_EPOCH + Duration::from_nanos(1_234_567_891);
     assert_eq!(micros(at), 1_234_567);
-    let load = LoadId::from_parts(at, 1);
-    let read = receipt(load, CommitSeq::FIRST, 1_234_567, 2, 3);
+    let read = receipt(1, 1, 1_234_567, 2, 3);
     assert_eq!(
         read.committed_at,
         UNIX_EPOCH + Duration::from_micros(1_234_567)
     );
     assert_eq!((read.rows, read.bytes), (2, 3));
     assert_eq!(
-        receipt(load, CommitSeq::FIRST, -1, -1, 0).rows,
+        receipt(1, 1, -1, -1, 0).rows,
         0,
         "negative counts read as none"
     );

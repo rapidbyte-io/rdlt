@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use crate::capabilities::Capabilities;
 use crate::commit::{CommitMeta, Receipt};
 use crate::error::Result;
-use crate::id::{Epoch, GenerationId, LoadId, PipelineId, SchemaVersion, SegmentId, TablePath};
+use crate::id::{Epoch, GenerationId, PipelineId, SchemaVersion, SegmentId, TablePath};
 use crate::schema::TableSchema;
 use crate::spec::{BoxFuture, ConnectContext, ConnectorSpec};
 use crate::state::StateRecord;
@@ -36,17 +36,19 @@ pub use readable::readable_destination_factory;
 pub struct OpenContext {
     /// The pipeline whose state the session reads and writes.
     pub pipeline: PipelineId,
-    /// The load the session serves.
-    pub load_id: LoadId,
 }
 
-/// A session a destination opened: the new epoch and the committed state records.
+/// A session a destination opened: the new epoch, the last commit that landed and the committed
+/// state records.
 #[derive(Debug)]
 pub struct Opened<S> {
     /// The session.
     pub session: S,
     /// The epoch this open set; commits with an older epoch must fail with a fenced error.
     pub epoch: Epoch,
+    /// The receipt of the pipeline's last commit that landed, as its fence row holds it; none
+    /// before the first.
+    pub landed: Option<Receipt>,
     /// Every committed state record of the pipeline.
     pub state: Vec<StateRecord>,
 }
@@ -336,9 +338,12 @@ pub trait Session: Send + 'static {
 
     /// Publishes the staged segments in `meta` with its state changes, atomically.
     ///
-    /// Re-committing the same `(load_id, commit_seq)` returns the stored receipt without
-    /// publishing. A commit whose epoch is older than the pipeline's fails with a fenced error.
-    /// A segment this session never staged publishes nothing; the commit may instead fail. A
+    /// The commit reads the pipeline's fence row under its transaction's write lock and answers
+    /// as [`answer`](crate::answer) decides: the commit whose key landed last returns that
+    /// receipt and publishes nothing; one of an older epoch fails with a fenced error; one whose
+    /// `after` is not the key landed fails fenced, coded `commit_stale`, and publishes nothing;
+    /// the rest apply, and write their receipt into the row in the same transaction (clause
+    /// `D-LANDED`). A segment this session never staged publishes nothing; the commit may instead fail. A
     /// segment may hold rows for several tables, as a stream and its child tables share their
     /// partition's segments, and its commit publishes each table's rows whole: where a table
     /// lacks a column its rows were staged with, as one dropped outside the pipeline, the commit
@@ -401,6 +406,8 @@ pub struct OpenedSession {
     pub session: Box<dyn DestinationSession>,
     /// The epoch this open set.
     pub epoch: Epoch,
+    /// The receipt of the pipeline's last commit that landed; none before the first.
+    pub landed: Option<Receipt>,
     /// Every committed state record of the pipeline, with distinct keys: the engine refuses state
     /// holding a key twice.
     pub state: Vec<StateRecord>,
@@ -410,6 +417,7 @@ impl std::fmt::Debug for OpenedSession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OpenedSession")
             .field("epoch", &self.epoch)
+            .field("landed", &self.landed)
             .field("state", &self.state.len())
             .finish_non_exhaustive()
     }

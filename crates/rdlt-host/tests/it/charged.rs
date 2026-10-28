@@ -166,7 +166,7 @@ async fn each_frame_is_charged_and_released_before_its_event_waits_for_room() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_writer_releases_each_answer_s_charge_once_it_is_decoded() {
     use rdlt_connector::{
-        Destination as _, LoadId, OpenContext, SchemaVersion, SegmentId, TablePath, TableRef,
+        Destination as _, OpenContext, SchemaVersion, SegmentId, TablePath, TableRef,
     };
     let tally = Arc::new(Tally::default());
     let charge = Arc::new(Charging(Arc::clone(&tally)));
@@ -175,7 +175,6 @@ async fn a_writer_releases_each_answer_s_charge_once_it_is_decoded() {
     rdlt_wire::bounded::charging(charge, async move {
         let context = OpenContext {
             pipeline: PipelineId::parse("charged").unwrap(),
-            load_id: LoadId::from_parts(std::time::UNIX_EPOCH, 1),
         };
         let mut opened = destination.open(&context).await.expect("the session opens");
         let table = TableRef {

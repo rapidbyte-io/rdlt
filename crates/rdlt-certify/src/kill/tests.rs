@@ -101,7 +101,7 @@ fn rows_render_by_column_name_without_metadata_whatever_their_batches() {
     let first = batch(vec![
         ("name", names),
         ("id", Arc::new(Int64Array::from(vec![2, 1]))),
-        ("_rdlt_load_id", Arc::new(StringArray::from(vec!["x", "y"]))),
+        ("_rdlt_load_epoch", Arc::new(Int64Array::from(vec![3, 3]))),
     ]);
     let second = batch(vec![
         ("id", Arc::new(Int64Array::from(vec![2]))),

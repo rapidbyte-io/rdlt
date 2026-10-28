@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 /// The format this build writes and reads.
-const FORMAT: u16 = 1;
+const FORMAT: u16 = 2;
 
 /// A file's format: written as this build's, and read only as it, so a file of another build is
 /// refused rather than read as one it is not.

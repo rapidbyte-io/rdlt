@@ -4,7 +4,7 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use rdlt_connector::{
     BoxFuture, Capabilities, ColumnKey, ColumnPath, CommitMeta, ConnectorError, DestinationSession,
-    DestinationWriter, Field, GenerationId, IdentifierCase, LoadId, LogicalType, Receipt, Result,
+    DestinationWriter, Field, GenerationId, IdentifierCase, LogicalType, Receipt, Result,
     SchemaChanges, SchemaVersion, StateChange, StateEntry, StreamName, TableChange, TablePath,
     TableRef, TableSchema,
 };
@@ -72,7 +72,7 @@ fn resolver() -> Resolver {
         naming: Naming::new(capabilities.identifiers.clone()),
         capabilities: Arc::new(capabilities),
         meta: MetaNames {
-            load_id: "_rdlt_load_id".into(),
+            load_epoch: "_rdlt_load_epoch".into(),
             loaded_at: "_rdlt_loaded_at".into(),
             seq: None,
             id: None,
@@ -364,15 +364,15 @@ impl DestinationSession for Physical {
 
 /// The tables of attempt `number` over the destination columns `columns`, folding identifiers to
 /// lower case; nothing is committed, so each attempt starts from no table.
-fn attempt(columns: &Columns, number: u128) -> Tables {
+fn attempt(columns: &Columns, number: u64) -> Tables {
     let mut resolver = resolver();
     let mut capabilities = (*resolver.capabilities).clone();
     capabilities.identifiers.case = IdentifierCase::Lower;
     resolver.naming = Naming::new(capabilities.identifiers.clone());
     resolver.capabilities = Arc::new(capabilities);
-    let load = LoadId::from_parts(std::time::UNIX_EPOCH, number);
+    let epoch = rdlt_connector::Epoch(number);
     let tables =
-        Tables::new(SharedSession::new(Box::new(Physical(Arc::clone(columns))))).salted(load);
+        Tables::new(SharedSession::new(Box::new(Physical(Arc::clone(columns))))).salted(epoch);
     tables
         .add(resolver, &table(None), Model::default())
         .unwrap();
@@ -463,7 +463,7 @@ async fn attempts_name_around_more_leftovers_than_one_attempt_names_around() {
             );
         }
     }
-    for (number, logical) in (0_u128..).zip(widening) {
+    for (number, logical) in (0_u64..).zip(widening) {
         let tables = attempt(&columns, number);
         let fitted = tables.fit(0, &schema(&[("x", logical.clone())])).await;
         let (view, _) = fitted.unwrap_or_else(|error| panic!("attempt {number}: {error}"));

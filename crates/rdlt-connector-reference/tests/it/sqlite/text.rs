@@ -18,7 +18,7 @@ pub(super) fn created(shared: &Shared, name: &str) -> Vec<String> {
 #[tokio::test]
 async fn a_declared_type_the_dialect_does_not_render_is_never_copied() {
     let shared = Shared::new().await;
-    let mut session = shared.open("p", 1).await;
+    let mut session = shared.open("p").await;
     shared.execute(
         "CREATE TABLE t (id \"INTEGER, injected TEXT DEFAULT (sqlite_version())\", seq BLOB)",
     );
@@ -56,7 +56,7 @@ fn merging(table: &TableRef, key: MergeKey) -> TableRef {
 #[tokio::test]
 async fn a_merge_key_the_table_does_not_hold_is_refused_where_its_writer_opens() {
     let shared = Shared::new().await;
-    let mut session = shared.open("p", 1).await;
+    let mut session = shared.open("p").await;
     let orders = table("orders", "orders", true);
     session.load(&orders, 1, &[1, 2]).await;
     let before = shared.objects();
@@ -89,7 +89,7 @@ async fn a_merge_key_the_table_does_not_hold_is_refused_where_its_writer_opens()
 #[tokio::test]
 async fn a_recorded_sequence_that_is_no_column_fails_the_commit() {
     let shared = Shared::new().await;
-    let mut session = shared.open("p", 1).await;
+    let mut session = shared.open("p").await;
     let orders = table("orders", "orders", true);
     session.load(&orders, 1, &[1]).await;
     // Three rows of one key, the newest written second.

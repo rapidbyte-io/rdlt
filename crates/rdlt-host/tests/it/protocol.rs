@@ -4,7 +4,7 @@ use std::time::Duration;
 use rdlt_connector::serve::Served;
 use rdlt_connector::wire::{error as carried, v1};
 use rdlt_connector::{
-    CommitMeta, CommitSeq, ConnectorErrorKind, Destination as _, LoadId, OpenContext, Partition,
+    CommitKey, CommitMeta, ConnectorErrorKind, Destination as _, OpenContext, Partition,
     PipelineId, ReadRequest, Role, SegmentSet, Source as _, StreamName, partition_channel,
     source_factory,
 };
@@ -361,20 +361,20 @@ async fn a_call_beyond_its_deadline_fails_with_deadline_exceeded() {
     let destination = rdlt_host::RemoteDestination::new(connection).unwrap();
     let context = OpenContext {
         pipeline: PipelineId::parse("deadline").unwrap(),
-        load_id: LoadId::from_parts(std::time::UNIX_EPOCH, 1),
     };
     let mut opened = destination.open(&context).await.unwrap();
     let meta = CommitMeta {
-        load_id: context.load_id,
-        commit_seq: CommitSeq::FIRST,
-        epoch: opened.epoch,
+        key: CommitKey {
+            epoch: opened.epoch,
+            seq: 1,
+        },
+        after: opened.landed.as_ref().map(|landed| landed.key),
         segments: SegmentSet::new(),
         abandoned: SegmentSet::new(),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
-        horizon: None,
     };
     let error = opened.session.commit(&meta).await.unwrap_err();
     assert_eq!(
@@ -527,7 +527,6 @@ async fn a_call_for_the_other_role_is_refused() {
     configured(&mut client, v1::Role::Source, &rows(1).to_string()).await;
     let open = v1::OpenRequest {
         pipeline: "p".to_owned(),
-        load_id: vec![0; 16].into(),
     };
     let status = client.rpc.open(open).await.unwrap_err();
     assert_eq!(carried(&status).code(), Some("role"));

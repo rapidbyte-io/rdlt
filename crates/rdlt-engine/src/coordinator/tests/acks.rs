@@ -1,6 +1,5 @@
 //! What a source is told is committed, against the commits that had landed when it was told,
-//! and each commit's horizon, whatever order partitions seal and end in and whichever reports
-//! fail.
+//! whatever order partitions seal and end in and whichever reports fail.
 
 use std::collections::BTreeMap;
 use std::num::NonZeroU32;
@@ -158,11 +157,10 @@ proptest! {
     /// Every cursor a source is told is committed is one its partition sealed, and no later than
     /// where the commits that had landed when it was told leave the partition, a partition done
     /// being past every cursor, whichever reports fail; no report carries a cursor older than one
-    /// an earlier report of its partition carried; an attempt that ends well has told every
-    /// partition at a cursor the last its commits recorded; and each commit's horizon is no
-    /// earlier than its predecessor's.
+    /// an earlier report of its partition carried; and an attempt that ends well has told every
+    /// partition at a cursor the last its commits recorded.
     #[test]
-    fn a_source_is_told_only_cursors_a_landed_commit_covers_and_horizons_only_move_on(
+    fn a_source_is_told_only_cursors_a_landed_commit_covers(
         partitions in 1..=PARTITIONS,
         steps in proptest::collection::vec(step(), 0..16),
         answers in proptest::collection::vec(answer(), 0..16),
@@ -203,12 +201,6 @@ proptest! {
                 }
             }
             Err(error) => prop_assert_eq!(error.kind(), ErrorKind::Source),
-        }
-        for commit in &case.commits {
-            prop_assert!(commit.horizon.is_some(), "commit {:?} carries no horizon", commit.commit_seq);
-        }
-        for pair in case.commits.windows(2) {
-            prop_assert!(pair[0].horizon <= pair[1].horizon, "commit {:?}'s horizon is earlier than its predecessor's", pair[1].commit_seq);
         }
     }
 }

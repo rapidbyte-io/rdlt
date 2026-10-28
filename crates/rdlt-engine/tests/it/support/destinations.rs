@@ -92,6 +92,7 @@ impl DestinationConnector for Null {
             epoch: rdlt_connector::Epoch(
                 self.epoch.fetch_add(1, Ordering::SeqCst).saturating_add(1),
             ),
+            landed: None,
             state: Vec::new(),
         })
     }
@@ -130,8 +131,7 @@ impl Session for NullSession {
             .filter_map(|segment| staged.remove(&segment))
             .sum();
         Ok(Receipt {
-            load_id: meta.load_id,
-            commit_seq: meta.commit_seq,
+            key: meta.key,
             committed_at: UNIX_EPOCH,
             rows,
             bytes: 0,
@@ -227,6 +227,8 @@ pub(crate) enum Step {
     StallWrites,
     /// Every open answers with a state record that is not one.
     GarbleState,
+    /// Every open answers with an epoch past what a load's epoch column holds.
+    EpochPastColumn,
     /// Every commit fails, and no close of a session ever returns.
     StallClose,
 }
@@ -280,6 +282,9 @@ impl Destination for Failing {
                     value: bytes::Bytes::from_static(b"garbled"),
                 });
             }
+            if self.step == Step::EpochPastColumn {
+                opened.epoch = rdlt_connector::Epoch(u64::MAX);
+            }
             Ok(OpenedSession {
                 session: Box::new(FailingSession {
                     inner: opened.session,
@@ -332,7 +337,10 @@ impl DestinationSession for FailingSession {
             }
             Ok(match self.step {
                 Step::SkewReceipts => Receipt {
-                    commit_seq: receipt.commit_seq.next(),
+                    key: rdlt_connector::CommitKey {
+                        seq: receipt.key.seq + 1,
+                        ..receipt.key
+                    },
                     ..receipt
                 },
                 Step::InflateReceipts => Receipt {

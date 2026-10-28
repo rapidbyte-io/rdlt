@@ -4,9 +4,7 @@
 mod tests;
 
 use std::fmt;
-use std::num::NonZeroU64;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -36,12 +34,6 @@ pub enum IdError {
         kind: &'static str,
         /// The first offending character.
         character: char,
-    },
-    /// The value is not the identifier's written form.
-    #[error("{kind} is not written as one is")]
-    Malformed {
-        /// The identifier being built.
-        kind: &'static str,
     },
 }
 
@@ -265,92 +257,6 @@ impl TryFrom<Vec<String>> for TablePath {
 impl Serialize for TablePath {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.collect_seq(self.segments())
-    }
-}
-
-/// Identifies one attempt's load; time-ordered (a version 7 UUID).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct LoadId(uuid::Uuid);
-
-impl LoadId {
-    /// Builds the id from a wall-clock time and random bits.
-    ///
-    /// The low 80 bits of `random` fill the id; the version and variant fields overwrite 6 of them
-    /// (bits 76–79 and 62–63). Times before the Unix epoch count as the epoch.
-    pub fn from_parts(at: SystemTime, random: u128) -> Self {
-        let millis = at
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |since| since.as_millis());
-        let millis = u64::try_from(millis).unwrap_or(u64::MAX);
-        let mut bytes = [0u8; 10];
-        bytes.copy_from_slice(&random.to_be_bytes()[6..]);
-        Self(uuid::Builder::from_unix_timestamp_millis(millis, &bytes).into_uuid())
-    }
-
-    /// The id's 16 bytes.
-    pub fn as_bytes(&self) -> &[u8; 16] {
-        self.0.as_bytes()
-    }
-
-    /// The load id whose 16 bytes are `bytes`.
-    #[cfg(feature = "wire")]
-    pub(crate) fn from_bytes(bytes: [u8; 16]) -> Self {
-        Self(uuid::Uuid::from_bytes(bytes))
-    }
-}
-
-impl fmt::Display for LoadId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.hyphenated().fmt(f)
-    }
-}
-
-impl std::str::FromStr for LoadId {
-    type Err = IdError;
-
-    /// The load id `value` writes, as [`Display`](fmt::Display) writes one.
-    fn from_str(value: &str) -> Result<Self, IdError> {
-        let malformed = || IdError::Malformed { kind: "load id" };
-        let id = uuid::Uuid::try_parse(value).map_err(|_| malformed())?;
-        // Only the form a load id is written in, so one name never stands for two.
-        if id.hyphenated().to_string() != value {
-            return Err(malformed());
-        }
-        Ok(Self(id))
-    }
-}
-
-/// The position of a commit within a load, starting at 1.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct CommitSeq(NonZeroU64);
-
-impl CommitSeq {
-    /// The first commit of a load.
-    pub const FIRST: Self = Self(NonZeroU64::MIN);
-
-    /// The commit after this one.
-    ///
-    /// # Panics
-    ///
-    /// Panics after `u64::MAX` commits in one load, which no load reaches.
-    #[must_use]
-    pub fn next(self) -> Self {
-        Self(
-            self.0
-                .checked_add(1)
-                .expect("a load commits fewer than u64::MAX times"),
-        )
-    }
-
-    /// The sequence number.
-    pub fn get(self) -> u64 {
-        self.0.get()
-    }
-
-    /// The sequence number `value`, if it is not zero.
-    #[cfg(feature = "wire")]
-    pub(crate) fn new(value: u64) -> Option<Self> {
-        NonZeroU64::new(value).map(Self)
     }
 }
 

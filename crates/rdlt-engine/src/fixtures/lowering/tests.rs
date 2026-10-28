@@ -1,12 +1,11 @@
 use std::sync::Arc;
-use std::time::UNIX_EPOCH;
 
 use arrow_array::cast::AsArray;
 use arrow_array::types::{Int64Type, TimestampMicrosecondType};
 use arrow_array::{Array, ArrayRef, Decimal128Array, Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field as ArrowField, Schema};
 use rdlt_connector::cost::{Stored, arrays};
-use rdlt_connector::{DecimalType, LoadId, LogicalType, TimeUnit};
+use rdlt_connector::{DecimalType, Epoch, LogicalType, TimeUnit};
 
 use super::{Case, Kept, LoweringCase, Made, Storage, events, stamp, with_column};
 use crate::cost::CHANGE_ROW;
@@ -350,14 +349,14 @@ fn a_plan_copies_nothing_only_where_it_hands_every_column_over_as_it_arrives() {
 }
 
 #[test]
-fn a_plan_copies_nothing_for_rows_of_the_load_its_constants_were_built_for() {
+fn a_plan_copies_nothing_for_rows_of_the_session_its_constants_were_built_for() {
     let case = Case::new(LoweringCase::AppendNative, ROWS);
     case.prepare().unwrap();
     let (plan, pushed) = (case.plan(), case.batch());
     assert!(plan.copies_nothing(&pushed.slice(1, 10), &stamp()));
     assert!(!plan.copies_nothing(&events(0, ROWS + 1, 10), &stamp()));
     let next = Stamp {
-        load_id: LoadId::from_parts(UNIX_EPOCH, 2),
+        epoch: Epoch(stamp().epoch.0 + 1),
         ..stamp()
     };
     assert!(!plan.copies_nothing(pushed, &next));

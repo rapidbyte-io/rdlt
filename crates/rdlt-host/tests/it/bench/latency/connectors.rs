@@ -283,6 +283,7 @@ impl DestinationConnector for Landing {
         Ok(Opened {
             session,
             epoch,
+            landed: None,
             state,
         })
     }
@@ -327,7 +328,7 @@ impl Session for LandingSession {
     /// Lands the commit's segments and state, then appends each push they hold, the instant
     /// they landed; or answers `Transient` before landing anything, where the draw says.
     async fn commit(&mut self, meta: &CommitMeta) -> Result<Receipt> {
-        if meta.epoch != self.epoch || self.kept.lock().epoch != self.epoch {
+        if meta.key.epoch != self.epoch || self.kept.lock().epoch != self.epoch {
             return Err(ConnectorError::fenced("a newer session holds the pipeline"));
         }
         if drawn(self.config.transient) {
@@ -356,8 +357,7 @@ impl Session for LandingSession {
         }
         append(&self.config.record, lines).await?;
         Ok(Receipt {
-            load_id: meta.load_id,
-            commit_seq: meta.commit_seq,
+            key: meta.key,
             committed_at: UNIX_EPOCH,
             rows: (pushes.len() * ROWS) as u64,
             bytes: 0,

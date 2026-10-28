@@ -13,9 +13,9 @@ use super::{
     WriteStats, destination_factory,
 };
 use crate::capabilities::Capabilities;
-use crate::commit::{CommitMeta, Receipt, SegmentSet};
+use crate::commit::{CommitKey, CommitMeta, Receipt, SegmentSet};
 use crate::error::{ConnectorError, Result};
-use crate::id::{CommitSeq, Epoch, LoadId, PipelineId, SchemaVersion, SegmentId, TablePath};
+use crate::id::{Epoch, PipelineId, SchemaVersion, SegmentId, TablePath};
 use crate::schema::TableSchema;
 use crate::spec::ConnectContext;
 use crate::state::StateRecord;
@@ -85,6 +85,7 @@ impl DestinationConnector for Recorder {
                 fail_discard: self.fail_discard,
             },
             epoch: Epoch(3),
+            landed: None,
             state,
         })
     }
@@ -126,10 +127,9 @@ impl Session for RecorderSession {
         self.journal
             .lock()
             .unwrap()
-            .push(format!("commit {}", meta.commit_seq.get()));
+            .push(format!("commit {}", meta.key.seq));
         Ok(Receipt {
-            load_id: meta.load_id,
-            commit_seq: meta.commit_seq,
+            key: meta.key,
             committed_at: UNIX_EPOCH,
             rows: 1,
             bytes: 8,
@@ -160,7 +160,6 @@ impl TableWriter for RecorderWriter {
 fn context() -> OpenContext {
     OpenContext {
         pipeline: PipelineId::parse("orders").unwrap(),
-        load_id: LoadId::from_parts(UNIX_EPOCH, 1),
     }
 }
 
@@ -183,7 +182,7 @@ async fn open_discards_staging_before_the_engine_sees_the_session() {
     let opened = destination.open(&context()).await.unwrap();
     assert_eq!(
         format!("{opened:?}"),
-        "OpenedSession { epoch: Epoch(3), state: 1, .. }"
+        "OpenedSession { epoch: Epoch(3), landed: None, state: 1, .. }"
     );
     assert_eq!(opened.epoch, Epoch(3));
     assert_eq!(opened.state.len(), 1);
@@ -215,16 +214,17 @@ async fn sessions_forward_every_call() {
         WriteStats { rows: 1, bytes: 8 }
     );
     let meta = CommitMeta {
-        load_id: context().load_id,
-        commit_seq: CommitSeq::FIRST,
-        epoch: Epoch(3),
+        key: CommitKey {
+            epoch: Epoch(3),
+            seq: 1,
+        },
+        after: None,
         segments: SegmentSet::from_iter([SegmentId(4)]),
         abandoned: SegmentSet::new(),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
-        horizon: None,
     };
     assert_eq!(session.commit(&meta).await.unwrap().rows, 1);
     session.close().await.unwrap();

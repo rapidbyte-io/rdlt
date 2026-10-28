@@ -11,8 +11,6 @@ use std::num::NonZeroUsize;
 use std::pin::Pin;
 use std::time::{Duration, Instant, SystemTime};
 
-use rdlt_connector::LoadId;
-
 use crate::compute::ComputePool;
 
 #[cfg(any(test, feature = "bench"))]
@@ -49,10 +47,4 @@ pub trait Env: Send + Sync + 'static {
     /// where it is negative.
     #[cfg(feature = "sim")]
     fn charged(&self, _change: i64) {}
-
-    /// A new load id from the current wall-clock time and 128 random bits.
-    fn load_id(&self) -> LoadId {
-        let random = (u128::from(self.random()) << 64) + u128::from(self.random());
-        LoadId::from_parts(self.now(), random)
-    }
 }

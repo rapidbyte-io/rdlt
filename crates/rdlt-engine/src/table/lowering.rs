@@ -28,7 +28,7 @@ use arrow_array::{Array, ArrayRef, BooleanArray, RecordBatch};
 use arrow_schema::FieldRef;
 use arrow_select::filter::FilterBuilder;
 use parking_lot::Mutex;
-use rdlt_connector::{Epoch, Field, LoadId, LogicalType, SegmentId, StreamName};
+use rdlt_connector::{Epoch, Field, LogicalType, SegmentId, StreamName};
 
 use super::TableView;
 use super::convert::text;
@@ -52,7 +52,6 @@ pub(crate) use unheld::{Check, nulled_at, refused};
 /// What the metadata columns of a batch hold.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Stamp {
-    pub(crate) load_id: LoadId,
     /// When the load started.
     pub(crate) loaded_at: SystemTime,
     /// When the batch was received: where a history stream's versions begin without a change
@@ -401,7 +400,7 @@ impl LoweringPlan {
             .collect()
     }
 
-    /// The load id and load start columns for `rows` rows, and the load start in microseconds
+    /// The load epoch and load start columns for `rows` rows, and the load start in microseconds
     /// since the epoch: slices of arrays built once, and built again only for a batch more than
     /// the arrays hold, whose keys take a byte a row.
     fn constants(

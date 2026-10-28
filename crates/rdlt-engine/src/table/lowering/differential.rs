@@ -11,7 +11,7 @@ use arrow_array::cast::AsArray;
 use arrow_array::{RecordBatch, RecordBatchOptions};
 use proptest::prelude::*;
 use rdlt_connector::{
-    Capabilities, ChangeOp, ColumnPath, LoadId, OP_COLUMN, ReadMode, SEQ_COLUMN, SchemaChanges,
+    Capabilities, ChangeOp, ColumnPath, OP_COLUMN, ReadMode, SEQ_COLUMN, SchemaChanges,
     SchemaVersion, SegmentId, StreamName, TablePath, TableRef, TableSchema, TypeKind,
     UNCHANGED_COLUMN, UnchangedFlags,
 };
@@ -306,7 +306,6 @@ fn decoded(
 fn stamp() -> Stamp {
     Stamp {
         epoch: rdlt_connector::Epoch(1),
-        load_id: LoadId::from_parts(UNIX_EPOCH + Duration::from_secs(1_000), 1),
         loaded_at: UNIX_EPOCH + Duration::from_secs(1_000),
         received_at: UNIX_EPOCH + Duration::from_secs(1_000),
         segment: SegmentId(1),

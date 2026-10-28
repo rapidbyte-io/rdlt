@@ -7,9 +7,9 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use arrow_array::RecordBatch;
 use rdlt_connector::merge::{Merged, failed, merge_children_sparse, merge_sparse};
 use rdlt_connector::{
-    CommitMeta, CommitSeq, ConnectorError, Epoch, GenerationId, LoadId, MergeKey, PartitionId,
-    PipelineId, ReadMode, Receipt, Result, SegmentId, StateChange, StateEntry, StateKey,
-    StateRecord, StreamName, TablePath, TableRef,
+    CommitMeta, ConnectorError, Epoch, Fence, GenerationId, MergeKey, PartitionId, PipelineId,
+    ReadMode, Receipt, Result, SegmentId, StateChange, StateEntry, StateKey, StateRecord,
+    StreamName, TablePath, TableRef,
 };
 
 use super::read::{names, next_offset};
@@ -22,8 +22,6 @@ use crate::world::World;
 #[derive(Debug, Default)]
 pub(crate) struct Store {
     pub(super) pipelines: BTreeMap<PipelineId, PipelineStore>,
-    /// Each commit's receipt, by its pipeline and the commit.
-    pub(super) receipts: BTreeMap<(PipelineId, LoadId, CommitSeq), Receipt>,
     /// Staged rows, by the pipeline whose session staged them and their segment.
     pub(super) staged: BTreeMap<(PipelineId, SegmentId), Vec<Staged>>,
     pub(super) names: BTreeMap<TablePath, String>,
@@ -38,6 +36,8 @@ pub(crate) struct Store {
 #[derive(Debug, Default)]
 pub(super) struct PipelineStore {
     pub(super) epoch: Epoch,
+    /// The receipt of the pipeline's last commit that landed.
+    pub(super) landed: Option<Receipt>,
     pub(super) state: BTreeMap<String, StateRecord>,
     /// The generations of full reads completed, by stream and the phase they completed in.
     ///
@@ -76,7 +76,7 @@ struct Plan {
 }
 
 /// A digest of everything a destination holds: its tables' columns and rows, each pipeline's
-/// state and receipts, and how far commits moved each partition.
+/// state and last commit that landed, and how far commits moved each partition.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Digest(u64);
 
@@ -94,8 +94,8 @@ impl Store {
         for (pipeline, store) in &self.pipelines {
             pipeline.to_string().hash(&mut hasher);
             format!("{:?}", store.state).hash(&mut hasher);
+            format!("{:?}", store.landed).hash(&mut hasher);
         }
-        format!("{:?}", self.receipts).hash(&mut hasher);
         format!("{:?}", self.landed).hash(&mut hasher);
         Digest(hasher.finish())
     }
@@ -199,6 +199,17 @@ impl Store {
         self.pipelines
             .get(pipeline)
             .map_or_else(Epoch::default, |store| store.epoch)
+    }
+
+    /// `pipeline`'s fence row: its epoch and the receipt of its last commit that landed.
+    pub(super) fn fence(&self, pipeline: &PipelineId) -> Fence {
+        Fence {
+            epoch: self.epoch(pipeline),
+            landed: self
+                .pipelines
+                .get(pipeline)
+                .and_then(|store| store.landed.clone()),
+        }
     }
 
     /// Publishes the segments of `meta` that `pipeline` staged and swaps in the generations it

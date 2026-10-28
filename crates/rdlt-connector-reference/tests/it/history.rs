@@ -1,10 +1,8 @@
 //! History tables merge into their table: a replace generation of one is refused.
 
-use std::time::UNIX_EPOCH;
-
 use rdlt_connector::{
     ConnectContext, ConnectorErrorKind, Destination, DestinationConnector, GenerationId,
-    HistoryColumns, LoadId, MergeKey, OpenContext, PipelineId, SchemaVersion, TablePath, TableRef,
+    HistoryColumns, MergeKey, OpenContext, PipelineId, SchemaVersion, TablePath, TableRef,
     destination_factory,
 };
 use rdlt_connector_reference::{FilesDestination, MemoryDestination};
@@ -41,7 +39,6 @@ async fn writers<C: DestinationConnector>(
         .expect("the destination connects");
     let context = OpenContext {
         pipeline: PipelineId::parse("history").expect("valid pipeline id"),
-        load_id: LoadId::from_parts(UNIX_EPOCH, 1),
     };
     let mut opened = destination.open(&context).await.expect("a session opens");
     let merged = opened.session.writer(&table(None)).await.is_ok();

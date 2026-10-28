@@ -27,8 +27,6 @@ pub enum StateKey {
     Names(TablePath),
     /// Who made a table's sequences.
     Sequences(TablePath),
-    /// The last commit's receipt.
-    Receipt,
 }
 
 impl StateKey {

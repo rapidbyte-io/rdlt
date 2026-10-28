@@ -15,7 +15,7 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use parking_lot::Mutex;
-use rdlt_connector::{Destination, LoadId, PipelineId, Source};
+use rdlt_connector::{Destination, PipelineId, Source};
 use tokio_util::sync::CancellationToken;
 
 use crate::attempt::{self, RunContext};
@@ -25,9 +25,7 @@ use crate::deadline::Waits;
 use crate::env::Env;
 use crate::error::Error;
 use crate::plan::PipelinePlan;
-use crate::report::{
-    AttemptEnd, AttemptLog, AttemptRecord, CommitRecord, Report, RunStatus, Tally,
-};
+use crate::report::{AttemptEnd, AttemptLog, AttemptRecord, Pending, Report, RunStatus, Tally};
 use crate::scope::contained;
 
 pub use reset::{ResetReport, ResetScope};
@@ -195,8 +193,9 @@ fn backoff(retry: &RetryPolicy, error: &Error, failures: u32, env: &dyn Env) -> 
 /// retries for ever stays bounded.
 struct Ledger {
     report: Report,
-    /// A failed attempt's commit in flight, credited to it once a later attempt reads it back.
-    unresolved: Option<CommitRecord>,
+    /// A failed attempt's commit in flight, credited to it once a later attempt's open finds its
+    /// key landed.
+    unresolved: Option<Pending>,
 }
 
 impl Ledger {
@@ -210,9 +209,10 @@ impl Ledger {
     /// Records `attempt`, which `failed` or not, and whether a commit of it moved the load on: a
     /// commit that left every partition where it stood, and published nothing, is no progress.
     ///
-    /// A failed attempt's commit in flight is credited once a later attempt opened and found it
-    /// landed, to the attempt whose load its receipt names. An attempt that never opened read
-    /// nothing back, so the commit stays in flight for the next.
+    /// A failed attempt's commit in flight is credited, to the attempt whose epoch its key names,
+    /// once a later attempt's open finds that key the last that landed; where it finds another,
+    /// the commit never landed or a later one landed on it, and goes uncredited. An attempt that
+    /// never opened found nothing, so the commit stays in flight for the next.
     ///
     /// # Errors
     ///
@@ -220,11 +220,11 @@ impl Ledger {
     /// hold.
     fn record(&mut self, mut attempt: AttemptRecord, failed: bool) -> Result<bool, Error> {
         let log = &mut attempt.log;
-        if let Some(opened) = log.opened
+        if let Some((_, landed)) = &log.opened
             && let Some(pending) = self.unresolved.take()
-            && opened == (pending.receipt.load_id, pending.receipt.commit_seq)
+            && let Some(commit) = landed.as_ref().and_then(|landed| pending.landed(landed))
         {
-            self.report.credit(pending)?;
+            self.report.credit(commit)?;
         }
         if failed && let Some(pending) = log.pending.take() {
             self.unresolved = Some(pending);
@@ -247,13 +247,12 @@ impl Ledger {
 async fn attempted(
     context: &RunContext,
     control: &RunControl,
-    load_id: LoadId,
     log: Arc<Mutex<AttemptLog>>,
 ) -> Result<AttemptEnd, Error> {
     tokio::select! {
         biased;
         () = control.now.cancelled() => Err(Error::cancelled("the run was stopped")),
-        result = contained(attempt::run(context, load_id, log)) => result.unwrap_or_else(|panic| {
+        result = contained(attempt::run(context, log)) => result.unwrap_or_else(|panic| {
             Err(Error::internal(format!("an attempt panicked: {panic}")))
         }),
     }
@@ -304,13 +303,11 @@ async fn drive(context: RunContext, control: RunControl) -> RunOutcome {
     let mut ledger = Ledger::new(context.plan.pipeline().clone());
     let mut failures = 0;
     let (status, error) = loop {
-        let load_id = context.env.load_id();
         let log = Arc::new(Mutex::new(AttemptLog::default()));
         let started_at = context.env.now();
-        let result = attempted(&context, &control, load_id, Arc::clone(&log)).await;
+        let result = attempted(&context, &control, Arc::clone(&log)).await;
         let log = std::mem::take(&mut *log.lock());
         let attempt = AttemptRecord {
-            load_id,
             started_at,
             ended_at: context.env.now(),
             log,

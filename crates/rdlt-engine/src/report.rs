@@ -7,7 +7,7 @@ mod tests;
 use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime};
 
-use rdlt_connector::{CommitSeq, LoadId, PartitionId, PipelineId, Receipt, StreamName};
+use rdlt_connector::{CommitKey, Epoch, PartitionId, PipelineId, Receipt, StreamName};
 use serde::Serialize;
 
 use crate::error::{Error, ErrorKind, ErrorReport, codes};
@@ -69,8 +69,9 @@ pub const REPORTED_ATTEMPTS: usize = 128;
 /// One attempt of a run.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct AttemptReport {
-    /// The attempt's load.
-    pub load_id: LoadId,
+    /// The epoch of the session the attempt opened, which keys its commits; none where it opened
+    /// none.
+    pub epoch: Option<Epoch>,
     /// When the attempt started.
     pub started_at: SystemTime,
     /// When the attempt ended.
@@ -165,6 +166,25 @@ pub(crate) struct CommitRecord {
     pub(crate) streams: BTreeMap<StreamName, StreamReport>,
 }
 
+/// A commit in flight, whose answer has not arrived: its key and what each stream contributed
+/// to it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Pending {
+    pub(crate) key: CommitKey,
+    pub(crate) streams: BTreeMap<StreamName, StreamReport>,
+}
+
+impl Pending {
+    /// The commit, once `landed`, the receipt the destination holds of the key that landed last,
+    /// shows it landed: the destination's own count of what it published.
+    pub(crate) fn landed(self, landed: &Receipt) -> Option<CommitRecord> {
+        (landed.key == self.key).then(|| CommitRecord {
+            receipt: landed.clone(),
+            streams: self.streams,
+        })
+    }
+}
+
 /// What an attempt committed, folded as each commit lands: an attempt that commits for ever
 /// keeps its totals, not every commit.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -233,9 +253,10 @@ pub(crate) struct AttemptLog {
     pub(crate) progressed: bool,
     pub(crate) end: Option<AttemptEnd>,
     /// The commit in flight, whose response has not arrived.
-    pub(crate) pending: Option<CommitRecord>,
-    /// The receipt state recorded when the attempt opened, naming the last commit that landed.
-    pub(crate) opened: Option<(LoadId, CommitSeq)>,
+    pub(crate) pending: Option<Pending>,
+    /// The epoch of the session the attempt opened, and the receipt of the last commit that had
+    /// landed when it did; none where it opened none.
+    pub(crate) opened: Option<(Epoch, Option<Receipt>)>,
     /// How many records each stream's reads were last behind their source's newest.
     pub(crate) behind: BTreeMap<StreamName, u64>,
     /// Each stream's reads that started again from their earliest after a retention loss.
@@ -247,7 +268,6 @@ pub(crate) struct AttemptLog {
 /// A finished attempt.
 #[derive(Debug)]
 pub(crate) struct AttemptRecord {
-    pub(crate) load_id: LoadId,
     pub(crate) started_at: SystemTime,
     pub(crate) ended_at: SystemTime,
     pub(crate) log: AttemptLog,
@@ -306,7 +326,7 @@ impl Report {
         self.commits += committed.commits;
         self.attempted += 1;
         self.attempts.push(AttemptReport {
-            load_id: attempt.load_id,
+            epoch: attempt.log.opened.as_ref().map(|(epoch, _)| *epoch),
             started_at: attempt.started_at,
             ended_at: attempt.ended_at,
             commits: committed.commits,
@@ -320,14 +340,14 @@ impl Report {
         Ok(())
     }
 
-    /// Credits `commit` to the folded attempt whose load its receipt names, once a later attempt
-    /// found it landed.
+    /// Credits `commit` to the folded attempt whose epoch its receipt's key names, once a later
+    /// attempt found it landed.
     ///
     /// # Errors
     ///
     /// `receipt_overflow`, as [`Report::absorb`] fails; the report is then as it was.
     pub(crate) fn credit(&mut self, commit: CommitRecord) -> Result<(), Error> {
-        let load = commit.receipt.load_id;
+        let epoch = commit.receipt.key.epoch;
         let mut committed = Committed::default();
         committed.add(commit)?;
         let rows = total(self.rows, committed.rows)?;
@@ -343,7 +363,7 @@ impl Report {
         if let Some(listed) = self
             .attempts
             .iter_mut()
-            .find(|attempt| attempt.load_id == load)
+            .find(|attempt| attempt.epoch == Some(epoch))
         {
             // An attempt's totals are part of the run's, which hold them.
             listed.commits += committed.commits;

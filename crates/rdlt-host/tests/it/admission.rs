@@ -13,7 +13,7 @@ use rdlt_connector::serve::{Listener, Listening, Log, Served, serve_listener};
 use rdlt_connector::wire::v1;
 use rdlt_connector::{
     Acknowledging, BoxFuture, ConnectContext, ConnectorId, ConnectorSpec, Destination,
-    DestinationFactory, Epoch, LoadId, OpenContext, PipelineId, Reading, Source, SourceFactory,
+    DestinationFactory, Epoch, OpenContext, PipelineId, Reading, Source, SourceFactory,
     acknowledging_source_factory, destination_factory, readable_destination_factory,
     source_factory,
 };
@@ -496,7 +496,6 @@ async fn hosts_of_a_listening_memory_destination_each_have_stores_of_their_own()
     let config = serde_json::json!({ "store": "shared" });
     let context = OpenContext {
         pipeline: PipelineId::parse("pipeline").expect("a valid id"),
-        load_id: LoadId::from_parts(std::time::UNIX_EPOCH, 1),
     };
     let mut epochs = Vec::new();
     // Each host opens the same pipeline of the same store twice, over a connection each time.
@@ -1088,7 +1087,7 @@ async fn a_connection_whose_host_takes_no_bytes_is_closed_at_its_send_wait() {
 #[tokio::test(start_paused = true)]
 async fn a_stopping_connector_closes_a_connection_still_busy_at_its_drain_wait() {
     use crate::support::connectors::SlowCommits;
-    use rdlt_connector::{CommitMeta, CommitSeq, SegmentSet};
+    use rdlt_connector::{CommitMeta, SegmentSet};
     const DRAIN: Duration = Duration::from_secs(120);
     let limits = ListenLimits {
         drain: DRAIN,
@@ -1106,23 +1105,22 @@ async fn a_stopping_connector_closes_a_connection_still_busy_at_its_drain_wait()
         .destination(&reference, &config)
         .await;
     let destination = placed.expect("the connector is placed").connector;
-    let load_id = LoadId::from_parts(std::time::UNIX_EPOCH, 1);
     let context = OpenContext {
         pipeline: PipelineId::parse("drained").expect("a valid id"),
-        load_id,
     };
     let mut opened = destination.open(&context).await.expect("the session opens");
     let meta = CommitMeta {
-        load_id,
-        commit_seq: CommitSeq::FIRST,
-        epoch: opened.epoch,
+        key: rdlt_connector::CommitKey {
+            epoch: opened.epoch,
+            seq: 1,
+        },
+        after: opened.landed.as_ref().map(|landed| landed.key),
         segments: SegmentSet::new(),
         abandoned: SegmentSet::new(),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
-        horizon: None,
     };
     let committing = tokio::spawn(async move { opened.session.commit(&meta).await });
     settle(Duration::from_secs(1)).await;

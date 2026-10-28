@@ -8,8 +8,7 @@ use std::time::UNIX_EPOCH;
 use arrow_array::types::Int64Type;
 use arrow_array::{ArrayRef, Int32Array, ListArray, RecordBatch, UInt32Array};
 use rdlt_connector::{
-    Capabilities, Epoch, LoadId, SchemaVersion, SegmentId, TablePath, TableRef, TableSchema,
-    TypeKind,
+    Capabilities, Epoch, SchemaVersion, SegmentId, TablePath, TableRef, TableSchema, TypeKind,
 };
 
 use super::lowering::{SLACK, peak};
@@ -100,9 +99,9 @@ fn preparing_a_child_tables_lineage_at_the_widest_stamp_allocates_no_more_than_i
     let part = &parts[1];
     // Every number of each id at its widest: 37 bytes an id.
     let lineage = widest(part.batch.num_rows());
+    // The widest epoch is the widest a load's `Int64` epoch column holds.
     let stamp = Stamp {
-        epoch: Epoch(u64::MAX),
-        load_id: LoadId::from_parts(UNIX_EPOCH, 1),
+        epoch: Epoch(i64::MAX.unsigned_abs()),
         loaded_at: UNIX_EPOCH,
         received_at: UNIX_EPOCH,
         segment: SegmentId(u64::MAX),

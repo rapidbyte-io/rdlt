@@ -2,7 +2,6 @@
 //! by the memory, the SQLite and the files destinations.
 
 use std::sync::Arc;
-use std::time::UNIX_EPOCH;
 
 use arrow_array::{
     ArrayRef, BinaryArray, BooleanArray, Int8Array, Int64Array, RecordBatch, StringArray,
@@ -10,8 +9,8 @@ use arrow_array::{
 use arrow_schema::{DataType, Field as ArrowField, Schema};
 use rdlt_connector::{
     ChangeColumns, ChangeOp, ConnectContext, ConnectorErrorKind, Deletion, Destination,
-    HistoryColumns, LoadId, MergeKey, OpenContext, PipelineId, SchemaVersion, SegmentId,
-    TableChange, TablePath, TableRef, TableSchema, destination_factory,
+    HistoryColumns, MergeKey, OpenContext, PipelineId, SchemaVersion, SegmentId, TableChange,
+    TablePath, TableRef, TableSchema, destination_factory,
 };
 use rdlt_connector_reference::{FilesDestination, MemoryDestination, SqliteDestination};
 use serde_json::json;
@@ -121,7 +120,6 @@ async fn flushed(
 ) -> Option<(ConnectorErrorKind, Option<String>)> {
     let context = OpenContext {
         pipeline: PipelineId::parse("p").expect("a valid pipeline id"),
-        load_id: LoadId::from_parts(UNIX_EPOCH, 1),
     };
     let mut opened = destination.open(&context).await.expect("a session opens");
     let table = orders(history);

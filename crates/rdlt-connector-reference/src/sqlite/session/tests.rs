@@ -5,18 +5,17 @@
 //! A commit runs a fixed count of statements for each table it publishes.
 
 use std::sync::Arc;
-use std::time::UNIX_EPOCH;
 
 use arrow_array::{ArrayRef, BinaryArray, Int8Array, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field as ArrowField, Schema};
 use parking_lot::Mutex;
 use rdlt_connector::sqlgen::{SqlPlanner, Sqlite};
 use rdlt_connector::{
-    COLUMN_MISSING, ChangeColumns, ChangeOp, ChildTable, CommitMeta, CommitSeq, ConnectContext,
-    ConnectorErrorKind, Deletion, Destination, Epoch, Field, GenerationId, LoadId, LogicalType,
-    MergeKey, OP_COLUMN, OpenContext, OpenedSession, PipelineId, RootKey, SEQ_COLUMN,
-    SchemaVersion, SegmentId, Session as _, TableChange, TablePath, TableRef, TableSchema,
-    TableWriter as _, UNCHANGED_COLUMN, destination_factory,
+    COLUMN_MISSING, ChangeColumns, ChangeOp, ChildTable, CommitKey, CommitMeta, ConnectContext,
+    ConnectorErrorKind, Deletion, Destination, Epoch, Field, GenerationId, LogicalType, MergeKey,
+    OP_COLUMN, OpenContext, OpenedSession, PipelineId, RootKey, SEQ_COLUMN, SchemaVersion,
+    SegmentId, Session as _, TableChange, TablePath, TableRef, TableSchema, TableWriter as _,
+    UNCHANGED_COLUMN, destination_factory,
 };
 use rusqlite::trace::TraceEvent;
 use serde_json::json;
@@ -122,12 +121,12 @@ fn by_stager(name: &str) -> (String, String) {
     (planner.staged_index_name(&staging), staging)
 }
 
-/// The first commit of `load` at `epoch`: segment 1, whose rows `children`, child tables, follow.
-fn first_commit(load: LoadId, epoch: Epoch, children: &[&TableRef]) -> CommitMeta {
+/// The first commit of a session at `epoch` of a pipeline nothing landed in: segment 1, whose
+/// rows `children`, child tables, follow.
+fn first_commit(epoch: Epoch, children: &[&TableRef]) -> CommitMeta {
     CommitMeta {
-        load_id: load,
-        commit_seq: CommitSeq::FIRST,
-        epoch,
+        key: CommitKey { epoch, seq: 1 },
+        after: None,
         segments: [SegmentId(1)].into_iter().collect(),
         abandoned: rdlt_connector::SegmentSet::new(),
         state_delta: Vec::new(),
@@ -140,29 +139,26 @@ fn first_commit(load: LoadId, epoch: Epoch, children: &[&TableRef]) -> CommitMet
             })
             .collect(),
         drop_tables: Vec::new(),
-        horizon: None,
     }
 }
 
-/// A session of the pipeline `indexes` on the database at `path`, and the context it opened in.
-async fn open_session(path: &std::path::Path) -> (OpenedSession, OpenContext) {
+/// A session of the pipeline `indexes` on the database at `path`.
+async fn open_session(path: &std::path::Path) -> OpenedSession {
     let destination: Box<dyn Destination> = destination_factory::<SqliteDestination>()
         .connect(json!({ "path": path }), ConnectContext::new())
         .await
         .expect("the destination connects");
     let context = OpenContext {
         pipeline: PipelineId::parse("indexes").expect("a valid pipeline id"),
-        load_id: LoadId::from_parts(UNIX_EPOCH, 1),
     };
-    let opened = destination.open(&context).await.expect("a session opens");
-    (opened, context)
+    destination.open(&context).await.expect("a session opens")
 }
 
 #[tokio::test]
 async fn a_staging_index_stands_while_its_table_s_writer_appends() {
     let directory = tempfile::tempdir().expect("a temporary directory");
     let path = directory.path().join("appends.db");
-    let (mut opened, _) = open_session(&path).await;
+    let mut opened = open_session(&path).await;
     let events = table("events", None);
     opened
         .session
@@ -198,7 +194,7 @@ async fn a_staging_index_stands_while_its_table_s_writer_appends() {
 async fn writers_index_what_a_commit_finds_and_the_commit_changes_no_schema() {
     let directory = tempfile::tempdir().expect("a temporary directory");
     let path = directory.path().join("indexes.db");
-    let (mut opened, context) = open_session(&path).await;
+    let mut opened = open_session(&path).await;
     let (roots, items) = roots_and_items();
     let events = table("events", None);
     for (table, key) in [(&events, "id"), (&roots, "id"), (&items, "root")] {
@@ -217,7 +213,7 @@ async fn writers_index_what_a_commit_finds_and_the_commit_changes_no_schema() {
     }
     let staged = schema_objects(&path);
     indexed_as_a_commit_finds_rows(&staged);
-    let meta = first_commit(context.load_id, opened.epoch, &[&items]);
+    let meta = first_commit(opened.epoch, &[&items]);
     let receipt = opened
         .session
         .commit(&meta)
@@ -265,7 +261,7 @@ fn started(event: TraceEvent<'_>) {
 }
 
 #[tokio::test]
-async fn a_commit_of_an_append_a_merge_and_a_child_table_runs_24_statements() {
+async fn a_commit_of_an_append_a_merge_and_a_child_table_runs_23_statements_two_of_its_fence() {
     let directory = tempfile::tempdir().expect("a temporary directory");
     let database = Database::open(directory.path().join("counted.db"))
         .await
@@ -290,7 +286,7 @@ async fn a_commit_of_an_append_a_merge_and_a_child_table_runs_24_statements() {
             .expect("the write buffers");
         writer.flush().await.expect("the flush stages");
     }
-    let meta = first_commit(LoadId::from_parts(UNIX_EPOCH, 1), opened.epoch, &[&items]);
+    let meta = first_commit(opened.epoch, &[&items]);
     let noted = session.written.of(&meta.segments);
     let tables: Vec<&str> = noted.keys().map(|(table, _)| table.as_str()).collect();
     assert_eq!(tables, ["events", "items", "roots"]);
@@ -307,7 +303,15 @@ async fn a_commit_of_an_append_a_merge_and_a_child_table_runs_24_statements() {
         .iter()
         .filter(|sql| !sql.starts_with("--"))
         .collect();
-    assert_eq!(run.len(), 24, "{run:#?}");
+    assert_eq!(run.len(), 23, "{run:#?}");
+    // The fence row is read under the write lock, then given the commit's key: no other statement
+    // of the commit reads or writes it.
+    let fenced: Vec<&&String> = run
+        .iter()
+        .filter(|sql| sql.contains("_rdlt_epochs"))
+        .collect();
+    assert_eq!(fenced.len(), 2, "{fenced:#?}");
+    assert!(fenced[0].starts_with("SELECT") && fenced[1].starts_with("UPDATE"));
 }
 
 /// Creates `table` of an `id` and a `name` in `opened`'s session and stages two rows of it in
@@ -345,7 +349,7 @@ async fn staged_names(opened: &mut OpenedSession, table: &TableRef, segments: &[
 async fn a_commit_whose_table_lost_a_column_it_staged_fails_and_publishes_nothing() {
     let directory = tempfile::tempdir().expect("a temporary directory");
     let path = directory.path().join("dropped.db");
-    let (mut opened, context) = open_session(&path).await;
+    let mut opened = open_session(&path).await;
     // The commit publishes `audit` before `events`, the table that loses a column.
     for name in ["audit", "events"] {
         staged_names(&mut opened, &table(name, None), &[1]).await;
@@ -354,7 +358,7 @@ async fn a_commit_whose_table_lost_a_column_it_staged_fails_and_publishes_nothin
     outside
         .execute("ALTER TABLE \"events\" DROP COLUMN \"name\"", [])
         .expect("the column is dropped");
-    let meta = first_commit(context.load_id, opened.epoch, &[]);
+    let meta = first_commit(opened.epoch, &[]);
     let error = opened
         .session
         .commit(&meta)
@@ -389,12 +393,17 @@ fn published(path: &std::path::Path, table: &str) -> i64 {
         .expect("the table counts")
 }
 
-/// Commit `seq` of `load` at `epoch`, of segment `segment` alone.
-fn commit_of(load: LoadId, epoch: Epoch, seq: CommitSeq, segment: u64) -> CommitMeta {
+/// Commit `seq` of a session at `epoch`, of segment `segment` alone, after the session's commit
+/// before it.
+fn commit_of(epoch: Epoch, seq: u64, segment: u64) -> CommitMeta {
     CommitMeta {
-        commit_seq: seq,
+        key: CommitKey { epoch, seq },
+        after: (seq > 1).then_some(CommitKey {
+            epoch,
+            seq: seq - 1,
+        }),
         segments: [SegmentId(segment)].into_iter().collect(),
-        ..first_commit(load, epoch, &[])
+        ..first_commit(epoch, &[])
     }
 }
 
@@ -434,7 +443,7 @@ fn changed_events() -> (TableRef, RecordBatch) {
 async fn an_append_after_a_change_merge_publishes_though_its_staging_keeps_the_merge_s_flags() {
     let directory = tempfile::tempdir().expect("a temporary directory");
     let path = directory.path().join("switched.db");
-    let (mut opened, context) = open_session(&path).await;
+    let mut opened = open_session(&path).await;
     let (merged, change) = changed_events();
     opened
         .session
@@ -442,7 +451,6 @@ async fn an_append_after_a_change_merge_publishes_though_its_staging_keeps_the_m
         .await
         .expect("the table is created");
     let appended = table("events", None);
-    let mut seq = CommitSeq::FIRST;
     for (segment, (written, batch)) in [(&merged, change), (&appended, batch("id"))]
         .into_iter()
         .enumerate()
@@ -458,13 +466,13 @@ async fn an_append_after_a_change_merge_publishes_though_its_staging_keeps_the_m
             .await
             .expect("the write buffers");
         writer.flush().await.expect("the flush stages");
-        let meta = commit_of(context.load_id, opened.epoch, seq, segment);
+        // Each segment is its own commit, its place among the session's.
+        let meta = commit_of(opened.epoch, segment, segment);
         opened
             .session
             .commit(&meta)
             .await
             .expect("the commit lands");
-        seq = seq.next();
     }
     assert_eq!(published(&path, "events"), 2);
 }
@@ -473,7 +481,7 @@ async fn an_append_after_a_change_merge_publishes_though_its_staging_keeps_the_m
 async fn an_append_after_an_abandoned_generation_publishes_though_its_staging_keeps_a_column() {
     let directory = tempfile::tempdir().expect("a temporary directory");
     let path = directory.path().join("abandoned.db");
-    let (mut opened, _) = open_session(&path).await;
+    let mut opened = open_session(&path).await;
     let events = table("events", None);
     let generation = TableRef {
         generation: Some(GenerationId(7)),
@@ -503,7 +511,7 @@ async fn an_append_after_an_abandoned_generation_publishes_though_its_staging_ke
         .await
         .expect("the column is added");
     drop(opened);
-    let (mut opened, context) = open_session(&path).await;
+    let mut opened = open_session(&path).await;
     let mut writer = opened
         .session
         .writer(&events)
@@ -514,7 +522,7 @@ async fn an_append_after_an_abandoned_generation_publishes_though_its_staging_ke
         .await
         .expect("the write buffers");
     writer.flush().await.expect("the flush stages");
-    let meta = first_commit(context.load_id, opened.epoch, &[]);
+    let meta = first_commit(opened.epoch, &[]);
     opened
         .session
         .commit(&meta)
@@ -527,7 +535,7 @@ async fn an_append_after_an_abandoned_generation_publishes_though_its_staging_ke
 async fn a_commit_into_a_generation_that_lost_a_column_it_staged_fails_and_publishes_nothing() {
     let directory = tempfile::tempdir().expect("a temporary directory");
     let path = directory.path().join("generation.db");
-    let (mut opened, context) = open_session(&path).await;
+    let mut opened = open_session(&path).await;
     let generation = TableRef {
         generation: Some(GenerationId(7)),
         ..table("events", None)
@@ -552,7 +560,7 @@ async fn a_commit_into_a_generation_that_lost_a_column_it_staged_fails_and_publi
     let outside = rusqlite::Connection::open(&path).expect("the database opens");
     let drop = format!("ALTER TABLE \"{target}\" DROP COLUMN \"{SEQ_COLUMN}\"");
     outside.execute(&drop, []).expect("the column is dropped");
-    let meta = first_commit(context.load_id, opened.epoch, &[]);
+    let meta = first_commit(opened.epoch, &[]);
     let error = opened
         .session
         .commit(&meta)
@@ -570,9 +578,9 @@ async fn a_commit_into_a_generation_that_lost_a_column_it_staged_fails_and_publi
 async fn a_column_dropped_between_two_commits_of_a_session_fails_the_second() {
     let directory = tempfile::tempdir().expect("a temporary directory");
     let path = directory.path().join("between.db");
-    let (mut opened, context) = open_session(&path).await;
+    let mut opened = open_session(&path).await;
     staged_names(&mut opened, &table("events", None), &[1, 2]).await;
-    let first = commit_of(context.load_id, opened.epoch, CommitSeq::FIRST, 1);
+    let first = commit_of(opened.epoch, 1, 1);
     opened
         .session
         .commit(&first)
@@ -582,7 +590,7 @@ async fn a_column_dropped_between_two_commits_of_a_session_fails_the_second() {
     outside
         .execute("ALTER TABLE \"events\" DROP COLUMN \"name\"", [])
         .expect("the column is dropped");
-    let second = commit_of(context.load_id, opened.epoch, CommitSeq::FIRST.next(), 2);
+    let second = commit_of(opened.epoch, 2, 2);
     let error = opened
         .session
         .commit(&second)

@@ -83,8 +83,8 @@ impl SharedSession {
 ///
 /// # Errors
 ///
-/// A receipt of another load or sequence is `receipt_mismatch`, a Destination error that no
-/// retry mends: its sources would be told positions of a commit the destination never made.
+/// A receipt of another key is `receipt_mismatch`, a Destination error that no retry mends: its
+/// sources would be told positions of a commit the destination never made.
 pub(crate) fn answered(meta: &CommitMeta, receipt: Receipt) -> Result<Receipt, Error> {
     if receipt.answers(meta) {
         return Ok(receipt);
@@ -92,12 +92,8 @@ pub(crate) fn answered(meta: &CommitMeta, receipt: Receipt) -> Result<Receipt, E
     Err(Error::new(
         ErrorKind::Destination,
         format!(
-            "the destination answered commit {} of load {} with the receipt of commit {} of \
-             load {}",
-            meta.commit_seq.get(),
-            meta.load_id,
-            receipt.commit_seq.get(),
-            receipt.load_id
+            "the destination answered {} with the receipt of {}",
+            meta.key, receipt.key
         ),
     )
     .with_code(codes::RECEIPT_MISMATCH))

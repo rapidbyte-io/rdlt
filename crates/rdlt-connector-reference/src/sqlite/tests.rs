@@ -6,7 +6,6 @@ mod cases;
 
 use std::path::Path;
 use std::sync::Arc;
-use std::time::UNIX_EPOCH;
 
 use arrow_array::{
     ArrayRef, BinaryArray, BooleanArray, Int8Array, Int64Array, RecordBatch, StringArray,
@@ -16,8 +15,8 @@ use arrow_schema::{DataType, Field as ArrowField, Schema, SchemaRef};
 use proptest::prelude::*;
 use rdlt_connector::merge::{Merged, merge_sparse, read_back, stored_schema};
 use rdlt_connector::{
-    ChangeColumns, ChangeOp, CommitMeta, CommitSeq, ConnectContext, DELETED_AT_COLUMN, Deletion,
-    Destination, HistoryColumns, LoadId, MergeKey, OP_COLUMN, OpenContext, PipelineId, SEQ_COLUMN,
+    ChangeColumns, ChangeOp, CommitKey, CommitMeta, ConnectContext, DELETED_AT_COLUMN, Deletion,
+    Destination, HistoryColumns, MergeKey, OP_COLUMN, OpenContext, PipelineId, SEQ_COLUMN,
     SchemaVersion, SegmentId, TableChange, TablePath, TableRef, TableSchema, UNCHANGED_COLUMN,
     destination_factory,
 };
@@ -260,8 +259,8 @@ fn rows(batches: &[RecordBatch], columns: &[&str]) -> Vec<Vec<String>> {
     rows
 }
 
-/// Commits `batches`, each staged as a segment of its own, to `destination` as commit `seq` of
-/// one load.
+/// Commits `batches`, each staged as a segment of its own numbered from `seq` tens, to
+/// `destination`, in a session of its own.
 async fn commit(
     destination: &dyn Destination,
     (table, schema): (&TableRef, &SchemaRef),
@@ -270,7 +269,6 @@ async fn commit(
 ) {
     let context = OpenContext {
         pipeline: PipelineId::parse("differential").expect("a valid pipeline id"),
-        load_id: LoadId::from_parts(UNIX_EPOCH, 1),
     };
     let mut opened = destination.open(&context).await.expect("a session opens");
     let create = TableChange::Create {
@@ -294,16 +292,17 @@ async fn commit(
     }
     writer.flush().await.expect("the flush stages");
     let meta = CommitMeta {
-        load_id: context.load_id,
-        commit_seq: (1..seq).fold(CommitSeq::FIRST, |commit, _| commit.next()),
-        epoch: opened.epoch,
+        key: CommitKey {
+            epoch: opened.epoch,
+            seq: 1,
+        },
+        after: opened.landed.as_ref().map(|landed| landed.key),
         segments: segments.into_iter().collect(),
         abandoned: rdlt_connector::SegmentSet::new(),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
-        horizon: None,
     };
     opened
         .session

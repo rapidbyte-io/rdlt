@@ -1,22 +1,22 @@
-//! The metadata columns holding one value a load: built once, and sliced for each batch.
+//! The metadata columns holding one value a session: built once, and sliced for each batch.
 
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use arrow_array::builder::FixedSizeBinaryBuilder;
 use arrow_array::types::Int8Type;
-use arrow_array::{ArrayRef, DictionaryArray, Int8Array, TimestampMicrosecondArray};
+use arrow_array::{ArrayRef, DictionaryArray, Int8Array, Int64Array, TimestampMicrosecondArray};
 use arrow_schema::ArrowError;
-use rdlt_connector::LoadId;
+use rdlt_connector::Epoch;
 
 use super::{Stamp, lower_array};
 use crate::table::TableView;
-use crate::table::lower::{LOAD_ID_TYPE, loaded_at_type};
+use crate::table::lower::{LOAD_EPOCH_TYPE, loaded_at_type};
 
-/// The load id and load start as dictionary arrays of one value, for up to `rows` rows.
+/// The session's epoch and the load start as dictionary arrays of one value, for up to `rows`
+/// rows.
 #[derive(Debug)]
 pub(super) struct Constants {
-    pub(super) load_id: LoadId,
+    pub(super) epoch: Epoch,
     pub(super) loaded_at: SystemTime,
     /// The load start in microseconds since the epoch.
     pub(super) micros: i64,
@@ -25,12 +25,16 @@ pub(super) struct Constants {
 }
 
 impl Constants {
-    /// The constant metadata columns of `view` for `rows` rows of the load `stamp` names.
+    /// The constant metadata columns of `view` for `rows` rows of the session `stamp` names.
     pub(super) fn new(view: &TableView, stamp: &Stamp, rows: usize) -> Result<Self, ArrowError> {
         let lowered = |index: usize| view.physical[view.model.columns.len() + index].logical_type();
-        let mut load_ids = FixedSizeBinaryBuilder::with_capacity(1, 16);
-        load_ids.append_value(stamp.load_id.as_bytes())?;
-        let load_id: ArrayRef = Arc::new(load_ids.finish());
+        let epoch = i64::try_from(stamp.epoch.0).map_err(|_| {
+            ArrowError::InvalidArgumentError(format!(
+                "epoch {} is past what an Int64 column holds",
+                stamp.epoch
+            ))
+        })?;
+        let load_epoch: ArrayRef = Arc::new(Int64Array::from(vec![epoch]));
         let micros = micros_of(stamp.loaded_at)?;
         let loaded_at: ArrayRef =
             Arc::new(TimestampMicrosecondArray::from(vec![micros]).with_timezone("UTC"));
@@ -39,20 +43,20 @@ impl Constants {
             Ok(Arc::new(DictionaryArray::<Int8Type>::try_new(keys, value)?))
         };
         Ok(Self {
-            load_id: stamp.load_id,
+            epoch: stamp.epoch,
             loaded_at: stamp.loaded_at,
             micros,
             rows,
             columns: [
-                constant(lower_array(&load_id, &LOAD_ID_TYPE, lowered(0))?)?,
+                constant(lower_array(&load_epoch, &LOAD_EPOCH_TYPE, lowered(0))?)?,
                 constant(lower_array(&loaded_at, &loaded_at_type(), lowered(1))?)?,
             ],
         })
     }
 
-    /// Whether the columns are of the load `stamp` names and reach `rows` rows.
+    /// Whether the columns are of the session `stamp` names and reach `rows` rows.
     pub(super) fn fits(&self, stamp: &Stamp, rows: usize) -> bool {
-        self.load_id == stamp.load_id && self.loaded_at == stamp.loaded_at && self.rows >= rows
+        self.epoch == stamp.epoch && self.loaded_at == stamp.loaded_at && self.rows >= rows
     }
 }
 

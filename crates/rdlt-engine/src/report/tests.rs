@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, UNIX_EPOCH};
 
-use rdlt_connector::{CommitSeq, LoadId, PartitionId, PipelineId, Receipt, StreamName};
+use rdlt_connector::{CommitKey, Epoch, PartitionId, PipelineId, Receipt, StreamName};
 
 use super::{
     AttemptLog, AttemptRecord, CommitRecord, Committed, Forgotten, REPORTED_ATTEMPTS,
@@ -9,11 +9,10 @@ use super::{
 };
 use crate::error::{Error, ErrorKind, codes};
 
-fn commit(load: LoadId, rows: u64, streams: &[(&str, u64, u64)]) -> CommitRecord {
+fn commit(epoch: Epoch, rows: u64, streams: &[(&str, u64, u64)]) -> CommitRecord {
     CommitRecord {
         receipt: Receipt {
-            load_id: load,
-            commit_seq: CommitSeq::FIRST,
+            key: CommitKey { epoch, seq: 1 },
             committed_at: UNIX_EPOCH,
             rows,
             bytes: rows * 10,
@@ -45,9 +44,9 @@ fn commit(load: LoadId, rows: u64, streams: &[(&str, u64, u64)]) -> CommitRecord
     }
 }
 
-fn attempt(load: LoadId, commits: Vec<CommitRecord>, error: Option<&Error>) -> AttemptRecord {
+/// An attempt of the session opened at `epoch`.
+fn attempt(epoch: Epoch, commits: Vec<CommitRecord>, error: Option<&Error>) -> AttemptRecord {
     AttemptRecord {
-        load_id: load,
         started_at: UNIX_EPOCH,
         ended_at: UNIX_EPOCH + Duration::from_secs(1),
         log: AttemptLog {
@@ -57,6 +56,7 @@ fn attempt(load: LoadId, commits: Vec<CommitRecord>, error: Option<&Error>) -> A
                     committed.add(commit).unwrap();
                     committed
                 }),
+            opened: Some((epoch, None)),
             ..AttemptLog::default()
         },
         error: error.map(Error::report),
@@ -65,8 +65,8 @@ fn attempt(load: LoadId, commits: Vec<CommitRecord>, error: Option<&Error>) -> A
 
 #[test]
 fn a_report_folds_every_attempt_from_receipts() {
-    let first = LoadId::from_parts(UNIX_EPOCH, 1);
-    let second = LoadId::from_parts(UNIX_EPOCH, 2);
+    let first = Epoch(1);
+    let second = Epoch(2);
     let failure = Error::new(ErrorKind::Source, "reading");
     let attempts = vec![
         attempt(
@@ -127,17 +127,17 @@ fn a_report_folds_every_attempt_from_receipts() {
 
 #[test]
 fn a_report_lists_the_latest_attempts_and_counts_every_one() {
-    let attempts: Vec<AttemptRecord> = (0..REPORTED_ATTEMPTS as u128 + 5)
-        .map(|load| {
-            let load = LoadId::from_parts(UNIX_EPOCH, load);
-            attempt(load, vec![commit(load, 2, &[("orders", 2, 16)])], None)
+    let attempts: Vec<AttemptRecord> = (0..REPORTED_ATTEMPTS as u64 + 5)
+        .map(|epoch| {
+            let epoch = Epoch(epoch);
+            attempt(epoch, vec![commit(epoch, 2, &[("orders", 2, 16)])], None)
         })
         .collect();
-    let first_listed = attempts[5].load_id;
+    let first_listed = attempts[5].log.opened.as_ref().map(|(epoch, _)| *epoch);
     let pipeline = PipelineId::parse("orders").unwrap();
     let report = Report::fold(pipeline, RunStatus::Stopped, attempts, Duration::ZERO, 0);
     assert_eq!(report.attempts.len(), REPORTED_ATTEMPTS);
-    assert_eq!(report.attempts[0].load_id, first_listed);
+    assert_eq!(report.attempts[0].epoch, first_listed);
     assert_eq!(report.attempted, REPORTED_ATTEMPTS as u64 + 5);
     // What each attempt committed still counts, listed or not.
     assert_eq!(report.commits, REPORTED_ATTEMPTS as u64 + 5);
@@ -147,7 +147,7 @@ fn a_report_lists_the_latest_attempts_and_counts_every_one() {
 #[test]
 fn a_commit_credited_to_a_folded_attempt_counts_toward_it_and_the_run() {
     let pipeline = PipelineId::parse("orders").unwrap();
-    let failed = LoadId::from_parts(UNIX_EPOCH, 1);
+    let failed = Epoch(1);
     let mut report = Report::new(pipeline);
     report.absorb(attempt(failed, vec![], None)).unwrap();
     report
@@ -164,8 +164,8 @@ fn a_report_totals_each_stream_s_resets_and_keeps_its_latest_known_lag() {
     let pipeline = PipelineId::parse("orders").unwrap();
     let mut report = Report::new(pipeline);
     let orders = || StreamName::new("orders").unwrap();
-    let signalled = |load, behind: Option<u64>, resets: u64| {
-        let mut signalled = attempt(LoadId::from_parts(UNIX_EPOCH, load), vec![], None);
+    let signalled = |epoch, behind: Option<u64>, resets: u64| {
+        let mut signalled = attempt(Epoch(epoch), vec![], None);
         signalled
             .log
             .behind
@@ -204,8 +204,8 @@ fn an_attempt_names_the_latest_partitions_it_forgot_and_counts_the_rest() {
 #[test]
 fn a_report_names_the_latest_partitions_its_attempts_forgot_and_counts_the_rest() {
     let mut report = Report::new(PipelineId::parse("orders").unwrap());
-    let forgot = |load, partitions: Vec<PartitionId>| {
-        let mut forgot = attempt(LoadId::from_parts(UNIX_EPOCH, load), vec![], None);
+    let forgot = |epoch, partitions: Vec<PartitionId>| {
+        let mut forgot = attempt(Epoch(epoch), vec![], None);
         let orders = StreamName::new("orders").unwrap();
         forgot
             .log
@@ -242,13 +242,13 @@ fn a_report_names_the_latest_partitions_its_attempts_forgot_and_counts_the_rest(
     );
 }
 
-/// A commit of `load` whose receipt counts `rows` and `bytes`.
-fn counted(load: LoadId, rows: u64, bytes: u64) -> CommitRecord {
+/// A commit of the session opened at `epoch` whose receipt counts `rows` and `bytes`.
+fn counted(epoch: Epoch, rows: u64, bytes: u64) -> CommitRecord {
     CommitRecord {
         receipt: Receipt {
             rows,
             bytes,
-            ..commit(load, 0, &[]).receipt
+            ..commit(epoch, 0, &[]).receipt
         },
         streams: BTreeMap::new(),
     }
@@ -264,21 +264,21 @@ fn overflowed(result: Result<(), Error>) {
 
 #[test]
 fn receipts_counting_past_a_total_are_refused_and_change_nothing() {
-    let load = LoadId::from_parts(UNIX_EPOCH, 1);
+    let epoch = Epoch(1);
     for (rows, bytes) in [(u64::MAX, 0), (0, u64::MAX)] {
         let mut committed = Committed::default();
-        committed.add(counted(load, rows, bytes)).unwrap();
-        overflowed(committed.add(counted(load, 1, 1)));
+        committed.add(counted(epoch, rows, bytes)).unwrap();
+        overflowed(committed.add(counted(epoch, 1, 1)));
         assert_eq!(
             (committed.commits, committed.rows, committed.bytes),
             (1, rows, bytes)
         );
         let mut report = Report::new(PipelineId::parse("orders").unwrap());
         report
-            .absorb(attempt(load, vec![counted(load, rows, bytes)], None))
+            .absorb(attempt(epoch, vec![counted(epoch, rows, bytes)], None))
             .unwrap();
-        overflowed(report.absorb(attempt(load, vec![counted(load, 1, 1)], None)));
-        overflowed(report.credit(counted(load, 1, 1)));
+        overflowed(report.absorb(attempt(epoch, vec![counted(epoch, 1, 1)], None)));
+        overflowed(report.credit(counted(epoch, 1, 1)));
         assert_eq!(
             (report.attempted, report.commits, report.rows, report.bytes),
             (1, 1, rows, bytes)

@@ -567,7 +567,7 @@ fn identifiers(rng: &mut SplitMix64, capabilities: &mut Capabilities) {
     if rng.chance(500) {
         rules.chars = IdentifierChars::Any;
     }
-    for word in ["id", "key", "offset", "_rdlt_load_id", "d0"] {
+    for word in ["id", "key", "offset", "_rdlt_load_epoch", "d0"] {
         if rng.chance(250) {
             rules.reserved.insert(word.to_owned());
         }

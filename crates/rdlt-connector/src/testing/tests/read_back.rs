@@ -86,7 +86,7 @@ fn failed(report: &Report) -> Vec<&'static str> {
 /// The clauses that read back tables of the certification schema, or its `id` and `name`.
 const KEYED: [&str; 14] = [
     "D-COMMIT",
-    "D-IDEMPOTENT",
+    "D-LANDED",
     "D-DISCARD",
     "D-REPLACE",
     "D-SCHEMA",

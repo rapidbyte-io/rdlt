@@ -15,7 +15,7 @@ use arrow_schema::SchemaRef;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use rdlt_connector::{
-    CommitSeq, ConnectorError, Epoch, GenerationId, Horizon, LoadId, PipelineId, Receipt, Result,
+    CommitKey, ConnectorError, Epoch, Fence, GenerationId, PipelineId, Receipt, Result,
     StateChange, StateRecord, sqlgen::micros,
 };
 use serde::{Deserialize, Serialize};
@@ -52,9 +52,9 @@ pub(super) struct Manifest {
     pub(super) epoch: Epoch,
     /// The pipeline's state records, their values in base64.
     pub(super) state: BTreeMap<String, String>,
-    /// The receipts of the commits the engine may repeat, as the last horizon a commit declared
-    /// leaves them.
-    pub(super) receipts: Vec<StoredReceipt>,
+    /// The receipt of the last commit that landed; none before the first.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub(super) landed: Option<StoredReceipt>,
     /// Each table's published files and replace generations, by identifier.
     pub(super) tables: BTreeMap<String, TableFiles>,
     /// The identifier of each table path the pipeline wrote, by the path's JSON.
@@ -68,8 +68,7 @@ pub(super) struct Manifest {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct StoredReceipt {
-    load_id: LoadId,
-    commit_seq: CommitSeq,
+    key: CommitKey,
     committed_at: u64,
     rows: u64,
     bytes: u64,
@@ -129,30 +128,24 @@ impl Manifest {
         }
     }
 
-    /// The stored receipt of `(load_id, commit_seq)`, if that commit happened.
-    pub(super) fn receipt(&self, load_id: LoadId, commit_seq: CommitSeq) -> Option<Receipt> {
-        self.receipts
-            .iter()
-            .find(|stored| stored.load_id == load_id && stored.commit_seq == commit_seq)
-            .map(|stored| Receipt {
-                load_id: stored.load_id,
-                commit_seq: stored.commit_seq,
+    /// The pipeline's fence row: the latest session's epoch and the receipt of the last commit
+    /// that landed.
+    pub(super) fn fence(&self) -> Fence {
+        Fence {
+            epoch: self.epoch,
+            landed: self.landed.as_ref().map(|stored| Receipt {
+                key: stored.key,
                 committed_at: UNIX_EPOCH + Duration::from_micros(stored.committed_at),
                 rows: stored.rows,
                 bytes: stored.bytes,
-            })
+            }),
+        }
     }
 
-    /// Records `receipt`, forgetting the receipts of the commits before `horizon`, which the
-    /// engine never repeats; with no horizon, every receipt is kept.
-    pub(super) fn record(&mut self, receipt: &Receipt, horizon: Option<&Horizon>) {
-        if let Some(horizon) = horizon {
-            self.receipts
-                .retain(|stored| horizon.keeps(stored.load_id, stored.commit_seq));
-        }
-        self.receipts.push(StoredReceipt {
-            load_id: receipt.load_id,
-            commit_seq: receipt.commit_seq,
+    /// Records `receipt` as the last commit's that landed.
+    pub(super) fn land(&mut self, receipt: &Receipt) {
+        self.landed = Some(StoredReceipt {
+            key: receipt.key,
             committed_at: micros(receipt.committed_at),
             rows: receipt.rows,
             bytes: receipt.bytes,

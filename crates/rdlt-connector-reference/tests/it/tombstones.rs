@@ -3,16 +3,15 @@
 
 use std::path::Path;
 use std::sync::Arc;
-use std::time::UNIX_EPOCH;
 
 use arrow_array::cast::AsArray;
 use arrow_array::types::Int64Type;
 use arrow_array::{ArrayRef, BinaryArray, Int8Array, Int64Array, RecordBatch};
 use rdlt_connector::{
-    ChangeColumns, ChangeOp, CommitMeta, CommitSeq, ConnectContext, Deletion, Destination,
-    DestinationConnector, Field, GenerationId, LoadId, LogicalType, MergeKey, OpenContext,
-    PipelineId, PublishedReader, PublishedRows, ReadBack, SchemaVersion, SegmentId, TableChange,
-    TablePath, TableRef, TableSchema, readable_destination_factory,
+    ChangeColumns, ChangeOp, CommitKey, CommitMeta, ConnectContext, Deletion, Destination,
+    DestinationConnector, Field, GenerationId, LogicalType, MergeKey, OpenContext, PipelineId,
+    PublishedReader, PublishedRows, ReadBack, SchemaVersion, SegmentId, TableChange, TablePath,
+    TableRef, TableSchema, readable_destination_factory,
 };
 use rdlt_connector_reference::{FilesDestination, MemoryDestination, SqliteDestination};
 use serde_json::json;
@@ -65,18 +64,16 @@ fn changes(rows: &[(Option<i64>, u8, ChangeOp)]) -> RecordBatch {
     .expect("a valid batch")
 }
 
-/// Opens a session of `destination` for load `load`, commits `batch` to `table`, swapping in the
-/// generations `finish` names, and closes it.
+/// Opens a session of `destination`, commits `batch` to `table`, swapping in the generations
+/// `finish` names, and closes it.
 async fn commit_as(
     destination: &dyn Destination,
-    load: u128,
     table: &TableRef,
     batch: RecordBatch,
     finish: Vec<(TablePath, GenerationId)>,
 ) {
     let context = OpenContext {
         pipeline: PipelineId::parse("tombstones").expect("valid pipeline id"),
-        load_id: LoadId::from_parts(UNIX_EPOCH, load),
     };
     let mut opened = destination.open(&context).await.expect("a session opens");
     let schema = TableSchema::new(vec![
@@ -103,16 +100,17 @@ async fn commit_as(
         .expect("the write buffers");
     writer.flush().await.expect("the flush stages");
     let meta = CommitMeta {
-        load_id: context.load_id,
-        commit_seq: CommitSeq::FIRST,
-        epoch: opened.epoch,
+        key: CommitKey {
+            epoch: opened.epoch,
+            seq: 1,
+        },
+        after: opened.landed.as_ref().map(|landed| landed.key),
         segments: [SegmentId(1)].into_iter().collect(),
         abandoned: rdlt_connector::SegmentSet::new(),
         state_delta: Vec::new(),
         finish_generations: finish,
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
-        horizon: None,
     };
     opened
         .session
@@ -122,9 +120,9 @@ async fn commit_as(
     opened.session.close().await.expect("the session closes");
 }
 
-/// Opens a session of `destination` for load `load`, commits `batch` to the table, and closes it.
-async fn commit(destination: &dyn Destination, load: u128, batch: RecordBatch) {
-    commit_as(destination, load, &table(), batch, Vec::new()).await;
+/// Opens a session of `destination`, commits `batch` to the table, and closes it.
+async fn commit(destination: &dyn Destination, batch: RecordBatch) {
+    commit_as(destination, &table(), batch, Vec::new()).await;
 }
 
 /// The ids `reader` reads back from the table.
@@ -163,8 +161,8 @@ async fn replayed<C: DestinationConnector + ReadBack>(config: serde_json::Value)
         .connect_reading(config, ConnectContext::new())
         .await
         .expect("the destination connects");
-    for (load, batch) in [(1, first), (2, again)] {
-        commit(destination.as_ref(), load, batch).await;
+    for batch in [first, again] {
+        commit(destination.as_ref(), batch).await;
     }
     ids(reader.as_ref()).await
 }
@@ -179,7 +177,7 @@ async fn replaced<C: DestinationConnector + ReadBack>(config: serde_json::Value)
         .await
         .expect("the destination connects");
     let deleted = changes(&[(Some(1), 1, Insert), (Some(1), 5, Delete)]);
-    commit(destination.as_ref(), 1, deleted).await;
+    commit(destination.as_ref(), deleted).await;
     let generation = TableRef {
         generation: Some(GenerationId(1)),
         merge: None,
@@ -188,9 +186,9 @@ async fn replaced<C: DestinationConnector + ReadBack>(config: serde_json::Value)
     let replacing = changes(&[(Some(9), 0, Insert)]);
     let replacing = replacing.project(&[0, 1]).expect("the stored columns");
     let finish = vec![(table().path, GenerationId(1))];
-    commit_as(destination.as_ref(), 2, &generation, replacing, finish).await;
+    commit_as(destination.as_ref(), &generation, replacing, finish).await;
     let inserted = changes(&[(Some(1), 2, Insert)]);
-    commit(destination.as_ref(), 3, inserted).await;
+    commit(destination.as_ref(), inserted).await;
     ids(reader.as_ref()).await
 }
 
@@ -252,10 +250,9 @@ async fn a_table_of_lines_holding_only_tombstones_takes_a_widen_to_json() {
         .await
         .expect("the destination connects");
     let deleted = changes(&[(Some(1), 1, Insert), (Some(1), 2, Delete)]);
-    commit(destination.as_ref(), 1, deleted).await;
+    commit(destination.as_ref(), deleted).await;
     let context = OpenContext {
         pipeline: PipelineId::parse("tombstones").expect("valid pipeline id"),
-        load_id: LoadId::from_parts(UNIX_EPOCH, 2),
     };
     let mut opened = destination.open(&context).await.expect("a session opens");
     let added = TableChange::AddColumn {
@@ -291,10 +288,9 @@ async fn a_table_of_lines_holding_only_tombstones_refuses_its_key_s_widen_to_jso
         .await
         .expect("the destination connects");
     let deleted = changes(&[(Some(1), 1, Insert), (Some(1), 2, Delete)]);
-    commit(destination.as_ref(), 1, deleted).await;
+    commit(destination.as_ref(), deleted).await;
     let context = OpenContext {
         pipeline: PipelineId::parse("tombstones").expect("valid pipeline id"),
-        load_id: LoadId::from_parts(UNIX_EPOCH, 2),
     };
     let mut opened = destination.open(&context).await.expect("a session opens");
     let widen = TableChange::Widen {

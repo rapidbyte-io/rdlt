@@ -9,10 +9,9 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use arrow_array::RecordBatch;
 use rdlt_connector::{
-    BoxFuture, Capabilities, CommitMeta, CommitSeq, ConnectorError, Destination,
-    DestinationSession, DestinationWriter, Epoch, LoadId, OpenContext, OpenedSession, PipelineId,
-    Receipt, Result, SchemaVersion, SegmentId, SegmentSet, TableChange, TablePath, TableRef,
-    WriteStats,
+    BoxFuture, Capabilities, CommitKey, CommitMeta, ConnectorError, Destination,
+    DestinationSession, DestinationWriter, Epoch, OpenContext, OpenedSession, PipelineId, Receipt,
+    Result, SchemaVersion, SegmentId, SegmentSet, TableChange, TablePath, TableRef, WriteStats,
 };
 use tokio::time::Instant;
 
@@ -53,6 +52,7 @@ impl Destination for Slow {
             Ok(OpenedSession {
                 session: Box::new(SlowSession(self.delay)),
                 epoch: Epoch(1),
+                landed: None,
                 state: Vec::new(),
             })
         })
@@ -80,8 +80,7 @@ impl DestinationSession for SlowSession {
         Box::pin(async move {
             after(self.0).await;
             Ok(Receipt {
-                load_id: meta.load_id,
-                commit_seq: meta.commit_seq,
+                key: meta.key,
                 committed_at: UNIX_EPOCH,
                 rows: 0,
                 bytes: 0,
@@ -126,22 +125,22 @@ fn waited(delay: Option<Duration>) -> Arc<dyn Destination> {
 fn context() -> OpenContext {
     OpenContext {
         pipeline: PipelineId::parse("waits").unwrap(),
-        load_id: LoadId::from_parts(UNIX_EPOCH, 1),
     }
 }
 
 fn meta() -> CommitMeta {
     CommitMeta {
-        load_id: LoadId::from_parts(UNIX_EPOCH, 1),
-        commit_seq: CommitSeq::FIRST,
-        epoch: Epoch(1),
+        key: CommitKey {
+            epoch: Epoch(1),
+            seq: 1,
+        },
+        after: None,
         segments: SegmentSet::new(),
         abandoned: SegmentSet::new(),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
-        horizon: None,
     }
 }
 

@@ -13,11 +13,11 @@ impl PipelineState {
                 stream,
                 partition,
                 state,
-                load,
+                epoch,
             } => {
                 let positions = &mut self.streams.entry(stream.clone()).or_default().partitions;
                 positions.insert(partition.clone(), state);
-                self.recorded_by.insert((stream, partition), load);
+                self.recorded_by.insert((stream, partition), epoch);
             }
             StateEntry::Generation { stream, generation } => {
                 self.streams.entry(stream).or_default().generation = Some(generation);
@@ -58,7 +58,6 @@ impl PipelineState {
                 (state.sequences, state.history) = (Some(sequences), history);
                 (state.key, state.change_time, state.identity) = (key, change_time, identity);
             }
-            StateEntry::Receipt(receipt) => self.last_receipt = Some(receipt),
         }
     }
 
@@ -110,7 +109,6 @@ impl PipelineState {
                     state.identity = Identity::Key;
                 }
             }
-            StateKey::Receipt => self.last_receipt = None,
         }
     }
 }

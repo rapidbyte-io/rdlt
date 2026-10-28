@@ -4,8 +4,8 @@ use std::sync::atomic::AtomicU64;
 use std::time::{Duration, UNIX_EPOCH};
 
 use rdlt_connector::{
-    Capabilities, ConnectContext, Cursor, LoadId, OpenContext, Partition, PartitionId,
-    PartitionState, PipelineId, SegmentId, StreamName, destination_factory, source_factory,
+    Capabilities, ConnectContext, Cursor, OpenContext, Partition, PartitionId, PartitionState,
+    PipelineId, SegmentId, StreamName, destination_factory, source_factory,
 };
 use rdlt_connector_reference::{GeneratorSource, MemoryDestination};
 use serde_json::json;
@@ -196,10 +196,8 @@ pub(super) async fn on_pool(budget: MemoryBudget, pool: Pool) -> PartitionContex
         .connect(json!({ "store": "units" }), ConnectContext::new())
         .await
         .expect("the destination connects");
-    let load_id = LoadId::from_parts(UNIX_EPOCH, 1);
     let open = OpenContext {
         pipeline: PipelineId::parse("units").expect("a valid pipeline id"),
-        load_id,
     };
     let opened = destination.open(&open).await.expect("the session opens");
     let tables = Arc::new(Tables::new(SharedSession::new(opened.session)));
@@ -228,7 +226,6 @@ pub(super) async fn on_pool(budget: MemoryBudget, pool: Pool) -> PartitionContex
         slots,
         segments: Arc::new(AtomicU64::new(1)),
         buffer: NonZeroUsize::MIN,
-        load_id,
         epoch: rdlt_connector::Epoch(1),
         clock: Arc::new(LoadClock::new(UNIX_EPOCH)),
         env: Arc::clone(&env),

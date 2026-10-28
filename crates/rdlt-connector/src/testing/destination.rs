@@ -10,7 +10,7 @@ mod encoding;
 mod evolving;
 mod fence;
 mod history;
-mod idempotent;
+mod landed;
 mod lanes;
 mod names;
 mod owned;
@@ -32,13 +32,13 @@ pub use read::read_back_integers;
 use super::{
     Clause, ClauseResult, Observed, Outcome, Report, Violation, bounded, bounded_call, outcome,
 };
-use crate::commit::{CommitMeta, SegmentSet};
+use crate::commit::{CommitKey, CommitMeta, Receipt, SegmentSet};
 use crate::destination::{
     Destination, DestinationConnector, DestinationFactory, DestinationSession, DestinationWriter,
     OpenContext, OpenedSession, TableChange, TableRef, destination_factory,
 };
 use crate::error::{ConnectorError, ConnectorErrorKind, Result};
-use crate::id::{CommitSeq, Epoch, LoadId, PipelineId, SchemaVersion, SegmentId, TablePath};
+use crate::id::{Epoch, PipelineId, SchemaVersion, SegmentId, TablePath};
 use crate::spec::{BoxFuture, ConnectContext};
 use crate::state::{StateChange, StateRecord};
 use rows::{STALE, expect_rows, rows, schema};
@@ -109,8 +109,7 @@ pub async fn certify_destination<C: DestinationConnector>(
 /// Certifies the destination `factory` creates from `config`, reading published data through `probe`.
 ///
 /// The factory connects twice with the same configuration, so clauses can play two workers of one
-/// pipeline; every run uses its own pipelines, tables and load ids, so a store can be certified
-/// again.
+/// pipeline; every run uses its own pipelines and tables, so a store can be certified again.
 pub async fn certify_destination_factory(
     factory: &dyn DestinationFactory,
     config: serde_json::Value,
@@ -191,7 +190,7 @@ pub async fn certify_destination_factory_observed(
 /// Why a clause that reads published data is not observed without a probe that reads it.
 const UNREAD: &str = "the destination's published data cannot be read";
 
-/// When this run started: it names the run's pipelines and tables and times its load ids.
+/// When this run started: it names the run's pipelines and tables.
 fn started() -> SystemTime {
     SystemTime::now()
 }
@@ -214,7 +213,10 @@ impl Bench<'_> {
             "D-EPOCH" => self.epochs_increase().await,
             "D-STAGING" => self.staging_is_invisible().await,
             "D-COMMIT" => self.commits_publish().await,
-            "D-IDEMPOTENT" => self.recommits_are_idempotent().await,
+            "D-LANDED" => {
+                self.landed_keys_are_answered_and_stale_commits_refused()
+                    .await
+            }
             "D-STATE" => self.state_round_trips().await,
             "D-DISCARD" => self.earlier_staging_is_discarded().await,
             "D-REPLACE" => self.generations_swap_in_atomically().await,
@@ -265,35 +267,17 @@ impl Bench<'_> {
         }
     }
 
-    /// Load ids unique across clauses and runs, as real load ids are: the random part holds the
-    /// run, the clause and `load`, since two runs can start within the millisecond a load id keeps.
-    fn load_id(&self, load: u8) -> LoadId {
-        let mut random = [0; 16];
-        random[6..14].copy_from_slice(&self.run().to_be_bytes());
-        random[14] = u8::try_from(self.index).unwrap_or(u8::MAX);
-        random[15] = load;
-        LoadId::from_parts(self.started, u128::from_be_bytes(random))
+    async fn open(&self, destination: &dyn Destination) -> Result<OpenedSession, Violation> {
+        self.open_as(destination, self.pipeline()).await
     }
 
-    async fn open(
-        &self,
-        destination: &dyn Destination,
-        load: u8,
-    ) -> Result<OpenedSession, Violation> {
-        self.open_as(destination, self.pipeline(), load).await
-    }
-
-    /// Opens a session of `pipeline` on `destination`, for load `load`.
+    /// Opens a session of `pipeline` on `destination`.
     async fn open_as(
         &self,
         destination: &dyn Destination,
         pipeline: PipelineId,
-        load: u8,
     ) -> Result<OpenedSession, Violation> {
-        let context = OpenContext {
-            pipeline,
-            load_id: self.load_id(load),
-        };
+        let context = OpenContext { pipeline };
         bounded("open", destination.open(&context))
             .await?
             .map_err(|error| Violation::from(format!("open: {error}")))
@@ -303,10 +287,9 @@ impl Bench<'_> {
     async fn staged(
         &self,
         destination: &dyn Destination,
-        load: u8,
         segments: &[u64],
     ) -> Result<OpenedSession, Violation> {
-        let mut opened = self.open(destination, load).await?;
+        let mut opened = self.open(destination).await?;
         let mut writer = self.writer(&mut opened.session).await?;
         for segment in segments {
             writer
@@ -356,22 +339,21 @@ impl Bench<'_> {
             key: "certify".to_owned(),
             value: Bytes::from_static(b"{\"v\":1}"),
         };
-        let mut first = self.staged(self.destination, 1, &[1]).await?;
+        let mut first = self.staged(self.destination, &[1]).await?;
         let put = vec![StateChange::Put(record.clone())];
-        let loaded = meta(self.load_id(1), first.epoch, &[1], put);
-        commit(&mut first.session, &loaded).await?;
-        let mut second = self.open(self.peer, 2).await?;
+        commit(&mut first, meta(&[1], put)).await?;
+        let mut second = self.open(self.peer).await?;
         let deleted = vec![StateChange::Delete(record.key)];
         let reset = if self.peer.capabilities().drop_tables {
             CommitMeta {
                 state_delta: deleted,
-                ..self.dropping(2, second.epoch)
+                ..self.dropping()
             }
         } else {
-            meta(self.load_id(2), second.epoch, &[], deleted)
+            meta(&[], deleted)
         };
-        commit(&mut second.session, &reset).await?;
-        let third = self.open(self.destination, 3).await?.epoch;
+        commit(&mut second, reset).await?;
+        let third = self.open(self.destination).await?.epoch;
         let epochs = [first.epoch, second.epoch, third];
         if epochs.windows(2).all(|pair| pair[0] < pair[1]) {
             Ok(())
@@ -381,18 +363,14 @@ impl Bench<'_> {
     }
 
     async fn staging_is_invisible(&self) -> Result<(), Violation> {
-        let _staged = self.staged(self.destination, 1, &[1]).await?;
+        let _staged = self.staged(self.destination, &[1]).await?;
         expect_rows(&self.published_rows().await?, &[])
     }
 
     /// Stages two segments and commits one: the other stays staged.
     async fn commits_publish(&self) -> Result<(), Violation> {
-        let mut opened = self.staged(self.destination, 1, &[1, 2]).await?;
-        let receipt = commit(
-            &mut opened.session,
-            &meta(self.load_id(1), opened.epoch, &[1], Vec::new()),
-        )
-        .await?;
+        let mut opened = self.staged(self.destination, &[1, 2]).await?;
+        let receipt = commit(&mut opened, meta(&[1], Vec::new())).await?;
         if receipt.rows != 3 {
             return Err(format!("the receipt reports {} rows, expected 3", receipt.rows).into());
         }
@@ -406,33 +384,23 @@ impl Bench<'_> {
             key: "certify".to_owned(),
             value: Bytes::from_static(b"{\"v\":1}"),
         };
-        let mut opened = self.open(self.destination, 1).await?;
+        let mut opened = self.open(self.destination).await?;
         commit(
-            &mut opened.session,
-            &meta(
-                self.load_id(1),
-                opened.epoch,
-                &[],
-                vec![StateChange::Put(record.clone())],
-            ),
+            &mut opened,
+            meta(&[], vec![StateChange::Put(record.clone())]),
         )
         .await?;
-        let mut reopened = self.open(self.peer, 2).await?;
+        let mut reopened = self.open(self.peer).await?;
         if !reopened.state.contains(&record) {
             return Err("the next open did not return the committed record".into());
         }
         commit(
-            &mut reopened.session,
-            &meta(
-                self.load_id(2),
-                reopened.epoch,
-                &[],
-                vec![StateChange::Delete(record.key.clone())],
-            ),
+            &mut reopened,
+            meta(&[], vec![StateChange::Delete(record.key.clone())]),
         )
         .await?;
         if self
-            .open(self.destination, 3)
+            .open(self.destination)
             .await?
             .state
             .iter()
@@ -444,12 +412,14 @@ impl Bench<'_> {
     }
 }
 
-/// The first commit of `load`, opened at `epoch`.
-fn meta(load: LoadId, epoch: Epoch, segments: &[u64], state_delta: Vec<StateChange>) -> CommitMeta {
+/// A commit of `segments` with `state_delta`, which [`keyed`] keys as a session's next.
+fn meta(segments: &[u64], state_delta: Vec<StateChange>) -> CommitMeta {
     CommitMeta {
-        load_id: load,
-        commit_seq: CommitSeq::FIRST,
-        epoch,
+        key: CommitKey {
+            epoch: Epoch(0),
+            seq: 0,
+        },
+        after: None,
         segments: segments
             .iter()
             .copied()
@@ -460,15 +430,42 @@ fn meta(load: LoadId, epoch: Epoch, segments: &[u64], state_delta: Vec<StateChan
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
-        horizon: None,
     }
 }
 
-async fn commit(
-    session: &mut Box<dyn DestinationSession>,
-    meta: &CommitMeta,
-) -> Result<crate::commit::Receipt, Violation> {
-    bounded("commit", session.commit(meta))
+/// `meta` as `opened`'s next commit: keyed by the session's epoch and the place after the last
+/// commit of it that landed, expecting the last commit that landed.
+fn keyed(opened: &OpenedSession, meta: CommitMeta) -> CommitMeta {
+    let landed = opened.landed.as_ref().map(|receipt| receipt.key);
+    let seq = landed
+        .filter(|key| key.epoch == opened.epoch)
+        .map_or(1, |key| key.seq + 1);
+    CommitMeta {
+        key: CommitKey {
+            epoch: opened.epoch,
+            seq,
+        },
+        after: landed,
+        ..meta
+    }
+}
+
+/// Commits `meta` as `opened`'s next commit, which must land.
+async fn commit(opened: &mut OpenedSession, meta: CommitMeta) -> Result<Receipt, Violation> {
+    try_commit(opened, meta)
         .await?
         .map_err(|error| Violation::from(format!("commit: {error}")))
+}
+
+/// Sends `meta` as `opened`'s next commit, which may fail; one that lands is the session's last.
+async fn try_commit(
+    opened: &mut OpenedSession,
+    meta: CommitMeta,
+) -> Result<Result<Receipt>, Violation> {
+    let meta = keyed(opened, meta);
+    let answered = bounded("commit", opened.session.commit(&meta)).await?;
+    if let Ok(receipt) = &answered {
+        opened.landed = Some(receipt.clone());
+    }
+    Ok(answered)
 }

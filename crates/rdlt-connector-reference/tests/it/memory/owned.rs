@@ -1,15 +1,14 @@
 //! A memory session touches only tables its pipeline owns.
 
 use std::sync::Arc;
-use std::time::UNIX_EPOCH;
 
 use arrow_array::cast::AsArray;
 use arrow_array::types::Int64Type;
 use arrow_array::{ArrayRef, BinaryArray, Int64Array, RecordBatch};
 use rdlt_connector::{
-    ChildTable, CommitMeta, CommitSeq, ConnectContext, ConnectorError, ConnectorErrorKind,
-    Destination, DroppedTable, GenerationId, LoadId, MergeKey, OpenContext, OpenedSession,
-    PipelineId, RootKey, SchemaVersion, SegmentId, TableChange, TablePath, TableRef, TableSchema,
+    ChildTable, CommitKey, CommitMeta, ConnectContext, ConnectorError, ConnectorErrorKind,
+    Destination, DroppedTable, GenerationId, MergeKey, OpenContext, OpenedSession, PipelineId,
+    RootKey, SchemaVersion, SegmentId, TableChange, TablePath, TableRef, TableSchema,
     destination_factory,
 };
 use rdlt_connector_reference::{MemoryDestination, published};
@@ -22,14 +21,9 @@ pub(super) async fn store(name: &str) -> Box<dyn Destination> {
         .expect("the memory destination connects")
 }
 
-pub(super) async fn open(
-    destination: &dyn Destination,
-    pipeline: &str,
-    load: u128,
-) -> OpenedSession {
+pub(super) async fn open(destination: &dyn Destination, pipeline: &str) -> OpenedSession {
     let context = OpenContext {
         pipeline: PipelineId::parse(pipeline).expect("a valid pipeline id"),
-        load_id: LoadId::from_parts(UNIX_EPOCH, load),
     };
     destination.open(&context).await.expect("the session opens")
 }
@@ -91,22 +85,27 @@ pub(super) async fn stage(
     writer.flush().await.expect("the flush stages");
 }
 
-pub(super) fn meta(session: &OpenedSession, load: u128, seq: u64, segments: &[u64]) -> CommitMeta {
-    let mut commit_seq = CommitSeq::FIRST;
-    for _ in 1..seq {
-        commit_seq = commit_seq.next();
-    }
+/// Commit `seq` of `session`, of `segments`, expecting the session's commit before it landed, or
+/// for its first the key the session found landed.
+pub(super) fn meta(session: &OpenedSession, seq: u64, segments: &[u64]) -> CommitMeta {
+    let epoch = session.epoch;
+    let found = session.landed.as_ref().map(|landed| landed.key);
     CommitMeta {
-        load_id: LoadId::from_parts(UNIX_EPOCH, load),
-        commit_seq,
-        epoch: session.epoch,
+        key: CommitKey { epoch, seq },
+        after: if seq == 1 {
+            found
+        } else {
+            Some(CommitKey {
+                epoch,
+                seq: seq - 1,
+            })
+        },
         segments: segments.iter().copied().map(SegmentId).collect(),
         abandoned: rdlt_connector::SegmentSet::new(),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
-        horizon: None,
     }
 }
 
@@ -137,16 +136,16 @@ pub(super) fn refusal<T: std::fmt::Debug>(
 async fn a_listed_child_table_of_another_pipeline_is_refused() {
     let destination = store("owned-children").await;
     let items = table("items", "items", Some("key"));
-    let mut victim = open(destination.as_ref(), "victim", 1).await;
+    let mut victim = open(destination.as_ref(), "victim").await;
     stage(&mut victim, &items, 1, &[1, 2]).await;
     victim
         .session
-        .commit(&meta(&victim, 1, 1, &[1]))
+        .commit(&meta(&victim, 1, &[1]))
         .await
         .expect("the victim commits");
-    let mut intruder = open(destination.as_ref(), "intruder", 2).await;
+    let mut intruder = open(destination.as_ref(), "intruder").await;
     stage(&mut intruder, &table("r", "r", Some("id")), 1, &[2]).await;
-    let mut listing = meta(&intruder, 2, 1, &[1]);
+    let mut listing = meta(&intruder, 1, &[1]);
     listing.child_tables = vec![ChildTable {
         table: "items".into(),
         merge: MergeKey {
@@ -172,10 +171,10 @@ async fn a_listed_child_table_of_another_pipeline_is_refused() {
 async fn replaced_beside_a_namesake(store_name: &str, dropping: bool) -> Vec<i64> {
     let destination = store(store_name).await;
     let orders = table("orders", "orders", None);
-    let mut a = open(destination.as_ref(), "a", 1).await;
+    let mut a = open(destination.as_ref(), "a").await;
     stage(&mut a, &orders, 1, &[1]).await;
     a.session
-        .commit(&meta(&a, 1, 1, &[1]))
+        .commit(&meta(&a, 1, &[1]))
         .await
         .expect("the first load commits");
     let filling = TableRef {
@@ -184,25 +183,25 @@ async fn replaced_beside_a_namesake(store_name: &str, dropping: bool) -> Vec<i64
     };
     stage(&mut a, &filling, 2, &[2]).await;
     a.session
-        .commit(&meta(&a, 1, 2, &[2]))
+        .commit(&meta(&a, 2, &[2]))
         .await
         .expect("the generation's rows commit");
     let namesake = table("orders_abc234", "orders", None);
-    let mut b = open(destination.as_ref(), "b", 2).await;
+    let mut b = open(destination.as_ref(), "b").await;
     stage(&mut b, &namesake, 1, &[99]).await;
     b.session
-        .commit(&meta(&b, 2, 1, &[1]))
+        .commit(&meta(&b, 1, &[1]))
         .await
         .expect("the namesake commits");
     if dropping {
-        let mut drop = meta(&b, 2, 2, &[]);
+        let mut drop = meta(&b, 2, &[]);
         drop.drop_tables = vec![DroppedTable {
             path: namesake.path.clone(),
             name: "orders_abc234".into(),
         }];
         b.session.commit(&drop).await.expect("the drop lands");
     }
-    let mut finish = meta(&a, 1, 3, &[]);
+    let mut finish = meta(&a, 3, &[]);
     finish.finish_generations = vec![(orders.path.clone(), GenerationId(1))];
     a.session
         .commit(&finish)
@@ -224,13 +223,13 @@ async fn a_path_another_pipeline_registered_swaps_the_pipeline_s_own_table() {
 async fn a_writer_of_a_table_dropped_since_stages_nothing() {
     let destination = store("owned-dropped").await;
     let orders = table("orders", "orders", None);
-    let mut session = open(destination.as_ref(), "a", 1).await;
+    let mut session = open(destination.as_ref(), "a").await;
     let mut writer = session
         .session
         .writer(&orders)
         .await
         .expect("a writer opens");
-    let mut drop = meta(&session, 1, 1, &[]);
+    let mut drop = meta(&session, 1, &[]);
     drop.drop_tables = vec![DroppedTable {
         path: orders.path.clone(),
         name: "orders".into(),
@@ -251,20 +250,20 @@ async fn a_writer_of_a_table_dropped_since_stages_nothing() {
 async fn a_generation_finished_for_a_table_dropped_since_creates_nothing() {
     let destination = store("owned-finished").await;
     let orders = table("orders", "orders", None);
-    let mut session = open(destination.as_ref(), "a", 1).await;
+    let mut session = open(destination.as_ref(), "a").await;
     stage(&mut session, &orders, 1, &[1]).await;
     session
         .session
-        .commit(&meta(&session, 1, 1, &[1]))
+        .commit(&meta(&session, 1, &[1]))
         .await
         .expect("the load commits");
-    let mut drop = meta(&session, 1, 2, &[]);
+    let mut drop = meta(&session, 2, &[]);
     drop.drop_tables = vec![DroppedTable {
         path: orders.path.clone(),
         name: "orders".into(),
     }];
     session.session.commit(&drop).await.expect("the drop lands");
-    let mut finish = meta(&session, 1, 3, &[]);
+    let mut finish = meta(&session, 3, &[]);
     finish.finish_generations = vec![(orders.path.clone(), GenerationId(1))];
     session
         .session
@@ -273,14 +272,14 @@ async fn a_generation_finished_for_a_table_dropped_since_creates_nothing() {
         .expect("the commit lands");
     assert!(rdlt_connector_reference::tables("owned-finished").is_empty());
     // A table another pipeline creates since is not what the path named either.
-    let mut other = open(destination.as_ref(), "b", 2).await;
+    let mut other = open(destination.as_ref(), "b").await;
     stage(&mut other, &orders, 1, &[5]).await;
     other
         .session
-        .commit(&meta(&other, 2, 1, &[1]))
+        .commit(&meta(&other, 1, &[1]))
         .await
         .expect("the other pipeline's load commits");
-    let again = meta(&session, 1, 4, &[]);
+    let again = meta(&session, 4, &[]);
     let again = CommitMeta {
         finish_generations: vec![(orders.path.clone(), GenerationId(1))],
         ..again

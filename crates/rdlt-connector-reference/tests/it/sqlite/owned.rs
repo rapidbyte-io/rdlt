@@ -43,12 +43,12 @@ fn child_of(child: &str, root: &str) -> ChildTable {
 #[tokio::test]
 async fn a_catalog_or_reserved_name_is_never_a_table() {
     let shared = Shared::new().await;
-    let mut victim = shared.open("victim", 1).await;
+    let mut victim = shared.open("victim").await;
     victim
         .load(&table("orders", "orders", true), 1, &[1, 2])
         .await;
     let before = shared.objects();
-    let mut intruder = shared.open("intruder", 2).await;
+    let mut intruder = shared.open("intruder").await;
     intruder.stage(&table("r", "r", true), 1, &[2]).await;
     let staged = shared.objects();
     for name in RESERVED {
@@ -91,7 +91,7 @@ async fn a_catalog_or_reserved_name_is_never_a_table() {
 #[tokio::test]
 async fn a_name_holding_a_nul_is_refused_before_any_statement_names_it() {
     let shared = Shared::new().await;
-    let mut session = shared.open("pipeline", 1).await;
+    let mut session = shared.open("pipeline").await;
     let before = shared.objects();
     for name in ["a\0b", "orders\0"] {
         let named = table(name, "weird", true);
@@ -113,7 +113,7 @@ async fn a_name_holding_a_nul_is_refused_before_any_statement_names_it() {
 #[tokio::test]
 async fn a_table_without_an_owner_record_is_never_dropped() {
     let shared = Shared::new().await;
-    let mut session = shared.open("pipeline", 1).await;
+    let mut session = shared.open("pipeline").await;
     shared.execute("CREATE TABLE customers (id INTEGER); INSERT INTO customers VALUES (7)");
     let mut drop = session.meta(&[]);
     drop.drop_tables = vec![dropped("customers")];
@@ -131,11 +131,11 @@ async fn a_table_without_an_owner_record_is_never_dropped() {
 #[tokio::test]
 async fn a_listed_child_table_of_another_pipeline_is_refused() {
     let shared = Shared::new().await;
-    let mut victim = shared.open("victim", 1).await;
+    let mut victim = shared.open("victim").await;
     victim
         .load(&table("orders", "orders", true), 1, &[1, 2])
         .await;
-    let mut intruder = shared.open("intruder", 2).await;
+    let mut intruder = shared.open("intruder").await;
     intruder.stage(&table("r", "r", true), 1, &[2]).await;
     let mut listing = intruder.meta(&[1]);
     listing.child_tables = vec![child_of("orders", "r")];
@@ -161,11 +161,11 @@ async fn a_listed_child_table_of_another_pipeline_is_refused() {
 async fn replaced_beside_a_namesake(dropping: bool) -> (Vec<i64>, Vec<String>) {
     let shared = Shared::new().await;
     let orders = table("orders", "orders", false);
-    let mut a = shared.open("a", 1).await;
+    let mut a = shared.open("a").await;
     a.load(&orders, 1, &[1]).await;
     a.load(&generation(&orders, 1), 2, &[2]).await;
     let namesake = table("orders_abc234", "orders", false);
-    let mut b = shared.open("b", 2).await;
+    let mut b = shared.open("b").await;
     b.load(&namesake, 1, &[99]).await;
     if dropping {
         let mut drop = b.meta(&[]);
@@ -196,16 +196,16 @@ async fn a_path_another_pipeline_registered_swaps_the_pipeline_s_own_table() {
 #[tokio::test]
 async fn an_open_discards_the_staging_of_every_table_the_pipeline_owns() {
     let shared = Shared::new().await;
-    let mut a = shared.open("a", 1).await;
+    let mut a = shared.open("a").await;
     a.stage(&table("orders", "orders", true), 1, &[1]).await;
     drop(a);
-    let mut b = shared.open("b", 2).await;
+    let mut b = shared.open("b").await;
     b.create(&table("orders_abcdef", "orders", true))
         .await
         .expect("the namesake is created");
     let staged = || shared.count("SELECT count(*) FROM \"_rdlt_staging__orders\"");
     assert_eq!(staged(), 1);
-    let _again = shared.open("a", 3).await;
+    let _again = shared.open("a").await;
     assert_eq!(staged(), 0);
 }
 
@@ -213,7 +213,7 @@ async fn an_open_discards_the_staging_of_every_table_the_pipeline_owns() {
 async fn a_generation_finished_for_a_table_dropped_since_creates_nothing() {
     let shared = Shared::new().await;
     let orders = table("orders", "orders", false);
-    let mut session = shared.open("a", 1).await;
+    let mut session = shared.open("a").await;
     session.load(&orders, 1, &[1]).await;
     session.load(&generation(&orders, 1), 2, &[2]).await;
     let mut drop = session.meta(&[]);

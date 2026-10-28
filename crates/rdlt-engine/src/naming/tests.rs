@@ -267,7 +267,7 @@ proptest! {
 #[test]
 fn metadata_columns_follow_the_rules_and_never_share_an_identifier() {
     let upper = Naming::new(rules(IdentifierCase::Upper, IdentifierChars::AsciiWord, 63));
-    assert_eq!(&*upper.metadata("_rdlt_load_id"), "_RDLT_LOAD_ID");
+    assert_eq!(&*upper.metadata("_rdlt_load_epoch"), "_RDLT_LOAD_EPOCH");
     let mut reserving = rules(IdentifierCase::Lower, IdentifierChars::AsciiWord, 16);
     reserving.reserved.insert("_rdlt_seq".to_owned());
     let short = Naming::new(reserving);

@@ -35,7 +35,7 @@ fn a_column_no_name_map_names_and_no_metadata_column_is_unnamed() {
     names
         .insert(ColumnKey::Source(ColumnPath::from("id")), "id".to_owned())
         .unwrap();
-    let fields: Vec<String> = ["id", "stray", "_load_id", "_loaded_at"]
+    let fields: Vec<String> = ["id", "stray", "_load_epoch", "_loaded_at"]
         .map(ToOwned::to_owned)
         .into();
     assert_eq!(unnamed(&fields, &names, 2), ["stray"]);

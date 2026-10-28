@@ -20,7 +20,7 @@ impl Bench<'_> {
             .max_parallel_writers
             .get()
             .min(LANES);
-        let mut opened = self.open(self.destination, 1).await?;
+        let mut opened = self.open(self.destination).await?;
         let mut writers = vec![self.writer(&mut opened.session).await?];
         for _ in 1..lanes {
             let writer = opened
@@ -50,11 +50,7 @@ impl Bench<'_> {
                 .map_err(Violation::from)?;
         }
         let segments: Vec<u64> = (1..=u64::from(lanes)).collect();
-        commit(
-            &mut opened.session,
-            &meta(self.load_id(1), opened.epoch, &segments, Vec::new()),
-        )
-        .await?;
+        commit(&mut opened, meta(&segments, Vec::new())).await?;
         expect_rows(&self.published_rows().await?, &segments)
     }
 }

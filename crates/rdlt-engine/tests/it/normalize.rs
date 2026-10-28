@@ -1282,7 +1282,7 @@ async fn a_tables_columns_follow_the_order_in_which_they_are_first_valued() {
     succeeded(&in_chunks(store, push, SchemaPolicy::Evolve, memory(store).await).await);
     assert_eq!(
         names(store),
-        ["id", "_rdlt_load_id", "_rdlt_loaded_at", "_rdlt_id", "a"]
+        ["id", "_rdlt_load_epoch", "_rdlt_loaded_at", "_rdlt_id", "a"]
     );
     // Whole, `a` is valued as the table is created, among its columns.
     let store = "ordered_whole";
@@ -1297,7 +1297,7 @@ async fn a_tables_columns_follow_the_order_in_which_they_are_first_valued() {
     succeeded(&outcome);
     assert_eq!(
         names(store),
-        ["id", "a", "_rdlt_load_id", "_rdlt_loaded_at", "_rdlt_id"]
+        ["id", "a", "_rdlt_load_epoch", "_rdlt_loaded_at", "_rdlt_id"]
     );
 }
 

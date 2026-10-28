@@ -1156,9 +1156,6 @@ pub struct OpenRequest {
     /// The pipeline.
     #[prost(string, tag = "1")]
     pub pipeline: ::prost::alloc::string::String,
-    /// The load, a UUIDv7 in its 16 bytes.
-    #[prost(bytes = "bytes", tag = "2")]
-    pub load_id: ::prost::bytes::Bytes,
 }
 /// An open session.
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1169,8 +1166,11 @@ pub struct OpenResponse {
     /// The epoch the open set.
     #[prost(uint64, tag = "2")]
     pub epoch: u64,
+    /// The receipt of the pipeline's last commit that landed; absent before the first.
+    #[prost(message, optional, tag = "3")]
+    pub landed: ::core::option::Option<Receipt>,
     /// Every committed state record of the pipeline, with distinct keys.
-    #[prost(message, repeated, tag = "3")]
+    #[prost(message, repeated, tag = "4")]
     pub state: ::prost::alloc::vec::Vec<StateRecord>,
 }
 /// The key rows of a merged table are matched by.
@@ -1451,51 +1451,44 @@ pub struct ChildTable {
     #[prost(message, optional, tag = "2")]
     pub merge: ::core::option::Option<MergeKey>,
 }
+/// A commit's key: its session's epoch and its place among the session's commits.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CommitKey {
+    /// The epoch of the session that makes the commit.
+    #[prost(uint64, tag = "1")]
+    pub epoch: u64,
+    /// The commit's place among its session's commits, from 1.
+    #[prost(uint64, tag = "2")]
+    pub seq: u64,
+}
 /// What a commit publishes.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CommitMeta {
-    /// The load, a UUIDv7 in its 16 bytes.
-    #[prost(bytes = "bytes", tag = "1")]
-    pub load_id: ::prost::bytes::Bytes,
-    /// The commit's sequence within the load; at least 1.
-    #[prost(uint64, tag = "2")]
-    pub commit_seq: u64,
-    /// The session's epoch.
-    #[prost(uint64, tag = "3")]
-    pub epoch: u64,
+    /// The commit's key.
+    #[prost(message, optional, tag = "1")]
+    pub key: ::core::option::Option<CommitKey>,
+    /// The key of the commit the session expects landed; absent where none of the pipeline has.
+    #[prost(message, optional, tag = "2")]
+    pub after: ::core::option::Option<CommitKey>,
     /// The segments it publishes, ascending, disjoint and not adjacent.
-    #[prost(message, repeated, tag = "4")]
+    #[prost(message, repeated, tag = "3")]
     pub segments: ::prost::alloc::vec::Vec<SegmentRange>,
     /// The state changes it makes.
-    #[prost(message, repeated, tag = "5")]
+    #[prost(message, repeated, tag = "4")]
     pub state_delta: ::prost::alloc::vec::Vec<StateChange>,
     /// The generations it finishes.
-    #[prost(message, repeated, tag = "6")]
+    #[prost(message, repeated, tag = "5")]
     pub finish_generations: ::prost::alloc::vec::Vec<FinishGeneration>,
     /// The child tables it replaces rows of.
-    #[prost(message, repeated, tag = "7")]
+    #[prost(message, repeated, tag = "6")]
     pub child_tables: ::prost::alloc::vec::Vec<ChildTable>,
     /// The tables it drops.
-    #[prost(message, repeated, tag = "8")]
+    #[prost(message, repeated, tag = "7")]
     pub drop_tables: ::prost::alloc::vec::Vec<DroppedTable>,
-    /// The oldest commit the engine may still repeat: the receipt of every commit before it may be
-    /// forgotten. Absent, none may.
-    #[prost(message, optional, tag = "9")]
-    pub horizon: ::core::option::Option<Horizon>,
-    /// The segments of the load abandoned since its last commit, whose staged rows it removes;
+    /// The segments of the attempt abandoned since its last commit, whose staged rows it removes;
     /// ascending, disjoint, not adjacent, and none among `segments`.
-    #[prost(message, repeated, tag = "10")]
+    #[prost(message, repeated, tag = "8")]
     pub abandoned: ::prost::alloc::vec::Vec<SegmentRange>,
-}
-/// A commit by its load and its sequence in the load; commits order by load id, then sequence.
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct Horizon {
-    /// The load, a UUIDv7 in its 16 bytes.
-    #[prost(bytes = "bytes", tag = "1")]
-    pub load_id: ::prost::bytes::Bytes,
-    /// The commit's sequence within the load; at least 1.
-    #[prost(uint64, tag = "2")]
-    pub commit_seq: u64,
 }
 /// A table a commit drops.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1518,22 +1511,19 @@ pub struct CommitRequest {
     pub meta: ::core::option::Option<CommitMeta>,
 }
 /// What a commit published.
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Receipt {
-    /// The load, a UUIDv7 in its 16 bytes.
-    #[prost(bytes = "bytes", tag = "1")]
-    pub load_id: ::prost::bytes::Bytes,
-    /// The commit's sequence within the load.
-    #[prost(uint64, tag = "2")]
-    pub commit_seq: u64,
+    /// The commit's key.
+    #[prost(message, optional, tag = "1")]
+    pub key: ::core::option::Option<CommitKey>,
     /// When it committed.
-    #[prost(message, optional, tag = "3")]
+    #[prost(message, optional, tag = "2")]
     pub committed_at: ::core::option::Option<Instant>,
     /// Rows published.
-    #[prost(uint64, tag = "4")]
+    #[prost(uint64, tag = "3")]
     pub rows: u64,
     /// Bytes published.
-    #[prost(uint64, tag = "5")]
+    #[prost(uint64, tag = "4")]
     pub bytes: u64,
 }
 /// Closes a session.

@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use rdlt_connector::wire::v1;
 use rdlt_connector::{
-    ConnectorError, Field, LoadId, LogicalType, SchemaVersion, TableChange, TablePath, TableRef,
+    ConnectorError, Field, LogicalType, SchemaVersion, TableChange, TablePath, TableRef,
     TableSchema,
 };
 use rdlt_host::remote::Client;
@@ -107,10 +107,6 @@ async fn created(client: &mut Client) -> Result<(u64, TableRef), Violation> {
         .rpc
         .open(v1::OpenRequest {
             pipeline: name.clone(),
-            load_id: LoadId::from_parts(SystemTime::now(), run)
-                .as_bytes()
-                .to_vec()
-                .into(),
         })
         .await
         .map_err(|status| failed("the open", &status))?

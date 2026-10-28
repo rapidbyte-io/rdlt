@@ -66,7 +66,7 @@ fn a_record_stating_its_decision_passes() {
         "A plan made for a view already superseded is used but not cached.\n",
         "The lattice differs from spec §8.2: `Int64 ∨ Float64` is `Json`.\n",
         "- A table replaced whole, by a rule\n  (ADR 0049). It holds.\n",
-        "  (ADR 0045): receipts are forgotten before the horizon.\n",
+        "  (ADR 0045): the landed key answers its commit.\n",
         "A stream is refused\n(ADR 0029, `change_read_unreplayable`).\n",
         "\n\n(ADR 0021).\n",
     ] {

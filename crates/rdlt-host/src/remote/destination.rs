@@ -71,7 +71,6 @@ impl Destination for RemoteDestination {
             let mut client = connection.client.state.clone();
             let request = v1::OpenRequest {
                 pipeline: context.pipeline.as_str().to_owned(),
-                load_id: context.load_id.as_bytes().to_vec().into(),
             };
             let opened = connection
                 .call(deadline, "the open", client.open(request))
@@ -86,12 +85,18 @@ impl Destination for RemoteDestination {
                         rdlt_connector::wire::frame_error(&rdlt_wire::WireError::Refused(refusal))
                     })?;
             }
+            let landed = opened
+                .landed
+                .map(Receipt::try_from)
+                .transpose()
+                .map_err(|error| invalid(&error))?;
             Ok(OpenedSession {
                 session: Box::new(RemoteSession {
                     connection: Arc::clone(&self.connection),
                     id: opened.session,
                 }),
                 epoch: Epoch(opened.epoch),
+                landed,
                 state: opened.state.into_iter().map(StateRecord::from).collect(),
             })
         })

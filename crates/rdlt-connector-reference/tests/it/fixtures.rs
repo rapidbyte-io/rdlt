@@ -2,14 +2,12 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::UNIX_EPOCH;
 
 use arrow_array::{ArrayRef, BinaryArray, Int64Array, RecordBatch};
 use rdlt_connector::{
-    CommitMeta, CommitSeq, ConnectContext, Destination, Field, LoadId, LogicalType, MergeKey,
-    OpenContext, OpenedSession, PipelineId, PublishedReader, PublishedRows, SchemaVersion,
-    SegmentId, SegmentSet, TableChange, TablePath, TableRef, TableSchema,
-    readable_destination_factory,
+    CommitKey, CommitMeta, ConnectContext, Destination, Field, LogicalType, MergeKey, OpenContext,
+    OpenedSession, PipelineId, PublishedReader, PublishedRows, SchemaVersion, SegmentId,
+    SegmentSet, TableChange, TablePath, TableRef, TableSchema, readable_destination_factory,
 };
 use rdlt_connector_reference::FilesDestination;
 use serde_json::{Value, json};
@@ -50,18 +48,14 @@ pub(crate) async fn connect(root: &Path, format: &str) -> Arc<dyn Destination> {
     connect_with(root, json!({ "format": format })).await.0
 }
 
-pub(crate) fn context(load: u128) -> OpenContext {
+pub(crate) fn context() -> OpenContext {
     OpenContext {
         pipeline: PipelineId::parse(PIPELINE).expect("valid pipeline id"),
-        load_id: LoadId::from_parts(UNIX_EPOCH, load),
     }
 }
 
-pub(crate) async fn open(destination: &dyn Destination, load: u128) -> OpenedSession {
-    destination
-        .open(&context(load))
-        .await
-        .expect("the root opens")
+pub(crate) async fn open(destination: &dyn Destination) -> OpenedSession {
+    destination.open(&context()).await.expect("the root opens")
 }
 
 /// The append table `name`.
@@ -89,16 +83,20 @@ pub(crate) fn merge_table(name: &str) -> TableRef {
     }
 }
 
-pub(crate) fn meta(
-    opened: &OpenedSession,
-    load: u128,
-    seq: CommitSeq,
-    segments: &[u64],
-) -> CommitMeta {
+/// Commit `seq` of `opened`, of `segments`, expecting the session's commit before it landed, or
+/// for its first the key the session found landed.
+pub(crate) fn meta(opened: &OpenedSession, seq: u64, segments: &[u64]) -> CommitMeta {
+    let epoch = opened.epoch;
     CommitMeta {
-        load_id: LoadId::from_parts(UNIX_EPOCH, load),
-        commit_seq: seq,
-        epoch: opened.epoch,
+        key: CommitKey { epoch, seq },
+        after: if seq == 1 {
+            opened.landed.as_ref().map(|landed| landed.key)
+        } else {
+            Some(CommitKey {
+                epoch,
+                seq: seq - 1,
+            })
+        },
         segments: segments
             .iter()
             .copied()
@@ -109,7 +107,6 @@ pub(crate) fn meta(
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
-        horizon: None,
     }
 }
 

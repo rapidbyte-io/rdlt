@@ -14,7 +14,7 @@ use crate::serve::Served;
 use crate::serve::live::CountedSession;
 use crate::spec::{BoxFuture, ConnectContext, ConnectorSpec};
 use crate::wire::v1;
-use crate::{Capabilities, ConnectorId, Epoch, LoadId};
+use crate::{Capabilities, ConnectorId, Epoch};
 
 /// Bounds every wait of a test: an Open that hangs fails its test.
 const WAIT: Duration = Duration::from_secs(60);
@@ -51,6 +51,7 @@ impl Destination for Slow {
             Ok(OpenedSession {
                 session,
                 epoch: Epoch(nth + 1),
+                landed: None,
                 state: Vec::new(),
             })
         })
@@ -108,10 +109,8 @@ async fn concurrent_opens_on_a_connection_never_hold_more_sessions_than_it_may()
     for pipeline in 0..8 {
         let service = Arc::clone(&service);
         opens.spawn(async move {
-            let load_id = LoadId::from_parts(std::time::UNIX_EPOCH, pipeline);
             let request = v1::OpenRequest {
                 pipeline: format!("pipeline-{pipeline}"),
-                load_id: load_id.as_bytes().to_vec().into(),
             };
             let opened = service.open(Request::new(request)).await;
             opened.map(|opened| opened.into_inner().session)

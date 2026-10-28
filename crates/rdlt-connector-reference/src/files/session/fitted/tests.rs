@@ -69,7 +69,7 @@ fn publishing(seconds_held: i64) -> Sessions {
     let sessions = Sessions::new(FileFormat::Arrow);
     sessions.create(&table(), &schema(seconds()));
     sessions.stage(&table(), 1, row(1, seconds_held));
-    sessions.commit(&sessions.meta(1, 1, &[1])).unwrap();
+    sessions.commit(&sessions.meta(1, &[1])).unwrap();
     sessions
 }
 
@@ -127,7 +127,7 @@ fn a_change_checked_against_a_table_that_changed_since_is_not_taken() {
     assert_eq!(stands(&checked).unwrap_err().code(), Some(TABLE_CHANGED));
     let checked = fits(&sessions.location, &sessions.shared, &widen()).unwrap();
     stands(&checked).unwrap();
-    sessions.commit(&sessions.meta(1, 2, &[2])).unwrap();
+    sessions.commit(&sessions.meta(2, &[2])).unwrap();
     let changed = stands(&checked).unwrap_err();
     assert_eq!(changed.code(), Some(TABLE_CHANGED));
     assert_eq!(
@@ -180,7 +180,7 @@ fn a_widen_to_json_of_a_table_of_lines_checked_empty_is_not_taken_once_it_holds_
     let rows = RecordBatch::try_from_iter([("id", Arc::clone(&ids)), ("held", text), ("seq", ids)])
         .unwrap();
     sessions.stage(&table(), 1, rows);
-    sessions.commit(&sessions.meta(1, 1, &[1])).unwrap();
+    sessions.commit(&sessions.meta(1, &[1])).unwrap();
     let moved = checked.stands(&sessions.location, &sessions.shared, asked);
     assert_eq!(moved.unwrap_err().code(), Some(TABLE_CHANGED));
 }

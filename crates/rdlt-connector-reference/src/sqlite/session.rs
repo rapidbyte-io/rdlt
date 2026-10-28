@@ -8,7 +8,7 @@ mod writer;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use parking_lot::Mutex;
 use rdlt_connector::prelude::*;
@@ -16,8 +16,8 @@ use rdlt_connector::sqlgen::{self, SqlPlanner, Sqlite};
 use rdlt_connector::{Epoch, GenerationId, PipelineId, SegmentId, SegmentSet, StateRecord};
 use rusqlite::types::Value;
 
-use super::database::{Database, columns, integer, query, run, run_all, text};
-use commit::{drop_tables, finish, publish, stored};
+use super::database::{Database, columns, query, run, run_all, text};
+use commit::{drop_tables, fence, finish, publish};
 use owners::{catalog, changed, created, discard, distinct};
 
 pub use writer::SqliteWriter;
@@ -83,25 +83,20 @@ impl Written {
 }
 
 impl SqliteSession {
-    /// Creates the catalog where it is missing, increments `pipeline`'s epoch and reads its state.
+    /// Creates the catalog where it is missing, increments `pipeline`'s epoch and reads its last
+    /// commit that landed and its state.
     pub(super) async fn open(
         database: Database,
         planner: Arc<SqlPlanner<Sqlite>>,
         pipeline: PipelineId,
     ) -> Result<Opened<Self>> {
         let (plan, name) = (Arc::clone(&planner), pipeline.clone());
-        let (epoch, state) = database
+        let (fence, state) = database
             .transaction(move |transaction| {
                 catalog(transaction, &plan)?;
                 run_all(transaction, &plan.bootstrap())?;
                 run_all(transaction, &plan.open(&name))?;
-                let epoch = query(transaction, &plan.epoch(&name))?;
-                let epoch = epoch
-                    .first()
-                    .and_then(|row| row.first())
-                    .map(integer)
-                    .transpose()?
-                    .unwrap_or_default();
+                let fence = fence(transaction, &plan, &name)?;
                 let state = query(transaction, &plan.state(&name))?
                     .into_iter()
                     .map(|row| match &row[..] {
@@ -112,19 +107,19 @@ impl SqliteSession {
                         _ => Err(ConnectorError::internal("a state record is not bytes")),
                     })
                     .collect::<Result<Vec<_>>>()?;
-                Ok((epoch, state))
+                Ok((fence, state))
             })
             .await?;
-        let epoch = Epoch(sqlgen::unsigned(epoch));
         Ok(Opened {
             session: Self {
                 database,
                 planner,
                 pipeline,
-                epoch,
+                epoch: fence.epoch,
                 written: Written::default(),
             },
-            epoch,
+            epoch: fence.epoch,
+            landed: fence.landed,
             state,
         })
     }
@@ -202,21 +197,14 @@ impl Session for SqliteSession {
         let receipt = self
             .database
             .transaction(move |transaction| {
-                let fenced =
-                    meta.epoch != epoch || run(transaction, &planner.fence(&pipeline, epoch))? == 0;
-                if fenced {
-                    return Err(ConnectorError::fenced(format!(
-                        "pipeline {pipeline} has a session newer than epoch {epoch}"
-                    )));
+                if let Some(landed) = fence(transaction, &planner, &pipeline)?.decide(&meta)? {
+                    return Ok(landed);
                 }
-                if let Some(receipt) = stored(
-                    transaction,
-                    &planner,
-                    &pipeline,
-                    meta.load_id,
-                    meta.commit_seq,
-                )? {
-                    return Ok(receipt);
+                if meta.key.epoch != epoch {
+                    return Err(ConnectorError::fenced(format!(
+                        "a session of epoch {epoch} cannot apply {}",
+                        meta.key
+                    )));
                 }
                 let (rows, bytes) =
                     publish(transaction, &planner, (&pipeline, epoch), &meta, &noted)?;
@@ -227,17 +215,13 @@ impl Session for SqliteSession {
                     &planner.state_changes(&pipeline, &meta.state_delta),
                 )?;
                 let committed_at = sqlgen::micros(SystemTime::now());
-                let receipt = sqlgen::receipt(
-                    meta.load_id,
-                    meta.commit_seq,
-                    i64::try_from(committed_at).unwrap_or(i64::MAX),
-                    rows,
-                    bytes,
-                );
-                if let Some(horizon) = &meta.horizon {
-                    run(transaction, &planner.forget_receipts(&pipeline, horizon))?;
-                }
-                run(transaction, &planner.record_receipt(&pipeline, &receipt))?;
+                let receipt = Receipt {
+                    key: meta.key,
+                    committed_at: UNIX_EPOCH + Duration::from_micros(committed_at),
+                    rows: u64::try_from(rows).unwrap_or_default(),
+                    bytes: u64::try_from(bytes).unwrap_or_default(),
+                };
+                run(transaction, &planner.land(&pipeline, &receipt))?;
                 Ok(receipt)
             })
             .await?;

@@ -15,8 +15,8 @@ use std::sync::atomic::AtomicU64;
 
 use parking_lot::Mutex;
 use rdlt_connector::{
-    Cursor, Destination, Epoch, GenerationId, LoadId, OpenContext, OpenedSession, Partition,
-    PipelineState, Source, StreamName,
+    Cursor, Destination, Epoch, GenerationId, OpenContext, OpenedSession, Partition, PipelineState,
+    Receipt, Source, StreamName,
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -78,25 +78,25 @@ struct Planned {
     partitions: Vec<(Partition, Option<Cursor>)>,
 }
 
-/// An open session and the state it returned.
+/// An open session, the last commit that had landed and the state it returned.
 struct Opened {
     session: Arc<SharedSession>,
     epoch: Epoch,
+    landed: Option<Receipt>,
     state: PipelineState,
     /// What the state's records take as an open's answer carries them.
     stored: Stored,
 }
 
-/// Runs one attempt under `load_id`, recording its commits in `log` as they land.
+/// Runs one attempt, recording its commits in `log` as they land.
 pub(crate) async fn run(
     context: &RunContext,
-    load_id: LoadId,
     log: Arc<Mutex<AttemptLog>>,
 ) -> Result<AttemptEnd, Error> {
     within_calls(context)?;
-    let opened = open(context, load_id).await?;
+    let opened = open(context).await?;
     let session = Arc::clone(&opened.session);
-    let ran = opened_run(context, load_id, opened, &log).await;
+    let ran = opened_run(context, opened, &log).await;
     if ran.is_err() {
         // A failed attempt's session releases what it holds now; the failure matters more than
         // any error from closing, and a session the coordinator closed stays closed.
@@ -143,15 +143,10 @@ async fn closed_within<T>(context: &RunContext, closing: impl Future<Output = T>
 /// Runs the attempt as [`run`] does, on the session it opened.
 async fn opened_run(
     context: &RunContext,
-    load_id: LoadId,
     opened: Opened,
     log: &Arc<Mutex<AttemptLog>>,
 ) -> Result<AttemptEnd, Error> {
-    log.lock().opened = opened
-        .state
-        .last_receipt
-        .as_ref()
-        .map(|receipt| (receipt.load_id, receipt.commit_seq));
+    log.lock().opened = Some((opened.epoch, opened.landed.clone()));
     let catalog = context
         .source
         .discover()
@@ -168,42 +163,44 @@ async fn opened_run(
         capabilities,
     };
     let tables = Tables::new(Arc::clone(&opened.session))
-        .salted(load_id)
+        .salted(opened.epoch)
         .growing(context.config.child_table_limit())
         .committed(&opened.state)?;
     let planned = planning.streams(context.plan.streams(), &tables).await?;
     let partitions = planned.iter().map(|stream| stream.partitions.len()).sum();
     within_partition_limit(partitions)?;
-    launch(
-        context,
-        load_id,
-        opened,
-        planned,
-        Arc::new(tables),
-        Arc::clone(log),
-    )
-    .await?;
+    launch(context, opened, planned, Arc::new(tables), Arc::clone(log)).await?;
     let end = log.lock().end;
     end.ok_or_else(|| Error::internal("the attempt ended without its coordinator finishing"))
 }
 
 /// Opens the destination, which fences older sessions, and decodes the committed state.
 ///
-/// The epoch comes from the open itself: destinations keep their live epoch outside the state
-/// records.
-async fn open(context: &RunContext, load_id: LoadId) -> Result<Opened, Error> {
+/// The epoch and the last commit that landed come from the open itself: destinations keep them
+/// in their fence row, outside the state records. An epoch past what an `Int64` holds, or state
+/// the engine cannot read, is `state_invalid`, a Destination error.
+async fn open(context: &RunContext) -> Result<Opened, Error> {
     let open = OpenContext {
         pipeline: context.plan.pipeline().clone(),
-        load_id,
     };
     let OpenedSession {
         session,
         epoch,
+        landed,
         state,
     } =
         context.destination.open(&open).await.map_err(|error| {
             Error::connector(Side::Destination, "opening the destination", error)
         })?;
+    // Every row a session loads holds its epoch in an `Int64` column.
+    if i64::try_from(epoch.0).is_err() {
+        closed_within(context, session.close()).await;
+        return Err(Error::new(
+            ErrorKind::Destination,
+            format!("the destination opened epoch {epoch}, past what a load's epoch column holds"),
+        )
+        .with_code(codes::STATE_INVALID));
+    }
     let stored = Stored::of(&state, StateLimits::of(&context.config));
     let state = match PipelineState::from_records(&state) {
         Ok(state) => state,
@@ -219,6 +216,7 @@ async fn open(context: &RunContext, load_id: LoadId) -> Result<Opened, Error> {
     Ok(Opened {
         session: SharedSession::new(session),
         epoch,
+        landed,
         state,
         stored,
     })
@@ -248,7 +246,6 @@ pub(crate) fn within_partition_limit(partitions: usize) -> Result<(), Error> {
 /// Runs the lanes, the partitions and the coordinator in one scope until all of them end.
 async fn launch(
     context: &RunContext,
-    load_id: LoadId,
     opened: Opened,
     planned: Vec<Planned>,
     tables: Arc<Tables>,
@@ -266,8 +263,7 @@ async fn launch(
         stop: stop_reads.clone(),
         cancel: scope.token().clone(),
     };
-    let partition_context =
-        shared_by_partitions(context, (load_id, opened.epoch), (&lanes, &tables), ends);
+    let partition_context = shared_by_partitions(context, opened.epoch, (&lanes, &tables), ends);
     let (tasks, spawned) = mpsc::unbounded_channel();
     let (streams, partitions) = spawn_partitions(&mut scope, planned, &partition_context);
     let coordinator = Coordinator::new(CoordinatorParts {
@@ -277,8 +273,8 @@ async fn launch(
         tables,
         source: Arc::clone(&context.source),
         lanes,
-        load_id,
         epoch: opened.epoch,
+        after: opened.landed.as_ref().map(|landed| landed.key),
         streams,
         partitions,
         progress: progress_feed,
@@ -310,11 +306,11 @@ struct Ends {
     cancel: CancellationToken,
 }
 
-/// What the attempt's partitions share: its load and its session's epoch, its `lanes` and
-/// `tables`, and their `ends`.
+/// What the attempt's partitions share: its session's epoch, its `lanes` and `tables`, and their
+/// `ends`.
 fn shared_by_partitions(
     context: &RunContext,
-    (load_id, epoch): (LoadId, Epoch),
+    epoch: Epoch,
     (lanes, tables): (&Lanes, &Arc<Tables>),
     ends: Ends,
 ) -> Arc<PartitionContext> {
@@ -336,7 +332,6 @@ fn shared_by_partitions(
         ),
         segments: Arc::new(AtomicU64::new(1)),
         buffer: context.config.partition_buffer(),
-        load_id,
         epoch,
         clock: Arc::new(LoadClock::new(context.env.now())),
         env: Arc::clone(&context.env),

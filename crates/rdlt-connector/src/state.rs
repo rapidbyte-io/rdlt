@@ -15,9 +15,8 @@ use std::sync::Arc;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
-use crate::commit::Receipt;
 use crate::cursor::Cursor;
-use crate::id::{Epoch, GenerationId, LoadId, PartitionId, SchemaVersion, StreamName, TablePath};
+use crate::id::{Epoch, GenerationId, PartitionId, SchemaVersion, StreamName, TablePath};
 use crate::schema::{ColumnPath, TableSchema};
 
 pub use error::StateError;
@@ -25,7 +24,7 @@ pub use key::StateKey;
 pub use names::{NameConflict, NameMap};
 
 /// The state value format this crate writes and reads.
-const STATE_VERSION: u16 = 5;
+const STATE_VERSION: u16 = 6;
 
 /// One stored state record, opaque to the destination that keeps it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,8 +79,8 @@ pub enum StateEntry {
         partition: PartitionId,
         /// Where it stands.
         state: PartitionState,
-        /// The load whose commit recorded it there.
-        load: LoadId,
+        /// The epoch of the session whose commit recorded it there.
+        epoch: Epoch,
     },
     /// A stream's full read in progress; a replace stream fills the read's generation.
     Generation {
@@ -141,8 +140,6 @@ pub enum StateEntry {
         /// How the table's root rows are identified.
         identity: Identity,
     },
-    /// The last commit's receipt.
-    Receipt(Receipt),
 }
 
 /// Who made the `_rdlt_seq` values a table's rows hold, which says whether a later load may
@@ -191,7 +188,6 @@ impl StateEntry {
             Self::Schema { table, .. } => StateKey::Schema(table.clone()),
             Self::Names { table, .. } => StateKey::Names(table.clone()),
             Self::Sequences { table, .. } => StateKey::Sequences(table.clone()),
-            Self::Receipt(_) => StateKey::Receipt,
         }
     }
 
@@ -281,7 +277,7 @@ pub struct TableState {
     pub identity: Identity,
 }
 
-/// Everything a pipeline has committed: epoch, cursors, schemas, names and the last receipt.
+/// Everything a pipeline has committed: epoch, cursors, schemas and names.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PipelineState {
     /// The fencing epoch recorded in state.
@@ -296,10 +292,9 @@ pub struct PipelineState {
     /// The epoch of the session that last reset each stream reset: a full read a session older
     /// than it began is over.
     pub resets: BTreeMap<StreamName, Epoch>,
-    /// The last commit's receipt.
-    pub last_receipt: Option<Receipt>,
-    /// The load whose commit recorded each partition's position, by stream and partition.
-    pub recorded_by: BTreeMap<(StreamName, PartitionId), LoadId>,
+    /// The epoch of the session whose commit recorded each partition's position, by stream and
+    /// partition.
+    pub recorded_by: BTreeMap<(StreamName, PartitionId), Epoch>,
 }
 
 impl PipelineState {

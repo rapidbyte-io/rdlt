@@ -322,6 +322,7 @@ impl Destination for Slow {
                     delay: self.delay,
                 }),
                 epoch: opened.epoch,
+                landed: opened.landed,
                 state: opened.state,
             })
         })
@@ -549,6 +550,7 @@ impl Destination for Wrong {
                     writing: self.writing,
                 }),
                 epoch: opened.epoch,
+                landed: opened.landed,
                 state: opened.state,
             })
         })

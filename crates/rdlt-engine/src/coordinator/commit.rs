@@ -5,16 +5,14 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use rdlt_connector::{
-    CommitMeta, GenerationId, Horizon, SegmentSet, StateChange, StateEntry, StreamName, TablePath,
-};
+use rdlt_connector::{CommitMeta, GenerationId, SegmentSet, StateChange, StreamName, TablePath};
 
 use super::Coordinator;
 use crate::crash::crash_point;
 use crate::env::Env;
 use crate::error::Error;
 use crate::partition::CursorHold;
-use crate::report::{CommitPhases, CommitRecord, StreamReport, Trigger};
+use crate::report::{CommitPhases, Pending, StreamReport, Trigger};
 
 impl Coordinator {
     /// Commits every sealed segment with the state that goes with it, then acknowledges the
@@ -45,7 +43,7 @@ impl Coordinator {
         }
         let progressed = self.progresses(&collected, &delta);
         let streams = self.stream_reports(collected.streams, &completing);
-        self.receipted(&streams, &mut delta);
+        self.pending(&streams);
         let env = Arc::clone(&self.parts.env);
         let (mut laps, mut phases) = (Laps::new(env.as_ref()), CommitPhases::default());
         crash_point!("engine.flush.before");
@@ -85,48 +83,32 @@ impl Coordinator {
         Ok(())
     }
 
-    /// The commit of `segments` with `delta`, finishing `finish_generations`; it removes the
-    /// staging of the segments abandoned since the last.
-    ///
-    /// Nothing commits it again once it lands, so it is its own horizon: the destination may
-    /// forget the receipts of every commit before it.
+    /// The commit of `segments` with `delta`, finishing `finish_generations`, under the next key
+    /// and expecting the last commit that landed; it removes the staging of the segments
+    /// abandoned since the last.
     fn meta(
         &mut self,
         segments: SegmentSet,
         delta: Vec<StateChange>,
         finish_generations: Vec<(TablePath, GenerationId)>,
     ) -> CommitMeta {
-        let horizon = Horizon {
-            load_id: self.parts.load_id,
-            commit_seq: self.seq,
-        };
         CommitMeta {
-            load_id: self.parts.load_id,
-            commit_seq: self.seq,
-            epoch: self.parts.epoch,
+            key: self.key,
+            after: self.after,
             segments,
             abandoned: std::mem::take(&mut self.abandoned),
             state_delta: delta,
             finish_generations,
             child_tables: self.parts.tables.child_tables(),
             drop_tables: Vec::new(),
-            horizon: Some(horizon),
         }
     }
 
-    /// Records the commit's own receipt in `delta` and as pending, so an attempt that loses the
-    /// response can still be credited with it once a later attempt reads it back.
-    fn receipted(
-        &self,
-        streams: &BTreeMap<StreamName, StreamReport>,
-        delta: &mut Vec<StateChange>,
-    ) {
-        let marker = self.marker(streams);
-        delta.push(StateChange::Put(
-            StateEntry::Receipt(marker.clone()).to_record(),
-        ));
-        self.parts.log.lock().pending = Some(CommitRecord {
-            receipt: marker,
+    /// Records the commit as in flight, so an attempt that loses its answer is still credited
+    /// with it once a later attempt's open finds its key landed.
+    fn pending(&self, streams: &BTreeMap<StreamName, StreamReport>) {
+        self.parts.log.lock().pending = Some(Pending {
+            key: self.key,
             streams: streams.clone(),
         });
     }

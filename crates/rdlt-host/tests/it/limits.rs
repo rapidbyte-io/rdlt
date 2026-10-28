@@ -210,7 +210,7 @@ async fn a_request_beyond_its_class_limit_is_refused_by_the_served_connector() {
 
 #[tokio::test]
 async fn a_state_key_beyond_the_control_string_limit_is_refused_where_it_is_received() {
-    use rdlt_connector::{Destination as _, LoadId, OpenContext, PipelineId};
+    use rdlt_connector::{Destination as _, OpenContext, PipelineId};
     use rdlt_testkit::fake::{Fake, Fault, socket};
     let opened = |key: fn() -> String| async move {
         let io = socket(Fake(Fault::Keys(key)));
@@ -226,7 +226,6 @@ async fn a_state_key_beyond_the_control_string_limit_is_refused_where_it_is_rece
             rdlt_host::RemoteDestination::new(connection).expect("the fake declares capabilities");
         let context = OpenContext {
             pipeline: PipelineId::parse("keyed").expect("a pipeline id"),
-            load_id: LoadId::from_parts(std::time::UNIX_EPOCH, 1),
         };
         destination
             .open(&context)

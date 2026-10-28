@@ -11,6 +11,9 @@ use crate::types::LogicalType;
 /// SQLite keeps the names under `sqlite_` for itself and reads those under `pragma_` as its
 /// table-valued functions, and it matches table names without ASCII case, so a destination table
 /// takes none of those, and only a name that is its own lower case.
+///
+/// SQLite locks no row a read reads: a destination begins each transaction `IMMEDIATE`, which
+/// holds the database's write lock from its start, so the fence row it reads stays as read.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Sqlite;
 
@@ -35,6 +38,10 @@ impl SqlDialect for Sqlite {
 
     fn transactional_ddl(&self) -> bool {
         true
+    }
+
+    fn lock_clause(&self) -> &'static str {
+        ""
     }
 
     fn max_params(&self) -> usize {

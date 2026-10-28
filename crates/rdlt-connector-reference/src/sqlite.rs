@@ -35,8 +35,9 @@ pub struct SqliteDestinationConfig {
     pub path: PathBuf,
 }
 
-/// Loads into a SQLite database: each commit is one transaction that publishes the staged rows,
-/// writes the state and records the receipt, fenced by the pipeline's epoch.
+/// Loads into a SQLite database: each commit is one transaction that reads the pipeline's fence
+/// row, publishes the staged rows, writes the state and writes its receipt into the row, fenced
+/// by the pipeline's epoch and the key that landed last.
 ///
 /// Every table has a staging table beside it; a replace generation fills its own table until the
 /// commit that finishes it renames it over the table. Column types are SQLite's storage classes,

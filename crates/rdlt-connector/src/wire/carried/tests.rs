@@ -1,14 +1,13 @@
 use std::collections::BTreeMap;
-use std::time::UNIX_EPOCH;
 
 use proptest::prelude::*;
 use rdlt_wire::prost::Message as _;
 
 use super::super::v1;
 use super::{answer_bytes, commit_bytes, counted, record_bytes};
-use crate::commit::CommitMeta;
+use crate::commit::{CommitKey, CommitMeta};
 use crate::cursor::Cursor;
-use crate::id::{CommitSeq, Epoch, LoadId, PartitionId, SegmentId, StreamName};
+use crate::id::{Epoch, PartitionId, SegmentId, StreamName};
 use crate::state::{PartitionState, StateChange, StateEntry, StateRecord, StreamState};
 
 fn records() -> impl Strategy<Value = Vec<StateRecord>> {
@@ -44,12 +43,18 @@ proptest! {
         let answer = v1::OpenResponse {
             session: u64::MAX,
             epoch: u64::MAX,
+            landed: Some(v1::Receipt {
+                key: Some(v1::CommitKey { epoch: u64::MAX, seq: u64::MAX }),
+                committed_at: Some(v1::Instant { seconds: i64::MAX, nanos: 999_999_999 }),
+                rows: u64::MAX,
+                bytes: u64::MAX,
+            }),
             state: records.iter().map(v1::StateRecord::from).collect(),
         };
         let scanned = counted(rdlt_wire::scan::response("Open"), &answer.encode_to_vec());
         let measured: u64 = records.iter().map(record_bytes).sum::<u64>() + answer_bytes(&[]);
         prop_assert_eq!(answer_bytes(&records), measured);
-        // An answer's handle and epoch hold nothing decoded beyond their fields.
+        // An answer's handle, epoch and landed receipt hold nothing decoded beyond their fields.
         prop_assert_eq!(scanned, measured);
         // What a message holds decoded is never less than what it takes on the wire.
         prop_assert!(u64::try_from(answer.encoded_len()).unwrap() <= scanned);
@@ -58,19 +63,14 @@ proptest! {
     #[test]
     fn a_commit_s_request_takes_what_its_measure_says(changes in changes(), seq in 1_u64..1 << 40) {
         let meta = CommitMeta {
-            load_id: LoadId::from_parts(UNIX_EPOCH, 3),
-            commit_seq: (1..seq.min(64)).fold(CommitSeq::FIRST, |seq, _| seq.next()),
-            epoch: Epoch(seq),
+            key: CommitKey { epoch: Epoch(seq), seq },
+            after: Some(CommitKey { epoch: Epoch(seq), seq: seq - 1 }),
             segments: [SegmentId(seq)].into_iter().collect(),
             abandoned: crate::SegmentSet::new(),
             state_delta: changes,
             finish_generations: Vec::new(),
             child_tables: Vec::new(),
             drop_tables: Vec::new(),
-            horizon: Some(crate::Horizon {
-                load_id: LoadId::from_parts(UNIX_EPOCH, 2),
-                commit_seq: CommitSeq::FIRST,
-            }),
         };
         let request = v1::CommitRequest { session: 1, meta: Some(v1::CommitMeta::from(&meta)) };
         let scanned = counted(rdlt_wire::scan::request("Commit"), &request.encode_to_vec());
@@ -80,7 +80,7 @@ proptest! {
     }
 
     #[test]
-    fn a_stream_s_positions_take_less_in_a_plan_or_a_report_than_stored(
+    fn a_stream_s_positions_take_no_more_in_a_plan_or_a_report_than_in_an_open_s_answer(
         cursors in proptest::collection::vec(proptest::collection::vec(any::<u8>(), 0..400), 1..20),
     ) {
         let stream = StreamName::new("events").unwrap();
@@ -92,18 +92,20 @@ proptest! {
                 (PartitionId::parse(format!("p{index}")).unwrap(), PartitionState::Cursor(cursor))
             })
             .collect();
-        let stored: u64 = positions
+        let records: Vec<StateRecord> = positions
             .iter()
             .map(|(partition, state)| {
                 let entry = StateEntry::Partition {
                     stream: stream.clone(),
                     partition: partition.clone(),
                     state: state.clone(),
-                    load: LoadId::from_parts(UNIX_EPOCH, 1),
+                    epoch: Epoch(1),
                 };
-                record_bytes(&entry.to_record())
+                entry.to_record()
             })
-            .sum();
+            .collect();
+        // What the state limit holds: an open's answer carrying the stream's records.
+        let stored = answer_bytes(&records);
         let state = StreamState { partitions: positions.clone(), ..StreamState::default() };
         let plan = v1::PlanRequest {
             stream: Some(v1::StreamName::from(&stream)),

@@ -43,7 +43,7 @@ fn a_merge_table_of_more_narrow_rows_than_a_batch_holds_reads_back_and_merges_ag
     let half = 800_000;
     sessions.stage(&table, 1, rows(0, half));
     sessions.stage(&table, 2, rows(half, half));
-    sessions.commit(&sessions.meta(1, 1, &[1, 2])).unwrap();
+    sessions.commit(&sessions.meta(1, &[1, 2])).unwrap();
     let published = || {
         let latest = manifest::latest(&sessions.location.dir).unwrap().unwrap();
         let arrow = Arc::new(schema.to_arrow());
@@ -58,7 +58,7 @@ fn a_merge_table_of_more_narrow_rows_than_a_batch_holds_reads_back_and_merges_ag
     assert_eq!(published(), 1_600_000);
     // The next commit reads the table to merge into it.
     sessions.stage(&table, 3, rows(2 * half, 1));
-    sessions.commit(&sessions.meta(1, 2, &[3])).unwrap();
+    sessions.commit(&sessions.meta(2, &[3])).unwrap();
     assert_eq!(published(), 1_600_001);
 }
 
@@ -138,7 +138,7 @@ fn a_table_with_one_row_far_larger_than_the_others_is_written_by_a_merge_and_by_
         sessions.create(&table, &schema);
         sessions.stage(&table, 1, payloads(0, 2000, (1000, large)));
         sessions.stage(&table, 2, payloads(2000, 2000, (-1, 0)));
-        sessions.commit(&sessions.meta(1, 1, &[1, 2])).unwrap();
+        sessions.commit(&sessions.meta(1, &[1, 2])).unwrap();
         let (found, files) = published_payloads(&sessions, &schema);
         let expected: Vec<(i64, usize)> = (0..4000)
             .map(|id| (id, if id == 1000 { large } else { 64 }))

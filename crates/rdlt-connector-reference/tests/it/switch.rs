@@ -1,15 +1,14 @@
 //! A table's merging follows the writer that stages its rows, whatever the table was before.
 
 use std::sync::Arc;
-use std::time::UNIX_EPOCH;
 
 use arrow_array::cast::AsArray;
 use arrow_array::{ArrayRef, BinaryArray, Int64Array, RecordBatch, StringArray};
 use arrow_schema::DataType;
 use rdlt_connector::{
-    CommitMeta, CommitSeq, ConnectContext, DestinationConnector, Field, LoadId, LogicalType,
-    MergeKey, OpenContext, PipelineId, SchemaVersion, SegmentId, SegmentSet, Session, TableChange,
-    TablePath, TableRef, TableSchema, TableWriter,
+    CommitKey, CommitMeta, ConnectContext, DestinationConnector, Field, LogicalType, MergeKey,
+    OpenContext, PipelineId, SchemaVersion, SegmentId, SegmentSet, Session, TableChange, TablePath,
+    TableRef, TableSchema, TableWriter,
 };
 use rdlt_connector_reference::{
     FilesDestination, MemoryDestination, SqliteDestination, files, published, sqlite,
@@ -67,7 +66,6 @@ async fn switch<C: DestinationConnector>(config: serde_json::Value) {
     .expect("the destination connects");
     let context = OpenContext {
         pipeline: PipelineId::parse("switch").expect("valid pipeline id"),
-        load_id: LoadId::from_parts(UNIX_EPOCH, 1),
     };
     let mut opened = destination.open(&context).await.expect("the session opens");
     let create = TableChange::Create {
@@ -79,12 +77,11 @@ async fn switch<C: DestinationConnector>(config: serde_json::Value) {
         .apply_schema(&create)
         .await
         .expect("the table is created");
-    let mut seq = CommitSeq::FIRST;
-    for (segment, merging, batch) in [
+    for (seq, (segment, merging, batch)) in (1..).zip([
         (1, false, rows(&["a", "b"], 1)),
         (2, true, rows(&["c"], 3)),
         (3, false, rows(&["d"], 4)),
-    ] {
+    ]) {
         let mut writer = opened
             .session
             .writer(&table(merging))
@@ -96,23 +93,26 @@ async fn switch<C: DestinationConnector>(config: serde_json::Value) {
             .expect("the write buffers");
         writer.flush().await.expect("the flush stages");
         let meta = CommitMeta {
-            load_id: context.load_id,
-            commit_seq: seq,
-            epoch: opened.epoch,
+            key: CommitKey {
+                epoch: opened.epoch,
+                seq,
+            },
+            after: (seq > 1).then_some(CommitKey {
+                epoch: opened.epoch,
+                seq: seq - 1,
+            }),
             segments: [SegmentId(segment)].into_iter().collect::<SegmentSet>(),
             abandoned: SegmentSet::new(),
             state_delta: Vec::new(),
             finish_generations: Vec::new(),
             child_tables: Vec::new(),
             drop_tables: Vec::new(),
-            horizon: None,
         };
         opened
             .session
             .commit(&meta)
             .await
             .expect("the commit lands");
-        seq = seq.next();
     }
 }
 

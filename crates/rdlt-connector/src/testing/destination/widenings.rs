@@ -12,9 +12,8 @@ use arrow_array::{Array, ArrayRef, Decimal128Array, Float64Array, Int32Array, In
 use super::{Bench, commit, meta};
 use crate::OpenedSession;
 use crate::capabilities::Capabilities;
-use crate::commit::CommitMeta;
 use crate::destination::TableChange;
-use crate::id::{CommitSeq, SegmentId};
+use crate::id::SegmentId;
 use crate::schema::TableSchema;
 use crate::testing::reason::Listed;
 use crate::testing::{Violation, bounded_call};
@@ -23,21 +22,18 @@ use crate::types::{DecimalType, Field, LogicalType, TimeUnit, TypeKind};
 impl Bench<'_> {
     /// Widens a column of a table of its own for each pair of kinds the destination declares it
     /// stores and widens in place, holding the narrower type's edges, and reads every value back
-    /// as it was; commits from `seq` on.
+    /// as it was.
     ///
     /// The engine sends a kind the destination does not store as text, whose widening is the
     /// engine's own.
     pub(super) async fn widenings_keep_every_value(
         &self,
         opened: &mut OpenedSession,
-        seq: CommitSeq,
-    ) -> Result<CommitSeq, Violation> {
-        let mut seq = seq;
+    ) -> Result<(), Violation> {
         // Each widening's rows in a segment of their own, after those the clause wrote before.
         let segments = (100..).map(SegmentId);
         let widenings = checked(self.destination.capabilities());
         for (place, ((from, to), segment)) in widenings.into_iter().zip(segments).enumerate() {
-            seq = seq.next();
             let table = self.other_table(&format!("widened_{place}"));
             let create = TableChange::Create {
                 table: table.clone(),
@@ -58,11 +54,7 @@ impl Bench<'_> {
                 to: to.clone(),
             };
             bounded_call("apply_schema", opened.session.apply_schema(&widen)).await?;
-            let widened = CommitMeta {
-                commit_seq: seq,
-                ..meta(self.load_id(1), opened.epoch, &[segment.0], Vec::new())
-            };
-            commit(&mut opened.session, &widened).await?;
+            commit(opened, meta(&[segment.0], Vec::new())).await?;
             let mut expected = denotations(values.as_ref(), &to);
             let mut published = Vec::new();
             for batch in self.read(&table).await?.batches() {
@@ -81,7 +73,7 @@ impl Bench<'_> {
                 )));
             }
         }
-        Ok(seq)
+        Ok(())
     }
 }
 

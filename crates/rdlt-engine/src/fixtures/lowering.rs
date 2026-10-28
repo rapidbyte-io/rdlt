@@ -17,9 +17,9 @@ use arrow_schema::{Field as ArrowField, Schema};
 #[cfg(test)]
 use rdlt_connector::cost::{Rendering, arrays};
 use rdlt_connector::{
-    Capabilities, ChangeOp, ColumnPath, Epoch, Field, LoadId, LogicalType, OP_COLUMN, ReadMode,
-    SEQ_COLUMN, SchemaVersion, SegmentId, StreamName, TablePath, TableRef, TableSchema, TimeUnit,
-    TypeKind, UNCHANGED_COLUMN,
+    Capabilities, ChangeOp, ColumnPath, Epoch, Field, LogicalType, OP_COLUMN, ReadMode, SEQ_COLUMN,
+    SchemaVersion, SegmentId, StreamName, TablePath, TableRef, TableSchema, TimeUnit, TypeKind,
+    UNCHANGED_COLUMN,
 };
 
 use super::events;
@@ -396,7 +396,6 @@ impl Case {
 pub(crate) fn stamp() -> Stamp {
     Stamp {
         epoch: Epoch(1),
-        load_id: LoadId::from_parts(UNIX_EPOCH, 1),
         loaded_at: UNIX_EPOCH,
         received_at: UNIX_EPOCH,
         segment: SegmentId(1),

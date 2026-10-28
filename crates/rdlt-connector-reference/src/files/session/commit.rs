@@ -28,10 +28,11 @@ pub(super) fn commit(
     meta: &CommitMeta,
 ) -> Result<Receipt> {
     let mut manifest = manifest::latest(&location.dir)?.unwrap_or_default();
-    if manifest.epoch != location.epoch || meta.epoch != location.epoch {
+    let landed = manifest.fence().decide(meta)?;
+    if landed.is_none() && meta.key.epoch != location.epoch {
         return Err(ConnectorError::fenced(format!(
-            "the pipeline is at epoch {}; this session opened at {}",
-            manifest.epoch, location.epoch
+            "a session of epoch {} cannot apply {}",
+            location.epoch, meta.key
         )));
     }
     let (staged, names) = {
@@ -48,7 +49,7 @@ pub(super) fn commit(
         .iter()
         .map(|staged| staged.file.path.clone())
         .collect();
-    let receipt = if let Some(receipt) = manifest.receipt(meta.load_id, meta.commit_seq) {
+    let receipt = if let Some(receipt) = landed {
         // The commit's manifest exists, and an earlier answer may have failed before the
         // manifest's name was durable: it is made durable before the commit is answered again.
         manifest::settle(&location.dir)?;
@@ -65,7 +66,7 @@ pub(super) fn commit(
     };
     {
         let mut shared = shared.lock();
-        // What the session staged in a segment the load abandoned is never published: its files
+        // What the session staged in a segment the engine abandoned is never published: its files
         // go with those the manifest no longer lists.
         held.extend(
             shared
@@ -178,13 +179,12 @@ fn put(
         .retain(|name| !published.contains_key(name));
     manifest.apply(&meta.state_delta);
     let receipt = Receipt {
-        load_id: meta.load_id,
-        commit_seq: meta.commit_seq,
+        key: meta.key,
         committed_at: manifest::truncated(SystemTime::now()),
         rows: staged.iter().map(|staged| staged.file.rows).sum(),
         bytes: staged.iter().map(|staged| staged.file.bytes).sum(),
     };
-    manifest.record(&receipt, meta.horizon.as_ref());
+    manifest.land(&receipt);
     let Some(version) = manifest.version.checked_add(1) else {
         return Err(ConnectorError::data(format!(
             "pipeline {} holds the last manifest version there is",
@@ -200,9 +200,9 @@ fn put(
     Ok(receipt)
 }
 
-/// Names: how many of a staged path's leading names (the staging directory, the epoch and the
-/// load) lead to directories every writer of a session shares, which a commit never removes.
-const SHARED: usize = 3;
+/// Names: how many of a staged path's leading names (the staging directory and the epoch) lead
+/// to directories every writer of a session shares, which a commit never removes.
+const SHARED: usize = 2;
 
 /// Removes the files at `paths` under the pipeline's directory `dir`, and the directories of
 /// their own that leaves empty, as far as each goes: a path that cannot be removed is left for

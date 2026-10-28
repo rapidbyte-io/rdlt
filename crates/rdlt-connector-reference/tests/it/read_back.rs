@@ -1,15 +1,14 @@
 //! The memory and SQLite destinations reading back what they published, and nothing staged.
 
 use std::sync::Arc;
-use std::time::UNIX_EPOCH;
 
 use arrow_array::cast::AsArray;
 use arrow_array::types::Int64Type;
 use arrow_array::{Int64Array, RecordBatch};
 use rdlt_connector::{
-    CommitMeta, CommitSeq, ConnectContext, DestinationConnector, Field, LoadId, LogicalType,
-    OpenContext, OpenedSession, PipelineId, PublishedRows, ReadBack, SchemaVersion, SegmentId,
-    TableChange, TablePath, TableRef, TableSchema, readable_destination_factory,
+    CommitKey, CommitMeta, ConnectContext, DestinationConnector, Field, LogicalType, OpenContext,
+    OpenedSession, PipelineId, PublishedRows, ReadBack, SchemaVersion, SegmentId, TableChange,
+    TablePath, TableRef, TableSchema, readable_destination_factory,
 };
 use rdlt_connector_reference::{MemoryDestination, SqliteDestination, tables};
 use serde_json::json;
@@ -56,23 +55,23 @@ async fn read_back<C: DestinationConnector + ReadBack>(config: serde_json::Value
         .expect("the destination connects");
     let context = OpenContext {
         pipeline: PipelineId::parse("reader").expect("valid pipeline id"),
-        load_id: LoadId::from_parts(UNIX_EPOCH, 1),
     };
     let mut opened = destination.open(&context).await.expect("a session opens");
     let published = table("published");
     stage(&mut opened, &published, 1, vec![1, 2]).await;
     stage(&mut opened, &published, 2, vec![3, 4]).await;
     let meta = CommitMeta {
-        load_id: context.load_id,
-        commit_seq: CommitSeq::FIRST,
-        epoch: opened.epoch,
+        key: CommitKey {
+            epoch: opened.epoch,
+            seq: 1,
+        },
+        after: opened.landed.as_ref().map(|landed| landed.key),
         segments: [SegmentId(1)].into_iter().collect(),
         abandoned: rdlt_connector::SegmentSet::new(),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
-        horizon: None,
     };
     opened
         .session
@@ -118,7 +117,6 @@ async fn a_memory_store_lists_every_table_created_in_it() {
         .expect("the destination connects");
     let context = OpenContext {
         pipeline: PipelineId::parse("lister").expect("valid pipeline id"),
-        load_id: LoadId::from_parts(UNIX_EPOCH, 1),
     };
     let mut opened = destination.open(&context).await.expect("a session opens");
     for name in ["second", "first"] {
@@ -139,22 +137,22 @@ async fn the_sqlite_destination_reads_a_large_table_back_in_bounded_batches() {
         .expect("the destination connects");
     let context = OpenContext {
         pipeline: PipelineId::parse("reader").expect("valid pipeline id"),
-        load_id: LoadId::from_parts(UNIX_EPOCH, 1),
     };
     let mut opened = destination.open(&context).await.expect("a session opens");
     let large = table("large");
     stage(&mut opened, &large, 1, (0..5000).collect()).await;
     let meta = CommitMeta {
-        load_id: context.load_id,
-        commit_seq: CommitSeq::FIRST,
-        epoch: opened.epoch,
+        key: CommitKey {
+            epoch: opened.epoch,
+            seq: 1,
+        },
+        after: opened.landed.as_ref().map(|landed| landed.key),
         segments: [SegmentId(1)].into_iter().collect(),
         abandoned: rdlt_connector::SegmentSet::new(),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
-        horizon: None,
     };
     opened
         .session
@@ -180,7 +178,6 @@ async fn sqlite_batches(kind: LogicalType, values: arrow_array::ArrayRef) -> Vec
         .expect("the destination connects");
     let context = OpenContext {
         pipeline: PipelineId::parse("reader").expect("valid pipeline id"),
-        load_id: LoadId::from_parts(UNIX_EPOCH, 1),
     };
     let mut opened = destination.open(&context).await.expect("a session opens");
     let wide = table("wide");
@@ -204,16 +201,17 @@ async fn sqlite_batches(kind: LogicalType, values: arrow_array::ArrayRef) -> Vec
     writer.flush().await.expect("the flush stages");
     drop(writer);
     let meta = CommitMeta {
-        load_id: context.load_id,
-        commit_seq: CommitSeq::FIRST,
-        epoch: opened.epoch,
+        key: CommitKey {
+            epoch: opened.epoch,
+            seq: 1,
+        },
+        after: opened.landed.as_ref().map(|landed| landed.key),
         segments: [SegmentId(1)].into_iter().collect(),
         abandoned: rdlt_connector::SegmentSet::new(),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
-        horizon: None,
     };
     opened
         .session
@@ -257,23 +255,23 @@ async fn a_table_read_back_in_whole_batches_ends_without_an_empty_one() {
         .expect("the destination connects");
     let context = OpenContext {
         pipeline: PipelineId::parse("reader").expect("valid pipeline id"),
-        load_id: LoadId::from_parts(UNIX_EPOCH, 1),
     };
     let mut opened = destination.open(&context).await.expect("a session opens");
     let (exact, empty) = (table("exact"), table("empty"));
     stage(&mut opened, &exact, 1, (0..2048).collect()).await;
     stage(&mut opened, &empty, 2, Vec::new()).await;
     let meta = CommitMeta {
-        load_id: context.load_id,
-        commit_seq: CommitSeq::FIRST,
-        epoch: opened.epoch,
+        key: CommitKey {
+            epoch: opened.epoch,
+            seq: 1,
+        },
+        after: opened.landed.as_ref().map(|landed| landed.key),
         segments: [SegmentId(1)].into_iter().collect(),
         abandoned: rdlt_connector::SegmentSet::new(),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
-        horizon: None,
     };
     opened
         .session
@@ -309,7 +307,6 @@ async fn widened_to_json<C: DestinationConnector + ReadBack>(
         .expect("the destination connects");
     let context = OpenContext {
         pipeline: PipelineId::parse("widened").expect("valid pipeline id"),
-        load_id: LoadId::from_parts(UNIX_EPOCH, 1),
     };
     let mut opened = destination.open(&context).await.expect("a session opens");
     let mut widened = table("widened");
@@ -333,7 +330,7 @@ async fn widened_to_json<C: DestinationConnector + ReadBack>(
         .expect("a writer opens");
     writer.write(SegmentId(1), batch).await.expect("buffers");
     writer.flush().await.expect("the flush stages");
-    let meta = first_commit(&opened, context.load_id);
+    let meta = first_commit(&opened);
     opened
         .session
         .commit(&meta)
@@ -370,19 +367,20 @@ fn holding(logical: &LogicalType, value: arrow_array::ArrayRef) -> (TableSchema,
     (schema, batch)
 }
 
-/// The first commit of the load `load_id`, of segment 1, by `opened`.
-fn first_commit(opened: &OpenedSession, load_id: LoadId) -> CommitMeta {
+/// The first commit of `opened`, of segment 1.
+fn first_commit(opened: &OpenedSession) -> CommitMeta {
     CommitMeta {
-        load_id,
-        commit_seq: CommitSeq::FIRST,
-        epoch: opened.epoch,
+        key: CommitKey {
+            epoch: opened.epoch,
+            seq: 1,
+        },
+        after: opened.landed.as_ref().map(|landed| landed.key),
         segments: [SegmentId(1)].into_iter().collect(),
         abandoned: rdlt_connector::SegmentSet::new(),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
-        horizon: None,
     }
 }
 

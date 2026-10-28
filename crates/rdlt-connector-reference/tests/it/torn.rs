@@ -4,14 +4,13 @@
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::UNIX_EPOCH;
 
 use arrow_array::cast::AsArray;
 use arrow_array::{ArrayRef, BinaryArray, Int64Array, RecordBatch, StringArray};
 use rdlt_connector::{
-    CommitMeta, CommitSeq, ConnectContext, Destination, Field, LoadId, LogicalType, MergeKey,
-    OpenContext, OpenedSession, PipelineId, SchemaVersion, SegmentId, SegmentSet, TableChange,
-    TablePath, TableRef, TableSchema, destination_factory,
+    CommitKey, CommitMeta, ConnectContext, Destination, Field, LogicalType, MergeKey, OpenContext,
+    OpenedSession, PipelineId, SchemaVersion, SegmentId, SegmentSet, TableChange, TablePath,
+    TableRef, TableSchema, destination_factory,
 };
 use rdlt_connector_reference::{FilesDestination, files};
 use serde_json::json;
@@ -45,11 +44,10 @@ fn row(v: &str, seq: u8) -> RecordBatch {
     .expect("the batch is valid")
 }
 
-/// Opens a session for `load`, and stages `batch` as segment 1 of the table, created as needed.
-async fn staged(destination: &dyn Destination, load: u128, batch: RecordBatch) -> OpenedSession {
+/// Opens a session, and stages `batch` as segment 1 of the table, created as needed.
+async fn staged(destination: &dyn Destination, batch: RecordBatch) -> OpenedSession {
     let context = OpenContext {
         pipeline: PipelineId::parse("torn").expect("valid pipeline id"),
-        load_id: LoadId::from_parts(UNIX_EPOCH, load),
     };
     let mut opened = destination.open(&context).await.expect("the session opens");
     let schema = TableSchema::new(vec![
@@ -80,18 +78,20 @@ async fn staged(destination: &dyn Destination, load: u128, batch: RecordBatch) -
     opened
 }
 
-fn meta(opened: &OpenedSession, load: u128) -> CommitMeta {
+/// The first commit of `opened`, expecting the key it found landed.
+fn meta(opened: &OpenedSession) -> CommitMeta {
     CommitMeta {
-        load_id: LoadId::from_parts(UNIX_EPOCH, load),
-        commit_seq: CommitSeq::FIRST,
-        epoch: opened.epoch,
+        key: CommitKey {
+            epoch: opened.epoch,
+            seq: 1,
+        },
+        after: opened.landed.as_ref().map(|landed| landed.key),
         segments: [SegmentId(1)].into_iter().collect::<SegmentSet>(),
         abandoned: SegmentSet::new(),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
-        horizon: None,
     }
 }
 
@@ -133,14 +133,14 @@ async fn a_commit_failing_before_its_manifest_leaves_the_table_and_its_retry_pub
         .connect(json!({ "root": root.path() }), ConnectContext::new())
         .await
         .expect("the destination connects");
-    let mut first = staged(destination.as_ref(), 1, row("a", 1)).await;
-    let meta_first = meta(&first, 1);
+    let mut first = staged(destination.as_ref(), row("a", 1)).await;
+    let meta_first = meta(&first);
     first
         .session
         .commit(&meta_first)
         .await
         .expect("the first commit lands");
-    let mut torn = staged(destination.as_ref(), 2, row("b", 2)).await;
+    let mut torn = staged(destination.as_ref(), row("b", 2)).await;
     let manifests = manifests(root.path());
     set_mode(&manifests, 0o555);
     // Where permissions bind nothing, as for root, the fault cannot be made.
@@ -148,19 +148,16 @@ async fn a_commit_failing_before_its_manifest_leaves_the_table_and_its_retry_pub
         set_mode(&manifests, 0o755);
         return;
     }
-    let meta_torn = meta(&torn, 2);
+    let meta_torn = meta(&torn);
     let failed = torn.session.commit(&meta_torn).await;
     set_mode(&manifests, 0o755);
     failed.expect_err("the manifest cannot be written");
     assert_eq!(values(root.path()), ["a"]);
-    // The retry commits under the torn commit's own key, whose receipt the torn commit must not
-    // have recorded.
-    let mut retried = staged(destination.as_ref(), 2, row("b", 2)).await;
-    let meta_retried = meta(&retried, 2);
-    assert_eq!(
-        (meta_retried.load_id, meta_retried.commit_seq),
-        (meta_torn.load_id, meta_torn.commit_seq)
-    );
+    // The torn commit left the first commit's key landed, which the retry's session finds and
+    // expects.
+    let mut retried = staged(destination.as_ref(), row("b", 2)).await;
+    let meta_retried = meta(&retried);
+    assert_eq!(meta_retried.after, Some(meta_first.key));
     retried
         .session
         .commit(&meta_retried)

@@ -295,7 +295,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
     }
 
     /// The tables of the catalog, which [`SqlPlanner::bootstrap`] creates.
-    pub fn catalog(&self) -> [&'static str; 7] {
+    pub fn catalog(&self) -> [&'static str; 6] {
         CATALOG
     }
 

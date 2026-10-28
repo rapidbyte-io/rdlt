@@ -1,14 +1,13 @@
 mod claims;
 mod floats;
 mod kit;
+mod landed;
 mod names;
 mod owned;
 mod reads;
-mod receipts;
 mod text;
 
 use std::sync::Arc;
-use std::time::UNIX_EPOCH;
 
 use arrow_array::cast::AsArray;
 use arrow_array::types::{Float64Type, Int64Type};
@@ -18,9 +17,9 @@ use arrow_array::{
 };
 use arrow_schema::DataType;
 use rdlt_connector::{
-    CommitMeta, CommitSeq, ConnectContext, ConnectorErrorKind, Destination, Field, LoadId,
-    LogicalType, OpenContext, OpenedSession, PipelineId, SchemaVersion, SegmentId, SegmentSet,
-    TableChange, TablePath, TableRef, TableSchema, destination_factory,
+    CommitKey, CommitMeta, ConnectContext, ConnectorErrorKind, Destination, Field, LogicalType,
+    OpenContext, OpenedSession, PipelineId, SchemaVersion, SegmentId, SegmentSet, TableChange,
+    TablePath, TableRef, TableSchema, destination_factory,
 };
 use rdlt_connector_reference::{SqliteDestination, sqlite};
 use serde_json::json;
@@ -35,7 +34,6 @@ async fn connect(path: &std::path::Path) -> Box<dyn Destination> {
 fn context() -> OpenContext {
     OpenContext {
         pipeline: PipelineId::parse("values").expect("valid pipeline id"),
-        load_id: LoadId::from_parts(UNIX_EPOCH, 1),
     }
 }
 
@@ -58,16 +56,17 @@ fn table() -> TableRef {
 
 fn commit(opened: &OpenedSession) -> CommitMeta {
     CommitMeta {
-        load_id: LoadId::from_parts(UNIX_EPOCH, 1),
-        commit_seq: CommitSeq::FIRST,
-        epoch: opened.epoch,
+        key: CommitKey {
+            epoch: opened.epoch,
+            seq: 1,
+        },
+        after: opened.landed.as_ref().map(|landed| landed.key),
         segments: [SegmentId(1)].into_iter().collect::<SegmentSet>(),
         abandoned: SegmentSet::new(),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
-        horizon: None,
     }
 }
 
@@ -229,7 +228,6 @@ async fn a_replace_that_staged_nothing_empties_the_table_it_finishes() {
     let destination = connect(&path).await;
     let mut opened = open(destination.as_ref()).await;
     let finish = CommitMeta {
-        load_id: LoadId::from_parts(UNIX_EPOCH, 2),
         segments: SegmentSet::default(),
         finish_generations: vec![(table().path, rdlt_connector::GenerationId(1))],
         ..commit(&opened)

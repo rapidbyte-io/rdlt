@@ -40,7 +40,7 @@ async fn a_destination_that_reads_back_is_certified_in_every_clause_that_reads_i
     for id in [
         "D-STAGING",
         "D-COMMIT",
-        "D-IDEMPOTENT",
+        "D-LANDED",
         "D-DISCARD",
         "D-MERGE",
         "D-DELETE",

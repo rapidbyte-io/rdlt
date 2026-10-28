@@ -19,8 +19,8 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use parking_lot::Mutex;
 use rdlt_connector::{
-    BoxFuture, Catalog, CommitMeta, CommitSeq, ConnectorError, Cursor, DestinationSession,
-    DestinationWriter, Epoch, GenerationId, LoadId, PartitionId, PartitionSink, PartitionState,
+    BoxFuture, Catalog, CommitKey, CommitMeta, ConnectorError, Cursor, DestinationSession,
+    DestinationWriter, Epoch, GenerationId, PartitionId, PartitionSink, PartitionState,
     ReadRequest, Receipt, Result, SchemaVersion, SegmentId, Source, StateChange, StateEntry,
     StateKey, StreamName, StreamState, TableChange, TablePath, TableRef, TableSchema,
 };
@@ -90,14 +90,12 @@ impl DestinationSession for Recorder {
                 return Err(ConnectorError::data("commit refused"));
             }
             self.commits.lock().push(meta.clone());
-            let skew = if self.skewed {
-                CommitSeq::next
-            } else {
-                std::convert::identity
-            };
+            let skew = u64::from(self.skewed);
             Ok(Receipt {
-                load_id: meta.load_id,
-                commit_seq: skew(meta.commit_seq),
+                key: CommitKey {
+                    seq: meta.key.seq + skew,
+                    ..meta.key
+                },
                 committed_at: UNIX_EPOCH,
                 rows: meta.segments.len(),
                 bytes: 0,
@@ -198,6 +196,8 @@ struct Setup {
     fail_commit: bool,
     /// Whether the destination answers each commit with the receipt of the next.
     skew_receipts: bool,
+    /// The key the session found landed, which its first commit expects.
+    after: Option<CommitKey>,
     /// A schema the first stream's table is created with before the coordinator starts.
     schema: Option<TableSchema>,
     /// The memory budget's bytes, a quarter of which waiting cursors may hold before a commit
@@ -222,6 +222,7 @@ impl Setup {
             barrier_wait: Duration::from_secs(60),
             fail_commit: false,
             skew_receipts: false,
+            after: None,
             schema: None,
             budget: u64::MAX,
             pace: Duration::ZERO,
@@ -245,7 +246,7 @@ impl Setup {
                 naming: Naming::new(capabilities.identifiers.clone()),
                 capabilities: Arc::new(capabilities.clone()),
                 meta: MetaNames {
-                    load_id: "_rdlt_load_id".into(),
+                    load_epoch: "_rdlt_load_epoch".into(),
                     loaded_at: "_rdlt_loaded_at".into(),
                     seq: None,
                     id: None,
@@ -312,8 +313,8 @@ impl Setup {
             lanes: lanes(&tables),
             tables,
             source,
-            load_id: LoadId::from_parts(UNIX_EPOCH, 1),
             epoch: Epoch(3),
+            after: self.after,
             streams: self.streams,
             partitions: self.partitions,
             progress: progress_feed,
@@ -466,19 +467,9 @@ fn position(id: &str, state: PartitionState) -> StateChange {
         stream: name(),
         partition: PartitionId::parse(id).unwrap(),
         state,
-        load: LoadId::from_parts(UNIX_EPOCH, 1),
+        epoch: Epoch(3),
     };
     StateChange::Put(entry.to_record())
-}
-
-/// `delta` without the receipt entry every commit ends with.
-fn without_receipt(delta: &[StateChange]) -> Vec<StateChange> {
-    let receipt = StateKey::Receipt.encode();
-    delta
-        .iter()
-        .filter(|change| !matches!(change, StateChange::Put(record) if record.key == receipt))
-        .cloned()
-        .collect()
 }
 
 /// Waits until `condition` holds, failing the test after ten minutes of paused time.
@@ -530,10 +521,10 @@ async fn sealed_segments_commit_with_their_positions_and_the_source_hears_afterw
         [SegmentId(1)]
     );
     assert_eq!(
-        without_receipt(&commits[0].state_delta),
+        commits[0].state_delta.clone(),
         [position("p0", PartitionState::Cursor(cursor(5)))]
     );
-    assert_eq!(commits[0].epoch, Epoch(3));
+    assert_eq!(commits[0].key.epoch, Epoch(3));
     assert!(commits[0].finish_generations.is_empty());
     let acks = harness.acks.lock();
     assert_eq!(
@@ -629,21 +620,14 @@ async fn commits_follow_the_row_threshold_and_count_their_sequence() {
     harness.end(0, false);
     ended(task).await.unwrap();
     let commits = harness.commits.lock();
-    let sequence: Vec<u64> = commits
-        .iter()
-        .map(|commit| commit.commit_seq.get())
-        .collect();
+    let sequence: Vec<u64> = commits.iter().map(|commit| commit.key.seq).collect();
     assert_eq!(sequence[..3], [1, 2, 3]);
     let size = crate::report::Commits {
         size: 3,
         ..crate::report::Commits::default()
     };
     assert_eq!(harness.tally.counters().commits, size);
-    assert!(
-        commits
-            .iter()
-            .all(|commit| commit.load_id == LoadId::from_parts(UNIX_EPOCH, 1))
-    );
+    assert!(commits.iter().all(|commit| commit.key.epoch == Epoch(3)));
 }
 
 #[tokio::test(start_paused = true)]
@@ -1071,7 +1055,7 @@ async fn empty_segments_record_their_position_without_publishing() {
     let commits = harness.commits.lock();
     assert!(commits[0].segments.is_empty());
     assert_eq!(
-        without_receipt(&commits[0].state_delta),
+        commits[0].state_delta.clone(),
         [position("p0", PartitionState::Done)]
     );
     assert!(
@@ -1123,7 +1107,7 @@ async fn a_new_table_schema_is_recorded_by_the_first_commit_only() {
     assert!(keys(0).contains(&StateKey::Schema(path.clone()).encode()));
     assert!(keys(0).contains(&StateKey::Names(path).encode()));
     assert_eq!(
-        without_receipt(&commits[1].state_delta),
+        commits[1].state_delta.clone(),
         [position("p0", PartitionState::Cursor(cursor(2)))]
     );
 }
@@ -1188,7 +1172,7 @@ async fn a_segment_left_without_rows_publishes_nothing_and_counts_only_what_it_d
     assert_eq!(commits.len(), 1);
     assert!(commits[0].segments.is_empty());
     assert_eq!(
-        without_receipt(&commits[0].state_delta),
+        commits[0].state_delta,
         [position("p0", PartitionState::Cursor(cursor(6)))]
     );
     let log = harness.log.lock();
@@ -1239,7 +1223,7 @@ async fn a_full_read_is_recorded_when_it_starts_and_completed_when_every_partiti
         generation: GenerationId(7),
     };
     assert_eq!(
-        without_receipt(&commits[0].state_delta),
+        commits[0].state_delta.clone(),
         [
             StateChange::Delete(stale),
             StateChange::Put(generation.to_record()),
@@ -1252,7 +1236,7 @@ async fn a_full_read_is_recorded_when_it_starts_and_completed_when_every_partiti
         generations: vec![GenerationId(7)],
     };
     assert_eq!(
-        without_receipt(&commits[1].state_delta),
+        commits[1].state_delta.clone(),
         [
             position("p0", PartitionState::Done),
             StateChange::Delete(StateKey::Generation(name()).encode()),
@@ -1459,28 +1443,36 @@ async fn a_completed_read_joins_the_most_recent_sixteen() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn every_commit_records_its_receipt_in_state() {
-    let (task, harness) = Setup::new(
+async fn each_commit_expects_the_one_before_it_landed_the_first_the_one_the_open_found() {
+    let found = CommitKey {
+        epoch: Epoch(2),
+        seq: 7,
+    };
+    let mut setup = Setup::new(
         vec![stream(WriteMode::Append, None, 1)],
         vec![partition("p0", false)],
-    )
-    .start()
-    .await;
-    harness.seal(0, 1, 5, PartitionState::Cursor(cursor(5)), None);
+    );
+    setup.after = Some(found);
+    setup.policy = CommitPolicy::new(None, Some(1), None).unwrap();
+    let (task, harness) = setup.start().await;
+    for segment in 1..=2 {
+        let next = segment * 5;
+        harness.seal(0, segment, 5, PartitionState::Cursor(cursor(next)), None);
+        until(|| harness.commit_count() == usize::try_from(segment).unwrap()).await;
+    }
     harness.end(0, false);
     ended(task).await.unwrap();
-    let commits = harness.commits.lock();
-    let Some(StateChange::Put(record)) = commits[0].state_delta.last() else {
-        panic!("the commit ends with a put");
+    let keyed: Vec<(CommitKey, Option<CommitKey>)> = harness
+        .commits
+        .lock()
+        .iter()
+        .map(|commit| (commit.key, commit.after))
+        .collect();
+    let key = |seq| CommitKey {
+        epoch: Epoch(3),
+        seq,
     };
-    let Ok(StateEntry::Receipt(receipt)) = StateEntry::from_record(record) else {
-        panic!("the last put is the receipt");
-    };
-    assert_eq!(
-        (receipt.load_id, receipt.commit_seq),
-        (commits[0].load_id, commits[0].commit_seq)
-    );
-    assert_eq!((receipt.rows, receipt.bytes), (5, 40));
+    assert_eq!(keyed[..2], [(key(1), Some(found)), (key(2), Some(key(1)))]);
     assert!(
         harness.log.lock().pending.is_none(),
         "the landed commit is no longer pending"
@@ -1504,8 +1496,14 @@ async fn a_failed_commit_stays_pending_in_the_log() {
         .as_ref()
         .expect("the commit in flight is pending");
     assert_eq!(
-        (pending.receipt.rows, pending.streams[&name()].rows),
-        (3, 3)
+        (pending.key, pending.streams[&name()].rows),
+        (
+            CommitKey {
+                epoch: Epoch(3),
+                seq: 1
+            },
+            3
+        )
     );
 }
 
@@ -1597,7 +1595,7 @@ async fn a_partition_done_after_its_last_checkpoint_is_still_told_that_checkpoin
     ended(task).await.unwrap();
     let commits = harness.commits.lock();
     assert_eq!(
-        without_receipt(&commits[0].state_delta),
+        commits[0].state_delta.clone(),
         [position("p0", PartitionState::Done)]
     );
     assert_eq!(
