@@ -210,7 +210,7 @@ impl Changing<'_> {
                 (Some(placing), Some(rng)) => placing.disrupting(rng, executing).await,
                 _ => executing.await,
             };
-            self.ledger.ended(round, scenario, &executed);
+            self.ledger.ended(round, scenario, &executed, self.world);
             let clean = !(disrupted && (features.faults || features.disruptions));
             let failures: Vec<_> = executed
                 .iter()

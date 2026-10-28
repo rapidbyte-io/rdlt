@@ -443,7 +443,7 @@ impl Simulation {
             .map(|pipeline| plan(workload, &self.relaxed, pipeline).with_until(until))
             .collect();
         let executed = self.measured(&plans, scenario, clean, network, phase).await;
-        self.ledger.ended(phase, scenario, &executed);
+        self.ledger.ended(phase, scenario, &executed, &self.world);
         self.held_to_plans(scenario, &executed);
         let mut failures = Vec::new();
         for (plan, executed) in plans.iter().zip(&executed) {
