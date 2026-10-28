@@ -283,14 +283,14 @@ pub(crate) static COLUMN_PATHS: Form = Form {
     }],
 };
 
-/// The form of `CommitMeta`.
-pub(crate) static COMMIT_META: Form = Form {
-    name: "CommitMeta",
-    size: size_of::<v1::CommitMeta>(),
+/// The form of `CommitKey`.
+pub(crate) static COMMIT_KEY: Form = Form {
+    name: "CommitKey",
+    size: size_of::<v1::CommitKey>(),
     fields: &[
         Field {
             number: 1,
-            kind: Kind::Bytes,
+            kind: Kind::Scalar(8),
             repeated: false,
         },
         Field {
@@ -298,43 +298,51 @@ pub(crate) static COMMIT_META: Form = Form {
             kind: Kind::Scalar(8),
             repeated: false,
         },
+    ],
+};
+
+/// The form of `CommitMeta`.
+pub(crate) static COMMIT_META: Form = Form {
+    name: "CommitMeta",
+    size: size_of::<v1::CommitMeta>(),
+    fields: &[
         Field {
-            number: 3,
-            kind: Kind::Scalar(8),
+            number: 1,
+            kind: Kind::Message(&COMMIT_KEY),
             repeated: false,
         },
         Field {
-            number: 4,
+            number: 2,
+            kind: Kind::Message(&COMMIT_KEY),
+            repeated: false,
+        },
+        Field {
+            number: 3,
             kind: Kind::Message(&SEGMENT_RANGE),
             repeated: true,
         },
         Field {
-            number: 5,
+            number: 4,
             kind: Kind::Message(&STATE_CHANGE),
             repeated: true,
         },
         Field {
-            number: 6,
+            number: 5,
             kind: Kind::Message(&FINISH_GENERATION),
             repeated: true,
         },
         Field {
-            number: 7,
+            number: 6,
             kind: Kind::Message(&CHILD_TABLE),
             repeated: true,
         },
         Field {
-            number: 8,
+            number: 7,
             kind: Kind::Message(&DROPPED_TABLE),
             repeated: true,
         },
         Field {
-            number: 9,
-            kind: Kind::Message(&HORIZON),
-            repeated: false,
-        },
-        Field {
-            number: 10,
+            number: 8,
             kind: Kind::Message(&SEGMENT_RANGE),
             repeated: true,
         },
@@ -748,24 +756,6 @@ pub(crate) static HISTORY_COLUMNS: Form = Form {
     ],
 };
 
-/// The form of `Horizon`.
-pub(crate) static HORIZON: Form = Form {
-    name: "Horizon",
-    size: size_of::<v1::Horizon>(),
-    fields: &[
-        Field {
-            number: 1,
-            kind: Kind::Bytes,
-            repeated: false,
-        },
-        Field {
-            number: 2,
-            kind: Kind::Scalar(8),
-            repeated: false,
-        },
-    ],
-};
-
 /// The form of `IdentifierRules`.
 pub(crate) static IDENTIFIER_RULES: Form = Form {
     name: "IdentifierRules",
@@ -1036,18 +1026,11 @@ pub(crate) static NESTED_SUPPORT: Form = Form {
 pub(crate) static OPEN_REQUEST: Form = Form {
     name: "OpenRequest",
     size: size_of::<v1::OpenRequest>(),
-    fields: &[
-        Field {
-            number: 1,
-            kind: Kind::String,
-            repeated: false,
-        },
-        Field {
-            number: 2,
-            kind: Kind::Bytes,
-            repeated: false,
-        },
-    ],
+    fields: &[Field {
+        number: 1,
+        kind: Kind::String,
+        repeated: false,
+    }],
 };
 
 /// The form of `OpenResponse`.
@@ -1067,6 +1050,11 @@ pub(crate) static OPEN_RESPONSE: Form = Form {
         },
         Field {
             number: 3,
+            kind: Kind::Message(&RECEIPT),
+            repeated: false,
+        },
+        Field {
+            number: 4,
             kind: Kind::Message(&STATE_RECORD),
             repeated: true,
         },
@@ -1330,26 +1318,21 @@ pub(crate) static RECEIPT: Form = Form {
     fields: &[
         Field {
             number: 1,
-            kind: Kind::Bytes,
+            kind: Kind::Message(&COMMIT_KEY),
             repeated: false,
         },
         Field {
             number: 2,
-            kind: Kind::Scalar(8),
-            repeated: false,
-        },
-        Field {
-            number: 3,
             kind: Kind::Message(&INSTANT),
             repeated: false,
         },
         Field {
-            number: 4,
+            number: 3,
             kind: Kind::Scalar(8),
             repeated: false,
         },
         Field {
-            number: 5,
+            number: 4,
             kind: Kind::Scalar(8),
             repeated: false,
         },

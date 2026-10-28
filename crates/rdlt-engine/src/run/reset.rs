@@ -3,9 +3,9 @@
 use std::sync::Arc;
 
 use rdlt_connector::{
-    CommitMeta, CommitSeq, Destination, DestinationSession, DroppedTable, Epoch, LoadId,
-    OpenContext, OpenedSession, PipelineId, PipelineState, Receipt, SegmentSet, Source,
-    StateChange, StateEntry, StateKey, StateRecord, StreamName, TablePath,
+    CommitKey, CommitMeta, Destination, DestinationSession, DroppedTable, Epoch, OpenContext,
+    OpenedSession, PipelineId, PipelineState, SegmentSet, Source, StateChange, StateEntry,
+    StateKey, StateRecord, StreamName, TablePath,
 };
 
 use super::Engine;
@@ -102,21 +102,21 @@ impl Engine {
         }
         readable_again(source.as_ref(), streams).await?;
         let naming = Naming::checked(&destination.capabilities().identifiers)?;
-        let load_id = self.env.load_id();
         let context = OpenContext {
             pipeline: pipeline.clone(),
-            load_id,
         };
         let OpenedSession {
             mut session,
             epoch,
+            landed,
             state,
         } = destination.open(&context).await.map_err(|error| {
             Error::connector(Side::Destination, "opening the destination", error)
         })?;
         let reset = cleared(&state, &naming, streams, scope, epoch);
+        let after = landed.map(|landed| landed.key);
         let committed = match reset {
-            Ok(cleared) => self.commit(&mut *session, load_id, epoch, cleared).await,
+            Ok(cleared) => self.commit(&mut *session, (epoch, after), cleared).await,
             Err(error) => Err(error),
         };
         let closed = session.close().await.map_err(|error| {
@@ -131,38 +131,28 @@ impl Engine {
         })
     }
 
-    /// Commits `cleared` in `session`, opened at `epoch` for `load_id`; the tables it dropped.
+    /// Commits `cleared` in `session`, opened at `epoch`, as its first commit expecting `after`
+    /// landed; the tables it dropped.
     async fn commit(
         &self,
         session: &mut dyn DestinationSession,
-        load_id: LoadId,
-        epoch: Epoch,
+        (epoch, after): (Epoch, Option<CommitKey>),
         cleared: Cleared,
     ) -> Result<Vec<TablePath>, Error> {
         let Cleared {
-            mut state_delta,
+            state_delta,
             drop_tables,
         } = cleared;
-        let receipt = Receipt {
-            load_id,
-            commit_seq: CommitSeq::FIRST,
-            committed_at: self.env.now(),
-            rows: 0,
-            bytes: 0,
-        };
-        state_delta.push(StateChange::Put(StateEntry::Receipt(receipt).to_record()));
         let dropped = drop_tables.iter().map(|table| table.path.clone()).collect();
         let meta = CommitMeta {
-            load_id,
-            commit_seq: CommitSeq::FIRST,
-            epoch,
+            key: CommitKey { epoch, seq: 1 },
+            after,
             segments: SegmentSet::new(),
             abandoned: SegmentSet::new(),
             state_delta,
             finish_generations: Vec::new(),
             child_tables: Vec::new(),
             drop_tables,
-            horizon: None,
         };
         let receipt = session
             .commit(&meta)

@@ -1,6 +1,6 @@
 //! `D-OWNED`: a table belongs to the pipeline that created it.
 
-use super::{Bench, commit, expect_rows, meta};
+use super::{Bench, commit, expect_rows, meta, try_commit};
 use crate::error::{ConnectorError, ConnectorErrorKind, TABLE_OWNED};
 use crate::id::{GenerationId, PipelineId};
 use crate::testing::{Violation, bounded};
@@ -12,18 +12,11 @@ impl Bench<'_> {
     /// loading it: it creates the table again, writes and commits, and, where the probe reads
     /// them, both its commits' rows are published.
     pub(super) async fn tables_belong_to_their_pipeline(&self) -> Result<(), Violation> {
-        let mut owner = self.staged(self.destination, 1, &[1]).await?;
-        commit(
-            &mut owner.session,
-            &meta(self.load_id(1), owner.epoch, &[1], Vec::new()),
-        )
-        .await?;
+        let mut owner = self.staged(self.destination, &[1]).await?;
+        commit(&mut owner, meta(&[1], Vec::new())).await?;
         let other = PipelineId::parse(format!("{}_other", self.name()))
             .expect("certification pipeline ids are valid");
-        let context = OpenContext {
-            pipeline: other,
-            load_id: self.load_id(2),
-        };
+        let context = OpenContext { pipeline: other };
         let mut intruder = bounded("open", self.peer.open(&context))
             .await?
             .map_err(|error| Violation::from(format!("open: {error}")))?;
@@ -40,18 +33,14 @@ impl Bench<'_> {
         // rows: refused, or leaving them as they were.
         let swap = CommitMeta {
             finish_generations: vec![(self.table().path, GenerationId(1))],
-            ..meta(self.load_id(2), intruder.epoch, &[], Vec::new())
+            ..meta(&[], Vec::new())
         };
-        match bounded("commit", intruder.session.commit(&swap)).await? {
+        match try_commit(&mut intruder, swap).await? {
             Ok(_) => {}
             refused => owned("generation swap", refused.map(drop))?,
         }
-        let mut again = self.staged(self.destination, 3, &[2]).await?;
-        commit(
-            &mut again.session,
-            &meta(self.load_id(3), again.epoch, &[2], Vec::new()),
-        )
-        .await?;
+        let mut again = self.staged(self.destination, &[2]).await?;
+        commit(&mut again, meta(&[2], Vec::new())).await?;
         if self.probe.reads() {
             expect_rows(&self.published_rows().await?, &[1, 2])?;
         }

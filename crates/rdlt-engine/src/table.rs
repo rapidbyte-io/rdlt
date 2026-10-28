@@ -51,7 +51,7 @@ pub(crate) struct TableView {
     pub(crate) physical: Vec<Field>,
     /// The same columns as a schema, as a table is created.
     created: TableSchema,
-    /// The Arrow schema of prepared batches, whose load id and load start columns are
+    /// The Arrow schema of prepared batches, whose load epoch and load start columns are
     /// dictionaries of one value.
     pub(crate) schema: SchemaRef,
     pub(crate) meta: MetaNames,

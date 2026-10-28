@@ -3,7 +3,7 @@ use std::sync::Arc;
 use arrow_array::{ArrayRef, BinaryArray, NullArray, RecordBatch};
 use rdlt_connector::{
     BoxFuture, Capabilities, CommitMeta, ConnectorErrorKind, Destination, DestinationSession,
-    DestinationWriter, Epoch, LoadId, OpenContext, OpenedSession, PipelineId, Receipt, Result,
+    DestinationWriter, Epoch, OpenContext, OpenedSession, PipelineId, Receipt, Result,
     SchemaVersion, SegmentId, TableChange, TablePath, TableRef, WriteStats,
 };
 
@@ -30,6 +30,7 @@ impl Destination for Sink {
             Ok(OpenedSession {
                 session: Box::new(SinkSession(Arc::clone(&self.1))),
                 epoch: Epoch(1),
+                landed: None,
                 state: Vec::new(),
             })
         })
@@ -106,7 +107,6 @@ async fn written(batches: Vec<RecordBatch>) -> (usize, Vec<bool>, bool) {
     bounded.check().await.expect("the destination checks");
     let context = OpenContext {
         pipeline: PipelineId::parse("bounded").expect("a valid id"),
-        load_id: LoadId::from_parts(std::time::UNIX_EPOCH, 7),
     };
     let mut opened = bounded.open(&context).await.expect("it opens");
     assert_eq!(opened.epoch, Epoch(1));
@@ -169,7 +169,6 @@ async fn a_bounded_destination_commits_and_closes_as_its_own_does() {
     let bounded = Bounded::new(Arc::new(Sink(Capabilities::minimal(), taken)));
     let context = OpenContext {
         pipeline: PipelineId::parse("bounded").expect("a valid id"),
-        load_id: LoadId::from_parts(std::time::UNIX_EPOCH, 7),
     };
     let mut opened = bounded.open(&context).await.expect("it opens");
     let field = rdlt_connector::Field::new("more", rdlt_connector::LogicalType::Int64, true);
@@ -179,16 +178,17 @@ async fn a_bounded_destination_commits_and_closes_as_its_own_does() {
     };
     opened.session.apply_schema(&add).await.expect("it applies");
     let meta = CommitMeta {
-        load_id: context.load_id,
-        commit_seq: rdlt_connector::CommitSeq::FIRST,
-        epoch: opened.epoch,
+        key: rdlt_connector::CommitKey {
+            epoch: opened.epoch,
+            seq: 1,
+        },
+        after: opened.landed.as_ref().map(|landed| landed.key),
         segments: rdlt_connector::SegmentSet::default(),
         abandoned: rdlt_connector::SegmentSet::new(),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
-        horizon: None,
     };
     let refused = opened
         .session

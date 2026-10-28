@@ -10,7 +10,7 @@ use super::kit::{Shared, refusal, table};
 #[tokio::test]
 async fn nan_and_negative_zero_are_refused_and_nothing_of_their_batch_is_staged() {
     let shared = Shared::new().await;
-    let mut session = shared.open("p", 1).await;
+    let mut session = shared.open("p").await;
     let floats = table("floats", "floats", false);
     let schema = TableSchema::new(vec![
         Field::new("wide", LogicalType::Float64, true),

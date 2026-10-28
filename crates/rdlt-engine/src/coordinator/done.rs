@@ -7,33 +7,33 @@ mod tests;
 use std::collections::BTreeMap;
 
 use rdlt_connector::{
-    LoadId, PartitionId, PartitionState, PipelineState, StateChange, StateEntry, StateKey,
+    Epoch, PartitionId, PartitionState, PipelineState, StateChange, StateEntry, StateKey,
     StateRecord, StreamName,
 };
 
-/// Each partition the destination holds done, by stream and partition, with the load whose
-/// commit recorded it so.
+/// Each partition the destination holds done, by stream and partition, with the epoch of the
+/// session whose commit recorded it so.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct DoneMarkers {
-    loads: BTreeMap<(StreamName, PartitionId), LoadId>,
+    epochs: BTreeMap<(StreamName, PartitionId), Epoch>,
 }
 
-/// The states a load's own commit records its partitions at, by stream and partition, and the
-/// load: what landing the commit reads, rather than decoding its records.
+/// The states a session's own commit records its partitions at, by stream and partition, and
+/// the session's epoch: what landing the commit reads, rather than decoding its records.
 #[derive(Debug)]
 pub(crate) struct Recorded<'a> {
-    pub(crate) load: LoadId,
+    pub(crate) epoch: Epoch,
     pub(crate) states: &'a BTreeMap<(StreamName, PartitionId), PartitionState>,
 }
 
 impl DoneMarkers {
-    /// The partitions held done, each with its stream and the load whose commit recorded it so,
-    /// the earliest first.
-    pub(crate) fn listed(&self) -> Vec<(LoadId, &StreamName, &PartitionId)> {
+    /// The partitions held done, each with its stream and the epoch of the session whose commit
+    /// recorded it so, the earliest first.
+    pub(crate) fn listed(&self) -> Vec<(Epoch, &StreamName, &PartitionId)> {
         let mut done: Vec<_> = self
-            .loads
+            .epochs
             .iter()
-            .map(|(key, load)| (*load, &key.0, &key.1))
+            .map(|(key, epoch)| (*epoch, &key.0, &key.1))
             .collect();
         done.sort();
         done
@@ -48,7 +48,7 @@ impl DoneMarkers {
                 StateChange::Put(record) => self.put(record, recorded),
                 StateChange::Delete(key) => {
                     if let Ok(StateKey::Partition(stream, partition)) = StateKey::parse(key) {
-                        self.loads.remove(&(stream, partition));
+                        self.epochs.remove(&(stream, partition));
                     }
                 }
             }
@@ -62,35 +62,35 @@ impl DoneMarkers {
         };
         let key = (stream, partition);
         let done = match recorded.states.get(&key) {
-            Some(state) => (*state == PartitionState::Done).then_some(recorded.load),
+            Some(state) => (*state == PartitionState::Done).then_some(recorded.epoch),
             None => match StateEntry::from_record(record) {
-                Ok(StateEntry::Partition { state, load, .. }) => {
-                    (state == PartitionState::Done).then_some(load)
+                Ok(StateEntry::Partition { state, epoch, .. }) => {
+                    (state == PartitionState::Done).then_some(epoch)
                 }
                 _ => return,
             },
         };
         match done {
-            Some(load) => self.loads.insert(key, load),
-            None => self.loads.remove(&key),
+            Some(epoch) => self.epochs.insert(key, epoch),
+            None => self.epochs.remove(&key),
         };
     }
 }
 
 impl From<&PipelineState> for DoneMarkers {
-    /// The partitions `state` records done, each by the load it says recorded it.
+    /// The partitions `state` records done, each by the epoch it says recorded it.
     fn from(state: &PipelineState) -> Self {
-        let mut loads = BTreeMap::new();
+        let mut epochs = BTreeMap::new();
         for (stream, streamed) in &state.streams {
             for (partition, position) in &streamed.partitions {
                 let key = (stream.clone(), partition.clone());
                 if *position == PartitionState::Done
-                    && let Some(load) = state.recorded_by.get(&key)
+                    && let Some(epoch) = state.recorded_by.get(&key)
                 {
-                    loads.insert(key, *load);
+                    epochs.insert(key, *epoch);
                 }
             }
         }
-        Self { loads }
+        Self { epochs }
     }
 }

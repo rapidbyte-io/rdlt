@@ -493,7 +493,6 @@ async fn a_reset_of_no_streams_is_refused_before_it_fences_anything() {
     let destination = memory("reset_nothing").await;
     let context = OpenContext {
         pipeline: rdlt_connector::PipelineId::parse("nothing").expect("a valid id"),
-        load_id: rdlt_connector::LoadId::from_parts(std::time::UNIX_EPOCH, 1),
     };
     let mut running = destination.open(&context).await.expect("a session opens");
     let refused = engine(commit_every(16))
@@ -510,16 +509,17 @@ async fn a_reset_of_no_streams_is_refused_before_it_fences_anything() {
     assert_eq!(refused.code(), Some(codes::NO_STREAMS));
     // The session opened before it still commits: nothing fenced it.
     let meta = CommitMeta {
-        load_id: context.load_id,
-        commit_seq: rdlt_connector::CommitSeq::FIRST,
-        epoch: running.epoch,
+        key: rdlt_connector::CommitKey {
+            epoch: running.epoch,
+            seq: 1,
+        },
+        after: running.landed.as_ref().map(|landed| landed.key),
         segments: rdlt_connector::SegmentSet::new(),
         abandoned: rdlt_connector::SegmentSet::new(),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
-        horizon: None,
     };
     running
         .session

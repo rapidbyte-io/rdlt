@@ -8,7 +8,7 @@ use super::text::created;
 #[tokio::test]
 async fn a_stream_named_like_a_built_in_virtual_table_loads_into_its_own_table() {
     let shared = Shared::new().await;
-    let mut session = shared.open("p", 1).await;
+    let mut session = shared.open("p").await;
     let built_in = [
         "json_each",
         "json_tree",

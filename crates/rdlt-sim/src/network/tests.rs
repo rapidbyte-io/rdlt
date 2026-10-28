@@ -3,8 +3,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rdlt_connector::{
-    ConnectorErrorKind, LoadId, OpenContext, Partition, PartitionId, PipelineId, ReadRequest,
-    StreamName, partition_channel,
+    ConnectorErrorKind, OpenContext, Partition, PartitionId, PipelineId, ReadRequest, StreamName,
+    partition_channel,
 };
 
 use super::{
@@ -106,7 +106,6 @@ fn a_call_the_network_held_lands_before_the_disrupted_work_is_over() {
                 turmoil::hold(ENGINE, Side::Destination.host());
                 let context = OpenContext {
                     pipeline: PipelineId::parse("held").expect("valid pipeline id"),
-                    load_id: LoadId::from_parts(std::time::UNIX_EPOCH, 1),
                 };
                 tokio::spawn(async move { destination.open(&context).await.map(drop) });
                 tokio::time::sleep(Duration::from_millis(2)).await;

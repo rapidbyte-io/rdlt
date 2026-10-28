@@ -1,10 +1,6 @@
-use std::time::{Duration, UNIX_EPOCH};
-
 use proptest::prelude::*;
 
-use super::{
-    CommitSeq, ConnectorId, Epoch, IdError, LoadId, PartitionId, PipelineId, StreamName, TablePath,
-};
+use super::{ConnectorId, Epoch, IdError, PartitionId, PipelineId, StreamName, TablePath};
 
 #[test]
 fn text_ids_accept_values_at_their_length_limit() {
@@ -149,31 +145,7 @@ fn table_paths_need_at_least_one_valid_segment() {
 }
 
 #[test]
-fn load_ids_are_ordered_by_time() {
-    let earlier = LoadId::from_parts(UNIX_EPOCH + Duration::from_secs(100), u128::MAX);
-    let later = LoadId::from_parts(UNIX_EPOCH + Duration::from_secs(101), 0);
-    assert!(earlier < later);
-    assert_eq!(
-        earlier.as_bytes()[6] >> 4,
-        7,
-        "the version nibble marks UUIDv7"
-    );
-    assert_eq!(
-        LoadId::from_parts(UNIX_EPOCH, 0).to_string(),
-        "00000000-0000-7000-8000-000000000000"
-    );
-}
-
-#[test]
-fn load_ids_before_the_epoch_clamp_to_it() {
-    let before = LoadId::from_parts(UNIX_EPOCH - Duration::from_secs(5), 1);
-    assert_eq!(before, LoadId::from_parts(UNIX_EPOCH, 1));
-}
-
-#[test]
 fn counters_advance_by_one_and_never_past_their_largest() {
-    assert_eq!(CommitSeq::FIRST.get(), 1);
-    assert_eq!(CommitSeq::FIRST.next().get(), 2);
     assert_eq!(Epoch(u64::MAX).next(), None);
     assert_eq!(Epoch(4).next(), Some(Epoch(5)));
 }
@@ -199,45 +171,6 @@ proptest! {
         let path = TablePath::new(&segments).unwrap();
         let json = serde_json::to_string(&path).unwrap();
         prop_assert_eq!(serde_json::from_str::<TablePath>(&json).unwrap(), path);
-    }
-}
-
-#[test]
-fn load_ids_differ_when_their_random_bits_differ() {
-    assert_ne!(
-        LoadId::from_parts(UNIX_EPOCH, 1),
-        LoadId::from_parts(UNIX_EPOCH, 2)
-    );
-    assert_ne!(
-        LoadId::from_parts(UNIX_EPOCH, 1 << 64),
-        LoadId::from_parts(UNIX_EPOCH, 2 << 64)
-    );
-}
-
-#[test]
-fn a_load_id_reads_back_from_its_written_form_and_nothing_else() {
-    let id = LoadId::from_parts(UNIX_EPOCH + Duration::from_millis(1_234), 0xfeed);
-    assert_eq!(id.to_string().parse::<LoadId>(), Ok(id));
-    // Only the form it is written in: not the simple, braced, URN or uppercase forms of a UUID.
-    let written = id.to_string();
-    let simple = written.replace('-', "");
-    let braced = format!("{{{written}}}");
-    let urn = format!("urn:uuid:{written}");
-    let upper = written.to_uppercase();
-    for malformed in [
-        "",
-        "load",
-        "00000000-0000-7000-8000-00000000000g",
-        &simple,
-        &braced,
-        &urn,
-        &upper,
-    ] {
-        assert_eq!(
-            malformed.parse::<LoadId>(),
-            Err(IdError::Malformed { kind: "load id" }),
-            "{malformed}"
-        );
     }
 }
 

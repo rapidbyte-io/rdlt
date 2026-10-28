@@ -5,8 +5,8 @@ use std::sync::Arc;
 use arrow_array::cast::AsArray;
 use arrow_array::types::{Int8Type, Int64Type, TimestampMicrosecondType};
 use arrow_array::{
-    Array, ArrayRef, DictionaryArray, FixedSizeBinaryArray, Int8Array, Int64Array, RecordBatch,
-    StringArray, TimestampMicrosecondArray,
+    Array, ArrayRef, DictionaryArray, Int8Array, Int64Array, RecordBatch, StringArray,
+    TimestampMicrosecondArray,
 };
 use arrow_schema::{DataType, Schema};
 
@@ -22,24 +22,21 @@ use crate::types::{Field, LogicalType, TimeUnit, TypeKind};
 /// The load start every row carries, in microseconds since the epoch.
 const LOADED_AT: i64 = 1_700_000_000_000_000;
 
-/// The load id every row carries.
-const LOAD_ID: [u8; 16] = [7; 16];
+/// The epoch of the session that loaded every row.
+const LOAD_EPOCH: i64 = 7;
 
-/// A published row: its id, name, load start and load id.
-type Row = (i64, Option<String>, Option<i64>, Option<Vec<u8>>);
+/// A published row: its id, name, load start and load epoch.
+type Row = (i64, Option<String>, Option<i64>, Option<i64>);
 
 impl Bench<'_> {
     /// Stages, commits and reads back three rows whose columns but `id` are dictionaries.
     ///
-    /// Each is a dictionary of one value, as the engine sends the load id and load start: `name`
-    /// always, `at` and `load` where the destination stores timestamps and uuids.
+    /// Each is a dictionary of one value, as the engine sends the load epoch and load start:
+    /// `name` and `epoch` always, `at` where the destination stores timestamps.
     pub(super) async fn dictionaries_publish_their_values(&self) -> Result<(), Violation> {
         let types = &self.destination.capabilities().types;
-        let fields = fields(
-            types.contains(&TypeKind::Timestamp),
-            types.contains(&TypeKind::Uuid),
-        );
-        let mut opened = self.open(self.destination, 1).await?;
+        let fields = fields(types.contains(&TypeKind::Timestamp));
+        let mut opened = self.open(self.destination).await?;
         let table = self.table();
         let schema = TableSchema::new(fields.clone()).expect("the certification schema is valid");
         let create = TableChange::Create {
@@ -60,11 +57,7 @@ impl Bench<'_> {
             .flush()
             .await
             .map_err(|error| Violation::from(format!("flush: {error}")))?;
-        commit(
-            &mut opened.session,
-            &meta(self.load_id(1), opened.epoch, &[1], Vec::new()),
-        )
-        .await?;
+        commit(&mut opened, meta(&[1], Vec::new())).await?;
         let published = self.read(&table).await?;
         let mut rows = published
             .batches()
@@ -84,18 +77,16 @@ impl Bench<'_> {
     }
 }
 
-/// The table's fields: `id` and `name`, then `at` and `load` where the destination stores them.
-fn fields(timestamps: bool, uuids: bool) -> Vec<Field> {
+/// The table's fields: `id`, `name` and `epoch`, then `at` where the destination stores it.
+fn fields(timestamps: bool) -> Vec<Field> {
     let mut fields = vec![
         Field::new("id", LogicalType::Int64, false),
         Field::new("name", LogicalType::Utf8, true),
+        Field::new("epoch", LogicalType::Int64, true),
     ];
     if timestamps {
         let at = LogicalType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()));
         fields.push(Field::new("at", at, true));
-    }
-    if uuids {
-        fields.push(Field::new("load", LogicalType::Uuid, true));
     }
     fields
 }
@@ -108,10 +99,7 @@ fn encoded(fields: &[Field]) -> RecordBatch {
         let values: ArrayRef = match field.name() {
             "name" => Arc::new(StringArray::from(vec!["ann"])),
             "at" => Arc::new(TimestampMicrosecondArray::from(vec![LOADED_AT]).with_timezone("UTC")),
-            _ => Arc::new(
-                FixedSizeBinaryArray::try_from_iter([LOAD_ID].into_iter())
-                    .expect("the load id is 16 bytes"),
-            ),
+            _ => Arc::new(Int64Array::from(vec![LOAD_EPOCH])),
         };
         let keys = Int8Array::from(vec![Some(0), None, Some(0)]);
         let dictionary =
@@ -136,7 +124,7 @@ fn expected(fields: &[Field]) -> Vec<Row> {
             id,
             set.then(|| "ann".to_owned()),
             (set && has("at")).then_some(LOADED_AT),
-            (set && has("load")).then(|| LOAD_ID.to_vec()),
+            set.then_some(LOAD_EPOCH),
         )
     };
     vec![row(1, true), row(2, false), row(3, true)]
@@ -154,20 +142,20 @@ fn rows(batch: Read<'_>, fields: &[Field]) -> Result<Vec<Row>, Violation> {
     };
     let ids = batch.required("id", &DataType::Int64)?;
     let names = batch.nullable("name", &DataType::Utf8)?;
-    let (at, load) = (column("at")?, column("load")?);
+    let epochs = batch.nullable("epoch", &DataType::Int64)?;
+    let at = column("at")?;
     let (ids, names) = (ids.as_primitive::<Int64Type>(), names.as_string::<i32>());
+    let epochs = epochs.as_primitive::<Int64Type>();
     let at = at
         .as_ref()
         .map(AsArray::as_primitive::<TimestampMicrosecondType>);
-    let load = load.as_ref().map(AsArray::as_fixed_size_binary);
     Ok((0..batch.rows())
         .map(|row| {
             (
                 ids.value(row),
                 names.is_valid(row).then(|| names.value(row).to_owned()),
                 at.filter(|at| at.is_valid(row)).map(|at| at.value(row)),
-                load.filter(|load| load.is_valid(row))
-                    .map(|load| load.value(row).to_vec()),
+                epochs.is_valid(row).then(|| epochs.value(row)),
             )
         })
         .collect())

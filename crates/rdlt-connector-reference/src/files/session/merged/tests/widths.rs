@@ -167,16 +167,16 @@ fn one_wide_row_after_many_narrow_rows_costs_a_merge_table_its_own_cells() {
         let merged = table(None, true);
         sessions.create(&merged, &schema(0));
         sessions.stage(&merged, 1, rows(0..ROWS, 1, 0));
-        sessions.commit(&sessions.meta(1, 1, &[1])).unwrap();
+        sessions.commit(&sessions.meta(1, &[1])).unwrap();
         sessions.create(&merged, &schema(WIDTH));
         sessions.stage(&merged, 2, rows(ROWS..ROWS + 1, 1, WIDTH));
-        sessions.commit(&sessions.meta(1, 2, &[2])).unwrap();
+        sessions.commit(&sessions.meta(2, &[2])).unwrap();
         assert_costs_its_own_cells(&sessions, narrow, "once merged");
         // Another session merges into what the first left.
-        sessions.open(2);
+        sessions.open();
         sessions.stage(&merged, 1, rows(5..6, 2, 0));
         sessions.stage(&merged, 2, rows(ROWS + 1..ROWS + 2, 2, 0));
-        sessions.commit(&sessions.meta(2, 1, &[1, 2])).unwrap();
+        sessions.commit(&sessions.meta(1, &[1, 2])).unwrap();
         assert_costs_its_own_cells(&sessions, narrow + 1, "merged again");
         assert_eq!(ids(&sessions), (0..ROWS + 2).collect::<Vec<i64>>());
     }
@@ -193,7 +193,7 @@ fn files_of_differing_columns_are_compacted_and_merged_into_at_their_rows_own_co
         sessions.stage(&filling, 1, rows(0..ROWS / 2, 1, 0));
         sessions.stage(&filling, 2, rows(ROWS / 2..ROWS / 2 + 1, 1, WIDTH));
         sessions.stage(&filling, 3, rows(ROWS / 2 + 1..ROWS + 1, 1, 0));
-        let mut meta = sessions.meta(1, 1, &[1, 2, 3]);
+        let mut meta = sessions.meta(1, &[1, 2, 3]);
         meta.finish_generations = vec![(filling.path.clone(), GenerationId(1))];
         sessions.commit(&meta).unwrap();
         // Lines of any columns share a file; an Arrow file holds one set of columns, so a file
@@ -209,7 +209,7 @@ fn files_of_differing_columns_are_compacted_and_merged_into_at_their_rows_own_co
         // A merge reads the compacted files and writes the table again.
         let merged = table(None, true);
         sessions.stage(&merged, 4, rows(5..6, 2, 0));
-        sessions.commit(&sessions.meta(1, 2, &[4])).unwrap();
+        sessions.commit(&sessions.meta(2, &[4])).unwrap();
         assert_costs_its_own_cells(&sessions, narrow, "merged after compaction");
         let files = if format == FileFormat::Jsonl { 1 } else { 2 };
         assert_eq!(listed(&sessions).len(), files, "{format:?}");
@@ -232,7 +232,7 @@ fn rows_of_many_sets_of_columns_are_a_merge_table_of_few_files() {
             let batch = whole.project(&[0, 1, own]).unwrap();
             sessions.stage(&merged, *segment, batch);
         }
-        sessions.commit(&sessions.meta(1, 1, &segments)).unwrap();
+        sessions.commit(&sessions.meta(1, &segments)).unwrap();
         let files = if format == FileFormat::Jsonl {
             1
         } else {
@@ -271,7 +271,7 @@ fn a_table_of_many_shapes_settles_over_many_commits_into_files_of_bounded_absent
     }
     segments.push(17);
     sessions.stage(&merged, 17, rows(0..1, 1, width));
-    sessions.commit(&sessions.meta(1, 1, &segments)).unwrap();
+    sessions.commit(&sessions.meta(1, &segments)).unwrap();
     let limit = usize::try_from(FOLD_CELLS).unwrap();
     let (mut counts, mut sizes) = (Vec::new(), Vec::new());
     for commit in 2..=14_u64 {
@@ -279,7 +279,7 @@ fn a_table_of_many_shapes_settles_over_many_commits_into_files_of_bounded_absent
         // would lack a million cells, just within what one fold makes.
         let from = 100 * each + i64::try_from(commit).unwrap() * 5_000;
         sessions.stage(&merged, 20 + commit, rows(from..from + 5_000, 1, 0));
-        let meta = sessions.meta(1, commit, &[20 + commit]);
+        let meta = sessions.meta(commit, &[20 + commit]);
         sessions.commit(&meta).unwrap();
         let files = listed(&sessions);
         counts.push(files.len());

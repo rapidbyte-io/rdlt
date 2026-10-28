@@ -7,7 +7,7 @@ use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 use rdlt_connector::{
-    ChildTable, CommitSeq, ConnectorErrorKind, DroppedTable, Field, LogicalType, MergeKey, RootKey,
+    ChildTable, ConnectorErrorKind, DroppedTable, Field, LogicalType, MergeKey, RootKey,
     TableChange, TablePath, TableRef, TableSchema,
 };
 use rdlt_connector_reference::files;
@@ -32,14 +32,14 @@ async fn an_open_never_deletes_through_a_planted_staging_link() {
     let base = crate::fixtures::tempdir().unwrap();
     let (root, victim) = (base.path().join("root"), victim(base.path()));
     let destination = connect(&root, "jsonl").await;
-    let first = open(destination.as_ref(), 1).await;
+    let first = open(destination.as_ref()).await;
     first.session.close().await.unwrap();
     let staging = pipeline_dir(&root).join("staging");
     std::fs::create_dir_all(staging.join("1").join("load")).unwrap();
     // One link named as an older session's staging, one below an older session's staging.
     symlink(&victim, staging.join("0")).unwrap();
     symlink(&victim, staging.join("1").join("load").join("segment")).unwrap();
-    let second = destination.open(&crate::fixtures::context(2)).await;
+    let second = destination.open(&crate::fixtures::context()).await;
     assert!(victim.join("a.txt").exists() && victim.join("sub").join("b.txt").exists());
     second.expect("the links are removed, not followed");
     assert!(std::fs::symlink_metadata(staging.join("0")).is_err());
@@ -72,7 +72,7 @@ async fn a_manifest_path_outside_the_pipeline_is_refused() {
     let secret = base.path().join("secret.jsonl");
     std::fs::write(&secret, "{\"id\":7}\n").unwrap();
     let (destination, reader) = connect_with(&root, json!({})).await;
-    let mut opened = open(destination.as_ref(), 1).await;
+    let mut opened = open(destination.as_ref()).await;
     // The sequence may be missing, so a file holding only ids reads as rows of the table.
     let (_, batch) = keyed(&[1], 1);
     let schema = TableSchema::new(vec![
@@ -84,7 +84,7 @@ async fn a_manifest_path_outside_the_pipeline_is_refused() {
     stage(&mut opened, &rows, &schema, batch.clone(), 1).await;
     opened
         .session
-        .commit(&meta(&opened, 1, CommitSeq::FIRST, &[1]))
+        .commit(&meta(&opened, 1, &[1]))
         .await
         .unwrap();
     let dir = pipeline_dir(&root);
@@ -109,10 +109,7 @@ async fn a_manifest_path_outside_the_pipeline_is_refused() {
         assert_eq!(error.kind(), ConnectorErrorKind::Data, "{escape}");
         // The next commit merges the table's listed files: it reads none of them either.
         stage(&mut opened, &rows, &schema, batch.clone(), 2).await;
-        let commit = opened
-            .session
-            .commit(&meta(&opened, 1, CommitSeq::FIRST.next(), &[2]))
-            .await;
+        let commit = opened.session.commit(&meta(&opened, 2, &[2])).await;
         let error = commit.expect_err(&escape);
         assert_eq!(error.kind(), ConnectorErrorKind::Data, "{escape}");
     }
@@ -122,10 +119,10 @@ async fn a_manifest_path_outside_the_pipeline_is_refused() {
 async fn a_manifest_named_for_another_version_is_refused_not_retried_forever() {
     let root = crate::fixtures::tempdir().unwrap();
     let destination = connect(root.path(), "jsonl").await;
-    drop(open(destination.as_ref(), 1).await);
+    drop(open(destination.as_ref()).await);
     let (latest, _) = latest_manifest(root.path());
     std::fs::copy(&latest, latest.with_file_name("00000000000000000100.json")).unwrap();
-    let context = crate::fixtures::context(2);
+    let context = crate::fixtures::context();
     let opened = tokio::time::timeout(Duration::from_secs(20), destination.open(&context))
         .await
         .expect("the open ends");
@@ -160,10 +157,10 @@ async fn a_dropped_name_that_is_no_identifier_is_refused() {
     let root = base.path().join("a").join("b").join("root");
     std::fs::create_dir_all(base.path().join("a").join("somedir")).unwrap();
     let destination = connect(&root, "jsonl").await;
-    let mut opened = open(destination.as_ref(), 1).await;
-    let mut seq = CommitSeq::FIRST;
+    let mut opened = open(destination.as_ref()).await;
+    // Each commit is refused, so each is the session's first.
     for name in bad_names() {
-        let mut dropping = meta(&opened, 1, seq, &[]);
+        let mut dropping = meta(&opened, 1, &[]);
         dropping.drop_tables = vec![DroppedTable {
             path: TablePath::new(["t"]).unwrap(),
             name: name.as_str().into(),
@@ -175,10 +172,9 @@ async fn a_dropped_name_that_is_no_identifier_is_refused() {
             .expect_err("the name is refused");
         assert_eq!(error.kind(), ConnectorErrorKind::Data, "{name:?}");
         assert_eq!(error.code(), Some("invalid_name"), "{name:?}");
-        seq = seq.next();
     }
     // Nothing recorded the names: the pipeline opens again, and nothing was made outside the root.
-    drop(open(destination.as_ref(), 2).await);
+    drop(open(destination.as_ref()).await);
     let outside: Vec<_> = files_under(base.path())
         .into_iter()
         .filter(|path| !path.starts_with(&root))
@@ -191,7 +187,7 @@ async fn a_child_or_root_name_that_is_no_identifier_is_refused() {
     let base = crate::fixtures::tempdir().unwrap();
     let root = base.path().join("root");
     let destination = connect(&root, "jsonl").await;
-    let mut opened = open(destination.as_ref(), 1).await;
+    let mut opened = open(destination.as_ref()).await;
     let child = |table: &str, root: &str| ChildTable {
         table: table.into(),
         merge: MergeKey {
@@ -206,10 +202,10 @@ async fn a_child_or_root_name_that_is_no_identifier_is_refused() {
             history: None,
         },
     };
-    let mut seq = CommitSeq::FIRST;
+    // Each commit is refused, so each is the session's first.
     for name in bad_names() {
         for named in [child(&name, "roots"), child("items", &name)] {
-            let mut committing = meta(&opened, 1, seq, &[]);
+            let mut committing = meta(&opened, 1, &[]);
             committing.child_tables = vec![named];
             let error = opened
                 .session
@@ -218,7 +214,6 @@ async fn a_child_or_root_name_that_is_no_identifier_is_refused() {
                 .expect_err("the name is refused");
             assert_eq!(error.kind(), ConnectorErrorKind::Data, "{name:?}");
             assert_eq!(error.code(), Some("invalid_name"), "{name:?}");
-            seq = seq.next();
         }
     }
 }
@@ -228,12 +223,12 @@ async fn a_dropped_name_a_manifest_was_tampered_to_hold_is_refused() {
     let base = crate::fixtures::tempdir().unwrap();
     let root = base.path().join("a").join("b").join("root");
     let destination = connect(&root, "jsonl").await;
-    drop(open(destination.as_ref(), 1).await);
+    drop(open(destination.as_ref()).await);
     let (latest, mut manifest) = latest_manifest(&root);
     manifest["dropped"] = json!(["../../../../planted"]);
     plant_manifest(&latest, manifest);
-    for load in [2, 3] {
-        let Err(error) = destination.open(&crate::fixtures::context(load)).await else {
+    for _ in 0..2 {
+        let Err(error) = destination.open(&crate::fixtures::context()).await else {
             panic!("a manifest dropping no identifier was followed");
         };
         assert_eq!(error.kind(), ConnectorErrorKind::Data);
@@ -247,7 +242,7 @@ async fn a_table_name_that_is_no_identifier_is_refused() {
     let base = crate::fixtures::tempdir().unwrap();
     let root = base.path().join("root");
     let destination = connect(&root, "jsonl").await;
-    let mut opened = open(destination.as_ref(), 1).await;
+    let mut opened = open(destination.as_ref()).await;
     let (schema, _) = ids(&[1]);
     for name in bad_names() {
         let named = TableRef {
@@ -279,7 +274,7 @@ async fn a_table_name_that_is_no_identifier_is_refused() {
 async fn a_catalog_version_at_the_end_of_its_range_is_refused() {
     let root = crate::fixtures::tempdir().unwrap();
     let destination = connect(root.path(), "jsonl").await;
-    let mut opened = open(destination.as_ref(), 1).await;
+    let mut opened = open(destination.as_ref()).await;
     let (schema, batch) = ids(&[1]);
     stage(&mut opened, &table("t"), &schema, batch, 1).await;
     let catalog = root.path().join("_rdlt").join("tables").join("t");
@@ -307,7 +302,7 @@ async fn a_lock_file_that_is_a_link_is_refused() {
     let base = crate::fixtures::tempdir().unwrap();
     let root = base.path().join("root");
     let destination = connect(&root, "jsonl").await;
-    let mut opened = open(destination.as_ref(), 1).await;
+    let mut opened = open(destination.as_ref()).await;
     let (schema, batch) = ids(&[1]);
     stage(&mut opened, &table("held"), &schema, batch, 1).await;
     let locks = root.join("_rdlt").join("locks");
@@ -324,7 +319,7 @@ async fn a_lock_file_that_is_a_link_is_refused() {
 async fn stale_temporaries_are_swept_at_open_and_fresh_ones_left() {
     let root = crate::fixtures::tempdir().unwrap();
     let destination = connect(root.path(), "jsonl").await;
-    drop(open(destination.as_ref(), 1).await);
+    drop(open(destination.as_ref()).await);
     let manifests = pipeline_dir(root.path()).join("manifests");
     let (stale, fresh) = (
         manifests.join(".tmp-00000000000000000000000000000001"),
@@ -340,7 +335,7 @@ async fn stale_temporaries_are_swept_at_open_and_fresh_ones_left() {
         .unwrap()
         .set_modified(long_ago)
         .unwrap();
-    drop(open(destination.as_ref(), 2).await);
+    drop(open(destination.as_ref()).await);
     assert!(!stale.exists(), "a temporary a crash left stays");
     assert!(fresh.exists(), "a temporary another writer is writing went");
 }
@@ -349,7 +344,7 @@ async fn stale_temporaries_are_swept_at_open_and_fresh_ones_left() {
 async fn control_files_that_are_not_regular_or_too_large_are_refused() {
     let root = crate::fixtures::tempdir().unwrap();
     let destination = connect(root.path(), "jsonl").await;
-    let mut opened = open(destination.as_ref(), 1).await;
+    let mut opened = open(destination.as_ref()).await;
     let (schema, batch) = ids(&[1]);
     stage(&mut opened, &table("t"), &schema, batch, 1).await;
     let catalog = root.path().join("_rdlt").join("tables").join("t");
@@ -382,7 +377,7 @@ async fn control_files_that_are_not_regular_or_too_large_are_refused() {
         .status()
         .expect("mkfifo runs");
     assert!(made.success());
-    let context = crate::fixtures::context(2);
+    let context = crate::fixtures::context();
     let opened = tokio::time::timeout(bounded, destination.open(&context))
         .await
         .expect("the open ends");
@@ -395,14 +390,14 @@ async fn everything_the_destination_creates_is_private() {
     let root = base.path().join("made").join("root");
     let destination = connect(&root, "arrow").await;
     destination.check().await.unwrap();
-    let mut opened = open(destination.as_ref(), 1).await;
+    let mut opened = open(destination.as_ref()).await;
     let (schema, batch) = keyed(&[1, 2], 1);
     stage(&mut opened, &merge_table("merged"), &schema, batch, 1).await;
     let (schema, batch) = ids(&[1]);
     stage(&mut opened, &table("rows"), &schema, batch, 2).await;
     opened
         .session
-        .commit(&meta(&opened, 1, CommitSeq::FIRST, &[1, 2]))
+        .commit(&meta(&opened, 1, &[1, 2]))
         .await
         .unwrap();
     let mode = |path: &Path| {
@@ -440,12 +435,12 @@ async fn a_root_or_a_directory_beneath_it_that_others_may_write_is_refused() {
     let base = crate::fixtures::tempdir().unwrap();
     let root = base.path().join("root");
     let destination = connect(&root, "jsonl").await;
-    let mut opened = open(destination.as_ref(), 1).await;
+    let mut opened = open(destination.as_ref()).await;
     let (schema, batch) = ids(&[1]);
     stage(&mut opened, &table("rows"), &schema, batch, 1).await;
     opened
         .session
-        .commit(&meta(&opened, 1, CommitSeq::FIRST, &[1]))
+        .commit(&meta(&opened, 1, &[1]))
         .await
         .unwrap();
     let mode = |path: &Path, mode| {
@@ -461,7 +456,7 @@ async fn a_root_or_a_directory_beneath_it_that_others_may_write_is_refused() {
     ] {
         for bits in [0o777, 0o1777, 0o770] {
             mode(&shared, bits);
-            let Err(error) = destination.open(&crate::fixtures::context(2)).await else {
+            let Err(error) = destination.open(&crate::fixtures::context()).await else {
                 panic!("{} with mode {bits:o} was opened", shared.display());
             };
             assert_eq!(error.kind(), ConnectorErrorKind::Config, "{shared:?}");

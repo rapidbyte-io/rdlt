@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use rdlt_connector::{ConnectorErrorKind, ConnectorId, PipelineId, StreamName};
+use rdlt_connector::{CommitKey, ConnectorErrorKind, ConnectorId, PipelineId, StreamName};
 use rdlt_engine::{
     CommitPolicy, Engine, EngineConfig, PipelinePlan, RetryPolicy, RunStatus, StreamPlan,
 };
@@ -555,7 +555,7 @@ async fn a_path_that_is_no_program_is_not_found() {
 
 #[tokio::test]
 async fn a_destination_crashing_in_a_session_carries_its_last_words() {
-    use rdlt_connector::{CommitMeta, CommitSeq, LoadId, OpenContext, SegmentSet};
+    use rdlt_connector::{CommitMeta, OpenContext, SegmentSet};
     let id = ConnectorId::parse("io.rapidbyte.memory").expect("a valid id");
     let reference = ConnectorRef::new(id).path(example("crashing_destination"));
     let destination = local()
@@ -565,20 +565,20 @@ async fn a_destination_crashing_in_a_session_carries_its_last_words() {
         .connector;
     let context = OpenContext {
         pipeline: PipelineId::parse("crashing").expect("a valid pipeline id"),
-        load_id: LoadId::from_parts(std::time::UNIX_EPOCH, 1),
     };
     let mut opened = destination.open(&context).await.expect("the session opens");
     let meta = CommitMeta {
-        load_id: context.load_id,
-        commit_seq: CommitSeq::FIRST,
-        epoch: opened.epoch,
+        key: CommitKey {
+            epoch: opened.epoch,
+            seq: 1,
+        },
+        after: opened.landed.as_ref().map(|landed| landed.key),
         segments: SegmentSet::new(),
         abandoned: SegmentSet::new(),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
-        horizon: None,
     };
     let error = opened.session.commit(&meta).await.unwrap_err();
     let words = std::error::Error::source(&error)

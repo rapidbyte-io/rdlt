@@ -9,7 +9,7 @@ use arrow_array::{ArrayRef, RecordBatch, StringArray};
 use rdlt_connector::prelude::*;
 use rdlt_connector::serve::Served;
 use rdlt_connector::{
-    ConnectContext, Destination as _, DestinationWriter, LoadId, OpenContext, PipelineId,
+    CommitKey, ConnectContext, Destination as _, DestinationWriter, OpenContext, PipelineId,
     ReadRequest, Role, SchemaVersion, SegmentId, Source as _, TablePath, TableRef,
     destination_factory, partition_channel, source_factory,
 };
@@ -212,7 +212,6 @@ pub(crate) async fn writer(
     let destination = RemoteDestination::new(connection).expect("its capabilities are declared");
     let context = OpenContext {
         pipeline: PipelineId::parse("flow").expect("a valid pipeline id"),
-        load_id: LoadId::from_parts(std::time::UNIX_EPOCH, 1),
     };
     let mut opened = destination.open(&context).await.expect("the session opens");
     opened
@@ -513,7 +512,6 @@ pub(crate) async fn trickled(
     let destination = RemoteDestination::new(connection).expect("the fake declares capabilities");
     let context = OpenContext {
         pipeline: PipelineId::parse("trickled").expect("a pipeline id"),
-        load_id: LoadId::from_parts(std::time::UNIX_EPOCH, 1),
     };
     let mut opened = destination.open(&context).await.expect("the session opens");
     opened
@@ -586,7 +584,7 @@ fn framed() -> Limits {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn five_writers_of_frame_sized_batches_through_one_connection_are_all_taken() {
-    use rdlt_connector::{CommitMeta, CommitSeq, SegmentSet};
+    use rdlt_connector::{CommitMeta, SegmentSet};
     let served = Served::new().with_destination(destination_factory::<MemoryDestination>());
     let io = served_within(served, framed());
     let options = Options {
@@ -600,7 +598,6 @@ async fn five_writers_of_frame_sized_batches_through_one_connection_are_all_take
     let destination = RemoteDestination::new(connection).expect("its capabilities are declared");
     let context = OpenContext {
         pipeline: PipelineId::parse("five").expect("a valid pipeline id"),
-        load_id: LoadId::from_parts(std::time::UNIX_EPOCH, 1),
     };
     let mut opened = destination.open(&context).await.expect("the session opens");
     let mut writers = Vec::new();
@@ -626,16 +623,17 @@ async fn five_writers_of_frame_sized_batches_through_one_connection_are_all_take
     }
     // A commit behind the writes, on the same connection, is taken too.
     let meta = CommitMeta {
-        load_id: context.load_id,
-        commit_seq: CommitSeq::FIRST,
-        epoch: opened.epoch,
+        key: CommitKey {
+            epoch: opened.epoch,
+            seq: 1,
+        },
+        after: opened.landed.as_ref().map(|landed| landed.key),
         segments: SegmentSet::new(),
         abandoned: SegmentSet::new(),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
-        horizon: None,
     };
     let bounded = Duration::from_secs(60);
     let committed = tokio::time::timeout(bounded, opened.session.commit(&meta)).await;

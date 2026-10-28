@@ -12,8 +12,6 @@ import "rdlt/connector/v1/source.proto";
 message OpenRequest {
   // The pipeline.
   string pipeline = 1;
-  // The load, a UUIDv7 in its 16 bytes.
-  bytes load_id = 2;
 }
 
 // An open session.
@@ -22,8 +20,10 @@ message OpenResponse {
   uint64 session = 1;
   // The epoch the open set.
   uint64 epoch = 2;
+  // The receipt of the pipeline's last commit that landed; absent before the first.
+  optional Receipt landed = 3;
   // Every committed state record of the pipeline, with distinct keys.
-  repeated StateRecord state = 3;
+  repeated StateRecord state = 4;
 }
 
 // The key rows of a merged table are matched by.
@@ -227,38 +227,33 @@ message ChildTable {
   MergeKey merge = 2;
 }
 
-// What a commit publishes.
-message CommitMeta {
-  // The load, a UUIDv7 in its 16 bytes.
-  bytes load_id = 1;
-  // The commit's sequence within the load; at least 1.
-  uint64 commit_seq = 2;
-  // The session's epoch.
-  uint64 epoch = 3;
-  // The segments it publishes, ascending, disjoint and not adjacent.
-  repeated SegmentRange segments = 4;
-  // The state changes it makes.
-  repeated StateChange state_delta = 5;
-  // The generations it finishes.
-  repeated FinishGeneration finish_generations = 6;
-  // The child tables it replaces rows of.
-  repeated ChildTable child_tables = 7;
-  // The tables it drops.
-  repeated DroppedTable drop_tables = 8;
-  // The oldest commit the engine may still repeat: the receipt of every commit before it may be
-  // forgotten. Absent, none may.
-  Horizon horizon = 9;
-  // The segments of the load abandoned since its last commit, whose staged rows it removes;
-  // ascending, disjoint, not adjacent, and none among `segments`.
-  repeated SegmentRange abandoned = 10;
+// A commit's key: its session's epoch and its place among the session's commits.
+message CommitKey {
+  // The epoch of the session that makes the commit.
+  uint64 epoch = 1;
+  // The commit's place among its session's commits, from 1.
+  uint64 seq = 2;
 }
 
-// A commit by its load and its sequence in the load; commits order by load id, then sequence.
-message Horizon {
-  // The load, a UUIDv7 in its 16 bytes.
-  bytes load_id = 1;
-  // The commit's sequence within the load; at least 1.
-  uint64 commit_seq = 2;
+// What a commit publishes.
+message CommitMeta {
+  // The commit's key.
+  CommitKey key = 1;
+  // The key of the commit the session expects landed; absent where none of the pipeline has.
+  optional CommitKey after = 2;
+  // The segments it publishes, ascending, disjoint and not adjacent.
+  repeated SegmentRange segments = 3;
+  // The state changes it makes.
+  repeated StateChange state_delta = 4;
+  // The generations it finishes.
+  repeated FinishGeneration finish_generations = 5;
+  // The child tables it replaces rows of.
+  repeated ChildTable child_tables = 6;
+  // The tables it drops.
+  repeated DroppedTable drop_tables = 7;
+  // The segments of the attempt abandoned since its last commit, whose staged rows it removes;
+  // ascending, disjoint, not adjacent, and none among `segments`.
+  repeated SegmentRange abandoned = 8;
 }
 
 // A table a commit drops.
@@ -279,16 +274,14 @@ message CommitRequest {
 
 // What a commit published.
 message Receipt {
-  // The load, a UUIDv7 in its 16 bytes.
-  bytes load_id = 1;
-  // The commit's sequence within the load.
-  uint64 commit_seq = 2;
+  // The commit's key.
+  CommitKey key = 1;
   // When it committed.
-  Instant committed_at = 3;
+  Instant committed_at = 2;
   // Rows published.
-  uint64 rows = 4;
+  uint64 rows = 3;
   // Bytes published.
-  uint64 bytes = 5;
+  uint64 bytes = 4;
 }
 
 // Closes a session.

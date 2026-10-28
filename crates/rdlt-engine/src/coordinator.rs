@@ -27,8 +27,8 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use rdlt_connector::{
-    CommitMeta, CommitSeq, Epoch, GenerationId, LoadId, PartitionId, PartitionState, Receipt,
-    SegmentSet, Source, StreamName, TablePath,
+    CommitKey, CommitMeta, Epoch, GenerationId, PartitionId, PartitionState, Receipt, SegmentSet,
+    Source, StreamName, TablePath,
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -159,8 +159,10 @@ pub(crate) struct CoordinatorParts {
     pub(crate) tables: Arc<Tables>,
     pub(crate) source: Arc<dyn Source>,
     pub(crate) lanes: Lanes,
-    pub(crate) load_id: LoadId,
     pub(crate) epoch: Epoch,
+    /// The key of the pipeline's last commit that had landed when the session opened, which its
+    /// first commit expects landed.
+    pub(crate) after: Option<CommitKey>,
     pub(crate) streams: Vec<StreamRun>,
     pub(crate) partitions: Vec<PartitionRun>,
     pub(crate) progress: mpsc::UnboundedReceiver<Progress>,
@@ -196,7 +198,10 @@ pub(crate) struct CoordinatorParts {
 
 pub(crate) struct Coordinator {
     parts: CoordinatorParts,
-    seq: CommitSeq,
+    /// The next commit's key: the session's epoch, and its place among the session's commits.
+    key: CommitKey,
+    /// The key of the commit the next one expects landed: the last that landed.
+    after: Option<CommitKey>,
     sealed: WaitingSeals,
     /// Whether something arrived since the last commit.
     cursors_may_free: bool,
@@ -229,8 +234,12 @@ impl Coordinator {
         let unended = parts.partitions.iter().filter(|run| !run.ended).count();
         Self {
             cursors_may_free: true,
+            key: CommitKey {
+                epoch: parts.epoch,
+                seq: 1,
+            },
+            after: parts.after,
             parts,
-            seq: CommitSeq::FIRST,
             sealed: WaitingSeals::default(),
             due: due::Due::default(),
             barrier: 0,
@@ -461,7 +470,7 @@ impl Coordinator {
             })
             .collect();
         let recorded = Recorded {
-            load: self.parts.load_id,
+            epoch: self.parts.epoch,
             states: &states,
         };
         self.parts.done.landed(&meta.state_delta, &recorded);
@@ -479,7 +488,12 @@ impl Coordinator {
         streams: BTreeMap<StreamName, crate::report::StreamReport>,
         completing: &[usize],
     ) -> Result<(), Error> {
-        self.seq = self.seq.next();
+        self.after = Some(receipt.key);
+        self.key.seq = self
+            .key
+            .seq
+            .checked_add(1)
+            .expect("a session commits fewer than u64::MAX times");
         for stream in &mut self.parts.streams {
             if let Some(cycle) = &mut stream.cycle {
                 cycle.recorded = true;

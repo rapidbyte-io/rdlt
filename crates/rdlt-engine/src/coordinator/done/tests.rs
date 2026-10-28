@@ -1,11 +1,9 @@
-use std::collections::BTreeMap;
-use std::time::{Duration, UNIX_EPOCH};
-
 use proptest::prelude::*;
 use rdlt_connector::{
-    Cursor, GenerationId, LoadId, PartitionId, PartitionState, PipelineState, StateChange,
+    Cursor, Epoch, GenerationId, PartitionId, PartitionState, PipelineState, StateChange,
     StateEntry, StateKey, StreamName,
 };
+use std::collections::BTreeMap;
 
 use super::{DoneMarkers, Recorded};
 
@@ -21,55 +19,51 @@ fn at(next: u64) -> PartitionState {
     PartitionState::Cursor(Cursor::encode(1, &next).expect("a cursor"))
 }
 
-fn load(seconds: u64) -> LoadId {
-    LoadId::from_parts(UNIX_EPOCH + Duration::from_secs(seconds), 1)
-}
-
-/// The change recording `id` of stream `name` at `state`, by load `seconds`.
-fn recorded(name: &str, id: &str, state: PartitionState, seconds: u64) -> StateChange {
+/// The change recording `id` of stream `name` at `state`, by the session of epoch `number`.
+fn recorded(name: &str, id: &str, state: PartitionState, number: u64) -> StateChange {
     StateChange::Put(
         StateEntry::Partition {
             stream: stream(name),
             partition: partition(id),
             state,
-            load: load(seconds),
+            epoch: Epoch(number),
         }
         .to_record(),
     )
 }
 
-/// Lands `delta` as a commit of another load's, whose states the markers decode.
+/// Lands `delta` as a commit of another session's, whose states the markers decode.
 fn decoded(markers: &mut DoneMarkers, delta: &[StateChange]) {
     let none = BTreeMap::new();
     markers.landed(
         delta,
         &Recorded {
-            load: load(0),
+            epoch: Epoch(0),
             states: &none,
         },
     );
 }
 
-/// Each marker, by load and partition id.
-fn listed(markers: &DoneMarkers) -> Vec<(LoadId, String)> {
+/// Each marker, by epoch and partition id.
+fn listed(markers: &DoneMarkers) -> Vec<(Epoch, String)> {
     markers
         .listed()
         .into_iter()
-        .map(|(load, _, id)| (load, id.to_string()))
+        .map(|(epoch, _, id)| (epoch, id.to_string()))
         .collect()
 }
 
 #[test]
 fn done_markers_follow_the_state_they_start_from_and_the_commits_after_it() {
     let mut state = PipelineState::default();
-    for (id, seconds) in [("old", 1), ("cursor", 2)] {
+    for (id, number) in [("old", 1), ("cursor", 2)] {
         let position = if id == "old" {
             PartitionState::Done
         } else {
             at(1)
         };
         state
-            .apply(&recorded("orders", id, position, seconds))
+            .apply(&recorded("orders", id, position, number))
             .expect("applies");
     }
     let mut markers = DoneMarkers::from(&state);
@@ -84,10 +78,10 @@ fn done_markers_follow_the_state_they_start_from_and_the_commits_after_it() {
     assert_eq!(
         listed(&markers),
         [
-            (load(1), "old".to_owned()),
-            (load(5), "middle".to_owned()),
-            (load(7), "cursor".to_owned()),
-            (load(9), "newest".to_owned()),
+            (Epoch(1), "old".to_owned()),
+            (Epoch(5), "middle".to_owned()),
+            (Epoch(7), "cursor".to_owned()),
+            (Epoch(9), "newest".to_owned()),
         ]
     );
     let gone = StateKey::Partition(stream("events"), partition("middle")).encode();
@@ -101,8 +95,8 @@ fn done_markers_follow_the_state_they_start_from_and_the_commits_after_it() {
     assert_eq!(
         listed(&markers),
         [
-            (load(7), "cursor".to_owned()),
-            (load(9), "newest".to_owned())
+            (Epoch(7), "cursor".to_owned()),
+            (Epoch(9), "newest".to_owned())
         ]
     );
 }
@@ -115,7 +109,7 @@ const PARTITIONS: [&str; 3] = ["p0", "p1", "p2"];
 /// One change a commit records.
 #[derive(Clone, Debug)]
 enum Change {
-    /// A partition's position, a cursor or done, by the load of `.3` seconds.
+    /// A partition's position, a cursor or done, by the session of epoch `.3`.
     Position(usize, usize, Option<u64>, u64),
     /// A partition's position deleted.
     Unplaced(usize, usize),
@@ -131,7 +125,7 @@ fn change() -> impl Strategy<Value = Change> {
     let (streams, partitions) = (0..STREAMS.len(), 0..PARTITIONS.len());
     prop_oneof![
         4 => (streams.clone(), partitions.clone(), proptest::option::of(0_u64..9), 1_u64..4)
-            .prop_map(|(name, id, next, seconds)| Change::Position(name, id, next, seconds)),
+            .prop_map(|(name, id, next, number)| Change::Position(name, id, next, number)),
         2 => (streams.clone(), partitions).prop_map(|(name, id)| Change::Unplaced(name, id)),
         1 => (streams.clone(), any::<u16>()).prop_map(|(name, phase)| Change::Phase(name, phase)),
         1 => (streams.clone(), any::<u64>())
@@ -143,9 +137,9 @@ fn change() -> impl Strategy<Value = Change> {
 /// The state change `change` is.
 fn written(change: &Change) -> StateChange {
     match *change {
-        Change::Position(name, id, next, seconds) => {
+        Change::Position(name, id, next, number) => {
             let state = next.map_or(PartitionState::Done, at);
-            recorded(STREAMS[name], PARTITIONS[id], state, seconds)
+            recorded(STREAMS[name], PARTITIONS[id], state, number)
         }
         Change::Unplaced(name, id) => StateChange::Delete(
             StateKey::Partition(stream(STREAMS[name]), partition(PARTITIONS[id])).encode(),
@@ -174,14 +168,14 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(rdlt_testkit::cases(64)))]
 
     /// After any commits' changes, the partitions held done are those the last change naming
-    /// each left done, by that change's load, listed the earliest recorded first, and landing
+    /// each left done, by that change's epoch, listed the earliest recorded first, and landing
     /// commits one at a time is landing them together.
     #[test]
     fn done_markers_are_what_the_commits_record_in_order(
         commits in proptest::collection::vec(proptest::collection::vec(change(), 0..6), 0..6),
     ) {
         let mut markers = DoneMarkers::default();
-        let mut placed: BTreeMap<(usize, usize), (PartitionState, LoadId)> = BTreeMap::new();
+        let mut placed: BTreeMap<(usize, usize), (PartitionState, Epoch)> = BTreeMap::new();
         let mut all = Vec::new();
         for commit in &commits {
             let changes: Vec<StateChange> = commit.iter().map(written).collect();
@@ -189,9 +183,9 @@ proptest! {
             all.extend(changes);
             for change in commit {
                 match *change {
-                    Change::Position(name, id, next, seconds) => {
+                    Change::Position(name, id, next, number) => {
                         let state = next.map_or(PartitionState::Done, at);
-                        placed.insert((name, id), (state, load(seconds)));
+                        placed.insert((name, id), (state, Epoch(number)));
                     }
                     Change::Unplaced(name, id) => {
                         placed.remove(&(name, id));
@@ -200,16 +194,16 @@ proptest! {
                 }
             }
         }
-        let mut done: Vec<(LoadId, StreamName, PartitionId)> = placed
+        let mut done: Vec<(Epoch, StreamName, PartitionId)> = placed
             .iter()
             .filter(|(_, (state, _))| *state == PartitionState::Done)
-            .map(|((name, id), (_, load))| (*load, stream(STREAMS[*name]), partition(PARTITIONS[*id])))
+            .map(|((name, id), (_, epoch))| (*epoch, stream(STREAMS[*name]), partition(PARTITIONS[*id])))
             .collect();
         done.sort();
-        let listed: Vec<(LoadId, StreamName, PartitionId)> = markers
+        let listed: Vec<(Epoch, StreamName, PartitionId)> = markers
             .listed()
             .into_iter()
-            .map(|(load, name, id)| (load, name.clone(), id.clone()))
+            .map(|(epoch, name, id)| (epoch, name.clone(), id.clone()))
             .collect();
         prop_assert_eq!(listed, done);
         let mut together = DoneMarkers::default();
@@ -217,7 +211,7 @@ proptest! {
         prop_assert_eq!(together, markers);
     }
 
-    /// A load's commit, landed from the states it was made from, leaves the markers its records
+    /// A session's commit, landed from the states it was made from, leaves the markers its records
     /// decode to, whatever stood before and however often it names a partition.
     #[test]
     fn a_commit_landed_from_its_states_marks_what_its_records_say(
@@ -243,7 +237,7 @@ proptest! {
         decoded(&mut from_records, &before.iter().map(written).collect::<Vec<_>>());
         let mut from_states = from_records.clone();
         decoded(&mut from_records, &delta);
-        from_states.landed(&delta, &Recorded { load: load(1), states: &states });
+        from_states.landed(&delta, &Recorded { epoch: Epoch(1), states: &states });
         prop_assert_eq!(from_states, from_records);
     }
 }
@@ -255,7 +249,7 @@ fn landing_a_commit_copies_none_of_its_cursors() {
     let delta = vec![recorded("orders", "p0", state.clone(), 1)];
     let states = BTreeMap::from([((stream("orders"), partition("p0")), state)]);
     let made = Recorded {
-        load: load(1),
+        epoch: Epoch(1),
         states: &states,
     };
     let (peak, markers) = crate::cost::tests::peak_alone(|| {

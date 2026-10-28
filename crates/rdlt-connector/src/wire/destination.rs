@@ -8,22 +8,32 @@ use std::sync::Arc;
 use super::types::{instant, system_time};
 use super::{Invalid, required, v1};
 use crate::commit::{
-    ChildTable, CommitMeta, DroppedTable, Horizon, Receipt, SegmentRange, SegmentSet,
+    ChildTable, CommitKey, CommitMeta, DroppedTable, Receipt, SegmentRange, SegmentSet,
 };
 use crate::destination::{
     ChangeColumns, Deletion, HistoryColumns, MergeKey, RootKey, TableChange, TableRef, WriteStats,
 };
-use crate::id::{CommitSeq, Epoch, GenerationId, LoadId, SchemaVersion, SegmentId, TablePath};
+use crate::id::{Epoch, GenerationId, SchemaVersion, SegmentId, TablePath};
 use crate::schema::TableSchema;
 use crate::state::StateChange;
 use crate::types::{Field, LogicalType};
 
-/// The load id whose 16 bytes `bytes` holds.
-pub(crate) fn load_id(bytes: &[u8]) -> Result<LoadId, Invalid> {
-    let bytes: [u8; 16] = bytes
-        .try_into()
-        .map_err(|_| Invalid::OutOfRange("load id"))?;
-    Ok(LoadId::from_bytes(bytes))
+impl From<CommitKey> for v1::CommitKey {
+    fn from(key: CommitKey) -> Self {
+        Self {
+            epoch: key.epoch.0,
+            seq: key.seq,
+        }
+    }
+}
+
+impl From<v1::CommitKey> for CommitKey {
+    fn from(key: v1::CommitKey) -> Self {
+        Self {
+            epoch: Epoch(key.epoch),
+            seq: key.seq,
+        }
+    }
 }
 
 impl From<&MergeKey> for v1::MergeKey {
@@ -265,9 +275,8 @@ impl TryFrom<v1::CommitMeta> for CommitMeta {
             })
             .collect::<Result<_, Invalid>>()?;
         Ok(Self {
-            load_id: load_id(&meta.load_id)?,
-            commit_seq: CommitSeq::new(meta.commit_seq).ok_or(Invalid::OutOfRange("commit seq"))?,
-            epoch: Epoch(meta.epoch),
+            key: CommitKey::from(required("commit's key", meta.key)?),
+            after: meta.after.map(CommitKey::from),
             segments,
             abandoned,
             state_delta: meta
@@ -278,26 +287,15 @@ impl TryFrom<v1::CommitMeta> for CommitMeta {
             finish_generations,
             child_tables,
             drop_tables,
-            horizon: meta.horizon.as_ref().map(horizon).transpose()?,
         })
     }
-}
-
-/// The horizon `horizon` says.
-fn horizon(horizon: &v1::Horizon) -> Result<Horizon, Invalid> {
-    Ok(Horizon {
-        load_id: load_id(&horizon.load_id)?,
-        commit_seq: CommitSeq::new(horizon.commit_seq)
-            .ok_or(Invalid::OutOfRange("horizon's commit seq"))?,
-    })
 }
 
 /// The message of `meta` without its state changes.
 pub(super) fn unchanged(meta: &CommitMeta) -> v1::CommitMeta {
     v1::CommitMeta {
-        load_id: meta.load_id.as_bytes().to_vec().into(),
-        commit_seq: meta.commit_seq.get(),
-        epoch: meta.epoch.0,
+        key: Some(v1::CommitKey::from(meta.key)),
+        after: meta.after.map(v1::CommitKey::from),
         segments: ranges(&meta.segments),
         abandoned: ranges(&meta.abandoned),
         state_delta: Vec::new(),
@@ -325,10 +323,6 @@ pub(super) fn unchanged(meta: &CommitMeta) -> v1::CommitMeta {
                 name: dropped.name.to_string(),
             })
             .collect(),
-        horizon: meta.horizon.map(|horizon| v1::Horizon {
-            load_id: horizon.load_id.as_bytes().to_vec().into(),
-            commit_seq: horizon.commit_seq.get(),
-        }),
     }
 }
 
@@ -359,8 +353,7 @@ fn segment_set(what: &'static str, ranges: Vec<v1::SegmentRange>) -> Result<Segm
 impl From<&Receipt> for v1::Receipt {
     fn from(receipt: &Receipt) -> Self {
         Self {
-            load_id: receipt.load_id.as_bytes().to_vec().into(),
-            commit_seq: receipt.commit_seq.get(),
+            key: Some(v1::CommitKey::from(receipt.key)),
             committed_at: Some(instant(receipt.committed_at)),
             rows: receipt.rows,
             bytes: receipt.bytes,
@@ -373,9 +366,7 @@ impl TryFrom<v1::Receipt> for Receipt {
 
     fn try_from(receipt: v1::Receipt) -> Result<Self, Invalid> {
         Ok(Self {
-            load_id: load_id(&receipt.load_id)?,
-            commit_seq: CommitSeq::new(receipt.commit_seq)
-                .ok_or(Invalid::OutOfRange("commit seq"))?,
+            key: CommitKey::from(required("receipt's key", receipt.key)?),
             committed_at: system_time(required("commit time", receipt.committed_at)?)?,
             rows: receipt.rows,
             bytes: receipt.bytes,

@@ -57,7 +57,7 @@ async fn staged(session: &mut OpenedSession, segment: u64, id: i64, until: Array
 /// another row at the unit the column then has; returns the widen's outcome.
 async fn widened(store_name: &str, stored: i64) -> Result<(), rdlt_connector::ConnectorError> {
     let destination = store(store_name).await;
-    let mut session = open(destination.as_ref(), "p", 1).await;
+    let mut session = open(destination.as_ref(), "p").await;
     let seconds = LogicalType::Timestamp(TimeUnit::Second, None);
     let nanos = LogicalType::Timestamp(TimeUnit::Nanosecond, None);
     let create = TableChange::Create {
@@ -78,7 +78,7 @@ async fn widened(store_name: &str, stored: i64) -> Result<(), rdlt_connector::Co
     staged(&mut session, 1, 1, first).await;
     session
         .session
-        .commit(&meta(&session, 1, 1, &[1]))
+        .commit(&meta(&session, 1, &[1]))
         .await
         .expect("the first row commits");
     let widen = TableChange::Widen {
@@ -95,7 +95,7 @@ async fn widened(store_name: &str, stored: i64) -> Result<(), rdlt_connector::Co
     staged(&mut session, 2, 2, second).await;
     session
         .session
-        .commit(&meta(&session, 1, 2, &[2]))
+        .commit(&meta(&session, 2, &[2]))
         .await
         .expect("the table merges at the type it has");
     widening
@@ -171,7 +171,7 @@ async fn a_table_that_holds_tombstones_takes_a_widen_whatever_its_sequence_is() 
     for (case, kind) in kinds.into_iter().enumerate() {
         let name = format!("widened-over-a-tombstone-{case}");
         let destination = store(&name).await;
-        let mut session = open(destination.as_ref(), "p", 1).await;
+        let mut session = open(destination.as_ref(), "p").await;
         let create = TableChange::Create {
             table: changes(),
             schema: TableSchema::new(vec![
@@ -202,7 +202,7 @@ async fn a_table_that_holds_tombstones_takes_a_widen_whatever_its_sequence_is() 
                 .await
                 .expect("buffers");
             writer.flush().await.expect("the flush stages");
-            let commit = meta(&session, 1, segment, &[segment]);
+            let commit = meta(&session, segment, &[segment]);
             session.session.commit(&commit).await.expect("the commit");
         }
         for column in ["v", "id"] {
@@ -221,7 +221,7 @@ async fn a_table_that_holds_tombstones_takes_a_widen_whatever_its_sequence_is() 
 #[tokio::test]
 async fn a_widen_a_staged_value_does_not_fit_is_refused() {
     let destination = store("widened-staged").await;
-    let mut session = open(destination.as_ref(), "p", 1).await;
+    let mut session = open(destination.as_ref(), "p").await;
     let seconds = LogicalType::Timestamp(TimeUnit::Second, None);
     let create = TableChange::Create {
         table: events(),
@@ -248,7 +248,7 @@ async fn a_widen_a_staged_value_does_not_fit_is_refused() {
     let refused = session.session.apply_schema(&widen).await;
     let refused = refused.expect_err("the staged value does not fit");
     assert_eq!(refused.code(), Some("schema_conflict"));
-    let commit = meta(&session, 1, 1, &[1]);
+    let commit = meta(&session, 1, &[1]);
     session
         .session
         .commit(&commit)
@@ -280,7 +280,7 @@ async fn committed(session: &mut OpenedSession, segment: u64, batch: RecordBatch
     writer.flush().await.expect("the flush stages");
     session
         .session
-        .commit(&meta(session, 1, segment, &[segment]))
+        .commit(&meta(session, segment, &[segment]))
         .await
         .expect("the rows commit");
 }
@@ -318,7 +318,7 @@ async fn to_json(
     Vec<(i64, Option<String>)>,
 ) {
     let destination = store(store_name).await;
-    let mut session = open(destination.as_ref(), "p", 1).await;
+    let mut session = open(destination.as_ref(), "p").await;
     let create = TableChange::Create {
         table: events(),
         schema: TableSchema::new(vec![
@@ -460,7 +460,7 @@ async fn text_the_engine_rendered_a_type_as_becomes_that_type_s_json_when_it_wid
     for (case, (logical, text, json)) in cases.into_iter().enumerate() {
         let name = format!("widened-lowered-{case}");
         let destination = store(&name).await;
-        let mut session = open(destination.as_ref(), "p", 1).await;
+        let mut session = open(destination.as_ref(), "p").await;
         let create = TableChange::Create {
             table: events(),
             schema: TableSchema::new(vec![

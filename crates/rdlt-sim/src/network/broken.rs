@@ -19,9 +19,9 @@ use arrow_array::{Int64Array, RecordBatch};
 use rdlt_connector::limits::ListenLimits;
 use rdlt_connector::wire::{INVALID_MESSAGE, MALFORMED_FRAME, PROTOCOL_VERSION, TRANSPORT, v1};
 use rdlt_connector::{
-    ConnectorError, ConnectorId, Destination as _, LoadId, OpenContext, Partition, PipelineId,
-    ReadRequest, Role, SchemaVersion, SegmentId, Source as _, SourceEvent, StreamName, TablePath,
-    TableRef, partition_channel,
+    ConnectorError, ConnectorId, Destination as _, OpenContext, Partition, PipelineId, ReadRequest,
+    Role, SchemaVersion, SegmentId, Source as _, SourceEvent, StreamName, TablePath, TableRef,
+    partition_channel,
 };
 use rdlt_host::{
     CONNECTOR_LOST, Connection, ConnectorRef, DEADLINE_EXCEEDED, Deadlines, MAX_FREE_FRAMES,
@@ -512,7 +512,6 @@ async fn read(connection: Arc<Connection>, barrier: bool) -> Ended {
 fn context() -> OpenContext {
     OpenContext {
         pipeline: PipelineId::parse("sim-broken").expect("a valid pipeline id"),
-        load_id: LoadId::from_parts(std::time::UNIX_EPOCH, 1),
     }
 }
 

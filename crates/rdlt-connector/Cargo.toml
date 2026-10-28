@@ -72,7 +72,6 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 tokio-util.workspace = true
 unicase = { workspace = true, optional = true }
-uuid.workspace = true
 zeroize.workspace = true
 
 [target.'cfg(unix)'.dependencies]

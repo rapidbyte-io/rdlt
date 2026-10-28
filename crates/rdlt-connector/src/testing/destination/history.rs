@@ -71,19 +71,17 @@ impl Bench<'_> {
     }
 
     /// Commits each of `commits` in turn to a history table of `kind`, each in a session of its
-    /// own, loads numbered from `load` times sixteen, and returns the versions it publishes after
-    /// each.
+    /// own, and returns the versions it publishes after each.
     async fn versioned(
         &self,
-        (suffix, load): (&str, u8),
+        suffix: &str,
         kind: Kind,
         commits: &[&[Row]],
     ) -> Result<Vec<Vec<Version>>, Violation> {
         let table = self.history_table(suffix, kind);
         let mut published = Vec::with_capacity(commits.len());
-        for (index, rows) in commits.iter().enumerate() {
-            let load = load * 16 + u8::try_from(index).unwrap_or(0);
-            let mut opened = self.open(self.destination, load).await?;
+        for rows in commits {
+            let mut opened = self.open(self.destination).await?;
             let create = TableChange::Create {
                 table: table.clone(),
                 schema: stored(kind),
@@ -92,8 +90,7 @@ impl Bench<'_> {
             let mut writer = bounded_call("writer", opened.session.writer(&table)).await?;
             bounded_call("write", writer.write(SegmentId(1), written(rows, kind))).await?;
             bounded_call("flush", writer.flush()).await?;
-            let committing = meta(self.load_id(load), opened.epoch, &[1], Vec::new());
-            commit(&mut opened.session, &committing).await?;
+            commit(&mut opened, meta(&[1], Vec::new())).await?;
             drop(writer);
             bounded_call("close", opened.session.close()).await?;
             published.push(self.versions(&table).await?);
@@ -175,7 +172,7 @@ impl Bench<'_> {
                 upsert(3, "d", 3, 22),
             ],
         ];
-        let published = self.versioned(("plain", 2), Kind::Plain, &commits).await?;
+        let published = self.versioned("plain", Kind::Plain, &commits).await?;
         let (x, y) = (closed(1, "x", 10, 11, 1), current(1, "y", 11, 2));
         expect(
             &published,
@@ -205,7 +202,7 @@ impl Bench<'_> {
                 upsert(2, "c", 5, 5),
             ],
         ];
-        let published = self.versioned(("late", 5), Kind::Plain, &commits).await?;
+        let published = self.versioned("late", Kind::Plain, &commits).await?;
         let expected = [
             closed(1, "a", 30, 30, 1),
             current(1, "b", 30, 2),
@@ -225,7 +222,7 @@ impl Bench<'_> {
             &[upsert(1, "b", 3, 15)],
         ];
         let published = self
-            .versioned(("reopened", 6), Kind::Changes { soft: false }, &commits)
+            .versioned("reopened", Kind::Changes { soft: false }, &commits)
             .await?;
         let expected = [closed(1, "a", 10, 20, 1), current(1, "b", 20, 3)];
         expect(
@@ -244,7 +241,7 @@ impl Bench<'_> {
         let commits = changed_commits();
         let commits: Vec<&[Row]> = commits.iter().map(Vec::as_slice).collect();
         let published = self
-            .versioned(("changes", 3), Kind::Changes { soft: false }, &commits)
+            .versioned("changes", Kind::Changes { soft: false }, &commits)
             .await?;
         let what = "a change stream's history";
         let a = closed(1, "a", 10, 40, 1);
@@ -295,7 +292,7 @@ impl Bench<'_> {
             &[truncate(7, 70), upsert(3, "c", 8, 80)],
         ];
         let published = self
-            .versioned(("soft", 4), Kind::Changes { soft: true }, &commits)
+            .versioned("soft", Kind::Changes { soft: true }, &commits)
             .await?;
         let what = "a history with soft deletes";
         let a = closed(1, "a", 10, 30, 1);

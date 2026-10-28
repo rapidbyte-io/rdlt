@@ -13,8 +13,8 @@ use arrow_schema::{DataType, Field as ArrowField, TimeUnit};
 use proptest::prelude::*;
 use rdlt_connector::{
     Capabilities, ChangeOp, ColumnKey, ColumnPath, DELETED_AT_COLUMN, DecimalType, Field,
-    GenerationId, LoadId, LogicalType, OP_COLUMN, SEQ_COLUMN, SchemaChanges, SchemaVersion,
-    SegmentId, StreamName, TablePath, TableRef, TableSchema, TypeKind,
+    GenerationId, LogicalType, OP_COLUMN, SEQ_COLUMN, SchemaChanges, SchemaVersion, SegmentId,
+    StreamName, TablePath, TableRef, TableSchema, TypeKind,
 };
 
 mod decimals;
@@ -59,7 +59,7 @@ fn resolver(capabilities: Capabilities, stream: StreamPlan, key: &[&str]) -> Res
         naming: Naming::new(capabilities.identifiers.clone()),
         capabilities: Arc::new(capabilities),
         meta: MetaNames {
-            load_id: "_rdlt_load_id".into(),
+            load_epoch: "_rdlt_load_epoch".into(),
             loaded_at: "_rdlt_loaded_at".into(),
             seq: (!key.is_empty()).then(|| "_rdlt_seq".into()),
             id: None,
@@ -377,7 +377,6 @@ fn table(name: &str) -> TableRef {
 fn stamp() -> Stamp {
     Stamp {
         epoch: rdlt_connector::Epoch(3),
-        load_id: LoadId::from_parts(UNIX_EPOCH + Duration::from_secs(1_000), 5),
         loaded_at: UNIX_EPOCH + Duration::from_secs(1_000),
         received_at: UNIX_EPOCH + Duration::from_secs(1_000),
         segment: SegmentId(7),
@@ -386,7 +385,7 @@ fn stamp() -> Stamp {
 }
 
 /// The values of `batch`'s column `index`, a dictionary of one value per batch encoding values of
-/// `values`: the load id and load start.
+/// `values`: the load epoch and load start.
 fn constant(batch: &RecordBatch, index: usize, values: &DataType) -> ArrayRef {
     let column = batch.column(index);
     assert_eq!(
@@ -444,7 +443,13 @@ fn prepared_batches_convert_exactly_lower_to_the_destination_and_carry_metadata(
         .collect();
     assert_eq!(
         names,
-        ["id", "amount", "tags", "_rdlt_load_id", "_rdlt_loaded_at"]
+        [
+            "id",
+            "amount",
+            "tags",
+            "_rdlt_load_epoch",
+            "_rdlt_loaded_at"
+        ]
     );
     assert_eq!(out.column(0).as_primitive::<Int64Type>().values(), &[1, 2]);
     assert_eq!(out.column(1).data_type(), &DataType::Decimal128(10, 2));
@@ -455,11 +460,11 @@ fn prepared_batches_convert_exactly_lower_to_the_destination_and_carry_metadata(
         "minimal destinations store lists as text"
     );
     assert!(tags.is_null(1));
-    let load_ids = constant(&out, 3, &DataType::Utf8);
+    let epochs = constant(&out, 3, &DataType::Int64);
     assert_eq!(
-        load_ids.as_string::<i32>().value(0).len(),
-        36,
-        "UUIDs lower to hyphenated text"
+        epochs.as_primitive::<Int64Type>().value(0),
+        3,
+        "the session's epoch, an integer every destination stores"
     );
     let loaded_at = constant(
         &out,
@@ -505,9 +510,7 @@ fn nested_values_stay_native_where_the_destination_stores_them() {
     let mut native = capabilities();
     native.nested.structs = true;
     native.nested.lists = true;
-    native
-        .types
-        .extend([TypeKind::Struct, TypeKind::List, TypeKind::Uuid]);
+    native.types.extend([TypeKind::Struct, TypeKind::List]);
     let child = ArrowField::new("n", DataType::Int64, true);
     let structs = StructArray::from(vec![(
         Arc::new(child),
@@ -517,7 +520,7 @@ fn nested_values_stay_native_where_the_destination_stores_them() {
     let natively = resolver(native.clone(), plan(), &[]);
     let out = prepared(&natively, &Model::default(), &batch).batch;
     assert!(matches!(out.column(0).data_type(), DataType::Struct(_)));
-    assert_eq!(constant(&out, 1, &DataType::FixedSizeBinary(16)).len(), 1);
+    assert_eq!(constant(&out, 1, &DataType::Int64).len(), 1);
     let as_json = plan().column("s", SchemaSettings::new().nested(Nested::Json));
     let as_json = resolver(native, as_json, &[]);
     let out = prepared(&as_json, &Model::default(), &batch).batch;
@@ -859,7 +862,7 @@ fn a_views_physical_schema_is_its_lowered_columns_then_metadata() {
         [
             ("id", &LogicalType::Int64, false),
             ("tags", &LogicalType::Utf8, true),
-            ("_rdlt_load_id", &LogicalType::Utf8, false),
+            ("_rdlt_load_epoch", &LogicalType::Int64, false),
             (
                 "_rdlt_loaded_at",
                 &LogicalType::Timestamp(rdlt_connector::TimeUnit::Microsecond, Some("UTC".into())),
@@ -876,7 +879,7 @@ fn a_source_column_named_like_a_metadata_column_is_refused() {
     let error = resolver
         .resolve(
             &Model::default(),
-            &schema(&[("_rdlt_load_id", LogicalType::Int64)]),
+            &schema(&[("_rdlt_load_epoch", LogicalType::Int64)]),
         )
         .unwrap_err();
     assert_eq!(
@@ -1067,9 +1070,7 @@ fn a_value_its_column_cannot_represent_fails_the_batch() {
 
 #[test]
 fn constant_metadata_columns_are_built_once_and_sliced_per_batch() {
-    let mut uuids = capabilities();
-    uuids.types.insert(TypeKind::Uuid);
-    let resolver = resolver(uuids, plan(), &[]);
+    let resolver = resolver(capabilities(), plan(), &[]);
     let ids = |rows: i64| {
         batch(vec![(
             "id",
@@ -1080,7 +1081,7 @@ fn constant_metadata_columns_are_built_once_and_sliced_per_batch() {
     let resolution = resolver.resolve(&Model::default(), &incoming).unwrap();
     let view = Arc::new(TableView::new(&table("t"), resolution.model, &resolver).unwrap());
     let lowering = LoweringPlan::new(resolver.stream.clone(), view, incoming, resolution.routes);
-    // The keys of the load id column, and the buffer they sit in.
+    // The keys of the load epoch column, and the buffer they sit in.
     let keys = |rows: i64, stamp: &Stamp| {
         let prepared = lowering
             .prepare(ids(rows), None, stamp, None)
@@ -1103,17 +1104,14 @@ fn constant_metadata_columns_are_built_once_and_sliced_per_batch() {
     assert_eq!(keys(100, &stamp), hundred, "and so does the size after it");
     assert_ne!(keys(101, &stamp), hundred, "a larger batch gets its own");
     let later = Stamp {
-        load_id: LoadId::from_parts(UNIX_EPOCH + Duration::from_secs(2_000), 6),
+        epoch: rdlt_connector::Epoch(6),
         ..stamp
     };
     let forty_one = keys(41, &stamp);
-    assert_ne!(keys(41, &later), forty_one, "another load gets its own");
+    assert_ne!(keys(41, &later), forty_one, "another session gets its own");
     let prepared = lowering.prepare(ids(3), None, &later, None).unwrap().batch;
-    let load_ids = constant(&prepared, 1, &DataType::FixedSizeBinary(16));
-    assert_eq!(
-        load_ids.as_fixed_size_binary().value(2),
-        later.load_id.as_bytes()
-    );
+    let epochs = constant(&prepared, 1, &DataType::Int64);
+    assert_eq!(epochs.as_primitive::<Int64Type>().value(2), 6);
 }
 
 /// `batch` with its metadata columns decoded to the values they encode.
@@ -1141,11 +1139,9 @@ fn decoded(batch: &RecordBatch) -> RecordBatch {
 proptest! {
     #[test]
     fn a_plan_reused_across_batches_lowers_each_as_a_fresh_plan_does(
-        batches in proptest::collection::vec((1_i64..300, 0_u128..3, 0_u64..3), 1..12),
+        batches in proptest::collection::vec((1_i64..300, 0_u64..3, 0_u64..3), 1..12),
     ) {
-        let mut uuids = capabilities();
-        uuids.types.insert(TypeKind::Uuid);
-        let resolver = resolver(uuids, plan(), &[]);
+        let resolver = resolver(capabilities(), plan(), &[]);
         let ids = |rows: i64| {
             batch(vec![("id", Arc::new(Int64Array::from_iter_values(0..rows)) as _)])
         };
@@ -1156,18 +1152,19 @@ proptest! {
             LoweringPlan::new(resolver.stream.clone(), Arc::clone(&view), incoming.clone(), resolution.routes.clone())
         };
         let reused = fresh();
-        // The load id and load start vary apart, so each is checked on its own.
-        for (rows, load, start) in batches {
+        // The epoch and load start vary apart, so each is checked on its own.
+        for (rows, epoch, start) in batches {
             let stamp = Stamp {
-                load_id: LoadId::from_parts(UNIX_EPOCH + Duration::from_secs(1_000), load),
+                epoch: rdlt_connector::Epoch(epoch),
                 loaded_at: UNIX_EPOCH + Duration::from_secs(1_000 + start),
                 ..stamp()
             };
             let batch = ids(rows);
             let lowered = decoded(&reused.prepare(batch.clone(), None, &stamp, None).unwrap().batch);
             prop_assert_eq!(&lowered, &decoded(&fresh().prepare(batch.clone(), None, &stamp, None).unwrap().batch));
-            let load_ids = lowered.column(1).as_fixed_size_binary();
-            prop_assert!(load_ids.iter().all(|id| id == Some(stamp.load_id.as_bytes().as_slice())));
+            let epochs = lowered.column(1).as_primitive::<Int64Type>();
+            let epoch = i64::try_from(stamp.epoch.0).unwrap();
+            prop_assert!(epochs.iter().all(|stored| stored == Some(epoch)));
             let loaded_at = lowered.column(2).as_primitive::<TimestampMicrosecondType>();
             let micros = i64::try_from(stamp.loaded_at.duration_since(UNIX_EPOCH).unwrap().as_micros()).unwrap();
             prop_assert!(loaded_at.iter().all(|at| at == Some(micros)));
@@ -1468,20 +1465,20 @@ fn a_column_stored_as_another_type_names_its_logical_type_in_the_batch() {
 
 #[test]
 fn a_metadata_column_stored_as_another_type_names_its_logical_type_too() {
-    let mut text_ids = capabilities();
-    text_ids.types.remove(&TypeKind::Uuid);
-    let resolver = resolver(text_ids, plan(), &[]);
+    let mut text_times = capabilities();
+    text_times.types.remove(&TypeKind::Timestamp);
+    let resolver = resolver(text_times, plan(), &[]);
     let model = created(&resolver, &[("n", LogicalType::Int64)]);
     let batch = batch(vec![("n", Arc::new(Int64Array::from(vec![2])) as ArrayRef)]);
     let prepared = prepared(&resolver, &model, &batch);
     let schema = prepared.batch.schema();
-    let load_id = schema.field_with_name("_rdlt_load_id").unwrap();
-    let named = load_id
+    let loaded_at = schema.field_with_name("_rdlt_loaded_at").unwrap();
+    let named = loaded_at
         .metadata()
         .get(rdlt_connector::LOGICAL_TYPE_KEY)
         .unwrap();
     let logical: LogicalType = serde_json::from_str(named).unwrap();
-    assert_eq!(logical, LogicalType::Uuid);
+    assert_eq!(logical, super::lower::loaded_at_type());
 }
 
 /// Columns `fields`, those named in `rounded` holding an integer a float would round.

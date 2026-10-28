@@ -1,11 +1,7 @@
-use std::time::UNIX_EPOCH;
-
 use bytes::Bytes;
 use proptest::prelude::*;
 use rdlt_connector::wire::{answer_bytes, commit_bytes, record_bytes};
-use rdlt_connector::{
-    CommitMeta, CommitSeq, Epoch, LoadId, SegmentSet, StateChange, StateKey, StateRecord,
-};
+use rdlt_connector::{CommitKey, CommitMeta, Epoch, SegmentSet, StateChange, StateRecord};
 
 use super::{Measured, StateLimits, Stored};
 use crate::config::EngineConfig;
@@ -61,16 +57,17 @@ impl Stored {
 
 fn meta(delta: Vec<StateChange>) -> CommitMeta {
     CommitMeta {
-        load_id: LoadId::from_parts(UNIX_EPOCH, 1),
-        commit_seq: CommitSeq::FIRST,
-        epoch: Epoch(1),
+        key: CommitKey {
+            epoch: Epoch(1),
+            seq: 1,
+        },
+        after: None,
         segments: SegmentSet::new(),
         abandoned: SegmentSet::new(),
         state_delta: delta,
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
-        horizon: None,
     }
 }
 
@@ -141,24 +138,6 @@ fn a_commit_that_grows_no_state_is_admitted_though_state_is_past_the_limit() {
     let error = over
         .admit_all(&meta(vec![StateChange::Put(record("a", 2001))]))
         .unwrap_err();
-    assert_eq!(error.code(), Some(codes::STATE_BYTES_EXCEEDED));
-}
-
-#[test]
-fn past_the_limit_the_receipt_taking_a_byte_more_grows_no_state() {
-    let receipt = StateKey::Receipt.encode();
-    let records = [record("a", 2000), record(&receipt, 100)];
-    let over = Stored::of(&records, limits(1000, ROOM));
-    let replacing = |bytes, receipt_bytes| {
-        meta(vec![
-            StateChange::Put(record("a", bytes)),
-            StateChange::Put(record(&receipt, receipt_bytes)),
-        ])
-    };
-    over.admit_all(&replacing(2000, 101)).unwrap();
-    over.admit_all(&replacing(1999, 200)).unwrap();
-    // Another record growing is refused, though the receipt shrinks by as much.
-    let error = over.admit_all(&replacing(2001, 99)).unwrap_err();
     assert_eq!(error.code(), Some(codes::STATE_BYTES_EXCEEDED));
 }
 

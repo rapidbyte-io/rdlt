@@ -729,6 +729,7 @@ async fn every_failed_attempt_closes_the_session_it_opened() {
         (Step::Commit, "closed-commit"),
         (Step::StallWrites, "closed-stall"),
         (Step::GarbleState, "closed-state"),
+        (Step::EpochPastColumn, "closed-epoch"),
     ] {
         let (destination, sessions) = counting(failing(memory(name).await, step));
         let (_, source) = Script::new(vec![ScriptStream::new("events", 1, 20, 5)])
@@ -747,6 +748,28 @@ async fn every_failed_attempt_closes_the_session_it_opened() {
         assert!(opened >= 1, "{step:?}");
         assert_eq!(sessions.closed.load(Ordering::SeqCst), opened, "{step:?}");
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_open_at_an_epoch_no_load_column_holds_fails_the_run_typed() {
+    use crate::support::destinations::{Step, failing};
+    let (_, source) = Script::new(vec![ScriptStream::new("events", 1, 20, 5)])
+        .connect("past_epoch")
+        .await;
+    let outcome = engine(retrying(2))
+        .run(
+            pipeline("past-epoch", [stream("events").read(ReadMode::Incremental)]),
+            source,
+            failing(memory("past_epoch").await, Step::EpochPastColumn),
+        )
+        .await;
+    assert_eq!(outcome.report.status, RunStatus::Failed);
+    let error = outcome.error.expect("the run failed");
+    assert_eq!(
+        (error.kind(), error.code()),
+        (ErrorKind::Destination, Some(codes::STATE_INVALID))
+    );
+    assert_eq!(outcome.report.attempts.len(), 1, "no retry mends it");
 }
 
 #[tokio::test(start_paused = true)]

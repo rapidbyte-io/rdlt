@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use rdlt_connector::{
-    Field, LoadId, LogicalType, OpenContext, PipelineId, SchemaVersion, SegmentId, TableChange,
-    TablePath, TableRef, TableSchema,
+    Field, LogicalType, OpenContext, PipelineId, SchemaVersion, SegmentId, TableChange, TablePath,
+    TableRef, TableSchema,
 };
 use rdlt_wire::Limits;
 use tokio::runtime::Handle;
@@ -215,7 +215,6 @@ async fn hung_writer_released(net: Arc<Net>) -> (bool, (usize, Held)) {
     let destination = placing.destination(&config, false).await;
     let context = OpenContext {
         pipeline: PipelineId::parse("released").expect("a valid pipeline id"),
-        load_id: LoadId::from_parts(std::time::UNIX_EPOCH, 1),
     };
     let mut opened = tokio::time::timeout(WAIT, destination.open(&context))
         .await

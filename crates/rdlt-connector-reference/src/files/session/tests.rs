@@ -1,7 +1,7 @@
 use std::sync::Arc;
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::Duration;
 
-use rdlt_connector::{Epoch, GenerationId, LoadId, PipelineId};
+use rdlt_connector::{Epoch, GenerationId, PipelineId};
 
 use super::Location;
 use crate::files::FileFormat;
@@ -19,7 +19,6 @@ pub(crate) fn location(format: FileFormat) -> (tempfile::TempDir, Location) {
         dir: Arc::new(dir),
         format,
         epoch: Epoch(7),
-        load_id: LoadId::from_parts(UNIX_EPOCH, 1),
         lock_wait: Duration::from_secs(20),
     };
     (root, location)
@@ -28,16 +27,12 @@ pub(crate) fn location(format: FileFormat) -> (tempfile::TempDir, Location) {
 #[test]
 fn a_staged_file_s_place_names_its_session_its_segment_its_table_and_its_part() {
     let (root, location) = location(FileFormat::Arrow);
-    let load = location.load_id.to_string();
     let (names, file) = location.staged(&["3".to_owned()], "rows", None, 9);
-    assert_eq!(names, ["staging", "7", load.as_str(), "3", "rows", "table"]);
+    assert_eq!(names, ["staging", "7", "3", "rows", "table"]);
     assert_eq!(file, "9.arrow");
     let segment = ["merged".to_owned(), "4".to_owned()];
     let (names, file) = location.staged(&segment, "rows", Some(GenerationId(5)), 0);
-    assert_eq!(
-        names,
-        ["staging", "7", load.as_str(), "merged", "4", "rows", "g5"]
-    );
+    assert_eq!(names, ["staging", "7", "merged", "4", "rows", "g5"]);
     assert_eq!(file, "0.arrow");
     let dir = location.staging(&names).unwrap();
     let made = root.path().join("pipeline").join(names.join("/"));
@@ -64,7 +59,7 @@ fn a_staged_file_s_directory_and_every_directory_made_for_it_are_synced() {
     let (root, location) = location(FileFormat::Jsonl);
     let pipeline = root.path().join("pipeline");
     let (names, file) = location.staged(&["3".to_owned()], "rows", None, 1);
-    location.staging(&names[..3]).unwrap();
+    location.staging(&names[..2]).unwrap();
     trace::clear();
     let dir = location.staging(&names).unwrap();
     let ids: arrow_array::ArrayRef = Arc::new(arrow_array::Int64Array::from(vec![1, 2]));
@@ -73,35 +68,36 @@ fn a_staged_file_s_directory_and_every_directory_made_for_it_are_synced() {
     let synced = trace::synced();
     // Each new directory's entry is synced in its parent, and the file's in its own; the
     // directories that were there are not synced again.
-    let load = pipeline.join(names[..3].join("/"));
+    let session = pipeline.join(names[..2].join("/"));
     let expected = [
-        load.clone(),
-        load.join("3"),
-        load.join("3").join("rows"),
-        load.join("3").join("rows").join("table"),
+        session.clone(),
+        session.join("3"),
+        session.join("3").join("rows"),
+        session.join("3").join("rows").join("table"),
     ];
     assert_eq!(synced, expected);
 }
 
 #[test]
-fn a_file_a_commit_writes_is_named_for_its_own_load_and_number_and_for_no_other_try() {
-    use rdlt_connector::{CommitMeta, CommitSeq, SegmentSet};
+fn a_file_a_commit_writes_is_named_for_its_own_key_and_for_no_other_try() {
+    use rdlt_connector::{CommitKey, CommitMeta, SegmentSet};
     let meta = CommitMeta {
-        load_id: LoadId::from_parts(UNIX_EPOCH, 42),
-        commit_seq: CommitSeq::FIRST.next(),
-        epoch: Epoch(7),
+        key: CommitKey {
+            epoch: Epoch(7),
+            seq: 2,
+        },
+        after: None,
         segments: SegmentSet::default(),
         abandoned: SegmentSet::new(),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
-        horizon: None,
     };
     let [kind, first] = Location::written_by("merged", &meta).unwrap();
     let [_, second] = Location::written_by("merged", &meta).unwrap();
     assert_eq!(kind, "merged");
-    let commit = format!("{}-2-", meta.load_id);
+    let commit = format!("{}-2-", meta.key.epoch);
     assert!(
         first.starts_with(&commit) && first.len() == commit.len() + 32,
         "{first}"
@@ -151,6 +147,8 @@ pub(crate) struct Sessions {
     pub(crate) root: tempfile::TempDir,
     pub(crate) location: Location,
     pub(in crate::files::session) shared: parking_lot::Mutex<super::Shared>,
+    /// The receipt of the last commit that had landed when the session opened.
+    pub(crate) landed: Option<rdlt_connector::Receipt>,
 }
 
 impl Sessions {
@@ -161,21 +159,22 @@ impl Sessions {
             root,
             location,
             shared: parking_lot::Mutex::default(),
+            landed: None,
         };
-        sessions.open(1);
+        sessions.open();
         sessions
     }
 
-    /// Opens the pipeline's next session for `load`, as an open does: the next epoch, and what
-    /// older sessions staged and never published discarded.
-    pub(crate) fn open(&mut self, load: u128) {
+    /// Opens the pipeline's next session, as an open does: the next epoch, the last commit that
+    /// landed, and what older sessions staged and never published discarded.
+    pub(crate) fn open(&mut self) {
         let (dir, rdlt) = (&self.location.dir, &self.location.rdlt);
         let wait = self.location.lock_wait;
         let manifest =
             crate::files::destination::next_epoch(dir, rdlt, &self.location.pipeline, wait)
                 .unwrap();
         self.location.epoch = manifest.epoch;
-        self.location.load_id = LoadId::from_parts(UNIX_EPOCH, load);
+        self.landed = manifest.fence().landed;
         self.shared = parking_lot::Mutex::default();
         crate::files::destination::discard(dir, manifest.epoch).unwrap();
     }
@@ -209,18 +208,16 @@ impl Sessions {
         super::stage(&self.location, &self.shared, table, buffered).unwrap();
     }
 
-    /// Commit `seq` of `load` of `segments`.
-    pub(crate) fn meta(
-        &self,
-        load: u128,
-        seq: u64,
-        segments: &[u64],
-    ) -> rdlt_connector::CommitMeta {
-        let seq = (1..seq).fold(rdlt_connector::CommitSeq::FIRST, |seq, _| seq.next());
+    /// Commit `seq` of the session, of `segments`, expecting the commit the latest manifest
+    /// holds landed.
+    pub(crate) fn meta(&self, seq: u64, segments: &[u64]) -> rdlt_connector::CommitMeta {
+        let latest = crate::files::manifest::latest(&self.location.dir).unwrap();
         rdlt_connector::CommitMeta {
-            load_id: LoadId::from_parts(UNIX_EPOCH, load),
-            commit_seq: seq,
-            epoch: self.location.epoch,
+            key: rdlt_connector::CommitKey {
+                epoch: self.location.epoch,
+                seq,
+            },
+            after: latest.and_then(|manifest| manifest.fence().landed.map(|landed| landed.key)),
             segments: segments
                 .iter()
                 .copied()
@@ -231,7 +228,6 @@ impl Sessions {
             finish_generations: Vec::new(),
             child_tables: Vec::new(),
             drop_tables: Vec::new(),
-            horizon: None,
         }
     }
 

@@ -7,7 +7,7 @@ mod tests;
 use std::collections::BTreeMap;
 
 use rdlt_connector::wire::{answer_bytes, commit_bytes, record_bytes};
-use rdlt_connector::{CommitMeta, StateChange, StateKey, StateRecord, StreamName};
+use rdlt_connector::{CommitMeta, StateChange, StateRecord, StreamName};
 
 use crate::config::EngineConfig;
 use crate::error::{Error, codes};
@@ -116,10 +116,8 @@ impl Stored {
     /// it, within its limit or no more than what is stored, and its own request within its
     /// limit.
     ///
-    /// State stored under a larger limit, before the memory was lowered, or by a replayed commit
-    /// logged under one, is past the limit: a commit that does not grow it lands, so a pipeline
-    /// whose limit fell keeps loading. The receipt, which every commit replaces, is not counted
-    /// there: it takes a byte more whenever one of its numbers gains a digit.
+    /// State stored under a larger limit, before the memory was lowered, is past the limit: a
+    /// commit that does not grow it lands, so a pipeline whose limit fell keeps loading.
     ///
     /// The records of child tables state does not record yet, `born` by their keys with their
     /// streams, are blamed first: where the state would fit without them, the commit is refused
@@ -130,7 +128,7 @@ impl Stored {
     /// A `Schema` error coded `child_tables_exceeded` where only the new child tables' records
     /// take state past its limit, else a `Config` error coded `state_bytes_exceeded` where the
     /// commit would grow state past its limit or send a request past its: nothing of the commit
-    /// is logged, acknowledged or sent.
+    /// is acknowledged or sent.
     pub(crate) fn admit(
         &self,
         measured: &Measured,
@@ -224,13 +222,11 @@ impl Stored {
         })
     }
 
-    /// Bytes: by how much `changed` leaves the records other than the receipt taking more than
-    /// they take.
+    /// Bytes: by how much `changed` leaves the records taking more than they take.
     fn growth(&self, changed: &Changed) -> u64 {
-        let receipt = StateKey::Receipt.encode();
-        let (more, less) = changed.iter().filter(|(key, _)| **key != receipt).fold(
-            (0_u64, 0_u64),
-            |(more, less), (key, bytes)| {
+        let (more, less) = changed
+            .iter()
+            .fold((0_u64, 0_u64), |(more, less), (key, bytes)| {
                 let (before, bytes) = (
                     self.records.get(key).copied().unwrap_or(0),
                     bytes.unwrap_or(0),
@@ -239,8 +235,7 @@ impl Stored {
                     more.saturating_add(bytes.saturating_sub(before)),
                     less.saturating_add(before.saturating_sub(bytes)),
                 )
-            },
-        );
+            });
         more.saturating_sub(less)
     }
 }

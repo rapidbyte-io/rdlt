@@ -2,16 +2,15 @@
 //! change follows it, and dropping the table is what clears it.
 
 use std::sync::Arc;
-use std::time::UNIX_EPOCH;
 
 use arrow_array::cast::AsArray;
 use arrow_array::types::Int64Type;
 use arrow_array::{ArrayRef, BinaryArray, Int8Array, Int64Array, RecordBatch};
 use rdlt_connector::{
-    ChangeColumns, ChangeOp, CommitMeta, CommitSeq, ConnectContext, Deletion, Destination,
-    DestinationConnector, DroppedTable, Field, LoadId, LogicalType, MergeKey, OpenContext,
-    PipelineId, PublishedReader, ReadBack, SchemaVersion, SegmentId, TableChange, TablePath,
-    TableRef, TableSchema, readable_destination_factory,
+    ChangeColumns, ChangeOp, CommitKey, CommitMeta, ConnectContext, Deletion, Destination,
+    DestinationConnector, DroppedTable, Field, LogicalType, MergeKey, OpenContext, PipelineId,
+    PublishedReader, ReadBack, SchemaVersion, SegmentId, TableChange, TablePath, TableRef,
+    TableSchema, readable_destination_factory,
 };
 use rdlt_connector_reference::{MemoryDestination, SqliteDestination};
 use serde_json::json;
@@ -64,10 +63,9 @@ fn position(seq: u64) -> [u8; 16] {
 }
 
 /// Commits `batch`, and the drop of the table where `dropping`, in a session of its own.
-async fn commit(destination: &dyn Destination, load: u128, batch: Option<RecordBatch>, drop: bool) {
+async fn commit(destination: &dyn Destination, batch: Option<RecordBatch>, drop: bool) {
     let context = OpenContext {
         pipeline: PipelineId::parse("poisoned").expect("valid pipeline id"),
-        load_id: LoadId::from_parts(UNIX_EPOCH, load),
     };
     let mut opened = destination.open(&context).await.expect("a session opens");
     if let Some(batch) = batch {
@@ -97,16 +95,17 @@ async fn commit(destination: &dyn Destination, load: u128, batch: Option<RecordB
         name: "changes".into(),
     };
     let meta = CommitMeta {
-        load_id: context.load_id,
-        commit_seq: CommitSeq::FIRST,
-        epoch: opened.epoch,
+        key: CommitKey {
+            epoch: opened.epoch,
+            seq: 1,
+        },
+        after: opened.landed.as_ref().map(|landed| landed.key),
         segments: [SegmentId(1)].into_iter().collect(),
         abandoned: rdlt_connector::SegmentSet::new(),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: if drop { vec![dropped] } else { Vec::new() },
-        horizon: None,
     };
     opened
         .session
@@ -146,7 +145,6 @@ where
     let insert = |id: i64, seq: u64| (Some(id), position(seq), ChangeOp::Insert);
     commit(
         destination,
-        1,
         Some(changes(&[insert(1, 10), insert(2, 11)])),
         false,
     )
@@ -154,20 +152,18 @@ where
     assert_eq!(ids(reader).await, [1, 2]);
     // No sequence follows the greatest: the truncate removes every row and bounds every change.
     let greatest = (None, [u8::MAX; 16], ChangeOp::Truncate);
-    commit(destination, 2, Some(changes(&[greatest])), false).await;
+    commit(destination, Some(changes(&[greatest])), false).await;
     commit(
         destination,
-        3,
         Some(changes(&[insert(3, 12), insert(1, u64::MAX)])),
         false,
     )
     .await;
     assert_eq!(ids(reader).await, Vec::<i64>::new());
     // Dropped, as a reset of the stream with its tables drops it, the table forgets the bound.
-    commit(destination, 4, None, true).await;
+    commit(destination, None, true).await;
     commit(
         destination,
-        5,
         Some(changes(&[insert(3, 12), insert(4, 13)])),
         false,
     )

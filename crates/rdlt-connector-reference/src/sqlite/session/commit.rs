@@ -1,9 +1,9 @@
-//! What a commit's transaction does after its fence: publishing, swapping generations in, and
-//! dropping tables, each table checked against its owner record first.
+//! What a commit's transaction does: reading the fence row, then publishing, swapping
+//! generations in, and dropping tables, each table checked against its owner record first.
 
 use rdlt_connector::prelude::*;
 use rdlt_connector::sqlgen::{self, Owned, SqlPlanner, Sqlite, Staged};
-use rdlt_connector::{CommitSeq, Epoch, GenerationId, LoadId, PipelineId, SegmentSet};
+use rdlt_connector::{Epoch, Fence, GenerationId, PipelineId, SegmentSet};
 use rusqlite::Transaction;
 use rusqlite::types::Value;
 
@@ -11,30 +11,43 @@ use super::super::database::{columns, integer, query, run, run_all, text};
 use super::Columns;
 use super::owners::{owned, standing};
 
-/// The receipt stored for `(load_id, commit_seq)`, if that commit already happened.
-pub(super) fn stored(
+/// `pipeline`'s fence row: its epoch and the receipt of its last commit that landed, read
+/// under the transaction's write lock.
+pub(super) fn fence(
     transaction: &Transaction<'_>,
     planner: &SqlPlanner<Sqlite>,
     pipeline: &PipelineId,
-    load_id: LoadId,
-    commit_seq: CommitSeq,
-) -> Result<Option<Receipt>> {
-    let rows = query(transaction, &planner.receipt(pipeline, load_id, commit_seq))?;
+) -> Result<Fence> {
+    let rows = query(transaction, &planner.fence(pipeline))?;
     let Some(row) = rows.first() else {
-        return Ok(None);
+        return Err(ConnectorError::internal(format!(
+            "pipeline {pipeline} has no fence row"
+        )));
     };
-    match &row[..] {
-        [at, count, bytes] => Ok(Some(sqlgen::receipt(
-            load_id,
-            commit_seq,
+    let [epoch, landed @ ..] = &row[..] else {
+        return Err(ConnectorError::internal("a fence row has no epoch"));
+    };
+    let epoch = Epoch(sqlgen::unsigned(integer(epoch)?));
+    let landed = match landed {
+        [
+            Value::Null,
+            Value::Null,
+            Value::Null,
+            Value::Null,
+            Value::Null,
+        ] => None,
+        [key, seq, at, rows, bytes] => Some(sqlgen::receipt(
+            integer(key)?,
+            integer(seq)?,
             integer(at)?,
-            integer(count)?,
+            integer(rows)?,
             integer(bytes)?,
-        ))),
-        _ => Err(ConnectorError::internal(
-            "a stored receipt has missing fields",
         )),
-    }
+        _ => {
+            return Err(ConnectorError::internal("a fence row has missing fields"));
+        }
+    };
+    Ok(Fence { epoch, landed })
 }
 
 /// Publishes what this session staged in `meta`'s segments into each table its pipeline owns,

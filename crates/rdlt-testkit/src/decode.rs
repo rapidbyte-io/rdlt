@@ -72,7 +72,7 @@ pub fn cell(
     {
         return Canon::Null;
     }
-    // Destinations receive the load id and load start as dictionaries of one value.
+    // Destinations receive the load epoch and load start as dictionaries of one value.
     if let DataType::Dictionary(_, values) = array.data_type() {
         let plain = arrow_cast::cast(&arrow_array::make_array(array.to_data()), values)
             .expect("a dictionary casts to its values' type");

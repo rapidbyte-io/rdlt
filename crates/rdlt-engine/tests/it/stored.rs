@@ -163,7 +163,6 @@ fn ids(count: usize) -> Vec<String> {
 async fn carried(name: &str) -> u64 {
     let context = OpenContext {
         pipeline: PipelineId::parse(name).expect("a valid pipeline"),
-        load_id: rdlt_connector::LoadId::from_parts(std::time::UNIX_EPOCH, 1),
     };
     let opened = memory(name).await.open(&context).await.expect("it opens");
     answer_bytes(&opened.state)
@@ -181,7 +180,6 @@ fn state_limit(memory: u64) -> u64 {
 async fn stored(destination: &dyn Destination, name: &str) -> PipelineState {
     let context = OpenContext {
         pipeline: PipelineId::parse(name).expect("a valid pipeline"),
-        load_id: rdlt_connector::LoadId::from_parts(std::time::UNIX_EPOCH, 1),
     };
     let opened = destination
         .open(&context)

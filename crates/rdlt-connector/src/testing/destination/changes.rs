@@ -155,17 +155,16 @@ impl Bench<'_> {
     }
 
     /// Commits each of `commits` in turn to `table`, each in a session of its own, as a load
-    /// started again after each commit is, and returns what the table publishes after each; the
-    /// sessions' loads are numbered from `load` times sixteen.
+    /// started again after each commit is, and returns what the table publishes after each.
     async fn changed(
         &self,
-        (table, load): (&TableRef, u8),
+        table: &TableRef,
         soft: bool,
         commits: &[&[Change]],
     ) -> Result<Vec<Vec<Marked>>, Violation> {
         let mut published = Vec::with_capacity(commits.len());
-        for (load, changes) in (load * 16..).zip(commits) {
-            let mut opened = self.open(self.destination, load).await?;
+        for changes in commits {
+            let mut opened = self.open(self.destination).await?;
             let create = TableChange::Create {
                 table: table.clone(),
                 schema: stored(soft),
@@ -174,8 +173,7 @@ impl Bench<'_> {
             let mut writer = bounded_call("writer", opened.session.writer(table)).await?;
             bounded_call("write", writer.write(SegmentId(1), written(changes, soft))).await?;
             bounded_call("flush", writer.flush()).await?;
-            let committing = meta(self.load_id(load), opened.epoch, &[1], Vec::new());
-            commit(&mut opened.session, &committing).await?;
+            commit(&mut opened, meta(&[1], Vec::new())).await?;
             drop(writer);
             bounded_call("close", opened.session.close()).await?;
             published.push(self.marked(table).await?);
@@ -183,10 +181,9 @@ impl Bench<'_> {
         Ok(published)
     }
 
-    /// Replaces `table`'s rows whole with a generation holding `rows`, in a session of load
-    /// `load`.
-    async fn replaced(&self, table: &TableRef, load: u8, rows: &[Change]) -> Result<(), Violation> {
-        let mut opened = self.open(self.destination, load).await?;
+    /// Replaces `table`'s rows whole with a generation holding `rows`, in a session of its own.
+    async fn replaced(&self, table: &TableRef, rows: &[Change]) -> Result<(), Violation> {
+        let mut opened = self.open(self.destination).await?;
         let generation = TableRef {
             generation: Some(GENERATION),
             merge: None,
@@ -201,9 +198,9 @@ impl Bench<'_> {
         bounded_call("flush", writer.flush()).await?;
         let finishing = CommitMeta {
             finish_generations: vec![(table.path.clone(), GENERATION)],
-            ..meta(self.load_id(load), opened.epoch, &[1], Vec::new())
+            ..meta(&[1], Vec::new())
         };
-        commit(&mut opened.session, &finishing).await?;
+        commit(&mut opened, finishing).await?;
         drop(writer);
         bounded_call("close", opened.session.close()).await?;
         Ok(())
@@ -243,7 +240,7 @@ impl Bench<'_> {
                 &[upsert(2, "b", 2), upsert(9, "z", 3), upsert(3, "c", 3)],
                 &[upsert(2, "again", 7)],
             ];
-            let published = self.changed((&table, 2), false, &commits).await?;
+            let published = self.changed(&table, false, &commits).await?;
             expect(&published, 2, &[live(1, "a"), live(3, "d")], "hard deletes")?;
             let again = [live(1, "a"), live(2, "again"), live(3, "d")];
             expect(&published, 3, &again, "hard deletes")?;
@@ -260,7 +257,7 @@ impl Bench<'_> {
                 &[upsert(2, "b", 2), delete(2, 5, 50)],
                 &[upsert(2, "back", 6)],
             ];
-            let published = self.changed((&table, 3), true, &commits).await?;
+            let published = self.changed(&table, true, &commits).await?;
             let deleted = [live(1, "a"), (2, Some("b".to_owned()), Some(40))];
             expect(&published, 2, &deleted, "soft deletes")?;
             expect(
@@ -278,10 +275,10 @@ impl Bench<'_> {
     async fn replacing_forgets_tombstones(&self) -> Result<(), Violation> {
         let table = self.changed_table("replaced", false);
         let deleted: [&[Change]; 1] = [&[upsert(1, "a", 1), delete(1, 5, 50)]];
-        self.changed((&table, 4), false, &deleted).await?;
-        self.replaced(&table, 80, &[upsert(9, "i", 4)]).await?;
+        self.changed(&table, false, &deleted).await?;
+        self.replaced(&table, &[upsert(9, "i", 4)]).await?;
         let again: [&[Change]; 1] = [&[upsert(1, "again", 2)]];
-        let published = self.changed((&table, 6), false, &again).await?;
+        let published = self.changed(&table, false, &again).await?;
         let expected = [live(1, "again"), live(9, "i")];
         expect(&published, 0, &expected, "a table replaced whole")
     }
@@ -293,7 +290,7 @@ impl Bench<'_> {
         // do: a stream ignoring its deletes and truncates writes one.
         let table = self.changed_table("partial", false);
         let commits: [&[Change]; 2] = [&[upsert(1, "a", 1)], &[partial(1, 2), partial(5, 3)]];
-        let published = self.changed((&table, 2), false, &commits).await?;
+        let published = self.changed(&table, false, &commits).await?;
         expect(
             &published,
             1,
@@ -316,7 +313,7 @@ impl Bench<'_> {
                 // Changes from before the truncate stay out; one after it lands.
                 &[upsert(1, "a", 1), upsert(3, "c", 3), upsert(7, "g", 7)],
             ];
-            let published = self.changed((&table, 2), false, &commits).await?;
+            let published = self.changed(&table, false, &commits).await?;
             expect(
                 &published,
                 2,
@@ -334,7 +331,7 @@ impl Bench<'_> {
                 &[upsert(3, "c", 3), truncate(4, 40), upsert(4, "d", 5)],
                 &[upsert(1, "a", 1)],
             ];
-            let published = self.changed((&table, 3), true, &commits).await?;
+            let published = self.changed(&table, true, &commits).await?;
             let marked = [
                 (1, Some("a".to_owned()), Some(40)),
                 (2, Some("b".to_owned()), Some(40)),
@@ -366,7 +363,7 @@ impl Bench<'_> {
             &[upsert(1, "new", 5)],
             &[upsert(1, "old", 3), upsert(2, "b", 4), upsert(2, "b", 4)],
         ];
-        let published = self.changed((&table, 2), false, &commits).await?;
+        let published = self.changed(&table, false, &commits).await?;
         expect(&published, 1, &[live(1, "new"), live(2, "b")], "changes")
     }
 }

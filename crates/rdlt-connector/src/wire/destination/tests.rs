@@ -44,8 +44,7 @@ fn a_table_named_as_no_destination_identifier_is_refused() {
 #[test]
 fn a_commit_naming_a_table_as_no_destination_identifier_is_refused() {
     let commit = |dropped: &str, child: &str| v1::CommitMeta {
-        load_id: vec![0; 16].into(),
-        commit_seq: 1,
+        key: Some(v1::CommitKey { epoch: 1, seq: 1 }),
         drop_tables: vec![v1::DroppedTable {
             path: Some(v1::TablePath {
                 segments: vec!["orders".to_owned()],

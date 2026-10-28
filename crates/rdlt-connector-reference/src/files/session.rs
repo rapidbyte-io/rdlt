@@ -15,7 +15,7 @@ use std::time::Duration;
 use arrow_array::RecordBatch;
 use parking_lot::Mutex;
 use rdlt_connector::prelude::*;
-use rdlt_connector::{Epoch, GenerationId, LoadId, PipelineId, SegmentId, TablePath};
+use rdlt_connector::{Epoch, GenerationId, PipelineId, SegmentId, TablePath};
 
 use super::format::FileFormat;
 use super::manifest::{self, Listed, STAGING};
@@ -36,7 +36,6 @@ pub(super) struct Location {
     pub(super) dir: Arc<Dir>,
     pub(super) format: FileFormat,
     pub(super) epoch: Epoch,
-    pub(super) load_id: LoadId,
     /// How long the session waits for a table's lock.
     pub(super) lock_wait: Duration,
 }
@@ -212,21 +211,17 @@ impl Location {
         part: u64,
     ) -> (Vec<String>, String) {
         let generation = generation.map_or_else(|| "table".to_owned(), |g| format!("g{g}"));
-        let mut names = vec![
-            STAGING.to_owned(),
-            self.epoch.to_string(),
-            self.load_id.to_string(),
-        ];
+        let mut names = vec![STAGING.to_owned(), self.epoch.to_string()];
         names.extend(segment.iter().cloned());
         names.extend([table.to_owned(), generation]);
         (names, format!("{part}.{}", self.format.extension()))
     }
 
     /// The names standing in a segment's place for a file commit `meta` writes as `kind`: the
-    /// commit's own load and number, and random bits no other try of the commit shares, so no
-    /// file a commit writes ever takes the name of another.
+    /// commit's own key, and random bits no other try of the commit shares, so no file a commit
+    /// writes ever takes the name of another.
     fn written_by(kind: &str, meta: &CommitMeta) -> Result<[String; 2]> {
-        let commit = format!("{}-{}-", meta.load_id, meta.commit_seq.get());
+        let commit = format!("{}-{}-", meta.key.epoch, meta.key.seq);
         let unique = crate::rooted::unique(&commit)
             .map_err(io::failed("naming a file of", std::path::Path::new(kind)))?;
         Ok([kind.to_owned(), unique.to_string_lossy().into_owned()])

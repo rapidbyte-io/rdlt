@@ -84,6 +84,7 @@ mod factory;
 mod id;
 pub mod instants;
 pub mod json;
+mod landed;
 pub mod limits;
 #[cfg(feature = "merge")]
 pub mod merge;
@@ -117,7 +118,7 @@ pub use change::{
     validate_change_batch,
 };
 pub use commit::{
-    ChildTable, CommitMeta, DroppedTable, Horizon, Receipt, SegmentRange, SegmentSet,
+    ChildTable, CommitKey, CommitMeta, DroppedTable, Receipt, SegmentRange, SegmentSet,
     UnorderedRanges,
 };
 pub use config::parse as parse_config;
@@ -134,18 +135,20 @@ pub use destination::{
 };
 pub use emitter::Emitter;
 pub use error::{
-    COLUMN_MISSING, CURSOR_UNISSUED, ConnectorError, ConnectorErrorKind, DEADLINE_EXCEEDED,
-    LimitExceeded, RETENTION_LOST, Result, ResultExt, SCHEMA_CONFLICT, TABLE_OWNED,
+    COLUMN_MISSING, COMMIT_STALE, CURSOR_UNISSUED, ConnectorError, ConnectorErrorKind,
+    DEADLINE_EXCEEDED, LimitExceeded, RETENTION_LOST, Result, ResultExt, SCHEMA_CONFLICT,
+    TABLE_OWNED,
 };
 pub use factory::{RoleFactory, Serve};
 pub use id::{
-    CommitSeq, ConnectorId, Epoch, GenerationId, IdError, LoadId, PartitionId, PipelineId,
-    SchemaVersion, SegmentId, StreamName, TablePath,
+    ConnectorId, Epoch, GenerationId, IdError, PartitionId, PipelineId, SchemaVersion, SegmentId,
+    StreamName, TablePath,
 };
+pub use landed::{Answer, Fence, answer};
 pub use meta::{
-    DELETED_AT_COLUMN, ID_COLUMN, IDX_COLUMN, IS_CURRENT_COLUMN, LOAD_ID_COLUMN, LOADED_AT_COLUMN,
-    META_PREFIX, PARENT_ID_COLUMN, ROOT_ID_COLUMN, ROW_HASH_COLUMN, VALID_FROM_COLUMN,
-    VALID_TO_COLUMN,
+    DELETED_AT_COLUMN, ID_COLUMN, IDX_COLUMN, IS_CURRENT_COLUMN, LOAD_EPOCH_COLUMN,
+    LOADED_AT_COLUMN, META_PREFIX, PARENT_ID_COLUMN, ROOT_ID_COLUMN, ROW_HASH_COLUMN,
+    VALID_FROM_COLUMN, VALID_TO_COLUMN,
 };
 #[cfg(feature = "macros")]
 pub use rdlt_connector_macros::{destination, source};

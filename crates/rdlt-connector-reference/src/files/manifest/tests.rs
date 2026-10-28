@@ -1,6 +1,6 @@
 use std::time::{Duration, UNIX_EPOCH};
 
-use rdlt_connector::{CommitSeq, ConnectorErrorKind, Epoch, Horizon, LoadId, PipelineId, Receipt};
+use rdlt_connector::{CommitKey, ConnectorErrorKind, Epoch, PipelineId, Receipt};
 
 use super::{
     Listed, MANIFEST_INVALID, MANIFESTS, Manifest, TableFiles, format_of, latest, located,
@@ -10,18 +10,16 @@ use crate::files::FileFormat;
 use crate::limits::{KEPT_VERSIONS, MANIFEST_BYTES};
 use crate::rooted::Dir;
 
-fn receipt(load: u128, commit_seq: CommitSeq) -> Receipt {
+fn receipt(epoch: u64, seq: u64) -> Receipt {
     Receipt {
-        load_id: LoadId::from_parts(UNIX_EPOCH, load),
-        commit_seq,
+        key: CommitKey {
+            epoch: Epoch(epoch),
+            seq,
+        },
         committed_at: UNIX_EPOCH + Duration::from_micros(7),
         rows: 1,
         bytes: 2,
     }
-}
-
-fn seq(n: u64) -> CommitSeq {
-    (1..n).fold(CommitSeq::FIRST, |seq, _| seq.next())
 }
 
 /// A pipeline's directory.
@@ -40,55 +38,17 @@ fn listed(path: &str) -> Listed {
 }
 
 #[test]
-fn a_manifest_forgets_the_receipts_before_a_horizon_and_keeps_every_one_after() {
-    let mut manifest = Manifest::default();
-    for load in 1..=3 {
-        for commit in 1..=3 {
-            manifest.record(&receipt(load, seq(commit)), None);
-        }
-    }
-    assert_eq!(
-        manifest.receipts.len(),
-        9,
-        "with no horizon every receipt stays"
-    );
-    // Load 2's second commit is the oldest the engine may repeat.
-    let horizon = Horizon {
-        load_id: LoadId::from_parts(UNIX_EPOCH, 2),
-        commit_seq: seq(2),
+fn a_manifest_keeps_the_receipt_of_the_last_commit_that_landed_and_its_epoch() {
+    let mut manifest = Manifest {
+        epoch: Epoch(4),
+        ..Manifest::default()
     };
-    manifest.record(&receipt(3, seq(4)), Some(&horizon));
-    for load in 1..=3_u128 {
-        let load_id = LoadId::from_parts(UNIX_EPOCH, load);
-        for commit in 1..=4 {
-            let recorded = commit <= 3 || (load, commit) == (3, 4);
-            let kept = recorded && (load, commit) >= (2, 2);
-            let stored = manifest.receipt(load_id, seq(commit));
-            assert_eq!(stored.is_some(), kept, "load {load} commit {commit}");
-        }
+    assert_eq!(manifest.fence().landed, None);
+    for seq in 1..=3 {
+        manifest.land(&receipt(4, seq));
     }
-}
-
-#[test]
-fn a_manifest_of_one_long_load_keeps_only_the_receipts_its_horizon_spares() {
-    let mut manifest = Manifest::default();
-    // A run that follows its source is one load: each commit declares the oldest it may
-    // repeat, a few commits back, and what the manifest keeps stays as short.
-    for commit in 1..=100 {
-        let horizon = Horizon {
-            load_id: LoadId::from_parts(UNIX_EPOCH, 1),
-            commit_seq: seq(commit.max(3) - 2),
-        };
-        manifest.record(&receipt(1, seq(commit)), Some(&horizon));
-        assert!(manifest.receipts.len() <= 3, "{commit}");
-    }
-    let load_id = LoadId::from_parts(UNIX_EPOCH, 1);
-    for commit in 98..=100 {
-        assert_eq!(
-            manifest.receipt(load_id, seq(commit)),
-            Some(receipt(1, seq(commit)))
-        );
-    }
+    let fence = manifest.fence();
+    assert_eq!((fence.epoch, fence.landed), (Epoch(4), Some(receipt(4, 3))));
 }
 
 #[test]
@@ -212,7 +172,7 @@ fn changed(change: &dyn Fn(&mut Manifest)) -> rdlt_connector::Result<Option<Mani
         ..Manifest::default()
     };
     let rows = TableFiles {
-        files: vec![listed("staging/1/load/1/rows/table/1.jsonl")],
+        files: vec![listed("staging/1/1/rows/table/1.jsonl")],
         ..TableFiles::default()
     };
     manifest.tables.insert("rows".to_owned(), rows);
@@ -423,9 +383,9 @@ fn a_manifest_of_another_format_or_with_a_field_it_does_not_know_is_refused() {
         .join("00000000000000000001.json");
     let written: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    assert_eq!(written["format"], serde_json::json!(1));
+    assert_eq!(written["format"], serde_json::json!(2));
     let mut other = written.clone();
-    other["format"] = serde_json::json!(2);
+    other["format"] = serde_json::json!(3);
     let mut unformatted = written.clone();
     unformatted.as_object_mut().unwrap().remove("format");
     let mut grown = written.clone();

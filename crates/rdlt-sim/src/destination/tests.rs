@@ -10,11 +10,11 @@ use arrow_buffer::OffsetBuffer;
 use arrow_schema::{DataType, Field as ArrowField};
 use rdlt_connector::limits::ListenLimits;
 use rdlt_connector::{
-    ChildTable, ColumnKey, ColumnPath, CommitMeta, CommitSeq, ConnectContext, ConnectorErrorKind,
-    Cursor, DestinationConnector, Epoch, Field, LoadId, LogicalType, MergeKey, NameMap,
-    OpenContext, PartitionId, PartitionState, PipelineId, ReadMode, RootKey, SCHEMA_CONFLICT,
-    SchemaVersion, SegmentId, SegmentSet, Session, StateChange, StateEntry, StreamName,
-    TableChange, TablePath, TableRef, TableSchema, TableWriter, source_factory,
+    ChildTable, ColumnKey, ColumnPath, CommitKey, CommitMeta, ConnectContext, ConnectorErrorKind,
+    Cursor, DestinationConnector, Epoch, Field, LogicalType, MergeKey, NameMap, OpenContext,
+    PartitionId, PartitionState, PipelineId, ReadMode, RootKey, SCHEMA_CONFLICT, SchemaVersion,
+    SegmentId, SegmentSet, Session, StateChange, StateEntry, StreamName, TableChange, TablePath,
+    TableRef, TableSchema, TableWriter, source_factory,
 };
 use rdlt_testkit::canon::Canon;
 use serde::Serialize;
@@ -254,16 +254,17 @@ fn first_commit(children: Vec<ChildTable>) -> CommitMeta {
     let mut segments = SegmentSet::new();
     segments.insert(SegmentId(1));
     CommitMeta {
-        load_id: LoadId::from_parts(std::time::UNIX_EPOCH, 1),
-        commit_seq: CommitSeq::FIRST,
-        epoch: Epoch::default(),
+        key: CommitKey {
+            epoch: Epoch::default(),
+            seq: 1,
+        },
+        after: None,
         segments,
         abandoned: SegmentSet::new(),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: children,
         drop_tables: Vec::new(),
-        horizon: None,
     }
 }
 
@@ -361,7 +362,6 @@ fn pipelines_sharing_the_destination_neither_fence_nor_discard_each_other() {
             let destination = destination(world);
             let open = |pipeline: &str| OpenContext {
                 pipeline: PipelineId::parse(pipeline).unwrap(),
-                load_id: LoadId::from_parts(std::time::UNIX_EPOCH, 1),
             };
             let mut first = destination.open(&open("first")).await.unwrap();
             let create = TableChange::Create {
@@ -380,30 +380,28 @@ fn pipelines_sharing_the_destination_neither_fence_nor_discard_each_other() {
             let mut segments = SegmentSet::new();
             segments.insert(SegmentId(1));
             let meta = CommitMeta {
-                load_id: LoadId::from_parts(std::time::UNIX_EPOCH, 1),
-                commit_seq: CommitSeq::FIRST,
-                epoch: first.epoch,
+                key: CommitKey {
+                    epoch: first.epoch,
+                    seq: 1,
+                },
+                after: first.landed.as_ref().map(|landed| landed.key),
                 segments,
                 abandoned: SegmentSet::new(),
                 state_delta: Vec::new(),
                 finish_generations: Vec::new(),
                 child_tables: Vec::new(),
                 drop_tables: Vec::new(),
-                horizon: None,
             };
             let receipt = first.session.commit(&meta).await.unwrap();
             assert_eq!(receipt.rows, 1, "the first pipeline's staged row publishes");
-            // The second pipeline's commit declares a horizon past the first's commit: the
-            // first's receipt is its own, and stays.
-            let past = rdlt_connector::Horizon {
-                load_id: LoadId::from_parts(std::time::UNIX_EPOCH, 9),
-                commit_seq: CommitSeq::FIRST,
-            };
+            // The second pipeline's commit lands a key of its own: the first's landed key is its
+            // own, and stays.
             let theirs = CommitMeta {
-                load_id: LoadId::from_parts(std::time::UNIX_EPOCH, 9),
-                epoch: second.epoch,
+                key: CommitKey {
+                    epoch: second.epoch,
+                    seq: 1,
+                },
                 segments: SegmentSet::new(),
-                horizon: Some(past),
                 ..meta.clone()
             };
             second.session.commit(&theirs).await.unwrap();
@@ -635,7 +633,6 @@ const WAIT: Duration = Duration::from_secs(60);
 fn opening() -> OpenContext {
     OpenContext {
         pipeline: PipelineId::parse("held").unwrap(),
-        load_id: LoadId::from_parts(std::time::UNIX_EPOCH, 1),
     }
 }
 
@@ -806,7 +803,7 @@ fn moving<C: Serialize + Default>(
         stream: stream.clone(),
         partition: partition.clone(),
         state: PartitionState::Cursor(Cursor::encode(1, &position.unwrap_or_default()).unwrap()),
-        load: LoadId::from_parts(std::time::UNIX_EPOCH, 1),
+        epoch: Epoch(1),
     };
     let change = if put {
         StateChange::Put(entry.to_record())
@@ -904,7 +901,7 @@ fn cursor_commit(next: u64) -> CommitMeta {
         stream: StreamName::new("s0").unwrap(),
         partition: PartitionId::parse("p0").unwrap(),
         state: PartitionState::Cursor(Cursor::encode(1, &cursor).unwrap()),
-        load: LoadId::from_parts(std::time::UNIX_EPOCH, 1),
+        epoch: Epoch(1),
     };
     CommitMeta {
         state_delta: vec![StateChange::Put(entry.to_record())],

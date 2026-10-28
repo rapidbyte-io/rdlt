@@ -7,7 +7,7 @@ use arrow_array::{Array, RecordBatch};
 
 use super::evolving::{GENERATION, keyed, merged};
 use super::rows::{Row, schema};
-use super::{Bench, Probe, commit, expect_rows, meta, rows};
+use super::{Bench, Probe, commit, expect_rows, meta, rows, try_commit};
 use crate::commit::CommitMeta;
 use crate::destination::{TableChange, TableRef};
 use crate::error::{COLUMN_MISSING, ConnectorErrorKind};
@@ -55,7 +55,7 @@ impl Bench<'_> {
     /// then, where the probe drops columns, has it drop one between a write and its commit, for
     /// each write mode the destination declares.
     pub(super) async fn segments_span_tables(&self) -> Result<(), Violation> {
-        let mut opened = self.open(self.destination, 1).await?;
+        let mut opened = self.open(self.destination).await?;
         let child = child_table(&self.table());
         let mut parent_writer = self.writer(&mut opened.session).await?;
         let mut child_writer = self.writer_of(&mut opened.session, &child).await?;
@@ -69,11 +69,7 @@ impl Bench<'_> {
                 .await
                 .map_err(|error| Violation::from(format!("flush: {error}")))?;
         }
-        commit(
-            &mut opened.session,
-            &meta(self.load_id(1), opened.epoch, &[1], Vec::new()),
-        )
-        .await?;
+        commit(&mut opened, meta(&[1], Vec::new())).await?;
         for table in [self.table(), child] {
             expect_rows(&self.rows_of(&table).await?, &[1])
                 .map_err(|violation| violation.of(format_args!("table {}", table.name)))?;
@@ -81,9 +77,9 @@ impl Bench<'_> {
         if !self.probe.drops_columns() {
             return Ok(());
         }
-        for (load, dropping) in (2..).zip(self.droppings()) {
+        for dropping in self.droppings() {
             let mode = dropping.mode;
-            self.dropped_column(dropping, load)
+            self.dropped_column(dropping)
                 .await
                 .map_err(|violation| violation.of(format_args!("{mode} with a column dropped")))?;
         }
@@ -146,11 +142,11 @@ impl Bench<'_> {
         droppings
     }
 
-    /// Stages `dropping`'s rows in a session of load `load`, has the probe drop the column, and
+    /// Stages `dropping`'s rows in a session of its own, has the probe drop the column, and
     /// commits: the commit publishes every column it staged, or fails as `column_missing` and
     /// publishes nothing in any table.
-    async fn dropped_column(&self, dropping: Dropping, load: u8) -> Result<(), Violation> {
-        let mut opened = self.open(self.destination, load).await?;
+    async fn dropped_column(&self, dropping: Dropping) -> Result<(), Violation> {
+        let mut opened = self.open(self.destination).await?;
         for written in &dropping.written {
             bounded_call("apply_schema", opened.session.apply_schema(&written.create)).await?;
             let mut writer = bounded_call("writer", opened.session.writer(&written.writer)).await?;
@@ -163,9 +159,9 @@ impl Bench<'_> {
         })?;
         let committing = CommitMeta {
             finish_generations: dropping.finishing,
-            ..meta(self.load_id(load), opened.epoch, &[1], Vec::new())
+            ..meta(&[1], Vec::new())
         };
-        match bounded("commit", opened.session.commit(&committing)).await? {
+        match try_commit(&mut opened, committing).await? {
             Ok(_) => {
                 for (table, batch) in &dropping.read {
                     let published = self.rows_of(table).await?;

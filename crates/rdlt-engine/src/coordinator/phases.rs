@@ -293,7 +293,7 @@ impl Coordinator {
     /// before the partition's first checkpoint resumes it there.
     pub(super) fn phase_delta(&mut self) -> Vec<StateChange> {
         let mut changes = Vec::new();
-        let load = self.parts.load_id;
+        let epoch = self.parts.epoch;
         for stream in &mut self.parts.streams {
             let Some(phases) = stream.phases.as_mut() else {
                 continue;
@@ -312,7 +312,7 @@ impl Coordinator {
                     stream: stream.name.clone(),
                     partition,
                     state,
-                    load,
+                    epoch,
                 };
                 changes.push(StateChange::Put(entry.to_record()));
             }

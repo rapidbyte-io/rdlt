@@ -15,7 +15,7 @@ async fn a_lock_another_holds_is_waited_for_a_bounded_time() {
         json!({ "lock_wait": { "secs": 0, "nanos": 300_000_000 } }),
     )
     .await;
-    let mut opened = open(destination.as_ref(), 1).await;
+    let mut opened = open(destination.as_ref()).await;
     let (schema, batch) = ids(&[1]);
     let orders = table("orders");
     stage(&mut opened, &orders, &schema, batch, 1).await;
@@ -58,7 +58,7 @@ async fn a_lock_another_holds_is_waited_for_a_bounded_time() {
 async fn a_lock_held_briefly_is_waited_for_where_no_wait_is_configured() {
     let root = crate::fixtures::tempdir().unwrap();
     let destination = connect(root.path(), "jsonl").await;
-    let mut opened = open(destination.as_ref(), 1).await;
+    let mut opened = open(destination.as_ref()).await;
     let (schema, batch) = ids(&[1]);
     let orders = table("orders");
     stage(&mut opened, &orders, &schema, batch, 1).await;

@@ -3,12 +3,11 @@
 
 use std::path::Path;
 use std::sync::Arc;
-use std::time::UNIX_EPOCH;
 
 use arrow_array::cast::AsArray;
 use arrow_array::{ArrayRef, BinaryArray, Int64Array, RecordBatch, StringArray};
 use rdlt_connector::{
-    ChildTable, CommitMeta, CommitSeq, ConnectContext, Destination, LoadId, MergeKey, OpenContext,
+    ChildTable, CommitKey, CommitMeta, ConnectContext, Destination, MergeKey, OpenContext,
     OpenedSession, PipelineId, RootKey, SchemaVersion, SegmentId, TableChange, TablePath, TableRef,
     TableSchema, destination_factory,
 };
@@ -123,11 +122,21 @@ async fn write(opened: &mut OpenedSession, table: &TableRef, segment: u64, batch
     writer.flush().await.expect("the flush stages");
 }
 
-fn meta(opened: &OpenedSession, seq: CommitSeq, segment: u64, items: &TableRef) -> CommitMeta {
+/// Commit `seq` of `opened`, of `segment`, whose rows `items`, a child table, follow.
+fn meta(opened: &OpenedSession, seq: u64, segment: u64, items: &TableRef) -> CommitMeta {
     CommitMeta {
-        load_id: LoadId::from_parts(UNIX_EPOCH, 1),
-        commit_seq: seq,
-        epoch: opened.epoch,
+        key: CommitKey {
+            epoch: opened.epoch,
+            seq,
+        },
+        after: if seq == 1 {
+            opened.landed.as_ref().map(|landed| landed.key)
+        } else {
+            Some(CommitKey {
+                epoch: opened.epoch,
+                seq: seq - 1,
+            })
+        },
         segments: [SegmentId(segment)].into_iter().collect(),
         abandoned: rdlt_connector::SegmentSet::new(),
         state_delta: Vec::new(),
@@ -137,14 +146,12 @@ fn meta(opened: &OpenedSession, seq: CommitSeq, segment: u64, items: &TableRef) 
             merge: items.merge.clone().expect("a merge key"),
         }],
         drop_tables: Vec::new(),
-        horizon: None,
     }
 }
 
 fn context() -> OpenContext {
     OpenContext {
         pipeline: PipelineId::parse("children").expect("valid pipeline id"),
-        load_id: LoadId::from_parts(UNIX_EPOCH, 1),
     }
 }
 
@@ -188,14 +195,14 @@ async fn a_child_table_none_of_whose_roots_changed_is_not_rewritten() {
     let (root_table, item_table) = family();
     write(&mut opened, &root_table, 1, roots(&[(1, 1, 1), (2, 2, 2)])).await;
     write(&mut opened, &item_table, 1, items(&[("a", 2, 2)])).await;
-    let first = meta(&opened, CommitSeq::FIRST, 1, &item_table);
+    let first = meta(&opened, 1, 1, &item_table);
     opened
         .session
         .commit(&first)
         .await
         .expect("the first commit");
     write(&mut opened, &root_table, 2, roots(&[(1, 1, 3)])).await;
-    let second = meta(&opened, CommitSeq::FIRST.next(), 2, &item_table);
+    let second = meta(&opened, 2, 2, &item_table);
     opened
         .session
         .commit(&second)
@@ -232,14 +239,14 @@ async fn a_sqlite_child_table_follows_a_root_that_merged_where_the_child_staged_
         items(&[("a", 1, 1), ("b", 2, 2)]),
     )
     .await;
-    let first = meta(&opened, CommitSeq::FIRST, 1, &item_table);
+    let first = meta(&opened, 1, 1, &item_table);
     opened
         .session
         .commit(&first)
         .await
         .expect("the first commit");
     write(&mut opened, &root_table, 2, roots(&[(1, 1, 3)])).await;
-    let second = meta(&opened, CommitSeq::FIRST.next(), 2, &item_table);
+    let second = meta(&opened, 2, 2, &item_table);
     opened
         .session
         .commit(&second)
@@ -270,7 +277,7 @@ async fn roots_before_any_child(destination: &dyn Destination) -> rdlt_connector
     let mut opened = destination.open(&context()).await.expect("a session opens");
     let (root_table, item_table) = family();
     write(&mut opened, &root_table, 1, roots(&[(1, 1, 1)])).await;
-    let commit = meta(&opened, CommitSeq::FIRST, 1, &item_table);
+    let commit = meta(&opened, 1, 1, &item_table);
     opened.session.commit(&commit).await.map(|_| ())
 }
 

@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::time::{Duration, UNIX_EPOCH};
 
 use bytes::Bytes;
 use proptest::prelude::*;
@@ -8,11 +7,8 @@ use super::{
     Identity, NameConflict, NameMap, PartitionState, PipelineState, Sequences, StateChange,
     StateEntry, StateError, StateKey, StateRecord, StreamState, TableState, Writing,
 };
-use crate::commit::Receipt;
 use crate::cursor::Cursor;
-use crate::id::{
-    CommitSeq, Epoch, GenerationId, LoadId, PartitionId, SchemaVersion, StreamName, TablePath,
-};
+use crate::id::{Epoch, GenerationId, PartitionId, SchemaVersion, StreamName, TablePath};
 use crate::schema::{ColumnKey, ColumnPath, TableSchema};
 use crate::types::{Field, Fields, LogicalType, TypeKind};
 
@@ -28,25 +24,9 @@ fn cursor(offset: u64) -> PartitionState {
     PartitionState::Cursor(Cursor::encode(1, &offset).unwrap())
 }
 
-/// The load of number `n`, loads of greater numbers later.
-fn load(n: u64) -> LoadId {
-    LoadId::from_parts(UNIX_EPOCH + Duration::from_secs(n), u128::from(n))
-}
-
-fn receipt() -> Receipt {
-    Receipt {
-        load_id: LoadId::from_parts(UNIX_EPOCH + Duration::from_secs(10), 7),
-        commit_seq: CommitSeq::FIRST,
-        committed_at: UNIX_EPOCH + Duration::from_secs(11),
-        rows: 3,
-        bytes: 40,
-    }
-}
-
 fn sample_state() -> PipelineState {
     let mut state = PipelineState {
         epoch: Epoch(4),
-        last_receipt: Some(receipt()),
         ..PipelineState::default()
     };
     let orders = state.streams.entry(stream("orders")).or_default();
@@ -58,7 +38,7 @@ fn sample_state() -> PipelineState {
     orders.generation = Some(GenerationId(2));
     for (id, number) in [("p0", 5), ("p1", 3)] {
         let position = (stream("orders"), partition(id));
-        state.recorded_by.insert(position, load(number));
+        state.recorded_by.insert(position, Epoch(number));
     }
     orders.completed = vec![GenerationId(0), GenerationId(1)];
     state.resets.insert(stream("orders"), Epoch(3));
@@ -121,14 +101,11 @@ fn records_of(state: &PipelineState) -> Vec<StateRecord> {
     for (path, table) in &state.tables {
         entries.extend(table_entries(path, table));
     }
-    if let Some(receipt) = &state.last_receipt {
-        entries.push(StateEntry::Receipt(receipt.clone()));
-    }
     entries.iter().map(StateEntry::to_record).collect()
 }
 
-/// The entries of `stream`'s partitions, named `name`; a position no load is known to have
-/// recorded, as in a state built by hand, records as the earliest load's.
+/// The entries of `stream`'s partitions, named `name`; a position no session is known to have
+/// recorded, as in a state built by hand, records as the earliest epoch's.
 fn partition_entries(
     state: &PipelineState,
     name: &StreamName,
@@ -138,16 +115,16 @@ fn partition_entries(
         .partitions
         .iter()
         .map(|(partition, position)| {
-            let load = state
+            let epoch = state
                 .recorded_by
                 .get(&(name.clone(), partition.clone()))
                 .copied()
-                .unwrap_or_else(|| LoadId::from_parts(UNIX_EPOCH, 0));
+                .unwrap_or_default();
             StateEntry::Partition {
                 stream: name.clone(),
                 partition: partition.clone(),
                 state: position.clone(),
-                load,
+                epoch,
             }
         })
         .collect()
@@ -325,11 +302,11 @@ fn unreadable_records_are_typed_errors() {
         ),
         (
             StateRecord {
-                key: StateKey::Receipt.encode(),
+                key: StateKey::Phase(stream("orders")).encode(),
                 value: epoch.value.clone(),
             },
             StateError::KeyMismatch {
-                key: StateKey::Receipt.encode(),
+                key: StateKey::Phase(stream("orders")).encode(),
             },
         ),
     ];
@@ -360,7 +337,7 @@ fn keys_in_a_non_canonical_form_are_malformed() {
         stream: stream("s"),
         partition: partition("p"),
         state: cursor(5),
-        load: load(1),
+        epoch: Epoch(1),
     };
     let canonical = entry.to_record();
     // The stream's members in another order.
@@ -401,7 +378,7 @@ fn applying_changes_puts_and_deletes_entries() {
         stream: stream("orders"),
         partition: partition("p0"),
         state: cursor(5),
-        load: load(2),
+        epoch: Epoch(2),
     };
     state.apply(&StateChange::Put(put.to_record())).unwrap();
     assert_eq!(
@@ -417,7 +394,6 @@ fn applying_changes_puts_and_deletes_entries() {
         full.apply(&StateChange::Delete(record.key)).unwrap();
     }
     assert_eq!(full.epoch, Epoch::default());
-    assert!(full.last_receipt.is_none());
     assert!(
         full.tables
             .values()
@@ -490,7 +466,7 @@ fn partition_states() -> impl Strategy<Value = PartitionState> {
     prop_oneof![Just(PartitionState::Done), any::<u64>().prop_map(cursor)]
 }
 
-/// Records each of `state`'s positions as recorded by a load of its own, from load `first` on.
+/// Records each of `state`'s positions as recorded by a session of its own, from epoch `first` on.
 fn recorded(state: &mut PipelineState, first: u64) {
     let positions: Vec<(StreamName, PartitionId)> = state
         .streams
@@ -504,7 +480,7 @@ fn recorded(state: &mut PipelineState, first: u64) {
         .collect();
     for (offset, position) in (0_u64..).zip(positions) {
         let number = (first % (1 << 40)).wrapping_add(offset);
-        state.recorded_by.insert(position, load(number));
+        state.recorded_by.insert(position, Epoch(number));
     }
 }
 
@@ -524,8 +500,8 @@ fn states() -> impl Strategy<Value = PipelineState> {
         any::<u64>(),
         0..3,
     );
-    (any::<u64>(), streams, any::<bool>(), resets)
-        .prop_map(|(epoch, streams, with_receipt, resets)| PipelineState {
+    (any::<u64>(), streams, resets)
+        .prop_map(|(epoch, streams, resets)| PipelineState {
             epoch: Epoch(epoch),
             streams: streams
                 .into_iter()
@@ -550,7 +526,6 @@ fn states() -> impl Strategy<Value = PipelineState> {
                 .into_iter()
                 .map(|(name, epoch)| (stream(name), Epoch(epoch)))
                 .collect(),
-            last_receipt: with_receipt.then(receipt),
             recorded_by: std::collections::BTreeMap::new(),
         })
         .prop_flat_map(|state| (Just(state), tables(), any::<u64>()))
@@ -899,7 +874,7 @@ fn a_record_s_value_is_written_as_the_json_it_holds() {
         stream: stream("orders"),
         partition: partition("p0"),
         state: PartitionState::Cursor(Cursor::new(1, &vec![b'c'; 30_000]).unwrap()),
-        load: load(1),
+        epoch: Epoch(1),
     };
     let record = entry.to_record();
     let json = serde_json::to_vec(&record).unwrap();
@@ -1052,7 +1027,7 @@ fn a_record_holds_the_json_its_entry_writes() {
             stream: stream("orders"),
             partition: partition("p0"),
             state: PartitionState::Cursor(cursor),
-            load: LoadId::from_parts(UNIX_EPOCH, 1),
+            epoch: Epoch(1),
         },
         StateEntry::Phase {
             stream: stream("ü \"quoted\""),
@@ -1124,7 +1099,7 @@ fn a_table_s_records_are_this_json() {
         (
             r#"{"schema":["orders","lines"]}"#,
             concat!(
-                r#"{"v":5,"entry":{"schema":{"table":["orders","lines"],"version":3,"schema":"#,
+                r#"{"v":6,"entry":{"schema":{"table":["orders","lines"],"version":3,"schema":"#,
                 r#"{"fields":[[{"name":"id","nullable":false,"type":"int64"}],"#,
                 r#"[{"name":"address","nullable":true,"type":{"struct":1}},"#,
                 r#"{"name":"city","nullable":true,"type":"utf8"}],"#,
@@ -1135,7 +1110,7 @@ fn a_table_s_records_are_this_json() {
         (
             r#"{"names":["orders","lines"]}"#,
             concat!(
-                r#"{"v":5,"entry":{"names":{"table":["orders","lines"],"#,
+                r#"{"v":6,"entry":{"names":{"table":["orders","lines"],"#,
                 r#""physical":"orders__lines","names":[[{"source":["id"]},"id"],"#,
                 r#"[{"variant":{"column":["address","city"],"kind":"int64"}},"#,
                 r#""address__city__int"]]}}}"#,
@@ -1144,7 +1119,7 @@ fn a_table_s_records_are_this_json() {
         (
             r#"{"sequences":["orders","lines"]}"#,
             concat!(
-                r#"{"v":5,"entry":{"sequences":{"table":["orders","lines"],"#,
+                r#"{"v":6,"entry":{"sequences":{"table":["orders","lines"],"#,
                 r#""sequences":"source","history":true,"key":[["id"],["address","city"]],"#,
                 r#""change_time":["address","city"],"identity":"position"}}}"#,
             ),

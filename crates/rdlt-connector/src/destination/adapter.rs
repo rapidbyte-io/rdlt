@@ -35,6 +35,7 @@ impl<C: DestinationConnector> Destination for DestinationAdapter<C> {
             let Opened {
                 mut session,
                 epoch,
+                landed,
                 state,
             } = self.connector.open(context).await?;
             // Unpublished staging from any earlier load must never reach a later commit.
@@ -44,6 +45,7 @@ impl<C: DestinationConnector> Destination for DestinationAdapter<C> {
             Ok(OpenedSession {
                 session: Box::new(SessionAdapter(session)),
                 epoch,
+                landed,
                 state,
             })
         })

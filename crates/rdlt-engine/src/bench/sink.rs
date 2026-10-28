@@ -143,6 +143,7 @@ impl DestinationConnector for Sink {
                 tally: self.tally.as_ref().map(Arc::clone),
             },
             epoch: Epoch(1),
+            landed: None,
             state: Vec::new(),
         })
     }
@@ -187,8 +188,7 @@ impl Session for SinkSession {
             tally.lock().commits += 1;
         }
         Ok(Receipt {
-            load_id: meta.load_id,
-            commit_seq: meta.commit_seq,
+            key: meta.key,
             committed_at: UNIX_EPOCH,
             rows,
             bytes: 0,

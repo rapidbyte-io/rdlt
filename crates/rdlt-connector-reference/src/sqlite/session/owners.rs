@@ -8,7 +8,7 @@ use rdlt_connector::{Epoch, PipelineId};
 use rusqlite::types::Value;
 use rusqlite::{Connection, Transaction};
 
-use super::super::database::{columns, query, run, run_all, text};
+use super::super::database::{columns, query, run_all, text};
 
 /// The rows `statement` answers, as the planner reads them.
 fn answers(
@@ -91,10 +91,20 @@ pub(super) fn changed<'t>(
     name: &str,
 ) -> Result<Owned<'t>> {
     let standing = standing(transaction, planner, name)?;
-    if standing.unowned() && run(transaction, &planner.fence(pipeline, epoch))? == 0 {
+    if standing.unowned() && fenced_since(transaction, planner, pipeline, epoch)? {
         return Err(fenced(pipeline, epoch));
     }
     standing.owned(pipeline)
+}
+
+/// Whether a session of `pipeline` newer than `epoch` opened, as its fence row says.
+fn fenced_since(
+    transaction: &Transaction<'_>,
+    planner: &SqlPlanner<Sqlite>,
+    pipeline: &PipelineId,
+    epoch: Epoch,
+) -> Result<bool> {
+    Ok(super::commit::fence(transaction, planner, pipeline)?.epoch != epoch)
 }
 
 fn fenced(pipeline: &PipelineId, epoch: Epoch) -> ConnectorError {
@@ -115,7 +125,7 @@ pub(super) fn created<'t>(
     table: &TableRef,
 ) -> Result<Owned<'t>> {
     let owned = standing(transaction, planner, &table.name)?.created(pipeline)?;
-    if owned.claims() && run(transaction, &planner.fence(pipeline, epoch))? == 0 {
+    if owned.claims() && fenced_since(transaction, planner, pipeline, epoch)? {
         return Err(fenced(pipeline, epoch));
     }
     derived(transaction, planner, table)?;

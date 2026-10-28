@@ -237,7 +237,7 @@ fn a_kept_name_the_database_takes_for_another_table_is_a_clash() {
         let clash = planner.exact("_rdlt_staging__orders", &found);
         assert_eq!(refusal(clash), config("table_name_clash"), "{found:?}");
     }
-    assert_eq!(planner.catalog().len(), 7);
+    assert_eq!(planner.catalog().len(), 6);
     for name in planner.catalog() {
         assert!(planner.named(name).is_err(), "{name}");
     }

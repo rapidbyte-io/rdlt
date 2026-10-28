@@ -277,8 +277,7 @@ impl Connector for Service {
         let request = request.into_inner();
         let pipeline = PipelineId::parse(request.pipeline)
             .map_err(|error| invalid(&Invalid::rejected("pipeline id", error)))?;
-        let load_id = crate::wire::load_id(&request.load_id).map_err(|e| invalid(&e))?;
-        let context = OpenContext { pipeline, load_id };
+        let context = OpenContext { pipeline };
         let destination = self.destination()?;
         // Room is taken before the destination opens the session, so Opens in flight count too;
         // one that fails, or whose call is cancelled, drops its room.
@@ -291,6 +290,7 @@ impl Connector for Service {
         Ok(Response::new(v1::OpenResponse {
             session: id,
             epoch: opened.epoch.0,
+            landed: opened.landed.as_ref().map(v1::Receipt::from),
             state: opened.state.iter().map(v1::StateRecord::from).collect(),
         }))
     }

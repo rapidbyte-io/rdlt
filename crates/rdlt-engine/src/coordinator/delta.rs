@@ -110,20 +110,6 @@ impl Coordinator {
             .collect()
     }
 
-    /// The receipt the next commit records in state, from the engine's own counts.
-    pub(super) fn marker(
-        &self,
-        streams: &BTreeMap<StreamName, StreamReport>,
-    ) -> rdlt_connector::Receipt {
-        rdlt_connector::Receipt {
-            load_id: self.parts.load_id,
-            commit_seq: self.seq,
-            committed_at: self.parts.env.now(),
-            rows: streams.values().map(|counts| counts.rows).sum(),
-            bytes: streams.values().map(|counts| counts.bytes).sum(),
-        }
-    }
-
     /// The state changes recording how each stream's table sequences and matches its rows, where
     /// state records otherwise: the next commit takes them.
     pub(super) fn sequences_delta(&mut self) -> Vec<StateChange> {
@@ -196,7 +182,7 @@ impl Coordinator {
             stream: self.parts.streams[partition.stream].name.clone(),
             partition: partition.id.clone(),
             state: state.clone(),
-            load: self.parts.load_id,
+            epoch: self.parts.epoch,
         };
         StateChange::Put(entry.to_record())
     }

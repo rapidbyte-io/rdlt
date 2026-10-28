@@ -39,6 +39,10 @@ impl SqlDialect for Standard {
     fn upserts(&self) -> Upserts {
         Upserts::Guarded
     }
+
+    fn lock_clause(&self) -> &'static str {
+        Sqlite.lock_clause()
+    }
 }
 
 /// [`Standard`], selecting bound values from the table `dual`, as Oracle does.
@@ -73,11 +77,15 @@ impl SqlDialect for Dual {
     fn values_table(&self) -> Option<&str> {
         Some("dual")
     }
+
+    fn lock_clause(&self) -> &'static str {
+        Standard.lock_clause()
+    }
 }
 
 /// What the catalog holds after two opens, two pipelines claiming one table, a state record put
 /// in two commits, and a table registered under a path it then takes another name for: the
-/// epoch, the owner, the state and the registered names.
+/// fence row, the owner, the state and the registered names.
 fn catalog<D: SqlDialect>(dialect: D) -> Vec<Vec<Vec<Value>>> {
     let connection = Connection::open_in_memory().unwrap();
     connection
@@ -114,7 +122,7 @@ fn catalog<D: SqlDialect>(dialect: D) -> Vec<Vec<Vec<Value>>> {
     };
     run_all(&connection, &planner.register_of(&renamed));
     vec![
-        query(&connection, &planner.epoch(&orders)),
+        query(&connection, &planner.fence(&orders)),
         query(&connection, &planner.owner("events")),
         query(&connection, &planner.state(&orders)),
         query(
@@ -130,7 +138,14 @@ fn catalog<D: SqlDialect>(dialect: D) -> Vec<Vec<Vec<Value>>> {
 #[test]
 fn standard_sql_writes_the_catalog_as_on_conflict_does() {
     let expected = vec![
-        vec![vec![Value::Integer(2)]],
+        vec![vec![
+            Value::Integer(2),
+            Value::Null,
+            Value::Null,
+            Value::Null,
+            Value::Null,
+            Value::Null,
+        ]],
         vec![vec![Value::Text("orders".to_owned())]],
         vec![vec![
             Value::Text("cursor".to_owned()),

@@ -5,7 +5,7 @@ use bytes::Bytes;
 use rdlt_connector::serve::{ServeError, Served, serve_connection};
 use rdlt_connector::wire::{error as carried, v1};
 use rdlt_connector::{
-    Destination as _, LoadId, OpenContext, PipelineId, Role, SchemaVersion, SegmentId, Source as _,
+    Destination as _, OpenContext, PipelineId, Role, SchemaVersion, SegmentId, Source as _,
     TablePath, TableRef, destination_factory, source_factory,
 };
 use rdlt_connector_reference::{MemoryDestination, MemorySource};
@@ -42,7 +42,6 @@ pub(crate) fn table() -> TableRef {
 pub(crate) fn context() -> OpenContext {
     OpenContext {
         pipeline: PipelineId::parse("sessions").expect("a valid pipeline id"),
-        load_id: LoadId::from_parts(std::time::UNIX_EPOCH, 1),
     }
 }
 
@@ -89,7 +88,6 @@ pub(crate) async fn raw_session_within(
     let context = context();
     let open = v1::OpenRequest {
         pipeline: context.pipeline.as_str().to_owned(),
-        load_id: context.load_id.as_bytes().to_vec().into(),
     };
     let session = client
         .rpc
@@ -132,10 +130,8 @@ async fn a_raw_client_sends_no_message_beyond_the_size_it_is_held_to() {
     let served = Served::new().with_destination(Writes::factory(Writing::Fails));
     let (client, session) = raw_session(served, "held").await;
     let mut client = client.max_encoding_message_size(16);
-    let context = context();
     let open = v1::OpenRequest {
-        pipeline: context.pipeline.as_str().to_owned(),
-        load_id: context.load_id.as_bytes().to_vec().into(),
+        pipeline: "a_pipeline_named_past_the_size".to_owned(),
     };
     assert!(open.encoded_len() > 16);
     client
@@ -490,7 +486,6 @@ async fn a_connection_holds_a_few_sessions_open_and_a_further_closes_its_oldest(
     for pipeline in 0..10 {
         let open = v1::OpenRequest {
             pipeline: format!("pipeline-{pipeline}"),
-            load_id: context().load_id.as_bytes().to_vec().into(),
         };
         let opened = client.rpc.open(open).await.expect("the session opens");
         sessions.push(opened.into_inner().session);

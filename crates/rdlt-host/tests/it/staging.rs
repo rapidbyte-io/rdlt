@@ -9,8 +9,7 @@ use bytes::Bytes;
 use rdlt_connector::serve::Served;
 use rdlt_connector::wire::v1;
 use rdlt_connector::{
-    ConnectorError, Destination as _, LoadId, OpenContext, PipelineId, Role, SegmentId,
-    destination_factory,
+    ConnectorError, Destination as _, OpenContext, PipelineId, Role, SegmentId, destination_factory,
 };
 use rdlt_connector_reference::MemoryDestination;
 use rdlt_host::{Connection, Options, RemoteDestination};
@@ -167,7 +166,6 @@ async fn the_hosts_writer_flushes_before_it_stages_more_than_the_destination_hol
             RemoteDestination::new(connection).expect("its capabilities are declared");
         let context = OpenContext {
             pipeline: PipelineId::parse("staging").expect("a valid pipeline id"),
-            load_id: LoadId::from_parts(std::time::UNIX_EPOCH, 1),
         };
         let mut opened = destination.open(&context).await.expect("the session opens");
         let mut writer = opened

@@ -20,8 +20,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use rdlt_connector::cost::Rendering;
 use rdlt_connector::{
-    Cursor, Epoch, LoadId, PartitionFeed, PartitionState, Permit, Push, ReadRequest, SegmentId,
-    Source, SourceEvent, admitted_partition_channel,
+    Cursor, Epoch, PartitionFeed, PartitionState, Permit, Push, ReadRequest, SegmentId, Source,
+    SourceEvent, admitted_partition_channel,
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -70,7 +70,6 @@ pub(crate) struct PartitionContext {
     /// The next segment id of the load.
     pub(crate) segments: Arc<AtomicU64>,
     pub(crate) buffer: NonZeroUsize,
-    pub(crate) load_id: LoadId,
     /// The epoch of the attempt's session, which every positional id it builds begins with.
     pub(crate) epoch: Epoch,
     /// When the attempt started, which every row it loads carries, and when each batch is

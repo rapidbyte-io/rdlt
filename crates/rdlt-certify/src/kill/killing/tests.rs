@@ -3,8 +3,8 @@ use std::time::SystemTime;
 
 use arrow_array::{Int64Array, RecordBatch};
 use rdlt_connector::{
-    BoxFuture, Capabilities, CommitMeta, CommitSeq, Destination, DestinationSession,
-    DestinationWriter, Epoch, LoadId, OpenContext, OpenedSession, PipelineId, Receipt, Result,
+    BoxFuture, Capabilities, CommitKey, CommitMeta, Destination, DestinationSession,
+    DestinationWriter, Epoch, OpenContext, OpenedSession, PipelineId, Receipt, Result,
     SchemaVersion, SegmentId, SegmentSet, TableChange, TablePath, TableRef, WriteStats,
 };
 use rdlt_host::{CONNECTOR_LOST, Kills};
@@ -32,6 +32,7 @@ impl Destination for Taking {
             Ok(OpenedSession {
                 session: Box::new(TakingSession),
                 epoch: Epoch(1),
+                landed: None,
                 state: Vec::new(),
             })
         })
@@ -57,8 +58,7 @@ impl DestinationSession for TakingSession {
     fn commit<'a>(&'a mut self, meta: &'a CommitMeta) -> BoxFuture<'a, Result<Receipt>> {
         Box::pin(async move {
             Ok(Receipt {
-                load_id: meta.load_id,
-                commit_seq: meta.commit_seq,
+                key: meta.key,
                 committed_at: SystemTime::now(),
                 rows: 0,
                 bytes: 0,
@@ -93,16 +93,17 @@ fn table(name: &str) -> TableRef {
 
 fn meta() -> CommitMeta {
     CommitMeta {
-        load_id: LoadId::from_parts(SystemTime::now(), 7),
-        commit_seq: CommitSeq::FIRST,
-        epoch: Epoch(1),
+        key: CommitKey {
+            epoch: Epoch(1),
+            seq: 1,
+        },
+        after: None,
         segments: SegmentSet::new(),
         abandoned: SegmentSet::new(),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
-        horizon: None,
     }
 }
 
@@ -142,7 +143,6 @@ async fn kills_land_after_the_settled_commit_before_the_scheduled_one_and_losing
     let killing = Killing::new(Arc::new(Taking(Capabilities::minimal())), &kills, schedule);
     let context = OpenContext {
         pipeline: PipelineId::parse("killing").expect("a valid id"),
-        load_id: meta().load_id,
     };
     let mut session = killing.open(&context).await.expect("opens").session;
     let mut writer = session.writer(&table("rows")).await.expect("a writer");
@@ -185,7 +185,6 @@ async fn the_tables_written_are_named_once_each() {
     );
     let context = OpenContext {
         pipeline: PipelineId::parse("tables").expect("a valid id"),
-        load_id: meta().load_id,
     };
     let mut session = killing.open(&context).await.expect("opens").session;
     for name in ["a", "b", "a"] {

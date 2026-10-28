@@ -1,19 +1,18 @@
 mod keys;
+mod landed;
 mod owned;
 mod poisoned;
-mod receipts;
 mod widened;
 mod widths;
 
 use std::num::NonZeroUsize;
 use std::sync::Arc;
-use std::time::UNIX_EPOCH;
 
 use arrow_array::cast::AsArray;
 use arrow_array::types::Int64Type;
 use arrow_array::{BinaryArray, Int32Array, Int64Array, RecordBatch, StringArray};
 use rdlt_connector::{
-    CommitMeta, CommitSeq, ConnectContext, ConnectorErrorKind, Cursor, Field, GenerationId, LoadId,
+    CommitKey, CommitMeta, ConnectContext, ConnectorErrorKind, Cursor, Field, GenerationId,
     LogicalType, MergeKey, OpenContext, OpenedSession, Partition, PipelineId, ReadRequest,
     SchemaVersion, SegmentId, SegmentSet, SourceEvent, StreamName, TableChange, TablePath,
     TableRef, TableSchema, destination_factory, partition_channel, source_factory,
@@ -67,10 +66,9 @@ async fn a_cursor_past_the_end_reads_nothing() {
     assert_eq!(event, None);
 }
 
-fn open_context(pipeline: &str, load: u128) -> OpenContext {
+fn open_context(pipeline: &str) -> OpenContext {
     OpenContext {
         pipeline: PipelineId::parse(pipeline).expect("valid pipeline id"),
-        load_id: LoadId::from_parts(UNIX_EPOCH, load),
     }
 }
 
@@ -89,30 +87,28 @@ async fn opening_one_pipeline_keeps_another_pipelines_staging() {
     };
     // The other pipeline's epochs run ahead of this one's, so only the pipeline tells whose
     // staging an open discards.
-    for load in [2, 3] {
-        destination
-            .open(&open_context("second", load))
-            .await
-            .unwrap();
+    for _ in 0..2 {
+        destination.open(&open_context("second")).await.unwrap();
     }
-    let mut first = destination.open(&open_context("first", 1)).await.unwrap();
+    let mut first = destination.open(&open_context("first")).await.unwrap();
     let mut writer = first.session.writer(&table).await.unwrap();
     let batch =
         RecordBatch::try_from_iter([("id", Arc::new(Int64Array::from(vec![1, 2])) as _)]).unwrap();
     writer.write(SegmentId(1), batch).await.unwrap();
     writer.flush().await.unwrap();
-    destination.open(&open_context("second", 4)).await.unwrap();
+    destination.open(&open_context("second")).await.unwrap();
     let meta = CommitMeta {
-        load_id: LoadId::from_parts(UNIX_EPOCH, 1),
-        commit_seq: CommitSeq::FIRST,
-        epoch: first.epoch,
+        key: CommitKey {
+            epoch: first.epoch,
+            seq: 1,
+        },
+        after: first.landed.as_ref().map(|landed| landed.key),
         segments: SegmentSet::from_iter([SegmentId(1)]),
         abandoned: SegmentSet::new(),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
-        horizon: None,
     };
     assert_eq!(first.session.commit(&meta).await.unwrap().rows, 2);
     assert_eq!(
@@ -153,18 +149,26 @@ async fn stage(session: &mut OpenedSession, table: &TableRef, segment: u64, ids:
     writer.flush().await.expect("flushing succeeds");
 }
 
-fn commit_meta(session: &OpenedSession, seq: CommitSeq, segments: &[u64]) -> CommitMeta {
+/// Commit `seq` of `session`, of `segments`, expecting the session's commit before it landed, or
+/// for its first the key the session found landed.
+fn commit_meta(session: &OpenedSession, seq: u64, segments: &[u64]) -> CommitMeta {
+    let epoch = session.epoch;
     CommitMeta {
-        load_id: LoadId::from_parts(UNIX_EPOCH, 7),
-        commit_seq: seq,
-        epoch: session.epoch,
+        key: CommitKey { epoch, seq },
+        after: if seq == 1 {
+            session.landed.as_ref().map(|landed| landed.key)
+        } else {
+            Some(CommitKey {
+                epoch,
+                seq: seq - 1,
+            })
+        },
         segments: segments.iter().copied().map(SegmentId).collect(),
         abandoned: SegmentSet::new(),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
-        horizon: None,
     }
 }
 
@@ -187,12 +191,12 @@ async fn a_replace_generation_stays_hidden_until_its_finishing_commit_swaps_it_i
         generation: Some(GenerationId(9)),
         ..base.clone()
     };
-    let mut opened = destination.open(&open_context("replace", 1)).await.unwrap();
+    let mut opened = destination.open(&open_context("replace")).await.unwrap();
     stage(&mut opened, &base, 1, vec![1, 2]).await;
-    let first = commit_meta(&opened, CommitSeq::FIRST, &[1]);
+    let first = commit_meta(&opened, 1, &[1]);
     opened.session.commit(&first).await.unwrap();
     stage(&mut opened, &generation, 2, vec![3]).await;
-    let second = commit_meta(&opened, CommitSeq::FIRST.next(), &[2]);
+    let second = commit_meta(&opened, 2, &[2]);
     assert_eq!(opened.session.commit(&second).await.unwrap().rows, 1);
     assert_eq!(
         ids(&published("replace", "t")),
@@ -204,7 +208,7 @@ async fn a_replace_generation_stays_hidden_until_its_finishing_commit_swaps_it_i
         finish_generations: vec![(path, GenerationId(9))],
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
-        ..commit_meta(&opened, CommitSeq::FIRST.next().next(), &[3])
+        ..commit_meta(&opened, 3, &[3])
     };
     opened.session.commit(&finish).await.unwrap();
     assert_eq!(ids(&published("replace", "t")), [3, 4]);
@@ -226,7 +230,7 @@ async fn schema_changes_follow_the_table_and_applying_them_again_changes_nothing
         .connect(json!({ "store": "schemas" }), ConnectContext::new())
         .await
         .unwrap();
-    let mut opened = destination.open(&open_context("schemas", 1)).await.unwrap();
+    let mut opened = destination.open(&open_context("schemas")).await.unwrap();
     let table = table_ref("t");
     let add = TableChange::AddColumn {
         table: table.clone(),
@@ -279,10 +283,7 @@ async fn a_change_declaring_a_column_at_another_type_fails_and_changes_nothing()
         .connect(json!({ "store": "conflicts" }), ConnectContext::new())
         .await
         .unwrap();
-    let mut opened = destination
-        .open(&open_context("conflicts", 1))
-        .await
-        .unwrap();
+    let mut opened = destination.open(&open_context("conflicts")).await.unwrap();
     let table = table_ref("t");
     let create = |fields| TableChange::Create {
         table: table.clone(),
@@ -323,7 +324,7 @@ async fn widening_a_column_a_crashed_attempt_widened_otherwise_joins_the_two() {
         .connect(json!({ "store": "joins" }), ConnectContext::new())
         .await
         .unwrap();
-    let mut opened = destination.open(&open_context("joins", 1)).await.unwrap();
+    let mut opened = destination.open(&open_context("joins")).await.unwrap();
     let table = table_ref("t");
     let widen = |to| TableChange::Widen {
         table: table.clone(),
@@ -368,13 +369,8 @@ fn merge_table() -> TableRef {
     }
 }
 
-/// Stages `batch` as `segment` of the merge table and commits it as `commit_seq`.
-async fn merge_commit(
-    opened: &mut OpenedSession,
-    segment: u64,
-    batch: RecordBatch,
-    commit_seq: CommitSeq,
-) {
+/// Stages `batch` as `segment` of the merge table and commits it as the session's commit `seq`.
+async fn merge_commit(opened: &mut OpenedSession, segment: u64, batch: RecordBatch, seq: u64) {
     let mut writer = opened
         .session
         .writer(&merge_table())
@@ -385,7 +381,7 @@ async fn merge_commit(
         .await
         .expect("staging succeeds");
     writer.flush().await.expect("flushing succeeds");
-    let meta = commit_meta(opened, commit_seq, &[segment]);
+    let meta = commit_meta(opened, seq, &[segment]);
     opened
         .session
         .commit(&meta)
@@ -429,7 +425,7 @@ async fn a_merge_matches_rows_published_before_the_table_changed() {
         .await
         .unwrap();
     let table = merge_table();
-    let mut opened = destination.open(&open_context("merge", 1)).await.unwrap();
+    let mut opened = destination.open(&open_context("merge")).await.unwrap();
     let create = TableChange::Create {
         table: table.clone(),
         schema: TableSchema::new(vec![
@@ -447,7 +443,7 @@ async fn a_merge_matches_rows_published_before_the_table_changed() {
         ),
     ])
     .unwrap();
-    merge_commit(&mut opened, 1, first, CommitSeq::FIRST).await;
+    merge_commit(&mut opened, 1, first, 1).await;
     for change in [
         TableChange::Widen {
             table: table.clone(),
@@ -471,7 +467,7 @@ async fn a_merge_matches_rows_published_before_the_table_changed() {
         ("note", Arc::new(StringArray::from(vec!["new"])) as _),
     ])
     .unwrap();
-    merge_commit(&mut opened, 2, second, CommitSeq::FIRST.next()).await;
+    merge_commit(&mut opened, 2, second, 2).await;
     assert_eq!(merged_rows(), [(1, None), (2, Some("new".to_owned()))]);
 }
 
@@ -508,7 +504,7 @@ async fn a_memory_writer_s_flush_and_its_commit_count_the_bytes_it_staged() {
         .await
         .expect("the destination connects");
     let mut session = destination
-        .open(&open_context("flush_bytes", 1))
+        .open(&open_context("flush_bytes"))
         .await
         .expect("the session opens");
     let table = table_ref("flushed");
@@ -525,16 +521,17 @@ async fn a_memory_writer_s_flush_and_its_commit_count_the_bytes_it_staged() {
     let stats = writer.flush().await.expect("the flush stages");
     assert_eq!((stats.rows, stats.bytes), (4, 2 * bytes));
     let meta = CommitMeta {
-        load_id: LoadId::from_parts(UNIX_EPOCH, 1),
-        commit_seq: CommitSeq::FIRST,
-        epoch: session.epoch,
+        key: CommitKey {
+            epoch: session.epoch,
+            seq: 1,
+        },
+        after: session.landed.as_ref().map(|landed| landed.key),
         segments: SegmentSet::from_iter([SegmentId(1), SegmentId(2)]),
         abandoned: SegmentSet::new(),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
-        horizon: None,
     };
     let receipt = session
         .session

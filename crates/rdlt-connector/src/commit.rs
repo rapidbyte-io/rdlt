@@ -3,13 +3,14 @@
 #[cfg(test)]
 mod tests;
 
+use std::fmt;
 use std::sync::Arc;
 use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
 use crate::destination::MergeKey;
-use crate::id::{CommitSeq, Epoch, GenerationId, LoadId, SegmentId, TablePath};
+use crate::id::{Epoch, GenerationId, SegmentId, TablePath};
 use crate::state::StateChange;
 
 /// An inclusive run of consecutive segment ids.
@@ -155,16 +156,36 @@ impl From<SegmentSet> for Vec<SegmentRange> {
     }
 }
 
+/// A commit's key: the epoch of the session that makes it and its place among that session's
+/// commits, from 1.
+///
+/// Each open takes an epoch no earlier open of its pipeline took, so no two commits of a pipeline
+/// share a key; keys order by epoch, then by place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CommitKey {
+    /// The epoch of the session that makes the commit.
+    pub epoch: Epoch,
+    /// The commit's place among its session's commits, from 1.
+    pub seq: u64,
+}
+
+impl fmt::Display for CommitKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "commit {} of epoch {}", self.seq, self.epoch)
+    }
+}
+
 /// Everything one commit publishes: sealed segments and the state they imply.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CommitMeta {
-    /// The load committing.
-    pub load_id: LoadId,
-    /// The commit's position in the load; `(load_id, commit_seq)` is the idempotence key.
-    pub commit_seq: CommitSeq,
-    /// The epoch the session opened with; a destination refuses commits from older epochs.
-    pub epoch: Epoch,
+    /// The commit's key; its epoch is the session's, which a newer session fences.
+    pub key: CommitKey,
+    /// The key of the commit the session expects the destination to hold landed, none where no
+    /// commit of the pipeline has landed: a destination refuses the commit where another landed.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub after: Option<CommitKey>,
     /// The sealed segments to publish.
     pub segments: SegmentSet,
     /// Segments of the load the engine abandoned since its last commit, never sealed.
@@ -187,31 +208,6 @@ pub struct CommitMeta {
     /// Only a destination that declares
     /// [`Capabilities::drop_tables`](crate::Capabilities::drop_tables) receives them.
     pub drop_tables: Vec<DroppedTable>,
-    /// The oldest commit the engine may still repeat, where it says: the destination may forget
-    /// the receipt of every commit before it, and keeps those of the rest.
-    #[serde(deserialize_with = "Option::deserialize")]
-    pub horizon: Option<Horizon>,
-}
-
-/// The oldest commit an engine may still repeat: a receipt of a commit before it is never asked
-/// for again, so a destination may forget it.
-///
-/// Commits are ordered by their load's id, then by their sequence in it, as horizons are.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Horizon {
-    /// The load of the oldest commit the engine may repeat.
-    pub load_id: LoadId,
-    /// That commit's position in its load.
-    pub commit_seq: CommitSeq,
-}
-
-impl Horizon {
-    /// Whether the engine may still repeat commit `commit_seq` of load `load_id`: it is not
-    /// before the horizon, so its receipt is kept.
-    pub fn keeps(&self, load_id: LoadId, commit_seq: CommitSeq) -> bool {
-        (load_id, commit_seq) >= (self.load_id, self.commit_seq)
-    }
 }
 
 /// A table a commit drops.
@@ -236,14 +232,13 @@ pub struct ChildTable {
 
 /// A destination's acknowledgment of a commit.
 ///
-/// Re-committing the same `(load_id, commit_seq)` returns the stored receipt without publishing.
+/// The destination keeps the receipt of the last commit that landed, and answers that commit
+/// sent again with it, publishing nothing.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Receipt {
-    /// The load that committed.
-    pub load_id: LoadId,
-    /// The commit's position in the load.
-    pub commit_seq: CommitSeq,
+    /// The commit's key.
+    pub key: CommitKey,
     /// When the destination committed.
     pub committed_at: SystemTime,
     /// Rows published.
@@ -253,8 +248,8 @@ pub struct Receipt {
 }
 
 impl Receipt {
-    /// Whether this is the receipt of the commit `meta` describes: of its load and sequence.
+    /// Whether this is the receipt of the commit `meta` describes: of its key.
     pub fn answers(&self, meta: &CommitMeta) -> bool {
-        (self.load_id, self.commit_seq) == (meta.load_id, meta.commit_seq)
+        self.key == meta.key
     }
 }

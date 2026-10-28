@@ -386,7 +386,7 @@ impl Table<'_> {
         }
     }
 
-    /// How many metadata columns follow a row's source columns: the load id and load start, a
+    /// How many metadata columns follow a row's source columns: the load epoch and load start, a
     /// merge table's sequence, and a normalized stream's lineage, a child's four columns of it.
     fn meta(&self) -> usize {
         let lineage = match (self.path.len() > 1, self.stream.normalized()) {

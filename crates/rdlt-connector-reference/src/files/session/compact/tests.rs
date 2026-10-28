@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
-use rdlt_connector::{CommitMeta, CommitSeq, GenerationId, SegmentSet};
+use rdlt_connector::{CommitKey, CommitMeta, GenerationId, SegmentSet};
 
 use super::{compact, keyed, runs};
 use crate::files::FileFormat;
@@ -24,7 +24,7 @@ fn listed(format: FileFormat, rows: &[u64]) -> Vec<Listed> {
     rows.iter()
         .enumerate()
         .map(|(part, rows)| Listed {
-            path: format!("staging/7/load/{part}/rows/table/1.{}", format.extension()),
+            path: format!("staging/7/{part}/rows/table/1.{}", format.extension()),
             rows: *rows,
             bytes: 1,
         })
@@ -75,18 +75,19 @@ fn files_merge_only_up_to_the_size_of_a_full_file_and_only_in_the_session_s_form
     }
 }
 
-fn meta(location: &Location, seq: CommitSeq) -> CommitMeta {
+fn meta(location: &Location, seq: u64) -> CommitMeta {
     CommitMeta {
-        load_id: location.load_id,
-        commit_seq: seq,
-        epoch: location.epoch,
+        key: CommitKey {
+            epoch: location.epoch,
+            seq,
+        },
+        after: None,
         segments: SegmentSet::default(),
         abandoned: SegmentSet::new(),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
-        horizon: None,
     }
 }
 
@@ -140,7 +141,7 @@ fn merged_files_hold_every_row_in_order_and_what_they_merged_stays_until_the_com
         let before = files.clone();
         let mut created = Vec::new();
         let generation = Some(GenerationId(4));
-        let seq = CommitSeq::FIRST;
+        let seq = 1;
         compact(
             &location,
             "rows",
@@ -154,7 +155,7 @@ fn merged_files_hold_every_row_in_order_and_what_they_merged_stays_until_the_com
         assert_eq!(files[0], before[0]);
         assert_eq!(files[1].rows, 2);
         assert_eq!(created, [files[1].path.clone()]);
-        let commit = format!("/compacted/{}-1-", location.load_id);
+        let commit = format!("/compacted/{}-1-", location.epoch);
         assert!(files[1].path.contains(&commit), "{}", files[1].path);
         assert!(files[1].path.contains("/rows/g4/0."), "{}", files[1].path);
         let size = std::fs::metadata(location.dir.at(&files[1].path))
@@ -199,15 +200,12 @@ fn a_merge_that_fails_leaves_the_list_and_nothing_it_made() {
             staged(&location, 2, &ids(&[2])),
         ];
         let before = files.clone();
-        let made = location
-            .dir
-            .at("staging/7")
-            .join(location.load_id.to_string());
+        let made = location.dir.at("staging/7");
         // A try refused at any step, the syncs of its file and of its directory among them,
         // leaves no part of its file and none of the directories made for it.
         for step in 0.. {
             let mut created = Vec::new();
-            let seq = CommitSeq::FIRST;
+            let seq = 1;
             trace::fail_at(step);
             compact(
                 &location,
@@ -235,7 +233,7 @@ fn a_merge_that_fails_leaves_the_list_and_nothing_it_made() {
         std::fs::remove_file(location.dir.at(&files[0].path)).ok();
         let mut created = Vec::new();
         trace::clear();
-        let seq = CommitSeq::FIRST.next();
+        let seq = 2;
         compact(
             &location,
             "rows",
@@ -295,7 +293,7 @@ fn arrow_files_with_dictionaries_merge_as_the_values_they_stand_for() {
     ];
     assert_eq!(tail(&location, &files), Some(0));
     let mut created = Vec::new();
-    let seq = CommitSeq::FIRST;
+    let seq = 1;
     compact(
         &location,
         "rows",

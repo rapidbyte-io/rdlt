@@ -7,7 +7,7 @@ impl Bench<'_> {
     /// Checks the destination, and opens and closes a session; they must agree.
     pub(super) async fn check_agrees_with_open(&self) -> Result<(), Violation> {
         let checked = bounded_call("check", self.destination.check()).await;
-        let opened = match self.open(self.destination, 1).await {
+        let opened = match self.open(self.destination).await {
             Ok(opened) => bounded("close", opened.session.close())
                 .await?
                 .map_err(|error| Violation::from(format!("close: {error}"))),

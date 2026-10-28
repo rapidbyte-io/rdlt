@@ -19,7 +19,7 @@ async fn reading_back_a_database_that_is_missing_creates_none() {
 #[tokio::test]
 async fn reading_back_reads_a_table_a_pipeline_owns_and_no_other() {
     let shared = Shared::new().await;
-    let mut session = shared.open("p", 1).await;
+    let mut session = shared.open("p").await;
     session
         .load(&table("orders", "orders", true), 1, &[1, 2])
         .await;
@@ -34,7 +34,7 @@ async fn reading_back_reads_a_table_a_pipeline_owns_and_no_other() {
     let kept = [
         "_rdlt_state",
         "_rdlt_owners",
-        "_rdlt_receipts",
+        "_rdlt_epochs",
         "_rdlt_staging__orders",
         "_RDLT_STATE",
         "sqlite_schema",

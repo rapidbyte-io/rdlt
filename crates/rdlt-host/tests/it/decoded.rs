@@ -3,7 +3,7 @@
 //! bound its class states.
 
 use bytes::Bytes;
-use rdlt_connector::{Destination as _, LoadId, OpenContext, PipelineId, Role, Source as _};
+use rdlt_connector::{Destination as _, OpenContext, PipelineId, Role, Source as _};
 use rdlt_host::{Connection, Options, RemoteDestination, RemoteSource};
 use rdlt_testkit::fake::Fault;
 use rdlt_wire::Limits;
@@ -116,7 +116,7 @@ async fn an_open_answering_empty_state_at_its_bytes_is_refused_within_its_bound(
     let io = answering(
         Fault::Keys(String::new),
         "Open",
-        &entries([0x1a, 0x00], limit),
+        &entries([0x22, 0x00], limit),
     );
     let config = serde_json::json!({});
     let connection = Connection::connect(io, Role::Destination, &config, Options::default())
@@ -125,7 +125,6 @@ async fn an_open_answering_empty_state_at_its_bytes_is_refused_within_its_bound(
     let destination = RemoteDestination::new(connection).expect("its capabilities are taken");
     let context = OpenContext {
         pipeline: PipelineId::parse("bloated").expect("a pipeline id"),
-        load_id: LoadId::from_parts(std::time::UNIX_EPOCH, 1),
     };
     let (refused, peak) = peaked(destination.open(&context)).await;
     let Err(refused) = refused else {
@@ -138,7 +137,7 @@ async fn an_open_answering_empty_state_at_its_bytes_is_refused_within_its_bound(
 async fn a_commit_of_empty_child_tables_is_refused_by_the_served_connector_within_its_bound() {
     let limit = usize::try_from(Limits::default().state_bytes).unwrap();
     // A session, and the commit's meta: child tables, each empty, near the state's bytes.
-    let children = entries([0x3a, 0x00], limit - 16);
+    let children = entries([0x32, 0x00], limit - 16);
     let io = destination(Limits::default());
     let (refused, peak) = peaked(called(io, "Commit", commit(&children))).await;
     let refused = refused.expect_err("the commit is refused");
@@ -163,7 +162,7 @@ fn commit(meta: &[u8]) -> Bytes {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_commit_behind_a_group_the_decoder_skips_is_refused_within_its_bound() {
     let limit = usize::try_from(Limits::default().state_bytes).unwrap();
-    let children = entries([0x3a, 0x00], limit - 32);
+    let children = entries([0x32, 0x00], limit - 32);
     let payload = grouped(&commit(&children));
     let io = destination(Limits::default());
     let (refused, peak) = peaked(called(io, "Commit", payload)).await;

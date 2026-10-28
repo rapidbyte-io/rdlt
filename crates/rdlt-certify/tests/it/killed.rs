@@ -185,7 +185,11 @@ impl DestinationSession for DeferringSession {
         Box::pin(async move {
             if let Some(last) = last.filter(|_| !held.is_empty()) {
                 let rest = CommitMeta {
-                    commit_seq: last.commit_seq.next(),
+                    key: rdlt_connector::CommitKey {
+                        seq: last.key.seq + 1,
+                        ..last.key
+                    },
+                    after: Some(last.key),
                     segments: held,
                     abandoned: SegmentSet::new(),
                     state_delta: Vec::new(),

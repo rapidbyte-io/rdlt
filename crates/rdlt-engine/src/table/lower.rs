@@ -5,7 +5,7 @@ use std::sync::Arc;
 use arrow_schema::{DataType, Field as ArrowField, Schema, SchemaRef};
 use rdlt_connector::{
     Capabilities, DELETED_AT_COLUMN, Field, ID_COLUMN, IDX_COLUMN, IS_CURRENT_COLUMN,
-    LOAD_ID_COLUMN, LOADED_AT_COLUMN, LogicalType, OP_COLUMN, PARENT_ID_COLUMN, ROOT_ID_COLUMN,
+    LOAD_EPOCH_COLUMN, LOADED_AT_COLUMN, LogicalType, OP_COLUMN, PARENT_ID_COLUMN, ROOT_ID_COLUMN,
     ROW_HASH_COLUMN, SEQ_COLUMN, TimeUnit, TypeKind, UNCHANGED_COLUMN, VALID_FROM_COLUMN,
     VALID_TO_COLUMN,
 };
@@ -17,7 +17,7 @@ use crate::policy::Nested;
 /// The identifiers of a table's metadata columns under the destination's rules.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct MetaNames {
-    pub(crate) load_id: Arc<str>,
+    pub(crate) load_epoch: Arc<str>,
     pub(crate) loaded_at: Arc<str>,
     /// The sequence column, for merge tables and change streams' tables.
     pub(crate) seq: Option<Arc<str>>,
@@ -96,7 +96,7 @@ impl MetaNames {
     ) -> Self {
         let name = |column: &str| naming.metadata(column);
         Self {
-            load_id: name(LOAD_ID_COLUMN),
+            load_epoch: name(LOAD_EPOCH_COLUMN),
             loaded_at: name(LOADED_AT_COLUMN),
             seq: (merge || layout.is_some()).then(|| name(SEQ_COLUMN)),
             changes: layout.map(|layout| ChangeNames {
@@ -138,8 +138,8 @@ pub(crate) const ID_TYPE: LogicalType = LogicalType::Binary;
 /// The type of the position column: an item's position in its array, whose offsets are 32-bit.
 pub(crate) const IDX_TYPE: LogicalType = LogicalType::Int32;
 
-/// The type of the load id column: the load's UUID.
-pub(crate) const LOAD_ID_TYPE: LogicalType = LogicalType::Uuid;
+/// The type of the load epoch column: the epoch of the session that wrote the row.
+pub(crate) const LOAD_EPOCH_TYPE: LogicalType = LogicalType::Int64;
 
 /// The type of the loaded-at column.
 pub(crate) fn loaded_at_type() -> LogicalType {
@@ -205,7 +205,7 @@ pub(crate) fn logical_fields(model: &Model, meta: &MetaNames) -> Vec<Field> {
     let column = |name: &Arc<str>, logical: LogicalType, nullable| {
         Field::new(Arc::clone(name), logical, nullable)
     };
-    fields.push(column(&meta.load_id, LOAD_ID_TYPE, false));
+    fields.push(column(&meta.load_epoch, LOAD_EPOCH_TYPE, false));
     fields.push(column(&meta.loaded_at, loaded_at_type(), false));
     if let Some(seq) = &meta.seq {
         fields.push(column(seq, LogicalType::Binary, false));
@@ -279,7 +279,7 @@ pub(crate) fn validity(capabilities: &Capabilities) -> LogicalType {
 
 /// The Arrow schema of prepared batches of a table whose columns are `fields`, of the types
 /// `logical` gives, the model's `columns` first: each stored as another type names its own, and
-/// the load id and load start, which hold one value per batch, are dictionaries of it.
+/// the load epoch and load start, which hold one value per batch, are dictionaries of it.
 pub(crate) fn prepared_schema(fields: &[Field], logical: &[Field], columns: usize) -> SchemaRef {
     let fields: Vec<ArrowField> = fields
         .iter()

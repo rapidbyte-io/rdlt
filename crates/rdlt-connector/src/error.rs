@@ -35,6 +35,10 @@ pub const TABLE_OWNED: &str = "table_owned";
 /// rows were written with: the commit publishes nothing.
 pub const COLUMN_MISSING: &str = "column_missing";
 
+/// The code of the `Fenced` error a commit fails with where it expects another commit landed
+/// than the last that did, as a copy a later commit overtook does: it publishes nothing.
+pub const COMMIT_STALE: &str = "commit_stale";
+
 /// What kind of failure a [`ConnectorError`] reports; the engine decides retries from it.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

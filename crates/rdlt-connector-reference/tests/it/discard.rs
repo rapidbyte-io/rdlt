@@ -1,13 +1,12 @@
 //! A discard that lands late never removes a newer session's staging.
 
 use std::sync::Arc;
-use std::time::UNIX_EPOCH;
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use rdlt_connector::{
-    CommitMeta, CommitSeq, ConnectContext, DestinationConnector, Field, LoadId, LogicalType,
-    OpenContext, PipelineId, SchemaVersion, SegmentId, SegmentSet, Session, TableChange, TablePath,
-    TableRef, TableSchema, TableWriter,
+    CommitKey, CommitMeta, ConnectContext, DestinationConnector, Field, LogicalType, OpenContext,
+    PipelineId, SchemaVersion, SegmentId, SegmentSet, Session, TableChange, TablePath, TableRef,
+    TableSchema, TableWriter,
 };
 use rdlt_connector_reference::{
     FilesDestination, MemoryDestination, SqliteDestination, files, published, sqlite, staged,
@@ -36,7 +35,6 @@ async fn late_discard<C: DestinationConnector>(config: serde_json::Value) -> u64
     .expect("the destination connects");
     let context = OpenContext {
         pipeline: PipelineId::parse("late").expect("valid pipeline id"),
-        load_id: LoadId::from_parts(UNIX_EPOCH, 1),
     };
     let mut older = destination
         .open(&context)
@@ -53,16 +51,17 @@ async fn late_discard<C: DestinationConnector>(config: serde_json::Value) -> u64
         .await
         .expect("the late discard runs");
     let meta = CommitMeta {
-        load_id: context.load_id,
-        commit_seq: CommitSeq::FIRST,
-        epoch: newer.epoch,
+        key: CommitKey {
+            epoch: newer.epoch,
+            seq: 1,
+        },
+        after: newer.landed.as_ref().map(|landed| landed.key),
         segments: [SegmentId(1)].into_iter().collect::<SegmentSet>(),
         abandoned: SegmentSet::new(),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
-        horizon: None,
     };
     newer
         .session
@@ -135,7 +134,6 @@ async fn a_newer_memory_session_discards_what_older_ones_staged() {
     .expect("the destination connects");
     let context = OpenContext {
         pipeline: PipelineId::parse("abandoned").expect("valid pipeline id"),
-        load_id: LoadId::from_parts(UNIX_EPOCH, 1),
     };
     let mut older = destination
         .open(&context)

@@ -10,8 +10,8 @@ use arrow_array::{
     TimestampSecondArray,
 };
 use rdlt_connector::{
-    ChangeColumns, ChangeOp, CommitSeq, ConnectorErrorKind, Deletion, Field, LogicalType,
-    OpenedSession, SegmentId, TableChange, TableRef, TableSchema, TimeUnit,
+    ChangeColumns, ChangeOp, ConnectorErrorKind, Deletion, Field, LogicalType, OpenedSession,
+    SegmentId, TableChange, TableRef, TableSchema, TimeUnit,
 };
 use rdlt_connector_reference::files;
 
@@ -117,17 +117,17 @@ async fn widened_over_a_tombstone(format: &str, kind: LogicalType) {
     let what = format!("{kind:?} in {format}");
     let root = tempdir().expect("a root");
     let destination = connect(root.path(), format).await;
-    let mut session = open(destination.as_ref(), 1).await;
+    let mut session = open(destination.as_ref()).await;
     session
         .session
         .apply_schema(&created(&kind))
         .await
         .expect(&what);
-    let mut seq = CommitSeq::FIRST;
+    let mut seq = 1;
     let mut commit = async |session: &mut OpenedSession, segment: u64| {
-        let commit = meta(session, 1, seq, &[segment]);
+        let commit = meta(session, seq, &[segment]);
         session.session.commit(&commit).await.expect("a commit");
-        seq = seq.next();
+        seq += 1;
     };
     changed(
         &mut session,
@@ -189,7 +189,7 @@ async fn a_widen_a_staged_value_does_not_fit_is_refused_and_the_staged_rows_comm
     let nanos = LogicalType::Timestamp(TimeUnit::Nanosecond, None);
     let root = tempdir().expect("a root");
     let destination = connect(root.path(), "arrow").await;
-    let mut session = open(destination.as_ref(), 1).await;
+    let mut session = open(destination.as_ref()).await;
     let table = merge_table("events");
     let create = TableChange::Create {
         table: table.clone(),
@@ -228,7 +228,7 @@ async fn a_widen_a_staged_value_does_not_fit_is_refused_and_the_staged_rows_comm
     let refused = refused.expect_err("the staged value does not fit");
     assert_eq!(refused.kind(), ConnectorErrorKind::Data);
     assert_eq!(refused.code(), Some("schema_conflict"));
-    let commit = meta(&session, 1, CommitSeq::FIRST, &[1]);
+    let commit = meta(&session, 1, &[1]);
     session
         .session
         .commit(&commit)

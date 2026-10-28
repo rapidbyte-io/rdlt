@@ -443,9 +443,9 @@ fn a_catalog_of_another_format_or_with_a_field_it_does_not_know_is_refused() {
         .join("00000000000000000001.json");
     let written: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    assert_eq!(written["format"], serde_json::json!(1));
+    assert_eq!(written["format"], serde_json::json!(2));
     let mut other = written.clone();
-    other["format"] = serde_json::json!(2);
+    other["format"] = serde_json::json!(3);
     let mut unformatted = written.clone();
     unformatted.as_object_mut().unwrap().remove("format");
     let mut grown = written.clone();

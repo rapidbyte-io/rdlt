@@ -45,7 +45,8 @@ fn rows(ids: std::ops::Range<i64>, width: usize) -> RecordBatch {
     RecordBatch::try_from_iter(columns).expect("a valid batch")
 }
 
-/// Declares the columns of `batch` for the table, stages it in `segment` and commits it.
+/// Declares the columns of `batch` for the table, stages it in `segment` and commits it as the
+/// session's commit of that place: a session's segments count its commits.
 async fn loaded(session: &mut OpenedSession, segment: u64, batch: RecordBatch) {
     let create = TableChange::Create {
         table: events(),
@@ -62,7 +63,7 @@ async fn loaded(session: &mut OpenedSession, segment: u64, batch: RecordBatch) {
         .await
         .expect("the write buffers");
     writer.flush().await.expect("the flush stages");
-    let commit = meta(session, 1, segment, &[segment]);
+    let commit = meta(session, segment, &[segment]);
     session
         .session
         .commit(&commit)
@@ -91,7 +92,7 @@ fn held_bytes(batches: &[RecordBatch]) -> usize {
 #[tokio::test]
 async fn one_wide_row_among_many_narrow_rows_costs_the_table_its_own_cells() {
     let destination = store("widths").await;
-    let mut session = open(destination.as_ref(), "p", 1).await;
+    let mut session = open(destination.as_ref(), "p").await;
     loaded(&mut session, 1, rows(0..ROWS, 0)).await;
     loaded(&mut session, 2, rows(ROWS..ROWS + 1, WIDTH)).await;
     loaded(&mut session, 3, rows(ROWS + 1..ROWS + 2, 0)).await;
@@ -122,7 +123,7 @@ fn only(ids: std::ops::Range<i64>, column: usize) -> RecordBatch {
 #[tokio::test]
 async fn a_table_of_many_shapes_keeps_each_row_under_its_own_columns_over_many_commits() {
     let destination = store("shapes").await;
-    let mut session = open(destination.as_ref(), "p", 1).await;
+    let mut session = open(destination.as_ref(), "p").await;
     loaded(&mut session, 1, rows(0..1, 400)).await;
     // Forty shapes of a thousand rows, each holding a column of its own, then twelve commits
     // of rows that hold their key and sequence alone.
@@ -134,7 +135,7 @@ async fn a_table_of_many_shapes_keeps_each_row_under_its_own_columns_over_many_c
     }
     for commit in 0..12_i64 {
         let from = 100_000 + commit * 5_000;
-        let segment = u64::try_from(commit).expect("a segment") + 50;
+        let segment = u64::try_from(commit).expect("a segment") + 42;
         loaded(&mut session, segment, rows(from..from + 5_000, 0)).await;
         let held = published("shapes", "events");
         // A table keeps a batch for each set of columns its rows hold and makes no cell: the
@@ -149,7 +150,7 @@ async fn a_table_of_many_shapes_keeps_each_row_under_its_own_columns_over_many_c
 #[tokio::test]
 async fn a_row_of_a_shape_of_its_own_costs_a_batch_of_the_columns_it_holds() {
     let destination = store("shapes-of-one").await;
-    let mut session = open(destination.as_ref(), "p", 1).await;
+    let mut session = open(destination.as_ref(), "p").await;
     loaded(&mut session, 1, rows(0..1, 400)).await;
     // Four hundred rows, each holding a column no other does, written a batch each: the table
     // keeps a batch for each, of three columns, and joins none.
@@ -160,7 +161,7 @@ async fn a_row_of_a_shape_of_its_own_costs_a_batch_of_the_columns_it_holds() {
         writer.write(SegmentId(2), batch).await.expect("buffers");
     }
     writer.flush().await.expect("the flush stages");
-    let commit = meta(&session, 1, 2, &[2]);
+    let commit = meta(&session, 2, &[2]);
     session.session.commit(&commit).await.expect("the commit");
     let held = published("shapes-of-one", "events");
     assert_eq!(held.len(), 401);
@@ -172,7 +173,7 @@ async fn a_row_of_a_shape_of_its_own_costs_a_batch_of_the_columns_it_holds() {
 #[tokio::test]
 async fn a_reader_is_given_every_column_of_rows_written_without_one_declared_never_null() {
     let destination = store("never-null").await;
-    let mut session = open(destination.as_ref(), "p", 1).await;
+    let mut session = open(destination.as_ref(), "p").await;
     let declared = TableSchema::new(vec![
         rdlt_connector::Field::new("id", rdlt_connector::LogicalType::Int64, false),
         rdlt_connector::Field::new("seq", rdlt_connector::LogicalType::Binary, false),
@@ -193,7 +194,7 @@ async fn a_reader_is_given_every_column_of_rows_written_without_one_declared_nev
     let mut writer = session.session.writer(&events()).await.expect("a writer");
     writer.write(SegmentId(1), narrow).await.expect("buffers");
     writer.flush().await.expect("the flush stages");
-    let commit = meta(&session, 1, 1, &[1]);
+    let commit = meta(&session, 1, &[1]);
     session.session.commit(&commit).await.expect("the commit");
     let held = published("never-null", "events");
     assert_eq!(held.iter().map(RecordBatch::num_rows).sum::<usize>(), 3);

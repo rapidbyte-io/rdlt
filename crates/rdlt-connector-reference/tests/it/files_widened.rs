@@ -8,8 +8,8 @@ use arrow_array::{
     ArrayRef, Int32Array, Int64Array, RecordBatch, TimestampNanosecondArray, TimestampSecondArray,
 };
 use rdlt_connector::{
-    CommitSeq, ConnectorError, ConnectorErrorKind, Field, LogicalType, OpenedSession, SegmentId,
-    TableChange, TableSchema, TimeUnit,
+    ConnectorError, ConnectorErrorKind, Field, LogicalType, OpenedSession, SegmentId, TableChange,
+    TableSchema, TimeUnit,
 };
 use rdlt_connector_reference::files;
 
@@ -42,7 +42,7 @@ async fn widened(
 ) -> (Result<(), ConnectorError>, tempfile::TempDir) {
     let root = tempdir().expect("a root");
     let destination = connect(root.path(), format).await;
-    let mut session = open(destination.as_ref(), 1).await;
+    let mut session = open(destination.as_ref()).await;
     let create = TableChange::Create {
         table: merge_table("events"),
         schema: TableSchema::new(vec![
@@ -60,7 +60,7 @@ async fn widened(
     staged(&mut session, 1, 1, first).await;
     session
         .session
-        .commit(&meta(&session, 1, CommitSeq::FIRST, &[1]))
+        .commit(&meta(&session, 1, &[1]))
         .await
         .expect("the first row commits");
     let widen = TableChange::Widen {
@@ -74,7 +74,7 @@ async fn widened(
     staged(&mut session, 2, 2, second).await;
     session
         .session
-        .commit(&meta(&session, 1, CommitSeq::FIRST.next(), &[2]))
+        .commit(&meta(&session, 2, &[2]))
         .await
         .expect("the table merges at the type it has");
     (widening, root)
@@ -161,7 +161,7 @@ fn holding(ids: Vec<i64>, held: ArrayRef, kind: LogicalType) -> RecordBatch {
 }
 
 /// Stages `batch` in `segment` and commits it as commit `seq`.
-async fn committed(session: &mut OpenedSession, segment: u64, seq: CommitSeq, batch: RecordBatch) {
+async fn committed(session: &mut OpenedSession, segment: u64, seq: u64, batch: RecordBatch) {
     let table = merge_table("events");
     let mut writer = session.session.writer(&table).await.expect("a writer");
     writer
@@ -171,7 +171,7 @@ async fn committed(session: &mut OpenedSession, segment: u64, seq: CommitSeq, ba
     writer.flush().await.expect("the flush stages");
     session
         .session
-        .commit(&meta(session, 1, seq, &[segment]))
+        .commit(&meta(session, seq, &[segment]))
         .await
         .expect("the rows commit");
 }
@@ -209,7 +209,7 @@ async fn to_json(
 ) -> (Result<(), ConnectorError>, Vec<(i64, Option<String>)>) {
     let root = tempdir().expect("a root");
     let destination = connect(root.path(), format).await;
-    let mut session = open(destination.as_ref(), 1).await;
+    let mut session = open(destination.as_ref()).await;
     let create = TableChange::Create {
         table: merge_table("events"),
         schema: TableSchema::new(vec![
@@ -227,7 +227,7 @@ async fn to_json(
     let ids: Vec<i64> = (1..=i64::try_from(first.len()).expect("few rows")).collect();
     let later = i64::try_from(ids.len()).expect("few rows") + 1;
     let rows = holding(ids, first, from.clone());
-    committed(&mut session, 1, CommitSeq::FIRST, rows).await;
+    committed(&mut session, 1, 1, rows).await;
     let widen = TableChange::Widen {
         table: merge_table("events"),
         column: "held".into(),
@@ -238,7 +238,7 @@ async fn to_json(
     if widening.is_ok() {
         let text: ArrayRef = Arc::new(arrow_array::StringArray::from(vec![r#"{"a":1}"#]));
         let rows = holding(vec![later], text, LogicalType::Json);
-        committed(&mut session, 2, CommitSeq::FIRST.next(), rows).await;
+        committed(&mut session, 2, 2, rows).await;
     }
     (widening, held_text(root.path()))
 }
@@ -326,7 +326,7 @@ async fn booleans_numbers_and_structs_a_column_held_become_their_json_when_it_wi
 async fn a_table_of_json_lines_takes_a_widen_to_json_until_it_holds_rows_staged_or_published() {
     let root = tempdir().expect("a root");
     let destination = connect(root.path(), "jsonl").await;
-    let mut session = open(destination.as_ref(), 1).await;
+    let mut session = open(destination.as_ref()).await;
     let create = TableChange::Create {
         table: merge_table("events"),
         schema: TableSchema::new(vec![

@@ -462,6 +462,7 @@ impl Connector for Fake {
         Ok(Response::new(v1::OpenResponse {
             session: 1,
             epoch: 1,
+            landed: None,
             state: Vec::new(),
         }))
     }

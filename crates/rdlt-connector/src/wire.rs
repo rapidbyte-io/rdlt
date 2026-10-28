@@ -19,8 +19,6 @@ mod types;
 use std::error::Error as StdError;
 
 pub use carried::{answer_bytes, commit_bytes, record_bytes};
-#[cfg(feature = "serve")]
-pub(crate) use destination::load_id;
 pub use error::{CONFIGURE_REPEATED, HOST_CODES, INVALID_CODE, INVALID_MESSAGE, PROTOCOL_VERSION};
 pub use rdlt_wire::v1;
 pub use status::{

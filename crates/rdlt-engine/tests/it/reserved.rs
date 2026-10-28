@@ -74,7 +74,7 @@ async fn a_column_asking_for_a_metadata_name_is_refused_before_any_mode_switch()
     let names = [
         "_rdlt_id",
         "_rdlt_seq",
-        "_rdlt_load_id",
+        "_rdlt_load_epoch",
         "_rdlt_valid_from",
         "_rdlt_deleted_at",
         "_rdlt_idx",

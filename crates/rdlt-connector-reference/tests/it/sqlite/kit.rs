@@ -2,14 +2,13 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::UNIX_EPOCH;
 
 use arrow_array::cast::AsArray;
 use arrow_array::types::Int64Type;
 use arrow_array::{ArrayRef, BinaryArray, Int64Array, RecordBatch};
 use rdlt_connector::{
-    CommitMeta, CommitSeq, ConnectContext, ConnectorError, ConnectorErrorKind, Destination, Field,
-    GenerationId, LoadId, LogicalType, MergeKey, OpenContext, OpenedSession, PipelineId, Receipt,
+    CommitKey, CommitMeta, ConnectContext, ConnectorError, ConnectorErrorKind, Destination, Field,
+    GenerationId, LogicalType, MergeKey, OpenContext, OpenedSession, PipelineId, Receipt,
     SchemaVersion, SegmentId, TableChange, TablePath, TableRef, TableSchema, destination_factory,
 };
 use rdlt_connector_reference::{SqliteDestination, sqlite};
@@ -34,22 +33,17 @@ impl Shared {
         }
     }
 
-    /// A session of `pipeline`, whose commits are load `load`'s.
-    pub(super) async fn open(&self, pipeline: &str, load: u128) -> Opened {
+    /// A session of `pipeline`.
+    pub(super) async fn open(&self, pipeline: &str) -> Opened {
         let context = OpenContext {
             pipeline: PipelineId::parse(pipeline).expect("a valid pipeline id"),
-            load_id: LoadId::from_parts(UNIX_EPOCH, load),
         };
         let session = self
             .destination
             .open(&context)
             .await
             .expect("the session opens");
-        Opened {
-            session,
-            load_id: context.load_id,
-            seq: CommitSeq::FIRST,
-        }
+        Opened { session, seq: 1 }
     }
 
     /// The `id`s the table `name` holds, ascending.
@@ -108,11 +102,10 @@ pub(super) async fn connect(path: &Path) -> Box<dyn Destination> {
         .expect("the sqlite destination connects")
 }
 
-/// A session and the commits it has made.
+/// A session, the last commit that landed as it knows it, and the place of its next commit.
 pub(super) struct Opened {
     pub(super) session: OpenedSession,
-    load_id: LoadId,
-    seq: CommitSeq,
+    seq: u64,
 }
 
 impl Opened {
@@ -137,26 +130,32 @@ impl Opened {
         writer.flush().await.expect("the flush stages");
     }
 
-    /// The session's next commit, of `segments`.
+    /// The session's next commit, of `segments`, expecting the last commit that landed.
     pub(super) fn meta(&mut self, segments: &[u64]) -> CommitMeta {
         let meta = CommitMeta {
-            load_id: self.load_id,
-            commit_seq: self.seq,
-            epoch: self.session.epoch,
+            key: CommitKey {
+                epoch: self.session.epoch,
+                seq: self.seq,
+            },
+            after: self.session.landed.as_ref().map(|landed| landed.key),
             segments: segments.iter().copied().map(SegmentId).collect(),
             abandoned: rdlt_connector::SegmentSet::new(),
             state_delta: Vec::new(),
             finish_generations: Vec::new(),
             child_tables: Vec::new(),
             drop_tables: Vec::new(),
-            horizon: None,
         };
-        self.seq = self.seq.next();
+        self.seq += 1;
         meta
     }
 
+    /// Sends `meta`; one that lands is the last commit that landed.
     pub(super) async fn commit(&mut self, meta: &CommitMeta) -> Result<Receipt, ConnectorError> {
-        self.session.session.commit(meta).await
+        let answered = self.session.session.commit(meta).await;
+        if let Ok(receipt) = &answered {
+            self.session.landed = Some(receipt.clone());
+        }
+        answered
     }
 
     /// Stages `ids` for `table` in `segment` and commits them.

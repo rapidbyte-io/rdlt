@@ -1,7 +1,7 @@
 //! A transactional destination that keeps tables and state in process memory.
 
+mod committed;
 mod owners;
-mod receipts;
 mod table;
 
 use std::collections::BTreeMap;
@@ -13,8 +13,8 @@ use parking_lot::Mutex;
 use rdlt_connector::merge::Merged;
 use rdlt_connector::prelude::*;
 use rdlt_connector::{
-    CommitSeq, DeleteModes, Epoch, GenerationId, LoadId, PipelineId, SchemaChanges, SegmentId,
-    SegmentSet, StateRecord, TablePath, TypeKind,
+    DeleteModes, Epoch, GenerationId, PipelineId, SchemaChanges, SegmentId, SegmentSet,
+    StateRecord, TablePath, TypeKind,
 };
 use rdlt_wire::limits::count;
 use schemars::JsonSchema;
@@ -39,9 +39,9 @@ pub struct MemoryDestinationConfig {
 /// A replace generation's rows stay hidden until the commit that finishes the generation swaps
 /// them in for the table's rows. A merge table keeps one row per key: the newest commit's, and
 /// within a commit the row with the greatest sequence; a history table keeps every version of
-/// each key. Commits are atomic under the store's lock, idempotent on `(load_id, commit_seq)` and
-/// fenced by the pipeline's epoch; so are flushes, so a fenced worker cannot stage rows that the
-/// latest session would publish.
+/// each key. Commits are atomic under the store's lock, answered by the key that landed last and
+/// fenced by the pipeline's epoch; flushes are fenced too, so a fenced worker cannot stage rows
+/// that the latest session would publish.
 #[derive(Debug)]
 pub struct MemoryDestination {
     store: Arc<Mutex<Store>>,
@@ -265,7 +265,8 @@ fn staged_in<'a>(
 struct PipelineStore {
     epoch: Epoch,
     state: BTreeMap<String, StateRecord>,
-    receipts: BTreeMap<(LoadId, CommitSeq), Receipt>,
+    /// The receipt of the last commit that landed.
+    landed: Option<Receipt>,
 }
 
 #[destination(id = "io.rapidbyte.memory")]
@@ -327,6 +328,7 @@ impl DestinationConnector for MemoryDestination {
         Ok(Opened {
             session,
             epoch,
+            landed: pipeline.landed.clone(),
             state,
         })
     }
@@ -380,26 +382,24 @@ impl Session for MemorySession {
 
     async fn commit(&mut self, meta: &CommitMeta) -> Result<Receipt> {
         let mut store = self.store.lock();
-        let current = store
+        let fence = store
             .pipelines
             .entry(self.pipeline.clone())
             .or_default()
-            .epoch;
-        if current != self.epoch || meta.epoch != self.epoch {
+            .fence();
+        if let Some(landed) = fence.decide(meta)? {
+            return Ok(landed);
+        }
+        if meta.key.epoch != self.epoch {
             let message = format!(
-                "pipeline {} is at epoch {current}; this session opened at {}",
-                self.pipeline, self.epoch
+                "a session of epoch {} cannot apply {}",
+                self.epoch, meta.key
             );
             return Err(ConnectorError::fenced(message));
         }
-        let key = (meta.load_id, meta.commit_seq);
-        if let Some(receipt) = store.pipelines[&self.pipeline].receipts.get(&key) {
-            return Ok(receipt.clone());
-        }
         let (rows, bytes) = store.publish(&self.pipeline, self.epoch, meta)?;
         let receipt = Receipt {
-            load_id: meta.load_id,
-            commit_seq: meta.commit_seq,
+            key: meta.key,
             committed_at: SystemTime::now(),
             rows,
             bytes,

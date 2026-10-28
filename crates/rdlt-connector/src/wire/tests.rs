@@ -12,15 +12,14 @@ use crate::capabilities::{
     SchemaChanges, WriteModes,
 };
 use crate::catalog::{Catalog, Checkpointing, ReadMode, StreamSpec};
-use crate::commit::{ChildTable, CommitMeta, DroppedTable, Horizon, Receipt, SegmentSet};
+use crate::commit::{ChildTable, CommitKey, CommitMeta, DroppedTable, Receipt, SegmentSet};
 use crate::cursor::Cursor;
 use crate::destination::{
     ChangeColumns, Deletion, HistoryColumns, MergeKey, RootKey, TableChange, TableRef, WriteStats,
 };
 use crate::error::{ConnectorError, ConnectorErrorKind, LimitExceeded};
 use crate::id::{
-    CommitSeq, Epoch, GenerationId, LoadId, PartitionId, SchemaVersion, SegmentId, StreamName,
-    TablePath,
+    Epoch, GenerationId, PartitionId, SchemaVersion, SegmentId, StreamName, TablePath,
 };
 use crate::schema::{ColumnPath, TableSchema};
 use crate::state::{PartitionState, StateChange, StateRecord, StreamState};
@@ -276,9 +275,10 @@ fn table_change() -> impl Strategy<Value = TableChange> {
     ]
 }
 
-fn load_id() -> impl Strategy<Value = LoadId> {
-    (0..4_000_000_000_u64, any::<u128>()).prop_map(|(millis, random)| {
-        LoadId::from_parts(UNIX_EPOCH + Duration::from_millis(millis), random)
+fn commit_key() -> impl Strategy<Value = CommitKey> {
+    (any::<u64>(), any::<u64>()).prop_map(|(epoch, seq)| CommitKey {
+        epoch: Epoch(epoch),
+        seq,
     })
 }
 
@@ -297,9 +297,8 @@ fn state_change() -> impl Strategy<Value = StateChange> {
 fn commit_meta() -> impl Strategy<Value = CommitMeta> {
     let change = state_change();
     (
-        load_id(),
-        1..u64::MAX,
-        any::<u64>(),
+        commit_key(),
+        proptest::option::of(commit_key()),
         proptest::collection::btree_set(0..64_u64, 0..10),
         proptest::collection::btree_set(64..128_u64, 0..10),
         proptest::collection::vec(change, 0..3),
@@ -309,25 +308,12 @@ fn commit_meta() -> impl Strategy<Value = CommitMeta> {
         ),
         proptest::collection::vec((name(), merge_key()), 0..2),
         proptest::collection::vec((proptest::collection::vec(name(), 1..3), name()), 0..2),
-        proptest::option::of(horizon()),
     )
         .prop_map(
-            |(
-                load_id,
-                seq,
-                epoch,
-                segments,
-                abandoned,
-                state_delta,
-                finish,
-                children,
-                dropped,
-                horizon,
-            )| {
+            |(key, after, segments, abandoned, state_delta, finish, children, dropped)| {
                 CommitMeta {
-                    load_id,
-                    commit_seq: CommitSeq::new(seq).unwrap(),
-                    epoch: Epoch(epoch),
+                    key,
+                    after,
                     segments: segments.into_iter().map(SegmentId).collect(),
                     abandoned: abandoned.into_iter().map(SegmentId).collect(),
                     state_delta,
@@ -351,31 +337,21 @@ fn commit_meta() -> impl Strategy<Value = CommitMeta> {
                             name: Arc::from(name),
                         })
                         .collect(),
-                    horizon,
                 }
             },
         )
 }
 
-fn horizon() -> impl Strategy<Value = Horizon> {
-    (load_id(), 1..u64::MAX).prop_map(|(load_id, seq)| Horizon {
-        load_id,
-        commit_seq: CommitSeq::new(seq).unwrap(),
-    })
-}
-
 fn receipt() -> impl Strategy<Value = Receipt> {
     (
-        load_id(),
-        1..u64::MAX,
+        commit_key(),
         0..4_000_000_000_u64,
         0..1_000_000_000_u32,
         any::<u64>(),
         any::<u64>(),
     )
-        .prop_map(|(load_id, seq, seconds, nanos, rows, bytes)| Receipt {
-            load_id,
-            commit_seq: CommitSeq::new(seq).unwrap(),
+        .prop_map(|(key, seconds, nanos, rows, bytes)| Receipt {
+            key,
             committed_at: UNIX_EPOCH + Duration::new(seconds, nanos),
             rows,
             bytes,
@@ -529,60 +505,42 @@ fn an_unspecified_or_unknown_enum_value_is_refused() {
 }
 
 #[test]
-fn a_horizon_naming_no_commit_is_refused() {
+fn a_commit_or_receipt_without_its_key_is_refused() {
+    let key = CommitKey {
+        epoch: Epoch(2),
+        seq: 1,
+    };
     let meta = CommitMeta {
-        abandoned: SegmentSet::new(),
-        load_id: LoadId::from_parts(UNIX_EPOCH, 2),
-        commit_seq: CommitSeq::FIRST,
-        epoch: Epoch(1),
+        key,
+        after: Some(CommitKey {
+            epoch: Epoch(1),
+            seq: 4,
+        }),
         segments: SegmentSet::new(),
+        abandoned: SegmentSet::new(),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
-        horizon: Some(Horizon {
-            load_id: LoadId::from_parts(UNIX_EPOCH, 1),
-            commit_seq: CommitSeq::FIRST,
-        }),
     };
     let mut wire = v1::CommitMeta::from(&meta);
     assert_eq!(CommitMeta::try_from(wire.clone()).unwrap(), meta);
-    let horizon = wire.horizon.as_mut().unwrap();
-    horizon.commit_seq = 0;
-    assert!(matches!(
-        CommitMeta::try_from(wire.clone()),
-        Err(Invalid::OutOfRange("horizon's commit seq"))
-    ));
-    let horizon = wire.horizon.as_mut().unwrap();
-    horizon.commit_seq = 1;
-    horizon.load_id = Bytes::from_static(&[1, 2, 3]);
+    wire.key = None;
     assert!(matches!(
         CommitMeta::try_from(wire),
-        Err(Invalid::OutOfRange("load id"))
+        Err(Invalid::Missing("commit's key"))
     ));
-}
-
-#[test]
-fn a_horizon_orders_commits_by_load_then_sequence() {
-    let at = |load: u128, seq: u64| {
-        let seq = (1..seq).fold(CommitSeq::FIRST, |seq, _| seq.next());
-        (LoadId::from_parts(UNIX_EPOCH, load), seq)
-    };
-    let (load, seq) = at(2, 3);
-    let horizon = Horizon {
-        load_id: load,
-        commit_seq: seq,
-    };
-    for (load, seq, kept) in [
-        (1, 9, false),
-        (2, 2, false),
-        (2, 3, true),
-        (2, 4, true),
-        (3, 1, true),
-    ] {
-        let (load_id, commit_seq) = at(load, seq);
-        assert_eq!(horizon.keeps(load_id, commit_seq), kept, "{load} {seq}");
-    }
+    let mut receipt = v1::Receipt::from(&Receipt {
+        key,
+        committed_at: UNIX_EPOCH,
+        rows: 0,
+        bytes: 0,
+    });
+    receipt.key = None;
+    assert!(matches!(
+        Receipt::try_from(receipt),
+        Err(Invalid::Missing("receipt's key"))
+    ));
 }
 
 #[test]
@@ -596,30 +554,20 @@ fn numbers_that_do_not_fit_are_out_of_range() {
         Err(Invalid::OutOfRange("decimal precision"))
     ));
     let mut receipt = v1::Receipt::from(&Receipt {
-        load_id: LoadId::from_parts(UNIX_EPOCH, 1),
-        commit_seq: CommitSeq::FIRST,
+        key: CommitKey {
+            epoch: Epoch(1),
+            seq: 1,
+        },
         committed_at: UNIX_EPOCH,
         rows: 0,
         bytes: 0,
     });
-    receipt.commit_seq = 0;
-    assert!(matches!(
-        Receipt::try_from(receipt.clone()),
-        Err(Invalid::OutOfRange("commit seq"))
-    ));
-    receipt.commit_seq = 1;
-    receipt.load_id = Bytes::from_static(&[1, 2, 3]);
-    assert!(matches!(
-        Receipt::try_from(receipt.clone()),
-        Err(Invalid::OutOfRange("load id"))
-    ));
-    receipt.load_id = Bytes::from(vec![0; 16]);
     receipt.committed_at = Some(v1::Instant {
         seconds: -1,
         nanos: 0,
     });
     assert!(matches!(
-        Receipt::try_from(receipt.clone()),
+        Receipt::try_from(receipt),
         Err(Invalid::OutOfRange("instant"))
     ));
     receipt.committed_at = Some(v1::Instant {
@@ -709,16 +657,17 @@ fn values_that_break_their_types_rules_are_rejected() {
         })
     ));
     let mut meta = v1::CommitMeta::from(&CommitMeta {
-        load_id: LoadId::from_parts(UNIX_EPOCH, 1),
-        commit_seq: CommitSeq::FIRST,
-        epoch: Epoch(1),
+        key: CommitKey {
+            epoch: Epoch(1),
+            seq: 1,
+        },
+        after: None,
         segments: SegmentSet::new(),
         abandoned: SegmentSet::new(),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
-        horizon: None,
     });
     meta.segments = vec![
         v1::SegmentRange { first: 5, last: 6 },
@@ -736,16 +685,17 @@ fn values_that_break_their_types_rules_are_rejected() {
 #[test]
 fn abandoned_segments_are_ordered_and_none_is_committed() {
     let mut abandoned = v1::CommitMeta::from(&CommitMeta {
-        load_id: LoadId::from_parts(UNIX_EPOCH, 1),
-        commit_seq: CommitSeq::FIRST,
-        epoch: Epoch(1),
+        key: CommitKey {
+            epoch: Epoch(1),
+            seq: 1,
+        },
+        after: None,
         segments: SegmentSet::new(),
         abandoned: SegmentSet::new(),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
-        horizon: None,
     });
     abandoned.abandoned = vec![
         v1::SegmentRange { first: 5, last: 6 },

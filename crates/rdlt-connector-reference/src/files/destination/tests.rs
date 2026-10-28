@@ -330,20 +330,20 @@ fn what_commits_wrote_and_no_manifest_lists_is_swept_and_what_writers_stage_is_n
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, b"x").unwrap();
     };
-    let listed = "staging/5/load/merged/c1/rows/table/0.jsonl";
+    let listed = "staging/5/merged/c1/rows/table/0.jsonl";
     let kept = [
         listed,
         // A writer of the session is staging these: no commit wrote them.
-        "staging/5/load/7/rows/table/1.jsonl",
-        "staging/5/other/8/rows/table/1.jsonl",
+        "staging/5/7/rows/table/1.jsonl",
+        "staging/5/8/rows/table/1.jsonl",
         // A newer session's.
-        "staging/6/load/merged/c1/rows/table/0.jsonl",
+        "staging/6/merged/c1/rows/table/0.jsonl",
     ];
     let swept = [
-        "staging/5/load/merged/c0/rows/table/0.jsonl",
-        "staging/5/load/compacted/c0/rows/table/0.jsonl",
-        "staging/5/other/tombstones/c0/rows/table/0.jsonl",
-        "staging/4/load/3/rows/table/1.jsonl",
+        "staging/5/merged/c0/rows/table/0.jsonl",
+        "staging/5/compacted/c0/rows/table/0.jsonl",
+        "staging/5/tombstones/c0/rows/table/0.jsonl",
+        "staging/4/3/rows/table/1.jsonl",
     ];
     for path in kept.iter().chain(&swept) {
         touch(path);
@@ -371,7 +371,7 @@ fn what_commits_wrote_and_no_manifest_lists_is_swept_and_what_writers_stage_is_n
     for path in swept {
         assert!(!root.path().join(path).exists(), "{path}");
     }
-    assert!(!root.path().join("staging/5/load/compacted").exists());
+    assert!(!root.path().join("staging/5/compacted").exists());
     assert!(root.path().join("staging/5/stray").exists());
     // A pipeline whose session staged nothing has nothing to sweep.
     let empty = crate::scratch::tempdir().unwrap();
