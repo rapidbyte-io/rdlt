@@ -238,7 +238,7 @@ fn encode(value: &Json, out: &mut Vec<u8>) {
                 (Some(integer), _, _) => integer.to_string(),
                 (_, Some(integer), _) => integer.to_string(),
                 (_, _, Some(float)) => float_text(float),
-                _ => unreachable_number(),
+                _ => unreachable!("a JSON number is an integer or a float"),
             };
             out.push(b'd');
             length(out, text.as_bytes());
@@ -308,10 +308,6 @@ fn float_text(float: f64) -> String {
         plain.to_owned()
     };
     if negative { format!("-{plain}") } else { plain }
-}
-
-fn unreachable_number() -> String {
-    panic!("a JSON number is an integer or a float")
 }
 
 /// `value` with its numbers in one form and its objects' null fields dropped, as text.
