@@ -459,9 +459,11 @@ impl Reservation {
     /// it, not to the budget, so a holder that needs more waits for its own parts to be released.
     pub(crate) fn lend(self) -> Lent {
         let (bytes, class, free) = (self.bytes, self.class, self.bytes);
+        // A part of a lent reservation, lent again, presses the budget the first was lent from.
         let ledger = match &self.home {
             Some(Home::Budget(shared)) => Some(Arc::clone(shared)),
-            _ => None,
+            Some(Home::Lent(lending)) => lending.ledger.as_ref().map(Arc::clone),
+            None => None,
         };
         Lent(Arc::new(Lending {
             bytes,

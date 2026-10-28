@@ -827,3 +827,32 @@ async fn a_closed_lent_reservation_gives_the_budget_back_what_no_part_holds_and_
     drop(lent);
     assert_eq!(budget.reserved(), 0);
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_part_of_a_lent_reservation_lent_again_presses_for_its_parts_and_gives_all_back() {
+    let budget = budget(BUDGET);
+    let lent = budget.acquire_working(1_000).await.unwrap().lend();
+    let again = lent.try_take(600).expect("the lent bytes have room").lend();
+    let part = again.try_take(500).expect("the part lent again has room");
+    // A request of the part lent again waits for its own part, pressing whoever holds it.
+    let mut waiting = Box::pin(again.take(200));
+    assert!(waits(&mut waiting).await);
+    assert!(
+        felt(&budget).await,
+        "whoever holds the part is pressed to write it"
+    );
+    drop(part);
+    let taken = waiting.await.expect("the part went back");
+    assert!(!felt(&budget).await);
+    assert!(
+        lent.try_take(401).is_none(),
+        "the part lent again is still out"
+    );
+    drop((taken, again));
+    assert!(
+        lent.try_take(1_000).is_some(),
+        "the part lent again went back to what it was lent from"
+    );
+    drop(lent);
+    assert_eq!(budget.reserved(), 0);
+}
