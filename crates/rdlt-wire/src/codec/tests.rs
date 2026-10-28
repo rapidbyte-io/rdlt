@@ -66,7 +66,7 @@ proptest! {
         for frame in encoder.batch(&batch).unwrap() {
             let frame = frame.aligned();
             let measured = decoder.measure(&frame).unwrap();
-            prop_assert_eq!(measured, counted(&frame, MESSAGE_ROOM));
+            prop_assert_eq!(measured, counted(&frame));
             let (_, shape) = decoder.shaped(&frame).unwrap();
             let held = if frame.body.is_empty() { 0 } else { count(frame.allocation.len()) };
             prop_assert_eq!(shape.held_bytes, held);
@@ -214,7 +214,6 @@ fn a_decoder_tells_the_limits_it_decodes_within() {
         ..Limits::default()
     };
     assert_eq!(Decoder::new(limits).limits(), &limits);
-    assert_eq!(Decoder::sharing(limits).limits(), &limits);
 }
 
 #[test]
@@ -689,7 +688,11 @@ fn dictionary_held(schema: &Bytes, frames: &[IpcFrame]) -> u64 {
     // A dictionary counts its frame and its message's room: at least the allocation it keeps
     // alive.
     let held = measuring.dictionary_bytes();
-    assert_eq!(held, counted(&frames[0], MESSAGE_ROOM));
+    let frame = &frames[0];
+    assert_eq!(
+        held,
+        count(frame.header.len()) + count(frame.body.len()) + MESSAGE_ROOM
+    );
     assert!(held >= shape.held_bytes, "{held} {}", shape.held_bytes);
     held
 }
@@ -702,10 +705,7 @@ fn the_dictionaries_a_decoder_holds_are_bounded_together() {
     let frames = encoder.batch(&batch).unwrap();
     assert_eq!(frames.len(), 4, "three dictionaries, then the batch");
     assert!(dictionary_held(&schema, &frames) >= 1_000);
-    let each: Vec<u64> = frames[..3]
-        .iter()
-        .map(|frame| counted(frame, MESSAGE_ROOM))
-        .collect();
+    let each: Vec<u64> = frames[..3].iter().map(counted).collect();
     let (two, three) = (each[0] + each[1], each[0] + each[1] + each[2]);
     // A frame limit, and so a dictionary limit of a frame and its message's room, of two such
     // dictionaries and of a byte less than three.

@@ -22,16 +22,6 @@ fn skip(pointer: *const u8) -> usize {
     (ALIGNMENT - pointer.addr() % ALIGNMENT) % ALIGNMENT
 }
 
-/// `bytes` from a first byte at a multiple of [`ALIGNMENT`]: as they are where they start at
-/// one, otherwise copied once into an allocation of their own that does.
-pub fn ensure(bytes: Bytes) -> Bytes {
-    if is_aligned(&bytes) {
-        bytes
-    } else {
-        Aligned::copied(&bytes).bytes
-    }
-}
-
 /// Bytes gathered from a first byte at a multiple of [`ALIGNMENT`], in an allocation of the room
 /// asked for and the alignment beside it.
 #[derive(Debug, Default)]

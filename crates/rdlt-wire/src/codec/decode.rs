@@ -29,9 +29,6 @@ pub struct Decoder {
     /// The bytes each dictionary held counts, its frame and the room beside it, by its id: at
     /// least the allocation it keeps alive.
     held: HashMap<i64, u64>,
-    /// Bytes: what a frame's message may take beside its header and body in the allocation it
-    /// arrives in, which a dictionary decoded from it keeps alive.
-    room: u64,
 }
 
 impl Decoder {
@@ -44,16 +41,6 @@ impl Decoder {
             message: None,
             dictionaries: HashMap::new(),
             held: HashMap::new(),
-            room: MESSAGE_ROOM,
-        }
-    }
-
-    /// A decoder of frames that lie in one allocation their reader reserves whole, as a log
-    /// frame's do: each dictionary counts its frame's bytes alone.
-    pub fn sharing(limits: Limits) -> Self {
-        Self {
-            room: 0,
-            ..Self::new(limits)
         }
     }
 
@@ -131,7 +118,7 @@ impl Decoder {
     /// buffers lie.
     pub fn measure(&self, frame: &IpcFrame) -> Result<u64, WireError> {
         measured(self.columns.as_ref(), &self.limits, frame)?;
-        Ok(counted(frame, self.room))
+        Ok(counted(frame))
     }
 
     /// Decodes `frame` as [`Decoder::frame`] does, and measures what it holds.
@@ -152,7 +139,7 @@ impl Decoder {
             view_bytes: measured.walked.view_bytes,
             held_bytes: in_place::held(frame),
         };
-        let counted = counted(frame, self.room);
+        let counted = counted(frame);
         if let Some(id) = measured.dictionary {
             // Counted before it is decoded: a dictionary replaces any of its id.
             admit_dictionary(&self.limits, &self.held, id, counted)?;
@@ -190,11 +177,11 @@ impl Decoder {
 }
 
 /// Bytes: what `frame` counts toward the dictionaries a receiver holds, its header and body and
-/// `room` beside them, at least the allocation a receiver holds it in.
-pub(crate) fn counted(frame: &IpcFrame, room: u64) -> u64 {
+/// [`MESSAGE_ROOM`] beside them, at least the allocation a receiver holds it in.
+pub(crate) fn counted(frame: &IpcFrame) -> u64 {
     count(frame.header.len())
         .saturating_add(count(frame.body.len()))
-        .saturating_add(room)
+        .saturating_add(MESSAGE_ROOM)
 }
 
 /// Admits a dictionary of id `id` that takes `bytes` beside `held`, the dictionaries a receiver
