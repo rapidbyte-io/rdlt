@@ -57,28 +57,6 @@ fn a_recorded_schema_at_version_zero_is_refused() {
 }
 
 #[test]
-fn a_change_past_the_last_an_attempt_counts_is_refused() {
-    let plain = resolver(capabilities(), plan(), &[]);
-    let mut model = created(&plain, &[("id", LogicalType::Int64)]);
-    model.revision = u32::MAX;
-    let wider = schema(&[("id", LogicalType::Int64), ("extra", LogicalType::Utf8)]);
-    let error = plain.resolve(&model, &wider).unwrap_err();
-    assert_eq!(error.code(), Some(codes::SCHEMA_VERSION_EXHAUSTED));
-    // A normalized stream's table is created by a batch of nulls alone.
-    let mut normalized = resolver(capabilities(), plan(), &[]);
-    normalized.meta.id = Some("_rdlt_id".into());
-    let nulls = schema(&[("n", LogicalType::Null)]);
-    let fresh = normalized.resolve(&Model::default(), &nulls).unwrap();
-    assert_eq!((fresh.model.version, fresh.model.revision), (1, 1));
-    let counted = Model {
-        revision: u32::MAX,
-        ..Model::default()
-    };
-    let error = normalized.resolve(&counted, &nulls).unwrap_err();
-    assert_eq!(error.code(), Some(codes::SCHEMA_VERSION_EXHAUSTED));
-}
-
-#[test]
 fn a_table_is_as_wide_as_its_columns_and_their_nested_fields() {
     let item = rdlt_connector::Field::new("item", LogicalType::Int64, true);
     let fields = rdlt_connector::Fields::new(vec![

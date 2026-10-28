@@ -215,7 +215,7 @@ async fn the_delta_holds_tables_changed_since_state_recorded_them() {
         .await
         .unwrap();
     let delta = tables.delta();
-    assert_eq!(delta.revisions, [(0, 1)]);
+    assert_eq!(delta.versions, [(0, 1)]);
     let entries: Vec<StateEntry> = delta
         .changes
         .iter()
@@ -234,7 +234,7 @@ async fn the_delta_holds_tables_changed_since_state_recorded_them() {
     assert!(
         matches!(&entries[1], StateEntry::Names { physical, .. } if physical.as_ref() == "orders")
     );
-    tables.recorded(&delta.revisions);
+    tables.recorded(&delta.versions);
     assert!(tables.delta().changes.is_empty());
     tables.recorded(&[(0, 0)]);
     assert!(
@@ -244,11 +244,35 @@ async fn the_delta_holds_tables_changed_since_state_recorded_them() {
 }
 
 #[tokio::test]
+async fn a_committed_table_is_recorded_again_only_once_it_changes() {
+    let ids = schema(&[("id", LogicalType::Int64)]);
+    let mut committed = resolver().resolve(&Model::default(), &ids).unwrap().model;
+    committed.version = 3;
+    let (tables, _) = tables(None, committed);
+    tables.fit(0, &ids).await.unwrap();
+    assert!(
+        tables.delta().changes.is_empty(),
+        "state records it as it is"
+    );
+    let wider = schema(&[("id", LogicalType::Int64), ("note", LogicalType::Utf8)]);
+    tables.fit(0, &wider).await.unwrap();
+    assert_eq!(tables.delta().versions, [(0, 4)]);
+    tables.recorded(&[(0, 3)]);
+    assert_eq!(
+        tables.delta().versions,
+        [(0, 4)],
+        "an older version is not this one"
+    );
+    tables.recorded(&[(0, 4)]);
+    assert!(tables.delta().changes.is_empty());
+}
+
+#[tokio::test]
 async fn a_batch_of_integers_a_float_would_round_changes_neither_the_table_nor_its_record() {
     let (tables, changes) = tables(None, Model::default());
     let integers = schema(&[("n", LogicalType::Int64)]);
     let (created, _) = tables.fit(0, &integers).await.unwrap();
-    tables.recorded(&tables.delta().revisions);
+    tables.recorded(&tables.delta().versions);
     let rounding = integers.rounding(BTreeSet::from([ColumnPath::from("n")]));
     let (view, routes) = tables.fit(0, &rounding).await.unwrap();
     assert_eq!(routes, [Route::Column(0)]);
@@ -656,10 +680,10 @@ async fn a_tables_records_are_reserved_at_its_change_until_a_commit_records_them
     let second = tables.delta();
     assert!(records(&second) > records(&first));
     assert_eq!(budget.reserved(), records(&second));
-    // A commit recording an older revision releases nothing; a commit recording the latest does.
-    tables.recorded(&first.revisions);
+    // A commit recording an older version releases nothing; a commit recording the latest does.
+    tables.recorded(&first.versions);
     assert_eq!(budget.reserved(), records(&second));
-    tables.recorded(&second.revisions);
+    tables.recorded(&second.versions);
     assert_eq!(budget.reserved(), 0);
 }
 

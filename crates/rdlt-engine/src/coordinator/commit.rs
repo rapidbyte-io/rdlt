@@ -57,7 +57,7 @@ impl Coordinator {
             .await?;
         crash_point!("engine.complete.after", !completing.is_empty());
         phases.commit = laps.lap();
-        self.parts.tables.recorded(&tables.revisions);
+        self.parts.tables.recorded(&tables.versions);
         self.record(receipt, streams, &completing)?;
         self.forgot(forgotten);
         self.record_positions(&collected.positions);

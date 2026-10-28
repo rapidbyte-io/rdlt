@@ -243,8 +243,6 @@ impl Resolver {
         // so its first batch creates it.
         if self.meta.id.is_some() && !resolution.model.created() {
             resolution.model.version = 1;
-            resolution.model.revision =
-                draft::advanced(resolution.model.revision).map_err(stream)?;
         }
         if resolution.model.version != model.version {
             width::admit(&resolution.model, self.columns).map_err(stream)?;

@@ -821,14 +821,7 @@ fn models_come_from_committed_state() {
         history: false,
         ..TableState::default()
     };
-    // A model read from state starts this attempt's revisions afresh.
-    assert_eq!(
-        Model::from_state(Some(&state)).unwrap(),
-        Model {
-            revision: 0,
-            ..model.clone()
-        }
-    );
+    assert_eq!(Model::from_state(Some(&state)).unwrap(), model);
     let named_only = TableState {
         schema: None,
         ..state.clone()

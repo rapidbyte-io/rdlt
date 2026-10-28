@@ -92,23 +92,23 @@ impl Tables {
             .with_code(codes::TABLE_EXCEEDS_BUDGET)
             .with_stream(stream),
         })?;
-        *slot.records.lock() = Some((next.model.revision, reserved));
+        *slot.records.lock() = Some((next.model.version, reserved));
         Ok(())
     }
 
-    /// Releases what `table`'s changes reserved, where a commit now records its model at
-    /// `revision`.
-    pub(super) fn release_records(&self, table: usize, revision: u32) {
+    /// Releases what `table`'s changes reserved, where a commit now records its schema at
+    /// `version`.
+    pub(super) fn release_records(&self, table: usize, version: u32) {
         let slot = self.slot(table);
         let mut records = slot.records.lock();
         if records
             .as_ref()
-            .is_some_and(|(reserved, _)| *reserved <= revision)
+            .is_some_and(|(reserved, _)| *reserved <= version)
         {
             drop(records.take());
         }
     }
 }
 
-/// What holds a table's records: the model revision they were reserved for, and the bytes.
+/// What holds a table's records: the schema version they were reserved for, and the bytes.
 pub(super) type Held = Option<(u32, Reservation)>;
