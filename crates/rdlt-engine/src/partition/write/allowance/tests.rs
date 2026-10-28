@@ -11,8 +11,9 @@ use rdlt_connector::cost::Rendering;
 use rdlt_connector::{ColumnPath, StreamName, TableSchema};
 use tokio_util::sync::CancellationToken;
 
-use super::{Cutter, PartPiece, UNIT};
-use crate::error::ErrorKind;
+use super::{Cutter, PartPiece};
+use crate::budget::TooLarge;
+use crate::error::{Error, ErrorKind};
 use crate::normalize::{Shape, normalize};
 use crate::table::{Incoming, LoweringPlan};
 
@@ -51,6 +52,14 @@ fn rows(pieces: &[PartPiece]) -> usize {
     pieces.iter().map(|piece| piece.batch.num_rows()).sum()
 }
 
+/// A part's piece never takes more than its allowance, which holds every piece whole.
+fn unfit(large: TooLarge) -> Error {
+    panic!(
+        "a piece of {} passes its allowance of {}",
+        large.asked, large.limit
+    )
+}
+
 #[test]
 fn parts_are_cut_into_pieces_within_a_piece_and_keep_their_rows_and_lineage() {
     let cutter = Cutter::new(1 << 20, 16 << 10);
@@ -74,13 +83,13 @@ fn a_row_beyond_what_the_parts_may_take_is_refused() {
     let one = cut(Cutter::new(1 << 20, 16 << 10), 1);
     let row = one[0].bytes;
     assert!(row >= 8, "{row}");
-    let within = Cutter::new(row.div_ceil(UNIT) * UNIT, 16 << 10);
-    assert_eq!(rows(&cut(within, 3)), 3);
-    let Err(refused) = Cutter::new(0, 16 << 10).cut(&Rendering::native(), unit(3)) else {
-        panic!("a row was cut within no bytes");
+    // A row fits within exactly what lowering it takes, and not a byte less.
+    assert_eq!(rows(&cut(Cutter::new(row, 16 << 10), 3)), 3);
+    let Err(refused) = Cutter::new(row - 1, 16 << 10).cut(&Rendering::native(), unit(3)) else {
+        panic!("a row was cut within less than it takes");
     };
-    assert_eq!(refused.limit, 0);
-    assert!(refused.expanded > 0);
+    assert_eq!(refused.limit, row - 1);
+    assert!(refused.expanded > row - 1, "{}", refused.expanded);
 }
 
 #[test]
@@ -95,44 +104,39 @@ fn an_allowance_holds_every_piece_whole_and_never_more_than_is_available() {
         let Ok(pieces) = cutter.cut(&Rendering::native(), unit(count)) else {
             continue;
         };
-        let allowance = cutter.for_pieces(&pieces);
+        let allowance = cutter.allowance(&pieces);
         let what = format!("{available} available in pieces of {piece}");
-        assert!(allowance.bytes <= available, "{what}: {}", allowance.bytes);
-        let permits = allowance.permits.available_permits();
-        assert_eq!(allowance.bytes, permits as u64 * UNIT, "{what}");
+        assert!(allowance <= available, "{what}: {allowance}");
         for piece in &pieces {
-            let needed = piece.bytes.div_ceil(UNIT);
             assert!(
-                needed <= permits as u64,
+                piece.bytes <= allowance,
                 "{what}: a piece of {}",
                 piece.bytes
             );
         }
         // Few rows take what they take, and no more.
-        let all: u64 = pieces.iter().map(|piece| piece.bytes.div_ceil(UNIT)).sum();
-        assert!(permits as u64 <= all, "{what}");
+        let all: u64 = pieces.iter().map(|piece| piece.bytes).sum();
+        assert!(allowance <= all, "{what}: {allowance} of {all}");
     }
 }
 
 #[tokio::test(start_paused = true)]
 async fn a_piece_waits_for_those_before_it_to_be_written_and_presses_for_it() {
     let budget = crate::budget::budget(1 << 20);
-    let cancel = CancellationToken::new();
     let cutter = Cutter::new(1 << 20, 16 << 10);
     let pieces = cut(cutter, 10_000);
-    let allowance = cutter.for_pieces(&pieces);
-    assert_eq!(allowance.bytes, 32 << 10);
+    let allowance = cutter.allowance(&pieces);
+    assert_eq!(allowance, 32 << 10);
+    let lent = budget.acquire_working(allowance).await.unwrap().lend();
     // Two pieces are lowered at once: one lowered while the other is written.
-    let first = allowance.take(&budget, &cancel, &pieces[0]).await.unwrap();
-    let second = allowance.take(&budget, &cancel, &pieces[1]).await.unwrap();
-    let taken = |piece: &PartPiece| piece.bytes.div_ceil(UNIT);
-    let free = 32 - taken(&pieces[0]) - taken(&pieces[1]);
-    assert_eq!(allowance.permits.available_permits() as u64, free);
+    let first = lent.take(pieces[0].bytes).await.unwrap();
+    let second = lent.take(pieces[1].bytes).await.unwrap();
+    let free = allowance - pieces[0].bytes - pieces[1].bytes;
     assert!(
-        taken(&pieces[2]) > free,
+        pieces[2].bytes > free,
         "the third piece fits beside the first two"
     );
-    let third = allowance.take(&budget, &cancel, &pieces[2]);
+    let third = lent.take(pieces[2].bytes);
     tokio::pin!(third);
     let mut pressure = budget.pressure();
     tokio::select! {
@@ -150,7 +154,10 @@ async fn a_piece_waits_for_those_before_it_to_be_written_and_presses_for_it() {
         () = tokio::time::sleep(Duration::from_secs(1)) => {}
     }
     drop((second, third));
-    assert_eq!(allowance.permits.available_permits(), 32);
+    assert!(
+        lent.try_take(allowance).is_some(),
+        "each piece gave its part back"
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -159,9 +166,15 @@ async fn a_piece_waiting_for_its_allowance_stops_when_the_attempt_is_cancelled()
     let cancel = CancellationToken::new();
     let cutter = Cutter::new(16 << 10, 16 << 10);
     let pieces = cut(cutter, 10_000);
-    let allowance = cutter.for_pieces(&pieces);
-    let _held = allowance.take(&budget, &cancel, &pieces[0]).await.unwrap();
-    let (waiting, ()) = tokio::join!(allowance.take(&budget, &cancel, &pieces[1]), async {
+    let allowance = cutter.allowance(&pieces);
+    assert!(
+        pieces[0].bytes + pieces[1].bytes > allowance,
+        "one piece at a time"
+    );
+    let lent = budget.acquire_working(allowance).await.unwrap().lend();
+    let held = lent.try_take(pieces[0].bytes).unwrap();
+    let waiting = super::super::taking(&cancel, &lent, pieces[1].bytes, unfit);
+    let (waiting, ()) = tokio::join!(waiting, async {
         tokio::time::sleep(Duration::from_secs(5)).await;
         cancel.cancel();
     });
@@ -169,4 +182,13 @@ async fn a_piece_waiting_for_its_allowance_stops_when_the_attempt_is_cancelled()
         waiting.err().map(|error| error.kind()),
         Some(ErrorKind::Cancelled)
     );
+    // The take let go took nothing, and presses no lane.
+    let mut pressure = budget.pressure();
+    tokio::select! {
+        biased;
+        () = pressure.raised() => panic!("nothing waits any more"),
+        () = tokio::time::sleep(Duration::from_secs(1)) => {}
+    }
+    assert!(lent.try_take(allowance - pieces[0].bytes).is_some());
+    drop(held);
 }

@@ -19,6 +19,7 @@ use std::sync::Arc;
 use arrow_array::RecordBatch;
 use rdlt_connector::cost::{Allocations, Rendering, arrays};
 use rdlt_connector::{ColumnPath, Permit, SchemaError, TableSchema};
+use tokio_util::sync::CancellationToken;
 
 use self::changes::{Ignored, split_changes};
 use self::held::{Held, Share};
@@ -136,9 +137,20 @@ async fn reserve(
     if let Some(reserved) = room.try_reserve(&context.budget, bytes) {
         return Ok(reserved);
     }
+    taking(&context.cancel, lent, bytes, too_large).await
+}
+
+/// Takes `bytes` of `lent`, waiting for its parts to be written unless `cancel` fires first:
+/// `too_large` is the error for more than is lent.
+async fn taking(
+    cancel: &CancellationToken,
+    lent: &Lent,
+    bytes: u64,
+    too_large: impl FnOnce(TooLarge) -> Error,
+) -> Result<Reservation, Error> {
     let taken = tokio::select! {
         biased;
-        () = context.cancel.cancelled() => {
+        () = cancel.cancelled() => {
             return Err(Error::cancelled("the attempt was cancelled"));
         }
         taken = lent.take(bytes) => taken,
