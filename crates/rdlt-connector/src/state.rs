@@ -220,16 +220,6 @@ impl StateEntry {
         }
     }
 
-    /// Whether `record` is the record this entry is stored as, byte for byte, judged as the
-    /// entry's key and JSON are written, without building the bytes of either.
-    pub fn is_written_as(&self, record: &StateRecord) -> bool {
-        let writing = Writing {
-            v: STATE_VERSION,
-            entry: self,
-        };
-        Same::holds(record.key.as_bytes(), &self.key()) && Same::holds(&record.value, &writing)
-    }
-
     /// The entry a record stores.
     pub fn from_record(record: &StateRecord) -> Result<Self, StateError> {
         let key = StateKey::parse(&record.key)?;
@@ -411,36 +401,6 @@ struct Counted(usize);
 impl io::Write for Counted {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         self.0 = self.0.saturating_add(bytes.len());
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-/// A writer that takes only the bytes `expected` holds next, failing at the first that
-/// differs.
-struct Same<'a> {
-    expected: &'a [u8],
-    at: usize,
-}
-
-impl Same<'_> {
-    /// Whether `value`'s JSON is exactly `expected`.
-    fn holds(expected: &[u8], value: &impl Serialize) -> bool {
-        let mut same = Same { expected, at: 0 };
-        serde_json::to_writer(&mut same, value).is_ok() && same.at == expected.len()
-    }
-}
-
-impl io::Write for Same<'_> {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        let end = self.at.saturating_add(bytes.len());
-        if self.expected.get(self.at..end) != Some(bytes) {
-            return Err(io::Error::from(io::ErrorKind::InvalidData));
-        }
-        self.at = end;
         Ok(bytes.len())
     }
 
