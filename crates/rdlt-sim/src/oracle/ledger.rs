@@ -1,5 +1,5 @@
 //! What a simulation's runs left as they ended: a trace of them, their waits on the memory budget,
-//! and how long the last that succeeded took.
+//! how long the last that succeeded took, and the paths their reports to the source reached.
 
 use std::hash::{DefaultHasher, Hash as _, Hasher as _};
 use std::time::Duration;
@@ -8,6 +8,8 @@ use rdlt_engine::{RunStatus, Waits};
 
 use super::pressure::added;
 use super::scenario::{Executed, Scenario};
+use crate::reached::Reach;
+use crate::world::World;
 
 /// What a simulation's runs left, folded in as each scenario's runs end.
 #[derive(Debug, Default)]
@@ -22,8 +24,16 @@ pub(super) struct Ledger {
 }
 
 impl Ledger {
-    /// Folds in the runs of `scenario` in `phase`, those of each pipeline in `executed`.
-    pub(super) fn ended(&mut self, phase: usize, scenario: Scenario, executed: &[Executed]) {
+    /// Folds in the runs of `scenario` in `phase`, those of each pipeline in `executed`, and
+    /// notes in `world` where their reports to the source failed, leaving cursors owed, and where
+    /// an owed cursor was given up.
+    pub(super) fn ended(
+        &mut self,
+        phase: usize,
+        scenario: Scenario,
+        executed: &[Executed],
+        world: &World,
+    ) {
         phase.hash(&mut self.trace);
         format!("{scenario:?}").hash(&mut self.trace);
         for executed in executed {
@@ -31,6 +41,12 @@ impl Ledger {
                 let reported = serde_json::to_string(report).expect("a report serializes");
                 reported.hash(&mut self.trace);
                 added(&mut self.waits, &report.counters.waits);
+                if report.counters.acks.failed > 0 {
+                    world.reach(Reach::ReportOwed);
+                }
+                if report.counters.acks.dropped > 0 {
+                    world.reach(Reach::OwedDropped);
+                }
                 if report.status == RunStatus::Succeeded {
                     self.length = Some(report.elapsed);
                 }

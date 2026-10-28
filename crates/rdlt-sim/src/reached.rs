@@ -38,11 +38,15 @@ pub enum Reach {
     /// A source that cannot read again served again rows a checkpoint had already sent, never
     /// told they were committed.
     ServedAgain,
+    /// A report of committed cursors failed, which left its cursors owed to the next commit's.
+    ReportOwed,
+    /// A cursor owed to a partition recorded done was given up.
+    OwedDropped,
 }
 
 impl Reach {
     /// Every path, in the order a timing line names them.
-    const ALL: [Self; 16] = [
+    const ALL: [Self; 18] = [
         Self::ConnectorStopped,
         Self::LinkCut,
         Self::Crashed,
@@ -59,6 +63,8 @@ impl Reach {
         Self::Replanned,
         Self::Framing,
         Self::ServedAgain,
+        Self::ReportOwed,
+        Self::OwedDropped,
     ];
 
     fn bit(self) -> u32 {

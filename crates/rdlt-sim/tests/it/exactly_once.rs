@@ -85,6 +85,23 @@ fn seeds_that_once_found_a_defect_pass() {
     });
 }
 
+/// The seed of [`a_seed_whose_reports_fail_owes_their_cursors_and_passes`].
+const OWED: u64 = 164;
+
+/// A seed whose runs see reports of committed cursors fail, owe their cursors to the next
+/// commit's report, and give up one owed to a partition recorded done, so neither path drops out
+/// of the simulation unseen.
+#[test]
+fn a_seed_whose_reports_fail_owes_their_cursors_and_passes() {
+    let checked = check_exactly_once(Seed::new(OWED));
+    for path in [Reach::ReportOwed, Reach::OwedDropped] {
+        assert!(
+            checked.reached.has(path),
+            "seed {OWED} no longer reaches {path:?}: keep a seed that does"
+        );
+    }
+}
+
 /// The seed of [`a_seed_whose_rows_only_the_source_held_passes`].
 const SERVED_AGAIN: u64 = 14;
 
