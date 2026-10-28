@@ -6,9 +6,9 @@ Status: accepted, 2026-09-29.
 
 ADR 0025 split JSON exactness from H1b. Each of its findings needs values, not only types, to be
 judged:
-- A column of integers that later meets floats becomes JSON text, since the lattice joins `Int64`
-  and a float as `Json` (spec §8.2): a 64-bit float rounds integers beyond 2⁵³. A column whose
-  integers are all within 2⁵³ loses nothing to floats, yet takes them as text.
+- A column of integers that later meets floats sends them to JSON text, since the lattice joins
+  `Int64` and a float as `Json`: a 64-bit float rounds integers beyond 2⁵³. The floats lose
+  nothing as floats, yet land as text.
 - An integer beyond 38 digits fails its push as `value_unrepresentable`, even in a column already
   of JSON text, which holds it.
 - A merge key decimal the destination stores as text is refused a wider precision at the same
@@ -29,45 +29,41 @@ process; H1b fixed it (ADR 0025).
     refusal sends the chunk through the exact parse, which tells them apart. The exact parse hands
     an integer beyond 38 digits to the shredder as its digits, through the one visit JSON never
     makes otherwise, `visit_bytes`.
-  - The exact parse builds a record whole, so it first scans the record's brackets, outside its
-    strings, and refuses one nested past the limit as `limit_exceeded`: a record the fast parse
-    refused or found imprecise cannot exhaust the stack.
-- **A column of 64-bit integers is exact while a 64-bit float holds every value it stored.**
-  - Exactness is judged from values, whatever the source: a batch's column of 64-bit integers
+  - The exact parse walks a record a token at a time (ADR 0040), and its reader refuses a
+    container opened past the nesting limit as `limit_exceeded`: a record the fast parse refused
+    or found imprecise cannot exhaust the stack.
+- **Floats meeting 64-bit integers take a variant of floats; integers meeting floats are cast
+  only where a float holds each.**
+  - A batch's column of 64-bit integers is judged from its values, whatever the source: it
     rounds when a value its rows hold is beyond 2⁵³ either way. A column is read where it lies,
     in any encoding, a dictionary's values through the keys its rows hold and a run's through
     the runs they fall in, so only values rows hold count and nothing is decoded. A declared
-    schema holds no values, so it creates exact columns.
+    schema holds no values, so it rounds nothing.
   - The batch judged is a partition's flush, every table's rows of it judged together, before
     its policy drops any. A flush is shredded in chunks and lowered in slices whose sizes fall
     where they may, so where a flush is cut decides no column's type. A normalized flush is
     judged where its batches hold its rows, each column walked as normalizing places it, before
     any of it is split.
-  - The table's model keeps its exact columns. A column added from a batch that rounds is not
-    exact, and one that later takes such a batch stops being exact; nothing makes it exact again.
-  - State records them with the schema, as `exact`; the record always holds them, and a record of
-    another format is refused (ADR 0041). Losing exactness changes
-    the model but not the table, so it advances the model's revision, which state compares, and
-    not the schema's version, which destinations see. It is decided under the table's lock, before
-    any of the rounding batch is written, and each commit records the table's current model, so no
-    commit records a column exact after a rounding batch was planned.
-  - A column of 64-bit floats takes a batch of exact integers cast, as it takes narrower floats.
-    The conversion checks again, and refuses a batch whose integers a float would round as
-    `value_unrepresentable`, so a plan used on other batches than it judged never rounds.
-    A declared column of 64-bit integers hinted as floats is not refused as a run plans:
-    its batches are judged by their values, and one that rounds is incompatible with the hint.
-  - Floats arriving at an exact column join its integers as 64-bit floats: they take a variant of
-    floats, `__float64`, rather than JSON text. Such a join never widens the column in place,
-    even where the destination declares it could: a partition's plan made before may still write
-    the column integers. Only the lattice's joins widen a column.
+  - A column of 64-bit floats takes a batch of 64-bit integers cast where none rounds, as it
+    takes narrower floats. The conversion checks again, and refuses a batch whose integers a
+    float would round as `value_unrepresentable`, so a plan used on other batches than it judged
+    never rounds. A declared column of 64-bit integers hinted as floats is not refused as a run
+    plans: its batches are judged by their values, and one that rounds is incompatible with the
+    hint.
+  - Floats arriving at a column of 64-bit integers join its integers as 64-bit floats, whatever
+    integers it stored: they take a variant of floats, `__float64`, rather than JSON text. The
+    variant holds only the floats, which are exact as floats, so nothing about the column's own
+    values is kept to choose it. Such a join never widens the column in place, even where the
+    destination declares it could: a float rounds integers beyond 2⁵³. Only the lattice's joins
+    widen a column. A column that already has a variant holding floats, `__json` among them,
+    keeps sending them there.
   - Values go first to the column's own, as they are or cast; then to a variant that holds them as
     they are. A variant never takes a cast.
   - A column arriving as JSON text whose own column is of another type sends there each value
-    that column holds alone, and a column of integers it is read into is not exact, since its
-    integers are read only as the plan lowers them (ADR 0040).
-  - The lattice and JSON value inference differ from spec §8.2: `Int64 ∨ FloatM` is `Json`, and
-    `Float64` in a variant for a column whose values a float holds exactly; an integer is inferred
-    as the narrowest type that holds it, as above.
+    that column holds alone (ADR 0040).
+  - The lattice joins `Int64` and a float as `Json`; a column of 64-bit integers picks its
+    variant for floats as `Float64`. An integer is inferred as the narrowest type that holds it,
+    as above.
 - **A merge key keeps matching where its values render alike.** A key widens where the destination
   stores both types by value, or renders both into one type alike: integers and
   decimals of one scale render the same digits. A scale that grows still changes the key's text
@@ -78,8 +74,9 @@ process; H1b fixed it (ADR 0025).
 - **The simulation models values.**
   - An arrival of 64-bit integers is exact where a float holds each of them, over the batch and
     over the batches the engine may gather with it, for JSON and Arrow alike. Exact integers join
-    floats as floats, as the shredder joins them.
-  - Each column's own column carries its exactness through every order of a phase's batches.
+    floats as floats, as the shredder joins them, and a column of floats takes them.
+  - Each column's own column is followed through every order of a phase's batches: floats
+    meeting one of 64-bit integers take a variant, whatever integers it holds.
   - Draws of 64-bit integers mix values within 2⁵³, beyond it and at its edges; JSON pushes carry
     whole numbers of every width, past 76 digits too.
   - The model keeps a pushed value as the value drawn and reads it as its JSON text, so integers
@@ -87,9 +84,13 @@ process; H1b fixed it (ADR 0025).
     leading zeros.
   - Its key model applies the same rule for keys rendered alike.
 - Rejected:
-  - Widening a column of exact integers to floats in place where the destination declares it:
-    it races partitions still writing integers under an older plan, and no destination declares
-    it.
+  - Widening a column of 64-bit integers to floats in place where the destination declares it:
+    a float rounds integers beyond 2⁵³, a partition still writing integers under an older plan
+    races it, and no destination declares it.
+  - Recording which columns of 64-bit integers hold only integers a float holds exactly, to send
+    floats beside any others to JSON text: the variant holds only the floats arriving, so the
+    column's own integers decide nothing, and the record would need a revision of the model
+    beside its schema version.
   - Tracking exactness of integers nested in objects and lists stored whole: such values join as
     the lattice says.
   - Refusing, rather than keeping as JSON text, integers beyond 76 digits: text holds them
@@ -97,7 +98,6 @@ process; H1b fixed it (ADR 0025).
 
 ## Consequences
 
-- Tables take floats after exact integers in a `__float64` column.
+- Tables take floats after 64-bit integers in a `__float64` column, whatever integers an
+  earlier flush held.
 - A push holding an integer beyond 38 digits loads instead of failing.
-- State records always carry exact columns, none where a table has none; older engines' records
-  are refused (ADR 0041).

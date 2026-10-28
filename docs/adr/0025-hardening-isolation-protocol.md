@@ -35,8 +35,8 @@ The findings split in two, as ADR 0024 split H1a from H1b:
   - a decimal key changing precision at the same scale;
   - integers beyond 128 bits in `Json` columns.
 
-Each needs value-level exactness kept in table state, and a model of it in the simulation. M5b
-follows H1c.
+Each needs values judged, not only types, and a model of them in the simulation. M5b follows
+H1c.
 
 - **A table belongs to the pipeline that created it.**
   - A schema change or writer of another pipeline's session fails with a `Config` error coded
