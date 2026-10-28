@@ -94,6 +94,16 @@ pub(crate) enum Before {
     Commit(u64),
     /// The commit named so.
     Named(Named),
+    /// The answer to the commit of this number, counted across attempts: the commit lands and
+    /// its answer is lost with the destination.
+    Answer(Answer),
+}
+
+/// The commit whose answer a kill falls before.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Answer {
+    pub(crate) answer: u64,
 }
 
 /// A commit named by what it does.
