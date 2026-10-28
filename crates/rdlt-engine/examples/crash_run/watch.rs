@@ -1,6 +1,6 @@
 //! Watching a run as it loads: the source's reads as they begin and the destination's commits as
-//! they land, told on standard output, and a spawned connector killed before a chosen commit, or
-//! a source before a chosen write.
+//! they land, told on standard output, and a spawned connector killed before a chosen commit or
+//! before its answer, or a source before a chosen write.
 
 use std::io::Write as _;
 use std::num::NonZeroUsize;
@@ -17,7 +17,7 @@ use rdlt_connector::{
 };
 use rdlt_host::Kills;
 
-use crate::config::{Before, Kill, Named, Victim};
+use crate::config::{Answer, Before, Kill, Named, Victim};
 
 /// How long a killed connector may take to be gone before the run goes on regardless, and
 /// the test that watches it fails.
@@ -78,7 +78,7 @@ impl Watch {
             return;
         };
         let chosen = match (kill.victim, kill.before) {
-            (Victim::Source, _) => false,
+            (Victim::Source, _) | (Victim::Destination, Before::Answer(_)) => false,
             (Victim::Destination, Before::Commit(commit)) => asked == commit,
             (Victim::Destination, Before::Named(Named::Publish)) => {
                 !meta.finish_generations.is_empty()
@@ -129,6 +129,24 @@ impl Watch {
         while rdlt_host::spawned().len() >= alive && tokio::time::Instant::now() < until {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
+    }
+
+    /// After the commit the destination was last asked for landed, before its answer is heard:
+    /// kills the destination where the answer is the chosen one, and tells the commit landed;
+    /// whether it killed it.
+    async fn answering(&self) -> bool {
+        let Some((kills, kill)) = &self.kill else {
+            return false;
+        };
+        let Before::Answer(Answer { answer }) = kill.before else {
+            return false;
+        };
+        if kill.victim != Victim::Destination || self.asked.load(Ordering::SeqCst) != answer {
+            return false;
+        }
+        self.kills(kills).await;
+        writeln!(std::io::stdout(), "landed unanswered {answer}").ok();
+        true
     }
 
     /// After a commit landed: tells its number.
@@ -244,6 +262,11 @@ impl DestinationSession for Session {
         Box::pin(async move {
             self.watch.committing(meta).await;
             let receipt = self.inner.commit(meta).await?;
+            if self.watch.answering().await {
+                // The destination is gone with the answer: what the engine hears is what its
+                // connection says now.
+                return self.inner.commit(meta).await;
+            }
             self.watch.committed().await;
             Ok(receipt)
         })

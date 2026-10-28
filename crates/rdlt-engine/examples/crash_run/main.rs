@@ -6,7 +6,8 @@
 //! where the run succeeded and 1 where it failed; `FAILPOINTS` crashes it where it names, and it
 //! leaves no core dump when it does. It tells each connector it spawns by its process id (`connector 4321`), each read as it begins
 //! (`read 2`), each commit as it lands (`commit 3`), a kill as it makes it (`killed reading 1`,
-//! the source's reads then in flight), and last its report, as JSON; told to pause after a read
+//! the source's reads then in flight), a commit that landed and lost its answer to a kill
+//! (`landed unanswered 2`), and last its report, as JSON; told to pause after a read
 //! or commit, it waits there to be killed. Before it exits it stops what it spawned.
 
 #![forbid(unsafe_code)]

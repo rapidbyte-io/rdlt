@@ -60,6 +60,9 @@ files, sockets and child processes.
     than its connection holds, and a spawned destination before a chosen commit or the one
     publishing a replace, waiting for it to die; the kill must fail an attempt, which a later
     attempt rides out.
+  - It kills a spawned destination once a chosen commit landed, before its answer reaches the
+    engine: the later attempt's open finds that commit's key landed and credits it, so the run's
+    report counts every commit that landed.
   - A run the test gives up on is killed with its process group, so a failure leaves nothing
     running.
 

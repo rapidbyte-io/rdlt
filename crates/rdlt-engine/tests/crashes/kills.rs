@@ -451,6 +451,62 @@ fn a_spawned_destination_killed_as_a_run_loads_is_spawned_again_and_doubles_noth
     );
 }
 
+/// Kills the spawned destination of the harness running `scenario` once each commit of
+/// `answers` landed, before its answer reaches the engine: the run rides the kill out on a later
+/// attempt, which finds the commit's key landed and credits it, so the report counts every commit
+/// that landed and every row once.
+fn answer_lost(scenario: &Scenario, answers: &[u64]) {
+    for answer in answers {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let kill = json!({ "victim": "destination", "before": { "answer": answer } });
+        let config = scenario.write_spawned(dir.path(), &json!({ "kill": kill }));
+        let context = format!(
+            "{}: the destination killed before answer {answer}",
+            scenario.name
+        );
+        let run = Watched::spawn(&config);
+        let connectors = run.connectors();
+        let (status, lines) = run.ended();
+        assert!(
+            !orphans(&connectors),
+            "{context}: a connector outlived the run"
+        );
+        assert!(
+            status.success(),
+            "{context}: the run did not ride the kill out: {status}"
+        );
+        let unanswered = format!("landed unanswered {answer}");
+        assert!(
+            lines.contains(&unanswered),
+            "{context}: nothing was killed: {lines:?}"
+        );
+        let answered = lines
+            .iter()
+            .filter(|line| line.starts_with("commit "))
+            .count();
+        let report: Value = lines
+            .last()
+            .and_then(|line| serde_json::from_str(line).ok())
+            .expect("a report");
+        assert!(
+            report["attempted"].as_u64().expect("a count of attempts") >= 2,
+            "{context}: the kill failed no attempt: {lines:?}"
+        );
+        assert_eq!(
+            report["commits"].as_u64(),
+            Some(answered as u64 + 1),
+            "{context}: the commit whose answer was lost is not credited: {lines:?}"
+        );
+        scenario.verify(dir.path(), &context);
+    }
+}
+
+#[test]
+fn a_commit_whose_answer_a_killed_destination_lost_is_credited_and_lands_once() {
+    answer_lost(&scenarios::forgetting_log(), &[1, 3]);
+    answer_lost(&scenarios::replaced(), &[1]);
+}
+
 /// A stand-in for a test of the matrix: it starts a run that waits after its first read, says
 /// which processes that started, and waits to be killed.
 #[test]
