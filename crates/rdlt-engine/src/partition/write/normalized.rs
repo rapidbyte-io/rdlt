@@ -83,9 +83,9 @@ pub(super) async fn write_normalized(
             // No piece asks for more: what the room has left goes back to the budget.
             room.close();
         }
-        // The piece's parts, on their lanes and in the log, share what holds them, the piece's
-        // batches and what it reserved until the last of them is written: the parts go first,
-        // then the piece's rows and with them its share of the unit, then what the split made.
+        // The piece's parts on their lanes share what holds them, the piece's batches and what
+        // it reserved until the last of them is written: the parts go first, then the piece's
+        // rows and with them its share of the unit, then what the split made.
         let hold = Arc::new(Mutex::new((kept, held, reserved)));
         let mut cut = cut.into_iter().peekable();
         while let Some(piece) = cut.next() {
