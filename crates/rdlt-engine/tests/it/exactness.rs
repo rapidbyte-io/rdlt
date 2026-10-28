@@ -1,5 +1,6 @@
-//! Floats arriving at a column of integers, in a later run: beside integers every one of which a
-//! float holds exactly they land as floats, and beside any other as JSON text.
+//! Floats and 64-bit integers meeting across runs: floats arriving at a column of integers land
+//! beside it as floats, whatever integers it holds, and integers arriving at a column of floats
+//! land in it only where a float holds every integer pushed with them exactly.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -55,67 +56,53 @@ async fn after(store: &str, integers: Push, floats: Push) -> Vec<Value> {
 }
 
 #[tokio::test(start_paused = true)]
-async fn floats_after_json_integers_every_one_exact_land_beside_them_as_floats() {
-    let rows = after(
-        "exact_json",
-        json("{\"n\":1}\n{\"n\":-9007199254740992}"),
-        json("{\"n\":2.5}"),
-    )
-    .await;
-    assert_eq!(
-        rows,
-        [
-            json!({"n": -9_007_199_254_740_992_i64}),
-            json!({"n": 1}),
-            json!({"n__float64": 2.5}),
-        ]
-    );
-}
-
-#[tokio::test(start_paused = true)]
-async fn floats_after_a_json_integer_a_float_would_round_land_as_json_text() {
-    let rows = after(
-        "rounded_json",
-        json("{\"n\":9007199254740993}"),
-        json("{\"n\":2.5}"),
-    )
-    .await;
-    assert_eq!(
-        rows,
-        [
-            json!({"n": 9_007_199_254_740_993_i64}),
-            json!({"n__json": "2.5"}),
-        ]
-    );
-}
-
-#[tokio::test(start_paused = true)]
-async fn arrow_integers_are_judged_by_their_values_as_json_ones_are() {
-    let batch = |column: ArrayRef| RecordBatch::try_from_iter([("n", column)]).unwrap();
-    let exact = batch(Arc::new(Int64Array::from(vec![1_i64 << 53])));
-    let rounded = batch(Arc::new(Int64Array::from(vec![(1_i64 << 53) + 1])));
-    let floats = batch(Arc::new(Float64Array::from(vec![0.5])));
-    let exact = after(
-        "exact_arrow",
-        Push::Arrow(exact),
-        Push::Arrow(floats.clone()),
-    )
-    .await;
-    assert_eq!(
-        exact,
-        [
-            json!({"n": 9_007_199_254_740_992_i64}),
-            json!({"n__float64": 0.5}),
-        ]
-    );
-    let rounded = after("rounded_arrow", Push::Arrow(rounded), Push::Arrow(floats)).await;
-    assert_eq!(
-        rounded,
-        [
-            json!({"n": 9_007_199_254_740_993_i64}),
-            json!({"n__json": "0.5"}),
-        ]
-    );
+async fn floats_after_integers_land_beside_them_as_floats_whatever_the_integers() {
+    let arrow =
+        |column: ArrayRef| Push::Arrow(RecordBatch::try_from_iter([("n", column)]).unwrap());
+    let integers = |values: Vec<i64>| arrow(Arc::new(Int64Array::from(values)));
+    let floats = arrow(Arc::new(Float64Array::from(vec![0.5])));
+    let cases = [
+        (
+            "exact_json",
+            json("{\"n\":1}\n{\"n\":-9007199254740992}"),
+            json("{\"n\":2.5}"),
+            vec![
+                json!({"n": -9_007_199_254_740_992_i64}),
+                json!({"n": 1}),
+                json!({"n__float64": 2.5}),
+            ],
+        ),
+        (
+            "rounded_json",
+            json("{\"n\":9007199254740993}"),
+            json("{\"n\":2.5}"),
+            vec![
+                json!({"n": 9_007_199_254_740_993_i64}),
+                json!({"n__float64": 2.5}),
+            ],
+        ),
+        (
+            "exact_arrow",
+            integers(vec![1_i64 << 53]),
+            floats.clone(),
+            vec![
+                json!({"n": 9_007_199_254_740_992_i64}),
+                json!({"n__float64": 0.5}),
+            ],
+        ),
+        (
+            "rounded_arrow",
+            integers(vec![(1_i64 << 53) + 1]),
+            floats,
+            vec![
+                json!({"n": 9_007_199_254_740_993_i64}),
+                json!({"n__float64": 0.5}),
+            ],
+        ),
+    ];
+    for (store, integers, floats, expected) in cases {
+        assert_eq!(after(store, integers, floats).await, expected, "{store}");
+    }
 }
 
 #[tokio::test(start_paused = true)]
