@@ -274,7 +274,7 @@ impl Resolver {
             let hint = self.settings.stream.hinted(&column.path);
             let logical = hint.unwrap_or(column.logical).clone();
             self.identifies(column, &logical)?;
-            draft.add(key, logical, !column.is_key, !column.rounding)
+            draft.add(key, logical, !column.is_key)
         };
         self.place(draft, column, original)
     }
@@ -343,9 +343,6 @@ impl Resolver {
         let split = splits(draft, column, original);
         let rest = |rest: Rest| routed(split, rest);
         if let Some(fitting) = fitting {
-            if column.rounding {
-                draft.round(fitting);
-            }
             if fitting == original {
                 return Ok(Route::Column(original));
             }
@@ -363,7 +360,7 @@ impl Resolver {
             // A key keeps matching its stored rows only where its values are stored alike: a
             // decimal stored as text renders 1.50 as 1.5000 once its scale grows.
             if widens && self.keeps_matching(&current, &joined, column.settings.nested) {
-                draft.widen(original, joined, !column.rounding);
+                draft.widen(original, joined);
                 return Ok(Route::Column(original));
             }
             let detail = cannot("the key cannot hold");
@@ -378,7 +375,7 @@ impl Resolver {
             SchemaPolicy::Evolve => {}
         }
         if widens {
-            draft.widen(original, joined, !column.rounding);
+            draft.widen(original, joined);
             return Ok(Route::Column(original));
         }
         if column.settings.on_unsupported == OnUnsupported::Refuse
@@ -419,7 +416,7 @@ impl Resolver {
         };
         let kind = joined.kind();
         let Some(existing) = draft.find(&key(kind)) else {
-            return draft.add(key(kind), joined.clone(), true, !column.rounding);
+            return draft.add(key(kind), joined.clone(), true);
         };
         let current = draft.column_type(existing);
         let wider = current.join(column.logical);
@@ -428,14 +425,13 @@ impl Resolver {
             && !self.unwidened.contains(&key(kind))
             && self.widens(&current, &wider, column.settings.nested)
         {
-            // A variant's kind is its type's, so it never widens to 64-bit integers.
-            draft.widen(existing, wider, false);
+            draft.widen(existing, wider);
             return existing;
         }
         let json = key(TypeKind::Json);
         draft
             .find(&json)
-            .unwrap_or_else(|| draft.add(json, LogicalType::Json, true, false))
+            .unwrap_or_else(|| draft.add(json, LogicalType::Json, true))
     }
 
     /// Whether the destination can change a column of `from` to `to` in place: they are stored
@@ -510,17 +506,9 @@ fn family(kind: TypeKind) -> TypeKind {
 /// The own column of `column`, at `original`, where it is JSON text and its own column is of
 /// another type: one value of another kind makes a flush's column JSON, and each value its own
 /// column holds still goes there, only the others taking a variant or the policy.
-fn splits(draft: &mut Draft, column: &Arriving<'_>, original: usize) -> Option<usize> {
+fn splits(draft: &Draft, column: &Arriving<'_>, original: usize) -> Option<usize> {
     let own = draft.column_type(original);
-    if *column.logical != LogicalType::Json || own == LogicalType::Json {
-        return None;
-    }
-    // Its integers are read only once the plan lowers them, after the model records which
-    // columns hold only integers a float holds exactly: a column of integers may hold any.
-    if own == LogicalType::Int64 {
-        draft.round(original);
-    }
-    Some(original)
+    (*column.logical == LogicalType::Json && own != LogicalType::Json).then_some(original)
 }
 
 /// The route of a column's values that `rest` takes, where none goes to its own column `split`

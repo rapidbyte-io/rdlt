@@ -22,7 +22,6 @@ pub(super) fn records(view: &TableView) -> [StateChange; 2] {
         table: path.clone(),
         version: SchemaVersion(view.model.version),
         schema: view.model.schema(),
-        exact: view.model.exact.clone(),
     };
     let names = StateEntry::Names {
         table: path,

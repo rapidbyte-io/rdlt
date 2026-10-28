@@ -4,7 +4,7 @@ use rdlt_connector::{Capabilities, DecimalType, LogicalType, SchemaChanges, Type
 use rdlt_engine::{Code, Nested, SchemaPolicy, codes};
 
 use super::keys::{key_outcome, key_step};
-use super::{Arrival, Outcome, Own, Rules, Step, orders, outcome, predict, prunes};
+use super::{Arrival, Outcome, Rules, Step, orders, outcome, predict, prunes};
 use crate::rng::SplitMix64;
 use crate::workload::{PHASES, Relaxed};
 use crate::world::{Registered, World};
@@ -33,21 +33,6 @@ fn typed(logical: LogicalType) -> Arrival {
     Arrival::Typed(logical)
 }
 
-/// `rules`' steps over plain types: columns whose exactness the test leaves aside, as inexact.
-fn plain<'a>(
-    rules: &'a Rules<'a>,
-) -> impl Fn(Option<&LogicalType>, &Arrival) -> Step<LogicalType> + 'a {
-    move |current, arrival| {
-        let inexact = Arrival::Typed(LogicalType::Int64);
-        let current = current.map(|logical| Own::new(logical.clone(), Some(&inexact)));
-        match rules.step(current.as_ref(), arrival) {
-            Step::To(own) => Step::To(own.logical),
-            Step::Refused => Step::Refused,
-            Step::Unknown => Step::Unknown,
-        }
-    }
-}
-
 #[test]
 fn every_order_of_the_arrivals_is_followed_once() {
     let mut three = orders(3);
@@ -63,14 +48,14 @@ fn a_frozen_column_refuses_a_new_column_and_any_type_it_does_not_hold() {
     let capabilities = capabilities(&[(TypeKind::Int32, TypeKind::Int64)]);
     let frozen = rules(SchemaPolicy::Freeze, false, &capabilities);
     let int32 = LogicalType::Int32;
-    assert_eq!(plain(&frozen)(None, &typed(int32.clone())), Step::Refused);
+    assert_eq!(frozen.step(None, &typed(int32.clone())), Step::Refused);
     assert_eq!(
-        plain(&frozen)(Some(&int32), &typed(LogicalType::Int16)),
+        frozen.step(Some(&int32), &typed(LogicalType::Int16)),
         Step::To(int32.clone()),
         "a frozen column still takes values it holds"
     );
     assert_eq!(
-        plain(&frozen)(Some(&int32), &typed(LogicalType::Int64)),
+        frozen.step(Some(&int32), &typed(LogicalType::Int64)),
         Step::Refused,
         "even where the destination could widen it"
     );
@@ -83,10 +68,10 @@ fn an_evolving_column_widens_where_it_can_and_else_is_refused_only_when_told() {
     for refuses in [false, true] {
         let evolving = rules(SchemaPolicy::Evolve, refuses, &capabilities);
         assert_eq!(
-            plain(&evolving)(Some(&int32), &typed(LogicalType::Int64)),
+            evolving.step(Some(&int32), &typed(LogicalType::Int64)),
             Step::To(LogicalType::Int64)
         );
-        let variant = plain(&evolving)(Some(&int32), &typed(LogicalType::Utf8));
+        let variant = evolving.step(Some(&int32), &typed(LogicalType::Utf8));
         let expected = if refuses {
             Step::Refused
         } else {
@@ -104,12 +89,12 @@ fn a_hinted_column_never_widens() {
         ..rules(SchemaPolicy::Evolve, true, &capabilities)
     };
     assert_eq!(
-        plain(&hinted)(None, &typed(LogicalType::Int64)),
+        hinted.step(None, &typed(LogicalType::Int64)),
         Step::Refused,
         "a new hinted column takes its hint, which the batch does not fit"
     );
     assert_eq!(
-        plain(&hinted)(None, &typed(LogicalType::Int8)),
+        hinted.step(None, &typed(LogicalType::Int8)),
         Step::To(LogicalType::Int32)
     );
 }
@@ -120,11 +105,11 @@ fn a_destination_that_cannot_add_columns_refuses_a_new_one() {
     capabilities.schema_changes.add_column = false;
     let evolving = rules(SchemaPolicy::Evolve, true, &capabilities);
     assert_eq!(
-        plain(&evolving)(None, &typed(LogicalType::Int8)),
+        evolving.step(None, &typed(LogicalType::Int8)),
         Step::Refused
     );
     assert_eq!(
-        plain(&evolving)(Some(&LogicalType::Int8), &typed(LogicalType::Int8)),
+        evolving.step(Some(&LogicalType::Int8), &typed(LogicalType::Int8)),
         Step::To(LogicalType::Int8)
     );
 }
@@ -134,14 +119,14 @@ fn only_a_json_column_surely_holds_a_pushed_container() {
     let capabilities = capabilities(&[]);
     let evolving = rules(SchemaPolicy::Evolve, true, &capabilities);
     assert_eq!(
-        plain(&evolving)(Some(&LogicalType::Json), &Arrival::Container),
+        evolving.step(Some(&LogicalType::Json), &Arrival::Container),
         Step::To(LogicalType::Json)
     );
     assert_eq!(
-        plain(&evolving)(Some(&LogicalType::Int8), &Arrival::Container),
+        evolving.step(Some(&LogicalType::Int8), &Arrival::Container),
         Step::Refused
     );
-    assert_eq!(plain(&evolving)(None, &Arrival::Container), Step::Unknown);
+    assert_eq!(evolving.step(None, &Arrival::Container), Step::Unknown);
 }
 
 #[test]
@@ -153,8 +138,7 @@ fn a_refusal_only_some_orders_meet_may_happen_but_need_not() {
         (TypeKind::Int16, TypeKind::Int32),
     ]);
     let evolving = rules(SchemaPolicy::Evolve, true, &capabilities);
-    let step =
-        |current: Option<&LogicalType>, arrival: &Arrival| plain(&evolving)(current, arrival);
+    let step = |current: Option<&LogicalType>, arrival: &Arrival| evolving.step(current, arrival);
     let both = [vec![typed(LogicalType::Int16), typed(LogicalType::Int32)]];
     assert_eq!(
         outcome(
@@ -194,8 +178,7 @@ fn a_phase_starts_from_every_type_the_last_one_may_have_left() {
         (TypeKind::Int16, TypeKind::Int32),
     ]);
     let evolving = rules(SchemaPolicy::Evolve, true, &capabilities);
-    let step =
-        |current: Option<&LogicalType>, arrival: &Arrival| plain(&evolving)(current, arrival);
+    let step = |current: Option<&LogicalType>, arrival: &Arrival| evolving.step(current, arrival);
     // The first phase widens Int8 to Int16, so the second's Int32 widens it again.
     let phases = [
         vec![typed(LogicalType::Int16)],
@@ -294,7 +277,7 @@ fn a_decimal_key_stored_as_text_widens_only_where_its_values_render_alike() {
 }
 
 #[test]
-fn floats_after_exact_integers_take_a_variant_and_never_widen_the_column() {
+fn floats_after_64_bit_integers_take_a_variant_and_never_widen_the_column() {
     let mut widening = capabilities(&[]);
     widening
         .schema_changes
@@ -303,43 +286,29 @@ fn floats_after_exact_integers_take_a_variant_and_never_widen_the_column() {
     let floats = typed(LogicalType::Float64);
     for refuses in [false, true] {
         let evolving = rules(SchemaPolicy::Evolve, refuses, &widening);
-        let exact = evolving.step(None, &Arrival::ExactInt);
-        let Step::To(exact) = exact else {
-            panic!("a new column takes exact integers: {exact:?}");
-        };
-        assert_eq!(
-            exact,
-            Own::new(LogicalType::Int64, Some(&Arrival::ExactInt))
-        );
-        assert!(exact.exact);
-        let expected = if refuses {
-            Step::Refused
-        } else {
-            Step::To(exact.clone())
-        };
-        assert_eq!(evolving.step(Some(&exact), &floats), expected, "{refuses}");
+        for integers in [Arrival::ExactInt, typed(LogicalType::Int64)] {
+            let created = evolving.step(None, &integers);
+            let Step::To(column) = created else {
+                panic!("a new column takes integers: {created:?}");
+            };
+            assert_eq!(column, LogicalType::Int64);
+            let expected = if refuses {
+                Step::Refused
+            } else {
+                Step::To(LogicalType::Int64)
+            };
+            assert_eq!(
+                evolving.step(Some(&column), &floats),
+                expected,
+                "{refuses} {integers:?}"
+            );
+        }
     }
-}
-
-#[test]
-fn an_integer_a_float_would_round_ends_a_column_s_exactness() {
-    let capabilities = capabilities(&[]);
-    let evolving = rules(SchemaPolicy::Evolve, false, &capabilities);
-    let exact = Own::new(LogicalType::Int64, Some(&Arrival::ExactInt));
-    let Step::To(rounded) = evolving.step(Some(&exact), &typed(LogicalType::Int64)) else {
-        panic!("a column of integers holds integers");
-    };
-    assert!(!rounded.exact);
+    let evolving = rules(SchemaPolicy::Evolve, true, &widening);
     assert_eq!(
-        evolving.step(Some(&rounded), &Arrival::ExactInt),
-        Step::To(rounded.clone()),
-        "exactness, once lost, stays lost"
-    );
-    let float = Own::new(LogicalType::Float64, None);
-    assert_eq!(
-        evolving.step(Some(&float), &Arrival::ExactInt),
-        Step::To(float.clone()),
-        "a column of floats takes exact integers"
+        evolving.step(Some(&LogicalType::Float64), &Arrival::ExactInt),
+        Step::To(LogicalType::Float64),
+        "a column of floats takes integers a float holds exactly"
     );
 }
 

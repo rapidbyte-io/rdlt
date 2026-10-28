@@ -196,7 +196,6 @@ fn every_type_at_every_shape_reads_back_to_the_nesting_limit() {
                     table: TablePath::new(["deep"]).unwrap(),
                     version: SchemaVersion(u32::MAX),
                     schema: TableSchema::new(vec![Field::new("c", logical, true)]).unwrap(),
-                    exact: std::collections::BTreeSet::new(),
                 };
                 assert_eq!(StateEntry::from_record(&entry.to_record()), Ok(entry));
             }

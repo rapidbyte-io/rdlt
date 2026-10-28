@@ -121,23 +121,6 @@ enum Step<S> {
     Unknown,
 }
 
-/// A drift column's own column: its type, and whether a 64-bit float holds every value stored in
-/// it exactly, which only a column of 64-bit integers keeps track of.
-#[derive(Clone, Debug, PartialEq)]
-struct Own {
-    logical: LogicalType,
-    exact: bool,
-}
-
-impl Own {
-    /// A column of `logical` created with `arrival`'s values, or with none where the type is
-    /// declared.
-    fn new(logical: LogicalType, arrival: Option<&Arrival>) -> Self {
-        let exact = logical == LogicalType::Int64 && !arrival.is_some_and(Arrival::rounds);
-        Self { logical, exact }
-    }
-}
-
 impl<'a> Column<'a> {
     fn new(
         stream: &'a SimStream,
@@ -185,7 +168,7 @@ impl<'a> Column<'a> {
         let initial = drift
             .declared
             .as_ref()
-            .map(|declared| Own::new(drift.hint.clone().unwrap_or_else(|| declared.clone()), None));
+            .map(|declared| drift.hint.clone().unwrap_or_else(|| declared.clone()));
         let arrivals: Vec<Vec<Arrival>> = (0..=phase).map(|at| self.arrivals(at)).collect();
         let outcome = outcome(initial, &arrivals, rules.code(), |current, arrival| {
             rules.step(current, arrival)
@@ -261,51 +244,37 @@ impl Rules<'_> {
         }
     }
 
-    /// What a batch column arriving as `arrival` does to an own column `current`, or to none
+    /// What a batch column arriving as `arrival` does to an own column of `current`, or to none
     /// yet: the steps schema resolution takes.
-    fn step(&self, current: Option<&Own>, arrival: &Arrival) -> Step<Own> {
+    fn step(&self, current: Option<&LogicalType>, arrival: &Arrival) -> Step<LogicalType> {
         let current = match (current, &self.hint, arrival.logical()) {
             (Some(current), ..) => current.clone(),
             (None, ..) if self.policy == SchemaPolicy::Freeze => return Step::Refused,
             (None, ..) if !self.capabilities.schema_changes.add_column => {
                 return Step::Refused;
             }
-            (None, Some(hint), _) => Own::new(hint.clone(), Some(arrival)),
-            (None, None, Some(logical)) => Own::new(logical, Some(arrival)),
+            (None, Some(hint), _) => hint.clone(),
+            (None, None, Some(logical)) => logical,
             (None, None, None) => return Step::Unknown,
         };
-        match arrival.fits(&current.logical) {
-            Some(true) => {
-                // An integer a float would round ends the column's exactness.
-                let exact = current.exact && !arrival.rounds();
-                return Step::To(Own { exact, ..current });
-            }
+        match arrival.fits(&current) {
+            Some(true) => return Step::To(current),
             None => return Step::Unknown,
             Some(false) => {}
         }
-        let lattice = arrival
+        // The lattice joins floats and 64-bit integers as JSON, so they take a variant: the engine
+        // joins them as floats only to name it.
+        let joined = arrival
             .logical()
-            .map_or(LogicalType::Json, |logical| current.logical.join(&logical));
-        // Floats meeting integers every one of which they hold exactly join them as floats, which
-        // take a variant: only the lattice's joins widen a column in place.
-        let floats = matches!(
-            arrival,
-            Arrival::Typed(LogicalType::Float32 | LogicalType::Float64)
-        );
-        let joined = if current.logical == LogicalType::Int64 && current.exact && floats {
-            LogicalType::Float64
-        } else {
-            lattice.clone()
-        };
+            .map_or(LogicalType::Json, |logical| current.join(&logical));
         if self.policy == SchemaPolicy::Freeze {
             return Step::Refused;
         }
         if self.hint.is_none()
-            && joined == lattice
             && joined != LogicalType::Json
-            && widens(&current.logical, &joined, self.nested, self.capabilities)
+            && widens(&current, &joined, self.nested, self.capabilities)
         {
-            return Step::To(Own::new(joined, Some(arrival)));
+            return Step::To(joined);
         }
         if self.refuses {
             return Step::Refused;

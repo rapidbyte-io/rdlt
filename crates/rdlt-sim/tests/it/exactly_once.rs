@@ -7,7 +7,7 @@ use rdlt_sim::{
 ///
 /// A seed fails if its defect comes back, unless its comment says otherwise: such a seed keeps
 /// only the path, and its defect may come back unseen.
-const FOUND: [(u64, Reach); 17] = [
+const FOUND: [(u64, Reach); 16] = [
     // Over the network: a host whose handshake a partition cut short held its connection, and
     // its connector's stop, forever.
     (743, Reach::LinkCut),
@@ -20,9 +20,6 @@ const FOUND: [(u64, Reach); 17] = [
     // Streaming: reads cut batches wherever rows had arrived, so JSON pushes inferred types the
     // model never saw, until they served whole checkpoint groups.
     (4_516, Reach::Followed),
-    // A column of integers made for a column of JSON as its table was created was recorded
-    // exact, though the integers split into it were read only as they were lowered.
-    (29_442, Reach::Widened),
     // A frozen normalized stream's declared array whose table no row had made yet was refused
     // as new to the table once a crashed attempt had created the stream's own table.
     (167_631, Reach::Crashed),

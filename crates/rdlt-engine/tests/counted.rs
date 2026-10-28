@@ -107,7 +107,6 @@ fn a_table_s_state_records_allocate_their_key_value_and_each_field_s_walk_alone(
                 table: table.clone(),
                 version: SchemaVersion(1),
                 schema: TableSchema::new(fields.to_vec()).unwrap(),
-                exact: ["id".into()].into(),
             },
             3.0 + 2.0 * 3.0,
         ),

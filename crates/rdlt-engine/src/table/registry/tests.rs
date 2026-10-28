@@ -244,38 +244,23 @@ async fn the_delta_holds_tables_changed_since_state_recorded_them() {
 }
 
 #[tokio::test]
-async fn a_column_losing_its_exactness_changes_no_table_and_state_records_it() {
+async fn a_batch_of_integers_a_float_would_round_changes_neither_the_table_nor_its_record() {
     let (tables, changes) = tables(None, Model::default());
     let integers = schema(&[("n", LogicalType::Int64)]);
-    tables.fit(0, &integers).await.unwrap();
-    let delta = tables.delta();
-    tables.recorded(&delta.revisions);
-    let exact = |delta: &super::TablesDelta| {
-        delta.changes.iter().find_map(|change| match change {
-            StateChange::Put(record) => match StateEntry::from_record(record).unwrap() {
-                StateEntry::Schema { exact, version, .. } => Some((exact, version)),
-                _ => None,
-            },
-            StateChange::Delete(_) => None,
-        })
-    };
-    assert_eq!(
-        exact(&delta),
-        Some((BTreeSet::from(["n".into()]), SchemaVersion(1)))
-    );
+    let (created, _) = tables.fit(0, &integers).await.unwrap();
+    tables.recorded(&tables.delta().revisions);
     let rounding = integers.rounding(BTreeSet::from([ColumnPath::from("n")]));
     let (view, routes) = tables.fit(0, &rounding).await.unwrap();
     assert_eq!(routes, [Route::Column(0)]);
-    assert!(view.model.exact.is_empty(), "the view holds the change");
+    assert!(Arc::ptr_eq(&view, &created), "the view is the same");
     assert_eq!(
         changes.lock().len(),
         1,
         "only the table's creation reached it"
     );
-    assert_eq!(
-        exact(&tables.delta()),
-        Some((BTreeSet::new(), SchemaVersion(1))),
-        "state records the column no longer exact, at the same schema version"
+    assert!(
+        tables.delta().changes.is_empty(),
+        "state has nothing new to record"
     );
 }
 
@@ -581,7 +566,6 @@ async fn partitions_adding_one_child_table_at_once_add_it_once() {
         physical: Some("orders__items".into()),
         names,
         sequences: None,
-        exact: BTreeSet::new(),
         history: false,
         ..rdlt_connector::TableState::default()
     };
@@ -651,43 +635,6 @@ async fn a_merge_streams_table_created_before_it_merged_gains_only_its_sequence_
         (field.name(), field.logical_type(), field.is_nullable()),
         ("_rdlt_seq", &LogicalType::Binary, true)
     );
-}
-
-#[tokio::test]
-async fn a_rounding_batch_planned_beside_floats_leaves_no_column_exact_whichever_plans_first() {
-    for rounding_first in [true, false] {
-        let (tables, _) = tables(None, Model::default());
-        let integers = schema(&[("n", LogicalType::Int64)]);
-        tables.fit(0, &integers).await.unwrap();
-        let rounding = integers.rounding(BTreeSet::from([ColumnPath::from("n")]));
-        let floats = schema(&[("n", LogicalType::Float64)]);
-        let (rounded, floated) = if rounding_first {
-            tokio::join!(tables.plan(0, rounding), tables.plan(0, floats))
-        } else {
-            let (floated, rounded) = tokio::join!(tables.plan(0, floats), tables.plan(0, rounding));
-            (rounded, floated)
-        };
-        let (rounded, floated) = (rounded.unwrap(), floated.unwrap());
-        assert!(tables.view(0).model.exact.is_empty(), "{rounding_first}");
-        let recorded = tables
-            .delta()
-            .changes
-            .iter()
-            .find_map(|change| match change {
-                StateChange::Put(record) => match StateEntry::from_record(record).unwrap() {
-                    StateEntry::Schema { exact, .. } => Some(exact),
-                    _ => None,
-                },
-                StateChange::Delete(_) => None,
-            });
-        assert_eq!(recorded, Some(BTreeSet::new()), "{rounding_first}");
-        // The integers stay integers; the floats take a variant.
-        assert_eq!(
-            rounded.view().model.columns[0].logical_type(),
-            &LogicalType::Int64
-        );
-        assert!(floated.view().model.columns.len() > 1, "{rounding_first}");
-    }
 }
 
 #[tokio::test]
