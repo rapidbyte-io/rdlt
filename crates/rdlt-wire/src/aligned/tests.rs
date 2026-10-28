@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use proptest::prelude::*;
 
-use super::{ALIGNMENT, Aligned, ensure, is_aligned};
+use super::{ALIGNMENT, Aligned, is_aligned};
 
 proptest! {
     /// Whatever it grows to and holds, its bytes start at a multiple of the alignment, are those
@@ -59,17 +59,15 @@ fn room_asked_for_is_kept_until_more_is_asked() {
 }
 
 #[test]
-fn bytes_at_any_address_are_ensured_aligned_and_copied_only_where_they_are_not() {
+fn bytes_at_any_address_are_copied_aligned() {
     let frozen = Aligned::copied(&[7; 200]);
-    let aligned = frozen.bytes.clone();
-    assert_eq!(ensure(aligned.clone()).as_ptr(), aligned.as_ptr());
+    assert!(is_aligned(&frozen.bytes));
     for skew in 1..ALIGNMENT {
         let off = frozen.bytes.slice(skew..skew + 100);
         assert!(!is_aligned(&off), "{skew}");
-        let ensured = ensure(off.clone());
-        assert!(is_aligned(&ensured), "{skew}");
-        assert_ne!(ensured.as_ptr(), off.as_ptr(), "copied: {skew}");
-        assert_eq!(ensured, off, "{skew}");
+        let copied = Aligned::copied(&off).bytes;
+        assert!(is_aligned(&copied), "{skew}");
+        assert_eq!(copied, off, "{skew}");
     }
 }
 

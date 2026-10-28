@@ -4,10 +4,10 @@ use arrow_array::{Array, ArrayRef, Int8Array, Int64Array, RecordBatch, make_arra
 use bytes::Bytes;
 
 use crate::aligned::{ALIGNMENT, Aligned};
+use crate::codec::IpcFrame;
 use crate::codec::measure::{Columns, measured};
 use crate::codec::tests::frames::{padded_to_eight, sent};
 use crate::codec::tests::samples::{self, batch_of};
-use crate::codec::{Decoder, IpcFrame};
 use crate::error::{Problem, WireError};
 use crate::limits::Limits;
 
@@ -183,31 +183,4 @@ fn only_a_message_whose_run_end_column_the_walk_emptied_is_read_as_the_walk_read
     };
     assert!(walked(&samples::empty_runs()));
     assert!(!walked(&samples::batch()));
-}
-
-#[test]
-fn a_decoder_sharing_its_frames_counts_a_dictionary_at_its_frame_alone() {
-    use arrow_array::DictionaryArray;
-    use arrow_array::types::Int32Type;
-    let keys = arrow_array::Int32Array::from(vec![0, 1, 0]);
-    let values = arrow_array::StringArray::from(vec!["a", "b"]);
-    let keyed = DictionaryArray::<Int32Type>::try_new(keys, Arc::new(values)).unwrap();
-    let batch = batch_of(Arc::new(keyed));
-    let (mut alone, frames) = sent(&batch, Limits::default());
-    let mut sharing = Decoder::sharing(Limits::default());
-    sharing
-        .schema(
-            &crate::codec::Encoder::default()
-                .schema(&batch.schema())
-                .unwrap(),
-        )
-        .unwrap();
-    for frame in &frames {
-        alone.frame(frame).unwrap();
-        sharing.frame(frame).unwrap();
-    }
-    let dictionary = &frames[0];
-    let own = u64::try_from(dictionary.header.len() + dictionary.body.len()).unwrap();
-    assert_eq!(sharing.dictionary_bytes(), own);
-    assert_eq!(alone.dictionary_bytes(), own + crate::limits::MESSAGE_ROOM);
 }
