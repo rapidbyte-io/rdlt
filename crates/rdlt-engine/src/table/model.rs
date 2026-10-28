@@ -13,9 +13,6 @@ use crate::error::{Error, ErrorKind, codes};
 pub(crate) struct Model {
     /// The schema's version, which each change to the destination's table advances.
     pub(crate) version: u32,
-    /// How many changes this attempt made to the model, which state has recorded when it
-    /// records the model.
-    pub(crate) revision: u32,
     /// The columns in order, metadata columns aside: identifiers, logical types and nullability.
     pub(crate) columns: Vec<Field>,
     pub(crate) names: NameMap,
@@ -65,7 +62,6 @@ impl Model {
         }
         Ok(Self {
             version: *version,
-            revision: 0,
             columns,
             names,
         })

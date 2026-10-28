@@ -48,7 +48,7 @@ struct Slot {
     current: Mutex<Arc<TableView>>,
     /// Held while a schema change is worked out and applied, so changes to one table never race.
     evolving: tokio::sync::Mutex<()>,
-    /// The model revision state records.
+    /// The schema version state records.
     recorded: Mutex<u32>,
     /// Plans for the current view, the newest last.
     plans: Mutex<Vec<Arc<LoweringPlan>>>,
@@ -98,11 +98,11 @@ pub(crate) struct Tables {
     salt: u64,
 }
 
-/// What a commit records about the tables, and the model revisions it records.
+/// What a commit records about the tables, and the schema versions it records.
 #[derive(Debug, Default)]
 pub(crate) struct TablesDelta {
     pub(crate) changes: Vec<StateChange>,
-    pub(crate) revisions: Vec<(usize, u32)>,
+    pub(crate) versions: Vec<(usize, u32)>,
     /// The keys of the records of child tables state does not record yet, with their streams.
     pub(crate) born: Vec<(StreamName, String)>,
 }
@@ -218,7 +218,8 @@ impl Tables {
         model: Model,
         shape: Option<Shape>,
     ) -> Result<usize, Error> {
-        let recorded = model.revision;
+        // State records the committed model at its version.
+        let recorded = model.version;
         let view = TableView::new(table, model, &resolver)?;
         let mut slots = self.slots.write();
         slots.push(Arc::new(Slot {
@@ -303,7 +304,7 @@ impl Tables {
         let slot = self.slot(table);
         let view = self.view(table);
         let unchanged = |resolution: &Resolution, view: &TableView| {
-            resolution.model.revision == view.model.revision
+            resolution.model.version == view.model.version
         };
         let resolution = self.resolver(table).resolve(&view.model, incoming)?;
         if unchanged(&resolution, &view) {
@@ -439,7 +440,7 @@ impl Tables {
         let children: BTreeSet<usize> = self.children.lock().values().copied().collect();
         for (index, slot) in slots.iter().enumerate() {
             let view = self.view(index);
-            if view.model.revision <= *slot.recorded.lock() {
+            if view.model.version <= *slot.recorded.lock() {
                 continue;
             }
             let records = records::records(&view);
@@ -453,19 +454,19 @@ impl Tables {
                     }));
             }
             delta.changes.extend(records);
-            delta.revisions.push((index, view.model.revision));
+            delta.versions.push((index, view.model.version));
         }
         delta
     }
 
-    /// Notes that state now records the model `revisions`.
-    pub(crate) fn recorded(&self, revisions: &[(usize, u32)]) {
-        for (index, revision) in revisions {
+    /// Notes that state now records the schema `versions`.
+    pub(crate) fn recorded(&self, versions: &[(usize, u32)]) {
+        for (index, version) in versions {
             let slot = self.slot(*index);
             let mut recorded = slot.recorded.lock();
-            *recorded = (*recorded).max(*revision);
+            *recorded = (*recorded).max(*version);
             drop(recorded);
-            self.release_records(*index, *revision);
+            self.release_records(*index, *version);
         }
     }
 }

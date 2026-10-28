@@ -113,7 +113,6 @@ impl Draft {
         }
         if !self.changes.is_empty() {
             self.model.version = advanced(self.model.version)?;
-            self.model.revision = advanced(self.model.revision)?;
         }
         Ok(Resolution {
             changes: self.changes,
@@ -123,16 +122,16 @@ impl Draft {
     }
 }
 
-/// `count`, a table's schema version or its changes this attempt, advanced by one.
+/// `version`, a table's schema version, advanced by one.
 ///
 /// # Errors
 ///
 /// A `Schema` error coded `schema_version_exhausted` past `u32::MAX`: a table that changed so
 /// often is reset to change again.
-pub(super) fn advanced(count: u32) -> Result<u32, Error> {
-    count.checked_add(1).ok_or_else(|| {
+fn advanced(version: u32) -> Result<u32, Error> {
+    version.checked_add(1).ok_or_else(|| {
         Error::schema(format!(
-            "the table's schema changed {count} times, the most its version counts"
+            "the table's schema changed {version} times, the most its version counts"
         ))
         .with_code(codes::SCHEMA_VERSION_EXHAUSTED)
     })
