@@ -1,6 +1,7 @@
 //! Workloads other than the passthrough's, each served with both connectors in processes of their
 //! own over the socket, as production runs them, beside the bench that runs it in process: the
-//! wide table of five thousand columns pushed as Arrow, and the merge of hot keys.
+//! wide tables of five thousand and of a thousand columns pushed as Arrow, and the merge of hot
+//! keys.
 
 use std::hint::black_box;
 use std::sync::Arc;
@@ -18,22 +19,21 @@ use crate::{Pids, Seconds, Transport, Usage};
 /// A workload served with both connectors in processes of their own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Shaped {
-    /// The wide bench's `arrow/5000`, into a sink that discards each batch.
-    Wide,
+    /// The wide bench's `arrow/<columns>`, into a sink that discards each batch.
+    Wide(u16),
     /// The normalized bench's `merge/zipf`, into the IPC sink.
     Merge,
 }
 
 impl Shaped {
     /// Every workload.
-    pub(crate) const ALL: [Self; 2] = [Self::Wide, Self::Merge];
-    /// Columns of the wide table.
-    const COLUMNS: u16 = 5_000;
+    pub(crate) const ALL: [Self; 3] = [Self::Wide(5_000), Self::Wide(1_000), Self::Merge];
 
     /// The replay its source pushes.
     pub(crate) fn replay(self) -> &'static str {
         match self {
-            Self::Wide => "wide_arrow_5000",
+            Self::Wide(5_000) => "wide_arrow_5000",
+            Self::Wide(_) => "wide_arrow_1000",
             Self::Merge => "merge_zipf",
         }
     }
@@ -45,13 +45,16 @@ impl Shaped {
 
     /// The workload's place in [`Shaped::ALL`].
     pub(crate) fn index(self) -> usize {
-        self as usize
+        Self::ALL
+            .into_iter()
+            .position(|shaped| shaped == self)
+            .expect("every workload is one of all")
     }
 
     /// The pushes its source replays, made alike in whichever process asks for them.
     pub(crate) fn replayed(self) -> Replayed {
         match self {
-            Self::Wide => Wide::replayed(Form::Arrow, Self::COLUMNS, Wide::PUSHES),
+            Self::Wide(columns) => Wide::replayed(Form::Arrow, columns, Wide::PUSHES),
             Self::Merge => Replayed::Json(Merged::pushes(Merged::ROWS)),
         }
     }
@@ -59,7 +62,7 @@ impl Shaped {
     /// Its name, as its bench in process names it.
     fn shape(self) -> String {
         match self {
-            Self::Wide => format!("wide/arrow/{}", Self::COLUMNS),
+            Self::Wide(columns) => format!("wide/arrow/{columns}"),
             Self::Merge => "normalized/merge/zipf".to_owned(),
         }
     }
@@ -67,7 +70,7 @@ impl Shaped {
     /// What its sink does with each batch: what its sink in process does.
     fn sinking(self) -> Sinking {
         match self {
-            Self::Wide => Sinking::Discard,
+            Self::Wide(_) => Sinking::Discard,
             Self::Merge => Sinking::Ipc,
         }
     }
@@ -75,7 +78,7 @@ impl Shaped {
     /// The rows a run pushes.
     fn rows(self) -> u64 {
         match self {
-            Self::Wide => Wide::rows_of(Form::Arrow, Self::COLUMNS, Wide::PUSHES),
+            Self::Wide(columns) => Wide::rows_of(Form::Arrow, columns, Wide::PUSHES),
             Self::Merge => Merged::ROWS,
         }
     }
@@ -83,7 +86,7 @@ impl Shaped {
     /// The pushes a run makes.
     fn pushes(self) -> u64 {
         match self {
-            Self::Wide => u64::from(Wide::PUSHES),
+            Self::Wide(_) => u64::from(Wide::PUSHES),
             Self::Merge => Merged::ROWS.div_ceil(Merged::PUSH_ROWS.get()),
         }
     }
@@ -100,9 +103,9 @@ impl Loaded {
     fn new(shaped: Shaped, cores: Cores) -> Self {
         let started = "the pool starts";
         match shaped {
-            Shaped::Wide => Self::Wide(
-                Wide::try_new(cores, Form::Arrow, Shaped::COLUMNS, Wide::PUSHES).expect(started),
-            ),
+            Shaped::Wide(columns) => {
+                Self::Wide(Wide::try_new(cores, Form::Arrow, columns, Wide::PUSHES).expect(started))
+            }
             Shaped::Merge => Self::Merge(Merged::try_new(cores, Merged::ROWS).expect(started)),
         }
     }
