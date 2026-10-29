@@ -6,7 +6,7 @@ mod tests;
 
 use rdlt_connector::wire::{Invalid, frame_error, v1};
 use rdlt_connector::{
-    ConnectorError, ConnectorErrorKind, Cursor, LogLevel, PartitionSink, Permit, Push, ReadRequest,
+    ConnectorError, ConnectorErrorKind, Cursor, PartitionSink, Permit, Push, ReadRequest,
     Requested, SourceEvent,
 };
 use rdlt_wire::flow::Granting;
@@ -216,12 +216,12 @@ struct Reader {
     /// Frames since the last event of a read's data that carried no event.
     quiet: u64,
     /// Frames since the last event of a read's data that carried an event the engine takes for
-    /// nothing: a log line, a metric, a lag or a replan.
+    /// nothing: a lag or a replan.
     free: u64,
 }
 
-/// The frames whose events the engine takes for nothing, log lines, metrics, lags and replans,
-/// a read may send between two of its data's: rows or a checkpoint.
+/// The frames whose events the engine takes for nothing, lags and replans, a read may send
+/// between two of its data's: rows or a checkpoint.
 pub const MAX_FREE_FRAMES: u64 = 1024;
 
 impl Reader {
@@ -234,8 +234,7 @@ impl Reader {
     ///
     /// Frames the engine takes for nothing are not slowed by it, so each kind is bounded between
     /// two events of the read's data: schemas and dictionaries, which carry no event, to a schema
-    /// and a dictionary for each column it may have; log lines, metrics, lags and replans to
-    /// [`MAX_FREE_FRAMES`].
+    /// and a dictionary for each column it may have; lags and replans to [`MAX_FREE_FRAMES`].
     fn event(&mut self, frame: v1::ReadFrame, allocation: Bytes) -> rdlt_connector::Result<Read> {
         let read = self.decoded(frame, allocation)?;
         let (count, limit, what) = match &read {
@@ -244,15 +243,10 @@ impl Reader {
                 self.limits.schema_columns.saturating_add(1),
                 "frames between events that carry none",
             ),
-            Read::Event(
-                SourceEvent::Log { .. }
-                | SourceEvent::Metric { .. }
-                | SourceEvent::Behind { .. }
-                | SourceEvent::Replan,
-            ) => (
+            Read::Event(SourceEvent::Behind { .. } | SourceEvent::Replan) => (
                 &mut self.free,
                 MAX_FREE_FRAMES,
-                "log, metric, lag and replan frames between events",
+                "lag and replan frames between events",
             ),
             Read::Event(_) | Read::Done => {
                 (self.quiet, self.free) = (0, 0);
@@ -291,20 +285,6 @@ impl Reader {
                     Read::Event(SourceEvent::Checkpoint {
                         cursor,
                         answers: checkpoint.barrier,
-                    })
-                }
-                Frame::Log(log) => {
-                    self.limits.admit_string(&log.message).map_err(refused)?;
-                    Read::Event(SourceEvent::Log {
-                        level: log_level(log.level)?,
-                        message: log.message,
-                    })
-                }
-                Frame::Metric(metric) => {
-                    self.limits.admit_string(&metric.name).map_err(refused)?;
-                    Read::Event(SourceEvent::Metric {
-                        name: metric.name,
-                        value: metric.value,
                     })
                 }
                 Frame::Replan(_) => Read::Event(SourceEvent::Replan),
@@ -379,14 +359,4 @@ fn json_push(text: Bytes, allocation: &Bytes) -> rdlt_connector::Result<Push> {
             .with_code(rdlt_connector::wire::MALFORMED_FRAME));
     }
     Ok(Push::Json(text))
-}
-
-fn log_level(level: i32) -> rdlt_connector::Result<LogLevel> {
-    match v1::LogLevel::try_from(level) {
-        Ok(v1::LogLevel::Error) => Ok(LogLevel::Error),
-        Ok(v1::LogLevel::Warn) => Ok(LogLevel::Warn),
-        Ok(v1::LogLevel::Info) => Ok(LogLevel::Info),
-        Ok(v1::LogLevel::Debug) => Ok(LogLevel::Debug),
-        Ok(v1::LogLevel::Unspecified) | Err(_) => Err(invalid(&Invalid::Unknown("log level"))),
-    }
 }

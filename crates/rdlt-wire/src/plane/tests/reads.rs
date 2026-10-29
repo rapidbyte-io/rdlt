@@ -192,9 +192,6 @@ fn read_frame() -> impl Strategy<Value = v1::ReadFrame> {
             proptest::option::of(any::<u64>())
         )
             .prop_map(|(cursor, barrier)| F::Checkpoint(v1::CheckpointFrame { cursor, barrier })),
-        (0..5_i32, ".{0,64}").prop_map(|(level, message)| F::Log(v1::LogFrame { level, message })),
-        (".{0,40}", any::<f64>())
-            .prop_map(|(name, value)| F::Metric(v1::MetricFrame { name, value })),
         Just(F::Done(v1::Done {})),
         Just(F::Replan(v1::ReplanFrame {})),
         any::<u64>().prop_map(|records| F::Behind(v1::BehindFrame { records })),

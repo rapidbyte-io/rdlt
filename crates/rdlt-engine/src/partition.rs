@@ -405,7 +405,6 @@ impl Ingested {
                 let seal = sealed.seal(job.index, state, answers, CursorHold::new(permit));
                 return seal_segment(job, context, seal);
             }
-            SourceEvent::Log { .. } | SourceEvent::Metric { .. } => return Ok(()),
             SourceEvent::Replan => {
                 return context.signalled(job.index, context.latest.replan(job.index));
             }

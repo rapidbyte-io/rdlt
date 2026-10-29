@@ -14,7 +14,6 @@ use crate::cursor::Cursor;
 use crate::emitter::Emitter;
 use crate::error::Result;
 use crate::id::{PartitionId, StreamName};
-use crate::sink::LogLevel;
 use crate::source::{Partition, PartitionPlan, ReadStream, SourceConnector, Streams};
 use crate::spec::ConnectContext;
 use crate::state::{PartitionState, StreamState};
@@ -59,7 +58,7 @@ struct LogConfig {
     deaf: bool,
     /// Waits half a second before its first change.
     slow_start: bool,
-    /// Waits as `idle` does, logging as it waits.
+    /// Waits as `idle` does, saying how far behind it is as it waits.
     chatty: bool,
     /// Checkpoints the changes only when asked.
     on_demand: bool,
@@ -158,7 +157,7 @@ impl Log {
             }
             if self.config.chatty {
                 loop {
-                    out.log(LogLevel::Info, "waiting for changes").await?;
+                    out.behind(0).await?;
                     tokio::time::sleep(Duration::from_millis(100)).await;
                 }
             }

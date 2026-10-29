@@ -15,7 +15,7 @@ use serde_json::value::RawValue;
 use super::Emitter;
 use crate::cursor::Cursor;
 use crate::error::ConnectorErrorKind;
-use crate::sink::{LogLevel, PartitionFeed, Push, SourceEvent, partition_channel};
+use crate::sink::{PartitionFeed, Push, SourceEvent, partition_channel};
 
 #[derive(Serialize)]
 struct Row {
@@ -184,26 +184,6 @@ async fn checkpoints_encode_the_cursor_and_answer_pending_barriers() {
             SourceEvent::Checkpoint {
                 cursor: Cursor::encode(7, &6u64).unwrap(),
                 answers: Some(1)
-            },
-        ]
-    );
-}
-
-#[tokio::test]
-async fn logs_and_metrics_are_forwarded() {
-    let (mut out, feed) = emitter();
-    out.log(LogLevel::Warn, "slow page").await.unwrap();
-    out.metric("pages", 3.0).await.unwrap();
-    assert_eq!(
-        drain(out, feed).await,
-        vec![
-            SourceEvent::Log {
-                level: LogLevel::Warn,
-                message: "slow page".to_owned()
-            },
-            SourceEvent::Metric {
-                name: "pages".to_owned(),
-                value: 3.0
             },
         ]
     );

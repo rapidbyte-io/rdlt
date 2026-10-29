@@ -32,19 +32,6 @@ pub enum Push {
     Changes(RecordBatch),
 }
 
-/// The severity of a connector log line.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum LogLevel {
-    /// Something failed.
-    Error,
-    /// Something is wrong but reading continues.
-    Warn,
-    /// Progress worth recording.
-    Info,
-    /// Detail for debugging.
-    Debug,
-}
-
 /// Everything a partition's read sends to the engine.
 #[derive(Clone, Debug, PartialEq)]
 pub enum SourceEvent {
@@ -56,20 +43,6 @@ pub enum SourceEvent {
         cursor: Cursor,
         /// The barrier this checkpoint answers, if one was pending.
         answers: Option<u64>,
-    },
-    /// A log line.
-    Log {
-        /// Severity.
-        level: LogLevel,
-        /// The line.
-        message: String,
-    },
-    /// A metric sample.
-    Metric {
-        /// The metric's name.
-        name: String,
-        /// The sample.
-        value: f64,
     },
     /// The stream's partitions changed: the engine plans the stream again.
     Replan,

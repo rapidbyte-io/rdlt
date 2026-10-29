@@ -919,24 +919,6 @@ pub(crate) static LIMITS: Form = Form {
     ],
 };
 
-/// The form of `LogFrame`.
-pub(crate) static LOG_FRAME: Form = Form {
-    name: "LogFrame",
-    size: size_of::<v1::LogFrame>(),
-    fields: &[
-        Field {
-            number: 1,
-            kind: Kind::Scalar(4),
-            repeated: false,
-        },
-        Field {
-            number: 2,
-            kind: Kind::String,
-            repeated: false,
-        },
-    ],
-};
-
 /// The form of `LogicalType`.
 pub(crate) static LOGICAL_TYPE: Form = Form {
     name: "LogicalType",
@@ -976,24 +958,6 @@ pub(crate) static MERGE_KEY: Form = Form {
         Field {
             number: 5,
             kind: Kind::Message(&HISTORY_COLUMNS),
-            repeated: false,
-        },
-    ],
-};
-
-/// The form of `MetricFrame`.
-pub(crate) static METRIC_FRAME: Form = Form {
-    name: "MetricFrame",
-    size: size_of::<v1::MetricFrame>(),
-    fields: &[
-        Field {
-            number: 1,
-            kind: Kind::String,
-            repeated: false,
-        },
-        Field {
-            number: 2,
-            kind: Kind::Scalar(8),
             repeated: false,
         },
     ],
@@ -1236,26 +1200,16 @@ pub(crate) static READ_FRAME: Form = Form {
         },
         Field {
             number: 5,
-            kind: Kind::Message(&LOG_FRAME),
-            repeated: false,
-        },
-        Field {
-            number: 6,
-            kind: Kind::Message(&METRIC_FRAME),
-            repeated: false,
-        },
-        Field {
-            number: 7,
             kind: Kind::Message(&DONE),
             repeated: false,
         },
         Field {
-            number: 8,
+            number: 6,
             kind: Kind::Message(&REPLAN_FRAME),
             repeated: false,
         },
         Field {
-            number: 9,
+            number: 7,
             kind: Kind::Message(&BEHIND_FRAME),
             repeated: false,
         },

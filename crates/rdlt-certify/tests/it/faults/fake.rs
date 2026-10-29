@@ -239,15 +239,12 @@ impl Fake {
         let patient = !self.keeps(Fault::Patient);
         let (frames, answer) = mpsc::channel(64);
         tokio::spawn(async move {
-            let log = |line: usize| v1::ReadFrame {
-                frame: Some(v1::read_frame::Frame::Log(v1::LogFrame {
-                    level: v1::LogLevel::Info as i32,
-                    message: format!("line {line}"),
-                })),
+            let lag = |records: u64| v1::ReadFrame {
+                frame: Some(v1::read_frame::Frame::Behind(v1::BehindFrame { records })),
             };
             let (mut credit, mut granted_times): (i64, u32) = (0, 0);
-            for line in 0..8 {
-                if paced && line > 0 {
+            for frame in 0..8 {
+                if paced && frame > 0 {
                     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
                 }
                 while credit <= 0 && !greedy {
@@ -266,7 +263,7 @@ impl Fake {
                     }
                 }
                 credit -= 16;
-                if frames.send(Ok(log(line))).await.is_err() {
+                if frames.send(Ok(lag(frame))).await.is_err() {
                     return;
                 }
             }

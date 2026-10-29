@@ -101,16 +101,12 @@ message ReadFrame {
     JsonFrame json = 3;
     // A resumable position.
     CheckpointFrame checkpoint = 4;
-    // A log line.
-    LogFrame log = 5;
-    // A metric sample.
-    MetricFrame metric = 6;
     // The end of the read.
-    Done done = 7;
+    Done done = 5;
     // The stream's partitions changed: the engine plans the stream again.
-    ReplanFrame replan = 8;
+    ReplanFrame replan = 6;
     // How many records the read is behind its source's newest.
-    BehindFrame behind = 9;
+    BehindFrame behind = 7;
   }
 }
 
@@ -168,36 +164,6 @@ message CheckpointFrame {
   Cursor cursor = 1;
   // The barrier it answers, if one was pending.
   optional uint64 barrier = 2;
-}
-
-// The severity of a log line.
-enum LogLevel {
-  // Never sent; a receiver refuses it.
-  LOG_LEVEL_UNSPECIFIED = 0;
-  // Something failed.
-  LOG_LEVEL_ERROR = 1;
-  // Something is wrong but reading continues.
-  LOG_LEVEL_WARN = 2;
-  // Progress worth recording.
-  LOG_LEVEL_INFO = 3;
-  // Detail for debugging.
-  LOG_LEVEL_DEBUG = 4;
-}
-
-// A log line.
-message LogFrame {
-  // Its severity.
-  LogLevel level = 1;
-  // The line.
-  string message = 2;
-}
-
-// A metric sample.
-message MetricFrame {
-  // The metric's name.
-  string name = 1;
-  // The sample.
-  double value = 2;
 }
 
 // The end of a read: the source's read returned. A read that fails ends with the error's status

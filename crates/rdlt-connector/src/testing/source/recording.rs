@@ -96,10 +96,7 @@ impl Recording {
                 self.checkpoints.push(cursor);
                 self.answered.extend(answers);
             }
-            SourceEvent::Log { .. }
-            | SourceEvent::Metric { .. }
-            | SourceEvent::Replan
-            | SourceEvent::Behind { .. } => {}
+            SourceEvent::Replan | SourceEvent::Behind { .. } => {}
         }
         Ok(())
     }

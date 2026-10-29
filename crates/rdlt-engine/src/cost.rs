@@ -177,10 +177,9 @@ impl Admission for Charging {
             SourceEvent::Push(push) => (push_charge(push), false),
             // A cursor waits with its seal for a commit, which alone releases it.
             SourceEvent::Checkpoint { cursor, .. } => (count(cursor.bytes().len()), true),
-            SourceEvent::Log { .. }
-            | SourceEvent::Metric { .. }
-            | SourceEvent::Replan
-            | SourceEvent::Behind { .. } => return Box::pin(async { Ok(None) }),
+            SourceEvent::Replan | SourceEvent::Behind { .. } => {
+                return Box::pin(async { Ok(None) });
+            }
         };
         Box::pin(async move {
             if cursor {

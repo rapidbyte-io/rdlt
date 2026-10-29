@@ -882,16 +882,16 @@ pub struct Stop {
     pub mode: i32,
 }
 /// What a source sends on a read.
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ReadFrame {
     /// The frame.
-    #[prost(oneof = "read_frame::Frame", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9")]
+    #[prost(oneof = "read_frame::Frame", tags = "1, 2, 3, 4, 5, 6, 7")]
     pub frame: ::core::option::Option<read_frame::Frame>,
 }
 /// Nested message and enum types in `ReadFrame`.
 pub mod read_frame {
     /// The frame.
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Frame {
         /// An Arrow schema, once per schema epoch.
         #[prost(message, tag = "1")]
@@ -905,20 +905,14 @@ pub mod read_frame {
         /// A resumable position.
         #[prost(message, tag = "4")]
         Checkpoint(super::CheckpointFrame),
-        /// A log line.
-        #[prost(message, tag = "5")]
-        Log(super::LogFrame),
-        /// A metric sample.
-        #[prost(message, tag = "6")]
-        Metric(super::MetricFrame),
         /// The end of the read.
-        #[prost(message, tag = "7")]
+        #[prost(message, tag = "5")]
         Done(super::Done),
         /// The stream's partitions changed: the engine plans the stream again.
-        #[prost(message, tag = "8")]
+        #[prost(message, tag = "6")]
         Replan(super::ReplanFrame),
         /// How many records the read is behind its source's newest.
-        #[prost(message, tag = "9")]
+        #[prost(message, tag = "7")]
         Behind(super::BehindFrame),
     }
 }
@@ -978,26 +972,6 @@ pub struct CheckpointFrame {
     /// The barrier it answers, if one was pending.
     #[prost(uint64, optional, tag = "2")]
     pub barrier: ::core::option::Option<u64>,
-}
-/// A log line.
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct LogFrame {
-    /// Its severity.
-    #[prost(enumeration = "LogLevel", tag = "1")]
-    pub level: i32,
-    /// The line.
-    #[prost(string, tag = "2")]
-    pub message: ::prost::alloc::string::String,
-}
-/// A metric sample.
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct MetricFrame {
-    /// The metric's name.
-    #[prost(string, tag = "1")]
-    pub name: ::prost::alloc::string::String,
-    /// The sample.
-    #[prost(double, tag = "2")]
-    pub value: f64,
 }
 /// The end of a read: the source's read returned. A read that fails ends with the error's status
 /// instead, and one the host stopped ends however the source's read returned.
@@ -1105,47 +1079,6 @@ impl BatchKind {
             "BATCH_KIND_UNSPECIFIED" => Some(Self::Unspecified),
             "BATCH_KIND_ARROW" => Some(Self::Arrow),
             "BATCH_KIND_CHANGE" => Some(Self::Change),
-            _ => None,
-        }
-    }
-}
-/// The severity of a log line.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
-#[repr(i32)]
-pub enum LogLevel {
-    /// Never sent; a receiver refuses it.
-    Unspecified = 0,
-    /// Something failed.
-    Error = 1,
-    /// Something is wrong but reading continues.
-    Warn = 2,
-    /// Progress worth recording.
-    Info = 3,
-    /// Detail for debugging.
-    Debug = 4,
-}
-impl LogLevel {
-    /// String value of the enum field names used in the ProtoBuf definition.
-    ///
-    /// The values are not transformed in any way and thus are considered stable
-    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
-        match self {
-            Self::Unspecified => "LOG_LEVEL_UNSPECIFIED",
-            Self::Error => "LOG_LEVEL_ERROR",
-            Self::Warn => "LOG_LEVEL_WARN",
-            Self::Info => "LOG_LEVEL_INFO",
-            Self::Debug => "LOG_LEVEL_DEBUG",
-        }
-    }
-    /// Creates an enum from field names used in the ProtoBuf definition.
-    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
-        match value {
-            "LOG_LEVEL_UNSPECIFIED" => Some(Self::Unspecified),
-            "LOG_LEVEL_ERROR" => Some(Self::Error),
-            "LOG_LEVEL_WARN" => Some(Self::Warn),
-            "LOG_LEVEL_INFO" => Some(Self::Info),
-            "LOG_LEVEL_DEBUG" => Some(Self::Debug),
             _ => None,
         }
     }

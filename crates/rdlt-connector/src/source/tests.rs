@@ -80,9 +80,8 @@ impl ReadStream<Counter> for Numbers {
             return Err(ConnectorError::data("forty-two rows are refused"));
         }
         if source.limit == 7 {
-            // A counter to seven says whether it was given a cursor.
-            let resumes = if out.resumes() { 1.0 } else { 0.0 };
-            out.metric("resumes", resumes).await?;
+            // A counter to seven says whether it was given a cursor, as how far it is behind.
+            out.behind(u64::from(out.resumes())).await?;
         }
         for n in cursor.n..source.limit {
             out.rows(&[json!({ "n": n })]).await?;
@@ -402,17 +401,17 @@ async fn a_following_read_waits_once_caught_up_until_asked_to_stop() {
 async fn a_read_knows_whether_it_was_given_a_cursor_or_starts_from_the_default() {
     let source = connect(7).await;
     let told = |events: &[SourceEvent]| match events.first() {
-        Some(SourceEvent::Metric { value, .. }) => *value,
-        other => panic!("no metric first: {other:?}"),
+        Some(SourceEvent::Behind { records, .. }) => *records,
+        other => panic!("no lag first: {other:?}"),
     };
     let (read, events) = read_all(source.as_ref(), None).await;
     read.unwrap();
-    assert!(told(&events) < 0.5);
+    assert_eq!(told(&events), 0);
     // The default cursor, given, is a cursor given: the host said where to read from.
     let start = Cursor::encode(2, &Next::default()).unwrap();
     let (read, events) = read_all(source.as_ref(), Some(start)).await;
     read.unwrap();
-    assert!(told(&events) > 0.5);
+    assert_eq!(told(&events), 1);
 }
 
 fn plan_of(ids: &[&str]) -> PartitionPlan {

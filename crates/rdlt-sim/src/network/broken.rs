@@ -193,8 +193,8 @@ pub(super) fn catalogue() -> [Broken; 20] {
         )
         .small(),
         Broken::new(
-            "sends log lines past their bound",
-            Fault::Logs(MAX_FREE_FRAMES + 1),
+            "sends lags past their bound",
+            Fault::Lags(MAX_FREE_FRAMES + 1),
             Read,
             invalid,
         ),

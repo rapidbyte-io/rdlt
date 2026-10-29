@@ -75,7 +75,6 @@ pub(super) async fn read(
                     }
                     Some(SourceEvent::Behind { records }) => sent.behind.push(records),
                     Some(SourceEvent::Replan) => sent.replans += 1,
-                    Some(_) => {}
                     None => break,
                 },
             }

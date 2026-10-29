@@ -26,7 +26,7 @@ use crate::Cursor;
 use crate::error::ConnectorErrorKind;
 use crate::id::{PartitionId, StreamName};
 use crate::sink::{
-    Admission, LogLevel, PartitionFeed, Push, SourceEvent, admitted_partition_channel,
+    Admission, PartitionFeed, Push, SourceEvent, admitted_partition_channel,
 };
 use crate::source::{Partition, ReadRequest, Source};
 use crate::wire::{Invalid, frame_error, status, v1};
@@ -146,17 +146,6 @@ impl Outbox {
                     barrier: answers,
                 }));
             }
-            SourceEvent::Log { level, message } => {
-                self.host.admit_string(&message).map_err(refused)?;
-                self.push(Frame::Log(v1::LogFrame {
-                    level: log_level(level) as i32,
-                    message,
-                }));
-            }
-            SourceEvent::Metric { name, value } => {
-                self.host.admit_string(&name).map_err(refused)?;
-                self.push(Frame::Metric(v1::MetricFrame { name, value }));
-            }
             SourceEvent::Replan => self.push(Frame::Replan(v1::ReplanFrame {})),
             SourceEvent::Behind { records } => {
                 self.push(Frame::Behind(v1::BehindFrame { records }));
@@ -216,15 +205,6 @@ impl Outbox {
             }));
         }
         Ok(())
-    }
-}
-
-fn log_level(level: LogLevel) -> v1::LogLevel {
-    match level {
-        LogLevel::Error => v1::LogLevel::Error,
-        LogLevel::Warn => v1::LogLevel::Warn,
-        LogLevel::Info => v1::LogLevel::Info,
-        LogLevel::Debug => v1::LogLevel::Debug,
     }
 }
 
