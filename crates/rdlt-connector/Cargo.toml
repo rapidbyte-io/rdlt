@@ -45,7 +45,6 @@ merge = ["dep:arrow-cast", "dep:arrow-row", "dep:arrow-select"]
 arrow-array.workspace = true
 arrow-buffer.workspace = true
 arrow-cast = { workspace = true, optional = true }
-arrow-data.workspace = true
 arrow-row = { workspace = true, optional = true }
 arrow-schema.workspace = true
 arrow-select = { workspace = true, optional = true }

@@ -6,9 +6,10 @@ use std::sync::Arc;
 
 use arrow_array::types::Int32Type;
 use arrow_array::{
-    ArrayRef, DictionaryArray, Int32Array, Int64Array, RecordBatch, StringArray,
+    ArrayRef, BooleanArray, DictionaryArray, Int32Array, Int64Array, RecordBatch, StringArray,
     TimestampNanosecondArray, TimestampSecondArray,
 };
+use arrow_buffer::{BooleanBuffer, NullBuffer};
 use rdlt_connector::{ReadMode, TimeUnit};
 
 use super::{Case, Made, Meta, Pushed, Storage, changed, instant, stream, with_column};
@@ -109,6 +110,17 @@ pub(crate) fn dictionaries(rows: u32, columns: usize) -> RecordBatch {
         let keyed = DictionaryArray::<Int32Type>::try_new(keys, words);
         let keyed: ArrayRef = Arc::new(keyed.expect("keys within the dictionary"));
         (format!("c{column}"), keyed)
+    });
+    RecordBatch::try_from_iter(named).expect("columns of one length")
+}
+
+/// `rows` rows of `columns` columns of booleans, `c0` on, each with a validity that holds no null.
+pub(crate) fn flags(rows: u32, columns: usize) -> RecordBatch {
+    let rows = usize::try_from(rows).expect("a row count");
+    let named = (0..columns).map(|column| {
+        let valid = Some(NullBuffer::new_valid(rows));
+        let flags: ArrayRef = Arc::new(BooleanArray::new(BooleanBuffer::new_set(rows), valid));
+        (format!("c{column}"), flags)
     });
     RecordBatch::try_from_iter(named).expect("columns of one length")
 }

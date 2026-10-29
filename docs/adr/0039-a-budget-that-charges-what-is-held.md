@@ -165,7 +165,8 @@ budget before it is held, or bounded by a limit with a typed refusal.
   - **Held**: the bytes of every allocation the batch reaches, validity, data, child and
     dictionary buffers alike, each counted once however many arrays or slices share it. A slice
     costs the buffer it was cut from; a frame's batch costs the allocation the decoder made for
-    it and the dictionaries its keys use.
+    it and the dictionaries its keys use. A validity is found through the arrays that hold it,
+    since Arrow's data of an array leaves out one holding no null, which the array keeps alive.
   - **Expanded**: what its rows become in whatever of the engine does most with them.
     - A dictionary or run-end row is the value it names; a null key is a slot of the value type,
       whatever the dictionary holds.
@@ -223,11 +224,12 @@ budget before it is held, or bounded by a limit with a typed refusal.
     two in two of a table of a thousand and of the widest a schema may have at the defaults,
     7,489: a change stream's, as a log and merged, stored as it is and as text, with its flags
     and the deletes it ignores, a merge's of repeated keys, a history table's, and one dropping
-    rows. At both widths a push of a row of integers or of dictionaries holds no more than it is
-    admitted for, built in its source's process or decoded from its frame; a JSON push's batches
-    no more than they keep charged once shredded; a normalized split, in one part and in two,
-    keyed or not, no more than it keeps charged once its parts are planned; and cutting a unit
-    keeps nothing a column beside it between its pieces.
+    rows. At both widths a push of a row of integers or of dictionaries, or of a thousand rows of
+    booleans whose validity holds no null, holds no more than it is admitted for, built in its
+    source's process or decoded from its frame; a JSON push's batches no more than they keep
+    charged once shredded; a normalized split, in one part and in two, keyed or not, no more than
+    it keeps charged once its parts are planned; and cutting a unit keeps nothing a column beside
+    it between its pieces.
   - Judging which columns of 64-bit integers a batch holds a value a float would round in reads
     each column where it lies, in any encoding, and holds nothing a row, so nothing is charged
     for it; a normalized flush is judged so before any of it is split, and tests hold its peak
