@@ -114,6 +114,16 @@ impl Networked {
         };
         self.remote.wire(&reference(side.host(), id)).await.ok()
     }
+
+    /// A raw stream to `side`'s connector, over which a client speaks HTTP/2 itself; none where
+    /// the dial failed.
+    pub(super) async fn dialed(&self, side: Side) -> Option<Box<dyn rdlt_host::Stream>> {
+        let id: ConnectorId = match side {
+            Side::Source => self.net.serving.factory().spec().id.clone(),
+            Side::Destination => destination_factory::<SimDestination>().spec().id.clone(),
+        };
+        self.remote.dial(&reference(side.host(), id)).await.ok()
+    }
 }
 
 impl Attacker<'_> {
@@ -180,9 +190,7 @@ impl Attacker<'_> {
     /// A client of `side`'s connector, with no handshake yet.
     async fn client(&self, side: Side) -> Option<Client> {
         let client = match self.placing.wire(side).await {
-            Some(wire) => rdlt_host::remote::client(wire, self.placing.remote_options)
-                .await
-                .ok(),
+            Some(wire) => wire.client(self.placing.remote_options).await.ok(),
             None => None,
         };
         if client.is_none() {

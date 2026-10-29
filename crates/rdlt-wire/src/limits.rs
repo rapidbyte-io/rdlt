@@ -100,17 +100,16 @@ pub const DECODED_PER_BYTE: usize = 16;
 /// Bytes: what a message holds beside the field a limit bounds.
 const MESSAGE_OVERHEAD: usize = 64 * 1024;
 
-/// Bytes: the most a data-plane message holding a frame takes, in the allocation it arrives in,
-/// beside the frame's header and body: its prefix, the fields around them, the padding before the
-/// body, and the room that starts it at a 64-byte address.
+/// Bytes: the most a frame's allocation takes beside its header and body: its prefix, the padding
+/// around its metadata, and the room that starts it at a 64-byte address.
 pub const MESSAGE_ROOM: u64 = 256;
 
 /// Bytes: bounds the text of a panic the decoder contained, as its error carries it.
 pub const PANIC_TEXT_BYTES: u64 = 256;
 
-/// Bytes: the least window of credit a receiver grants a call, and each call's transport window:
-/// one frame at the least frame limit a peer may set.
-pub const CREDIT_FLOOR: u64 = MIN_FRAME_BYTES;
+/// Bytes: each HTTP/2 call's stream window, what a peer may send on it that this end has not
+/// taken: one frame at the least frame limit a peer may set.
+pub const STREAM_WINDOW: u64 = MIN_FRAME_BYTES;
 
 /// The calls one connection may hold open at once: a host's heartbeat, and the engine's reads,
 /// writes and control calls, which it keeps within the rest.
@@ -337,9 +336,7 @@ impl Class {
             "Handshake" => Self::Handshake,
             "Configure" => Self::Config,
             "ApplySchema" => Self::Schema,
-            "Read" => Self::Cursor,
             "Plan" | "Committed" | "Commit" => Self::State,
-            "Write" => Self::Data,
             _ => Self::Control,
         }
     }
@@ -351,7 +348,6 @@ impl Class {
             "Handshake" | "Configure" => Self::Handshake,
             "Discover" => Self::Catalog,
             "Plan" | "Open" => Self::State,
-            "Read" | "ReadPublished" => Self::Data,
             _ => Self::Control,
         }
     }

@@ -1,4 +1,5 @@
-//! A call's body, its messages each held to their bounds before what reads the body sees them.
+//! A control call's body, its messages each held to their bounds before what reads the body sees
+//! them.
 //!
 //! A gRPC message is a five-byte prefix, its length among it, then the message. A decoder that
 //! reads the prefix reserves the length it declares before the bytes arrive, and decodes the
@@ -6,7 +7,7 @@
 //! has arrived: within the wire bound of its call, and counted by its [scan](crate::scan) within
 //! the bound of what it decodes to. A message beyond either, one the scan cannot walk, and one
 //! the body ends within fail the call before anything decodes them. Each message is passed on
-//! whole, prefix and all, as one `Bytes`, which the data plane's reader decodes in place.
+//! whole, prefix and all, as one `Bytes`.
 //!
 //! A message is held from a first byte at a 64-byte address, and what arrives past its end waits
 //! for the message after it, so each message is passed on in an allocation of its own length.
@@ -19,7 +20,7 @@
 //! held rather than refused.
 //!
 //! Where the body is [charged](charging), a message is passed on once what its scan counts is
-//! charged, and the charge is held until it is decoded.
+//! charged, and the charge is held until the next message is passed on, or the body ends.
 
 mod charge;
 #[cfg(kani)]
@@ -87,6 +88,17 @@ impl Window {
         }
     }
 
+    /// Takes room for `bytes`, at most the window's, waiting until it has them; held until the
+    /// permit is dropped.
+    ///
+    /// # Errors
+    ///
+    /// None while the window lives: it is never closed.
+    pub async fn take(&self, bytes: usize) -> Result<OwnedSemaphorePermit, AcquireError> {
+        let wanted = u32::try_from(bytes).unwrap_or(u32::MAX).min(self.bytes);
+        Arc::clone(&self.room).acquire_many_owned(wanted).await
+    }
+
     /// The room taken in the window now.
     pub fn taken(&self) -> usize {
         (self.bytes as usize).saturating_sub(self.room.available_permits())
@@ -132,7 +144,7 @@ pub struct Bounded {
     done: bool,
     /// Whoever each message is charged to before it is passed on, where anyone is.
     charge: Option<Arc<dyn Charge>>,
-    /// The charge of the message passed on last, held until it is decoded.
+    /// The charge of the message passed on last, held until the next is passed on.
     held: Option<Held>,
     /// A message whole, waiting for its charge.
     charging: Option<(Charging, Arrived)>,
@@ -158,16 +170,11 @@ impl Bounded {
     }
 
     /// The body, each message charged to `charge` before it is passed on, where a charge is
-    /// given, and the charge held until the message is decoded.
+    /// given, and the charge held until the next is passed on.
     #[must_use]
     pub fn charged(mut self, charge: Option<Arc<dyn Charge>>) -> Self {
         self.charge = charge;
         self
-    }
-
-    /// Releases the charge of the message passed on last: it has been decoded.
-    pub fn release(&mut self) {
-        self.held = None;
     }
 
     /// The length the arriving message's prefix declares, where it has arrived, within the wire

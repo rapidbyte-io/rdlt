@@ -17,12 +17,8 @@
 #[cfg(test)]
 mod tests;
 
-#[expect(
-    clippy::match_same_arms,
-    reason = "the forms' lookups name each method, whatever form it shares"
-)]
 #[path = "generated/forms.rs"]
-mod forms;
+pub(crate) mod forms;
 
 pub use forms::{request, response};
 
@@ -337,16 +333,21 @@ pub mod differential {
             (request("Check"), decodes::<v1::CheckRequest>),
             (request("Discover"), decodes::<v1::DiscoverRequest>),
             (request("Plan"), decodes::<v1::PlanRequest>),
-            (request("Read"), decodes::<v1::ReadControl>),
+            (Some(&super::forms::READ_START), decodes::<v1::ReadStart>),
+            (
+                Some(&super::forms::READ_CONTROL),
+                decodes::<v1::ReadControl>,
+            ),
             (request("Committed"), decodes::<v1::CommittedRequest>),
             (request("Open"), decodes::<v1::OpenRequest>),
             (request("ApplySchema"), decodes::<v1::ApplySchemaRequest>),
-            (request("Write"), decodes::<v1::WriteFrame>),
+            (Some(&super::forms::WRITE_START), decodes::<v1::WriteStart>),
+            (Some(&super::forms::WRITE_FRAME), decodes::<v1::WriteFrame>),
             (request("Commit"), decodes::<v1::CommitRequest>),
             (request("Close"), decodes::<v1::CloseRequest>),
             (request("Heartbeat"), decodes::<v1::Ping>),
             (
-                request("ReadPublished"),
+                Some(&super::forms::READ_PUBLISHED_REQUEST),
                 decodes::<v1::ReadPublishedRequest>,
             ),
             (
@@ -358,11 +359,11 @@ pub mod differential {
             (response("Check"), decodes::<v1::CheckResponse>),
             (response("Discover"), decodes::<v1::Catalog>),
             (response("Plan"), decodes::<v1::PlanResponse>),
-            (response("Read"), decodes::<v1::ReadFrame>),
+            (Some(&super::forms::READ_FRAME), decodes::<v1::ReadFrame>),
             (response("Committed"), decodes::<v1::CommittedResponse>),
             (response("Open"), decodes::<v1::OpenResponse>),
             (response("ApplySchema"), decodes::<v1::ApplySchemaResponse>),
-            (response("Write"), decodes::<v1::WriteAck>),
+            (Some(&super::forms::WRITE_ACK), decodes::<v1::WriteAck>),
             (response("Commit"), decodes::<v1::Receipt>),
             (response("Close"), decodes::<v1::CloseResponse>),
             (response("Heartbeat"), decodes::<v1::Pong>),

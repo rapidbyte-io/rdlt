@@ -5,8 +5,11 @@
 mod tests;
 
 use std::io::Read as _;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
-use bytes::Bytes;
+use bytes::{BufMut as _, Bytes};
+use tokio::io::AsyncRead;
 
 /// Bytes: the alignment a frame's allocation starts at and its buffers lie at, every Arrow type's
 /// or more.
@@ -130,6 +133,23 @@ impl Aligned {
         // Room for all it may read is reserved, so the allocation stays where it is aligned.
         reader.take(len).read_to_end(&mut self.bytes)?;
         Ok(())
+    }
+
+    /// Reads what `reader` has ready of the bytes it still has room for, into room no byte was
+    /// written to first: how many it read, none once its room is full or `reader` has ended.
+    ///
+    /// # Errors
+    ///
+    /// The error reading failed with.
+    pub fn poll_read_from<R: AsyncRead + ?Sized>(
+        &mut self,
+        reader: Pin<&mut R>,
+        context: &mut Context<'_>,
+    ) -> Poll<std::io::Result<usize>> {
+        let left = self.room.saturating_sub(self.len());
+        // Room for all it may read is reserved, so the allocation stays where it is aligned.
+        let mut room = (&mut self.bytes).limit(left);
+        tokio_util::io::poll_read_buf(reader, context, &mut room)
     }
 
     /// Keeps the first `len` bytes held.

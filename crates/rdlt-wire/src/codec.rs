@@ -1,15 +1,19 @@
-//! Arrow batches on the wire, in Arrow Flight's `FlightData` layout: a schema once per schema
-//! epoch, then for each batch the dictionary batches it needs that were not sent, then the batch.
+//! Arrow batches on the wire, each frame one Arrow IPC encapsulated message: a schema once per
+//! schema epoch, then for each batch the dictionary batches it needs that were not sent, then
+//! the batch.
 //!
-//! A receiver decodes each frame where it arrived, its buffers slices of the allocation the
-//! frame lies in, and refuses one whose buffers do not lie at their types' alignment.
+//! A sender sends a batch's frame from the batch's own buffers. A receiver decodes each frame
+//! where it arrived, its buffers slices of the allocation the frame lies in, and refuses one
+//! whose buffers do not lie at their types' alignment.
 
 mod compact;
 mod contain;
 mod decode;
+mod encoded;
 mod framing;
 mod in_place;
 mod measure;
+mod pieces;
 mod schema;
 mod shape;
 mod split;
@@ -21,7 +25,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
-use arrow_ipc::writer::{DictionaryTracker, IpcDataGenerator, IpcWriteContext, IpcWriteOptions};
+use arrow_ipc::writer::{DictionaryTracker, IpcDataGenerator, IpcWriteOptions, StreamEncoder};
 use arrow_schema::{DataType, Schema};
 use bytes::Bytes;
 
@@ -31,6 +35,7 @@ use crate::error::{Frame, Problem, WireError};
 use crate::limits::{MESSAGE_ROOM, count};
 
 pub use decode::Decoder;
+pub use encoded::Encoded;
 pub use shape::Shape;
 pub use split::Cut;
 pub use weigh::{Weigher, Weight};
@@ -95,13 +100,17 @@ impl IpcFrame {
     }
 }
 
-/// Encodes one sender's batches: a schema, then batches in it.
-#[derive(Debug)]
+/// Encodes one sender's batches: a schema, then batches in it, each frame from the batch's own
+/// buffers.
+#[derive(Default)]
 pub struct Encoder {
-    generator: IpcDataGenerator,
-    tracker: DictionaryTracker,
+    /// How messages are written: the protocol's own, or another writer's in tests.
     options: IpcWriteOptions,
-    context: IpcWriteContext,
+    /// The stream encoder of the schema epoch, holding the dictionaries it sent.
+    stream: Option<StreamEncoder>,
+    /// Whether the stream encoder has yet to encode its first batch, before which it sends the
+    /// schema again.
+    fresh: bool,
     /// The columns of the schema last encoded, as its receiver converts it.
     columns: Option<Columns>,
     /// The dictionaries its receiver holds since that schema, by id: what each takes there.
@@ -111,18 +120,13 @@ pub struct Encoder {
     encodes: usize,
 }
 
-impl Default for Encoder {
-    fn default() -> Self {
-        Self {
-            generator: IpcDataGenerator {},
-            tracker: DictionaryTracker::new(false),
-            options: IpcWriteOptions::default(),
-            context: IpcWriteContext::default(),
-            columns: None,
-            held: HashMap::new(),
-            #[cfg(test)]
-            encodes: 0,
-        }
+impl std::fmt::Debug for Encoder {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Encoder")
+            .field("epoch", &self.stream.is_some())
+            .field("held", &self.held)
+            .finish_non_exhaustive()
     }
 }
 
@@ -136,6 +140,7 @@ impl Encoder {
     /// schema message describes: nothing is to be sent for it, and the epoch before it is over.
     pub fn schema(&mut self, schema: &Schema) -> Result<Bytes, WireError> {
         self.columns = None;
+        self.stream = None;
         self.held.clear();
         if schema
             .fields()
@@ -147,11 +152,11 @@ impl Encoder {
                 Problem::DictionaryOfDictionaries,
             ));
         }
-        self.tracker = DictionaryTracker::new(false);
-        let encoded = self.generator.schema_to_bytes_with_dictionary_tracker(
+        let options = self.options.clone();
+        let encoded = IpcDataGenerator {}.schema_to_bytes_with_dictionary_tracker(
             schema,
-            &mut self.tracker,
-            &self.options,
+            &mut DictionaryTracker::new(false),
+            &options,
         );
         // Read back as its receiver reads it, verified exactly as deep as the schema nests.
         let depth = usize::try_from(nesting(schema)).unwrap_or(usize::MAX);
@@ -160,14 +165,21 @@ impl Encoder {
         let read = message
             .header_as_schema()
             .ok_or_else(|| measure::unexpected(Frame::Schema, &message))?;
-        self.columns = Some(Columns::new(Arc::new(arrow_ipc::convert::fb_to_schema(
-            read,
-        ))));
+        let columns = Columns::new(Arc::new(arrow_ipc::convert::fb_to_schema(read)));
+        // Its dictionaries take the ids the schema message names: both trackers start afresh.
+        let stream = StreamEncoder::try_new_with_options(schema, options).map_err(|source| {
+            WireError::Arrow {
+                frame: Frame::Schema,
+                encoding: true,
+                source,
+            }
+        })?;
+        (self.columns, self.stream, self.fresh) = (Some(columns), Some(stream), true);
         Ok(Bytes::from(encoded.ipc_message))
     }
 
     /// The frames of `batch`, which must be in the schema last encoded: the dictionaries it needs
-    /// that differ from those sent, then the batch.
+    /// that differ from those sent, then the batch, each gathered into an allocation of its own.
     ///
     /// # Errors
     ///
@@ -176,36 +188,31 @@ impl Encoder {
     pub fn batch(&mut self, batch: &RecordBatch) -> Result<Vec<IpcFrame>, WireError> {
         let (mut frames, batch) = self.encoded(batch)?;
         frames.push(batch);
-        Ok(frames)
+        Ok(frames.iter().map(Encoded::gathered).collect())
     }
 
     /// The dictionaries `batch` needs that differ from those sent, and its own frame.
-    fn encoded(&mut self, batch: &RecordBatch) -> Result<(Vec<IpcFrame>, IpcFrame), WireError> {
-        if self.columns.is_none() {
+    fn encoded(&mut self, batch: &RecordBatch) -> Result<(Vec<Encoded>, Encoded), WireError> {
+        let Some(stream) = self.stream.as_mut().filter(|_| self.columns.is_some()) else {
             return Err(WireError::malformed(Frame::Batch, Problem::NoSchema));
-        }
+        };
         #[cfg(test)]
         {
             self.encodes += 1;
         }
-        let (dictionaries, encoded) = self
-            .generator
-            .encode(batch, &mut self.tracker, &self.options, &mut self.context)
-            .map_err(|source| WireError::Arrow {
-                frame: Frame::Batch,
-                encoding: true,
-                source,
-            })?;
-        let frame = |encoded: arrow_ipc::writer::EncodedData| {
-            IpcFrame::new(
-                Bytes::from(encoded.ipc_message),
-                Bytes::from(encoded.arrow_data),
-            )
-        };
-        Ok((
-            dictionaries.into_iter().map(frame).collect(),
-            frame(encoded),
-        ))
+        let encoding = stream.encode(batch);
+        // Its schema goes with its first call, whether or not the batch then encodes.
+        let fresh = std::mem::take(&mut self.fresh);
+        let buffers = encoding.map_err(|source| WireError::Arrow {
+            frame: Frame::Batch,
+            encoding: true,
+            source,
+        })?;
+        let mut messages = encoded::split(buffers, fresh)?;
+        let batch = messages
+            .pop()
+            .ok_or_else(|| WireError::malformed(Frame::Batch, Problem::Encapsulation))?;
+        Ok((messages, batch))
     }
 }
 

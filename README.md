@@ -29,8 +29,9 @@ or malformed ones with a typed error, and every other message beyond the limit o
 carries; the contract's types convert to and from its messages under
 `rdlt-connector`'s `wire` feature. A connector serves the protocol with `rdlt-connector`'s `serve`
 feature, one handshaken session per connection. The engine loads through it with `rdlt-host`'s
-`RemoteSource` and `RemoteDestination`: errors cross whole, reads and writes keep within credit,
-heartbeats notice a lost connector, and each call has its deadline. A provider places each
+`RemoteSource` and `RemoteDestination`: errors cross whole, each read and write is a stream of
+frames of its own, read into place and written from the batch's own buffers, heartbeats notice a
+lost connector, and each call has its deadline. A provider places each
 connector by policy (ADR 0043): in process only what its embedder trusts
 (`Registry::trusted`), and in a process of its own inside a sandbox (`Local::sandboxed`, with
 bubblewrap on Linux) unless its binaries are stated to be trusted

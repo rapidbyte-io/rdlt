@@ -3,11 +3,11 @@
 //! connected.
 
 use rdlt_connector::ConnectorId;
-use rdlt_connector::serve::{Served, serve_connection};
+use rdlt_connector::serve::{Served, serve_opened};
 use rdlt_connector_reference::MemorySource;
 use rdlt_host::{
     Connect, ConnectorRef, Digest, Isolation, Kills, Local, Provider, ProviderError, Registry,
-    Remote, Stream,
+    Remote,
 };
 use rdlt_testkit::tls::Pki;
 use rdlt_wire::Limits;
@@ -182,9 +182,11 @@ async fn a_connector_reached_through_a_function_is_placed_for_a_bare_reference_a
     let connect = Connect::new(move || {
         let served = std::sync::Arc::clone(&served);
         Box::pin(async move {
-            let (host, connector) = tokio::net::UnixStream::pair()?;
-            tokio::spawn(serve_connection(served, connector, Limits::default()));
-            Ok(Box::new(host) as Box<dyn Stream>)
+            let (host, connector) = std::os::unix::net::UnixStream::pair()?;
+            let connector = std::os::fd::OwnedFd::from(connector);
+            tokio::spawn(serve_opened(served, connector, Limits::default()));
+            let opener = rdlt_host::Passing::new(std::os::fd::OwnedFd::from(host))?;
+            Ok(Box::new(opener) as Box<dyn rdlt_host::Opener>)
         })
     });
     let memory = ConnectorRef::new(ConnectorId::parse("io.rapidbyte.memory").expect("a valid id"));

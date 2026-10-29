@@ -1,7 +1,6 @@
 //! The protocol's clauses (`P`), checked by a client that speaks the protocol raw, each over
 //! connections of its own.
 
-mod credit;
 mod handshake;
 mod heartbeat;
 mod limits;
@@ -16,8 +15,6 @@ use rdlt_connector::wire::v1;
 use rdlt_connector::{ConnectorError, Role};
 use rdlt_host::remote::Client;
 use rdlt_wire::PROTOCOL_MAJOR;
-use rdlt_wire::plane::Incoming;
-use rdlt_wire::prost::Message;
 use rdlt_wire::tonic::Status;
 
 use crate::target::Target;
@@ -60,11 +57,6 @@ pub const PROTOCOL_CLAUSES: &[Clause] = &[
         statement: "a call the connector cannot read, or a frame it cannot decode, is refused \
                     with a typed error, and the connection serves on",
         unless: "",
-    },
-    Clause {
-        id: "P-CREDIT",
-        statement: "a read sends nothing more once its credit is spent, until more is granted",
-        unless: "the connector is certified as a destination, which grants credit and spends none",
     },
 ];
 
@@ -136,8 +128,7 @@ pub(crate) async fn check(
                 "P-ROLE" => handshake::roles(target, role, &config).await,
                 "P-LIMITS" => limits::kept(target, role, &config).await,
                 "P-HEARTBEAT" => heartbeat::echoed(target, role, &config).await,
-                "P-MALFORMED" => malformed::refused(target, role, &config).await,
-                _ => credit::respected(target, role, &config).await,
+                _ => malformed::refused(target, role, &config).await,
             }
         };
         let outcome = match within(checking).await {
@@ -146,13 +137,10 @@ pub(crate) async fn check(
             Found::Inapplicable(reason) => Outcome::Inapplicable(reason.into()),
             Found::Unobserved(reason) => Outcome::Unobserved(reason.into()),
         };
-        let note = (matches!(outcome, Outcome::Passed) && clause.id == "P-CREDIT")
-            .then(|| credit::note(target))
-            .flatten();
         let result = ClauseResult {
             clause: *clause,
             outcome,
-            note,
+            note: None,
         };
         observed.tell(result.clone());
         results.push(result);
@@ -240,12 +228,35 @@ fn refused_with<T>(
     }
 }
 
-/// How a streaming call ended, when it was refused: before its answer's headers, or as the first
-/// message of its answer.
-async fn first_refusal<T: Message + Default>(
-    result: Result<Incoming<T>, Status>,
-) -> Result<(), Status> {
-    result?.message().await.map(drop)
+/// The first stream of a source's catalog, and the first partition its plan names, where it
+/// names any.
+async fn first_partition(
+    client: &mut Client,
+) -> Result<Option<(v1::StreamName, String)>, Violation> {
+    let failed = |what: &str, status: &Status| format!("{what} failed: {}", error(status));
+    let catalog = client
+        .rpc
+        .discover(v1::DiscoverRequest {})
+        .await
+        .map_err(|status| failed("the discovery", &status))?
+        .into_inner();
+    let Some(stream) = catalog.streams.into_iter().find_map(|spec| spec.name) else {
+        return Ok(None);
+    };
+    let planned = client
+        .rpc
+        .plan(v1::PlanRequest {
+            stream: Some(stream.clone()),
+            state: Some(v1::StreamState::default()),
+        })
+        .await
+        .map_err(|status| failed("the plan", &status))?
+        .into_inner();
+    Ok(planned
+        .partitions
+        .into_iter()
+        .next()
+        .map(|partition| (stream, partition)))
 }
 
 /// Whether `error` is refused as unsupported; `what` names the call.

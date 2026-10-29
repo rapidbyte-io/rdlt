@@ -9,7 +9,6 @@ certification of io.rapidbyte.memory
   pass P-LIMITS
   pass P-HEARTBEAT
   pass P-MALFORMED
-  pass P-CREDIT (watched 50ms after each grant, not 1s)
   pass S-CHECK
   pass S-DISCOVER
   pass S-PLAN
@@ -19,4 +18,4 @@ certification of io.rapidbyte.memory
   n/a  S-BARRIER: no stream checkpoints on demand
   n/a  S-ACK: the source does not tell where it stands
   skip K-SOURCE: no kill interrupted the load: it ended first (kill seed 515)
-incomplete: 12 passed, 0 failed, 1 not observed, 3 not applicable
+incomplete: 11 passed, 0 failed, 1 not observed, 3 not applicable

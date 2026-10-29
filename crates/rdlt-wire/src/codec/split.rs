@@ -10,8 +10,9 @@ use arrow_array::RecordBatch;
 use super::compact::Narrower;
 use super::decode::{admit_dictionary, counted};
 use super::measure::measured;
+use super::pieces::Body as _;
 use super::weigh::{Weigher, Weight};
-use super::{Encoder, IpcFrame};
+use super::{Encoded, Encoder};
 use crate::error::{Frame, WireError};
 use crate::limits::{Limit, Limits, Refusal};
 
@@ -173,7 +174,7 @@ impl Encoder {
     /// A [`WireError::Refused`] naming the limit when one row, or a dictionary, is beyond it;
     /// [`WireError::Arrow`] when Arrow cannot encode the batch. The pieces before the row were
     /// handed over; the cut is done, and a batch after it needs its schema encoded again.
-    pub fn piece(&mut self, cut: &mut Cut) -> Result<Option<Vec<IpcFrame>>, WireError> {
+    pub fn piece(&mut self, cut: &mut Cut) -> Result<Option<Vec<Encoded>>, WireError> {
         if cut.done {
             return Ok(None);
         }
@@ -186,7 +187,7 @@ impl Encoder {
         framed.map(Some)
     }
 
-    fn framed(&mut self, cut: &mut Cut) -> Result<Vec<IpcFrame>, WireError> {
+    fn framed(&mut self, cut: &mut Cut) -> Result<Vec<Encoded>, WireError> {
         let mut frames = Vec::new();
         if cut.sent == 0 {
             // Before anything is rebuilt or encoded: a dictionary's values are rebuilt whole.
@@ -223,20 +224,21 @@ impl Encoder {
         &mut self,
         piece: &RecordBatch,
         limits: &Limits,
-        frames: &mut Vec<IpcFrame>,
-    ) -> Result<Result<IpcFrame, Refusal>, WireError> {
+        frames: &mut Vec<Encoded>,
+    ) -> Result<Result<Encoded, Refusal>, WireError> {
         let (dictionaries, frame) = self.encoded(piece)?;
         for dictionary in dictionaries {
-            let measured = measured(self.columns.as_ref(), limits, &dictionary)?;
+            let (header, body) = (dictionary.header(), dictionary.body());
+            let measured = measured(self.columns.as_ref(), limits, header, body)?;
             // What the receiver holds of it, beside every other it holds until the next schema.
             if let Some(id) = measured.dictionary {
-                let bytes = counted(&dictionary);
+                let bytes = counted(header.len(), body.len());
                 admit_dictionary(limits, &self.held, id, bytes)?;
                 self.held.insert(id, bytes);
             }
             frames.push(dictionary);
         }
-        match measured(self.columns.as_ref(), limits, &frame) {
+        match measured(self.columns.as_ref(), limits, frame.header(), frame.body()) {
             Ok(_) => Ok(Ok(frame)),
             Err(WireError::Refused(refusal)) => Ok(Err(refusal)),
             Err(error) => Err(error),

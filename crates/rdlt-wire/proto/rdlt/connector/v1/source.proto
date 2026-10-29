@@ -3,6 +3,7 @@ syntax = "proto3";
 
 package rdlt.connector.v1;
 
+import "rdlt/connector/v1/errors.proto";
 import "rdlt/connector/v1/state.proto";
 import "rdlt/connector/v1/types.proto";
 
@@ -26,22 +27,18 @@ message PlanResponse {
   repeated string unbounded = 4;
 }
 
-// What the engine sends on a read.
+// What the engine sends on a read after its start.
 message ReadControl {
   // The message.
   oneof control {
-    // Starts the read; the first message.
-    ReadStart start = 1;
     // Asks for a checkpoint answering a barrier.
-    CheckpointRequest checkpoint = 2;
-    // Grants bytes the source may send.
-    Credit credit = 3;
+    CheckpointRequest checkpoint = 1;
     // Asks the read to stop.
-    Stop stop = 4;
+    Stop stop = 2;
   }
 }
 
-// Starts reading a partition.
+// Starts reading a partition: the body of the frame opening a read.
 message ReadStart {
   // The stream.
   StreamName stream = 1;
@@ -65,14 +62,6 @@ message CheckpointRequest {
   uint64 barrier = 1;
 }
 
-// Bytes a receiver grants its sender. A sender may send a frame while its credit is above zero;
-// the frame spends its encoded size, which may leave the credit below zero until more is granted.
-// So a small window bounds how far a sender runs ahead, and no frame is too large for it.
-message Credit {
-  // The bytes.
-  uint64 bytes = 1;
-}
-
 // How a read should stop.
 enum StopMode {
   // Never sent; a receiver refuses it.
@@ -89,28 +78,27 @@ message Stop {
   StopMode mode = 1;
 }
 
-// What a source sends on a read.
+// What a source sends on a read in a message frame; its batches and JSON pushes are frames of
+// their own.
 message ReadFrame {
   // The frame.
   oneof frame {
     // An Arrow schema, once per schema epoch.
     SchemaFrame schema = 1;
-    // An Arrow record or dictionary batch.
-    BatchFrame batch = 2;
-    // JSON records.
-    JsonFrame json = 3;
     // A resumable position.
-    CheckpointFrame checkpoint = 4;
+    CheckpointFrame checkpoint = 2;
     // A log line.
-    LogFrame log = 5;
+    LogFrame log = 3;
     // A metric sample.
-    MetricFrame metric = 6;
+    MetricFrame metric = 4;
     // The end of the read.
-    Done done = 7;
+    Done done = 5;
     // The stream's partitions changed: the engine plans the stream again.
-    ReplanFrame replan = 8;
+    ReplanFrame replan = 6;
     // How many records the read is behind its source's newest.
-    BehindFrame behind = 9;
+    BehindFrame behind = 7;
+    // The read failed, or was refused as it opened; nothing follows.
+    Error error = 8;
   }
 }
 
@@ -129,37 +117,6 @@ message SchemaFrame {
   uint64 schema_epoch = 1;
   // The IPC schema message, as a flatbuffer.
   bytes ipc_schema = 2;
-}
-
-// What a batch holds.
-enum BatchKind {
-  // Never sent; a receiver refuses it.
-  BATCH_KIND_UNSPECIFIED = 0;
-  // Rows.
-  BATCH_KIND_ARROW = 1;
-  // Changes.
-  BATCH_KIND_CHANGE = 2;
-}
-
-// An Arrow batch, in Arrow Flight's FlightData layout.
-message BatchFrame {
-  // The schema epoch it belongs to.
-  uint64 schema_epoch = 1;
-  // What it holds.
-  BatchKind kind = 2;
-  // The IPC message: a record batch or dictionary batch flatbuffer.
-  bytes data_header = 3;
-  // Zero bytes placing data_body at a multiple of 64 bytes from the message's gRPC prefix, so
-  // its receiver reads the body where it arrived.
-  bytes padding = 4;
-  // The message's body buffers.
-  bytes data_body = 5;
-}
-
-// JSON records: an array of objects, or newline-delimited objects.
-message JsonFrame {
-  // The JSON.
-  bytes data = 1;
 }
 
 // A resumable position; it seals everything sent since the previous checkpoint.
@@ -200,8 +157,8 @@ message MetricFrame {
   double value = 2;
 }
 
-// The end of a read: the source's read returned. A read that fails ends with the error's status
-// instead, and one the host stopped ends however the source's read returned.
+// The end of a read: the source's read returned. A read that fails ends with its error instead,
+// and one the host stopped ends however the source's read returned.
 message Done {}
 
 // Reports cursors a destination committed.

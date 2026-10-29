@@ -4,32 +4,32 @@ use super::{MAX_DEPTH, Unscanned, decoded, field_bytes, request, response};
 use crate::v1;
 
 /// The service's methods.
-const METHODS: [&str; 16] = [
+const METHODS: [&str; 13] = [
     "Handshake",
     "Configure",
     "Check",
     "Discover",
     "Plan",
-    "Read",
     "Committed",
     "Open",
     "ApplySchema",
-    "Write",
     "Commit",
     "Close",
     "Heartbeat",
-    "ReadPublished",
     "ReadAcknowledged",
     "Ping",
 ];
 
 #[test]
 fn each_method_s_request_and_answer_have_a_form() {
-    for method in &METHODS[..15] {
+    for method in &METHODS[..12] {
         assert!(request(method).is_some(), "{method}");
         assert!(response(method).is_some(), "{method}");
     }
-    assert!(request("Ping").is_none(), "no method of that name");
+    // A data call is a stream of frames, no method of the service.
+    for method in ["Ping", "Read", "Write", "ReadPublished"] {
+        assert!(request(method).is_none(), "{method}");
+    }
     assert_eq!(response("Discover").map(|form| form.name), Some("Catalog"));
     assert_eq!(
         request("Commit").map(|form| form.name),

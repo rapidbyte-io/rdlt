@@ -117,8 +117,13 @@ impl Decoder {
     /// As [`Decoder::frame`], for every check made before Arrow reads anything but where its
     /// buffers lie.
     pub fn measure(&self, frame: &IpcFrame) -> Result<u64, WireError> {
-        measured(self.columns.as_ref(), &self.limits, frame)?;
-        Ok(counted(frame))
+        measured(
+            self.columns.as_ref(),
+            &self.limits,
+            &frame.header,
+            &frame.body[..],
+        )?;
+        Ok(counted(frame.header.len(), frame.body.len()))
     }
 
     /// Decodes `frame` as [`Decoder::frame`] does, and measures what it holds.
@@ -127,7 +132,12 @@ impl Decoder {
     ///
     /// As [`Decoder::frame`].
     pub fn shaped(&mut self, frame: &IpcFrame) -> Result<(Option<RecordBatch>, Shape), WireError> {
-        let measured = measured(self.columns.as_ref(), &self.limits, frame)?;
+        let measured = measured(
+            self.columns.as_ref(),
+            &self.limits,
+            &frame.header,
+            &frame.body[..],
+        )?;
         let malformed = |problem| WireError::malformed(measured.frame, problem);
         let body = in_place::body(frame);
         // Before Arrow reads anything: a buffer off its alignment is a broken sender's.
@@ -139,7 +149,7 @@ impl Decoder {
             view_bytes: measured.walked.view_bytes,
             held_bytes: in_place::held(frame),
         };
-        let counted = counted(frame);
+        let counted = counted(frame.header.len(), frame.body.len());
         if let Some(id) = measured.dictionary {
             // Counted before it is decoded: a dictionary replaces any of its id.
             admit_dictionary(&self.limits, &self.held, id, counted)?;
@@ -176,11 +186,12 @@ impl Decoder {
     }
 }
 
-/// Bytes: what `frame` counts toward the dictionaries a receiver holds, its header and body and
-/// [`MESSAGE_ROOM`] beside them, at least the allocation a receiver holds it in.
-pub(crate) fn counted(frame: &IpcFrame) -> u64 {
-    count(frame.header.len())
-        .saturating_add(count(frame.body.len()))
+/// Bytes: what a frame of a `header` and a `body` of those lengths counts toward the
+/// dictionaries a receiver holds, with [`MESSAGE_ROOM`] beside them, at least the allocation a
+/// receiver holds it in.
+pub(crate) fn counted(header: usize, body: usize) -> u64 {
+    count(header)
+        .saturating_add(count(body))
         .saturating_add(MESSAGE_ROOM)
 }
 

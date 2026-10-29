@@ -202,8 +202,8 @@ fn the_protocol_names_each_least_a_peer_may_set_and_the_limit_without_a_default(
 }
 
 #[test]
-fn the_credit_floor_the_calls_and_a_messages_overhead_are_the_protocols() {
-    assert_eq!(super::CREDIT_FLOOR, super::MIN_FRAME_BYTES);
+fn the_stream_window_the_calls_and_a_messages_overhead_are_the_protocols() {
+    assert_eq!(super::STREAM_WINDOW, super::MIN_FRAME_BYTES);
     assert_eq!(super::MAX_CALLS, 200);
     let limits = Limits {
         frame_bytes: 10,
@@ -474,10 +474,7 @@ fn each_call_s_answer_has_the_class_of_what_it_carries() {
         ("Discover", Class::Catalog),
         ("Plan", Class::State),
         ("Open", Class::State),
-        ("Read", Class::Data),
-        ("ReadPublished", Class::Data),
         ("Commit", Class::Control),
-        ("Write", Class::Control),
         ("Check", Class::Control),
     ];
     for (method, expected) in expected {
@@ -495,15 +492,12 @@ fn each_call_s_request_is_bounded_as_what_it_carries() {
         ("Check", Class::Control),
         ("Discover", Class::Control),
         ("Plan", Class::State),
-        ("Read", Class::Cursor),
         ("Committed", Class::State),
         ("Open", Class::Control),
         ("ApplySchema", Class::Schema),
-        ("Write", Class::Data),
         ("Commit", Class::State),
         ("Close", Class::Control),
         ("Heartbeat", Class::Control),
-        ("ReadPublished", Class::Control),
         ("ReadAcknowledged", Class::Control),
     ];
     for (method, class) in expected {

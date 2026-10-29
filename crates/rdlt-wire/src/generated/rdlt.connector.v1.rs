@@ -782,374 +782,6 @@ pub struct StreamState {
     #[prost(uint64, repeated, tag = "4")]
     pub completed: ::prost::alloc::vec::Vec<u64>,
 }
-/// Asks for the partitions of a stream.
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct PlanRequest {
-    /// The stream.
-    #[prost(message, optional, tag = "1")]
-    pub stream: ::core::option::Option<StreamName>,
-    /// Its committed state.
-    #[prost(message, optional, tag = "2")]
-    pub state: ::core::option::Option<StreamState>,
-}
-/// The partitions of a stream to read.
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct PlanResponse {
-    /// Their ids, distinct.
-    #[prost(string, repeated, tag = "1")]
-    pub partitions: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
-    /// The stream's phase they belong to; absent, the phase state records.
-    #[prost(uint32, optional, tag = "2")]
-    pub phase: ::core::option::Option<u32>,
-    /// Where partitions of a new phase start; each with a cursor.
-    #[prost(message, repeated, tag = "3")]
-    pub starts: ::prost::alloc::vec::Vec<PartitionState>,
-    /// The ids of the partitions that never end, as a change stream's changes; each one of `partitions`.
-    #[prost(string, repeated, tag = "4")]
-    pub unbounded: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
-}
-/// What the engine sends on a read.
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct ReadControl {
-    /// The message.
-    #[prost(oneof = "read_control::Control", tags = "1, 2, 3, 4")]
-    pub control: ::core::option::Option<read_control::Control>,
-}
-/// Nested message and enum types in `ReadControl`.
-pub mod read_control {
-    /// The message.
-    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
-    pub enum Control {
-        /// Starts the read; the first message.
-        #[prost(message, tag = "1")]
-        Start(super::ReadStart),
-        /// Asks for a checkpoint answering a barrier.
-        #[prost(message, tag = "2")]
-        Checkpoint(super::CheckpointRequest),
-        /// Grants bytes the source may send.
-        #[prost(message, tag = "3")]
-        Credit(super::Credit),
-        /// Asks the read to stop.
-        #[prost(message, tag = "4")]
-        Stop(super::Stop),
-    }
-}
-/// Starts reading a partition.
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct ReadStart {
-    /// The stream.
-    #[prost(message, optional, tag = "1")]
-    pub stream: ::core::option::Option<StreamName>,
-    /// The partition's id.
-    #[prost(string, tag = "2")]
-    pub partition: ::prost::alloc::string::String,
-    /// Where to resume; absent reads from the start.
-    #[prost(message, optional, tag = "3")]
-    pub cursor: ::core::option::Option<Cursor>,
-    /// The newest barrier pending when the read starts, which the source answers as one requested
-    /// during the read; 0 for none.
-    #[prost(uint64, tag = "4")]
-    pub barrier: u64,
-    /// Whether the partition never ends, as the plan said.
-    #[prost(bool, tag = "5")]
-    pub unbounded: bool,
-    /// Whether a read of an unbounded partition follows it once caught up, until asked to stop;
-    /// otherwise it returns once caught up to where the source stood when the read started.
-    #[prost(bool, tag = "6")]
-    pub follow: bool,
-}
-/// Asks for a checkpoint answering a barrier.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct CheckpointRequest {
-    /// The barrier.
-    #[prost(uint64, tag = "1")]
-    pub barrier: u64,
-}
-/// Bytes a receiver grants its sender. A sender may send a frame while its credit is above zero;
-/// the frame spends its encoded size, which may leave the credit below zero until more is granted.
-/// So a small window bounds how far a sender runs ahead, and no frame is too large for it.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct Credit {
-    /// The bytes.
-    #[prost(uint64, tag = "1")]
-    pub bytes: u64,
-}
-/// Asks a read to stop.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct Stop {
-    /// How.
-    #[prost(enumeration = "StopMode", tag = "1")]
-    pub mode: i32,
-}
-/// What a source sends on a read.
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ReadFrame {
-    /// The frame.
-    #[prost(oneof = "read_frame::Frame", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9")]
-    pub frame: ::core::option::Option<read_frame::Frame>,
-}
-/// Nested message and enum types in `ReadFrame`.
-pub mod read_frame {
-    /// The frame.
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
-    pub enum Frame {
-        /// An Arrow schema, once per schema epoch.
-        #[prost(message, tag = "1")]
-        Schema(super::SchemaFrame),
-        /// An Arrow record or dictionary batch.
-        #[prost(message, tag = "2")]
-        Batch(super::BatchFrame),
-        /// JSON records.
-        #[prost(message, tag = "3")]
-        Json(super::JsonFrame),
-        /// A resumable position.
-        #[prost(message, tag = "4")]
-        Checkpoint(super::CheckpointFrame),
-        /// A log line.
-        #[prost(message, tag = "5")]
-        Log(super::LogFrame),
-        /// A metric sample.
-        #[prost(message, tag = "6")]
-        Metric(super::MetricFrame),
-        /// The end of the read.
-        #[prost(message, tag = "7")]
-        Done(super::Done),
-        /// The stream's partitions changed: the engine plans the stream again.
-        #[prost(message, tag = "8")]
-        Replan(super::ReplanFrame),
-        /// How many records the read is behind its source's newest.
-        #[prost(message, tag = "9")]
-        Behind(super::BehindFrame),
-    }
-}
-/// The stream's partitions changed.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct ReplanFrame {}
-/// How many records the read is behind its source's newest, as the source measures it.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct BehindFrame {
-    /// The records.
-    #[prost(uint64, tag = "1")]
-    pub records: u64,
-}
-/// An Arrow schema: an IPC schema message.
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct SchemaFrame {
-    /// The epoch the schema opens; batches name it.
-    #[prost(uint64, tag = "1")]
-    pub schema_epoch: u64,
-    /// The IPC schema message, as a flatbuffer.
-    #[prost(bytes = "bytes", tag = "2")]
-    pub ipc_schema: ::prost::bytes::Bytes,
-}
-/// An Arrow batch, in Arrow Flight's FlightData layout.
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct BatchFrame {
-    /// The schema epoch it belongs to.
-    #[prost(uint64, tag = "1")]
-    pub schema_epoch: u64,
-    /// What it holds.
-    #[prost(enumeration = "BatchKind", tag = "2")]
-    pub kind: i32,
-    /// The IPC message: a record batch or dictionary batch flatbuffer.
-    #[prost(bytes = "bytes", tag = "3")]
-    pub data_header: ::prost::bytes::Bytes,
-    /// Zero bytes placing data_body at a multiple of 64 bytes from the message's gRPC prefix, so
-    /// its receiver reads the body where it arrived.
-    #[prost(bytes = "bytes", tag = "4")]
-    pub padding: ::prost::bytes::Bytes,
-    /// The message's body buffers.
-    #[prost(bytes = "bytes", tag = "5")]
-    pub data_body: ::prost::bytes::Bytes,
-}
-/// JSON records: an array of objects, or newline-delimited objects.
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct JsonFrame {
-    /// The JSON.
-    #[prost(bytes = "bytes", tag = "1")]
-    pub data: ::prost::bytes::Bytes,
-}
-/// A resumable position; it seals everything sent since the previous checkpoint.
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct CheckpointFrame {
-    /// Where to resume.
-    #[prost(message, optional, tag = "1")]
-    pub cursor: ::core::option::Option<Cursor>,
-    /// The barrier it answers, if one was pending.
-    #[prost(uint64, optional, tag = "2")]
-    pub barrier: ::core::option::Option<u64>,
-}
-/// A log line.
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct LogFrame {
-    /// Its severity.
-    #[prost(enumeration = "LogLevel", tag = "1")]
-    pub level: i32,
-    /// The line.
-    #[prost(string, tag = "2")]
-    pub message: ::prost::alloc::string::String,
-}
-/// A metric sample.
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct MetricFrame {
-    /// The metric's name.
-    #[prost(string, tag = "1")]
-    pub name: ::prost::alloc::string::String,
-    /// The sample.
-    #[prost(double, tag = "2")]
-    pub value: f64,
-}
-/// The end of a read: the source's read returned. A read that fails ends with the error's status
-/// instead, and one the host stopped ends however the source's read returned.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct Done {}
-/// Reports cursors a destination committed.
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct CommittedRequest {
-    /// The stream.
-    #[prost(message, optional, tag = "1")]
-    pub stream: ::core::option::Option<StreamName>,
-    /// Each committed partition's cursor.
-    #[prost(message, repeated, tag = "2")]
-    pub cursors: ::prost::alloc::vec::Vec<CommittedCursor>,
-}
-/// A partition's committed cursor.
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct CommittedCursor {
-    /// The partition's id.
-    #[prost(string, tag = "1")]
-    pub partition: ::prost::alloc::string::String,
-    /// Its cursor.
-    #[prost(message, optional, tag = "2")]
-    pub cursor: ::core::option::Option<Cursor>,
-}
-/// The answer to a committed report.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct CommittedResponse {}
-/// Asks a source where it stands for a partition outside the engine.
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct ReadAcknowledgedRequest {
-    /// The stream.
-    #[prost(message, optional, tag = "1")]
-    pub stream: ::core::option::Option<StreamName>,
-    /// The partition's id.
-    #[prost(string, tag = "2")]
-    pub partition: ::prost::alloc::string::String,
-}
-/// Where a source stands for a partition outside the engine.
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct ReadAcknowledgedResponse {
-    /// The cursor it was last told is committed; absent where it keeps none, or was never told.
-    #[prost(message, optional, tag = "1")]
-    pub cursor: ::core::option::Option<Cursor>,
-}
-/// How a read should stop.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
-#[repr(i32)]
-pub enum StopMode {
-    /// Never sent; a receiver refuses it.
-    Unspecified = 0,
-    /// After a checkpoint, keeping what was read.
-    AfterCheckpoint = 1,
-    /// At once.
-    Now = 2,
-}
-impl StopMode {
-    /// String value of the enum field names used in the ProtoBuf definition.
-    ///
-    /// The values are not transformed in any way and thus are considered stable
-    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
-        match self {
-            Self::Unspecified => "STOP_MODE_UNSPECIFIED",
-            Self::AfterCheckpoint => "STOP_MODE_AFTER_CHECKPOINT",
-            Self::Now => "STOP_MODE_NOW",
-        }
-    }
-    /// Creates an enum from field names used in the ProtoBuf definition.
-    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
-        match value {
-            "STOP_MODE_UNSPECIFIED" => Some(Self::Unspecified),
-            "STOP_MODE_AFTER_CHECKPOINT" => Some(Self::AfterCheckpoint),
-            "STOP_MODE_NOW" => Some(Self::Now),
-            _ => None,
-        }
-    }
-}
-/// What a batch holds.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
-#[repr(i32)]
-pub enum BatchKind {
-    /// Never sent; a receiver refuses it.
-    Unspecified = 0,
-    /// Rows.
-    Arrow = 1,
-    /// Changes.
-    Change = 2,
-}
-impl BatchKind {
-    /// String value of the enum field names used in the ProtoBuf definition.
-    ///
-    /// The values are not transformed in any way and thus are considered stable
-    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
-        match self {
-            Self::Unspecified => "BATCH_KIND_UNSPECIFIED",
-            Self::Arrow => "BATCH_KIND_ARROW",
-            Self::Change => "BATCH_KIND_CHANGE",
-        }
-    }
-    /// Creates an enum from field names used in the ProtoBuf definition.
-    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
-        match value {
-            "BATCH_KIND_UNSPECIFIED" => Some(Self::Unspecified),
-            "BATCH_KIND_ARROW" => Some(Self::Arrow),
-            "BATCH_KIND_CHANGE" => Some(Self::Change),
-            _ => None,
-        }
-    }
-}
-/// The severity of a log line.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
-#[repr(i32)]
-pub enum LogLevel {
-    /// Never sent; a receiver refuses it.
-    Unspecified = 0,
-    /// Something failed.
-    Error = 1,
-    /// Something is wrong but reading continues.
-    Warn = 2,
-    /// Progress worth recording.
-    Info = 3,
-    /// Detail for debugging.
-    Debug = 4,
-}
-impl LogLevel {
-    /// String value of the enum field names used in the ProtoBuf definition.
-    ///
-    /// The values are not transformed in any way and thus are considered stable
-    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
-        match self {
-            Self::Unspecified => "LOG_LEVEL_UNSPECIFIED",
-            Self::Error => "LOG_LEVEL_ERROR",
-            Self::Warn => "LOG_LEVEL_WARN",
-            Self::Info => "LOG_LEVEL_INFO",
-            Self::Debug => "LOG_LEVEL_DEBUG",
-        }
-    }
-    /// Creates an enum from field names used in the ProtoBuf definition.
-    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
-        match value {
-            "LOG_LEVEL_UNSPECIFIED" => Some(Self::Unspecified),
-            "LOG_LEVEL_ERROR" => Some(Self::Error),
-            "LOG_LEVEL_WARN" => Some(Self::Warn),
-            "LOG_LEVEL_INFO" => Some(Self::Info),
-            "LOG_LEVEL_DEBUG" => Some(Self::Debug),
-            _ => None,
-        }
-    }
-}
 /// Opens a session: fences older ones, discards unpublished staging and returns state.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct OpenRequest {
@@ -1325,11 +957,12 @@ pub struct ApplySchemaRequest {
 /// The answer to a schema change.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ApplySchemaResponse {}
-/// What the engine sends on a write.
+/// What the engine sends on a write in a message frame after its start; its batches are frames of
+/// their own.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct WriteFrame {
     /// The frame.
-    #[prost(oneof = "write_frame::Frame", tags = "1, 2, 3, 4")]
+    #[prost(oneof = "write_frame::Frame", tags = "1, 2")]
     pub frame: ::core::option::Option<write_frame::Frame>,
 }
 /// Nested message and enum types in `WriteFrame`.
@@ -1337,21 +970,15 @@ pub mod write_frame {
     /// The frame.
     #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Frame {
-        /// Starts writing a table; the first message.
-        #[prost(message, tag = "1")]
-        Start(super::WriteStart),
         /// An Arrow schema, once per table version.
-        #[prost(message, tag = "2")]
+        #[prost(message, tag = "1")]
         Schema(super::WriteSchema),
-        /// An Arrow record or dictionary batch.
-        #[prost(message, tag = "3")]
-        Batch(super::WriteBatch),
         /// Asks for everything written so far to be durable in staging.
-        #[prost(message, tag = "4")]
+        #[prost(message, tag = "2")]
         Flush(super::Unit),
     }
 }
-/// Starts writing a table.
+/// Starts writing a table: the body of the frame opening a write.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct WriteStart {
     /// The session.
@@ -1371,28 +998,11 @@ pub struct WriteSchema {
     #[prost(bytes = "bytes", tag = "2")]
     pub ipc_schema: ::prost::bytes::Bytes,
 }
-/// An Arrow batch of one segment, in Arrow Flight's FlightData layout.
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct WriteBatch {
-    /// The segment.
-    #[prost(uint64, tag = "1")]
-    pub segment: u64,
-    /// The IPC message: a record batch or dictionary batch flatbuffer.
-    #[prost(bytes = "bytes", tag = "2")]
-    pub data_header: ::prost::bytes::Bytes,
-    /// Zero bytes placing data_body at a multiple of 64 bytes from the message's gRPC prefix, so
-    /// its receiver reads the body where it arrived.
-    #[prost(bytes = "bytes", tag = "3")]
-    pub padding: ::prost::bytes::Bytes,
-    /// The message's body buffers.
-    #[prost(bytes = "bytes", tag = "4")]
-    pub data_body: ::prost::bytes::Bytes,
-}
 /// What a destination answers on a write.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct WriteAck {
     /// The answer.
-    #[prost(oneof = "write_ack::Ack", tags = "1, 2, 3")]
+    #[prost(oneof = "write_ack::Ack", tags = "1, 2")]
     pub ack: ::core::option::Option<write_ack::Ack>,
 }
 /// Nested message and enum types in `WriteAck`.
@@ -1400,14 +1010,11 @@ pub mod write_ack {
     /// The answer.
     #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Ack {
-        /// Grants bytes the engine may send.
-        #[prost(message, tag = "1")]
-        Credit(super::Credit),
         /// Everything written so far is durable in staging.
-        #[prost(message, tag = "2")]
+        #[prost(message, tag = "1")]
         Flushed(super::WriteStats),
-        /// The write failed.
-        #[prost(message, tag = "3")]
+        /// The write failed, or was refused as it opened; nothing follows.
+        #[prost(message, tag = "2")]
         Error(super::Error),
     }
 }
@@ -1546,12 +1153,304 @@ pub struct CloseRequest {
 /// The answer to a close.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CloseResponse {}
-/// Asks a destination for every row it published to a table.
+/// Asks a destination for every row it published to a table: the body of the frame opening a
+/// read-back.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ReadPublishedRequest {
     /// The table.
     #[prost(message, optional, tag = "1")]
     pub table: ::core::option::Option<TableRef>,
+}
+/// Asks for the partitions of a stream.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PlanRequest {
+    /// The stream.
+    #[prost(message, optional, tag = "1")]
+    pub stream: ::core::option::Option<StreamName>,
+    /// Its committed state.
+    #[prost(message, optional, tag = "2")]
+    pub state: ::core::option::Option<StreamState>,
+}
+/// The partitions of a stream to read.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PlanResponse {
+    /// Their ids, distinct.
+    #[prost(string, repeated, tag = "1")]
+    pub partitions: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// The stream's phase they belong to; absent, the phase state records.
+    #[prost(uint32, optional, tag = "2")]
+    pub phase: ::core::option::Option<u32>,
+    /// Where partitions of a new phase start; each with a cursor.
+    #[prost(message, repeated, tag = "3")]
+    pub starts: ::prost::alloc::vec::Vec<PartitionState>,
+    /// The ids of the partitions that never end, as a change stream's changes; each one of `partitions`.
+    #[prost(string, repeated, tag = "4")]
+    pub unbounded: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+}
+/// What the engine sends on a read after its start.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ReadControl {
+    /// The message.
+    #[prost(oneof = "read_control::Control", tags = "1, 2")]
+    pub control: ::core::option::Option<read_control::Control>,
+}
+/// Nested message and enum types in `ReadControl`.
+pub mod read_control {
+    /// The message.
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Control {
+        /// Asks for a checkpoint answering a barrier.
+        #[prost(message, tag = "1")]
+        Checkpoint(super::CheckpointRequest),
+        /// Asks the read to stop.
+        #[prost(message, tag = "2")]
+        Stop(super::Stop),
+    }
+}
+/// Starts reading a partition: the body of the frame opening a read.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ReadStart {
+    /// The stream.
+    #[prost(message, optional, tag = "1")]
+    pub stream: ::core::option::Option<StreamName>,
+    /// The partition's id.
+    #[prost(string, tag = "2")]
+    pub partition: ::prost::alloc::string::String,
+    /// Where to resume; absent reads from the start.
+    #[prost(message, optional, tag = "3")]
+    pub cursor: ::core::option::Option<Cursor>,
+    /// The newest barrier pending when the read starts, which the source answers as one requested
+    /// during the read; 0 for none.
+    #[prost(uint64, tag = "4")]
+    pub barrier: u64,
+    /// Whether the partition never ends, as the plan said.
+    #[prost(bool, tag = "5")]
+    pub unbounded: bool,
+    /// Whether a read of an unbounded partition follows it once caught up, until asked to stop;
+    /// otherwise it returns once caught up to where the source stood when the read started.
+    #[prost(bool, tag = "6")]
+    pub follow: bool,
+}
+/// Asks for a checkpoint answering a barrier.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CheckpointRequest {
+    /// The barrier.
+    #[prost(uint64, tag = "1")]
+    pub barrier: u64,
+}
+/// Asks a read to stop.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Stop {
+    /// How.
+    #[prost(enumeration = "StopMode", tag = "1")]
+    pub mode: i32,
+}
+/// What a source sends on a read in a message frame; its batches and JSON pushes are frames of
+/// their own.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ReadFrame {
+    /// The frame.
+    #[prost(oneof = "read_frame::Frame", tags = "1, 2, 3, 4, 5, 6, 7, 8")]
+    pub frame: ::core::option::Option<read_frame::Frame>,
+}
+/// Nested message and enum types in `ReadFrame`.
+pub mod read_frame {
+    /// The frame.
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Frame {
+        /// An Arrow schema, once per schema epoch.
+        #[prost(message, tag = "1")]
+        Schema(super::SchemaFrame),
+        /// A resumable position.
+        #[prost(message, tag = "2")]
+        Checkpoint(super::CheckpointFrame),
+        /// A log line.
+        #[prost(message, tag = "3")]
+        Log(super::LogFrame),
+        /// A metric sample.
+        #[prost(message, tag = "4")]
+        Metric(super::MetricFrame),
+        /// The end of the read.
+        #[prost(message, tag = "5")]
+        Done(super::Done),
+        /// The stream's partitions changed: the engine plans the stream again.
+        #[prost(message, tag = "6")]
+        Replan(super::ReplanFrame),
+        /// How many records the read is behind its source's newest.
+        #[prost(message, tag = "7")]
+        Behind(super::BehindFrame),
+        /// The read failed, or was refused as it opened; nothing follows.
+        #[prost(message, tag = "8")]
+        Error(super::Error),
+    }
+}
+/// The stream's partitions changed.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ReplanFrame {}
+/// How many records the read is behind its source's newest, as the source measures it.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct BehindFrame {
+    /// The records.
+    #[prost(uint64, tag = "1")]
+    pub records: u64,
+}
+/// An Arrow schema: an IPC schema message.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SchemaFrame {
+    /// The epoch the schema opens; batches name it.
+    #[prost(uint64, tag = "1")]
+    pub schema_epoch: u64,
+    /// The IPC schema message, as a flatbuffer.
+    #[prost(bytes = "bytes", tag = "2")]
+    pub ipc_schema: ::prost::bytes::Bytes,
+}
+/// A resumable position; it seals everything sent since the previous checkpoint.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CheckpointFrame {
+    /// Where to resume.
+    #[prost(message, optional, tag = "1")]
+    pub cursor: ::core::option::Option<Cursor>,
+    /// The barrier it answers, if one was pending.
+    #[prost(uint64, optional, tag = "2")]
+    pub barrier: ::core::option::Option<u64>,
+}
+/// A log line.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct LogFrame {
+    /// Its severity.
+    #[prost(enumeration = "LogLevel", tag = "1")]
+    pub level: i32,
+    /// The line.
+    #[prost(string, tag = "2")]
+    pub message: ::prost::alloc::string::String,
+}
+/// A metric sample.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct MetricFrame {
+    /// The metric's name.
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    /// The sample.
+    #[prost(double, tag = "2")]
+    pub value: f64,
+}
+/// The end of a read: the source's read returned. A read that fails ends with its error instead,
+/// and one the host stopped ends however the source's read returned.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Done {}
+/// Reports cursors a destination committed.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CommittedRequest {
+    /// The stream.
+    #[prost(message, optional, tag = "1")]
+    pub stream: ::core::option::Option<StreamName>,
+    /// Each committed partition's cursor.
+    #[prost(message, repeated, tag = "2")]
+    pub cursors: ::prost::alloc::vec::Vec<CommittedCursor>,
+}
+/// A partition's committed cursor.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CommittedCursor {
+    /// The partition's id.
+    #[prost(string, tag = "1")]
+    pub partition: ::prost::alloc::string::String,
+    /// Its cursor.
+    #[prost(message, optional, tag = "2")]
+    pub cursor: ::core::option::Option<Cursor>,
+}
+/// The answer to a committed report.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CommittedResponse {}
+/// Asks a source where it stands for a partition outside the engine.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ReadAcknowledgedRequest {
+    /// The stream.
+    #[prost(message, optional, tag = "1")]
+    pub stream: ::core::option::Option<StreamName>,
+    /// The partition's id.
+    #[prost(string, tag = "2")]
+    pub partition: ::prost::alloc::string::String,
+}
+/// Where a source stands for a partition outside the engine.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ReadAcknowledgedResponse {
+    /// The cursor it was last told is committed; absent where it keeps none, or was never told.
+    #[prost(message, optional, tag = "1")]
+    pub cursor: ::core::option::Option<Cursor>,
+}
+/// How a read should stop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum StopMode {
+    /// Never sent; a receiver refuses it.
+    Unspecified = 0,
+    /// After a checkpoint, keeping what was read.
+    AfterCheckpoint = 1,
+    /// At once.
+    Now = 2,
+}
+impl StopMode {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "STOP_MODE_UNSPECIFIED",
+            Self::AfterCheckpoint => "STOP_MODE_AFTER_CHECKPOINT",
+            Self::Now => "STOP_MODE_NOW",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "STOP_MODE_UNSPECIFIED" => Some(Self::Unspecified),
+            "STOP_MODE_AFTER_CHECKPOINT" => Some(Self::AfterCheckpoint),
+            "STOP_MODE_NOW" => Some(Self::Now),
+            _ => None,
+        }
+    }
+}
+/// The severity of a log line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum LogLevel {
+    /// Never sent; a receiver refuses it.
+    Unspecified = 0,
+    /// Something failed.
+    Error = 1,
+    /// Something is wrong but reading continues.
+    Warn = 2,
+    /// Progress worth recording.
+    Info = 3,
+    /// Detail for debugging.
+    Debug = 4,
+}
+impl LogLevel {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "LOG_LEVEL_UNSPECIFIED",
+            Self::Error => "LOG_LEVEL_ERROR",
+            Self::Warn => "LOG_LEVEL_WARN",
+            Self::Info => "LOG_LEVEL_INFO",
+            Self::Debug => "LOG_LEVEL_DEBUG",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "LOG_LEVEL_UNSPECIFIED" => Some(Self::Unspecified),
+            "LOG_LEVEL_ERROR" => Some(Self::Error),
+            "LOG_LEVEL_WARN" => Some(Self::Warn),
+            "LOG_LEVEL_INFO" => Some(Self::Info),
+            "LOG_LEVEL_DEBUG" => Some(Self::Debug),
+            _ => None,
+        }
+    }
 }
 /// The limits each end enforces on what it receives.
 ///
@@ -1744,6 +1643,23 @@ pub mod connector_client {
     use tonic::codegen::http::Uri;
     use tonic::codegen::*;
     /// A connector, serving every role it supports.
+    ///
+    /// Its data calls are streams of their own, outside this service: a read of a partition, a write of
+    /// a table and, where the handshake accepted the "published" feature, a read-back of every row a
+    /// destination published to a table, for certification, which the engine never makes. Each stream
+    /// carries frames of a 16-byte head, `len:u32le | kind:u8 | flags:u8 | 0:u16 | tag:u64le`, then
+    /// `len` bytes: kind 1 is one Arrow IPC encapsulated message at the stream format's 64-byte
+    /// alignment, its tag the schema epoch on a read and the segment on a write, its flags' bit 0 set
+    /// for change rows and bit 1 for a dictionary; kind 2 is a push's JSON; kind 3 is one message of
+    /// this package. The host's first frame is a message whose flags name the call (1 a read, 2 a write,
+    /// 3 a read-back) and whose body is the call's start, a ReadStart, a WriteStart or a
+    /// ReadPublishedRequest; the connector answers with a message head of the same flags and no body, or
+    /// with the call's answer carrying its error. After it a read's host sends ReadControl messages and
+    /// its connector ReadFrame messages, batches and JSON pushes; a write's host WriteFrame messages and
+    /// batches, its connector WriteAck messages; a read-back's connector what a read's does but JSON. A
+    /// spawned connector's streams are passed over the socket at its descriptor 3, the control
+    /// connection first; a remote one's ride one HTTP/2 call, `/rdlt.connector.v1.Connector/Data`, of
+    /// the control connection.
     #[derive(Debug, Clone)]
     pub struct ConnectorClient<T> {
         inner: tonic::client::Grpc<T>,
@@ -1892,7 +1808,9 @@ pub mod connector_client {
                 .insert(GrpcMethod::new("rdlt.connector.v1.Connector", "Plan"));
             self.inner.unary(req, path, codec).await
         }
-        /// Reads a partition.
+        /// Reports cursors a destination committed: each a checkpoint a read sent this host, or the
+        /// cursor a read of its started from. A report of any other position is refused as transient,
+        /// with the code "position_unsent".
         pub async fn committed(
             &mut self,
             request: impl tonic::IntoRequest<super::CommittedRequest>,
@@ -1908,9 +1826,7 @@ pub mod connector_client {
                 .insert(GrpcMethod::new("rdlt.connector.v1.Connector", "Committed"));
             self.inner.unary(req, path, codec).await
         }
-        /// Reports cursors a destination committed: each a checkpoint a read sent this host, or the
-        /// cursor a read of its started from. A report of any other position is refused as transient,
-        /// with the code "position_unsent".
+        /// Opens a destination session.
         pub async fn open(
             &mut self,
             request: impl tonic::IntoRequest<super::OpenRequest>,
@@ -1925,7 +1841,7 @@ pub mod connector_client {
                 .insert(GrpcMethod::new("rdlt.connector.v1.Connector", "Open"));
             self.inner.unary(req, path, codec).await
         }
-        /// Opens a destination session.
+        /// Applies a schema change.
         pub async fn apply_schema(
             &mut self,
             request: impl tonic::IntoRequest<super::ApplySchemaRequest>,
@@ -1944,7 +1860,7 @@ pub mod connector_client {
             ));
             self.inner.unary(req, path, codec).await
         }
-        /// Applies a schema change.
+        /// Commits a session's staged segments.
         pub async fn commit(
             &mut self,
             request: impl tonic::IntoRequest<super::CommitRequest>,
@@ -1959,7 +1875,7 @@ pub mod connector_client {
                 .insert(GrpcMethod::new("rdlt.connector.v1.Connector", "Commit"));
             self.inner.unary(req, path, codec).await
         }
-        /// Writes a table's batches.
+        /// Closes a session.
         pub async fn close(
             &mut self,
             request: impl tonic::IntoRequest<super::CloseRequest>,
@@ -1974,7 +1890,7 @@ pub mod connector_client {
                 .insert(GrpcMethod::new("rdlt.connector.v1.Connector", "Close"));
             self.inner.unary(req, path, codec).await
         }
-        /// Commits a session's staged segments.
+        /// Proves both ends are alive.
         pub async fn heartbeat(
             &mut self,
             request: impl tonic::IntoStreamingRequest<Message = super::Ping>,
@@ -1991,7 +1907,9 @@ pub mod connector_client {
                 .insert(GrpcMethod::new("rdlt.connector.v1.Connector", "Heartbeat"));
             self.inner.streaming(req, path, codec).await
         }
-        /// Closes a session.
+        /// Tells where a source stands for a partition outside the engine, for certification; served
+        /// when the handshake accepted the "acknowledged" feature, which only a connector built and
+        /// served for certification does. The engine never calls it.
         pub async fn read_acknowledged(
             &mut self,
             request: impl tonic::IntoRequest<super::ReadAcknowledgedRequest>,
@@ -2053,29 +1971,29 @@ pub mod connector_server {
             &self,
             request: tonic::Request<super::PlanRequest>,
         ) -> std::result::Result<tonic::Response<super::PlanResponse>, tonic::Status>;
-        /// Reads a partition.
+        /// Reports cursors a destination committed: each a checkpoint a read sent this host, or the
+        /// cursor a read of its started from. A report of any other position is refused as transient,
+        /// with the code "position_unsent".
         async fn committed(
             &self,
             request: tonic::Request<super::CommittedRequest>,
         ) -> std::result::Result<tonic::Response<super::CommittedResponse>, tonic::Status>;
-        /// Reports cursors a destination committed: each a checkpoint a read sent this host, or the
-        /// cursor a read of its started from. A report of any other position is refused as transient,
-        /// with the code "position_unsent".
+        /// Opens a destination session.
         async fn open(
             &self,
             request: tonic::Request<super::OpenRequest>,
         ) -> std::result::Result<tonic::Response<super::OpenResponse>, tonic::Status>;
-        /// Opens a destination session.
+        /// Applies a schema change.
         async fn apply_schema(
             &self,
             request: tonic::Request<super::ApplySchemaRequest>,
         ) -> std::result::Result<tonic::Response<super::ApplySchemaResponse>, tonic::Status>;
-        /// Applies a schema change.
+        /// Commits a session's staged segments.
         async fn commit(
             &self,
             request: tonic::Request<super::CommitRequest>,
         ) -> std::result::Result<tonic::Response<super::Receipt>, tonic::Status>;
-        /// Writes a table's batches.
+        /// Closes a session.
         async fn close(
             &self,
             request: tonic::Request<super::CloseRequest>,
@@ -2085,18 +2003,37 @@ pub mod connector_server {
                 Item = std::result::Result<super::Pong, tonic::Status>,
             > + std::marker::Send
             + 'static;
-        /// Commits a session's staged segments.
+        /// Proves both ends are alive.
         async fn heartbeat(
             &self,
             request: tonic::Request<tonic::Streaming<super::Ping>>,
         ) -> std::result::Result<tonic::Response<Self::HeartbeatStream>, tonic::Status>;
-        /// Closes a session.
+        /// Tells where a source stands for a partition outside the engine, for certification; served
+        /// when the handshake accepted the "acknowledged" feature, which only a connector built and
+        /// served for certification does. The engine never calls it.
         async fn read_acknowledged(
             &self,
             request: tonic::Request<super::ReadAcknowledgedRequest>,
         ) -> std::result::Result<tonic::Response<super::ReadAcknowledgedResponse>, tonic::Status>;
     }
     /// A connector, serving every role it supports.
+    ///
+    /// Its data calls are streams of their own, outside this service: a read of a partition, a write of
+    /// a table and, where the handshake accepted the "published" feature, a read-back of every row a
+    /// destination published to a table, for certification, which the engine never makes. Each stream
+    /// carries frames of a 16-byte head, `len:u32le | kind:u8 | flags:u8 | 0:u16 | tag:u64le`, then
+    /// `len` bytes: kind 1 is one Arrow IPC encapsulated message at the stream format's 64-byte
+    /// alignment, its tag the schema epoch on a read and the segment on a write, its flags' bit 0 set
+    /// for change rows and bit 1 for a dictionary; kind 2 is a push's JSON; kind 3 is one message of
+    /// this package. The host's first frame is a message whose flags name the call (1 a read, 2 a write,
+    /// 3 a read-back) and whose body is the call's start, a ReadStart, a WriteStart or a
+    /// ReadPublishedRequest; the connector answers with a message head of the same flags and no body, or
+    /// with the call's answer carrying its error. After it a read's host sends ReadControl messages and
+    /// its connector ReadFrame messages, batches and JSON pushes; a write's host WriteFrame messages and
+    /// batches, its connector WriteAck messages; a read-back's connector what a read's does but JSON. A
+    /// spawned connector's streams are passed over the socket at its descriptor 3, the control
+    /// connection first; a remote one's ride one HTTP/2 call, `/rdlt.connector.v1.Connector/Data`, of
+    /// the control connection.
     #[derive(Debug)]
     pub struct ConnectorServer<T> {
         inner: Arc<T>,

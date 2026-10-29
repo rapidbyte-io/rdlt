@@ -1,5 +1,5 @@
 //! Supervision: a connector that is lost, by its transport failing, missing heartbeats or exiting,
-//! which closes its socket, is started again for the next call, respawned or redialed, and the
+//! which closes its streams, is started again for the next call, respawned or redialed, and the
 //! engine's retry of the attempt reaches it.
 
 use std::sync::Arc;
@@ -32,14 +32,23 @@ use crate::limits::LAST_WORDS;
 use rdlt_connector::limits::MAX_ERROR_CODE_BYTES;
 
 /// How a connector starts: spawned in a process of its own, dialed where it listens, or reached
-/// through a stream a function opens.
+/// through an opener a function opens.
 pub(crate) enum Start {
     /// Spawned from its binary.
     Spawn(Launch),
     /// Dialed over mutual TLS.
     Dial(Dial),
-    /// Reached through a stream the function opens.
+    /// Reached through an opener the function opens.
     Connect(Open),
+}
+
+/// How a started connector is reached: one stream carrying its control calls and data calls,
+/// or an opener passing a stream for each.
+pub(crate) enum Reached {
+    /// A stream, over which data calls are `Data` calls.
+    Stream(Box<dyn crate::network::Stream>),
+    /// An opener.
+    Opener(Arc<dyn crate::opener::Opener>),
 }
 
 /// A connector and the connection to it: its process, when this process spawned it.
@@ -302,50 +311,53 @@ async fn begin(
     admit: &Admit<'_>,
     redactions: &Redactions,
 ) -> Result<Running, Spawned> {
-    let io: Box<dyn crate::network::Stream> = match start {
+    let reached = match start {
         Start::Spawn(launch) => {
             return spawn(launch, role, configured, options, admit, redactions).await;
         }
         Start::Connect(open) => {
             let deadline = options.deadlines.connect;
-            tokio::time::timeout(deadline, open())
+            let opener = tokio::time::timeout(deadline, open())
                 .await
                 .map_err(|_| {
                     Spawned::Unreachable(std::io::Error::new(
                         std::io::ErrorKind::TimedOut,
-                        format!("the connector's stream did not open within {deadline:?}"),
+                        format!("the connector's opener did not open within {deadline:?}"),
                     ))
                 })?
-                .map_err(Spawned::Unreachable)?
+                .map_err(Spawned::Unreachable)?;
+            Reached::Opener(Arc::from(opener))
         }
-        Start::Dial(dial) => Box::new(crate::network::dial(dial, options.deadlines.connect).await?),
+        Start::Dial(dial) => Reached::Stream(Box::new(
+            crate::network::dial(dial, options.deadlines.connect).await?,
+        )),
     };
-    let connection = self::configured(io, role, configured, redactions, options, admit).await?;
+    let connection =
+        self::configured(reached, role, configured, redactions, options, admit).await?;
     Ok(Running {
         connection,
         process: None,
     })
 }
 
-/// Handshakes over `io`, and once `admit` accepts the connector's spec resolves the secrets
-/// of its configuration within the connect deadline and configures it: a connector other than
-/// was placed is sent no configuration, and no secret is resolved for it.
-async fn configured<IO>(
-    io: IO,
+/// Handshakes with the connector `reached` reaches, and once `admit` accepts its spec resolves
+/// the secrets of its configuration within the connect deadline and configures it: a connector
+/// other than was placed is sent no configuration, and no secret is resolved for it.
+async fn configured(
+    reached: Reached,
     role: Role,
     configured: &Configured,
     redactions: &Redactions,
     options: &Options,
     admit: &Admit<'_>,
-) -> Result<Arc<Connection>, Spawned>
-where
-    IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
-{
+) -> Result<Arc<Connection>, Spawned> {
     let scrubbed =
         |error: ConnectorError| Spawned::Connect(error.received(&|text| redactions.scrubbed(text)));
-    let handshaken = Connection::handshake(io, role, *options)
-        .await
-        .map_err(scrubbed)?;
+    let handshaking = match reached {
+        Reached::Stream(io) => Connection::handshake(io, role, *options).await,
+        Reached::Opener(opener) => Connection::opened(opener, role, *options).await,
+    };
+    let handshaken = handshaking.map_err(scrubbed)?;
     admit(handshaken.spec())?;
     // A secret store that does not answer may answer the next start: the start fails
     // retryably at the connect deadline.
@@ -372,11 +384,12 @@ async fn spawn(
 ) -> Result<Running, Spawned> {
     let deadline = options.deadlines.connect;
     let launched = Process::launching(launch.clone(), redactions.clone(), deadline).await;
-    let (io, process) = launched.map_err(|unspawned| match *unspawned {
+    let (opener, process) = launched.map_err(|unspawned| match *unspawned {
         (_, Unspawned::Io(error)) => Spawned::Io(error),
         (launch, refused) => Spawned::Refused(crate::local::refused(&launch, refused)),
     })?;
-    let connecting = self::configured(io, role, configured, redactions, options, admit);
+    let reached = Reached::Opener(opener);
+    let connecting = self::configured(reached, role, configured, redactions, options, admit);
     let connection = match connecting.await {
         Ok(connection) => connection,
         Err(Spawned::Connect(error)) => {

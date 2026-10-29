@@ -1,5 +1,5 @@
 //! The command that starts a connector: its program, executed from the file that was opened
-//! and hashed, given its socket and nothing else of the host's, confined where it is
+//! and hashed, given its opener and nothing else of the host's, confined where it is
 //! untrusted.
 
 use std::ffi::OsString;
@@ -57,8 +57,8 @@ pub(crate) struct Commanded {
     pub(crate) held: Vec<OwnedFd>,
 }
 
-/// The arguments `launch`'s binary is given: the socket it serves, and the bytes of state one
-/// request may carry where the host's limit is not the protocol's.
+/// The arguments `launch`'s binary is given: the opener it takes its streams from, and the bytes
+/// of state one request may carry where the host's limit is not the protocol's.
 pub(crate) fn arguments(launch: &Launch) -> Vec<OsString> {
     let socket = OsString::from(format!("--rdlt-fd={SOCKET_FD}"));
     let state = launch
@@ -88,9 +88,10 @@ pub(crate) fn checked(launch: &Launch) -> Result<u64, Unspawned> {
     Ok(names)
 }
 
-/// The command that starts `launch`'s binary serving `socket` at file descriptor 3, with the
-/// environment `launch` keeps and glibc's malloc tunables, in a process group of its own,
-/// inheriting no other descriptor of this process; and how the connector is asked to stop.
+/// The command that starts `launch`'s binary taking its streams from `socket`, its opener, at
+/// file descriptor 3, with the environment `launch` keeps and glibc's malloc tunables, in a
+/// process group of its own, inheriting no other descriptor of this process; and how the
+/// connector is asked to stop.
 ///
 /// A sandboxed connector is spawned only where `marks_at_once` says the kernel marks every
 /// other descriptor close-on-exec in one call.

@@ -21,11 +21,9 @@ A report's verdict follows from its outcomes:
 | incomplete | no clause failed, yet one that applies was not observed, or none passed | 2 |
 | failed | a clause failed | 1 |
 
-The clauses a connector must pass are therefore those its declarations leave applicable: a connector cannot skip one by how it behaves, only by declaring less, and the engine uses of a connector only what it declares. `--require partial` exits 0 for an incomplete certification in which no clause failed and one passed; the report, and its JSON `verdict` and `passed`, say incomplete all the same. A clause is unobserved when nothing reads back what a destination published, when a source sends no checkpoint to resume or plan again from, when a read ends within its first credit, when no kill reaches the connector, or when what a source sends is more than certification holds: certify with a fixture that shows the behaviour.
+The clauses a connector must pass are therefore those its declarations leave applicable: a connector cannot skip one by how it behaves, only by declaring less, and the engine uses of a connector only what it declares. `--require partial` exits 0 for an incomplete certification in which no clause failed and one passed; the report, and its JSON `verdict` and `passed`, say incomplete all the same. A clause is unobserved when nothing reads back what a destination published, when a source sends no checkpoint to resume or plan again from, when no kill reaches the connector, or when what a source sends is more than certification holds: certify with a fixture that shows the behaviour.
 
 A kill clause that passed says beside its `pass`, and as `note` in JSON, what it passed on: `killed`, a connection ended with a process a kill ended, or `cut`, kills cut the connection of a connector the host did not start, and no process was seen to stop.
-
-`P-CREDIT`'s pass says beside its `pass`, and as `note` in JSON, the watch it ran under when `--credit-watch` chose one other than a second.
 
 `D-TABLES` drops a column of a table outside the pipeline, for each write mode a destination declares, only through a probe that alters the store, as an in-process certification's may; the read-back over the wire alters nothing, so its pass says beside `pass`, and as `note` in JSON, that no column was dropped.
 
@@ -52,7 +50,6 @@ A certification cut at its timeout reports what it saw: the clauses already chec
 | `P-LIMITS` | a configuration, a source's cursor or a destination's batch frame beyond the connector's limit is refused with `limit_exceeded` | the connector declares no limit this host can exceed |
 | `P-HEARTBEAT` | each heartbeat is answered with its sequence number, in order | — |
 | `P-MALFORMED` | a call the connector cannot read, or a frame it cannot decode, is refused with a typed error, and the connection serves on | — |
-| `P-CREDIT` | a read sends nothing more once its credit is spent, until more is granted | the connector is certified as a destination, which grants credit and spends none |
 
 ## Source (`S`)
 
@@ -111,7 +108,6 @@ A certification cut at its timeout reports what it saw: the clauses already chec
 - A kill clause passes only when a kill landed: the host saw a connection to the connector end after the kill. A spawned connector's ends once no process holds its other end, which a kill of its process group brings about unless a process left the group and holds it. The connection of a connector reached at an endpoint, or served in process, is cut by the host, which proves no process stopped: the report notes which was seen.
 - A kill clause loads in a mode the connector declares: a destination in the first of append, merge and replace it writes, a source each stream in the first of incremental, full and change reads it serves. A destination that keeps history alone leaves `K-DESTINATION` unobserved, and one whose identifiers are shorter than the names `D-NAMES` writes leaves that unobserved.
 - A spawned connector leads a process group the certifier stops, then kills, when the certification ends, is cut at its timeout, panics, or hears a signal. A member that left the group is not reached, and neither is anything when the certifier is killed outright.
-- `P-CREDIT` watches a read whose credit is spent for four seconds, granting a byte three times, or four times the watch `--credit-watch` chooses: a source that ignores credit and sends less often than that is not told from one that waits.
 
 ## What certification cannot show
 

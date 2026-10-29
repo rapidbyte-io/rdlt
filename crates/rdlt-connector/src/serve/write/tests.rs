@@ -1,28 +1,23 @@
 use std::collections::VecDeque;
-use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll};
 use std::time::Duration;
 
 use arrow_array::{Int64Array, RecordBatch};
 use bytes::Bytes;
-use rdlt_wire::bounded::{Bounded, Bounds};
-use rdlt_wire::flow::Granting;
-use rdlt_wire::limits::{CREDIT_FLOOR, Class, MIN_FRAME_BYTES};
-use rdlt_wire::plane::{Chained as _, Incoming, Outgoing};
-use rdlt_wire::tonic::body::Body;
-use rdlt_wire::tonic::{Code, Status};
-use rdlt_wire::{Encoder, Limits};
+use rdlt_wire::limits::MIN_FRAME_BYTES;
+use rdlt_wire::stream::{Call, End, FrameReader, HEAD_BYTES, Head, Kind, Outgoing, Rows};
+use rdlt_wire::{Cut, Encoder, Limits};
+use tokio::io::{AsyncWriteExt as _, DuplexStream, ReadHalf, WriteHalf};
 use tokio::sync::oneshot;
-use tokio::time::Instant;
-use tokio_stream::{Stream, StreamExt as _};
+use tokio::task::JoinHandle;
 
 use super::writing;
 use crate::destination::{DestinationWriter, WriteStats};
 use crate::error::{ConnectorError, Result};
 use crate::id::SegmentId;
 use crate::serve::live::{Live, gone};
+use crate::serve::stream::Frames;
 use crate::spec::BoxFuture;
 use crate::wire::v1;
 use crate::wire::v1::write_ack::Ack;
@@ -33,6 +28,9 @@ const WAIT: Duration = Duration::from_secs(60);
 
 /// How long a test lets a task that should end at once go on before it fails.
 const HOUR: Duration = Duration::from_mins(60);
+
+/// Bytes: what the stream between a test's host and its write holds in each direction.
+const BUFFERED: usize = 64 * 1024;
 
 /// What a recording writer does when it is called.
 #[derive(Clone, Copy, Debug)]
@@ -118,157 +116,136 @@ fn ids(rows: i64) -> RecordBatch {
     RecordBatch::try_from_iter([("id", Arc::new(ids) as _)]).expect("a valid batch")
 }
 
-fn schema() -> v1::WriteFrame {
+/// The frame of a message the host sends on a write.
+fn message(frame: Frame) -> Outgoing {
+    let message = v1::WriteFrame { frame: Some(frame) };
+    Outgoing::message(None, &message).expect("a message fits a head")
+}
+
+fn schema() -> Outgoing {
     let ipc_schema = Encoder::default()
         .schema(&ids(0).schema())
         .expect("the schema encodes");
-    v1::WriteFrame {
-        frame: Some(Frame::Schema(v1::WriteSchema {
-            version: 1,
-            ipc_schema,
-        })),
-    }
+    message(Frame::Schema(v1::WriteSchema {
+        version: 1,
+        ipc_schema,
+    }))
 }
 
 /// The frame of a batch of `rows` ids for `segment`.
-fn batch(segment: u64, rows: i64) -> v1::WriteFrame {
+fn batch(segment: u64, rows: i64) -> Outgoing {
     let mut encoder = Encoder::default();
     let batch = ids(rows);
     encoder.schema(&batch.schema()).expect("the schema encodes");
-    let mut frames = encoder.batch(&batch).expect("the batch encodes");
+    let mut cut = Cut::new(batch, Limits::default());
+    let mut frames = encoder
+        .piece(&mut cut)
+        .expect("the batch encodes")
+        .expect("the batch has rows");
     assert_eq!(frames.len(), 1, "ids need no dictionary");
     let frame = frames.remove(0);
-    v1::WriteFrame {
-        frame: Some(Frame::Batch(v1::WriteBatch {
-            segment,
-            data_header: frame.header,
-            padding: Bytes::new(),
-            data_body: frame.body,
-        })),
-    }
+    let kind = Kind::Batch {
+        rows: Rows::Arrow,
+        dictionary: false,
+        tag: segment,
+    };
+    Outgoing::new(kind, frame.into_pieces()).expect("a batch fits a head")
 }
 
 /// A batch frame of `bytes` that does not decode.
-fn garbage(bytes: usize) -> v1::WriteFrame {
-    v1::WriteFrame {
-        frame: Some(Frame::Batch(v1::WriteBatch {
-            segment: 1,
-            data_header: Bytes::from_static(b"not an IPC message"),
-            padding: Bytes::new(),
-            data_body: Bytes::from(vec![0; bytes.saturating_sub(18)]),
-        })),
+fn garbage(bytes: usize) -> Outgoing {
+    let kind = Kind::Batch {
+        rows: Rows::Arrow,
+        dictionary: false,
+        tag: 1,
+    };
+    Outgoing::new(kind, vec![Bytes::from(vec![0; bytes])]).expect("a batch fits a head")
+}
+
+fn flush() -> Outgoing {
+    message(Frame::Flush(v1::Unit {}))
+}
+
+/// The host's end of a write: what it sends, and the answers it reads.
+struct Host {
+    answers: FrameReader<ReadHalf<DuplexStream>>,
+    frames: WriteHalf<DuplexStream>,
+}
+
+impl Host {
+    /// Sends `frame` whole.
+    async fn send(&mut self, mut frame: Outgoing) {
+        tokio::time::timeout(WAIT, frame.write(&mut self.frames))
+            .await
+            .expect("the write takes the frame")
+            .expect("the write is open");
     }
-}
 
-fn flush() -> v1::WriteFrame {
-    v1::WriteFrame {
-        frame: Some(Frame::Flush(v1::Unit {})),
-    }
-}
-
-/// The credit a write within `limits` answers with: its opening credit, then a credit for each
-/// of `frames` in turn.
-fn credits(limits: &Limits, frames: &[v1::WriteFrame]) -> Vec<Ack> {
-    let mut granting = Granting::new(CREDIT_FLOOR, limits);
-    let opening = granting.opening();
-    let taken = frames.iter().map(|frame| {
-        let bytes = u64::try_from(frame.sent_len()).expect("a length fits");
-        granting.taken(bytes)
-    });
-    std::iter::once(opening)
-        .chain(taken.collect::<Vec<_>>())
-        .map(|bytes| Ack::Credit(v1::Credit { bytes }))
-        .collect()
-}
-
-/// `frames`, each arriving `wait` after the write asks for it, counting those asked for.
-fn arriving(
-    frames: Vec<v1::WriteFrame>,
-    waits: Vec<Duration>,
-    asked: Arc<AtomicUsize>,
-) -> impl Stream<Item = v1::WriteFrame> + Send + 'static {
-    tokio_stream::iter(frames.into_iter().zip(waits)).then(move |(frame, wait)| {
-        asked.fetch_add(1, Ordering::SeqCst);
-        async move {
-            tokio::time::sleep(wait).await;
-            frame
+    /// The write's answers, up to its end or the `most`th.
+    async fn answers(&mut self, most: usize) -> Vec<Ack> {
+        let mut all = Vec::new();
+        let form = Call::Write
+            .form(End::Connector)
+            .expect("a write's connector answers");
+        while all.len() < most
+            && let Some(answer) = tokio::time::timeout(WAIT, self.answers.next())
+                .await
+                .expect("the write answers or ends")
+                .expect("every answer arrives whole")
+        {
+            let answer: v1::WriteAck = answer.message(form, 1 << 20).expect("an answer decodes");
+            all.push(answer.ack.expect("an answer carries an ack"));
         }
-    })
+        all
+    }
 }
 
-/// The answers of a write of `frames` to `writer` within `limits`, up to its end: each an
-/// answer, or the code of the status that ended it.
+/// A write to `writer` within `limits`, its opening read: the host's end, and the write.
+async fn served(
+    limits: Limits,
+    writer: impl DestinationWriter + 'static,
+) -> (Host, JoinHandle<()>) {
+    let (mut host, connector) = tokio::io::duplex(BUFFERED);
+    let mut opening = Outgoing::message(Some(Call::Write), &v1::WriteStart::default())
+        .expect("a start fits a head");
+    opening.write(&mut host).await.expect("the opening is sent");
+    let (read, write) = tokio::io::split(connector);
+    let window = rdlt_wire::bounded::Window::new(4 * limits.largest());
+    let mut frames = Frames::new(read, limits, window);
+    tokio::time::timeout(WAIT, frames.opening())
+        .await
+        .expect("the opening arrives")
+        .expect("the opening reads")
+        .expect("the host opened a call");
+    let writing = tokio::spawn(writing(Box::new(writer), frames, write, limits));
+    let (answers, frames) = tokio::io::split(host);
+    let answers = FrameReader::new(answers, Call::Write.bounds(End::Connector, &limits));
+    (Host { answers, frames }, writing)
+}
+
+/// The answers of a write of `sent` to `writer` within `limits`, each sent the wait `waits`
+/// holds for it after the frame before it, up to the write's end or the `most`th; then the host
+/// goes, and the write ends.
 async fn answers(
     limits: Limits,
     writer: Recording,
-    frames: impl Stream<Item = v1::WriteFrame> + Send + 'static,
-) -> Vec<std::result::Result<Ack, Code>> {
-    let body = Body::new(Outgoing::request(frames, limits.largest()));
-    answered(limits, bounds(&limits), writer, body).await
-}
-
-/// The bounds a served write's request is held to within `limits`.
-fn bounds(limits: &Limits) -> Bounds {
-    Bounds::of(limits, Class::Data, rdlt_wire::scan::request("Write"))
-}
-
-/// The answers of a write of the frames `body` carries, held to `bounds`, as [`answers`] gives
-/// them.
-async fn answered(
-    limits: Limits,
-    bounds: Bounds,
-    writer: Recording,
-    body: Body,
-) -> Vec<std::result::Result<Ack, Code>> {
-    let incoming = Incoming::request(Bounded::new(body, bounds, None));
-    let mut answers = writing(Box::new(writer), incoming, limits);
-    let mut all = Vec::new();
-    while let Some(answer) = tokio::time::timeout(WAIT, answers.next())
+    sent: Vec<Outgoing>,
+    waits: Vec<Duration>,
+    most: usize,
+) -> Vec<Ack> {
+    let (mut host, writing) = served(limits, writer).await;
+    let waits = waits.into_iter().chain(std::iter::repeat(Duration::ZERO));
+    for (frame, wait) in sent.into_iter().zip(waits) {
+        tokio::time::sleep(wait).await;
+        host.send(frame).await;
+    }
+    let answers = host.answers(most).await;
+    drop(host);
+    tokio::time::timeout(HOUR, writing)
         .await
-        .expect("the write ends")
-    {
-        let answer = answer.map(|answer| answer.ack.expect("an answer carries an ack"));
-        all.push(answer.map_err(|status| status.code()));
-    }
-    all
-}
-
-/// A request's body of `frames`, each a gRPC message as its sender sends it, which then fails
-/// with `status`.
-struct Cut {
-    frames: VecDeque<v1::WriteFrame>,
-    status: Option<Status>,
-}
-
-impl http_body::Body for Cut {
-    type Data = Bytes;
-    type Error = Status;
-
-    fn poll_frame(
-        mut self: Pin<&mut Self>,
-        _: &mut Context<'_>,
-    ) -> Poll<Option<std::result::Result<http_body::Frame<Bytes>, Status>>> {
-        let Some(frame) = self.frames.pop_front() else {
-            return Poll::Ready(self.status.take().map(Err));
-        };
-        let chunks = frame.chunks();
-        let mut message = chunks.head.to_vec();
-        message.extend(chunks.body.unwrap_or_default());
-        Poll::Ready(Some(Ok(http_body::Frame::data(Bytes::from(message)))))
-    }
-}
-
-/// A request whose frames never end, counted in its `Live` until it is dropped.
-struct Open {
-    _live: Live,
-}
-
-impl Stream for Open {
-    type Item = v1::WriteFrame;
-
-    fn poll_next(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<v1::WriteFrame>> {
-        Poll::Pending
-    }
+        .expect("the write ends once its host goes")
+        .expect("the write does not panic");
+    answers
 }
 
 /// A writer whose writes and flushes wait for ever once begun, telling `begun` of the first, and
@@ -319,74 +296,50 @@ fn waits(seed: u64, count: usize) -> Vec<Duration> {
 #[tokio::test(start_paused = true)]
 async fn frames_are_written_in_order_and_a_flush_follows_them() {
     let limits = Limits::default();
-    let sent = vec![
-        schema(),
-        batch(1, 10),
-        batch(1, 20),
-        batch(2, 30),
-        flush(),
-        batch(2, 40),
-    ];
-    let mut expected = credits(&limits, &sent);
-    // The flush's stats follow its credit, and the credit of the batch after it follows them.
-    expected.insert(6, Ack::Flushed(v1::WriteStats { rows: 60, bytes: 0 }));
+    let sent = || {
+        vec![
+            schema(),
+            batch(1, 10),
+            batch(1, 20),
+            batch(2, 30),
+            flush(),
+            batch(2, 40),
+        ]
+    };
     for seed in 0..32 {
         let turns = waits(seed, 5).into_iter().map(Turn::Takes);
         let (writer, log) = Recording::new(turns);
-        let asked = Arc::default();
-        let frames = arriving(sent.clone(), waits(seed + 100, sent.len()), asked);
-        let answers = answers(limits, writer, frames).await;
+        let answers = answers(limits, writer, sent(), waits(seed + 100, 6), 1).await;
         assert_eq!(
-            log.events(),
-            [
-                "write 1:10",
-                "write 1:20",
-                "write 2:30",
-                "flush",
-                "write 2:40"
-            ],
+            answers,
+            [Ack::Flushed(v1::WriteStats { rows: 60, bytes: 0 })],
             "seed {seed}"
         );
-        let answers: Vec<_> = answers.into_iter().map(Result::unwrap).collect();
-        assert_eq!(answers, expected, "seed {seed}");
+        // The batch after the flush may or may not be written before the host goes.
+        let events = log.events();
+        assert_eq!(
+            events[..4],
+            ["write 1:10", "write 1:20", "write 2:30", "flush"],
+            "seed {seed}"
+        );
+        assert!(events.len() <= 5, "seed {seed}: {events:?}");
     }
 }
 
 #[tokio::test(start_paused = true)]
-async fn the_next_frame_arrives_and_decodes_while_one_is_written() {
-    // Each frame arrives 10 ms after it is asked for, and each write takes 10 ms: in turn, the
-    // schema and four batches take 90 ms; each received while the frame before it is written,
-    // 60.
+async fn a_frame_that_does_not_decode_fails_the_write_after_the_frames_before_it() {
     let sent = vec![
         schema(),
         batch(1, 10),
         batch(1, 20),
+        garbage(64),
         batch(1, 30),
-        batch(1, 40),
     ];
-    let (writer, log) = Recording::new([Turn::Takes(Duration::from_millis(10)); 4]);
-    let frames = arriving(sent, vec![Duration::from_millis(10); 5], Arc::default());
-    let started = Instant::now();
-    let answers = answers(Limits::default(), writer, frames).await;
-    assert_eq!(started.elapsed(), Duration::from_millis(60));
-    assert_eq!(log.events().len(), 4);
-    assert!(answers.iter().all(Result::is_ok), "{answers:?}");
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_frame_that_does_not_decode_fails_the_write_after_the_frames_before_it() {
-    let limits = Limits::default();
-    let good = vec![schema(), batch(1, 10), batch(1, 20)];
-    let mut sent = good.clone();
-    sent.extend([garbage(64), batch(1, 30)]);
     let (writer, log) = Recording::new([Turn::Takes(Duration::from_millis(50)); 2]);
-    let answers = answers(limits, writer, tokio_stream::iter(sent)).await;
+    let answers = answers(Limits::default(), writer, sent, Vec::new(), usize::MAX).await;
     assert_eq!(log.events(), ["write 1:10", "write 1:20"]);
-    let (error, credited) = answers.split_last().expect("the write answers");
-    let credited: Vec<_> = credited.iter().cloned().map(Result::unwrap).collect();
-    assert_eq!(credited, credits(&limits, &good));
-    let Ok(Ack::Error(error)) = error else {
-        panic!("the write fails with the frame's error: {error:?}");
+    let [Ack::Error(error)] = answers.as_slice() else {
+        panic!("the write fails with the frame's error alone: {answers:?}");
     };
     assert_eq!(
         error.code.as_deref(),
@@ -396,89 +349,52 @@ async fn a_frame_that_does_not_decode_fails_the_write_after_the_frames_before_it
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_writer_that_fails_ends_the_write_and_no_credit_follows_its_error() {
+async fn a_writer_that_fails_ends_the_write_with_its_error_alone() {
     // The engine sends three frames and then nothing more, without ending the write.
     let sent = vec![schema(), batch(1, 10), batch(1, 20)];
-    let asked = Arc::new(AtomicUsize::new(0));
-    let frames =
-        arriving(sent, vec![Duration::ZERO; 3], Arc::clone(&asked)).chain(tokio_stream::pending());
     let (writer, log) = Recording::new([Turn::Takes(Duration::ZERO), Turn::Fails]);
-    let answers = answers(Limits::default(), writer, frames).await;
+    let answers = answers(Limits::default(), writer, sent, Vec::new(), usize::MAX).await;
     assert_eq!(log.events(), ["write 1:10"]);
-    let error = answers
-        .iter()
-        .position(|answer| matches!(answer, Ok(Ack::Error(_))))
-        .expect("the write fails");
-    assert_eq!(error, answers.len() - 1, "{answers:?}");
+    let [Ack::Error(error)] = answers.as_slice() else {
+        panic!("the write fails with the writer's error alone: {answers:?}");
+    };
+    assert_eq!(error.kind(), v1::ErrorKind::Data, "{error:?}");
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_writer_that_panics_fails_the_write_as_internal() {
+async fn a_writer_that_panics_fails_the_write_as_internal_telling_neither_its_message_nor_task() {
     let sent = vec![schema(), batch(1, 10), batch(1, 20)];
-    let frames = tokio_stream::iter(sent).chain(tokio_stream::pending());
     let (writer, log) = Recording::new([Turn::Takes(Duration::ZERO), Turn::Panics]);
-    let answers = answers(Limits::default(), writer, frames).await;
+    let answers = answers(Limits::default(), writer, sent, Vec::new(), usize::MAX).await;
     assert_eq!(log.events(), ["write 1:10"]);
-    let (last, before) = answers.split_last().expect("the write answers");
-    assert_eq!(*last, Err(Code::Internal));
+    let [Ack::Error(error)] = answers.as_slice() else {
+        panic!("the write fails with the panic's error alone: {answers:?}");
+    };
+    assert_eq!(error.kind(), v1::ErrorKind::Internal, "{error:?}");
     assert!(
-        before
-            .iter()
-            .all(|answer| matches!(answer, Ok(Ack::Credit(_))))
+        !error.message.contains("4417") && !error.message.contains("task"),
+        "the host is told {error:?}"
     );
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_writer_s_panic_tells_its_host_neither_its_message_nor_its_task() {
-    let sent = vec![schema(), batch(1, 10), batch(1, 20)];
-    let frames = tokio_stream::iter(sent).chain(tokio_stream::pending());
-    let (writer, _) = Recording::new([Turn::Takes(Duration::ZERO), Turn::Panics]);
-    let body = Body::new(Outgoing::request(frames, Limits::default().largest()));
-    let incoming = Incoming::request(Bounded::new(body, bounds(&Limits::default()), None));
-    let answers = writing(Box::new(writer), incoming, Limits::default())
-        .take(16)
-        .collect::<Vec<_>>();
-    let answers = tokio::time::timeout(WAIT, answers)
-        .await
-        .expect("the write ends");
-    let Some(Err(status)) = answers.last() else {
-        panic!("the write fails: {answers:?}");
-    };
-    assert_eq!(status.code(), Code::Internal);
-    for told in [
-        status.message().to_owned(),
-        crate::wire::error(status).to_string(),
-    ] {
-        assert!(
-            !told.contains("4417") && !told.contains("task"),
-            "the host is told {told:?}"
-        );
-    }
-}
-
-#[tokio::test(start_paused = true)]
-async fn the_staged_bound_refuses_a_frame_before_it_decodes_with_one_waiting() {
+async fn the_staged_bound_refuses_a_frame_before_it_decodes() {
     // Four frames of nearly the least frame limit fill the sixteen mebibytes a write may stage
-    // between flushes; a fifth, which would not decode, is refused for its size instead, while
-    // the fourth waits for the writer.
+    // between flushes; a fifth, which would not decode, is refused for its size instead.
     let limits = Limits {
         frame_bytes: MIN_FRAME_BYTES,
         ..Limits::default()
     };
     let rows = i64::try_from(MIN_FRAME_BYTES * 15 / 16 / 8).expect("fits");
-    let near = batch(1, rows);
-    let Some(Frame::Batch(ref inner)) = near.frame else {
-        unreachable!("a batch frame");
-    };
-    let size = inner.data_header.len() + inner.data_body.len();
+    let size = batch(1, rows).len() - HEAD_BYTES;
     let mut sent = vec![schema()];
-    sent.extend(std::iter::repeat_n(near.clone(), 4));
+    sent.extend((0..4).map(|_| batch(1, rows)));
     sent.extend([garbage(size), flush()]);
     let (writer, log) = Recording::new([Turn::Takes(Duration::from_millis(10)); 4]);
-    let answers = answers(limits, writer, tokio_stream::iter(sent)).await;
+    let answers = answers(limits, writer, sent, Vec::new(), usize::MAX).await;
     let written = format!("write 1:{rows}");
     assert_eq!(log.events(), vec![written; 4]);
-    let Some(Ok(Ack::Error(error))) = answers.last() else {
+    let [Ack::Error(error)] = answers.as_slice() else {
         panic!("the write is refused: {answers:?}");
     };
     assert_eq!(error.code.as_deref(), Some("limit_exceeded"), "{error:?}");
@@ -487,128 +403,123 @@ async fn the_staged_bound_refuses_a_frame_before_it_decodes_with_one_waiting() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_frame_its_bounds_refuse_fails_the_write_with_its_refusal_after_the_frames_before_it() {
+async fn a_frame_beyond_the_frame_limit_fails_the_write_with_its_refusal_before_its_body() {
     let limits = Limits::default();
-    let good = vec![schema(), batch(1, 10), batch(1, 20)];
-    let mut sent = good.clone();
-    sent.push(batch(1, 100_000));
-    // Bounds that hold the small frames and refuse the large one, beyond the wire bound.
-    let bounds = Bounds {
-        wire: 64 * 1024,
-        ..bounds(&limits)
-    };
     let (writer, log) = Recording::new([Turn::Takes(Duration::from_millis(50)); 2]);
-    let body = Body::new(Outgoing::request(
-        tokio_stream::iter(sent),
-        limits.largest(),
-    ));
-    let answers = answered(limits, bounds, writer, body).await;
+    let (mut host, writing) = served(limits, writer).await;
+    for frame in [schema(), batch(1, 10), batch(1, 20)] {
+        host.send(frame).await;
+    }
+    // A head declaring a frame beyond the limit, and none of its body.
+    let kind = Kind::Batch {
+        rows: Rows::Arrow,
+        dictionary: false,
+        tag: 1,
+    };
+    let bound = Call::Write.bounds(End::Host, &limits).batch;
+    let beyond = bound.expect("a write's host sends batches").bytes + 1;
+    let head = Head::new(kind, beyond).encode();
+    host.frames
+        .write_all(&head)
+        .await
+        .expect("the head is sent");
+    let answers = host.answers(usize::MAX).await;
+    tokio::time::timeout(HOUR, writing)
+        .await
+        .expect("the write ends")
+        .expect("the write does not panic");
     assert_eq!(log.events(), ["write 1:10", "write 1:20"]);
-    let (refused, credited) = answers.split_last().expect("the write answers");
-    let credited: Vec<_> = credited.iter().cloned().map(Result::unwrap).collect();
-    assert_eq!(credited, credits(&limits, &good));
-    let Ok(Ack::Error(refused)) = refused else {
-        panic!("the write fails with the frame's refusal: {refused:?}");
+    let [Ack::Error(refused)] = answers.as_slice() else {
+        panic!("the write fails with the frame's refusal: {answers:?}");
     };
-    assert_eq!(refused.code.as_deref(), Some(crate::wire::TRANSPORT));
-    assert!(refused.message.contains("too large"), "{refused:?}");
+    assert_eq!(
+        refused.code.as_deref(),
+        Some("limit_exceeded"),
+        "{refused:?}"
+    );
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_request_whose_body_fails_fails_the_write_after_the_frames_before_it() {
+async fn a_write_whose_host_goes_within_or_between_frames_ends_unanswered_and_drops_its_writer() {
     let limits = Limits::default();
-    let body = Cut {
-        frames: VecDeque::from([schema(), batch(1, 10)]),
-        status: Some(Status::unknown("the stream was reset")),
-    };
-    let (writer, log) = Recording::new([]);
-    let answers = answered(limits, bounds(&limits), writer, Body::new(body)).await;
-    assert_eq!(log.events(), ["write 1:10"]);
-    let Some(Ok(Ack::Error(failed))) = answers.last() else {
-        panic!("the write fails with its body's error: {answers:?}");
-    };
-    assert_eq!(failed.code.as_deref(), Some(crate::wire::TRANSPORT));
-    assert!(failed.message.contains("reset"), "{failed:?}");
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_request_its_host_cancels_ends_the_write_after_the_frames_before_it() {
-    let limits = Limits::default();
-    let body = Cut {
-        frames: VecDeque::from([schema(), batch(1, 10)]),
-        status: Some(Status::cancelled("the host cancelled the write")),
-    };
-    let (writer, log) = Recording::new([]);
-    let answers = answered(limits, bounds(&limits), writer, Body::new(body)).await;
-    assert_eq!(log.events(), ["write 1:10"]);
-    let answers: Vec<_> = answers.into_iter().map(Result::unwrap).collect();
-    assert_eq!(answers, credits(&limits, &[schema(), batch(1, 10)]));
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_writer_waiting_in_a_write_or_a_flush_is_dropped_once_its_answers_are() {
-    let limits = Limits::default();
-    for sent in [vec![flush()], vec![schema(), batch(1, 10)]] {
-        let writer_live = Arc::new(AtomicUsize::new(0));
-        let request_live = Arc::new(AtomicUsize::new(0));
+    for within in [false, true] {
+        let live = Arc::new(AtomicUsize::new(0));
         let (begun, beginning) = oneshot::channel();
         let writer = Stuck {
             begun: Some(begun),
-            _live: Live::new(&writer_live),
+            _live: Live::new(&live),
         };
-        // The engine's request stays open: only its answers go.
-        let frames = tokio_stream::iter(sent).chain(Open {
-            _live: Live::new(&request_live),
-        });
-        let body = Body::new(Outgoing::request(frames, limits.largest()));
-        let incoming = Incoming::request(Bounded::new(body, bounds(&limits), None));
-        let answers = writing(Box::new(writer), incoming, limits);
+        let (mut host, writing) = served(limits, writer).await;
+        for frame in [schema(), batch(1, 10)] {
+            host.send(frame).await;
+        }
         tokio::time::timeout(WAIT, beginning)
             .await
             .expect("the writer begins")
             .expect("the writer says so");
-        drop(answers);
-        tokio::time::timeout(HOUR, gone(&writer_live))
+        if within {
+            // A frame's head, and none of its body.
+            let kind = Kind::Batch {
+                rows: Rows::Arrow,
+                dictionary: false,
+                tag: 1,
+            };
+            let head = Head::new(kind, 1_000).encode();
+            host.frames
+                .write_all(&head)
+                .await
+                .expect("the head is sent");
+        }
+        host.frames.shutdown().await.ok();
+        let answers = host.answers(usize::MAX).await;
+        assert_eq!(answers, [], "within a frame: {within}");
+        tokio::time::timeout(HOUR, writing)
             .await
-            .expect("the writer is dropped once its answers are");
-        tokio::time::timeout(WAIT, gone(&request_live))
+            .expect("the write ends once its host goes")
+            .expect("the write does not panic");
+        tokio::time::timeout(WAIT, gone(&live))
             .await
-            .expect("the request is dropped with the writer");
+            .expect("the writer is dropped with the write");
     }
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_write_waiting_for_its_next_frame_ends_once_its_answers_are_dropped() {
+async fn a_writer_waiting_in_a_write_a_flush_or_for_a_frame_is_dropped_once_its_host_goes() {
     let limits = Limits::default();
-    let writer_live = Arc::new(AtomicUsize::new(0));
-    let request_live = Arc::new(AtomicUsize::new(0));
-    let (begun, _beginning) = oneshot::channel();
-    let writer = Stuck {
-        begun: Some(begun),
-        _live: Live::new(&writer_live),
-    };
-    let frames = tokio_stream::iter([schema()]).chain(Open {
-        _live: Live::new(&request_live),
-    });
-    let body = Body::new(Outgoing::request(frames, limits.largest()));
-    let incoming = Incoming::request(Bounded::new(body, bounds(&limits), None));
-    let mut answers = writing(Box::new(writer), incoming, limits);
-    // The opening credit, then the schema's: the writer took it and waits for the next frame.
-    for _ in 0..2 {
-        let answer = tokio::time::timeout(WAIT, answers.next())
+    let cases: [fn() -> Vec<Outgoing>; 4] = [
+        || vec![flush()],
+        || vec![schema(), batch(1, 10)],
+        || vec![schema()],
+        // The writer waits in the first batch while the frames after it fill every stage.
+        || vec![schema(), batch(1, 10), batch(2, 10), flush()],
+    ];
+    for (case, sent) in cases.into_iter().enumerate() {
+        let live = Arc::new(AtomicUsize::new(0));
+        let (begun, beginning) = oneshot::channel();
+        let writer = Stuck {
+            begun: Some(begun),
+            _live: Live::new(&live),
+        };
+        let (mut host, writing) = served(limits, writer).await;
+        for frame in sent() {
+            host.send(frame).await;
+        }
+        if case == 2 {
+            // The writer took the schema and waits for the next frame.
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        } else {
+            tokio::time::timeout(WAIT, beginning)
+                .await
+                .expect("the writer begins")
+                .expect("the writer says so");
+        }
+        drop(host);
+        tokio::time::timeout(HOUR, writing)
             .await
-            .expect("the write answers")
-            .expect("the write goes on");
-        assert!(
-            matches!(answer.map(|answer| answer.ack), Ok(Some(Ack::Credit(_)))),
-            "credit comes first"
-        );
+            .unwrap_or_else(|_| panic!("case {case}: the write ends once its host goes"))
+            .expect("the write does not panic");
+        tokio::time::timeout(WAIT, gone(&live))
+            .await
+            .expect("the writer is dropped with the write");
     }
-    drop(answers);
-    tokio::time::timeout(HOUR, gone(&writer_live))
-        .await
-        .expect("the writer is dropped once its answers are");
-    tokio::time::timeout(WAIT, gone(&request_live))
-        .await
-        .expect("the request is dropped with the writer");
 }

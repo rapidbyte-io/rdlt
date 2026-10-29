@@ -4,14 +4,14 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
-use rdlt_connector::serve::{Served, serve_connection};
+use rdlt_connector::serve::{Served, serve_connection, serve_opened};
 use rdlt_connector::{Role, destination_factory, source_factory};
 use rdlt_connector_reference::{MemoryDestination, MemorySource};
 use rdlt_engine::{
     CommitPolicy, ComputePool, Cores, Engine, EngineConfig, EngineConfigBuilder, Env, Job, Sleep,
     SystemEnv,
 };
-use rdlt_host::{Connection, Options, RemoteDestination, RemoteSource};
+use rdlt_host::{Connection, Opener, Options, Passing, RemoteDestination, RemoteSource};
 use rdlt_wire::Limits;
 use rdlt_wire::v1::connector_client::ConnectorClient;
 use tokio::io::DuplexStream;
@@ -28,6 +28,21 @@ pub(crate) fn served_within(served: Served, limits: Limits) -> UnixStream {
     let (host, connector) = UnixStream::pair().expect("a socket pair");
     tokio::spawn(serve_connection(Arc::new(served), connector, limits));
     host
+}
+
+/// An opener whose other end serves `served`, as a spawned connector serves the opener it
+/// inherits: each stream a socket pair's, passed over it.
+pub(crate) fn opener(served: Served) -> Box<dyn Opener> {
+    opener_within(served, Limits::default())
+}
+
+/// As [`opener`], the connector enforcing `limits`.
+pub(crate) fn opener_within(served: Served, limits: Limits) -> Box<dyn Opener> {
+    let (host, connector) = std::os::unix::net::UnixStream::pair().expect("a socket pair");
+    let connector = std::os::fd::OwnedFd::from(connector);
+    tokio::spawn(serve_opened(Arc::new(served), connector, limits));
+    let host = std::os::fd::OwnedFd::from(host);
+    Box::new(Passing::new(host).expect("the opener registers"))
 }
 
 /// The host's end of an in-memory pipe whose other end serves `served`: no socket, so a runtime
@@ -48,8 +63,8 @@ pub(crate) async fn raw_client(io: UnixStream) -> ConnectorClient<Channel> {
 }
 
 /// A client of the connector served on the other end of `io`, which has had no handshake: its
-/// generated calls and the data plane's, as certification speaks the protocol.
-pub(crate) async fn plane_client(io: UnixStream) -> rdlt_host::remote::Client {
+/// generated calls and its data calls' streams, as certification speaks the protocol.
+pub(crate) async fn protocol_client(io: UnixStream) -> rdlt_host::remote::Client {
     rdlt_host::remote::client(io, Options::default())
         .await
         .expect("the channel connects")

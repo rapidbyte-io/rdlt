@@ -24,9 +24,9 @@ What a run holds resident beyond its inputs, against the limit its budget gives 
   `VmHWM`. Growth is that peak less the resident memory at the reset.
 - **Limit.** The budget, a fifth of it and 32 MiB, plus the largest push the run holds
   unadmitted, plus 2 MiB of stack a thread (the runtime's workers, the compute threads and the
-  main thread). `served`'s host holds a frame unadmitted a partition, and what its connectors'
-  open calls hold in transport besides, a stream window of 4 MiB (`CREDIT_FLOOR`) a call: a read
-  a partition and the sink's one writer. A run over its limit exits with 1.
+  main thread). `served`'s host reserves each frame before it reads its body, and its streams
+  hold what is in transit in the kernel's socket buffers, so it holds nothing unadmitted beside
+  the budget. A run over its limit exits with 1.
 - **Connector processes.** In `served`, each spawned connector's peak resident memory (`VmHWM`)
   is read before it stops: a process spawned for the run, so the peak is all it held, the
   source's batches among it. They are reported apart, and not held to a limit: the budget bounds

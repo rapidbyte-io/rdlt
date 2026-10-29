@@ -10,21 +10,21 @@ mod tests;
 
 use std::sync::Arc;
 
-use rdlt_wire::Limits;
-use rdlt_wire::plane::Answers;
 use rdlt_wire::tonic::Status;
 
 use super::handshake::unsupported;
-use crate::destination::{Destination, DestinationFactory, PUBLISHED_CODE};
+use crate::destination::{
+    Destination, DestinationFactory, PUBLISHED_CODE, PublishedReader, TableRef,
+};
 use crate::error::ConnectorError;
 use crate::source::{ACKNOWLEDGED_CODE, Source, SourceFactory};
 use crate::spec::ConnectContext;
 use crate::wire::{status, v1};
 
-/// The status of a read-back the connection does not serve.
-fn no_read_back() -> Status {
+/// The refusal of a read-back the connection does not serve.
+fn no_read_back() -> ConnectorError {
     let message = "reading back what was published needs its feature in the handshake";
-    status(&unsupported(message, PUBLISHED_CODE))
+    unsupported(message, PUBLISHED_CODE)
 }
 
 /// The status of a question where the source stands that the connection does not answer.
@@ -38,7 +38,7 @@ fn no_standing() -> Status {
 #[derive(Default)]
 pub(super) struct Probes {
     #[cfg(feature = "certify")]
-    reader: Option<Arc<dyn crate::destination::PublishedReader>>,
+    reader: Option<Arc<dyn PublishedReader>>,
     #[cfg(feature = "certify")]
     acknowledger: Option<Arc<dyn crate::source::AcknowledgedReader>>,
 }
@@ -123,7 +123,12 @@ impl Probes {
         Ok((destination, Self::default()))
     }
 
-    /// The rows of `request`'s table, read back as frames within `host`'s limits.
+    /// What reads back `request`'s table, and the table.
+    ///
+    /// # Errors
+    ///
+    /// An unsupported error where the connection serves no read-back, and an
+    /// `invalid_message` error where the request names no table.
     #[cfg_attr(
         not(feature = "certify"),
         expect(
@@ -136,17 +141,16 @@ impl Probes {
     pub(super) fn read_published(
         &self,
         request: v1::ReadPublishedRequest,
-        host: Limits,
-    ) -> Result<Answers<v1::ReadFrame>, Status> {
+    ) -> Result<(Arc<dyn PublishedReader>, TableRef), ConnectorError> {
         #[cfg(feature = "certify")]
         if let Some(reader) = self.reader.clone() {
             use crate::wire::Invalid;
             let table = request
                 .table
                 .ok_or(Invalid::Missing("table"))
-                .and_then(crate::destination::TableRef::try_from)
+                .and_then(TableRef::try_from)
                 .map_err(|error| super::service::invalid(&error))?;
-            return Ok(super::published::serve(reader, table, host));
+            return Ok((reader, table));
         }
         Err(no_read_back())
     }
@@ -173,9 +177,9 @@ impl Probes {
                 .stream
                 .ok_or(Invalid::Missing("stream"))
                 .and_then(StreamName::try_from)
-                .map_err(|error| invalid(&error))?;
+                .map_err(|error| status(&invalid(&error)))?;
             let partition = PartitionId::parse(request.partition)
-                .map_err(|error| invalid(&Invalid::rejected("partition id", error)))?;
+                .map_err(|error| status(&invalid(&Invalid::rejected("partition id", error))))?;
             let cursor = acknowledger
                 .acknowledged(&stream, &partition)
                 .await

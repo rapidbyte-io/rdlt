@@ -113,16 +113,13 @@ connector cannot skip one by how it behaves, only by declaring less, and the eng
 connector only what it declares. `--require partial` exits 0 for an incomplete certification in \
 which no clause failed and one passed; the report, and its JSON `verdict` and `passed`, say \
 incomplete all the same. A clause is unobserved when nothing reads back what a destination \
-published, when a source sends no checkpoint to resume or plan again from, when a read ends \
-within its first credit, when no kill reaches the connector, or when what a source sends is \
-more than certification holds: certify with a fixture that shows the behaviour.
+published, when a source sends no checkpoint to resume or plan again from, when no kill reaches \
+the connector, or when what a source sends is more than certification holds: certify with a \
+fixture that shows the behaviour.
 
 A kill clause that passed says beside its `pass`, and as `note` in JSON, what it passed on: \
 `killed`, a connection ended with a process a kill ended, or `cut`, kills cut the connection of \
 a connector the host did not start, and no process was seen to stop.
-
-`P-CREDIT`'s pass says beside its `pass`, and as `note` in JSON, the watch it ran under when \
-`--credit-watch` chose one other than a second.
 
 `D-TABLES` drops a column of a table outside the pipeline, for each write mode a destination \
 declares, only through a probe that alters the store, as an in-process certification's may; the \
@@ -188,9 +185,6 @@ one whose identifiers are shorter than the names `D-NAMES` writes leaves that un
 - A spawned connector leads a process group the certifier stops, then kills, when the \
 certification ends, is cut at its timeout, panics, or hears a signal. A member that left the \
 group is not reached, and neither is anything when the certifier is killed outright.
-- `P-CREDIT` watches a read whose credit is spent for four seconds, granting a byte three times, \
-or four times the watch `--credit-watch` chooses: a source that ignores credit and sends less \
-often than that is not told from one that waits.
 
 ## What certification cannot show
 

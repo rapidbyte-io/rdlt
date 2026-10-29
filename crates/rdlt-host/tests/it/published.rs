@@ -7,16 +7,18 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use arrow_array::{Int64Array, RecordBatch};
 use rdlt_connector::serve::Served;
-use rdlt_connector::wire::{error as carried, v1};
+use rdlt_connector::wire::v1;
 use rdlt_connector::{
     BoxFuture, ConnectContext, ConnectorError, ConnectorErrorKind, ConnectorSpec,
     DestinationFactory, PublishedReader, PublishedRows, Reading, TableRef, destination_factory,
     readable_destination_factory,
 };
 use rdlt_connector_reference::MemoryDestination;
-use rdlt_wire::{PROTOCOL_MAJOR, PUBLISHED};
+use rdlt_host::remote::{Client, RawCall};
+use rdlt_wire::stream::{Call, Kind, Received};
+use rdlt_wire::{Limits, PROTOCOL_MAJOR, PUBLISHED};
 
-use crate::support::{plane_client, served};
+use crate::support::{protocol_client, served};
 
 fn handshake(features: &[&str]) -> v1::HandshakeRequest {
     v1::HandshakeRequest {
@@ -36,6 +38,40 @@ fn configure() -> v1::ConfigureRequest {
     }
 }
 
+/// A frame of a read-back, as its host reads it.
+#[derive(Debug)]
+enum Back {
+    /// A message: a schema, or the read-back's end.
+    Message(v1::read_frame::Frame),
+    /// A batch.
+    Batch(Received),
+}
+
+/// The read-back's next frame, `None` once it ended, or the error it failed with.
+async fn next(back: &mut RawCall) -> Result<Option<Back>, ConnectorError> {
+    let Some(received) = back.next().await? else {
+        return Ok(None);
+    };
+    if !matches!(received.head.kind, Kind::Message { .. }) {
+        return Ok(Some(Back::Batch(received)));
+    }
+    match back.read_frame(&received)?.frame {
+        Some(v1::read_frame::Frame::Error(error)) => {
+            Err(ConnectorError::try_from(error).expect("the error is whole"))
+        }
+        Some(frame) => Ok(Some(Back::Message(frame))),
+        None => panic!("an empty frame"),
+    }
+}
+
+/// Opens a read-back of [`table`] on `client`'s connection, reading within `limits`.
+async fn read_back(
+    client: &Client,
+    limits: &Limits,
+) -> Result<Result<RawCall, ConnectorError>, ConnectorError> {
+    RawCall::open(client, Call::ReadPublished, &table(), limits).await
+}
+
 fn table() -> v1::ReadPublishedRequest {
     v1::ReadPublishedRequest {
         table: Some(v1::TableRef {
@@ -53,7 +89,7 @@ fn table() -> v1::ReadPublishedRequest {
 async fn a_destination_that_reads_back_accepts_the_feature_when_offered_and_serves_it() {
     let readable =
         || Served::new().with_destination(readable_destination_factory::<MemoryDestination>());
-    let mut client = plane_client(served(readable())).await;
+    let mut client = protocol_client(served(readable())).await;
     let answer = client
         .rpc
         .handshake(handshake(&[PUBLISHED, "unknown"]))
@@ -66,16 +102,13 @@ async fn a_destination_that_reads_back_accepts_the_feature_when_offered_and_serv
         .configure(configure())
         .await
         .expect("the configuration succeeds");
-    let mut frames = client
-        .read_published(table())
+    let mut frames = read_back(&client, &Limits::default())
         .await
+        .expect("the stream opens")
         .expect("the read-back starts");
-    let first = frames.message().await.expect("a frame");
+    let first = next(&mut frames).await.expect("a frame");
     assert!(
-        matches!(
-            first.and_then(|frame| frame.frame),
-            Some(v1::read_frame::Frame::Done(_))
-        ),
+        matches!(first, Some(Back::Message(v1::read_frame::Frame::Done(_)))),
         "nothing published reads back as done alone"
     );
 }
@@ -97,7 +130,7 @@ async fn a_read_back_the_handshake_did_not_accept_is_refused_as_unsupported() {
         ),
     ];
     for (served_by, offered) in cases {
-        let mut client = plane_client(served(served_by)).await;
+        let mut client = protocol_client(served(served_by)).await;
         let answer = client
             .rpc
             .handshake(handshake(offered))
@@ -110,11 +143,10 @@ async fn a_read_back_the_handshake_did_not_accept_is_refused_as_unsupported() {
             .configure(configure())
             .await
             .expect("the configuration succeeds");
-        let refused = client
-            .read_published(table())
-            .await
-            .expect_err("the read-back is refused");
-        let error = carried(&refused);
+        let opened = read_back(&client, &Limits::default()).await;
+        let Err(error) = opened.expect("the stream opens") else {
+            panic!("the read-back is refused");
+        };
         assert_eq!(error.kind(), ConnectorErrorKind::Unsupported, "{error}");
         assert_eq!(error.code(), Some("published"), "{error}");
     }
@@ -240,18 +272,16 @@ impl DestinationFactory for Large {
 }
 
 /// A client that reads `factory`'s table back: its frames.
-async fn reading_back(factory: Large) -> rdlt_wire::plane::Incoming<v1::ReadFrame> {
+async fn reading_back(factory: Large) -> RawCall {
     reading_back_within(factory, None).await
 }
 
 /// As [`reading_back`], a host that takes frames within `limits`.
-async fn reading_back_within(
-    factory: Large,
-    limits: Option<v1::Limits>,
-) -> rdlt_wire::plane::Incoming<v1::ReadFrame> {
-    let mut client = plane_client(served(Served::new().with_destination(Box::new(factory)))).await;
+async fn reading_back_within(factory: Large, limits: Option<Limits>) -> RawCall {
+    let mut client =
+        protocol_client(served(Served::new().with_destination(Box::new(factory)))).await;
     let offered = v1::HandshakeRequest {
-        limits,
+        limits: limits.map(v1::Limits::from),
         ..handshake(&[PUBLISHED])
     };
     client
@@ -264,9 +294,9 @@ async fn reading_back_within(
         .configure(configure())
         .await
         .expect("the configuration succeeds");
-    client
-        .read_published(table())
+    read_back(&client, &limits.unwrap_or_default())
         .await
+        .expect("the stream opens")
         .expect("the read-back starts")
 }
 
@@ -276,10 +306,10 @@ async fn a_table_is_read_back_no_further_than_its_host_takes() {
     let factory = Large::new(100_000, false);
     let (sent, ended) = (Arc::clone(&factory.sent), Arc::clone(&factory.ended));
     let mut frames = reading_back(factory).await;
-    let first = frames.message().await.expect("a frame");
+    let first = next(&mut frames).await.expect("a frame");
     assert!(matches!(
-        first.and_then(|frame| frame.frame),
-        Some(v1::read_frame::Frame::Schema(_))
+        first,
+        Some(Back::Message(v1::read_frame::Frame::Schema(_)))
     ));
     // The host takes no more: the connector reads a few batches ahead, and waits.
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
@@ -304,21 +334,21 @@ async fn a_table_read_back_arrives_whole_a_batch_a_frame_and_then_done() {
     use v1::read_frame::Frame;
     let mut frames = reading_back(Large::new(300, false)).await;
     let (mut schemas, mut rows, mut done) = (0, 0, 0);
-    let mut decoder = rdlt_wire::Decoder::new(rdlt_wire::Limits::default());
-    while let Some(frame) = frames.message().await.expect("a frame") {
+    let mut decoder = rdlt_wire::Decoder::new(Limits::default());
+    while let Some(frame) = next(&mut frames).await.expect("a frame") {
         assert_eq!(done, 0, "a frame followed the done frame");
-        match frame.frame {
-            Some(Frame::Schema(schema)) => {
+        match frame {
+            Back::Message(Frame::Schema(schema)) => {
                 decoder.schema(&schema.ipc_schema).expect("a schema");
                 schemas += 1;
             }
-            Some(Frame::Batch(batch)) => {
-                let frame = rdlt_wire::IpcFrame::new(batch.data_header, batch.data_body);
+            Back::Batch(batch) => {
+                let frame = rdlt_wire::IpcFrame::framed(batch.body).expect("a message");
                 let batch = decoder.frame(&frame).expect("a batch decodes");
                 rows += batch.map_or(0, |batch| batch.num_rows());
             }
-            Some(Frame::Done(_)) => done += 1,
-            other => panic!("{other:?}"),
+            Back::Message(Frame::Done(_)) => done += 1,
+            other @ Back::Message(_) => panic!("{other:?}"),
         }
     }
     assert_eq!((schemas, rows, done), (1, 300 * ROWS, 1));
@@ -330,14 +360,12 @@ async fn a_read_back_that_fails_ends_with_its_error_after_the_rows_it_read() {
     let mut frames = reading_back(Large::new(3, true)).await;
     let mut batches = 0;
     let failed = loop {
-        match frames.message().await {
-            Ok(Some(frame)) => match frame.frame {
-                Some(Frame::Batch(_)) => batches += 1,
-                Some(Frame::Schema(_)) => {}
-                other => panic!("{other:?}"),
-            },
+        match next(&mut frames).await {
+            Ok(Some(Back::Batch(_))) => batches += 1,
+            Ok(Some(Back::Message(Frame::Schema(_)))) => {}
+            Ok(Some(other)) => panic!("{other:?}"),
             Ok(None) => panic!("the read-back ended without its error"),
-            Err(status) => break carried(&status),
+            Err(error) => break error,
         }
     };
     assert_eq!(batches, 3);
@@ -350,19 +378,19 @@ async fn a_row_read_back_beyond_its_hosts_frames_ends_the_read_back_as_exceeding
     // of the four a host may ask for at least.
     let factory = Large::new(100_000, false).of_blobs();
     let (sent, ended) = (Arc::clone(&factory.sent), Arc::clone(&factory.ended));
-    let small = v1::Limits {
+    let small = Limits {
         frame_bytes: rdlt_wire::limits::MIN_FRAME_BYTES,
-        ..v1::Limits::from(rdlt_wire::Limits::default())
+        ..Limits::default()
     };
     let mut frames = reading_back_within(factory, Some(small)).await;
     let refused = loop {
-        match frames.message().await {
+        match next(&mut frames).await {
             Ok(Some(frame)) => assert!(
-                matches!(frame.frame, Some(v1::read_frame::Frame::Schema(_))),
+                matches!(frame, Back::Message(v1::read_frame::Frame::Schema(_))),
                 "a row beyond the host's frames was sent"
             ),
             Ok(None) => panic!("the read-back ended without its error"),
-            Err(status) => break carried(&status),
+            Err(error) => break error,
         }
     };
     assert!(refused.limit().is_some(), "{refused}");

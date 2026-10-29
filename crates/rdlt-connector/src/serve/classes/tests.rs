@@ -12,26 +12,24 @@ use tokio_util::sync::CancellationToken;
 
 use super::super::Served;
 use super::super::service::Service;
-use super::{classed, window};
+use super::classed;
 
 #[test]
-fn each_call_s_request_has_the_class_of_what_it_carries() {
+fn each_call_s_request_has_the_class_of_what_it_carries_and_a_data_call_none_of_its_own() {
     let expected = [
         ("Handshake", Class::Handshake),
         ("Configure", Class::Config),
         ("Check", Class::Control),
         ("Discover", Class::Control),
         ("Plan", Class::State),
-        ("Read", Class::Cursor),
         ("Committed", Class::State),
         ("Open", Class::Control),
         ("ApplySchema", Class::Schema),
-        ("Write", Class::Data),
         ("Commit", Class::State),
         ("Close", Class::Control),
         ("Heartbeat", Class::Control),
-        ("ReadPublished", Class::Control),
         ("ReadAcknowledged", Class::Control),
+        ("Data", Class::Control),
         ("Unknown", Class::Control),
     ];
     for (name, expected) in expected {
@@ -67,9 +65,15 @@ async fn requests_still_arriving_on_a_connection_hold_its_window_and_the_rest_wa
         ..Limits::default()
     };
     let stopping = CancellationToken::new();
-    let service = Service::new(Arc::new(Served::new()), limits, None, 1, stopping);
-    let window = window(&limits);
-    let mut classed = classed(service, &limits, window.clone());
+    let service = Arc::new(Service::new(
+        Arc::new(Served::new()),
+        limits,
+        None,
+        1,
+        stopping,
+    ));
+    let window = service.window.clone();
+    let mut classed = classed(service);
     // Five handshakes, each of a declared length at its class's bound, each only begun.
     let length = u32::try_from(HANDSHAKE_BYTES).unwrap() - 5;
     let message = 5 + usize::try_from(length).unwrap();

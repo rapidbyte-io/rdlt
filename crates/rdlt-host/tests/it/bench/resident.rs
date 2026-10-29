@@ -12,10 +12,9 @@ use std::num::{NonZeroU16, NonZeroUsize};
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use rdlt_engine::bench::{Cell, Passthrough, Resident, reset_peak, resident_kib};
+use rdlt_engine::bench::{Resident, reset_peak, resident_kib};
 use rdlt_engine::{Cores, EngineConfig};
 use rdlt_host::Options;
-use rdlt_wire::limits::CREDIT_FLOOR;
 
 use crate::processes::Processes;
 use crate::{Budget, Case, Frames, Layout, Mode, Transport, Workload, connectors};
@@ -69,7 +68,7 @@ pub(crate) fn measure() -> ExitCode {
     };
     let workload = Workload::new(cores, case.frames, case.budget);
     let measured = run(&workload, case);
-    let limit = limit(cores, case);
+    let limit = limit(cores);
     let growth = measured
         .host
         .saturating_sub(measured.base)
@@ -141,21 +140,15 @@ fn run(workload: &Workload, case: Case) -> Measured {
 }
 
 /// Bytes: what ADR 0039's bound lets the run raise the host's resident memory by: the budget, a
-/// fifth of it and 32 MiB, a frame each partition holds before it is admitted, each open call's
-/// stream window, a read's each partition and a write's each writer, and a stack a thread.
-fn limit(cores: Cores, case: Case) -> u64 {
-    let (_, rows) = case.frames.shape();
-    let frame = Passthrough::bytes(Cell {
-        rows,
-        batches: 1,
-        ..Cell::PAIRED
-    });
-    let partitions = u64::try_from(case.partitions.get()).expect("a count fits in 64 bits");
+/// fifth of it and 32 MiB, and a stack a thread.
+///
+/// Each frame is reserved from the budget before its body is read, and what each call's stream
+/// holds in transit lies in its socket's buffers, the kernel's.
+fn limit(cores: Cores) -> u64 {
     let threads = cores.runtime_workers().get() + cores.count().get() + 1;
     Resident {
         memory: EngineConfig::default().memory().get(),
-        push: frame.saturating_mul(partitions),
-        transport: CREDIT_FLOOR.saturating_mul(partitions + u64::from(WRITERS.get())),
+        push: 0,
         threads: u64::try_from(threads).expect("a count fits in 64 bits"),
     }
     .limit()

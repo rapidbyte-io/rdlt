@@ -19,11 +19,12 @@ use rdlt_connector::{
 };
 use rdlt_connector_reference::{MemoryDestination, published};
 use rdlt_engine::{PipelinePlan, RunStatus, StreamPlan};
+use rdlt_host::remote::RawCall;
 use rdlt_host::{Connection, Options, RemoteDestination, RemoteSource};
-use rdlt_testkit::fake::{Fake, Fault, socket};
+use rdlt_testkit::fake::{Fake, Fault, encapsulated, socket};
 use rdlt_wire::limits::{MIN_BATCH_ROWS, MIN_BATCH_VALUES};
+use rdlt_wire::stream::{Call, Kind, Outgoing, Rows};
 use rdlt_wire::{Encoder, IpcFrame, Limits};
-use tokio_stream::wrappers::ReceiverStream;
 
 use crate::sessions::{context, raw_session, table};
 use crate::support::connectors::{Kept, Ticks, Writes, Writing, flagged};
@@ -155,45 +156,42 @@ async fn a_served_connector_refuses_a_hosts_frame_no_limit_bounds_as_a_whole() {
     use v1::write_frame::Frame;
     for (sent, code, limit) in REFUSED {
         let served = Served::new().with_destination(Writes::factory(Writing::Panics));
-        let (mut client, session) = raw_session(served, "frames").await;
+        let (client, session) = raw_session(served, "frames").await;
         let (schema, batches) = sent();
-        let start = Frame::Start(v1::WriteStart {
+        let start = v1::WriteStart {
             session,
             table: Some(v1::TableRef::from(&table())),
-        });
-        let schema = Frame::Schema(v1::WriteSchema {
-            version: 1,
-            ipc_schema: schema,
-        });
-        let batches = batches.into_iter().map(|frame| {
-            Frame::Batch(v1::WriteBatch {
-                segment: 1,
-                data_header: frame.header,
-                padding: Bytes::new(),
-                data_body: frame.body,
-            })
-        });
-        let (frames, receiver) = tokio::sync::mpsc::channel(8);
-        for frame in [start, schema].into_iter().chain(batches) {
-            let frame = v1::WriteFrame { frame: Some(frame) };
-            frames.send(frame).await.expect("the write is open");
-        }
-        let mut acks = client
-            .write(ReceiverStream::new(receiver))
+        };
+        let mut write = RawCall::open(&client, Call::Write, &start, &Limits::default())
             .await
-            .expect("the write starts");
-        let mut error = None;
-        while let Some(ack) = tokio::time::timeout(Duration::from_secs(30), acks.message())
+            .expect("the stream opens")
+            .expect("the write opens");
+        let schema = v1::WriteFrame {
+            frame: Some(Frame::Schema(v1::WriteSchema {
+                version: 1,
+                ipc_schema: schema,
+            })),
+        };
+        let schema = Outgoing::message(None, &schema).expect("a schema fits a head");
+        let kind = Kind::Batch {
+            rows: Rows::Arrow,
+            dictionary: false,
+            tag: 1,
+        };
+        let batches = batches
+            .iter()
+            .map(|frame| Outgoing::new(kind, vec![encapsulated(frame)]).expect("a frame fits"));
+        for frame in std::iter::once(schema).chain(batches) {
+            // The connector may refuse a frame before the rest arrive.
+            if !write.send(frame).await {
+                break;
+            }
+        }
+        let error = tokio::time::timeout(Duration::from_secs(30), write.refusal())
             .await
             .expect("the write answers")
             .expect("the write's answers arrive")
-        {
-            if let Some(v1::write_ack::Ack::Error(refused)) = ack.ack {
-                error = Some(refused);
-            }
-        }
-        let error = ConnectorError::try_from(error.expect("the write answers its error"));
-        let error = error.expect("a connector error");
+            .expect("the write answers its error");
         assert_eq!(refusal(&error), (Some(code), limit), "{error}");
     }
 }

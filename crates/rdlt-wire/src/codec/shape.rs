@@ -12,6 +12,7 @@ use arrow_schema::DataType;
 use flatbuffers::VectorIter;
 
 use self::layout::{Layout, layout};
+use super::pieces::Body;
 use crate::error::{Frame, Part, Problem, WireError};
 use crate::limits::{Limit, Limits};
 
@@ -60,11 +61,11 @@ pub(super) struct Walked {
 ///
 /// A [`WireError`] when the message's shape is not one its columns have, or it holds more than
 /// `limits` allow.
-pub(super) fn walk<'t>(
+pub(super) fn walk<'t, B: Body + ?Sized>(
     frame: Frame,
     batch: RecordBatch<'_>,
     types: impl IntoIterator<Item = &'t DataType>,
-    body: &[u8],
+    body: &B,
     limits: &Limits,
 ) -> Result<Walked, WireError> {
     let mut walk = Walk {
@@ -110,9 +111,9 @@ struct Node {
 }
 
 /// A walk in progress: what of the message is left, and what it held so far.
-struct Walk<'a, 'm, 'l> {
+struct Walk<'a, 'm, 'l, B: ?Sized> {
     frame: Frame,
-    body: &'a [u8],
+    body: &'a B,
     limits: &'l Limits,
     nodes: VectorIter<'m, FieldNode>,
     buffers: VectorIter<'m, Buffer>,
@@ -131,7 +132,7 @@ struct Walk<'a, 'm, 'l> {
     view_bytes: u64,
 }
 
-impl<'a> Walk<'a, '_, '_> {
+impl<'a, B: Body + ?Sized> Walk<'a, '_, '_, B> {
     fn malformed(&self, problem: Problem) -> WireError {
         WireError::malformed(self.frame, problem)
     }

@@ -20,7 +20,7 @@ use arrow_array::{
 use arrow_buffer::{OffsetBuffer, ScalarBuffer};
 use arrow_schema::{DataType, Field as ArrowField, Fields};
 use proptest::prelude::*;
-use rdlt_connector::cost::{Allocations, Rendering};
+use rdlt_connector::cost::{Allocations, Rendering, batch_charge};
 use rdlt_connector::{Admission, Field, LogicalType, Push, SourceEvent, TypeKind};
 use rdlt_testkit::drawn::{Drawn, KINDS, Scalar, array, field, values};
 use rdlt_wire::limits::MESSAGE_ROOM;
@@ -664,6 +664,60 @@ async fn a_checkpoint_is_admitted_for_its_cursor_and_signals_for_nothing() {
     drop(held);
     assert_eq!(budget.reserved(), 0);
     assert!(Admitted::of(Box::new(7_u8)).is_none());
+}
+
+#[tokio::test]
+async fn a_frame_s_reservation_shrinks_to_its_push_and_admits_it_in_one_operation() {
+    let (budget, admission) = charging(1 << 30, 1);
+    let batch =
+        RecordBatch::try_from_iter([("n", Arc::new(Int64Array::from(vec![7; 1_000])) as ArrayRef)])
+            .unwrap();
+    // What the push holds, and its arrays.
+    let charge = batch_charge(&batch);
+    let reserved = admission.reserve_frame(charge + 4_096).await.unwrap();
+    assert_eq!(budget.reserved(), charge + 4_096);
+    let push = SourceEvent::Push(Push::Arrow(batch));
+    let permit = admission.admit_reserved(&push, reserved).await.unwrap();
+    let admitted = Admitted::of(permit.unwrap()).unwrap();
+    assert_eq!((admitted.bytes, budget.reserved()), (charge, charge));
+    drop(admitted);
+    assert_eq!(budget.reserved(), 0);
+    // A push beyond what its frame reserved is refused as a malformed frame, its reservation gone.
+    let small = admission.reserve_frame(charge - 1).await.unwrap();
+    let refused = admission.admit_reserved(&push, small).await.err().unwrap();
+    assert_eq!(refused.code(), Some("malformed_frame"));
+    assert_eq!(budget.reserved(), 0);
+    // A checkpoint's frame reservation goes, and its cursor is admitted to the cursors' share.
+    let reserved = admission.reserve_frame(1_000).await.unwrap();
+    let held = admission
+        .admit_reserved(&checkpoint(40), reserved)
+        .await
+        .unwrap();
+    assert_eq!(budget.reserved(), 40);
+    drop(held);
+    assert_eq!(budget.reserved(), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_frame_waiting_for_its_reservation_is_counted_apart_from_pushes() {
+    let (budget, admission) = charging(6_400, 1);
+    let pushes = budget.acquire(budget.shares().intake).await.unwrap();
+    let release = async {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the test drives tokio's paused clock directly"
+        )]
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        drop(pushes);
+    };
+    let (frame, ()) = tokio::join!(admission.reserve_frame(1), release);
+    let decode = crate::report::Waited {
+        count: 1,
+        time: Duration::from_secs(2),
+    };
+    assert_eq!(budget.waited().decode, decode);
+    assert_eq!(budget.waited().intake, crate::report::Waited::default());
+    drop(frame);
 }
 
 #[tokio::test(start_paused = true)]

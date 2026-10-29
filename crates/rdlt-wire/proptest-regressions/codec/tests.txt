@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 1edb0aa317019b142d1d9c52915ba46c267349245a02765afd3d28fe507d5e55 # shrinks to drawn = ([("a", Shape { logical: List(Field { name: "item", logical_type: Decimal(DecimalType { precision: 3, scale: 1 }), nullable: true }), encoding: Plain, children: [Shape { logical: Decimal(DecimalType { precision: 3, scale: 1 }), encoding: Plain, children: [] }] })], [[List([])], [List([])]])
+cc 518d1c8f92c04711a6512237f6155d5d23b4bd67bcebf8bba011de381b70bb5c # shrinks to drawn = ([("a", Shape { logical: Null, encoding: Plain, children: [] }), ("b", Shape { logical: Null, encoding: Plain, children: [] }), ("c", Shape { logical: Int32, encoding: Plain, children: [] })], []), flips = [(4480145575315363750, 19), (7443980115495555950, 193), (2343967794593591404, 255), (8307159713100674390, 6), (12298250293393066970, 254), (5559120535552957201, 217)], header = false
+cc 310fc06dd566b5e50e66ad7b7cee7bee83b18f8603b616071068b96b80cee9f7 # shrinks to drawn = ([("b", Shape { logical: Null, encoding: Plain, children: [] }), ("c", Shape { logical: List(Field { name: "item", logical_type: Null, nullable: true }), encoding: View, children: [Shape { logical: Null, encoding: Plain, children: [] }] })], [])

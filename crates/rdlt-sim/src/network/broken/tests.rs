@@ -60,7 +60,7 @@ fn every_broken_connector_listens_on_its_port_over_mutual_tls() {
         .filter(|(_, dialed)| dialed.is_err())
         .collect();
     assert!(failed.is_empty(), "{failed:#?}");
-    assert_eq!(dialed.len(), 20);
+    assert_eq!(dialed.len(), 21);
 }
 
 // The host accepts a connection only after the attack dials it, so a cap longer than every

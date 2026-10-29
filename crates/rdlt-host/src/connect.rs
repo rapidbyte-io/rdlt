@@ -1,4 +1,4 @@
-//! Connectors reached through streams a function opens, as a certification opens them to one
+//! Connectors reached through openers a function opens, as a certification opens them to one
 //! served in its own process: supervised as any other, so a lost one is reached again.
 
 use std::sync::Arc;
@@ -6,7 +6,7 @@ use std::sync::Arc;
 use rdlt_connector::{BoxFuture, Destination, Role, Source};
 
 use crate::kills::Kills;
-use crate::network::Stream;
+use crate::opener::Opener;
 use crate::provider::{ConnectorRef, Honours, Placed, Placement, Provider, ProviderError};
 use crate::remote::Options;
 use crate::secrets::{Config, SecretResolver, Secrets};
@@ -14,14 +14,15 @@ use crate::supervise::{
     Configured, Gate, Spawned, Start, SupervisedDestination, SupervisedSource, Supervisor,
 };
 
-/// Opens a stream to a connector.
-pub type Open = Arc<dyn Fn() -> BoxFuture<'static, std::io::Result<Box<dyn Stream>>> + Send + Sync>;
+/// Opens a connection to a connector: the opener its streams are passed over.
+pub type Open = Arc<dyn Fn() -> BoxFuture<'static, std::io::Result<Box<dyn Opener>>> + Send + Sync>;
 
-/// Places the connector every stream `open` opens reaches, when it is the connector the
-/// reference names, and reaches it again through a new one once it is lost.
+/// Places the connector every opener `open` opens reaches, when it is the connector the
+/// reference names, and reaches it again through a new one once it is lost: each connection's
+/// control connection and each of its data calls a stream the opener passes it.
 ///
-/// A reference that requires a path, an endpoint, a digest or an isolation is refused: a
-/// stream a function opens shows none of them.
+/// A reference that requires a path, an endpoint, a digest or an isolation is refused: an
+/// opener a function opens shows none of them.
 #[derive(Clone)]
 pub struct Connect {
     open: Open,
@@ -39,10 +40,10 @@ impl std::fmt::Debug for Connect {
 }
 
 impl Connect {
-    /// Reaches connectors through the streams `open` opens.
+    /// Reaches connectors through the openers `open` opens.
     pub fn new<F>(open: F) -> Self
     where
-        F: Fn() -> BoxFuture<'static, std::io::Result<Box<dyn Stream>>> + Send + Sync + 'static,
+        F: Fn() -> BoxFuture<'static, std::io::Result<Box<dyn Opener>>> + Send + Sync + 'static,
     {
         Self {
             open: Arc::new(open),
@@ -65,14 +66,15 @@ impl Connect {
         self
     }
 
-    /// Reaches each connector so that `kills` cuts every connection to it.
+    /// Reaches each connector so that `kills` cuts every connection to it, and every stream of
+    /// its data calls.
     #[must_use]
     pub fn kills(mut self, kills: &Kills) -> Self {
         let (open, kills) = (self.open, kills.clone());
         self.open = Arc::new(move || {
             let opening = open();
             let kills = kills.clone();
-            Box::pin(async move { opening.await.map(|stream| kills.sever(stream)) })
+            Box::pin(async move { opening.await.map(|opener| kills.severing(opener)) })
         });
         self
     }
@@ -130,7 +132,7 @@ const HONOURS: Honours = Honours {
 };
 
 /// Where a connector reached through a function is, as errors and specs name it.
-const CONNECTED: &str = "a stream a function opens";
+const CONNECTED: &str = "an opener a function opens";
 
 impl Provider for Connect {
     fn source<'a>(

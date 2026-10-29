@@ -84,3 +84,38 @@ fn what_is_read_is_held_aligned_and_no_more_than_the_reader_gives() {
     assert!(is_aligned(&frozen.bytes));
     assert!(frozen.allocation.len() < 60 + 500 + ALIGNMENT);
 }
+
+#[test]
+fn bytes_read_into_its_room_stay_where_it_is_aligned_and_stop_at_its_room() {
+    let data: Vec<u8> = (0..=255).cycle().take(10_000).collect();
+    let mut aligned = Aligned::with_room(7_000);
+    let start = aligned.as_slice().as_ptr();
+    let mut reader = &data[..];
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+    let mut reads = 0;
+    loop {
+        let polled = aligned.poll_read_from(std::pin::Pin::new(&mut reader), &mut context);
+        let std::task::Poll::Ready(read) = polled else {
+            panic!("a slice is always ready");
+        };
+        let read = read.expect("a slice reads");
+        if read == 0 {
+            break;
+        }
+        reads += 1;
+        assert!(reads < 10_000, "each read takes a byte at least");
+    }
+    assert_eq!(aligned.as_slice(), &data[..7_000], "no more than its room");
+    assert_eq!(
+        aligned.as_slice().as_ptr(),
+        start,
+        "the allocation never moved"
+    );
+    assert!(is_aligned(aligned.as_slice()));
+    assert_eq!(aligned.room(), 7_000);
+    assert_eq!(
+        &reader[..10],
+        &data[7_000..7_010],
+        "what is past its room stays unread"
+    );
+}

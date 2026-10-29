@@ -1,12 +1,16 @@
 //! A simulated network: the source and the destination listen on hosts of their own over mutual
 //! TLS, and the engine places them there through the host's remote placement, all on turmoil's
 //! hosts, each a paused tokio clock the network steps together.
+//!
+//! In half the seeds the engine reaches them as it reaches a spawned connector instead: a stream
+//! of its own for the control connection and each data call.
 
 mod broken;
 mod connectors;
 mod faults;
 mod hostile;
 mod stalled;
+mod streams;
 #[cfg(test)]
 mod tests;
 
@@ -25,8 +29,8 @@ use rdlt_connector::{
     BoxFuture, Destination, Source, SourceFactory, destination_factory, source_factory,
 };
 use rdlt_host::{
-    ConnectorRef, Deadlines, Identity, Network, Options, Placed, Provider as _, ProviderError,
-    Remote, Stream,
+    Connect, ConnectorRef, Deadlines, Identity, Network, Opener, Options, Placed, Provider as _,
+    ProviderError, Remote, Stream,
 };
 use rdlt_testkit::tls::{Files, Pki};
 use rdlt_wire::Limits;
@@ -163,10 +167,14 @@ pub(crate) struct Net {
     watch: Watch,
     /// The paths the network's faults and connectors reached.
     reached: Mutex<Reached>,
+    /// Whether the engine reaches the connectors over streams of their own rather than over TLS.
+    streams: bool,
+    /// Where the connectors take the streams the engine opens, where it does.
+    pipes: Arc<streams::Pipes>,
 }
 
 impl Net {
-    fn new(serving: Serving, peers: Peers) -> Self {
+    fn new(serving: Serving, peers: Peers, streams: bool) -> Self {
         let pki = Pki::new("ca");
         let mut hosts = vec![Side::Source.host(), Side::Destination.host(), STALLED];
         // Named only where it listens, so no other seed's handshakes carry its name.
@@ -187,6 +195,8 @@ impl Net {
             framing: peers.framing,
             watch: Watch::default(),
             reached: Mutex::default(),
+            streams,
+            pipes: Arc::default(),
         }
     }
 }
@@ -206,7 +216,8 @@ where
     T: 'static,
 {
     let mut rng = SplitMix64::new(seed.value() ^ LATENCY);
-    let net = Arc::new(Net::new(serving, peers));
+    let streams = SplitMix64::new(seed.value() ^ STREAMS).chance(500);
+    let net = Arc::new(Net::new(serving, peers, streams));
     let mut sim = turmoil::Builder::new()
         .tick_duration(TICK)
         .simulation_duration(LIMIT)
@@ -290,6 +301,9 @@ where
 /// What the latency's draw mixes into the seed: "latency" in ASCII.
 const LATENCY: u64 = 0x006c_6174_656e_6379;
 
+/// What the draw of the streams' half mixes into the seed: "streams" in ASCII.
+const STREAMS: u64 = 0x0073_7472_6561_6d73;
+
 /// Serves `side`'s connector on its host, again after each crash or stop, as the network's
 /// connectors say.
 ///
@@ -322,13 +336,27 @@ async fn listen(net: Arc<Net>, side: Side) -> turmoil::Result {
             listener,
             _held: held,
         };
-        let mut serving = Box::pin(serve_listener(
-            served,
+        let stop = futures_util::FutureExt::shared(Box::pin(stop));
+        let listening_served = serve_listener(
+            Arc::clone(&served),
             sockets,
             listening.clone(),
             limits,
-            stop,
-        ));
+            stop.clone(),
+        );
+        let streamed = net
+            .streams
+            .then(|| streams::serve(Arc::clone(&net.pipes), side.host(), served, limits, stop));
+        let mut serving = Box::pin(async move {
+            match streamed {
+                Some(streamed) => {
+                    tokio::join!(listening_served, streamed);
+                }
+                None => {
+                    listening_served.await;
+                }
+            }
+        });
         let draining = tokio::select! {
             biased;
             // Dropping the serving drops its listener and every connection at once, as a crashed
@@ -391,6 +419,17 @@ pub(crate) struct Networked {
     canary: Canary,
 }
 
+/// Places the connector on `host` reached over streams, through `net`'s pipes.
+fn connecting(net: &Arc<Net>, host: &'static str, options: &Options, canary: &Canary) -> Connect {
+    let pipes = Arc::clone(&net.pipes);
+    Connect::new(move || {
+        let dialing = streams::Dialing::new(Arc::clone(&pipes), host);
+        Box::pin(async move { Ok(Box::new(dialing) as Box<dyn Opener>) })
+    })
+    .options(*options)
+    .secrets(canary.vault())
+}
+
 impl Networked {
     /// Places connectors on `net`, running their connections with `options`, and resolving the
     /// secrets of `canary` their configurations refer to.
@@ -413,9 +452,14 @@ impl Networked {
         *self.net.reached.lock()
     }
 
-    /// Bytes: the least credit the engine's host grants a read of a connector it placed.
-    pub(crate) fn read_floor(&self) -> u64 {
-        self.remote_options.read_floor
+    /// Bytes: what the network holds of one data call's stream: an HTTP/2 call's window over
+    /// TLS, or a pipe's buffer.
+    pub(crate) fn transport(&self) -> u64 {
+        if self.net.streams {
+            streams::BUFFERED
+        } else {
+            rdlt_wire::limits::STREAM_WINDOW
+        }
     }
 
     /// Bytes: the frame limit the engine's host tells a connector it placed.
@@ -467,6 +511,17 @@ impl Networked {
         stalled: bool,
     ) -> Arc<dyn Source> {
         let id = self.net.serving.factory().spec().id.clone();
+        if self.net.streams && !stalled {
+            let connect = connecting(
+                &self.net,
+                Side::Source.host(),
+                &self.remote_options,
+                &self.canary,
+            );
+            let reference = ConnectorRef::new(id);
+            let place = async || connect.source(&reference, config).await;
+            return Arc::from(placed("source", &self.canary, place).await);
+        }
         let reference = reference(host(Side::Source, stalled), id);
         Arc::from(
             placed("source", &self.canary, async || {
@@ -484,6 +539,13 @@ impl Networked {
         stalled: bool,
     ) -> Arc<dyn Destination> {
         let id = destination_factory::<SimDestination>().spec().id.clone();
+        if self.net.streams && !stalled {
+            let options = &self.remote_options;
+            let connect = connecting(&self.net, Side::Destination.host(), options, &self.canary);
+            let reference = ConnectorRef::new(id);
+            let place = async || connect.destination(&reference, config).await;
+            return Arc::from(placed("destination", &self.canary, place).await);
+        }
         let reference = reference(host(Side::Destination, stalled), id);
         let place = async || self.remote.destination(&reference, config).await;
         Arc::from(placed("destination", &self.canary, place).await)
@@ -567,6 +629,5 @@ pub(crate) fn options(rng: &mut SplitMix64, limits: Limits) -> Options {
             ..Deadlines::default()
         },
         limits,
-        ..Options::default()
     }
 }

@@ -113,7 +113,7 @@ sim-rate floor="2" cores=env("RDLT_SIM_CORES", ""): sim-archive
     RDLT_SIM_SEED="" RDLT_SIM_SEEDS=1000 RDLT_SIM_SEEDS_FROM=0 RDLT_SIM_CORES="{{ cores }}" cargo nextest run --archive-file target/sim.tar.zst --workspace-remap . -E 'test(=exactly_once::every_row_lands_exactly_once_through_faults_crashes_and_concurrent_runs)'
     cargo xtask sim-rate target/sim-timings/exactly_once.jsonl --floor {{ floor }}
 
-# Measure how much of the engine, connector, host and data-plane code the simulation alone
+# Measure how much of the engine, connector, host and wire code the simulation alone
 # reaches, and hold it above its floor: left out are test code, modules built only for tests and
 # benches among it, the connector's test kit and SQL planner, generated code, and what the
 # simulation never runs (what process placement leaves to the operating system, files the seeds

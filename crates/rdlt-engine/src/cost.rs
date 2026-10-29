@@ -176,6 +176,42 @@ impl Admission for Charging {
         self.budget.limits()
     }
 
+    fn reserve_frame(&self, bytes: u64) -> BoxFuture<'_, rdlt_connector::Result<Permit>> {
+        Box::pin(async move {
+            // A frame's wait is counted apart from pushes', which it waits among.
+            let reserved = self.budget.acquire_decoding(bytes).await;
+            let reservation = reserved.map_err(|denied| self.refused(PUSH, denied))?;
+            let reservation = self.admitted(reservation);
+            Ok(Box::new(Admitted::new(bytes, reservation)) as Permit)
+        })
+    }
+
+    fn admit_reserved(
+        &self,
+        event: &SourceEvent,
+        reserved: Permit,
+    ) -> BoxFuture<'_, rdlt_connector::Result<Option<Permit>>> {
+        let SourceEvent::Push(push) = event else {
+            // A cursor waits with its seal in a share of its own: the frame's reservation goes.
+            drop(reserved);
+            return self.admit(event);
+        };
+        let bytes = push_charge(push);
+        let admitted = match Admitted::of(reserved) {
+            Some(mut admitted) if bytes <= admitted.bytes => {
+                // One operation on the budget: what the frame held beyond the push goes.
+                admitted.shrink(bytes);
+                Ok(Some(admitted as Permit))
+            }
+            _ => Err(ConnectorError::new(
+                ConnectorErrorKind::Internal,
+                format!("a push of {bytes} bytes beyond what its frame reserved"),
+            )
+            .with_code(rdlt_connector::wire::MALFORMED_FRAME)),
+        };
+        Box::pin(async move { admitted })
+    }
+
     fn charge(&self, bytes: u64) -> rdlt_connector::Result<Permit> {
         // What a read keeps beside its events no write releases: it has a part of a share of its
         // own, and a read that would keep more is refused where it would.

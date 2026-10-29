@@ -31,11 +31,6 @@ impl Feed {
     pub(crate) fn send(&self, frame: Frame<Bytes>) -> Result<(), Dropped> {
         self.0.send(Ok(frame)).map_err(|_| Dropped)
     }
-
-    /// Fails the body with `status`, unless it was dropped.
-    pub(crate) fn fail(&self, status: Status) -> Result<(), Dropped> {
-        self.0.send(Err(status)).map_err(|_| Dropped)
-    }
 }
 
 /// The body a feed sends to was dropped.

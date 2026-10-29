@@ -218,8 +218,8 @@ are (ADR 0042):
 - a connector's error neither sets a wait outside the retry policy nor claims a fence or a stop
   the engine did not see, and a read that keeps losing its place spends the retry budget.
 
-Not guaranteed: a read's credit is kept by the served end and HTTP/2's flow control; a host
-cannot tell an overrun from a read that kept to its credit (ADR 0016).
+Not guaranteed: a read's pace is kept by its stream, a socket's buffer or HTTP/2's flow
+control; a connector parks at most what its stream holds in transport (ADR 0016).
 
 ## What a frame may hold
 

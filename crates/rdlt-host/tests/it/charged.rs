@@ -94,8 +94,6 @@ async fn a_catalog_at_the_least_budget_s_limit_is_charged_before_it_is_decoded_a
 struct Tally {
     held: AtomicUsize,
     frames: AtomicUsize,
-    /// How many were held as each event a read sent was admitted.
-    seen: Mutex<Vec<usize>>,
 }
 
 struct Charged(Arc<Tally>);
@@ -119,47 +117,85 @@ impl Charge for Charging {
     }
 }
 
-struct Watching(Arc<Tally>);
+/// What a read's frames reserved, and what the events decoded from them were charged.
+#[derive(Default)]
+struct Reserved {
+    /// Bytes: each frame's reservation, in the order they were made.
+    frames: Mutex<Vec<u64>>,
+    /// Bytes: each event admitted from a frame, its charge and what its frame reserved.
+    admitted: Mutex<Vec<(u64, u64)>>,
+}
+
+/// A frame's reservation, which knows its bytes.
+struct Reservation(u64);
+
+struct Watching(Arc<Reserved>);
 
 impl Admission for Watching {
     fn admit(&self, _: &SourceEvent) -> BoxFuture<'_, rdlt_connector::Result<Option<Permit>>> {
-        let held = self.0.held.load(Ordering::SeqCst);
-        self.0.seen.lock().expect("not poisoned").push(held);
         Box::pin(async { Ok(None) })
     }
 
     fn charge(&self, _: u64) -> rdlt_connector::Result<Permit> {
         Ok(Box::new(()))
     }
+
+    fn reserve_frame(&self, bytes: u64) -> BoxFuture<'_, rdlt_connector::Result<Permit>> {
+        self.0.frames.lock().expect("not poisoned").push(bytes);
+        Box::pin(async move { Ok(Box::new(Reservation(bytes)) as Permit) })
+    }
+
+    fn admit_reserved(
+        &self,
+        event: &SourceEvent,
+        reserved: Permit,
+    ) -> BoxFuture<'_, rdlt_connector::Result<Option<Permit>>> {
+        let reserved = reserved
+            .downcast::<Reservation>()
+            .expect("a frame's reservation is this admission's");
+        let charge = match event {
+            SourceEvent::Push(push) => rdlt_connector::cost::push_charge(push),
+            _ => 0,
+        };
+        let admitted = &self.0.admitted;
+        admitted
+            .lock()
+            .expect("not poisoned")
+            .push((charge, reserved.0));
+        Box::pin(async { Ok(None) })
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn each_frame_is_charged_and_released_before_its_event_waits_for_room() {
+async fn each_frame_is_reserved_before_it_is_read_and_its_event_admitted_within_it() {
     let source = memory_source(streams(1), &Options::default()).await;
-    let tally = Arc::new(Tally::default());
-    let watching = Arc::new(Watching(Arc::clone(&tally)));
+    let reserved = Arc::new(Reserved::default());
+    let watching = Arc::new(Watching(Arc::clone(&reserved)));
     let (sink, mut feed) = admitted_partition_channel(NonZeroUsize::MIN, watching);
     let request = ReadRequest::new(first(), Partition::single(), None);
+    // A read's frames are no answers of the control connection: none is charged as one.
+    let tally = Arc::new(Tally::default());
     let charge = Arc::new(Charging(Arc::clone(&tally)));
     let read = tokio::spawn(rdlt_wire::bounded::charging(charge, async move {
         source.read(request, sink).await
     }));
     while feed.recv().await.is_some() {}
     read.await.expect("the read runs").expect("the read ends");
-    assert!(
-        tally.frames.load(Ordering::SeqCst) > 0,
-        "frames are charged"
-    );
-    let seen = tally.seen.lock().expect("not poisoned").clone();
-    assert!(!seen.is_empty(), "events are admitted");
-    assert!(
-        seen.iter().all(|held| *held == 0),
-        "a charge held as an event was admitted: {seen:?}"
-    );
     assert_eq!(
-        tally.held.load(Ordering::SeqCst),
+        tally.frames.load(Ordering::SeqCst),
         0,
-        "every charge is released"
+        "a frame was charged"
+    );
+    let frames = reserved.frames.lock().expect("not poisoned").clone();
+    assert!(!frames.is_empty(), "frames are reserved");
+    let admitted = reserved.admitted.lock().expect("not poisoned").clone();
+    assert!(
+        admitted.iter().any(|(charge, _)| *charge > 0),
+        "a push was admitted from its frame: {admitted:?}"
+    );
+    assert!(
+        admitted.iter().all(|(charge, reserved)| charge <= reserved),
+        "an event held more than its frame reserved: {admitted:?}"
     );
 }
 
@@ -202,5 +238,6 @@ async fn a_writer_releases_each_answer_s_charge_once_it_is_decoded() {
         );
     })
     .await;
-    assert!(tally.seen.lock().expect("not poisoned").is_empty());
+    // The write's batches went as frames of its stream, none charged as an answer.
+    assert_eq!(tally.frames.load(Ordering::SeqCst), 0);
 }

@@ -858,6 +858,8 @@ fn print_sides(case: Case, seconds: &[Seconds]) {
 criterion_group!(benches, served, shaped::shaped, tables::tables);
 
 fn main() -> ExitCode {
+    // A connector spawned holds a descriptor of this process's for each of its data calls.
+    rdlt_host::raise_open_files();
     if connector::asked() {
         return connector::serve(processes::served);
     }

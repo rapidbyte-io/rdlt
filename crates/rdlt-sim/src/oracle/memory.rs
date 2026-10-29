@@ -29,17 +29,16 @@ const IN_PROCESS: u64 = 13 << 20;
 /// Bytes: as [`IN_PROCESS`], where the connectors are served apart from the engine, on the
 /// simulated network or in played processes, and their hosts share the thread; what their reads
 /// hold between the source and the engine is counted beside it, by [`QUEUED`], [`CHANNEL`] and
-/// the credit floor.
+/// what each read's stream holds in transport.
 const NETWORK: u64 = 11 << 20;
 
 /// Events a read over the network may hold beyond the push its source is sending and its
-/// channel's, each place holding at most one: the host's event waiting for the engine to admit
-/// it, the batch being cut and its piece waiting for credit, and the frame sent past the credit
-/// left; an event is a push or a checkpoint, which carries its cursor.
+/// channel's, each place holding at most one: the batch being cut, and the piece of it being
+/// written; an event is a push or a checkpoint, which carries its cursor.
 ///
-/// The frames credit lets go before the host takes them are counted apart: a window of two of
-/// the largest frames, or the credit floor where it is larger.
-const QUEUED: u64 = 1 + 2 + 1;
+/// The host reserves each frame before it reads its body, so nothing it holds of a read is
+/// uncharged.
+const QUEUED: u64 = 2;
 
 /// Events the channel of a read the connector serves holds, whose pushes keep alive no more than
 /// the host's frame limit together, or one larger push alone; checkpoints pass it free.
@@ -66,14 +65,13 @@ pub(super) fn allowance(seed: Seed, inline: bool, apart: bool, hostile: bool) ->
 }
 
 /// Bytes: what `reads` reads over the network hold beyond the pushes their source is sending,
-/// where the largest events are `largest`, the host's frame limit is `frame` and each read is
-/// granted credit of at least `floor`.
+/// where the largest events are `largest`, the host's frame limit is `frame` and each read's
+/// stream holds `transport` in transport.
 ///
 /// A read's channel holds its events, or its pushes' window and every event a cursor, whichever
 /// is less.
-fn queued(reads: u64, largest: Largest, frame: u64, floor: u64) -> u64 {
+fn queued(reads: u64, largest: Largest, frame: u64, transport: u64) -> u64 {
     let event = largest.event();
-    let credit = event.saturating_mul(2).max(floor);
     let window = frame
         .saturating_add(largest.push)
         .saturating_add(CHANNEL.saturating_mul(largest.cursor));
@@ -81,7 +79,7 @@ fn queued(reads: u64, largest: Largest, frame: u64, floor: u64) -> u64 {
     let read = QUEUED
         .saturating_mul(event)
         .saturating_add(channel)
-        .saturating_add(credit);
+        .saturating_add(transport);
     reads.saturating_mul(read)
 }
 
@@ -176,7 +174,7 @@ impl super::Simulation {
         let queued = self.placing.as_ref().map_or(0, |placing| {
             let reads = started.saturating_mul(self.partitions);
             let largest = self.world.pushes.largest();
-            queued(reads, largest, placing.frame_bytes(), placing.read_floor())
+            queued(reads, largest, placing.frame_bytes(), placing.transport())
         });
         let attempt = Held { held, queued };
         self.held = Some(Held::worse(self.held, attempt));

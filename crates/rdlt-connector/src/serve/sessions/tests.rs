@@ -4,7 +4,6 @@ use std::time::Duration;
 
 use super::Sessions;
 use crate::serve::live::CountedSession;
-use crate::wire::error;
 
 /// Bounds every wait of a test: an Open or a Close that hangs fails its test.
 const WAIT: Duration = Duration::from_secs(60);
@@ -27,7 +26,7 @@ async fn holding(sessions: &Sessions, count: u64, live: &Arc<AtomicUsize>) {
 async fn is_closed(sessions: &Sessions, id: u64) -> bool {
     match sessions.session(id).await {
         Ok(_) => false,
-        Err(refused) => error(&refused).code() == Some("no_session"),
+        Err(refused) => refused.code() == Some("no_session"),
     }
 }
 

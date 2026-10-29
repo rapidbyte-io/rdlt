@@ -8,6 +8,23 @@ import "rdlt/connector/v1/destination.proto";
 import "rdlt/connector/v1/source.proto";
 
 // A connector, serving every role it supports.
+//
+// Its data calls are streams of their own, outside this service: a read of a partition, a write of
+// a table and, where the handshake accepted the "published" feature, a read-back of every row a
+// destination published to a table, for certification, which the engine never makes. Each stream
+// carries frames of a 16-byte head, `len:u32le | kind:u8 | flags:u8 | 0:u16 | tag:u64le`, then
+// `len` bytes: kind 1 is one Arrow IPC encapsulated message at the stream format's 64-byte
+// alignment, its tag the schema epoch on a read and the segment on a write, its flags' bit 0 set
+// for change rows and bit 1 for a dictionary; kind 2 is a push's JSON; kind 3 is one message of
+// this package. The host's first frame is a message whose flags name the call (1 a read, 2 a write,
+// 3 a read-back) and whose body is the call's start, a ReadStart, a WriteStart or a
+// ReadPublishedRequest; the connector answers with a message head of the same flags and no body, or
+// with the call's answer carrying its error. After it a read's host sends ReadControl messages and
+// its connector ReadFrame messages, batches and JSON pushes; a write's host WriteFrame messages and
+// batches, its connector WriteAck messages; a read-back's connector what a read's does but JSON. A
+// spawned connector's streams are passed over the socket at its descriptor 3, the control
+// connection first; a remote one's ride one HTTP/2 call, `/rdlt.connector.v1.Connector/Data`, of
+// the control connection.
 service Connector {
   // Agrees the protocol version, role and features, and answers who the connector is, before
   // it receives any configuration.
@@ -21,8 +38,6 @@ service Connector {
   rpc Discover(DiscoverRequest) returns (Catalog);
   // The partitions of a stream to read.
   rpc Plan(PlanRequest) returns (PlanResponse);
-  // Reads a partition.
-  rpc Read(stream ReadControl) returns (stream ReadFrame);
   // Reports cursors a destination committed: each a checkpoint a read sent this host, or the
   // cursor a read of its started from. A report of any other position is refused as transient,
   // with the code "position_unsent".
@@ -31,18 +46,12 @@ service Connector {
   rpc Open(OpenRequest) returns (OpenResponse);
   // Applies a schema change.
   rpc ApplySchema(ApplySchemaRequest) returns (ApplySchemaResponse);
-  // Writes a table's batches.
-  rpc Write(stream WriteFrame) returns (stream WriteAck);
   // Commits a session's staged segments.
   rpc Commit(CommitRequest) returns (Receipt);
   // Closes a session.
   rpc Close(CloseRequest) returns (CloseResponse);
   // Proves both ends are alive.
   rpc Heartbeat(stream Ping) returns (stream Pong);
-  // Reads back every row a destination published to a table, for certification; served when
-  // the handshake accepted the "published" feature, which only a connector built and served for
-  // certification does. The engine never calls it.
-  rpc ReadPublished(ReadPublishedRequest) returns (stream ReadFrame);
   // Tells where a source stands for a partition outside the engine, for certification; served
   // when the handshake accepted the "acknowledged" feature, which only a connector built and
   // served for certification does. The engine never calls it.

@@ -1,4 +1,4 @@
-//! Calls over a link with a round trip of tens of milliseconds: credit and HTTP/2's windows keep
+//! Calls over a link with a round trip of tens of milliseconds: HTTP/2's windows keep
 //! mebibytes of a call in flight, so a call over a distant link is slowed by a round trip only as
 //! often as its windows fill.
 //!

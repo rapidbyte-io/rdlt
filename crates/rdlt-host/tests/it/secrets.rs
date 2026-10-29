@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use rdlt_connector::serve::{Served, serve_connection};
+use rdlt_connector::serve::Served;
 use rdlt_connector::{
     BoxFuture, ConnectContext, ConnectorErrorKind, ConnectorId, ConnectorSpec, Destination,
     DestinationFactory, Secret, destination_factory, source_factory,
@@ -218,8 +218,8 @@ async fn a_secret_an_earlier_start_was_sent_is_scrubbed_from_what_a_later_one_sa
 fn reaching(serving: impl Fn(usize) -> Served + Send + Sync + 'static, kills: &Kills) -> Connect {
     let opened = AtomicUsize::new(0);
     Connect::new(move || {
-        let stream = crate::support::served(serving(opened.fetch_add(1, Ordering::SeqCst)));
-        Box::pin(async move { Ok(Box::new(stream) as Box<dyn rdlt_host::Stream>) })
+        let passing = crate::support::opener(serving(opened.fetch_add(1, Ordering::SeqCst)));
+        Box::pin(async move { Ok(passing) })
     })
     .kills(kills)
 }
@@ -382,14 +382,9 @@ fn piped(secrets: Stalls) -> Connect {
         ..Options::default()
     };
     Connect::new(|| {
-        let (host, connector) = tokio::io::duplex(1 << 16);
-        let served = Arc::new(Served::new().with_source(source_factory::<MemorySource>()));
-        tokio::spawn(serve_connection(
-            served,
-            connector,
-            rdlt_wire::Limits::default(),
-        ));
-        Box::pin(async move { Ok(Box::new(host) as Box<dyn rdlt_host::Stream>) })
+        let opener =
+            crate::support::opener(Served::new().with_source(source_factory::<MemorySource>()));
+        Box::pin(async move { Ok(opener) })
     })
     .secrets(secrets)
     .options(options)

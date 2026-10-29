@@ -19,15 +19,18 @@ http-body.workspace = true
 prost.workspace = true
 nix = { workspace = true, optional = true, features = ["fs", "user"] }
 rustls = { workspace = true, optional = true }
+rustix = { workspace = true, features = ["net", "process"] }
 thiserror.workspace = true
-tokio = { workspace = true, features = ["rt", "sync"] }
+tokio = { workspace = true, features = ["io-util", "net", "rt", "sync"] }
+tokio-util = { workspace = true, features = ["io"] }
 tonic = { workspace = true, features = ["codegen"] }
 tonic-prost.workspace = true
 webpki = { workspace = true, optional = true }
 
 [features]
-# tonic's server support and the data plane's router, for a connector that serves the
-# protocol; the server stub is generated in every build.
+# tonic's server support and the router that serves a connection's calls, its data calls'
+# streams among them, for a connector that serves the protocol; the server stub is generated in
+# every build.
 serve = ["tonic/server"]
 # The protocol's TLS, for connectors reached over the network.
 tls = ["dep:nix", "dep:rustls", "dep:webpki"]

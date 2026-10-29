@@ -2,7 +2,9 @@
 //!
 //! One connection is one session of the protocol: it opens with a handshake that names the role
 //! and carries the configuration, and every later call works on the connector that handshake
-//! connected. A binary serves every role it has a factory for.
+//! connected. Its control calls ride HTTP/2; each data call is a stream of its own, passed over
+//! an opener beside the control connection, or one `Data` call of it. A binary serves every role
+//! it has a factory for.
 
 mod args;
 mod binary;
@@ -19,6 +21,7 @@ mod read;
 mod sending;
 mod service;
 mod sessions;
+mod stream;
 #[cfg(test)]
 mod tests;
 mod until;
@@ -31,12 +34,15 @@ use std::time::Duration;
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use hyper_util::service::TowerToHyperService;
 use rdlt_wire::Limits;
-use rdlt_wire::flow::Transport;
+use rdlt_wire::opener::Accepting;
+use rdlt_wire::transport::Transport;
 use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::task::JoinSet;
 use tower::ServiceExt as _;
 
 pub use binary::serve;
 pub use listen::{Listener, Listening, Log, serve_listener};
+pub use rdlt_wire::opener::Opening;
 
 use crate::destination::DestinationFactory;
 use crate::source::SourceFactory;
@@ -114,10 +120,17 @@ impl Hosted {
     }
 }
 
-/// Serving a connection failed in its transport.
+/// Serving a connection failed.
 #[derive(Debug, thiserror::Error)]
-#[error("serving the connection failed")]
-pub struct ServeError(#[source] hyper::Error);
+#[non_exhaustive]
+pub enum ServeError {
+    /// Its control connection's transport failed.
+    #[error("serving the connection failed")]
+    Transport(#[source] hyper::Error),
+    /// Its opener failed, or passed no control connection first.
+    #[error("taking the connection's streams failed")]
+    Opener(#[source] std::io::Error),
+}
 
 /// How often a served connection pings its host over HTTP/2, as the host's heartbeat pings it.
 const KEEP_ALIVE: Duration = Duration::from_secs(5);
@@ -125,8 +138,8 @@ const KEEP_ALIVE: Duration = Duration::from_secs(5);
 /// How long a ping may go unanswered before the host counts as gone.
 const KEEP_ALIVE_PATIENCE: Duration = Duration::from_secs(30);
 
-/// Serves the protocol on `io`, enforcing `limits` on what it receives, until the host closes the
-/// connection, which ends it cleanly.
+/// Serves the protocol on `io`, its data calls as `Data` calls of it, enforcing `limits` on what
+/// it receives, until the host closes the connection, which ends it cleanly.
 ///
 /// # Errors
 ///
@@ -143,6 +156,177 @@ where
     serve_until(served, io, limits, host, std::future::pending()).await
 }
 
+/// What passes a connection's streams to the connector serving it: the control connection
+/// first, then a stream for each data call.
+pub trait Opened: Send {
+    /// A stream passed.
+    type Stream: AsyncRead + AsyncWrite + Send + Unpin + 'static;
+
+    /// The next stream passed, and what it is; `None` once nothing more is passed.
+    fn next(
+        &mut self,
+    ) -> impl Future<Output = std::io::Result<Option<(Opening, Self::Stream)>>> + Send;
+}
+
+impl Opened for Accepting {
+    type Stream = tokio::net::UnixStream;
+
+    async fn next(&mut self) -> std::io::Result<Option<(Opening, Self::Stream)>> {
+        let Some((opening, stream)) = Accepting::next(self).await? else {
+            return Ok(None);
+        };
+        Ok(Some((opening, passed(stream)?)))
+    }
+}
+
+impl<S: AsyncRead + AsyncWrite + Send + Unpin + 'static> Opened
+    for tokio::sync::mpsc::Receiver<(Opening, S)>
+{
+    type Stream = S;
+
+    async fn next(&mut self) -> std::io::Result<Option<(Opening, S)>> {
+        Ok(self.recv().await)
+    }
+}
+
+/// Serves the protocol on the streams its host passes over `opener`, the opener's end it holds:
+/// the first its control connection, each later one a data call's stream; enforcing `limits` on
+/// what it receives, until the host closes the control connection, which ends it cleanly.
+///
+/// # Errors
+///
+/// A [`ServeError`] when the opener fails, its first stream is not the control connection, or
+/// the control connection fails in its transport.
+pub async fn serve_opened(
+    served: Arc<Served>,
+    opener: std::os::fd::OwnedFd,
+    limits: Limits,
+) -> Result<(), ServeError> {
+    let opener = Accepting::new(opener).map_err(ServeError::Opener)?;
+    serve_streams(served, opener, limits, std::future::pending()).await
+}
+
+/// Serves the protocol on the streams `opened` passes, as [`serve_opened`] serves those an
+/// opener passes, and once `stop` ends, stops taking new calls and ends when the calls in flight
+/// have.
+///
+/// # Errors
+///
+/// As [`serve_opened`].
+pub async fn serve_streams<O: Opened>(
+    served: Arc<Served>,
+    opened: O,
+    limits: Limits,
+    stop: impl Future<Output = ()>,
+) -> Result<(), ServeError> {
+    let host = Hosted::spawning();
+    serve_opened_until(served, opened, limits, host, stop).await
+}
+
+/// Serves as [`serve_streams`] does, for the host `host` names.
+async fn serve_opened_until<O: Opened>(
+    served: Arc<Served>,
+    mut opener: O,
+    limits: Limits,
+    host: Hosted,
+    stop: impl Future<Output = ()>,
+) -> Result<(), ServeError> {
+    let control = match opener.next().await.map_err(ServeError::Opener)? {
+        Some((Opening::Control, control)) => control,
+        Some((Opening::Data, _)) | None => {
+            let refused = "the opener passed no control connection first";
+            return Err(ServeError::Opener(std::io::Error::other(refused)));
+        }
+    };
+    let drain = host.drain;
+    // A stop reaches the control connection once the data calls in flight have ended, within the
+    // drain: they ride no call of it, so its own drain would not wait for them.
+    let (release, released) = tokio::sync::oneshot::channel::<()>();
+    let released = async {
+        released.await.ok();
+    };
+    let (service, serving) = serving(served, control, limits, host, released);
+    let mut calls = DataCalls {
+        service: Arc::clone(&service),
+        calls: JoinSet::new(),
+    };
+    let (mut release, mut open, mut stopping) = (Some(release), true, false);
+    let drained = tokio::time::sleep(drain);
+    tokio::pin!(serving, stop, drained);
+    let served = loop {
+        if stopping
+            && calls.calls.is_empty()
+            && let Some(release) = release.take()
+        {
+            release.send(()).ok();
+        }
+        tokio::select! {
+            biased;
+            served = &mut serving => break served,
+            () = &mut stop, if !stopping => {
+                stopping = true;
+                drained.as_mut().reset(tokio::time::Instant::now() + drain);
+            }
+            () = &mut drained, if stopping && release.is_some() => {
+                if let Some(release) = release.take() {
+                    release.send(()).ok();
+                }
+            }
+            passed = opener.next(), if open => match passed {
+                Ok(Some((Opening::Data, stream))) => calls.serve(stream, stopping),
+                // A second control connection is no stream of this one.
+                Ok(Some((Opening::Control, _))) => {}
+                Ok(None) => open = false,
+                // A connection that can take no more data calls ends, rather than leave its host
+                // waiting on each call it opens: a spawned connector then exits, and is started
+                // again.
+                Err(error) => break Err(ServeError::Opener(error)),
+            },
+            Some(_) = calls.calls.join_next() => {}
+        }
+    };
+    // The data calls end with the control connection: a host gone takes them with it.
+    service.ended.cancel();
+    while calls.calls.join_next().await.is_some() {}
+    served
+}
+
+/// A passed connection's data calls in flight.
+///
+/// A call's writes wait as long as its host takes nothing, an engine waiting for room among
+/// them: a host gone ends its calls with its control connection, whose own writes have a send
+/// wait.
+struct DataCalls {
+    service: Arc<service::Service>,
+    calls: JoinSet<()>,
+}
+
+impl DataCalls {
+    /// Serves the data call `stream` carries, unless the connection is `stopping` or carries as
+    /// many as it may: such a stream ends unanswered.
+    fn serve<S: AsyncRead + AsyncWrite + Send + Unpin + 'static>(
+        &mut self,
+        stream: S,
+        stopping: bool,
+    ) {
+        while self.calls.try_join_next().is_some() {}
+        if !stopping && self.calls.len() < MAX_DATA_CALLS {
+            self.calls
+                .spawn(stream::serve(Arc::clone(&self.service), stream));
+        }
+    }
+}
+
+/// The data calls one passed connection serves at once: as many as its HTTP/2 calls.
+const MAX_DATA_CALLS: usize = rdlt_wire::limits::MAX_CALLS as usize;
+
+/// `stream`, a socket passed over an opener, as the runtime drives it.
+fn passed(stream: std::os::fd::OwnedFd) -> std::io::Result<tokio::net::UnixStream> {
+    let stream = std::os::unix::net::UnixStream::from(stream);
+    stream.set_nonblocking(true)?;
+    tokio::net::UnixStream::from_std(stream)
+}
+
 /// Serves as [`serve_connection`] does, the host named `host` where a listening connector
 /// accepted it by name, and once `stop` ends, stops taking new calls and ends when the calls in
 /// flight have.
@@ -156,9 +340,62 @@ async fn serve_until<IO>(
 where
     IO: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 {
+    let (service, serving) = serving(served, io, limits, host, stop);
+    let served = serving.await;
+    // Its `Data` calls end with it.
+    service.ended.cancel();
+    served
+}
+
+/// The service of the connection `io` carries to `host`, and its serving, as
+/// [`serve_until`] serves it.
+fn serving<IO>(
+    served: Arc<Served>,
+    io: IO,
+    limits: Limits,
+    host: Hosted,
+    stop: impl Future<Output = ()>,
+) -> (
+    Arc<service::Service>,
+    impl Future<Output = Result<(), ServeError>>,
+)
+where
+    IO: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+{
     let stopping = tokio_util::sync::CancellationToken::new();
-    let service = service::Service::new(served, limits, host.name, host.sessions, stopping.clone());
-    let service = classes::classed(service, &limits, classes::window(&limits));
+    let service = Arc::new(service::Service::new(
+        served,
+        limits,
+        host.name,
+        host.sessions,
+        stopping.clone(),
+    ));
+    let serving = control(
+        Arc::clone(&service),
+        io,
+        host.send,
+        host.drain,
+        stop,
+        stopping,
+    );
+    (service, serving)
+}
+
+/// Serves the control connection `io` of `service`'s connection until it ends, or until `stop`
+/// ends and its calls in flight have, within `drain`; its writes fail once they make no
+/// progress for `send`.
+async fn control<IO>(
+    service: Arc<service::Service>,
+    io: IO,
+    send: Duration,
+    drain: Duration,
+    stop: impl Future<Output = ()>,
+    stopping: tokio_util::sync::CancellationToken,
+) -> Result<(), ServeError>
+where
+    IO: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+{
+    let service = classes::classed(service);
     let service = service.map_request(|request: http::Request<hyper::body::Incoming>| {
         request.map(rdlt_wire::tonic::body::Body::new)
     });
@@ -180,7 +417,7 @@ where
             .keep_alive_timeout(KEEP_ALIVE_PATIENCE);
         builder
     };
-    let io = sending::Sending::within(io, host.send);
+    let io = sending::Sending::within(io, send);
     let connection = builder.serve_connection(TokioIo::new(io), TowerToHyperService::new(service));
     tokio::pin!(connection, stop);
     let served = tokio::select! {
@@ -191,7 +428,7 @@ where
             stopping.cancel();
             connection.as_mut().graceful_shutdown();
             // Calls still in flight once the drain is over end with the connection.
-            tokio::time::timeout(host.drain, connection)
+            tokio::time::timeout(drain, connection)
                 .await
                 .unwrap_or(Ok(()))
         }
@@ -200,7 +437,7 @@ where
         if gone(&error) {
             Ok(())
         } else {
-            Err(ServeError(error))
+            Err(ServeError::Transport(error))
         }
     })
 }

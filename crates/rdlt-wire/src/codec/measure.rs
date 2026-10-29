@@ -8,8 +8,8 @@ use arrow_ipc::{Message, MetadataVersion, RecordBatch};
 use arrow_schema::{DataType, Field, Fields, Schema, SchemaRef};
 use flatbuffers::InvalidFlatbuffer;
 
-use super::IpcFrame;
 use super::framing::{framing, kind};
+use super::pieces::Body;
 use super::shape::{Walked, walk};
 use crate::error::{Frame, Problem, WireError};
 use crate::limits::{Limit, Limits};
@@ -50,7 +50,7 @@ pub(super) struct Measured<'a> {
     pub(super) walked: Walked,
 }
 
-/// Measures `frame`, a batch or dictionary frame in the schema of `columns`.
+/// Measures a batch or dictionary frame of `header` and `body` in the schema of `columns`.
 ///
 /// # Errors
 ///
@@ -59,11 +59,12 @@ pub(super) struct Measured<'a> {
 pub(super) fn measured<'a>(
     columns: Option<&Columns>,
     limits: &Limits,
-    frame: &'a IpcFrame,
+    header: &'a [u8],
+    body: &(impl Body + ?Sized),
 ) -> Result<Measured<'a>, WireError> {
-    limits.admit_frame(frame.header.len().saturating_add(frame.body.len()))?;
-    let message = message(Frame::Batch, &frame.header, limits.nesting_depth)?;
-    let framed = framing(&message, frame.body.len())?;
+    limits.admit_frame(header.len().saturating_add(body.len()))?;
+    let message = message(Frame::Batch, header, limits.nesting_depth)?;
+    let framed = framing(&message, body.len())?;
     let malformed = |problem| WireError::malformed(framed.frame, problem);
     let Some(columns) = columns else {
         return Err(malformed(Problem::NoSchema));
@@ -82,7 +83,7 @@ pub(super) fn measured<'a>(
         },
     };
     let types = columns.fields().iter().map(|field| field.data_type());
-    let walked = walk(framed.frame, framed.batch, types, &frame.body, limits)?;
+    let walked = walk(framed.frame, framed.batch, types, body, limits)?;
     Ok(Measured {
         frame: framed.frame,
         batch: framed.batch,

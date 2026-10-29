@@ -1,6 +1,6 @@
 //! The wire protocol between rdlt and connectors that run out of process: the messages of
-//! package `rdlt.connector.v1`, the codec carrying Arrow batches in them, the limits each end
-//! enforces on what it receives, and the flow control of its calls.
+//! package `rdlt.connector.v1`, the stream each data call is, the codec carrying Arrow batches in
+//! its frames, and the limits each end enforces on what it receives.
 
 #![forbid(unsafe_code)]
 
@@ -14,22 +14,24 @@ pub mod aligned;
 pub mod bounded;
 pub mod codec;
 pub mod error;
-pub mod flow;
 pub mod limits;
-pub mod plane;
+pub mod opener;
+#[cfg(feature = "serve")]
+pub mod route;
 pub mod scan;
+pub mod stream;
 #[cfg(test)]
 mod testing;
 #[cfg(feature = "tls")]
 pub mod tls;
+pub mod transport;
 
 /// The messages of package `rdlt.connector.v1`, and its `Connector` service's client
-/// (`connector_client`) and server (`connector_server`) for every call but the data plane's,
-/// which [`plane`] serves and calls, generated from the `.proto` files under `proto/` by
-/// `cargo xtask codegen`.
+/// (`connector_client`) and server (`connector_server`) for its control calls, generated from
+/// the `.proto` files under `proto/` by `cargo xtask codegen`; the data calls' messages ride
+/// [`stream`]'s frames.
 #[expect(
     clippy::doc_markdown,
-    clippy::large_enum_variant,
     clippy::struct_excessive_bools,
     reason = "generated code keeps the .proto files' comments and messages as written"
 )]
@@ -45,7 +47,8 @@ pub mod tls;
 pub mod v1;
 
 pub use codec::{
-    Cut, Decoder, Encoder, IpcFrame, Shape, Weigher, Weight, child_fields, schema_message_bytes,
+    Cut, Decoder, Encoded, Encoder, IpcFrame, Shape, Weigher, Weight, child_fields,
+    schema_message_bytes,
 };
 pub use error::{Frame, Part, Problem, WireError};
 pub use limits::{Limit, Limits, Refusal, Shortfall};
@@ -54,7 +57,7 @@ pub use tonic;
 
 /// The protocol's major version: a peer of another major version is refused at the handshake,
 /// since messages are numbered anew whenever a field goes or a message's layout changes.
-pub const PROTOCOL_MAJOR: u32 = 5;
+pub const PROTOCOL_MAJOR: u32 = 6;
 
 /// The handshake's feature a host offers to read back what a destination published, and a
 /// destination that can accepts: then it serves `ReadPublished`.

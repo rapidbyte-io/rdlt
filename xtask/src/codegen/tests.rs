@@ -11,18 +11,12 @@ fn the_committed_code_is_what_the_protocol_generates() {
 }
 
 #[test]
-fn the_data_plane_is_left_out_of_the_generated_service_and_its_messages_are_not() {
+fn the_data_calls_are_no_calls_of_the_service_and_their_messages_have_forms() {
     let (generated, forms) = super::generate(&workspace_root()).unwrap();
     for method in ["Write", "Read", "ReadPublished"] {
         assert!(
             !generated.contains(&format!("Connector/{method}\"")),
-            "neither end of the service calls {method}"
-        );
-    }
-    for method in ["fn write(", "fn read(", "fn read_published("] {
-        assert!(
-            !generated.contains(method),
-            "no {method} in client or server"
+            "{method} is a stream of its own, no call of the service"
         );
     }
     assert!(
@@ -35,19 +29,20 @@ fn the_data_plane_is_left_out_of_the_generated_service_and_its_messages_are_not(
     );
     assert!(
         generated.contains("pub async fn read_acknowledged("),
-        "a read's probe is no data-plane call"
+        "a read's probe is a call of the service"
     );
-    for form in [
-        "\"Write\" => Some(&WRITE_FRAME)",
-        "\"Write\" => Some(&WRITE_ACK)",
-        "\"Read\" => Some(&READ_CONTROL)",
-        "\"Read\" => Some(&READ_FRAME)",
-        "\"ReadPublished\" => Some(&READ_PUBLISHED_REQUEST)",
-        "\"ReadPublished\" => Some(&READ_FRAME)",
+    for message in [
+        "READ_START",
+        "READ_CONTROL",
+        "READ_FRAME",
+        "WRITE_START",
+        "WRITE_FRAME",
+        "WRITE_ACK",
+        "READ_PUBLISHED_REQUEST",
     ] {
         assert!(
-            forms.contains(form),
-            "the forms keep the data plane's messages: {form}"
+            forms.contains(&format!("pub(crate) static {message}: Form")),
+            "a stream's receiver scans its messages by their forms: {message}"
         );
     }
 }

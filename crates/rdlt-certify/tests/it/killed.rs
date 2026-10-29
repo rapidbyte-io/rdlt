@@ -16,15 +16,15 @@ use serde_json::json;
 /// A seed whose kills land while a source of thousands of rows still reads.
 ///
 /// They land at the first write after the third commit, before the third, and after the second,
-/// losing its answer: a source read within a small window of credit is still reading then.
+/// losing its answer: a source of thousands of rows is still reading then.
 pub(crate) const SETTLED_LATE: u64 = 1;
 
 /// A generator's stream, drawn from `seed`, that a kill clause's load still reads as each of its
 /// kills lands.
 ///
-/// A commit holds about a credit window of each partition's rows, and more on a busy machine,
-/// where the source reads on while a commit waits: one partition and rows for more than three
-/// times the commits the latest kill point needs keep the source reading even then.
+/// A commit holds about what each partition's stream holds of its rows, and more on a busy
+/// machine, where the source reads on while a commit waits: one partition and rows for more than
+/// three times the commits the latest kill point needs keep the source reading even then.
 pub(crate) fn read_as_killed(seed: u64) -> serde_json::Value {
     json!({
         "seed": seed,
@@ -277,9 +277,8 @@ async fn a_source_that_loses_what_it_resumes_fails_k_source_at_every_schedule() 
     for seed in every_schedule(false) {
         certifying.spawn(async move {
             let forgetful = Forgetful(source_factory::<GeneratorSource>());
-            let target = Target::served(Served::new().with_source(Box::new(forgetful)))
-                .credit_watch(crate::BRIEF)
-                .kill_seed(seed);
+            let target =
+                Target::served(Served::new().with_source(Box::new(forgetful))).kill_seed(seed);
             (seed, certify_source(&target, read_as_killed(3)).await)
         });
     }
@@ -378,7 +377,6 @@ async fn a_destination_is_killed_in_a_write_mode_it_declares_whichever_that_is()
 #[tokio::test]
 async fn a_change_source_is_killed_as_it_reads_its_changes() {
     let target = Target::served(Served::new().with_source(source_factory::<ChangesSource>()))
-        .credit_watch(crate::BRIEF)
         .kill_seed(SETTLED_LATE);
     let config = json!({
         "seed": 5,

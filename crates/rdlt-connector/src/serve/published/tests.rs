@@ -3,14 +3,17 @@ use std::sync::atomic::AtomicUsize;
 use std::time::Duration;
 
 use rdlt_wire::Limits;
+use rdlt_wire::stream::{Call, Outgoing};
 use tokio::sync::Notify;
 
-use super::serve;
+use super::pump;
 use crate::destination::{PublishedReader, PublishedRows, TableRef};
 use crate::error::Result;
 use crate::id::{SchemaVersion, TablePath};
 use crate::serve::live::{Live, gone};
+use crate::serve::stream::Frames;
 use crate::spec::BoxFuture;
+use crate::wire::v1;
 
 /// Bounds every wait of a test: a read-back that hangs fails its test.
 const WAIT: Duration = Duration::from_secs(60);
@@ -58,11 +61,36 @@ async fn a_read_back_waiting_for_its_reader_ends_once_its_host_goes() {
             begun: Notify::new(),
             live: Arc::clone(&live),
         });
-        let answers = serve(Arc::clone(&reader) as _, table(), Limits::default());
-        tokio::time::timeout(WAIT, reader.begun.notified())
+        let limits = Limits::default();
+        let (mut host, connector) = tokio::io::duplex(64 * 1024);
+        let start = v1::ReadPublishedRequest::default();
+        let mut opening =
+            Outgoing::message(Some(Call::ReadPublished), &start).expect("a start fits a head");
+        opening.write(&mut host).await.expect("the opening is sent");
+        let (read, write) = tokio::io::split(connector);
+        let window = rdlt_wire::bounded::Window::new(limits.largest());
+        let mut frames = Frames::new(read, limits, window);
+        tokio::time::timeout(WAIT, frames.opening())
+            .await
+            .expect("the opening arrives")
+            .expect("the opening reads")
+            .expect("the host opened a call");
+        let begun = reader.begun.notified();
+        let pumping = tokio::spawn(pump(
+            Arc::clone(&reader) as _,
+            table(),
+            limits,
+            frames,
+            write,
+        ));
+        tokio::time::timeout(WAIT, begun)
             .await
             .expect("the reader begins");
-        drop(answers);
+        drop(host);
+        tokio::time::timeout(HOUR, pumping)
+            .await
+            .expect("the read-back ends once its host goes")
+            .expect("the read-back does not panic");
         tokio::time::timeout(HOUR, gone(&live))
             .await
             .unwrap_or_else(|_| {

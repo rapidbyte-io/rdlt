@@ -26,8 +26,7 @@ impl Probe for MemoryProbe {
 
 #[tokio::test]
 async fn the_generator_served_in_process_is_certified_through_the_protocol() {
-    let target = Target::served(Served::new().with_source(source_factory::<GeneratorSource>()))
-        .credit_watch(crate::BRIEF);
+    let target = Target::served(Served::new().with_source(source_factory::<GeneratorSource>()));
     let config = json!({
         "seed": 7,
         "streams": [{ "name": "events", "rows": 57, "partitions": 3, "batch_rows": 5 }],
@@ -42,7 +41,6 @@ async fn the_generator_served_in_process_is_certified_through_the_protocol() {
         "P-LIMITS",
         "P-HEARTBEAT",
         "P-MALFORMED",
-        "P-CREDIT",
         "S-RESUME",
         "S-BARRIER",
     ] {
@@ -61,13 +59,6 @@ async fn the_memory_destination_served_in_process_is_certified_through_the_proto
     )
     .await;
     report.assert_passed();
-    assert_eq!(
-        report
-            .outcome("P-CREDIT")
-            .map(|outcome| matches!(outcome, Outcome::Inapplicable(_))),
-        Some(true),
-        "{report}"
-    );
     for id in ["D-FENCE", "K-DESTINATION"] {
         assert_eq!(report.outcome(id), Some(&Outcome::Passed), "{id}: {report}");
     }
@@ -76,7 +67,6 @@ async fn the_memory_destination_served_in_process_is_certified_through_the_proto
 #[tokio::test]
 async fn a_source_served_in_process_killed_as_it_loads_resumes_where_it_was() {
     let target = Target::served(Served::new().with_source(source_factory::<GeneratorSource>()))
-        .credit_watch(crate::BRIEF)
         .kill_seed(SETTLED_LATE);
     let report = certify_source(&target, read_as_killed(5)).await;
     // Every clause that applies was seen to be met, the kill clause among them.
@@ -97,7 +87,6 @@ async fn a_source_served_in_process_killed_as_it_loads_resumes_where_it_was() {
 #[tokio::test]
 async fn a_source_holding_more_than_a_kill_clause_loads_leaves_it_unobserved() {
     let target = Target::served(Served::new().with_source(source_factory::<GeneratorSource>()))
-        .credit_watch(crate::BRIEF)
         .kill_seed(SETTLED_LATE);
     // A hundred rows more than a kill clause loads.
     let config = json!({
@@ -113,7 +102,6 @@ async fn a_source_holding_more_than_a_kill_clause_loads_leaves_it_unobserved() {
 #[tokio::test]
 async fn a_source_holding_all_a_kill_clause_loads_is_beyond_it_once_a_kill_repeats_a_row() {
     let target = Target::served(Served::new().with_source(source_factory::<GeneratorSource>()))
-        .credit_watch(crate::BRIEF)
         .kill_seed(SETTLED_LATE);
     // Exactly what a kill clause loads: a load never killed writes each row once, and one
     // killed writes again what its kills left uncommitted.
@@ -129,8 +117,7 @@ async fn a_source_holding_all_a_kill_clause_loads_is_beyond_it_once_a_kill_repea
 
 #[tokio::test]
 async fn a_source_read_before_any_kill_lands_proves_nothing_of_kills() {
-    let target = Target::served(Served::new().with_source(source_factory::<GeneratorSource>()))
-        .credit_watch(crate::BRIEF);
+    let target = Target::served(Served::new().with_source(source_factory::<GeneratorSource>()));
     let config = json!({
         "seed": 5,
         "streams": [{ "name": "events", "rows": 300, "partitions": 2, "batch_rows": 5 }],
@@ -163,8 +150,7 @@ async fn a_destination_certified_again_in_its_store_is_killed_into_tables_of_its
 
 #[tokio::test]
 async fn the_memory_source_served_in_process_is_certified_through_the_protocol() {
-    let target = Target::served(Served::new().with_source(source_factory::<MemorySource>()))
-        .credit_watch(crate::BRIEF);
+    let target = Target::served(Served::new().with_source(source_factory::<MemorySource>()));
     let config =
         json!({ "streams": { "users": [{"id": 1}, {"id": 2}, {"id": 3}] }, "page_size": 1 });
     let report = certify_source(&target, config).await;
@@ -196,7 +182,7 @@ async fn a_kill_timeout_bounds_the_kill_clauses_alone() {
 #[tokio::test]
 async fn a_change_source_served_in_process_tells_where_it_stands_through_the_protocol() {
     let served = Served::new().with_source(acknowledging_source_factory::<ChangesSource>());
-    let target = Target::served(served).credit_watch(crate::BRIEF);
+    let target = Target::served(served);
     let config = json!({
         "seed": 5,
         "streams": [{ "name": "accounts", "keys": 9, "changes": 6, "batch_rows": 2 }],
@@ -210,8 +196,7 @@ async fn a_change_source_served_in_process_tells_where_it_stands_through_the_pro
 
 #[tokio::test]
 async fn s_ack_does_not_apply_through_the_protocol_to_a_source_that_tells_nothing() {
-    let target = Target::served(Served::new().with_source(source_factory::<GeneratorSource>()))
-        .credit_watch(crate::BRIEF);
+    let target = Target::served(Served::new().with_source(source_factory::<GeneratorSource>()));
     let config = json!({
         "seed": 7,
         "streams": [{ "name": "events", "rows": 5, "partitions": 1, "batch_rows": 5 }],

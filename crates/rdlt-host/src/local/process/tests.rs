@@ -536,6 +536,24 @@ struct Script {
     given: Arc<std::sync::Mutex<Option<super::Playing>>>,
 }
 
+/// An opener of one stream: the control connection's end of a pipe.
+#[cfg(feature = "sim")]
+struct Once(std::sync::Mutex<Option<tokio::io::DuplexStream>>);
+
+#[cfg(feature = "sim")]
+impl crate::opener::Opener for Once {
+    fn open(
+        &self,
+        _: crate::opener::Opening,
+    ) -> rdlt_connector::BoxFuture<'_, std::io::Result<Box<dyn crate::network::Stream>>> {
+        let taken = self.0.lock().expect("no panic holds it").take();
+        Box::pin(async move {
+            let stream = taken.ok_or_else(|| std::io::Error::other("it opens one stream"))?;
+            Ok(Box::new(stream) as Box<dyn crate::network::Stream>)
+        })
+    }
+}
+
 /// A play that hands out one played process, and what its script holds.
 #[cfg(feature = "sim")]
 fn played_once() -> (super::Play, Script) {
@@ -546,7 +564,7 @@ fn played_once() -> (super::Play, Script) {
     let exited = Arc::clone(&exit);
     let played = super::Played {
         id: 7,
-        socket: Box::new(socket),
+        opener: Box::new(Once(std::sync::Mutex::new(Some(socket)))),
         stdout: Box::new(stdout),
         stderr: Box::new(stderr),
         exit,
@@ -586,7 +604,11 @@ async fn a_played_connector_is_given_checked_drained_stopped_and_killed_as_a_spa
     let (play, mut script) = played_once();
     let redactions = Redactions::new();
     redactions.add("hunter2-canary \t");
-    let (mut host, process) = Process::played(&launch, &play, redactions).expect("it plays");
+    let (opener, process) = Process::played(&launch, &play, redactions).expect("it plays");
+    let mut host = opener
+        .open(crate::opener::Opening::Control)
+        .await
+        .expect("its control connection opens");
     let playing = script
         .given
         .lock()

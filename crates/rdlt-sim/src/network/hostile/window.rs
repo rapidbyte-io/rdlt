@@ -1,5 +1,6 @@
-//! Writes whose bodies stop within a message, as no client of the protocol sends them: some take
-//! a connection's whole window, and others wait behind them for room.
+//! Calls whose bodies stop within a message, as no client of the protocol sends them: commits
+//! take a connection's whole window, and data calls wait behind them for room for their
+//! frames.
 
 use std::future::Future as _;
 use std::pin::Pin;
@@ -20,9 +21,16 @@ use crate::rng::SplitMix64;
 /// Bytes: a gRPC message's prefix, its flag and its length.
 pub(super) const PREFIX: usize = 5;
 
-/// Writes that each take room for the largest message a write may hold: one more than the four
-/// such messages a connection's window holds, so it is full whatever room is left.
-pub(super) const HOLDERS: usize = 5;
+/// Bytes: the largest message a commit may hold, which a holder of the window declares.
+pub(super) fn held() -> usize {
+    Limits::default().decoding(Class::State)
+}
+
+/// Commits that each take room for the largest message a commit may hold: one more than a
+/// connection's window holds of them, so it is full whatever room is left.
+pub(super) fn holders() -> usize {
+    Limits::default().largest() * 4 / held() + 1
+}
 
 /// How long the network takes to carry a write's first frame and serving to take its room.
 pub(super) const SETTLE: Duration = Duration::from_millis(200);
@@ -59,7 +67,7 @@ pub(super) struct Raw {
     host: &'static str,
 }
 
-/// A write in flight: cut when dropped, and told when serving answered it.
+/// A call in flight: cut when dropped, and told when serving answered it.
 pub(super) struct Write {
     _cut: oneshot::Sender<()>,
     answered: oneshot::Receiver<()>,
@@ -67,7 +75,7 @@ pub(super) struct Write {
 
 impl Raw {
     /// HTTP/2 over `wire`, to the connector listening on `host`.
-    pub(super) async fn over(wire: rdlt_host::Wire, host: &'static str) -> Option<Self> {
+    pub(super) async fn over(wire: Box<dyn rdlt_host::Stream>, host: &'static str) -> Option<Self> {
         let handshaking =
             hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(wire));
         let (sender, connection) = tokio::time::timeout(PATIENCE, handshaking)
@@ -78,26 +86,59 @@ impl Raw {
         Some(Self { sender, host })
     }
 
-    /// A write whose first message declares `length` bytes, and whose body carries `carried`
-    /// bytes past the prefix, all zero, and then stops.
-    pub(super) fn write(&mut self, length: usize, carried: usize) -> Write {
-        let mut data = vec![0; PREFIX + carried];
+    /// A commit whose message declares `length` bytes, and whose body carries nothing past the
+    /// prefix, and then stops.
+    pub(super) fn hold(&mut self, length: usize) -> Write {
+        let mut data = vec![0; PREFIX];
         data[1..PREFIX].copy_from_slice(&u32::try_from(length).unwrap_or(u32::MAX).to_be_bytes());
+        let path = "/rdlt.connector.v1.Connector/Commit";
+        self.send(path, "application/grpc", data, false)
+    }
+
+    /// A data call whose opening, a read's, declares a body of `length` bytes, and carries
+    /// `carried` bytes past its head, all zero, and then stops.
+    pub(super) fn data(&mut self, length: usize, carried: usize) -> Write {
+        use rdlt_wire::stream::{Call, HEAD_BYTES, Head, Kind};
+        let len = u32::try_from(length).unwrap_or(u32::MAX);
+        let head = Head::new(
+            Kind::Message {
+                opens: Some(Call::Read),
+            },
+            len,
+        )
+        .encode();
+        let mut data = vec![0; HEAD_BYTES + carried];
+        data[..HEAD_BYTES].copy_from_slice(&head);
+        let path = rdlt_wire::stream::DATA;
+        self.send(path, "application/octet-stream", data, true)
+    }
+
+    /// A call of `path` whose body is `data`, then stops; answered once its answer's headers come,
+    /// or, a data call's being answered at once, once its answer's first frame does where `framed`.
+    fn send(&mut self, path: &str, content: &'static str, data: Vec<u8>, framed: bool) -> Write {
         let (cut, held) = oneshot::channel();
         let body = Stalled {
             data: Some(Bytes::from(data)),
             cut: held,
         };
-        let uri = format!("https://{}:{PORT}{}", self.host, rdlt_wire::plane::WRITE);
+        let uri = format!("https://{}:{PORT}{path}", self.host);
         let request = http::Request::post(uri)
-            .header(http::header::CONTENT_TYPE, "application/grpc")
+            .header(http::header::CONTENT_TYPE, content)
             .header(http::header::TE, "trailers")
             .body(body)
             .expect("a request of known parts builds");
         let responding = self.sender.send_request(request);
         let (ended, answered) = oneshot::channel();
         tokio::spawn(async move {
-            responding.await.ok();
+            if let Ok(answer) = responding.await
+                && framed
+            {
+                let mut body = answer.into_body();
+                std::future::poll_fn(|context| {
+                    http_body::Body::poll_frame(Pin::new(&mut body), context)
+                })
+                .await;
+            }
             ended.send(()).ok();
         });
         Write {
@@ -126,11 +167,11 @@ impl Write {
 }
 
 impl Attacker<'_> {
-    /// Writes that take the destination connection's whole window, and writes behind them that each
-    /// bring a whole message and a byte past it in one frame: those wait, unanswered, and are
-    /// answered once the first are cut and their room comes back.
+    /// Commits that take the destination connection's whole window, and data calls behind them
+    /// that each bring a whole opening and a byte past it in one frame: those wait, unanswered,
+    /// and are answered once the commits are cut and their room comes back.
     pub(super) async fn window(&self, rng: &mut SplitMix64) {
-        let Some(wire) = self.placing.wire(Side::Destination).await else {
+        let Some(wire) = self.placing.dialed(Side::Destination).await else {
             self.lost("dial");
             return;
         };
@@ -138,27 +179,26 @@ impl Attacker<'_> {
             self.lost("HTTP/2's handshake");
             return;
         };
-        let largest = Limits::default().decoding(Class::Data) - PREFIX;
-        let holders: Vec<Write> = (0..HOLDERS).map(|_| raw.write(largest, 0)).collect();
+        let holders: Vec<Write> = (0..holders()).map(|_| raw.hold(held() - PREFIX)).collect();
         tokio::time::sleep(SETTLE).await;
         let count = 1 + rng.below(4);
         let waiting: Vec<Write> = (0..count)
             .map(|_| {
                 let length = 16 * 1024 + usize::try_from(rng.below(48 * 1024)).unwrap_or(0);
-                raw.write(length, length + 1)
+                raw.data(length, length + 1)
             })
             .collect();
         tokio::time::sleep(SETTLE).await;
         if self.strict && waiting.iter().any(Write::answered) {
             self.found(
                 "window",
-                "a write was answered while writes before it held the whole window",
+                "a data call was answered while commits before it held the whole window",
             );
         }
         drop(holders);
         for write in waiting {
             if !write.ends_within(PATIENCE).await {
-                self.lost("write once the window's room came back");
+                self.lost("data call once the window's room came back");
             }
         }
     }

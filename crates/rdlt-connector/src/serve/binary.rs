@@ -10,17 +10,18 @@ use tokio::io::AsyncReadExt as _;
 use tokio_util::sync::CancellationToken;
 
 use super::args::{Args, Failure, parse};
-use super::{Hosted, Served, listen, serve_until};
+use super::{Hosted, Served, listen, serve_opened_until};
 use crate::factory::{RoleFactory, Serve};
 
 /// Serves `C` as a whole binary's `main` does: `fn main() -> ExitCode { serve::<C>() }`.
 ///
-/// Spawned by its host, with `--rdlt-fd`, it takes the socket the host passed before it builds
-/// `C`'s factory, and serves it until the host closes it. Code a binary runs before it calls
-/// `serve` stays responsible for owning no descriptor that socket's number names. It
-/// shuts down gracefully once its standard input ends or it receives `SIGTERM`. The host manages
-/// it, so it ignores `SIGINT`: a terminal's Ctrl-C reaches the host, which stops its connectors
-/// itself.
+/// Spawned by its host, with `--rdlt-fd`, it takes the opener the host passed before it builds
+/// `C`'s factory, raises its soft limit of open files to its hard limit, as each data call holds
+/// a descriptor, and serves the connection whose streams the host passes over it until the host
+/// closes its control connection. Code a binary runs before it calls `serve` stays responsible
+/// for owning no descriptor that opener's number names. It shuts down gracefully once its
+/// standard input ends or it receives `SIGTERM`. The host manages it, so it ignores `SIGINT`: a
+/// terminal's Ctrl-C reaches the host, which stops its connectors itself.
 ///
 /// Run on its own, with `--listen <address> --tls-cert <path> --tls-key <path> --tls-client-ca
 /// <path>` and a `--tls-allow-host <name>` for each host it accepts, it serves those hosts over
@@ -53,7 +54,7 @@ impl From<RoleFactory> for Served {
 impl Served {
     /// Serves the roles `build` makes as a whole binary's `main` does; see [`serve`].
     ///
-    /// A spawned connector calls `build` once it has taken its host's socket, so nothing `build`
+    /// A spawned connector calls `build` once it has taken its host's opener, so nothing `build`
     /// runs comes before.
     pub fn serve(build: impl FnOnce() -> Self) -> ExitCode {
         match run(build) {
@@ -77,7 +78,7 @@ fn run(build: impl FnOnce() -> Served) -> Result<(), Failure> {
     // The arguments name the descriptor to take, and reading them runs no connector code.
     let (args, limits) = parse(std::env::args().skip(1))?;
     match args {
-        Args::Inherited { fd } => inherited_socket(build, fd, limits),
+        Args::Inherited { fd } => inherited_opener(build, fd, limits),
         Args::Listen(listening) => {
             let served = build();
             let runtime = runtime()?;
@@ -96,9 +97,9 @@ fn run(build: impl FnOnce() -> Served) -> Result<(), Failure> {
     }
 }
 
-/// Serves the socket the host passed at `fd` with the roles `build` makes, enforcing `limits` on
-/// what it receives.
-fn inherited_socket(
+/// Serves the connection whose streams the host passes over the opener at `fd` with the roles
+/// `build` makes, enforcing `limits` on what it receives.
+fn inherited_opener(
     build: impl FnOnce() -> Served,
     fd: i32,
     limits: Limits,
@@ -106,20 +107,18 @@ fn inherited_socket(
     // Before any connector code runs, its factories' construction included: see
     // `rdlt_adopt::adopt`.
     let socket = rdlt_adopt::adopt(fd)
-        .map_err(|error| format!("taking the host's socket failed: {error}"))?;
+        .map_err(|error| format!("taking the host's opener failed: {error}"))?;
+    rdlt_wire::opener::raise_open_files();
     #[cfg(target_os = "linux")]
     nix::sys::prctl::set_pdeathsig(nix::sys::signal::Signal::SIGTERM)
         .map_err(|error| format!("asking to end with the host failed: {error}"))?;
     let served = build();
     let runtime = runtime()?;
     let served = runtime.block_on(async move {
-        socket
-            .set_nonblocking(true)
-            .map_err(|error| format!("the host's socket failed: {error}"))?;
-        let io = tokio::net::UnixStream::from_std(socket)
-            .map_err(|error| format!("the host's socket failed: {error}"))?;
+        let opener = rdlt_wire::opener::Accepting::new(socket.into())
+            .map_err(|error| format!("the host's opener failed: {error}"))?;
         let stop = told_to_stop().map_err(|error| format!("watching for stops failed: {error}"))?;
-        serve_until(Arc::new(served), io, limits, Hosted::spawning(), stop)
+        serve_opened_until(Arc::new(served), opener, limits, Hosted::spawning(), stop)
             .await
             .map_err(|error| match std::error::Error::source(&error) {
                 Some(source) => format!("{error}: {source}"),

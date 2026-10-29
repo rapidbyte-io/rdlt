@@ -216,6 +216,16 @@ impl Remote {
     /// [`ProviderError::NotFound`] when `reference` names no endpoint;
     /// [`ProviderError::Unreachable`] or [`ProviderError::Tls`] when the dial fails.
     pub async fn wire(&self, reference: &ConnectorRef) -> Result<Wire, ProviderError> {
+        self.dial(reference).await.map(Wire::stream)
+    }
+
+    /// The stream [`wire`](Self::wire) dials, for a client that speaks HTTP/2 to the connector
+    /// itself, as a test of hostile hosts does.
+    ///
+    /// # Errors
+    ///
+    /// As [`wire`](Self::wire).
+    pub async fn dial(&self, reference: &ConnectorRef) -> Result<Box<dyn Stream>, ProviderError> {
         let Some(endpoint) = &reference.endpoint else {
             return Err(not_found(reference));
         };
@@ -223,7 +233,7 @@ impl Remote {
         let stream = dial(&dialing, self.options.deadlines.connect)
             .await
             .map_err(|spawned| refused(reference, &dialing.endpoint.to_string(), spawned))?;
-        Ok(Wire::new(Box::new(stream), None))
+        Ok(Box::new(stream))
     }
 }
 

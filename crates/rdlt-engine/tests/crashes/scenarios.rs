@@ -34,9 +34,9 @@ impl Scenario {
     /// processes of their own, and the keys of `extra`, a kill or a pause; its path.
     ///
     /// The run has about the least memory budget an engine takes, an event a partition, and
-    /// writes as small as its pushes, and its source reads within a credit of less than a batch:
-    /// the source waits for commits, its reads in flight across them, whatever its connection
-    /// could buffer.
+    /// writes as small as its pushes, and its host reads each frame only once the engine has
+    /// room for it: its reads wait for commits, in flight across them, whatever its streams
+    /// buffer.
     pub(crate) fn write_spawned(&self, dir: &Path, extra: &Value) -> PathBuf {
         let mut config = (self.config)(dir);
         config["source"]["spawned"] = json!(true);
@@ -80,9 +80,8 @@ pub(crate) fn forgetting_log() -> Scenario {
     log_of::<50, false>("a forgetting log")
 }
 
-/// The forgetting log with two hundred messages a partition: many times the credit its
-/// source reads within and the kilobyte the run holds, so a kill before an early commit finds
-/// the source with messages still to send.
+/// The forgetting log with two hundred messages a partition: many times the kilobyte the run
+/// holds, so a kill before an early commit finds the read with messages still to send.
 pub(crate) fn long_forgetting_log() -> Scenario {
     log_of::<200, false>("a long forgetting log")
 }

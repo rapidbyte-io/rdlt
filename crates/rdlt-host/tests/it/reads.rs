@@ -234,17 +234,14 @@ async fn a_barrier_pending_when_a_read_starts_is_answered_across_the_wire() {
 }
 
 #[tokio::test]
-async fn a_barrier_pending_when_a_read_starts_reaches_a_connector_that_knows_no_barrier_in_its_start()
- {
-    let io = socket(Fake(Fault::Unstarted));
+async fn a_read_frame_whose_head_names_no_kind_fails_the_read_as_malformed() {
+    let io = socket(Fake(Fault::BadHead));
     let connection =
         Connection::connect(io, Role::Source, &serde_json::json!({}), Options::default())
             .await
             .expect("the fake handshakes");
     let source = RemoteSource::new(connection);
-    let (sink, mut feed) = partition_channel(NonZeroUsize::new(64).expect("not zero"));
-    // Raised before the read starts: a connector that reads no barrier in the start still gets it.
-    feed.request_checkpoint(1);
+    let (sink, _feed) = partition_channel(NonZeroUsize::new(64).expect("not zero"));
     let request = ReadRequest::new(
         StreamName::new("events").expect("a valid stream name"),
         Partition::single(),
@@ -255,39 +252,13 @@ async fn a_barrier_pending_when_a_read_starts_reaches_a_connector_that_knows_no_
         source.read(request, sink),
     )
     .await
-    .expect("the connector answers the barrier and ends the read");
-    read.expect("the read succeeds");
-    let mut answered = Vec::new();
-    while let Some(event) = feed.recv().await {
-        if let SourceEvent::Checkpoint { answers, .. } = event {
-            answered.extend(answers);
-        }
-    }
-    assert_eq!(answered, [1]);
-}
-
-#[tokio::test]
-async fn a_read_with_no_barrier_pending_asks_for_none() {
-    let io = socket(Fake(Fault::Unstarted));
-    let connection =
-        Connection::connect(io, Role::Source, &serde_json::json!({}), Options::default())
-            .await
-            .expect("the fake handshakes");
-    let source = RemoteSource::new(connection);
-    let (sink, mut feed) = partition_channel(NonZeroUsize::new(64).expect("not zero"));
-    let request = ReadRequest::new(
-        StreamName::new("events").expect("a valid stream name"),
-        Partition::single(),
-        None,
+    .expect("the read ends at the head");
+    let error = read.expect_err("the read fails");
+    assert_eq!(
+        error.code(),
+        Some(rdlt_connector::wire::MALFORMED_FRAME),
+        "{error}"
     );
-    source.read(request, sink).await.expect("the read succeeds");
-    let mut answered = Vec::new();
-    while let Some(event) = feed.recv().await {
-        if let SourceEvent::Checkpoint { answers, .. } = event {
-            answered.extend(answers);
-        }
-    }
-    assert!(answered.is_empty(), "{answered:?}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -5,19 +5,16 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
-use rdlt_connector::serve::{Served, serve_connection};
+use rdlt_connector::serve::{Served, serve_opened};
 use rdlt_connector::wire::TRANSPORT;
 use rdlt_connector::{BoxFuture, ConnectorError, ConnectorErrorKind, Role};
-use rdlt_host::remote::{CONNECTOR_LOST, Client, DEADLINE_EXCEEDED, client};
-use rdlt_host::{Connection, ConnectorRef, Local, Options, Remote, Stream, Witness};
+use rdlt_host::remote::{CONNECTOR_LOST, Client, DEADLINE_EXCEEDED};
+use rdlt_host::{Connection, ConnectorRef, Local, Opener, Options, Passing, Remote, Wire};
 use rdlt_wire::Limits;
 use rdlt_wire::tonic::{Response, Status};
 
 /// How long a failed connection waits for a spawned connector's standard error to close.
 const LAST_WORDS: Duration = Duration::from_secs(1);
-
-/// Bytes: the floor of the credit a source placed for a kill clause reads within.
-const KILL_FLOOR: u64 = 65_536;
 
 /// A connector to certify, and how to reach it.
 #[derive(Debug)]
@@ -26,11 +23,10 @@ pub struct Target {
     options: Options,
     kill_seed: Option<u64>,
     kill_timeout: Option<Duration>,
-    credit_watch: Option<Duration>,
 }
 
 enum Reach {
-    /// Opened by a function, each connection a stream of its own.
+    /// Opened by a function, each connection an opener of its own.
     Connected(Arc<Connect>),
     /// Spawned from its binary for each connection.
     Spawned {
@@ -44,8 +40,8 @@ enum Reach {
     },
 }
 
-/// What opens a fresh stream to a connector.
-type Connect = dyn Fn() -> BoxFuture<'static, std::io::Result<Box<dyn Stream>>> + Send + Sync;
+/// What opens a fresh opener of a connection to a connector.
+type Connect = dyn Fn() -> BoxFuture<'static, std::io::Result<Box<dyn Opener>>> + Send + Sync;
 
 impl std::fmt::Debug for Reach {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -66,23 +62,26 @@ impl std::fmt::Debug for Reach {
 }
 
 impl Target {
-    /// The connector `served` serves, in this process, each connection over a socket of its own.
+    /// The connector `served` serves, in this process, each connection over an opener of its own
+    /// that passes it a socket for its control connection and for each data call, as a spawned
+    /// connector's does.
     pub fn served(served: Served) -> Self {
         let served = Arc::new(served);
         Self::connected(move || {
             let served = Arc::clone(&served);
             Box::pin(async move {
-                let (host, connector) = tokio::net::UnixStream::pair()?;
-                tokio::spawn(serve_connection(served, connector, Limits::default()));
-                Ok(Box::new(host) as Box<dyn Stream>)
+                let (host, connector) = std::os::unix::net::UnixStream::pair()?;
+                tokio::spawn(serve_opened(served, connector.into(), Limits::default()));
+                Ok(Box::new(Passing::new(host.into())?) as Box<dyn Opener>)
             })
         })
     }
 
-    /// The connector `connect` reaches, by opening a fresh stream to it for each connection: over
-    /// any transport, or to a connector that is no `rdlt-connector` binary.
+    /// The connector `connect` reaches, by opening a fresh opener of each connection to it, which
+    /// passes it a stream for its control connection and for each data call: over any transport,
+    /// or to a connector that is no `rdlt-connector` binary.
     pub fn connected(
-        connect: impl Fn() -> BoxFuture<'static, std::io::Result<Box<dyn Stream>>>
+        connect: impl Fn() -> BoxFuture<'static, std::io::Result<Box<dyn Opener>>>
         + Send
         + Sync
         + 'static,
@@ -106,7 +105,6 @@ impl Target {
             options: Options::default(),
             kill_seed: None,
             kill_timeout: None,
-            credit_watch: None,
         }
     }
 
@@ -131,21 +129,6 @@ impl Target {
     pub fn kill_timeout(mut self, bound: Duration) -> Self {
         self.kill_timeout = Some(bound);
         self
-    }
-
-    /// Watches a read whose credit is spent for `watch` after each grant, rather than
-    /// [`CREDIT_WATCH`](crate::CREDIT_WATCH): `P-CREDIT` then takes four times `watch`, tells a
-    /// source that ignores credit only when it sends within that, and notes the watch beside
-    /// its pass.
-    #[must_use]
-    pub fn credit_watch(mut self, watch: Duration) -> Self {
-        self.credit_watch = Some(watch);
-        self
-    }
-
-    /// How long a read whose credit is spent is watched after each grant, when that is chosen.
-    pub(crate) fn chosen_watch(&self) -> Option<Duration> {
-        self.credit_watch
     }
 
     /// How long each kill clause may take, when that is chosen.
@@ -179,12 +162,7 @@ impl Target {
     }
 
     /// A fresh raw connection to the connector.
-    pub(crate) async fn wire(&self) -> Result<Box<dyn Stream>, ConnectorError> {
-        self.witnessed().await.map(|(wire, _)| wire)
-    }
-
-    /// A fresh raw connection to the connector, and a witness to how it ends when spawned.
-    async fn witnessed(&self) -> Result<(Box<dyn Stream>, Option<Witness>), ConnectorError> {
+    pub(crate) async fn wire(&self) -> Result<Wire, ConnectorError> {
         let unreachable = |error: &dyn std::fmt::Display| {
             ConnectorError::new(
                 ConnectorErrorKind::Transient,
@@ -197,21 +175,16 @@ impl Target {
                 let opened = tokio::time::timeout(deadline, connect()).await;
                 let opened = opened.unwrap_or_else(|_| Err(std::io::ErrorKind::TimedOut.into()));
                 opened
-                    .map(|wire| (wire, None))
+                    .map(Wire::opened)
                     .map_err(|error| unreachable(&error))
             }
             Reach::Spawned { local, reference } => local
                 .wire(reference)
                 .await
-                .map(|wire| {
-                    let witness = wire.witness();
-                    (Box::new(wire) as Box<dyn Stream>, witness)
-                })
                 .map_err(|error| unreachable(&error)),
             Reach::Listening { remote, reference } => remote
                 .wire(reference)
                 .await
-                .map(|wire| (Box::new(wire) as Box<dyn Stream>, None))
                 .map_err(|error| unreachable(&error)),
         }
     }
@@ -222,8 +195,9 @@ impl Target {
         role: Role,
         config: &serde_json::Value,
     ) -> Result<Arc<Connection>, ConnectorError> {
-        let (wire, witness) = self.witnessed().await?;
-        let connected = Connection::connect(wire, role, config, self.options).await;
+        let wire = self.wire().await?;
+        let witness = wire.witness();
+        let connected = wire.connect(role, config, self.options).await;
         match (connected, witness) {
             // A spawned connector whose transport failed most likely ended: say what it said.
             (Err(error), Some(witness))
@@ -237,7 +211,7 @@ impl Target {
 
     /// A fresh client of the protocol, with no handshake yet.
     pub(crate) async fn client(&self) -> Result<Client, ConnectorError> {
-        client(self.wire().await?, self.options).await
+        self.wire().await?.client(self.options).await
     }
 
     /// The answer to `call`, a handshake or a configuration a raw client makes, within the
@@ -263,10 +237,8 @@ impl Target {
     /// is started or reached again, killed by `kills`; and the reference to it, as `id`, which
     /// its handshake answered.
     ///
-    /// A spawned connector is killed outright; one reached otherwise has its connections cut. A
-    /// source's credit opens at [`KILL_FLOOR`] and grows to two of its frames, so it runs little
-    /// ahead of the commits the kills follow, and is told `admitted`, the limits the loading
-    /// engine admits within.
+    /// A spawned connector is killed outright; one reached otherwise has its connections cut. It
+    /// is told `admitted`, the limits the loading engine admits within.
     pub(crate) fn provider(
         &self,
         id: &rdlt_connector::ConnectorId,
@@ -285,7 +257,6 @@ impl Target {
                 .unwrap_or_default(),
         };
         let options = Options {
-            read_floor: KILL_FLOOR,
             limits: self.options.limits.lesser(admitted),
             ..self.options
         };

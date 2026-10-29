@@ -8,7 +8,10 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use rdlt_wire::Limits;
-use rdlt_wire::plane::{Answers, Incoming, Plane, Serving};
+use rdlt_wire::bounded::Window;
+use rdlt_wire::route::Streams;
+use rdlt_wire::stream::Piped;
+use rdlt_wire::tonic::body::Body;
 use rdlt_wire::tonic::codegen::tokio_stream::Stream;
 use rdlt_wire::tonic::{self, Request, Response, Status, Streaming};
 use rdlt_wire::v1::connector_server::Connector;
@@ -17,11 +20,10 @@ use tokio_stream::StreamExt as _;
 use tokio_util::sync::CancellationToken;
 
 use super::handshake::{Agreed, no_handshake, not_configured, unsupported};
-use super::noted::Noted;
 use super::probes::Probes;
 use super::sessions::{SessionSlot, Sessions, closed};
 use super::until::Until;
-use super::{Served, read, write};
+use super::{Served, stream};
 use crate::destination::{Destination, OpenContext, TableChange, TableRef};
 use crate::error::{ConnectorError, ConnectorErrorKind};
 use crate::id::{PartitionId, PipelineId, StreamName};
@@ -56,6 +58,10 @@ pub(super) struct Service {
     pub(super) sessions: Sessions,
     /// Cancelled once the connection is stopping, which ends every heartbeat stream.
     pub(super) stopping: CancellationToken,
+    /// Cancelled once the connection has ended, which ends every data call it still serves.
+    pub(super) ended: CancellationToken,
+    /// What the connection's requests and data streams still arriving hold together.
+    pub(super) window: Window,
 }
 
 impl Service {
@@ -74,6 +80,8 @@ impl Service {
             connected: OnceCell::new(),
             sessions: Sessions::holding(sessions),
             stopping,
+            ended: CancellationToken::new(),
+            window: super::classes::window(&limits),
         }
     }
 
@@ -87,57 +95,56 @@ impl Service {
             .unwrap_or_default()
     }
 
-    fn connected(&self) -> Result<&Connected, Status> {
+    fn connected(&self) -> Result<&Connected, ConnectorError> {
         let Some(configured) = self.connected.get() else {
-            let error = if self.agreed.initialized() {
+            return Err(if self.agreed.initialized() {
                 not_configured()
             } else {
                 no_handshake()
-            };
-            return Err(status(&error));
+            });
         };
         Ok(&configured.connected)
     }
 
     /// The probes the configuration connected; none before it.
-    fn probes(&self) -> &Probes {
+    pub(super) fn probes(&self) -> &Probes {
         self.connected
             .get()
             .map_or(&super::probes::NONE, |configured| &configured.probes)
     }
 
-    fn source(&self) -> Result<Arc<dyn Source>, Status> {
+    pub(super) fn source(&self) -> Result<Arc<dyn Source>, ConnectorError> {
         match self.connected()? {
             Connected::Source(source) => Ok(Arc::clone(source)),
             Connected::Destination(_) => Err(wrong_role("source")),
         }
     }
 
-    fn destination(&self) -> Result<Arc<dyn Destination>, Status> {
+    fn destination(&self) -> Result<Arc<dyn Destination>, ConnectorError> {
         match self.connected()? {
             Connected::Destination(destination) => Ok(Arc::clone(destination)),
             Connected::Source(_) => Err(wrong_role("destination")),
         }
     }
 
-    async fn session(&self, id: u64) -> Result<SessionSlot, Status> {
+    async fn session(&self, id: u64) -> Result<SessionSlot, ConnectorError> {
         self.sessions.session(id).await
     }
 }
 
-fn wrong_role(role: &str) -> Status {
-    status(&unsupported(
-        format!("the connection's role is not {role}"),
-        "role",
-    ))
+fn wrong_role(role: &str) -> ConnectorError {
+    unsupported(format!("the connection's role is not {role}"), "role")
+}
+
+/// `invalid` as the error of a request the connector cannot read.
+pub(super) fn invalid(invalid: &Invalid) -> ConnectorError {
+    ConnectorError::new(ConnectorErrorKind::Internal, invalid.to_string())
+        .with_code(INVALID_MESSAGE)
 }
 
 /// `invalid` as the status of a request the connector cannot read.
-pub(super) fn invalid(invalid: &Invalid) -> Status {
-    status(
-        &ConnectorError::new(ConnectorErrorKind::Internal, invalid.to_string())
-            .with_code(INVALID_MESSAGE),
-    )
+fn refused(invalid: &Invalid) -> Status {
+    status(&self::invalid(invalid))
 }
 
 /// The stream the heartbeat answers with.
@@ -181,7 +188,7 @@ impl Connector for Service {
         &self,
         _: Request<v1::CheckRequest>,
     ) -> Result<Response<v1::CheckResponse>, Status> {
-        let checked = match self.connected()? {
+        let checked = match self.connected().map_err(|error| status(&error))? {
             Connected::Source(source) => source.check().await,
             Connected::Destination(destination) => destination.check().await,
         };
@@ -194,7 +201,8 @@ impl Connector for Service {
         _: Request<v1::DiscoverRequest>,
     ) -> Result<Response<v1::Catalog>, Status> {
         let catalog = self
-            .source()?
+            .source()
+            .map_err(|error| status(&error))?
             .discover()
             .await
             .map_err(|error| status(&error))?;
@@ -210,13 +218,14 @@ impl Connector for Service {
             request
                 .stream
                 .ok_or(Invalid::Missing("stream"))
-                .map_err(|e| invalid(&e))?,
+                .map_err(|e| refused(&e))?,
         )
-        .map_err(|e| invalid(&e))?;
+        .map_err(|e| refused(&e))?;
         let state =
-            StreamState::try_from(request.state.unwrap_or_default()).map_err(|e| invalid(&e))?;
+            StreamState::try_from(request.state.unwrap_or_default()).map_err(|e| refused(&e))?;
         let planned = self
-            .source()?
+            .source()
+            .map_err(|error| status(&error))?
             .plan(&stream, &state)
             .await
             .map_err(|error| status(&error))?;
@@ -243,9 +252,9 @@ impl Connector for Service {
             request
                 .stream
                 .ok_or(Invalid::Missing("stream"))
-                .map_err(|e| invalid(&e))?,
+                .map_err(|e| refused(&e))?,
         )
-        .map_err(|e| invalid(&e))?;
+        .map_err(|e| refused(&e))?;
         let cursors = request
             .cursors
             .into_iter()
@@ -256,14 +265,15 @@ impl Connector for Service {
                 Ok((partition, cursor))
             })
             .collect::<Result<Vec<_>, Invalid>>()
-            .map_err(|e| invalid(&e))?;
+            .map_err(|e| refused(&e))?;
         // A host is heard for what it was sent or read from, and nothing else of its choosing:
         // a report of anything else is refused before the source hears of it.
         let host = self.host_name.as_deref();
         let sent = &self.served.sent;
         sent.admit(host, &stream, &cursors)
             .map_err(|error| status(&error))?;
-        self.source()?
+        self.source()
+            .map_err(|error| status(&error))?
             .committed(&stream, &cursors)
             .await
             .map_err(|error| status(&error))?;
@@ -276,10 +286,10 @@ impl Connector for Service {
     ) -> Result<Response<v1::OpenResponse>, Status> {
         let request = request.into_inner();
         let pipeline = PipelineId::parse(request.pipeline)
-            .map_err(|error| invalid(&Invalid::rejected("pipeline id", error)))?;
-        let load_id = crate::wire::load_id(&request.load_id).map_err(|e| invalid(&e))?;
+            .map_err(|error| refused(&Invalid::rejected("pipeline id", error)))?;
+        let load_id = crate::wire::load_id(&request.load_id).map_err(|e| refused(&e))?;
         let context = OpenContext { pipeline, load_id };
-        let destination = self.destination()?;
+        let destination = self.destination().map_err(|error| status(&error))?;
         // Room is taken before the destination opens the session, so Opens in flight count too;
         // one that fails, or whose call is cancelled, drops its room.
         let opening = self.sessions.open().await;
@@ -304,12 +314,17 @@ impl Connector for Service {
             request
                 .change
                 .ok_or(Invalid::Missing("change"))
-                .map_err(|e| invalid(&e))?,
+                .map_err(|e| refused(&e))?,
         )
-        .map_err(|e| invalid(&e))?;
-        let slot = self.session(request.session).await?;
+        .map_err(|e| refused(&e))?;
+        let slot = self
+            .session(request.session)
+            .await
+            .map_err(|error| status(&error))?;
         let mut session = slot.lock().await;
-        let session = session.as_mut().ok_or_else(|| closed(request.session))?;
+        let session = session
+            .as_mut()
+            .ok_or_else(|| status(&closed(request.session)))?;
         session
             .apply_schema(&change)
             .await
@@ -326,12 +341,17 @@ impl Connector for Service {
             request
                 .meta
                 .ok_or(Invalid::Missing("commit meta"))
-                .map_err(|e| invalid(&e))?,
+                .map_err(|e| refused(&e))?,
         )
-        .map_err(|e| invalid(&e))?;
-        let slot = self.session(request.session).await?;
+        .map_err(|e| refused(&e))?;
+        let slot = self
+            .session(request.session)
+            .await
+            .map_err(|error| status(&error))?;
         let mut session = slot.lock().await;
-        let session = session.as_mut().ok_or_else(|| closed(request.session))?;
+        let session = session
+            .as_mut()
+            .ok_or_else(|| status(&closed(request.session)))?;
         let receipt = session
             .commit(&meta)
             .await
@@ -344,7 +364,10 @@ impl Connector for Service {
         request: Request<v1::CloseRequest>,
     ) -> Result<Response<v1::CloseResponse>, Status> {
         let id = request.into_inner().session;
-        self.sessions.close(id).await?;
+        self.sessions
+            .close(id)
+            .await
+            .map_err(|error| status(&error))?;
         Ok(Response::new(v1::CloseResponse {}))
     }
 
@@ -362,24 +385,12 @@ impl Connector for Service {
     }
 }
 
-impl Plane for Service {
-    fn write(&self, frames: Incoming<v1::WriteFrame>) -> Serving<'_, v1::WriteAck> {
-        Box::pin(write::serve(self, self.limits, frames))
-    }
-
-    fn read(&self, controls: Incoming<v1::ReadControl>) -> Serving<'_, v1::ReadFrame> {
-        Box::pin(async move {
-            let host = self.host();
-            let (frames, read) = read::serve(self.source()?, self.limits, host, controls).await?;
-            // Where the read starts, and each checkpoint it sends, the host may report committed.
-            let served = Arc::clone(&self.served);
-            let noted = Noted::new(frames, served, self.host_name.clone(), read);
-            Ok(Box::pin(noted) as Answers<_>)
-        })
-    }
-
-    fn read_published(&self, request: v1::ReadPublishedRequest) -> Serving<'_, v1::ReadFrame> {
-        Box::pin(async move { self.probes().read_published(request, self.host()) })
+impl Streams for Service {
+    fn serve(
+        self: Arc<Self>,
+        stream: Piped<Body>,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>> {
+        Box::pin(stream::serve(self, stream))
     }
 }
 
@@ -389,10 +400,10 @@ impl Service {
         &self,
         id: u64,
         table: &TableRef,
-    ) -> Result<Box<dyn crate::destination::DestinationWriter>, Status> {
+    ) -> Result<Box<dyn crate::destination::DestinationWriter>, ConnectorError> {
         let slot = self.session(id).await?;
         let mut session = slot.lock().await;
         let session = session.as_mut().ok_or_else(|| closed(id))?;
-        session.writer(table).await.map_err(|error| status(&error))
+        session.writer(table).await
     }
 }

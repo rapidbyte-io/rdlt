@@ -282,24 +282,24 @@ fn an_allowance_is_found_by_placement_where_work_is_on_one_thread() {
 }
 
 #[test]
-fn a_read_of_pushes_beyond_a_frame_holds_one_in_its_channel_and_two_frames_of_credit() {
-    let (push, cursor, frame) = (10 << 20, 100, 4 << 20);
+fn a_read_of_pushes_beyond_a_frame_holds_one_in_its_channel_and_its_stream_s_transport() {
+    let (push, cursor, frame, transport) = (10 << 20, 100, 4 << 20, 256 << 10);
     let largest = Largest { push, cursor };
     assert_eq!(
-        queued(3, largest, frame, 4 << 20),
-        3 * (QUEUED * push + frame + push + CHANNEL * cursor + 2 * push)
+        queued(3, largest, frame, transport),
+        3 * (QUEUED * push + frame + push + CHANNEL * cursor + transport)
     );
 }
 
 #[test]
-fn a_read_of_small_pushes_holds_its_channel_s_events_and_the_credit_floor() {
-    let (push, frame, floor) = (500, 4 << 20, 4 << 20);
+fn a_read_of_small_pushes_holds_its_channel_s_events_and_its_stream_s_transport() {
+    let (push, frame, transport) = (500, 4 << 20, 4 << 20);
     let largest = Largest { push, cursor: 20 };
     assert_eq!(
-        queued(3, largest, frame, floor),
-        3 * (QUEUED * push + CHANNEL * push + floor)
+        queued(3, largest, frame, transport),
+        3 * (QUEUED * push + CHANNEL * push + transport)
     );
-    assert_eq!(queued(0, largest, frame, floor), 0);
+    assert_eq!(queued(0, largest, frame, transport), 0);
 }
 
 #[test]
@@ -310,7 +310,7 @@ fn a_cursor_larger_than_every_push_is_a_read_s_largest_event() {
     };
     assert_eq!(
         queued(1, largest, 4 << 20, 1),
-        QUEUED * 1_000 + CHANNEL * 1_000 + 2 * 1_000
+        QUEUED * 1_000 + CHANNEL * 1_000 + 1
     );
 }
 

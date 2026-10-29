@@ -1,4 +1,4 @@
-//! A connector's process: spawned with its socket on file descriptor 3, leading a process group
+//! A connector's process: spawned with its opener on file descriptor 3, leading a process group
 //! of its own, its output drained into `tracing`, and reaped by a thread that owns the group.
 //!
 //! The group is the host's for its whole life. It is stopped with `SIGTERM`, then `SIGKILL`
@@ -47,7 +47,7 @@ pub(crate) use played::Play;
 #[cfg(feature = "sim")]
 pub use played::{Played, Playing};
 
-/// The descriptor a connector finds its socket at.
+/// The descriptor a connector finds its opener at.
 pub(crate) const SOCKET_FD: RawFd = 3;
 
 /// The descriptor a sandbox's launcher, or a script's interpreter, finds the connector's
@@ -148,8 +148,8 @@ impl Drop for Process {
     }
 }
 
-/// The host's end of a spawned connector's socket, and the connector's process.
-pub(crate) type Launched = (Box<dyn crate::network::Stream>, Process);
+/// What opens a spawned connector's streams, and the connector's process.
+pub(crate) type Launched = (Arc<dyn crate::opener::Opener>, Process);
 
 /// The steps of owning a spawned connector that can fail, each of which a test fails in turn.
 pub(crate) struct Steps {
@@ -170,10 +170,10 @@ impl Steps {
 }
 
 impl Process {
-    /// Spawns `launch`'s binary serving the other end of `socket` at file descriptor 3, its
-    /// output scrubbed of `redactions`, taking `steps`: its group's place is taken before
-    /// anything is launched, and a connector that started and a step then fails is killed and
-    /// reaped before the failure is returned.
+    /// Spawns `launch`'s binary taking its streams from the other end of `socket`, its opener, at
+    /// file descriptor 3, its output scrubbed of `redactions`, taking `steps`: its group's place
+    /// is taken before anything is launched, and a connector that started and a step then fails
+    /// is killed and reaped before the failure is returned.
     fn spawn_by(
         launch: &Launch,
         socket: OwnedFd,
@@ -273,11 +273,11 @@ impl Process {
         }
     }
 
-    /// Spawns `launch`'s binary serving one end of a new socket pair, taking `steps`; the other
-    /// end, and the process.
+    /// Spawns `launch`'s binary taking its streams from one end of a new socket pair, taking
+    /// `steps`; what passes streams over the other end, and the process.
     ///
-    /// Where a kill may kill the process, the other end counts it as landed once it ends after
-    /// the kill: a socket ends when no process holds its other end.
+    /// Where a kill may kill the process, its control connection counts it as landed once it ends
+    /// after the kill: a socket ends when no process holds its other end.
     pub(crate) fn launched(
         launch: &Launch,
         redactions: Redactions,
@@ -285,13 +285,12 @@ impl Process {
     ) -> Result<Launched, Unspawned> {
         let (host, connector) = std::os::unix::net::UnixStream::pair()?;
         let process = Self::spawn_by(launch, connector.into(), redactions, steps)?;
-        host.set_nonblocking(true)?;
-        let host = tokio::net::UnixStream::from_std(host)?;
-        let host = match (&launch.kills, &process.killed) {
-            (Some(kills), Some(killed)) => kills.watch(host, killed.clone()),
-            _ => Box::new(host) as Box<dyn crate::network::Stream>,
+        let opener = Box::new(crate::opener::Passing::new(host.into())?);
+        let opener = match (&launch.kills, &process.killed) {
+            (Some(kills), Some(killed)) => kills.watching(opener, killed.clone()),
+            _ => opener as Box<dyn crate::opener::Opener>,
         };
-        Ok((host, process))
+        Ok((Arc::from(opener), process))
     }
 
     /// What the connector left on its standard error, and how it exited, once it has: waits

@@ -3,8 +3,7 @@
 
 use rdlt_connector::wire::v1;
 use rdlt_connector::{ConnectorId, Role};
-use rdlt_host::remote::client;
-use rdlt_host::{Connection, ConnectorRef, Local, Options, ProviderError, Remote};
+use rdlt_host::{ConnectorRef, Local, Options, ProviderError, Remote};
 use rdlt_testkit::tls::Pki;
 use rdlt_wire::PROTOCOL_MAJOR;
 
@@ -33,7 +32,8 @@ async fn a_client_speaks_the_protocol_raw_over_a_spawned_connectors_wire() {
         .await
         .expect("the connector spawns");
     assert!(format!("{wire:?}").contains("spawned: true"), "{wire:?}");
-    let mut client = client(wire, Options::default())
+    let mut client = wire
+        .client(Options::default())
         .await
         .expect("the client connects");
     let answer = client
@@ -58,14 +58,10 @@ async fn a_client_speaks_the_protocol_raw_over_a_listening_connectors_wire() {
         .wire(&scripted().endpoint(endpoint))
         .await
         .expect("the connector is dialed");
-    let connection = Connection::connect(
-        wire,
-        Role::Source,
-        &serde_json::json!({}),
-        Options::default(),
-    )
-    .await
-    .expect("the connector handshakes");
+    let connection = wire
+        .connect(Role::Source, &serde_json::json!({}), Options::default())
+        .await
+        .expect("the connector handshakes");
     let spec = connection
         .connector_spec()
         .expect("the spec is the contract's");

@@ -110,6 +110,34 @@ pub trait Admission: Send + Sync {
     fn limits(&self) -> Limits {
         Limits::default()
     }
+
+    /// Waits until `bytes`, what a frame of a remote read holds from before its body is read
+    /// until its event is admitted, may be held beside the events admitted, and returns what
+    /// holds them: by default nothing.
+    ///
+    /// # Errors
+    ///
+    /// As [`admit`](Self::admit) fails.
+    fn reserve_frame(&self, bytes: u64) -> BoxFuture<'_, Result<Permit>> {
+        let _ = bytes;
+        Box::pin(async { Ok(Box::new(()) as Permit) })
+    }
+
+    /// Admits `event`, decoded from a frame `reserved` holds: what the frame reserved beyond
+    /// what the event holds is released, and the rest becomes its permit; by default the
+    /// reservation goes, and the event is admitted as any is.
+    ///
+    /// # Errors
+    ///
+    /// As [`admit`](Self::admit) fails, and where the event holds more than was reserved.
+    fn admit_reserved(
+        &self,
+        event: &SourceEvent,
+        reserved: Permit,
+    ) -> BoxFuture<'_, Result<Option<Permit>>> {
+        drop(reserved);
+        self.admit(event)
+    }
 }
 
 /// Creates the two ends of one partition's channel, buffering up to `capacity` events.
@@ -222,6 +250,11 @@ impl PartitionSink {
     /// checkpoint answering a barrier the engine never asked for. Where the channel's events are
     /// admitted, the error its admission refused the event with.
     pub async fn send(&mut self, event: SourceEvent) -> Result<()> {
+        self.sending(event, None).await
+    }
+
+    /// Sends `event`, admitted within `reserved` where a reservation holds it.
+    async fn sending(&mut self, event: SourceEvent, reserved: Option<Permit>) -> Result<()> {
         let answering = match &event {
             SourceEvent::Checkpoint {
                 answers: Some(barrier),
@@ -241,8 +274,12 @@ impl PartitionSink {
         };
         let (event, permit) = match &self.admission {
             Some(admission) => {
+                let admitted = match reserved {
+                    Some(reserved) => admission.admit_reserved(&event, reserved),
+                    None => admission.admit(&event),
+                };
                 let admitting = Admitting {
-                    admission: admission.admit(&event),
+                    admission: admitted,
                     event: Some(event),
                 };
                 tokio::select! {
@@ -307,10 +344,50 @@ impl PartitionSink {
             .transpose()
     }
 
+    /// What reserves the frames of a read received from elsewhere before their events are
+    /// known, where whoever admits the channel's events reserves them.
+    pub fn reserving(&self) -> Option<Reserving> {
+        self.admission
+            .as_ref()
+            .map(|admission| Reserving(Arc::clone(admission)))
+    }
+
+    /// Sends `event`, decoded from a frame `reserved` holds, as [`send`](Self::send) does: the
+    /// reservation, shrunk to what the event holds, admits it.
+    ///
+    /// # Errors
+    ///
+    /// As [`send`](Self::send).
+    pub async fn send_reserved(&mut self, event: SourceEvent, reserved: Permit) -> Result<()> {
+        self.sending(event, Some(reserved)).await
+    }
+
     /// The newest barrier no checkpoint has answered yet.
     pub fn pending_barrier(&self) -> Option<u64> {
         let requested = *self.barrier.borrow();
         (requested > self.answered).then_some(requested)
+    }
+}
+
+/// Reserves the frames of a read received from elsewhere, before their events are known, from
+/// whoever admits the read's events.
+#[derive(Clone)]
+pub struct Reserving(Arc<dyn Admission>);
+
+impl fmt::Debug for Reserving {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("Reserving").finish_non_exhaustive()
+    }
+}
+
+impl Reserving {
+    /// Waits until `bytes` a frame holds may be held, and returns what holds them.
+    ///
+    /// # Errors
+    ///
+    /// Why the admission refused them, as it refuses an event.
+    pub async fn reserve(&self, bytes: u64) -> Result<Permit> {
+        self.0.reserve_frame(bytes).await
     }
 }
 

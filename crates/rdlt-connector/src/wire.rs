@@ -25,7 +25,7 @@ pub use error::{CONFIGURE_REPEATED, HOST_CODES, INVALID_CODE, INVALID_MESSAGE, P
 pub use rdlt_wire::v1;
 pub use status::{
     MALFORMED_FRAME, TRANSPORT, UNENCODABLE_BATCH, UNSENDABLE_TYPE, error, frame_error,
-    shortfall_error, status,
+    shortfall_error, status, stream_error, wire_error,
 };
 
 /// A message from the wire that does not decode into the contract's type.

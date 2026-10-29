@@ -8,30 +8,55 @@ use arrow_array::{Array as _, ArrayRef, DictionaryArray, RecordBatch, StringArra
 use rdlt_connector::wire::v1;
 use rdlt_connector::wire::v1::write_frame::Frame;
 use rdlt_connector::{ConnectorErrorKind, DestinationWriter as _, SegmentId, WriteStats};
-use rdlt_wire::bounded::{Bounded, Bounds};
-use rdlt_wire::flow::Spending;
-use rdlt_wire::limits::Class;
-use rdlt_wire::plane::{Incoming, Outgoing};
+use rdlt_wire::stream::{Call, End, FrameReader, HEAD_BYTES, Kind, Outgoing, Received};
 use rdlt_wire::{Decoder, Encoder, IpcFrame, Limits};
-use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
+use tokio::io::{DuplexStream, ReadHalf, WriteHalf};
 use tokio_util::sync::CancellationToken;
 
 use super::RemoteWriter;
+use crate::network::Stream;
 use crate::remote::checked::Checked;
 use crate::remote::clients::Clients;
+use crate::remote::opened::Carrier;
 use crate::remote::{CONNECTOR_LOST, Connection, DEADLINE_EXCEEDED, Deadlines, Options};
 
-/// A writer over no connector: what it sends queues in `frames`, which holds one frame, and
-/// its answers are what `acks` sends.
-struct Fixture {
-    writer: RemoteWriter,
-    frames: mpsc::Receiver<v1::WriteFrame>,
-    acks: mpsc::Sender<v1::WriteAck>,
+/// The connector's end of a write's stream: the frames the writer sends, and its answers.
+struct Connector {
+    frames: FrameReader<ReadHalf<DuplexStream>>,
+    acks: WriteHalf<DuplexStream>,
 }
 
-/// A writer with `credit` bytes of credit, each wait for an answer due within a second.
-fn fixture(credit: u64) -> Fixture {
+impl Connector {
+    /// The writer's next frame, within a second.
+    async fn frame(&mut self) -> Received {
+        tokio::time::timeout(Duration::from_secs(1), self.frames.next())
+            .await
+            .expect("a frame arrives in time")
+            .expect("the frame arrives whole")
+            .expect("the writer is open")
+    }
+
+    /// The message the writer's next frame holds, within a second.
+    async fn message(&mut self) -> Frame {
+        let frame = self.frame().await;
+        let form = Call::Write
+            .form(End::Host)
+            .expect("a write's host sends messages");
+        let message: v1::WriteFrame = frame.message(form, 1 << 20).expect("the message decodes");
+        message.frame.expect("a frame")
+    }
+
+    /// Answers with `ack`.
+    async fn answer(&mut self, ack: v1::write_ack::Ack) {
+        let answer = v1::WriteAck { ack: Some(ack) };
+        let mut frame = Outgoing::message(None, &answer).expect("an answer fits a head");
+        frame.write(&mut self.acks).await.expect("the writer reads");
+    }
+}
+
+/// A writer over a stream holding `buffered` bytes each way, each wait for an answer due within
+/// a second, and the connector's end of it.
+fn fixture(buffered: usize) -> (RemoteWriter, Connector) {
     let options = Options {
         deadlines: Deadlines {
             write_ack: Duration::from_secs(1),
@@ -40,7 +65,7 @@ fn fixture(credit: u64) -> Fixture {
         ..Options::default()
     };
     let channel = tonic::transport::Endpoint::from_static("http://127.0.0.1:1").connect_lazy();
-    let checked = Checked::new(channel, options.limits);
+    let checked = Checked::new(channel.clone(), options.limits);
     let connection = Arc::new(Connection {
         client: Clients::new(&checked, &options.limits),
         spec: v1::ConnectorSpec::default(),
@@ -48,115 +73,120 @@ fn fixture(credit: u64) -> Fixture {
         options,
         lost: CancellationToken::new(),
         spent: CancellationToken::new(),
+        carrier: Carrier::Called(channel),
     });
-    let (acks, answers) = mpsc::channel(8);
-    let most = options.limits.largest();
-    let body = tonic::body::Body::new(Outgoing::request(ReceiverStream::new(answers), most));
-    let bounds = Bounds::of(
-        &options.limits,
-        Class::of_answer("Write"),
-        rdlt_wire::scan::response("Write"),
-    );
-    let (sender, frames) = mpsc::channel(1);
-    let mut spending = Spending::default();
-    if credit > 0 {
-        spending.grant(credit).expect("a credit of some bytes");
-    }
+    let (host, connector) = tokio::io::duplex(buffered);
+    let (acks, frames) = tokio::io::split(Box::new(host) as Box<dyn Stream>);
+    let limits = options.limits;
     let writer = RemoteWriter {
         connection,
-        frames: sender,
-        acks: Incoming::request(Bounded::new(body, bounds, None)),
-        credit: spending,
+        acks: FrameReader::new(acks, Call::Write.bounds(End::Connector, &limits)),
+        frames,
         encoder: Encoder::default(),
         schema: None,
         version: 1,
         staged: 0,
         flushed: WriteStats::default(),
         unanswered: false,
+        pending: None,
+        torn: false,
     };
-    Fixture {
-        writer,
-        frames,
-        acks,
-    }
+    let (read, write) = tokio::io::split(connector);
+    let connector = Connector {
+        frames: FrameReader::new(read, Call::Write.bounds(End::Host, &limits)),
+        acks: write,
+    };
+    (writer, connector)
 }
 
-fn flush() -> v1::WriteFrame {
-    v1::WriteFrame {
+/// A flush's frame.
+fn flush() -> Outgoing {
+    let flush = v1::WriteFrame {
         frame: Some(Frame::Flush(v1::Unit {})),
-    }
+    };
+    Outgoing::message(None, &flush).expect("a flush fits a head")
 }
 
-fn credit(bytes: u64) -> v1::WriteAck {
-    v1::WriteAck {
-        ack: Some(v1::write_ack::Ack::Credit(v1::Credit { bytes })),
-    }
+/// Bytes: a flush's frame, head and body.
+fn flush_bytes() -> usize {
+    HEAD_BYTES + flush().len()
 }
 
-/// The next `count` frames the writer queued, each within a second.
-async fn queued(frames: &mut mpsc::Receiver<v1::WriteFrame>, count: usize) -> Vec<Frame> {
-    let mut queued = Vec::with_capacity(count);
-    for _ in 0..count {
-        let frame = tokio::time::timeout(Duration::from_secs(1), frames.recv())
-            .await
-            .expect("a frame is queued in time")
-            .expect("the writer is open");
-        queued.push(frame.frame.expect("a frame"));
-    }
-    queued
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_frame_its_deadline_kept_from_the_queue_spends_no_credit_and_goes_when_retried() {
-    let Fixture {
-        mut writer,
-        mut frames,
-        acks: _acks,
-    } = fixture(1);
-    writer.frames.try_send(flush()).expect("room for one frame");
-    let sending = tokio::time::timeout(
-        Duration::from_secs(2),
-        writer.send(Frame::Flush(v1::Unit {})),
-    );
-    let late = sending
-        .await
-        .expect("the write-ack deadline ends the send")
-        .expect_err("the queue stays full");
-    assert_eq!(late.code(), Some(DEADLINE_EXCEEDED));
+/// Fails the test unless `ended` failed as a call past its deadline, which is also how a writer
+/// whose flush went unanswered, or whose frame was cut part way, refuses.
+fn deadline_exceeded<T: std::fmt::Debug>(ended: rdlt_connector::Result<T>) {
+    let error = ended.expect_err("the call fails");
     assert_eq!(
-        writer.credit.credit(),
-        1,
-        "a frame never queued spent credit"
+        (error.kind(), error.code()),
+        (ConnectorErrorKind::Transient, Some(DEADLINE_EXCEEDED))
     );
-    queued(&mut frames, 1).await;
-    let retried = tokio::time::timeout(
-        Duration::from_secs(2),
-        writer.send(Frame::Flush(v1::Unit {})),
-    );
-    retried
-        .await
-        .expect("the retry ends")
-        .expect("the retry goes on the credit left");
-    assert!(matches!(
-        queued(&mut frames, 1).await[..],
-        [Frame::Flush(_)]
-    ));
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_connector_lost_while_a_frame_waits_for_room_spends_no_credit() {
-    let Fixture {
-        mut writer,
-        frames: _frames,
-        acks: _acks,
-    } = fixture(1);
-    writer.frames.try_send(flush()).expect("room for one frame");
+async fn a_frame_the_connector_takes_none_of_in_time_is_dropped_and_the_writer_goes_on() {
+    // The stream holds one flush, so the second waits before any of it goes.
+    let (mut writer, mut connector) = fixture(flush_bytes());
+    writer
+        .send(flush(), false)
+        .await
+        .expect("the first frame fits");
+    let late = tokio::time::timeout(Duration::from_secs(2), writer.send(flush(), false))
+        .await
+        .expect("the write-ack deadline ends the send");
+    deadline_exceeded(late);
+    assert!(matches!(connector.message().await, Frame::Flush(_)));
+    // The retry's schema, dictionary and batch, each taken as it comes.
+    let taking = async {
+        let first = connector.message().await;
+        connector.frame().await;
+        connector.frame().await;
+        first
+    };
+    let retried = async { tokio::join!(writer.write(SegmentId(1), keyed("alpha")), taking) };
+    let (written, first) = tokio::time::timeout(Duration::from_secs(2), retried)
+        .await
+        .expect("the retry ends");
+    written.expect("the retry goes");
+    assert!(
+        matches!(first, Frame::Schema(_)),
+        "the dropped frame never went"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_frame_cut_part_way_leaves_the_writer_refusing_every_call() {
+    // The stream holds part of a flush.
+    let (mut writer, _connector) = fixture(flush_bytes() - 1);
+    let late = tokio::time::timeout(Duration::from_secs(2), writer.send(flush(), false))
+        .await
+        .expect("the write-ack deadline ends the send");
+    deadline_exceeded(late);
+    let written = tokio::time::timeout(
+        Duration::from_millis(20),
+        writer.write(SegmentId(1), keyed("alpha")),
+    )
+    .await
+    .expect("the writer refuses at once");
+    deadline_exceeded(written);
+    let flushed = tokio::time::timeout(Duration::from_millis(20), writer.flush())
+        .await
+        .expect("the writer refuses at once");
+    deadline_exceeded(flushed);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_connector_lost_while_a_frame_waits_for_room_fails_the_send() {
+    let (mut writer, _connector) = fixture(flush_bytes());
+    writer
+        .send(flush(), false)
+        .await
+        .expect("the first frame fits");
     let lost = writer.connection.lost.clone();
     let losing = async {
         tokio::time::sleep(Duration::from_millis(10)).await;
         lost.cancel();
     };
-    let sending = async { tokio::join!(writer.send(Frame::Flush(v1::Unit {})), losing) };
+    let sending = async { tokio::join!(writer.send(flush(), false), losing) };
     let (sent, ()) = tokio::time::timeout(Duration::from_secs(2), sending)
         .await
         .expect("the loss ends the send");
@@ -165,36 +195,21 @@ async fn a_connector_lost_while_a_frame_waits_for_room_spends_no_credit() {
         (error.kind(), error.code()),
         (ConnectorErrorKind::Transient, Some(CONNECTOR_LOST))
     );
-    assert_eq!(
-        writer.credit.credit(),
-        1,
-        "a frame never queued spent credit"
-    );
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_write_its_connector_ended_fails_with_its_error_and_spends_no_credit() {
-    let Fixture {
-        mut writer,
-        frames,
-        acks,
-    } = fixture(1);
-    // The connector ended the write: the call's frames go nowhere, and its last answer says why.
-    drop(frames);
+async fn a_write_its_connector_ended_fails_with_its_error() {
+    let (mut writer, mut connector) = fixture(1 << 16);
+    // The connector ended the write: its last answer says why, and it takes nothing more.
     let refused = v1::Error {
         kind: v1::ErrorKind::Data as i32,
         message: "the table is gone".to_owned(),
         code: Some("table_gone".to_owned()),
         ..v1::Error::default()
     };
-    let answer = v1::WriteAck {
-        ack: Some(v1::write_ack::Ack::Error(refused)),
-    };
-    acks.send(answer).await.expect("the answers are read");
-    let sending = tokio::time::timeout(
-        Duration::from_secs(2),
-        writer.send(Frame::Flush(v1::Unit {})),
-    );
+    connector.answer(v1::write_ack::Ack::Error(refused)).await;
+    drop(connector);
+    let sending = tokio::time::timeout(Duration::from_secs(2), writer.send(flush(), false));
     let error = sending
         .await
         .expect("the write's end ends the send")
@@ -203,38 +218,25 @@ async fn a_write_its_connector_ended_fails_with_its_error_and_spends_no_credit()
         (error.kind(), error.code()),
         (ConnectorErrorKind::Data, Some("table_gone"))
     );
-    assert_eq!(
-        writer.credit.credit(),
-        1,
-        "a frame never queued spent credit"
-    );
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_send_dropped_while_it_waits_for_credit_goes_on_the_credit_granted_meanwhile() {
-    let Fixture {
-        mut writer,
-        mut frames,
-        acks,
-    } = fixture(0);
-    let dropped = tokio::time::timeout(
-        Duration::from_millis(20),
-        writer.send(Frame::Flush(v1::Unit {})),
+async fn a_flush_whose_connector_ends_the_stream_unanswered_fails_as_the_connector_lost() {
+    let (mut writer, mut connector) = fixture(1 << 16);
+    let flushing = tokio::time::timeout(Duration::from_secs(2), writer.flush());
+    let ending = async {
+        assert!(matches!(connector.message().await, Frame::Flush(_)));
+        // A connector that crashed or lost its connection ends the stream as one that closes it.
+        drop(connector);
+    };
+    let (flushed, ()) = tokio::join!(flushing, ending);
+    let error = flushed
+        .expect("the stream's end ends the flush")
+        .expect_err("the flush is unanswered");
+    assert_eq!(
+        (error.kind(), error.code()),
+        (ConnectorErrorKind::Transient, Some(CONNECTOR_LOST))
     );
-    assert!(dropped.await.is_err(), "no credit is granted");
-    acks.send(credit(64)).await.expect("the answers are read");
-    let retried = tokio::time::timeout(
-        Duration::from_secs(2),
-        writer.send(Frame::Flush(v1::Unit {})),
-    );
-    retried
-        .await
-        .expect("the retry ends")
-        .expect("the retry goes on the credit granted");
-    assert!(matches!(
-        queued(&mut frames, 1).await[..],
-        [Frame::Flush(_)]
-    ));
 }
 
 /// A batch of one dictionary column whose first value is `first`.
@@ -259,99 +261,58 @@ fn first_value(batch: &RecordBatch) -> String {
     values.value(key).to_owned()
 }
 
-/// The batch `frames` decode to with `decoder`, as the connector would decode them.
-fn decoded(decoder: &mut Decoder, frames: &[Frame]) -> RecordBatch {
-    let mut last = None;
-    for frame in frames {
-        match frame {
-            Frame::Schema(schema) => {
-                decoder
-                    .schema(&schema.ipc_schema)
-                    .expect("the schema decodes");
+/// What `decoder` makes of `frame`, a frame of a write's host, as the connector decodes it: a
+/// batch, or nothing where it is a schema or a dictionary, or why it does not decode; `None`
+/// where it is a flush.
+fn decoded(decoder: &mut Decoder, frame: Received) -> Option<Result<Option<RecordBatch>, String>> {
+    let outcome = match frame.head.kind {
+        Kind::Batch { .. } => IpcFrame::framed(frame.body).and_then(|frame| decoder.frame(&frame)),
+        Kind::Message { .. } => {
+            let form = Call::Write
+                .form(End::Host)
+                .expect("a write's host sends messages");
+            let message: v1::WriteFrame = frame.message(form, 1 << 20).expect("a message");
+            match message.frame.expect("a frame") {
+                Frame::Schema(schema) => decoder.schema(&schema.ipc_schema).map(|_| None),
+                Frame::Flush(_) => return None,
             }
-            Frame::Batch(batch) => {
-                let frame = IpcFrame::new(batch.data_header.clone(), batch.data_body.clone());
-                last = decoder.frame(&frame).expect("the frame decodes").or(last);
-            }
-            other => panic!("not a frame of a batch: {other:?}"),
         }
-    }
-    last.expect("a batch is decoded")
-}
-
-/// Writes `batch` while taking its three frames from `frames`, all within two seconds.
-async fn written(
-    writer: &mut RemoteWriter,
-    frames: &mut mpsc::Receiver<v1::WriteFrame>,
-    batch: RecordBatch,
-) -> Vec<Frame> {
-    let writing = async { tokio::join!(writer.write(SegmentId(1), batch), queued(frames, 3)) };
-    let (written, sent) = tokio::time::timeout(Duration::from_secs(2), writing)
-        .await
-        .expect("the write ends");
-    written.expect("the write is written");
-    sent
+        Kind::Json => panic!("a write sends no JSON"),
+    };
+    Some(outcome.map_err(|error| error.to_string()))
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_dictionary_write_dropped_at_any_frame_sends_its_schema_and_dictionary_again() {
-    // The frames the queue gives up before the write waits: none, so it waits at its schema;
-    // one, so at its dictionary; two, so at its batch.
-    for taken in 0..3 {
-        let Fixture {
-            mut writer,
-            mut frames,
-            acks: _acks,
-        } = fixture(1 << 20);
-        // A frame already queued: the write's frames wait behind it.
-        writer.frames.try_send(flush()).expect("room for one frame");
-        let writing = async {
-            tokio::join!(
-                writer.write(SegmentId(1), keyed("alpha")),
-                queued(&mut frames, taken)
-            )
-        };
-        let dropped = tokio::time::timeout(Duration::from_millis(20), writing).await;
-        assert!(dropped.is_err(), "the write waits after {taken} frames");
-        queued(&mut frames, 1).await;
-        let sent = written(&mut writer, &mut frames, keyed("alpha")).await;
-        assert!(
-            matches!(sent[0], Frame::Schema(_)),
-            "after {taken}: {sent:?}"
-        );
-        let batch = decoded(&mut Decoder::new(Limits::default()), &sent);
-        assert_eq!(first_value(&batch), "alpha", "after {taken}");
+async fn a_write_s_frames_decode_as_the_batch_written() {
+    let (mut writer, mut connector) = fixture(1 << 16);
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        writer.write(SegmentId(1), keyed("alpha")),
+    )
+    .await
+    .expect("the write ends")
+    .expect("the write goes");
+    let mut decoder = Decoder::new(Limits::default());
+    let mut batches = Vec::new();
+    for _ in 0..3 {
+        let frame = connector.frame().await;
+        let taken = decoded(&mut decoder, frame).expect("no flush");
+        if let Some(batch) = taken.expect("each frame decodes") {
+            batches.push(first_value(&batch));
+        }
     }
+    assert_eq!(batches, ["alpha"]);
 }
 
-fn stats(rows: u64) -> v1::WriteAck {
-    v1::WriteAck {
-        ack: Some(v1::write_ack::Ack::Flushed(v1::WriteStats {
-            rows,
-            bytes: rows,
-        })),
-    }
-}
-
-/// Fails the test unless `ended` failed as a call past its deadline, which is also how a writer
-/// whose flush went unanswered refuses.
-fn deadline_exceeded<T: std::fmt::Debug>(ended: rdlt_connector::Result<T>) {
-    let error = ended.expect_err("the call fails");
-    assert_eq!(
-        (error.kind(), error.code()),
-        (ConnectorErrorKind::Transient, Some(DEADLINE_EXCEEDED))
-    );
+fn stats(rows: u64) -> v1::write_ack::Ack {
+    v1::write_ack::Ack::Flushed(v1::WriteStats { rows, bytes: rows })
 }
 
 #[tokio::test(start_paused = true)]
 async fn a_writer_whose_flush_went_unanswered_refuses_every_later_call() {
     // The flush dropped by its caller, then one that passed its own deadline.
     for passes_deadline in [false, true] {
-        let Fixture {
-            mut writer,
-            mut frames,
-            acks,
-        } = fixture(1 << 20);
+        let (mut writer, mut connector) = fixture(1 << 16);
         if passes_deadline {
             let ended = tokio::time::timeout(Duration::from_secs(2), writer.flush())
                 .await
@@ -361,15 +322,9 @@ async fn a_writer_whose_flush_went_unanswered_refuses_every_later_call() {
             let dropped = tokio::time::timeout(Duration::from_millis(20), writer.flush()).await;
             assert!(dropped.is_err(), "the flush waits for its stats");
         }
-        assert!(matches!(
-            queued(&mut frames, 1).await[..],
-            [Frame::Flush(_)]
-        ));
+        assert!(matches!(connector.message().await, Frame::Flush(_)));
         // Its stats arrive late: taken by a later flush, they would be counted as that flush's.
-        tokio::time::timeout(Duration::from_millis(20), acks.send(stats(7)))
-            .await
-            .expect("the answers have room")
-            .expect("the answers are read");
+        connector.answer(stats(7)).await;
         let flushed = tokio::time::timeout(Duration::from_millis(20), writer.flush())
             .await
             .expect("the writer refuses at once");
@@ -381,24 +336,20 @@ async fn a_writer_whose_flush_went_unanswered_refuses_every_later_call() {
         .await
         .expect("the writer refuses at once");
         deadline_exceeded(written);
-        assert!(frames.try_recv().is_err(), "a refused writer sends nothing");
+        let sent = tokio::time::timeout(Duration::from_millis(20), connector.frames.next()).await;
+        assert!(sent.is_err(), "a refused writer sends nothing");
     }
 }
 
 #[tokio::test(start_paused = true)]
 async fn a_write_dropped_while_its_own_flush_waits_refuses_the_writer() {
-    let Fixture {
-        mut writer,
-        mut frames,
-        acks: _acks,
-    } = fixture(1 << 20);
+    let (mut writer, mut connector) = fixture(1 << 16);
     // What the connector has staged is at its limit: the write's first frame flushes first.
     writer.staged = writer.connection.peer.staged_bytes();
     let writing = async {
-        tokio::join!(
-            writer.write(SegmentId(1), keyed("alpha")),
-            queued(&mut frames, 2)
-        )
+        tokio::join!(writer.write(SegmentId(1), keyed("alpha")), async {
+            (connector.message().await, connector.message().await)
+        })
     };
     let dropped = tokio::time::timeout(Duration::from_millis(20), writing).await;
     assert!(dropped.is_err(), "the write's flush waits for its stats");
@@ -409,5 +360,81 @@ async fn a_write_dropped_while_its_own_flush_waits_refuses_the_writer() {
     .await
     .expect("the writer refuses at once");
     deadline_exceeded(written);
-    assert!(frames.try_recv().is_err(), "a refused writer sends nothing");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_flush_dropped_before_any_of_it_went_leaves_the_writer_usable() {
+    // The stream is full, so the flush waits before any of it goes.
+    let (mut writer, mut connector) = fixture(flush_bytes());
+    writer
+        .send(flush(), false)
+        .await
+        .expect("the first frame fits");
+    let dropped = tokio::time::timeout(Duration::from_millis(20), writer.flush()).await;
+    assert!(dropped.is_err(), "the flush waits for room");
+    assert!(matches!(connector.message().await, Frame::Flush(_)));
+    let answering = async {
+        let sent = connector.message().await;
+        connector.answer(stats(3)).await;
+        sent
+    };
+    let flushing = async { tokio::join!(writer.flush(), answering) };
+    let (flushed, sent) = tokio::time::timeout(Duration::from_millis(20), flushing)
+        .await
+        .expect("the flush goes");
+    assert!(matches!(sent, Frame::Flush(_)));
+    assert_eq!(flushed.expect("the flush is answered").rows, 3);
+}
+
+#[test]
+fn any_answer_a_destination_sends_decodes_within_what_its_frame_is_charged() {
+    use crate::remote::read::reservation;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("a runtime");
+    let lengths = [0, 1, 255, 4_096, 65_536];
+    let answers = lengths.into_iter().flat_map(|length| {
+        let text = "e".repeat(length);
+        [
+            stats(u64::try_from(length).expect("a length")),
+            v1::write_ack::Ack::Error(v1::Error {
+                kind: v1::ErrorKind::Data as i32,
+                message: text.clone(),
+                code: Some("limit_exceeded".to_owned()),
+                retry_after: Some(v1::Duration {
+                    seconds: 1,
+                    nanos: 2,
+                }),
+                limit: Some(v1::LimitExceeded {
+                    name: text,
+                    limit: u64::MAX,
+                    actual: u64::MAX,
+                }),
+            }),
+        ]
+    });
+    for ack in answers {
+        let sent = v1::WriteAck { ack: Some(ack) };
+        let decoded = runtime.block_on(async {
+            let (mut connector, host) = tokio::io::duplex(1 << 20);
+            let mut frame = Outgoing::message(None, &sent).expect("an answer fits a head");
+            frame
+                .write(&mut connector)
+                .await
+                .expect("the answer is taken");
+            let limits = Limits::default();
+            let mut answers = FrameReader::new(host, Call::Write.bounds(End::Connector, &limits));
+            let received = answers
+                .next()
+                .await
+                .expect("the answer arrives whole")
+                .expect("an answer");
+            let bound = usize::try_from(reservation(&received.head, 0)).expect("a bound");
+            let form = Call::Write
+                .form(End::Connector)
+                .expect("a write's connector answers");
+            received.message::<v1::WriteAck>(form, bound)
+        });
+        assert_eq!(decoded.ok(), Some(sent));
+    }
 }

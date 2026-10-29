@@ -1,88 +1,115 @@
 //! Raw connections to connectors, before any handshake, for clients that speak the protocol
 //! themselves, as a certification suite does.
 
-#[cfg(test)]
-mod tests;
+use std::sync::Arc;
 
-use std::pin::Pin;
-use std::task::{Context, Poll};
-
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use rdlt_connector::{BoxFuture, ConnectorError, Role};
 
 use crate::local::process::{Process, Witness};
 use crate::network::Stream;
+use crate::opener::{Opener, Opening};
+use crate::remote::{Client, Connection, Options, client, client_opened};
 
 /// A raw connection to a connector, before its handshake: a stream whose other end serves the
-/// protocol, and the connector's process when this process spawned it, which stops once the
-/// wire is dropped.
+/// protocol, its data calls `Data` calls of it, or an opener passing the connector a stream for
+/// its control connection and for each data call; and the connector's process when this process
+/// spawned it, which stops once what the wire becomes is dropped.
 pub struct Wire {
-    stream: Box<dyn Stream>,
-    process: Option<Process>,
+    reach: Reach,
+    witness: Option<Witness>,
+}
+
+/// How a wire reaches its connector.
+enum Reach {
+    Stream(Box<dyn Stream>),
+    Opener(Arc<dyn Opener>),
 }
 
 impl std::fmt::Debug for Wire {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("Wire")
-            .field("spawned", &self.process.is_some())
+            .field("spawned", &self.witness.is_some())
             .finish_non_exhaustive()
     }
 }
 
+/// An opener whose connector's process lives as long as it does.
+struct Spawned {
+    opener: Arc<dyn Opener>,
+    _process: Process,
+}
+
+impl Opener for Spawned {
+    fn open(&self, opening: Opening) -> BoxFuture<'_, std::io::Result<Box<dyn Stream>>> {
+        self.opener.open(opening)
+    }
+}
+
 impl Wire {
-    pub(crate) fn new(stream: Box<dyn Stream>, process: Option<Process>) -> Self {
-        Self { stream, process }
+    /// The wire `stream` is, to a connector this process did not spawn.
+    pub(crate) fn stream(stream: Box<dyn Stream>) -> Self {
+        Self {
+            reach: Reach::Stream(stream),
+            witness: None,
+        }
+    }
+
+    /// The wire whose streams `opener` passes to the connector `process` runs.
+    pub(crate) fn spawned(opener: Arc<dyn Opener>, process: Process) -> Self {
+        let witness = Some(process.witness());
+        let spawned = Spawned {
+            opener,
+            _process: process,
+        };
+        Self {
+            reach: Reach::Opener(Arc::new(spawned)),
+            witness,
+        }
+    }
+
+    /// The wire whose streams `opener` passes to its connector.
+    pub fn opened(opener: Box<dyn Opener>) -> Self {
+        Self {
+            reach: Reach::Opener(Arc::from(opener)),
+            witness: None,
+        }
     }
 
     /// A witness to how the connector ends, when this process spawned it: what it last said, for
     /// the errors of a transport that failed.
     pub fn witness(&self) -> Option<Witness> {
-        self.process.as_ref().map(Process::witness)
-    }
-}
-
-impl AsyncRead for Wire {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        context: &mut Context<'_>,
-        buffer: &mut ReadBuf<'_>,
-    ) -> Poll<std::io::Result<()>> {
-        Pin::new(&mut self.stream).poll_read(context, buffer)
-    }
-}
-
-impl AsyncWrite for Wire {
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        context: &mut Context<'_>,
-        buffer: &[u8],
-    ) -> Poll<std::io::Result<usize>> {
-        Pin::new(&mut self.stream).poll_write(context, buffer)
+        self.witness.clone()
     }
 
-    fn poll_flush(
-        mut self: Pin<&mut Self>,
-        context: &mut Context<'_>,
-    ) -> Poll<std::io::Result<()>> {
-        Pin::new(&mut self.stream).poll_flush(context)
+    /// A client of the protocol over the wire, with no handshake yet.
+    ///
+    /// # Errors
+    ///
+    /// As [`client`] and [`client_opened`] fail.
+    pub async fn client(self, options: Options) -> Result<Client, ConnectorError> {
+        match self.reach {
+            Reach::Stream(stream) => client(stream, options).await,
+            Reach::Opener(opener) => client_opened(opener, options).await,
+        }
     }
 
-    fn poll_shutdown(
-        mut self: Pin<&mut Self>,
-        context: &mut Context<'_>,
-    ) -> Poll<std::io::Result<()>> {
-        Pin::new(&mut self.stream).poll_shutdown(context)
-    }
-
-    fn poll_write_vectored(
-        mut self: Pin<&mut Self>,
-        context: &mut Context<'_>,
-        buffers: &[std::io::IoSlice<'_>],
-    ) -> Poll<std::io::Result<usize>> {
-        Pin::new(&mut self.stream).poll_write_vectored(context, buffers)
-    }
-
-    fn is_write_vectored(&self) -> bool {
-        self.stream.is_write_vectored()
+    /// Connects over the wire to its connector, as `role`, with `config`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Connection::connect`] and [`Connection::connect_opened`] fail.
+    pub async fn connect(
+        self,
+        role: Role,
+        config: &serde_json::Value,
+        options: Options,
+    ) -> Result<Arc<Connection>, ConnectorError> {
+        match self.reach {
+            Reach::Stream(stream) => Connection::connect(stream, role, config, options).await,
+            Reach::Opener(opener) => {
+                Connection::connect_opened(opener, role, config, options).await
+            }
+        }
     }
 }

@@ -4,20 +4,21 @@ use std::time::Duration;
 
 use arrow_array::{ArrayRef, RecordBatch, StringArray};
 use rdlt_wire::Limits;
-use rdlt_wire::bounded::{Bounded, Bounds};
-use rdlt_wire::limits::{CREDIT_FLOOR, Class};
-use rdlt_wire::plane::{Incoming, Outgoing};
-use rdlt_wire::tonic::Code;
-use rdlt_wire::tonic::body::Body;
-use tokio::sync::{Notify, mpsc};
-use tokio_stream::wrappers::ReceiverStream;
+use rdlt_wire::stream::{Call, End, FrameReader, Kind, Outgoing};
+use tokio::io::{DuplexStream, ReadHalf, WriteHalf};
+use tokio::sync::Notify;
+use tokio::task::JoinHandle;
 
 use super::window::Window;
-use super::{EVENTS, Outbox, finish, pump};
+use super::{EVENTS, Outbox, Pumping, finish, pump};
+use crate::ConnectorErrorKind;
 use crate::cost::push_charge;
 use crate::error::Result;
 use crate::id::{PartitionId, StreamName};
+use crate::serve::Served;
 use crate::serve::live::{Live, gone};
+use crate::serve::noted::{Noting, Read};
+use crate::serve::stream::Frames;
 use crate::sink::{Admission, PartitionSink, Permit, Push, SourceEvent};
 use crate::source::{Partition, PartitionPlan, ReadRequest, Source};
 use crate::spec::BoxFuture;
@@ -76,20 +77,8 @@ impl Source for Stuck {
     }
 }
 
-/// The host's end of a read's controls, and the controls as the pump reads them.
-fn controls(limits: &Limits) -> (mpsc::Sender<v1::ReadControl>, Incoming<v1::ReadControl>) {
-    let (control, sent) = mpsc::channel(1);
-    let body = Body::new(Outgoing::request(
-        ReceiverStream::new(sent),
-        limits.largest(),
-    ));
-    let bounds = Bounds::of(
-        limits,
-        Class::of_request("Read"),
-        rdlt_wire::scan::request("Read"),
-    );
-    (control, Incoming::request(Bounded::new(body, bounds, None)))
-}
+/// Bytes: what the stream between a test's host and its read holds in each direction.
+const BUFFERED: usize = 64 * 1024;
 
 fn request() -> ReadRequest {
     let partition = Partition::new(PartitionId::parse("p0").expect("a valid partition id"));
@@ -98,6 +87,43 @@ fn request() -> ReadRequest {
         partition,
         None,
     )
+}
+
+/// A read of `source` pumped within `limits`, its pushes admitted by `admission`: the host's end
+/// of its stream, the opening sent, and the pump.
+async fn pumped(
+    source: Arc<dyn Source>,
+    limits: Limits,
+    admission: Arc<dyn Admission>,
+) -> (DuplexStream, JoinHandle<()>) {
+    let (mut host, connector) = tokio::io::duplex(BUFFERED);
+    let start = v1::ReadStart::default();
+    let mut opening = Outgoing::message(Some(Call::Read), &start).expect("a start fits a head");
+    opening.write(&mut host).await.expect("the opening is sent");
+    let (read, write) = tokio::io::split(connector);
+    let window = rdlt_wire::bounded::Window::new(limits.largest());
+    let mut frames = Frames::new(read, limits, window);
+    tokio::time::timeout(WAIT, frames.opening())
+        .await
+        .expect("the opening arrives")
+        .expect("the opening reads")
+        .expect("the host opened a call");
+    let request = request();
+    let read = Read {
+        stream: request.stream.clone(),
+        partition: request.partition.id().clone(),
+        start: None,
+    };
+    let pumping = Pumping {
+        source,
+        request,
+        barrier: 0,
+        noting: Noting::new(Arc::new(Served::new()), None, read),
+    };
+    let pumping = tokio::spawn(pump::<ReadHalf<DuplexStream>, WriteHalf<DuplexStream>>(
+        pumping, frames, write, admission,
+    ));
+    (host, pumping)
 }
 
 fn stuck(keeps_sink: bool, live: &Arc<AtomicUsize>) -> Arc<Stuck> {
@@ -114,23 +140,15 @@ async fn a_read_ends_once_its_host_goes_though_its_source_let_its_sink_go_and_cl
         let limits = Limits::default();
         let live = Arc::new(AtomicUsize::new(0));
         let source = stuck(keeps_sink, &live);
-        let (control, controls) = controls(&limits);
-        let (frames, answers) = mpsc::channel(16);
-        let pumping = tokio::spawn(pump(
-            Arc::clone(&source) as _,
-            request(),
-            0,
-            controls,
-            frames,
-            Arc::new(Window::new(limits)),
-        ));
-        tokio::time::timeout(WAIT, source.begun.notified())
+        let begun = source.begun.notified();
+        let window = Arc::new(Window::new(limits));
+        let (host, pumping) = pumped(Arc::clone(&source) as _, limits, window).await;
+        tokio::time::timeout(WAIT, begun)
             .await
             .expect("the source reads");
         // The pump finds the feed ended where the source let its sink go.
         tokio::time::sleep(Duration::from_secs(1)).await;
-        drop(control);
-        drop(answers);
+        drop(host);
         tokio::time::timeout(HOUR, pumping)
             .await
             .unwrap_or_else(|_| panic!("the read ends once its host goes, sink kept: {keeps_sink}"))
@@ -142,50 +160,19 @@ async fn a_read_ends_once_its_host_goes_though_its_source_let_its_sink_go_and_cl
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_read_ends_once_its_host_drops_its_answers_though_its_request_stays_open() {
-    let limits = Limits::default();
-    let live = Arc::new(AtomicUsize::new(0));
-    let source = stuck(true, &live);
-    let (control, controls) = controls(&limits);
-    let (frames, answers) = mpsc::channel(16);
-    let pumping = tokio::spawn(pump(
-        Arc::clone(&source) as _,
-        request(),
-        0,
-        controls,
-        frames,
-        Arc::new(Window::new(limits)),
-    ));
-    tokio::time::timeout(WAIT, source.begun.notified())
-        .await
-        .expect("the source reads");
-    drop(answers);
-    tokio::time::timeout(HOUR, pumping)
-        .await
-        .expect("the read ends once its answers are dropped")
-        .expect("the pump does not panic");
-    tokio::time::timeout(WAIT, gone(&live))
-        .await
-        .expect("the source's read is dropped with the pump");
-    drop(control);
-}
-
-#[tokio::test(start_paused = true)]
 async fn a_read_s_panic_tells_its_host_neither_its_message_nor_its_task() {
-    let read: tokio::task::JoinHandle<Result<()>> =
+    let read: JoinHandle<Result<()>> =
         tokio::spawn(async { panic!("the read held row 4417 of the ledger") });
     let ended = tokio::time::timeout(WAIT, read)
         .await
         .expect("the read ends");
     let mut outbox = Outbox::new(Limits::default());
-    let Err(status) = finish(&mut outbox, ended) else {
+    let Err(error) = finish(&mut outbox, ended) else {
         panic!("a read that panicked fails");
     };
-    assert_eq!(status.code(), Code::Internal);
-    for told in [
-        status.message().to_owned(),
-        crate::wire::error(&status).to_string(),
-    ] {
+    assert_eq!(error.kind(), ConnectorErrorKind::Internal);
+    let wire = crate::wire::wire_error(&error);
+    for told in [error.to_string(), wire.message] {
         assert!(
             !told.contains("4417") && !told.contains("task"),
             "the host is told {told:?}"
@@ -314,20 +301,8 @@ async fn a_read_whose_host_takes_nothing_holds_a_frame_and_one_push_in_its_chann
             window: Window::new(limits),
             held: Arc::clone(&held),
         });
-        let (control, controls) = controls(&limits);
-        let (frames, answers) = mpsc::channel(EVENTS.get());
-        let pumping = tokio::spawn(pump(source, request(), 0, controls, frames, admission));
-        // The host grants the read its first credit, and takes nothing.
-        let credit = v1::read_control::Control::Credit(v1::Credit {
-            bytes: CREDIT_FLOOR,
-        });
-        let credit = v1::ReadControl {
-            control: Some(credit),
-        };
-        control
-            .send(credit)
-            .await
-            .expect("the read takes its credit");
+        // The host takes nothing of what the read writes.
+        let (host, pumping) = pumped(source, limits, admission).await;
         tokio::time::sleep(Duration::from_secs(1)).await;
         let waiting = sent.load(Ordering::SeqCst);
         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -347,10 +322,51 @@ async fn a_read_whose_host_takes_nothing_holds_a_frame_and_one_push_in_its_chann
             pushes < u64::try_from(EVENTS.get()).expect("a count"),
             "the bytes bound the channel, not its count: {pushes} pushes of {push} bytes"
         );
-        drop((control, answers));
+        drop(host);
         tokio::time::timeout(HOUR, pumping)
             .await
             .expect("the read ends once its host goes")
             .expect("the pump does not panic");
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_frame_being_written_goes_on_whole_while_the_host_s_controls_arrive() {
+    let limits = Limits::default();
+    let source = Arc::new(Pushing {
+        batch: strings(1_024, 512),
+        sent: Arc::new(AtomicUsize::new(0)),
+    });
+    let window = Arc::new(Window::new(limits));
+    let (host, pumping) = pumped(source, limits, window).await;
+    let (read, mut write) = tokio::io::split(host);
+    let mut frames = FrameReader::new(read, Call::Read.bounds(End::Connector, &limits));
+    let control = v1::ReadControl {
+        control: Some(v1::read_control::Control::Checkpoint(
+            v1::CheckpointRequest { barrier: 1 },
+        )),
+    };
+    let mut batches = 0;
+    for _ in 0..200 {
+        // A control lands between every few reads of the host's, within frames being written.
+        let mut sent = Outgoing::message(None, &control).expect("a control fits a head");
+        tokio::time::timeout(WAIT, sent.write(&mut write))
+            .await
+            .expect("the read takes its controls")
+            .expect("the stream is open");
+        let frame = tokio::time::timeout(WAIT, frames.next())
+            .await
+            .expect("the read writes")
+            .expect("every frame arrives whole")
+            .expect("the read goes on");
+        if matches!(frame.head.kind, Kind::Batch { .. }) {
+            batches += 1;
+        }
+    }
+    assert!(batches > 0, "the read wrote no batch");
+    drop((frames, write));
+    tokio::time::timeout(HOUR, pumping)
+        .await
+        .expect("the read ends once its host goes")
+        .expect("the pump does not panic");
 }

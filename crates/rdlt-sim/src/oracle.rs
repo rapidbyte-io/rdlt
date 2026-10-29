@@ -372,7 +372,14 @@ impl Simulation {
         self.attacks += 1;
         let attacking = SplitMix64::new(self.seed.value() ^ HOSTILE ^ self.attacks);
         let placing = self.placing.as_ref();
-        let executing = execute_all(&self.engine, plans, &self.name, placing, scenario);
+        // Boxed, so every future awaiting it holds a pointer rather than the runs.
+        let executing = Box::pin(execute_all(
+            &self.engine,
+            plans,
+            &self.name,
+            placing,
+            scenario,
+        ));
         let hostile = placing
             .and_then(Placing::networked)
             .filter(|_| self.world.workload.features.hostile);

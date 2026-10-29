@@ -108,12 +108,15 @@ fn a_message_is_passed_on_once_what_its_scan_counts_is_charged_and_held_until_de
         ],
         "each at its scan's count, the one before released first"
     );
-    body.release();
-    assert!(!gate.holds());
+    assert!(
+        gate.holds(),
+        "the last message's charge is held until the body goes"
+    );
     gate.permits.add_permits(1);
     drop(feed);
     assert_eq!(poll(&mut body), Passed::End);
     drop(body);
+    assert!(!gate.holds());
     assert_eq!(
         gate.permits.available_permits(),
         3,

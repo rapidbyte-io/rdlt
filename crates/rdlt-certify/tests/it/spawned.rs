@@ -29,7 +29,6 @@ pub(crate) fn reference() -> Target {
         local,
         ConnectorRef::new(id).path(example("serve_reference")),
     )
-    .credit_watch(crate::BRIEF)
 }
 
 /// Reads what the SQLite destination published in the database at its path.
@@ -53,11 +52,6 @@ async fn a_spawned_source_binary_is_certified_through_the_protocol() {
     // Three rows end before a kill lands.
     assert_eq!(crate::unobserved(&report), ["K-SOURCE"], "{report}");
     assert_eq!(report.connector, "io.rapidbyte.memory", "{report}");
-    assert_eq!(
-        report.outcome("P-CREDIT"),
-        Some(&Outcome::Passed),
-        "{report}"
-    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -65,8 +59,7 @@ async fn a_spawned_source_killed_as_it_loads_is_spawned_again_and_resumes() {
     let id = ConnectorId::parse("io.rapidbyte.generator").expect("a valid id");
     let local = Local::trusting_binaries().env_passthrough("LLVM_PROFILE_FILE");
     // No seed is chosen: the clause loads again until a kill interrupts a load.
-    let target = Target::spawned(local, ConnectorRef::new(id).path(example("serve_source")))
-        .credit_watch(crate::BRIEF);
+    let target = Target::spawned(local, ConnectorRef::new(id).path(example("serve_source")));
     let report = certify_source(&target, crate::killed::read_as_killed(11)).await;
     report.assert_passed();
     assert_eq!(
@@ -76,14 +69,14 @@ async fn a_spawned_source_killed_as_it_loads_is_spawned_again_and_resumes() {
     );
     let note = report.note("K-SOURCE").expect("a note");
     assert!(note.starts_with("killed: "), "{report}");
-    // `P-CREDIT`, watched briefly, is noted too, and no other clause.
+    // No other clause is noted.
     let noted: Vec<&str> = report
         .results
         .iter()
         .filter(|result| result.note.is_some())
         .map(|result| result.clause.id)
         .collect();
-    assert_eq!(noted, ["P-CREDIT", "K-SOURCE"], "{report}");
+    assert_eq!(noted, ["K-SOURCE"], "{report}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -175,8 +168,7 @@ fn launcher(directory: &std::path::Path, detached: bool) -> Target {
         .expect("the launcher is executable");
     let id = ConnectorId::parse("io.rapidbyte.reference").expect("a valid id");
     let local = Local::trusting_binaries().env_passthrough("LLVM_PROFILE_FILE");
-    let target =
-        Target::spawned(local, ConnectorRef::new(id).path(path)).credit_watch(crate::BRIEF);
+    let target = Target::spawned(local, ConnectorRef::new(id).path(path));
     // A connector no kill reaches is loaded once: one that is, until a kill interrupts a load,
     // which on a busy machine may end before the points one seed draws.
     if detached {

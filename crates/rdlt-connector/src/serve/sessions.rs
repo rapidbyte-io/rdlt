@@ -13,12 +13,10 @@ mod tests;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use rdlt_wire::tonic::Status;
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
 use crate::destination::DestinationSession;
 use crate::error::{ConnectorError, ConnectorErrorKind};
-use crate::wire::status;
 
 /// A destination session, until its close takes it; empty once closed, or where its open failed.
 pub(super) type SessionSlot = Arc<Mutex<Option<Box<dyn DestinationSession>>>>;
@@ -91,23 +89,23 @@ impl Sessions {
     }
 
     /// The open session `id`.
-    pub(super) async fn session(&self, id: u64) -> Result<SessionSlot, Status> {
+    pub(super) async fn session(&self, id: u64) -> Result<SessionSlot, ConnectorError> {
         let held = self.open.lock().await;
         held.1.get(&id).cloned().ok_or_else(|| closed(id))
     }
 
     /// Closes the session `id`, which holds its room until its close ends.
-    pub(super) async fn close(&self, id: u64) -> Result<(), Status> {
+    pub(super) async fn close(&self, id: u64) -> Result<(), ConnectorError> {
         let slot = self.session(id).await?;
         // The slot stays locked until the close ends, so the session still counts meanwhile.
         let mut held = slot.lock().await;
         let session = held.take().ok_or_else(|| closed(id))?;
-        session.close().await.map_err(|error| status(&error))
+        session.close().await
     }
 }
 
-/// The status of a call on a session that is not open: closed, or never opened.
-pub(super) fn closed(id: u64) -> Status {
+/// The error of a call on a session that is not open: closed, or never opened.
+pub(super) fn closed(id: u64) -> ConnectorError {
     let message = format!("session {id} is not open");
-    status(&ConnectorError::new(ConnectorErrorKind::Internal, message).with_code("no_session"))
+    ConnectorError::new(ConnectorErrorKind::Internal, message).with_code("no_session")
 }

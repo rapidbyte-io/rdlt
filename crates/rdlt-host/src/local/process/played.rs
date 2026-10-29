@@ -1,6 +1,6 @@
 //! A connector's process played in this process, for the simulation: given what a spawned
 //! connector is given, checked, drained, stopped and killed as one is, with nothing spawned, no
-//! descriptor passed and no thread started.
+//! descriptor passed and no thread started: its streams pass through an opener of its own.
 
 use std::ffi::OsString;
 use std::fmt;
@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::{Ended, Launch, Launched, Owner, Process, Told, Unspawned, command, draining};
 use crate::kills::Kills;
-use crate::network::Stream;
+use crate::opener::Opener;
 use crate::secrets::Redactions;
 
 /// What a played connector's script is given as its process starts.
@@ -33,8 +33,8 @@ pub struct Playing {
 pub struct Played {
     /// Its process id, as the host is told it.
     pub id: u32,
-    /// The host's end of its socket.
-    pub socket: Box<dyn Stream>,
+    /// What opens its streams.
+    pub opener: Box<dyn Opener>,
     /// Its standard output.
     pub stdout: Box<dyn AsyncRead + Send + Unpin>,
     /// Its standard error.
@@ -72,7 +72,7 @@ impl fmt::Debug for Play {
 
 impl Process {
     /// Plays `launch`'s connector with `play`, its output scrubbed of `redactions`, once the
-    /// checks every start makes pass: the host's end of its socket, and the process.
+    /// checks every start makes pass: what opens its streams, and the process.
     pub(super) fn played(
         launch: &Launch,
         play: &Play,
@@ -89,7 +89,7 @@ impl Process {
         };
         let Played {
             id,
-            socket,
+            opener,
             stdout,
             stderr,
             exit,
@@ -99,9 +99,9 @@ impl Process {
         if let Some(Told(told)) = &launch.told {
             told(id);
         }
-        let socket = match (&launch.kills, &killed) {
-            (Some(kills), Some(killed)) => kills.watch(socket, killed.clone()),
-            _ => socket,
+        let opener = match (&launch.kills, &killed) {
+            (Some(kills), Some(killed)) => kills.watching(opener, killed.clone()),
+            _ => opener,
         };
         let process = Self {
             owner: Owner::Played(stopped),
@@ -111,6 +111,6 @@ impl Process {
             tail,
             redactions,
         };
-        Ok((socket, process))
+        Ok((Arc::from(opener), process))
     }
 }

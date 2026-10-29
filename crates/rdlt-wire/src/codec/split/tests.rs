@@ -17,7 +17,7 @@ use crate::codec::split::Probe;
 use crate::codec::tests::frames::refusal;
 use crate::codec::tests::samples::batch_of;
 use crate::codec::weigh::{Weigher, Weight};
-use crate::codec::{Cut, Decoder, Encoder, IpcFrame};
+use crate::codec::{Cut, Decoder, Encoded, Encoder, IpcFrame};
 use crate::error::WireError;
 use crate::limits::{BATCH_ROWS, BATCH_VALUES, Limit, Limits};
 
@@ -37,7 +37,7 @@ fn stepped(
     let mut cut = Cut::new(batch.clone(), *limits);
     let mut all = Vec::new();
     while let Some(frames) = encoder.piece(&mut cut)? {
-        all.extend(frames);
+        all.extend(frames.iter().map(Encoded::gathered));
     }
     assert!(cut.is_done());
     Ok(all)
@@ -537,6 +537,7 @@ fn cost(batch: &RecordBatch, limits: Limits) -> Cost {
         },
     );
     while let Some(frames) = encoder.piece(&mut cut).unwrap() {
+        let frames: Vec<IpcFrame> = frames.iter().map(Encoded::gathered).collect();
         // What the sender is handed at each step is the piece, and the dictionaries before it.
         cost.largest = cost.largest.max(bytes(&frames));
         cost.sent += bytes(&frames);
@@ -676,7 +677,7 @@ fn a_piece_whose_frame_outweighs_its_rows_is_halved_a_bounded_number_of_times() 
     cut.probe.unpadded = true;
     let mut frames = Vec::new();
     while let Some(piece) = encoder.piece(&mut cut).unwrap() {
-        frames.extend(piece);
+        frames.extend(piece.iter().map(Encoded::gathered));
     }
     let pieces = in_order(&batch, &received(&batch, &frames, limits));
     assert!(pieces.len() > 1, "{pieces:?}");
@@ -773,6 +774,7 @@ fn a_refused_row_ends_its_batchs_cut_after_the_pieces_before_it() {
     encoder.schema(&batch.schema()).unwrap();
     let mut cut = Cut::new(batch.clone(), limits);
     let first = encoder.piece(&mut cut).unwrap().unwrap();
+    let first: Vec<IpcFrame> = first.iter().map(Encoded::gathered).collect();
     assert_eq!(
         in_order(&batch.slice(0, 10), &received(&batch, &first, limits)),
         [10]

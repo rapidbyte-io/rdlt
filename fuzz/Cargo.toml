@@ -23,6 +23,7 @@ rdlt-connector = { path = "../crates/rdlt-connector", default-features = false, 
 rdlt-engine = { path = "../crates/rdlt-engine", features = ["bench"] }
 rdlt-testkit = { path = "../crates/rdlt-testkit" }
 rdlt-wire = { path = "../crates/rdlt-wire" }
+tokio = { version = "1.53.3", default-features = false }
 
 [[bin]]
 name = "state_record"
@@ -70,8 +71,8 @@ doc = false
 bench = false
 
 [[bin]]
-name = "wire_plane"
-path = "fuzz_targets/wire_plane.rs"
+name = "wire_stream"
+path = "fuzz_targets/wire_stream.rs"
 test = false
 doc = false
 bench = false

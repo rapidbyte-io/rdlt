@@ -11,7 +11,7 @@ use rdlt_connector_reference::MemorySource;
 use rdlt_host::{Connect, ConnectorRef, Kills, Placement, Provider as _};
 
 use crate::process::{local, scripted, wait_gone};
-use crate::support::served;
+use crate::support::opener;
 
 /// How long a process killed may take to be gone on a busy machine.
 const GONE: Duration = Duration::from_secs(60);
@@ -62,8 +62,8 @@ async fn a_connector_reached_by_a_function_is_reached_again_once_its_stream_is_c
         let opened = Arc::clone(&opened);
         move || {
             opened.fetch_add(1, Ordering::SeqCst);
-            let stream = served(Served::new().with_source(source_factory::<MemorySource>()));
-            Box::pin(async move { Ok(Box::new(stream) as Box<dyn rdlt_host::Stream>) })
+            let passing = opener(Served::new().with_source(source_factory::<MemorySource>()));
+            Box::pin(async move { Ok(passing) })
         }
     })
     .kills(&kills);
@@ -217,7 +217,7 @@ async fn a_stopped_connector_takes_what_it_started_with_it() {
 
 #[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread")]
-async fn a_kill_that_leaves_a_holder_of_the_connection_alive_has_not_landed() {
+async fn a_kill_lands_though_a_process_the_connector_started_lives_on() {
     let kills = Kills::new();
     let directory = tempfile::tempdir().expect("a temporary directory");
     let launched = launcher(directory.path(), true);
@@ -227,22 +227,19 @@ async fn a_kill_that_leaves_a_holder_of_the_connection_alive_has_not_landed() {
         .await
         .expect("the connector starts")
         .connector;
-    // In a session of its own, the sleeper holds the connector's end of the connection, and
-    // outlives the kill of the connector's group: once it has left the group, which it does
-    // after the launcher wrote its id.
+    // In a session of its own, the sleeper outlives the kill of the connector's group: it holds
+    // the opener the connector was started with, and none of the streams passed over it after,
+    // each received close-on-exec.
     let holder = sleeper(directory.path());
     assert!(
         own_session(holder).await,
         "the sleeper never left the connector's group"
     );
     kills.kill();
-    assert_eq!(landed_after_a_while(&kills).await, 0);
-    assert_eq!((kills.count(), kills.landed()), (1, 0));
+    assert!(lands(&kills, 1).await, "{} landed", kills.landed());
     assert!(!wait_gone(holder, Duration::from_millis(100)).await);
-    // Once the last holder ends, the connection does, and the kill has landed.
     let holder = nix::unistd::Pid::from_raw(holder);
     nix::sys::signal::kill(holder, nix::sys::signal::Signal::SIGKILL).expect("it is signalled");
-    assert!(lands(&kills, 1).await, "{} landed", kills.landed());
     drop(source);
 }
 
@@ -252,8 +249,8 @@ async fn a_cut_connection_lands_its_kill_once_and_a_kill_of_nothing_lands_nowher
     kills.kill();
     assert_eq!((kills.count(), kills.landed()), (1, 0));
     let connect = Connect::new(|| {
-        let stream = served(Served::new().with_source(source_factory::<MemorySource>()));
-        Box::pin(async move { Ok(Box::new(stream) as Box<dyn rdlt_host::Stream>) })
+        let opener = opener(Served::new().with_source(source_factory::<MemorySource>()));
+        Box::pin(async move { Ok(opener) })
     })
     .kills(&kills);
     let reference = ConnectorRef::new(ConnectorId::parse("io.rapidbyte.memory").expect("valid"));

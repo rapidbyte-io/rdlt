@@ -2384,10 +2384,12 @@ dependencies = [
  "proptest",
  "prost",
  "rdlt-testkit",
+ "rustix",
  "rustls",
  "rustls-webpki",
  "thiserror",
  "tokio",
+ "tokio-util",
  "tonic",
  "tonic-prost",
 ]

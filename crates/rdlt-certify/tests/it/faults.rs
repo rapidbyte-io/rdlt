@@ -16,7 +16,7 @@ use fake::{BROKEN, Fault, served};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn each_protocol_clause_fails_a_connector_that_breaks_it_and_only_that() {
-    // Each certification waits out the credit clause's quiet second, so the faults run at once.
+    // The faults are certified at once, each over connections of its own.
     let mut certifying = tokio::task::JoinSet::new();
     for (fault, broken) in BROKEN {
         certifying.spawn(async move {
@@ -67,8 +67,7 @@ async fn a_connector_no_host_connects_to_is_not_certified() {
 
 #[tokio::test]
 async fn limits_beyond_any_this_host_sends_are_not_exceeded() {
-    let target =
-        Target::connected(|| Box::pin(async { served(Fault::Vast) })).credit_watch(crate::BRIEF);
+    let target = Target::connected(|| Box::pin(async { served(Fault::Vast) }));
     let report = certify_source(&target, serde_json::json!({})).await;
     let Some(Outcome::Inapplicable(reason)) = report.outcome("P-LIMITS") else {
         panic!("P-LIMITS ran: {report}");
@@ -88,9 +87,7 @@ async fn limits_this_host_keeps_below_the_connectors_are_not_exceeded() {
         ..Options::default()
     };
     let served = Served::new().with_source(source_factory::<MemorySource>());
-    let target = Target::served(served)
-        .options(options)
-        .credit_watch(crate::BRIEF);
+    let target = Target::served(served).options(options);
     let report = certify_source(&target, serde_json::json!({ "streams": { "items": [] } })).await;
     let Some(Outcome::Inapplicable(reason)) = report.outcome("P-LIMITS") else {
         panic!("P-LIMITS ran: {report}");
@@ -131,8 +128,7 @@ async fn a_destination_that_reads_a_misaligned_batch_fails_malformed() {
 
 #[tokio::test]
 async fn a_heartbeat_whose_answers_stay_open_after_the_pings_is_kept() {
-    let target = Target::connected(|| Box::pin(async { served(Fault::Lingering) }))
-        .credit_watch(crate::BRIEF);
+    let target = Target::connected(|| Box::pin(async { served(Fault::Lingering) }));
     let report = certify_source(&target, serde_json::json!({})).await;
     assert_eq!(
         report.outcome("P-HEARTBEAT"),
@@ -158,8 +154,7 @@ async fn a_connector_that_answers_no_heartbeat_is_certified_in_bounded_time() {
 
 #[tokio::test]
 async fn a_connector_that_refuses_a_feature_it_does_not_know_fails_its_handshake() {
-    let target = Target::connected(|| Box::pin(async { served(Fault::RefusesUnknownFeatures) }))
-        .credit_watch(crate::BRIEF);
+    let target = Target::connected(|| Box::pin(async { served(Fault::RefusesUnknownFeatures) }));
     let report = certify_source(&target, serde_json::json!({})).await;
     assert!(
         matches!(report.outcome("P-HANDSHAKE"), Some(Outcome::Failed(_))),
@@ -174,19 +169,4 @@ async fn a_destination_of_short_identifiers_keeps_the_protocols_clauses() {
     for id in ["P-MALFORMED", "P-LIMITS"] {
         assert_eq!(report.outcome(id), Some(&Outcome::Passed), "{id}: {report}");
     }
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn a_read_is_watched_for_as_long_as_the_target_chooses_and_no_longer() {
-    // A source that ignores credit and sends a little over a second after its first frame: the
-    // watch of a second after each grant sees it, as the faults above show, and one of 50 ms
-    // after each, 200 ms in all, is over before it sends.
-    let target =
-        Target::connected(|| Box::pin(async { served(Fault::Paced) })).credit_watch(crate::BRIEF);
-    let report = certify_source(&target, serde_json::json!({})).await;
-    assert_eq!(
-        report.outcome("P-CREDIT"),
-        Some(&Outcome::Passed),
-        "{report}"
-    );
 }

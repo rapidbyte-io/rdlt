@@ -8,13 +8,24 @@ use rdlt_certify::{
     certify_destination, certify_source,
 };
 use rdlt_connector::serve::Served;
-use rdlt_connector::{ConnectorId, source_factory};
+use rdlt_connector::{BoxFuture, ConnectorId, source_factory};
 use rdlt_connector_reference::MemorySource;
-use rdlt_host::{ConnectorRef, Local};
+use rdlt_host::{ConnectorRef, Local, Opener, Opening, Stream};
 use rdlt_testkit::tls::Pki;
 use serde_json::json;
 
 use crate::listening::{listening, target};
+
+/// An opener whose streams reach a connector that takes every byte and never answers.
+struct Silent(Arc<Mutex<Vec<tokio::io::DuplexStream>>>);
+
+impl Opener for Silent {
+    fn open(&self, _: Opening) -> BoxFuture<'_, std::io::Result<Box<dyn Stream>>> {
+        let (host, connector) = tokio::io::duplex(1 << 20);
+        self.0.lock().expect("the silent ends").push(connector);
+        Box::pin(async move { Ok(Box::new(host) as Box<dyn Stream>) })
+    }
+}
 
 fn failed(outcome: Option<&Outcome>) -> bool {
     matches!(outcome, Some(Outcome::Failed(_)))
@@ -25,12 +36,8 @@ async fn a_connector_that_never_answers_fails_every_clause_in_time() {
     // Each connection reaches a connector that takes every byte and never answers.
     let silent = Arc::new(Mutex::new(Vec::new()));
     let target = Target::connected(move || {
-        let silent = Arc::clone(&silent);
-        Box::pin(async move {
-            let (host, connector) = tokio::io::duplex(1 << 20);
-            silent.lock().expect("the silent ends").push(connector);
-            Ok(Box::new(host) as Box<dyn rdlt_host::Stream>)
-        })
+        let opener = Box::new(Silent(Arc::clone(&silent))) as Box<dyn Opener>;
+        Box::pin(async move { Ok(opener) })
     });
     let started = tokio::time::Instant::now();
     let report = certify_source(&target, json!({})).await;

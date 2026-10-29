@@ -1,10 +1,11 @@
 //! The reference connectors' binaries, spawned as a host places them.
 
 use rdlt_connector::wire::v1;
-use rdlt_connector::{ConnectorId, RoleFactory, Serve};
+use rdlt_connector::{ConnectorErrorKind, ConnectorId, RoleFactory, Serve};
 use rdlt_connector_reference::{GeneratorSource, SqliteDestination};
-use rdlt_host::remote::client;
+use rdlt_host::remote::RawCall;
 use rdlt_host::{ConnectorRef, Local, Options, Provider as _};
+use rdlt_wire::stream::Call;
 use serde_json::json;
 
 fn reference(id: &str, binary: &str) -> ConnectorRef {
@@ -118,7 +119,8 @@ async fn a_shipped_destination_binary_reads_nothing_back_whatever_its_host_offer
             .wire(&reference(id, binary))
             .await
             .expect("the binary starts");
-        let mut client = client(wire, Options::default())
+        let mut client = wire
+            .client(Options::default())
             .await
             .expect("the binary connects");
         let agreed = client.rpc.handshake(offering_read_back()).await;
@@ -141,14 +143,12 @@ async fn a_shipped_destination_binary_reads_nothing_back_whatever_its_host_offer
             ..v1::TableRef::default()
         };
         let request = v1::ReadPublishedRequest { table: Some(table) };
-        let Err(refused) = client.read_published(request).await else {
+        let limits = rdlt_wire::Limits::default();
+        let opened = RawCall::open(&client, Call::ReadPublished, &request, &limits).await;
+        let Err(refused) = opened.expect("the stream opens") else {
             panic!("{id} read a table back");
         };
-        assert_eq!(
-            refused.code(),
-            rdlt_wire::tonic::Code::Unimplemented,
-            "{id}"
-        );
+        assert_eq!(refused.kind(), ConnectorErrorKind::Unsupported, "{id}");
     }
 }
 

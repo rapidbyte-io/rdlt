@@ -46,39 +46,6 @@ pub(crate) static APPLY_SCHEMA_RESPONSE: Form = Form {
     fields: &[],
 };
 
-/// The form of `BatchFrame`.
-pub(crate) static BATCH_FRAME: Form = Form {
-    name: "BatchFrame",
-    size: size_of::<v1::BatchFrame>(),
-    fields: &[
-        Field {
-            number: 1,
-            kind: Kind::Scalar(8),
-            repeated: false,
-        },
-        Field {
-            number: 2,
-            kind: Kind::Scalar(4),
-            repeated: false,
-        },
-        Field {
-            number: 3,
-            kind: Kind::Bytes,
-            repeated: false,
-        },
-        Field {
-            number: 4,
-            kind: Kind::Bytes,
-            repeated: false,
-        },
-        Field {
-            number: 5,
-            kind: Kind::Bytes,
-            repeated: false,
-        },
-    ],
-};
-
 /// The form of `BehindFrame`.
 pub(crate) static BEHIND_FRAME: Form = Form {
     name: "BehindFrame",
@@ -475,17 +442,6 @@ pub(crate) static CREATE_TABLE: Form = Form {
     ],
 };
 
-/// The form of `Credit`.
-pub(crate) static CREDIT: Form = Form {
-    name: "Credit",
-    size: size_of::<v1::Credit>(),
-    fields: &[Field {
-        number: 1,
-        kind: Kind::Scalar(8),
-        repeated: false,
-    }],
-};
-
 /// The form of `Cursor`.
 pub(crate) static CURSOR: Form = Form {
     name: "Cursor",
@@ -815,17 +771,6 @@ pub(crate) static INSTANT: Form = Form {
             repeated: false,
         },
     ],
-};
-
-/// The form of `JsonFrame`.
-pub(crate) static JSON_FRAME: Form = Form {
-    name: "JsonFrame",
-    size: size_of::<v1::JsonFrame>(),
-    fields: &[Field {
-        number: 1,
-        kind: Kind::Bytes,
-        repeated: false,
-    }],
 };
 
 /// The form of `LimitExceeded`.
@@ -1200,21 +1145,11 @@ pub(crate) static READ_CONTROL: Form = Form {
     fields: &[
         Field {
             number: 1,
-            kind: Kind::Message(&READ_START),
-            repeated: false,
-        },
-        Field {
-            number: 2,
             kind: Kind::Message(&CHECKPOINT_REQUEST),
             repeated: false,
         },
         Field {
-            number: 3,
-            kind: Kind::Message(&CREDIT),
-            repeated: false,
-        },
-        Field {
-            number: 4,
+            number: 2,
             kind: Kind::Message(&STOP),
             repeated: false,
         },
@@ -1233,42 +1168,37 @@ pub(crate) static READ_FRAME: Form = Form {
         },
         Field {
             number: 2,
-            kind: Kind::Message(&BATCH_FRAME),
-            repeated: false,
-        },
-        Field {
-            number: 3,
-            kind: Kind::Message(&JSON_FRAME),
-            repeated: false,
-        },
-        Field {
-            number: 4,
             kind: Kind::Message(&CHECKPOINT_FRAME),
             repeated: false,
         },
         Field {
-            number: 5,
+            number: 3,
             kind: Kind::Message(&LOG_FRAME),
             repeated: false,
         },
         Field {
-            number: 6,
+            number: 4,
             kind: Kind::Message(&METRIC_FRAME),
             repeated: false,
         },
         Field {
-            number: 7,
+            number: 5,
             kind: Kind::Message(&DONE),
             repeated: false,
         },
         Field {
-            number: 8,
+            number: 6,
             kind: Kind::Message(&REPLAN_FRAME),
             repeated: false,
         },
         Field {
-            number: 9,
+            number: 7,
             kind: Kind::Message(&BEHIND_FRAME),
+            repeated: false,
+        },
+        Field {
+            number: 8,
+            kind: Kind::Message(&ERROR),
             repeated: false,
         },
     ],
@@ -1845,45 +1775,12 @@ pub(crate) static WRITE_ACK: Form = Form {
     fields: &[
         Field {
             number: 1,
-            kind: Kind::Message(&CREDIT),
-            repeated: false,
-        },
-        Field {
-            number: 2,
             kind: Kind::Message(&WRITE_STATS),
             repeated: false,
         },
         Field {
-            number: 3,
-            kind: Kind::Message(&ERROR),
-            repeated: false,
-        },
-    ],
-};
-
-/// The form of `WriteBatch`.
-pub(crate) static WRITE_BATCH: Form = Form {
-    name: "WriteBatch",
-    size: size_of::<v1::WriteBatch>(),
-    fields: &[
-        Field {
-            number: 1,
-            kind: Kind::Scalar(8),
-            repeated: false,
-        },
-        Field {
             number: 2,
-            kind: Kind::Bytes,
-            repeated: false,
-        },
-        Field {
-            number: 3,
-            kind: Kind::Bytes,
-            repeated: false,
-        },
-        Field {
-            number: 4,
-            kind: Kind::Bytes,
+            kind: Kind::Message(&ERROR),
             repeated: false,
         },
     ],
@@ -1896,21 +1793,11 @@ pub(crate) static WRITE_FRAME: Form = Form {
     fields: &[
         Field {
             number: 1,
-            kind: Kind::Message(&WRITE_START),
-            repeated: false,
-        },
-        Field {
-            number: 2,
             kind: Kind::Message(&WRITE_SCHEMA),
             repeated: false,
         },
         Field {
-            number: 3,
-            kind: Kind::Message(&WRITE_BATCH),
-            repeated: false,
-        },
-        Field {
-            number: 4,
+            number: 2,
             kind: Kind::Message(&UNIT),
             repeated: false,
         },
@@ -2007,15 +1894,12 @@ pub fn request(method: &str) -> Option<&'static Form> {
         "Check" => Some(&CHECK_REQUEST),
         "Discover" => Some(&DISCOVER_REQUEST),
         "Plan" => Some(&PLAN_REQUEST),
-        "Read" => Some(&READ_CONTROL),
         "Committed" => Some(&COMMITTED_REQUEST),
         "Open" => Some(&OPEN_REQUEST),
         "ApplySchema" => Some(&APPLY_SCHEMA_REQUEST),
-        "Write" => Some(&WRITE_FRAME),
         "Commit" => Some(&COMMIT_REQUEST),
         "Close" => Some(&CLOSE_REQUEST),
         "Heartbeat" => Some(&PING),
-        "ReadPublished" => Some(&READ_PUBLISHED_REQUEST),
         "ReadAcknowledged" => Some(&READ_ACKNOWLEDGED_REQUEST),
         _ => None,
     }
@@ -2029,15 +1913,12 @@ pub fn response(method: &str) -> Option<&'static Form> {
         "Check" => Some(&CHECK_RESPONSE),
         "Discover" => Some(&CATALOG),
         "Plan" => Some(&PLAN_RESPONSE),
-        "Read" => Some(&READ_FRAME),
         "Committed" => Some(&COMMITTED_RESPONSE),
         "Open" => Some(&OPEN_RESPONSE),
         "ApplySchema" => Some(&APPLY_SCHEMA_RESPONSE),
-        "Write" => Some(&WRITE_ACK),
         "Commit" => Some(&RECEIPT),
         "Close" => Some(&CLOSE_RESPONSE),
         "Heartbeat" => Some(&PONG),
-        "ReadPublished" => Some(&READ_FRAME),
         "ReadAcknowledged" => Some(&READ_ACKNOWLEDGED_RESPONSE),
         _ => None,
     }

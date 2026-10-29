@@ -11,6 +11,13 @@ use crate::error::{ConnectorError, ConnectorErrorKind};
 /// The code a transport failure with no error in its details goes by.
 pub const TRANSPORT: &str = "transport";
 
+/// `error` as the message carrying it whole, its message cut to the control string limit.
+pub fn wire_error(error: &ConnectorError) -> v1::Error {
+    let mut carried = v1::Error::from(error);
+    cut(&mut carried.message, CONTROL_STRING_BYTES);
+    carried
+}
+
 /// `error` as a gRPC status carrying it whole, its message cut to the control string limit.
 pub fn status(error: &ConnectorError) -> Status {
     let code = match error.kind() {
@@ -24,8 +31,7 @@ pub fn status(error: &ConnectorError) -> Status {
         ConnectorErrorKind::Stopped => Code::Cancelled,
         ConnectorErrorKind::Internal => Code::Internal,
     };
-    let mut carried = v1::Error::from(error);
-    cut(&mut carried.message, CONTROL_STRING_BYTES);
+    let carried = wire_error(error);
     let mut message = error.to_string();
     cut(&mut message, STATUS_MESSAGE_BYTES);
     Status::with_details(code, message, carried.encode_to_vec().into())
@@ -96,6 +102,29 @@ pub fn frame_error(error: &rdlt_wire::WireError) -> ConnectorError {
         WireError::Refused(refusal) => ConnectorError::from(*refusal),
         other => ConnectorError::new(ConnectorErrorKind::Internal, other.to_string())
             .with_code(MALFORMED_FRAME),
+    }
+}
+
+/// What reading a data call's stream failed with, as the error the end that read it reports: a
+/// frame beyond a limit refused by it, a malformed frame, a message that does not decode, or a
+/// failure of the stream's transport, which a retry may not meet.
+pub fn stream_error(error: &rdlt_wire::stream::StreamError) -> ConnectorError {
+    use rdlt_wire::stream::{HeadError, StreamError};
+    match error {
+        StreamError::Head(HeadError::Refused(refusal)) => ConnectorError::from(*refusal),
+        StreamError::Head(HeadError::Malformed(_)) => {
+            ConnectorError::new(ConnectorErrorKind::Internal, error.to_string())
+                .with_code(MALFORMED_FRAME)
+        }
+        StreamError::Unscanned { .. } | StreamError::Inflated { .. } | StreamError::Decode(_) => {
+            ConnectorError::new(ConnectorErrorKind::Internal, error.to_string())
+                .with_code(super::INVALID_MESSAGE)
+        }
+        StreamError::Truncated { .. } | StreamError::Io(_) => ConnectorError::new(
+            ConnectorErrorKind::Transient,
+            format!("the data call's stream failed: {error}"),
+        )
+        .with_code(TRANSPORT),
     }
 }
 

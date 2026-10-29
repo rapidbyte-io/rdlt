@@ -1,70 +1,88 @@
 //! A served read: the source reads a partition into a channel, its pushes within a window of the
-//! host's frame limit, and each event it sends becomes frames sent to the host within the credit
-//! the host grants.
+//! host's frame limit, and the read's pump writes each event it sends as frames, one at a time,
+//! while it reads the host's controls.
 
+mod outbox;
 #[cfg(test)]
 mod tests;
 mod window;
 
-use std::collections::VecDeque;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
-use arrow_array::RecordBatch;
-use arrow_schema::SchemaRef;
-use bytes::Bytes;
-use rdlt_wire::flow::Spending;
-use rdlt_wire::plane::{Answers, Chained as _, Incoming};
-use rdlt_wire::tonic::Status;
-use rdlt_wire::{Cut, Encoder, Limits};
-use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
+use rdlt_wire::stream::{Call, Outgoing, Received};
+use tokio::io::{AsyncRead, AsyncWrite};
 
-use super::noted::Read;
-use super::service::invalid;
+use super::noted::{Note, Noting, Read};
+use super::service::Service;
+use super::stream::{Frames, failed, opened, send};
 use crate::Cursor;
-use crate::error::ConnectorErrorKind;
+use crate::error::{ConnectorError, ConnectorErrorKind};
 use crate::id::{PartitionId, StreamName};
-use crate::sink::{
-    Admission, LogLevel, PartitionFeed, Push, SourceEvent, admitted_partition_channel,
-};
+use crate::sink::{Admission, PartitionFeed, SourceEvent, admitted_partition_channel};
 use crate::source::{Partition, ReadRequest, Source};
-use crate::wire::{Invalid, frame_error, status, v1};
+use crate::wire::{Invalid, frame_error, v1};
+pub(super) use outbox::Outbox;
 use window::Window;
 
-/// Events the source may send ahead of the frames waiting for credit.
+/// Events the source may send ahead of the frame being written.
 const EVENTS: NonZeroUsize = NonZeroUsize::new(16).expect("sixteen is not zero");
 
-/// Starts serving the read the host's first message asks for, whose cursor keeps within `own`,
-/// this end's limits; what it sends keeps within `host`, the lesser of the host's and its own.
-///
-/// Answers its frames, and which stream and partition it reads.
-pub(super) async fn serve(
-    source: Arc<dyn Source>,
-    own: Limits,
-    host: Limits,
-    mut controls: Incoming<v1::ReadControl>,
-) -> Result<(Answers<v1::ReadFrame>, Read), Status> {
-    let Some(v1::ReadControl {
-        control: Some(v1::read_control::Control::Start(start)),
-    }) = controls.message().await?
-    else {
-        return Err(invalid(&Invalid::Missing("read start")));
+/// Serves the read `opening` starts, whose cursor keeps within the connection's own limits; what
+/// it sends keeps within the host's, and goes to `io` while `controls` brings the host's.
+pub(super) async fn serve<R, W>(
+    service: &Service,
+    opening: &Received,
+    controls: Frames<R>,
+    mut io: W,
+) where
+    R: AsyncRead + Unpin + Send,
+    W: AsyncWrite + Unpin + Send,
+{
+    let started = started(service, opening, &controls);
+    let (source, request, barrier) = match started {
+        Ok(started) => started,
+        Err(error) => {
+            send(&mut io, failed(Call::Read, &error)).await;
+            return;
+        }
     };
-    if let Some(cursor) = &start.cursor {
-        own.admit_cursor(cursor.bytes.len()).map_err(refused)?;
+    if !send(&mut io, opened(Call::Read)).await {
+        return;
     }
-    let barrier = start.barrier;
-    let request = request(start).map_err(|error| invalid(&error))?;
     let read = Read {
         stream: request.stream.clone(),
         partition: request.partition.id().clone(),
         start: request.cursor.clone(),
     };
-    let (frames, answer) = mpsc::channel(EVENTS.get());
-    let window = Arc::new(Window::new(host));
-    tokio::spawn(pump(source, request, barrier, controls, frames, window));
-    Ok((Box::pin(ReceiverStream::new(answer)), read))
+    let noting = Noting::new(Arc::clone(&service.served), service.host_name.clone(), read);
+    let window = Arc::new(Window::new(service.host()));
+    let pumping = Pumping {
+        source,
+        request,
+        barrier,
+        noting,
+    };
+    pump(pumping, controls, io, window).await;
+}
+
+/// The source, request and pending barrier of the read `opening` starts.
+fn started<R: AsyncRead + Unpin>(
+    service: &Service,
+    opening: &Received,
+    controls: &Frames<R>,
+) -> Result<(Arc<dyn Source>, ReadRequest, u64), ConnectorError> {
+    let start: v1::ReadStart = controls.start(Call::Read, opening)?;
+    let source = service.source()?;
+    if let Some(cursor) = &start.cursor {
+        service
+            .limits
+            .admit_cursor(cursor.bytes.len())
+            .map_err(refused)?;
+    }
+    let barrier = start.barrier;
+    let request = request(start).map_err(|error| super::service::invalid(&error))?;
+    Ok((source, request, barrier))
 }
 
 fn request(start: v1::ReadStart) -> Result<ReadRequest, Invalid> {
@@ -84,148 +102,9 @@ fn request(start: v1::ReadStart) -> Result<ReadRequest, Invalid> {
     .following(start.follow))
 }
 
-/// Frames waiting for credit, and what encodes them.
-pub(super) struct Outbox {
-    frames: VecDeque<v1::ReadFrame>,
-    credit: Spending,
-    encoder: Encoder,
-    schema: Option<SchemaRef>,
-    epoch: u64,
-    /// The host's limits, which every frame sent keeps within.
-    host: Limits,
-    /// The batch whose pieces are being sent, and its kind.
-    cutting: Option<(Cut, v1::BatchKind)>,
-}
-
-/// A frame the host's limits refuse, as the status the read fails with.
-fn refused(refusal: rdlt_wire::Refusal) -> Status {
-    status(&frame_error(&rdlt_wire::WireError::Refused(refusal)))
-}
-
-impl Outbox {
-    /// An empty outbox, whose frames keep within `host`'s limits.
-    pub(super) fn new(host: Limits) -> Self {
-        Self {
-            frames: VecDeque::new(),
-            credit: Spending::default(),
-            encoder: Encoder::default(),
-            schema: None,
-            epoch: 0,
-            host,
-            cutting: None,
-        }
-    }
-
-    /// The frames queued, in order, which leave the outbox.
-    #[cfg(feature = "certify")]
-    pub(super) fn take_frames(&mut self) -> VecDeque<v1::ReadFrame> {
-        std::mem::take(&mut self.frames)
-    }
-
-    fn push(&mut self, frame: v1::read_frame::Frame) {
-        self.frames.push_back(v1::ReadFrame { frame: Some(frame) });
-    }
-
-    /// Queues `event` as the frames that carry it.
-    fn event(&mut self, event: SourceEvent) -> Result<(), Status> {
-        use v1::read_frame::Frame;
-        match event {
-            SourceEvent::Push(Push::Arrow(batch)) => self.batch(&batch, v1::BatchKind::Arrow)?,
-            SourceEvent::Push(Push::Changes(batch)) => self.batch(&batch, v1::BatchKind::Change)?,
-            SourceEvent::Push(Push::Json(data)) => {
-                self.host.admit_json(data.len()).map_err(refused)?;
-                self.push(Frame::Json(v1::JsonFrame { data }));
-            }
-            SourceEvent::Checkpoint { cursor, answers } => {
-                let cursor = v1::Cursor::from(&cursor);
-                self.host
-                    .admit_cursor(cursor.bytes.len())
-                    .map_err(refused)?;
-                self.push(Frame::Checkpoint(v1::CheckpointFrame {
-                    cursor: Some(cursor),
-                    barrier: answers,
-                }));
-            }
-            SourceEvent::Log { level, message } => {
-                self.host.admit_string(&message).map_err(refused)?;
-                self.push(Frame::Log(v1::LogFrame {
-                    level: log_level(level) as i32,
-                    message,
-                }));
-            }
-            SourceEvent::Metric { name, value } => {
-                self.host.admit_string(&name).map_err(refused)?;
-                self.push(Frame::Metric(v1::MetricFrame { name, value }));
-            }
-            SourceEvent::Replan => self.push(Frame::Replan(v1::ReplanFrame {})),
-            SourceEvent::Behind { records } => {
-                self.push(Frame::Behind(v1::BehindFrame { records }));
-            }
-        }
-        Ok(())
-    }
-
-    /// Queues `batch`, after a schema frame opening a new epoch if its schema differs.
-    pub(super) fn batch(&mut self, batch: &RecordBatch, kind: v1::BatchKind) -> Result<(), Status> {
-        use v1::read_frame::Frame;
-        if self.schema.as_ref() != Some(&batch.schema()) {
-            self.epoch += 1;
-            self.schema = None;
-            let ipc_schema = self
-                .encoder
-                .schema(&batch.schema())
-                .map_err(|error| status(&frame_error(&error)))?;
-            self.schema = Some(batch.schema());
-            self.push(Frame::Schema(v1::SchemaFrame {
-                schema_epoch: self.epoch,
-                ipc_schema,
-            }));
-        }
-        self.cutting = Some((Cut::new(batch.clone(), self.host), kind));
-        self.refill()
-    }
-
-    /// Whether a batch is still being cut: its next piece is queued by [`Outbox::refill`], and
-    /// nothing else may be queued before its last.
-    pub(super) fn cutting(&self) -> bool {
-        self.cutting.is_some()
-    }
-
-    /// Queues the next piece of the batch being cut.
-    ///
-    /// A batch beyond the host's limits goes as several, in order, each encoded only once the
-    /// piece before it was sent; a row beyond them fails the read.
-    pub(super) fn refill(&mut self) -> Result<(), Status> {
-        use v1::read_frame::Frame;
-        let Some((cut, kind)) = &mut self.cutting else {
-            return Ok(());
-        };
-        let kind = *kind;
-        let piece = self.encoder.piece(cut);
-        if cut.is_done() {
-            self.cutting = None;
-        }
-        let frames = piece.map_err(|error| status(&frame_error(&error)))?;
-        for frame in frames.into_iter().flatten() {
-            self.push(Frame::Batch(v1::BatchFrame {
-                schema_epoch: self.epoch,
-                kind: kind as i32,
-                data_header: frame.header,
-                padding: Bytes::new(),
-                data_body: frame.body,
-            }));
-        }
-        Ok(())
-    }
-}
-
-fn log_level(level: LogLevel) -> v1::LogLevel {
-    match level {
-        LogLevel::Error => v1::LogLevel::Error,
-        LogLevel::Warn => v1::LogLevel::Warn,
-        LogLevel::Info => v1::LogLevel::Info,
-        LogLevel::Debug => v1::LogLevel::Debug,
-    }
+/// A frame the host's limits refuse, as the error the read fails with.
+fn refused(refusal: rdlt_wire::Refusal) -> ConnectorError {
+    frame_error(&rdlt_wire::WireError::Refused(refusal))
 }
 
 /// A spawned read, aborted once dropped: a read the host leaves, which may wait for data that
@@ -238,17 +117,98 @@ impl Drop for Reading {
     }
 }
 
-/// Reads the partition and sends its frames within credit until the read is done, or the host
-/// goes; `admission` admits what the source sends into the channel, within the host's limits.
-async fn pump(
+/// What a pump reads, and for whom.
+struct Pumping {
     source: Arc<dyn Source>,
     request: ReadRequest,
     barrier: u64,
-    mut controls: Incoming<v1::ReadControl>,
-    frames: mpsc::Sender<Result<v1::ReadFrame, Status>>,
+    noting: Noting,
+}
+
+/// What a pump's turn came to.
+enum Turn {
+    Control(Result<Option<Received>, ConnectorError>),
+    Written(bool),
+    Event(Option<SourceEvent>),
+    Ended(Result<crate::error::Result<()>, tokio::task::JoinError>),
+}
+
+/// What a pump does after a turn.
+enum Then {
+    /// Goes on.
+    Pumps,
+    /// Ends the read: its host went.
+    Ends,
+    /// Fails the read with this error, then ends it.
+    Fails(ConnectorError),
+}
+
+/// Where a pump stands: what it sends next, and how far the source's read went.
+struct Pumped {
+    outbox: Outbox,
+    /// Whether the source's channel has ended.
+    exhausted: bool,
+    /// Whether the source's read has returned.
+    done: bool,
+}
+
+impl Pumped {
+    /// Takes `turn`, the host's `control` read from `controls` among them.
+    fn take<R: AsyncRead + Unpin>(
+        &mut self,
+        turn: Turn,
+        controls: &Frames<R>,
+        feed: &PartitionFeed,
+    ) -> Then {
+        let queued = match turn {
+            Turn::Control(control) => {
+                if !applied(controls, control, feed) {
+                    return Then::Ends;
+                }
+                Ok(())
+            }
+            Turn::Written(true) => Ok(()),
+            Turn::Written(false) => return Then::Ends,
+            Turn::Event(Some(event)) => self.outbox.event(event),
+            Turn::Event(None) => {
+                self.exhausted = true;
+                Ok(())
+            }
+            Turn::Ended(ended) => {
+                self.done = true;
+                finish(&mut self.outbox, ended)
+            }
+        };
+        match queued {
+            Ok(()) => Then::Pumps,
+            Err(error) => Then::Fails(error),
+        }
+    }
+}
+
+/// Reads the partition and writes its frames, one at a time, until the read is done, or the
+/// host goes; `admission` admits what the source sends into the channel, within the host's
+/// limits.
+async fn pump<R, W>(
+    pumping: Pumping,
+    mut controls: Frames<R>,
+    mut io: W,
     admission: Arc<dyn Admission>,
-) {
-    let mut outbox = Outbox::new(admission.limits());
+) where
+    R: AsyncRead + Unpin + Send,
+    W: AsyncWrite + Unpin + Send,
+{
+    let Pumping {
+        source,
+        request,
+        barrier,
+        mut noting,
+    } = pumping;
+    let mut pumped = Pumped {
+        outbox: Outbox::new(admission.limits()),
+        exhausted: false,
+        done: false,
+    };
     let (sink, mut feed) = admitted_partition_channel(EVENTS, admission);
     // What the source pushes is cut to the host's frames as it is sent.
     let sink = sink.cut();
@@ -259,111 +219,77 @@ async fn pump(
     let mut reading = Reading(tokio::spawn(
         async move { source.read(request, sink).await },
     ));
-    let (mut done, mut exhausted) = (false, false);
-    loop {
-        if !send_queued(&mut outbox, &frames).await {
-            feed.stop();
-            return;
+    let mut writing: Option<Outgoing> = None;
+    let failure = loop {
+        if writing.is_none()
+            && let Some(queued) = pumped.outbox.next()
+        {
+            noting.note(&queued.note);
+            writing = Some(queued.frame);
         }
-        // The next piece of a batch being cut is encoded once the last was sent, and before
-        // anything else the source sends is taken. The host's controls wait meanwhile, for no
-        // longer than the credit lasts or the batch has pieces.
-        if outbox.frames.is_empty() && outbox.cutting() {
-            if !refill(&mut outbox, &frames).await {
-                feed.stop();
-                return;
+        // The next piece of a batch being cut is encoded once the last was written, and before
+        // anything else the source sends is taken.
+        if writing.is_none() && pumped.outbox.cutting() {
+            if let Err(error) = pumped.outbox.refill() {
+                break Some(error);
             }
             tokio::task::yield_now().await;
             continue;
         }
-        if done && outbox.frames.is_empty() {
-            return;
+        if writing.is_none() && pumped.done {
+            break None;
         }
-        let queued = tokio::select! {
+        let idle = writing.is_none();
+        let (exhausted, done) = (pumped.exhausted, pumped.done);
+        let turn = tokio::select! {
             biased;
-            // A host that dropped its answers takes nothing more: it wins over everything else.
-            () = frames.closed() => {
-                feed.stop();
-                return;
-            }
-            control = controls.message() => {
-                if !control_read(control, &mut outbox, &feed) {
-                    feed.stop();
-                    return;
-                }
-                Ok(())
-            }
-            event = feed.recv(), if outbox.frames.is_empty() && !exhausted => {
-                if let Some(event) = event {
-                    outbox.event(event)
-                } else {
-                    exhausted = true;
-                    Ok(())
-                }
-            }
+            // The host's controls win over the frame being written, which goes on where it was.
+            control = controls.next() => Turn::Control(control),
+            written = write(&mut writing, &mut io), if !idle => Turn::Written(written),
+            event = feed.recv(), if idle && !exhausted => Turn::Event(event),
             // A source may clean up after its sink is gone, while the host's controls are read.
-            ended = &mut reading.0, if exhausted && !done => {
-                done = true;
-                finish(&mut outbox, ended)
-            }
+            ended = &mut reading.0, if idle && exhausted && !done => Turn::Ended(ended),
         };
-        if let Err(error) = queued {
-            // The host may have gone; the read ends either way.
-            frames.send(Err(error)).await.ok();
-            feed.stop();
-            return;
+        match pumped.take(turn, &controls, &feed) {
+            Then::Pumps => {}
+            Then::Ends => break None,
+            Then::Fails(error) => break Some(error),
         }
+    };
+    // The host may have gone; the read ends either way.
+    if let Some(error) = failure {
+        send(&mut io, failed(Call::Read, &error)).await;
     }
+    feed.stop();
 }
 
-/// Sends the frames queued while credit lasts; whether the host is still there to take them.
-async fn send_queued(
-    outbox: &mut Outbox,
-    frames: &mpsc::Sender<Result<v1::ReadFrame, Status>>,
-) -> bool {
-    while let Some(frame) = outbox.frames.front() {
-        // A frame goes while credit remains, and spends its size, even below zero.
-        if !outbox.credit.may_send() {
-            break;
-        }
-        let size = u64::try_from(frame.sent_len()).unwrap_or(u64::MAX);
-        outbox.credit.spend(size);
-        let frame = outbox.frames.pop_front().expect("a frame is at the front");
-        if frames.send(Ok(frame)).await.is_err() {
-            return false;
-        }
-    }
-    true
-}
-
-/// Encodes the next piece of the batch being cut; whether the read goes on, which it does not
-/// where the piece cannot be encoded and the host is told so.
-async fn refill(outbox: &mut Outbox, frames: &mpsc::Sender<Result<v1::ReadFrame, Status>>) -> bool {
-    if let Err(error) = outbox.refill() {
-        frames.send(Err(error)).await.ok();
-        return false;
-    }
-    true
+/// Writes what is left of the frame `writing` holds to `io`; whether the host took it.
+async fn write<W: AsyncWrite + Unpin>(writing: &mut Option<Outgoing>, io: &mut W) -> bool {
+    let Some(frame) = writing else {
+        return true;
+    };
+    let written = frame.write(io).await.is_ok();
+    *writing = None;
+    written
 }
 
 /// Applies the host's `control`; whether the host is still there.
-fn control_read(
-    control: Result<Option<v1::ReadControl>, Status>,
-    outbox: &mut Outbox,
+fn applied<R: AsyncRead + Unpin>(
+    controls: &Frames<R>,
+    control: Result<Option<Received>, ConnectorError>,
     feed: &PartitionFeed,
 ) -> bool {
     use v1::read_control::Control;
-    let Ok(Some(control)) = control else {
+    let Ok(Some(received)) = control else {
+        return false;
+    };
+    let Ok(control) = controls.message::<v1::ReadControl>(&received) else {
         return false;
     };
     match control.control {
-        Some(Control::Credit(credit)) => {
-            // A credit of no bytes grants nothing, and changes nothing.
-            outbox.credit.grant(credit.bytes).ok();
-        }
         Some(Control::Checkpoint(request)) => feed.request_checkpoint(request.barrier),
         Some(Control::Stop(_)) => feed.stop(),
-        Some(Control::Start(_)) | None => {}
+        None => {}
     }
     true
 }
@@ -372,22 +298,19 @@ fn control_read(
 fn finish(
     outbox: &mut Outbox,
     ended: Result<crate::error::Result<()>, tokio::task::JoinError>,
-) -> Result<(), Status> {
+) -> Result<(), ConnectorError> {
     match ended {
-        Ok(Ok(())) => {
-            outbox.push(v1::read_frame::Frame::Done(v1::Done {}));
-            Ok(())
-        }
-        Ok(Err(error)) => Err(status(&error)),
+        Ok(Ok(())) => outbox.message(v1::read_frame::Frame::Done(v1::Done {}), Note::Data),
+        Ok(Err(error)) => Err(error),
         // The join error's text carries a process-wide task number and the panic's message,
         // which may quote what was read; neither is this connector's to tell its host.
-        Err(join) => Err(status(&crate::error::ConnectorError::new(
+        Err(join) => Err(ConnectorError::new(
             ConnectorErrorKind::Internal,
             if join.is_panic() {
                 "the read panicked"
             } else {
                 "the read was cancelled"
             },
-        ))),
+        )),
     }
 }

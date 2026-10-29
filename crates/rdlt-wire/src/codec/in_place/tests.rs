@@ -176,10 +176,15 @@ fn only_a_message_whose_run_end_column_the_walk_emptied_is_read_as_the_walk_read
         let (_, frames) = sent(batch, Limits::default());
         let columns = Columns::new(batch.schema());
         let frame = frames.last().unwrap();
-        measured(Some(&columns), &Limits::default(), frame)
-            .unwrap()
-            .walked
-            .emptied
+        measured(
+            Some(&columns),
+            &Limits::default(),
+            &frame.header,
+            &frame.body[..],
+        )
+        .unwrap()
+        .walked
+        .emptied
     };
     assert!(walked(&samples::empty_runs()));
     assert!(!walked(&samples::batch()));

@@ -52,7 +52,8 @@ fn deliver(
     let piece = |encoder: &mut Encoder, cut: &mut Cut| -> Result<Option<Vec<IpcFrame>>, String> {
         let cut = catch_unwind(AssertUnwindSafe(|| encoder.piece(cut)));
         let cut = cut.map_err(|_| "the cut panicked".to_owned())?;
-        cut.map_err(|error| format!("the sender refused: {error}"))
+        let frames = cut.map_err(|error| format!("the sender refused: {error}"))?;
+        Ok(frames.map(|frames| frames.iter().map(crate::codec::Encoded::gathered).collect()))
     };
     while let Some(frames) = piece(encoder, &mut cut)? {
         for frame in &frames {

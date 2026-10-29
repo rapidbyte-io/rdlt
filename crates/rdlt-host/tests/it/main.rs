@@ -7,7 +7,6 @@ mod admission;
 mod calls;
 mod canary;
 mod charged;
-mod credit;
 mod cuts;
 mod decoded;
 mod descriptors;

@@ -13,10 +13,9 @@ use rdlt_host::remote::Client;
 use rdlt_host::{CONNECTOR_LOST, Connection, DEADLINE_EXCEEDED, Deadlines, Options, RemoteSource};
 use rdlt_testkit::fake::{Fake, Fault, socket};
 use rdlt_wire::{Limits, PROTOCOL_MAJOR};
-use tokio_stream::wrappers::ReceiverStream;
 
 use crate::support::connectors::{Denied, SlowCommits};
-use crate::support::{memory_destination, plane_client, served, served_within};
+use crate::support::{memory_destination, protocol_client, served, served_within};
 
 /// Options that notice a lost connector within about a tenth of a second.
 fn quick() -> Options {
@@ -70,7 +69,7 @@ fn rows(count: usize) -> serde_json::Value {
 #[tokio::test]
 async fn a_host_of_another_major_version_is_refused_at_the_handshake() {
     for major in [PROTOCOL_MAJOR - 1, PROTOCOL_MAJOR + 1] {
-        let mut client = plane_client(served(memory())).await;
+        let mut client = protocol_client(served(memory())).await;
         let status = client
             .rpc
             .handshake(handshake(major, v1::Role::Source))
@@ -100,7 +99,7 @@ async fn a_host_that_sets_no_dictionary_limit_is_refused_at_the_handshake() {
         }),
     ];
     for limits in unset {
-        let mut client = plane_client(served(memory())).await;
+        let mut client = protocol_client(served(memory())).await;
         let status = client
             .rpc
             .handshake(v1::HandshakeRequest {
@@ -130,7 +129,7 @@ async fn a_connector_that_says_no_dictionary_limit_is_refused_at_the_handshake()
 
 #[tokio::test]
 async fn a_call_before_the_handshake_is_refused() {
-    let mut client = plane_client(served(memory())).await;
+    let mut client = protocol_client(served(memory())).await;
     let status = client.rpc.check(v1::CheckRequest {}).await.unwrap_err();
     assert_eq!(carried(&status).code(), Some("no_handshake"));
 }
@@ -383,52 +382,6 @@ async fn a_call_beyond_its_deadline_fails_with_deadline_exceeded() {
     );
 }
 
-#[tokio::test]
-async fn a_served_read_sends_a_frame_only_while_it_has_credit() {
-    use v1::read_control::Control;
-    let mut client = plane_client(served(memory())).await;
-    configured(&mut client, v1::Role::Source, &rows(50).to_string()).await;
-    let (controls, receiver) = tokio::sync::mpsc::channel(4);
-    let control = |control| v1::ReadControl {
-        control: Some(control),
-    };
-    let start = v1::ReadStart {
-        stream: Some(v1::StreamName {
-            namespace: None,
-            name: "items".to_owned(),
-        }),
-        partition: "whole".to_owned(),
-        cursor: None,
-        barrier: 0,
-        unbounded: false,
-        follow: false,
-    };
-    controls.send(control(Control::Start(start))).await.unwrap();
-    controls
-        .send(control(Control::Credit(v1::Credit { bytes: 1 })))
-        .await
-        .unwrap();
-    let mut frames = client.read(ReceiverStream::new(receiver)).await.unwrap();
-    // One byte of credit lets one frame go, whatever its size, and then no other.
-    let wait = Duration::from_millis(300);
-    let first = tokio::time::timeout(Duration::from_secs(5), frames.message())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(first.is_some(), "a frame goes while credit remains");
-    let early = tokio::time::timeout(wait, frames.message()).await;
-    assert!(early.is_err(), "no frame goes once the credit is spent");
-    controls
-        .send(control(Control::Credit(v1::Credit { bytes: 1 << 20 })))
-        .await
-        .unwrap();
-    let next = tokio::time::timeout(Duration::from_secs(5), frames.message())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(next.is_some(), "more credit lets more frames go");
-}
-
 #[tokio::test(flavor = "multi_thread")]
 async fn slow_commit_within_deadline_succeeds() {
     // Liveness and work deadlines differ: a commit much longer than the heartbeat's patience still
@@ -472,48 +425,6 @@ async fn slow_commit_within_deadline_succeeds() {
 }
 
 #[tokio::test]
-async fn a_served_read_spends_its_credit_frame_by_frame_until_none_remains() {
-    use rdlt_wire::prost::Message as _;
-    use v1::read_control::Control;
-    let mut client = plane_client(served(memory())).await;
-    configured(&mut client, v1::Role::Source, &rows(500).to_string()).await;
-    let (controls, receiver) = tokio::sync::mpsc::channel(4);
-    let control = |control| v1::ReadControl {
-        control: Some(control),
-    };
-    let start = v1::ReadStart {
-        stream: Some(v1::StreamName {
-            namespace: None,
-            name: "items".to_owned(),
-        }),
-        partition: "whole".to_owned(),
-        cursor: None,
-        barrier: 0,
-        unbounded: false,
-        follow: false,
-    };
-    let grant = 2000;
-    controls.send(control(Control::Start(start))).await.unwrap();
-    controls
-        .send(control(Control::Credit(v1::Credit { bytes: grant })))
-        .await
-        .unwrap();
-    let mut frames = client.read(ReceiverStream::new(receiver)).await.unwrap();
-    let mut sizes = Vec::new();
-    while let Ok(frame) = tokio::time::timeout(Duration::from_millis(300), frames.message()).await {
-        sizes.push(u64::try_from(frame.unwrap().expect("the read goes on").encoded_len()).unwrap());
-    }
-    let (sent, last) = (
-        sizes.iter().sum::<u64>(),
-        *sizes.last().expect("a frame went"),
-    );
-    assert!(
-        sent - last < grant && grant <= sent,
-        "{sizes:?} for {grant} bytes of credit"
-    );
-}
-
-#[tokio::test]
 async fn a_connectors_catalog_crosses_the_wire() {
     let source = crate::support::memory_source(rows(3), &Options::default()).await;
     let catalog = source.discover().await.unwrap();
@@ -523,7 +434,7 @@ async fn a_connectors_catalog_crosses_the_wire() {
 
 #[tokio::test]
 async fn a_call_for_the_other_role_is_refused() {
-    let mut client = plane_client(served(memory())).await;
+    let mut client = protocol_client(served(memory())).await;
     configured(&mut client, v1::Role::Source, &rows(1).to_string()).await;
     let open = v1::OpenRequest {
         pipeline: "p".to_owned(),
@@ -535,7 +446,7 @@ async fn a_call_for_the_other_role_is_refused() {
 
 #[tokio::test]
 async fn a_second_handshake_or_configuration_is_refused_before_it_connects() {
-    let mut client = plane_client(served(memory())).await;
+    let mut client = protocol_client(served(memory())).await;
     configured(&mut client, v1::Role::Source, &rows(1).to_string()).await;
     let status = client
         .rpc
@@ -554,7 +465,7 @@ async fn a_second_handshake_or_configuration_is_refused_before_it_connects() {
 
 #[tokio::test]
 async fn a_configuration_before_the_handshake_and_a_call_before_the_configuration_are_refused() {
-    let mut client = plane_client(served(memory())).await;
+    let mut client = protocol_client(served(memory())).await;
     let status = client.rpc.configure(configure("{}")).await.unwrap_err();
     assert_eq!(carried(&status).code(), Some("no_handshake"));
     client
@@ -568,7 +479,7 @@ async fn a_configuration_before_the_handshake_and_a_call_before_the_configuratio
 
 #[tokio::test]
 async fn a_message_that_does_not_decode_is_refused() {
-    let mut client = plane_client(served(memory())).await;
+    let mut client = protocol_client(served(memory())).await;
     configured(&mut client, v1::Role::Source, &rows(1).to_string()).await;
     let plan = v1::PlanRequest {
         stream: None,
@@ -614,24 +525,6 @@ async fn status_details_that_do_not_decode_fail_the_call_rather_than_the_host() 
         .expect("the call does not panic")
         .expect_err("the discovery fails");
     assert_eq!(error.code(), Some("transport"), "{error}");
-}
-
-#[tokio::test]
-async fn a_write_refused_with_details_that_do_not_decode_fails_without_them() {
-    let io = socket(Fake(Fault::GarbledDetails));
-    let mut client = rdlt_host::remote::client(io, Options::default())
-        .await
-        .expect("the client connects");
-    // The fake refuses every write before any answer, its details not base64.
-    let frames = tokio_stream::iter(Vec::<v1::WriteFrame>::new());
-    let written = tokio::spawn(async move { client.write(frames).await.map(drop) });
-    let refused = tokio::time::timeout(Duration::from_secs(5), written)
-        .await
-        .expect("the write is answered")
-        .expect("the call does not panic")
-        .expect_err("the write is refused");
-    assert_eq!(refused.code(), tonic::Code::Unimplemented);
-    assert!(refused.details().is_empty(), "the details are dropped");
 }
 
 #[test]

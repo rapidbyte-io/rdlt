@@ -11,16 +11,15 @@ use rdlt_connector::Role;
 use rdlt_connector::wire::v1;
 use rdlt_wire::limits::LIMIT_EXCEEDED;
 use rdlt_wire::prost::bytes::Bytes;
+use rdlt_wire::stream::Call;
 use rdlt_wire::{Limits, PROTOCOL_MAJOR};
-use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
 
-use super::credit::first_partition;
 use super::writing::Writing;
 use super::{
-    Found, Violation, configure_request, error, first_refusal, handshaken, refused_with, request,
+    Found, Violation, configure_request, error, first_partition, handshaken, refused_with, request,
 };
 use crate::target::Target;
+use rdlt_host::remote::RawCall;
 
 /// Checks `P-LIMITS`.
 pub(super) async fn kept(target: &Target, role: Role, config: &str) -> Found {
@@ -132,8 +131,7 @@ async fn cursor(
             "the source has no partition to read".to_owned(),
         ));
     };
-    let (controls, receiver) = mpsc::channel(2);
-    let start = v1::read_control::Control::Start(v1::ReadStart {
+    let start = v1::ReadStart {
         stream: Some(stream),
         partition,
         cursor: Some(v1::Cursor {
@@ -143,26 +141,16 @@ async fn cursor(
         barrier: 0,
         unbounded: false,
         follow: false,
-    });
-    // Credit, so a source that took the cursor answers at once rather than wait for it.
-    let credit = v1::read_control::Control::Credit(v1::Credit { bytes: 1 << 20 });
-    for control in [start, credit] {
-        // The receiver is open until it is dropped with the call, so these sends succeed.
-        controls
-            .send(v1::ReadControl {
-                control: Some(control),
-            })
-            .await
-            .ok();
+    };
+    let opened = RawCall::open(&client, Call::Read, &start, &target.limits()).await;
+    let what = "a read from a cursor beyond the cursor limit";
+    match opened.map_err(Violation::of)? {
+        Ok(_) => Err(Violation::from(format!("{what} was opened, not refused"))),
+        Err(refused) if refused.code() == Some(LIMIT_EXCEEDED) => Ok(Limit::Kept),
+        Err(refused) => Err(Violation::from(format!(
+            "{what} was refused with `{refused}`, not with `{LIMIT_EXCEEDED}`"
+        ))),
     }
-    let mut client = client.max_encoding_message_size(usize::MAX);
-    let read = first_refusal(client.read(ReceiverStream::new(receiver)).await).await;
-    refused_with(
-        read,
-        LIMIT_EXCEEDED,
-        "a read from a cursor beyond the cursor limit",
-    )?;
-    Ok(Limit::Kept)
 }
 
 /// A batch frame beyond the connector's frame limit, in a write of a table of its own.
@@ -175,15 +163,16 @@ async fn frame(
     let Some(over) = beyond(declared, host) else {
         return Ok(unexceeded("frame", declared, host));
     };
-    let (client, _) = handshaken(target, Role::Destination, config).await?;
-    let mut client = client.max_encoding_message_size(usize::MAX);
-    let batch = v1::WriteBatch {
-        segment: 1,
-        data_header: Bytes::new(),
-        padding: Bytes::new(),
-        data_body: Bytes::from(vec![0; over]),
-    };
-    let refusal = Writing::start(&mut client).await?.refusal(batch).await?;
+    let (mut client, _) = handshaken(target, Role::Destination, config).await?;
+    // A frame's body holds its message's prefix and metadata beside its frame: so much more, and
+    // the frame is beyond the limit wherever its bytes lie.
+    let room = usize::try_from(rdlt_wire::limits::MESSAGE_ROOM).unwrap_or(usize::MAX);
+    let batch = Bytes::from(vec![0; over.saturating_add(room)]);
+    let limits = target.limits();
+    let refusal = Writing::start(&mut client, &limits)
+        .await?
+        .refusal(batch)
+        .await?;
     if refusal.code() == Some(LIMIT_EXCEEDED) {
         Ok(Limit::Kept)
     } else {

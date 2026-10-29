@@ -57,7 +57,7 @@ fn served(asking: &Arc<AtomicUsize>, failing: bool) -> Target {
         asking: Arc::clone(asking),
         failing,
     };
-    Target::served(Served::new().with_source(Box::new(counted))).credit_watch(crate::BRIEF)
+    Target::served(Served::new().with_source(Box::new(counted)))
 }
 
 fn config(slot: &str) -> serde_json::Value {

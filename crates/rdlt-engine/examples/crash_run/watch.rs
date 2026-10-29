@@ -93,8 +93,8 @@ impl Watch {
     /// write and every later one until the source is gone.
     ///
     /// The engine takes no more of a source than its budget holds and its writes carry away,
-    /// and the source reads within a credit of less than a batch: with its writes held, what
-    /// the engine took is bounded, so a source with more to send is killed as it reads,
+    /// and the host reads a frame only once the engine has room for it: with its writes held,
+    /// what the engine took is bounded, so a read with more to send is killed as it reads,
     /// however the host's tasks and threads are scheduled.
     async fn writing(&self) {
         let written = self.writes.fetch_add(1, Ordering::SeqCst) + 1;

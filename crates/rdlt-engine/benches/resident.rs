@@ -64,7 +64,6 @@ fn main() -> ExitCode {
     let limit = Resident {
         memory: MEMORY,
         push,
-        transport: 0,
         threads,
     }
     .limit();

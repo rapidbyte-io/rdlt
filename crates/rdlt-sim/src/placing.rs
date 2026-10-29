@@ -115,11 +115,12 @@ impl Placing {
         }
     }
 
-    /// Bytes: the least credit the engine's host grants a read of a connector it placed.
-    pub(crate) fn read_floor(&self) -> u64 {
+    /// Bytes: what the placement holds of one data call's stream between the connector and the
+    /// engine's host.
+    pub(crate) fn transport(&self) -> u64 {
         match self {
-            Self::Network(networked) => networked.read_floor(),
-            Self::Process(spawning) => spawning.read_floor(),
+            Self::Network(networked) => networked.transport(),
+            Self::Process(_) => Spawning::transport(),
         }
     }
 

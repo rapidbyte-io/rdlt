@@ -159,6 +159,10 @@ pub enum Problem {
     /// A batch arrived before any schema.
     #[error("no schema was received")]
     NoSchema,
+    /// The frame is no encapsulated IPC message: its prefix is not the continuation marker and
+    /// a length within the frame.
+    #[error("the frame is no encapsulated IPC message")]
+    Encapsulation,
     /// The message carrying the frame takes more beside its header and body than a message may.
     #[error(
         "the message holds {extra} bytes beside its frame's header and body, more than the {} a \

@@ -10,6 +10,7 @@ mod kills;
 pub mod limits;
 pub mod local;
 pub mod network;
+mod opener;
 pub mod provider;
 pub mod registry;
 pub mod remote;
@@ -28,7 +29,9 @@ pub use local::{
 #[cfg(feature = "sim")]
 pub use local::{Ended, Played, Playing};
 pub use network::{Endpoint, EndpointError, Network, Remote, Stream, Tcp};
+pub use opener::{Opener, Opening, Passing};
 pub use provider::{ConnectorRef, Digest, Isolation, Placed, Placement, Provider, ProviderError};
+pub use rdlt_wire::opener::raise_open_files;
 pub use rdlt_wire::tls::Identity;
 pub use registry::Registry;
 pub use remote::{

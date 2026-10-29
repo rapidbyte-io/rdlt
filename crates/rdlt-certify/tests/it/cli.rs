@@ -29,22 +29,7 @@ async fn certify(args: &[&str]) -> Output {
     if spawned && !confined {
         given.push("--trusted");
     }
-    certify_given(&given, config.unwrap_or_default(), &[]).await
-}
-
-/// The watch the command-line tests give `P-CREDIT`, as the library's tests give theirs.
-const WATCH: [&str; 2] = ["--credit-watch", "50"];
-
-/// Runs `rdlt-certify` with `args`, `input` on its standard input and `env` in its environment,
-/// watching a read whose credit is spent briefly when it certifies a connector.
-async fn certify_given(args: &[&str], input: &str, env: &[(&str, &str)]) -> Output {
-    let certifying = args.first().is_some_and(|first| !first.starts_with("--"));
-    let watched = if certifying {
-        [args, &WATCH[..]].concat()
-    } else {
-        args.to_vec()
-    };
-    certify_exactly(&watched, input, env).await
+    certify_exactly(&given, config.unwrap_or_default(), &[]).await
 }
 
 /// Runs `rdlt-certify` with exactly `args`, `input` on its standard input and `env` in its
@@ -118,8 +103,8 @@ async fn a_connector_seen_to_keep_every_clause_exits_zero_and_reports_as_json() 
 async fn a_certification_that_could_not_observe_a_clause_exits_two_unless_part_is_required() {
     let binary = example("serve_reference");
     let binary = binary.to_str().expect("a UTF-8 path");
-    // A stream of no rows: its read ends within its first credit, sends no checkpoint, and
-    // ends before any kill lands. The clauses that need those apply, and are not observed;
+    // A stream of no rows: its read ends at once, sends no checkpoint, and ends before any kill
+    // lands. The clauses that need those apply, and are not observed;
     // none of them waits to see it.
     let empty = [
         binary,
@@ -152,7 +137,7 @@ async fn a_certification_that_could_not_observe_a_clause_exits_two_unless_part_i
             .filter(|clause| clause["outcome"] == "unobserved")
             .filter_map(|clause| clause["id"].as_str())
             .collect();
-        let unseen = ["P-CREDIT", "S-RESUME", "S-PARTITION", "K-SOURCE"];
+        let unseen = ["S-RESUME", "S-PARTITION", "K-SOURCE"];
         assert_eq!(unobserved, unseen, "{report}");
     }
 }
@@ -399,8 +384,7 @@ async fn a_certification_that_outlives_its_timeout_fails_where_it_was_cut_and_ex
 async fn a_certification_asked_for_no_timeout_runs_unbounded_and_takes_no_timeout_beside() {
     let binary = example("serve_source");
     let binary = binary.to_str().expect("a UTF-8 path");
-    // A stream of no rows: its read ends within its first credit, so nothing waits to see
-    // it hold to one.
+    // A stream of no rows: its read ends at once.
     let config = r#"{"seed": 7, "streams": [{"name": "events", "rows": 0}]}"#;
     let args = [binary, "--config", config, "--env", "LLVM_PROFILE_FILE"];
     let unbounded = ["--no-timeout", "--require", "partial", "--role", "source"];
@@ -641,8 +625,7 @@ fn surviving(directory: &std::path::Path) -> Vec<i32> {
 async fn a_certification_that_ends_leaves_nothing_its_connectors_started() {
     let directory = tempfile::tempdir().expect("a temporary directory");
     let launched = launcher(directory.path(), "serve_source");
-    // A stream of no rows: its read ends within its first credit, so nothing waits to see
-    // it hold to one.
+    // A stream of no rows: its read ends at once.
     let config = r#"{"seed": 7, "streams": [{"name": "events", "rows": 0}]}"#;
     let args = [
         launched.as_str(),
@@ -834,7 +817,7 @@ async fn a_configuration_that_is_no_json_document_is_refused_without_being_quote
         "",
         r#"{"a": "${vault:hunter2-canary}"}"#,
     ] {
-        let output = certify_given(&args, unusable, &[]).await;
+        let output = certify_exactly(&args, unusable, &[]).await;
         assert_eq!(code(&output), Some(64), "{unusable}");
         let said = String::from_utf8_lossy(&output.stderr);
         assert!(said.contains("standard input"), "{said}");
@@ -853,11 +836,11 @@ async fn a_configuration_is_read_up_to_its_bound_and_refused_as_too_large_beyond
     let bound = usize::try_from(rdlt_wire::limits::CONFIG_BYTES).expect("a size");
     // An object of one text field, `{"pad":"…"}`, of `bytes` in all.
     let padded = |bytes: usize| format!(r#"{{"pad":"{}"}}"#, "x".repeat(bytes - 10));
-    let within = certify_given(&args, &padded(bound), &[]).await;
+    let within = certify_exactly(&args, &padded(bound), &[]).await;
     let said = String::from_utf8_lossy(&within.stderr);
     assert!(!said.contains("standard input"), "{said}");
     assert_ne!(code(&within), Some(64), "{said}");
-    let beyond = certify_given(&args, &padded(bound + 1), &[]).await;
+    let beyond = certify_exactly(&args, &padded(bound + 1), &[]).await;
     assert_eq!(code(&beyond), Some(64));
     let said = String::from_utf8_lossy(&beyond.stderr);
     assert!(
@@ -888,7 +871,7 @@ async fn reports_with_a_secret(
             output,
         ];
         let args = [&args[..], allowed].concat();
-        let certified = certify_given(&args, config, env).await;
+        let certified = certify_exactly(&args, config, env).await;
         assert_eq!(code(&certified), Some(1), "{output}");
         let stdout = String::from_utf8_lossy(&certified.stdout).into_owned();
         let stderr = String::from_utf8_lossy(&certified.stderr).into_owned();
@@ -936,7 +919,7 @@ async fn a_secret_that_does_not_resolve_ends_the_certification_before_any_connec
     let binary = binary.to_str().expect("a UTF-8 path");
     let args = [binary, "--trusted", "--config-file", "-"];
     let config = r#"{"path": "hunter2-canary ${env:RDLT_TEST_UNSET_VARIABLE}"}"#;
-    let output = certify_given(&args, config, &[]).await;
+    let output = certify_exactly(&args, config, &[]).await;
     assert_eq!(code(&output), Some(64));
     let said = String::from_utf8_lossy(&output.stderr);
     assert!(said.contains("config field path"), "{said}");
@@ -961,7 +944,7 @@ async fn a_binary_is_certified_inside_a_sandbox_unless_it_is_said_to_be_trusted(
         "--kill-seed",
         "515",
     ];
-    let output = certify_given(&args, config, &[]).await;
+    let output = certify_exactly(&args, config, &[]).await;
     let said = String::from_utf8_lossy(&output.stderr);
     let usable = rdlt_host::Bubblewrap::new().usable();
     if usable.is_ok() {
@@ -1004,12 +987,12 @@ async fn a_sandboxed_destination_writes_only_where_it_is_granted() {
         "json",
     ];
     // Confined, the destination finds no such directory, and every clause fails on it.
-    let confined = certify_given(&common, &config, &[]).await;
+    let confined = certify_exactly(&common, &config, &[]).await;
     assert_eq!(code(&confined), Some(1));
     assert!(!directory.path().join("store.db").exists());
     // Granted the directory, it writes its store there.
     let granted = [&common[..], &["--grant-write", store]].concat();
-    let granted = certify_given(&granted, &config, &[]).await;
+    let granted = certify_exactly(&granted, &config, &[]).await;
     let report: serde_json::Value =
         serde_json::from_slice(&granted.stdout).expect("the report is JSON");
     assert_ne!(report["verdict"], "failed", "{report}");
@@ -1020,7 +1003,7 @@ async fn a_sandboxed_destination_writes_only_where_it_is_granted() {
         &["--grant-write", store, "--secret-dir", store],
     ]
     .concat();
-    let guarded = certify_given(&guarded, &config, &[]).await;
+    let guarded = certify_exactly(&guarded, &config, &[]).await;
     assert_eq!(code(&guarded), Some(1));
     let said = String::from_utf8_lossy(&guarded.stdout);
     assert!(said.contains("cannot be sandboxed"), "{said}");
@@ -1042,7 +1025,7 @@ async fn a_reference_to_a_secret_the_command_line_does_not_allow_is_refused_unre
     ] {
         let config = serde_json::json!({ "path": reference }).to_string();
         let args = [binary, "--trusted", "--config-file", "-"];
-        let output = certify_given(&args, &config, &env).await;
+        let output = certify_exactly(&args, &config, &env).await;
         assert_eq!(code(&output), Some(64), "{reference}");
         let said = String::from_utf8_lossy(&output.stderr);
         assert!(said.contains("config field path"), "{said}");
@@ -1050,65 +1033,5 @@ async fn a_reference_to_a_secret_the_command_line_does_not_allow_is_refused_unre
             !said.contains("hunter2") && !said.contains("RDLT_TEST") && !said.contains("secret"),
             "{said}"
         );
-    }
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn a_shortened_credit_watch_is_noted_beside_its_pass_and_a_second_is_not() {
-    let binary = example("serve_reference");
-    let binary = binary.to_str().expect("a UTF-8 path");
-    let args = [
-        binary,
-        "--role",
-        "source",
-        "--trusted",
-        "--config-file",
-        "-",
-        "--env",
-        "LLVM_PROFILE_FILE",
-        "--kill-seed",
-        "515",
-        "--output",
-        "json",
-    ];
-    let shortened = [&args[..], &WATCH[..]].concat();
-    let (watched, shortened) = tokio::join!(
-        certify_exactly(&args, USERS, &[]),
-        certify_exactly(&shortened, USERS, &[]),
-    );
-    let credit = |output: &Output| {
-        let report: serde_json::Value =
-            serde_json::from_slice(&output.stdout).expect("the report is JSON");
-        report["reports"][0]["clauses"]
-            .as_array()
-            .expect("the clauses are listed")
-            .iter()
-            .find(|clause| clause["id"] == "P-CREDIT")
-            .expect("P-CREDIT is reported")
-            .clone()
-    };
-    let (watched, shortened) = (credit(&watched), credit(&shortened));
-    assert_eq!(watched["outcome"], "passed", "{watched}");
-    assert_eq!(shortened["outcome"], "passed", "{shortened}");
-    assert!(watched["note"].is_null(), "{watched}");
-    assert!(shortened["note"].is_string(), "{shortened}");
-}
-
-#[tokio::test]
-async fn a_credit_watch_outside_one_to_a_thousand_ms_is_a_usage_error() {
-    // A binary that is not there is refused with 74 once the command line is read.
-    let missing = "/nonexistent/rdlt-connector";
-    let cases = [
-        ("0", 64),
-        ("1001", 64),
-        ("-5", 64),
-        ("soon", 64),
-        ("1", 74),
-        ("1000", 74),
-    ];
-    for (watch, expected) in cases {
-        let output =
-            certify_exactly(&[missing, "--trusted", "--credit-watch", watch], "", &[]).await;
-        assert_eq!(code(&output), Some(expected), "--credit-watch {watch}");
     }
 }

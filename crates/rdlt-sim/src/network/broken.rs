@@ -53,8 +53,8 @@ pub(super) enum Call {
     Heartbeat,
     /// A read of one partition.
     Read,
-    /// A read of one partition, a barrier raised before it starts.
-    Barrier,
+    /// A read of one partition, let go once the heartbeat has had twice its patience.
+    Held,
     /// A discovery.
     Discover,
     /// A session's opening, as a destination.
@@ -80,7 +80,7 @@ pub(super) enum Expect {
     Code(&'static str),
     /// The call fails as an answer too large to decode.
     TooLarge,
-    /// The read succeeds, having answered its barrier once.
+    /// The read waits for what never comes, failing nothing, until it is let go.
     Answered,
 }
 
@@ -122,11 +122,10 @@ impl Broken {
     clippy::too_many_lines,
     reason = "a table, one row to a broken connector"
 )]
-pub(super) fn catalogue() -> [Broken; 20] {
-    use Call::{Barrier, Connect, Discover, Heartbeat, Open, Read, Write};
+pub(super) fn catalogue() -> [Broken; 21] {
+    use Call::{Connect, Discover, Heartbeat, Held, Open, Read, Write};
     let invalid = Expect::Code(INVALID_MESSAGE);
     let lost = Expect::Code(CONNECTOR_LOST);
-    let trickle = Duration::from_millis(100);
     [
         Broken::new(
             "configures as another connector",
@@ -199,9 +198,15 @@ pub(super) fn catalogue() -> [Broken; 20] {
             invalid,
         ),
         Broken::new(
-            "knows no barrier in a read's start",
-            Fault::Unstarted,
-            Barrier,
+            "sends a frame's head of no kind",
+            Fault::BadHead,
+            Read,
+            Expect::Code(MALFORMED_FRAME),
+        ),
+        Broken::new(
+            "stalls halfway through a frame's body",
+            Fault::Stalls,
+            Held,
             Expect::Answered,
         ),
         Broken::new(
@@ -224,16 +229,16 @@ pub(super) fn catalogue() -> [Broken; 20] {
             Expect::Code(LIMIT_EXCEEDED),
         ),
         Broken::new(
-            "grants a byte of credit at a time",
-            Fault::Trickles(trickle, 1),
+            "never reads what its writes are sent",
+            Fault::Hoards,
             Write,
             Expect::Code(DEADLINE_EXCEEDED),
         ),
         Broken::new(
-            "grants credit of no bytes",
-            Fault::Trickles(trickle, 0),
+            "never answers a flush",
+            Fault::Unflushed,
             Write,
-            invalid,
+            Expect::Code(DEADLINE_EXCEEDED),
         ),
     ]
 }
@@ -411,7 +416,7 @@ impl Breaker<'_> {
 
 /// The options an attack's connection runs with, drawn from `rng`: heartbeats 20 to 100 ms
 /// apart, [`MISSED`] of them missed, `connect` to set it up, writes waiting 300 ms to 3 s for
-/// credit, and limits its answers pass where `small`.
+/// the connector to take a frame or answer a flush, and limits its answers pass where `small`.
 fn attacking(rng: &mut SplitMix64, connect: Duration, small: bool) -> Options {
     let limits = if small {
         Limits {
@@ -432,17 +437,16 @@ fn attacking(rng: &mut SplitMix64, connect: Duration, small: bool) -> Options {
             ..Deadlines::default()
         },
         limits,
-        ..Options::default()
     }
 }
 
-/// How long an attack with `options` may take: its dial, its handshake and its configuration,
-/// each within the connect deadline, four of its heartbeat's patience, a write's wait for
-/// credit, and [`LATE`].
+/// How long an attack with `options` may take: its dial, its handshake, its configuration and a
+/// read's opening, each within the connect deadline, four of its heartbeat's patience, a write's
+/// opening and its wait for the connector, each within the write-ack deadline, and [`LATE`].
 fn bound(options: &Options) -> Duration {
-    options.deadlines.connect.saturating_mul(3)
+    options.deadlines.connect.saturating_mul(4)
         + patience(options).saturating_mul(4)
-        + options.deadlines.write_ack
+        + options.deadlines.write_ack.saturating_mul(2)
         + LATE
 }
 
@@ -454,7 +458,9 @@ fn disrupted(expect: Expect, ended: &Ended) -> bool {
 
 /// Sets up a connection over `wire` as `call`'s role, with `options`, and makes `call` on it.
 async fn made(call: Call, wire: Wire, options: &Options) -> Ended {
-    let connected = Connection::connect(wire, call.role(), &serde_json::json!({}), *options).await;
+    let connected = wire
+        .connect(call.role(), &serde_json::json!({}), *options)
+        .await;
     let connection = match connected {
         Ok(connection) => connection,
         Err(error) => return Ended::Refused(error),
@@ -465,8 +471,15 @@ async fn made(call: Call, wire: Wire, options: &Options) -> Ended {
             tokio::time::sleep(patience(options).saturating_mul(2)).await;
             ended(RemoteSource::new(connection).check().await)
         }
-        Call::Read => read(connection, false).await,
-        Call::Barrier => read(connection, true).await,
+        Call::Read => read(connection).await,
+        Call::Held => {
+            let held = patience(options).saturating_mul(2);
+            match tokio::time::timeout(held, read(connection)).await {
+                Ok(Ended::Refused(error)) => Ended::Refused(error),
+                Ok(_) => Ended::Wrong("its read ended".to_owned()),
+                Err(_) => Ended::Answered,
+            }
+        }
         Call::Discover => ended(RemoteSource::new(connection).discover().await.map(drop)),
         Call::Open => open(connection).await,
         Call::Write => write(connection).await,
@@ -481,13 +494,9 @@ fn ended(result: rdlt_connector::Result<()>) -> Ended {
     }
 }
 
-/// Reads one partition of `connection`'s source, barrier 1 raised before the read where
-/// `barrier`.
-async fn read(connection: Arc<Connection>, barrier: bool) -> Ended {
+/// Reads one partition of `connection`'s source.
+async fn read(connection: Arc<Connection>) -> Ended {
     let (sink, mut feed) = partition_channel(NonZeroUsize::new(8).unwrap_or(NonZeroUsize::MIN));
-    if barrier {
-        feed.request_checkpoint(1);
-    }
     let stream = StreamName::new("items").expect("a valid stream name");
     let request = ReadRequest::new(stream, Partition::single(), None);
     let source = RemoteSource::new(connection);
@@ -503,7 +512,6 @@ async fn read(connection: Arc<Connection>, barrier: bool) -> Ended {
     let (read, answered) = tokio::join!(source.read(request, sink), taking);
     match read {
         Err(error) => Ended::Refused(error),
-        Ok(()) if barrier && answered == [1] => Ended::Answered,
         Ok(()) => Ended::Wrong(format!("its read ended, answering barriers {answered:?}")),
     }
 }

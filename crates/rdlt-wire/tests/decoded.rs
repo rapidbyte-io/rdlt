@@ -1,11 +1,11 @@
 //! What a message decodes to is no more than its scan counts, measured on the heap, for the
 //! shapes of message a hostile peer may send and the shapes a connector sends of its data; and
-//! what the data plane holds decoding a batch.
+//! what a data call's stream holds reading a batch.
 
 #![forbid(unsafe_code)]
 
-#[path = "decoded/plane.rs"]
-mod plane;
+#[path = "decoded/stream.rs"]
+mod stream;
 
 use bytes::Bytes;
 use proptest::prelude::*;
@@ -290,7 +290,7 @@ proptest! {
 
 #[test]
 fn every_message_the_calls_carry_is_held_to_the_scan() {
-    assert_eq!(differential::count(), 29);
+    assert_eq!(differential::count(), 31);
 }
 
 /// Field `number` holding `value`, length-delimited.

@@ -11,6 +11,7 @@ use rdlt_connector::BoxFuture;
 use tokio_util::sync::CancellationToken;
 
 use crate::network::{Network, Stream};
+use crate::opener::{Opener, Wrapping};
 use crate::remote::severed::Severed;
 use landing::Landing;
 
@@ -85,6 +86,34 @@ impl Kills {
         let killed = self.next();
         let severed = Severed::new(stream, killed.clone());
         Box::new(Landing::new(severed, killed, self.clone(), true))
+    }
+
+    /// `opener`, the opener of a connector what `killed` cancels kills, whose control connection
+    /// counts the kill as landed once it ends after it, as [`watch`](Self::watch) counts a
+    /// stream.
+    pub(crate) fn watching(
+        &self,
+        opener: Box<dyn Opener>,
+        killed: CancellationToken,
+    ) -> Box<dyn Opener> {
+        let kills = self.clone();
+        Box::new(Wrapping {
+            inner: opener,
+            watched: Arc::new(move |stream| kills.watch(stream, killed.clone())),
+            cut: Arc::new(|stream| stream),
+        })
+    }
+
+    /// `opener`, whose every stream the next kill after its opening cuts: its control
+    /// connection counted as landed once it ends after it, as [`sever`](Self::sever) counts a
+    /// stream, and its data calls' streams cut with it.
+    pub(crate) fn severing(&self, opener: Box<dyn Opener>) -> Box<dyn Opener> {
+        let (watching, cutting) = (self.clone(), self.clone());
+        Box::new(Wrapping {
+            inner: opener,
+            watched: Arc::new(move |stream| watching.sever(stream)),
+            cut: Arc::new(move |stream| Box::new(Severed::new(stream, cutting.next()))),
+        })
     }
 
     /// What the next kill cancels.

@@ -10,85 +10,71 @@ use rdlt_connector::{
     TableSchema,
 };
 use rdlt_host::remote::Client;
-use rdlt_wire::plane::Incoming;
+use rdlt_wire::prost::bytes::Bytes;
+use rdlt_wire::stream::{Call, Kind, Outgoing, Rows};
 use rdlt_wire::tonic::Status;
-use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
 
 use super::{Violation, error};
+use rdlt_host::remote::RawCall;
 
 /// A write of a one-column table, its schema sent, waiting for batches.
 pub(super) struct Writing {
-    frames: mpsc::Sender<v1::WriteFrame>,
-    acks: Incoming<v1::WriteAck>,
+    streamed: RawCall,
 }
 
 impl Writing {
     /// Opens a session on the connector `client` speaks to, creates a table of its own in it, and
-    /// starts writing the table, its schema sent.
-    pub(super) async fn start(client: &mut Client) -> Result<Self, Violation> {
+    /// starts writing the table, its schema sent, reading within `limits`.
+    pub(super) async fn start(
+        client: &mut Client,
+        limits: &rdlt_wire::Limits,
+    ) -> Result<Self, Violation> {
         let (session, table) = created(client).await?;
-        let (frames, receiver) = mpsc::channel(4);
-        let start = v1::write_frame::Frame::Start(v1::WriteStart {
+        let start = v1::WriteStart {
             session,
             table: Some(v1::TableRef::from(&table)),
-        });
+        };
+        let opened = RawCall::open(client, Call::Write, &start, limits).await;
+        let mut streamed = opened
+            .map_err(Violation::of)?
+            .map_err(|refused| Violation::from(format!("the write was refused: {refused}")))?;
         let ipc_schema = rdlt_wire::Encoder::default()
             .schema(&rows().schema())
             .map_err(|error| Violation::from(format!("the schema does not encode: {error}")))?;
-        let schema = v1::write_frame::Frame::Schema(v1::WriteSchema {
-            version: 1,
-            ipc_schema,
-        });
-        for frame in [start, schema] {
-            // The receiver is open until it is dropped with the call, so these sends succeed.
-            frames
-                .send(v1::WriteFrame { frame: Some(frame) })
-                .await
-                .ok();
+        let schema = v1::WriteFrame {
+            frame: Some(v1::write_frame::Frame::Schema(v1::WriteSchema {
+                version: 1,
+                ipc_schema,
+            })),
+        };
+        let schema = Outgoing::message(None, &schema).map_err(Violation::of)?;
+        if !streamed.send(schema).await {
+            return Err(Violation::from("the write ended before its schema"));
         }
-        let acks = client
-            .write(ReceiverStream::new(receiver))
-            .await
-            .map_err(|status| Violation::from(format!("the write failed: {}", error(&status))))?;
-        Ok(Self { frames, acks })
+        Ok(Self { streamed })
     }
 
-    /// Sends `batch`, and a flush after it, and returns the error the write then fails with.
-    pub(super) async fn refusal(
-        mut self,
-        batch: v1::WriteBatch,
-    ) -> Result<ConnectorError, Violation> {
+    /// Sends a batch frame of `body`, and a flush after it, and returns the error the write then
+    /// fails with.
+    pub(super) async fn refusal(mut self, body: Bytes) -> Result<ConnectorError, Violation> {
+        let kind = Kind::Batch {
+            rows: Rows::Arrow,
+            dictionary: false,
+            tag: 1,
+        };
+        let batch = Outgoing::new(kind, vec![body]).map_err(Violation::of)?;
         // A flush, so a destination that took the batch says so rather than wait for more.
-        let frames = [
-            v1::write_frame::Frame::Batch(batch),
-            v1::write_frame::Frame::Flush(v1::Unit {}),
-        ];
-        for frame in frames {
-            // A write refused already takes no more frames; its refusal is read below.
-            self.frames
-                .send(v1::WriteFrame { frame: Some(frame) })
-                .await
-                .ok();
+        let flush = v1::WriteFrame {
+            frame: Some(v1::write_frame::Frame::Flush(v1::Unit {})),
+        };
+        let flush = Outgoing::message(None, &flush).map_err(Violation::of)?;
+        // A write refused already takes no more frames; its refusal is read below.
+        if self.streamed.send(batch).await {
+            self.streamed.send(flush).await;
         }
-        loop {
-            match self.acks.message().await {
-                Err(status) => return Ok(error(&status)),
-                Ok(Some(v1::WriteAck {
-                    ack: Some(v1::write_ack::Ack::Error(refusal)),
-                })) => {
-                    return ConnectorError::try_from(refusal).map_err(|invalid| {
-                        Violation::from(format!("the write's error is malformed: {invalid}"))
-                    });
-                }
-                Ok(
-                    Some(v1::WriteAck {
-                        ack: Some(v1::write_ack::Ack::Flushed(_)),
-                    })
-                    | None,
-                ) => return Err(Violation::from("the write took the batch")),
-                Ok(Some(_)) => {}
-            }
+        match self.streamed.refusal().await {
+            Ok(Some(refused)) | Err(refused) => Ok(refused),
+            Ok(None) => Err(Violation::from("the write took the batch")),
         }
     }
 }
@@ -139,13 +125,14 @@ async fn created(client: &mut Client) -> Result<(u64, TableRef), Violation> {
     Ok((opened.session, table))
 }
 
-/// A batch of the table's rows whose values buffer starts four bytes into its body, where no
-/// eight-byte value may be read in place: its message otherwise as a sender encodes it.
+/// A batch frame's body of the table's rows whose values buffer starts four bytes into the
+/// message's body, where no eight-byte value may be read in place: its message otherwise as a
+/// sender encodes it.
 ///
 /// # Errors
 ///
 /// A violation where the batch does not encode, which never happens.
-pub(super) fn misaligned(segment: u64) -> Result<v1::WriteBatch, Violation> {
+pub(super) fn misaligned() -> Result<Bytes, Violation> {
     let unencoded = |error: rdlt_wire::WireError| Violation::from(format!("{error}"));
     let mut encoder = rdlt_wire::Encoder::default();
     encoder.schema(&rows().schema()).map_err(unencoded)?;
@@ -164,12 +151,18 @@ pub(super) fn misaligned(segment: u64) -> Result<v1::WriteBatch, Violation> {
         .checked_add(4)
         .ok_or_else(|| Violation::from("the rows' values buffer lies at no offset"))?;
     header[at..at + 8].copy_from_slice(&moved.to_le_bytes());
-    Ok(v1::WriteBatch {
-        segment,
-        data_header: header.into(),
-        padding: rdlt_wire::prost::bytes::Bytes::new(),
-        data_body: frame.body,
-    })
+    Ok(encapsulated(&header, &frame.body))
+}
+
+/// The bytes of an encapsulated IPC message of `header`, its metadata, and `body`.
+fn encapsulated(header: &[u8], body: &[u8]) -> Bytes {
+    let mut bytes = Vec::with_capacity(8 + header.len() + body.len());
+    bytes.extend_from_slice(&[0xff; 4]);
+    let len = i32::try_from(header.len()).unwrap_or(i32::MAX);
+    bytes.extend_from_slice(&len.to_le_bytes());
+    bytes.extend_from_slice(header);
+    bytes.extend_from_slice(body);
+    Bytes::from(bytes)
 }
 
 /// A batch of the table's one column.

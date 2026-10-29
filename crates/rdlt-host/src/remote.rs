@@ -1,11 +1,15 @@
 //! A connection to a served connector: the handshake that connects it, a heartbeat that notices
-//! when it stops answering, and a deadline for each call.
+//! when it stops answering, a deadline for each call, and a stream of its own for each data call,
+//! passed over an opener or carried by a `Data` call of the control connection.
 
 mod agreed;
 mod checked;
 mod clients;
 mod destination;
+mod opened;
+mod raw;
 mod read;
+mod setup;
 pub(crate) mod severed;
 mod source;
 mod write;
@@ -15,25 +19,26 @@ mod tests;
 
 use std::future::Future;
 use std::num::{NonZeroU32, NonZeroUsize};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
-use hyper_util::rt::TokioIo;
 use rdlt_connector::wire::{Invalid, error as status_error, v1};
 use rdlt_connector::{ConnectorError, ConnectorErrorKind, Role};
-use rdlt_wire::flow::Transport;
 use rdlt_wire::limits::MAX_CALLS;
 use rdlt_wire::{Limits, PROTOCOL_MAJOR};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
-use tonic::transport::Endpoint;
 
 pub use clients::Client;
 use clients::Clients;
 pub use destination::RemoteDestination;
+pub(crate) use opened::Carrier;
+pub use raw::RawCall;
 pub use read::MAX_FREE_FRAMES;
+use setup::channel;
+pub use setup::{client, client_opened};
 pub use source::RemoteSource;
 
 /// The code of the error a call fails with once the connector stops answering heartbeats.
@@ -64,8 +69,8 @@ pub struct Deadlines {
     pub open: Duration,
     /// Applying a schema change.
     pub apply_schema: Duration,
-    /// A write's wait for credit to send a frame, or a flush's wait for its stats, however
-    /// many answers come meanwhile.
+    /// A write's opening, its wait for the connector to take each frame, or a flush's wait for its
+    /// stats.
     pub write_ack: Duration,
     /// A commit.
     pub commit: Duration,
@@ -101,9 +106,6 @@ pub struct Options {
     pub deadlines: Deadlines,
     /// The limits this end enforces on what it receives.
     pub limits: Limits,
-    /// Bytes: the least window of credit a read grants, which opens it; the window grows to two
-    /// of the largest frames the read has taken.
-    pub read_floor: u64,
 }
 
 impl Default for Options {
@@ -113,7 +115,6 @@ impl Default for Options {
             missed: NonZeroU32::new(6).unwrap_or(NonZeroU32::MIN),
             deadlines: Deadlines::default(),
             limits: Limits::default(),
-            read_floor: rdlt_wire::limits::CREDIT_FLOOR,
         }
     }
 }
@@ -131,6 +132,8 @@ pub struct Connection {
     /// Cancelled once the connection takes no new calls: the connector was lost, or is stopping
     /// and finishes the calls in flight.
     spent: CancellationToken,
+    /// How each data call reaches the connector.
+    carrier: Carrier,
 }
 
 impl Drop for Connection {
@@ -141,6 +144,47 @@ impl Drop for Connection {
 }
 
 impl Connection {
+    /// Connects through `opener` to the connector it passes streams to, as `role`, with
+    /// `config`, whatever connector it is: [`Connection::opened`] checks who it is first.
+    ///
+    /// # Errors
+    ///
+    /// As [`Connection::opened`] and [`Handshaken::configure`] fail.
+    pub async fn connect_opened(
+        opener: Arc<dyn crate::Opener>,
+        role: Role,
+        config: &serde_json::Value,
+        options: Options,
+    ) -> Result<Arc<Self>, ConnectorError> {
+        Self::opened(opener, role, options)
+            .await?
+            .configure(config)
+            .await
+    }
+
+    /// Handshakes with the connector `opener` passes streams to, as `role`, its control
+    /// connection the first stream it opens and each data call a stream of its own.
+    ///
+    /// # Errors
+    ///
+    /// As [`Connection::handshake`] fails, and a transient error coded `connector_lost` where the
+    /// control connection cannot be opened.
+    pub async fn opened(
+        opener: Arc<dyn crate::Opener>,
+        role: Role,
+        options: Options,
+    ) -> Result<Handshaken, ConnectorError> {
+        let deadline = options.deadlines.connect;
+        let opening = opener.open(crate::Opening::Control);
+        let io = tokio::time::timeout(deadline, opening)
+            .await
+            .map_err(|_| exceeded("opening the control connection", deadline))?
+            .map_err(|error| {
+                lost_because(format!("opening the control connection failed: {error}"))
+            })?;
+        Self::handshaking(io, role, &options, Some(opener)).await
+    }
+
     /// Connects over `io` to a connector served on its other end, as `role`, with `config`,
     /// whatever connector it is: [`Connection::handshake`] checks who it is first.
     ///
@@ -162,8 +206,9 @@ impl Connection {
             .await
     }
 
-    /// Handshakes over `io` with a connector served on its other end, as `role`: its answer says
-    /// who the connector is, which the host checks before configuring it.
+    /// Handshakes over `io` with a connector served on its other end, as `role`, each data call
+    /// a `Data` call of the connection: its answer says who the connector is, which the host
+    /// checks before configuring it.
     ///
     /// # Errors
     ///
@@ -179,6 +224,21 @@ impl Connection {
     where
         IO: AsyncRead + AsyncWrite + Send + Unpin + 'static,
     {
+        Self::handshaking(io, role, &options, None).await
+    }
+
+    /// Handshakes over `io`, each data call a stream `opener` opens, or a `Data` call of the
+    /// connection where there is none.
+    async fn handshaking<IO>(
+        io: IO,
+        role: Role,
+        options: &Options,
+        opener: Option<Arc<dyn crate::Opener>>,
+    ) -> Result<Handshaken, ConnectorError>
+    where
+        IO: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+    {
+        let options = *options;
         if options.heartbeat.is_zero() {
             return Err(ConnectorError::config("the heartbeat interval is zero")
                 .with_code("options_invalid"));
@@ -216,6 +276,10 @@ impl Connection {
         let peer = response.limits.map(Limits::from).unwrap_or_default();
         peer.admit_peer()
             .map_err(|shortfall| rdlt_connector::wire::shortfall_error(&shortfall))?;
+        let carrier = match opener {
+            Some(opener) => Carrier::Opened(opener),
+            None => Carrier::Called(client.channel.channel()),
+        };
         Ok(Handshaken {
             client,
             spec: response.spec.unwrap_or_default(),
@@ -223,6 +287,7 @@ impl Connection {
             options,
             lost,
             spent,
+            carrier,
         })
     }
 
@@ -273,6 +338,7 @@ pub struct Handshaken {
     options: Options,
     lost: CancellationToken,
     spent: CancellationToken,
+    carrier: Carrier,
 }
 
 impl Handshaken {
@@ -343,75 +409,9 @@ impl Handshaken {
             options: self.options,
             lost: self.lost.clone(),
             spent: self.spent.clone(),
+            carrier: self.carrier.clone(),
         }))
     }
-}
-
-/// A client of the protocol over `io`, with no handshake yet: for clients that speak the protocol
-/// themselves, as a certification suite does.
-///
-/// It runs as a connection does, with `options`' limits and HTTP/2 pings.
-///
-/// # Errors
-///
-/// A transient error when the transport fails, coded `deadline_exceeded` when the connection
-/// is not set up within the connect deadline.
-pub async fn client<IO>(io: IO, options: Options) -> Result<Client, ConnectorError>
-where
-    IO: AsyncRead + AsyncWrite + Send + Unpin + 'static,
-{
-    let (cut, spent) = (CancellationToken::new(), CancellationToken::new());
-    let deadline = options.deadlines.connect;
-    let setup = channel(io, &options, cut, spent);
-    let channel = tokio::time::timeout(deadline, setup)
-        .await
-        .map_err(|_| exceeded("setting up the connection", deadline))??;
-    Ok(Client::new(&channel, &options.limits))
-}
-
-/// A channel over `io`, which fails once `cut` is cancelled, and whose one connection, once
-/// closed, cancels `spent`.
-async fn channel<IO>(
-    io: IO,
-    options: &Options,
-    cut: CancellationToken,
-    spent: CancellationToken,
-) -> Result<checked::Checked, ConnectorError>
-where
-    IO: AsyncRead + AsyncWrite + Send + Unpin + 'static,
-{
-    let slot = Arc::new(Mutex::new(Some(severed::Severed::new(io, cut))));
-    let connector = tower::service_fn(move |_| {
-        let io = slot.lock().map(|mut slot| slot.take()).ok().flatten();
-        // The channel reconnects once its one connection has closed: the connection is spent.
-        if io.is_none() {
-            spent.cancel();
-        }
-        async move {
-            io.map(TokioIo::new).ok_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::NotConnected, "the connection is spent")
-            })
-        }
-    });
-    // HTTP/2's pings end a connection the network dropped silently. They wait twice the
-    // heartbeat's patience: after a stall they check their deadline before reading the pong
-    // waiting, where the heartbeat reads its echoes first, so the heartbeat judges a connector.
-    let patience = options
-        .heartbeat
-        .saturating_mul(options.missed.get().saturating_mul(2));
-    let transport = Transport::default();
-    let channel = Endpoint::from_static("http://connector")
-        .initial_stream_window_size(transport.stream_window)
-        .initial_connection_window_size(transport.connection_window)
-        .max_frame_size(transport.max_frame)
-        .http2_max_header_list_size(rdlt_wire::limits::HEADER_LIST_BYTES)
-        .http2_keep_alive_interval(options.heartbeat)
-        .keep_alive_timeout(patience)
-        .keep_alive_while_idle(true)
-        .connect_with_connector(connector)
-        .await
-        .map_err(|error| lost_because(format!("connecting failed: {error}")))?;
-    Ok(checked::Checked::new(channel, options.limits))
 }
 
 /// The contract's spec of the connector the handshake's `spec` describes.

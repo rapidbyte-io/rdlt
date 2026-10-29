@@ -8,13 +8,13 @@ use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use parking_lot::Mutex;
-use rdlt_connector::serve::{Served, serve_connection};
+use rdlt_connector::serve::{Opening, Served, serve_streams};
 use rdlt_connector::{
     BoxFuture, ConnectContext, ConnectorSpec, Destination, DestinationFactory, Source,
     SourceFactory, destination_factory,
 };
 use rdlt_host::limits::TAIL_BYTES;
-use rdlt_host::{Ended, Played, Playing};
+use rdlt_host::{Ended, Opener, Played, Playing, Stream};
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, DuplexStream};
 use tokio::sync::{Notify, mpsc};
 use tokio::task::AbortHandle;
@@ -26,6 +26,43 @@ use crate::rng::SplitMix64;
 
 /// Bytes a played socket or standard stream holds before its writer waits, as a pipe's buffer.
 const PIPE: usize = 64 * 1024;
+
+/// Bytes: what is carried at once between the host's end of a stream and the served connector.
+const CARRY: usize = 16 * 1024;
+
+/// Bytes: what a played process's pipes hold of one direction of a stream: two pipes, and what
+/// is being carried between them.
+pub(super) const CARRIED: u64 = 2 * PIPE as u64 + CARRY as u64;
+
+/// What passes a played process's streams to it: each a pipe to the host, carried to the served
+/// connector while the process is not stalled, and cut once the process ends.
+struct Passing {
+    streams: mpsc::Sender<(Opening, DuplexStream)>,
+    control: Arc<Control>,
+    dead: CancellationToken,
+}
+
+impl Opener for Passing {
+    fn open(&self, opening: Opening) -> BoxFuture<'_, std::io::Result<Box<dyn Stream>>> {
+        Box::pin(async move {
+            let (host, connector) = tokio::io::duplex(PIPE);
+            let (served_end, serving_end) = tokio::io::duplex(PIPE);
+            let (control, dead) = (Arc::clone(&self.control), self.dead.clone());
+            tokio::spawn(async move {
+                tokio::select! {
+                    biased;
+                    () = dead.cancelled() => {}
+                    () = relay(connector, served_end, control) => {}
+                }
+            });
+            self.streams
+                .send((opening, serving_end))
+                .await
+                .map_err(|_| std::io::Error::from(std::io::ErrorKind::BrokenPipe))?;
+            Ok(Box::new(host) as Box<dyn Stream>)
+        })
+    }
+}
 
 /// What plays one side's processes, and what the simulation does to those still running.
 pub(super) struct Script {
@@ -135,15 +172,20 @@ impl Script {
         playing.iter().filter_map(Weak::upgrade).collect()
     }
 
-    /// Plays the process `playing` starts: the simulated connector, served on a socket whose
-    /// other end the host is given.
+    /// Plays the process `playing` starts: the simulated connector, served on the streams the
+    /// opener the host is given passes it.
     pub(super) fn play(&self, playing: Playing) -> Played {
         let draws = Draws::draw(&mut self.rng.lock());
         let id = self.pids.fetch_add(1, Ordering::Relaxed);
         let control = Arc::new(Control::default());
         self.playing.lock().push(Arc::downgrade(&control));
-        let (socket, connector) = tokio::io::duplex(PIPE);
-        let (served_end, serving_end) = tokio::io::duplex(PIPE);
+        let (passing, passed) = mpsc::channel(4);
+        let dead = CancellationToken::new();
+        let opener = Passing {
+            streams: passing,
+            control: Arc::clone(&control),
+            dead: dead.clone(),
+        };
         let (stdout, stdout_written) = tokio::io::duplex(PIPE);
         let (stderr, stderr_written) = tokio::io::duplex(PIPE);
         let exit = Arc::new(Ended::default());
@@ -160,14 +202,18 @@ impl Script {
             .with_source(Box::new(source))
             .with_destination(Box::new(destination));
         let limits = limits(&playing.args);
-        let serving = tokio::spawn(serve_connection(Arc::new(served), serving_end, limits));
-        let relaying = tokio::spawn(relay(connector, served_end, Arc::clone(&control)));
+        let serving = tokio::spawn(serve_streams(
+            Arc::new(served),
+            passed,
+            limits,
+            std::future::pending(),
+        ));
         tokio::spawn(life(Life {
             playing,
             control,
             draws,
             serving: serving.abort_handle(),
-            relaying: relaying.abort_handle(),
+            dead,
             stdout: stdout_written,
             stderr: stderr_written,
             saying,
@@ -175,7 +221,7 @@ impl Script {
         }));
         Played {
             id,
-            socket: Box::new(socket),
+            opener: Box::new(opener),
             stdout: Box::new(stdout),
             stderr: Box::new(stderr),
             exit,
@@ -253,7 +299,7 @@ async fn carry(
     mut to: impl AsyncWrite + Unpin,
     control: &Control,
 ) {
-    let mut buffer = vec![0; 16 * 1024];
+    let mut buffer = vec![0; CARRY];
     loop {
         let read = match from.read(&mut buffer).await {
             Ok(0) | Err(_) => break,
@@ -267,8 +313,8 @@ async fn carry(
     to.shutdown().await.ok();
 }
 
-/// Carries bytes both ways between the connector's end of the host's socket and the served
-/// connector.
+/// Carries bytes both ways between the connector's end of one of the host's streams and the
+/// served connector.
 async fn relay(host: DuplexStream, served: DuplexStream, control: Arc<Control>) {
     let (from_host, to_host) = tokio::io::split(host);
     let (from_served, to_served) = tokio::io::split(served);
@@ -284,7 +330,8 @@ struct Life {
     control: Arc<Control>,
     draws: Draws,
     serving: AbortHandle,
-    relaying: AbortHandle,
+    /// Cancelled as the process ends, which cuts every stream it was passed.
+    dead: CancellationToken,
     stdout: DuplexStream,
     stderr: DuplexStream,
     saying: mpsc::UnboundedReceiver<String>,
@@ -337,14 +384,14 @@ async fn life(life: Life) {
         control,
         draws,
         serving,
-        relaying,
+        dead,
         mut stdout,
         mut stderr,
         mut saying,
         exited,
     } = life;
     for _ in 0..draws.flood {
-        // A connector serves on its socket: the host logs what it writes here as a fault.
+        // A connector serves on its streams: the host logs what it writes here as a fault.
         if stdout
             .write_all(b"a connector's own noise\n")
             .await
@@ -382,7 +429,7 @@ async fn life(life: Life) {
         }
     }
     serving.abort();
-    relaying.abort();
+    dead.cancel();
     drop((stdout, stderr));
     exited.set(end.status());
 }

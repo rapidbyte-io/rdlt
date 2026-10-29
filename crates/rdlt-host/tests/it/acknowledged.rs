@@ -7,17 +7,15 @@ use std::sync::Arc;
 use rdlt_connector::serve::{Served, serve_connection};
 use rdlt_connector::wire::{error as carried, v1};
 use rdlt_connector::{
-    BoxFuture, ConnectContext, ConnectorErrorKind, ConnectorSpec, Source, SourceFactory,
-    acknowledging_source_factory, source_factory,
+    BoxFuture, ConnectContext, ConnectorError, ConnectorErrorKind, ConnectorSpec, Source,
+    SourceFactory, acknowledging_source_factory, source_factory,
 };
 use rdlt_connector_reference::{ChangesSource, GeneratorSource};
-use rdlt_wire::{ACKNOWLEDGED, PROTOCOL_MAJOR};
+use rdlt_host::remote::{Client, RawCall};
+use rdlt_wire::stream::{Call, Kind};
+use rdlt_wire::{ACKNOWLEDGED, Limits, PROTOCOL_MAJOR};
 
-use rdlt_host::remote::Client;
-use tokio_stream::StreamExt as _;
-use tokio_stream::wrappers::ReceiverStream;
-
-use crate::support::{plane_client, served};
+use crate::support::{protocol_client, served};
 
 /// A factory written by hand, which says nothing of where its source stands.
 struct Plain(Box<dyn SourceFactory>);
@@ -72,7 +70,7 @@ fn asked() -> v1::ReadAcknowledgedRequest {
 
 #[tokio::test]
 async fn a_source_that_tells_accepts_the_feature_when_offered_and_tells_what_it_was_told() {
-    let mut client = plane_client(served(
+    let mut client = protocol_client(served(
         Served::new().with_source(acknowledging_source_factory::<ChangesSource>()),
     ))
     .await;
@@ -135,8 +133,7 @@ pub(crate) async fn read_from(
     stream: &str,
     partition: &str,
     cursor: Option<v1::Cursor>,
-) -> Result<Vec<v1::Cursor>, tonic::Status> {
-    use v1::read_control::Control;
+) -> Result<Vec<v1::Cursor>, ConnectorError> {
     use v1::read_frame::Frame;
     let start = v1::ReadStart {
         stream: Some(v1::StreamName {
@@ -149,27 +146,23 @@ pub(crate) async fn read_from(
         unbounded: false,
         follow: false,
     };
-    let controls = [
-        Control::Start(start),
-        Control::Credit(v1::Credit { bytes: 1 << 30 }),
-    ];
-    let controls = controls.map(|control| v1::ReadControl {
-        control: Some(control),
-    });
-    let (open, pending) = tokio::sync::mpsc::channel(1);
-    let controls = tokio_stream::iter(controls).chain(ReceiverStream::new(pending));
-    let mut frames = client.read(controls).await?;
+    let mut read = RawCall::open(client, Call::Read, &start, &Limits::default()).await??;
     let mut checkpoints = Vec::new();
-    while let Some(frame) = frames.message().await? {
-        match frame.frame {
+    while let Some(received) = read.next().await? {
+        if !matches!(received.head.kind, Kind::Message { .. }) {
+            continue;
+        }
+        match read.read_frame(&received)?.frame {
             Some(Frame::Checkpoint(checkpoint)) => {
                 checkpoints.push(checkpoint.cursor.expect("a checkpoint has its cursor"));
             }
             Some(Frame::Done(_)) => break,
+            Some(Frame::Error(error)) => {
+                return Err(ConnectorError::try_from(error).expect("the error is whole"));
+            }
             _ => {}
         }
     }
-    drop(open);
     Ok(checkpoints)
 }
 
@@ -269,9 +262,9 @@ async fn a_host_acknowledges_only_the_checkpoints_its_reads_were_sent() {
 /// streams.
 async fn connected(served: &Arc<Served>) -> Client {
     let (host, connector) = tokio::net::UnixStream::pair().expect("a socket pair");
-    let limits = rdlt_wire::Limits::default();
+    let limits = Limits::default();
     tokio::spawn(serve_connection(Arc::clone(served), connector, limits));
-    let mut client = plane_client(host).await;
+    let mut client = protocol_client(host).await;
     client
         .rpc
         .handshake(handshake(&[ACKNOWLEDGED]))
@@ -373,7 +366,7 @@ async fn asking_a_source_the_handshake_did_not_accept_is_refused_as_unsupported(
     ];
     for (factory, offered) in cases {
         let generator = factory.spec().id.as_str() == "io.rapidbyte.generator";
-        let mut client = plane_client(served(Served::new().with_source(factory))).await;
+        let mut client = protocol_client(served(Served::new().with_source(factory))).await;
         let answer = client
             .rpc
             .handshake(handshake(offered))

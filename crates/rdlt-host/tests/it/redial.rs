@@ -310,8 +310,8 @@ async fn a_function_reaching_another_connector_once_cut_is_refused() {
                     (Some((id, version)), false) => posing_noted(id, version, &configured),
                     (None, false) => reshaped(),
                 };
-                let stream = crate::support::served(served);
-                Box::pin(async move { Ok(Box::new(stream) as Box<dyn rdlt_host::Stream>) })
+                let passing = crate::support::opener(served);
+                Box::pin(async move { Ok(passing) })
             }
         })
         .kills(&kills);

@@ -18,7 +18,6 @@ use rdlt_connector::{
     source_factory,
 };
 use rdlt_connector_reference::{ChangesSource, MemoryDestination, MemorySource};
-use rdlt_host::remote::client;
 use rdlt_host::{ConnectorRef, Provider as _, ProviderError, Remote};
 use rdlt_testkit::tls::Pki;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _, DuplexStream, ReadBuf};
@@ -628,7 +627,8 @@ async fn a_connector_is_told_which_host_it_serves_in_either_role_and_with_either
             .wire(reference)
             .await
             .expect("the connector is dialed");
-        let mut client = client(wire, rdlt_host::Options::default())
+        let mut client = wire
+            .client(rdlt_host::Options::default())
             .await
             .expect("it connects");
         let offered = v1::HandshakeRequest {

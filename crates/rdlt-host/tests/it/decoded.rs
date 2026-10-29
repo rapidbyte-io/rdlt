@@ -3,14 +3,17 @@
 //! bound its class states.
 
 use bytes::Bytes;
+use rdlt_connector::wire::INVALID_MESSAGE;
 use rdlt_connector::{Destination as _, LoadId, OpenContext, PipelineId, Role, Source as _};
+use rdlt_host::remote::RawCall;
 use rdlt_host::{Connection, Options, RemoteDestination, RemoteSource};
 use rdlt_testkit::fake::Fault;
 use rdlt_wire::Limits;
 use rdlt_wire::limits::Class;
+use rdlt_wire::stream::{Call, End};
 
 use crate::HEAP;
-use crate::support::raw::{answering, called};
+use crate::support::raw::{answering, answering_streams, called};
 
 /// `entry`, an empty entry of a repeated field, as many times as `bytes` take.
 fn entries(entry: [u8; 2], bytes: usize) -> Bytes {
@@ -83,11 +86,18 @@ async fn a_catalog_behind_a_group_the_decoder_skips_is_refused_within_its_bound(
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_read_frame_counted_beyond_its_bound_is_refused_within_it() {
-    let limit = Limits::default().decoding(Class::Data);
+async fn a_read_message_counted_beyond_its_reservation_is_refused_within_it() {
+    let limits = Limits::default();
+    let limit =
+        usize::try_from(Call::Read.bounds(End::Connector, &limits).message.bytes).expect("a bound");
     // A schema frame whose schema comes again and again, empty.
     let schema = field(1, &[0x12, 0x00].repeat((limit - 16) / 2));
-    let source = source("Read", schema.into()).await;
+    let io = answering_streams(Fault::Bloats(0), &schema);
+    let config = serde_json::json!({});
+    let connection = Connection::connect(io, Role::Source, &config, Options::default())
+        .await
+        .expect("the fake handshakes");
+    let source = RemoteSource::new(connection);
     let (sink, _feed) = rdlt_connector::partition_channel(std::num::NonZeroUsize::MIN);
     let request = rdlt_connector::ReadRequest::new(
         rdlt_connector::StreamName::new("s").expect("a name"),
@@ -96,7 +106,10 @@ async fn a_read_frame_counted_beyond_its_bound_is_refused_within_it() {
     );
     let (refused, peak) = peaked(source.read(request, sink)).await;
     let refused = refused.expect_err("the frame is refused");
-    within(&refused.to_string(), peak, Class::Data);
+    assert_eq!(refused.code(), Some(INVALID_MESSAGE), "{refused}");
+    // The frame, and its reservation of twice its bytes beside it.
+    let bound = 3 * schema.len() + 4_096;
+    assert!(peak <= bound, "held {peak} bytes, beyond {bound}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -174,15 +187,19 @@ async fn a_commit_behind_a_group_the_decoder_skips_is_refused_within_its_bound()
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_write_starting_with_a_table_path_of_empty_segments_is_refused_within_its_bound() {
-    let limit = Limits::default().decoding(Class::Data);
+    let limits = Limits::default();
+    let limit = limits.decoding(Class::Control);
     let path = field(1, &[0x0a, 0x00].repeat((limit - 32) / 2));
     let start = [&[0x08, 0x01][..], &field(2, &path)].concat();
-    let frame = field(1, &start);
-    let io = destination(Limits::default());
-    let (refused, peak) = peaked(crate::support::raw::streamed(io, "Write", frame.into())).await;
-    let refused = refused.expect_err("the write is refused");
-    assert_eq!(refused.code(), tonic::Code::OutOfRange, "{refused}");
-    within(refused.message(), peak, Class::Data);
+    let client = crate::support::protocol_client(destination(limits)).await;
+    let opening = RawCall::opened(&client, Call::Write, start.into(), &limits);
+    let (opened, peak) = peaked(opening).await;
+    let Err(refused) = opened.expect("the stream opens") else {
+        panic!("the write is refused");
+    };
+    assert_eq!(refused.code(), Some(INVALID_MESSAGE), "{refused}");
+    let bound = limits.decoding(Class::Control) + limits.decoded(Class::Control);
+    assert!(peak <= bound, "held {peak} bytes, beyond {bound}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

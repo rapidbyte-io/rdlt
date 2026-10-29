@@ -7,10 +7,9 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use rdlt_wire::Limits;
-use rdlt_wire::plane::Plane as _;
+use rdlt_wire::stream::{Call, End, FrameReader, Kind, Outgoing};
 use rdlt_wire::tonic::{Request, Status};
 use rdlt_wire::v1::connector_server::Connector as _;
-use tokio_stream::StreamExt as _;
 use tokio_util::sync::CancellationToken;
 
 use crate::destination::{
@@ -269,7 +268,7 @@ fn configuring(
 
 /// The codes the connected connector's check and its probe fail with: each the name of the
 /// configuration that connected it.
-async fn answers(service: &Service, role: v1::Role) -> [Option<String>; 2] {
+async fn answers(service: &Arc<Service>, role: v1::Role) -> [Option<String>; 2] {
     let code = |status: &Status| error(status).code().map(str::to_owned);
     let checked = service
         .check(Request::new(v1::CheckRequest {}))
@@ -283,10 +282,11 @@ async fn answers(service: &Service, role: v1::Role) -> [Option<String>; 2] {
             }),
             partition: "p0".to_owned(),
         };
-        service
+        let refused = service
             .read_acknowledged(Request::new(asked))
             .await
-            .expect_err("the probe fails with its name")
+            .expect_err("the probe fails with its name");
+        error(&refused)
     } else {
         let table = v1::TableRef {
             path: Some(v1::TablePath {
@@ -296,19 +296,48 @@ async fn answers(service: &Service, role: v1::Role) -> [Option<String>; 2] {
             version: 1,
             ..v1::TableRef::default()
         };
-        let request = v1::ReadPublishedRequest { table: Some(table) };
-        let mut frames = service
-            .read_published(request)
-            .await
-            .expect("the read-back is served");
-        let first = tokio::time::timeout(WAIT, frames.next())
-            .await
-            .expect("the read-back answers");
-        first
-            .expect("the read-back answers once")
-            .expect_err("the read-back fails with its name")
+        read_back_refused(service, v1::ReadPublishedRequest { table: Some(table) }).await
     };
-    [code(&checked), code(&probed)]
+    [code(&checked), probed.code().map(str::to_owned)]
+}
+
+/// The error a read-back of `request` on `service`'s connection is refused with, once it opened.
+async fn read_back_refused(
+    service: &Arc<Service>,
+    request: v1::ReadPublishedRequest,
+) -> ConnectorError {
+    let (mut host, connector) = tokio::io::duplex(64 * 1024);
+    let serving = tokio::spawn(crate::serve::stream::serve(Arc::clone(service), connector));
+    let mut opening =
+        Outgoing::message(Some(Call::ReadPublished), &request).expect("a start fits a head");
+    opening.write(&mut host).await.expect("the opening is sent");
+    let limits = Limits::default();
+    let mut frames = FrameReader::new(host, Call::ReadPublished.answering(&limits));
+    let mut next = async || {
+        tokio::time::timeout(WAIT, frames.next())
+            .await
+            .expect("the read-back answers")
+            .expect("the answer arrives whole")
+            .expect("the read-back answers once")
+    };
+    let mut first = next().await;
+    // The read-back opened: its reader fails it next.
+    if matches!(first.head.kind, Kind::Message { opens: Some(_) }) {
+        first = next().await;
+    }
+    let form = Call::ReadPublished
+        .form(End::Connector)
+        .expect("a read-back's connector answers");
+    let frame: v1::ReadFrame = first.message(form, 1 << 20).expect("the answer decodes");
+    let Some(v1::read_frame::Frame::Error(refused)) = frame.frame else {
+        panic!("the read-back fails with its name: {frame:?}");
+    };
+    drop(frames);
+    tokio::time::timeout(WAIT, serving)
+        .await
+        .expect("the read-back ends")
+        .expect("the read-back does not panic");
+    ConnectorError::try_from(refused).expect("the error is whole")
 }
 
 /// Two configurations of `role` at once, [`HELD`]'s connecting first: the name of the configuration that

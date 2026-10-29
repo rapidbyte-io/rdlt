@@ -99,9 +99,10 @@ impl Spawning {
         Arc::from(placed("destination", &self.canary, place).await)
     }
 
-    /// Bytes: the least credit the engine's host grants a read of a connector it placed.
-    pub(crate) fn read_floor(&self) -> u64 {
-        self.options.read_floor
+    /// Bytes: what a played process's pipes hold of one data call's stream: the host's and the
+    /// served connector's, and the bytes being carried between them.
+    pub(crate) const fn transport() -> u64 {
+        script::CARRIED
     }
 
     /// Bytes: the frame limit the engine's host tells a connector it placed.

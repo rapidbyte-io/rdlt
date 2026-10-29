@@ -15,14 +15,14 @@ use rdlt_host::remote::Client;
 use rdlt_wire::ACKNOWLEDGED;
 
 use crate::acknowledged::{checkpoints_from, committed, handshake, read_from};
-use crate::support::plane_client;
+use crate::support::protocol_client;
 
 /// A client of `served`, handshaken and configured with `config`.
 async fn configured(served: Served, config: &serde_json::Value) -> Client {
     let (host, connector) = tokio::net::UnixStream::pair().expect("a socket pair");
     let limits = rdlt_wire::Limits::default();
     tokio::spawn(serve_connection(Arc::new(served), connector, limits));
-    let mut client = plane_client(host).await;
+    let mut client = protocol_client(host).await;
     let greeted = client.rpc.handshake(handshake(&[ACKNOWLEDGED])).await;
     greeted.expect("the handshake succeeds");
     let request = v1::ConfigureRequest {
@@ -128,7 +128,7 @@ async fn refused_and_unheard(mut client: Client, partition: &str, forged: v1::Cu
     let before = standing(&mut client, "orders", partition).await;
     // The source refuses the read before it sends anything.
     let read = read_from(&mut client, "orders", partition, Some(forged.clone())).await;
-    let refused = carried(&read.expect_err(&what));
+    let refused = read.expect_err(&what);
     assert_eq!(
         refused.kind(),
         ConnectorErrorKind::Data,
@@ -262,7 +262,7 @@ async fn a_start_a_growing_log_has_yet_to_reach_is_tried_again_and_its_host_not_
     let forged = cursor(r#"{"next":1000000}"#);
     let before = standing(&mut client, "orders", "p0").await;
     let read = read_from(&mut client, "orders", "p0", Some(forged.clone())).await;
-    let refused = carried(&read.expect_err("the start is ahead of the log"));
+    let refused = read.expect_err("the start is ahead of the log");
     assert_eq!(refused.kind(), ConnectorErrorKind::Transient, "{refused}");
     assert_eq!(refused.code(), Some("cursor_ahead"), "{refused}");
     let report = client.rpc.committed(committed("orders", "p0", forged));

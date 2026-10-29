@@ -6,15 +6,16 @@ mod tests;
 
 use arrow_array::RecordBatch;
 use rdlt_connector::testing::Probe;
-use rdlt_connector::wire::{error, frame_error, v1};
+use rdlt_connector::wire::{frame_error, v1};
 use rdlt_connector::{BoxFuture, ConnectorError, ConnectorErrorKind, Result, Role, TableRef};
 use rdlt_host::remote::Client;
-use rdlt_wire::plane::Incoming;
-use rdlt_wire::{Decoder, IpcFrame, Limits, PUBLISHED};
+use rdlt_wire::stream::{Call, Kind};
+use rdlt_wire::{Decoder, IpcFrame, PUBLISHED};
 
 use crate::limits::{PUBLISHED_BYTES, PUBLISHED_ROWS, READ_BACK_TIME};
 use crate::protocol::{configure_request, request};
 use crate::target::Target;
+use rdlt_host::remote::RawCall;
 
 /// What reads back what the destination `target` reaches published, with `config`.
 pub struct ReadBackProbe<'a> {
@@ -80,7 +81,7 @@ impl ReadBackProbe<'_> {
             return Err(ConnectorError::new(ConnectorErrorKind::Transient, message));
         }
         {
-            let (mut client, accepted) = handshaken(self.target, &self.config).await?;
+            let (client, accepted) = handshaken(self.target, &self.config).await?;
             if !accepted {
                 let message = "the destination no longer reads back what it published";
                 return Err(ConnectorError::new(
@@ -91,11 +92,9 @@ impl ReadBackProbe<'_> {
             let request = v1::ReadPublishedRequest {
                 table: Some(v1::TableRef::from(table)),
             };
-            let frames = client
-                .read_published(request)
-                .await
-                .map_err(|status| error(&status))?;
-            decoded(frames, self.target.limits()).await
+            let limits = self.target.limits();
+            let streamed = RawCall::open(&client, Call::ReadPublished, &request, &limits).await?;
+            decoded(streamed?).await
         }
     }
 }
@@ -123,48 +122,49 @@ async fn handshaken(target: &Target, config: &str) -> Result<(Client, bool)> {
     Ok((client, accepted))
 }
 
-/// The batches `frames` carry, decoded within `limits`, [`PUBLISHED_BYTES`] and
+/// The batches `streamed` carries, decoded within its limits, [`PUBLISHED_BYTES`] and
 /// [`PUBLISHED_ROWS`], once the done frame ends them.
-async fn decoded(mut frames: Incoming<v1::ReadFrame>, limits: Limits) -> Result<Vec<RecordBatch>> {
+async fn decoded(mut streamed: RawCall) -> Result<Vec<RecordBatch>> {
     use v1::read_frame::Frame;
-    let mut decoder = Decoder::new(limits);
+    let mut decoder = Decoder::new(*streamed.limits());
     let (mut batches, mut bytes, mut rows) = (Vec::new(), 0_usize, 0_usize);
-    while let Some(received) = frames.arrived().await.map_err(|status| error(&status))? {
-        match received.message.frame {
+    while let Some(received) = streamed.next().await? {
+        if let Kind::Batch { .. } = received.head.kind {
+            let Some(read) = within(bytes, received.body.bytes.len(), PUBLISHED_BYTES) else {
+                let message = format!(
+                    "the destination read back more than the {PUBLISHED_BYTES} bytes \
+                     certification reads of a table"
+                );
+                return Err(ConnectorError::data(message).with_code("published_bytes"));
+            };
+            bytes = read;
+            let frame = IpcFrame::framed(received.body).map_err(|error| frame_error(&error))?;
+            if let Some(batch) = decoder.frame(&frame).map_err(|error| frame_error(&error))? {
+                let Some(read) = within(rows, batch.num_rows(), PUBLISHED_ROWS) else {
+                    let message = format!(
+                        "the destination read back more than the {PUBLISHED_ROWS} rows \
+                         certification reads of a table"
+                    );
+                    return Err(ConnectorError::data(message).with_code("published_rows"));
+                };
+                rows = read;
+                batches.push(batch);
+            }
+            continue;
+        }
+        match streamed.read_frame(&received)?.frame {
             Some(Frame::Schema(schema)) => {
                 decoder
                     .schema(&schema.ipc_schema)
                     .map_err(|error| frame_error(&error))?;
             }
-            Some(Frame::Batch(batch)) => {
-                let frame = batch
-                    .data_header
-                    .len()
-                    .saturating_add(batch.data_body.len());
-                let Some(read) = within(bytes, frame, PUBLISHED_BYTES) else {
-                    let message = format!(
-                        "the destination read back more than the {PUBLISHED_BYTES} bytes \
-                         certification reads of a table"
-                    );
-                    return Err(ConnectorError::data(message).with_code("published_bytes"));
-                };
-                bytes = read;
-                let frame =
-                    IpcFrame::arrived(batch.data_header, batch.data_body, received.allocation)
-                        .map_err(|error| frame_error(&error))?;
-                if let Some(batch) = decoder.frame(&frame).map_err(|error| frame_error(&error))? {
-                    let Some(read) = within(rows, batch.num_rows(), PUBLISHED_ROWS) else {
-                        let message = format!(
-                            "the destination read back more than the {PUBLISHED_ROWS} rows \
-                             certification reads of a table"
-                        );
-                        return Err(ConnectorError::data(message).with_code("published_rows"));
-                    };
-                    rows = read;
-                    batches.push(batch);
-                }
-            }
             Some(Frame::Done(_)) => return Ok(batches),
+            Some(Frame::Error(error)) => {
+                let failed = ConnectorError::try_from(error);
+                return Err(failed.unwrap_or_else(|invalid| {
+                    ConnectorError::data(format!("the read-back failed: {invalid}"))
+                }));
+            }
             _ => {
                 let message = "the read-back sent a frame no read-back sends";
                 return Err(ConnectorError::data(message));

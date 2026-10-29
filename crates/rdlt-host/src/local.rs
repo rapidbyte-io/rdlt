@@ -406,11 +406,11 @@ impl Local {
         let deadline = self.options.deadlines.connect;
         let launched =
             Process::launching(launch, crate::secrets::Redactions::new(), deadline).await;
-        let (stream, process) = launched.map_err(|unspawned| {
+        let (opener, process) = launched.map_err(|unspawned| {
             let (launch, unspawned) = *unspawned;
             refused(&launch, unspawned)
         })?;
-        Ok(Wire::new(stream, Some(process)))
+        Ok(Wire::spawned(opener, process))
     }
 
     /// Spawns the connector `reference` names as `role`, and checks it is that connector.

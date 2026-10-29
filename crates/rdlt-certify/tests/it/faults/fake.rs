@@ -1,8 +1,10 @@
-//! A source that keeps the protocol but for one fault, served over a socket in this process; for
+//! A source that keeps the protocol but for one fault, served over an opener in this process; for
 //! the faults of a destination's frames, a destination too.
 
 mod writes;
 
+use std::future::Future;
+use std::os::fd::OwnedFd;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -12,15 +14,17 @@ use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use hyper_util::service::TowerToHyperService;
 use rdlt_connector::wire::{status, v1};
 use rdlt_connector::{ConnectorError, ConnectorErrorKind};
-use rdlt_host::Stream;
+use rdlt_host::{Opener, Passing};
+use rdlt_testkit::fake::encapsulated;
 use rdlt_wire::bounded::Window;
-use rdlt_wire::plane::{Incoming, Plane, Router, Serving};
-use rdlt_wire::prost::bytes::Bytes;
+use rdlt_wire::opener::{Accepting, Opening};
+use rdlt_wire::route::{Router, Streams};
+use rdlt_wire::stream::{Bounds, Call, End, FrameReader, Kind, Outgoing, Piped, Received, Rows};
 use rdlt_wire::v1::connector_server::{Connector, ConnectorServer};
 use rdlt_wire::{Limits, PROTOCOL_MAJOR, PUBLISHED};
-use tokio::sync::mpsc;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_stream::StreamExt as _;
-use tokio_stream::wrappers::ReceiverStream;
+use tonic::body::Body;
 use tonic::{Request, Response, Status, Streaming};
 use tower::ServiceExt as _;
 
@@ -54,16 +58,8 @@ pub(crate) enum Fault {
     Unlimited,
     /// It answers each heartbeat with the next sequence number.
     EchoAhead,
-    /// It reads a read that begins with credit.
+    /// It opens a read whose start does not decode.
     Lenient,
-    /// Its reads send every frame, whatever the credit.
-    Greedy,
-    /// Its reads send every frame, whatever the credit, a little over a second apart.
-    Paced,
-    /// Its reads send a frame for each credit it is granted, however little that is.
-    Eager,
-    /// Its reads wait for credit, or for the fourth message that grants any, whichever is first.
-    Patient,
     /// It declares configuration and cursor limits beyond any this host sends, which breaks no
     /// clause.
     Vast,
@@ -95,7 +91,7 @@ pub(crate) enum Fault {
 }
 
 /// The clause each fault breaks.
-pub(crate) const BROKEN: [(Fault, &str); 16] = [
+pub(crate) const BROKEN: [(Fault, &str); 12] = [
     (Fault::AnyVersion, "P-HANDSHAKE"),
     (Fault::MistypedVersion, "P-HANDSHAKE"),
     (Fault::Limitless, "P-HANDSHAKE"),
@@ -105,10 +101,6 @@ pub(crate) const BROKEN: [(Fault, &str); 16] = [
     (Fault::Unlimited, "P-LIMITS"),
     (Fault::EchoAhead, "P-HEARTBEAT"),
     (Fault::Lenient, "P-MALFORMED"),
-    (Fault::Greedy, "P-CREDIT"),
-    (Fault::Paced, "P-CREDIT"),
-    (Fault::Eager, "P-CREDIT"),
-    (Fault::Patient, "P-CREDIT"),
     (Fault::LenientCursor, "P-LIMITS"),
     (Fault::AcceptsAnyFeature, "P-HANDSHAKE"),
     // Only the handshake clause offers a feature no host defines.
@@ -133,31 +125,90 @@ pub(crate) struct Fake {
 
 type Answer<T> = Pin<Box<dyn tokio_stream::Stream<Item = Result<T, Status>> + Send>>;
 
-/// The host's end of a new socket whose other end serves a fake with `fault`.
-pub(crate) fn served(fault: Fault) -> std::io::Result<Box<dyn Stream>> {
-    let (host, connector) = tokio::net::UnixStream::pair()?;
+/// The limits the fake reads within: a frame a little over its frame limit is read, so the fake
+/// refuses it by the limit.
+fn reading() -> Limits {
+    Limits {
+        frame_bytes: 2 * FRAME_BYTES,
+        ..Limits::default()
+    }
+}
+
+/// The host's end of a new opener whose other end serves a fake with `fault`.
+pub(crate) fn served(fault: Fault) -> std::io::Result<Box<dyn Opener>> {
+    let (host, connector) = std::os::unix::net::UnixStream::pair()?;
+    let accepting = Accepting::new(OwnedFd::from(connector))?;
     let fake = Arc::new(Fake {
         fault,
         handshaken: AtomicBool::new(false),
         configured: AtomicBool::new(false),
     });
-    // A message a little over its frame limit is read, so the fake refuses it by the limit.
-    let limits = Limits {
-        frame_bytes: 2 * FRAME_BYTES,
-        ..Limits::default()
-    };
+    tokio::spawn(accept(fake, accepting));
+    Ok(Box::new(Passing::new(OwnedFd::from(host))?))
+}
+
+/// Serves each stream `accepting` passes: the control connection's calls, and each data call.
+async fn accept(fake: Arc<Fake>, accepting: Accepting) {
+    while let Ok(Some((opening, fd))) = accepting.next().await {
+        let socket = std::os::unix::net::UnixStream::from(fd);
+        let Ok(socket) = socket
+            .set_nonblocking(true)
+            .and_then(|()| tokio::net::UnixStream::from_std(socket))
+        else {
+            continue;
+        };
+        match opening {
+            Opening::Control => {
+                tokio::spawn(control(Arc::clone(&fake), socket));
+            }
+            Opening::Data => {
+                tokio::spawn(Arc::clone(&fake).stream(socket));
+            }
+        }
+    }
+}
+
+/// Serves the fake's calls on its control connection, `socket`.
+async fn control(fake: Arc<Fake>, socket: tokio::net::UnixStream) {
+    let limits = reading();
     let server =
         ConnectorServer::from_arc(Arc::clone(&fake)).max_decoding_message_size(limits.largest());
     let window = Window::new(usize::MAX);
-    let service = Router::new(server, fake, &limits, window).map_request(
-        |request: http::Request<hyper::body::Incoming>| request.map(tonic::body::Body::new),
-    );
-    tokio::spawn(
-        hyper::server::conn::http2::Builder::new(TokioExecutor::new())
-            .timer(TokioTimer::new())
-            .serve_connection(TokioIo::new(connector), TowerToHyperService::new(service)),
-    );
-    Ok(Box::new(host))
+    let service = Router::new(server, fake, &limits, window)
+        .map_request(|request: http::Request<hyper::body::Incoming>| request.map(Body::new));
+    hyper::server::conn::http2::Builder::new(TokioExecutor::new())
+        .timer(TokioTimer::new())
+        .serve_connection(TokioIo::new(socket), TowerToHyperService::new(service))
+        .await
+        .ok();
+}
+
+/// The frame carrying `message`.
+fn message(message: &impl rdlt_wire::prost::Message) -> Outgoing {
+    Outgoing::message(None, message).expect("a message fits a head")
+}
+
+/// The frame answering `call`'s opening with `error`.
+fn refusal(call: Call, error: &ConnectorError) -> Outgoing {
+    let error = Some(v1::Error::from(error));
+    match call {
+        Call::Write => message(&v1::WriteAck {
+            ack: error.map(v1::write_ack::Ack::Error),
+        }),
+        Call::Read | Call::ReadPublished => message(&v1::ReadFrame {
+            frame: error.map(v1::read_frame::Frame::Error),
+        }),
+    }
+}
+
+/// The frame opening `call`.
+fn opened(call: Call) -> Outgoing {
+    Outgoing::new(Kind::Message { opens: Some(call) }, Vec::new()).expect("an empty frame")
+}
+
+/// Writes `frame` to `io`; whether the host took it.
+async fn send<W: AsyncWrite + Unpin>(io: &mut W, mut frame: Outgoing) -> bool {
+    frame.write(io).await.is_ok()
 }
 
 fn refused(kind: ConnectorErrorKind, code: &'static str) -> Status {
@@ -199,117 +250,117 @@ impl Fake {
     }
 }
 
-impl Plane for Fake {
-    fn write(&self, frames: Incoming<v1::WriteFrame>) -> Serving<'_, v1::WriteAck> {
-        Box::pin(async move { Ok(writes::write(self.fault, frames)) })
-    }
-
-    fn read(&self, controls: Incoming<v1::ReadControl>) -> Serving<'_, v1::ReadFrame> {
-        Box::pin(self.reading(controls))
-    }
-
-    fn read_published(&self, _: v1::ReadPublishedRequest) -> Serving<'_, v1::ReadFrame> {
-        Box::pin(async { self.reading_back() })
+impl Streams for Fake {
+    fn serve(
+        self: Arc<Self>,
+        stream: Piped<Body>,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>> {
+        Box::pin(self.stream(stream))
     }
 }
 
 impl Fake {
-    /// A read the host controls with `controls`, as the fault says.
-    async fn reading(
-        &self,
-        mut controls: Incoming<v1::ReadControl>,
-    ) -> Result<Answer<v1::ReadFrame>, Status> {
-        use v1::read_control::Control;
-        let first = controls
-            .message()
-            .await?
-            .and_then(|control| control.control);
-        if !matches!(first, Some(Control::Start(_))) && self.keeps(Fault::Lenient) {
-            return Err(refused(ConnectorErrorKind::Internal, "invalid_message"));
+    /// Serves the data call `io` carries, as the fault says.
+    async fn stream<IO: AsyncRead + AsyncWrite + Send + 'static>(self: Arc<Self>, io: IO) {
+        let (read, mut write) = tokio::io::split(io);
+        let limits = reading();
+        let opening = Bounds {
+            batch: None,
+            json: None,
+            ..Call::Read.bounds(End::Host, &limits)
+        };
+        let mut frames = FrameReader::new(read, opening);
+        let Ok(Some(first)) = frames.next().await else {
+            return;
+        };
+        let Kind::Message { opens: Some(call) } = first.head.kind else {
+            return;
+        };
+        frames.set_bounds(call.bounds(End::Host, &limits));
+        match call {
+            Call::Read => self.reading(&first, &mut write).await,
+            Call::Write => writes::write(self.fault, &first, frames, &mut write).await,
+            Call::ReadPublished => self.reading_back(&mut write).await,
         }
-        if let Some(Control::Start(start)) = &first {
-            let cursor = start.cursor.as_ref().map_or(0, |cursor| cursor.bytes.len());
-            if cursor > CURSOR_BYTES && self.keeps(Fault::LenientCursor) {
-                return Err(refused(ConnectorErrorKind::Data, "limit_exceeded"));
+    }
+
+    /// A read `opening` starts, as the fault says: eight log lines and its end.
+    async fn reading<W: AsyncWrite + Unpin>(&self, opening: &Received, io: &mut W) {
+        let start = opening.message::<v1::ReadStart>(Call::Read.opening(), 1 << 20);
+        let refused = match start {
+            Err(_) if self.keeps(Fault::Lenient) => Some(
+                ConnectorError::new(ConnectorErrorKind::Internal, "refused: invalid_message")
+                    .with_code("invalid_message"),
+            ),
+            Ok(start)
+                if start.cursor.as_ref().map_or(0, |cursor| cursor.bytes.len()) > CURSOR_BYTES
+                    && self.keeps(Fault::LenientCursor) =>
+            {
+                Some(ConnectorError::data("refused: limit_exceeded").with_code("limit_exceeded"))
             }
+            _ => None,
+        };
+        if let Some(refused) = refused {
+            send(io, refusal(Call::Read, &refused)).await;
+            return;
         }
-        let paced = !self.keeps(Fault::Paced);
-        let greedy = !self.keeps(Fault::Greedy) || paced;
-        let eager = !self.keeps(Fault::Eager);
-        let patient = !self.keeps(Fault::Patient);
-        let (frames, answer) = mpsc::channel(64);
-        tokio::spawn(async move {
-            let log = |line: usize| v1::ReadFrame {
+        if !send(io, opened(Call::Read)).await {
+            return;
+        }
+        for line in 0..8 {
+            let log = v1::ReadFrame {
                 frame: Some(v1::read_frame::Frame::Log(v1::LogFrame {
                     level: v1::LogLevel::Info as i32,
                     message: format!("line {line}"),
                 })),
             };
-            let (mut credit, mut granted_times): (i64, u32) = (0, 0);
-            for line in 0..8 {
-                if paced && line > 0 {
-                    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
-                }
-                while credit <= 0 && !greedy {
-                    match controls.message().await {
-                        Ok(Some(v1::ReadControl {
-                            control: Some(Control::Credit(granted)),
-                        })) => {
-                            credit += i64::try_from(granted.bytes).unwrap_or(i64::MAX);
-                            granted_times += 1;
-                            if eager || (patient && granted_times >= 4) {
-                                credit = credit.max(1);
-                            }
-                        }
-                        Ok(Some(_)) => {}
-                        _ => return,
-                    }
-                }
-                credit -= 16;
-                if frames.send(Ok(log(line))).await.is_err() {
-                    return;
-                }
+            if !send(io, message(&log)).await {
+                return;
             }
-            let done = v1::ReadFrame {
-                frame: Some(v1::read_frame::Frame::Done(v1::Done {})),
-            };
-            frames.send(Ok(done)).await.ok();
-        });
-        Ok(Box::pin(ReceiverStream::new(answer)) as Answer<_>)
+        }
+        let done = v1::ReadFrame {
+            frame: Some(v1::read_frame::Frame::Done(v1::Done {})),
+        };
+        send(io, message(&done)).await;
     }
 
     /// A read-back of what it published, as the fault says.
-    fn reading_back(&self) -> Result<Answer<v1::ReadFrame>, Status> {
-        use v1::read_frame::Frame;
-        let frame = |frame| Ok(v1::ReadFrame { frame: Some(frame) });
+    async fn reading_back<W: AsyncWrite + Unpin>(&self, io: &mut W) {
         let mut encoder = rdlt_wire::Encoder::default();
         let rows: Arc<dyn Array> = Arc::new(Int64Array::from(vec![7; 64 * 1024]));
         let batch = RecordBatch::try_from_iter([("id", rows)]).expect("a batch");
-        let schema = Frame::Schema(v1::SchemaFrame {
-            schema_epoch: 1,
-            ipc_schema: encoder.schema(&batch.schema()).expect("the schema encodes"),
+        let schema = message(&v1::ReadFrame {
+            frame: Some(v1::read_frame::Frame::Schema(v1::SchemaFrame {
+                schema_epoch: 1,
+                ipc_schema: encoder.schema(&batch.schema()).expect("the schema encodes"),
+            })),
         });
         let data = encoder.batch(&batch).expect("the batch encodes").remove(0);
-        let rows = Frame::Batch(v1::BatchFrame {
-            schema_epoch: 1,
-            kind: v1::BatchKind::Arrow as i32,
-            data_header: data.header,
-            padding: Bytes::new(),
-            data_body: data.body,
-        });
-        let frames: Answer<v1::ReadFrame> = match self.fault {
-            Fault::ReadBackEndless => Box::pin(tokio_stream::iter([frame(schema)]).chain(
-                tokio_stream::iter(std::iter::repeat_with(move || frame(rows.clone()))),
-            )),
-            Fault::ReadBackUnfinished => Box::pin(tokio_stream::iter([frame(schema), frame(rows)])),
+        let body = encapsulated(&data);
+        let rows = || {
+            let kind = Kind::Batch {
+                rows: Rows::Arrow,
+                dictionary: false,
+                tag: 1,
+            };
+            Outgoing::new(kind, vec![body.clone()]).expect("a batch fits a head")
+        };
+        let endless = match self.fault {
+            Fault::ReadBackEndless => true,
+            Fault::ReadBackUnfinished => false,
             _ => {
-                return Err(status(&ConnectorError::new(
+                let refused = ConnectorError::new(
                     ConnectorErrorKind::Transient,
                     "refused: the store is unreachable",
-                )));
+                );
+                send(io, refusal(Call::ReadPublished, &refused)).await;
+                return;
             }
         };
-        Ok(frames)
+        if !send(io, opened(Call::ReadPublished)).await || !send(io, schema).await {
+            return;
+        }
+        while send(io, rows()).await && endless {}
     }
 }
 

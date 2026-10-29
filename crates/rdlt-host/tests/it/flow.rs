@@ -147,13 +147,52 @@ async fn backpressured_partitions_do_not_lose_a_live_source() {
             .expect("the read sends");
         feeds.push(feed);
     }
-    // Each read holds what its credit let the connector send, which the engine has not taken.
+    // Each read holds what its stream let the connector send, which the engine has not taken.
     // The connection still carries the answers of its other calls, the heartbeat's among them:
     // the source is live, only the engine is behind.
     tokio::time::timeout(bound, source.check())
         .await
         .expect("the check is answered in time")
         .expect("the source is still connected");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_spawned_sources_read_waits_out_an_engine_that_takes_nothing_for_minutes() {
+    use rdlt_connector::limits::ListenLimits;
+    let opener = crate::support::opener(Served::new().with_source(source_factory::<Blobs>()));
+    let connection = Connection::connect_opened(
+        Arc::from(opener),
+        Role::Source,
+        &serde_json::json!({}),
+        Options::default(),
+    )
+    .await
+    .expect("the source handshakes");
+    let source = RemoteSource::new(connection);
+    let (sink, mut feed) = partition_channel(NonZeroUsize::new(1).expect("not zero"));
+    tokio::spawn(async move {
+        let request = ReadRequest::new(
+            StreamName::new("blobs").expect("a valid stream name"),
+            Partition::single(),
+            None,
+        );
+        source.read(request, sink).await
+    });
+    // Bounded on the paused clock: a wait nothing ends fails here, a day on.
+    let day = Duration::from_hours(24);
+    let first = tokio::time::timeout(day, feed.recv()).await;
+    first.expect("the read sends").expect("the read sends");
+    // The engine takes nothing for longer than a connector waits on a host's control connection
+    // that takes nothing: the read's socket fills, and its connector waits on it.
+    tokio::time::sleep(ListenLimits::default().send * 3).await;
+    for _ in 0..8 {
+        let event = tokio::time::timeout(day, feed.recv()).await;
+        let event = event.expect("the read goes on").expect("the read is open");
+        assert!(
+            matches!(event, rdlt_connector::SourceEvent::Push(_)),
+            "{event:?}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -277,12 +316,12 @@ async fn a_stalled_writer_fails_once_its_write_ack_deadline_passes() {
         ..quick()
     };
     let mut writer = writer(served, Limits::default(), "flow_stalls", &options).await;
-    // Batches of about 160 KB: 27 of them spend the credit floor, and the connector's writer
-    // stalls on the first it takes, so beyond the first's no credit comes back and the writer
-    // waits for credit that does not come.
+    // Batches of about 160 KB: the connector's writer stalls on the first it takes, the batches
+    // after it fill its stages and the stream, and a write then finds no room before its
+    // deadline.
     let written = tokio::time::timeout(
         Duration::from_secs(10),
-        write_until_failed(writer.as_mut(), &ids(20_000), 40),
+        write_until_failed(writer.as_mut(), &ids(20_000), 200),
     )
     .await
     .expect("the writer does not hang past its deadline");
@@ -301,22 +340,25 @@ async fn a_schema_that_could_not_be_sent_is_sent_again_with_the_next_write() {
         ..Options::default()
     };
     let mut writer = writer(served, Limits::default(), "flow_gated", &options).await;
-    // Frames of 4.8 MB, the first beyond the credit the connector opens with. Its writer takes
-    // the first and waits, which returns the first's credit and grows the window to two frames:
-    // the second waits decoded for the writer, the third to be decoded, and no credit is left.
-    for _ in 0..3 {
-        writer
-            .write(SegmentId(1), ids(600_000))
-            .await
-            .expect("the frame goes on the credit left");
-    }
-    // A batch of another schema: its schema waits for credit, and its deadline passes.
+    // Frames of 800 KB, each crossing in one piece of the call's body, so a frame that finds no
+    // room goes not at all. The connector's writer takes the first and waits; the frames after it
+    // wait in its stages and in the stream, until a write finds no room before its deadline.
+    let mut written = 0;
+    let full = loop {
+        match writer.write(SegmentId(1), ids(100_000)).await {
+            Ok(()) => written += 1,
+            Err(full) => break full,
+        }
+        assert!(written < 64, "the stream took every frame");
+    };
+    assert_eq!(full.code(), Some(DEADLINE_EXCEEDED));
+    // A batch of another schema: its schema waits for room, and its deadline passes.
     let texts: ArrayRef = Arc::new(StringArray::from(vec!["some text"; 10]));
     let texts = RecordBatch::try_from_iter([("t", texts)]).expect("a valid batch");
     let late = writer
         .write(SegmentId(1), texts.clone())
         .await
-        .expect_err("no credit returns in time");
+        .expect_err("no room comes in time");
     assert_eq!(late.code(), Some(DEADLINE_EXCEEDED));
     // Written again once the connector's writer goes on, the batch follows its schema.
     GATE.open();
@@ -330,7 +372,9 @@ async fn a_schema_that_could_not_be_sent_is_sent_again_with_the_next_write() {
         .expect("the connector decoded every frame");
     let kept = GATE.kept.lock().expect("the lock is not poisoned");
     let rows: Vec<_> = kept.iter().map(|(_, batch)| batch.num_rows()).collect();
-    assert_eq!(rows, [600_000, 600_000, 600_000, 10]);
+    let mut expected = vec![100_000; written];
+    expected.push(10);
+    assert_eq!(rows, expected);
 }
 
 #[tokio::test]
@@ -497,7 +541,7 @@ async fn a_batch_is_cut_to_the_connectors_own_frames_for_a_host_that_takes_large
 }
 
 /// A writer of the table `orders` on a fake destination that answers its writes as `fault` says.
-pub(crate) async fn trickled(
+pub(crate) async fn faulty_writer(
     fault: rdlt_testkit::fake::Fault,
     options: &Options,
 ) -> Box<dyn DestinationWriter> {
@@ -512,7 +556,7 @@ pub(crate) async fn trickled(
     .expect("the fake connects");
     let destination = RemoteDestination::new(connection).expect("the fake declares capabilities");
     let context = OpenContext {
-        pipeline: PipelineId::parse("trickled").expect("a pipeline id"),
+        pipeline: PipelineId::parse("faulty_writer").expect("a pipeline id"),
         load_id: LoadId::from_parts(std::time::UNIX_EPOCH, 1),
     };
     let mut opened = destination.open(&context).await.expect("the session opens");
@@ -524,18 +568,15 @@ pub(crate) async fn trickled(
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_write_whose_credit_trickles_in_fails_at_its_write_ack_deadline() {
+async fn a_write_whose_connector_takes_nothing_fails_at_its_write_ack_deadline() {
     use rdlt_testkit::fake::Fault;
     let deadline = Deadlines::default().write_ack;
-    // A byte of credit just within each answer's deadline never makes up a frame's size.
-    let every = deadline
-        .checked_sub(Duration::from_secs(60))
-        .expect("the deadline is longer than a minute");
-    let mut writer = trickled(Fault::Trickles(every, 1), &Options::default()).await;
+    // The connector opens the write and never reads it: the stream fills, and a write waits.
+    let mut writer = faulty_writer(Fault::Hoards, &Options::default()).await;
     let started = tokio::time::Instant::now();
     let writing = async {
-        for segment in 1..=4 {
-            writer.write(SegmentId(segment), ids(10)).await?;
+        for segment in 1..=4_096 {
+            writer.write(SegmentId(segment), ids(10_000)).await?;
         }
         Ok::<_, ConnectorError>(())
     };
@@ -546,28 +587,13 @@ async fn a_write_whose_credit_trickles_in_fails_at_its_write_ack_deadline() {
         .expect("the writes end");
     assert_eq!(written.unwrap_err().code(), Some(DEADLINE_EXCEEDED));
     let elapsed = started.elapsed();
-    assert!(elapsed <= every + deadline * 2, "{elapsed:?}");
-    let mut writer = trickled(Fault::Trickles(every, 1 << 30), &Options::default()).await;
+    assert!(elapsed <= deadline * 2, "{elapsed:?}");
+    // One that reads every frame and never answers a flush fails the flush at the deadline.
+    let mut writer = faulty_writer(Fault::Unflushed, &Options::default()).await;
     let flushed = tokio::time::timeout(day, writer.flush())
         .await
         .expect("the flush ends");
     assert_eq!(flushed.unwrap_err().code(), Some(DEADLINE_EXCEEDED));
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_credit_of_no_bytes_is_refused() {
-    use rdlt_testkit::fake::Fault;
-    let mut writer = trickled(
-        Fault::Trickles(Duration::from_secs(1), 0),
-        &Options::default(),
-    )
-    .await;
-    let written = writer.write(SegmentId(1), ids(10));
-    let error = tokio::time::timeout(Duration::from_hours(24), written)
-        .await
-        .expect("the write ends")
-        .expect_err("the write is refused");
-    assert_eq!(error.code(), Some("invalid_message"));
 }
 
 /// Limits whose largest message is a frame of the protocol's least, so a few writes' frames fill

@@ -5,9 +5,10 @@ use std::time::Duration;
 use rdlt_connector::limits::ListenLimits;
 use rdlt_connector::wire::{CONFIGURE_REPEATED, v1};
 use rdlt_connector::{LoadId, SchemaVersion, TablePath, TableRef};
-use rdlt_host::remote::Client;
+use rdlt_host::remote::{Client, RawCall};
 use rdlt_wire::Limits;
 use rdlt_wire::limits::LIMIT_EXCEEDED;
+use rdlt_wire::stream::Call;
 
 use super::factories::Asked;
 use super::{Attacker, PATIENCE, answer, handshake};
@@ -174,18 +175,15 @@ impl Attacker<'_> {
             return;
         };
         // The oldest's call for a writer stays in flight for the destination's pause.
-        let start = v1::WriteFrame {
-            frame: Some(v1::write_frame::Frame::Start(v1::WriteStart {
-                session: oldest,
-                table: Some(v1::TableRef::from(&table())),
-            })),
+        let start = v1::WriteStart {
+            session: oldest,
+            table: Some(v1::TableRef::from(&table())),
         };
-        let mut writing = client.clone();
+        let writing = client.clone();
         let write = async move {
-            let frames = futures_util::stream::iter([start]);
-            tokio::time::timeout(PATIENCE, writing.write(frames))
-                .await
-                .is_ok()
+            let limits = Limits::default();
+            let opening = RawCall::open(&writing, Call::Write, &start, &limits);
+            tokio::time::timeout(PATIENCE, opening).await.is_ok()
         };
         let mut beyond = client.rpc.clone();
         let request = open(rng);

@@ -13,11 +13,13 @@ use hyper_util::service::TowerToHyperService;
 use parking_lot::Mutex;
 use rdlt_connector::wire::v1;
 use rdlt_wire::bounded::Window;
-use rdlt_wire::plane::{Incoming, Plane, Router, Serving};
 use rdlt_wire::prost::bytes::Bytes;
+use rdlt_wire::route::{Router, Streams};
+use rdlt_wire::stream::{Call, End, FrameReader, Kind, Outgoing, Piped, Rows};
+use rdlt_wire::tonic::body::Body;
 use rdlt_wire::tonic::{Request, Response, Status, Streaming};
 use rdlt_wire::v1::connector_server::{Connector, ConnectorServer};
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _};
 use tokio::net::UnixStream;
 use tokio::time::Instant;
 use tokio_stream::{Stream, StreamExt as _};
@@ -49,13 +51,8 @@ pub enum Fault {
     StaleEpoch,
     /// Its handshake says its limits, but no dictionary limit among them.
     NoDictionaryLimit,
-    /// Its reads know no barrier in their start, as a connector built before it could carry one,
-    /// and have nothing to read: each answers a barrier its controls ask for before its first
-    /// credit, and ends at that credit.
-    Unstarted,
-    /// It is a destination whose writes it answers, every interval, with a credit of the bytes
-    /// given, and never with a flush's stats.
-    Trickles(Duration, u64),
+    /// It is a destination whose writes take every frame, and never answer a flush.
+    Unflushed,
     /// It answers a discovery and a plan with this many empty entries, each two bytes on the wire.
     Bloats(usize),
     /// Every failure it answers with carries status details that are not base64.
@@ -72,19 +69,16 @@ pub enum Fault {
     Logs(u64),
     /// It is a destination whose configuration answers with identifier rules at their limits.
     WideRules,
-    /// Its reads send the next of these frames for each credit the host grants, and keep each
-    /// credit.
-    Granted(fn() -> Vec<v1::ReadFrame>, &'static Granted),
-    /// Its reads send frames of a mebibyte for as long as its transport takes them, whatever
-    /// its credit, counting what the transport took.
+    /// Its reads send frames of a mebibyte for as long as their stream takes them, counting what
+    /// it took.
     Floods(&'static Polled),
-    /// It is a destination whose writes it answers with a credit of the bytes given, and whose
-    /// frames it never reads.
-    Hoards(u64),
+    /// It is a destination whose writes it opens, and whose frames it never reads.
+    Hoards,
+    /// Its reads send a frame's head of no kind a frame has.
+    BadHead,
+    /// Its reads send a batch frame's head and half its body, then nothing more.
+    Stalls,
 }
-
-/// The credits a fake's read was granted, in order.
-pub type Granted = Mutex<Vec<u64>>;
 
 /// What a flooding read's transport took of it, and when last.
 #[derive(Debug)]
@@ -130,53 +124,43 @@ impl Polled {
     }
 }
 
-/// The schema of a column of ids, and a batch frame of a mebibyte of them.
-pub fn mebibyte() -> (v1::ReadFrame, v1::ReadFrame) {
+/// The schema of a column of ids, and a batch frame's body of a mebibyte of them.
+pub fn mebibyte() -> (Bytes, Bytes) {
     let values: Vec<i64> = (0..131_072).collect();
     let column = Arc::new(arrow_array::Int64Array::from(values));
     let batch = arrow_array::RecordBatch::try_from_iter([("id", column as _)]).expect("a batch");
     let mut encoder = rdlt_wire::Encoder::default();
-    let schema = v1::read_frame::Frame::Schema(v1::SchemaFrame {
-        schema_epoch: 1,
-        ipc_schema: encoder.schema(&batch.schema()).expect("the schema encodes"),
-    });
+    let schema = encoder.schema(&batch.schema()).expect("the schema encodes");
     let mut frames = encoder.batch(&batch).expect("the batch encodes");
     let frame = frames.pop().expect("one frame");
-    let batch = v1::read_frame::Frame::Batch(v1::BatchFrame {
-        schema_epoch: 1,
-        kind: v1::BatchKind::Arrow as i32,
-        data_header: frame.header,
-        padding: Bytes::new(),
-        data_body: frame.body,
-    });
-    let message = |frame| v1::ReadFrame { frame: Some(frame) };
-    (message(schema), message(batch))
+    (schema, encapsulated(&frame))
 }
 
-/// Takes a read's controls until the host ends them.
-async fn controlled(mut controls: Incoming<v1::ReadControl>) {
-    while let Ok(Some(_)) = controls.message().await {}
+/// The body of a batch frame carrying `frame`: its encapsulated IPC message.
+pub fn encapsulated(frame: &rdlt_wire::IpcFrame) -> Bytes {
+    let mut bytes = Vec::with_capacity(8 + frame.header.len() + frame.body.len());
+    bytes.extend_from_slice(&[0xff; 4]);
+    let len = i32::try_from(frame.header.len()).expect("a header's length fits");
+    bytes.extend_from_slice(&len.to_le_bytes());
+    bytes.extend_from_slice(&frame.header);
+    bytes.extend_from_slice(&frame.body);
+    Bytes::from(bytes)
 }
 
-/// Takes a read's controls until the host ends them, keeping each credit in `granted` and
-/// answering it with the next of `frames`.
-async fn granting(
-    mut controls: Incoming<v1::ReadControl>,
-    frames: Vec<v1::ReadFrame>,
-    granted: &Granted,
-    sent: tokio::sync::mpsc::Sender<Result<v1::ReadFrame, Status>>,
-) {
-    let mut frames = frames.into_iter();
-    while let Ok(Some(control)) = controls.message().await {
-        if let Some(v1::read_control::Control::Credit(credit)) = control.control {
-            granted.lock().push(credit.bytes);
-            if let Some(frame) = frames.next()
-                && sent.send(Ok(frame)).await.is_err()
-            {
-                return;
-            }
-        }
-    }
+/// The frame of a read's message `frame`.
+fn read_message(frame: v1::read_frame::Frame) -> Outgoing {
+    let message = v1::ReadFrame { frame: Some(frame) };
+    Outgoing::message(None, &message).expect("a fake's message fits a head")
+}
+
+/// A batch frame of epoch 1, its body `body`.
+fn batch_frame(body: Bytes) -> Outgoing {
+    let kind = Kind::Batch {
+        rows: Rows::Arrow,
+        dictionary: false,
+        tag: 1,
+    };
+    Outgoing::new(kind, vec![body]).expect("a fake's batch fits a head")
 }
 
 /// A connector that breaks the protocol as its fault says.
@@ -192,22 +176,20 @@ where
 {
     let garbles = matches!(fake.0, Fault::GarbledDetails);
     let unread = matches!(fake.0, Fault::Unread);
-    let service = routed(fake)
-        .map_request(|request: http::Request<hyper::body::Incoming>| {
-            request.map(rdlt_wire::tonic::body::Body::new)
-        })
-        .map_response(
-            move |mut response: http::Response<rdlt_wire::tonic::body::Body>| {
-                let headers = response.headers_mut();
-                if garbles && headers.contains_key("grpc-status") {
-                    headers.insert(
-                        "grpc-status-details-bin",
-                        http::HeaderValue::from_static("!"),
-                    );
-                }
-                response
-            },
-        );
+    // Dropped once the connection ends, which ends every data call it still serves.
+    let (connected, ended) = tokio::sync::watch::channel(());
+    let service = routed(fake, ended)
+        .map_request(|request: http::Request<hyper::body::Incoming>| request.map(Body::new))
+        .map_response(move |mut response: http::Response<Body>| {
+            let headers = response.headers_mut();
+            if garbles && headers.contains_key("grpc-status") {
+                headers.insert(
+                    "grpc-status-details-bin",
+                    http::HeaderValue::from_static("!"),
+                );
+            }
+            response
+        });
     let mut builder = hyper::server::conn::http2::Builder::new(TokioExecutor::new());
     builder
         .timer(TokioTimer::new())
@@ -226,6 +208,7 @@ where
         .serve_connection(TokioIo::new(io), TowerToHyperService::new(service))
         .await
         .ok();
+    drop(connected);
 }
 
 /// The host's end of a socket whose other end serves `fake`.
@@ -235,18 +218,27 @@ pub fn socket(fake: Fake) -> UnixStream {
     host
 }
 
-/// `fake`'s calls, each request held to the default limits, the data plane's served by it as
-/// its generated calls are.
-fn routed(fake: Fake) -> Router<ConnectorServer<Fake>, Fake> {
+/// `fake`'s calls, each request held to the default limits, its data calls' streams served by it
+/// as its generated calls are, each until `ended` tells its connection has.
+fn routed(
+    fake: Fake,
+    ended: tokio::sync::watch::Receiver<()>,
+) -> Router<ConnectorServer<Fake>, Streamed> {
     let fake = Arc::new(fake);
     let limits = rdlt_wire::Limits::default();
     let window = Window::new(usize::MAX);
-    Router::new(
-        ConnectorServer::from_arc(Arc::clone(&fake)),
-        fake,
-        &limits,
-        window,
-    )
+    let streamed = Arc::new(Streamed {
+        fake: Arc::clone(&fake),
+        ended,
+    });
+    Router::new(ConnectorServer::from_arc(fake), streamed, &limits, window)
+}
+
+/// A fake's data calls, each ended once its connection has.
+struct Streamed {
+    fake: Arc<Fake>,
+    /// Closed once the connection has ended.
+    ended: tokio::sync::watch::Receiver<()>,
 }
 
 /// The fake's spec, as `id`, a destination where `destination`.
@@ -289,17 +281,17 @@ impl Fake {
     fn destination(&self) -> bool {
         matches!(
             self.0,
-            Fault::Trickles(..) | Fault::Keys(_) | Fault::WideRules | Fault::Hoards(_)
+            Fault::Unflushed | Fault::Keys(_) | Fault::WideRules | Fault::Hoards
         )
     }
 
     /// The frames a read sends, as the fault says.
-    fn read_frames(&self) -> Vec<Result<v1::ReadFrame, Status>> {
-        let schema = |ipc_schema| v1::ReadFrame {
-            frame: Some(v1::read_frame::Frame::Schema(v1::SchemaFrame {
+    fn read_frames(&self) -> Vec<Outgoing> {
+        let schema = |ipc_schema| {
+            read_message(v1::read_frame::Frame::Schema(v1::SchemaFrame {
                 schema_epoch: 1,
                 ipc_schema,
-            })),
+            }))
         };
         if matches!(self.0, Fault::AnswersAhead) {
             let checkpoint = v1::CheckpointFrame {
@@ -309,11 +301,9 @@ impl Fake {
                 }),
                 barrier: Some(u64::MAX),
             };
-            vec![Ok(v1::ReadFrame {
-                frame: Some(v1::read_frame::Frame::Checkpoint(checkpoint)),
-            })]
+            vec![read_message(v1::read_frame::Frame::Checkpoint(checkpoint))]
         } else if matches!(self.0, Fault::StaleEpoch) {
-            vec![Ok(schema(ids())), Ok(schema(ids()))]
+            vec![schema(ids()), schema(ids())]
         } else if let Fault::Schemas(count) | Fault::Chatters(count) = self.0 {
             let chatty = matches!(self.0, Fault::Chatters(_));
             (1..=count)
@@ -324,33 +314,16 @@ impl Fake {
                     });
                     std::iter::once(schema).chain(chatty.then(logged))
                 })
-                .map(|frame| Ok(v1::ReadFrame { frame: Some(frame) }))
+                .map(read_message)
                 .collect()
         } else if let Fault::Logs(count) = self.0 {
-            (0..count)
-                .map(|_| {
-                    Ok(v1::ReadFrame {
-                        frame: Some(logged()),
-                    })
-                })
-                .collect()
+            (0..count).map(|_| read_message(logged())).collect()
         } else if let Fault::Sends(frames) = self.0 {
             let (ipc, frames) = frames();
-            let batches = frames.into_iter().map(|frame| v1::ReadFrame {
-                frame: Some(v1::read_frame::Frame::Batch(v1::BatchFrame {
-                    schema_epoch: 1,
-                    kind: v1::BatchKind::Arrow as i32,
-                    data_header: frame.header,
-                    padding: Bytes::new(),
-                    data_body: frame.body,
-                })),
-            });
-            std::iter::once(schema(ipc))
-                .chain(batches)
-                .map(Ok)
-                .collect()
+            let batches = frames.iter().map(|frame| batch_frame(encapsulated(frame)));
+            std::iter::once(schema(ipc)).chain(batches).collect()
         } else {
-            vec![Ok(schema(Bytes::from_static(b"not an IPC message")))]
+            vec![schema(Bytes::from_static(b"not an IPC message"))]
         }
     }
 }
@@ -535,107 +508,161 @@ impl Connector for Fake {
     }
 }
 
-impl Plane for Fake {
-    fn write(&self, mut frames: Incoming<v1::WriteFrame>) -> Serving<'_, v1::WriteAck> {
-        let fault = self.0;
+impl Streams for Streamed {
+    fn serve(
+        self: Arc<Self>,
+        stream: Piped<Body>,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>> {
         Box::pin(async move {
-            if let Fault::Hoards(bytes) = fault {
-                // The frames stay unread for as long as the write is open.
-                let credit = v1::WriteAck {
-                    ack: Some(v1::write_ack::Ack::Credit(v1::Credit { bytes })),
-                };
-                let acks = tokio_stream::iter([Ok(credit)])
-                    .chain(tokio_stream::pending())
-                    .map(move |ack| {
-                        let _ = &frames;
-                        ack
-                    });
-                return Ok(Box::pin(acks) as Answer<_>);
+            let mut ended = self.ended.clone();
+            tokio::select! {
+                biased;
+                _ = ended.changed() => {}
+                () = self.fake.stream(stream) => {}
             }
-            let Fault::Trickles(every, bytes) = fault else {
-                return Err(Status::unimplemented("write"));
-            };
-            // The frames are taken and dropped, so the transport's windows never fill.
-            tokio::spawn(async move { while let Ok(Some(_)) = frames.message().await {} });
-            let (acks, sent) = tokio::sync::mpsc::channel(1);
-            tokio::spawn(async move {
-                loop {
-                    tokio::time::sleep(every).await;
-                    let credit = v1::WriteAck {
-                        ack: Some(v1::write_ack::Ack::Credit(v1::Credit { bytes })),
-                    };
-                    if acks.send(Ok(credit)).await.is_err() {
-                        return;
-                    }
-                }
-            });
-            Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(sent)) as Answer<_>)
         })
-    }
-
-    fn read(&self, controls: Incoming<v1::ReadControl>) -> Serving<'_, v1::ReadFrame> {
-        Box::pin(async move {
-            if matches!(self.0, Fault::Unstarted) {
-                return Ok(Box::pin(answering(controls)) as Answer<_>);
-            }
-            if let Fault::Granted(frames, granted) = self.0 {
-                let (sent, sending) = tokio::sync::mpsc::channel(1);
-                tokio::spawn(granting(controls, frames(), granted, sent));
-                let frames = tokio_stream::wrappers::ReceiverStream::new(sending);
-                return Ok(Box::pin(frames) as Answer<_>);
-            }
-            if let Fault::Floods(polled) = self.0 {
-                tokio::spawn(controlled(controls));
-                let (schema, batch) = mebibyte();
-                let frames = std::iter::once(schema).chain(std::iter::repeat(batch));
-                let frames = tokio_stream::iter(frames).map(move |frame| {
-                    polled.took(rdlt_wire::prost::Message::encoded_len(&frame));
-                    Ok(frame)
-                });
-                return Ok(Box::pin(frames) as Answer<_>);
-            }
-            let sent = self.read_frames();
-            let frames = tokio_stream::iter(sent)
-                .chain(tokio_stream::pending::<Result<v1::ReadFrame, Status>>());
-            Ok(Box::pin(frames) as Answer<_>)
-        })
-    }
-
-    fn read_published(&self, _: v1::ReadPublishedRequest) -> Serving<'_, v1::ReadFrame> {
-        Box::pin(async { Err(Status::unimplemented("read_published")) })
     }
 }
 
-/// A read with nothing to read: it answers a barrier `controls` ask for before its first credit
-/// with a checkpoint, and ends at that credit.
-fn answering(
-    mut controls: Incoming<v1::ReadControl>,
-) -> impl Stream<Item = Result<v1::ReadFrame, Status>> + Send {
-    let (frames, sent) = tokio::sync::mpsc::channel(2);
-    tokio::spawn(async move {
-        let mut answered = Vec::new();
-        while let Ok(Some(control)) = controls.message().await {
-            match control.control {
-                Some(v1::read_control::Control::Checkpoint(asked)) => {
-                    answered.push(v1::read_frame::Frame::Checkpoint(v1::CheckpointFrame {
-                        cursor: Some(v1::Cursor {
-                            version: 1,
-                            bytes: Bytes::new(),
-                        }),
-                        barrier: Some(asked.barrier),
-                    }));
-                }
-                Some(v1::read_control::Control::Credit(_)) => break,
-                _ => {}
+/// A data stream's reader on the fake's end, and what it writes to.
+type Reading = FrameReader<tokio::io::ReadHalf<Piped<Body>>>;
+type Writing = tokio::io::WriteHalf<Piped<Body>>;
+
+impl Fake {
+    /// Serves the data call `stream` carries, as the fault says.
+    async fn stream(&self, stream: Piped<Body>) {
+        let (read, mut write) = tokio::io::split(stream);
+        let Some((call, frames)) = opened(read).await else {
+            return;
+        };
+        let served = matches!(
+            (call, self.0),
+            (Call::Write, Fault::Hoards | Fault::Unflushed) | (Call::Read, _)
+        );
+        let mut answer = if served {
+            Outgoing::new(Kind::Message { opens: Some(call) }, Vec::new()).expect("an empty frame")
+        } else {
+            refusal(call)
+        };
+        if answer.write(&mut write).await.is_err() || !served {
+            return;
+        }
+        match self.0 {
+            // The frames stay unread for as long as the write is open.
+            Fault::Hoards => std::future::pending::<()>().await,
+            // The frames are taken and dropped, so the stream's buffers never fill.
+            Fault::Unflushed => drain(frames).await,
+            Fault::Floods(polled) => {
+                tokio::join!(drain(frames), flood(polled, &mut write));
+            }
+            Fault::BadHead => bad_head(&mut write).await,
+            Fault::Stalls => stall(&mut write).await,
+            _ => {
+                let sending = async {
+                    for mut frame in self.read_frames() {
+                        if frame.write(&mut write).await.is_err() {
+                            return;
+                        }
+                    }
+                    std::future::pending::<()>().await;
+                };
+                tokio::join!(drain(frames), sending);
             }
         }
-        answered.push(v1::read_frame::Frame::Done(v1::Done {}));
-        for frame in answered {
-            let frame = v1::ReadFrame { frame: Some(frame) };
-            if frames.send(Ok(frame)).await.is_err() {
-                return;
-            }
-        }
+    }
+}
+
+/// The call a data stream opens, and its frames after the opening; `None` where it opens none.
+async fn opened(read: tokio::io::ReadHalf<Piped<Body>>) -> Option<(Call, Reading)> {
+    let limits = rdlt_wire::Limits::default();
+    let opening = rdlt_wire::stream::Bounds {
+        batch: None,
+        json: None,
+        ..Call::Read.bounds(End::Host, &limits)
+    };
+    let mut frames = FrameReader::new(read, opening);
+    let Ok(Some(first)) = frames.next().await else {
+        return None;
+    };
+    let Kind::Message { opens: Some(call) } = first.head.kind else {
+        return None;
+    };
+    frames.set_bounds(call.bounds(End::Host, &limits));
+    Some((call, frames))
+}
+
+/// The answer refusing `call`, which the fake serves none of.
+fn refusal(call: Call) -> Outgoing {
+    let refused = v1::Error {
+        kind: v1::ErrorKind::Unsupported as i32,
+        message: "the fake serves no such call".to_owned(),
+        ..v1::Error::default()
+    };
+    match call {
+        Call::Write => Outgoing::message(
+            None,
+            &v1::WriteAck {
+                ack: Some(v1::write_ack::Ack::Error(refused)),
+            },
+        ),
+        Call::Read | Call::ReadPublished => Outgoing::message(
+            None,
+            &v1::ReadFrame {
+                frame: Some(v1::read_frame::Frame::Error(refused)),
+            },
+        ),
+    }
+    .expect("an error fits a head")
+}
+
+/// Takes `frames` to their end, dropping each.
+async fn drain(mut frames: Reading) {
+    while let Ok(Some(_)) = frames.next().await {}
+}
+
+/// Sends frames of a mebibyte for as long as the stream takes them, counting them in `polled`.
+async fn flood(polled: &Polled, write: &mut Writing) {
+    let (schema, batch) = mebibyte();
+    let schema = v1::read_frame::Frame::Schema(v1::SchemaFrame {
+        schema_epoch: 1,
+        ipc_schema: schema,
     });
-    tokio_stream::wrappers::ReceiverStream::new(sent)
+    if read_message(schema).write(write).await.is_err() {
+        return;
+    }
+    loop {
+        let mut frame = batch_frame(batch.clone());
+        let len = frame.len();
+        if frame.write(write).await.is_err() {
+            return;
+        }
+        polled.took(len);
+    }
+}
+
+/// Sends a head of a kind no frame has, then nothing more.
+async fn bad_head(write: &mut Writing) {
+    let mut head = [0_u8; rdlt_wire::stream::HEAD_BYTES];
+    head[4] = 9;
+    if write.write_all(&head).await.is_ok() {
+        std::future::pending::<()>().await;
+    }
+}
+
+/// Sends a batch frame's head and half its body, then nothing more.
+async fn stall(write: &mut Writing) {
+    let (_, batch) = mebibyte();
+    let mut frame = batch_frame(batch);
+    let half = rdlt_wire::stream::HEAD_BYTES + frame.len() / 2;
+    let mut sent = 0;
+    while sent < half {
+        let chunk = rdlt_wire::prost::bytes::Buf::chunk(&frame);
+        let take = chunk.len().min(half - sent);
+        if write.write_all(&chunk[..take]).await.is_err() {
+            return;
+        }
+        rdlt_wire::prost::bytes::Buf::advance(&mut frame, take);
+        sent += take;
+    }
+    std::future::pending::<()>().await;
 }

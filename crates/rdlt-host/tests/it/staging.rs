@@ -5,7 +5,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arrow_array::RecordBatch;
-use bytes::Bytes;
 use rdlt_connector::serve::Served;
 use rdlt_connector::wire::v1;
 use rdlt_connector::{
@@ -13,10 +12,11 @@ use rdlt_connector::{
     destination_factory,
 };
 use rdlt_connector_reference::MemoryDestination;
+use rdlt_host::remote::RawCall;
 use rdlt_host::{Connection, Options, RemoteDestination};
 use rdlt_wire::limits::MIN_FRAME_BYTES;
-use rdlt_wire::{Encoder, Limits};
-use tokio_stream::wrappers::ReceiverStream;
+use rdlt_wire::stream::{Call, Kind, Outgoing, Rows};
+use rdlt_wire::{Cut, Encoder, Limits};
 
 use crate::sessions::{raw_session_within, table};
 use crate::support::connectors::{Gate, Writes, Writing};
@@ -45,6 +45,38 @@ fn ids(count: i64) -> RecordBatch {
         .expect("a valid batch")
 }
 
+/// A write's frames: its schema, then `batches` frames of a mebibyte of ids, a flush after every
+/// `flush_every` of them.
+fn frames(batches: usize, flush_every: usize) -> Vec<Outgoing> {
+    use v1::write_frame::Frame;
+    let batch = ids(MEBIBYTE);
+    let mut encoder = Encoder::default();
+    let message = |frame| {
+        Outgoing::message(None, &v1::WriteFrame { frame: Some(frame) }).expect("a message fits")
+    };
+    let mut sent = vec![message(Frame::Schema(v1::WriteSchema {
+        version: 1,
+        ipc_schema: encoder.schema(&batch.schema()).expect("the schema encodes"),
+    }))];
+    for index in 1..=batches {
+        let mut cut = Cut::new(batch.clone(), limits());
+        while let Some(pieces) = encoder.piece(&mut cut).expect("the batch encodes") {
+            for piece in pieces {
+                let kind = Kind::Batch {
+                    rows: Rows::Arrow,
+                    dictionary: piece.is_dictionary(),
+                    tag: 1,
+                };
+                sent.push(Outgoing::new(kind, piece.into_pieces()).expect("a frame fits"));
+            }
+        }
+        if index % flush_every == 0 {
+            sent.push(message(Frame::Flush(v1::Unit {})));
+        }
+    }
+    sent
+}
+
 /// What a raw write to `served` of `batches` frames of a mebibyte of ids answers with, a flush
 /// sent after every `flush_every` of them: the error it ended with, if any, and how many flushes
 /// it answered.
@@ -54,53 +86,40 @@ async fn raw_write(
     batches: usize,
     flush_every: usize,
 ) -> (Option<ConnectorError>, usize) {
-    use v1::write_frame::Frame;
-    let (mut client, session) = raw_session_within(served, store, limits()).await;
-    let batch = ids(MEBIBYTE);
-    let mut encoder = Encoder::default();
-    let mut sent = vec![
-        Frame::Start(v1::WriteStart {
-            session,
-            table: Some(v1::TableRef::from(&table())),
-        }),
-        Frame::Schema(v1::WriteSchema {
-            version: 1,
-            ipc_schema: encoder.schema(&batch.schema()).expect("the schema encodes"),
-        }),
-    ];
-    for index in 1..=batches {
-        for frame in encoder.batch(&batch).expect("the batch encodes") {
-            sent.push(Frame::Batch(v1::WriteBatch {
-                segment: 1,
-                data_header: frame.header,
-                padding: Bytes::new(),
-                data_body: frame.body,
-            }));
-        }
-        if index % flush_every == 0 {
-            sent.push(Frame::Flush(v1::Unit {}));
-        }
-    }
-    let (frames, receiver) = tokio::sync::mpsc::channel(sent.len());
-    for frame in sent {
-        let frame = v1::WriteFrame { frame: Some(frame) };
-        frames.send(frame).await.expect("the write is open");
-    }
-    drop(frames);
-    let mut acks = client
-        .write(ReceiverStream::new(receiver))
+    let (client, session) = raw_session_within(served, store, limits()).await;
+    let start = v1::WriteStart {
+        session,
+        table: Some(v1::TableRef::from(&table())),
+    };
+    let mut write = RawCall::open(&client, Call::Write, &start, &Limits::default())
         .await
-        .expect("the write starts");
+        .expect("the stream opens")
+        .expect("the write opens");
+    for frame in frames(batches, flush_every) {
+        // A refused write takes nothing more.
+        if !write.send(frame).await {
+            break;
+        }
+    }
+    // The write's answers, up to its refusal or the stats of its last flush.
     let (mut error, mut flushes) = (None, 0);
-    while let Some(ack) = tokio::time::timeout(Duration::from_secs(30), acks.message())
+    let expected = batches / flush_every;
+    while let Some(answer) = tokio::time::timeout(Duration::from_secs(30), write.next())
         .await
         .expect("the write answers")
         .expect("the write's answers arrive")
     {
+        let ack = write.write_ack(&answer).expect("an answer decodes");
         match ack.ack {
-            Some(v1::write_ack::Ack::Error(refused)) => error = Some(refused),
+            Some(v1::write_ack::Ack::Error(refused)) => {
+                error = Some(refused);
+                break;
+            }
             Some(v1::write_ack::Ack::Flushed(_)) => flushes += 1,
-            _ => {}
+            None => {}
+        }
+        if flushes == expected {
+            break;
         }
     }
     let error = error.map(|error| ConnectorError::try_from(error).expect("a connector error"));
@@ -153,8 +172,8 @@ async fn a_served_write_whose_writer_falls_behind_refuses_the_same_frame() {
 
 #[tokio::test]
 async fn the_hosts_writer_flushes_before_it_stages_more_than_the_destination_holds() {
-    // Frames of a mebibyte, within the credit floor; and frames of nearly the frame limit, whose
-    // window of two frames leaves credit to spare when the destination's limit nears.
+    // Frames of a mebibyte; and frames of nearly the frame limit, few of which fill what the
+    // destination may stage.
     let near = i64::try_from(MIN_FRAME_BYTES * 15 / 16 / 8).expect("fits");
     for (store, rows, writes) in [("staged_host", MEBIBYTE, 40), ("staged_spare", near, 10)] {
         let served = Served::new().with_destination(destination_factory::<MemoryDestination>());

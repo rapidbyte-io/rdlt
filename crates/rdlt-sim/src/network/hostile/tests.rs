@@ -3,10 +3,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rdlt_wire::Limits;
-use rdlt_wire::limits::{Class, TRANSPORT_FRAME_BYTES};
+use rdlt_wire::limits::TRANSPORT_FRAME_BYTES;
 
 use super::factories::{Asked, Counted};
-use super::window::{HOLDERS, PREFIX, Raw, SETTLE, Write};
+use super::window::{PREFIX, Raw, SETTLE, Write, held, holders};
 use super::{Attack, Attacker, PATIENCE};
 use crate::canary::Canary;
 use crate::network::{Net, Networked, Peers, Serving, Side, options, run_networked};
@@ -18,7 +18,7 @@ use crate::world::World;
 #[test]
 fn a_watch_records_a_hostile_connection_holding_more_than_it_may() {
     let registered = World::register("hostile-watch", &mut SplitMix64::new(3));
-    let net = Arc::new(Net::new(Serving::Rows, Peers::HOSTILE));
+    let net = Arc::new(Net::new(Serving::Rows, Peers::HOSTILE, false));
     let first = Counted::enter(&net, 9, 1, "hostile-watch");
     assert!(registered.world().violations().is_empty());
     let second = Counted::enter(&net, 9, 1, "hostile-watch");
@@ -43,7 +43,7 @@ fn a_watch_records_a_hostile_connection_holding_more_than_it_may() {
 #[test]
 fn a_connector_started_again_after_an_odd_count_of_crashes_names_itself_after_its_token() {
     let token = "rdlt-canary-token-oracle-18446744073709551615";
-    let hostile = Arc::new(Net::new(Serving::Rows, Peers::HOSTILE));
+    let hostile = Arc::new(Net::new(Serving::Rows, Peers::HOSTILE, false));
     hostile.watch.token.lock()[0] = Some(token.to_owned());
     let renamed = hostile.source_factory(1).spec().version.clone();
     assert_eq!(renamed, format!("0.0.0-{token}"));
@@ -60,7 +60,7 @@ fn a_connector_started_again_after_an_odd_count_of_crashes_names_itself_after_it
         "0.0.0",
         "no token was heard"
     );
-    let plain = Arc::new(Net::new(Serving::Rows, Peers::HONEST));
+    let plain = Arc::new(Net::new(Serving::Rows, Peers::HONEST, false));
     plain.watch.token.lock()[0] = Some(token.to_owned());
     assert_eq!(plain.source_factory(1).spec().version, "0.0.0");
 }
@@ -135,8 +135,8 @@ const BESIDE: usize = 620 * 1024;
 #[test]
 fn a_write_waiting_for_room_holds_the_frame_it_read_and_no_copy_of_it() {
     let frame = usize::try_from(TRANSPORT_FRAME_BYTES).expect("a frame's length fits");
-    // With its prefix and a byte past it, each waiting message fills one transport frame.
-    let message = frame - PREFIX - 1;
+    // With its head and a byte past it, each waiting opening fills one transport frame.
+    let message = frame - rdlt_wire::stream::HEAD_BYTES - 1;
     let (held, unanswered) = run_networked(
         Seed::new(1),
         Serving::Rows,
@@ -146,18 +146,17 @@ fn a_write_waiting_for_room_holds_the_frame_it_read_and_no_copy_of_it() {
             let canary = Canary::of("hostile-heap");
             let placing = Networked::new(net, &options(&mut rng, Limits::default()), &canary);
             let wire = placing
-                .wire(Side::Destination)
+                .dialed(Side::Destination)
                 .await
                 .expect("the destination is reached");
             let mut raw = Raw::over(wire, Side::Destination.host())
                 .await
                 .expect("HTTP/2 opens");
-            let largest = Limits::default().decoding(Class::Data) - PREFIX;
-            let holders: Vec<Write> = (0..HOLDERS).map(|_| raw.write(largest, 0)).collect();
+            let holders: Vec<Write> = (0..holders()).map(|_| raw.hold(held() - PREFIX)).collect();
             tokio::time::sleep(SETTLE).await;
             let window = Window::open();
             let waiting: Vec<Write> = (0..WAITING)
-                .map(|_| raw.write(message, message + 1))
+                .map(|_| raw.data(message, message + 1))
                 .collect();
             tokio::time::sleep(SETTLE * 5).await;
             let held = window.close();
@@ -199,7 +198,7 @@ async fn let_go(serving: impl Fn() -> usize, most: usize) -> usize {
 #[test]
 fn serving_lets_go_of_writes_cut_behind_a_full_window_and_of_their_connection() {
     let frame = usize::try_from(TRANSPORT_FRAME_BYTES).expect("a frame's length fits");
-    let message = frame - PREFIX - 1;
+    let message = frame - rdlt_wire::stream::HEAD_BYTES - 1;
     let (connected, holding, kept, left) = run_networked(
         Seed::new(1),
         Serving::Rows,
@@ -216,7 +215,7 @@ fn serving_lets_go_of_writes_cut_behind_a_full_window_and_of_their_connection() 
                     .sum::<usize>()
             };
             let wire = placing
-                .wire(Side::Destination)
+                .dialed(Side::Destination)
                 .await
                 .expect("the destination is reached");
             let mut raw = Raw::over(wire, Side::Destination.host())
@@ -224,10 +223,9 @@ fn serving_lets_go_of_writes_cut_behind_a_full_window_and_of_their_connection() 
                 .expect("HTTP/2 opens");
             tokio::time::sleep(SETTLE).await;
             let connected = serving();
-            let largest = Limits::default().decoding(Class::Data) - PREFIX;
-            let holders: Vec<Write> = (0..HOLDERS).map(|_| raw.write(largest, 0)).collect();
+            let holders: Vec<Write> = (0..holders()).map(|_| raw.hold(held() - PREFIX)).collect();
             tokio::time::sleep(SETTLE).await;
-            let waiting: Vec<Write> = (0..4).map(|_| raw.write(message, message + 1)).collect();
+            let waiting: Vec<Write> = (0..4).map(|_| raw.data(message, message + 1)).collect();
             tokio::time::sleep(SETTLE).await;
             let holding = serving();
             drop(holders);
@@ -270,13 +268,13 @@ fn a_write_with_room_is_seen_answered_and_then_ends() {
             let canary = Canary::of("hostile-answered");
             let placing = Networked::new(net, &options(&mut rng, Limits::default()), &canary);
             let wire = placing
-                .wire(Side::Destination)
+                .dialed(Side::Destination)
                 .await
                 .expect("the destination is reached");
             let mut raw = Raw::over(wire, Side::Destination.host())
                 .await
                 .expect("HTTP/2 opens");
-            let write = raw.write(16, 17);
+            let write = raw.data(16, 17);
             tokio::time::sleep(SETTLE).await;
             let seen = write.answered();
             (seen, write.ends_within(PATIENCE).await)

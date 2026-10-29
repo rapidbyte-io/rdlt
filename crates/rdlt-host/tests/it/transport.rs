@@ -10,8 +10,8 @@ use bytes::Bytes;
 use http_body::{Body, Frame};
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use hyper_util::service::TowerToHyperService;
-use rdlt_wire::flow::Transport;
 use rdlt_wire::limits::TRANSPORT_FRAME_BYTES;
+use rdlt_wire::transport::Transport;
 use tokio::net::UnixStream;
 
 use crate::HEAP;

@@ -2,6 +2,7 @@ pub(crate) mod frames;
 pub(crate) mod nested;
 pub(crate) mod odd;
 pub(crate) mod samples;
+mod streamed;
 
 use std::sync::Arc;
 
@@ -66,7 +67,7 @@ proptest! {
         for frame in encoder.batch(&batch).unwrap() {
             let frame = frame.aligned();
             let measured = decoder.measure(&frame).unwrap();
-            prop_assert_eq!(measured, counted(&frame));
+            prop_assert_eq!(measured, counted(frame.header.len(), frame.body.len()));
             let (_, shape) = decoder.shaped(&frame).unwrap();
             let held = if frame.body.is_empty() { 0 } else { count(frame.allocation.len()) };
             prop_assert_eq!(shape.held_bytes, held);
@@ -705,7 +706,10 @@ fn the_dictionaries_a_decoder_holds_are_bounded_together() {
     let frames = encoder.batch(&batch).unwrap();
     assert_eq!(frames.len(), 4, "three dictionaries, then the batch");
     assert!(dictionary_held(&schema, &frames) >= 1_000);
-    let each: Vec<u64> = frames[..3].iter().map(counted).collect();
+    let each: Vec<u64> = frames[..3]
+        .iter()
+        .map(|frame| counted(frame.header.len(), frame.body.len()))
+        .collect();
     let (two, three) = (each[0] + each[1], each[0] + each[1] + each[2]);
     // A frame limit, and so a dictionary limit of a frame and its message's room, of two such
     // dictionaries and of a byte less than three.
@@ -948,7 +952,10 @@ fn sent_within(batch: &RecordBatch, limit: u64) -> Option<(Bytes, Vec<IpcFrame>)
     let schema = encoder.schema(&batch.schema()).unwrap();
     let mut cut = super::Cut::new(batch.clone(), limits);
     let frames = encoder.piece(&mut cut).ok()?.unwrap();
-    Some((schema, frames))
+    Some((
+        schema,
+        frames.iter().map(super::Encoded::gathered).collect(),
+    ))
 }
 
 #[test]
@@ -1020,7 +1027,7 @@ fn a_sender_counts_the_dictionaries_its_receiver_holds_from_the_batches_before()
     // which its receiver still holds, is not.
     let mut first = super::Cut::new(two_keyed(1, big), limits);
     for frame in encoder.piece(&mut first).unwrap().unwrap() {
-        decoder.frame(&frame).unwrap();
+        decoder.frame(&frame.gathered()).unwrap();
     }
     let mut second = super::Cut::new(two_keyed(big, 1), limits);
     let refused = encoder.piece(&mut second).unwrap_err();
@@ -1035,7 +1042,7 @@ fn a_sender_counts_the_dictionaries_its_receiver_holds_from_the_batches_before()
     decoder.schema(&again).unwrap();
     let mut second = super::Cut::new(two_keyed(big, 1), limits);
     for frame in encoder.piece(&mut second).unwrap().unwrap() {
-        decoder.frame(&frame).unwrap();
+        decoder.frame(&frame.gathered()).unwrap();
     }
 }
 
@@ -1218,7 +1225,7 @@ proptest! {
         let mut cut = super::Cut::new(batch, limits);
         while let Ok(Some(frames)) = encoder.piece(&mut cut) {
             for frame in &frames {
-                decoder.frame(&frame.aligned()).unwrap();
+                decoder.frame(&frame.gathered()).unwrap();
             }
             let sent: u64 = encoder.held.values().sum();
             prop_assert_eq!(decoder.dictionary_bytes(), sent);

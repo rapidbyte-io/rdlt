@@ -2,11 +2,12 @@
 //! row is published once and in order, and no checkpoint lands among them.
 
 use std::num::NonZeroUsize;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use arrow_array::Int64Array;
+use rdlt_connector::BoxFuture;
 use rdlt_connector::serve::Served;
 use rdlt_connector::{
     ConnectorError, ConnectorErrorKind, ConnectorId, Destination, Partition, PipelineId, Push,
@@ -17,12 +18,15 @@ use rdlt_engine::{
     CommitPolicy, Engine, EngineConfig, PipelinePlan, RetryPolicy, RunControl, RunOutcome,
     RunStatus, StopMode, StreamPlan,
 };
-use rdlt_host::{Connect, Connection, ConnectorRef, Kills, Options, Provider as _, RemoteSource};
+use rdlt_host::{
+    Connect, Connection, ConnectorRef, Kills, Opener, Opening, Options, Provider as _,
+    RemoteSource, Stream,
+};
 use rdlt_wire::Limits;
 use rdlt_wire::limits::{MIN_BATCH_ROWS, MIN_BATCH_VALUES};
 
 use crate::support::connectors::{FLAGGED, Hook, Ticks, Writes, Writing};
-use crate::support::{served, served_within};
+use crate::support::{opener, opener_within, served};
 
 /// Rows the source sends as one batch, and the flags beside each row's id: 301 values a row.
 const ROWS: u64 = 9_000;
@@ -48,21 +52,21 @@ async fn tagged(tag: &str, options: &Options) -> RemoteSource {
 
 /// The host's end of a socket serving the memory destination over `hook`, taking the fewest rows
 /// a frame the protocol allows, so the host cuts every batch it writes.
-fn hooked(hook: &'static Hook) -> tokio::net::UnixStream {
+fn hooked(hook: &'static Hook) -> Box<dyn Opener> {
     let limits = Limits {
         batch_rows: MIN_BATCH_ROWS,
         ..Limits::default()
     };
     let hooked = Served::new().with_destination(Writes::factory(Writing::Hooked(hook)));
-    served_within(hooked, limits)
+    opener_within(hooked, limits)
 }
 
 /// The memory destination over `hook` and `store`, reached again whenever its connection is lost
 /// or `kills` cuts it.
 async fn destination(hook: &'static Hook, store: &str, kills: &Kills) -> Arc<dyn Destination> {
     let connect = Connect::new(move || {
-        let stream = hooked(hook);
-        Box::pin(async move { Ok(Box::new(stream) as Box<dyn rdlt_host::Stream>) })
+        let opener = hooked(hook);
+        Box::pin(async move { Ok(opener) })
     })
     .kills(kills);
     let reference = ConnectorRef::new(ConnectorId::parse("io.rapidbyte.memory").expect("valid"));
@@ -178,10 +182,32 @@ async fn a_run_stopped_between_a_batchs_pieces_publishes_none_of_them_and_the_ne
     assert_eq!(ids("cuts_stopped"), every_row());
 }
 
-/// A connection that fails once the host has read `left` bytes of it.
+/// An opener whose streams all fail once the host has read `left` bytes of them together.
+///
+/// Once they have, `kills` cuts every stream of the connection, as a connector's end going does.
+struct Cutting {
+    inner: Box<dyn Opener>,
+    left: Arc<AtomicUsize>,
+    kills: Kills,
+}
+
+impl Opener for Cutting {
+    fn open(&self, opening: Opening) -> BoxFuture<'_, std::io::Result<Box<dyn Stream>>> {
+        Box::pin(async move {
+            let inner = self.inner.open(opening).await?;
+            let left = Arc::clone(&self.left);
+            let kills = self.kills.clone();
+            Ok(Box::new(Severed { inner, left, kills }) as Box<dyn Stream>)
+        })
+    }
+}
+
+/// A stream that fails once the host has read what `left` counts down, and then has `kills`
+/// cut its connection's every other stream.
 struct Severed {
-    inner: tokio::net::UnixStream,
-    left: usize,
+    inner: Box<dyn Stream>,
+    left: Arc<AtomicUsize>,
+    kills: Kills,
 }
 
 impl tokio::io::AsyncRead for Severed {
@@ -190,12 +216,19 @@ impl tokio::io::AsyncRead for Severed {
         context: &mut std::task::Context<'_>,
         buffer: &mut tokio::io::ReadBuf<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
-        if self.left == 0 {
+        if self.left.load(Ordering::SeqCst) == 0 {
             return std::task::Poll::Ready(Err(std::io::ErrorKind::ConnectionReset.into()));
         }
         let before = buffer.filled().len();
         let read = std::pin::Pin::new(&mut self.inner).poll_read(context, buffer);
-        self.left = self.left.saturating_sub(buffer.filled().len() - before);
+        let taken = buffer.filled().len() - before;
+        let left = &self.left;
+        let counted = left.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+            Some(left.saturating_sub(taken))
+        });
+        if counted.is_ok_and(|was| was > 0 && was <= taken) {
+            self.kills.kill();
+        }
         read
     }
 }
@@ -227,8 +260,8 @@ impl tokio::io::AsyncWrite for Severed {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_source_lost_between_a_batchs_pieces_commits_none_of_them_and_the_next_attempt_all() {
     // The source's rows reach the host as three pieces, of about 312, 312 and 185 kilobytes,
-    // after a schema of 13; its window is two pieces once the first is taken. Its first
-    // connection fails once the host has read 700 kilobytes: two pieces, and part of the third.
+    // after a schema of 13. Its first connection fails once the host has read 700 kilobytes of
+    // it: two pieces, and part of the third.
     static SEVERED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     static HOOK: Hook = Hook::at(usize::MAX);
     let options = Options {
@@ -236,20 +269,24 @@ async fn a_source_lost_between_a_batchs_pieces_commits_none_of_them_and_the_next
             batch_values: MIN_BATCH_VALUES,
             ..Limits::default()
         },
-        read_floor: 1,
         ..Options::default()
     };
-    let connect = Connect::new(|| {
-        let inner = served(Served::new().with_source(source_factory::<Ticks>()));
+    let kills = Kills::new();
+    let cutting = kills.clone();
+    let connect = Connect::new(move || {
+        let inner = opener(Served::new().with_source(source_factory::<Ticks>()));
         let left = if SEVERED.swap(true, Ordering::SeqCst) {
             usize::MAX
         } else {
             700_000
         };
-        let stream = Severed { inner, left };
-        Box::pin(async move { Ok(Box::new(stream) as Box<dyn rdlt_host::Stream>) })
+        let left = Arc::new(AtomicUsize::new(left));
+        let kills = cutting.clone();
+        let opener = Box::new(Cutting { inner, left, kills }) as Box<dyn Opener>;
+        Box::pin(async move { Ok(opener) })
     })
-    .options(options);
+    .options(options)
+    .kills(&kills);
     let reference = ConnectorRef::new(ConnectorId::parse("test.ticks").expect("valid"));
     let config = serde_json::json!({ "rows": ROWS, "flags": FLAGS, "tag": "cuts_lost" });
     let placed = connect.source(&reference, &config).await;
@@ -269,14 +306,13 @@ async fn a_source_lost_between_a_batchs_pieces_commits_none_of_them_and_the_next
 #[tokio::test]
 async fn a_checkpoint_asked_for_between_a_batchs_pieces_follows_its_last_piece() {
     // The host takes the fewest values a frame the protocol allows, so the batch goes as three
-    // pieces, and grants a byte of credit at first: the host asks for a checkpoint with the
+    // pieces, and the engine takes an event at a time: the host asks for a checkpoint with the
     // first piece in hand, and the source answers at once; its answer follows the last piece.
     let options = Options {
         limits: Limits {
             batch_values: MIN_BATCH_VALUES,
             ..Limits::default()
         },
-        read_floor: 1,
         ..Options::default()
     };
     let io = served(Served::new().with_source(source_factory::<Ticks>()));

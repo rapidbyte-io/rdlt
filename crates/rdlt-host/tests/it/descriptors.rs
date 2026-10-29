@@ -64,7 +64,7 @@ async fn a_connector_whose_socket_cannot_be_taken_fails_without_building_its_fac
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("taking the host's socket failed: file descriptor 2 is a standard stream"),
+        stderr.contains("taking the host's opener failed: file descriptor 2 is a standard stream"),
         "{stderr}"
     );
     assert!(!marker.exists(), "its factory was built before its socket");

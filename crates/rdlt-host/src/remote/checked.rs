@@ -7,9 +7,7 @@
 //! of the transport. Each message of an answer is passed on whole, within the bounds of its
 //! call's class on the wire and on what it decodes to, before anything reserves or decodes any of
 //! it; and, for a call made within [`rdlt_wire::bounded::charging`], once what decoding it holds
-//! is charged. A data-plane call's answer is its bounded body, whose reader releases each
-//! message's charge once it is decoded; a generated call's message holds its charge until the
-//! next is passed on, or the answer ends.
+//! is charged. Each message holds its charge until the next is passed on, or the answer ends.
 
 #[cfg(test)]
 mod tests;
@@ -52,23 +50,10 @@ impl Checked {
         Self { channel, limits }
     }
 
-    /// Calls a method of the data plane with `request`, and returns its answer: its headers
-    /// checked, its messages held to the bounds of the method's answers, and charged as those
-    /// of any call made where the caller is.
-    pub(crate) async fn data(
-        &mut self,
-        request: http::Request<tonic::body::Body>,
-    ) -> Result<http::Response<Bounded>, tonic::Status> {
-        let bounds = self.bounds(request.uri().path());
-        let charge = rdlt_wire::bounded::current();
-        let ready = tower::ServiceExt::ready(&mut self.channel).await;
-        let channel = ready
-            .map_err(|error| tonic::Status::unknown(format!("the channel failed: {error}")))?;
-        let answer = tower::Service::call(channel, request)
-            .await
-            .map_err(|error| tonic::Status::from_error(Box::new(error)))?;
-        let (parts, body) = checked(answer, bounds, charge);
-        Ok(http::Response::from_parts(parts, body))
+    /// The channel its calls go over, for the `Data` calls whose bodies are a data call's
+    /// stream, raw.
+    pub(crate) fn channel(&self) -> Channel {
+        self.channel.clone()
     }
 
     /// The bounds of the answers of the method at `path`.

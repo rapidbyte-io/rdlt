@@ -7,7 +7,7 @@ mod tests;
 /// Bytes of stack each thread is given room for in the limit.
 const STACK: u64 = 2 << 20;
 
-/// A run's budget, what it holds unadmitted and in transport, and its threads.
+/// A run's budget, what it holds unadmitted, and its threads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Resident {
     /// Bytes: the run's memory budget.
@@ -15,23 +15,18 @@ pub struct Resident {
     /// Bytes: the pushes or frames its partitions hold before they are admitted, the largest
     /// one a partition.
     pub push: u64,
-    /// Bytes: what remote connectors' open calls hold in transport, each call's stream window;
-    /// none where every connector runs in the process.
-    pub transport: u64,
     /// The process's threads: its runtime workers, its compute threads and its main thread.
     pub threads: u64,
 }
 
 impl Resident {
     /// Bytes: the most a run may raise the process's resident memory by: the budget, a fifth
-    /// of it and 32 MiB (ADR 0039), what it holds unadmitted and in transport, and a stack a
-    /// thread.
+    /// of it and 32 MiB (ADR 0039), what it holds unadmitted, and a stack a thread.
     pub fn limit(&self) -> u64 {
         self.memory
             .saturating_add(self.memory / 5)
             .saturating_add(32 << 20)
             .saturating_add(self.push)
-            .saturating_add(self.transport)
             .saturating_add(self.threads.saturating_mul(STACK))
     }
 }

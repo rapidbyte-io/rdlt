@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use bytes::Bytes;
 use rdlt_connector::serve::{ServeError, Served, serve_connection};
 use rdlt_connector::wire::{error as carried, v1};
 use rdlt_connector::{
@@ -9,13 +8,14 @@ use rdlt_connector::{
     TablePath, TableRef, destination_factory, source_factory,
 };
 use rdlt_connector_reference::{MemoryDestination, MemorySource};
-use rdlt_host::remote::Client;
+use rdlt_host::remote::{Client, RawCall};
 use rdlt_host::{Connection, Options, RemoteDestination, RemoteSource};
 use rdlt_testkit::fake::{Fake, Fault, socket};
+use rdlt_wire::limits::STREAM_WINDOW;
 use rdlt_wire::prost::Message as _;
-use rdlt_wire::{Encoder, Limits, PROTOCOL_MAJOR};
+use rdlt_wire::stream::{Call, Kind, Outgoing, Rows};
+use rdlt_wire::{Cut, Encoder, Limits, PROTOCOL_MAJOR};
 use tokio::net::UnixStream;
-use tokio_stream::wrappers::ReceiverStream;
 
 use crate::support::connectors::{Writes, Writing};
 use crate::support::served_within;
@@ -130,7 +130,7 @@ async fn a_closed_session_refuses_later_calls() {
 #[tokio::test]
 async fn a_raw_client_sends_no_message_beyond_the_size_it_is_held_to() {
     let served = Served::new().with_destination(Writes::factory(Writing::Fails));
-    let (client, session) = raw_session(served, "held").await;
+    let (client, _) = raw_session(served, "held").await;
     let mut client = client.max_encoding_message_size(16);
     let context = context();
     let open = v1::OpenRequest {
@@ -143,77 +143,58 @@ async fn a_raw_client_sends_no_message_beyond_the_size_it_is_held_to() {
         .open(open)
         .await
         .expect_err("an open beyond the size is not sent");
-    let start = v1::WriteFrame {
-        frame: Some(v1::write_frame::Frame::Start(v1::WriteStart {
-            session,
-            table: Some(v1::TableRef::from(&table())),
-        })),
-    };
-    assert!(start.encoded_len() > 16);
-    let written = async {
-        let mut acks = client.write(tokio_stream::iter([start])).await?;
-        acks.message().await
-    };
-    let answered = tokio::time::timeout(Duration::from_secs(5), written).await;
-    assert!(
-        matches!(answered, Ok(Err(_))),
-        "a write's start beyond the size is not sent: {answered:?}"
-    );
 }
 
 #[tokio::test]
 async fn a_failed_write_answers_with_its_error_and_ends_the_write() {
     use v1::write_frame::Frame;
     let served = Served::new().with_destination(Writes::factory(Writing::Fails));
-    let (mut client, session) = raw_session(served, "refused").await;
-    let (frames, receiver) = tokio::sync::mpsc::channel(8);
-    let frame = |frame| v1::WriteFrame { frame: Some(frame) };
-    frames
-        .send(frame(Frame::Start(v1::WriteStart {
-            session,
-            table: Some(v1::TableRef::from(&table())),
-        })))
+    let (client, session) = raw_session(served, "refused").await;
+    let start = v1::WriteStart {
+        session,
+        table: Some(v1::TableRef::from(&table())),
+    };
+    let mut write = RawCall::open(&client, Call::Write, &start, &Limits::default())
         .await
-        .unwrap();
+        .expect("the stream opens")
+        .expect("the write opens");
     let batch = ids(3);
     let mut encoder = Encoder::default();
-    frames
-        .send(frame(Frame::Schema(v1::WriteSchema {
+    let schema = v1::WriteFrame {
+        frame: Some(Frame::Schema(v1::WriteSchema {
             version: 1,
             ipc_schema: encoder.schema(&batch.schema()).expect("the schema encodes"),
-        })))
-        .await
-        .unwrap();
-    for ipc in encoder.batch(&batch).expect("the batch encodes") {
-        frames
-            .send(frame(Frame::Batch(v1::WriteBatch {
-                segment: 1,
-                data_header: ipc.header,
-                padding: Bytes::new(),
-                data_body: ipc.body,
-            })))
-            .await
-            .unwrap();
-    }
-    let mut acks = client.write(ReceiverStream::new(receiver)).await.unwrap();
-    let mut error = None;
-    while let Some(ack) = tokio::time::timeout(Duration::from_secs(5), acks.message())
-        .await
-        .unwrap()
-        .unwrap()
-    {
-        if let Some(v1::write_ack::Ack::Error(refused)) = ack.ack {
-            error = Some(refused);
+        })),
+    };
+    let mut frames = vec![Outgoing::message(None, &schema).expect("a schema fits a head")];
+    let mut cut = Cut::new(batch, Limits::default());
+    while let Some(pieces) = encoder.piece(&mut cut).expect("the batch encodes") {
+        for piece in pieces {
+            let kind = Kind::Batch {
+                rows: Rows::Arrow,
+                dictionary: piece.is_dictionary(),
+                tag: 1,
+            };
+            frames.push(Outgoing::new(kind, piece.into_pieces()).expect("a piece fits a head"));
         }
     }
-    let error =
-        rdlt_connector::ConnectorError::try_from(error.expect("the write answers its error"))
-            .unwrap();
-    assert_eq!(error.to_string(), "the write was refused");
+    for frame in frames {
+        assert!(write.send(frame).await, "the write takes its frames");
+    }
+    let refused = tokio::time::timeout(Duration::from_secs(5), write.refusal())
+        .await
+        .expect("the write answers")
+        .expect("the write's answers arrive")
+        .expect("the write answers its error");
+    assert_eq!(refused.to_string(), "the write was refused");
+    let ended = tokio::time::timeout(Duration::from_secs(5), write.next())
+        .await
+        .expect("the write ends");
+    assert!(matches!(ended, Ok(None)), "{ended:?}");
 }
 
 #[tokio::test]
-async fn a_writer_waits_once_its_credit_is_spent() {
+async fn a_writer_waits_once_the_write_s_stages_and_its_stream_are_full() {
     let limits = Limits {
         frame_bytes: rdlt_wire::limits::MIN_FRAME_BYTES,
         ..Limits::default()
@@ -229,11 +210,11 @@ async fn a_writer_waits_once_its_credit_is_spent() {
     let destination = RemoteDestination::new(connection).unwrap();
     let mut opened = destination.open(&context()).await.unwrap();
     let mut writer = opened.session.writer(&table()).await.unwrap();
-    // The destination's writer takes the first batch and stalls, so only the credit of the
-    // schema and that batch returns: the writes go while the window of credit and it last, each
-    // frame spending its size, and the next waits.
+    // The destination's writer takes the first batch and stalls: the batches after it wait in
+    // the write's stages, one decoded, one decoding and one read, and in the stream, whose
+    // window holds a frame of the least frame limit; and the next write waits.
     let mut written = 0;
-    for segment in 1..=20 {
+    for segment in 1..=40 {
         let wrote = tokio::time::timeout(
             Duration::from_millis(300),
             writer.write(SegmentId(segment), ids(ROWS)),
@@ -245,60 +226,16 @@ async fn a_writer_waits_once_its_credit_is_spent() {
         wrote.unwrap().unwrap();
         written += 1;
     }
-    assert_eq!(
-        written,
-        writes_within(limits.frame_bytes),
-        "writes before one waited"
+    // About 800 KB a frame: the window holds five, and each end of the stream a frame more.
+    let window = usize::try_from(STREAM_WINDOW / 800_000).expect("a count");
+    assert!(
+        (4..=4 + window + 4).contains(&written),
+        "{written} writes went before one waited"
     );
 }
 
-/// Rows in each batch written until the credit is spent: about 800 KB a frame.
+/// Rows in each batch written until the stream is full: about 800 KB a frame.
 const ROWS: i64 = 100_000;
-
-/// How many writes of `ids(ROWS)` go before one waits, with `window` bytes of credit and only
-/// the schema's and the first batch's returned: each frame goes while credit remains and spends
-/// its encoded size.
-fn writes_within(window: u64) -> usize {
-    use rdlt_wire::prost::Message as _;
-    use v1::write_frame::Frame;
-    let batch = ids(ROWS);
-    let mut encoder = Encoder::default();
-    let size = |frame: Frame| {
-        i64::try_from(v1::WriteFrame { frame: Some(frame) }.encoded_len())
-            .expect("a frame fits an i64")
-    };
-    let schema = size(Frame::Schema(v1::WriteSchema {
-        version: 1,
-        ipc_schema: encoder.schema(&batch.schema()).expect("the schema encodes"),
-    }));
-    let batches: Vec<i64> = encoder
-        .batch(&batch)
-        .expect("the batch encodes")
-        .into_iter()
-        .map(|ipc| {
-            size(Frame::Batch(v1::WriteBatch {
-                segment: 1,
-                data_header: ipc.header,
-                padding: Bytes::new(),
-                data_body: ipc.body,
-            }))
-        })
-        .collect();
-    let mut credit = i64::try_from(window).expect("the window fits an i64") + schema + batches[0];
-    for written in 0.. {
-        let first: Vec<i64> = std::iter::once(schema)
-            .chain(batches.iter().copied())
-            .collect();
-        let frames = if written == 0 { first } else { batches.clone() };
-        for frame in frames {
-            if credit <= 0 {
-                return written;
-            }
-            credit -= frame;
-        }
-    }
-    unreachable!("the credit runs out")
-}
 
 /// A socket whose shutdown fails with its error kind: `NotConnected` as macOS's does once the peer
 /// has closed.
