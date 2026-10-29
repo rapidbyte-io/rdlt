@@ -1381,3 +1381,112 @@ samples seen inside `Bounded::arrive`, without the copies whose caller unwinding
   its workers', the partition's read and the lane's writes among them.
 - Kernel time is not sampled: 38 % of the host's kept samples are taken at a kernel entry, a page
   fault or a system call, and counted with the user frames that made it.
+
+## One framed stream a data call
+
+Each data call, a read, a write and certification's read-back, built to ride a byte stream of its
+own in place of a gRPC call on the control connection. For a spawned connector the stream is a
+socket pair whose connector end the host passes over the opener on descriptor 3; for one dialed
+over TLS it is a `Data` call of its connection. A frame is a 16-byte head and its body. The
+receiver reserves a frame from its budget before it reads the body, into an allocation of exactly
+its length, where it is decoded. The sender writes a batch's frames from the batch's own buffers,
+copying those under 4 KiB together. Credit goes: a socket's buffer, or HTTP/2's windows, paces the
+sender. "The boundary's copies" above found the gathers and the encode copies at 26.3 % of the
+pipeline's CPU seconds a GB, over the 12 % that warranted building it.
+
+The rule was set before measuring. Adopt only if every condition holds:
+
+- In `process/socket/both/64x80000`, every process's CPU seconds a GB falls at least 10 %, and
+  the rounds' ranges are apart from `main`'s.
+- In no `process/socket` case does a process's CPU seconds a GB rise above `main`'s median.
+- No served case's median MB/s falls more than 3 % below `main`'s. The cases are the production
+  slice's cells, the multi-writer rows, the wide case and `process/tls/{destination,both}/64x80000`.
+
+Two variants were to be measured. In A, the reader holds one frame beyond its consumer. B was to
+be run only if A failed the MB/s clause: there the reader reads ahead up to 4 MiB of reserved
+frames. The change also ran with no malloc tunables for the spawned connectors. Had every case
+stayed within 3 % of the run with them, the tunables would have gone.
+
+- **Trees.** `main` at `bb4d460c`. The change, with A, on the same `main`. B, which reads ahead
+  up to 4 MiB on both readers the change has: the host's reader of a read, and a served write's
+  reader. Each reader is held to that by a byte semaphore and to at most 1 024 frames. The
+  change with no malloc tunables. Every tree was built before its rounds.
+- **Running.** `just bench served 0-3 '^served/process/' 4-11`, on 2026-10-29 between 04:55 and
+  10:40. The host ran on CPUs 0–3 and the connectors on 4–11, with governor powersave and energy
+  preference performance. Each run took the measurement lock alone and started once the
+  one-minute load average fell below 1.0. The loads at the starts were 0.69 to 0.91, and at the
+  ends 1.18 to 2.71.
+- **Rounds.** Round 1 ran `main`, A, no tunables, then B. Round 2 ran B, A, then `main`. Rounds
+  stopped there, since the rule failed alike in both. The tables give each side's median over its
+  two rounds, with the range of its two in brackets.
+
+The CPU rule's case, `process/socket/both/64x80000`, CPU seconds a GB:
+
+| Side | All processes | Host | Source | Destination |
+|---|---|---|---|---|
+| `main` | 2.136 [2.103–2.169] | 0.988 | 0.531 | 0.615 |
+| A | 1.159 [1.099–1.219] | 0.537 | 0.238 | 0.394 |
+| B | 1.084 [1.079–1.089] | 0.516 | 0.227 | 0.339 |
+
+The production slice, the multi-writer rows, the wide case and the TLS cells the rule names, in
+MB/s (the wide case in thousands of rows a second):
+
+| Case | `main` | A | B |
+|---|---|---|---|
+| `both/64x80000` | 1 458 [1 421–1 496] | 2 092 [1 988–2 196] | 2 257 [2 251–2 264] |
+| `both/64x80000/4-partitions` | 1 488 [1 412–1 563] | 2 493 [2 470–2 516] | 2 512 [2 461–2 564] |
+| `both/64x80000/8-partitions` | 1 521 [1 502–1 540] | 2 338 [2 281–2 395] | 2 452 [2 427–2 477] |
+| `both/64x80000/16-partitions` | 1 410 [1 372–1 449] | 2 356 [2 352–2 360] | 2 343 [2 314–2 373] |
+| `both/512x10000` | 2 396 [2 280–2 511] | 2 937 [2 556–3 318] | 3 449 [3 352–3 546] |
+| `both/512x10000/4-partitions` | 2 452 [2 355–2 549] | 3 816 [3 806–3 826] | 3 695 [3 685–3 705] |
+| `both/512x10000/16-partitions` | 2 341 [2 321–2 362] | 2 851 [2 848–2 853] | 2 925 [2 893–2 957] |
+| `both/5120x1000` | 1 818 [1 809–1 827] | **1 369** [1 369–1 369] | **1 418** [1 405–1 430] |
+| `both/5120x1000/4-partitions` | 1 559 [1 550–1 569] | **1 263** [1 259–1 267] | **1 248** [1 244–1 251] |
+| `both/5120x1000/16-partitions` | 1 503 [1 499–1 507] | **1 195** [1 192–1 197] | **1 239** [1 228–1 249] |
+| `both/64x80000/4-writers` | 1 787 [1 694–1 879] | 2 528 [2 474–2 583] | 2 608 [2 585–2 632] |
+| `both/64x80000/4-partitions/4-writers` | 1 673 [1 589–1 757] | 4 183 [4 150–4 216] | 4 003 [3 993–4 014] |
+| `both/64x80000/16-partitions/4-writers` | 1 366 [1 360–1 372] | 3 917 [3 892–3 941] | 3 766 [3 748–3 785] |
+| `both/512x10000/4-writers` | 2 879 [2 785–2 973] | 3 220 [3 206–3 233] | 3 669 [3 605–3 732] |
+| `both/512x10000/4-partitions/4-writers` | 2 261 [2 255–2 267] | 4 979 [4 966–4 993] | 4 736 [4 696–4 776] |
+| `both/512x10000/16-partitions/4-writers` | 2 021 [2 018–2 024] | 4 166 [4 120–4 211] | 4 074 [4 040–4 109] |
+| `both/5120x1000/4-writers` | 1 811 [1 805–1 817] | **1 355** [1 340–1 370] | **1 415** [1 382–1 447] |
+| `both/5120x1000/4-partitions/4-writers` | 1 722 [1 702–1 742] | 2 152 [2 149–2 154] | 2 098 [2 083–2 112] |
+| `both/5120x1000/16-partitions/4-writers` | 1 708 [1 707–1 709] | 2 029 [2 023–2 035] | 1 991 [1 983–1 999] |
+| `both/wide/arrow/5000` | 8.77 [8.77–8.77] | 8.78 [8.45–9.11] | 8.98 [8.93–9.03] |
+| `tls/destination/64x80000` | 1 324 [1 320–1 329] | 1 398 [1 388–1 407] | 1 425 [1 422–1 427] |
+| `tls/both/64x80000` | 1 141 [1 139–1 143] | 1 326 [1 304–1 347] | 1 258 [1 206–1 311] |
+
+**Decision: closed.** The first condition holds by far: every process's CPU seconds a GB falls
+36–57 %, and the ranges are apart. The other two fail in both rounds, alike for A and B:
+
+- The production slice's 1 000-row cells move 18–25 % less, through one writer from 1, 4 and 16
+  partitions: the four bold rows in each variant's column.
+- The wide case's source process rises above `main`'s median, 1.607 to 1.821 CPU seconds a GB
+  (+13.3 %) with A, and to 1.850 with B.
+
+What the rule does not gate, recorded:
+
+- **Where the 1 000-row cells lose.** A run of them writes through one lane. Through one writer
+  it moves 18–25 % less, while through four lanes it moves 17–25 % more. Every process keeps
+  fewer CPUs busy in the 1-partition cell: the host 1.86 to 1.27, the source 1.41 to 0.64 and the
+  destination 1.61 to 0.79. So the run waits on one task, not on CPU. No profile was taken; the
+  likeliest task is the lane. Each frame it writes, it now copies into the kernel itself, where
+  before it handed frames to HTTP/2's connection task, and with frames of a thousand rows that
+  copy and its system call would bound it. B's deeper look-ahead brings no failing cell within
+  3 %, so no reader is what waits. A task a call that took the lane's frames, as HTTP/2's
+  connection task did, is what this points to. It was not run, since only A and B were
+  registered before measuring.
+- **Larger frames gain.** The production slice's cells of 80 000 and 10 000 rows move 22–69 %
+  more, and through four writers 1.1 to 2.9 times as much. With A, a source alone moves 41–86 %
+  more, and a destination alone 41 % more in 80 000-row frames.
+- **Two cases outside the clause lose.** `destination/512x10000` moves 10.7 % less (14.2 % with
+  B), and with A the TLS rows of 10 000-row frames 6–10 % less (`tls/both/512x10000` 1 423 to
+  1 334, `tls/destination/512x10000` 1 632 to 1 471).
+- **Malloc tunables.** The change without them ran one round, beside A's first. Eighteen of its
+  cases moved more than 3 % from A's in MB/s or CPU seconds a GB, up to 13 % either way, the
+  multi-writer and TLS rows mostly slower. With the change closed, the tunables stay.
+- **Instructions and memory.** `just instructions` held every case within 2 % but
+  `ipc/roundtrip`: +2.8 % instructions and 148 to 210 allocations, as frames are gathered from
+  their pieces there. The new `wire/stream` case counted 823 681 instructions and 234
+  allocations. `just resident` held its bound. The served line's host peaked at 100–136 MiB, its
+  spawned source at 461–463 MiB and its destination at 47–54 MiB.
