@@ -47,7 +47,7 @@ fn native() -> Rendering {
 fn unplanned(max: u64, limit: u64) -> Lowered {
     Lowered {
         rendering: native(),
-        stored: Vec::new(),
+        stored: Arc::default(),
         row: 0,
         item: 0,
         piece: 0,
@@ -286,7 +286,7 @@ fn a_unit_is_cut_by_what_lowering_it_into_its_table_holds() {
         read: false,
     };
     let stored = Lowered {
-        stored: vec![Some(wide.clone())],
+        stored: Arc::from([Some(wide.clone())]),
         ..unplanned(MAX, u64::MAX)
     };
     let cut = pieces(small(), stored);
@@ -299,7 +299,7 @@ fn a_unit_is_cut_by_what_lowering_it_into_its_table_holds() {
     // Stored as text there, each takes its text beside, and each row the columns of the table
     // the unit holds nothing in.
     let text = Lowered {
-        stored: vec![Some(Stored { text: true, ..wide })],
+        stored: Arc::from([Some(Stored { text: true, ..wide })]),
         row: 100,
         ..unplanned(MAX, u64::MAX)
     };
@@ -309,18 +309,6 @@ fn a_unit_is_cut_by_what_lowering_it_into_its_table_holds() {
         cut.iter()
             .all(|(rows, bytes)| *bytes >= 215 * *rows as u64 && *bytes <= MAX)
     );
-}
-
-#[test]
-fn a_piece_of_a_unit_shares_the_allocations_the_unit_holds() {
-    let budget = crate::budget::budget(1 << 30);
-    let parts = vec![encoded(0, 100)];
-    let pieces = sliced(vec![held(&budget, parts, 64)], 2_000);
-    assert!(pieces.len() > 1);
-    let (last, others) = pieces.split_last().unwrap();
-    for held in others {
-        assert!(Arc::ptr_eq(&held.allocations, &last.allocations));
-    }
 }
 
 #[test]

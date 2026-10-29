@@ -217,6 +217,24 @@ fn a_batch_is_charged_its_change_columns_what_splitting_a_row_holds_and_its_arra
 }
 
 #[test]
+fn a_plan_aligns_how_its_table_stores_columns_to_where_a_change_batch_s_change_columns_sit() {
+    let changes = Case::new(LoweringCase::Changes, ROWS);
+    let batch = changes.batch();
+    // The same columns with the last moved first, a change column among them or not.
+    let mut order: Vec<usize> = (0..batch.num_columns()).collect();
+    order.rotate_right(1);
+    let moved = batch.project(&order).unwrap();
+    let plan = changes.plan();
+    for batch in [batch, &moved, batch] {
+        let by_batch = plan.aligned(batch);
+        assert_eq!(*by_batch, *aligned(batch, &plan.stored()));
+        // Batches whose change columns sit alike share one.
+        assert!(Arc::ptr_eq(&by_batch, &plan.aligned(batch)));
+    }
+    assert_ne!(*plan.aligned(batch), *plan.aligned(&moved));
+}
+
+#[test]
 fn a_change_row_is_charged_its_flags_over_the_columns_its_plan_writes() {
     // Beside a row's sequence, 72 bytes as bytes and 120 as text, and a log's op, 3 bytes
     // natively and 120 as text: flags over nine columns, 2 bytes with an offset and validity,

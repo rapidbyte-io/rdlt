@@ -137,9 +137,6 @@ async fn shredded_batches_hold_what_they_keep_alive_of_what_their_pushes_were_ad
     // The text is gone: the pushes hold what the batches keep alive, and nothing was asked of
     // the budget for them.
     assert_eq!((budget.reserved(), budget.peak()), (alive, admitted));
-    for (held, batch) in held.iter().zip(&batches) {
-        assert_eq!(held.allocations.bytes(), allocated(batch));
-    }
     // The batches share what holds them until the last is written.
     let mut held = held.into_iter();
     drop(held.next());
@@ -243,14 +240,13 @@ fn a_change_stream_s_unit_is_judged_and_cut_where_it_lies() {
         partial_updates: false,
     };
     let unit = changes(1_000, 10);
-    let held = Held::of(vec![unit.clone()], Vec::new());
     // Its data columns are judged as they lie: nothing of the unit is copied for them, and
     // they keep alive only a schema of their own.
     let judged = data(&unit).unwrap();
     assert_eq!(judged.num_columns(), 1);
     let schema = rdlt_connector::cost::schema_bytes(&judged.schema());
     assert_eq!(
-        Allocations::default().add_beyond(&judged, &held.allocations),
+        Allocations::default().add_beyond(&judged, &Allocations::of(&unit)),
         schema
     );
     // The rows the stream ignores are counted from their ops, where they lie.
@@ -349,7 +345,6 @@ fn held_by(
     copies: bool,
 ) {
     let lowering = super::Lowering {
-        allocations: Arc::default(),
         reserved: budget.try_acquire_working(bytes).unwrap(),
         unit: Arc::default(),
     };
@@ -507,7 +502,7 @@ fn flags_as_text(items: usize, shares: crate::budget::Shares) -> super::pieces::
     let (max, limit) = super::piece_bounds(shares);
     let lowered = super::pieces::Lowered {
         rendering: rdlt_connector::cost::Rendering::text(),
-        stored: vec![Some(stored)],
+        stored: Arc::from([Some(stored)]),
         row: 0,
         item: 0,
         piece: 0,

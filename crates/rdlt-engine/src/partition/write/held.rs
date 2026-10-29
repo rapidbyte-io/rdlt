@@ -1,12 +1,12 @@
-//! What holds a unit's memory while it is lowered: its batches, the permits its pushes were
-//! admitted with, and the allocations they cover.
+//! What holds a unit's memory while it is lowered: its batches and the permits its pushes were
+//! admitted with.
 
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
 use parking_lot::Mutex;
 use rdlt_connector::Permit;
-use rdlt_connector::cost::{Allocations, batch_charge};
+use rdlt_connector::cost::batch_charge;
 
 use crate::budget::Reservation;
 use crate::cost::Admitted;
@@ -20,10 +20,6 @@ use crate::cost::Admitted;
 pub(super) struct Held {
     pub(super) batches: Vec<RecordBatch>,
     pub(super) permits: Vec<Permit>,
-    /// The allocations the batches keep alive, made once and never added to, so every address
-    /// in it is alive while it is: what a piece is lowered to counts only what it keeps alive
-    /// beyond them.
-    pub(super) allocations: Arc<Allocations>,
 }
 
 /// What holds a unit, shared by each of its pieces, each declaring its share after its rows:
@@ -34,25 +30,7 @@ pub(super) type Share = Arc<Mutex<Held>>;
 impl Held {
     /// What holds `batches`, a unit `permits` were admitted for.
     pub(super) fn of(batches: Vec<RecordBatch>, permits: Vec<Permit>) -> Self {
-        let mut allocations = Allocations::default();
-        for batch in &batches {
-            allocations.add(batch);
-        }
-        Self {
-            batches,
-            permits,
-            allocations: Arc::new(allocations),
-        }
-    }
-
-    /// What holds `batches`, another piece of the same unit: no permits of its own, the unit's
-    /// allocations.
-    pub(super) fn piece(&self, batches: Vec<RecordBatch>) -> Self {
-        Self {
-            batches,
-            permits: Vec::new(),
-            allocations: Arc::clone(&self.allocations),
-        }
+        Self { batches, permits }
     }
 }
 

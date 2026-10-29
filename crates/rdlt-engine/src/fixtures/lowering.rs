@@ -29,8 +29,6 @@ use crate::error::Error;
 use crate::naming::Naming;
 use crate::plan::{StreamPlan, WriteMode};
 use crate::policy::{SchemaPolicy, SchemaSettings};
-#[cfg(test)]
-use crate::table::aligned;
 use crate::table::{
     ChangeLayout, ChangeRows, Incoming, LineageColumns, LoweringPlan, MetaNames, Model, Prepared,
     Resolver, Settings, Stamp, TableView,
@@ -378,7 +376,7 @@ impl Case {
     pub(crate) fn charge(&self) -> u64 {
         let (stored, beside) = match &self.pushed {
             Pushed::Data(_) => (self.plan.stored(), 0),
-            Pushed::Changes(batch) => (aligned(batch, &self.plan.stored()), CHANGE_ROW),
+            Pushed::Changes(batch) => (self.plan.aligned(batch), CHANGE_ROW),
         };
         let row = self.plan.row_bytes().saturating_add(beside);
         let mut measure = self

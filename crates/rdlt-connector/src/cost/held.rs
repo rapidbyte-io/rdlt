@@ -110,6 +110,17 @@ impl Allocations {
     }
 }
 
+impl<'a> FromIterator<&'a RecordBatch> for Allocations {
+    /// The allocations the batches keep alive together.
+    fn from_iter<I: IntoIterator<Item = &'a RecordBatch>>(batches: I) -> Self {
+        let mut allocations = Self::default();
+        for batch in batches {
+            allocations.add(batch);
+        }
+        allocations
+    }
+}
+
 /// How many data buffers the view arrays of a batch hold, at any depth.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ViewBuffers {

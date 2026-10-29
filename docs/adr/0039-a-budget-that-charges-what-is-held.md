@@ -238,7 +238,8 @@ budget before it is held, or bounded by a limit with a typed refusal.
     and in two, of integers keyed or not, and of those views at a thousand columns, no more than
     it keeps charged once its parts are planned; a piece of those views, and of one column of
     views holding four thousand buffers, in one part and in two, no more than it reserved; and
-    cutting a unit keeps nothing a column beside it between its pieces.
+    what holds and cuts a unit, a change stream's and a merge's, keeps nothing a column beside its
+    batches.
   - Judging which columns of 64-bit integers a batch holds a value a float would round in reads
     each column where it lies, in any encoding, and holds nothing a row, so nothing is charged
     for it; a normalized flush is judged so before any of it is split, and tests hold its peak
@@ -358,7 +359,11 @@ budget before it is held, or bounded by a limit with a typed refusal.
     rendering, and copies none of them. The cutter builds one for each piece it cuts, and one
     for a row beyond a piece, and reads the unit's batches through what holds the unit: what
     measuring learns of the values keys and runs name lasts the piece, and cutting keeps nothing
-    a column beside the unit between its pieces.
+    a column beside the unit between its pieces. How a table stores each column is built once
+    with its plan, and every unit the plan cuts shares it; a change stream's, aligned to its
+    batches' columns, the plan keeps for the batches whose change columns sit where the last
+    one's did. What holds a unit keeps its batches and its permits, and no set of what they keep
+    alive.
   - No more values are remembered than take an eighth of the limit measured against; a value
     beyond those is measured each time it is named.
   - Tests count the steps and the values remembered for dictionaries of every key type, nested
@@ -405,12 +410,13 @@ budget before it is held, or bounded by a limit with a typed refusal.
   flushed. The constant columns' buffers of a load count for none.
 - **A set of allocations names only what is alive.** `cost::Allocations` tells allocations
   apart by where they start, and the allocator hands a freed address out again, so a set is kept
-  only while its holder keeps alive what it names. A unit's set is built once from its batches,
-  which what holds the unit keeps until its last piece goes, and is never added to; a piece's
-  growth, and a split's, is counted in a set of its own, dropped once counted. A piece made where
-  an earlier piece of its unit was freed is charged in full: tests build one in the very
-  allocation an earlier piece freed, and a property holds each piece's charge to its allocations
-  beyond its unit, counted afresh.
+  only while its holder keeps alive what it names. No set is kept beside a unit: a piece's growth
+  is counted beyond the allocations of the parts it was lowered from, and a split's beyond its
+  piece's batches, in sets built as each is counted, while those batches are alive, and dropped
+  once it is. A piece reads only its parts, so what it shares with its unit it shares with them.
+  A piece made where an earlier piece of its unit was freed is charged in full: tests build one
+  in the very allocation an earlier piece freed, and a property holds each piece's charge to its
+  allocations beyond its parts, counted afresh.
 - **A row that fits no request is refused.** A row that alone takes more to lower than a request
   may take of the budget, or than a JSON flush's batches leave of theirs, fails the write with
   `row_exceeds_budget`, naming the limit, before it is lowered. A row within the frame limit

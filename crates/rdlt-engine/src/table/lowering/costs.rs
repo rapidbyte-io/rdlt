@@ -1,12 +1,63 @@
 //! What lowering a batch as a plan says holds: how the table stores each column, and what each
 //! row takes in the columns the batch does not hold.
 
+use std::sync::Arc;
+
+use arrow_array::RecordBatch;
+use parking_lot::Mutex;
 use rdlt_connector::LogicalType;
 use rdlt_connector::cost::{Stored, arrays};
 use rdlt_wire::limits::count;
 
-use super::{LoweringPlan, Source};
+use super::{LoweringPlan, Source, aligned, changes};
 use crate::cost::flags_bytes;
+use crate::table::TableView;
+
+/// How a plan's table stores each column, worked out once: by the incoming columns, and by the
+/// columns of the change batches it cut last.
+#[derive(Debug)]
+pub(super) struct Storing {
+    /// By the incoming columns, which every unit the plan cuts shares.
+    columns: Arc<[Option<Stored>]>,
+    /// By the columns of the change batches cut last, for the batches whose change columns sit
+    /// where theirs did.
+    aligned: Mutex<Option<Aligned>>,
+}
+
+impl Storing {
+    /// How `view`'s table stores each of `incoming` incoming columns, as [`LoweringPlan::stored`]
+    /// says, where `sources` says where each column of the table takes its values from.
+    pub(super) fn new(view: &TableView, sources: &[Source], incoming: usize) -> Self {
+        let mut stored = vec![None; incoming];
+        let columns = view.model.columns.iter().zip(&view.lowered);
+        for ((column, lowered), source) in columns.zip(sources) {
+            let (index, read) = match source {
+                Source::Incoming(index, from) if *from != LogicalType::Null => (*index, false),
+                // A column of JSON its own column holds in part: what reading it takes covers
+                // the values copied to their variant too.
+                Source::Read(index) => (*index, true),
+                _ => continue,
+            };
+            stored[index] = Some(Stored {
+                column: column.logical_type().clone(),
+                text: lowered != column.logical_type(),
+                read,
+            });
+        }
+        Self {
+            columns: stored.into(),
+            aligned: Mutex::new(None),
+        }
+    }
+}
+
+/// How a table stores each column of a change batch, by the batch's own columns.
+#[derive(Debug)]
+struct Aligned {
+    /// Where the batch's change columns sit among its fields.
+    places: Vec<usize>,
+    stored: Arc<[Option<Stored>]>,
+}
 
 /// Bytes: what a row takes in a metadata column of bytes the destination stores: at most 64
 /// bytes, which a positional id's 37, a hash's 32 and a sequence's 16 are within, their offset
@@ -33,23 +84,26 @@ impl LoweringPlan {
     /// column, whether the destination stores it as text, and whether the column reads it in
     /// part; nothing for a column the plan sends nowhere, or sends typed null, which
     /// [`LoweringPlan::null_fill`] counts.
-    pub(crate) fn stored(&self) -> Vec<Option<Stored>> {
-        let mut stored = vec![None; self.routes.len()];
-        let columns = self.view.model.columns.iter().zip(&self.view.lowered);
-        for ((column, lowered), source) in columns.zip(&self.sources) {
-            let (index, read) = match source {
-                Source::Incoming(index, from) if *from != LogicalType::Null => (*index, false),
-                // A column of JSON its own column holds in part: what reading it takes covers
-                // the values copied to their variant too.
-                Source::Read(index) => (*index, true),
-                _ => continue,
-            };
-            stored[index] = Some(Stored {
-                column: column.logical_type().clone(),
-                text: lowered != column.logical_type(),
-                read,
-            });
+    pub(crate) fn stored(&self) -> Arc<[Option<Stored>]> {
+        Arc::clone(&self.storing.columns)
+    }
+
+    /// How the plan's table stores each column of `batch`, a change batch, by the batch's own
+    /// columns: nothing for its change columns.
+    pub(crate) fn aligned(&self, batch: &RecordBatch) -> Arc<[Option<Stored>]> {
+        let places = changes::places(batch);
+        let mut last = self.storing.aligned.lock();
+        if let Some(kept) = last.as_ref()
+            && kept.places == places
+        {
+            return Arc::clone(&kept.stored);
         }
+        let stored: Arc<[Option<Stored>]> = aligned(batch, &self.storing.columns).into();
+        let kept = Aligned {
+            places,
+            stored: Arc::clone(&stored),
+        };
+        *last = Some(kept);
         stored
     }
 
