@@ -183,19 +183,20 @@ async fn a_unit_s_charge_is_released_once_the_last_of_its_pieces_is_let_go() {
     assert_eq!(*freed.lock(), Some(true));
 }
 
-#[tokio::test(start_paused = true)]
-async fn a_normalized_unit_s_charge_is_released_once_the_last_of_its_pieces_on_any_lane_goes() {
+/// A context over `budget` normalizing its stream, writing to two lanes that are never run, and
+/// the lanes, each holding what is queued on it until dropped: a partition's rows go to the
+/// first, its array's items to the second.
+async fn normalizing(budget: MemoryBudget) -> (PartitionContext, Vec<crate::lane::Lane>) {
     let shape = crate::normalize::Shape {
         max_depth: 8,
         whole: std::collections::BTreeSet::new(),
         key: Vec::new(),
     };
-    let mut context = context(budget(), Pool::inline(), Some(shape)).await;
-    // Two lanes, never run: a partition's rows go to the first, its array's items to the second.
+    let mut context = context(budget, Pool::inline(), Some(shape)).await;
     let env: Arc<dyn Env> = Arc::new(InlineEnv);
     let writers = crate::config::GrowthLimits::default().writers();
     let window = NonZeroUsize::new(1_024).unwrap();
-    let (lanes, mut ends) = crate::lane::Lanes::new(
+    let (lanes, ends) = crate::lane::Lanes::new(
         (NonZeroUsize::new(2).unwrap(), writers),
         &context.tables,
         window,
@@ -203,6 +204,13 @@ async fn a_normalized_unit_s_charge_is_released_once_the_last_of_its_pieces_on_a
         (&env, &Arc::default()),
     );
     context.lanes = lanes;
+    (context, ends)
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_normalized_unit_s_charge_is_released_once_the_last_of_its_pieces_on_any_lane_goes() {
+    let budget = budget();
+    let (context, mut ends) = normalizing(budget.clone()).await;
     // Rows holding arrays are cut into several pieces before the split, and the rows after them,
     // holding empty arrays, into more: the last pieces go all to the first lane. Each item's
     // text is long enough that lowering a piece's items takes no more than its allowance holds.
@@ -241,8 +249,46 @@ async fn a_normalized_unit_s_charge_is_released_once_the_last_of_its_pieces_on_a
         None,
         "the unit's charge went with its last piece"
     );
+    assert!(
+        budget.reserved() > 0,
+        "its pieces hold what lowering them took"
+    );
     drop(second);
     assert_eq!(*freed.lock(), Some(true));
+    assert_eq!(budget.reserved(), 0, "every piece gave back what it took");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_normalized_json_write_gives_back_all_it_reserved_once_its_pieces_go() {
+    let budget = budget();
+    let (context, ends) = normalizing(budget.clone()).await;
+    // Rows whose arrays' items go to a table of their own, lowered inside what was reserved for
+    // the flush.
+    let records: Vec<String> = (0..2_000)
+        .map(|row| {
+            format!(
+                "{{\"id\":{row},\"items\":[\"{}\",\"{row}\"]}}",
+                "x".repeat(32)
+            )
+        })
+        .collect();
+    let text = Bytes::from(records.join("\n"));
+    let permit = super::json_text(&budget, text.clone()).await;
+    let flushed = Flushed {
+        unit: Unit::Json(vec![text]),
+        permits: vec![permit],
+        bytes: 0,
+    };
+    let (job, mut open, mut schemas) = (job(), OpenSegment::default(), Schemas::default());
+    let written = write_flushed(&job, &context, &mut open, &mut schemas, flushed);
+    written.await.unwrap();
+    drop(context);
+    assert!(
+        budget.reserved() > 0,
+        "its pieces hold what lowering them took"
+    );
+    drop(ends);
+    assert_eq!(budget.reserved(), 0, "every piece gave back what it took");
 }
 
 /// Jobs kept until they are run, as a pool whose threads are all busy keeps them.
