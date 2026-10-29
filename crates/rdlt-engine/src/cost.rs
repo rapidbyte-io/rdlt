@@ -8,8 +8,9 @@ use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use arrow_array::RecordBatch;
 use parking_lot::Mutex;
-use rdlt_connector::cost::{Rendering, push_charge};
+use rdlt_connector::cost::{Rendering, ViewBuffers, listed_bytes, push_charge};
 use rdlt_connector::{
     Admission, BoxFuture, Capabilities, ConnectorError, ConnectorErrorKind, LimitExceeded, Permit,
     SourceEvent,
@@ -67,6 +68,18 @@ pub(crate) const fn flags_bytes(columns: u64, text: bool) -> u64 {
     bytes
         .saturating_add(width.saturating_mul(2))
         .saturating_add(OFFSET_AND_VALIDITY)
+}
+
+/// Copies of a view array's list of its data buffers that lowering a part of it holds at once:
+/// the batch its parts are joined into, and Arrow's conversion of that, which copies the list into
+/// a vector it grows to twice its length and then into a list of its own.
+const VIEW_LISTS: u64 = 4;
+
+/// Bytes: what lowering a part of `batch` holds of its views' lists of their data buffers, for
+/// each buffer beyond the first of each view array: the part's arrays hold those of the first.
+pub(crate) fn view_lists(batch: &RecordBatch) -> u64 {
+    let beyond = ViewBuffers::of(batch).beyond_first;
+    listed_bytes(beyond.saturating_mul(VIEW_LISTS))
 }
 
 /// Times what a batch's rows expand to that normalizing them may hold: the items it copies out of

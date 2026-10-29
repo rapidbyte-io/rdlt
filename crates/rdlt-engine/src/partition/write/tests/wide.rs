@@ -5,8 +5,8 @@
 //! than it keeps charged once its parts are planned; cutting keeps nothing a column beside the
 //! unit it cuts; and a piece holds no more than it reserved, however many parts it joins: a
 //! change stream's flags remapped over the table's columns, every row a filter keeps copied as
-//! what it was copied from goes, and the arrays of each batch lowering holds of the piece. Once
-//! lowered, a piece keeps no more than it is charged.
+//! what it was copied from goes, the arrays of each batch lowering holds of the piece, and the
+//! lists of its views' data buffers. Once lowered, a piece keeps no more than it is charged.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -21,7 +21,7 @@ use super::super::held::shredded;
 use super::super::normalized::{kept, made, split};
 use super::super::pieces::Pieces;
 use crate::cost::tests::{held_alone, peak_alone};
-use crate::fixtures::lowering::wide::{dictionaries, flags, integers};
+use crate::fixtures::lowering::wide::{dictionaries, flags, integers, views};
 use crate::fixtures::lowering::{Case, Storage, stamp};
 use crate::normalize::Shape;
 use crate::partition::ChangeMode;
@@ -42,6 +42,10 @@ const ROWS: u32 = 2_048;
 /// slower than integers kept as they are: fewer, what they take still far beyond a piece's fixed
 /// parts.
 const SLOW_ROWS: u32 = 256;
+
+/// Data buffers each column of views holds: Arrow copies their list as it joins and converts
+/// them, whatever its rows name.
+const VIEW_BUFFERS: usize = 16;
 
 /// A piece measured: the columns of its table, its rows, and how many parts they are cut into.
 #[derive(Clone, Copy, Debug)]
@@ -220,6 +224,23 @@ fn a_wide_history_piece_hashes_its_versions_within_what_it_reserved() {
     }
 }
 
+#[test]
+fn a_wide_piece_of_views_holds_no_more_than_it_reserved() {
+    // Lowering converts a column at a time, so the list a piece of one part copies passes what
+    // its arrays leave room for where a column holds many buffers.
+    let mut found = Vec::new();
+    for (columns, buffers) in [(COLUMNS, VIEW_BUFFERS), (1, 4_096)] {
+        let case = Case::wide_views(2, columns, buffers);
+        for parts in [1, 2] {
+            if let Err(beyond) = within(&case, case.batch(), parts, None) {
+                let at = format!("{columns} columns of {buffers} buffers in {parts} parts");
+                found.push(format!("{at}: {beyond}"));
+            }
+        }
+    }
+    assert!(found.is_empty(), "{}", found.join("\n"));
+}
+
 /// What `batch` holds once decoded from the frame it is sent in, the frame's allocation among it,
 /// and the batch: its schema and dictionaries are the decoder's, which its read keeps.
 fn decoded_alone(batch: &RecordBatch) -> (u64, RecordBatch) {
@@ -240,11 +261,13 @@ fn decoded_alone(batch: &RecordBatch) -> (u64, RecordBatch) {
 fn a_wide_push_holds_no_more_than_it_is_admitted_for() {
     let mut found = Vec::new();
     for columns in [COLUMNS, WIDEST] {
-        // Booleans of many rows whose validity, holding no null, Arrow's data of them leaves out.
-        let pushes: [(&str, &dyn Fn() -> RecordBatch); 3] = [
+        // Booleans of many rows whose validity, holding no null, Arrow's data of them leaves out,
+        // and views each holding several data buffers.
+        let pushes: [(&str, &dyn Fn() -> RecordBatch); 4] = [
             ("integers", &|| integers(1, columns, |row| row)),
             ("dictionaries", &|| dictionaries(1, columns)),
             ("booleans", &|| flags(1_024, columns)),
+            ("views", &|| views(1, columns, VIEW_BUFFERS)),
         ];
         for (what, make) in pushes {
             let (held, built) = held_alone(make);
@@ -290,25 +313,42 @@ fn a_wide_split_keeps_no_more_than_it_is_charged_once_its_parts_are_planned() {
                 whole: BTreeSet::new(),
                 key: key.into_iter().map(Arc::from).collect(),
             };
-            let batch = integers(2, columns, |row| row);
-            let unit = Allocations::of(&batch);
-            for parts in [1, 2] {
-                // The piece cut before the split, its slices of the unit, and what the split's
-                // parts keep once they are planned, while their pieces are lowered.
-                let (held, (_, _, charged)) = held_alone(|| {
-                    let piece = sliced(&batch, parts);
-                    let split = split(&stream, &piece, &shape).unwrap();
-                    let charged = made(&piece, &split, &unit);
-                    (piece, kept(&split), charged)
-                });
-                if held > charged {
-                    let at = format!("{columns} columns keyed by {key:?} in {parts} parts");
-                    found.push(format!("{at}: {charged} charged, {held} held"));
-                }
+            // Views split as they are, their buffers' list joined, whatever the table's width: a
+            // stream keyed by `id` has none of them.
+            let mut batches = vec![integers(2, columns, |row| row)];
+            if key.is_none() && columns == COLUMNS {
+                batches.push(views(2, columns, VIEW_BUFFERS));
+            }
+            for batch in &batches {
+                within_split(&stream, &shape, batch, &mut found);
             }
         }
     }
     assert!(found.is_empty(), "{}", found.join("\n"));
+}
+
+/// Where splitting `batch` normalized as `shape`, in one part and in two, keeps more than it is
+/// charged once its parts are planned: what it held and was charged, added to `found`.
+fn within_split(stream: &StreamName, shape: &Shape, batch: &RecordBatch, found: &mut Vec<String>) {
+    let unit = Allocations::of(batch);
+    for parts in [1, 2] {
+        // The piece cut before the split, its slices of the unit, and what the split's parts
+        // keep once they are planned, while their pieces are lowered.
+        let (held, (_, _, charged)) = held_alone(|| {
+            let piece = sliced(batch, parts);
+            let split = split(stream, &piece, shape).unwrap();
+            let charged = made(&piece, &split, &unit);
+            (piece, kept(&split), charged)
+        });
+        if held > charged {
+            let (columns, key) = (batch.num_columns(), &shape.key);
+            let at = format!(
+                "{columns} columns of {} keyed by {key:?} in {parts} parts",
+                batch.schema().field(0).data_type()
+            );
+            found.push(format!("{at}: {charged} charged, {held} held"));
+        }
+    }
 }
 
 #[test]

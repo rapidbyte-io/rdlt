@@ -1,4 +1,5 @@
-//! The allocations a batch keeps alive, each counted once however many arrays share it.
+//! The allocations a batch keeps alive, each counted once however many arrays share it, and the
+//! data buffers its views hold.
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
@@ -93,13 +94,11 @@ impl Allocations {
             pending.extend(data.child_data());
         }
         // An array's data leaves out a validity holding no null, which the array keeps alive.
-        let (mut next, mut below) = (Some(array), Vec::new());
-        while let Some(array) = next.take().or_else(|| below.pop()) {
+        each_array(array, |array| {
             if let Some(nulls) = array.nulls() {
                 self.buffer(nulls.buffer(), beyond);
             }
-            children(array, &mut below);
-        }
+        });
     }
 
     fn buffer(&mut self, buffer: &Buffer, beyond: Option<&Self>) {
@@ -108,6 +107,47 @@ impl Allocations {
         if bytes > 0 && !held_by(beyond, start) && self.seen.insert(start) {
             self.bytes = self.bytes.saturating_add(bytes);
         }
+    }
+}
+
+/// How many data buffers the view arrays of a batch hold, at any depth.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ViewBuffers {
+    /// Every one.
+    pub all: u64,
+    /// Those beyond the first of each array.
+    pub beyond_first: u64,
+}
+
+impl ViewBuffers {
+    /// The data buffers the view arrays of `batch` hold.
+    pub fn of(batch: &RecordBatch) -> Self {
+        let mut counted = Self::default();
+        for column in batch.columns() {
+            each_array(column.as_ref(), |array| {
+                let buffers = match array.data_type() {
+                    DataType::Utf8View => array.as_string_view().data_buffers().len(),
+                    DataType::BinaryView => array.as_binary_view().data_buffers().len(),
+                    _ => 0,
+                };
+                let buffers = count(buffers);
+                counted.all = counted.all.saturating_add(buffers);
+                counted.beyond_first = counted
+                    .beyond_first
+                    .saturating_add(buffers.saturating_sub(1));
+            });
+        }
+        counted
+    }
+}
+
+/// Visits `array` and every array below it, at any depth.
+fn each_array<'a>(array: &'a dyn Array, mut visit: impl FnMut(&'a dyn Array)) {
+    // A stack of the arrays still to visit, which a flat array never fills.
+    let (mut next, mut below) = (Some(array), Vec::new());
+    while let Some(array) = next.take().or_else(|| below.pop()) {
+        visit(array);
+        children(array, &mut below);
     }
 }
 

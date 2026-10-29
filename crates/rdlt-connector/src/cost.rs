@@ -1,9 +1,10 @@
 //! What a batch costs whoever holds it: the memory it keeps alive, and the memory it becomes
 //! once its encodings are decoded and its values rendered as the destination stores them.
 //!
-//! A push is charged what it keeps alive and its arrays ([`push_charge`]); what it becomes bounds
-//! what is lowered, read back or compared at once. What a frame of its rows would hold on the
-//! wire is not measured here: `rdlt_wire::Weigher` weighs that.
+//! A push is charged what it keeps alive, its arrays and its views' data buffers
+//! ([`push_charge`]); what it becomes bounds what is lowered, read back or compared at once. What
+//! a frame of its rows would hold on the wire is not measured here: `rdlt_wire::Weigher` weighs
+//! that.
 
 mod expanded;
 mod held;
@@ -20,7 +21,7 @@ use arrow_array::{Array, RecordBatch};
 use arrow_schema::{DataType, Field, Fields};
 use rdlt_wire::limits::{MESSAGE_ROOM, count};
 
-pub use held::{Allocations, schema_bytes};
+pub use held::{Allocations, ViewBuffers, schema_bytes};
 
 use crate::sink::Push;
 use crate::types::{LogicalType, TypeKind};
@@ -104,6 +105,24 @@ pub const fn array_bytes(arrays: u64) -> u64 {
     arrays.saturating_mul(ARRAY)
 }
 
+/// Bytes: what a data buffer of a view array takes beside its bytes: the handle on its
+/// allocation and its place in the array's list of them.
+const VIEW_BUFFER: u64 = 80;
+
+/// Bytes: a data buffer's place in a view array's list of them, which each copy of the list
+/// takes again.
+const LISTED: u64 = 24;
+
+/// Bytes: what `buffers` data buffers of view arrays take beside their bytes.
+pub const fn view_buffer_bytes(buffers: u64) -> u64 {
+    buffers.saturating_mul(VIEW_BUFFER)
+}
+
+/// Bytes: what `buffers` places in view arrays' lists of their data buffers take.
+pub const fn listed_bytes(buffers: u64) -> u64 {
+    buffers.saturating_mul(LISTED)
+}
+
 /// Bytes: what the arrays of a batch of `fields` take beside the bytes of their buffers, an
 /// array a field at every depth, as a slice of the batch or a batch built of its rows holds them.
 pub fn arrays(fields: &Fields) -> u64 {
@@ -140,11 +159,15 @@ fn own_arrays(mut data_type: &DataType, values: bool) -> (u64, &DataType) {
     (arrays, data_type)
 }
 
-/// The bytes holding `batch` is charged: every allocation it keeps alive, each counted once, and
-/// its arrays, a dictionary's values among them.
+/// The bytes holding `batch` is charged: every allocation it keeps alive, each counted once, its
+/// arrays, a dictionary's values among them, and the data buffers of its views, any number.
 pub fn batch_charge(batch: &RecordBatch) -> u64 {
     let arrays = array_bytes(counted(batch.schema_ref().fields(), true));
-    Allocations::of(batch).bytes().saturating_add(arrays)
+    let views = view_buffer_bytes(ViewBuffers::of(batch).all);
+    Allocations::of(batch)
+        .bytes()
+        .saturating_add(arrays)
+        .saturating_add(views)
 }
 
 /// Bytes a JSON push is charged for each byte of its text: the text, and twice it for the
