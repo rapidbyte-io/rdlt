@@ -9,7 +9,7 @@ repository.workspace = true
 
 [features]
 # Internals for the benchmarks and fuzz targets; not a public API.
-bench = ["dep:arrow-ipc", "dep:schemars", "dep:stats_alloc", "tokio/rt-multi-thread"]
+bench = ["dep:arrow-ipc", "dep:schemars", "dep:stats_alloc", "tokio/net", "tokio/rt-multi-thread"]
 # Crash points at every durability step, for the failpoint sweep; never in a release.
 failpoints = ["dep:fail", "fail/failpoints"]
 # What the deterministic simulation observes of the engine; never in a release.

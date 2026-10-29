@@ -32,7 +32,8 @@ use rdlt_engine::bench::{
     Passthrough, Replayed, Wide, check_json, counted, json_column, normalize, null_sink, pruned,
     replay, rows_pushed, shred,
 };
-use rdlt_wire::{Decoder, Encoder, Limits};
+use rdlt_wire::stream::{Call, End, FrameReader, Kind, Outgoing, Rows};
+use rdlt_wire::{Cut, Decoder, Encoder, IpcFrame, Limits};
 use stats_alloc::{INSTRUMENTED_SYSTEM, StatsAlloc};
 
 #[global_allocator]
@@ -71,7 +72,7 @@ const COMMITTED: NonZeroUsize = NonZeroUsize::new(1_024).expect("not zero");
 type Case = (&'static str, fn(usize));
 
 /// Every case the instruction counts run.
-const CASES: [Case; 28] = [
+const CASES: [Case; 29] = [
     ("passthrough/null_sink", passed_through),
     ("commit/1024", committed),
     ("shred/nested", |times| shredded(Corpus::Nested, times)),
@@ -114,6 +115,7 @@ const CASES: [Case; 28] = [
     }),
     ("wide/arrow_1000", widened),
     ("ipc/roundtrip", round_tripped),
+    ("wire/stream", streamed),
     ("json/check", json_checked),
     ("lowering/history", |times| lowered("history", times)),
     ("lowering/changes", |times| lowered("changes", times)),
@@ -494,6 +496,71 @@ fn round_tripped(times: usize) {
     for _ in 0..times {
         black_box(roundtrip(&batch));
     }
+}
+
+/// One batch of [`ROWS`] rows framed as a sender frames it, written to one end of a socket pair
+/// from its own buffers, read from the other into place, and decoded, as a data call carries it.
+fn streamed(times: usize) {
+    let batch = Passthrough::batch(0, ROWS);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .build()
+        .expect("a runtime builds");
+    runtime.block_on(async {
+        let (sender, receiver) = tokio::net::UnixStream::pair().expect("a socket pair");
+        let (_, mut writer) = sender.into_split();
+        let (reader, _) = receiver.into_split();
+        let limits = Limits::default();
+        let mut frames = FrameReader::new(reader, Call::Read.bounds(End::Connector, &limits));
+        for _ in 0..times {
+            black_box(stream(&batch, &mut writer, &mut frames).await);
+        }
+    });
+}
+
+/// `batch` sent over `writer` and read back from `frames`, as [`streamed`] sends it.
+async fn stream(
+    batch: &RecordBatch,
+    writer: &mut tokio::net::unix::OwnedWriteHalf,
+    frames: &mut FrameReader<tokio::net::unix::OwnedReadHalf>,
+) -> RecordBatch {
+    let limits = Limits::default();
+    let mut encoder = Encoder::default();
+    let schema = encoder.schema(&batch.schema()).expect("the schema encodes");
+    let mut decoder = Decoder::new(limits);
+    decoder.schema(&schema).expect("the schema decodes");
+    let mut cut = Cut::new(batch.clone(), limits);
+    let mut sent = Vec::new();
+    while let Some(pieces) = encoder.piece(&mut cut).expect("the batch encodes") {
+        for piece in pieces {
+            let kind = Kind::Batch {
+                rows: Rows::Arrow,
+                dictionary: piece.is_dictionary(),
+                tag: 1,
+            };
+            sent.push(Outgoing::new(kind, piece.into_pieces()).expect("a piece fits a head"));
+        }
+    }
+    let count = sent.len();
+    let writing = async {
+        for mut frame in sent {
+            frame.write(writer).await.expect("the frame is taken");
+        }
+    };
+    let reading = async {
+        let mut received = None;
+        for _ in 0..count {
+            let frame = frames.next().await.expect("the frame arrives whole");
+            let frame = frame.expect("a frame");
+            let frame = IpcFrame::framed(frame.body).expect("an encapsulated message");
+            received = decoder
+                .frame(&frame)
+                .expect("the frame decodes")
+                .or(received);
+        }
+        received.expect("the last frame is the batch")
+    };
+    tokio::join!(writing, reading).1
 }
 
 /// `batch` encoded as one sender encodes it, then decoded as its receiver decodes it.
