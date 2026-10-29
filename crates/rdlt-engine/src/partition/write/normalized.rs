@@ -9,7 +9,7 @@ use std::sync::Arc;
 use arrow_array::RecordBatch;
 use arrow_schema::ArrowError;
 use parking_lot::Mutex;
-use rdlt_connector::cost::{Allocations, array_bytes, arrays};
+use rdlt_connector::cost::{Allocations, ViewBuffers, array_bytes, arrays, listed_bytes};
 use rdlt_connector::{Permit, StreamName};
 use rdlt_wire::limits::count;
 
@@ -481,8 +481,10 @@ pub(super) fn split(
 
 /// Bytes: what splitting `piece`, slices of a unit, into `parts` holds beyond what `unit` holds
 /// until the last of their pieces is written: the allocations of the parts' batches and lineage
-/// that `unit` does not hold, each counted once, and the arrays of `piece`'s batches, of the
-/// parts' and of their lineage.
+/// that `unit` does not hold, each counted once, the arrays of `piece`'s batches, of the parts'
+/// and of their lineage, and a place in a list for each data buffer of the parts' views beyond
+/// the first of each view array: the split joins the piece's lists, and a part's arrays hold the
+/// first.
 pub(super) fn made(piece: &[RecordBatch], parts: &[Part], unit: &Allocations) -> u64 {
     let mut made = Allocations::default();
     let sliced = piece
@@ -494,7 +496,8 @@ pub(super) fn made(piece: &[RecordBatch], parts: &[Part], unit: &Allocations) ->
         let lineage = part.lineage.arrays().len() + usize::from(part.lineage.keys.is_some());
         held = held
             .saturating_add(arrays(part.batch.schema_ref().fields()))
-            .saturating_add(array_bytes(count(lineage)));
+            .saturating_add(array_bytes(count(lineage)))
+            .saturating_add(listed_bytes(ViewBuffers::of(&part.batch).beyond_first));
     }
     made.bytes().saturating_add(held)
 }

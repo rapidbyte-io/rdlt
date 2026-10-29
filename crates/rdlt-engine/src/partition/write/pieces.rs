@@ -14,6 +14,7 @@ use rdlt_connector::cost::{Allocations, Measure, Rendering, Stored};
 
 use super::Held;
 use super::held::Share;
+use crate::cost::view_lists;
 
 /// A row that alone takes more to lower than what is asked of the budget for it may.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,6 +61,7 @@ pub(super) struct Piece {
 /// A run of rows of one batch, cut and measured.
 struct Run {
     rows: usize,
+    /// Bytes: what lowering the rows holds, and what their batch's views' lists take.
     bytes: u64,
 }
 
@@ -73,31 +75,32 @@ impl Lowered {
         measure.with_items(self.item)
     }
 
-    /// Bytes: what a piece of one part takes whatever its rows.
-    fn beside(&self) -> u64 {
-        self.piece.saturating_add(self.part)
+    /// Bytes: what a piece of one part of a batch whose views' lists take `lists` takes whatever
+    /// its rows.
+    fn beside(&self, lists: u64) -> u64 {
+        self.piece.saturating_add(self.part).saturating_add(lists)
     }
 
-    /// Bytes: the most the rows of a piece of one part may take, and a row's alone, beside what
-    /// the piece takes whatever its rows.
-    fn rows_within(&self) -> (u64, u64) {
-        let beside = self.beside();
+    /// Bytes: the most the rows of a piece of one part of a batch whose views' lists take
+    /// `lists` may take, and a row's alone, beside what the piece takes whatever its rows.
+    fn rows_within(&self, lists: u64) -> (u64, u64) {
+        let beside = self.beside(lists);
         (
             self.max.saturating_sub(beside),
             self.limit.saturating_sub(beside),
         )
     }
 
-    /// The next run of `batch` from its row `row`, as `measure` cuts it against what a piece's
-    /// rows may take: one row beyond a piece is measured again against what a row may take, each
-    /// value it names once.
+    /// The next run of `batch`, whose views' lists take `lists`, from its row `row`, as `measure`
+    /// cuts it against what a piece's rows may take: one row beyond a piece is measured again
+    /// against what a row may take, each value it names once.
     fn run(
         &self,
         measure: &mut Measure<'_>,
-        batch: &RecordBatch,
+        (batch, lists): (&RecordBatch, u64),
         row: usize,
     ) -> Result<Run, RowTooLarge> {
-        let ((max, limit), beside) = (self.rows_within(), self.beside());
+        let ((max, limit), beside) = (self.rows_within(lists), self.beside(lists));
         let cut = measure.piece(row);
         let (rows, mut bytes) = (cut.end - row, cut.bytes);
         if bytes > max {
@@ -109,7 +112,10 @@ impl Lowered {
                 });
             }
         }
-        Ok(Run { rows, bytes })
+        Ok(Run {
+            rows,
+            bytes: bytes.saturating_add(lists),
+        })
     }
 }
 
@@ -220,18 +226,21 @@ impl Pieces {
         };
         let unit = Arc::clone(&self.unit);
         let unit = unit.lock();
-        let max = self.lowered.rows_within().0;
-        let mut measure = None;
+        let mut measured = None;
         while let Some(batch) = unit.batches.get(self.part) {
             if self.row >= batch.num_rows() {
-                (self.part, self.row, measure) = (self.part + 1, 0, None);
+                (self.part, self.row, measured) = (self.part + 1, 0, None);
                 continue;
             }
             let run = if let Some(run) = self.cut.take() {
                 run
             } else {
-                let measure = measure.get_or_insert_with(|| self.lowered.measure(batch, max));
-                self.lowered.run(measure, batch, self.row)?
+                let (measure, lists) = measured.get_or_insert_with(|| {
+                    let lists = view_lists(batch);
+                    let max = self.lowered.rows_within(lists).0;
+                    (self.lowered.measure(batch, max), lists)
+                });
+                self.lowered.run(measure, (batch, *lists), self.row)?
             };
             // A second part joins the first into a batch of their own.
             let parts = if piece.parts.len() == 1 { 2 } else { 1 };

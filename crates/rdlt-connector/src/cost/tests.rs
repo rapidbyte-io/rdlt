@@ -21,8 +21,8 @@ use proptest::prelude::*;
 use rdlt_wire::limits::MESSAGE_ROOM;
 
 use super::{
-    Allocations, JSON_CHARGE, Piece, Rendering, Stored, array_bytes, arrays, batch_charge,
-    json_charge, nulls, push_charge, schema_bytes,
+    Allocations, JSON_CHARGE, Piece, Rendering, Stored, ViewBuffers, array_bytes, arrays,
+    batch_charge, json_charge, nulls, push_charge, schema_bytes,
 };
 use crate::sink::Push;
 use crate::types::{self, LogicalType, TypeKind};
@@ -475,6 +475,45 @@ fn a_batch_holds_every_allocation_it_pins_once() {
     assert_eq!(Allocations::of(&shared).bytes(), held);
     // A push holds its two arrays beside, 320 bytes each.
     assert_eq!(push_charge(&Push::Arrow(shared)), held + 2 * 320);
+}
+
+#[test]
+fn a_view_array_is_charged_a_handle_for_each_of_its_data_buffers() {
+    // Values short enough to be held in their views name no buffer, so a column holds those it
+    // was built with, any number of them, one of no bytes among them.
+    let views = |buffers: u8| {
+        let (views, _, nulls) = arrow_array::StringViewArray::from(vec!["abc"; 4]).into_parts();
+        let data: Vec<Buffer> = (0..buffers)
+            .map(|buffer| Buffer::from(vec![7_u8; usize::from(buffer)]))
+            .collect();
+        arrow_array::StringViewArray::try_new(views, data, nulls).unwrap()
+    };
+    for buffers in [0, 1, 3] {
+        let column = batch(Arc::new(views(buffers)));
+        let held = Allocations::of(&column).bytes() + 320;
+        let charged = push_charge(&Push::Arrow(column));
+        assert_eq!(charged, held + 80 * u64::from(buffers), "{buffers} buffers");
+    }
+    // A dictionary's values are views too, held beside its keys.
+    let keyed =
+        DictionaryArray::<Int32Type>::try_new(Int32Array::from(vec![0]), Arc::new(views(2)));
+    let keyed = batch(Arc::new(keyed.unwrap()));
+    let held = Allocations::of(&keyed).bytes() + 2 * 320;
+    assert_eq!(push_charge(&Push::Arrow(keyed)), held + 2 * 80);
+    // Bytes are counted as text is, and those beyond the first of each array apart.
+    let (views_of, _, nulls) =
+        arrow_array::BinaryViewArray::from(vec![b"ab".as_slice(); 4]).into_parts();
+    let data: Vec<Buffer> = (0..3).map(|_| Buffer::from(vec![7_u8; 8])).collect();
+    let bytes = arrow_array::BinaryViewArray::try_new(views_of, data, nulls).unwrap();
+    let columns = [
+        ("bytes", Arc::new(bytes) as ArrayRef),
+        ("text", Arc::new(views(0))),
+    ];
+    let columns = RecordBatch::try_from_iter(columns).unwrap();
+    let counted = ViewBuffers::of(&columns);
+    assert_eq!((counted.all, counted.beyond_first), (3, 2));
+    let held = Allocations::of(&columns).bytes() + 2 * 320;
+    assert_eq!(push_charge(&Push::Arrow(columns)), held + 3 * 80);
 }
 
 #[test]

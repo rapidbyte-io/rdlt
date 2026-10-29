@@ -100,7 +100,7 @@ budget before it is held, or bounded by a limit with a typed refusal.
 
   | Limit | Derived from | Least memory, 16 partitions | Default 256 MiB, 16 partitions | Wire default |
   |---|---|---|---|---|
-  | frame bytes | what pushes may take less what a read keeps, `MESSAGE_ROOM` and the arrays of a batch of every column, two a column, and half a request less what a row of the widest table takes beside its values | 4,194,304 | 28,505,370 | 64 MiB |
+  | frame bytes | what pushes may take less what a read keeps, `MESSAGE_ROOM` and the arrays of a batch of every column, two a column, with a view's data buffer a column, and half a request less what a row of the widest table takes beside its values | 4,194,304 | 28,505,370 | 64 MiB |
   | json push bytes | a third of what pushes may take less `MESSAGE_ROOM` | 5,149,072 | 34,952,448 | 64 MiB |
   | cursor bytes | the cursors' share over twice one more than the partitions | 18,173 | 123,361 | 4 MiB |
   | dictionary bytes | half of what a read keeps | 308,949 | 2,097,152 | 64 MiB |
@@ -186,7 +186,9 @@ budget before it is held, or bounded by a limit with a typed refusal.
 - **A push is admitted for what it holds, and lowered for what it becomes.** A push of Arrow
   batches reserves what it keeps alive when it is admitted, before its table is known, and its
   arrays: `ARRAY` (below) for each, a field at every depth and a dictionary's values beside its
-  keys, which a batch holds and a slice of it shares. Once its plan is found the cost model
+  keys, which a batch holds and a slice of it shares. A view array holds any number of data
+  buffers, and each costs `VIEW_BUFFER`, 80 bytes, beside its bytes: the handle on its allocation
+  and its place in the array's list of them. Once its plan is found the cost model
   takes, for each column, the type of the table's column and whether the destination stores it
   as text, and measures what lowering holds at once, which each piece reserves before it is
   lowered.
@@ -208,6 +210,11 @@ budget before it is held, or bounded by a limit with a typed refusal.
     validity takes. Lowering builds no other batch of a piece's columns: a lone part is lowered
     as it is, a merge's batch keeps its own schema where no key column changes, and a history
     table's versions hash its columns under fields built once with its plan.
+  - A part costs too, whatever its rows, four places in a list, 24 bytes each, for every data
+    buffer of its batch's views beyond the first of each view array: the batch its parts are
+    joined into lists them all, and Arrow's conversion of a view copies its list into a vector it
+    grows to twice its length and then into a list of its own. A part's arrays hold the copies of
+    the first, and a view a sender's frame carries holds one at most.
   - A change stream's row costs its unchanged flags as its table keeps or merges by them,
     remapped over the table's columns: a bit a column as far as the furthest the batch writes,
     with an offset and its validity, and their hex text beside them where the destination
@@ -224,12 +231,14 @@ budget before it is held, or bounded by a limit with a typed refusal.
     two in two of a table of a thousand and of the widest a schema may have at the defaults,
     7,489: a change stream's, as a log and merged, stored as it is and as text, with its flags
     and the deletes it ignores, a merge's of repeated keys, a history table's, and one dropping
-    rows. At both widths a push of a row of integers or of dictionaries, or of a thousand rows of
-    booleans whose validity holds no null, holds no more than it is admitted for, built in its
-    source's process or decoded from its frame; a JSON push's batches no more than they keep
-    charged once shredded; a normalized split, in one part and in two, keyed or not, no more than
-    it keeps charged once its parts are planned; and cutting a unit keeps nothing a column beside
-    it between its pieces.
+    rows. At both widths a push of a row of integers, of dictionaries or of views each holding
+    sixteen data buffers, or of a thousand rows of booleans whose validity holds no null, holds no
+    more than it is admitted for, built in its source's process or decoded from its frame; a JSON
+    push's batches no more than they keep charged once shredded; a normalized split, in one part
+    and in two, of integers keyed or not, and of those views at a thousand columns, no more than
+    it keeps charged once its parts are planned; a piece of those views, and of one column of
+    views holding four thousand buffers, in one part and in two, no more than it reserved; and
+    cutting a unit keeps nothing a column beside it between its pieces.
   - Judging which columns of 64-bit integers a batch holds a value a float would round in reads
     each column where it lies, in any encoding, and holds nothing a row, so nothing is charged
     for it; a normalized flush is judged so before any of it is split, and tests hold its peak
@@ -258,8 +267,9 @@ budget before it is held, or bounded by a limit with a typed refusal.
     the table stores them, the nulls of the columns it lacks and the metadata lowering adds.
     What the piece asked for beyond what its split made and an allowance for two of its parts'
     pieces is given back. What the split made is counted beyond the unit's batches, with the
-    arrays of the piece's slices of them, of its parts' batches and of their lineage, and the
-    piece and the parts it planned are held until the last of their pieces is written. The
+    arrays of the piece's slices of them, of its parts' batches and of their lineage, and a place
+    in a list for each data buffer of its parts' views beyond the first of each view array, and
+    the piece and the parts it planned are held until the last of their pieces is written. The
     allowance is lent to its parts' pieces: each takes the bytes lowering it holds and gives
     them back as it is written, so the partition waits for its own pieces to be written, never
     for the budget, while it holds them, and the allowance goes back with the last of them.
@@ -370,9 +380,9 @@ budget before it is held, or bounded by a limit with a typed refusal.
   - *How much text do these values render to?* `cost::text_bytes`, the same widths, for the
     engine's builders.
   - *What is a push charged?* `cost::push_charge`, by the engine's admission and by
-    certification's source clauses alike: a batch what it keeps alive and its arrays
-    (`cost::batch_charge`), and JSON `cost::json_charge`, `JSON_CHARGE` (three) times its text and
-    `MESSAGE_ROOM`.
+    certification's source clauses alike: a batch what it keeps alive, its arrays and its views'
+    data buffers (`cost::batch_charge`), and JSON `cost::json_charge`, `JSON_CHARGE` (three) times
+    its text and `MESSAGE_ROOM`.
   - *Do a schema's columns and depth fit?* The emitter counts them on the Arrow schema; the wire
     counts them on the schema's message.
 - **The engine materializes only what rows name.** Before anything converts a column, its
@@ -579,6 +589,10 @@ admitted, and what a remote connector's calls hold in transport.
   the defaults reserves 4.8 MB beside its values, each part of a piece of it 2.4 MB and the batch
   several are joined into as much again, so a unit of many small batches of a wide table is
   lowered in more pieces, and a frame at the defaults is at most 28.5 MB.
+- A view array is charged each of its data buffers, and a part of a piece the lists of them
+  lowering copies: a source whose views hold a buffer for every few rows loads in smaller
+  pieces, and a peer whose frame holds views it did not narrow is charged 80 bytes a buffer,
+  though their bytes share the frame and the decoded list takes 24.
 - No engine runs on less than about thirty-eight mebibytes, the price of a row as long as a
   frame lowering within half a request. The simulator draws budgets between the least for one
   partition and twice that, and gives a run one slot more than the unbounded partitions it

@@ -1,3 +1,8 @@
+use std::sync::Arc;
+
+use arrow_array::builder::StringViewBuilder;
+use arrow_array::types::Int32Type;
+use arrow_array::{ArrayRef, DictionaryArray, Int32Array, RecordBatch};
 use proptest::prelude::*;
 use rdlt_connector::cost::{Allocations, batch_charge, json_charge};
 use rdlt_wire::Limits;
@@ -43,18 +48,34 @@ fn the_default_budget_admits_these_limits() {
     assert_eq!(admitted(Shares::of(256 * MIB), 1).schema_columns, 10_000);
 }
 
+/// `columns` columns of a row of text behind 32-bit keys, `c0` on, each column's dictionary a
+/// view naming sixteen bytes of its one data buffer, as a sender narrows a frame's views.
+fn keyed_views(columns: usize) -> RecordBatch {
+    let named = (0..columns).map(|column| {
+        let mut views = StringViewBuilder::new();
+        views.append_value(format!("{column:>16}"));
+        let values = Arc::new(views.finish());
+        let keyed = DictionaryArray::<Int32Type>::try_new(Int32Array::from(vec![0]), values);
+        (format!("c{column}"), Arc::new(keyed.unwrap()) as ArrayRef)
+    });
+    RecordBatch::try_from_iter(named).unwrap()
+}
+
 #[test]
-fn a_push_s_arrays_are_at_most_two_a_column_of_its_schema() {
-    // Columns of dictionaries hold the most arrays a column a push may: their keys' and their
-    // values'. Integers hold one a column.
+fn a_push_s_arrays_and_views_take_at_most_what_each_of_its_columns_leaves_room_for() {
+    // Columns of dictionaries of views take the most a column of a frame may beside its buffers:
+    // the keys' array, the values' and the values' one data buffer. Dictionaries of text take
+    // the two arrays, and integers one.
     for columns in [1, 100, 7_489] {
-        let keyed = dictionaries(1, columns);
-        let arrays = batch_charge(&keyed) - Allocations::of(&keyed).bytes();
+        let keyed = keyed_views(columns);
+        let (keyed, words) = (&keyed, &dictionaries(1, columns));
+        let plain = &integers(1, columns, |row| row);
+        let beside = |batch: &RecordBatch| batch_charge(batch) - Allocations::of(batch).bytes();
         let columns = u64::try_from(columns).unwrap();
-        assert_eq!(arrays, pushed_arrays(columns));
-        let plain = integers(1, columns.try_into().unwrap(), |row| row);
-        let arrays = batch_charge(&plain) - Allocations::of(&plain).bytes();
-        assert_eq!(arrays * 2, pushed_arrays(columns));
+        assert_eq!(beside(keyed), pushed_arrays(columns));
+        assert_eq!(beside(words), 2 * beside(plain));
+        assert_eq!(beside(plain), columns * 320);
+        assert!(beside(words) < beside(keyed));
     }
 }
 
@@ -141,9 +162,9 @@ fn what_each_limit_admits_all_at_once_fits_the_share_it_draws_on() {
         let what = format!("{capacity} bytes read by {readers}");
         let defaults = Limits::default();
         assert_eq!(limits.lesser(&defaults), limits, "{what}");
-        // A frame's message, at most its frame and MESSAGE_ROOM, beside what a read keeps and a
-        // batch's arrays, fits what pushes may take; the frame, with a row's null in each column
-        // and the metadata, fits a request over what a data message holds decoded for each byte.
+        // A frame's message beside what a read keeps and a batch's arrays and buffers fits what
+        // pushes may take; the frame, with a row's null in each column and the metadata, fits a
+        // request over what a data message holds decoded for each byte.
         let message = limits.frame_bytes.saturating_add(MESSAGE_ROOM);
         let pushed = message + kept + pushed_arrays(limits.schema_columns);
         assert!(

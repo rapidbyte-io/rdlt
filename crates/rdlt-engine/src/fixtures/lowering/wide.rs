@@ -7,9 +7,9 @@ use std::sync::Arc;
 use arrow_array::types::Int32Type;
 use arrow_array::{
     ArrayRef, BooleanArray, DictionaryArray, Int32Array, Int64Array, RecordBatch, StringArray,
-    TimestampNanosecondArray, TimestampSecondArray,
+    StringViewArray, TimestampNanosecondArray, TimestampSecondArray,
 };
-use arrow_buffer::{BooleanBuffer, NullBuffer};
+use arrow_buffer::{BooleanBuffer, Buffer, NullBuffer};
 use rdlt_connector::{ReadMode, TimeUnit};
 
 use super::{Case, Made, Meta, Pushed, Storage, changed, instant, stream, with_column};
@@ -41,6 +41,13 @@ impl Case {
             pushed: Pushed::Changes(pushed),
         };
         Self::planned(storage.capabilities(), made)
+    }
+
+    /// An append of `rows` rows of a table of `columns` columns of text, pushed as views each
+    /// holding `buffers` data buffers.
+    pub(crate) fn wide_views(rows: u32, columns: usize, buffers: usize) -> Self {
+        let made = Made::append(views(rows, columns, buffers));
+        Self::planned(Storage::Native.capabilities(), made)
     }
 
     /// A merge by `id` of `rows` rows of a table of `columns` integer columns, each key held by
@@ -121,6 +128,19 @@ pub(crate) fn flags(rows: u32, columns: usize) -> RecordBatch {
         let valid = Some(NullBuffer::new_valid(rows));
         let flags: ArrayRef = Arc::new(BooleanArray::new(BooleanBuffer::new_set(rows), valid));
         (format!("c{column}"), flags)
+    });
+    RecordBatch::try_from_iter(named).expect("columns of one length")
+}
+
+/// `rows` rows of `columns` columns of text as views, `c0` on, each holding `buffers` data buffers
+/// of sixteen bytes that no view names: every value is short enough to be held in its view.
+pub(crate) fn views(rows: u32, columns: usize, buffers: usize) -> RecordBatch {
+    let rows = usize::try_from(rows).expect("a row count");
+    let named = (0..columns).map(|column| {
+        let (views, _, nulls) = StringViewArray::from(vec!["view"; rows]).into_parts();
+        let data: Vec<Buffer> = (0..buffers).map(|_| Buffer::from(vec![0_u8; 16])).collect();
+        let views = StringViewArray::try_new(views, data, nulls).expect("views name no buffer");
+        (format!("c{column}"), Arc::new(views) as ArrayRef)
     });
     RecordBatch::try_from_iter(named).expect("columns of one length")
 }

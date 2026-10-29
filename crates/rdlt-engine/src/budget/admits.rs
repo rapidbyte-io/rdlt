@@ -8,7 +8,7 @@ mod tests;
 
 use std::num::NonZeroUsize;
 
-use rdlt_connector::cost::{JSON_CHARGE, array_bytes};
+use rdlt_connector::cost::{JSON_CHARGE, array_bytes, view_buffer_bytes};
 use rdlt_wire::Limits;
 use rdlt_wire::limits::{Class, MESSAGE_ROOM, MIN_DICTIONARY_BYTES};
 
@@ -26,8 +26,9 @@ use crate::limits::{COLUMN_RECORD, SCHEMA_KEPT};
 ///   fifth of that half, since the schema decoded from it takes up to four times the message.
 /// - A frame's batch keeps alive the message it arrived in, its own bytes and at most
 ///   `MESSAGE_ROOM` beside them, the dictionaries its keys name and its schema, and holds its
-///   arrays, two a column where every column is a dictionary's keys beside its values, so a frame
-///   is at most what pushes may take less what a read may keep, that room and those arrays.
+///   arrays, two a column where every column is a dictionary's keys beside its values, and a data
+///   buffer of those values' views, which a sender narrows to one, so a frame is at most what
+///   pushes may take less what a read may keep, that room and those arrays and buffers.
 /// - A frame is charged, before it is decoded, what its scan counts decoding it holds, at most
 ///   twice its bytes and the fields around them, to what pushes may take: a frame is at most a
 ///   request over what a data message holds decoded for each of its bytes, less a row's null in
@@ -118,10 +119,11 @@ pub(crate) fn row_overhead(columns: u64) -> u64 {
         .saturating_add(array_bytes(arrays))
 }
 
-/// Bytes: the most a push's arrays take beside its buffers, in a batch of `columns` columns at
-/// most: two a column, where each is a dictionary's keys beside its values.
+/// Bytes: the most a frame's arrays and its views' data buffers take beside their bytes, in a
+/// batch of `columns` columns at most: two arrays a column, where each is a dictionary's keys
+/// beside its values, and a data buffer of those values' views, as a sender narrows them.
 pub(crate) fn pushed_arrays(columns: u64) -> u64 {
-    array_bytes(columns.saturating_mul(2))
+    array_bytes(columns.saturating_mul(2)).saturating_add(view_buffer_bytes(columns))
 }
 
 /// The parts what reads keep of a budget of `shares` is divided into for `readers` reads at once:
