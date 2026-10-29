@@ -23,7 +23,7 @@ decision they implement.
   `Registry` is trusted by construction, as any code the embedder links is.
 - **Everything a connector sends is hostile input**, not only its data frames: its spec and
   capabilities, catalogs, plans, cursors, checkpoints, state records, receipts, errors and their
-  text, deadlines, credit, its timing, and its silence.
+  text, deadlines, its frames' heads, its timing, and its silence.
 - **The engine survives any connector.** No connector behaviour may crash, abort or hang the
   host, or take memory, disk, descriptors or processor time beyond the host's configured budgets.
   - Every input is validated before it is used.

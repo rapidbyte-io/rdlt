@@ -20,8 +20,8 @@ hold the whole of M4's code and review it only at the end. M4a is the protocol a
 - **M4 is split in four**, along the spec's crates:
   - **M4a** is the protocol: the messages, the Arrow codec, the limits and the conversions.
   - **M4b** serves it and adapts it for the engine. `serve` and the remote source and
-    destination run over an in-process socket, with handshake, credit, heartbeat and deadlines,
-    and the `P` clauses.
+    destination run over an in-process socket, with handshake, heartbeat and deadlines, and the
+    `P` clauses.
   - **M4c** is `rdlt-host`: process and remote placement, supervision, respawn, the placement
     matrix, P1–P4 and L3.
   - **M4d** is `rdlt-certify`: its library and CLI, and the `K` kill matrix.
@@ -47,9 +47,9 @@ hold the whole of M4's code and review it only at the end. M4a is the protocol a
   - Building rdlt-wire needs neither `protoc` nor a build script.
   - `just lint` runs `cargo xtask codegen --check`, which fails when the committed code is stale.
   - `xtask lint`, coverage and mutation testing skip the `generated` directory.
-  - The data plane's calls (`Write`, `Read` and `ReadPublished`) are left out of the generated
-    service, as `rdlt_wire::plane` serves and calls them by hand; their messages are generated,
-    and the scan's forms describe every call's, the data plane's among them.
+  - The data calls (`Write`, `Read` and `ReadPublished`) are no methods of the generated service:
+    each is a stream of frames of its own (`rdlt_wire::stream`, ADR 0016). Their messages are
+    generated, and the scan's forms describe every call's and every frame's message.
   - The service stubs come with M4b, which uses them.
 - **The conversions live in `rdlt-connector`, under a `wire` feature.** The dependency rule
   (§4.3) gives `rdlt-wire` no workspace dependencies, and `rdlt-connector` depends on it.
@@ -63,12 +63,10 @@ hold the whole of M4's code and review it only at the end. M4a is the protocol a
 - **State records travel as their opaque bytes.** A destination stores state records verbatim and
   never reads them, and the contract types their values as bytes. So `StateRecord` is a key and
   bytes on the wire, not the typed `StateEntry` §12.3 lists.
-- **Arrow batches travel in Arrow Flight's `FlightData` layout** (§12.3): an IPC message
-  flatbuffer and its body buffers.
-  - A batch's message carries `padding` before `data_body`: zero bytes that put the body at a
-    multiple of 64 bytes from the message's gRPC prefix, so a receiver holding the message from
-    a 64-byte address reads the body where it arrived (ADR 0038). Credit counts each message as
-    sent, padding included. A JSON push is not padded.
+- **Arrow batches travel as Arrow IPC encapsulated messages** (§12.3), each a frame of its own:
+  its prefix, its flatbuffer metadata padded to 64 bytes, and its body buffers at the stream
+  format's 64-byte alignment, so a receiver holding the frame's body from a 64-byte address reads
+  each buffer where it arrived (ADR 0038). A JSON push is a frame of its text.
   - The `Encoder` sends a schema once per schema epoch, then for each batch the dictionaries it
     needs that differ from those sent, then the batch. A new schema epoch sends every dictionary
     again.

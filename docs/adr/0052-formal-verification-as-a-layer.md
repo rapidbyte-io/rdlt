@@ -7,7 +7,7 @@ Status: accepted, 2026-10-18.
 The simulation, the mutation tests and fuzzing find a defect by running into it: a seed that
 interleaves a cancellation with a send, a change no test catches, an input the fuzzer reaches.
 Some properties are stated over every input or every interleaving, and a run meets a sample of
-them: the credit a sender may spend, a budget's arithmetic, attempts that crash and race over one
+them: what a frame's head admits, a budget's arithmetic, attempts that crash and race over one
 destination. A bounded model checker proves a property of the code for every input up to a bound;
 a specification checked by a model checker proves a protocol's invariant over every interleaving
 up to a bound. Neither runs the program: each holds only what it is given, the code's arithmetic
@@ -27,7 +27,7 @@ or the protocol's design.
 | Trust in the file system | regression tests; every played placement opens, checks and hashes its binary |
 | Conversion fidelity | the simulation's encodings; differential tests |
 | A contract's documentation, fixtures, or an API's precondition | Kani over the limits a handshake accepts; tests |
-| Arithmetic of credit, budgets, positions and frame lengths | Kani; property tests where a proof does not fit (below) |
+| Arithmetic of budgets, positions, frame heads and lengths | Kani; property tests where a proof does not fit (below) |
 | A protocol across processes: exactly-once, re-planning | Quint |
 
 A formal layer is added to the layers of its class, never in place of one.
@@ -54,8 +54,8 @@ A formal layer is added to the layers of its class, never in place of one.
 - Kani's compiler builds `rdlt-wire` and `rdlt-engine` with their default features, Arrow, tonic,
   sonic-rs and stacker among them. Each module's proofs are a part of their own, which compiles for
   seconds when warm, so verification and not compilation is the time, as the bullets below give it
-  harness by harness. Warm on a laptop, `rdlt-wire`'s nine harnesses take about 460 seconds, 319 of
-  them `flow`'s credit harness, and `rdlt-engine`'s three about 250 seconds. A crate's
+  harness by harness. Warm on a laptop, `rdlt-wire`'s six harnesses take about 135 seconds, 119 of
+  them a bounded body's length prefix, and `rdlt-engine`'s three about 250 seconds. A crate's
   proofs check its own code, in the crate. Kani's output is not clean: its toolchain warns of the
   `register_tool` feature it forces and of deprecated methods in the engine, and it drops the
   arguments of an `unreachable!`, which warns of an unused variable; none comes from a proof.
@@ -73,12 +73,10 @@ A formal layer is added to the layers of its class, never in place of one.
   within three minutes. Code that takes such a lock is held by property tests.
 - Mutation testing leaves out `proofs.rs` (`.cargo/mutants.toml`): no mutant's tests compile it.
   Coverage needs no rule: no build it measures sets `kani`.
-- Wire credit is proved (`rdlt-wire/src/flow/proofs.rs`): a receiver opens within its bounds and
-  stays within them, its window between its floor and its limit, growing without overflow and
-  never shrinking, for any state those bounds admit; a grant of no bytes is refused; and over
-  every call of up to 6 steps a sender's credit is what was granted
-  less what was spent, above minus its largest frame, and the window once every frame sent is
-  taken.
+- A data call's frame head is proved (`rdlt-wire/src/stream/head/proofs.rs`): any sixteen
+  bytes are read, without panicking, as a head of a kind the sending end sends and within that
+  kind's bound, whose encoding is those bytes, or are refused; a head refused for its length
+  names a length beyond the bound (under a second).
 - The limits a handshake accepts are proved (`rdlt-wire/src/limits/proofs.rs`) for every value
   of every limit: a peer's limits are read as sent, or as the protocol's defaults where it left
   them unset, but the dictionary limit, taken as sent; a limit set a handshake admits, sent or
@@ -292,9 +290,8 @@ A formal layer is added to the layers of its class, never in place of one.
   `just formal-part`, within 15 minutes of its own, from a build cache the crate's parts share;
   the `formal` job, the check the ruleset requires, passes once every part has, or where the
   change needs none, so it always reports.
-- On GitHub's runners `rdlt-wire`'s `flow` part took 276 to 481 seconds over four runs, nearly all
-  of it its credit harness (271 to 450 seconds), beside a setup of about 25 seconds.
-  `rdlt-engine`'s `budget::admits` part takes about 7 minutes and `budget::ledger`'s about 2.
+- On GitHub's runners `rdlt-engine`'s `budget::admits` part takes about 7 minutes and
+  `budget::ledger`'s about 2.
 - A part that comes near its limit is split further, by module: its harnesses are divided
   between modules, each with proofs of its own and so a part of its own. Only a harness that
   alone would pass the limit becomes a property test.
@@ -392,9 +389,9 @@ what no bound names.
 - A crate that adds proofs adds `#[cfg(kani)] mod proofs;`. If it catches panics, its guard
   against aborting builds exempts `kani`, as `rdlt-wire`'s does.
 - `just ready` costs Kani's build and proofs of each crate under proof whenever the change touches
-  it: on a laptop, about 460 seconds for `rdlt-wire` and 1,400 to 1,850 for `rdlt-engine`, warm, so
-  a change that touches the tools, the justfile or the workflow, which runs both, spends about 1,900
-  to 2,300 seconds proving. The `formal` check waits for its longest part alone.
+  it: on a laptop, about 135 seconds for `rdlt-wire` and 1,400 to 1,850 for `rdlt-engine`, warm, so
+  a change that touches the tools, the justfile or the workflow, which runs both, spends about 1,550
+  to 2,000 seconds proving. The `formal` check waits for its longest part alone.
 - A contributor's `mise install` installs about 1.1 GB more on disk, and the first `just kani`
   fetches a nightly toolchain.
 - Updating Kani is its version and `mise lock`; its nightly comes with its bundle. Updating

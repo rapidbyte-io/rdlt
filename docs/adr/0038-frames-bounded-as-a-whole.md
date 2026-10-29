@@ -71,7 +71,7 @@ connector, a served connector reading from a host, and certification's read-back
     again with every buffer at a multiple of 64 bytes and decoded once more (ADR 0047).
   - What is decoded keeps the allocation its frame arrived in alive, whole, and no path lets
     that allocation hold more than the frame's charge counts:
-    - A data-plane message may take at most `MESSAGE_ROOM`, 256 bytes, beside its frame's header
+    - A batch frame's message may take at most `MESSAGE_ROOM`, 256 bytes, beside its header
       and body, or the frame is refused (`MessageRoom`), so a batch keeps alive at most its frame
       and that room.
     - A files block is read where it lies only where its allocation holds no more than that room
@@ -157,7 +157,8 @@ connector, a served connector reading from a host, and certification's read-back
     sender cut is refused by its receiver.
   - The pieces are consecutive rows in order. On a read they are pushes of the segment the batch
     was in, and nothing else the source sends, a checkpoint included, is taken until the last
-    piece went; the host's controls wait for the credit window or the batch's end, both bounded.
+    piece went; a checkpoint the host's controls ask for meanwhile waits for the batch's end,
+    which its stream paces.
     On a write they are writes of the batch's segment. Neither a push nor a write is a unit to a
     checkpoint or a commit: a segment is. A write that fails, a connection lost or a run stopped
     between pieces ends the attempt, whose staging the next attempt discards.

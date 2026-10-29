@@ -38,35 +38,52 @@ socket will be.
     the `v1::Error`. The host reads back the same kind, code, message, retry and limit.
   - A status without an error in its details is a transport failure: transient where retrying
     may help, internal otherwise, with code `transport`.
-  - A read that fails ends with its error's status. A write that fails answers with a `WriteAck`
-    error, and the write ends.
+  - A data call refused as it opens, or that fails, answers with a frame carrying its error, a
+    `ReadFrame`'s or a `WriteAck`'s, and the call ends.
   - A frame the codec refuses, or a message that does not decode, is an internal error:
     `malformed_frame` or `invalid_message`.
   - A status's own message is cut to 1 KiB, and the error in its details to the control string
     limit, so its trailers fit the host's header limit (`HEADER_LIST_BYTES`, 256 KiB).
   - A write the connector ended answers with the error its last answers carry, not a transport
     failure.
-- **Credit** (§12.5).
-  - A receiver grants each call a window of credit: its floor at first, then two of the largest
-    frames it has taken, never more than its own data wire bound. Each frame it takes, a flush
-    included, comes back as credit with any growth of the window, a flush's before its stats; the
-    window never shrinks (`rdlt_wire::flow::Granting`). A served write's floor is `CREDIT_FLOOR`,
-    a frame at the least frame limit a peer may set (4 MiB); a host's read takes its floor from
-    `Options::read_floor`, `CREDIT_FLOOR` by default.
-  - A sender sends while its credit is above zero, and each frame spends its encoded size, which
-    may leave the credit a frame below zero until more is granted (`Spending`). A sender runs at
-    most two of its frames ahead of its receiver, and one more below zero; no frame is too large
-    for any window. A credit of no bytes is refused by the host, and grants nothing on a served
-    read.
-  - The host grants a read's credit back as it hands each frame to the engine, whose memory
-    budget admits it.
-  - A host cannot tell a connector that overran its credit from one that did not, because it
-    grants credit back as it consumes. So the protection is HTTP/2's flow control, which the
-    receiver enforces: each call's stream window is `CREDIT_FLOOR`, and the connection's window
-    holds every call's and one more (`MAX_CALLS`, 200, the heartbeat among them: 804 MiB), so a peer
-    that ignores its credit parks at most a stream window a call, and never starves the
-    connection's other streams, the heartbeat among them. Frames that carry no event are bounded
-    by count between events instead (ADR 0042).
+- **Each data call is a stream of its own** (§12.5). A read, a write and certification's
+  read-back are no gRPC calls: each is a byte stream of frames, and only the control calls ride
+  gRPC on the control connection.
+  - A frame is a 16-byte head, its body's length (`u32`, little-endian), its kind, its flags, two
+    zero bytes and a tag (`u64`, little-endian), then its body. A `Batch` frame is one Arrow IPC
+    encapsulated message, a dictionary or a record batch, its tag the schema epoch on a read and
+    the segment on a write, its flags whether it holds change rows and whether it is a
+    dictionary. A `Json` frame is a push's text. A `Message` frame is one protobuf message of the
+    call's, its flags naming the call where it opens one.
+  - A call opens with a `Message` frame naming it and holding its start. The connector answers
+    with an empty `Message` frame naming the call, or with the error it refuses it with; the host
+    waits for that answer within the connect deadline for a read, and within the write-ack
+    deadline for a write, whose writer the connector opens once the session's schema changes and
+    commits let it.
+  - A receiver checks each head against what its sender may send before anything is held for
+    its body: a kind the call does not carry, flags it does not know, a nonzero reserved field
+    or a length beyond the kind's bound is refused there. A head refused for its length fails
+    the call with the limit's error; any other is `malformed_frame`. A message frame is scanned
+    against its message's form before it is decoded (ADR 0042).
+  - A spawned connector's streams are sockets: its file descriptor 3 is an opener over which
+    the host passes it one end of a fresh socket pair a stream, its control connection first
+    (ADR 0017). A connector reached over the network carries each stream on one `Data` call of
+    its control connection, the call's request and answer bodies the stream's bytes each way.
+  - A data call lives no longer than its connection: once the control connection ends, the host
+    gone or the connection failed, the connector ends every data call it still serves, a writer
+    waiting in its destination among them. A stop lets the data calls in flight end, within the
+    connector's drain, before it closes the control connection, and takes no new ones. A stream
+    that ends before the answer a host awaits fails the call as `connector_lost`: a connector
+    that crashed ends it as one that closes it.
+  - There is no credit. On a socket the kernel's buffer paces a sender: a write blocks once its
+    reader stops, and the host's reader stops when the engine's budget has no room for the next
+    frame. A sender that ignores this parks only its socket's buffer, in the kernel. On a `Data`
+    call, HTTP/2's windows pace and bound the sender: each call's stream window is
+    `STREAM_WINDOW`, a frame at the least frame limit a peer may set (4 MiB), and the connection's
+    window holds every call's and one more (`MAX_CALLS`, 200, the heartbeat among them), so a
+    peer parks at most a stream window a call, and never starves the connection's other calls,
+    the heartbeat among them. Frames that carry no event are bounded by count between events
+    (ADR 0042).
   - Both ends take transport frames of up to `TRANSPORT_FRAME_BYTES` (1 MiB): a frame of the
     protocol crosses in few reads and writes, and a ping waits for at most one transport frame.
     Neither end lets HTTP/2 size its windows itself, which would override both.
@@ -77,10 +94,12 @@ socket will be.
     `connector_lost` error. A heartbeat its queue has no room for counts as unanswered: the
     heartbeat never waits on its transport. That lets the engine retry the attempt, and M4c's
     supervision respawn the connector.
-  - An echo is a frame of a call like any other: it waits its turn behind a transport frame of
-    each call with data queued on its connection. A patience shorter than the link takes to carry
-    those loses a connector that answers every beat; the default's 30 s carries a transport frame
-    of all 199 calls on any link of 7 MiB a second or more.
+  - An echo is a frame of the control connection's. A spawned connector's data calls are sockets
+    of their own, which it never waits behind. A dialed connector's ride that connection as `Data`
+    calls, and there it waits its turn behind a transport frame of each call with data queued: a
+    patience shorter than the link takes to carry those loses a connector that answers every
+    beat; the default's 30 s carries a transport frame of all 199 calls on any link of 7 MiB a
+    second or more.
   - Each call has its deadline from §12.6, and fails past it with a transient
     `deadline_exceeded` error. The connect deadline bounds a connection's setup, HTTP/2's
     preface and settings, and the handshake's answer together; the configuration has a connect
@@ -88,16 +107,14 @@ socket will be.
     commit's deadline.
   - A started read has no deadline: silence on a data stream is never fatal. A read asked to
     stop is dropped once the engine's stop wait passes (ADR 0042).
-  - Each frame of a write is sent within the write-ack deadline, as the transport's windows fill
-    when a connector grants credit and reads nothing: such a write fails with `deadline_exceeded`
-    rather than hanging. The deadline bounds the whole wait for credit too, however many answers
-    arrive, so a destination whose writer never returns fails the write as well, and a credit of
-    no bytes is refused (ADR 0042). A frame spends its credit only as the writer's queue takes
-    it, so a send its deadline or its caller ends spends none. A write that fails or is dropped
-    before its last frame is queued leaves the next to send its schema, and every dictionary
-    after it, again. A flush sent whose stats did not arrive leaves its writer refusing every
-    later call with `deadline_exceeded`: the protocol has no flush id, and its stats would be
-    taken for the next flush's.
+  - Each frame of a write is written within the write-ack deadline, as a stream fills when a
+    connector reads nothing: such a write fails with `deadline_exceeded` rather than hanging, and
+    so does one to a destination whose writer never returns, once its stages and its stream are
+    full (ADR 0042). A frame cut before any of it was written is dropped, and the next write
+    sends its schema, and every dictionary after it, again; a frame cut part way leaves the
+    stream torn, and its writer refusing every later call with `deadline_exceeded`. A flush sent
+    whose stats did not arrive leaves its writer refusing every later call too: the protocol has
+    no flush id, and its stats would be taken for the next flush's.
   - After this end stalls, the next heartbeat waits its interval rather than catching up, so a
     stalled host does not lose a live connector. An echo of a heartbeat never sent answers
     nothing.
@@ -115,30 +132,27 @@ socket will be.
   - Arrow batches open a new schema epoch when their schema changes, and the host requires
     epochs to grow.
   - JSON pushes, cursors, log lines and metric names are admitted against the host's limits.
-- **A read ends with `Done` when the source's read returns**, and with its error's status when
-  it fails, as the in-process adapter returns. A read the engine stopped ends however the
+- **A read ends with `Done` when the source's read returns**, and with a frame carrying its error
+  when it fails, as the in-process adapter returns. A read the engine stopped ends however the
   source's read returned.
-- **`rdlt-wire` generates the service with tonic-prost-build, all but its data plane**: the
-  client and server stubs; `serve` adds tonic's server support. The data plane, `Write`, `Read` and
-  `ReadPublished`, is hand-written in `rdlt_wire::plane`, byte-identical to what gRPC and prost
-  put on the wire, so any gRPC implementation can still serve a connector: each end decodes a
-  data-plane message from the bytes its bounded body passes on, so a batch's body and a push's
-  JSON are never copied by the transport's decoder, and sends either as a chunk of its own after
-  a head prost encodes, so neither is copied into an encoding buffer. A served connection's
-  requests go through `plane::Router`, which holds each to its bounds, sends a data-plane call
-  to the plane, a read-back once its one request has arrived whole, and every other call to the
-  generated server; it ends calls as tonic does, by trailers, a trailers-only answer, a body's
-  error or a cancelled request, so the host classes a failure by the same code. It re-exports
-  tonic and prost, and states the protocol's version as `PROTOCOL_MAJOR` (5), which both ends
-  must match.
+- **`rdlt-wire` generates the control calls with tonic-prost-build**: the client and server
+  stubs; `serve` adds tonic's server support. The data calls' frames are `rdlt_wire::stream`'s:
+  a reader that reads each body into an allocation of exactly its length from a 64-byte address,
+  so a batch's buffers and a push's text are read where they arrive, and a writer that writes a
+  frame from the batch's own buffers. A served connection's control calls go through
+  `route::Router`, which holds each request to its bounds, serves a `Data` call's stream as a
+  passed one is served, and sends every other call to the generated server. It re-exports tonic
+  and prost, and states the protocol's version as `PROTOCOL_MAJOR` (6), which both ends must
+  match.
 - **The gates follow the code.** The served end is tested from `rdlt-host`, where a client
   exists, so `rdlt-host`'s tests run against `rdlt-wire`'s mutants (ADR 0003), and coverage runs
   `rdlt-host`'s tests with the engine's, connector's and wire's.
 
 ## Consequences
 
-- Any gRPC implementation can serve a connector: the protocol's behaviour is in its messages,
-  its statuses and this record.
+- A connector in another language serves the control calls with any gRPC implementation, and its
+  data calls' frames as this record states them: the protocol's behaviour is in its messages,
+  its statuses, its frames and this record.
 - `serve::<C>()`, a connector binary's whole `main` (§11.7), with `--rdlt-fd` and `--listen`, lands
   with M4c's placements. Taking a pre-connected socket from file descriptor 3 needs the audited
   `unsafe` §20.14 allows.

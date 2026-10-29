@@ -103,7 +103,7 @@ The owner chose to keep all of this in one milestone.
 - **Cancellation at every wait, beside the simulation.** A seed drops a call only where its faults
   and timing happen to. So each object a caller may call again after dropping a call to it is
   also tested by `rdlt_testkit::cancel::at_every_point`: the partition sink and the emitter, the
-  remote writer, and the data plane's reader with its bounded body. The harness runs an operation
+  remote writer, and the reader and writer of a data call's frames. The harness runs an operation
   to its end, then once for each time it waits, dropping it there. Each run builds afresh on a
   current-thread runtime of its own, its clock paused, so where the operation and its peers wait
   alike on every run (every `select!` biased, no tokio `watch` with several waiters), run *n*
@@ -123,7 +123,7 @@ The owner chose to keep all of this in one milestone.
   which runs a binary's tests on threads of one process, would put two tests that check one seed
   side by side.
 - **The simulation's own coverage.** `just sim-coverage` measures the engine, connector, host and
-  data-plane code the simulation alone reaches over 1 000 seeds, leaving out test code and what
+  wire code the simulation alone reaches over 1 000 seeds, leaving out test code and what
   the simulation never runs, and the nightly workflow holds it to the floor ADR 0019 states.
 - **Found and fixed in the engine.**
   - A connector that panicked while an attempt opened or planned panicked the caller awaiting the
@@ -149,7 +149,7 @@ The owner chose to keep all of this in one milestone.
   `watch` receiver. Every `select!` in the engine is biased, and clippy now bans the waiting
   receiver, so neither can quietly break replay again.
 - Loom and turmoil stay out of M3h:
-  - §20.5's loom models of the memory budget, credit windows, seal bookkeeping and the
+  - §20.5's loom models of the memory budget, seal bookkeeping and the
     coordinator's handshake check every interleaving of those primitives, where the stress run
     only samples some. ADR 0004 defers the budget's to M9, and the others belong with it.
   - Turmoil simulates networks, and belongs to the milestone that runs connectors over the

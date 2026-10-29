@@ -82,9 +82,17 @@ only at its end. The owner also asked for the host to be simulated over a networ
     the connection's setup with its handshake, the resolution of its configuration's secrets,
     and its configuration. A start whose every step is slow takes up to that many connect
     deadlines in all.
-  - The connector starts with its socket on file descriptor 3 (`--rdlt-fd=3`) and a piped standard
-    input. Its environment is cleared, keeping only the variables `env_passthrough` names. The host
-    sets no `RDLT_*` variables; it sets glibc's malloc tunables,
+  - The connector starts with its opener on file descriptor 3 (`--rdlt-fd=3`) and a piped standard
+    input. The opener is a socket over which the host passes the connector one end of a fresh socket
+    pair a stream, with `SCM_RIGHTS`, each in a one-byte message saying control or data: its control
+    connection first, then one for each data call (ADR 0016). Linux receives each close-on-exec;
+    macOS sets close-on-exec right after receipt, so a child the connector spawned in that instant
+    could inherit one, which a development platform accepts. The host closes its copy of the
+    connector's end once passed, so a call holds one of its descriptors, and a call that gets none
+    fails as transient. rdlt's own binaries, the certifier and the bench, raise their soft limit of
+    open files to the hard limit as they start; the host library leaves its embedder's limits alone.
+    The connector's environment is cleared, keeping only the variables `env_passthrough` names. The
+    host sets no `RDLT_*` variables; it sets glibc's malloc tunables,
     `glibc.malloc.trim_threshold=268435456` and `glibc.malloc.mmap_threshold=33554432`, in
     `GLIBC_TUNABLES`, keeping any the operator passes (in a passed `GLIBC_TUNABLES`, or glibc's
     `MALLOC_TRIM_THRESHOLD_` and `MALLOC_MMAP_THRESHOLD_`). They are a no-op where glibc is not the

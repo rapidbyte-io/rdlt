@@ -15,7 +15,7 @@ still taken largely on trust:
   checked in quadratic time;
 - names took any character but controls, and destination identifiers from the wire none at all;
 - some waits had no deadline: a call into a connector in process, a read asked to stop, a write
-  whose credit trickled in, and a served connection whose peer took nothing;
+  whose connector took little, and a served connection whose peer took nothing;
 - what a connector said could change what was committed, or how the engine retried: a receipt for
   another commit was taken as its answer, a catalog's new key re-keyed a merge table, a connector's
   error claimed a fence or set any wait, and a partition that lost its place looped without end;
@@ -31,12 +31,12 @@ still taken largely on trust:
   (4 MiB). A configuration, a schema change and a read's start are bounded by their field's
   limit and 64 KiB more; only reads and writes take frames. A connector's configuration schema
   is bounded on its own, at 1 MiB (`MAX_CONFIG_SCHEMA_BYTES`).
-  - Each end passes a message on to be decoded only once it has arrived whole
-    (`rdlt_wire::bounded`), to tonic for a generated call and to the data plane's reader
-    (`rdlt_wire::plane`) for a read, a read-back or a write, which decodes it from those bytes:
-    within its class's bytes on the wire, refused from its prefix, so no decoder reserves a
-    length before its bytes arrive; and, every message, frames among them, counted by a scan of
-    its encoding (`rdlt_wire::scan`) within what its class may hold decoded: `Limits::decoded`,
+  - Each end passes a message on to be decoded only once it has arrived whole: to tonic for a
+    generated call (`rdlt_wire::bounded`), and from a data call's frame for a read, a read-back or
+    a write (`rdlt_wire::stream`): within its class's bytes on the wire, refused from its prefix
+    or its frame's head, so no decoder reserves a length before its bytes arrive; and, every
+    message, counted by a scan of its encoding (`rdlt_wire::scan`) within what its class may hold
+    decoded: `Limits::decoded`,
     2 times the wire bound for a frame, 4 for a handshake, a configuration and a read's start, 16
     (`DECODED_PER_BYTE`) for a catalog, a schema change and any other control message: 128 MiB
     for a frame and 64 MiB for a catalog by default. State is bounded on what it holds decoded:
@@ -45,9 +45,9 @@ still taken largely on trust:
     goes straight to the message's end once within twice what it holds, so a frame at its limit
     holds less than twice its bytes. What arrives past its end waits for the next message,
     outside its room, so each message is passed on in an allocation of its own length and the
-    alignment's 63 bytes. A message holding a frame may take at most `MESSAGE_ROOM` (256) bytes
-    beside the frame's header and body, or the frame is refused before it is decoded, since what
-    is decoded from it keeps the message alive.
+    alignment's 63 bytes. A data call's frame is read into an allocation of exactly its length
+    from a 64-byte address, and a batch's message takes at most `MESSAGE_ROOM` (256) bytes beside
+    its header and body.
   - The scan walks the encoding by forms `cargo xtask codegen` generates from the `.proto`
     files, each message's size and the kind of each field. It counts each message its size, four
     times for an entry of a repeated field and eight for one of one-byte numbers, as a vector
@@ -103,7 +103,7 @@ still taken largely on trust:
       a read or a writer beside it: an attempt refuses it as it starts, before it opens the
       destination, with `calls_too_few`, naming the calls it carries and the two a run needs.
     - The connection's window holds every call's stream window and one more (ADR 0016), so each
-      call lets a peer that ignores its credit park 4 MiB more, 804 MiB at 200; and HTTP/2's
+      `Data` call lets a peer park 4 MiB more, 804 MiB at 200; and HTTP/2's
       largest window, just under 2 GiB, holds the windows of 510 calls and one more, still fewer
       than the partitions a run may read at once. The engine plans within the connection's calls
       rather than the calls growing to what a run reads.
@@ -116,13 +116,18 @@ still taken largely on trust:
   before it is decoded** (ADR 0039). Every call of a run or a reset into a connector, reads too,
   is made within a charge (`rdlt_wire::bounded::charging`); the host's transport charges each
   message of its answer at what the scan counts before it is decoded, and holds the charge
-  until it is decoded: the data plane's reader holds a read's frame's until the read has decoded
-  it, which releases it before its event waits for room, and a write's answer's until the writer
-  has decoded it; a generated call's ends with its next message or the call.
-  - A read's frame is charged to what pushes may take, which the batch it carries is admitted to
-    next: a frame decodes into twice its bytes at most, 8.5 MB at the least memory, where a read's
-    part of the reads' share is 516 KiB, so the reads' share could not hold one; the row bound
-    already keeps a frame within half of what pushes may take.
+  until it is decoded: a write's answer's until the writer has decoded it; a generated call's
+  ends with its next message or the call.
+  - A read's frame is reserved from what pushes may take before its body is read: a batch its
+    length, its allocation's room, what the read's decoder keeps, its schema and dictionaries,
+    which a batch decoded beside them holds too, and the arrays of a batch of the schema, as its
+    push is charged them; a push of JSON its charge; and a message twice
+    its length and 4 KiB, within which every message a source sends decodes. Decoded, a push's
+    reservation shrinks to what the push holds and admits it, released and taken again never; a
+    message's goes once it is decoded, and a schema's and a dictionary's once the decoder's own
+    charge holds them. A batch reserved for less than its push holds is refused as
+    `malformed_frame`. The reads' share could not hold a frame, 516 KiB of it a read at the least
+    memory; the row bound keeps a frame within half of what pushes may take.
   - Every other answer is charged to a share of its own, a sixteenth of the budget, which waits
     for no push. The catalog, state and control message limits a connector is told are what
     that share holds of one answer decoded: a catalog and a control message at sixteen times
@@ -137,22 +142,21 @@ still taken largely on trust:
   - A charge waits as any request of the budget does, in turn, and fails its call at the
     budget's deadline; one larger than its share fails it at once. No charge is held while
     another is waited for, and none while its holder waits for anything but the answer's bytes.
-  - A served connector has no engine budget: its window bounds what it holds of requests
-    arriving; each call's body holds beside it the transport frame it read last, 1 MiB at most
-    and 200 MiB on a connection of `MAX_CALLS`; and HTTP/2's stream windows bound what waits for
-    them in transport, a stream window a call. A write holds its staged bound and one decoded
-    frame waiting for its writer, beside the frame it received next, which decodes once the
-    writer takes the frame before it. A read holds its source's pushes as the source made them,
-    bounded by bytes: those the source sends ahead wait in a channel of 16 events whose pushes
-    keep alive at most the host's frame limit together, as `push_charge` counts them, each
-    taking the lesser of its charge and that limit, so a push beyond a frame waits until no
-    push holds any of it and then waits alone; a checkpoint, within the host's cursor limit,
-    and every other event pass free. Beside them it holds the push it waits to send, the one
-    being sent, and the frames its credit lets go, two of its largest and one more below zero
-    (ADR 0016). A JSON push is at most the host's `json push bytes`, and a batch, which the read
-    cuts to frames as it sends it, is bounded by its source alone: at the default budget a JSON
-    push at its limit is charged beyond a frame, so a read of them holds 6 at most, 176 MB. What
-    a connector's own process takes is the operator's to bound (ADR 0043).
+  - A served connector has no engine budget: its window bounds what it holds of requests and of data
+    calls' frames arriving; each call's body holds beside it the transport frame it read last, 1 MiB
+    at most and 200 MiB on a connection of `MAX_CALLS`; and a stream's socket buffer, in the kernel,
+    or a `Data` call's stream window bounds what waits for it in transport. A write holds its staged
+    bound, one decoded frame waiting for its writer, one frame waiting to be decoded and one read
+    beside it. A read holds its source's pushes as the source made them, bounded by bytes: those the
+    source sends ahead wait in a channel of 16 events whose pushes keep alive at most the host's
+    frame limit together, as `push_charge` counts them, each taking the lesser of its charge and
+    that limit, so a push beyond a frame waits until no push holds any of it and then waits alone; a
+    checkpoint, within the host's cursor limit, and every other event pass free. Beside them it
+    holds the push it waits to send and the frame being written, which its stream takes as its host
+    reads (ADR 0016). A JSON push is at most the host's `json push bytes`, and a batch, which the
+    read cuts to frames as it sends it, is bounded by its source alone: at the default budget a JSON
+    push at its limit is charged beyond a frame, so a read of them holds 6 at most, 176 MB. What a
+    connector's own process takes is the operator's to bound (ADR 0043).
 - **Lists are bounded and checked in linear time.** A catalog holds at most 65,536 streams and a
   plan 16,384 partitions, in every placement; a plan names each partition once and starts only
   those it names. A destination's identifier rules hold at most 4,096 reserved words and 64
@@ -176,11 +180,13 @@ still taken largely on trust:
     own error, of origin `Engine` and coded `deadline_exceeded`, so it is never taken for a
     connector's or its host's deadline, which are the side's.
   - A read asked to stop is dropped after `EngineConfig::stop_wait` (60 s).
-  - A remote write's whole wait for credit, a flush's stats or an ending write's error is bounded
-    by the write-ack deadline, however many answers arrive; a credit of no bytes is refused, and
-    a writer whose flush went unanswered takes no more calls.
-  - A served connection whose writes make no progress for its send wait (60 s) is closed, and a
-    stopping connector's drain ends at its drain wait (30 minutes), both `ListenLimits` fields.
+  - Each frame a remote write sends, a flush's stats and an ending write's error are each bounded
+    by the write-ack deadline, and a writer whose flush went unanswered, or whose frame was cut
+    part way, takes no more calls.
+  - A served connection whose control connection's writes make no progress for its send wait
+    (60 s) is closed, and a stopping connector's drain ends at its drain wait (30 minutes), both
+    `ListenLimits` fields. A data call's own stream has no send wait: an engine may take nothing
+    of a read for as long as its budget has no room, and a call ends with its connection.
   - A failed attempt closes the session it opened, waiting for the close no longer than
     `EngineConfig::close_wait` (60 s).
 - **What a connector says cannot silently change what was committed.**
@@ -219,8 +225,7 @@ still taken largely on trust:
 - **A read's frames the engine takes for nothing are bounded by count** between two events of its
   data, rows or a checkpoint: schemas and dictionaries to a schema and a dictionary for each
   column, and log lines, metrics, lags and replans to 1,024 (`MAX_FREE_FRAMES`), neither kind
-  ending the other's run. A read's data credit stays unchecked by the host: it grants credit back
-  as the engine takes each frame, so an overrun is undetectable at the receiver (ADR 0016).
+  ending the other's run.
 - **A served connection's send wait counts any byte as progress**: a host taking a byte a minute
   keeps its connection, holding only its own share, and a stop's drain ends it.
 

@@ -34,7 +34,7 @@ budget before it is held, or bounded by a limit with a typed refusal.
   | tables | 1/32 | 8 MiB | what a commit records of each changed table, its schema and names, from the change until the commit lands |
   | reads | 1/4 | 64 MiB | what reads keep beside their events: a decoder's schema and dictionaries |
   | answers | 1/16 | 16 MiB | what decoding a remote connector's answers holds, but a read's frames, from before each is decoded until it is (ADR 0042) |
-  | data | the rest, 41/64 | 164 MiB | pushes waiting to be lowered, and what lowering makes of them; a read's frame from before it is decoded until it is |
+  | data | the rest, 41/64 | 164 MiB | pushes waiting to be lowered, and what lowering makes of them; a read's frame from before its body is read, and the push it becomes |
 
   - Within the data, one request for lowering takes a quarter of the budget at most, and
     pushes never take the last quarter: a request for lowering always fits once the pieces
@@ -430,8 +430,8 @@ budget before it is held, or bounded by a limit with a typed refusal.
   - A state record's value is the JSON it is wherever the record is JSON.
   - A served write refuses more than four frames' bytes between two flushes, and the host's
     writer flushes before it would send more. The connector decodes a frame only once its
-    writer has taken the frame before it, so a write holds its staged bound and one decoded
-    frame waiting for its writer.
+    writer has taken the frame before it, so a write holds its staged bound, one decoded frame
+    waiting for its writer, one waiting to be decoded and one read beside it.
   - A column a batch holds nothing in is built as the destination stores it. Its nulls are part
     of what each row costs, so a piece is cut by them and reserves them before they are built:
     rows times the table's width is bounded by the budget, through a plan that normalizes too.
@@ -460,14 +460,16 @@ budget before it is held, or bounded by a limit with a typed refusal.
 ## The bound
 
 A run never reserves more than its memory budget, and its heap stays within the budget, a fifth
-of it and 32 MiB, beside what is not reserved: the push or frame each read holds before it is
-admitted, and what a remote connector's calls hold in transport.
+of it and 32 MiB, beside what is not reserved: the push each read in process holds before it is
+admitted, and what a dialed connector's calls hold in transport.
 
-- The first is one push or one frame a partition, within the wire's limits.
-- The second is each open call's stream window on a remote connection, `CREDIT_FLOOR` (4 MiB),
-  which HTTP/2 enforces on a connector that ignores its credit; the connection's window holds
-  every call's and one more, so no connection holds more than 804 MiB (ADR 0016). A read's
-  frames beyond it wait in the connector.
+- The first is one push a partition, within the wire's limits. A served read's frame is reserved
+  before its body is read (ADR 0042).
+- The second is each open call's stream window on a dialed connection, `STREAM_WINDOW` (4 MiB),
+  which HTTP/2 enforces; the connection's window holds every call's and one more, so no
+  connection holds more than 804 MiB (ADR 0016). A spawned connector's streams hold what is in
+  transit in the kernel's socket buffers, outside the heap. A read's frames beyond them wait in
+  the connector.
 - What a JSON push's records become beyond three times their text is reserved before it is
   built, and a push whose records could not fit is refused unbuilt (ADR 0040), but for the two
   documents "Not bounded here" names.
@@ -484,8 +486,7 @@ admitted, and what a remote connector's calls hold in transport.
   connector gets, and holds the process's resident peak to the budget's bound, one push, and
   2 MiB of stack a thread. It runs the passthrough workload served too, read from sixteen
   partitions through a host that spawned both connectors, and holds the host's peak to the
-  bound, a frame a partition and a stream window an open call, reporting each connector
-  process's peak beside it.
+  bound, its streams' buffers the kernel's, reporting each connector process's peak beside it.
 - **The simulation holds its attempts to it on the heap, at every moment.** Its test binary counts
   each thread's live bytes (`alloc_tracker`, a counting allocator kept per thread, installed in the
   simulation's test binaries alone); a seed's runs share its thread, compute inline, while seeds run
@@ -499,18 +500,17 @@ admitted, and what a remote connector's calls hold in transport.
   or a row is given room while it runs. Over each attempt, the most the thread holds beyond its
   charge stays within an allowance and, where the connectors listen on the simulated network or are
   played in processes and share the thread, what the reads hold between the source and the engine:
-  for each partition each run reads, 4 of the attempt's largest event, a push or a checkpoint's
-  cursor (the host's event waiting for admission, the batch being cut and its piece waiting for
-  credit, and a frame sent past its credit); what the connector's channel holds, 16 of the largest
-  event or, where it is less, the host's frame limit, the largest push and 16 of the largest cursor;
-  and the frames credit lets go before the host takes them, two of the largest or the host's credit
-  floor of 4 MiB,
-  whichever is more. The allowance is what the world holds beside the engine and keeps uncounted,
-  the runtime, its maps and builders' spare room, apart by where the connectors run: 13 MiB in
-  process and 11 MiB over the network or in played processes. Beyond their charge, seeds 0 to
-  99 999 hold at most 12.5 MB in process and 4.3 MB over the network, the network's beyond what
-  its reads hold. Over the network the allowance is the next whole mebibyte above five quarters
-  of the most a seed holds among the four network seeds, not
+  for each partition each run reads, 2 of the attempt's largest event, a push or a checkpoint's
+  cursor (the batch being cut and the piece of it being written); what the connector's channel
+  holds, 16 of the largest event or, where it is less, the host's frame limit, the largest push and
+  16 of the largest cursor; and what the read's stream holds in transport, the bytes a simulated
+  socket pair's pipe holds or a call's stream window of 4 MiB over the simulated TLS. The host
+  reserves each frame before it reads its body. The allowance is what the world holds beside the engine and
+  keeps uncounted, the runtime, its maps and builders' spare room, apart by where the connectors
+  run: 13 MiB in process and 11 MiB over the network or in played processes. Beyond their charge,
+  seeds 0 to 99 999 hold at most 12.5 MB in process and 4.3 MB over the network, the network's
+  beyond what its reads hold. Over the network the allowance is the next whole mebibyte above
+  five quarters of the most a seed holds among the four network seeds, not
   hostile, that hold the most the nightly has measured, replayed under these faults: 8.9 MB on seed
   732369, twice the most of seeds 0 to 99 999. No sweep of the nightly's million has measured the
   network's tail, so the allowance rests on those four seeds and the nightly is what tests it
@@ -614,8 +614,8 @@ admitted, and what a remote connector's calls hold in transport.
 - `ErrorKind` has `Memory`, and `Admission::admit` and `Admission::charge` return a `Result`;
   an `Admission` says the limits it admits within, and a `PartitionSink` holds what is sent to
   them. A run's report counts every wait on the budget and its time on the engine's clock, by
-  share, a read's wait for a slot among them, and a served frame's wait to be decoded apart from
-  the pushes it waits among; every budget has a clock and a deadline for the bytes it is asked
+  share, a read's wait for a slot among them, and a served frame's wait for its reservation apart
+  from the pushes it waits among; every budget has a clock and a deadline for the bytes it is asked
   for. The wire's limits hold `dictionary_bytes`, with a least of 256 KiB.
 - A cut that reads values costs a trip to the compute pool a piece; one that reads none takes
   none.

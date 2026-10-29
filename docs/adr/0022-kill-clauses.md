@@ -44,20 +44,20 @@ through the connector, and a host that can kill what it placed.
   macOS's does, still draws every point; or one chosen (`Target::kill_seed`, `--kill-seed`). A
   failure reports it, so it can be replayed.
 - **The loads are shaped so the kills land in flight**: batches of 8 rows, a commit every 16
-  rows, 1 MiB of engine memory, one event of partition buffer, one write in flight per lane, and
-  a read's credit floor of 64 KiB, so a source runs little ahead of the commits: 64 KiB, or two
-  of its frames where they are larger. A load retries 20 times, quickly, and up to three loads
-  run until one succeeds.
-- **A clause passes only on a kill that landed** (ADR 0050): for a spawned connector, `SIGKILL`
-  to its process group, which the host then sees end the connection unless a process outside
-  the group holds it open (`docs/certify/clauses.md`); for one reached at an
-  endpoint or served in process, the host's cut of its connection, which lands by itself. The
-  pass notes which (`killed`, `cut`). When no kill landed (the load ended first, as a source
-  smaller than about one credit window does), the clause is unobserved, with the seed. So is
-  `K-SOURCE` when no read of the source started after a kill: one that lands once the source was
-  read to its end, as on a busy machine whose commits come late, leaves nothing to resume. A clause
-  takes at most 300 s, or what `--kill-timeout` (`Target::kill_timeout`) gives it: a connector
-  slower than about two seconds a commit needs more.
+  rows, 1 MiB of engine memory, one event of partition buffer, and one write in flight per lane;
+  the host reads a frame only once the engine has room for it, so a source runs ahead of the
+  commits by little more than what its stream holds in transit. A load retries 20 times,
+  quickly, and up to three loads run until one succeeds.
+- **A clause passes only on a kill that landed** (ADR 0050): for a spawned connector, `SIGKILL` to
+  its process group, which the host then sees end the connection unless a process outside the group
+  holds it open (`docs/certify/clauses.md`); for one reached at an endpoint or served in process,
+  the host's cut of its connection, which lands by itself. The pass notes which (`killed`, `cut`).
+  When no kill landed (the load ended first, as a source smaller than what its stream holds in
+  transit does), the clause is unobserved, with the seed. So is `K-SOURCE` when no read of the
+  source started after a kill: one that lands once the source was read to its end, as on a busy
+  machine whose commits come late, leaves nothing to resume. A clause takes at most 300 s, or what
+  `--kill-timeout` (`Target::kill_timeout`) gives it: a connector slower than about two seconds a
+  commit needs more.
 - **`S-ARROW-JSON` waits for M8.** The engine infers the types of JSON pushes where Arrow pushes
   carry their own, so the same data rendered both ways publishes the same values only once a
   schema pins both; certification has no way to ask a source for both renderings. The Python

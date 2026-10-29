@@ -44,9 +44,6 @@ a binary that certifies any connector binary or endpoint and also runs `K`.
   - `P-HEARTBEAT`: each heartbeat is answered with its sequence number, in order;
   - `P-MALFORMED`: a read or write that does not begin with its start is refused, typed, and the
     connection serves on;
-  - `P-CREDIT`: a read sends nothing more once its credit is spent, until more is granted. One
-    frame after the grant shows it went on; the read is then stopped, so a partition of any
-    length is certified in bounded time.
   - Per-operation deadlines (§12.6) are the host's to keep, and its own tests pin them (ledger
     item L3); no clause checks them of a connector.
 - **`rdlt-host` gains raw wires** for clients that speak the protocol themselves: `Local::wire`,
@@ -76,9 +73,8 @@ a binary that certifies any connector binary or endpoint and also runs `K`.
   a test holds equal to `rdlt-certify --clauses`.
 - **What certification found**: a barrier pending when a read starts was forwarded after the
   read's start, so a read too short to see it never answered it, where in the engine's process it
-  always does. `ReadStart` carries the barrier pending at the start (`barrier`, field 5), and the
-  host also sends it as a control, before the read's credit. A connector that does not know the
-  field reads 0 and answers the control; one that knows both answers the barrier once.
+  always does. `ReadStart` carries the barrier pending at the start (`barrier`, field 5), which
+  the connector answers once.
 
 ## Consequences
 

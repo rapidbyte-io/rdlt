@@ -70,11 +70,11 @@ the whole engine on a paused clock from a seed, with connectors in the engine's 
     - a check once the heartbeat has had twice its patience: pings echoed ahead, none answered, a
       heartbeat that never opens or is refused, pings never read;
     - a read: a schema that is no IPC message, a barrier never asked for, a schema epoch sent
-      twice, too many frames that carry no event, too many log lines, and a connector that knows
-      no barrier in a read's start;
+      twice, too many frames that carry no event, too many log lines, a frame's head of no kind
+      a frame has, and a batch frame that stops halfway;
     - a discovery: status details that do not decode, a catalog too large to decode;
-    - a session's opening with a state key past its limit, and writes whose credit trickles or
-      is of no bytes.
+    - a session's opening with a state key past its limit, writes whose frames the connector
+      never reads, and flushes it never answers.
 
     On a healed network the host must meet each as its own tests do. Where the attempt's network
     is disrupted, a driver of its own also cuts and holds that host's link, and the host may lose
@@ -103,15 +103,20 @@ the whole engine on a paused clock from a seed, with connectors in the engine's 
   `kills.rs` and `local/grants/opened.rs`), a served binary's entry points, certification (the
   certify crate and the host's connections it uses), and test and bench code, modules built only
   for tests or benches among it: references and their comparisons, property-test strategies,
-  generated numbers, counts of serving tasks and an inline environment. The data plane
-  (`rdlt_wire::plane`) is hand-written, not generated, and every simulated served read and write
-  runs it, so it counts. In-process seeds place their connectors through the host's registry, as an
-  embedder does, so its resolution of secrets and its scrubbing of what connectors say run in every
-  seed. Played seeds place their connectors through `Local`, so its placement and supervision, the
-  output drains with their scrubbing and the witness run in them, and so do the host's digest and
-  grant checks. The coverage's floor is what 1 000 seeds reach, 80 % of lines and 71 % of branches.
-  A hostile host, in one networked seed in two, reaches the code that refuses a host breaking the
-  protocol. Beside the runs it:
+  generated numbers, counts of serving tasks and an inline environment. The data calls' frames
+  (`rdlt_wire::stream`) are hand-written, not generated, and every simulated served read and write
+  runs them, so they count. One networked seed in two reaches its connectors as a spawned connector
+  is reached instead: a stream for the control connection and one for each data call, each a pipe
+  between the engine's host and the connector's that holds a socket buffer's bytes each way and
+  closes as a socket pair does, what one end sent staying for the other to read. No partition or
+  hold reaches a pipe, as none reaches a socket pair; a connector's crash and stop do. The rest
+  reach their connectors over `Data` calls of the TLS connection. In-process seeds place their
+  connectors through the host's registry, as an embedder does, so its resolution of secrets and its
+  scrubbing of what connectors say run in every seed. Played seeds place their connectors through
+  `Local`, so its placement and supervision, the output drains with their scrubbing and the witness
+  run in them, and so do the host's digest and grant checks. The coverage's floor is what 1 000
+  seeds reach, 80 % of lines and 71 % of branches. A hostile host, in one networked seed in two,
+  reaches the code that refuses a host breaking the protocol. Beside the runs it:
   - calls before the handshake and the configuration;
   - configures one connection twice at once;
   - gives up on configurations and opens mid-way;
