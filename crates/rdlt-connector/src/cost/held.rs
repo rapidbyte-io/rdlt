@@ -3,9 +3,10 @@
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
+use arrow_array::cast::AsArray as _;
+use arrow_array::types::{Int16Type, Int32Type, Int64Type};
 use arrow_array::{Array, RecordBatch};
 use arrow_buffer::Buffer;
-use arrow_data::ArrayData;
 use arrow_schema::{DataType, Field, Schema};
 use rdlt_wire::limits::count;
 
@@ -64,7 +65,7 @@ impl Allocations {
     fn batch(&mut self, batch: &RecordBatch, beyond: Option<&Self>) -> u64 {
         let before = self.bytes;
         for column in batch.columns() {
-            self.data(&column.to_data(), beyond);
+            self.data(column.as_ref(), beyond);
         }
         // A batch keeps its schema alive too, which batches of one stream share.
         let schema = batch.schema_ref();
@@ -77,21 +78,27 @@ impl Allocations {
 
     fn array(&mut self, array: &dyn Array, beyond: Option<&Self>) -> u64 {
         let before = self.bytes;
-        self.data(&array.to_data(), beyond);
+        self.data(array, beyond);
         self.bytes - before
     }
 
-    fn data(&mut self, data: &ArrayData, beyond: Option<&Self>) {
+    fn data(&mut self, array: &dyn Array, beyond: Option<&Self>) {
+        let data = array.to_data();
         // A stack of the nodes still to visit, so a deep type costs no call stack.
-        let mut pending = vec![data];
+        let mut pending = vec![&data];
         while let Some(data) = pending.pop() {
             for buffer in data.buffers() {
                 self.buffer(buffer, beyond);
             }
-            if let Some(nulls) = data.nulls() {
+            pending.extend(data.child_data());
+        }
+        // An array's data leaves out a validity holding no null, which the array keeps alive.
+        let (mut next, mut below) = (Some(array), Vec::new());
+        while let Some(array) = next.take().or_else(|| below.pop()) {
+            if let Some(nulls) = array.nulls() {
                 self.buffer(nulls.buffer(), beyond);
             }
-            pending.extend(data.child_data());
+            children(array, &mut below);
         }
     }
 
@@ -101,6 +108,35 @@ impl Allocations {
         if bytes > 0 && !held_by(beyond, start) && self.seen.insert(start) {
             self.bytes = self.bytes.saturating_add(bytes);
         }
+    }
+}
+
+/// Pushes onto `below` the arrays one level below `array`: a struct's fields, a list's or a map's
+/// items, a union's members, a dictionary's keys and values, and a run-end encoding's values.
+fn children<'a>(array: &'a dyn Array, below: &mut Vec<&'a dyn Array>) {
+    use DataType as T;
+    match array.data_type() {
+        T::Struct(_) => below.extend(array.as_struct().columns().iter().map(AsRef::as_ref)),
+        T::List(_) => below.push(array.as_list::<i32>().values().as_ref()),
+        T::LargeList(_) => below.push(array.as_list::<i64>().values().as_ref()),
+        T::ListView(_) => below.push(array.as_list_view::<i32>().values().as_ref()),
+        T::LargeListView(_) => below.push(array.as_list_view::<i64>().values().as_ref()),
+        T::FixedSizeList(..) => below.push(array.as_fixed_size_list().values().as_ref()),
+        T::Map(..) => below.push(array.as_map().entries()),
+        T::Union(fields, _) => {
+            let union = array.as_union();
+            below.extend(fields.iter().map(|(id, _)| union.child(id).as_ref()));
+        }
+        T::Dictionary(..) => {
+            let dictionary = array.as_any_dictionary();
+            below.extend([dictionary.keys(), dictionary.values().as_ref()]);
+        }
+        T::RunEndEncoded(ends, _) => below.push(match ends.data_type() {
+            T::Int16 => array.as_run::<Int16Type>().values().as_ref(),
+            T::Int32 => array.as_run::<Int32Type>().values().as_ref(),
+            _ => array.as_run::<Int64Type>().values().as_ref(),
+        }),
+        _ => {}
     }
 }
 

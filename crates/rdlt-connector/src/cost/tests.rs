@@ -4,7 +4,7 @@ mod decoded;
 use std::sync::Arc;
 
 use arrow_array::builder::{BinaryViewBuilder, StringViewBuilder};
-use arrow_array::types::{Int8Type, Int16Type, Int32Type};
+use arrow_array::types::{Int8Type, Int16Type, Int32Type, Int64Type};
 use arrow_array::{
     Array, ArrayRef, BooleanArray, Date32Array, Decimal32Array, Decimal64Array, Decimal128Array,
     Decimal256Array, DictionaryArray, DurationSecondArray, FixedSizeBinaryArray,
@@ -14,7 +14,7 @@ use arrow_array::{
     Time32SecondArray, Time64NanosecondArray, TimestampSecondArray, UInt8Array, UInt16Array,
     UInt32Array, UInt64Array, UnionArray, new_null_array,
 };
-use arrow_buffer::{Buffer, OffsetBuffer, ScalarBuffer};
+use arrow_buffer::{BooleanBuffer, Buffer, NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow_schema::{DataType, Field, Fields, IntervalUnit, UnionFields};
 use bytes::Bytes;
 use proptest::prelude::*;
@@ -563,6 +563,100 @@ fn an_allocation_arrow_did_not_make_counts_whole() {
         None,
     ));
     assert_eq!(Allocations::default().add_array(column.as_ref()), 4_096);
+}
+
+#[test]
+fn a_validity_holding_no_null_counts_where_an_array_keeps_it() {
+    // Arrow's data of an array leaves out a validity that holds no null, which the array keeps.
+    let rows = 4_096;
+    let capacity = |buffer: &Buffer| u64::try_from(buffer.capacity()).unwrap();
+    let flags = |nulls: NullBuffer| {
+        let values = BooleanBuffer::new_set(rows);
+        let bytes = capacity(values.inner()) + capacity(nulls.buffer());
+        (BooleanArray::new(values, Some(nulls)), bytes)
+    };
+    let (valid, bytes) = flags(NullBuffer::new_valid(rows));
+    assert_eq!(Allocations::default().add_array(&valid), bytes);
+    // Those of a struct's fields count too.
+    let (other, more) = flags(NullBuffer::new_valid(rows));
+    let fields = Fields::from(vec![
+        Field::new("a", DataType::Boolean, true),
+        Field::new("b", DataType::Boolean, true),
+    ]);
+    let nested = StructArray::new(fields, vec![Arc::new(valid), Arc::new(other)], None);
+    let nested = batch(Arc::new(nested));
+    let schema = schema_bytes(&nested.schema());
+    assert_eq!(Allocations::of(&nested).bytes(), bytes + more + schema);
+    // A slice holding no null of an array that holds one keeps the whole validity alive.
+    let (some, bytes) = flags(NullBuffer::from_iter((0..rows).map(|row| row > 0)));
+    assert_eq!(Allocations::default().add_array(&some.slice(1, 10)), bytes);
+}
+
+/// `leaf`, four rows, under each array that holds others but a struct: a list, a large list, list
+/// views, a fixed-size list, a map's values, a union's member, a dictionary's values, and a
+/// run-end encoding's values for each type of run ends.
+fn holding(leaf: &ArrayRef) -> Vec<ArrayRef> {
+    let item = || item(leaf.data_type().clone());
+    let words: ArrayRef = Arc::new(StringArray::from(vec!["a", "b", "c", "d"]));
+    let member = Field::new("i", leaf.data_type().clone(), true);
+    let members = UnionFields::try_new([0], [member]).unwrap();
+    let ids = ScalarBuffer::from(vec![0_i8; 4]);
+    let union = UnionArray::try_new(members, ids, None, vec![Arc::clone(leaf)]).unwrap();
+    let keys = Int8Array::from(vec![0, 1, 2, 3]);
+    let keyed = DictionaryArray::<Int8Type>::try_new(keys, Arc::clone(leaf)).unwrap();
+    let runs = leaf.slice(2, 2);
+    let short = arrow_array::Int16Array::from(vec![2, 4]);
+    let (int, long) = (Int32Array::from(vec![2, 4]), Int64Array::from(vec![2, 4]));
+    vec![
+        Arc::new(ListArray::new(
+            item(),
+            OffsetBuffer::from_lengths([4]),
+            Arc::clone(leaf),
+            None,
+        )),
+        Arc::new(LargeListArray::new(
+            item(),
+            OffsetBuffer::from_lengths([4]),
+            Arc::clone(leaf),
+            None,
+        )),
+        Arc::new(ListViewArray::new(
+            item(),
+            vec![0].into(),
+            vec![4].into(),
+            Arc::clone(leaf),
+            None,
+        )),
+        Arc::new(LargeListViewArray::new(
+            item(),
+            vec![0].into(),
+            vec![4].into(),
+            Arc::clone(leaf),
+            None,
+        )),
+        Arc::new(FixedSizeListArray::new(item(), 4, Arc::clone(leaf), None)),
+        map(&words, leaf),
+        Arc::new(union),
+        Arc::new(keyed),
+        Arc::new(RunArray::<Int16Type>::try_new(&short, &runs).unwrap()),
+        Arc::new(RunArray::<Int32Type>::try_new(&int, &runs).unwrap()),
+        Arc::new(RunArray::<Int64Type>::try_new(&long, &runs).unwrap()),
+    ]
+}
+
+#[test]
+fn a_validity_counts_at_any_depth() {
+    // The last row is null, so a run-end encoding's values, the last two, hold one.
+    let nulls = NullBuffer::from(vec![true, true, true, false]);
+    let values = || ScalarBuffer::from(vec![1_i32, 2, 3, 4]);
+    let leaf: ArrayRef = Arc::new(Int32Array::new(values(), Some(nulls)));
+    let plain: ArrayRef = Arc::new(Int32Array::new(values(), None));
+    let validity = u64::try_from(leaf.nulls().unwrap().buffer().capacity()).unwrap();
+    let counted = |array: &ArrayRef| Allocations::default().add_array(array.as_ref());
+    for (with, without) in holding(&leaf).iter().zip(holding(&plain)) {
+        let what = with.data_type();
+        assert_eq!(counted(with), counted(&without) + validity, "{what}");
+    }
 }
 
 /// A batch of one column nested `levels` deep, a top-level column being the first level.

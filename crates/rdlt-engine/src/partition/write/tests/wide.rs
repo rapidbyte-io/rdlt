@@ -21,7 +21,7 @@ use super::super::held::shredded;
 use super::super::normalized::{kept, made, split};
 use super::super::pieces::Pieces;
 use crate::cost::tests::{held_alone, peak_alone};
-use crate::fixtures::lowering::wide::{dictionaries, integers};
+use crate::fixtures::lowering::wide::{dictionaries, flags, integers};
 use crate::fixtures::lowering::{Case, Storage, stamp};
 use crate::normalize::Shape;
 use crate::partition::ChangeMode;
@@ -240,9 +240,11 @@ fn decoded_alone(batch: &RecordBatch) -> (u64, RecordBatch) {
 fn a_wide_push_holds_no_more_than_it_is_admitted_for() {
     let mut found = Vec::new();
     for columns in [COLUMNS, WIDEST] {
-        let pushes: [(&str, &dyn Fn() -> RecordBatch); 2] = [
+        // Booleans of many rows whose validity, holding no null, Arrow's data of them leaves out.
+        let pushes: [(&str, &dyn Fn() -> RecordBatch); 3] = [
             ("integers", &|| integers(1, columns, |row| row)),
             ("dictionaries", &|| dictionaries(1, columns)),
+            ("booleans", &|| flags(1_024, columns)),
         ];
         for (what, make) in pushes {
             let (held, built) = held_alone(make);
