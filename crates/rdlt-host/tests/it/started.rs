@@ -6,7 +6,7 @@ use std::sync::Arc;
 use rdlt_connector::serve::{Served, serve_connection};
 use rdlt_connector::wire::{error as carried, v1};
 use rdlt_connector::{
-    Checkpointing, ConnectContext, ConnectorError, ConnectorErrorKind, Emitter, LogLevel,
+    Checkpointing, ConnectContext, ConnectorError, ConnectorErrorKind, Emitter,
     Partition, PartitionId, ReadMode, ReadStream, SourceConnector, StreamName, StreamSpec, Streams,
     acknowledging_source_factory,
 };
@@ -202,9 +202,9 @@ impl ReadStream<Resuming> for Kept {
         match partition.id().as_str() {
             // It says where it starts before anything else.
             "resumes" => out.checkpoint(&7).await,
-            // It fails after a line of its log, having sent nothing of the partition.
+            // It fails after saying how far behind it is, having sent nothing of the partition.
             "fails" => {
-                out.log(LogLevel::Info, "reading").await?;
+                out.behind(0).await?;
                 Err(ConnectorError::data("the partition cannot be read"))
             }
             _ => Ok(()),

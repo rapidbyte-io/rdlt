@@ -14,7 +14,7 @@ use serde::Serialize;
 
 use crate::cursor::Cursor;
 use crate::error::{ConnectorError, Result, ResultExt};
-use crate::sink::{LogLevel, PartitionSink, Push, SourceEvent};
+use crate::sink::{PartitionSink, Push, SourceEvent};
 
 /// Sends one partition's data and checkpoints to the engine, with cursors of type `C`.
 ///
@@ -166,26 +166,6 @@ impl<C: Serialize> Emitter<C> {
     /// Whether the engine is waiting for a checkpoint at the next safe point.
     pub fn checkpoint_due(&self) -> bool {
         self.sink.pending_barrier().is_some()
-    }
-
-    /// Sends a log line to the engine's log.
-    pub async fn log(&mut self, level: LogLevel, message: impl Into<String>) -> Result<()> {
-        self.sink
-            .send(SourceEvent::Log {
-                level,
-                message: message.into(),
-            })
-            .await
-    }
-
-    /// Sends a metric sample to the engine's metrics.
-    pub async fn metric(&mut self, name: impl Into<String>, value: f64) -> Result<()> {
-        self.sink
-            .send(SourceEvent::Metric {
-                name: name.into(),
-                value,
-            })
-            .await
     }
 
     /// Tells the engine the stream's partitions changed, as a topic's whose partitions were

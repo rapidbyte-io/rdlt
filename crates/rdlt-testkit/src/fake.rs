@@ -66,10 +66,10 @@ pub enum Fault {
     Keys(fn() -> String),
     /// Its reads send this many schemas, each of the next epoch, and nothing else.
     Schemas(u64),
-    /// Its reads send this many schemas, each of the next epoch and followed by a log line.
+    /// Its reads send this many schemas, each of the next epoch and followed by a lag.
     Chatters(u64),
-    /// Its reads send this many log lines, and nothing else.
-    Logs(u64),
+    /// Its reads send this many lags, and nothing else.
+    Lags(u64),
     /// It is a destination whose configuration answers with identifier rules at their limits.
     WideRules,
     /// Its reads send the next of these frames for each credit the host grants, and keep each
@@ -265,12 +265,9 @@ fn spec(id: &str, destination: bool) -> v1::ConnectorSpec {
     }
 }
 
-/// A frame of a log line.
-fn logged() -> v1::read_frame::Frame {
-    v1::read_frame::Frame::Log(v1::LogFrame {
-        level: v1::LogLevel::Info as i32,
-        message: "chatter".to_owned(),
-    })
+/// A frame of a lag.
+fn lagged() -> v1::read_frame::Frame {
+    v1::read_frame::Frame::Behind(v1::BehindFrame { records: 1 })
 }
 
 /// The IPC schema of one column of ids.
@@ -322,15 +319,15 @@ impl Fake {
                         schema_epoch: epoch,
                         ipc_schema: ids(),
                     });
-                    std::iter::once(schema).chain(chatty.then(logged))
+                    std::iter::once(schema).chain(chatty.then(lagged))
                 })
                 .map(|frame| Ok(v1::ReadFrame { frame: Some(frame) }))
                 .collect()
-        } else if let Fault::Logs(count) = self.0 {
+        } else if let Fault::Lags(count) = self.0 {
             (0..count)
                 .map(|_| {
                     Ok(v1::ReadFrame {
-                        frame: Some(logged()),
+                        frame: Some(lagged()),
                     })
                 })
                 .collect()

@@ -218,9 +218,9 @@ still taken largely on trust:
   tonic reads them.
 - **A read's frames the engine takes for nothing are bounded by count** between two events of its
   data, rows or a checkpoint: schemas and dictionaries to a schema and a dictionary for each
-  column, and log lines, metrics, lags and replans to 1,024 (`MAX_FREE_FRAMES`), neither kind
-  ending the other's run. A read's data credit stays unchecked by the host: it grants credit back
-  as the engine takes each frame, so an overrun is undetectable at the receiver (ADR 0016).
+  column, and lags and replans to 1,024 (`MAX_FREE_FRAMES`), neither kind ending the other's
+  run. A read's data credit stays unchecked by the host: it grants credit back as the engine
+  takes each frame, so an overrun is undetectable at the receiver (ADR 0016).
 - **A served connection's send wait counts any byte as progress**: a host taking a byte a minute
   keeps its connection, holding only its own share, and a stop's drain ends it.
 

@@ -13,7 +13,7 @@ use crate::cost::push_charge;
 use crate::cursor::Cursor;
 use crate::error::ConnectorErrorKind;
 use crate::sink::{
-    Admission, LogLevel, PartitionFeed, PartitionSink, Permit, Push, SourceEvent,
+    Admission, PartitionFeed, PartitionSink, Permit, Push, SourceEvent,
     admitted_partition_channel,
 };
 
@@ -130,14 +130,6 @@ async fn every_event_but_a_push_passes_a_full_window_and_holds_nothing() {
         },
         SourceEvent::Replan,
         SourceEvent::Behind { records: 7 },
-        SourceEvent::Log {
-            level: LogLevel::Info,
-            message: "read".to_owned(),
-        },
-        SourceEvent::Metric {
-            name: "rows".to_owned(),
-            value: 1.0,
-        },
     ];
     for event in others {
         let admitted = admitted(&window, &event).await;

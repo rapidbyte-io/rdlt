@@ -665,14 +665,6 @@ async fn a_checkpoint_is_admitted_for_its_cursor_and_signals_for_nothing() {
     for event in [
         SourceEvent::Replan,
         SourceEvent::Behind { records: 3 },
-        SourceEvent::Log {
-            level: rdlt_connector::LogLevel::Info,
-            message: "line".to_owned(),
-        },
-        SourceEvent::Metric {
-            name: "rows".to_owned(),
-            value: 1.0,
-        },
     ] {
         assert!(admission.admit(&event).await.unwrap().is_none());
     }

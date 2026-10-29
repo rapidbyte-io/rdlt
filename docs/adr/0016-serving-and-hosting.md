@@ -114,7 +114,7 @@ socket will be.
   - The served read feeds the source's partition channel and sends its events as frames.
   - Arrow batches open a new schema epoch when their schema changes, and the host requires
     epochs to grow.
-  - JSON pushes, cursors, log lines and metric names are admitted against the host's limits.
+  - JSON pushes and cursors are admitted against the host's limits.
 - **A read ends with `Done` when the source's read returns**, and with its error's status when
   it fails, as the in-process adapter returns. A read the engine stopped ends however the
   source's read returned.
@@ -129,7 +129,7 @@ socket will be.
   to the plane, a read-back once its one request has arrived whole, and every other call to the
   generated server; it ends calls as tonic does, by trailers, a trailers-only answer, a body's
   error or a cancelled request, so the host classes a failure by the same code. It re-exports
-  tonic and prost, and states the protocol's version as `PROTOCOL_MAJOR` (5), which both ends
+  tonic and prost, and states the protocol's version as `PROTOCOL_MAJOR` (7), which both ends
   must match.
 - **The gates follow the code.** The served end is tested from `rdlt-host`, where a client
   exists, so `rdlt-host`'s tests run against `rdlt-wire`'s mutants (ADR 0003), and coverage runs

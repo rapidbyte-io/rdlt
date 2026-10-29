@@ -70,7 +70,7 @@ the whole engine on a paused clock from a seed, with connectors in the engine's 
     - a check once the heartbeat has had twice its patience: pings echoed ahead, none answered, a
       heartbeat that never opens or is refused, pings never read;
     - a read: a schema that is no IPC message, a barrier never asked for, a schema epoch sent
-      twice, too many frames that carry no event, too many log lines, and a connector that knows
+      twice, too many frames that carry no event, too many lags, and a connector that knows
       no barrier in a read's start;
     - a discovery: status details that do not decode, a catalog too large to decode;
     - a session's opening with a state key past its limit, and writes whose credit trickles or

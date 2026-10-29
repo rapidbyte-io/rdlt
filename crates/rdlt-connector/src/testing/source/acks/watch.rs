@@ -142,12 +142,7 @@ impl Probed<'_> {
                     ask(&feed);
                 }
                 Some(SourceEvent::Push(_)) => read.tail = true,
-                Some(
-                    SourceEvent::Log { .. }
-                    | SourceEvent::Metric { .. }
-                    | SourceEvent::Replan
-                    | SourceEvent::Behind { .. },
-                ) => {}
+                Some(SourceEvent::Replan | SourceEvent::Behind { .. }) => {}
             }
         };
         // A stop request wins over any send, so the read's next event ends it.

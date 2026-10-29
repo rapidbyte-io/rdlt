@@ -157,7 +157,7 @@ pub use secret::Secret;
 #[cfg(feature = "serve")]
 pub use serve::serve;
 pub use sink::{
-    Admission, LogLevel, PartitionFeed, PartitionSink, Permit, Push, Requested, SourceEvent,
+    Admission, PartitionFeed, PartitionSink, Permit, Push, Requested, SourceEvent,
     admitted_partition_channel, partition_channel,
 };
 pub use source::{

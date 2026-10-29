@@ -389,7 +389,7 @@ impl Scripted {
                 if stream.idle && stream.idle_flag.load(Ordering::SeqCst) {
                     tokio::time::sleep(Duration::from_millis(100)).await;
                     self.checkpoint_if_asked(script, stream, next, out).await?;
-                    out.metric("idle", 0.0).await?;
+                    out.behind(0).await?;
                     continue;
                 }
                 break;

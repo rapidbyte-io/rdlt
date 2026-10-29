@@ -22,7 +22,7 @@ takes the rest of what a streaming source must be able to tell a run:
 ## Decision
 
 - **The re-plan signal.** `Emitter::replan()` sends `SourceEvent::Replan`, on the wire a
-  `ReadFrame` of kind `ReplanFrame` (8). In a run that follows its source and is not stopping,
+  `ReadFrame` of kind `ReplanFrame` (6). In a run that follows its source and is not stopping,
   the coordinator plans the stream again as soon as it hears the signal, as the interval would,
   with the same guards: a new phase waits for a commit, and an ended partition waits for its
   end's commit. Signals heard together plan each stream once. Elsewhere the signal is ignored: a
@@ -30,7 +30,7 @@ takes the rest of what a streaming source must be able to tell a run:
   change; signals a partition sends before the coordinator hears them are kept as its state and
   cost one `plan` call together (ADR 0039).
 - **The lag hook.** `Emitter::behind(records)` sends `SourceEvent::Behind { records }`, on the
-  wire a `BehindFrame` (9): how many records the read is behind its source's newest, as the
+  wire a `BehindFrame` (7): how many records the read is behind its source's newest, as the
   source measures it. The coordinator keeps, per stream, the latest count of each partition by
   id, so a partition read again keeps its place. It forgets a partition a re-plan retires,
   whether its read was running or had ended, and every partition when the stream begins a new

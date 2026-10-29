@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use rdlt_connector::serve::Served;
 use rdlt_connector::{
-    ConnectorErrorKind, LogLevel, Partition, PartitionId, PipelineId, ReadRequest, Role,
+    ConnectorErrorKind, Partition, PartitionId, PipelineId, ReadRequest, Role,
     Source as _, SourceEvent, StreamName, partition_channel, source_factory,
 };
 use rdlt_connector_reference::{GeneratorSource, published};
@@ -91,21 +91,6 @@ async fn a_served_read_learns_whether_its_partition_ends_and_whether_to_follow_i
     }
     let seen = READS.lock().expect("the lock is not poisoned").clone();
     assert_eq!(seen, [(false, false), (true, false), (true, true)]);
-}
-
-#[tokio::test]
-async fn a_warning_and_a_metric_cross_the_wire_as_themselves() {
-    let source = ticks(serde_json::json!({ "rows": 3, "chatty": true })).await;
-    let (events, read) = events(&source).await;
-    read.unwrap();
-    assert!(events.contains(&SourceEvent::Log {
-        level: LogLevel::Warn,
-        message: "ticking".to_owned()
-    }));
-    assert!(events.contains(&SourceEvent::Metric {
-        name: "ticks.started".to_owned(),
-        value: 1.5
-    }));
 }
 
 #[tokio::test]
