@@ -47,16 +47,24 @@ pub(crate) fn data_ordinals(batch: &RecordBatch) -> Vec<Option<usize>> {
     let fields = schema.fields().iter();
     fields
         .map(|field| {
-            let change = matches!(
-                field.name().as_str(),
-                OP_COLUMN | SEQ_COLUMN | UNCHANGED_COLUMN
-            );
-            (!change).then(|| {
+            (!change_column(field.name())).then(|| {
                 data += 1;
                 data - 1
             })
         })
         .collect()
+}
+
+/// Where the change columns of `batch`, a change batch, sit among its fields.
+pub(super) fn places(batch: &RecordBatch) -> Vec<usize> {
+    let fields = batch.schema_ref().fields().iter().enumerate();
+    let changes = fields.filter(|(_, field)| change_column(field.name()));
+    changes.map(|(place, _)| place).collect()
+}
+
+/// Whether a field named `name` is a change column.
+fn change_column(name: &str) -> bool {
+    matches!(name, OP_COLUMN | SEQ_COLUMN | UNCHANGED_COLUMN)
 }
 
 /// `stored`, how a table stores each data column of `batch`, a change batch, by the batch's own

@@ -30,10 +30,10 @@ pub(crate) use convert::normalize as plain;
 pub(crate) use exact::{EXACT_IN_FLOAT, rounds_at};
 pub(crate) use lower::{ChangeLayout, LineageColumns, MetaNames};
 pub(crate) use lowering::{
-    ChangeRows, LoweringPlan, Prepared, Stamp, aligned, filtered, key_values, with_columns,
+    ChangeRows, LoweringPlan, Prepared, Stamp, filtered, key_values, with_columns,
 };
 #[cfg(test)]
-pub(crate) use lowering::{Check, nulled_at, refused, split_lowered};
+pub(crate) use lowering::{Check, aligned, nulled_at, refused, split_lowered};
 pub(crate) use model::{Creation, Model};
 pub(crate) use registry::{Admission, Tables, shared};
 pub(crate) use resolve::{Incoming, Resolver, Settings};

@@ -1632,7 +1632,7 @@ fn rows_whose_json_its_own_column_does_not_hold_are_dropped_and_the_column_is_st
     );
     // The column of integers reads the JSON in part, which what lowering it takes counts.
     assert_eq!(
-        lowering.stored(),
+        *lowering.stored(),
         [Some(rdlt_connector::cost::Stored {
             column: LogicalType::Int64,
             text: false,
@@ -1700,7 +1700,7 @@ fn a_column_of_nulls_arriving_at_a_typed_column_is_charged_as_the_nulls_it_fills
         text: false,
         read: false,
     };
-    assert_eq!(lowering.stored(), [Some(id), None]);
+    assert_eq!(*lowering.stored(), [Some(id), None]);
     assert_eq!(
         lowering.null_fill(2),
         rdlt_connector::cost::nulls(&DataType::Int64, 2)

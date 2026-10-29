@@ -17,7 +17,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
-use rdlt_connector::cost::{Allocations, Rendering, arrays};
+use rdlt_connector::cost::{Rendering, arrays};
 use rdlt_connector::{ColumnPath, Permit, SchemaError, TableSchema};
 use tokio_util::sync::CancellationToken;
 
@@ -35,7 +35,7 @@ use crate::cost::CHANGE_ROW;
 use crate::error::{Error, ErrorKind, codes};
 use crate::limits::MAX_PIECE_BYTES;
 use crate::normalize::PushKind;
-use crate::table::{Incoming, LoweringPlan, Prepared, Stamp, aligned};
+use crate::table::{Incoming, LoweringPlan, Prepared, Stamp};
 
 /// Writes pushes gathered together: Arrow batches as one batch, JSON shredded into batches.
 pub(super) async fn write_flushed(
@@ -258,7 +258,7 @@ fn measured(
     (max, limit): (u64, u64),
 ) -> Lowered {
     let (stored, changes) = match mode {
-        Some(_) => (aligned(batch, &plan.stored()), CHANGE_ROW),
+        Some(_) => (plan.aligned(batch), CHANGE_ROW),
         None => (plan.stored(), 0),
     };
     Lowered {
@@ -294,13 +294,16 @@ async fn lowered(
             let rows = u64::try_from(piece.rows).unwrap_or(u64::MAX);
             let stamp = stamp(context, open, rows.saturating_sub(ignored.rows()));
             let lowering = Lowering {
-                allocations: pieces.allocations(),
                 reserved,
                 unit: pieces.share(),
             };
             let copies = !copies_nothing(&piece, &plan, &stamp, job.changes);
             let (plan, stream, mode) = (Arc::clone(&plan), job.stream.clone(), job.changes);
-            let run = move || lower(&stream, mode, &piece.parts, &plan, &stamp);
+            let run = move || {
+                let prepared = lower(&stream, mode, &piece.parts, &plan, &stamp)?;
+                let grown = prepared.growth(&piece.parts);
+                Ok((prepared, grown))
+            };
             window.push(Box::new(run), lowering, copies);
             if full(window.len()) {
                 window.lower(job, context, open).await?;
@@ -373,8 +376,6 @@ async fn next(
 /// What holds a piece while it is lowered and until it is written: dropped, what it reserved is
 /// released before its unit, whose batches go before their permits.
 struct Lowering {
-    /// The allocations its unit's batches keep alive, which what it is lowered to may share.
-    allocations: Arc<Allocations>,
     /// What lowering the piece holds, reserved before it is lowered.
     reserved: Reservation,
     /// A share of what holds its unit, so the unit's batches and permits hold until all of it is
@@ -382,8 +383,8 @@ struct Lowering {
     unit: Share,
 }
 
-/// A piece's lowering.
-type Run = Box<dyn FnOnce() -> Result<Prepared, Error> + Send>;
+/// A piece's lowering, and the bytes of what it keeps alive beyond the parts it was lowered from.
+type Run = Box<dyn FnOnce() -> Result<(Prepared, u64), Error> + Send>;
 
 /// Pieces reserved from a room and not yet lowered, in order: the runs are declared before what
 /// holds their pieces, so they go first.
@@ -445,7 +446,7 @@ impl Window {
 
     /// The window's pieces lowered, in order, each beside what holds it: on the calling task
     /// where lowering none copies a value, on the compute pool otherwise.
-    async fn lowered(&mut self, pool: &Pool) -> Vec<(Result<Prepared, Error>, Lowering)> {
+    async fn lowered(&mut self, pool: &Pool) -> Vec<(Result<(Prepared, u64), Error>, Lowering)> {
         let (runs, held) = (
             std::mem::take(&mut self.runs),
             std::mem::take(&mut self.held),
@@ -471,9 +472,8 @@ impl Window {
             .await
             .into_iter()
             .map(|(prepared, mut lowering)| {
-                prepared.map(|prepared| {
-                    let fresh = prepared.growth(&lowering.allocations);
-                    lowering.reserved.shrink(fresh);
+                prepared.map(|(prepared, grown)| {
+                    lowering.reserved.shrink(grown);
                     (prepared, lowering)
                 })
             })

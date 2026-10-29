@@ -63,7 +63,7 @@ pub(super) async fn write_normalized(
         let mut reserved = reserve(job, context, &room, request).await?;
         let (shape, stream, parts) = (Arc::clone(shape), job.stream.clone(), held.batches.clone());
         let parts = on_pool(context, move || split(&stream, &parts, &shape)).await?;
-        let made = made(&held.batches, &parts, &held.allocations);
+        let made = made(&held.batches, &parts);
         let received = parts.first().map_or(0, |part| part.batch.num_rows() as u64);
         if received == 0 {
             continue;
@@ -166,7 +166,7 @@ async fn sliced(
     let (max, limit) = split_bounds(room.shares(&context.budget));
     let lowered = Lowered {
         rendering: context.rendering.as_ref().clone(),
-        stored: Vec::new(),
+        stored: Arc::default(),
         row: lineage_row(shape),
         item: LINEAGE_ITEM,
         // What a split holds whatever its rows is within the whole request each reserves.
@@ -479,20 +479,21 @@ pub(super) fn split(
     normalize::normalize(&batch, shape).map_err(failed)
 }
 
-/// Bytes: what splitting `piece`, slices of a unit, into `parts` holds beyond what `unit` holds
-/// until the last of their pieces is written: the allocations of the parts' batches and lineage
-/// that `unit` does not hold, each counted once, the arrays of `piece`'s batches, of the parts'
-/// and of their lineage, and a place in a list for each data buffer of the parts' views beyond
-/// the first of each view array: the split joins the piece's lists, and a part's arrays hold the
-/// first.
-pub(super) fn made(piece: &[RecordBatch], parts: &[Part], unit: &Allocations) -> u64 {
-    let mut made = Allocations::default();
+/// Bytes: what splitting `piece`, slices of a unit, into `parts` holds beyond the unit until the
+/// last of their pieces is written: the allocations of the parts' batches and lineage that the
+/// piece's batches do not keep alive, each counted once, the arrays of `piece`'s batches, of the
+/// parts' and of their lineage, and a place in a list for each data buffer of the parts' views
+/// beyond the first of each view array: the split joins the piece's lists, and a part's arrays
+/// hold the first.
+pub(super) fn made(piece: &[RecordBatch], parts: &[Part]) -> u64 {
+    // A split reads only its piece, so what its parts share with the unit is the piece's.
+    let (unit, mut made): (Allocations, _) = (piece.iter().collect(), Allocations::default());
     let sliced = piece
         .iter()
         .map(|batch| arrays(batch.schema_ref().fields()));
     let mut held = sliced.fold(0, u64::saturating_add);
     for part in parts {
-        part_growth(part, unit, &mut made);
+        part_growth(part, &unit, &mut made);
         let lineage = part.lineage.arrays().len() + usize::from(part.lineage.keys.is_some());
         held = held
             .saturating_add(arrays(part.batch.schema_ref().fields()))

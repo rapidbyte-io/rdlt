@@ -39,6 +39,7 @@ use crate::normalize::{Lineage, Received};
 use crate::policy::SchemaPolicy;
 pub(crate) use changes::{ChangeRows, aligned};
 use constants::Constants;
+use costs::Storing;
 pub(crate) use kept::filtered;
 use kept::kept_by;
 use keys::keyed;
@@ -104,6 +105,8 @@ pub(crate) struct LoweringPlan {
     splits: Splits,
     /// The metadata columns holding one value per load, built once and sliced per batch.
     constants: Mutex<Option<Constants>>,
+    /// How the table stores each column.
+    storing: Storing,
     /// Each incoming column's schema policy, which decides what becomes of a value its column
     /// cannot hold.
     policies: Vec<SchemaPolicy>,
@@ -162,6 +165,7 @@ impl LoweringPlan {
         let hashed = history::hashed(&view, &sources, change_time);
         let mut plan = Self {
             splits: Splits::of(&routes, &types),
+            storing: Storing::new(&view, &sources, routes.len()),
             stream,
             view,
             incoming,

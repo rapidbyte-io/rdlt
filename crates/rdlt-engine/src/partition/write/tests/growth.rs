@@ -1,6 +1,6 @@
-//! A piece is charged for the allocations it keeps alive beyond its unit's batches, each once,
-//! however earlier pieces of the unit were freed and wherever the allocator placed it, and for
-//! its arrays.
+//! A piece is charged for the allocations it keeps alive beyond the batches it was lowered from,
+//! each once, however earlier pieces of the unit were freed and wherever the allocator placed it,
+//! and for its arrays.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -10,26 +10,24 @@ use arrow_buffer::{Buffer, NullBuffer, ScalarBuffer};
 use proptest::prelude::*;
 use rdlt_connector::cost::{Allocations, arrays};
 
-use super::super::Held;
 use super::super::normalized::{kept, made, part_growth};
 use super::{allocated, buffers, ids};
 use crate::table::Prepared;
 
 #[test]
-fn the_loads_constant_columns_and_the_units_batches_count_for_no_growth_but_their_arrays() {
+fn the_loads_constant_columns_and_a_piece_s_parts_count_for_no_growth_but_their_arrays() {
     let rows = ids(100);
     let prepared = lowered(Arc::clone(rows.column(0)));
     let arrays = arrays(prepared.batch.schema_ref().fields());
     assert_eq!(
-        prepared.growth(&Allocations::default()),
+        prepared.growth(&[]),
         buffers(&rows) + arrays,
         "the constant columns' buffers count nothing"
     );
-    // What the unit's batches keep alive is no growth, however many pieces keep it alive.
-    let unit = Held::of(vec![rows.clone()], Vec::new());
-    assert_eq!(prepared.growth(&unit.allocations), arrays);
-    assert_eq!(prepared.growth(&unit.allocations), arrays);
-    assert_eq!(unit.allocations.bytes(), allocated(&rows));
+    // What the batches it was lowered from keep alive is no growth, however many pieces keep it.
+    let parts = [rows];
+    assert_eq!(prepared.growth(&parts), arrays);
+    assert_eq!(prepared.growth(&parts), arrays);
 }
 
 /// A batch lowered from a unit: the load's two constant columns, then `column`.
@@ -75,14 +73,14 @@ fn in_place_of(freed: Buffer) -> ArrayRef {
 
 #[test]
 fn a_piece_allocated_where_an_earlier_piece_of_its_unit_was_freed_is_charged_in_full() {
-    let held = Held::of(vec![ids(100)], Vec::new());
+    let parts = [ids(100)];
     let first: ArrayRef = Arc::new(Int64Array::from_iter_values(0..1_000));
     let bytes = buffers(&RecordBatch::try_from_iter([("id", Arc::clone(&first))]).unwrap());
     let values = first.to_data().buffers()[0].clone();
     let address = values.as_ptr();
     let piece = lowered(first);
     let bytes = bytes + arrays(piece.batch.schema_ref().fields());
-    assert_eq!(piece.growth(&held.allocations), bytes);
+    assert_eq!(piece.growth(&parts), bytes);
     // The piece is written and freed, and the next piece of the unit is lowered where it was.
     drop(piece);
     let second = lowered(in_place_of(values));
@@ -90,7 +88,7 @@ fn a_piece_allocated_where_an_earlier_piece_of_its_unit_was_freed_is_charged_in_
         second.batch.column(2).to_data().buffers()[0].as_ptr(),
         address
     );
-    assert_eq!(second.growth(&held.allocations), bytes);
+    assert_eq!(second.growth(&parts), bytes);
 }
 
 /// A unit's shape: normalized to depth 8, keyless.
@@ -105,9 +103,8 @@ fn keyless() -> crate::normalize::Shape {
 #[test]
 fn a_split_made_where_an_earlier_split_of_its_unit_was_freed_is_charged_in_full() {
     let unit = ids(1_000);
-    let held = Held::of(vec![unit.clone()], Vec::new());
     let piece = std::slice::from_ref(&unit);
-    let made = |parts: &[crate::normalize::Part]| made(piece, parts, &held.allocations);
+    let made = |parts: &[crate::normalize::Part]| made(piece, parts);
     let first = crate::normalize::normalize(&unit, &keyless()).unwrap();
     let charged = made(&first);
     let rows = first[0].lineage.row.to_data().buffers()[0].clone();
@@ -136,7 +133,7 @@ fn what_holds_a_split_keeps_the_parts_it_planned_alive_until_it_goes() {
 #[test]
 fn a_units_parts_grow_it_by_their_lineage_their_schemas_and_their_arrays() {
     let unit = ids(1000);
-    let held = Held::of(vec![unit.clone()], Vec::new());
+    let held = Allocations::of(&unit);
     let parts = crate::normalize::normalize(&unit, &keyless()).unwrap();
     // The roots' positions are one buffer of exactly a row's 4 bytes each.
     let positions = parts[0].lineage.row.to_data();
@@ -154,27 +151,27 @@ fn a_units_parts_grow_it_by_their_lineage_their_schemas_and_their_arrays() {
     let mut piece = Allocations::default();
     let grown: u64 = parts
         .iter()
-        .map(|part| part_growth(part, &held.allocations, &mut piece))
+        .map(|part| part_growth(part, &held, &mut piece))
         .sum();
     assert_eq!(grown, u64::try_from(lineage).unwrap() + schemas);
     // Counted once within the piece.
     let again: u64 = parts
         .iter()
-        .map(|part| part_growth(part, &held.allocations, &mut piece))
+        .map(|part| part_growth(part, &held, &mut piece))
         .sum();
     assert_eq!(again, 0);
     // None of it joined the unit's set, which holds only the unit's batches. Beside it the split
     // holds the arrays of the piece it was made of, of its part and of the part's positions.
     let piece = std::slice::from_ref(&unit);
     assert_eq!(parts.len(), 1);
-    assert_eq!(made(piece, &parts, &held.allocations), grown + 3 * 320);
-    assert_eq!(held.allocations.bytes(), allocated(&unit));
+    assert_eq!(made(piece, &parts), grown + 3 * 320);
+    assert_eq!(held.bytes(), allocated(&unit));
 }
 
 #[test]
 fn each_part_of_a_merge_s_split_holds_the_keys_array_beside_its_lineage() {
     let unit = ids(1_000);
-    let held = Held::of(vec![unit.clone()], Vec::new());
+    let held = Allocations::of(&unit);
     let keyed = crate::normalize::Shape {
         key: vec![Arc::from("id")],
         ..keyless()
@@ -184,11 +181,11 @@ fn each_part_of_a_merge_s_split_holds_the_keys_array_beside_its_lineage() {
     assert!(parts[0].lineage.keys.is_some());
     let mut grown = Allocations::default();
     for part in &parts {
-        part_growth(part, &held.allocations, &mut grown);
+        part_growth(part, &held, &mut grown);
     }
     // The piece's array, the part's column, its positions and the keys the parts share.
     let piece = std::slice::from_ref(&unit);
-    let made = made(piece, &parts, &held.allocations);
+    let made = made(piece, &parts);
     assert_eq!(made, grown.bytes() + 4 * 320);
 }
 
@@ -247,8 +244,8 @@ fn afresh(unit: &[RecordBatch], columns: &[ArrayRef]) -> u64 {
 
 proptest! {
     /// Each piece of a unit is charged its arrays and the allocations it keeps alive beyond the
-    /// unit's batches, counted afresh: whatever it shares with the unit or repeats, and wherever
-    /// it was made, in the very allocation a piece written before it held among them.
+    /// batches it was lowered from, counted afresh: whatever it shares with them or repeats, and
+    /// wherever it was made, in the very allocation a piece written before it held among them.
     #[test]
     fn each_piece_s_growth_is_its_allocations_beyond_its_unit_counted_afresh(
         unit in proptest::collection::vec(1_500_usize..2_000, 1..4),
@@ -262,7 +259,6 @@ proptest! {
             .into_iter()
             .map(|rows| ids(i64::try_from(rows).unwrap()))
             .collect();
-        let held = Held::of(unit.clone(), Vec::new());
         let made_anew = |nulls: bool| -> ArrayRef {
             let values = (0..i64::try_from(rows).unwrap()).collect::<Vec<_>>();
             let nulls = nulls.then(|| NullBuffer::from_iter((0..rows).map(|row| row % 3 > 0)));
@@ -291,17 +287,12 @@ proptest! {
             }
             let piece = lowered_all(made.clone());
             let arrays = arrays(piece.batch.schema_ref().fields());
-            prop_assert_eq!(piece.growth(&held.allocations), afresh(&unit, &made) + arrays);
+            prop_assert_eq!(piece.growth(&unit), afresh(&unit, &made) + arrays);
             if written {
                 // Written and freed: what it made alone may be handed out again.
                 drop((piece, made));
                 freed.extend(own);
             }
         }
-        let mut alive = Allocations::default();
-        for batch in &unit {
-            alive.add(batch);
-        }
-        prop_assert_eq!(held.allocations.as_ref(), &alive);
     }
 }

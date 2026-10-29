@@ -12,7 +12,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use arrow_array::{Int8Array, RecordBatch};
-use rdlt_connector::cost::{Allocations, push_charge};
+use rdlt_connector::cost::push_charge;
 use rdlt_connector::{ChangeOp, OP_COLUMN, Push, StreamName};
 use rdlt_wire::{Decoder, Encoder, Limits};
 
@@ -131,12 +131,12 @@ fn within(
         let parts = sliced(batch, parts);
         super::super::lower(&stream, mode, &parts, case.plan(), &stamp()).unwrap()
     };
-    let unit = Allocations::of(batch);
     let reserved = reserved(case, &sliced(batch, parts), mode);
     // What the piece keeps once lowered is counted while it holds what it reserved.
     let (peak, (prepared, charged)) = peak_alone(|| {
-        let prepared = lower();
-        let charged = prepared.growth(&unit);
+        let parts = sliced(batch, parts);
+        let prepared = super::super::lower(&stream, mode, &parts, case.plan(), &stamp()).unwrap();
+        let charged = prepared.growth(&parts);
         (prepared, charged)
     });
     let rows = prepared.batch.num_rows();
@@ -330,14 +330,13 @@ fn a_wide_split_keeps_no_more_than_it_is_charged_once_its_parts_are_planned() {
 /// Where splitting `batch` normalized as `shape`, in one part and in two, keeps more than it is
 /// charged once its parts are planned: what it held and was charged, added to `found`.
 fn within_split(stream: &StreamName, shape: &Shape, batch: &RecordBatch, found: &mut Vec<String>) {
-    let unit = Allocations::of(batch);
     for parts in [1, 2] {
         // The piece cut before the split, its slices of the unit, and what the split's parts
         // keep once they are planned, while their pieces are lowered.
         let (held, (_, _, charged)) = held_alone(|| {
             let piece = sliced(batch, parts);
             let split = split(stream, &piece, shape).unwrap();
-            let charged = made(&piece, &split, &unit);
+            let charged = made(&piece, &split);
             (piece, kept(&split), charged)
         });
         if held > charged {
@@ -352,30 +351,40 @@ fn within_split(stream: &StreamName, shape: &Shape, batch: &RecordBatch, found: 
 }
 
 #[test]
-fn cutting_a_wide_unit_keeps_nothing_of_it_beside_it_between_its_pieces() {
-    let layout = ChangeLayout::Log;
+fn cutting_a_wide_unit_keeps_nothing_a_column_beside_its_batches() {
+    let mut found = Vec::new();
     for columns in [COLUMNS, WIDEST] {
-        let case = Case::wide_changes(4, columns, layout, Storage::Native);
-        let batch = case.batch();
-        let measured = |bounds| {
-            let mode = Some(mode(layout));
-            super::super::measured(case.plan(), case.rendering(), batch, mode, bounds)
-        };
-        // Pieces of a row each: a piece's rows may take a byte.
-        let whole = measured((u64::MAX, u64::MAX));
-        let lowered = measured((whole.piece + whole.part + 1, u64::MAX));
-        let unit = || Held::of(vec![batch.clone()], Vec::new());
-        let (alone, _) = held_alone(|| (unit(), lowered.clone()));
-        let (cutting, _) = held_alone(|| {
-            let mut pieces = Pieces::new(unit(), lowered.clone());
-            let piece = pieces.next().unwrap().expect("the unit has rows");
-            assert_eq!(piece.rows, 1);
-            pieces
-        });
-        let beside = cutting.saturating_sub(alone);
-        assert!(
-            beside < 1_024,
-            "{columns} columns: cutting keeps {beside} bytes"
-        );
+        // A change stream's unit, its table's columns aligned to its batches', and a merge's.
+        let layout = ChangeLayout::Log;
+        let changes = Case::wide_changes(4, columns, layout, Storage::Native);
+        let cases = [
+            ("a change stream's", changes, Some(mode(layout))),
+            ("a merge's", Case::wide_merge(4, columns), None),
+        ];
+        for (what, case, mode) in &cases {
+            let batch = case.batch();
+            let measured = |bounds| {
+                super::super::measured(case.plan(), case.rendering(), batch, *mode, bounds)
+            };
+            // Pieces of a row each: a piece's rows may take a byte.
+            let whole = measured((u64::MAX, u64::MAX));
+            let bounds = (whole.piece + whole.part + 1, u64::MAX);
+            let (alone, _) = held_alone(|| vec![batch.clone()]);
+            // What holds the unit and the cutter, which a plan tells how to measure it.
+            let (cutting, _) = held_alone(|| {
+                let unit = Held::of(vec![batch.clone()], Vec::new());
+                let mut pieces = Pieces::new(unit, measured(bounds));
+                let piece = pieces.next().unwrap().expect("the unit has rows");
+                assert_eq!(piece.rows, 1);
+                pieces
+            });
+            let beside = cutting.saturating_sub(alone);
+            if beside >= 1_024 {
+                found.push(format!(
+                    "{what} of {columns} columns: {beside} bytes beside"
+                ));
+            }
+        }
     }
+    assert!(found.is_empty(), "{}", found.join("\n"));
 }

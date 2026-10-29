@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use arrow_array::RecordBatch;
 use parking_lot::Mutex;
-use rdlt_connector::cost::{Allocations, Measure, Rendering, Stored};
+use rdlt_connector::cost::{Measure, Rendering, Stored};
 
 use super::Held;
 use super::held::Share;
@@ -29,8 +29,9 @@ pub(super) struct RowTooLarge {
 #[derive(Clone, Debug)]
 pub(super) struct Lowered {
     pub(super) rendering: Rendering,
-    /// How the table stores each column of the unit's batches; empty before its plan is found.
-    pub(super) stored: Vec<Option<Stored>>,
+    /// How the table stores each column of the unit's batches, as its plan says; empty before
+    /// its plan is found.
+    pub(super) stored: Arc<[Option<Stored>]>,
     /// Bytes: what each row takes beside its columns: the columns of the table the unit holds
     /// nothing in, and the metadata lowering adds.
     pub(super) row: u64,
@@ -153,7 +154,7 @@ impl Pieces {
             Held::default(),
             Lowered {
                 rendering: Rendering::text(),
-                stored: Vec::new(),
+                stored: Arc::default(),
                 row: 0,
                 item: 0,
                 piece: 0,
@@ -172,11 +173,6 @@ impl Pieces {
     /// Whether every row has been cut into a piece.
     fn cut_all(&self) -> bool {
         self.part >= self.unit.lock().batches.len()
-    }
-
-    /// The allocations the unit's batches keep alive, which its pieces share.
-    pub(super) fn allocations(&self) -> Arc<Allocations> {
-        Arc::clone(&self.unit.lock().allocations)
     }
 
     /// Holds `unit`, the same batches, in place of what held them.
@@ -279,7 +275,7 @@ pub(super) fn sliced(unit: Held, lowered: Lowered) -> Result<Vec<Held>, RowTooLa
     let mut pieces = Pieces::new(unit, lowered);
     let mut cut = Vec::new();
     while let Some(piece) = pieces.next()? {
-        let mut held = pieces.unit.lock().piece(piece.parts);
+        let mut held = Held::of(piece.parts, Vec::new());
         held.permits.push(Box::new(pieces.share()));
         cut.push(held);
     }
