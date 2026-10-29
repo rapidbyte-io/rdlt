@@ -583,6 +583,12 @@ admitted, and what a remote connector's calls hold in transport.
   follows. Its in-process sources press on them, in three worlds of four: pushes keeping alive
   a fifth to nine tenths of a frame, and cursors of half to all a cursor may be, so over two
   thousand seeds pushes wait for lowering's room in 783 and cursors wait for a commit in 474.
+  The exactly-once sweep holds the shares that keep the budget pressed, pushes waiting in a fifth
+  of its seeds at least and cursors in a tenth, as a one-sided binomial test: a count fails only
+  where a share at the gate's would give that count or fewer under once in a thousand. At 200
+  seeds that is under 23 seeds with pushes waiting and under 8 with cursors, and at a shard of
+  2,500 under 439 and under 205; at any size a count at the share's mean or above passes, and the
+  test job's twenty seeds can fail neither.
   The crash tests and certification's kill clauses run with 40 MiB, about the least.
 - A simulated network's source sends cursors no larger than its workload's. Cursors as large
   as a cursor may be fill a socket whose peer vanished without the close reaching it: the

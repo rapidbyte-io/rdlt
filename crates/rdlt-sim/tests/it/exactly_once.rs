@@ -52,27 +52,72 @@ const FOUND: [(u64, Reach); 16] = [
 #[test]
 fn every_row_lands_exactly_once_through_faults_crashes_and_concurrent_runs() {
     let checked = for_each_seed("exactly_once", seeds(20), Weight::One, check_exactly_once);
-    // The budget presses on a good share of the seeds: their pushes, or the frames carrying them,
-    // wait for lowering's room and their cursors for a commit. The test job's twenty seeds are too
-    // few to hold the share; the shards' and the nightly's thousands hold it.
-    if checked.len() >= 100 {
-        let pushes = checked
-            .iter()
-            .filter(|run| {
-                let waits = &run.waits;
-                waits.intake.count + waits.decode.count + waits.work.count > 0
-            })
-            .count();
-        let cursors = checked
-            .iter()
-            .filter(|run| run.waits.cursors.count > 0)
-            .count();
-        assert!(
-            pushes * 5 >= checked.len() && cursors * 10 >= checked.len(),
-            "of {} seeds, {pushes} made pushes wait and {cursors} cursors",
-            checked.len()
-        );
+    // The budget presses on a good share of the seeds: pushes wait in a fifth of them at least and
+    // cursors in a tenth, each share held by a one-sided binomial test at the run's size (ADR 0039).
+    let pushes = checked
+        .iter()
+        .filter(|run| {
+            let waits = &run.waits;
+            waits.intake.count + waits.decode.count + waits.work.count > 0
+        })
+        .count();
+    let cursors = checked
+        .iter()
+        .filter(|run| run.waits.cursors.count > 0)
+        .count();
+    let seeds = checked.len();
+    assert!(
+        !below(0.2, pushes, seeds) && !below(0.1, cursors, seeds),
+        "of {seeds} seeds, {pushes} made pushes wait and {cursors} cursors"
+    );
+}
+
+/// Whether `count` of `seeds` is too few for a share of `share` to have given: seeds that each
+/// meet something with chance `share`, apart from one another, meet it in `count` of them or fewer
+/// under once in a thousand.
+fn below(share: f64, count: usize, seeds: usize) -> bool {
+    lower_tail(share, count, seeds) < 1e-3
+}
+
+/// The chance that `seeds` seeds, each meeting something with chance `share` apart from one
+/// another, meet it in `count` of them or fewer; 1 from the share's mean up.
+fn lower_tail(share: f64, count: usize, seeds: usize) -> f64 {
+    let real = |n: usize| f64::from(u32::try_from(n).expect("a count of seeds fits a u32"));
+    let (met, all) = (real(count), real(seeds));
+    if met >= share * all {
+        return 1.0;
     }
+    // Summed in logs from the term of `count` down, the largest below the mean, so none overflows.
+    let choose: f64 = (1..=count)
+        .map(|i| (real(seeds - count + i) / real(i)).ln())
+        .sum();
+    let largest = choose + met * share.ln() + (all - met) * (1.0 - share).ln();
+    let odds = (share / (1.0 - share)).ln();
+    let (mut term, mut sum) = (0.0_f64, 1.0_f64);
+    for i in (1..=count).rev() {
+        term += (real(i) / real(seeds - i + 1)).ln() - odds;
+        sum += term.exp();
+    }
+    largest.exp() * sum
+}
+
+#[test]
+fn a_share_fails_only_on_a_count_it_gives_at_most_once_in_a_thousand() {
+    // Two hundred seeds: a tenth gives 19 often, 8 rarely and 7 or fewer under once in a thousand;
+    // a fifth gives 23 rarely and 22 or fewer under once in a thousand.
+    assert!(!below(0.1, 19, 200));
+    assert!(!below(0.1, 8, 200));
+    assert!(below(0.1, 7, 200));
+    assert!(!below(0.2, 23, 200));
+    assert!(below(0.2, 22, 200));
+    // A shard of 2,500 seeds holds the share far closer.
+    assert!(!below(0.1, 205, 2_500));
+    assert!(below(0.1, 204, 2_500));
+    assert!(!below(0.2, 439, 2_500));
+    assert!(below(0.2, 438, 2_500));
+    // No count at or above the share's mean fails, and a few seeds never fail.
+    assert!(!below(0.1, 1_000, 10_000));
+    assert!(!below(0.1, 0, 20));
 }
 
 #[test]
