@@ -79,8 +79,10 @@ contract M2b settles. Building M2b surfaced decisions the spec leaves open or ge
   and names as they stand when it collects its segments.
 - **Growth is charged at once** (spec §7.5): preparing a batch may make it larger than its push,
   and the difference is reserved without waiting.
-- **Discards are counted per stream** in the commit that publishes their segment. Samples and
-  `Discarded` events arrive with events (M7).
+- **Discards are counted per stream** in the commit that publishes their segment, by table,
+  column and reason: a change the policy refused, or a value its column cannot hold. A stream's
+  report and each commit's `Committed` event name the first 128 and count the rest (ADR 0004).
+  Samples arrive with M7.
 - **Identifiers.** A source name is folded and cleaned under the destination's rules; a taken
   or reserved identifier gets `_` and six base32 digits of the xxh3 hash of the exact source path,
   extended while still taken. A source column whose name folds and cleans to a metadata column's
@@ -92,8 +94,8 @@ contract M2b settles. Building M2b surfaced decisions the spec leaves open or ge
 - **Dependencies.** `arrow-array` enables `chrono-tz`, since rendering a timestamp with a named
   zone as text or JSON needs it. `xxhash-rust` is licensed BSL-1.0, now allowed.
 - **Deferred:** JSON and change pushes, `normalize` and child tables (M3); the lowering plan and
-  preparing batches on the compute pool (M3); discard samples, `Discarded` events and configurable
-  metadata names (M7).
+  preparing batches on the compute pool (M3); discard samples and configurable metadata names
+  (M7).
 
 ## Consequences
 

@@ -60,6 +60,12 @@ The owner chose to keep all of this in one milestone.
   bytes for the connector's send limit; a margin is added. A destination that holds more sessions
   at once than one connection may (`ListenLimits::connection_sessions`), counted from before each
   opens until its close ends, is a violation.
+- **What a run tells agrees with how it ended.** Each run's environment keeps what the run
+  tells it, folding each event as it comes and holding none. Once the run ends, the rows and bytes
+  of its `Committed` and `Credited` events are its report's; `RunEnded` comes last, once, with the
+  report's status; each failed attempt the report lists was told retried (`Retrying { Attempt }`)
+  or ended the run; and its status, pulled then, carries the outcome's report. Each disagreement
+  is a violation. A run a crash drops tells no end and is not checked.
 - **A destination two pipelines share.** Where a seed turns it on, the workload's streams split
   between two pipelines that run at once against one store.
   - The simulated destination keeps each pipeline's epoch, state, staging and completed reads
@@ -92,13 +98,13 @@ The owner chose to keep all of this in one milestone.
     cores hold, eight cores to a seed. The contention between them is intended.
 - **Same-seed replay.** `check_exactly_once` and `check_changes` return a digest of everything the
   destination holds at the end (its tables' columns and rows, and each pipeline's state and last
-  commit that landed), a trace (every report and failure of the phases' runs, in the order the
-  runs ended, hashed; not those of the runs that then check the engine's reports, whose times h2
-  moves over the network, ADR 0019), and the simulated time they took. A test runs each seed of both twice, one run
-  after the other, and requires the same digests, traces, waits, features, reached paths and
-  simulated time (the end time of a networked seed, or of one whose connectors are played in
-  processes, apart, ADR 0019). The test job runs twenty seeds, and the nightly workflow a thousand
-  through `just sim-replay`; a mismatch replays with `just sim-replay <seed>`.
+  commit that landed), a trace (every report, failure and event of the phases' runs, in the order
+  the runs ended, hashed; not those of the runs that then check the engine's reports, whose times
+  h2 moves over the network, ADR 0019), and the simulated time they took. A test runs each seed
+  of both twice, one run after the other, and requires the same digests, traces, waits, features,
+  reached paths and simulated time (the end time of a networked seed, or of one whose connectors
+  are played in processes, apart, ADR 0019). The test job runs twenty seeds, and the nightly
+  workflow a thousand through `just sim-replay`; a mismatch replays with `just sim-replay <seed>`.
 - **Kept seeds name their path.** A seed kept because it found a defect names the path its defect
   was on, one of the paths the simulation records as its runs reach them (a connector the network
   stopped, a crash, a source that forgets serving rows again, a reset refused, a hostile host's
