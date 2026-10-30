@@ -121,6 +121,11 @@ async fn the_memory_destination_is_certified() {
     .await;
     report.assert_passed();
     assert_eq!(report.outcome("D-HIST"), Some(&Outcome::Passed), "{report}");
+    assert_eq!(
+        report.outcome("D-RETRY"),
+        Some(&Outcome::Passed),
+        "{report}"
+    );
     // Nothing outside the pipeline changes a table of the memory destination's.
     assert!(report.note("D-TABLES").is_some(), "{report}");
 }
@@ -136,6 +141,11 @@ async fn the_sqlite_destination_is_certified() {
         let report = certify_destination::<SqliteDestination>(config, &probe).await;
         report.assert_passed();
         assert_eq!(report.outcome("D-HIST"), Some(&Outcome::Passed), "{report}");
+        assert_eq!(
+            report.outcome("D-RETRY"),
+            Some(&Outcome::Passed),
+            "{report}"
+        );
         // Its tables lost a column outside the pipeline in each write mode.
         assert_eq!(report.note("D-TABLES"), None, "{report}");
     }
@@ -152,6 +162,8 @@ async fn the_files_destination_is_certified_in_both_formats() {
             assert!(report.passed(), "{format}: {report}");
             let history = report.outcome("D-HIST");
             assert_eq!(history, Some(&Outcome::Passed), "{format}: {report}");
+            let retried = report.outcome("D-RETRY");
+            assert_eq!(retried, Some(&Outcome::Passed), "{format}: {report}");
         }
     }
 }
