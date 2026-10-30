@@ -29,14 +29,18 @@ takes the rest of what a streaming source must be able to tell a run:
   run that does not follow plans only at its phases. A source signals when its partitions
   change; signals a partition sends before the coordinator hears them are kept as its state and
   cost one `plan` call together (ADR 0039).
-- **The lag hook.** `Emitter::behind(records)` sends `SourceEvent::Behind { records }`, on the
-  wire a `BehindFrame` (7): how many records the read is behind its source's newest, as the
-  source measures it. The coordinator keeps, per stream, the latest count of each partition by
-  id, so a partition read again keeps its place. It forgets a partition a re-plan retires,
-  whether its read was running or had ended, and every partition when the stream begins a new
-  phase; a read asked to stop does not move it.
-  `StreamReport::behind` is the total, `None` where no partition that still lags said. Freshness
-  (time since the last commit) is the engine's own measure and lands with M7's metrics.
+- **The lag hook.** `Emitter::behind(records, headroom)` sends
+  `SourceEvent::Behind { records, headroom }`, on the wire a `BehindFrame` (7): how many records
+  the read is behind its source's newest, as the source measures it, and how much more its
+  retention keeps before it drops where the read stands, in bytes, time or both, where it says.
+  The coordinator keeps, per stream, the latest count and headroom of each partition by id, so a
+  partition read again keeps its place. It forgets a partition a re-plan retires, whether its
+  read was running or had ended, and every partition when the stream begins a new phase; a read
+  asked to stop does not move it. `StreamReport::behind` is the total, `None` where no partition
+  that still lags said, and `StreamReport::headroom` the least each partition said, of each
+  measure. Retention is a pipeline's buffer through an outage, so an operator watches the
+  headroom; no decision reads it. Freshness, when the last commit that landed a stream's rows or
+  positions landed, is the engine's own measure, in the run's status (ADR 0004).
 - **Retention loss.**
   - `ConnectorError::retention_lost(message)`: kind `Data`, so not retryable, with code
     `retention_lost` (`RETENTION_LOST`).
