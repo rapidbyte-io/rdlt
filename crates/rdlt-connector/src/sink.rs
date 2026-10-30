@@ -97,6 +97,21 @@ pub trait Admission: Send + Sync {
     /// fails with it, and so does the read.
     fn admit(&self, event: &SourceEvent) -> BoxFuture<'_, Result<Option<Permit>>>;
 
+    /// Admits `push`, decoded from a frame its read charged `charge` before decoding it, within
+    /// that charge, which the push then enters holding: the charge may shrink to what the push
+    /// holds, and nothing more is asked for.
+    ///
+    /// The default takes the charge as it is, for an admission that charges no budget of its
+    /// own.
+    ///
+    /// # Errors
+    ///
+    /// Why the push may not enter within its charge: the send fails with it, and so does the
+    /// read. The charge is left to the caller, which lets it go once the push is gone.
+    fn admit_charged(&self, _push: &Push, _charge: &mut Permit) -> Result<()> {
+        Ok(())
+    }
+
     /// Charges `bytes` a read keeps beside its events, at once.
     ///
     /// # Errors
@@ -254,17 +269,51 @@ impl PartitionSink {
             }
             None => (event, None),
         };
-        let sent = tokio::select! {
-            biased;
-            // A stop request wins over a send that could still complete.
-            () = self.stop.cancelled() => Err(ConnectorError::stopped()),
-            sent = self.events.send((event, permit)) => sent.map_err(|_| ConnectorError::stopped()),
-        };
-        sent?;
+        self.enter(event, permit).await?;
         if let Some(barrier) = answering {
             self.answered = self.answered.max(barrier);
         }
         Ok(())
+    }
+
+    /// Sends `event`, decoded from a frame its read charged `charge` before decoding it.
+    ///
+    /// A push enters holding the charge, admitted within it by whoever admits the channel's
+    /// events, and waits for no admission. Any other event lets the charge go first and is sent
+    /// as [`send`](Self::send) sends it, and a channel nothing admits lets it go.
+    ///
+    /// # Errors
+    ///
+    /// As [`send`](Self::send), and why the push may not enter within its charge, which goes
+    /// once the push is freed.
+    pub async fn send_charged(&mut self, event: SourceEvent, mut charge: Permit) -> Result<()> {
+        let admitted = match (&event, &self.admission) {
+            (SourceEvent::Push(push), Some(admission)) => {
+                Some(admission.admit_charged(push, &mut charge))
+            }
+            _ => None,
+        };
+        let Some(admitted) = admitted else {
+            drop(charge);
+            return self.send(event).await;
+        };
+        if let Err(refused) = admitted {
+            // What the charge covers goes before the charge does.
+            drop(event);
+            drop(charge);
+            return Err(refused);
+        }
+        self.enter(event, Some(charge)).await
+    }
+
+    /// Puts `event` and what admitted it in the channel, waiting while it is full.
+    async fn enter(&self, event: SourceEvent, permit: Option<Permit>) -> Result<()> {
+        tokio::select! {
+            biased;
+            // A stop request wins over a send that could still complete.
+            () = self.stop.cancelled() => Err(ConnectorError::stopped()),
+            sent = self.events.send((event, permit)) => sent.map_err(|_| ConnectorError::stopped()),
+        }
     }
 
     /// The engine's next request of the read: a checkpoint answering a barrier newer than
