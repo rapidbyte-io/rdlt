@@ -32,9 +32,10 @@ use arrow_schema::ArrowError;
 use bytes::Bytes;
 
 use crate::compute::{Pool, ready};
+use crate::config::BatchPolicy;
 use crate::env::Env;
 use crate::normalize::{self, Shape};
-use crate::shred::{self, ShredError};
+use crate::shred::{self, ShredError, Sizing};
 
 use sink::sink;
 
@@ -129,29 +130,53 @@ pub enum Parse {
     Exact,
 }
 
-/// Shreds the JSON `pushes` on the calling thread, in chunks of `chunk_bytes`, as the engine
-/// does.
-pub fn shred(pushes: &[Bytes], chunk_bytes: usize) -> Result<Vec<RecordBatch>, Refused> {
-    shred_with(pushes, chunk_bytes, ADMITTED, Parse::Fast)
+/// How [`shred_with`] cuts pushes into chunks, each shredded in a job of its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Jobs {
+    /// Chunks of this many bytes each, whatever their records.
+    Fixed(usize),
+    /// Chunks sized as a partition sizes a flush's.
+    Sized {
+        /// Bytes: the most a chunk takes, as [`BatchPolicy::chunk_bytes`] says.
+        limit: NonZeroUsize,
+        /// The cores the jobs share.
+        cores: NonZeroUsize,
+    },
 }
 
-/// Shreds the JSON `pushes` on the calling thread, in chunks of `chunk_bytes`, each chunk's
-/// builders taking at most `admitted` bytes for each byte of its records before it is observed
-/// instead, and each chunk parsed first as `parse` says: none of which may change the batches.
+impl Jobs {
+    /// What sizes the chunks this way.
+    fn sizing(self) -> Sizing {
+        match self {
+            Self::Fixed(chunk_bytes) => Sizing::fixed(chunk_bytes),
+            Self::Sized { limit, cores } => Sizing::new(limit, cores),
+        }
+    }
+}
+
+/// Shreds the JSON `pushes` on the calling thread in chunks of `chunk_bytes`, each as the engine
+/// shreds a chunk.
+pub fn shred(pushes: &[Bytes], chunk_bytes: usize) -> Result<Vec<RecordBatch>, Refused> {
+    shred_with(pushes, Jobs::Fixed(chunk_bytes), ADMITTED, Parse::Fast)
+}
+
+/// Shreds the JSON `pushes` on the calling thread, cut as `jobs` says, each chunk's builders
+/// taking at most `admitted` bytes for each byte of its records before it is observed instead,
+/// and each chunk parsed first as `parse` says: none of which may change the batches.
 ///
 /// # Errors
 ///
 /// Why the shredder refused the pushes.
 pub fn shred_with(
     pushes: &[Bytes],
-    chunk_bytes: usize,
+    jobs: Jobs,
     admitted: u64,
     parse: Parse,
 ) -> Result<Vec<RecordBatch>, Refused> {
     ready(shredded(
         inline(),
         pushes,
-        chunk_bytes,
+        jobs.sizing(),
         limits(admitted, parse),
     ))
 }
@@ -167,21 +192,18 @@ pub fn shred_counted(pushes: &[Bytes], chunk_bytes: usize) -> Result<crate::Shre
     let shredding = ready(shred::observe(
         inline(),
         pushes.to_vec(),
-        chunk_bytes,
+        Sizing::fixed(chunk_bytes),
         limits,
     ))?;
     Ok(shredding.counts())
 }
 
-/// Shreds the JSON `pushes` on `env`'s compute pool, in chunks of `chunk_bytes`, as a partition
-/// does.
-pub async fn shred_on(
-    env: &Arc<dyn Env>,
-    pushes: &[Bytes],
-    chunk_bytes: usize,
-) -> Result<Vec<RecordBatch>, Refused> {
+/// Shreds the JSON `pushes` on `env`'s compute pool as a partition shreds a flush: in jobs the
+/// default policy's limit and `env`'s cores size.
+pub async fn shred_on(env: &Arc<dyn Env>, pushes: &[Bytes]) -> Result<Vec<RecordBatch>, Refused> {
     let pool = Pool::new(Arc::clone(env), Arc::default());
-    shredded(&pool, pushes, chunk_bytes, limits(ADMITTED, Parse::Fast)).await
+    let sizing = Sizing::new(BatchPolicy::default().chunk_bytes(), env.cores());
+    shredded(&pool, pushes, sizing, limits(ADMITTED, Parse::Fast)).await
 }
 
 /// The pool every call on the calling thread shares, so a call allocates nothing for it.
@@ -200,14 +222,14 @@ fn limits(admitted: u64, parse: Parse) -> shred::ShredLimits {
     }
 }
 
-/// Shreds the JSON `pushes` on `pool`, in chunks of `chunk_bytes`, within `limits`.
+/// Shreds the JSON `pushes` on `pool`, in chunks `sizing` sizes, within `limits`.
 async fn shredded(
     pool: &Pool,
     pushes: &[Bytes],
-    chunk_bytes: usize,
+    sizing: Sizing,
     limits: shred::ShredLimits,
 ) -> Result<Vec<RecordBatch>, Refused> {
-    Ok(shred::shred(pool, pushes, chunk_bytes, limits).await?)
+    Ok(shred::shred(pool, pushes, sizing, limits).await?)
 }
 
 /// `batch` normalized as a stream normalized to `max_depth` and merged by `key`, where it names

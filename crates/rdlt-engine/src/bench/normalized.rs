@@ -13,15 +13,16 @@ use bytes::Bytes;
 use super::replay::connect_replay;
 use super::runner::{Runner, stream};
 use super::{
-    CHUNK_BYTES, Corpus, Passthrough, Replayed, Sinking, null_sink, register, sink,
-    split_replay_config,
+    Corpus, Passthrough, Replayed, Sinking, null_sink, register, sink, split_replay_config,
 };
-use crate::{ComputePoolError, Cores, Nested, Report, SchemaSettings};
+use crate::shred::{self, Sizing};
+use crate::{BatchPolicy, ComputePoolError, Cores, Nested, Report, SchemaSettings};
 
 /// The rows of the orders corpus pushed `per_push` a push, normalized through the engine.
 #[derive(Debug)]
 pub struct Normalized {
     runner: Runner,
+    cores: Cores,
     pushes: Vec<Bytes>,
     roots: u64,
     partitions: NonZeroUsize,
@@ -87,6 +88,7 @@ impl Normalized {
         let stream = stream().schema(SchemaSettings::new().nested(Nested::normalize()));
         Ok(Self {
             runner: Runner::within(cores, "normalized", vec![stream], None, memory)?,
+            cores,
             pushes: Corpus::Orders.rows(roots, per_push),
             roots,
             partitions: NonZeroUsize::MIN,
@@ -138,15 +140,16 @@ impl Normalized {
         roots + 3 * items
     }
 
-    /// The fewest and the most units a flush is cut into: one per chunk of JSON.
+    /// The fewest and the most units a flush is cut into: one per chunk of JSON, sized as the
+    /// engine sizes them within its cores.
     ///
     /// # Panics
     ///
     /// Panics where the corpus does not cut, which it always does.
     pub fn units(&self) -> (usize, usize) {
+        let sizing = Sizing::new(BatchPolicy::default().chunk_bytes(), self.cores.count());
         let units = self.pushes.iter().map(|push| {
-            crate::shred::chunked(std::slice::from_ref(push), CHUNK_BYTES)
-                .expect("the corpus cuts into chunks")
+            shred::chunked(std::slice::from_ref(push), sizing).expect("the corpus cuts into chunks")
         });
         units.fold((usize::MAX, 0), |(fewest, most), units| {
             (fewest.min(units), most.max(units))

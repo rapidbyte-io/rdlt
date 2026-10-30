@@ -318,12 +318,12 @@ fn a_batch_policy_needs_every_threshold_above_zero() {
 }
 
 #[test]
-fn the_default_batch_policy_is_eight_mebibytes_a_mebirow_or_a_second() {
+fn the_default_batch_policy_is_eight_mebibytes_a_mebirow_or_a_second_in_jobs_of_two_mebibytes() {
     let policy = BatchPolicy::default();
     assert_eq!(policy.target_bytes().get(), 8 << 20);
     assert_eq!(policy.max_rows().get(), 1 << 20);
     assert_eq!(policy.max_latency(), Duration::from_secs(1));
-    assert_eq!(policy.chunk_bytes().get(), 1 << 20);
+    assert_eq!(policy.chunk_bytes().get(), 2 << 20);
     assert_eq!(EngineConfig::default().batch(), &policy);
 }
 

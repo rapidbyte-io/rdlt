@@ -9,6 +9,7 @@ use bytes::Bytes;
 use proptest::prelude::*;
 use rdlt_connector::{DecimalType, LogicalType, TableSchema};
 
+use super::Sizing;
 use super::differential::shredded_within;
 use crate::error::{Code, codes};
 
@@ -275,7 +276,7 @@ proptest! {
         let push = records.join("\n");
         let expected = expected(&numbers);
         for (chunk_bytes, limits) in super::tests::ways() {
-            let shredded = shredded_within(&[Bytes::from(push.clone())], chunk_bytes, limits)
+            let shredded = shredded_within(&[Bytes::from(push.clone())], Sizing::fixed(chunk_bytes), limits)
                 .map(|batch| column(&batch.expect("a record a number")));
             prop_assert_eq!(&shredded, &expected, "{} in chunks of {}", push, chunk_bytes);
         }

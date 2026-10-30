@@ -3,8 +3,10 @@
 //! Pushes are cut into chunks without walking their records: lines at the first line end past a
 //! chunk's bytes, found by jumping there; an array at the first top-level comma past them, in one
 //! walk of its structure that checks it is an array and counts its elements. A chunk keeps only
-//! the span of each push it covers, and its job finds its records again as it parses them.
+//! the span of each push it covers, and its job finds its records again as it parses them. How
+//! many bytes a chunk takes, [`Sizing`] chooses for each flush.
 
+mod sizing;
 #[cfg(test)]
 mod tests;
 
@@ -14,6 +16,8 @@ use bytes::Bytes;
 use rdlt_connector::json::{Mark, Structure};
 
 use super::ShredError;
+
+pub(crate) use sizing::Sizing;
 
 /// Whole records of some pushes: the span of each push they lie in.
 pub(super) struct Chunk {

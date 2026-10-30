@@ -1,6 +1,7 @@
-//! Shredding untrusted JSON gives one answer whichever way it is shredded: cut into small chunks
-//! each built within the engine's allowance, cut into large chunks with room to build whatever
-//! they hold, or cut small with every chunk parsed exactly from its start.
+//! Shredding untrusted JSON gives one answer whichever way it is shredded: cut into jobs as a
+//! partition sizes them, at a small limit, each built within the engine's allowance; cut into large
+//! chunks with room to build whatever they hold; or cut small with every chunk parsed exactly from
+//! its start.
 //!
 //! The answer is the batches, concatenated and compared value for value, a column of JSON by its
 //! text, which keeps each number as it was written; or one refusal, its code and its message,
@@ -10,10 +11,12 @@
 #![forbid(unsafe_code)]
 #![no_main]
 
+use std::num::NonZeroUsize;
+
 use arrow_array::RecordBatch;
 use bytes::Bytes;
 use libfuzzer_sys::fuzz_target;
-use rdlt_engine::bench::{self, ADMITTED, Parse, Refused};
+use rdlt_engine::bench::{self, ADMITTED, Jobs, Parse, Refused};
 use rdlt_engine::codes;
 
 /// Bytes: a chunk larger than any input the fuzzer makes, so each push is one chunk.
@@ -25,7 +28,7 @@ const ROOMY: u64 = 1 << 20;
 /// One way of shredding the pushes.
 #[derive(Debug)]
 struct Way {
-    chunk_bytes: usize,
+    jobs: Jobs,
     admitted: u64,
     parse: Parse,
 }
@@ -34,33 +37,36 @@ struct Way {
 type Answer = Result<Option<RecordBatch>, Refused>;
 
 fuzz_target!(|input: &[u8]| {
-    // The first byte sizes the small chunks; the rest is the push.
+    // The first byte sizes the small chunks and the cores the engine's way sizes its jobs for;
+    // the rest is the push.
     let Some((&size, json)) = input.split_first() else {
         return;
     };
     let small = usize::from(size) * 16 + 1;
+    let limit = NonZeroUsize::new(small).expect("one byte or more");
+    let cores = NonZeroUsize::new(usize::from(size % 16) + 1).expect("one core or more");
     let push = Bytes::copy_from_slice(json);
     // Two copies meet across pushes and chunks, joining their shapes.
     let pushes = [push.clone(), push];
     let ways = [
         Way {
-            chunk_bytes: small,
+            jobs: Jobs::Sized { limit, cores },
             admitted: ADMITTED,
             parse: Parse::Fast,
         },
         Way {
-            chunk_bytes: LARGE_CHUNK,
+            jobs: Jobs::Fixed(LARGE_CHUNK),
             admitted: ROOMY,
             parse: Parse::Fast,
         },
         Way {
-            chunk_bytes: small,
+            jobs: Jobs::Fixed(small),
             admitted: ROOMY,
             parse: Parse::Exact,
         },
     ];
     let answers = ways.map(|way| {
-        let answer = bench::shred_with(&pushes, way.chunk_bytes, way.admitted, way.parse);
+        let answer = bench::shred_with(&pushes, way.jobs, way.admitted, way.parse);
         if let Err(refused) = &answer {
             let internal = codes::SHRED_INTERNAL.as_str();
             assert_ne!(refused.code, internal, "{way:?}: {}", refused.message);

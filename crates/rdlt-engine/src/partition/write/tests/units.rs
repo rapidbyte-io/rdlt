@@ -10,16 +10,21 @@ use super::job;
 use crate::budget::{MemoryBudget, Reservation};
 use crate::compute::Pool;
 use crate::config::BatchPolicy;
-use crate::env::InlineEnv;
+use crate::env::{Env, InlineEnv};
 use crate::error::{Error, codes};
 use crate::partition::PartitionContext;
 use crate::partition::tests::on_pool;
-use crate::shred::{self, ShredLimits};
+use crate::shred::{self, ShredLimits, Sizing};
 
 /// A partition's context over `budget`, its pool running jobs on the calling thread, its
 /// connectors never called.
 async fn context(budget: MemoryBudget) -> PartitionContext {
     on_pool(budget, Pool::inline()).await
+}
+
+/// Chunks sized as a partition of [`context`]'s sizes them.
+fn sizing() -> Sizing {
+    Sizing::new(BatchPolicy::default().chunk_bytes(), InlineEnv.cores())
 }
 
 /// Reserves `bytes` of what lowering holds, a request's share at a time.
@@ -48,8 +53,7 @@ async fn a_partition_waiting_to_build_its_json_holds_none_of_what_observing_it_t
     let push = Bytes::from(records.join("\n"));
     let _permit = super::json_text(&budget, push.clone()).await;
     let limits = ShredLimits::new(budget.limits().schema_columns);
-    let chunk_bytes = BatchPolicy::default().chunk_bytes().get();
-    let observed = shred::observe(&Pool::inline(), vec![push.clone()], chunk_bytes, limits)
+    let observed = shred::observe(&Pool::inline(), vec![push.clone()], sizing(), limits)
         .await
         .expect("the push is observed");
     let (observing, building) = (limits.beyond_bytes(), observed.excess());
@@ -77,9 +81,8 @@ async fn json_whose_build_and_what_is_asked_beside_take_all_a_request_may_is_bui
         .map(|record| format!("{{\"k{record}\":{record}}}"))
         .collect();
     let push = Bytes::from(records.join("\n"));
-    let chunk_bytes = BatchPolicy::default().chunk_bytes().get();
     let limits = ShredLimits::new(10_000);
-    let observed = shred::observe(&Pool::inline(), vec![push.clone()], chunk_bytes, limits)
+    let observed = shred::observe(&Pool::inline(), vec![push.clone()], sizing(), limits)
         .await
         .expect("the push is observed");
     let request = observed.excess() + 1;

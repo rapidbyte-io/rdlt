@@ -40,7 +40,7 @@ pub(super) fn shredded(records: &[Json], chunk_bytes: usize) -> Vec<RecordBatch>
     ready(shred(
         &Pool::inline(),
         &[push],
-        chunk_bytes,
+        crate::shred::Sizing::fixed(chunk_bytes),
         crate::shred::ShredLimits::new(rdlt_wire::limits::SCHEMA_COLUMNS),
     ))
     .expect("the records shred")

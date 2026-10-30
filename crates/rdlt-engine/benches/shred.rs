@@ -101,7 +101,8 @@ fn cliffs(c: &mut Criterion) {
 /// The nested corpus shredded by pools of each count of cores [`pool_cores`] gives for the
 /// host's, each beside the bench's one runtime worker, which only waits.
 ///
-/// Each 8 MiB push is a flush, shredded alone as a partition shreds one.
+/// Each 8 MiB push is a flush, shredded alone as a partition shreds one, in jobs sized for the
+/// pool's cores.
 #[expect(
     clippy::print_stdout,
     reason = "criterion reports times; each pool's threads are printed beside them"
@@ -128,8 +129,7 @@ fn many_cores(c: &mut Criterion) {
             });
             b.iter(|| {
                 for push in &pushes {
-                    let batches =
-                        runtime.block_on(shred_on(pool, std::slice::from_ref(push), CHUNK_BYTES));
+                    let batches = runtime.block_on(shred_on(pool, std::slice::from_ref(push)));
                     black_box(batches.expect("the corpus shreds"));
                 }
             });

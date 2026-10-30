@@ -245,10 +245,9 @@ fn a_wide_row_holds_its_columns_integers_and_strings_by_turns() {
 }
 
 #[test]
-fn the_benches_shred_four_pushes_of_the_engine_s_default_sizes() {
+fn the_benches_shred_four_pushes_of_the_engine_s_default_size() {
     let policy = BatchPolicy::default();
     assert_eq!(PUSH_BYTES as u64, policy.target_bytes().get());
-    assert_eq!(CHUNK_BYTES, policy.chunk_bytes().get());
     assert_eq!(CORPUS_BYTES.div_ceil(PUSH_BYTES), 4);
 }
 

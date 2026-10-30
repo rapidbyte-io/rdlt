@@ -41,6 +41,16 @@ wrong.
   chunk's job finds its own records, and counts a chunk of lines by its line ends, then parses
   each record on its own, so a line holds exactly one record and an array element exactly one
   value.
+- **A flush's jobs are sized by its records, the cores and a limit.** A chunk takes the bytes a
+  thousand of the flush's records take, by the records that end in its first 64 KiB, or an even
+  share of the flush that gives each of the engine's cores two jobs, whichever is more, and never
+  more than `BatchPolicy::chunk_bytes`, 2 MiB by default. A fixed size would make one number both
+  the unit of parallelism and the batch: a flush of short records would offer fewer jobs than cores,
+  and wide records would make batches of a few rows, each paying its columns' work again. Two jobs a
+  core keep every core busy while a chunk that trips or is built again runs long; the limit bounds
+  how long a job holds a compute thread. The sample is a function of the bytes alone, so the cut is
+  deterministic and keeps nothing across flushes; where no record ends in it, the chunk is the
+  limit.
 - **Values are typed by what they hold.** Integers are read exactly at any width: those that
   fit 64 signed bits are `Int64`; those above them that fit 64 unsigned bits, `Decimal(20, 0)`;
   within 38 digits `Decimal(38, 0)`; within 76 digits `Decimal(76, 0)`; and a column holding an
@@ -78,20 +88,21 @@ wrong.
 - **The reference shredder shares no code.** It parses with `serde_json` into a tree that keeps
   key order and repeated keys, reads each column's type off the whole set of its values, and
   builds the batch with `arrow-json`. A property test holds the shredder to it over generated
-  records, pushes and chunk sizes; JSON text compares as parsed values.
-- **Where a push is cut, what a chunk may build and how it is parsed never change the answer.**
-  A chunk the fast parse refuses a record of is parsed again exactly, which refuses the record as
-  it would wherever the chunk was cut. The `shred` fuzz target, run nightly from the seeds in
-  `fuzz/seeds/shred`, needs no reference: it shreds each input in small chunks within the
-  engine's allowance, in one chunk with room to build whatever it holds, and in small chunks each
-  parsed exactly from its start, and fails unless all three give the same batches, a column of
-  JSON compared by its text, or the same refusal, and none fails inside the shredder, save that
-  a push refused for a repeated key and for something else may be refused for either. A key
-  repeated in a value is found at the key where its column builds the value, at the object's end
-  where the column renders it as JSON text, and only on building the chunk again where the
-  column stopped building and skips it. A property test types columns of generated numbers
-  (integers of up to 80 digits, fractions, exponents of up to 30 digits) by what each number's
-  text alone says it is, all three ways.
+  records and pushes, cut into jobs as a partition sizes them at drawn limits, cores and row
+  targets; JSON text compares as parsed values.
+- **Where a push is cut, what a chunk may build and how it is parsed never change the answer.** A
+  chunk the fast parse refuses a record of is parsed again exactly, which refuses the record as it
+  would wherever the chunk was cut. The `shred` fuzz target, run nightly from the seeds in
+  `fuzz/seeds/shred`, needs no reference: it shreds each input in jobs sized as a partition sizes a
+  flush's, at a small limit and within the engine's allowance, in one chunk with room to build
+  whatever it holds, and in small chunks each parsed exactly from its start, and fails unless all
+  three give the same batches, a column of JSON compared by its text, or the same refusal, and none
+  fails inside the shredder, save that a push refused for a repeated key and for something else may
+  be refused for either. A key repeated in a value is found at the key where its column builds the
+  value, at the object's end where the column renders it as JSON text, and only on building the
+  chunk again where the column stopped building and skips it. A property test types columns of
+  generated numbers (integers of up to 80 digits, fractions, exponents of up to 30 digits) by what
+  each number's text alone says it is, all three ways.
 - **Benchmarks build as shipped binaries.** The `bench` feature exposes the shredder to a
   criterion bench, which builds with the release profile's fat LTO and one codegen unit, as every
   shipped binary does. The comparison, its method and the core scaling live in

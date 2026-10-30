@@ -10,7 +10,7 @@ use rdlt_wire::limits::{NESTING_DEPTH, SCHEMA_COLUMNS, count};
 
 use super::differential::shredded;
 use super::meter::{KEY, OBJECT_SHAPE};
-use super::{Parsed, ShredLimits, chunks, parse, shred};
+use super::{Parsed, ShredLimits, Sizing, chunks, parse, shred};
 use crate::compute::Cores;
 use crate::error::{Code, codes};
 use crate::report::ShredCounts;
@@ -216,7 +216,8 @@ fn values_nest_up_to_the_limit_and_no_deeper() {
             let deeper = format!("{before}{}", nested(NESTING_DEPTH + 1, open, close));
             assert_eq!(refused(&deeper), codes::LIMIT_EXCEEDED, "{before:?} {open}");
             let pushes = [Bytes::from(deeper)];
-            let refused_roomy = super::differential::shredded_within(&pushes, 1 << 20, roomy);
+            let refused_roomy =
+                super::differential::shredded_within(&pushes, Sizing::fixed(1 << 20), roomy);
             assert_eq!(
                 refused_roomy.unwrap_err(),
                 codes::LIMIT_EXCEEDED,
@@ -549,7 +550,8 @@ fn a_record_refused_for_more_than_one_reason_is_refused_alike_whichever_way_it_i
             ..limits()
         };
         for (chunk_bytes, limits) in ways().into_iter().chain([(1 << 20, observed)]) {
-            let refused = super::differential::shredded_within(&pushes, chunk_bytes, limits);
+            let refused =
+                super::differential::shredded_within(&pushes, Sizing::fixed(chunk_bytes), limits);
             assert_eq!(refused.err(), Some(code), "{text} {limits:?}");
         }
     }
@@ -635,7 +637,9 @@ async fn parallel_shredding_keeps_the_pushes_order() {
             Bytes::from(lines.join("\n"))
         })
         .collect();
-    let batches = shred(&pool, &pushes, 256, limits()).await.unwrap();
+    let batches = shred(&pool, &pushes, Sizing::fixed(256), limits())
+        .await
+        .unwrap();
     assert!(batches.len() > 40);
     let numbers: Vec<i64> = batches
         .iter()
@@ -784,7 +788,7 @@ fn a_record_over_the_column_limit_is_refused_as_soon_as_it_is_read() {
     let error = crate::compute::ready(shred(
         &crate::compute::Pool::inline(),
         &[Bytes::from(push)],
-        1 << 20,
+        Sizing::fixed(1 << 20),
         limits(),
     ));
     assert_eq!(
@@ -919,7 +923,7 @@ fn a_refusal_names_where_the_json_broke_without_quoting_the_data() {
     let error = crate::compute::ready(shred(
         &crate::compute::Pool::inline(),
         &[Bytes::from(push)],
-        1 << 20,
+        Sizing::fixed(1 << 20),
         limits(),
     ))
     .unwrap_err();
@@ -936,8 +940,13 @@ fn a_refusal_names_where_the_json_broke_without_quoting_the_data() {
         Bytes::from("{\"a\":1}\n{\"a\":2}"),
         Bytes::from("{\"a\":3}\n{\"a\":}"),
     ];
-    let later = crate::compute::ready(shred(&crate::compute::Pool::inline(), &pushes, 1, limits()))
-        .unwrap_err();
+    let later = crate::compute::ready(shred(
+        &crate::compute::Pool::inline(),
+        &pushes,
+        Sizing::fixed(1),
+        limits(),
+    ))
+    .unwrap_err();
     assert!(later.to_string().contains("record 4:"), "{later}");
 }
 
@@ -957,7 +966,7 @@ fn a_bad_record_is_numbered_in_its_push_whichever_chunk_holds_it() {
         let refused = crate::compute::ready(shred(
             &crate::compute::Pool::inline(),
             &pushes,
-            1024,
+            Sizing::fixed(1024),
             limits(),
         ))
         .unwrap_err();
@@ -1006,7 +1015,7 @@ fn blank_lines_among_records_cost_passes_but_not_their_batch() {
         crate::compute::ready(super::observe(
             &crate::compute::Pool::inline(),
             pushes,
-            1 << 20,
+            Sizing::fixed(1 << 20),
             limits(),
         ))
         .unwrap()
@@ -1044,7 +1053,7 @@ fn values_at_the_nesting_limit_shred_on_a_small_stack_in_any_build() {
         crate::compute::ready(shred(
             &crate::compute::Pool::inline(),
             &[Bytes::from(push)],
-            1 << 20,
+            Sizing::fixed(1 << 20),
             limits(),
         ))
     };
@@ -1085,7 +1094,7 @@ fn a_refusal_quotes_a_key_or_a_number_cut_to_its_limit() {
         let error = crate::compute::ready(shred(
             &crate::compute::Pool::inline(),
             &[Bytes::from(push)],
-            1 << 30,
+            Sizing::fixed(1 << 30),
             limits(),
         ))
         .unwrap_err();
@@ -1146,7 +1155,7 @@ fn a_push_takes_more_than_it_was_admitted_for_only_where_its_batches_hold_more()
         crate::compute::ready(super::observe(
             &crate::compute::Pool::inline(),
             pushes,
-            1 << 20,
+            Sizing::fixed(1 << 20),
             limits(),
         ))
         .unwrap()
@@ -1177,8 +1186,13 @@ fn the_column_limit_counts_every_column_a_chunk_holds_and_the_join_of_all() {
             columns,
             ..limits()
         };
-        crate::compute::ready(shred(&crate::compute::Pool::inline(), &pushes, 1, limits))
-            .map(|_| ())
+        crate::compute::ready(shred(
+            &crate::compute::Pool::inline(),
+            &pushes,
+            Sizing::fixed(1),
+            limits,
+        ))
+        .map(|_| ())
     };
     // An object and its fields, a list and its items, at any depth.
     let nested = r#"{"o":{"a":1,"l":[{"b":1}]}}"#;
@@ -1255,7 +1269,7 @@ fn held_within_charge(keys: usize, value: &str) {
         crate::compute::ready(shred(
             &crate::compute::Pool::inline(),
             std::slice::from_ref(&records),
-            1 << 20,
+            Sizing::fixed(1 << 20),
             limits(),
         ))
         .unwrap()
@@ -1278,7 +1292,7 @@ fn a_batch_holds_its_columns_at_their_count_not_the_builders_capacity() {
         crate::compute::ready(shred(
             &crate::compute::Pool::inline(),
             std::slice::from_ref(&records),
-            1 << 20,
+            Sizing::fixed(1 << 20),
             limits(),
         ))
         .unwrap()
@@ -1466,7 +1480,7 @@ fn a_chunk_whose_rendering_finds_no_room_is_built_again_to_the_same_batch() {
     let observed = crate::compute::ready(super::observe(
         &pool,
         vec![Bytes::from(text)],
-        1 << 20,
+        Sizing::fixed(1 << 20),
         roomy,
     ))
     .unwrap();
@@ -1491,7 +1505,12 @@ fn an_object_repeating_a_key_in_a_drifted_column_is_refused_as_before() {
 fn built_again(push: &str) -> (u64, RecordBatch) {
     let pool = crate::compute::Pool::inline();
     let pushes = vec![Bytes::from(push.to_owned())];
-    let observed = crate::compute::ready(super::observe(&pool, pushes, 1 << 20, limits()));
+    let observed = crate::compute::ready(super::observe(
+        &pool,
+        pushes,
+        Sizing::fixed(1 << 20),
+        limits(),
+    ));
     let observed = observed.unwrap();
     let rebuilt = observed.counts().rebuilt;
     let mut batches = crate::compute::ready(observed.build(&pool)).unwrap();
@@ -1511,7 +1530,12 @@ fn hundreds(first: &str, then: &str) -> String {
 fn an_observation_counts_its_passes_apart_from_the_chunks_building_will_build_again() {
     let pool = crate::compute::Pool::inline();
     let pushes = vec![Bytes::from(hundreds("1", r#"{"b":1}"#))];
-    let observed = crate::compute::ready(super::observe(&pool, pushes, 1 << 20, limits()));
+    let observed = crate::compute::ready(super::observe(
+        &pool,
+        pushes,
+        Sizing::fixed(1 << 20),
+        limits(),
+    ));
     let observed = observed.unwrap();
     let passes = ShredCounts {
         parsed: 1,
@@ -1565,7 +1589,12 @@ fn counted(push: &'static [u8]) -> ShredCounts {
 fn counted_within(push: &'static [u8], chunk_bytes: usize, limits: ShredLimits) -> ShredCounts {
     let pool = crate::compute::Pool::inline();
     let pushes = vec![Bytes::from_static(push)];
-    let observed = crate::compute::ready(super::observe(&pool, pushes, chunk_bytes, limits));
+    let observed = crate::compute::ready(super::observe(
+        &pool,
+        pushes,
+        Sizing::fixed(chunk_bytes),
+        limits,
+    ));
     observed.unwrap().counts()
 }
 
@@ -2008,7 +2037,12 @@ fn roomy_batch(push: &str, chunk_bytes: usize) -> (u64, RecordBatch) {
     };
     let pool = crate::compute::Pool::inline();
     let pushes = vec![Bytes::from(push.to_owned())];
-    let observed = crate::compute::ready(super::observe(&pool, pushes, chunk_bytes, roomy));
+    let observed = crate::compute::ready(super::observe(
+        &pool,
+        pushes,
+        Sizing::fixed(chunk_bytes),
+        roomy,
+    ));
     let observed = observed.unwrap();
     let rebuilt = observed.counts().rebuilt;
     let batches = crate::compute::ready(observed.build(&pool)).unwrap();
@@ -2073,7 +2107,13 @@ fn built_within_reckoning(text: &str, columns: u64) {
     let pool = crate::compute::Pool::inline();
     let limits = ShredLimits::new(columns);
     let pushes = vec![Bytes::from(text.to_owned())];
-    let observed = crate::compute::ready(super::observe(&pool, pushes, 1 << 20, limits)).unwrap();
+    let observed = crate::compute::ready(super::observe(
+        &pool,
+        pushes,
+        Sizing::fixed(1 << 20),
+        limits,
+    ))
+    .unwrap();
     let reckoned = count(text.len()) * limits.admitted + observed.excess();
     heap.reset_peak_usage();
     let before = heap.current_usage();
@@ -2107,7 +2147,13 @@ fn kept_within_admission_and_excess(texts: &[&str], chunk_bytes: usize) -> Vec<b
         .map(|text| Bytes::from((*text).to_owned()))
         .collect();
     let (kept, observed) = crate::cost::tests::held_alone(|| {
-        crate::compute::ready(super::observe(&pool, pushes.clone(), chunk_bytes, limits())).unwrap()
+        crate::compute::ready(super::observe(
+            &pool,
+            pushes.clone(),
+            Sizing::fixed(chunk_bytes),
+            limits(),
+        ))
+        .unwrap()
     });
     let total: usize = texts.iter().map(|text| text.len()).sum();
     let allowed = count(total) * limits().admitted + observed.excess();

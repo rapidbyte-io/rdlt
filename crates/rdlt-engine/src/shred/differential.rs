@@ -1,5 +1,6 @@
 //! The parallel shredder against the reference one, on generated pushes.
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use arrow_array::cast::AsArray;
@@ -10,23 +11,24 @@ use proptest::prelude::*;
 use rdlt_connector::{Field, LogicalType};
 
 use super::reference::{self, Json};
-use super::shred;
+use super::{Sizing, shred};
 use crate::compute::{Pool, ready};
 use crate::error::Code;
 
 /// The batches of `pushes`, shredded in chunks of `chunk_bytes`, as one, or the error's code.
 pub(super) fn shredded(pushes: &[Bytes], chunk_bytes: usize) -> Result<Option<RecordBatch>, Code> {
-    shredded_within(pushes, chunk_bytes, super::tests::limits())
+    shredded_within(pushes, Sizing::fixed(chunk_bytes), super::tests::limits())
 }
 
-/// The batches of `pushes`, shredded as [`shredded`] does within `limits`.
+/// The batches of `pushes`, shredded in chunks `sizing` sizes within `limits`, as one, or the
+/// error's code.
 pub(super) fn shredded_within(
     pushes: &[Bytes],
-    chunk_bytes: usize,
+    sizing: Sizing,
     limits: super::ShredLimits,
 ) -> Result<Option<RecordBatch>, Code> {
     let batches =
-        ready(shred(&Pool::inline(), pushes, chunk_bytes, limits)).map_err(|error| error.code())?;
+        ready(shred(&Pool::inline(), pushes, sizing, limits)).map_err(|error| error.code())?;
     let Some(first) = batches.first() else {
         return Ok(None);
     };
@@ -255,9 +257,17 @@ proptest! {
         cuts in prop::collection::vec((0_usize..10, any::<bool>()), 1..4),
         fault in fault(),
         at in any::<usize>(),
-        chunk_bytes in 1_usize..400,
+        rows in 0_usize..8,
+        limit in 1_usize..400,
+        cores in 1_usize..=16,
     ) {
         let pushes = pushes(&records, &cuts, fault.as_ref(), at);
+        // Small row targets let the records and the cores, not only the limit, size the chunks.
+        let sizing = Sizing {
+            rows,
+            limit: NonZeroUsize::new(limit).expect("drawn above zero"),
+            cores: NonZeroUsize::new(cores).expect("drawn above zero"),
+        };
         // Chunks whose builders pass their small allowance are observed and built again; with
         // room for them, each is built as it is parsed, its drifted columns converted in place.
         let roomy = super::ShredLimits {
@@ -266,7 +276,7 @@ proptest! {
         };
         for limits in [super::tests::limits(), roomy] {
             let expected = reference::shred(&pushes);
-            let actual = shredded_within(&pushes, chunk_bytes, limits);
+            let actual = shredded_within(&pushes, sizing, limits);
             match (expected, actual) {
                 (Ok(expected), Ok(Some(actual))) => prop_assert_eq!(normalized(&actual), normalized(&expected)),
                 (Ok(expected), Ok(None)) => prop_assert_eq!(expected.num_rows(), 0),

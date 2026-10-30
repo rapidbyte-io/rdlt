@@ -28,12 +28,21 @@ fn a_run_loads_every_root_item_and_tag_on_every_run() {
 }
 
 #[test]
-fn a_flush_is_cut_into_one_unit_a_chunk_of_its_json() {
-    assert_eq!(normalized(2_000, 2_000).units(), (1, 1));
-    let (fewest, most) = normalized(20_000, 10_000).units();
-    assert!(fewest >= 2 && most <= 3, "{fewest} to {most}");
-    let (fewest, _) = normalized(100_000, 50_000).units();
-    assert!(fewest >= 4, "{fewest}");
+fn a_flush_is_cut_into_the_units_the_engine_cuts_it_into() {
+    for (roots, per_push) in [(2_000, 2_000), (20_000, 10_000), (100_000, 50_000)] {
+        let bench = normalized(roots, per_push);
+        let (fewest, most) = bench.units();
+        let pushes = roots / per_push;
+        // Each chunk is parsed once: its records hold no number the fast parse misreads.
+        let parsed = bench.report().streams["events"].shred.parsed;
+        assert!(
+            (pushes * fewest as u64..=pushes * most as u64).contains(&parsed),
+            "{roots} roots: {parsed} chunks parsed, {fewest} to {most} units a flush"
+        );
+    }
+    let (_, few) = normalized(2_000, 2_000).units();
+    let (many, _) = normalized(100_000, 50_000).units();
+    assert!(many > few, "{many} units a flush of 50,000 rows, {few} of 2,000");
 }
 
 #[test]

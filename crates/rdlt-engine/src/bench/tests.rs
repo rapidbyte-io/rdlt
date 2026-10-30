@@ -5,7 +5,7 @@ use arrow_array::RecordBatch;
 use arrow_array::cast::AsArray;
 use bytes::Bytes;
 
-use super::{ADMITTED, CHUNK_BYTES, Corpus, PUSH_BYTES, Parse};
+use super::{ADMITTED, CHUNK_BYTES, Corpus, Jobs, PUSH_BYTES, Parse};
 use super::{
     Refused, check_json, json_column, normalize, pruned, shred, shred_counted, shred_on, shred_with,
 };
@@ -26,9 +26,27 @@ fn shredding_inline_and_on_a_pool_gives_the_same_batches() {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
-    let pooled = runtime.block_on(shred_on(&env, &pushes, 8)).unwrap();
-    assert_eq!(inline, pooled);
+    let pooled = runtime.block_on(shred_on(&env, &pushes)).unwrap();
+    assert_eq!(joined(&inline), joined(&pooled));
     assert_eq!(inline.iter().map(RecordBatch::num_rows).sum::<usize>(), 3);
+}
+
+#[test]
+fn shredding_on_a_pool_gives_each_of_its_cores_two_jobs_of_many_short_records() {
+    // Records of ten bytes: a share of two jobs a core holds more than a partition's rows of them.
+    let records = "{\"a\":123}\n".repeat(104_858);
+    let pushes = [Bytes::from(records)];
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    for cores in [1, 2, 8] {
+        let count = Cores::new(NonZeroUsize::new(cores).unwrap());
+        let env: Arc<dyn Env> = Arc::new(SystemEnv::try_new(count).unwrap());
+        let batches = runtime.block_on(shred_on(&env, &pushes)).unwrap();
+        assert_eq!(batches.len(), 2 * cores, "{cores} cores");
+        let rows: usize = batches.iter().map(RecordBatch::num_rows).sum();
+        assert_eq!(rows, 104_858);
+    }
 }
 
 #[test]
@@ -69,17 +87,22 @@ fn shredding_any_way_the_engine_may_gives_the_batches_it_gives() {
         let pushes = corpus.pushes(1 << 20);
         let engine = joined(&shred(&pushes, 64 << 10).unwrap());
         assert!(engine.num_rows() > 1000, "{}", corpus.name());
-        for (chunk_bytes, admitted, parse) in [
-            (64 << 10, ADMITTED, Parse::Fast),
-            (1 << 20, 1 << 20, Parse::Fast),
-            (64 << 10, 1 << 20, Parse::Exact),
-            (64 << 10, ADMITTED, Parse::Exact),
+        let sized = Jobs::Sized {
+            limit: NonZeroUsize::new(64 << 10).unwrap(),
+            cores: NonZeroUsize::new(4).unwrap(),
+        };
+        for (jobs, admitted, parse) in [
+            (sized, ADMITTED, Parse::Fast),
+            (Jobs::Fixed(64 << 10), ADMITTED, Parse::Fast),
+            (Jobs::Fixed(1 << 20), 1 << 20, Parse::Fast),
+            (Jobs::Fixed(64 << 10), 1 << 20, Parse::Exact),
+            (Jobs::Fixed(64 << 10), ADMITTED, Parse::Exact),
         ] {
-            let shredded = joined(&shred_with(&pushes, chunk_bytes, admitted, parse).unwrap());
+            let shredded = joined(&shred_with(&pushes, jobs, admitted, parse).unwrap());
             assert_eq!(
                 shredded,
                 engine,
-                "{} {chunk_bytes} {admitted} {parse:?}",
+                "{} {jobs:?} {admitted} {parse:?}",
                 corpus.name()
             );
         }

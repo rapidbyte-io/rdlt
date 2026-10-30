@@ -15,7 +15,7 @@ use super::Mix;
 pub const CORPUS_BYTES: usize = 32 << 20;
 /// Bytes per push, the default coalescing target.
 pub const PUSH_BYTES: usize = 8 << 20;
-/// Bytes per shredding job, the default chunk size.
+/// Bytes per shredding job where a bench shreds on one thread in chunks of one size.
 pub const CHUNK_BYTES: usize = 1 << 20;
 
 /// A generated corpus of JSON lines, the same bytes on every run.

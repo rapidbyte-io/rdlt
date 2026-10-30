@@ -56,21 +56,24 @@ impl BatchPolicy {
         self.max_latency
     }
 
-    /// Bytes of JSON pushes each shredding job takes, whitespace between records included: its
-    /// chunk ends at the first record end past them.
+    /// Bytes: the most of a flush's JSON one shredding job takes, whitespace between records
+    /// included, before its chunk ends at the next record end.
+    ///
+    /// A flush is cut into smaller chunks where a thousand of its records and an even share of two
+    /// jobs for each of the engine's cores both take fewer bytes: the larger of the two.
     pub fn chunk_bytes(&self) -> NonZeroUsize {
         self.chunk_bytes
     }
 }
 
 impl Default for BatchPolicy {
-    /// 8 MiB or 1 Mi rows within one second, shredded in 1 MiB chunks.
+    /// 8 MiB or 1 Mi rows within one second, shredded in jobs of at most 2 MiB.
     fn default() -> Self {
         Self {
             target_bytes: NonZeroU64::new(8 << 20).unwrap_or(NonZeroU64::MIN),
             max_rows: NonZeroU64::new(1 << 20).unwrap_or(NonZeroU64::MIN),
             max_latency: Duration::from_secs(1),
-            chunk_bytes: NonZeroUsize::new(1 << 20).unwrap_or(NonZeroUsize::MIN),
+            chunk_bytes: NonZeroUsize::new(2 << 20).unwrap_or(NonZeroUsize::MIN),
         }
     }
 }

@@ -11,7 +11,7 @@ use crate::error::{Error, ErrorKind, codes};
 use crate::json::{self, NotJson};
 use crate::partition::{PartitionContext, PartitionJob};
 use crate::report::ShredCounts;
-use crate::shred::{self, ShredError, ShredLimits};
+use crate::shred::{self, ShredError, ShredLimits, Sizing};
 
 /// Bytes: the most of a column's name an error quotes.
 const NAME_SHOWN: usize = 256;
@@ -147,10 +147,10 @@ pub(super) async fn built(
 ) -> Result<Built, Error> {
     let failed = |error: ShredError| shred_failed(job, error);
     let pool = &context.pool;
-    let chunk_bytes = context.batch.chunk_bytes().get();
+    let sizing = Sizing::new(context.batch.chunk_bytes(), context.env.cores());
     let limits = ShredLimits::new(context.budget.limits().schema_columns);
     let observe = || async {
-        shred::observe(pool, pushes.to_vec(), chunk_bytes, limits)
+        shred::observe(pool, pushes.to_vec(), sizing, limits)
             .await
             .map_err(failed)
     };

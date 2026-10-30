@@ -1,15 +1,16 @@
 //! JSON shredding: pushes of JSON records become Arrow batches, on the compute pool, built only
 //! once what they take is paid for.
 //!
-//! The pushes of a coalesced unit are cut into chunks on the pool at a record end past each
-//! chunk's bytes, without walking their records. Each chunk is parsed on the pool, finding and
-//! counting its own records, its values observed and, speculatively, built into columns typed by
-//! what the chunk held, within what its text was admitted for; a chunk whose builders would take
-//! more is read again only to observe its values and count them. The observations are joined in
-//! push order into one shape, whose columns and cells are bounded, and what building every
-//! chunk's batch against that shape takes is known before any is built. A chunk whose own shape
-//! is that shape keeps its columns; any other is parsed again and built against it, on the pool.
-//! The join is the same whatever the order chunks finish in, so the batches are too.
+//! The pushes of a coalesced unit are cut into chunks on the pool at a record end past each chunk's
+//! bytes, which follow from the unit's records, the cores and a limit, without walking its records.
+//! Each chunk is parsed on the pool, finding and counting its own records, its values observed and,
+//! speculatively, built into columns typed by what the chunk held, within what its text was
+//! admitted for; a chunk whose builders would take more is read again only to observe its values
+//! and count them. The observations are joined in push order into one shape, whose columns and
+//! cells are bounded, and what building every chunk's batch against that shape takes is known
+//! before any is built. A chunk whose own shape is that shape keeps its columns; any other is
+//! parsed again and built against it, on the pool. The join is the same whatever the order chunks
+//! finish in, so the batches are too.
 
 mod build;
 mod conform;
@@ -55,11 +56,13 @@ use records::{Chunk, chunks};
 use visit::{Context, RecordSeed, Row};
 
 pub(crate) use error::ShredError;
+pub(crate) use records::Sizing;
 
-/// How many chunks `pushes` are cut into, each shredded in a job of its own.
+/// How many chunks `pushes` are cut into as `sizing` sizes them, each shredded in a job of its
+/// own.
 #[cfg(feature = "bench")]
-pub(crate) fn chunked(pushes: &[Bytes], chunk_bytes: usize) -> Result<usize, ShredError> {
-    Ok(chunks(pushes, chunk_bytes)?.len())
+pub(crate) fn chunked(pushes: &[Bytes], sizing: Sizing) -> Result<usize, ShredError> {
+    Ok(chunks(pushes, sizing.chunk_bytes(pushes))?.len())
 }
 
 /// What shredding pushes may take, and how their chunks are parsed.
@@ -520,9 +523,9 @@ pub(crate) fn job<T>(work: impl FnOnce() -> T) -> T {
     stacker::maybe_grow(JOB_STACK, JOB_SEGMENT, work)
 }
 
-/// Observes the JSON `pushes`, in order, in chunks of about `chunk_bytes` each, on `pool`, within
-/// `limits`: what the batches will be, and what building them takes beyond what the pushes were
-/// admitted for.
+/// Observes the JSON `pushes`, in order, in chunks `sizing` sizes, on `pool`, within `limits`:
+/// what the batches will be, and what building them takes beyond what the pushes were admitted
+/// for.
 ///
 /// A push is a JSON array of objects, or objects on their own lines; blank lines are skipped. The
 /// pushes are cut into chunks without walking their records, and each chunk's job finds and
@@ -535,11 +538,11 @@ pub(crate) fn job<T>(work: impl FnOnce() -> T) -> T {
 pub(crate) async fn observe(
     pool: &Pool,
     pushes: Vec<Bytes>,
-    chunk_bytes: usize,
+    sizing: Sizing,
     limits: ShredLimits,
 ) -> Result<Shredding, ShredError> {
     let chunks = pool
-        .run_all([move || chunks(&pushes, chunk_bytes)])
+        .run_all([move || chunks(&pushes, sizing.chunk_bytes(&pushes))])
         .await
         .pop()
         .ok_or_else(|| {
@@ -581,10 +584,10 @@ pub(crate) async fn observe(
 pub(crate) async fn shred(
     pool: &Pool,
     pushes: &[Bytes],
-    chunk_bytes: usize,
+    sizing: Sizing,
     limits: ShredLimits,
 ) -> Result<Vec<RecordBatch>, ShredError> {
-    observe(pool, pushes.to_vec(), chunk_bytes, limits)
+    observe(pool, pushes.to_vec(), sizing, limits)
         .await?
         .build(pool)
         .await

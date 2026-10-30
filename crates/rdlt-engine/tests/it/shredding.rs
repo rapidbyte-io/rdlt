@@ -337,8 +337,9 @@ async fn sparse_json_of_any_number_of_partitions_loads_under_any_budget() {
     }
 }
 
-/// What building 1,500 records of a key each takes beyond twice their text.
-const BUILT_BEYOND: u64 = 20_318_222;
+/// What building 1,500 records of a key each takes beyond twice their text, in the jobs a
+/// partition cuts them into: each job's batch holds a null in every column the others hold.
+const BUILT_BEYOND: u64 = 21_278_224;
 
 /// Loads one partition's 1,500 records of a key each under a budget whose request is `beside`
 /// bytes more than building them takes beyond their text.
