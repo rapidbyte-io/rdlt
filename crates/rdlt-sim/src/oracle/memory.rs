@@ -33,13 +33,14 @@ const IN_PROCESS: u64 = 13 << 20;
 const NETWORK: u64 = 11 << 20;
 
 /// Events a read over the network may hold beyond the push its source is sending and its
-/// channel's, each place holding at most one: the host's event waiting for the engine to admit
-/// it, the batch being cut and its piece waiting for credit, and the frame sent past the credit
-/// left; an event is a push or a checkpoint, which carries its cursor.
+/// channel's, each place holding at most one: the batch being cut and its piece waiting for
+/// credit, and the frame sent past the credit left; an event is a push or a checkpoint, which
+/// carries its cursor.
 ///
 /// The frames credit lets go before the host takes them are counted apart: a window of two of
-/// the largest frames, or the credit floor where it is larger.
-const QUEUED: u64 = 1 + 2 + 1;
+/// the largest frames, or the credit floor where it is larger. The host takes a frame once its
+/// event is admitted, and a push is charged from before its frame is decoded.
+const QUEUED: u64 = 2 + 1;
 
 /// Events the channel of a read the connector serves holds, whose pushes keep alive no more than
 /// the host's frame limit together, or one larger push alone; checkpoints pass it free.

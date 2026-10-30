@@ -4,8 +4,8 @@ use std::hint::black_box;
 use alloc_tracker::Session;
 
 use super::{
-    CHANNEL, Counterweight, Held, IN_PROCESS, Kept, NETWORK, QUEUED, Rise, Tracing, Window,
-    account, allowance, charged, freed, installed, queued,
+    CHANNEL, Counterweight, Held, IN_PROCESS, Kept, NETWORK, Rise, Tracing, Window, account,
+    allowance, charged, freed, installed, queued,
 };
 use crate::seed::Seed;
 use crate::world::Largest;
@@ -287,7 +287,7 @@ fn a_read_of_pushes_beyond_a_frame_holds_one_in_its_channel_and_two_frames_of_cr
     let largest = Largest { push, cursor };
     assert_eq!(
         queued(3, largest, frame, 4 << 20),
-        3 * (QUEUED * push + frame + push + CHANNEL * cursor + 2 * push)
+        3 * (3 * push + frame + push + CHANNEL * cursor + 2 * push)
     );
 }
 
@@ -297,7 +297,7 @@ fn a_read_of_small_pushes_holds_its_channel_s_events_and_the_credit_floor() {
     let largest = Largest { push, cursor: 20 };
     assert_eq!(
         queued(3, largest, frame, floor),
-        3 * (QUEUED * push + CHANNEL * push + floor)
+        3 * (3 * push + CHANNEL * push + floor)
     );
     assert_eq!(queued(0, largest, frame, floor), 0);
 }
@@ -310,7 +310,7 @@ fn a_cursor_larger_than_every_push_is_a_read_s_largest_event() {
     };
     assert_eq!(
         queued(1, largest, 4 << 20, 1),
-        QUEUED * 1_000 + CHANNEL * 1_000 + 2 * 1_000
+        3 * 1_000 + CHANNEL * 1_000 + 2 * 1_000
     );
 }
 
