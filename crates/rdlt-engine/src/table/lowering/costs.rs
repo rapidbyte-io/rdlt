@@ -1,9 +1,11 @@
 //! What lowering a batch as a plan says holds: how the table stores each column, and what each
 //! row takes in the columns the batch does not hold.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
+use arrow_schema::DataType;
 use parking_lot::Mutex;
 use rdlt_connector::LogicalType;
 use rdlt_connector::cost::{Stored, arrays};
@@ -69,14 +71,19 @@ const META_BYTES: u64 = 72;
 const META_TEXT: u64 = 120;
 
 impl LoweringPlan {
-    /// The bytes the columns a batch of `rows` rows holds nothing in take once lowered: each a
-    /// column of nulls as the destination stores it.
+    /// The bytes the columns a batch of `rows` rows holds nothing in take once lowered: a column
+    /// of nulls of each type the destination stores them as, which those of the type share.
     pub(crate) fn null_fill(&self, rows: usize) -> u64 {
-        self.sources
+        let types: BTreeSet<DataType> = self
+            .sources
             .iter()
             .zip(&self.view.lowered)
             .filter(|(source, _)| source.is_null())
-            .map(|(_, lowered)| rdlt_connector::cost::nulls(&lowered.to_arrow(), rows))
+            .map(|(_, lowered)| lowered.to_arrow())
+            .collect();
+        types
+            .iter()
+            .map(|data_type| rdlt_connector::cost::nulls(data_type, rows))
             .fold(0, u64::saturating_add)
     }
 
@@ -107,10 +114,10 @@ impl LoweringPlan {
         stored
     }
 
-    /// The bytes each row takes beside the columns its batch holds: a null in every column of
-    /// the table the batch holds nothing in, and a value in every metadata column lowering
-    /// builds, the two a load shares between its rows left out, a change stream's unchanged
-    /// flags among them, whether its table stores them or merges by them.
+    /// The bytes each row takes beside the columns its batch holds: a null of each type among
+    /// the table's columns the batch holds nothing in, and a value in every metadata column
+    /// lowering builds, the two a load shares between its rows left out, a change stream's
+    /// unchanged flags among them, whether its table stores them or merges by them.
     pub(crate) fn row_bytes(&self) -> u64 {
         let model = self.view.model.columns.len();
         let changes = self.view.meta.changes.as_ref();

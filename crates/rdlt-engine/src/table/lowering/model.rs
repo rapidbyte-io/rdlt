@@ -1,9 +1,11 @@
 //! A batch's model columns, converted to the types the table holds and lowered as it stores
 //! them.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use arrow_array::{ArrayRef, RecordBatch, new_null_array};
+use arrow_schema::DataType;
 use rdlt_connector::{Field, LogicalType, StreamName};
 
 use super::split::Fitted;
@@ -14,7 +16,7 @@ use crate::table::convert::convert;
 
 impl LoweringPlan {
     /// The model's columns of `batch`, each from where the plan routes it, converted and lowered
-    /// as its column stores it; a column the batch lacks is null.
+    /// as its column stores it; a column the batch lacks is null, one array of nulls a type.
     ///
     /// A history table's columns come also as the model's types hold them, which its versions
     /// are hashed by.
@@ -27,6 +29,7 @@ impl LoweringPlan {
         let view = &self.view;
         let mut columns = Vec::with_capacity(view.physical.len());
         let mut held = view.meta.history.as_ref().map(|_| Vec::new());
+        let mut nulls = Nulls::new(batch.num_rows());
         for ((column, lowered), source) in view
             .model
             .columns
@@ -52,10 +55,9 @@ impl LoweringPlan {
                 // Nulls are built as the destination stores them, never as the wider type the
                 // column holds them in; a hash leaves a null column out.
                 _ => {
-                    let rows = batch.num_rows();
-                    columns.push(new_null_array(&lowered.to_arrow(), rows));
+                    columns.push(nulls.of(lowered.to_arrow()));
                     if let Some(held) = &mut held {
-                        held.push(new_null_array(&arrow_schema::DataType::Null, rows));
+                        held.push(nulls.of(DataType::Null));
                     }
                     continue;
                 }
@@ -72,6 +74,32 @@ impl LoweringPlan {
 /// A batch's model columns as the destination stores them, and for a history table as the
 /// model's types hold them.
 pub(super) type Columns = (Vec<ArrayRef>, Option<Vec<ArrayRef>>);
+
+/// Arrays of nulls as long as one batch, one of each type, which every column of that type the
+/// batch holds nothing in shares.
+struct Nulls {
+    rows: usize,
+    built: BTreeMap<DataType, ArrayRef>,
+}
+
+impl Nulls {
+    fn new(rows: usize) -> Self {
+        Self {
+            rows,
+            built: BTreeMap::new(),
+        }
+    }
+
+    /// The array of nulls of `data_type`, built the first time it is asked for.
+    fn of(&mut self, data_type: DataType) -> ArrayRef {
+        let rows = self.rows;
+        let built = self
+            .built
+            .entry(data_type)
+            .or_insert_with_key(|data_type| new_null_array(data_type, rows));
+        Arc::clone(built)
+    }
+}
 
 /// `array`, of type `from`, as `column` holds it; a value the column cannot hold fails the
 /// batch.
