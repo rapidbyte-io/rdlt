@@ -1,6 +1,6 @@
 use prost::Message as _;
 
-use super::{MAX_DEPTH, Unscanned, decoded, field_bytes, request, response};
+use super::{MAX_DEPTH, Unscanned, decoded, field_bytes, first_field, request, response};
 use crate::v1;
 
 /// The service's methods.
@@ -262,5 +262,30 @@ fn a_text_or_bytes_field_set_once_holds_what_its_measure_says() {
             entry + 2 * field_bytes(length),
             "a field of {length} bytes"
         );
+    }
+}
+
+#[test]
+fn the_field_an_encoding_sets_first_is_found_with_its_value() {
+    let json = v1::ReadFrame {
+        frame: Some(v1::read_frame::Frame::Json(v1::JsonFrame {
+            data: bytes::Bytes::from_static(b"[1]"),
+        })),
+    };
+    let encoded = json.encode_to_vec();
+    let (number, frame) = first_field(&encoded).expect("a whole field");
+    assert_eq!(number, 3, "a read frame's JSON");
+    assert_eq!(first_field(frame), Some((1, &b"[1]"[..])), "its text");
+    // A number has no value to hand back; the walk stops at the first field.
+    let behind = v1::ReadFrame {
+        frame: Some(v1::read_frame::Frame::Behind(v1::BehindFrame {
+            records: 300,
+        })),
+    };
+    let behind = behind.encode_to_vec();
+    let (number, inner) = first_field(&behind).expect("a whole field");
+    assert_eq!((number, first_field(inner)), (9, Some((1, &[][..]))));
+    for broken in [&[][..], &[0x1a][..], &[0x1a, 0x05, 0x01][..], &[0x00][..]] {
+        assert_eq!(first_field(broken), None, "{broken:?}");
     }
 }

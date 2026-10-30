@@ -108,6 +108,22 @@ pub fn decoded(form: &Form, message: &[u8], bound: usize) -> Result<usize, Unsca
     Ok(count.held)
 }
 
+/// The number of the field `message`, an encoding, sets first, and its value where that is
+/// length-delimited (empty otherwise); `None` where the encoding does not begin with a whole
+/// field.
+///
+/// A message whose fields are one `oneof`, set once as its senders set it, carries what that
+/// field is.
+pub fn first_field(mut message: &[u8]) -> Option<(u64, &[u8])> {
+    let key = key(&mut message).ok()?;
+    if key.wire != 2 {
+        return Some((key.number, &[]));
+    }
+    let length = usize::try_from(varint(&mut message).ok()?).ok()?;
+    let value = take(&mut message, length).ok()?;
+    Some((key.number, value))
+}
+
 /// What a scan has counted, and where it may stop.
 struct Count {
     held: usize,
