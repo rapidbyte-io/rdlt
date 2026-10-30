@@ -13,6 +13,7 @@ use rdlt_connector::{
 };
 
 use super::read::{names, next_offset};
+use super::running::Running;
 use super::{Stored, cells, columns, merged};
 use crate::reached::{Reach, Reached};
 use crate::world::World;
@@ -30,6 +31,8 @@ pub(crate) struct Store {
     /// commit deletes its cursor: a source may be told a commit landed after the next moved its
     /// stream on.
     landed: BTreeMap<(StreamName, PartitionId), u64>,
+    /// Tries of commits answered transiently whose transactions still run.
+    pub(super) running: Vec<Running>,
 }
 
 /// What the destination keeps for one pipeline.

@@ -1,5 +1,6 @@
 //! What a simulation's runs left as they ended: a trace of them, their waits on the memory budget,
-//! how long the last that succeeded took, and the paths their reports to the source reached.
+//! how long the last that succeeded took, and the paths their commits and reports to the source
+//! reached.
 
 use std::hash::{DefaultHasher, Hash as _, Hasher as _};
 use std::time::Duration;
@@ -25,8 +26,8 @@ pub(super) struct Ledger {
 
 impl Ledger {
     /// Folds in the runs of `scenario` in `phase`, those of each pipeline in `executed`, and
-    /// notes in `world` where their reports to the source failed, leaving cursors owed, and where
-    /// an owed cursor was given up.
+    /// notes in `world` where a commit was sent again in place, where their reports to the source
+    /// failed, leaving cursors owed, and where an owed cursor was given up.
     pub(super) fn ended(
         &mut self,
         phase: usize,
@@ -46,6 +47,9 @@ impl Ledger {
                 }
                 if report.counters.acks.dropped > 0 {
                     world.reach(Reach::OwedDropped);
+                }
+                if report.counters.commits.retried > 0 {
+                    world.reach(Reach::InPlaceRetried);
                 }
                 if report.status == RunStatus::Succeeded {
                     self.length = Some(report.elapsed);
