@@ -76,11 +76,11 @@ wrong.
   Unoptimized builds use far more stack per level than release ones, so each level grows the
   stack on demand (with `stacker`), every shredding job is sure of 4 MiB before it starts, and
   compute threads have 8 MiB: values at the limit shred in every build, on any thread.
-- **Partitions coalesce pushes.** Pushes gather until `BatchPolicy::target_bytes` or `max_rows`,
-  or until the first has waited `max_latency` on the environment's clock. A checkpoint, a push
-  of the other kind or an Arrow schema that differs, and the end of the read flush them first, so
-  a segment never spans coalesced pushes. A JSON push's rows are only known once it is shredded,
-  so JSON counts by bytes alone. Arrow batches of one schema are concatenated. Gathered pushes
+- **Partitions coalesce pushes.** Pushes gather until `BatchPolicy::target_bytes` or `max_rows`, or
+  until the first has waited `max_latency` on the environment's clock. A checkpoint, a push of the
+  other kind or an Arrow schema that differs, and the end of the read flush them first, so a segment
+  never spans coalesced pushes. A JSON push's rows are only known once it is shredded, so JSON
+  counts what its pushes were charged. Arrow batches of one schema are concatenated. Gathered pushes
   hold their permits, which the next push's admission may be waiting for, so the budget signals
   while any request waits and a partition then writes what it gathered at once: under memory
   pressure batches are smaller, never late. The pushes' permits travel with an Arrow batch; each

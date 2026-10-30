@@ -7,9 +7,10 @@ use crate::error::{Error, codes};
 
 /// How a partition coalesces pushes into batches and cuts JSON into chunks to shred in parallel.
 ///
-/// Pushes are held until they reach `target_bytes` or `max_rows`, or the first has waited
-/// `max_latency`; a checkpoint and the end of the read flush them too. A JSON push's rows are
-/// only known once it is shredded, so JSON pushes count toward `target_bytes` alone.
+/// Pushes are held until what they were charged reaches `target_bytes`, their rows reach
+/// `max_rows`, or the first has waited `max_latency`; a checkpoint and the end of the read flush
+/// them too. A JSON push's rows are only known once it is shredded, so a JSON push counts only what
+/// it was charged.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BatchPolicy {
     target_bytes: NonZeroU64,
@@ -41,7 +42,7 @@ impl BatchPolicy {
         })
     }
 
-    /// Bytes of pushes a batch is coalesced up to.
+    /// Bytes the pushes of a batch were charged, up to which they are coalesced.
     pub fn target_bytes(&self) -> NonZeroU64 {
         self.target_bytes
     }
@@ -67,7 +68,7 @@ impl BatchPolicy {
 }
 
 impl Default for BatchPolicy {
-    /// 8 MiB or 1 Mi rows within one second, shredded in jobs of at most 2 MiB.
+    /// 8 MiB charged or 1 Mi rows within one second, shredded in jobs of at most 2 MiB.
     fn default() -> Self {
         Self {
             target_bytes: NonZeroU64::new(8 << 20).unwrap_or(NonZeroU64::MIN),
