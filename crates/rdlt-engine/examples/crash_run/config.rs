@@ -168,7 +168,8 @@ impl Config {
             builder = builder.partition_buffer(events);
         }
         if let Some(rows) = self.batch_rows {
-            let batch = BatchPolicy::new(1 << 20, rows, Duration::from_millis(10), 1 << 20)
+            let limit = BatchPolicy::default().chunk_bytes().get();
+            let batch = BatchPolicy::new(1 << 20, rows, Duration::from_millis(10), limit)
                 .map_err(|error| error.to_string())?;
             builder = builder.batch(batch);
         }

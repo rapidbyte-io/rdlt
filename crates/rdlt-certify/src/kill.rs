@@ -256,7 +256,8 @@ fn config() -> Result<EngineConfig, Violation> {
         .reset_after_progress(true);
     // Small batches and little room ahead of the destination, so commits come often and a
     // source is still reading when the kills land.
-    let batch = BatchPolicy::new(1 << 20, BATCH_ROWS, Duration::from_millis(10), 1 << 20)
+    let limit = BatchPolicy::default().chunk_bytes().get();
+    let batch = BatchPolicy::new(1 << 20, BATCH_ROWS, Duration::from_millis(10), limit)
         .map_err(Violation::of)?;
     EngineConfig::builder()
         .memory(MEMORY)

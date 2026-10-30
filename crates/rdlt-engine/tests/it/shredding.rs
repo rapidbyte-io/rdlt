@@ -1,19 +1,19 @@
 //! JSON pushes whose records become far more than their text: refused before anything is built
 //! where they would pass a limit or the budget, and built within the budget where they fit.
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
-
 use std::time::Duration;
 
 use rdlt_engine::{
-    BatchPolicy, Code, EngineConfig, ErrorKind, Nested, RetryPolicy, RunOutcome, RunStatus,
+    BatchPolicy, Code, Cores, EngineConfig, ErrorKind, Nested, RetryPolicy, RunOutcome, RunStatus,
     SchemaSettings, ShredCounts, codes,
 };
 
 use crate::HEAP;
 use crate::support::destinations::null;
 use crate::support::making::{Step, Steps, making, making_parts};
-use crate::support::{commit_every, engine, pipeline, stream, yielding_engine};
+use crate::support::{commit_every, engine, engine_within, pipeline, stream, yielding_engine};
 
 /// About the least memory an engine runs on.
 const LEAST: u64 = 40 << 20;
@@ -23,14 +23,15 @@ fn bound(budget: u64) -> usize {
     usize::try_from(budget * 12 / 10 + (32 << 20)).expect("a bound in memory")
 }
 
-/// Loads the JSON push `text` under `budget`: the most the heap held beyond what it held before,
-/// and how the run ended.
+/// Loads the JSON push `text` under `budget`, in shredding jobs of at most the default limit: the
+/// most the heap held beyond what it held before, and how the run ended.
 async fn run(name: &str, budget: u64, text: String) -> (usize, RunOutcome) {
-    run_chunked(name, budget, 1 << 20, text).await
+    let limit = BatchPolicy::default().chunk_bytes().get();
+    run_chunked(name, budget, limit, text).await
 }
 
-/// Loads the JSON push `text` under `budget`, shredded in chunks of `chunk_bytes`: the most the
-/// heap held beyond what it held before, and how the run ended.
+/// Loads the JSON push `text` under `budget`, in shredding jobs of at most `chunk_bytes`: the
+/// most the heap held beyond what it held before, and how the run ended.
 async fn run_chunked(
     name: &str,
     budget: u64,
@@ -90,6 +91,45 @@ async fn a_stream_reports_the_passes_shredding_its_committed_json_took() {
         ..ShredCounts::default()
     };
     assert_eq!(outcome.report.streams["events"].shred, shred);
+}
+
+/// The passes shredding the JSON push `text` took, in jobs of at most `chunk_bytes` for `cores`
+/// declared cores.
+async fn shredded_within(name: &str, chunk_bytes: usize, cores: usize, text: &str) -> ShredCounts {
+    let pushed = bytes::Bytes::from(text.to_owned());
+    let steps: Steps = Arc::new(move |step| (step < 1).then(|| Step::Json(pushed.clone())));
+    let source = making(name, steps).await;
+    let batch = BatchPolicy::new(8 << 20, 1 << 20, Duration::from_secs(1), chunk_bytes)
+        .expect("a valid policy");
+    let cores = Cores::new(NonZeroUsize::new(cores).expect("a core or more"));
+    let outcome = engine_within(commit_every(1_000_000_000).batch(batch), cores)
+        .run(pipeline(name, [stream("events")]), source, null().await)
+        .await;
+    assert!(outcome.error.is_none(), "{:?}", outcome.error);
+    outcome.report.streams["events"].shred
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_flush_of_short_records_is_shredded_in_two_jobs_for_each_declared_core() {
+    // A megabyte of records of ten bytes: two jobs a core take far more than a thousand of them.
+    let text = "{\"a\":123}\n".repeat(104_858);
+    let limit = BatchPolicy::default().chunk_bytes().get();
+    for cores in [2, 8] {
+        let name = format!("short_records_{cores}");
+        let shred = shredded_within(&name, limit, cores, &text).await;
+        assert_eq!(shred.parsed, 2 * cores as u64, "{cores} cores");
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn wide_records_are_shredded_in_jobs_of_the_limit_whatever_the_cores() {
+    // Four hundred records of ten thousand bytes: a thousand of them take far more than the limit.
+    let text = format!("{{\"a\":\"{}\"}}\n", "x".repeat(9_991)).repeat(400);
+    for cores in [2, 8] {
+        let name = format!("wide_records_{cores}");
+        let shred = shredded_within(&name, 1 << 20, cores, &text).await;
+        assert_eq!(shred.parsed, 4, "{cores} cores");
+    }
 }
 
 #[tokio::test(start_paused = true)]
@@ -234,13 +274,14 @@ async fn wide_records_in_small_chunks_are_held_within_the_bound() {
     assert!(peak <= bound(BUDGET), "the heap held {peak} bytes");
 }
 
-/// Loads `chunks` chunks of two megabytes, each with all seven thousand columns, under the default
+/// Loads `chunks` chunks of `chunk_bytes`, each with all seven thousand columns, under the default
 /// budget: their columns' parts a chunk are charged, so the heap stays within what the budget
 /// held, a fifth and 32 MiB, and what takes more than a request is refused before it is built.
-async fn wide_full_chunks(chunks: usize) -> RunOutcome {
+async fn wide_full_chunks(chunks: usize, chunk_bytes: usize) -> RunOutcome {
     const BUDGET: u64 = 256 << 20;
-    let name = format!("wide_full_chunks_{chunks}");
-    let (peak, outcome) = run_chunked(&name, BUDGET, 2 << 20, wide_chunks(chunks, 2 << 20)).await;
+    let name = format!("wide_full_chunks_{chunks}_{chunk_bytes}");
+    let text = wide_chunks(chunks, chunk_bytes);
+    let (peak, outcome) = run_chunked(&name, BUDGET, chunk_bytes, text).await;
     let held = outcome.report.peak_memory;
     let within = usize::try_from(held + held / 5 + (32 << 20)).expect("a bound in memory");
     assert!(
@@ -252,13 +293,21 @@ async fn wide_full_chunks(chunks: usize) -> RunOutcome {
 
 #[tokio::test(start_paused = true)]
 async fn wide_records_in_a_few_full_chunks_load_charged_what_they_hold() {
-    let outcome = wide_full_chunks(4).await;
+    let outcome = wide_full_chunks(4, 2 << 20).await;
     assert!(outcome.error.is_none(), "{:?}", outcome.error);
 }
 
 #[tokio::test(start_paused = true)]
+async fn wide_records_in_jobs_of_the_default_limit_load_charged_what_they_hold() {
+    let outcome = wide_full_chunks(3, BatchPolicy::default().chunk_bytes().get()).await;
+    assert!(outcome.error.is_none(), "{:?}", outcome.error);
+    // A wide record outruns the sample, so each job takes the limit and the record after it.
+    assert_eq!(outcome.report.streams["events"].shred.parsed, 3);
+}
+
+#[tokio::test(start_paused = true)]
 async fn wide_records_in_many_full_chunks_are_refused_charged_what_they_hold() {
-    let outcome = wide_full_chunks(13).await;
+    let outcome = wide_full_chunks(13, 2 << 20).await;
     let error = outcome
         .error
         .expect("their batches take more than a request");
@@ -391,7 +440,8 @@ async fn optional_fields(name: &str, keys: usize, normalized: bool) -> Duration 
     let pushed = bytes::Bytes::from(records.join("\n"));
     let steps: Steps = Arc::new(move |step| (step < 40).then(|| Step::Json(pushed.clone())));
     let source = making_parts(name, steps, PARTS).await;
-    let batch = BatchPolicy::new(256 << 10, 1 << 20, Duration::from_secs(1), 1 << 20)
+    let limit = BatchPolicy::default().chunk_bytes().get();
+    let batch = BatchPolicy::new(256 << 10, 1 << 20, Duration::from_secs(1), limit)
         .expect("a valid policy");
     let config = commit_every(1_000_000_000)
         .memory(256 << 20)
