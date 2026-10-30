@@ -34,11 +34,12 @@ impl Simulation {
         // A run that converged may have run with faults on; the intruder's must meet none.
         world.set_faulty(false);
         let before = world.store.lock().tables_digest();
-        let handle = start(&self.engine, &intruder, &self.name, self.placing.as_ref()).await;
-        let outcome = tokio::time::timeout(RUN_LIMIT, handle)
-            .await
-            .expect("every run ends within the limit of virtual time");
+        let run = start(&self.runs, &intruder, &self.name, self.placing.as_ref()).await;
+        let (outcome, _, wrong) = run.ended(RUN_LIMIT).await;
         crate::canary::Canary::of(&self.name).kept(world, &outcome);
+        for finding in wrong {
+            world.violation(finding);
+        }
         // The destination refuses the intruder, and the engine passes its refusal on.
         let refused = outcome.error.as_ref().is_some_and(|error| {
             (error.kind(), error.origin(), error.connector_code())

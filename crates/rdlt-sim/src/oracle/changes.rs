@@ -9,11 +9,12 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use rdlt_connector::{PartitionState, PipelineId, ReadMode, StateEntry, StreamName};
-use rdlt_engine::{DeleteMode, Engine, Env as _, PipelinePlan, StreamPlan, WriteMode};
+use rdlt_engine::{DeleteMode, Env as _, PipelinePlan, StreamPlan, WriteMode};
 use rdlt_testkit::canon::Canon;
 use rdlt_wire::Limits;
 
 use super::config::{config, growth, waited};
+use super::events::Runs;
 use super::faulty::Faulty;
 use super::ledger::Ledger;
 use super::reports::Reported;
@@ -104,11 +105,11 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>) -> Checke
         waited(seed, features.faults),
     );
     let limits = config.limits();
-    let engine = Engine::new(config, env);
+    let runs = Runs::new(config, env);
     let placing = placed(seed, &world, net, &mut rng, limits, &canary);
     let plan = plan(&world.changes.streams);
     let mut changing = Changing {
-        engine: &engine,
+        runs: &runs,
         plan: &plan,
         world: &world,
         name: &name,
@@ -140,7 +141,7 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>) -> Checke
 
 /// The change oracle's runs: what they load and where, and what they left.
 struct Changing<'a> {
-    engine: &'a Engine,
+    runs: &'a Runs,
     plan: &'a PipelinePlan,
     world: &'a World,
     name: &'a str,
@@ -170,7 +171,7 @@ impl Changing<'_> {
     async fn report(&self) {
         let world = self.world;
         let reported = Reported {
-            engine: self.engine,
+            runs: self.runs,
             plans: vec![self.plan.clone()],
             world,
             name: self.name,
@@ -205,7 +206,7 @@ impl Changing<'_> {
             let network = (disrupted && features.faults && self.placing.is_some())
                 .then(|| SplitMix64::new(draws.next_u64()));
             let plans = std::slice::from_ref(self.plan);
-            let executing = execute_all(self.engine, plans, self.name, self.placing, scenario);
+            let executing = execute_all(self.runs, plans, self.name, self.placing, scenario);
             let executed = match (self.placing, network) {
                 (Some(placing), Some(rng)) => placing.disrupting(rng, executing).await,
                 _ => executing.await,

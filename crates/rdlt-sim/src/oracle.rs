@@ -5,6 +5,7 @@ mod arrivals;
 mod changes;
 mod churn;
 mod config;
+mod events;
 mod expected;
 mod faulty;
 mod intruder;
@@ -26,7 +27,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rdlt_connector::{ColumnPath, PartitionId, PipelineId, ReadMode, StreamName};
-use rdlt_engine::{Engine, Env as _, PipelinePlan, Report, StreamPlan, Until, codes};
+use rdlt_engine::{Env as _, PipelinePlan, Report, StreamPlan, Until, codes};
 use rdlt_wire::Limits;
 
 use crate::canary::Canary;
@@ -42,6 +43,7 @@ use crate::workload::{Level, PHASES, Relaxed, Row, Workload};
 use crate::world::World;
 pub use changes::check_changes;
 use config::{config, endless, growth, pressed, waited};
+use events::Runs;
 use expected::Discards;
 use faulty::Faulty;
 use ledger::Ledger;
@@ -157,7 +159,7 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>, threaded:
     world.press(pressed(seed, &config, &world.workload));
     let mut simulation = Simulation {
         seed,
-        engine: Engine::new(config, env),
+        runs: Runs::new(config, env),
         placing,
         relaxed: vec![Relaxed::default(); world.workload.streams.len()],
         world,
@@ -189,13 +191,12 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>, threaded:
     simulation.checked(digest, clock.instant() - started, reached)
 }
 
-/// One simulation: its world, the engine its runs share, and what an operator relaxed after
-/// refusals.
+/// One simulation: its world, what its runs share, and what an operator relaxed after refusals.
 struct Simulation {
     seed: Seed,
     name: String,
     world: Arc<World>,
-    engine: Engine,
+    runs: Runs,
     /// Where the connectors are placed apart from the engine: on a simulated network or in played
     /// processes.
     placing: Option<Placing>,
@@ -372,7 +373,7 @@ impl Simulation {
         self.attacks += 1;
         let attacking = SplitMix64::new(self.seed.value() ^ HOSTILE ^ self.attacks);
         let placing = self.placing.as_ref();
-        let executing = execute_all(&self.engine, plans, &self.name, placing, scenario);
+        let executing = execute_all(&self.runs, plans, &self.name, placing, scenario);
         let hostile = placing
             .and_then(Placing::networked)
             .filter(|_| self.world.workload.features.hostile);

@@ -15,8 +15,8 @@ use crate::world::World;
 /// What a simulation's runs left, folded in as each scenario's runs end.
 #[derive(Debug, Default)]
 pub(super) struct Ledger {
-    /// Every report and failure of the phases' runs, in the order the runs ended, hashed: alike on
-    /// every run of a seed.
+    /// Every report, failure and event of the phases' runs, in the order the runs ended, hashed:
+    /// alike on every run of a seed.
     trace: DefaultHasher,
     /// How often and how long the runs waited for room in the budget, by share.
     pub(super) waits: Waits,
@@ -57,6 +57,9 @@ impl Ledger {
             }
             for failure in &executed.failures {
                 failure.text.hash(&mut self.trace);
+            }
+            for events in &executed.events {
+                events.hash(&mut self.trace);
             }
         }
     }

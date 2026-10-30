@@ -2,8 +2,9 @@
 //! read from, checked once a workload has converged.
 
 use rdlt_connector::{PartitionId, ReadMode, StreamName};
-use rdlt_engine::{Engine, ErrorReport, PipelinePlan, RunStatus, Until};
+use rdlt_engine::{ErrorReport, PipelinePlan, RunStatus, Until};
 
+use super::events::Runs;
 use super::scenario::{Executed, Scenario, execute_all};
 use super::{Simulation, plan, settled};
 use crate::destination::committed_next;
@@ -13,7 +14,7 @@ use crate::world::World;
 
 /// A converged workload whose reports are checked: its pipelines, and what its state holds.
 pub(super) struct Reported<'a> {
-    pub(super) engine: &'a Engine,
+    pub(super) runs: &'a Runs,
     pub(super) plans: Vec<PipelinePlan>,
     pub(super) world: &'a World,
     pub(super) name: &'a str,
@@ -37,8 +38,8 @@ impl Reported<'_> {
         if let Some(placing) = self.placing {
             placing.restart_source().await;
         }
-        let (engine, placing) = (self.engine, self.placing);
-        execute_all(engine, &self.plans, self.name, placing, Scenario::Plain).await
+        let (runs, placing) = (self.runs, self.placing);
+        execute_all(runs, &self.plans, self.name, placing, Scenario::Plain).await
     }
 
     /// Checks that a run with nothing new takes one attempt and tells the source every
@@ -133,7 +134,7 @@ impl Simulation {
             .map(|pipeline| plan(workload, &self.relaxed, pipeline).with_until(Until::Exhausted))
             .collect();
         let reported = Reported {
-            engine: &self.engine,
+            runs: &self.runs,
             plans,
             world: &self.world,
             name: &self.name,
