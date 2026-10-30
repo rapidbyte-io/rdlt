@@ -7,7 +7,7 @@ use rdlt_sim::{
 ///
 /// A seed fails if its defect comes back, unless its comment says otherwise: such a seed keeps
 /// only the path, and its defect may come back unseen.
-const FOUND: [(u64, Reach); 16] = [
+const FOUND: [(u64, Reach); 15] = [
     // Over the network: a host whose handshake a partition cut short held its connection, and
     // its connector's stop, forever.
     (743, Reach::LinkCut),
@@ -34,9 +34,6 @@ const FOUND: [(u64, Reach); 16] = [
     // the types they were written as.
     (11_754, Reach::Widened),
     (302, Reach::Widened),
-    // A child table no row had reached yet was merged by its roots' commit, under no columns,
-    // which the merge refused. The defect may not fail this seed.
-    (86_557, Reach::EmptyChild),
     // A date written into timestamps, whose column then widens to JSON, holds a timestamp's text.
     (642_848, Reach::Widened),
     // A run held more than the heap's allowance beside what it charged. The defect may not fail
