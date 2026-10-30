@@ -68,6 +68,24 @@ Building M2a surfaced decisions the spec leaves open or gets wrong.
   commit whose answer was lost to the attempt that made it once the next open finds its key
   landed, and the report matches what the destination published; an attempt is named in the
   report by its epoch.
+- **A commit the destination answers transiently is sent again in place.** A try the
+  destination's connector answers `Transient` or `RateLimited`, with none of the host's codes, is
+  sent again on the same session: the same commit, by the same key and expecting the same key
+  landed. It is tried as many times at most as the run makes attempts, each wait drawn as the
+  run's backoff draws it, a rate limit's own wait held to the policy's delays, and the session
+  locked for each try alone, so writers open and schema changes apply between tries; partitions
+  read on, and what they seal waits for the next commit. A lost connection, the host's deadline or
+  the engine's wait for the call, a fence and a permanent error end the attempt, as does the last
+  try: one session owns one connection, and after such an end nothing tells whether the commit
+  applied, so the next open credits it by its landed key. A try answered transiently may still
+  land later: the key landed answers its retry, and `after` refuses it once a later commit landed
+  (clause `D-RETRY`). Without progress a commit is sent at most the square of the attempts, 25
+  times at the default policy. The wait races the attempt's cancel, which ends the attempt, then a
+  stop after commit, which ends it with the commit's error, so the run ends stopped as when a stop
+  meets the wait between attempts; every connector call of a commit, its reports included, races
+  the cancel, so another task's failure ends the attempt at once. A run stopped at once
+  (`StopMode::Now`) opens nothing after, so a commit of it that landed unheard is not in its
+  report.
 - **The report's counters are written, never read.** What a run waited for and spent its time on
   is counted as it happens and summed into its report; no decision of the engine reads a
   counter, so measuring a run never changes what it does.

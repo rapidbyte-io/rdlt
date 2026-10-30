@@ -9,7 +9,7 @@ use proptest::prelude::*;
 use rdlt_connector::{Cursor, PartitionId, PartitionState, StateChange, StateEntry};
 
 use super::{Answer, Harness, Setup, cursor, ended, name, partition, position, stream, until};
-use crate::config::CommitPolicy;
+use crate::config::{CommitPolicy, RetryPolicy};
 use crate::coordinator::delta::Collected;
 use crate::coordinator::{Coordinator, Phases, Template};
 use crate::error::ErrorKind;
@@ -103,7 +103,7 @@ fn run(partitions: usize, steps: Vec<Step>, answers: &[Answer], attempts: NonZer
             .map(|at| partition(id(at).as_str(), false))
             .collect(),
     );
-    setup.attempts = attempts;
+    setup.retry = RetryPolicy::default().max_attempts(attempts.get());
     paused().block_on(async {
         let (task, harness) = setup.start().await;
         harness.answers.lock().extend(answers.iter().copied());
@@ -391,7 +391,7 @@ async fn a_done_partition_refused_as_never_sent_is_given_up_at_once() {
 #[tokio::test(start_paused = true)]
 async fn a_partition_at_a_cursor_owed_across_the_attempts_ends_the_attempt() {
     let mut setup = committing_each_seal(1);
-    setup.attempts = NonZeroU32::new(3).unwrap();
+    setup.retry = RetryPolicy::default().max_attempts(3);
     let (task, harness) = setup.start().await;
     harness.answers.lock().extend([Answer::Refuse; 3]);
     harness.send(Progress::Started { partition: 0 });
@@ -416,7 +416,7 @@ async fn a_partition_at_a_cursor_owed_across_the_attempts_ends_the_attempt() {
 #[tokio::test(start_paused = true)]
 async fn a_done_partition_owed_across_the_attempts_is_given_up_as_the_attempt_reads_on() {
     let mut setup = committing_each_seal(2);
-    setup.attempts = NonZeroU32::new(2).unwrap();
+    setup.retry = RetryPolicy::default().max_attempts(2);
     let (task, harness) = setup.start().await;
     harness.answers.lock().extend([Answer::Refuse; 2]);
     for partition in 0..2 {

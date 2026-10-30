@@ -211,13 +211,14 @@ pub(crate) enum Step {
     CreateTable,
     Writer,
     Commit,
-    /// The first commit lands, but its response is lost.
+    /// The first commit lands, but its connection is lost before its response.
     LoseResponse,
-    /// The first commit lands but its response is lost, and the open after it fails.
+    /// The first commit lands but its connection is lost before its response, and the open after
+    /// it fails.
     LoseResponseThenOpen,
     /// Opening panics, as a connector with a bug may.
     PanicOnOpen,
-    /// The first commit fails before it lands; the others land.
+    /// The first commit's connection is lost before it lands; the others land.
     CommitOnce,
     /// Every commit lands, and is answered with the receipt of the commit after it.
     SkewReceipts,
@@ -255,6 +256,12 @@ struct Failing {
 
 fn injected() -> ConnectorError {
     ConnectorError::new(ConnectorErrorKind::Transient, "injected")
+}
+
+/// The error of a call whose connection was lost, as a host answers it: whether the call took
+/// effect is unknown.
+fn lost() -> ConnectorError {
+    injected().with_code(rdlt_host::CONNECTOR_LOST)
 }
 
 impl Destination for Failing {
@@ -325,15 +332,17 @@ impl DestinationSession for FailingSession {
     }
 
     fn commit<'a>(&'a mut self, meta: &'a CommitMeta) -> BoxFuture<'a, Result<Receipt>> {
-        let once = self.step == Step::CommitOnce && !self.lost.swap(true, Ordering::SeqCst);
-        if matches!(self.step, Step::Commit | Step::StallClose) || once {
+        if self.step == Step::CommitOnce && !self.lost.swap(true, Ordering::SeqCst) {
+            return Box::pin(async { Err(lost()) });
+        }
+        if matches!(self.step, Step::Commit | Step::StallClose) {
             return Box::pin(async { Err(injected()) });
         }
         Box::pin(async move {
             let receipt = self.inner.commit(meta).await?;
             let loses = matches!(self.step, Step::LoseResponse | Step::LoseResponseThenOpen);
             if loses && !self.lost.swap(true, Ordering::SeqCst) {
-                return Err(injected());
+                return Err(lost());
             }
             Ok(match self.step {
                 Step::SkewReceipts => Receipt {

@@ -19,7 +19,11 @@ pub use batch::BatchPolicy;
 pub use commit::CommitPolicy;
 pub use growth::GrowthLimits;
 
-/// How many attempts a run makes and how long it waits between them.
+/// How many attempts a run makes and how long it waits between them; a commit the destination
+/// answers transiently is sent again in place as many times, with as long between its tries.
+///
+/// A run that makes no progress sends a commit at most the square of its attempts times: each
+/// attempt sends it as many times as the run makes attempts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RetryPolicy {
     max_attempts: NonZeroU32,
@@ -29,7 +33,8 @@ pub struct RetryPolicy {
 }
 
 impl RetryPolicy {
-    /// Sets the number of attempts, the first included; zero means one.
+    /// Sets the number of attempts, the first included, and of tries of a commit; zero means
+    /// one.
     #[must_use]
     pub fn max_attempts(mut self, attempts: u32) -> Self {
         self.max_attempts = NonZeroU32::new(attempts).unwrap_or(NonZeroU32::MIN);
@@ -57,7 +62,7 @@ impl RetryPolicy {
         self
     }
 
-    /// The number of attempts, the first included.
+    /// The number of attempts, the first included, and of tries of a commit.
     pub fn attempts(&self) -> NonZeroU32 {
         self.max_attempts
     }

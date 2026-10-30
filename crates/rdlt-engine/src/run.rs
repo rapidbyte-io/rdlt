@@ -115,7 +115,8 @@ impl fmt::Debug for Engine {
 pub enum StopMode {
     /// Stop reading, commit what is sealed, and end cleanly.
     AfterCommit,
-    /// End the current attempt at once; its unpublished staging is discarded at the next open.
+    /// End the current attempt at once; its unpublished staging is discarded at the next open,
+    /// and a commit of it that landed unheard is not in the run's report.
     Now,
 }
 
@@ -179,9 +180,15 @@ impl Future for RunHandle {
     }
 }
 
-/// How long to wait before the next attempt: as long as the failure asked, up to the policy's
-/// longest delay, or the policy's backoff after `failures` consecutive failures.
-fn backoff(retry: &RetryPolicy, error: &Error, failures: u32, env: &dyn Env) -> Duration {
+/// How long to wait before trying again, after an attempt or a try of a commit failed: as long as
+/// the failure asked, held to the policy's delays, or the policy's backoff after `failures`
+/// consecutive failures.
+pub(crate) fn backoff(
+    retry: &RetryPolicy,
+    error: &Error,
+    failures: u32,
+    env: &dyn Env,
+) -> Duration {
     let failed = NonZeroU32::new(failures).unwrap_or(NonZeroU32::MIN);
     error.retry_after().map_or_else(
         || retry.delay(failed, env.random()),

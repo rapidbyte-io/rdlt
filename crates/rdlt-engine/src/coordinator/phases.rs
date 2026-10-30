@@ -288,8 +288,8 @@ impl Coordinator {
     /// The state changes recording the phases the next commit begins, stream by stream: each
     /// stream's stale partition entries deleted, where its partitions start, then the phase.
     ///
-    /// A commit that fails ends the attempt, so the commit that takes a phase's changes records
-    /// it. A partition that begins its phase is recorded at its start, so an attempt that ends
+    /// A commit that fails for good ends the attempt, and one sent again in place carries the
+    /// same changes, so the commit that takes a phase's changes records it. A partition that begins its phase is recorded at its start, so an attempt that ends
     /// before the partition's first checkpoint resumes it there.
     pub(super) fn phase_delta(&mut self) -> Vec<StateChange> {
         let mut changes = Vec::new();
