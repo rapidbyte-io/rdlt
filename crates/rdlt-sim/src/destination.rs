@@ -1,10 +1,12 @@
 //! The simulated destination: transactional commits answered by the key that landed last,
-//! fencing, staging and merges, checking the engine's invariants as it commits.
+//! fencing, staging and merges, checking the engine's invariants as it commits; a try it answers
+//! transiently may still land later.
 
 mod cells;
 mod columns;
 mod merged;
 mod read;
+mod running;
 mod store;
 #[cfg(test)]
 mod tests;
@@ -17,9 +19,9 @@ use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use rdlt_connector::limits::ListenLimits;
 use rdlt_connector::{
-    Capabilities, CommitMeta, ConnectContext, ConnectorError, DestinationConnector, Epoch,
-    GenerationId, MergeKey, OpenContext, Opened, PipelineId, Receipt, Result, SchemaVersion,
-    SegmentId, Session, TableChange, TableRef, TableWriter, WriteStats,
+    Capabilities, CommitMeta, ConnectContext, ConnectorError, ConnectorErrorKind,
+    DestinationConnector, Epoch, GenerationId, MergeKey, OpenContext, Opened, PipelineId, Receipt,
+    Result, SchemaVersion, SegmentId, Session, TableChange, TableRef, TableWriter, WriteStats,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -190,40 +192,22 @@ impl Session for SimSession {
     async fn commit(&mut self, meta: &CommitMeta) -> Result<Receipt> {
         self.world.latency().await;
         self.world.hang(FaultPoint::CommitBefore).await;
+        running::begun(&self.world, &self.pipeline);
         if let Some(fault) = self.world.fault(FaultPoint::CommitBefore) {
+            if fault.kind() == ConnectorErrorKind::Transient
+                && let Some(outlasts) = self.world.outlasts()
+            {
+                let mut store = self.world.store.lock();
+                store.leave_running(&self.pipeline, self.epoch, meta, outlasts);
+            }
             return Err(fault);
         }
-        let receipt = {
+        let landed = {
             let mut store = self.world.store.lock();
-            if let Some(landed) = store.fence(&self.pipeline).decide(meta)? {
-                return Ok(landed);
-            }
-            if meta.key.epoch != self.epoch {
-                return Err(ConnectorError::fenced(format!(
-                    "a session of epoch {} cannot apply {}",
-                    self.epoch, meta.key
-                )));
-            }
-            store.owned(&self.pipeline, meta)?;
-            // Where the destination held each partition before this commit.
-            let held = store.positions(&self.pipeline);
-            let (published, reached) = store.publish(&self.pipeline, meta)?;
-            self.world.reach_all(reached);
-            store.apply(&self.world, &self.pipeline, meta);
-            store.check_cursors(&self.world, &self.pipeline, &published, &held);
-            let receipt = Receipt {
-                key: meta.key,
-                committed_at: UNIX_EPOCH,
-                rows: published.iter().map(|(_, rows)| rows.len() as u64).sum(),
-                bytes: 0,
-            };
-            store
-                .pipelines
-                .entry(self.pipeline.clone())
-                .or_default()
-                .landed = Some(receipt.clone());
-            receipt
+            land(&self.world, &mut store, &self.pipeline, self.epoch, meta)
         };
+        running::ended(&self.world, &self.pipeline);
+        let receipt = landed?;
         self.world.hang(FaultPoint::CommitAfter).await;
         match self.world.fault(FaultPoint::CommitAfter) {
             Some(fault) => Err(fault),
@@ -238,6 +222,42 @@ impl Session for SimSession {
             None => Ok(()),
         }
     }
+}
+
+/// Lands `meta`, a commit of `pipeline`'s session of `epoch`, in `store`, answered as a commit is
+/// by the key that landed last: the receipt of the key landed, refused where it is fenced or
+/// stale, or applied whole.
+fn land(
+    world: &World,
+    store: &mut Store,
+    pipeline: &PipelineId,
+    epoch: Epoch,
+    meta: &CommitMeta,
+) -> Result<Receipt> {
+    if let Some(landed) = store.fence(pipeline).decide(meta)? {
+        return Ok(landed);
+    }
+    if meta.key.epoch != epoch {
+        return Err(ConnectorError::fenced(format!(
+            "a session of epoch {epoch} cannot apply {}",
+            meta.key
+        )));
+    }
+    store.owned(pipeline, meta)?;
+    // Where the destination held each partition before this commit.
+    let held = store.positions(pipeline);
+    let (published, reached) = store.publish(pipeline, meta)?;
+    world.reach_all(reached);
+    store.apply(world, pipeline, meta);
+    store.check_cursors(world, pipeline, &published, &held);
+    let receipt = Receipt {
+        key: meta.key,
+        committed_at: UNIX_EPOCH,
+        rows: published.iter().map(|(_, rows)| rows.len() as u64).sum(),
+        bytes: 0,
+    };
+    store.pipelines.entry(pipeline.clone()).or_default().landed = Some(receipt.clone());
+    Ok(receipt)
 }
 
 /// A writer of [`SimDestination`]: buffers rows and stages them on flush.
