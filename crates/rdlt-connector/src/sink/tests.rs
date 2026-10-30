@@ -10,7 +10,8 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::Notify;
 
 use super::{
-    Admission, Permit, Push, Requested, SourceEvent, admitted_partition_channel, partition_channel,
+    Admission, Headroom, Permit, Push, Requested, SourceEvent, admitted_partition_channel,
+    partition_channel,
 };
 use crate::cursor::Cursor;
 use crate::error::ConnectorErrorKind;
@@ -182,7 +183,11 @@ async fn an_event_its_admission_charges_nothing_enters_without_a_permit() {
     let gate = Arc::new(Gate::default());
     let (mut sink, mut feed) =
         admitted_partition_channel(NonZeroUsize::new(4).unwrap(), gate.clone());
-    for event in [SourceEvent::Replan, SourceEvent::Behind { records: 7 }] {
+    let lag = SourceEvent::Behind {
+        records: 7,
+        headroom: Headroom::default(),
+    };
+    for event in [SourceEvent::Replan, lag] {
         sink.send(event.clone()).await.unwrap();
         let (received, permit) = feed.recv_admitted().await.unwrap();
         assert_eq!(received, event);
@@ -367,4 +372,23 @@ async fn a_checkpoint_answering_a_barrier_never_requested_is_refused() {
         feed.recv().await.expect("the checkpoint arrives");
     }
     assert_eq!(sink.pending_barrier(), None);
+}
+
+#[test]
+fn the_least_of_two_headrooms_is_the_least_of_each_measure_either_says() {
+    let bytes = Headroom {
+        bytes: Some(10),
+        time: None,
+    };
+    let both = Headroom {
+        bytes: Some(20),
+        time: Some(Duration::from_secs(5)),
+    };
+    let least = Headroom {
+        bytes: Some(10),
+        time: Some(Duration::from_secs(5)),
+    };
+    assert_eq!(bytes.least(both), least);
+    assert_eq!(both.least(bytes), least);
+    assert_eq!(Headroom::default().least(bytes), bytes);
 }

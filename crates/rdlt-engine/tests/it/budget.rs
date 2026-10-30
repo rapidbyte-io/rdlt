@@ -13,8 +13,8 @@ use arrow_array::{
 };
 use arrow_buffer::{OffsetBuffer, ScalarBuffer};
 use arrow_schema::{DataType, Field, Fields};
-use rdlt_connector::Push;
 use rdlt_connector::cost::{Rendering, push_charge};
+use rdlt_connector::{Headroom, Push};
 use rdlt_engine::{RunStatus, codes};
 
 use crate::HEAP;
@@ -372,7 +372,7 @@ async fn signals_sent_while_a_commit_is_in_flight_do_not_pile_up() {
             Some(Step::Replan)
         }
         step if step < SIGNALS => Some(if step.is_multiple_of(2) {
-            Step::Behind(u64::try_from(step).expect("a count"))
+            Step::Behind(u64::try_from(step).expect("a count"), Headroom::default())
         } else {
             Step::Replan
         }),
@@ -382,7 +382,7 @@ async fn signals_sent_while_a_commit_is_in_flight_do_not_pile_up() {
                 .saturating_sub(heap.load(Ordering::SeqCst));
             heap.store(grown, Ordering::SeqCst);
             commits.open();
-            Some(Step::Behind(0))
+            Some(Step::Behind(0, Headroom::default()))
         }
         _ => None,
     });

@@ -73,7 +73,7 @@ pub(super) async fn read(
                         let next = cursor.decode::<Offset>(1).expect("an offset").next;
                         sent.checkpoints.push(next);
                     }
-                    Some(SourceEvent::Behind { records }) => sent.behind.push(records),
+                    Some(SourceEvent::Behind { records, .. }) => sent.behind.push(records),
                     Some(SourceEvent::Replan) => sent.replans += 1,
                     None => break,
                 },

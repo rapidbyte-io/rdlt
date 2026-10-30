@@ -13,6 +13,12 @@ use rdlt_connector_reference::MemoryDestination;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+/// How much retention [`Ticks`] says it has left, chatty, as it says how far behind it is.
+pub(crate) const LAGGED: Headroom = Headroom {
+    bytes: Some(4_096),
+    time: Some(Duration::from_secs(90)),
+};
+
 /// How often [`Counted`]'s check has been called.
 pub(crate) static CHECKS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
@@ -53,7 +59,8 @@ pub(crate) struct TicksConfig {
     /// Whether rows go as Arrow batches, the second half with a column the first lacks.
     #[serde(default)]
     pub(crate) arrow: bool,
-    /// Whether the read starts saying how far behind it is and that its partitions changed.
+    /// Whether the read starts saying how far behind it is, with [`LAGGED`], and that its
+    /// partitions changed.
     #[serde(default)]
     pub(crate) chatty: bool,
     /// Rows after which the read fails with a data error.
@@ -187,7 +194,7 @@ impl ReadStream<Ticks> for TickStream {
             .push((partition.is_unbounded(), out.follows()));
         let config = &source.config;
         if config.chatty {
-            out.behind(7).await?;
+            out.behind(7, LAGGED).await?;
             out.replan().await?;
         }
         if let Some(rows) = config.rows.filter(|_| config.flags > 0) {

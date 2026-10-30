@@ -7,8 +7,8 @@ use std::sync::{Arc, LazyLock};
 use arrow_array::RecordBatch;
 use parking_lot::Mutex;
 use rdlt_connector::{
-    ConnectContext, ConnectorError, Emitter, Partition, ReadMode, ReadStream, Result, Source,
-    SourceConnector, StreamName, StreamSpec, StreamState, Streams, source_factory,
+    ConnectContext, ConnectorError, Emitter, Headroom, Partition, ReadMode, ReadStream, Result,
+    Source, SourceConnector, StreamName, StreamSpec, StreamState, Streams, source_factory,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -22,8 +22,8 @@ pub(crate) enum Step {
     Json(bytes::Bytes),
     /// A checkpoint whose cursor is this many bytes.
     Checkpoint(usize),
-    /// How far behind the read is.
-    Behind(u64),
+    /// How far behind the read is, and how much more its source keeps.
+    Behind(u64, Headroom),
     /// That the stream's partitions changed.
     Replan,
     /// Nothing, once the future completes: a point the test holds the read at.
@@ -126,7 +126,7 @@ impl ReadStream<MakingSource> for Events {
                 Step::Checkpoint(bytes) => {
                     out.checkpoint(&"c".repeat(bytes.saturating_sub(2))).await?;
                 }
-                Step::Behind(records) => out.behind(records).await?,
+                Step::Behind(records, headroom) => out.behind(records, headroom).await?,
                 Step::Replan => out.replan().await?,
                 Step::Wait(held) => held.await,
             }

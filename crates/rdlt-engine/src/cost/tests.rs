@@ -664,7 +664,10 @@ async fn a_checkpoint_is_admitted_for_its_cursor_and_signals_for_nothing() {
     assert_eq!(budget.reserved(), 40);
     for event in [
         SourceEvent::Replan,
-        SourceEvent::Behind { records: 3 },
+        SourceEvent::Behind {
+            records: 3,
+            headroom: rdlt_connector::Headroom::default(),
+        },
     ] {
         assert!(admission.admit(&event).await.unwrap().is_none());
     }

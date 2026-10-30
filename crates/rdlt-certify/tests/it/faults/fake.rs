@@ -240,7 +240,10 @@ impl Fake {
         let (frames, answer) = mpsc::channel(64);
         tokio::spawn(async move {
             let lag = |records: u64| v1::ReadFrame {
-                frame: Some(v1::read_frame::Frame::Behind(v1::BehindFrame { records })),
+                frame: Some(v1::read_frame::Frame::Behind(v1::BehindFrame {
+                    records,
+                    headroom: None,
+                })),
             };
             let (mut credit, mut granted_times): (i64, u32) = (0, 0);
             for frame in 0..8 {

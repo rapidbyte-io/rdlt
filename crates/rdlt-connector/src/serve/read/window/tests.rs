@@ -13,7 +13,7 @@ use crate::cost::push_charge;
 use crate::cursor::Cursor;
 use crate::error::ConnectorErrorKind;
 use crate::sink::{
-    Admission, PartitionFeed, PartitionSink, Permit, Push, SourceEvent,
+    Admission, Headroom, PartitionFeed, PartitionSink, Permit, Push, SourceEvent,
     admitted_partition_channel,
 };
 
@@ -129,7 +129,10 @@ async fn every_event_but_a_push_passes_a_full_window_and_holds_nothing() {
             answers: Some(1),
         },
         SourceEvent::Replan,
-        SourceEvent::Behind { records: 7 },
+        SourceEvent::Behind {
+            records: 7,
+            headroom: Headroom::default(),
+        },
     ];
     for event in others {
         let admitted = admitted(&window, &event).await;

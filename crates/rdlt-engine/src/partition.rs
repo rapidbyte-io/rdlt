@@ -408,8 +408,9 @@ impl Ingested {
             SourceEvent::Replan => {
                 return context.signalled(job.index, context.latest.replan(job.index));
             }
-            SourceEvent::Behind { records } => {
-                return context.signalled(job.index, context.latest.behind(job.index, records));
+            SourceEvent::Behind { records, headroom } => {
+                let told = context.latest.behind(job.index, records, headroom);
+                return context.signalled(job.index, told);
             }
         };
         // Every push on an admitted channel carries the permit that reserved its bytes.

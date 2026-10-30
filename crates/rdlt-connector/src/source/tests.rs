@@ -14,7 +14,7 @@ use crate::cursor::Cursor;
 use crate::emitter::Emitter;
 use crate::error::{ConnectorError, ConnectorErrorKind, Result};
 use crate::id::{PartitionId, StreamName};
-use crate::sink::{Push, SourceEvent, partition_channel};
+use crate::sink::{Headroom, Push, SourceEvent, partition_channel};
 use crate::spec::ConnectContext;
 use crate::state::StreamState;
 
@@ -81,7 +81,8 @@ impl ReadStream<Counter> for Numbers {
         }
         if source.limit == 7 {
             // A counter to seven says whether it was given a cursor, as how far it is behind.
-            out.behind(u64::from(out.resumes())).await?;
+            out.behind(u64::from(out.resumes()), Headroom::default())
+                .await?;
         }
         for n in cursor.n..source.limit {
             out.rows(&[json!({ "n": n })]).await?;

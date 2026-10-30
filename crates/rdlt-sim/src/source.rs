@@ -11,9 +11,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rdlt_connector::{
-    Checkpointing, ConnectContext, ConnectorError, Cursor, Emitter, Field, LogicalType, Partition,
-    PartitionId, PartitionPlan, ReadMode, ReadStream, Result, SourceConnector, StreamName,
-    StreamSpec, StreamState, Streams, TableSchema,
+    Checkpointing, ConnectContext, ConnectorError, Cursor, Emitter, Field, Headroom, LogicalType,
+    Partition, PartitionId, PartitionPlan, ReadMode, ReadStream, Result, SourceConnector,
+    StreamName, StreamSpec, StreamState, Streams, TableSchema,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -258,7 +258,8 @@ impl ReadStream<SimSource> for SimStreamReader {
             // As a log does, it says how far behind its newest rows it is; and it asks for the
             // stream to be planned again, which changes nothing unless its world named other
             // partitions since.
-            out.behind(arrived.saturating_sub(next) as u64).await?;
+            out.behind(arrived.saturating_sub(next) as u64, Headroom::default())
+                .await?;
             out.replan().await?;
             if !self
                 .arrival(source, out, &reading, rows.len(), next)

@@ -7,9 +7,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use rdlt_connector::{
-    BoxFuture, Catalog, ConnectContext, ConnectorError, Cursor, PartitionId, PartitionPlan,
-    PartitionSink, ReadMode, ReadRequest, Source, SourceEvent, StreamName, StreamState,
-    partition_channel, source_factory,
+    BoxFuture, Catalog, ConnectContext, ConnectorError, Cursor, Headroom, PartitionId,
+    PartitionPlan, PartitionSink, ReadMode, ReadRequest, Source, SourceEvent, StreamName,
+    StreamState, partition_channel, source_factory,
 };
 use rdlt_connector_reference::LogSource;
 use rdlt_engine::{
@@ -282,7 +282,10 @@ impl Source for Reshaped {
                     ))
                 }
                 Shape::Lagging(prefix) if request.partition.id().as_str().starts_with(prefix) => {
-                    let lag = Some(SourceEvent::Behind { records: 100 });
+                    let lag = Some(SourceEvent::Behind {
+                        records: 100,
+                        headroom: Headroom::default(),
+                    });
                     let quiet = |event: &SourceEvent| !matches!(event, SourceEvent::Behind { .. });
                     self.forwarding(request, sink, lag, quiet).await
                 }

@@ -14,6 +14,7 @@ use crate::cursor::Cursor;
 use crate::emitter::Emitter;
 use crate::error::Result;
 use crate::id::{PartitionId, StreamName};
+use crate::sink::Headroom;
 use crate::source::{Partition, PartitionPlan, ReadStream, SourceConnector, Streams};
 use crate::spec::ConnectContext;
 use crate::state::{PartitionState, StreamState};
@@ -157,7 +158,7 @@ impl Log {
             }
             if self.config.chatty {
                 loop {
-                    out.behind(0).await?;
+                    out.behind(0, Headroom::default()).await?;
                     tokio::time::sleep(Duration::from_millis(100)).await;
                 }
             }

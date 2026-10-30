@@ -418,8 +418,8 @@ impl Coordinator {
                 if replan {
                     self.signalled(partition);
                 }
-                if let Some(records) = behind {
-                    self.behind(partition, records);
+                if let Some((records, headroom)) = behind {
+                    self.behind(partition, records, headroom);
                 }
             }
             Progress::RetentionReset { partition } => self.reset(partition),

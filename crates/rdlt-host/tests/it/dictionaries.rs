@@ -12,9 +12,9 @@ use arrow_array::{ArrayRef, DictionaryArray, Int8Array, RecordBatch, StringArray
 use rdlt_connector::prelude::*;
 use rdlt_connector::serve::Served;
 use rdlt_connector::{
-    Admission, BoxFuture, ConnectContext, PartitionFeed, PartitionId, Permit, PipelineId,
-    Push, ReadMode, ReadRequest, Role, Source as _, SourceEvent, StreamState,
-    admitted_partition_channel, source_factory,
+    Admission, BoxFuture, ConnectContext, PartitionFeed, PartitionId, Permit, PipelineId, Push,
+    ReadMode, ReadRequest, Role, Source as _, SourceEvent, StreamState, admitted_partition_channel,
+    source_factory,
 };
 use rdlt_host::{Connection, Options, RemoteSource};
 use schemars::JsonSchema;
@@ -81,7 +81,7 @@ impl ReadStream<Keyed> for KeyedStream {
             "done" => Ok(()),
             "fails" => Err(ConnectorError::data("the source failed").with_code("keyed_failed")),
             _ => loop {
-                out.behind(0).await?;
+                out.behind(0, Headroom::default()).await?;
                 tokio::time::sleep(Duration::from_millis(5)).await;
             },
         }

@@ -267,7 +267,10 @@ fn spec(id: &str, destination: bool) -> v1::ConnectorSpec {
 
 /// A frame of a lag.
 fn lagged() -> v1::read_frame::Frame {
-    v1::read_frame::Frame::Behind(v1::BehindFrame { records: 1 })
+    v1::read_frame::Frame::Behind(v1::BehindFrame {
+        records: 1,
+        headroom: None,
+    })
 }
 
 /// The IPC schema of one column of ids.

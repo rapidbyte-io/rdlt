@@ -8,9 +8,9 @@ use std::time::Duration;
 use arrow_array::{Int64Array, RecordBatch, StringArray};
 use parking_lot::Mutex;
 use rdlt_connector::{
-    Checkpointing, ConnectContext, ConnectorError, ConnectorErrorKind, Emitter, Field, LogicalType,
-    Partition, PartitionId, ReadMode, ReadStream, Result, Source, SourceConnector, StreamName,
-    StreamSpec, StreamState, Streams, TableSchema, source_factory,
+    Checkpointing, ConnectContext, ConnectorError, ConnectorErrorKind, Emitter, Field, Headroom,
+    LogicalType, Partition, PartitionId, ReadMode, ReadStream, Result, Source, SourceConnector,
+    StreamName, StreamSpec, StreamState, Streams, TableSchema, source_factory,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -389,7 +389,7 @@ impl Scripted {
                 if stream.idle && stream.idle_flag.load(Ordering::SeqCst) {
                     tokio::time::sleep(Duration::from_millis(100)).await;
                     self.checkpoint_if_asked(script, stream, next, out).await?;
-                    out.behind(0).await?;
+                    out.behind(0, Headroom::default()).await?;
                     continue;
                 }
                 break;
