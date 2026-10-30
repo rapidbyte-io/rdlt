@@ -7,7 +7,7 @@ use bytes::Bytes;
 
 use super::{ADMITTED, CHUNK_BYTES, Corpus, PUSH_BYTES, Parse};
 use super::{
-    Refused, check_json, json_column, normalize, pruned, shred, shred_counted, shred_on, shred_with,
+    Normalizing, Refused, check_json, json_column, shred, shred_counted, shred_on, shred_with,
 };
 use crate::SystemEnv;
 use crate::compute::Cores;
@@ -115,7 +115,7 @@ fn a_refusal_carries_the_errors_code_and_message() {
 fn normalizing_a_shredded_batch_names_each_table_by_its_path() {
     let push = Bytes::from_static(br#"{"id":1,"items":[{"sku":"a","tags":["x"]}]}"#);
     let batches = shred(&[push], 1 << 20).unwrap();
-    let parts = normalize(&batches[0], 8, &["id"]).unwrap();
+    let parts = Normalizing::new(8, &["id"]).normalize(&batches[0]).unwrap();
     let paths: Vec<Vec<String>> = parts.iter().map(|(path, _)| path.clone()).collect();
     assert_eq!(
         paths,
@@ -135,10 +135,9 @@ fn pruning_a_normalized_batch_drops_each_dropped_roots_children_with_it() {
     );
     let batches = shred(&[push], 1 << 20).unwrap();
     // Root 0 goes with its item and its tag; root 1, its item and its two tags are left.
-    assert_eq!(
-        pruned(&batches[0], 8, NonZeroUsize::new(2).unwrap()).unwrap(),
-        4
-    );
+    let mut normalizing = Normalizing::new(8, &[]);
+    let every = NonZeroUsize::new(2).unwrap();
+    assert_eq!(normalizing.pruned(&batches[0], every).unwrap(), 4);
 }
 
 #[test]

@@ -426,7 +426,14 @@ fn the_columns_lowered_are_of_every_kind_of_logical_type() {
     let splits = every_column().into_iter().any(|(field, column)| {
         let schema = Arc::new(arrow_schema::Schema::new(vec![field]));
         let batch = RecordBatch::try_new(schema, vec![column]).unwrap();
-        crate::normalize::normalize(&batch, &shape).unwrap().len() > 1
+        crate::normalize::normalize(
+            &batch,
+            &shape,
+            &mut crate::normalize::PartSchemas::default(),
+        )
+        .unwrap()
+        .len()
+            > 1
     });
     assert!(splits, "no column splits into tables of its own");
 }
@@ -502,7 +509,7 @@ fn split_estimate(batch: &RecordBatch, shape: &crate::normalize::Shape) -> u64 {
 
 #[test]
 fn a_merges_split_with_its_roots_key_ids_is_within_what_is_reserved() {
-    use crate::normalize::{Shape, normalize};
+    use crate::normalize::{PartSchemas, Shape, normalize};
     let rows = i64::try_from(ROWS).unwrap();
     let ids: ArrayRef = Arc::new(Int64Array::from_iter_values(0..rows));
     let items = (0..rows).map(|row| Some(vec![Some(row), Some(row)]));
@@ -526,7 +533,7 @@ fn a_merges_split_with_its_roots_key_ids_is_within_what_is_reserved() {
         "a row's position, and a merge root's 32-byte hash and offset"
     );
     let estimate = split_estimate(&batch, &keyed);
-    let (parts, peak) = peak(|| normalize(&batch, &keyed));
+    let (parts, peak) = peak(|| normalize(&batch, &keyed, &mut PartSchemas::default()));
     assert!(parts.unwrap()[0].lineage.keys.is_some());
     assert!(
         peak <= estimate + SLACK,
@@ -539,7 +546,7 @@ in_tenths!(a_column_through_a_normalizing_plan_is_split_and_lowered_within_what_
 /// Splits each column of `tenth` in every encoding through a normalizing plan, then lowers its
 /// parts as a plain batch's, failing where either allocates more than was reserved.
 fn splits_and_lowers_within_what_is_reserved(tenth: usize) {
-    use crate::normalize::{Shape, normalize};
+    use crate::normalize::{PartSchemas, Shape, normalize};
     let shape = Shape {
         max_depth: 8,
         whole: std::collections::BTreeSet::new(),
@@ -551,7 +558,7 @@ fn splits_and_lowers_within_what_is_reserved(tenth: usize) {
         let schema = Arc::new(arrow_schema::Schema::new(vec![field]));
         let batch = RecordBatch::try_new(schema, vec![column]).unwrap();
         let estimate = split_estimate(&batch, &shape);
-        let (parts, peak) = peak(|| normalize(&batch, &shape));
+        let (parts, peak) = peak(|| normalize(&batch, &shape, &mut PartSchemas::default()));
         let parts = parts.expect("every column normalizes");
         splits += 1;
         tables += parts.len();
@@ -630,7 +637,7 @@ fn judges_holding_nothing(tenth: usize) {
 
 #[test]
 fn a_run_end_encoded_field_under_a_nullable_object_splits_within_what_is_reserved() {
-    use crate::normalize::{Shape, normalize};
+    use crate::normalize::{PartSchemas, Shape, normalize};
     let rows = i32::try_from(ROWS).unwrap();
     let runs =
         RunArray::<Int32Type>::try_new(&Int32Array::from(vec![rows]), &Int64Array::from(vec![7]))
@@ -656,7 +663,7 @@ fn a_run_end_encoded_field_under_a_nullable_object_splits_within_what_is_reserve
         let object = StructArray::try_new(fields, vec![values], Some(nulls)).unwrap();
         let batch = RecordBatch::try_from_iter([("s", Arc::new(object) as ArrayRef)]).unwrap();
         let estimate = split_estimate(&batch, &shape);
-        let (parts, peak) = peak(|| normalize(&batch, &shape));
+        let (parts, peak) = peak(|| normalize(&batch, &shape, &mut PartSchemas::default()));
         parts.expect("the batch normalizes");
         assert!(
             peak <= estimate + SLACK,

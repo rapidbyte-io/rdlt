@@ -210,57 +210,74 @@ async fn shredded(
     Ok(shred::shred(pool, pushes, chunk_bytes, limits).await?)
 }
 
-/// `batch` normalized as a stream normalized to `max_depth` and merged by `key`, where it names
-/// columns, whose root rows its key identifies: each table's path below the stream's table, and
-/// its rows' data columns.
-pub fn normalize(
-    batch: &RecordBatch,
-    max_depth: u8,
-    key: &[&str],
-) -> Result<Vec<(Vec<String>, RecordBatch)>, ArrowError> {
-    let shape = Shape {
-        max_depth,
-        whole: std::collections::BTreeSet::new(),
-        key: key.iter().map(|column| Arc::from(*column)).collect(),
-    };
-    Ok(normalize::normalize(batch, &shape)?
-        .into_iter()
-        .map(|part| {
-            let path = part.path.iter().map(ToString::to_string).collect();
-            (path, part.batch)
-        })
-        .collect())
+/// Normalizing batches as a stream normalized to `max_depth` and merged by `key` does, where it
+/// names columns, keeping the schemas of the parts a batch splits into for the batches of its
+/// schema that follow, as a partition keeps them.
+#[derive(Debug)]
+pub struct Normalizing {
+    shape: Shape,
+    schemas: normalize::PartSchemas,
 }
 
-/// `batch` normalized as a keyless stream to `max_depth`, every `every`th root row dropped, and
-/// each child table's rows pruned of those whose parent went: the rows left in all its tables.
-///
-/// # Errors
-///
-/// Where normalizing refuses the batch.
-pub fn pruned(
-    batch: &RecordBatch,
-    max_depth: u8,
-    every: NonZeroUsize,
-) -> Result<usize, ArrowError> {
-    let shape = Shape {
-        max_depth,
-        whole: std::collections::BTreeSet::new(),
-        key: Vec::new(),
-    };
-    let mut parts = normalize::normalize(batch, &shape)?.into_iter();
-    let Some(root) = parts.next() else {
-        return Ok(0);
-    };
-    let root = normalize::Pruned::whole(root, normalize::PushKind::Arrow);
-    let kept: BooleanArray = (0..root.part.batch.num_rows())
-        .map(|row| Some(row % every.get() != 0))
-        .collect();
-    let mut dropped = normalize::Dropped::new(normalize::PushKind::Arrow);
-    dropped.unkept(&root, &kept);
-    let mut left = kept.true_count();
-    for part in parts {
-        left += dropped.prune(part)?.part.batch.num_rows();
+impl Normalizing {
+    /// Normalizing to `max_depth`, merged by `key` where it names columns.
+    pub fn new(max_depth: u8, key: &[&str]) -> Self {
+        Self {
+            shape: Shape {
+                max_depth,
+                whole: std::collections::BTreeSet::new(),
+                key: key.iter().map(|column| Arc::from(*column)).collect(),
+            },
+            schemas: normalize::PartSchemas::default(),
+        }
     }
-    Ok(left)
+
+    /// `batch` normalized: each table's path below the stream's table, and its rows' data
+    /// columns.
+    ///
+    /// # Errors
+    ///
+    /// Where normalizing refuses the batch.
+    pub fn normalize(
+        &mut self,
+        batch: &RecordBatch,
+    ) -> Result<Vec<(Vec<String>, RecordBatch)>, ArrowError> {
+        let parts = normalize::normalize(batch, &self.shape, &mut self.schemas)?;
+        Ok(parts
+            .into_iter()
+            .map(|part| {
+                let path = part.path.iter().map(ToString::to_string).collect();
+                (path, part.batch)
+            })
+            .collect())
+    }
+
+    /// `batch` normalized, every `every`th root row dropped, and each child table's rows pruned
+    /// of those whose parent went: the rows left in all its tables.
+    ///
+    /// # Errors
+    ///
+    /// Where normalizing refuses the batch.
+    pub fn pruned(
+        &mut self,
+        batch: &RecordBatch,
+        every: NonZeroUsize,
+    ) -> Result<usize, ArrowError> {
+        let parts = normalize::normalize(batch, &self.shape, &mut self.schemas)?;
+        let mut parts = parts.into_iter();
+        let Some(root) = parts.next() else {
+            return Ok(0);
+        };
+        let root = normalize::Pruned::whole(root, normalize::PushKind::Arrow);
+        let kept: BooleanArray = (0..root.part.batch.num_rows())
+            .map(|row| Some(row % every.get() != 0))
+            .collect();
+        let mut dropped = normalize::Dropped::new(normalize::PushKind::Arrow);
+        dropped.unkept(&root, &kept);
+        let mut left = kept.true_count();
+        for part in parts {
+            left += dropped.prune(part)?.part.batch.num_rows();
+        }
+        Ok(left)
+    }
 }

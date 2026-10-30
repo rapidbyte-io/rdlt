@@ -105,12 +105,22 @@ fn a_split_made_where_an_earlier_split_of_its_unit_was_freed_is_charged_in_full(
     let unit = ids(1_000);
     let piece = std::slice::from_ref(&unit);
     let made = |parts: &[crate::normalize::Part]| made(piece, parts);
-    let first = crate::normalize::normalize(&unit, &keyless()).unwrap();
+    let first = crate::normalize::normalize(
+        &unit,
+        &keyless(),
+        &mut crate::normalize::PartSchemas::default(),
+    )
+    .unwrap();
     let charged = made(&first);
     let rows = first[0].lineage.row.to_data().buffers()[0].clone();
     // The split's parts are written and freed, and the unit's next split is made where they were.
     drop(first);
-    let mut second = crate::normalize::normalize(&unit, &keyless()).unwrap();
+    let mut second = crate::normalize::normalize(
+        &unit,
+        &keyless(),
+        &mut crate::normalize::PartSchemas::default(),
+    )
+    .unwrap();
     second[0].lineage.row = in_place_of(rows);
     assert_eq!(made(&second), charged);
 }
@@ -118,7 +128,12 @@ fn a_split_made_where_an_earlier_split_of_its_unit_was_freed_is_charged_in_full(
 #[test]
 fn what_holds_a_split_keeps_the_parts_it_planned_alive_until_it_goes() {
     let unit = ids(1_000);
-    let parts = crate::normalize::normalize(&unit, &keyless()).unwrap();
+    let parts = crate::normalize::normalize(
+        &unit,
+        &keyless(),
+        &mut crate::normalize::PartSchemas::default(),
+    )
+    .unwrap();
     let lineage = parts[0].lineage.row.to_data().buffers()[0].clone();
     let held = kept(&parts);
     drop(parts);
@@ -134,7 +149,12 @@ fn what_holds_a_split_keeps_the_parts_it_planned_alive_until_it_goes() {
 fn a_units_parts_grow_it_by_their_lineage_their_schemas_and_their_arrays() {
     let unit = ids(1000);
     let held = Allocations::of(&unit);
-    let parts = crate::normalize::normalize(&unit, &keyless()).unwrap();
+    let parts = crate::normalize::normalize(
+        &unit,
+        &keyless(),
+        &mut crate::normalize::PartSchemas::default(),
+    )
+    .unwrap();
     // The roots' positions are one buffer of exactly a row's 4 bytes each.
     let positions = parts[0].lineage.row.to_data();
     assert_eq!(positions.buffers()[0].capacity(), 1000 * 4);
@@ -176,7 +196,9 @@ fn each_part_of_a_merge_s_split_holds_the_keys_array_beside_its_lineage() {
         key: vec![Arc::from("id")],
         ..keyless()
     };
-    let parts = crate::normalize::normalize(&unit, &keyed).unwrap();
+    let parts =
+        crate::normalize::normalize(&unit, &keyed, &mut crate::normalize::PartSchemas::default())
+            .unwrap();
     assert_eq!(parts.len(), 1);
     assert!(parts[0].lineage.keys.is_some());
     let mut grown = Allocations::default();

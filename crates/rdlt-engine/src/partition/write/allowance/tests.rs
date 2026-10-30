@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 use super::{Cutter, PartPiece};
 use crate::budget::TooLarge;
 use crate::error::{Error, ErrorKind};
-use crate::normalize::{Shape, normalize};
+use crate::normalize::{PartSchemas, Shape, normalize};
 use crate::table::{Incoming, LoweringPlan};
 
 /// A unit of `rows` 8-byte integers, normalized and planned for a table of no columns yet.
@@ -26,12 +26,12 @@ fn unit(rows: i64) -> super::PlannedParts {
         whole: std::collections::BTreeSet::new(),
         key: Vec::new(),
     };
-    let parts = normalize(&batch, &shape).unwrap();
+    let parts = normalize(&batch, &shape, &mut PartSchemas::default()).unwrap();
     parts
         .into_iter()
         .map(|part| {
             let schema = Arc::new(TableSchema::from_arrow(&part.batch.schema()).unwrap());
-            let incoming = Incoming::of(schema, part.columns.clone().into(), &[]);
+            let incoming = Incoming::of(schema, Arc::clone(&part.columns), &[]);
             let plan = LoweringPlan::new(
                 StreamName::new("events").unwrap(),
                 crate::table::testing::view("t"),

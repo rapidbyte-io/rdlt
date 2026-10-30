@@ -15,7 +15,7 @@ use proptest::prelude::*;
 use rdlt_connector::{Epoch, Field, SegmentId};
 
 use super::placement::Container;
-use super::{Part, Received, Shape, normalize};
+use super::{Part, PartSchemas, Received, Shape, normalize};
 use crate::table::plain;
 use rdlt_testkit::drawn::{Drawn, Encoding, Scalar, Shape as Drawing, array, field, values};
 
@@ -132,8 +132,8 @@ proptest! {
             .map(|((name, _), _)| Arc::from(name.as_str()))
             .collect();
         let shape = Shape { max_depth, whole: BTreeSet::new(), key };
-        let encoded = normalize(&batch(&drawn, Clone::clone), &shape);
-        let plain = normalize(&batch(&drawn, plainly), &shape);
+        let encoded = normalize(&batch(&drawn, Clone::clone), &shape, &mut PartSchemas::default());
+        let plain = normalize(&batch(&drawn, plainly), &shape, &mut PartSchemas::default());
         match (encoded, plain) {
             (Ok(encoded), Ok(plain)) => {
                 let (encoded, plain) = (held(&encoded), held(&plain));
@@ -197,8 +197,8 @@ proptest! {
                 })
                 .collect()
         };
-        let encoded = normalize(&encoded, &shape).expect("an encoded batch normalizes");
-        let kept = normalize(&plain, &whole).expect("a plain batch normalizes");
+        let encoded = normalize(&encoded, &shape, &mut PartSchemas::default()).expect("an encoded batch normalizes");
+        let kept = normalize(&plain, &whole, &mut PartSchemas::default()).expect("a plain batch normalizes");
         prop_assert_eq!(tables(&encoded), tables(&kept));
     }
 }

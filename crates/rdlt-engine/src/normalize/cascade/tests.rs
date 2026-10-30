@@ -11,7 +11,7 @@ use serde_json::json;
 
 use super::{Dropped, Pruned};
 use crate::normalize::tests::{parts, shape, shredded};
-use crate::normalize::{Part, PushKind, normalize};
+use crate::normalize::{Part, PartSchemas, PushKind, normalize};
 
 /// Three orders: the first with items a (tags x and y) and b, the second with item c (a note and
 /// tag z), the third with none.
@@ -174,7 +174,7 @@ fn noted(ids: Vec<i64>, skus: Vec<&str>, notes: Vec<Option<&str>>) -> Vec<Part> 
         ("items", Arc::new(list) as ArrayRef),
     ])
     .expect("a batch of orders");
-    normalize(&batch, &shape(8)).expect("the batch normalizes")
+    normalize(&batch, &shape(8), &mut PartSchemas::default()).expect("the batch normalizes")
 }
 
 #[test]
@@ -212,7 +212,7 @@ fn tagged(ids: Vec<i64>, texts: Vec<Option<&str>>, tags: &[Option<&str>]) -> Vec
         ("tags", Arc::new(list.finish()) as ArrayRef),
     ])
     .expect("a batch of tagged rows");
-    normalize(&batch, &shape(8)).expect("the batch normalizes")
+    normalize(&batch, &shape(8), &mut PartSchemas::default()).expect("the batch normalizes")
 }
 
 #[test]
@@ -244,7 +244,8 @@ fn a_column_of_the_streams_own_table_no_kept_json_row_holds_a_value_in_makes_no_
     let pruned = dropped.prune(root).unwrap();
     // Shredded in chunks of a record each, row 3's chunk holds `a`, a column of text, all null.
     let cut = shredded(&[json!({"id": 2, "a": "v"}), json!({"id": 3})], 1);
-    let alone = normalize(&cut[1], &shape(8)).expect("the batch normalizes");
+    let alone =
+        normalize(&cut[1], &shape(8), &mut PartSchemas::default()).expect("the batch normalizes");
     assert_eq!(columns(&alone[0]), ["a", "id"]);
     let whole = Pruned::whole(alone[0].clone(), PushKind::Json);
     assert_eq!(columns(&whole.part), ["id"]);

@@ -23,7 +23,7 @@ use super::super::pieces::Pieces;
 use crate::cost::tests::{held_alone, peak_alone};
 use crate::fixtures::lowering::wide::{dictionaries, flags, integers, views};
 use crate::fixtures::lowering::{Case, Storage, stamp};
-use crate::normalize::Shape;
+use crate::normalize::{PartSchemas, Shape};
 use crate::partition::ChangeMode;
 use crate::plan::{DeleteMode, OnTruncate};
 use crate::table::ChangeLayout;
@@ -335,7 +335,7 @@ fn within_split(stream: &StreamName, shape: &Shape, batch: &RecordBatch, found: 
         // keep once they are planned, while their pieces are lowered.
         let (held, (_, _, charged)) = held_alone(|| {
             let piece = sliced(batch, parts);
-            let split = split(stream, &piece, shape).unwrap();
+            let split = split(stream, &piece, shape, &mut PartSchemas::default()).unwrap();
             let charged = made(&piece, &split);
             (piece, kept(&split), charged)
         });

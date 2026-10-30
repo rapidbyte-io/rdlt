@@ -1,15 +1,20 @@
 //! The table schema of the Arrow schema a partition's units had last, kept so units of one
-//! schema are converted once, whether they share its `Arc` or each bring their own.
+//! schema are converted once, whether they share its `Arc` or each bring their own; and, for a
+//! normalized stream, the schemas of the parts its batches split into.
 
 use std::sync::Arc;
 
 use arrow_schema::SchemaRef;
 use rdlt_connector::{ColumnPath, SchemaError, TableSchema};
 
-/// The table schema and column paths of the last Arrow schema a partition's units had.
+use crate::normalize::PartSchemas;
+
+/// The table schema and column paths of the last Arrow schema a partition's units had, and the
+/// schemas of the parts a normalized stream's batches of one schema split into.
 #[derive(Debug, Default)]
 pub(crate) struct Schemas {
     last: Option<Converted>,
+    pub(super) parts: PartSchemas,
     /// How many schemas were converted, not found kept.
     #[cfg(test)]
     misses: usize,

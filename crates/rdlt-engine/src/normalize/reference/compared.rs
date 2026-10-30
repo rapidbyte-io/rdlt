@@ -15,11 +15,12 @@ use rdlt_connector::{Epoch, SegmentId};
 use serde_json::Value as Json;
 
 use super::{Record, Row, Tables, canonical_text, json, normalize, sorted, step};
-use crate::normalize::{Part, Received, Shape};
+use crate::normalize::{Part, PartSchemas, Received, Shape};
 
 /// The tables `pieces` normalize into, each a batch of the stream's rows in order normalized as
-/// `shape` and received where its stamp says, as the reference writes them, each row known by
-/// following its lineage, as [`walked`] follows it.
+/// `shape` and received where its stamp says, the schemas of their parts kept from piece to piece
+/// as a partition keeps them, as the reference writes them, each row known by following its
+/// lineage, as [`walked`] follows it.
 ///
 /// # Errors
 ///
@@ -29,8 +30,10 @@ pub(crate) fn tables_of(
     shape: &Shape,
 ) -> Result<Tables, Disagreement> {
     let mut normalized = Vec::with_capacity(pieces.len());
+    let mut schemas = PartSchemas::default();
     for (batch, received) in pieces {
-        let parts = crate::normalize::normalize(batch, shape).map_err(Disagreement::from)?;
+        let parts = crate::normalize::normalize(batch, shape, &mut schemas);
+        let parts = parts.map_err(Disagreement::from)?;
         normalized.push((parts, *received));
     }
     walked(&normalized, !shape.key.is_empty())
