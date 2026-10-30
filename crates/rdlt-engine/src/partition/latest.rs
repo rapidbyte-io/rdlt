@@ -17,6 +17,7 @@ mod tests;
 use std::collections::BTreeMap;
 
 use parking_lot::Mutex;
+use rdlt_connector::Headroom;
 
 use super::Seal;
 
@@ -35,8 +36,8 @@ struct Waiting {
     epoch: u64,
     /// The epoch of the queued message telling the coordinator a seal waits.
     seal_told: Option<u64>,
-    /// How many records the read last said it is behind.
-    behind: Option<u64>,
+    /// How many records the read last said it is behind, and its source's retention headroom.
+    behind: Option<(u64, Headroom)>,
     /// Whether the source said the stream's partitions changed.
     replan: bool,
     /// Whether a message telling the coordinator of a signal is in its queue.
@@ -86,11 +87,11 @@ impl Latest {
         })
     }
 
-    /// Keeps `records` as how far `partition`'s read is behind; returns whether the coordinator
-    /// must be told a signal waits.
-    pub(crate) fn behind(&self, partition: usize, records: u64) -> bool {
+    /// Keeps `records` as how far `partition`'s read is behind, with its source's `headroom`;
+    /// returns whether the coordinator must be told a signal waits.
+    pub(crate) fn behind(&self, partition: usize, records: u64, headroom: Headroom) -> bool {
         self.with(partition, |waiting| {
-            waiting.behind = Some(records);
+            waiting.behind = Some((records, headroom));
             !std::mem::replace(&mut waiting.signal_told, true)
         })
     }
@@ -104,9 +105,9 @@ impl Latest {
         })
     }
 
-    /// Takes the signals `partition` has waiting: how far its read is behind, and whether its
-    /// stream's partitions changed.
-    pub(crate) fn signals(&self, partition: usize) -> (Option<u64>, bool) {
+    /// Takes the signals `partition` has waiting: how far its read is behind with its source's
+    /// headroom, and whether its stream's partitions changed.
+    pub(crate) fn signals(&self, partition: usize) -> (Option<(u64, Headroom)>, bool) {
         self.with(partition, |waiting| {
             waiting.signal_told = false;
             (waiting.behind.take(), std::mem::take(&mut waiting.replan))

@@ -1,7 +1,7 @@
 //! Seals as they wait for their commit: one cursor a partition, charged until its commit lands,
 //! and a commit due once the cursors hold their share of the budget.
 
-use rdlt_connector::{Admission, Cursor, PartitionState, SegmentId, SourceEvent};
+use rdlt_connector::{Admission, Cursor, Headroom, PartitionState, SegmentId, SourceEvent};
 
 use super::{Setup, cursor, ended, partition, position, stream};
 use crate::coordinator::waiting::WaitingSeals;
@@ -272,10 +272,13 @@ async fn what_a_partition_has_waiting_is_taken_as_its_newest() {
     .coordinator()
     .await;
     coordinator.observe(Progress::Started { partition: 0 });
-    assert!(harness.latest.behind(0, 40));
-    assert!(!harness.latest.behind(0, 12));
+    assert!(harness.latest.behind(0, 40, Headroom::default()));
+    assert!(!harness.latest.behind(0, 12, Headroom::default()));
     coordinator.observe(Progress::Signalled { partition: 0 });
-    assert_eq!(harness.log.lock().behind.get(&super::name()), Some(&12));
+    assert_eq!(
+        harness.log.lock().behind.get(&super::name()),
+        Some(&(12, Headroom::default()))
+    );
     assert_eq!(harness.latest.moved(seal(0, 1, 0, 3, Some(6))), Some(0));
     coordinator.observe(Progress::Moved {
         partition: 0,
@@ -293,7 +296,10 @@ async fn what_a_partition_has_waiting_is_taken_as_its_newest() {
     });
     coordinator.observe(Progress::Signalled { partition: 0 });
     assert_eq!(coordinator.sealed.standing().len(), 1);
-    assert_eq!(harness.log.lock().behind.get(&super::name()), Some(&12));
+    assert_eq!(
+        harness.log.lock().behind.get(&super::name()),
+        Some(&(12, Headroom::default()))
+    );
 }
 
 #[tokio::test(start_paused = true)]

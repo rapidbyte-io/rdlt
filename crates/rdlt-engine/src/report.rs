@@ -7,7 +7,7 @@ mod tests;
 use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime};
 
-use rdlt_connector::{CommitKey, Epoch, PartitionId, PipelineId, Receipt, StreamName};
+use rdlt_connector::{CommitKey, Epoch, Headroom, PartitionId, PipelineId, Receipt, StreamName};
 use serde::Serialize;
 
 use crate::error::{Error, ErrorKind, ErrorReport, codes};
@@ -108,6 +108,9 @@ pub struct StreamReport {
     /// How many records the stream's reads were last behind its source's newest, over its
     /// partitions, as its source measures it; none where it never said.
     pub behind: Option<u64>,
+    /// The least retention headroom its partitions last said, of each measure, as they said how
+    /// far behind they were.
+    pub headroom: Headroom,
     /// Reads of the stream's partitions that started again from their earliest, where the
     /// source's retention had dropped where they would resume.
     pub retention_resets: u64,
@@ -257,8 +260,9 @@ pub(crate) struct AttemptLog {
     /// The epoch of the session the attempt opened, and the receipt of the last commit that had
     /// landed when it did; none where it opened none.
     pub(crate) opened: Option<(Epoch, Option<Receipt>)>,
-    /// How many records each stream's reads were last behind their source's newest.
-    pub(crate) behind: BTreeMap<StreamName, u64>,
+    /// How many records each stream's reads were last behind their source's newest, with the
+    /// least headroom their sources' retention had left.
+    pub(crate) behind: BTreeMap<StreamName, (u64, Headroom)>,
     /// Each stream's reads that started again from their earliest after a retention loss.
     pub(crate) retention_resets: BTreeMap<StreamName, u64>,
     /// The partitions whose done markers each stream's commits forgot to make room in state.
@@ -302,8 +306,9 @@ impl Report {
         let committed = attempt.log.committed;
         let rows = total(self.rows, committed.rows)?;
         let bytes = total(self.bytes, committed.bytes)?;
-        for (stream, behind) in &attempt.log.behind {
-            self.streams.entry(stream.to_string()).or_default().behind = Some(*behind);
+        for (stream, (behind, headroom)) in &attempt.log.behind {
+            let report = self.streams.entry(stream.to_string()).or_default();
+            (report.behind, report.headroom) = (Some(*behind), *headroom);
         }
         for (stream, forgotten) in &attempt.log.forgotten {
             self.streams

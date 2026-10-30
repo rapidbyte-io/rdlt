@@ -117,6 +117,17 @@ message ReplanFrame {}
 message BehindFrame {
   // The records.
   uint64 records = 1;
+  // How much more the source keeps before it drops where the read stands, where it says.
+  optional Headroom headroom = 2;
+}
+
+// How much more a source's retention keeps before it drops where a read stands: bytes, time, or
+// both.
+message Headroom {
+  // Bytes the source may still take before it drops where the read stands.
+  optional uint64 bytes = 1;
+  // How long before it drops where the read stands.
+  optional Duration time = 2;
 }
 
 // An Arrow schema: an IPC schema message.

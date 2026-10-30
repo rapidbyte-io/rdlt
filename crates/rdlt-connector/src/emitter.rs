@@ -14,7 +14,7 @@ use serde::Serialize;
 
 use crate::cursor::Cursor;
 use crate::error::{ConnectorError, Result, ResultExt};
-use crate::sink::{PartitionSink, Push, SourceEvent};
+use crate::sink::{Headroom, PartitionSink, Push, SourceEvent};
 
 /// Sends one partition's data and checkpoints to the engine, with cursors of type `C`.
 ///
@@ -176,9 +176,12 @@ impl<C: Serialize> Emitter<C> {
     }
 
     /// Tells the engine how many records this read is behind its source's newest, as the source
-    /// measures it: the engine reports the stream's lag from them.
-    pub async fn behind(&mut self, records: u64) -> Result<()> {
-        self.sink.send(SourceEvent::Behind { records }).await
+    /// measures it, and how much more its retention keeps before it drops where the read stands:
+    /// the engine reports the stream's lag and least headroom from them.
+    pub async fn behind(&mut self, records: u64, headroom: Headroom) -> Result<()> {
+        self.sink
+            .send(SourceEvent::Behind { records, headroom })
+            .await
     }
 }
 

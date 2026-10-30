@@ -925,6 +925,20 @@ pub struct BehindFrame {
     /// The records.
     #[prost(uint64, tag = "1")]
     pub records: u64,
+    /// How much more the source keeps before it drops where the read stands, where it says.
+    #[prost(message, optional, tag = "2")]
+    pub headroom: ::core::option::Option<Headroom>,
+}
+/// How much more a source's retention keeps before it drops where a read stands: bytes, time, or
+/// both.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Headroom {
+    /// Bytes the source may still take before it drops where the read stands.
+    #[prost(uint64, optional, tag = "1")]
+    pub bytes: ::core::option::Option<u64>,
+    /// How long before it drops where the read stands.
+    #[prost(message, optional, tag = "2")]
+    pub time: ::core::option::Option<Duration>,
 }
 /// An Arrow schema: an IPC schema message.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

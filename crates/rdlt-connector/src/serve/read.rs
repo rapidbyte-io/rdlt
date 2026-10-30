@@ -26,7 +26,7 @@ use crate::Cursor;
 use crate::error::ConnectorErrorKind;
 use crate::id::{PartitionId, StreamName};
 use crate::sink::{
-    Admission, PartitionFeed, Push, SourceEvent, admitted_partition_channel,
+    Admission, Headroom, PartitionFeed, Push, SourceEvent, admitted_partition_channel,
 };
 use crate::source::{Partition, ReadRequest, Source};
 use crate::wire::{Invalid, frame_error, status, v1};
@@ -147,8 +147,9 @@ impl Outbox {
                 }));
             }
             SourceEvent::Replan => self.push(Frame::Replan(v1::ReplanFrame {})),
-            SourceEvent::Behind { records } => {
-                self.push(Frame::Behind(v1::BehindFrame { records }));
+            SourceEvent::Behind { records, headroom } => {
+                let headroom = (headroom != Headroom::default()).then(|| (&headroom).into());
+                self.push(Frame::Behind(v1::BehindFrame { records, headroom }));
             }
         }
         Ok(())

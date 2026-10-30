@@ -387,8 +387,8 @@ impl ReadStream<LogSource> for Logged {
                 if batches.is_multiple_of(self.0.checkpoint_batches.max(1)) {
                     out.checkpoint(&Offset { next }).await?;
                 }
-                out.behind(self.head(source.elapsed()).saturating_sub(next))
-                    .await?;
+                let behind = self.head(source.elapsed()).saturating_sub(next);
+                out.behind(behind, Headroom::default()).await?;
             }
             if self.0.bounded || !out.follows() {
                 return reached(head);

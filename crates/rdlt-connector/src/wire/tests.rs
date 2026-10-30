@@ -22,6 +22,7 @@ use crate::id::{
     Epoch, GenerationId, PartitionId, SchemaVersion, SegmentId, StreamName, TablePath,
 };
 use crate::schema::{ColumnPath, TableSchema};
+use crate::sink::Headroom;
 use crate::state::{PartitionState, StateChange, StateRecord, StreamState};
 use crate::strategy::logical_type;
 use crate::types::{Field, TypeKind};
@@ -414,6 +415,16 @@ proptest! {
     }
 
     #[test]
+    fn headrooms_cross_the_wire_unchanged(
+        bytes in proptest::option::of(any::<u64>()),
+        time in proptest::option::of((any::<u64>(), 0..1_000_000_000_u32)),
+    ) {
+        let time = time.map(|(seconds, nanos)| Duration::new(seconds, nanos));
+        let headroom = Headroom { bytes, time };
+        prop_assert_eq!(crossed::<_, v1::Headroom>(&headroom)?, headroom);
+    }
+
+    #[test]
     fn stream_states_cross_the_wire_unchanged(state in stream_state()) {
         prop_assert_eq!(crossed::<_, v1::StreamState>(&state)?, state);
     }
@@ -577,6 +588,22 @@ fn numbers_that_do_not_fit_are_out_of_range() {
     assert!(matches!(
         Receipt::try_from(receipt),
         Err(Invalid::OutOfRange("instant nanoseconds"))
+    ));
+}
+
+#[test]
+fn a_headroom_of_a_second_or_more_in_nanoseconds_is_refused() {
+    let time = v1::Duration {
+        seconds: 1,
+        nanos: 1_000_000_000,
+    };
+    let headroom = v1::Headroom {
+        bytes: None,
+        time: Some(time),
+    };
+    assert!(matches!(
+        Headroom::try_from(headroom),
+        Err(Invalid::OutOfRange("duration nanoseconds"))
     ));
 }
 

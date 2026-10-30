@@ -6,7 +6,7 @@ mod tests;
 
 use rdlt_connector::wire::{Invalid, frame_error, v1};
 use rdlt_connector::{
-    ConnectorError, ConnectorErrorKind, Cursor, PartitionSink, Permit, Push, ReadRequest,
+    ConnectorError, ConnectorErrorKind, Cursor, Headroom, PartitionSink, Permit, Push, ReadRequest,
     Requested, SourceEvent,
 };
 use rdlt_wire::flow::Granting;
@@ -288,9 +288,15 @@ impl Reader {
                     })
                 }
                 Frame::Replan(_) => Read::Event(SourceEvent::Replan),
-                Frame::Behind(behind) => Read::Event(SourceEvent::Behind {
-                    records: behind.records,
-                }),
+                Frame::Behind(behind) => {
+                    let headroom = behind.headroom.map(Headroom::try_from).transpose();
+                    Read::Event(SourceEvent::Behind {
+                        records: behind.records,
+                        headroom: headroom
+                            .map_err(|error| invalid(&error))?
+                            .unwrap_or_default(),
+                    })
+                }
                 Frame::Done(_) => Read::Done,
             },
         )

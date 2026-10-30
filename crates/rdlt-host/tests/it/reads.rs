@@ -3,15 +3,15 @@ use std::sync::Arc;
 
 use rdlt_connector::serve::Served;
 use rdlt_connector::{
-    ConnectorErrorKind, Partition, PartitionId, PipelineId, ReadRequest, Role,
-    Source as _, SourceEvent, StreamName, partition_channel, source_factory,
+    ConnectorErrorKind, Partition, PartitionId, PipelineId, ReadRequest, Role, Source as _,
+    SourceEvent, StreamName, partition_channel, source_factory,
 };
 use rdlt_connector_reference::{GeneratorSource, published};
 use rdlt_engine::{PipelinePlan, RunStatus, StreamPlan};
 use rdlt_host::{Connection, Options, RemoteSource};
 use rdlt_testkit::fake::{Fake, Fault, socket};
 
-use crate::support::connectors::{COMMITTED, IDLE_READING, READS, Ticks};
+use crate::support::connectors::{COMMITTED, IDLE_READING, LAGGED, READS, Ticks};
 use crate::support::{engine, memory_destination, served};
 
 /// The ticks source, served, with `config`.
@@ -94,7 +94,7 @@ async fn a_served_read_learns_whether_its_partition_ends_and_whether_to_follow_i
 }
 
 #[tokio::test]
-async fn a_lag_and_a_replan_signal_cross_the_wire_as_themselves() {
+async fn a_lag_with_its_headroom_and_a_replan_signal_cross_the_wire_as_themselves() {
     let source = ticks(serde_json::json!({ "rows": 3, "chatty": true })).await;
     let (events, read) = events(&source).await;
     read.unwrap();
@@ -104,7 +104,13 @@ async fn a_lag_and_a_replan_signal_cross_the_wire_as_themselves() {
         .collect();
     assert_eq!(
         signals,
-        [&SourceEvent::Behind { records: 7 }, &SourceEvent::Replan]
+        [
+            &SourceEvent::Behind {
+                records: 7,
+                headroom: LAGGED
+            },
+            &SourceEvent::Replan
+        ]
     );
 }
 

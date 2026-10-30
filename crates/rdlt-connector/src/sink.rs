@@ -10,6 +10,7 @@ use std::num::NonZeroUsize;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
+use std::time::Duration;
 
 use arrow_array::RecordBatch;
 use bytes::Bytes;
@@ -50,7 +51,40 @@ pub enum SourceEvent {
     Behind {
         /// The records.
         records: u64,
+        /// How much more the source keeps before it drops where the read stands.
+        headroom: Headroom,
     },
+}
+
+/// How much more a source's retention keeps before it drops where a read stands, by bytes, by
+/// time or by both, as a topic keeps both a size and an age; neither where the source does not
+/// say.
+///
+/// Retention is a pipeline's buffer through an outage, so an operator watches the headroom; the
+/// engine reports it, and none of its decisions reads it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize)]
+pub struct Headroom {
+    /// Bytes the source may still take before it drops where the read stands.
+    pub bytes: Option<u64>,
+    /// How long before it drops where the read stands.
+    pub time: Option<Duration>,
+}
+
+impl Headroom {
+    /// The least of `self` and `other`, of each measure.
+    #[must_use]
+    pub fn least(self, other: Self) -> Self {
+        fn least<T: Ord>(one: Option<T>, other: Option<T>) -> Option<T> {
+            match (one, other) {
+                (Some(one), Some(other)) => Some(one.min(other)),
+                (one, other) => one.or(other),
+            }
+        }
+        Self {
+            bytes: least(self.bytes, other.bytes),
+            time: least(self.time, other.time),
+        }
+    }
 }
 
 /// Holds bytes against a memory budget until it is dropped.

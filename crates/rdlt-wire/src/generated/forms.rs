@@ -83,11 +83,18 @@ pub(crate) static BATCH_FRAME: Form = Form {
 pub(crate) static BEHIND_FRAME: Form = Form {
     name: "BehindFrame",
     size: size_of::<v1::BehindFrame>(),
-    fields: &[Field {
-        number: 1,
-        kind: Kind::Scalar(8),
-        repeated: false,
-    }],
+    fields: &[
+        Field {
+            number: 1,
+            kind: Kind::Scalar(8),
+            repeated: false,
+        },
+        Field {
+            number: 2,
+            kind: Kind::Message(&HEADROOM),
+            repeated: false,
+        },
+    ],
 };
 
 /// The form of `Capabilities`.
@@ -723,6 +730,24 @@ pub(crate) static HANDSHAKE_RESPONSE: Form = Form {
         Field {
             number: 4,
             kind: Kind::Scalar(4),
+            repeated: false,
+        },
+    ],
+};
+
+/// The form of `Headroom`.
+pub(crate) static HEADROOM: Form = Form {
+    name: "Headroom",
+    size: size_of::<v1::Headroom>(),
+    fields: &[
+        Field {
+            number: 1,
+            kind: Kind::Scalar(8),
+            repeated: false,
+        },
+        Field {
+            number: 2,
+            kind: Kind::Message(&DURATION),
             repeated: false,
         },
     ],

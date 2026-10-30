@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use rdlt_connector::{
-    BoxFuture, Catalog, ConnectorError, Cursor, Partition, PartitionId, PartitionPlan,
+    BoxFuture, Catalog, ConnectorError, Cursor, Headroom, Partition, PartitionId, PartitionPlan,
     PartitionSink, PartitionState, ReadRequest, Result, Source, StreamName, StreamState,
 };
 
@@ -135,11 +135,11 @@ async fn the_lag_of_many_partitions_is_kept_and_forgotten_in_linear_time() {
     let mut coordinator = begun_with_many().await;
     let started = cpu();
     for index in 0..MANY {
-        coordinator.behind(index, 2);
+        coordinator.behind(index, 2, Headroom::default());
     }
     assert_eq!(
         coordinator.parts.log.lock().behind.get(&name()),
-        Some(&(2 * u64::try_from(MANY).unwrap()))
+        Some(&(2 * u64::try_from(MANY).unwrap(), Headroom::default()))
     );
     let forgotten: BTreeSet<PartitionId> = ids(MANY)
         .iter()
@@ -148,7 +148,7 @@ async fn the_lag_of_many_partitions_is_kept_and_forgotten_in_linear_time() {
     coordinator.forget_lag(0, Some(&forgotten));
     let elapsed = cpu().saturating_sub(started);
     assert!(elapsed < LINEAR, "keeping lag took {elapsed:?}");
-    assert_eq!(coordinator.parts.log.lock().behind.get(&name()), None);
+    assert!(!coordinator.parts.log.lock().behind.contains_key(&name()));
 }
 
 #[tokio::test]

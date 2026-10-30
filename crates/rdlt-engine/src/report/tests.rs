@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, UNIX_EPOCH};
 
-use rdlt_connector::{CommitKey, Epoch, PartitionId, PipelineId, Receipt, StreamName};
+use rdlt_connector::{CommitKey, Epoch, Headroom, PartitionId, PipelineId, Receipt, StreamName};
 
 use super::{
     AttemptLog, AttemptRecord, CommitRecord, Committed, Forgotten, REPORTED_ATTEMPTS,
@@ -30,6 +30,7 @@ fn commit(epoch: Epoch, rows: u64, streams: &[(&str, u64, u64)]) -> CommitRecord
                     deletes_ignored: 0,
                     truncates_ignored: 0,
                     behind: None,
+                    headroom: Headroom::default(),
                     retention_resets: 0,
                     forgotten: Forgotten::default(),
                     shred: ShredCounts {
@@ -160,26 +161,32 @@ fn a_commit_credited_to_a_folded_attempt_counts_toward_it_and_the_run() {
 }
 
 #[test]
-fn a_report_totals_each_stream_s_resets_and_keeps_its_latest_known_lag() {
+fn a_report_totals_each_stream_s_resets_and_keeps_its_latest_known_lag_and_headroom() {
     let pipeline = PipelineId::parse("orders").unwrap();
     let mut report = Report::new(pipeline);
     let orders = || StreamName::new("orders").unwrap();
+    let headroom = |bytes| Headroom {
+        bytes: Some(bytes),
+        time: None,
+    };
     let signalled = |epoch, behind: Option<u64>, resets: u64| {
         let mut signalled = attempt(Epoch(epoch), vec![], None);
-        signalled
-            .log
-            .behind
-            .extend(behind.map(|behind| (orders(), behind)));
+        let lag = behind.map(|behind| (orders(), (behind, headroom(behind * 2))));
+        signalled.log.behind.extend(lag);
         signalled.log.retention_resets.insert(orders(), resets);
         signalled
+    };
+    let said = |report: &Report| {
+        let stream = &report.streams["orders"];
+        (stream.behind, stream.headroom)
     };
     report.absorb(signalled(1, Some(100), 1)).unwrap();
     // An attempt whose reads never said how far behind they were leaves the last it knew.
     report.absorb(signalled(2, None, 2)).unwrap();
-    assert_eq!(report.streams["orders"].behind, Some(100));
+    assert_eq!(said(&report), (Some(100), headroom(200)));
     assert_eq!(report.streams["orders"].retention_resets, 3);
     report.absorb(signalled(3, Some(7), 0)).unwrap();
-    assert_eq!(report.streams["orders"].behind, Some(7));
+    assert_eq!(said(&report), (Some(7), headroom(14)));
     assert_eq!(report.streams["orders"].retention_resets, 3);
 }
 

@@ -15,7 +15,7 @@ use serde_json::value::RawValue;
 use super::Emitter;
 use crate::cursor::Cursor;
 use crate::error::ConnectorErrorKind;
-use crate::sink::{PartitionFeed, Push, SourceEvent, partition_channel};
+use crate::sink::{Headroom, PartitionFeed, Push, SourceEvent, partition_channel};
 
 #[derive(Serialize)]
 struct Row {
@@ -190,17 +190,27 @@ async fn checkpoints_encode_the_cursor_and_answer_pending_barriers() {
 }
 
 #[tokio::test]
-async fn replan_and_lag_signals_are_forwarded() {
+async fn replan_and_lag_signals_are_forwarded_with_their_headroom() {
     let (mut out, feed) = emitter();
-    out.behind(12).await.unwrap();
+    let headroom = Headroom {
+        bytes: Some(1 << 30),
+        time: Some(Duration::from_secs(3600)),
+    };
+    out.behind(12, headroom).await.unwrap();
     out.replan().await.unwrap();
-    out.behind(0).await.unwrap();
+    out.behind(0, Headroom::default()).await.unwrap();
     assert_eq!(
         drain(out, feed).await,
         vec![
-            SourceEvent::Behind { records: 12 },
+            SourceEvent::Behind {
+                records: 12,
+                headroom
+            },
             SourceEvent::Replan,
-            SourceEvent::Behind { records: 0 },
+            SourceEvent::Behind {
+                records: 0,
+                headroom: Headroom::default()
+            },
         ]
     );
 }

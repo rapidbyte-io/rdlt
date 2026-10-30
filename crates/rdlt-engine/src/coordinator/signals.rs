@@ -1,9 +1,10 @@
 //! What a source tells the coordinator beside its data: that a stream's partitions changed, how
-//! far its reads are behind, and where it read again after its retention dropped their place.
+//! far its reads are behind and how much more its retention keeps, and where it read again after
+//! its retention dropped their place.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use rdlt_connector::PartitionId;
+use rdlt_connector::{Headroom, PartitionId};
 
 use super::Coordinator;
 use crate::error::Error;
@@ -30,17 +31,24 @@ impl Coordinator {
         Ok(())
     }
 
-    /// Records that `partition`'s read is `records` behind its source's newest, unless the read
-    /// was asked to stop, and the total its stream's partitions last said, for the report.
-    pub(super) fn behind(&mut self, partition: usize, records: u64) {
+    /// Records that `partition`'s read is `records` behind its source's newest, with `headroom`
+    /// left in its source's retention, unless the read was asked to stop; and the total its
+    /// stream's partitions last said, with the least headroom, for the report.
+    pub(super) fn behind(&mut self, partition: usize, records: u64, headroom: Headroom) {
         let run = &self.parts.partitions[partition];
         if run.stop.is_cancelled() {
             return;
         }
         let stream = run.stream;
         let lag = self.lag.entry(stream).or_default();
-        let before = lag.each.insert(run.id.clone(), records).unwrap_or(0);
+        let (before, held) = lag
+            .each
+            .insert(run.id.clone(), (records, headroom))
+            .unwrap_or_default();
         lag.total = lag.total - u128::from(before) + u128::from(records);
+        if held != headroom {
+            lag.least();
+        }
         self.report_lag(stream);
     }
 
@@ -53,18 +61,19 @@ impl Coordinator {
         match forgotten {
             Some(forgotten) => {
                 for id in forgotten {
-                    if let Some(records) = lag.each.remove(id) {
+                    if let Some((records, _)) = lag.each.remove(id) {
                         lag.total -= u128::from(records);
                     }
                 }
+                lag.least();
             }
             None => *lag = Lag::default(),
         }
         self.report_lag(stream);
     }
 
-    /// Reports the total `stream`'s partitions last said they are behind; unknown where none
-    /// that still lags said.
+    /// Reports the total `stream`'s partitions last said they are behind, and the least
+    /// headroom they said; unknown where none that still lags said.
     fn report_lag(&self, stream: usize) {
         let name = self.parts.streams[stream].name.clone();
         let lag = self.lag.get(&stream).filter(|lag| !lag.each.is_empty());
@@ -72,7 +81,7 @@ impl Coordinator {
         match lag {
             Some(lag) => {
                 let total = u64::try_from(lag.total).unwrap_or(u64::MAX);
-                log.behind.insert(name, total);
+                log.behind.insert(name, (total, lag.headroom));
             }
             None => {
                 log.behind.remove(&name);
@@ -94,10 +103,20 @@ impl Coordinator {
     }
 }
 
-/// How far behind a stream's partitions last said they are, and their total, kept as each says:
-/// a total of at most a `u64` for each of fewer than `u64::MAX` partitions fits a `u128`.
+/// How far behind a stream's partitions last said they are and the headroom each said, their
+/// total and the least headroom, kept as each says: a total of at most a `u64` for each of fewer
+/// than `u64::MAX` partitions fits a `u128`.
 #[derive(Debug, Default)]
 pub(super) struct Lag {
-    each: BTreeMap<PartitionId, u64>,
+    each: BTreeMap<PartitionId, (u64, Headroom)>,
     total: u128,
+    headroom: Headroom,
+}
+
+impl Lag {
+    /// Finds the least headroom its partitions said again, as one's changed.
+    fn least(&mut self) {
+        let each = self.each.values().map(|(_, headroom)| *headroom);
+        self.headroom = each.fold(Headroom::default(), Headroom::least);
+    }
 }

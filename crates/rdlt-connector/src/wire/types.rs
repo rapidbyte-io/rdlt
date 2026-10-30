@@ -7,6 +7,7 @@ use super::{Invalid, narrow, required, v1};
 use crate::cursor::Cursor;
 use crate::id::{StreamName, TablePath};
 use crate::schema::{ColumnPath, TableSchema};
+use crate::sink::Headroom;
 use crate::types::preorder::{self, Shape, Unread};
 use crate::types::{DecimalType, Field, LogicalType, TimeUnit, TypeKind};
 use rdlt_wire::limits::count;
@@ -323,6 +324,26 @@ impl TryFrom<v1::Cursor> for Cursor {
     fn try_from(cursor: v1::Cursor) -> Result<Self, Invalid> {
         let version = narrow("cursor version", cursor.version)?;
         Self::new(version, &cursor.bytes).map_err(|error| Invalid::rejected("cursor", error))
+    }
+}
+
+impl From<&Headroom> for v1::Headroom {
+    fn from(headroom: &Headroom) -> Self {
+        Self {
+            bytes: headroom.bytes,
+            time: headroom.time.map(duration),
+        }
+    }
+}
+
+impl TryFrom<v1::Headroom> for Headroom {
+    type Error = Invalid;
+
+    fn try_from(headroom: v1::Headroom) -> Result<Self, Invalid> {
+        Ok(Self {
+            bytes: headroom.bytes,
+            time: headroom.time.map(std_duration).transpose()?,
+        })
     }
 }
 

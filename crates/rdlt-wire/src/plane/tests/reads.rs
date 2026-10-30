@@ -194,9 +194,21 @@ fn read_frame() -> impl Strategy<Value = v1::ReadFrame> {
             .prop_map(|(cursor, barrier)| F::Checkpoint(v1::CheckpointFrame { cursor, barrier })),
         Just(F::Done(v1::Done {})),
         Just(F::Replan(v1::ReplanFrame {})),
-        any::<u64>().prop_map(|records| F::Behind(v1::BehindFrame { records })),
+        (any::<u64>(), proptest::option::of(headroom()))
+            .prop_map(|(records, headroom)| F::Behind(v1::BehindFrame { records, headroom })),
     ];
     proptest::option::of(frame).prop_map(|frame| v1::ReadFrame { frame })
+}
+
+/// A headroom of any measures, its time's nanoseconds of a second or more among them.
+fn headroom() -> impl Strategy<Value = v1::Headroom> {
+    let time =
+        (any::<u64>(), any::<u32>()).prop_map(|(seconds, nanos)| v1::Duration { seconds, nanos });
+    (
+        proptest::option::of(any::<u64>()),
+        proptest::option::of(time),
+    )
+        .prop_map(|(bytes, time)| v1::Headroom { bytes, time })
 }
 
 /// Every kind of read control, and none.

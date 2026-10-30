@@ -157,7 +157,7 @@ pub use secret::Secret;
 #[cfg(feature = "serve")]
 pub use serve::serve;
 pub use sink::{
-    Admission, PartitionFeed, PartitionSink, Permit, Push, Requested, SourceEvent,
+    Admission, Headroom, PartitionFeed, PartitionSink, Permit, Push, Requested, SourceEvent,
     admitted_partition_channel, partition_channel,
 };
 pub use source::{
@@ -180,10 +180,11 @@ pub use types::{
 pub mod prelude {
     pub use crate::{
         Capabilities, Catalog, Checkpointing, CommitMeta, ConnectContext, ConnectorError,
-        ConnectorErrorKind, Cursor, DestinationConnector, Emitter, LogicalType, OpenContext,
-        Opened, Partition, PartitionId, ReadMode, ReadStream, Receipt, Result, ResultExt, Secret,
-        Session, SourceConnector, StreamName, StreamSpec, StreamState, Streams, TableChange,
-        TableRef, TableSchema, TableWriter, WriteStats, destination_factory, source_factory,
+        ConnectorErrorKind, Cursor, DestinationConnector, Emitter, Headroom, LogicalType,
+        OpenContext, Opened, Partition, PartitionId, ReadMode, ReadStream, Receipt, Result,
+        ResultExt, Secret, Session, SourceConnector, StreamName, StreamSpec, StreamState, Streams,
+        TableChange, TableRef, TableSchema, TableWriter, WriteStats, destination_factory,
+        source_factory,
     };
     #[cfg(feature = "certify")]
     pub use crate::{PublishedRows, ReadBack, readable_destination_factory};
