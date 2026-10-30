@@ -3,9 +3,9 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::Semaphore;
 
-use super::{Bounded, Passed, bounds, chunks, fed, message, poll};
+use super::{Bounded, Passed, bounds, chunks, fed, message, poll, poll_arrived, poll_sized};
 use crate::aligned::ALIGNMENT;
-use crate::bounded::{Bounds, Charge, Charging};
+use crate::bounded::{Bounds, Charge, Charging, Whole};
 use crate::limits::Class;
 
 /// Charges each message's bytes once one of its permits is given, recording each charge and
@@ -71,7 +71,7 @@ impl Charge for Gate {
 }
 
 #[test]
-fn a_message_is_passed_on_once_what_its_scan_counts_is_charged_and_held_until_decoded() {
+fn a_message_is_passed_on_once_what_its_scan_counts_is_charged_and_held_until_the_next() {
     let gate = Gate::new(false);
     let (first, second) = (message(&[0x0a, 0x00]), message(&[0x0a, 0x00, 0x0a, 0x00]));
     let (feed, body) = fed();
@@ -108,8 +108,6 @@ fn a_message_is_passed_on_once_what_its_scan_counts_is_charged_and_held_until_de
         ],
         "each at its scan's count, the one before released first"
     );
-    body.release();
-    assert!(!gate.holds());
     gate.permits.add_permits(1);
     drop(feed);
     assert_eq!(poll(&mut body), Passed::End);
@@ -119,6 +117,60 @@ fn a_message_is_passed_on_once_what_its_scan_counts_is_charged_and_held_until_de
         3,
         "every charge is given back"
     );
+}
+
+#[test]
+fn a_data_plane_message_takes_its_charge_to_its_reader() {
+    let gate = Gate::new(false);
+    gate.permits.add_permits(2);
+    let (first, second) = (message(&[0x0a, 0x00]), message(&[0x0a, 0x00, 0x0a, 0x00]));
+    let mut body = Bounded::new(chunks(&[&first, &second]), bounds(1024, 1 << 20), None)
+        .charged(Some(Arc::clone(&gate) as Arc<dyn Charge>));
+    let one = poll_arrived(&mut body);
+    assert!(one.charge.is_some(), "the message comes with its charge");
+    let two = poll_arrived(&mut body);
+    let asked = gate.asked.lock().unwrap().clone();
+    assert!(
+        asked[1].2,
+        "the body leaves the charge before to its reader: {asked:?}"
+    );
+    drop(one);
+    assert!(gate.holds(), "the reader holds the second's");
+    drop(two);
+    assert!(!gate.holds(), "each charge goes with its message's reader");
+}
+
+#[test]
+fn a_sized_message_is_charged_what_its_reader_says_and_never_less_than_decoding_holds() {
+    let gate = Gate::new(false);
+    gate.permits.add_permits(2);
+    let (first, second) = (message(&[0x0a, 0x00]), message(&[0x0a, 0x00, 0x0a, 0x00]));
+    let mut body = Bounded::new(chunks(&[&first, &second]), bounds(1024, 1 << 20), None)
+        .charged(Some(Arc::clone(&gate) as Arc<dyn Charge>));
+    let seen = Mutex::new(Vec::new());
+    let more = |whole: &Whole<'_>| {
+        seen.lock()
+            .unwrap()
+            .push((whole.message.to_vec(), whole.allocation, whole.decoded));
+        whole.decoded + 1_000
+    };
+    let one = poll_sized(&mut body, &more).expect("a message");
+    let two = poll_sized(&mut body, &|_| 0).expect("a message");
+    let decoded = size_of::<crate::v1::Catalog>() + 4 * size_of::<crate::v1::StreamSpec>();
+    let seen = seen.into_inner().unwrap();
+    assert_eq!(
+        seen,
+        [(first[5..].to_vec(), one.allocation.len(), decoded)],
+        "the reader sizes the message whole, its prefix left out"
+    );
+    let asked = gate.asked.lock().unwrap().clone();
+    assert_eq!(asked[0].1, decoded + 1_000, "what the reader said");
+    assert_eq!(
+        asked[1].1,
+        decoded + 4 * size_of::<crate::v1::StreamSpec>(),
+        "no less than decoding holds"
+    );
+    drop((one, two));
 }
 
 #[test]

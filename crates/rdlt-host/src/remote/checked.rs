@@ -7,9 +7,9 @@
 //! of the transport. Each message of an answer is passed on whole, within the bounds of its
 //! call's class on the wire and on what it decodes to, before anything reserves or decodes any of
 //! it; and, for a call made within [`rdlt_wire::bounded::charging`], once what decoding it holds
-//! is charged. A data-plane call's answer is its bounded body, whose reader releases each
-//! message's charge once it is decoded; a generated call's message holds its charge until the
-//! next is passed on, or the answer ends.
+//! is charged. A data-plane call's answer is its bounded body, each message of which comes to
+//! its reader with its charge; a generated call's message holds its charge until the next is
+//! passed on, or the answer ends.
 
 #[cfg(test)]
 mod tests;

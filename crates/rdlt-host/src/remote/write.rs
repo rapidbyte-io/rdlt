@@ -100,8 +100,6 @@ impl RemoteWriter {
             () = self.connection.lost.cancelled() => return Err(lost_error()),
             answer = tokio::time::timeout_at(due, self.acks.message()) => answer,
         };
-        // Decoded: its charge goes.
-        self.acks.release();
         let message = match answer {
             Ok(Ok(Some(ack))) => ack.ack,
             Ok(Ok(None)) => return Err(out_of_turn("the end of the write")),

@@ -257,7 +257,7 @@ impl Charge for Counting {
 }
 
 #[tokio::test]
-async fn each_message_releases_the_charge_of_the_one_before() {
+async fn each_message_s_charge_goes_with_it_to_its_reader() {
     let counts = Arc::new(Counts::default());
     let charge = Arc::new(Counting(Arc::clone(&counts))) as Arc<dyn Charge>;
     let body = chunks(&[
@@ -268,15 +268,22 @@ async fn each_message_releases_the_charge_of_the_one_before() {
     let bounded = answered(body).charged(Some(charge));
     let mut incoming = Incoming::<v1::WriteAck>::answer(under_way(bounded)).unwrap();
     incoming.message().await.unwrap();
-    assert_eq!(counts.now(), 1, "held while it is decoded");
-    incoming.release();
-    assert_eq!(counts.now(), 0, "released once decoded");
-    incoming.message().await.unwrap();
-    // Not released by its reader: the next message's charge releases it first.
-    incoming.message().await.unwrap();
-    assert_eq!((counts.now(), counts.most()), (1, 1));
-    drop(incoming);
-    assert_eq!(counts.now(), 0, "the call's end releases the last");
+    assert_eq!(
+        counts.now(),
+        0,
+        "a message alone is decoded, its charge gone"
+    );
+    let first = incoming.arrived().await.unwrap().expect("a message");
+    let second = incoming.arrived().await.unwrap().expect("a message");
+    assert_eq!(
+        (counts.now(), counts.most()),
+        (2, 2),
+        "each held by its reader, not the body"
+    );
+    drop(first);
+    assert_eq!(counts.now(), 1);
+    drop((second, incoming));
+    assert_eq!(counts.now(), 0, "every charge goes with what holds it");
 }
 
 /// Every frame `body` sends, until it ends or fails.

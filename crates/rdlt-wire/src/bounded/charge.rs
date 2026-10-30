@@ -1,8 +1,9 @@
 //! What decoding a message holds, charged before it is decoded to whoever holds the memory.
 //!
 //! A call made within [`charging`] charges each message of its answer, at what its scan counts
-//! decoding it holds, before the message is passed on to be decoded, and holds the charge until
-//! the message is decoded: until whoever reads the answer releases it, the next message is
+//! decoding it holds or more where its reader sizes it so, before the message is passed on to be
+//! decoded. The charge goes with the message: a data-plane call's reader holds it for as long as
+//! it holds what the message became, and a generated call's message holds it until the next is
 //! passed on, or the answer ends.
 
 use std::any::Any;

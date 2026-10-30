@@ -125,7 +125,6 @@ async fn read_on(reading: &mut Reading, ended: Ended<Result<Option<v1::WriteAck>
     }
     // One read more than the call carries messages: its end.
     for _ in 0..=carried().len() {
-        reading.incoming.release();
         let next = tokio::time::timeout(WAIT, reading.incoming.message())
             .await
             .expect("the reader goes on")

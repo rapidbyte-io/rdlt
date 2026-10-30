@@ -8,7 +8,7 @@ use tonic::codegen::http::{self, HeaderMap, StatusCode};
 use tonic::{Code, Status};
 
 use super::{PREFIX, status};
-use crate::bounded::Bounded;
+use crate::bounded::{Bounded, Held, Whole};
 
 /// Which end reads the body, and so how it ends.
 #[derive(Clone, Copy, Debug)]
@@ -29,19 +29,23 @@ enum State {
     Ended,
 }
 
-/// A message as it arrived: decoded, and the allocation its bytes fields lie in.
+/// A message as it arrived: decoded, the allocation its bytes fields lie in, and its charge.
 #[derive(Debug)]
 pub struct Received<M> {
     /// The message.
     pub message: M,
     /// The allocation the message arrived in, whole: what a slice of it keeps alive.
     pub allocation: Bytes,
+    /// What holds the message's charge, where its body is charged, for its reader to hold for as
+    /// long as it holds what the charge covers.
+    pub charge: Option<Held>,
 }
 
 /// A call's messages of `M`, read from its body.
 ///
 /// Each message is decoded from the whole, scanned and, where the body is charged, charged
-/// bytes the body passes on: a `bytes` field of it is a slice of them, never a copy.
+/// bytes the body passes on, and comes with its charge: a `bytes` field of it is a slice of
+/// them, never a copy.
 pub struct Incoming<M> {
     body: Bounded,
     reading: Reading,
@@ -90,6 +94,8 @@ impl<M: Message + Default> Incoming<M> {
 
     /// The next message, or `None` once the call has ended well; after a failure, `None`.
     ///
+    /// Its charge goes once it is decoded.
+    ///
     /// # Errors
     ///
     /// The status the call failed with: one its peer sent, one its body failed with, or one of
@@ -114,8 +120,26 @@ impl<M: Message + Default> Incoming<M> {
     ///
     /// As [`message`](Self::message).
     pub async fn arrived(&mut self) -> Result<Option<Received<M>>, Status> {
+        self.arrived_sized(|whole| whole.decoded).await
+    }
+
+    /// The next message as [`arrived`](Self::arrived) returns it, charged what `size` says of it
+    /// whole where that is more than decoding it holds.
+    ///
+    /// # Errors
+    ///
+    /// As [`message`](Self::message).
+    ///
+    /// # Panics
+    ///
+    /// As [`message`](Self::message).
+    pub async fn arrived_sized(
+        &mut self,
+        size: impl Fn(&Whole<'_>) -> usize,
+    ) -> Result<Option<Received<M>>, Status> {
         while let State::Reading = self.state {
-            let frame = std::future::poll_fn(|context| self.body.poll_arrived(context)).await;
+            let frame =
+                std::future::poll_fn(|context| self.body.poll_arrived(context, &size)).await;
             let failed = match frame {
                 Some(Ok(frame)) => match frame.into_data() {
                     Ok(arrived) => match decoded(&arrived.bytes) {
@@ -123,6 +147,7 @@ impl<M: Message + Default> Incoming<M> {
                             return Ok(Some(Received {
                                 message,
                                 allocation: arrived.allocation,
+                                charge: arrived.charge,
                             }));
                         }
                         Err(status) => Some(status),
@@ -160,11 +185,6 @@ impl<M: Message + Default> Incoming<M> {
         // Read to its end, as any gRPC server reads a unary request: what follows is dropped.
         while self.message().await?.is_some() {}
         Ok(message)
-    }
-
-    /// Releases the charge of the message passed on last: it has been decoded.
-    pub fn release(&mut self) {
-        self.body.release();
     }
 
     /// Whether `status`, the error the body failed with, says its request's client cancelled it.

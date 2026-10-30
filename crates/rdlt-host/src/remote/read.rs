@@ -76,7 +76,7 @@ pub(super) async fn run(
                     Err(status) => return Err(rdlt_connector::wire::error(&status)),
                 };
                 // Decoded: its charge goes before its event waits for room in the budget.
-                frames.release();
+                drop(frame.charge);
                 let size = u64::try_from(frame.message.encoded_len()).unwrap_or(u64::MAX);
                 match reader.event(frame.message, frame.allocation)? {
                     Read::Done => return Ok(()),

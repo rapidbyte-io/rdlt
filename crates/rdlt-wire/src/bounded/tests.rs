@@ -10,7 +10,7 @@ use http_body::{Body, Frame};
 use proptest::prelude::*;
 use tonic::Code;
 
-use super::{Arrived, Bounded, Bounds, PREFIX, Window};
+use super::{Arrived, Bounded, Bounds, PREFIX, Whole, Window};
 use crate::aligned::{ALIGNMENT, Aligned, is_aligned};
 use crate::scan::response;
 pub(super) use crate::testing::{chunks, fed, message};
@@ -51,10 +51,17 @@ fn poll(body: &mut Bounded) -> Passed {
 
 /// The message `body` passes on when polled once, as it arrived.
 fn poll_arrived(body: &mut Bounded) -> Arrived {
+    poll_sized(body, &|whole| whole.decoded).expect("a message")
+}
+
+/// The message `body` passes on when polled once, as it arrived, charged what `size` says;
+/// `None` where it waits.
+fn poll_sized(body: &mut Bounded, size: &dyn Fn(&Whole<'_>) -> usize) -> Option<Arrived> {
     let waker = std::task::Waker::noop();
-    match body.poll_arrived(&mut Context::from_waker(waker)) {
-        Poll::Ready(Some(Ok(frame))) => frame.into_data().expect("a message"),
-        other => panic!("a message, not {other:?}"),
+    match body.poll_arrived(&mut Context::from_waker(waker), size) {
+        Poll::Ready(Some(Ok(frame))) => Some(frame.into_data().expect("a message")),
+        Poll::Pending => None,
+        other @ Poll::Ready(_) => panic!("a message, not {other:?}"),
     }
 }
 

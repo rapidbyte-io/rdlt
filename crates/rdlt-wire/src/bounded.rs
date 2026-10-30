@@ -18,8 +18,10 @@
 //! on: each message with room is read to its end, so room always comes back, and every sender is
 //! held rather than refused.
 //!
-//! Where the body is [charged](charging), a message is passed on once what its scan counts is
-//! charged, and the charge is held until it is decoded.
+//! Where the body is [charged](charging), a message is passed on once it is charged: what its
+//! scan counts, no less than the allocation it lies in, or more where its reader
+//! [sizes](Whole) it so. The charge goes with the message to whoever reads it as it arrived; one
+//! passed on as a generated call's body holds it until the next is passed on, or the body ends.
 
 mod charge;
 #[cfg(kani)]
@@ -106,13 +108,28 @@ enum Room {
     Taken { _room: OwnedSemaphorePermit },
 }
 
-/// A message as it arrived whole: its bytes, prefix and all, and the allocation they lie in.
+/// A message as it arrived whole: its bytes, prefix and all, the allocation they lie in, and its
+/// charge.
 #[derive(Debug)]
 pub(crate) struct Arrived {
     /// The message's bytes, its prefix first.
     pub(crate) bytes: Bytes,
     /// The allocation they lie in, whole: what a slice of them keeps alive.
     pub(crate) allocation: Bytes,
+    /// What holds its charge, where the body is charged.
+    pub(crate) charge: Option<Held>,
+}
+
+/// A message arrived whole and not yet decoded, as whoever reads it sizes its charge.
+#[derive(Clone, Copy, Debug)]
+pub struct Whole<'a> {
+    /// The message's encoding, its prefix left out.
+    pub message: &'a [u8],
+    /// Bytes: the allocation it arrived in.
+    pub allocation: usize,
+    /// Bytes: what decoding it holds, as its scan counts it, and no less than its allocation:
+    /// the least it is charged.
+    pub decoded: usize,
 }
 
 /// A body whose messages are held to their bounds before they are passed on.
@@ -132,7 +149,8 @@ pub struct Bounded {
     done: bool,
     /// Whoever each message is charged to before it is passed on, where anyone is.
     charge: Option<Arc<dyn Charge>>,
-    /// The charge of the message passed on last, held until it is decoded.
+    /// The charge of the message passed on last as a generated call's body, held until it is
+    /// decoded: until the next is passed on, or the body ends.
     held: Option<Held>,
     /// A message whole, waiting for its charge.
     charging: Option<(Charging, Arrived)>,
@@ -158,16 +176,11 @@ impl Bounded {
     }
 
     /// The body, each message charged to `charge` before it is passed on, where a charge is
-    /// given, and the charge held until the message is decoded.
+    /// given.
     #[must_use]
     pub fn charged(mut self, charge: Option<Arc<dyn Charge>>) -> Self {
         self.charge = charge;
         self
-    }
-
-    /// Releases the charge of the message passed on last: it has been decoded.
-    pub fn release(&mut self) {
-        self.held = None;
     }
 
     /// The length the arriving message's prefix declares, where it has arrived, within the wire
@@ -219,7 +232,11 @@ impl Bounded {
     /// message, and what its scan counts it holds decoded, its length where it has no form.
     fn whole(&mut self, length: usize) -> Result<(Arrived, usize), Status> {
         let Frozen { bytes, allocation } = std::mem::take(&mut self.arriving).freeze();
-        let arrived = Arrived { bytes, allocation };
+        let arrived = Arrived {
+            bytes,
+            allocation,
+            charge: None,
+        };
         // Its room is given back as it is passed on.
         self.room = Room::Free;
         let Some(form) = self.bounds.form else {
@@ -237,15 +254,27 @@ impl Bounded {
         Ok((arrived, held))
     }
 
-    /// Passes on `arrived`, which holds `held` bytes decoded, once they are charged, and no less
-    /// than the allocation it lies in, which decoding it keeps alive.
-    fn charge(&mut self, arrived: Arrived, held: usize) -> Option<Arrived> {
+    /// Passes on `arrived`, which holds `held` bytes decoded, once it is charged what `size` says
+    /// of it, and no less than those bytes and the allocation it lies in, which decoding it keeps
+    /// alive.
+    fn charge(
+        &mut self,
+        arrived: Arrived,
+        held: usize,
+        size: &dyn Fn(&Whole<'_>) -> usize,
+    ) -> Option<Arrived> {
         let Some(charge) = &self.charge else {
             return Some(arrived);
         };
-        // The message before has been decoded: its charge goes before this one's is taken.
+        // A generated call's message before has been decoded: its charge goes before this one's
+        // is taken.
         self.held = None;
-        let bytes = held.max(arrived.allocation.len());
+        let whole = Whole {
+            message: &arrived.bytes[PREFIX..],
+            allocation: arrived.allocation.len(),
+            decoded: held.max(arrived.allocation.len()),
+        };
+        let bytes = size(&whole).max(whole.decoded);
         self.charging = Some((charge.charge(self.bounds.class, bytes), arrived));
         None
     }
@@ -261,10 +290,12 @@ impl Bounded {
         let held = std::task::ready!(charging.as_mut().poll(context));
         let message = self.charging.take().map(|(_, message)| message);
         Poll::Ready(match held {
-            Ok(held) => {
-                self.held = Some(held);
-                message.map(Ok)
-            }
+            Ok(held) => message.map(|message| {
+                Ok(Arrived {
+                    charge: Some(held),
+                    ..message
+                })
+            }),
             Err(status) => Some(Err(status)),
         })
     }
@@ -310,10 +341,12 @@ impl Bounded {
         })
     }
 
-    /// The next message of the body, as it arrived, or what ends it.
+    /// The next message of the body, as it arrived and charged what `size` says of it, or what
+    /// ends it.
     pub(crate) fn poll_arrived(
         &mut self,
         context: &mut Context<'_>,
+        size: &dyn Fn(&Whole<'_>) -> usize,
     ) -> Poll<Option<Result<Frame<Arrived>, Status>>> {
         loop {
             if let Some(charged) = std::task::ready!(self.charged_message(context)) {
@@ -328,7 +361,7 @@ impl Bounded {
                 }
                 if self.arriving.len() >= PREFIX + length {
                     let (arrived, held) = self.whole(length)?;
-                    if let Some(arrived) = self.charge(arrived, held) {
+                    if let Some(arrived) = self.charge(arrived, held, size) {
                         return Poll::Ready(Some(Ok(Frame::data(arrived))));
                     }
                     continue;
@@ -384,8 +417,16 @@ impl Body for Bounded {
         mut self: Pin<&mut Self>,
         context: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Bytes>, Status>>> {
-        self.poll_arrived(context)
-            .map_ok(|frame| frame.map_data(|arrived| arrived.bytes))
+        let decoded = |whole: &Whole<'_>| whole.decoded;
+        let polled = std::task::ready!(self.poll_arrived(context, &decoded));
+        Poll::Ready(polled.map(|frame| {
+            frame.map(|frame| {
+                frame.map_data(|arrived| {
+                    self.held = arrived.charge;
+                    arrived.bytes
+                })
+            })
+        }))
     }
 
     fn is_end_stream(&self) -> bool {
