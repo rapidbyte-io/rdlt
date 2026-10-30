@@ -41,7 +41,7 @@ use crate::swarm::{FRAMING, Features, HOSTILE};
 use crate::workload::{Level, PHASES, Relaxed, Row, Workload};
 use crate::world::World;
 pub use changes::check_changes;
-use config::{config, endless, growth, pressed, waited};
+use config::{batch, config, endless, growth, pressed, waited};
 use expected::Discards;
 use faulty::Faulty;
 use ledger::Ledger;
@@ -148,6 +148,7 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>, threaded:
         world.workload.features.streaming,
         endless(&world.workload),
         growth(seed),
+        batch(seed),
         waited(seed, !threaded && world.workload.features.faults),
     );
     let (limits, budget) = (config.limits(), config.memory().get());

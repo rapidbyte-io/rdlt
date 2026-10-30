@@ -1,6 +1,6 @@
-use rdlt_engine::GrowthLimits;
+use rdlt_engine::{BatchPolicy, GrowthLimits};
 
-use super::{growth, waited};
+use super::{batch, growth, waited};
 use crate::seed::Seed;
 
 #[test]
@@ -40,4 +40,41 @@ fn a_world_whose_calls_may_hang_waits_five_to_twenty_seconds_for_each() {
         "the waits differ by seed"
     );
     assert_eq!(waited(Seed::new(1), false), None);
+}
+
+#[test]
+fn some_worlds_cut_json_flushes_into_small_jobs_and_the_rest_by_the_default_limit() {
+    let drawn: Vec<BatchPolicy> = (0..1000).map(|seed| batch(Seed::new(seed))).collect();
+    let defaults = BatchPolicy::default();
+    let small: Vec<usize> = drawn
+        .iter()
+        .map(|policy| policy.chunk_bytes().get())
+        .filter(|limit| *limit <= 64 << 10)
+        .collect();
+    assert!(
+        (100..500).contains(&small.len()),
+        "{} of 1000 cut small",
+        small.len()
+    );
+    for limit in [64, 64 << 10] {
+        assert!(small.contains(&limit), "{limit} is drawn");
+    }
+    for policy in drawn {
+        assert!(
+            policy.chunk_bytes() == defaults.chunk_bytes()
+                || policy.chunk_bytes().get() <= 64 << 10
+        );
+        assert_eq!(
+            (
+                policy.target_bytes(),
+                policy.max_rows(),
+                policy.max_latency()
+            ),
+            (
+                defaults.target_bytes(),
+                defaults.max_rows(),
+                defaults.max_latency()
+            )
+        );
+    }
 }

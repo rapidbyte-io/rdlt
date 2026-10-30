@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use rdlt_engine::{CommitPolicy, EngineConfig, GrowthLimits, RetryPolicy};
+use rdlt_engine::{BatchPolicy, CommitPolicy, EngineConfig, GrowthLimits, RetryPolicy};
 
 use crate::rng::SplitMix64;
 use crate::seed::Seed;
@@ -19,13 +19,15 @@ pub(super) const REPLAN: Duration = Duration::from_millis(250);
 /// that: small enough that a source pressing on it, as [`pressed`] draws, fills its shares.
 ///
 /// A run reads at least one partition more at once than the `endless` partitions it follows
-/// without end, which hold their places for as long as it runs, and holds to the `growth`
-/// limits. Where `wait` is drawn, the engine waits that long for each connector call.
+/// without end, which hold their places for as long as it runs, holds to the `growth` limits,
+/// and coalesces and shreds as `batch` says. Where `wait` is drawn, the engine waits that long
+/// for each connector call.
 pub(super) fn config(
     rng: &mut SplitMix64,
     streaming: bool,
     endless: usize,
     growth: GrowthLimits,
+    batch: BatchPolicy,
     wait: Option<Duration>,
 ) -> EngineConfig {
     let least = EngineConfig::least_memory(1);
@@ -62,6 +64,7 @@ pub(super) fn config(
         .commit(commit)
         .retry(retry)
         .growth(growth)
+        .batch(batch)
         .build()
         .expect("the drawn configuration is valid")
 }
@@ -85,6 +88,27 @@ pub(super) fn growth(seed: Seed) -> GrowthLimits {
         let writers = to_usize(1 + rng.below(3));
         GrowthLimits::new(defaults.child_tables().get(), writers)
             .expect("the drawn limits are valid")
+    } else {
+        defaults
+    }
+}
+
+/// The batch policy of an engine of the world `seed`, drawn apart from the world, so every other
+/// draw of the seed is as it was: in a quarter of worlds a shredding job takes at most 64 bytes to
+/// 64 KiB, so a flush of a few short JSON pushes is cut into several jobs, and the default
+/// elsewhere.
+pub(super) fn batch(seed: Seed) -> BatchPolicy {
+    let mut rng = SplitMix64::new(seed.value().rotate_left(43));
+    let defaults = BatchPolicy::default();
+    if rng.chance(250) {
+        let limit = 64_usize << rng.below(11);
+        BatchPolicy::new(
+            defaults.target_bytes().get(),
+            defaults.max_rows().get(),
+            defaults.max_latency(),
+            limit,
+        )
+        .expect("the drawn policy is valid")
     } else {
         defaults
     }

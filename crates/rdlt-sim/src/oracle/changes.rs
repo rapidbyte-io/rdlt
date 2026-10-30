@@ -13,7 +13,7 @@ use rdlt_engine::{DeleteMode, Engine, Env as _, PipelinePlan, StreamPlan, WriteM
 use rdlt_testkit::canon::Canon;
 use rdlt_wire::Limits;
 
-use super::config::{config, growth, waited};
+use super::config::{batch, config, growth, waited};
 use super::faulty::Faulty;
 use super::ledger::Ledger;
 use super::reports::Reported;
@@ -101,6 +101,7 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>) -> Checke
         false,
         0,
         growth(seed),
+        batch(seed),
         waited(seed, features.faults),
     );
     let limits = config.limits();
