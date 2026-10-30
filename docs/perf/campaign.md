@@ -34,7 +34,7 @@ and method, and the verdict; the baselines themselves are in their benches' reco
 
 | Question | Rule | Figure | Verdict |
 |---|---|---|---|
-| Are the boundary's copies worth a stream of their own for each data call? | gathers and encode copies ≥ 12 % of the pipeline's CPU s a GB | 26.3 % (25.7–26.5) | Passed: built; built, failed its own rule and closed |
+| Are the boundary's copies worth a stream of their own for each data call? | gathers and encode copies ≥ 12 % of the pipeline's CPU s a GB | 26.3 % (25.7–26.5) | Passed: built; failed its adoption rule and closed |
 | Do pressure flushes cost served throughput? | `64×80000` from 16 partitions ≥ 10 % faster within 1 GiB | 4.4 % slower | Failed: closed |
 | Does a checkpoint-set flush cost the in-process run? | `1000x5120` at k = 6 ≥ 1.5× k = 1 from 1 partition and ≥ 1.2× from 16 | 0.77× and 1.46× | Failed: closed |
 | Can one hot partition use more lanes? | four partitions ≥ 1.25× one through a writer a core | 0.98× | Failed: closed |
@@ -57,7 +57,7 @@ The baselines the later rules read, and their records, are listed after the deci
 - **Figures.** 26.3 % (25.7–26.5 % over three rounds): the gathers 12.4 %, the encode copies
   14.0 %; counting only the gather's samples whose caller unwinding keeps, 15.5–16.0 %
   ([served.md](served.md), "The boundary's copies").
-- **Verdict.** Passed: built. Built, it failed its own rule, as the 1 000-row cells through one
+- **Verdict.** Passed: built. Built, it failed its adoption rule, as the 1 000-row cells through one
   writer moved 18–25 % less, and closed ([served.md](served.md), "One framed stream a data
   call").
 

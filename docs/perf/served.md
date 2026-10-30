@@ -1485,7 +1485,7 @@ What the rule does not gate, recorded:
 - **Malloc tunables.** The change without them ran one round, beside A's first. Eighteen of its
   cases moved more than 3 % from A's in MB/s or CPU seconds a GB, up to 13 % either way, the
   multi-writer and TLS rows mostly slower. With the change closed, the tunables stay.
-- **Instructions and memory.** `just instructions` held every case within 2 % but
+- **Instructions and memory.** `just instructions` held every case within 2 % except
   `ipc/roundtrip`: +2.8 % instructions and 148 to 210 allocations, as frames are gathered from
   their pieces there. The new `wire/stream` case counted 823 681 instructions and 234
   allocations. `just resident` held its bound. The served line's host peaked at 100–136 MiB, its
