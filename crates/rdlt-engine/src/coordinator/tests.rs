@@ -5,6 +5,7 @@
 
 mod acks;
 mod lag;
+mod retried;
 // Linear time is measured as a thread's CPU time, which only Unix offers.
 #[cfg(unix)]
 mod scale;
@@ -12,23 +13,23 @@ mod seals;
 mod state;
 
 use std::collections::VecDeque;
-use std::num::{NonZeroU32, NonZeroUsize};
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, UNIX_EPOCH};
 
 use parking_lot::Mutex;
 use rdlt_connector::{
-    BoxFuture, Catalog, CommitKey, CommitMeta, ConnectorError, Cursor, DestinationSession,
-    DestinationWriter, Epoch, GenerationId, PartitionId, PartitionSink, PartitionState,
-    ReadRequest, Receipt, Result, SchemaVersion, SegmentId, Source, StateChange, StateEntry,
-    StateKey, StreamName, StreamState, TableChange, TablePath, TableRef, TableSchema,
+    BoxFuture, Catalog, CommitKey, CommitMeta, ConnectorError, ConnectorErrorKind, Cursor,
+    DestinationSession, DestinationWriter, Epoch, GenerationId, PartitionId, PartitionSink,
+    PartitionState, ReadRequest, Receipt, Result, SchemaVersion, SegmentId, Source, StateChange,
+    StateEntry, StateKey, StreamName, StreamState, TableChange, TablePath, TableRef, TableSchema,
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use super::{Coordinator, CoordinatorParts, Cycle, PartitionRun, StreamRun};
-use crate::config::CommitPolicy;
+use crate::config::{CommitPolicy, RetryPolicy};
 use crate::env::SystemEnv;
 use crate::error::{Error, ErrorKind, Origin, codes};
 use crate::lane::Lanes;
@@ -41,6 +42,10 @@ use crate::table::{Incoming, MetaNames, Model, Resolver, Settings, SharedSession
 use crate::watch;
 
 type Commits = Arc<Mutex<Vec<CommitMeta>>>;
+/// Every try of a commit sent, with the instant it was, in order.
+type Sent = Arc<Mutex<Vec<(CommitMeta, tokio::time::Instant)>>>;
+/// How the destination answers its next tries of commits, in order; it lands every try past them.
+type Tries = Arc<Mutex<VecDeque<Try>>>;
 type Acks = Arc<Mutex<Vec<(StreamName, Vec<(PartitionId, Cursor)>)>>>;
 /// Every report made, accepted or not, with how many commits had landed when it was, in order.
 type Asked = Arc<Mutex<Vec<(Vec<(PartitionId, Cursor)>, usize)>>>;
@@ -55,12 +60,41 @@ enum Answer {
     Refuse,
     /// Refused as holding a position the source never sent, as a source started again does.
     Unsent,
+    /// Never answered.
+    Hang,
+}
+
+/// How the destination answers a try of a commit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Try {
+    /// Fails with an error of the kind, coded as given, and lands nothing.
+    Fail(ConnectorErrorKind, Option<&'static str>),
+    /// Lands the commit, then fails with an error of the kind.
+    LandThenFail(ConnectorErrorKind),
+    /// Fails rate-limited, asking for the wait given, and lands nothing.
+    Limited(Duration),
+    /// Never answers.
+    Hang,
+}
+
+impl Try {
+    /// The error a try fails with, of `kind` coded `code`.
+    fn error(kind: ConnectorErrorKind, code: Option<&'static str>) -> ConnectorError {
+        let error = ConnectorError::new(kind, "the commit failed");
+        match code {
+            Some(code) => error.with_code(code),
+            None => error,
+        }
+    }
 }
 
 struct Recorder {
     commits: Commits,
+    sent: Sent,
+    tries: Tries,
+    /// The receipt of the last commit that landed, with which a try of its key is answered.
+    landed: Option<Receipt>,
     closed: Arc<AtomicBool>,
-    fail: bool,
     /// Whether each receipt names the commit after the commit it answers.
     skewed: bool,
     /// How long a commit takes.
@@ -85,13 +119,25 @@ impl DestinationSession for Recorder {
 
     fn commit<'a>(&'a mut self, meta: &'a CommitMeta) -> BoxFuture<'a, Result<Receipt>> {
         Box::pin(async move {
+            self.sent
+                .lock()
+                .push((meta.clone(), tokio::time::Instant::now()));
             tokio::time::sleep(self.pace).await;
-            if self.fail {
-                return Err(ConnectorError::data("commit refused"));
+            let answer = self.tries.lock().pop_front();
+            match answer {
+                Some(Try::Fail(kind, code)) => return Err(Try::error(kind, code)),
+                Some(Try::Limited(after)) => {
+                    return Err(ConnectorError::rate_limited("slow down", Some(after)));
+                }
+                Some(Try::Hang) => std::future::pending::<()>().await,
+                Some(Try::LandThenFail(_)) | None => {}
+            }
+            if let Some(landed) = self.landed.as_ref().filter(|landed| landed.key == meta.key) {
+                return Ok(landed.clone());
             }
             self.commits.lock().push(meta.clone());
             let skew = u64::from(self.skewed);
-            Ok(Receipt {
+            let receipt = Receipt {
                 key: CommitKey {
                     seq: meta.key.seq + skew,
                     ..meta.key
@@ -99,7 +145,12 @@ impl DestinationSession for Recorder {
                 committed_at: UNIX_EPOCH,
                 rows: meta.segments.len(),
                 bytes: 0,
-            })
+            };
+            self.landed = Some(receipt.clone());
+            match answer {
+                Some(Try::LandThenFail(kind)) => Err(Try::error(kind, None)),
+                _ => Ok(receipt),
+            }
         })
     }
 
@@ -152,13 +203,15 @@ impl Source for Listener {
                 !self.commits.lock().is_empty(),
                 "acknowledged before any commit landed"
             );
-            match self.answers.lock().pop_front().unwrap_or(Answer::Accept) {
+            let answer = self.answers.lock().pop_front().unwrap_or(Answer::Accept);
+            match answer {
                 Answer::Accept => {}
                 Answer::Refuse => return Err(transient("the report was lost")),
                 Answer::Unsent => {
                     let error = transient("a position this host was never sent");
                     return Err(error.with_code(rdlt_connector::POSITION_UNSENT));
                 }
+                Answer::Hang => std::future::pending::<()>().await,
             }
             self.acks.lock().push((stream.clone(), cursors.to_vec()));
             Ok(())
@@ -167,7 +220,7 @@ impl Source for Listener {
 }
 
 fn transient(message: &str) -> ConnectorError {
-    ConnectorError::new(rdlt_connector::ConnectorErrorKind::Transient, message)
+    ConnectorError::new(ConnectorErrorKind::Transient, message)
 }
 
 /// A coordinator and the handles a test drives it through.
@@ -178,6 +231,8 @@ struct Harness {
     stop: CancellationToken,
     cancel: CancellationToken,
     commits: Commits,
+    /// Every try of a commit sent.
+    sent: Sent,
     acks: Acks,
     answers: Answers,
     asked: Asked,
@@ -186,6 +241,8 @@ struct Harness {
     latest: Arc<Latest>,
     budget: crate::budget::MemoryBudget,
     tally: Arc<Tally>,
+    /// The destination session the coordinator commits through.
+    session: Arc<SharedSession>,
 }
 
 struct Setup {
@@ -193,7 +250,8 @@ struct Setup {
     partitions: Vec<PartitionRun>,
     policy: CommitPolicy,
     barrier_wait: Duration,
-    fail_commit: bool,
+    /// How the destination answers its first tries of commits, in order.
+    tries: Vec<Try>,
     /// Whether the destination answers each commit with the receipt of the next.
     skew_receipts: bool,
     /// The key the session found landed, which its first commit expects.
@@ -205,8 +263,8 @@ struct Setup {
     budget: u64,
     /// How long the destination takes to commit; the source takes twice as long to hear of it.
     pace: Duration,
-    /// The attempts the run makes.
-    attempts: NonZeroU32,
+    /// The run's retry policy.
+    retry: RetryPolicy,
 }
 
 impl Setup {
@@ -220,13 +278,13 @@ impl Setup {
             partitions,
             policy: CommitPolicy::new(None, Some(1_000), None).unwrap(),
             barrier_wait: Duration::from_secs(60),
-            fail_commit: false,
+            tries: Vec::new(),
             skew_receipts: false,
             after: None,
             schema: None,
             budget: u64::MAX,
             pace: Duration::ZERO,
-            attempts: crate::config::RetryPolicy::default().attempts(),
+            retry: RetryPolicy::default(),
         }
     }
 
@@ -281,6 +339,8 @@ impl Setup {
         let (commits, acks) = (Commits::default(), Acks::default());
         let (progress, progress_feed) = mpsc::unbounded_channel();
         let (barrier_sender, barrier) = watch::channel(0);
+        let (sent, closed) = (Sent::default(), Arc::<AtomicBool>::default());
+        let session = SharedSession::new(Box::new(self.recorder(&commits, &sent, &closed)));
         let harness = Harness {
             progress,
             barrier,
@@ -288,22 +348,17 @@ impl Setup {
             stop: CancellationToken::new(),
             cancel: CancellationToken::new(),
             commits: Arc::clone(&commits),
+            sent,
             acks: Arc::clone(&acks),
             answers: Answers::default(),
             asked: Asked::default(),
             log: Arc::default(),
-            closed: Arc::default(),
+            closed,
             latest: Arc::default(),
             budget: crate::budget::budget(self.budget),
             tally: Arc::default(),
+            session: Arc::clone(&session),
         };
-        let session = SharedSession::new(Box::new(Recorder {
-            commits: Arc::clone(&commits),
-            closed: Arc::clone(&harness.closed),
-            fail: self.fail_commit,
-            skewed: self.skew_receipts,
-            pace: self.pace,
-        }));
         let tables = self.tables(session).await;
         let source = Arc::new(self.listener(acks, commits, &harness));
         let coordinator = Coordinator::new(CoordinatorParts {
@@ -331,13 +386,27 @@ impl Setup {
             follow: false,
             replan: Duration::from_secs(60),
             tally: Arc::clone(&harness.tally),
-            attempts: self.attempts,
+            retry: self.retry,
         });
         (coordinator, harness)
     }
 }
 
 impl Setup {
+    /// The destination session recording what it lands into `commits` and every try into
+    /// `sent`, answering tries as the setup says.
+    fn recorder(&self, commits: &Commits, sent: &Sent, closed: &Arc<AtomicBool>) -> Recorder {
+        Recorder {
+            commits: Arc::clone(commits),
+            sent: Arc::clone(sent),
+            tries: Arc::new(Mutex::new(self.tries.iter().copied().collect())),
+            landed: None,
+            closed: Arc::clone(closed),
+            skewed: self.skew_receipts,
+            pace: self.pace,
+        }
+    }
+
     /// The source hearing of commits, into `acks`, which checks they follow `commits` and
     /// answers as `harness` says.
     fn listener(&self, acks: Acks, commits: Commits, harness: &Harness) -> Listener {
@@ -1352,24 +1421,6 @@ async fn partitions_that_vanish_without_ending_cancel_the_coordinator() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_failed_commit_ends_the_coordinator_and_acknowledges_nothing() {
-    let mut setup = Setup::new(
-        vec![stream(WriteMode::Append, None, 1)],
-        vec![partition("p0", false)],
-    );
-    setup.fail_commit = true;
-    let (task, harness) = setup.start().await;
-    harness.seal(0, 1, 3, PartitionState::Cursor(cursor(3)), None);
-    harness.end(0, false);
-    assert_eq!(
-        ended(task).await.unwrap_err().kind(),
-        ErrorKind::Destination
-    );
-    assert!(harness.acks.lock().is_empty());
-    assert_eq!(harness.log.lock().committed.commits, 0);
-}
-
-#[tokio::test(start_paused = true)]
 async fn a_receipt_for_another_commit_fails_the_commit_and_tells_the_source_nothing() {
     let mut setup = Setup::new(
         vec![stream(WriteMode::Append, None, 1)],
@@ -1485,7 +1536,7 @@ async fn a_failed_commit_stays_pending_in_the_log() {
         vec![stream(WriteMode::Append, None, 1)],
         vec![partition("p0", false)],
     );
-    setup.fail_commit = true;
+    setup.tries = vec![Try::Fail(ConnectorErrorKind::Data, None)];
     let (task, harness) = setup.start().await;
     harness.seal(0, 1, 3, PartitionState::Cursor(cursor(3)), None);
     harness.end(0, false);

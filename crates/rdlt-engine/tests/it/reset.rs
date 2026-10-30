@@ -421,7 +421,8 @@ impl DestinationSession for RacingSession {
         Box::pin(async move {
             if self.commits.fetch_add(1, Ordering::SeqCst) + 1 == self.at {
                 (self.reset)().await;
-                return Err(ConnectorError::new(ConnectorErrorKind::Transient, "lost"));
+                let lost = ConnectorError::new(ConnectorErrorKind::Transient, "lost");
+                return Err(lost.with_code(rdlt_host::CONNECTOR_LOST));
             }
             self.inner.commit(meta).await
         })
@@ -433,7 +434,8 @@ impl DestinationSession for RacingSession {
 }
 
 /// Loads 64 rows of a replace stream into `store` at `target`, the load's second of four commits
-/// racing a reset of the stream as `scope` says and then failing, so a retry reads the stream again.
+/// racing a reset of the stream as `scope` says and then losing its connection, so a retry reads
+/// the stream again.
 async fn raced(target: Target, store: &'static str, scope: ResetScope) {
     let reset: Resetting = Arc::new(move || {
         Box::pin(async move {

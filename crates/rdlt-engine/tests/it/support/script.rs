@@ -152,6 +152,8 @@ pub(crate) struct Script {
     reading: AtomicUsize,
     /// Reads started.
     pub(crate) reads: AtomicUsize,
+    /// Rows pushed, across reads.
+    pub(crate) pushed: AtomicU64,
     /// Reads of a stream that cannot read again, from before where it acknowledged.
     pub(crate) early_reads: AtomicUsize,
     /// The most partitions ever read at once.
@@ -407,6 +409,7 @@ impl Scripted {
             }
             let end = (next + stream.batch_rows).min(rows);
             push(stream.push, index, next..end, out).await?;
+            script.pushed.fetch_add(end - next, Ordering::SeqCst);
             next = end;
             batches += 1;
             match self.checkpointing {
