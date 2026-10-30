@@ -1,19 +1,23 @@
 //! A remote read: the connector's frames, received within the credit this end grants, become the
-//! events of the engine's partition sink, and the engine's requests go to the connector.
+//! events of the engine's partition sink, each with what its frame was charged before it was
+//! decoded, and the engine's requests go to the connector.
 
 #[cfg(test)]
 mod tests;
 
+use rdlt_connector::cost::{batch_arrays, json_charge};
 use rdlt_connector::wire::{Invalid, frame_error, v1};
 use rdlt_connector::{
     ConnectorError, ConnectorErrorKind, Cursor, LogLevel, PartitionSink, Permit, Push, ReadRequest,
     Requested, SourceEvent,
 };
+use rdlt_wire::bounded::{Held, Whole};
 use rdlt_wire::flow::Granting;
 use rdlt_wire::limits::{MESSAGE_ROOM, count};
 use rdlt_wire::plane::{Incoming, READ};
 use rdlt_wire::prost::Message as _;
 use rdlt_wire::prost::bytes::Bytes;
+use rdlt_wire::scan::first_field;
 use rdlt_wire::{Decoder, IpcFrame, Limits};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -39,14 +43,7 @@ pub(super) async fn run(
     let control = |control| v1::ReadControl {
         control: Some(control),
     };
-    let mut reader = Reader {
-        decoder: Decoder::new(limits),
-        limits,
-        epoch: None,
-        schema: 0,
-        quiet: 0,
-        free: 0,
-    };
+    let mut reader = Reader::new(limits);
     let (mut forwarded, mut stopping) = (pending, false);
     let mut kept = Kept::default();
     loop {
@@ -66,7 +63,7 @@ pub(super) async fn run(
                 };
                 controls.send(sent).await.ok();
             }
-            frame = frames.arrived() => {
+            frame = frames.arrived_sized(|whole| reader.size(whole)) => {
                 let frame = match frame {
                     Ok(Some(frame)) => frame,
                     Ok(None) => return Err(ConnectorError::new(
@@ -75,15 +72,17 @@ pub(super) async fn run(
                     ).with_code(super::CONNECTOR_LOST)),
                     Err(status) => return Err(rdlt_connector::wire::error(&status)),
                 };
-                // Decoded: its charge goes before its event waits for room in the budget.
-                drop(frame.charge);
                 let size = u64::try_from(frame.message.encoded_len()).unwrap_or(u64::MAX);
+                let charge = frame.charge;
                 match reader.event(frame.message, frame.allocation)? {
                     Read::Done => return Ok(()),
-                    Read::Event(event) => forward(&mut sink, event, forwarded).await?,
+                    Read::Event(event) => forward(&mut sink, event, charge, forwarded).await?,
                     // A schema and a dictionary wait in the decoder for the batches that use
-                    // them.
-                    Read::Nothing => kept.charge(&sink, reader.kept())?,
+                    // them, charged as what the read keeps before their frame's charge goes.
+                    Read::Nothing => {
+                        kept.charge(&sink, reader.kept())?;
+                        drop(charge);
+                    }
                 }
                 let credit = v1::Credit { bytes: granting.taken(size) };
                 controls.send(control(Control::Credit(credit))).await.ok();
@@ -92,8 +91,8 @@ pub(super) async fn run(
     }
 }
 
-/// Sends `event` to the engine, where a checkpoint in it answers no barrier beyond `forwarded`,
-/// the newest the host forwarded.
+/// Sends `event` to the engine with `charge`, what its frame was charged before it was decoded,
+/// where a checkpoint in it answers no barrier beyond `forwarded`, the newest the host forwarded.
 ///
 /// A send the engine stopped fails as stopped, even one that waited for room: the read's next
 /// turn forwards the stop, and the read drains.
@@ -105,6 +104,7 @@ pub(super) async fn run(
 async fn forward(
     sink: &mut PartitionSink,
     event: SourceEvent,
+    charge: Option<Held>,
     forwarded: u64,
 ) -> rdlt_connector::Result<()> {
     if let SourceEvent::Checkpoint {
@@ -115,7 +115,11 @@ async fn forward(
     {
         return Err(invalid(&Invalid::OutOfRange("checkpoint barrier")));
     }
-    match sink.send(event).await {
+    let sent = match charge {
+        Some(charge) => sink.send_charged(event, charge).await,
+        None => sink.send(event).await,
+    };
+    match sent {
         Err(refused) if refused.kind() != ConnectorErrorKind::Stopped => Err(refused),
         _ => Ok(()),
     }
@@ -216,6 +220,8 @@ struct Reader {
     epoch: Option<u64>,
     /// Bytes: what the schema the decoder holds takes, with the message it came from.
     schema: u64,
+    /// Bytes: what the arrays of a batch of that schema take beside its buffers.
+    arrays: u64,
     /// Frames since the last event of a read's data that carried no event.
     quiet: u64,
     /// Frames since the last event of a read's data that carried an event the engine takes for
@@ -227,10 +233,56 @@ struct Reader {
 /// a read may send between two of its data's: rows or a checkpoint.
 pub const MAX_FREE_FRAMES: u64 = 1024;
 
+/// The field of a read frame that carries a batch.
+const BATCH: u64 = 2;
+
+/// The field of a read frame that carries JSON.
+const JSON: u64 = 3;
+
+/// The field of a JSON frame that carries its text.
+const TEXT: u64 = 1;
+
 impl Reader {
+    /// A read's reader within `limits`, before any frame.
+    fn new(limits: Limits) -> Self {
+        Self {
+            decoder: Decoder::new(limits),
+            limits,
+            epoch: None,
+            schema: 0,
+            arrays: 0,
+            quiet: 0,
+            free: 0,
+        }
+    }
+
     /// Bytes: what the decoder keeps between batches, its schema and its dictionaries.
     fn kept(&self) -> u64 {
         self.schema.saturating_add(self.decoder.dictionary_bytes())
+    }
+
+    /// Bytes: what `whole`, the read's next frame, is charged before it is decoded: what decoding
+    /// it holds, or what the push it carries is charged where that is more, so the push is
+    /// admitted within the frame's charge.
+    ///
+    /// A batch's push keeps alive the allocation its frame arrived in and the schema and the
+    /// dictionaries the decoder keeps, and holds its arrays; a JSON push is charged for its text.
+    /// A frame is taken to carry the field its encoding sets first, as a sender sets one alone: a
+    /// frame that sets more decodes to the last, whose push, charged more, is refused.
+    fn size(&self, whole: &Whole<'_>) -> usize {
+        let bytes = |bytes: u64| usize::try_from(bytes).unwrap_or(usize::MAX);
+        let pushed = match first_field(whole.message) {
+            Some((BATCH, _)) => {
+                let beside = self.kept().saturating_add(self.arrays);
+                whole.allocation.saturating_add(bytes(beside))
+            }
+            Some((JSON, frame)) => match first_field(frame) {
+                Some((TEXT, text)) => bytes(json_charge(count(text.len()))),
+                _ => 0,
+            },
+            _ => 0,
+        };
+        whole.decoded.max(pushed)
     }
 
     /// What `frame` means to the read.
@@ -335,6 +387,7 @@ impl Reader {
         // The decoder keeps the schema, and its message to know it by.
         let message = u64::try_from(schema.ipc_schema.len()).unwrap_or(u64::MAX);
         self.schema = rdlt_connector::cost::schema_bytes(&held).saturating_add(message);
+        self.arrays = batch_arrays(held.fields());
         self.epoch = Some(schema.schema_epoch);
         Ok(Read::Nothing)
     }

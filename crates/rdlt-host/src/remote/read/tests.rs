@@ -1,3 +1,5 @@
+mod sized;
+
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 
@@ -13,20 +15,12 @@ use rdlt_wire::limits::{Class, JSON_PUSH_BYTES, MESSAGE_ROOM, count};
 use rdlt_wire::plane::{Incoming, Outgoing};
 use rdlt_wire::prost::Message as _;
 use rdlt_wire::prost::encoding::{WireType, encode_key, encode_varint};
-use rdlt_wire::{Decoder, Encoder, Limits};
+use rdlt_wire::{Encoder, Limits};
 
 use super::{Kept, Read, Reader};
 
 fn reader() -> Reader {
-    let limits = Limits::default();
-    Reader {
-        decoder: Decoder::new(limits),
-        limits,
-        epoch: None,
-        schema: 0,
-        quiet: 0,
-        free: 0,
-    }
+    Reader::new(Limits::default())
 }
 
 /// `frame` as a transport receives it: one buffer holding the message, padded with a megabyte
