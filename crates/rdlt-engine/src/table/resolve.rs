@@ -116,11 +116,14 @@ pub(crate) struct Resolver {
 }
 
 /// A batch's columns as they arrive: their types, and each column's path within its table.
+///
+/// The schema and the paths are shared by the batches of one schema, and compare by pointer
+/// first, so a plan made for them is found without comparing their columns.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Incoming {
-    pub(crate) schema: TableSchema,
+    pub(crate) schema: Arc<TableSchema>,
     /// Each column's path, in the schema's order.
-    pub(crate) paths: Vec<ColumnPath>,
+    pub(crate) paths: Arc<[ColumnPath]>,
     /// The columns of 64-bit integers holding a value a 64-bit float would round.
     pub(crate) rounding: BTreeSet<ColumnPath>,
     /// Whether the table takes every column as one being created does.
@@ -137,7 +140,7 @@ impl Incoming {
             .map(|field| ColumnPath::from(field.name()))
             .collect();
         Self {
-            schema,
+            schema: Arc::new(schema),
             paths,
             rounding: BTreeSet::new(),
             creation: Creation::AsModeled,
@@ -146,7 +149,11 @@ impl Incoming {
 
     /// The columns of `batches`, which are `schema`'s at `paths`, in order: those of 64-bit
     /// integers noted where a value a 64-bit float would round.
-    pub(crate) fn of(schema: TableSchema, paths: Vec<ColumnPath>, batches: &[RecordBatch]) -> Self {
+    pub(crate) fn of(
+        schema: Arc<TableSchema>,
+        paths: Arc<[ColumnPath]>,
+        batches: &[RecordBatch],
+    ) -> Self {
         let rounding = super::exact::rounding(&schema, &paths, batches);
         Self {
             schema,
@@ -225,7 +232,7 @@ impl Resolver {
         let mut draft = Draft::new(model);
         let fields = incoming.schema.fields();
         let mut routes = Vec::with_capacity(fields.len());
-        for (field, path) in fields.iter().zip(&incoming.paths) {
+        for (field, path) in fields.iter().zip(incoming.paths.iter()) {
             let path = path.clone();
             let column = Arriving {
                 settings: self.settings.column(&path),

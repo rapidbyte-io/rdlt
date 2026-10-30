@@ -217,6 +217,9 @@ async fn write(
 struct Planned {
     plan: Arc<LoweringPlan>,
     pieces: Pieces,
+    /// Whether the plan hands the unit's columns over as they arrive, which its pieces, slices
+    /// of batches of one schema, share.
+    handed: bool,
 }
 
 /// `units` judged and their plans found in order, since finding one may change the table, each to
@@ -241,8 +244,13 @@ async fn planned(
         let plan = context.tables.plan(job.table, unit.incoming).await?;
         let batch = &unit.held.batches[0];
         let lowered = measured(&plan, &context.rendering, batch, job.changes, (max, limit));
+        let handed = handed(&plan, batch, job.changes);
         let pieces = Pieces::new(unit.held, lowered);
-        planned.push(Planned { plan, pieces });
+        planned.push(Planned {
+            plan,
+            pieces,
+            handed,
+        });
     }
     Ok(planned)
 }
@@ -283,7 +291,12 @@ async fn lowered(
     room: Room,
 ) -> Result<(), Error> {
     let mut window = Window::new(room);
-    for Planned { plan, mut pieces } in planned {
+    for Planned {
+        plan,
+        mut pieces,
+        handed,
+    } in planned
+    {
         while let Some(piece) = next(job, context, &mut pieces).await? {
             let reserved = window.reserved(job, context, open, piece.bytes).await?;
             let ignored = job.changes.map_or_else(Ignored::default, |mode| {
@@ -297,7 +310,7 @@ async fn lowered(
                 reserved,
                 unit: pieces.share(),
             };
-            let copies = !copies_nothing(&piece, &plan, &stamp, job.changes);
+            let copies = !copies_nothing(&piece, &plan, &stamp, handed);
             let (plan, stream, mode) = (Arc::clone(&plan), job.stream.clone(), job.changes);
             let run = move || {
                 let prepared = lower(&stream, mode, &piece.parts, &plan, &stamp)?;
@@ -325,19 +338,17 @@ fn piece_bounds(shares: Shares) -> (u64, u64) {
     )
 }
 
+/// Whether `plan` hands the columns of a unit like `batch`, read as `mode` says, over as they
+/// arrive: not a change stream's, whose change columns are split off first.
+fn handed(plan: &LoweringPlan, batch: &RecordBatch, mode: Option<ChangeMode>) -> bool {
+    mode.is_none() && plan.arrives_stored(batch.schema_ref())
+}
+
 /// Whether lowering `piece` as `plan` lowers it for the load `stamp` names copies no value: a
-/// piece of one part, which needs no concatenating, of a stream that is not a change stream,
-/// whose change columns are split off first.
-fn copies_nothing(
-    piece: &Piece,
-    plan: &LoweringPlan,
-    stamp: &Stamp,
-    mode: Option<ChangeMode>,
-) -> bool {
-    match piece.parts.as_slice() {
-        [part] => mode.is_none() && plan.copies_nothing(part, stamp),
-        _ => false,
-    }
+/// piece of one part, which needs no concatenating, of a unit whose columns the plan hands over
+/// as they arrive, as `handed` says.
+fn copies_nothing(piece: &Piece, plan: &LoweringPlan, stamp: &Stamp, handed: bool) -> bool {
+    handed && piece.parts.len() == 1 && plan.constants_built(stamp, piece.rows)
 }
 
 /// The next piece of `pieces`: one cut ahead, or else cut on the partition's task where cutting

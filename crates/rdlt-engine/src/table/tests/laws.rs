@@ -320,7 +320,7 @@ fn incoming(batch: &Batch, order: &[usize]) -> Incoming {
         .map(|column| Field::new(column.path.to_string(), column.logical.clone(), true))
         .collect();
     Incoming {
-        schema: TableSchema::new(fields).unwrap(),
+        schema: Arc::new(TableSchema::new(fields).unwrap()),
         paths: columns.iter().map(|column| column.path.clone()).collect(),
         rounding: columns
             .iter()
@@ -390,7 +390,11 @@ fn loses_no_value(
         fields.len(),
         "a column has no route"
     );
-    for ((field, path), route) in fields.iter().zip(&incoming.paths).zip(&resolution.routes) {
+    for ((field, path), route) in fields
+        .iter()
+        .zip(incoming.paths.iter())
+        .zip(&resolution.routes)
+    {
         let values = Values {
             path,
             logical: field.logical_type(),

@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use rdlt_connector::cost::Rendering;
-use rdlt_connector::{ColumnPath, StreamName, TableSchema};
+use rdlt_connector::{StreamName, TableSchema};
 use tokio_util::sync::CancellationToken;
 
 use super::{Cutter, PartPiece};
@@ -30,9 +30,8 @@ fn unit(rows: i64) -> super::PlannedParts {
     parts
         .into_iter()
         .map(|part| {
-            let schema = TableSchema::from_arrow(&part.batch.schema()).unwrap();
-            let paths: Vec<ColumnPath> = part.columns.clone();
-            let incoming = Incoming::of(schema, paths, &[]);
+            let schema = Arc::new(TableSchema::from_arrow(&part.batch.schema()).unwrap());
+            let incoming = Incoming::of(schema, part.columns.clone().into(), &[]);
             let plan = LoweringPlan::new(
                 StreamName::new("events").unwrap(),
                 crate::table::testing::view("t"),

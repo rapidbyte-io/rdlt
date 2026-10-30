@@ -466,10 +466,10 @@ fn split_rounding(batches: &[RecordBatch], shape: &Shape) -> Rounding {
     let joined = arrow_select::concat::concat_batches(&batches[0].schema(), batches).unwrap();
     let mut rounding = Rounding::new();
     for part in normalize(&joined, shape).unwrap() {
-        let schema = TableSchema::from_arrow(&part.batch.schema()).unwrap();
+        let schema = Arc::new(TableSchema::from_arrow(&part.batch.schema()).unwrap());
         let incoming = Incoming::of(
             schema,
-            part.columns.clone(),
+            part.columns.clone().into(),
             std::slice::from_ref(&part.batch),
         );
         if !incoming.rounding.is_empty() {
