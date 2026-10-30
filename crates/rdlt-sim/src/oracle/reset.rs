@@ -111,7 +111,7 @@ impl Simulation {
             .lock()
             .insert(drawn.streams[0].name().to_owned());
         let resetting = resetting(
-            (self.engine.clone(), Arc::clone(&self.world)),
+            (self.runs.engine(), Arc::clone(&self.world)),
             (self.name.clone(), self.placing.clone()),
             seed,
             drawn.clone(),

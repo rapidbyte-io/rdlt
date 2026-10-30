@@ -7,9 +7,10 @@ use std::time::Duration;
 use rdlt_connector::{
     ConnectorId, Destination, DestinationConnector as _, Source, SourceConnector as _,
 };
-use rdlt_engine::{Engine, PipelinePlan, Report, RunHandle, RunStatus, StopMode};
+use rdlt_engine::{PipelinePlan, Report, RunStatus, StopMode};
 use rdlt_host::{ConnectorRef, Provider as _};
 
+use super::events::{Observed, Runs};
 use super::refusals::Failure;
 use crate::canary::Canary;
 use crate::changes::SimChangeSource;
@@ -62,21 +63,21 @@ pub(super) fn pick(rng: &mut SplitMix64, length: Option<Duration>) -> Scenario {
 /// `placing` where there is one, on a simulated network or in played processes, and in this
 /// process otherwise.
 pub(super) async fn start(
-    engine: &Engine,
+    runs: &Runs,
     plan: &PipelinePlan,
     world: &str,
     placing: Option<&Placing>,
-) -> RunHandle {
+) -> Observed {
     if let Some(placing) = placing {
         let config = Canary::of(world).config();
         // Where faults are on, a connector is now and then placed on the peer that stalls.
         let stalls = || World::named(world).is_some_and(|world| world.stalls());
         let source = placing.source(&config, stalls()).await;
         let destination = placing.destination(&config, stalls()).await;
-        return engine.run(plan.clone(), source, destination);
+        return runs.run(plan.clone(), source, destination);
     }
     let (source, destination) = in_process(world).await;
-    engine.run(plan.clone(), source, destination)
+    runs.run(plan.clone(), source, destination)
 }
 
 /// The source and destination of the world registered as `world`, placed in this process through
@@ -116,22 +117,24 @@ pub(super) struct Executed {
     pub(super) failures: Vec<Failure>,
     /// The reports of those that ended.
     pub(super) reports: Vec<Report>,
+    /// The trace of the events of each that ended, as its report.
+    pub(super) events: Vec<u64>,
     /// How many runs it started.
     pub(super) started: u64,
 }
 
 /// Runs `scenario` for each of `plans`, the pipelines sharing the destination, at once.
 pub(super) async fn execute_all(
-    engine: &Engine,
+    runs: &Runs,
     plans: &[PipelinePlan],
     world: &str,
     placing: Option<&Placing>,
     scenario: Scenario,
 ) -> Vec<Executed> {
-    let first = execute(engine, &plans[0], world, placing, scenario);
+    let first = execute(runs, &plans[0], world, placing, scenario);
     let second = async {
         match plans.get(1) {
-            Some(plan) => Some(execute(engine, plan, world, placing, scenario).await),
+            Some(plan) => Some(execute(runs, plan, world, placing, scenario).await),
             None => None,
         }
     };
@@ -141,7 +144,7 @@ pub(super) async fn execute_all(
 
 /// Runs `scenario` for the pipeline of `plan`.
 async fn execute(
-    engine: &Engine,
+    runs: &Runs,
     plan: &PipelinePlan,
     world: &str,
     placing: Option<&Placing>,
@@ -149,12 +152,12 @@ async fn execute(
 ) -> Executed {
     let (ended, dropped, started) = match scenario {
         Scenario::Plain => (
-            vec![bounded(start(engine, plan, world, placing).await, world).await],
+            vec![bounded(start(runs, plan, world, placing).await, world).await],
             false,
             1,
         ),
         Scenario::Crash(after) => {
-            let run = bounded(start(engine, plan, world, placing).await, world);
+            let run = bounded(start(runs, plan, world, placing).await, world);
             tokio::select! {
                 biased;
                 ended = run => (vec![ended], false, 1),
@@ -168,7 +171,7 @@ async fn execute(
             }
         }
         Scenario::Stop(after) | Scenario::StopNow(after) => {
-            let handle = start(engine, plan, world, placing).await;
+            let handle = start(runs, plan, world, placing).await;
             let control = handle.control();
             let stop = async {
                 tokio::time::sleep(after).await;
@@ -181,10 +184,10 @@ async fn execute(
             (vec![ended], false, 1)
         }
         Scenario::Concurrent(delay) => {
-            let first = bounded(start(engine, plan, world, placing).await, world);
+            let first = bounded(start(runs, plan, world, placing).await, world);
             let second = async {
                 tokio::time::sleep(delay).await;
-                bounded(start(engine, plan, world, placing).await, world).await
+                bounded(start(runs, plan, world, placing).await, world).await
             };
             let (first, second) = tokio::join!(first, second);
             (vec![first, second], false, 2)
@@ -192,27 +195,45 @@ async fn execute(
     };
     let succeeded = ended
         .iter()
-        .any(|(report, _)| report.status == RunStatus::Succeeded);
-    let (reports, failures): (Vec<Report>, Vec<Option<Failure>>) = ended.into_iter().unzip();
-    Executed {
+        .any(|ran| ran.report.status == RunStatus::Succeeded);
+    let mut executed = Executed {
         succeeded: succeeded && !dropped,
-        failures: failures.into_iter().flatten().collect(),
-        reports,
+        failures: Vec::new(),
+        reports: Vec::new(),
+        events: Vec::new(),
         started,
+    };
+    for ran in ended {
+        executed.reports.push(ran.report);
+        executed.events.push(ran.events);
+        executed.failures.extend(ran.failure);
     }
+    executed
+}
+
+/// How a run ended: its report, its failure, and the trace of its events.
+struct Ran {
+    report: Report,
+    failure: Option<Failure>,
+    events: u64,
 }
 
 /// Awaits `run` of the world registered as `world`, panicking if it takes longer than
-/// [`RUN_LIMIT`]; its report, and its failure.
+/// [`RUN_LIMIT`]: its report, its failure and the trace of its events.
 ///
-/// A secret in either is a broken invariant.
-async fn bounded(run: RunHandle, world: &str) -> (Report, Option<Failure>) {
-    let outcome = tokio::time::timeout(RUN_LIMIT, run)
-        .await
-        .expect("every run ends within the limit of virtual time");
+/// A secret in either, or events that disagree with how the run ended, are broken invariants.
+async fn bounded(run: Observed, world: &str) -> Ran {
+    let (outcome, events, wrong) = run.ended(RUN_LIMIT).await;
     if let Some(registered) = World::named(world) {
         Canary::of(world).kept(&registered, &outcome);
+        for finding in wrong {
+            registered.violation(finding);
+        }
     }
     let failure = outcome.error.as_ref().map(Failure::of);
-    (outcome.report, failure)
+    Ran {
+        report: outcome.report,
+        failure,
+        events,
+    }
 }
