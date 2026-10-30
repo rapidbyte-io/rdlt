@@ -778,6 +778,13 @@ struct VaultConfig {
     uncoded_missing_columns: bool,
     /// Publishes a commit whose table lost a column, then refuses it as `column_missing`.
     publish_before_missing: bool,
+    /// Publishes a commit dropping another pipeline's table, its generations swapped in, then
+    /// refuses it as `table_owned`.
+    publish_before_owned: bool,
+    /// Forgets what a commit dropping another pipeline's table staged as it refuses it.
+    forget_refused: bool,
+    /// Forgets what its session staged when a table's creation applies again.
+    forget_staged_on_create_again: bool,
 }
 
 #[derive(Default)]
@@ -1190,6 +1197,19 @@ impl VaultSession {
         None
     }
 
+    /// What the vault does with `meta`, a commit dropping another pipeline's table, as it refuses
+    /// it: nothing, unless set to publish it first or to forget what it staged.
+    fn refused(&self, store: &mut VaultStore, meta: &CommitMeta) {
+        if self.config.publish_before_owned {
+            self.publish(store, meta);
+        }
+        if self.config.forget_refused {
+            store.staged.retain(|(pipeline, segment), _| {
+                *pipeline != self.pipeline || !meta.segments.contains(*segment)
+            });
+        }
+    }
+
     /// Drops the tables `meta` names: their rows, generations, columns and tombstones, and their
     /// owners.
     fn drop_tables(&self, store: &mut VaultStore, meta: &CommitMeta) {
@@ -1401,6 +1421,11 @@ impl Session for VaultSession {
         if self.config.refuse_repeated_changes && alters && !first {
             return Err(ConnectorError::data("the change was already applied"));
         }
+        if self.config.forget_staged_on_create_again && !alters && !first {
+            store
+                .staged
+                .retain(|(pipeline, _), _| *pipeline != self.pipeline);
+        }
         if !self.config.accept_conflicts
             && let Some(conflict) = conflict(&store, change)
         {
@@ -1492,6 +1517,9 @@ impl Session for VaultSession {
             )));
         }
         if let Some(error) = self.intruding(&store, meta) {
+            if !meta.drop_tables.is_empty() {
+                self.refused(&mut store, meta);
+            }
             return Err(error);
         }
         if let Some(error) = self.losing(&store, meta) {
@@ -2087,24 +2115,25 @@ const BROKEN: &[(&str, &[&str])] = &[
     ("swap_others", &["D-OWNED"]),
     ("stale_claims", &["D-DROP"]),
     ("miscount", &["D-COMMIT"]),
-    ("republish", &["D-LANDED"]),
+    ("republish", &["D-LANDED", "D-RETRY"]),
     ("ignore_after", &["D-LANDED"]),
     ("uncoded_stale", &["D-LANDED"]),
-    ("recount_landed", &["D-LANDED"]),
+    ("recount_landed", &["D-LANDED", "D-RETRY"]),
     ("local_landed", &["D-LANDED"]),
-    ("shared_landed", &["D-LANDED"]),
+    ("shared_landed", &["D-LANDED", "D-RETRY"]),
     ("forget_state", &["D-STATE"]),
     ("ignore_deletes", &["D-STATE"]),
     ("keep_staging", &["D-DISCARD"]),
     ("keep_abandoned", &["D-DISCARD"]),
     ("no_fence", &["D-FENCE"]),
     ("wrong_fence_kind", &["D-DROP", "D-FENCE"]),
-    ("publish_all", &["D-COMMIT", "D-DISCARD"]),
+    ("publish_all", &["D-COMMIT", "D-RETRY", "D-DISCARD"]),
     (
         "blank_names",
         &[
             "D-COMMIT",
             "D-LANDED",
+            "D-RETRY",
             "D-DISCARD",
             "D-REPLACE",
             "D-MERGE",
@@ -2123,6 +2152,7 @@ const BROKEN: &[(&str, &[&str])] = &[
         "publish_other",
         &[
             "D-COMMIT",
+            "D-RETRY",
             "D-DISCARD",
             "D-REPLACE",
             "D-MERGE",
@@ -2131,7 +2161,10 @@ const BROKEN: &[(&str, &[&str])] = &[
     ),
     ("local_state", &["D-STATE"]),
     ("stale_writes", &["D-DISCARD"]),
-    ("replace_early", &["D-REPLACE", "D-DELETE", "D-TABLES"]),
+    (
+        "replace_early",
+        &["D-RETRY", "D-REPLACE", "D-DELETE", "D-TABLES"],
+    ),
     (
         "merge_appends",
         &[
@@ -2171,6 +2204,9 @@ const BROKEN: &[(&str, &[&str])] = &[
     ("lose_dropped_columns", &["D-TABLES"]),
     ("uncoded_missing_columns", &["D-TABLES"]),
     ("publish_before_missing", &["D-TABLES"]),
+    ("publish_before_owned", &["D-RETRY"]),
+    ("forget_refused", &["D-RETRY"]),
+    ("forget_staged_on_create_again", &["D-RETRY", "D-SCHEMA"]),
 ];
 
 #[tokio::test]
@@ -2229,10 +2265,15 @@ async fn a_probe_drops_no_column_unless_it_says_it_does() {
 
 #[tokio::test]
 async fn each_broken_destination_behavior_fails_exactly_its_clauses() {
+    let mut wrong = Vec::new();
     for (flag, clauses) in BROKEN {
         let report = certify_vault(flag, Some(flag)).await;
-        assert_eq!(failed(&report), *clauses, "{flag}: {report}");
+        let found = failed(&report);
+        if found != *clauses {
+            wrong.push(format!("{flag} fails {found:?}, not {clauses:?}: {report}"));
+        }
     }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
 #[tokio::test]
@@ -2336,6 +2377,7 @@ async fn visible_staging_fails_every_clause_that_reads_published_data() {
             "D-STAGING",
             "D-COMMIT",
             "D-LANDED",
+            "D-RETRY",
             "D-DISCARD",
             "D-REPLACE",
             "D-SCHEMA",

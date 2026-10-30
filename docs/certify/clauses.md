@@ -76,6 +76,7 @@ A certification cut at its timeout reports what it saw: the clauses already chec
 | `D-STAGING` | staged segments are invisible until committed | — |
 | `D-COMMIT` | a commit publishes exactly its segments and reports their rows | — |
 | `D-LANDED` | the commit whose key landed last, sent again from its session or a newer one, returns its receipt and publishes nothing; a commit expecting another key landed fails fenced, coded commit_stale, and publishes nothing | — |
+| `D-RETRY` | a commit whose try failed is taken again from its session, the same commit by the same key, the session's other work between: one lost before it landed lands whole once, one that landed returns its receipt and publishes nothing again, and, where the destination replaces and drops tables, one that failed after swapping its generation in published nothing and lands whole once what failed it is gone | — |
 | `D-STATE` | committed state records are returned by the next open | — |
 | `D-DISCARD` | segments staged by an earlier session, or that a commit abandons, are never published | — |
 | `D-REPLACE` | a replace generation stays hidden until the commit that finishes it swaps it in | the destination cannot replace |

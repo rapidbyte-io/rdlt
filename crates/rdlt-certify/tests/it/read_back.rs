@@ -41,6 +41,7 @@ async fn a_destination_that_reads_back_is_certified_in_every_clause_that_reads_i
         "D-STAGING",
         "D-COMMIT",
         "D-LANDED",
+        "D-RETRY",
         "D-DISCARD",
         "D-MERGE",
         "D-DELETE",
