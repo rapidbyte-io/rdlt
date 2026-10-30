@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use arrow_array::RecordBatch;
 use rdlt_connector::cost::{Rendering, arrays};
-use rdlt_connector::{ColumnPath, Permit, SchemaError, TableSchema};
+use rdlt_connector::{ColumnPath, Permit, SchemaError};
 use tokio_util::sync::CancellationToken;
 
 use self::changes::{Ignored, split_changes};
@@ -205,7 +205,9 @@ async fn write(
     kind: PushKind,
 ) -> Result<(), Error> {
     if let Some(shape) = context.tables.shape(job.table) {
-        return normalized::write_normalized(job, context, open, units, &shape, kind).await;
+        let parts = &mut schemas.parts;
+        return normalized::write_normalized(job, context, open, parts, units, (&shape, kind))
+            .await;
     }
     let Units { units, room } = units;
     let shares = room.shares(&context.budget);
@@ -538,11 +540,6 @@ fn judged(
         judged.push(Judged { incoming, held });
     }
     Ok(judged)
-}
-
-/// The table schema of `batch`'s columns.
-fn schema_of(job: &PartitionJob, batch: &RecordBatch) -> Result<TableSchema, Error> {
-    TableSchema::from_arrow(&batch.schema()).map_err(|error| schema_invalid(job, &error))
 }
 
 /// The error for a batch of `job`'s stream holding a column with no table schema.

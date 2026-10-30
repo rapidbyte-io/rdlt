@@ -2,7 +2,7 @@ use std::num::{NonZeroU64, NonZeroUsize};
 
 use super::Normalized;
 use crate::Cores;
-use crate::bench::{Corpus, normalize, shred};
+use crate::bench::{Corpus, Normalizing, shred};
 
 fn normalized(roots: u64, per_push: u64) -> Normalized {
     let cores = Cores::new(NonZeroUsize::new(2).unwrap());
@@ -17,9 +17,10 @@ fn a_run_loads_every_root_item_and_tag_on_every_run() {
     assert_eq!(bench.bytes(), bytes as u64);
     // The rows normalizing the corpus makes, counted apart from the engine.
     let shredded = shred(&pushes, 1 << 20).unwrap();
+    let mut normalizing = Normalizing::new(8, &[]);
     let parts = shredded
         .iter()
-        .flat_map(|batch| normalize(batch, 8, &[]).unwrap());
+        .flat_map(|batch| normalizing.normalize(batch).unwrap());
     let rows: usize = parts.map(|(_, batch)| batch.num_rows()).sum();
     assert_eq!(bench.rows(), rows as u64);
     for _ in 0..2 {

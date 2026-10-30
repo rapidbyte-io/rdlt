@@ -20,7 +20,7 @@ use serde_json::{Value as Json, json};
 use super::identity::batch_version_hashes;
 use super::reference::compared::{self, Cut};
 use super::reference::{self, Record};
-use super::{Part, Received, Shape, normalize};
+use super::{Part, PartSchemas, Received, Shape, normalize};
 use crate::compute::{Pool, ready};
 use crate::shred::shred;
 use crate::table::convert::decoded;
@@ -50,7 +50,9 @@ pub(super) fn shredded(records: &[Json], chunk_bytes: usize) -> Vec<RecordBatch>
 pub(super) fn parts(records: &[Json], shape: &Shape) -> Vec<Part> {
     shredded(records, 1 << 20)
         .iter()
-        .flat_map(|batch| normalize(batch, shape).expect("the batch normalizes"))
+        .flat_map(|batch| {
+            normalize(batch, shape, &mut PartSchemas::default()).expect("the batch normalizes")
+        })
         .collect()
 }
 
@@ -184,7 +186,7 @@ fn null_and_empty_arrays_hold_no_rows_and_null_items_are_rows() {
 /// keeps alive beyond the batch's.
 fn child_of(list: ListArray) -> (Vec<i64>, u64) {
     let batch = RecordBatch::try_from_iter([("l", Arc::new(list) as ArrayRef)]).unwrap();
-    let parts = normalize(&batch, &shape(8)).unwrap();
+    let parts = normalize(&batch, &shape(8), &mut PartSchemas::default()).unwrap();
     let column = parts[1].batch.column(0);
     let items = column
         .as_primitive::<Int64Type>()
@@ -239,7 +241,7 @@ fn a_sliced_batch_normalizes_as_the_rows_it_keeps() {
         tables_of(std::slice::from_ref(&sliced), &shape(8)),
         tables_of(&shredded(&records[1..], 1 << 20), &shape(8))
     );
-    let sliced = normalize(&sliced, &shape(8)).unwrap();
+    let sliced = normalize(&sliced, &shape(8), &mut PartSchemas::default()).unwrap();
     // Each table's values are the batch's own, at every depth.
     let mut held = Allocations::of(&batch);
     for part in &sliced[1..] {
@@ -348,7 +350,12 @@ fn a_merge_streams_roots_share_their_keys_id_and_other_streams_roots_have_none()
     assert_eq!(ids[0].len(), 32, "the 32 bytes of its key's hash");
     let (_, parents, roots) = ids_of(&parts, 1);
     assert_eq!((&parents, &roots), (&ids, &ids));
-    let positional = normalize(&shredded(&records, 1 << 20)[0], &shape(8)).unwrap();
+    let positional = normalize(
+        &shredded(&records, 1 << 20)[0],
+        &shape(8),
+        &mut PartSchemas::default(),
+    )
+    .unwrap();
     assert!(positional.iter().all(|part| part.lineage.keys.is_none()));
     let (ids, ..) = ids_of(&positional, 0);
     assert_ne!(ids[0], ids[1], "rows apart are identified apart");
@@ -366,7 +373,7 @@ fn maps_and_large_lists_normalize_like_lists() {
         ("l", Arc::new(large) as ArrayRef),
     ])
     .unwrap();
-    let parts = normalize(&batch, &shape(8)).unwrap();
+    let parts = normalize(&batch, &shape(8), &mut PartSchemas::default()).unwrap();
     let paths: Vec<String> = parts.iter().map(|part| part.path.join(".")).collect();
     assert_eq!(paths, ["", "m", "l"]);
     let map_columns: Vec<String> = parts[1].columns.iter().map(ToString::to_string).collect();
@@ -384,7 +391,13 @@ fn maps_and_large_lists_normalize_like_lists() {
 #[test]
 fn numbers_hash_alike_whatever_their_type_and_apart_from_text() {
     let batch = |values: ArrayRef| RecordBatch::try_from_iter([("v", values)]).unwrap();
-    let ids = |batch: RecordBatch| ids_of(&normalize(&batch, &keyed("v")).unwrap(), 0).0;
+    let ids = |batch: RecordBatch| {
+        ids_of(
+            &normalize(&batch, &keyed("v"), &mut PartSchemas::default()).unwrap(),
+            0,
+        )
+        .0
+    };
     let integer = ids(batch(Arc::new(Int64Array::from(vec![3]))));
     let float = ids(batch(Arc::new(Float64Array::from(vec![3.0]))));
     let text = ids(batch(Arc::new(StringArray::from(vec!["3"]))));
@@ -639,7 +652,7 @@ fn fields_of_a_null_object_are_null_whatever_the_array_holds_beneath() {
     let nulls = NullBuffer::from(vec![true, false]);
     let object = StructArray::new(fields, vec![values], Some(nulls));
     let batch = RecordBatch::try_from_iter([("o", Arc::new(object) as ArrayRef)]).unwrap();
-    let parts = normalize(&batch, &shape(8)).unwrap();
+    let parts = normalize(&batch, &shape(8), &mut PartSchemas::default()).unwrap();
     let a = parts[0].batch.column(0);
     assert_eq!(a.as_primitive::<Int64Type>().value(0), 1);
     assert!(a.is_null(1), "the null object's field is null, not 2");
@@ -742,7 +755,12 @@ fn encoded_fields() -> Vec<ArrayRef> {
 fn every_field_under_a_null_object_is_null_whatever_its_encoding() {
     for values in encoded_fields() {
         let kind = values.data_type().clone();
-        let parts = normalize(&under_a_null_object(values), &shape(8)).unwrap();
+        let parts = normalize(
+            &under_a_null_object(values),
+            &shape(8),
+            &mut PartSchemas::default(),
+        )
+        .unwrap();
         let column = decoded(parts[0].batch.column(0)).unwrap();
         assert_eq!(
             (column.is_valid(0), column.is_null(1)),
@@ -754,7 +772,12 @@ fn every_field_under_a_null_object_is_null_whatever_its_encoding() {
 
 #[test]
 fn a_null_field_under_a_null_object_stays_null() {
-    let parts = normalize(&under_a_null_object(Arc::new(NullArray::new(2))), &shape(8)).unwrap();
+    let parts = normalize(
+        &under_a_null_object(Arc::new(NullArray::new(2))),
+        &shape(8),
+        &mut PartSchemas::default(),
+    )
+    .unwrap();
     let column = parts[0].batch.column(0);
     assert_eq!(
         (column.data_type(), column.logical_null_count()),
@@ -773,7 +796,7 @@ fn every_item_field_under_a_null_object_is_null_whatever_its_encoding() {
         let offsets = OffsetBuffer::from_lengths([2]);
         let list = ListArray::try_new(item, offsets, Arc::new(items), None).unwrap();
         let batch = RecordBatch::try_from_iter([("l", Arc::new(list) as ArrayRef)]).unwrap();
-        let parts = normalize(&batch, &shape(8)).unwrap();
+        let parts = normalize(&batch, &shape(8), &mut PartSchemas::default()).unwrap();
         let child = parts.iter().find(|part| !part.path.is_empty()).unwrap();
         let column = decoded(child.batch.column(0)).unwrap();
         assert_eq!(
@@ -803,7 +826,7 @@ fn a_union_under_an_object_is_an_internal_error() {
         key: vec![Arc::from("id")],
         ..shape(8)
     };
-    let error = normalize(&batch, &keyed).unwrap_err();
+    let error = normalize(&batch, &keyed, &mut PartSchemas::default()).unwrap_err();
     assert!(
         matches!(&error, ArrowError::InvalidArgumentError(message) if message == "a union cannot be a column of a table"),
         "{error}"

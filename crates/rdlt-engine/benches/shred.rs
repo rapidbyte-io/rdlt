@@ -13,8 +13,8 @@ use arrow_schema::{DataType, Field as ArrowField, Schema, SchemaRef};
 use bytes::Bytes;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use rdlt_engine::bench::{
-    CHUNK_BYTES, CORPUS_BYTES, Corpus, PUSH_BYTES, check_json, json_column, logical_bytes,
-    normalize, pool_cores, shred, shred_counted, shred_on,
+    CHUNK_BYTES, CORPUS_BYTES, Corpus, Normalizing, PUSH_BYTES, check_json, json_column,
+    logical_bytes, pool_cores, shred, shred_counted, shred_on,
 };
 use rdlt_engine::{Cores, Env, SystemEnv};
 
@@ -218,12 +218,14 @@ fn normalizing(c: &mut Criterion) {
     });
     for (name, key) in [("keyed", &["id"][..]), ("keyless", &[][..])] {
         group.bench_function(name, |b| {
+            let mut normalizing = Normalizing::new(8, key);
             b.iter(|| {
                 let batches = shred(&pushes, CHUNK_BYTES).expect("the corpus shreds");
                 let parts: usize = batches
                     .iter()
                     .map(|batch| {
-                        normalize(batch, 8, key)
+                        normalizing
+                            .normalize(batch)
                             .expect("the batch normalizes")
                             .len()
                     })

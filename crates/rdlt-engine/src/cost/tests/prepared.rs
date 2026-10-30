@@ -13,7 +13,7 @@ use rdlt_connector::{
 
 use super::lowering::{SLACK, peak};
 use crate::fixtures::lowering::{Case, LoweringCase, Storage};
-use crate::normalize::{Lineage, Parent, Part, Shape, normalize};
+use crate::normalize::{Lineage, Parent, Part, PartSchemas, Shape, normalize};
 use crate::table::{Incoming, LineageColumns, LoweringPlan, MetaNames, Model, Stamp, TableView};
 
 /// Rows of each case's batch: enough that what an array takes beside its values is little of it.
@@ -112,7 +112,7 @@ fn preparing_a_child_tables_lineage_at_the_widest_stamp_allocates_no_more_than_i
         whole: std::collections::BTreeSet::new(),
         key: Vec::new(),
     };
-    let parts = normalize(&batch, &shape).unwrap();
+    let parts = normalize(&batch, &shape, &mut PartSchemas::default()).unwrap();
     let part = &parts[1];
     // Every number of each id at its widest: 37 bytes an id.
     let lineage = widest(part.batch.num_rows());

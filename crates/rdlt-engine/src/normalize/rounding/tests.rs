@@ -16,7 +16,7 @@ use rdlt_connector::{SchemaError, TableSchema};
 use super::{Rounding, judge};
 use crate::normalize::encodings::{batch, wrapped};
 use crate::normalize::placement::Container;
-use crate::normalize::{Part, Shape, normalize};
+use crate::normalize::{Part, PartSchemas, Shape, normalize};
 use crate::table::Incoming;
 
 const EDGE: i64 = 1 << 53;
@@ -402,7 +402,9 @@ fn an_encoded_container_under_an_object_with_nulls_stays_a_column() {
             let kind = plain.data_type().clone();
             let plain = batch(plain, None, item);
             let nulled = batch(nulled, Some(NullBuffer::from(vec![true, false])), item);
-            let parts = |batch: &RecordBatch| tables(&normalize(batch, &shape(8)).unwrap());
+            let parts = |batch: &RecordBatch| {
+                tables(&normalize(batch, &shape(8), &mut PartSchemas::default()).unwrap())
+            };
             assert_eq!(parts(&nulled), parts(&plain), "{kind}, item {item}");
             let mut walked = Rounding::new();
             judge(std::slice::from_ref(&nulled), &shape(8), &mut walked).unwrap();
@@ -465,11 +467,11 @@ fn a_column_with_no_logical_type_is_refused_wherever_normalizing_puts_it() {
 fn split_rounding(batches: &[RecordBatch], shape: &Shape) -> Rounding {
     let joined = arrow_select::concat::concat_batches(&batches[0].schema(), batches).unwrap();
     let mut rounding = Rounding::new();
-    for part in normalize(&joined, shape).unwrap() {
+    for part in normalize(&joined, shape, &mut PartSchemas::default()).unwrap() {
         let schema = Arc::new(TableSchema::from_arrow(&part.batch.schema()).unwrap());
         let incoming = Incoming::of(
             schema,
-            part.columns.clone().into(),
+            Arc::clone(&part.columns),
             std::slice::from_ref(&part.batch),
         );
         if !incoming.rounding.is_empty() {

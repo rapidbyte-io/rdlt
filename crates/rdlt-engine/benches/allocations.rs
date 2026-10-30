@@ -29,8 +29,8 @@ use rdlt_connector_reference::MemoryDestination;
 use rdlt_engine::Cores;
 use rdlt_engine::bench::{
     CHUNK_BYTES, CORPUS_BYTES, Cell, Corpus, Form, JsonCell, JsonPassthrough, Lowering, Normalized,
-    Passthrough, Replayed, Wide, check_json, counted, json_column, normalize, null_sink, pruned,
-    replay, rows_pushed, shred,
+    Normalizing, Passthrough, Replayed, Wide, check_json, counted, json_column, null_sink, replay,
+    rows_pushed, shred,
 };
 use rdlt_wire::{Decoder, Encoder, Limits};
 use stats_alloc::{INSTRUMENTED_SYSTEM, StatsAlloc};
@@ -243,8 +243,9 @@ fn shredding() {
         report(&format!("normalize/{name}"), || {
             let shredded = shred(&pushes, CHUNK_BYTES).expect("the corpus shreds");
             if let Some(key) = key {
+                let mut normalizing = Normalizing::new(8, key);
                 for batch in &shredded {
-                    black_box(normalize(batch, 8, key).expect("the batch normalizes"));
+                    black_box(normalizing.normalize(batch).expect("the batch normalizes"));
                 }
             }
             moved(&shredded)
@@ -446,12 +447,14 @@ fn widened(times: usize) {
     }
 }
 
-/// Normalizing, to depth 8 and with `key`, the batches [`COUNTED_BYTES`] of `corpus` shreds into.
+/// Normalizing, to depth 8 and with `key`, the batches [`COUNTED_BYTES`] of `corpus` shreds into,
+/// the schemas of their parts kept as a partition keeps them.
 fn normalized(corpus: Corpus, key: &[&str], times: usize) {
     let batches = shred(&corpus.pushes(COUNTED_BYTES), CHUNK_BYTES).expect("the corpus shreds");
+    let mut normalizing = Normalizing::new(8, key);
     for _ in 0..times {
         for batch in &batches {
-            black_box(normalize(batch, 8, key).expect("the batch normalizes"));
+            black_box(normalizing.normalize(batch).expect("the batch normalizes"));
         }
     }
 }
@@ -461,9 +464,14 @@ fn normalized(corpus: Corpus, key: &[&str], times: usize) {
 fn dropped(corpus: Corpus, times: usize) {
     let batches = shred(&corpus.pushes(COUNTED_BYTES), CHUNK_BYTES).expect("the corpus shreds");
     let every = NonZeroUsize::new(10).expect("ten is not zero");
+    let mut normalizing = Normalizing::new(8, &[]);
     for _ in 0..times {
         for batch in &batches {
-            black_box(pruned(batch, 8, every).expect("the batch normalizes"));
+            black_box(
+                normalizing
+                    .pruned(batch, every)
+                    .expect("the batch normalizes"),
+            );
         }
     }
 }

@@ -18,14 +18,14 @@ use super::pieces::{self, Lowered};
 use super::units::Units;
 use super::{
     Held, OpenSegment, PartitionContext, PartitionJob, Room, full, queue, reserve, schema_invalid,
-    schema_of, stamp, taking,
+    stamp, taking,
 };
 use crate::budget::{Shares, TooLarge};
 use crate::cost::{LINEAGE_ITEM, SPLIT_COPIES, lineage_row};
 use crate::error::{Error, codes};
 use crate::limits::MIN_PIECE;
 use crate::normalize::rounding::Rounding;
-use crate::normalize::{self, Dropped, Lineage, Part, Pruned, PushKind, Shape};
+use crate::normalize::{self, Dropped, Lineage, Part, PartSchemas, Pruned, PushKind, Shape};
 use crate::table::{
     Admission, Creation, Incoming, LoweringPlan, Prepared, Stamp, key_values, with_columns,
 };
@@ -50,9 +50,9 @@ pub(super) async fn write_normalized(
     job: &PartitionJob,
     context: &PartitionContext,
     open: &mut OpenSegment,
+    schemas: &mut PartSchemas,
     units: Units,
-    shape: &Arc<Shape>,
-    kind: PushKind,
+    (shape, kind): (&Arc<Shape>, PushKind),
 ) -> Result<(), Error> {
     let Units { units, room } = units;
     let pieces = sliced(job, context, (&room, shape), units).await?;
@@ -61,15 +61,14 @@ pub(super) async fn write_normalized(
     let last = pieces.len().saturating_sub(1);
     for (piece, held) in pieces.into_iter().enumerate() {
         let mut reserved = reserve(job, context, &room, request).await?;
-        let (shape, stream, parts) = (Arc::clone(shape), job.stream.clone(), held.batches.clone());
-        let parts = on_pool(context, move || split(&stream, &parts, &shape)).await?;
+        let parts = split_kept(job, context, schemas, shape, &held.batches).await?;
         let made = made(&held.batches, &parts);
         let received = parts.first().map_or(0, |part| part.batch.num_rows() as u64);
         if received == 0 {
             continue;
         }
         let stamp = stamp(context, open, received);
-        let (unit, discarded) = plan_parts(job, context, parts, &mut flush).await?;
+        let (unit, discarded) = plan_parts(job, context, (parts, schemas), &mut flush).await?;
         open.discarded_values += discarded.values;
         open.discarded_rows += discarded.rows;
         let kept = kept(unit.iter().map(|(_, part, _)| part));
@@ -260,7 +259,7 @@ enum Refused {
 async fn plan_parts(
     job: &PartitionJob,
     context: &PartitionContext,
-    parts: Vec<Part>,
+    (parts, schemas): (Vec<Part>, &mut PartSchemas),
     flush: &mut Flush,
 ) -> Result<(PlannedParts, Discarded), Error> {
     let kind = flush.kind;
@@ -303,9 +302,11 @@ async fn plan_parts(
         } else {
             context.tables.child(job.table, path).await?
         };
+        let part = &pruned.part;
+        let schema = schemas.table(&part.path, part.batch.schema_ref());
         let incoming = Incoming {
-            schema: Arc::new(schema_of(job, &pruned.part.batch)?),
-            paths: Arc::from(pruned.part.columns.as_slice()),
+            schema: schema.map_err(|error| schema_invalid(job, &error))?,
+            paths: Arc::clone(&part.columns),
             rounding,
             creation: flush.creation(context, table),
         };
@@ -444,11 +445,33 @@ fn unnamable(job: &PartitionJob, path: &[Arc<str>]) -> Error {
 /// Bytes: the most of an array's path an error quotes.
 const PATH_SHOWN: usize = 256;
 
-/// `parts`, one batch once concatenated, normalized as `shape`.
+/// `parts`, a piece of a unit, normalized as `shape` on the compute pool, their parts' schemas
+/// those `schemas` kept of earlier batches of their schema where they hold, and kept there.
+async fn split_kept(
+    job: &PartitionJob,
+    context: &PartitionContext,
+    schemas: &mut PartSchemas,
+    shape: &Arc<Shape>,
+    parts: &[RecordBatch],
+) -> Result<Vec<Part>, Error> {
+    let (shape, stream, parts) = (Arc::clone(shape), job.stream.clone(), parts.to_vec());
+    let mut kept = std::mem::take(schemas);
+    let splitting = move || {
+        let parts = split(&stream, &parts, &shape, &mut kept);
+        (parts, kept)
+    };
+    let (parts, kept) = on_pool(context, splitting).await;
+    *schemas = kept;
+    parts
+}
+
+/// `parts`, one batch once concatenated, normalized as `shape`, the schemas of what they split
+/// into kept in `schemas`.
 pub(super) fn split(
     stream: &StreamName,
     parts: &[RecordBatch],
     shape: &Shape,
+    schemas: &mut PartSchemas,
 ) -> Result<Vec<Part>, Error> {
     if let Some(key) = keys::taken_apart(&parts[0].schema(), shape) {
         let detail = format!(
@@ -476,7 +499,7 @@ pub(super) fn split(
         columns[index] = key_values(stream, column, batch.column(index), &|_| true)?;
     }
     let batch = with_columns(&batch, columns).map_err(failed)?;
-    normalize::normalize(&batch, shape).map_err(failed)
+    normalize::normalize(&batch, shape, schemas).map_err(failed)
 }
 
 /// Bytes: what splitting `piece`, slices of a unit, into `parts` holds beyond the unit until the

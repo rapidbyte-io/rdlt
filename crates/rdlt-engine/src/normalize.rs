@@ -15,6 +15,7 @@ pub(crate) mod placement;
 #[cfg(any(test, feature = "bench"))]
 pub(crate) mod reference;
 pub(crate) mod rounding;
+mod schemas;
 #[cfg(test)]
 mod tests;
 
@@ -28,7 +29,7 @@ use arrow_array::{
     UInt32Array,
 };
 use arrow_buffer::NullBuffer;
-use arrow_schema::{ArrowError, DataType, Field as ArrowField, FieldRef, Schema};
+use arrow_schema::{ArrowError, DataType, Field as ArrowField, FieldRef};
 use arrow_select::nullif::nullif;
 use placement::{Container, Placement, placement};
 use rdlt_connector::ColumnPath;
@@ -37,6 +38,7 @@ use crate::table::convert::decoded;
 
 pub(crate) use cascade::{Dropped, Pruned};
 pub(crate) use lineage::{Lineage, Parent, Received};
+pub(crate) use schemas::PartSchemas;
 
 /// How a stream's batches normalize.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -70,7 +72,7 @@ pub(crate) struct Part {
     /// the array its rows come from for a child table.
     pub(crate) path: Vec<Arc<str>>,
     /// The path of each of the batch's columns within its table.
-    pub(crate) columns: Vec<ColumnPath>,
+    pub(crate) columns: Arc<[ColumnPath]>,
     /// The table's data columns, named so no two paths share a name.
     pub(crate) batch: RecordBatch,
     pub(crate) lineage: Lineage,
@@ -101,8 +103,15 @@ struct Table {
 /// child tables, the parents' parts before their children's.
 ///
 /// A merge stream's root rows' ids are its key's hashes, which every part shares; no other row
-/// has an id until lowering builds it from its position.
-pub(crate) fn normalize(batch: &RecordBatch, shape: &Shape) -> Result<Vec<Part>, ArrowError> {
+/// has an id until lowering builds it from its position. The parts' schemas are those `schemas`
+/// kept of earlier batches of `batch`'s schema where they hold, and are kept there for the
+/// batches that follow.
+pub(crate) fn normalize(
+    batch: &RecordBatch,
+    shape: &Shape,
+    schemas: &mut PartSchemas,
+) -> Result<Vec<Part>, ArrowError> {
+    schemas.keep(batch.schema_ref());
     let keys = if shape.key.is_empty() {
         None
     } else {
@@ -125,7 +134,7 @@ pub(crate) fn normalize(batch: &RecordBatch, shape: &Shape) -> Result<Vec<Part>,
         keys: keys.clone(),
         parent: None,
     };
-    parts.push(root.part(Vec::new(), batch.num_rows(), lineage)?);
+    parts.push(root.part(Vec::new(), batch.num_rows(), lineage, schemas)?);
     let parents = Rows {
         path: &[],
         part: 0,
@@ -133,7 +142,14 @@ pub(crate) fn normalize(batch: &RecordBatch, shape: &Shape) -> Result<Vec<Part>,
     };
     let normalized = (shape.max_depth, keys.as_ref());
     for (path, array, depth) in arrays {
-        expand(&path, &array, depth, parents, normalized, &mut parts)?;
+        expand(
+            &path,
+            &array,
+            depth,
+            parents,
+            normalized,
+            (&mut parts, schemas),
+        )?;
     }
     Ok(parts)
 }
@@ -188,26 +204,22 @@ impl Table {
         }
     }
 
-    /// The part of `rows` rows at `path` this table holds.
-    fn part(self, path: Vec<Arc<str>>, rows: usize, lineage: Lineage) -> Result<Part, ArrowError> {
-        let mut columns = Vec::with_capacity(self.columns.len());
-        let mut fields = Vec::with_capacity(self.columns.len());
-        let mut arrays = Vec::with_capacity(self.columns.len());
-        for (path, field, array) in self.columns {
-            // The field keeps its metadata, such as the JSON and UUID extension names.
-            let field = field
-                .as_ref()
-                .clone()
-                .with_name(name(&path))
-                .with_data_type(array.data_type().clone())
-                .with_nullable(true);
-            columns.push(path);
-            fields.push(field);
-            arrays.push(array);
-        }
+    /// The part of `rows` rows at `path` this table holds, its schema kept in `schemas`.
+    fn part(
+        self,
+        path: Vec<Arc<str>>,
+        rows: usize,
+        lineage: Lineage,
+        schemas: &mut PartSchemas,
+    ) -> Result<Part, ArrowError> {
+        let (schema, columns) = schemas.part(&path, &self.columns);
+        let arrays = self
+            .columns
+            .into_iter()
+            .map(|(_, _, array)| array)
+            .collect();
         let options = RecordBatchOptions::new().with_row_count(Some(rows));
-        let batch =
-            RecordBatch::try_new_with_options(Arc::new(Schema::new(fields)), arrays, &options)?;
+        let batch = RecordBatch::try_new_with_options(schema, arrays, &options)?;
         Ok(Part {
             path,
             columns,
@@ -283,7 +295,7 @@ pub(crate) fn as_list(array: &ArrayRef) -> Result<ListArray, ArrowError> {
 
 /// Adds the child table at `path` holding the items of `array`, whose rows are `parents`, then its
 /// own child tables, of a stream normalized to `max_depth` whose root rows' ids are `keys`, where
-/// a merge identifies them by key.
+/// a merge identifies them by key, to `parts`, their schemas kept in `schemas`.
 ///
 /// Null and empty arrays hold no rows; a null item is a row.
 fn expand(
@@ -292,7 +304,7 @@ fn expand(
     depth: u8,
     parents: Rows<'_>,
     (max_depth, keys): (u8, Option<&ArrayRef>),
-    parts: &mut Vec<Part>,
+    (parts, schemas): (&mut Vec<Part>, &mut PartSchemas),
 ) -> Result<(), ArrowError> {
     let list = as_list(array)?;
     let Some(items) = Items::of(&list) else {
@@ -325,7 +337,7 @@ fn expand(
             idx: Arc::new(items.idx),
         }),
     };
-    parts.push(table.part(path.to_vec(), values.len(), lineage)?);
+    parts.push(table.part(path.to_vec(), values.len(), lineage, schemas)?);
     let rows = Rows {
         path,
         part,
@@ -339,7 +351,7 @@ fn expand(
             child_depth,
             rows,
             (max_depth, keys),
-            parts,
+            (parts, schemas),
         )?;
     }
     Ok(())
