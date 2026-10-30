@@ -803,7 +803,8 @@ which one served connection cannot carry ([served.md](served.md), "Many tables")
 - **Checks.** Every run checks every row its streams pushed lands.
 - **Running.** `just bench passthrough 0-3 tables`. A followed run lasts ten seconds, so each
   followed cell takes about two minutes. As a test, each cell runs once with the same pushes 20 ms
-  apart, committed every 40 ms and followed for two seconds.
+  apart, committed every 40 ms and followed for two seconds, then on until every row has landed,
+  as a loaded host may still be pushing at the two seconds' end.
 
 Measured in the three rounds of the chosen cells above, on their tree and cores, where each read
 took a part of its own, so the cells of 192 and 256 streams ran within the least budget that

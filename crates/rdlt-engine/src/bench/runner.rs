@@ -12,7 +12,7 @@ use tokio::runtime::Runtime;
 
 use crate::{
     CommitPolicy, ComputePoolError, Cores, Engine, EngineConfig, PipelinePlan, Report, RunOutcome,
-    StreamPlan, SystemEnv,
+    StopMode, StreamPlan, SystemEnv,
 };
 
 /// A runtime, and an engine on it with the plan it loads.
@@ -134,18 +134,25 @@ impl Runner {
     }
 
     /// Runs the engine from `source` into `destination` while `beside` runs beside it, both
-    /// started at once; the run's report and what `beside` returned.
+    /// started at once, and stops the run after a commit once `beside` returns; the run's report
+    /// and what `beside` returned.
     ///
     /// # Panics
     ///
     /// Panics where the run fails.
-    pub(super) fn load_beside<F: Future>(
+    pub(super) fn follow_beside<F: Future>(
         &self,
         source: Arc<dyn Source>,
         destination: Arc<dyn Destination>,
         beside: F,
     ) -> (Report, F::Output) {
         let run = self.engine.run(self.plan.clone(), source, destination);
+        let control = run.control();
+        let beside = async {
+            let output = beside.await;
+            control.stop(StopMode::AfterCommit);
+            output
+        };
         let (outcome, beside) = self.runtime.block_on(async { tokio::join!(run, beside) });
         assert!(outcome.error.is_none(), "{:?}", outcome.error);
         (outcome.report, beside)

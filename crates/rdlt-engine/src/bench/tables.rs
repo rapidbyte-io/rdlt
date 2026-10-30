@@ -1,15 +1,17 @@
 //! Many tables: streams followed at a low rate, and a snapshot of many small tables.
 //!
 //! A followed stream is one unbounded partition pushing a batch of a thousand rows and a
-//! checkpoint a pace apart on the bench's clock, committed on a short interval, for a fixed span;
-//! the snapshot runs at the engine's defaults. Each writes through as many writers as lanes, and
-//! every run lands every row it pushes.
+//! checkpoint a pace apart on the bench's clock, committed on a short interval, for a fixed span
+//! and on until every row it pushed has landed; the snapshot runs at the engine's defaults. Each
+//! writes through as many writers as lanes, and every run lands every row it pushes.
 
+mod landing;
 #[cfg(test)]
 mod tests;
 
 use std::fmt;
 use std::num::{NonZeroU16, NonZeroU64, NonZeroUsize};
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -25,9 +27,14 @@ use crate::budget::Shares;
 use crate::env::{Env, InlineEnv};
 use crate::{CommitPolicy, ComputePoolError, Cores, EngineConfig, PipelinePlan, Report, Until};
 
+use landing::Landing;
+
 /// Calls a run holds open on a served source's connection beside its reads: the heartbeat, and
 /// one control call at a time, as a commit's acknowledgement.
 const BESIDE_READS: usize = 2;
+
+/// How long past its span a followed run waits at most for every row it pushed to land.
+const LANDED_WITHIN: Duration = Duration::from_secs(30);
 
 /// One many-table cell.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -137,7 +144,8 @@ pub struct Schedule {
     pub interval: Duration,
     /// How long after its start a run's streams are quiet: every push made and committed.
     pub quiet: Duration,
-    /// How long a run follows its streams.
+    /// How long a run follows its streams, and longer where rows they pushed have yet to land
+    /// at its end.
     pub span: Duration,
 }
 
@@ -184,7 +192,8 @@ pub struct Tables {
 impl Tables {
     /// `cell` on a runtime of `cores`' workers and an engine within `cores`: a followed cell
     /// reading a partition more than its streams within the default budget, committing on
-    /// `schedule`'s interval and following for its span; the snapshot at the engine's defaults.
+    /// `schedule`'s interval and following until the bench stops it; the snapshot at the
+    /// engine's defaults.
     ///
     /// # Errors
     ///
@@ -212,7 +221,7 @@ impl Tables {
                     .into_iter()
                     .map(|stream| stream.read(ReadMode::Incremental));
                 let plan = PipelinePlan::new(pipeline, plans).expect("a valid plan");
-                let plan = plan.with_until(Until::For(schedule.span));
+                let plan = plan.with_until(Until::Forever);
                 (config.expect("a valid configuration"), plan)
             }
             TablesCell::Snapshot => {
@@ -296,6 +305,10 @@ impl Tables {
     /// Runs the engine from `source` into `destination`, reading `meter` at the start and the
     /// end of the run's window: a followed run's quiet seconds, the whole of a snapshot.
     ///
+    /// A followed run stops after a commit at its span's end once every row it pushed has
+    /// landed, as a loaded host may still be pushing then, or half a minute past its span
+    /// regardless, when the rows it lacks fail it.
+    ///
     /// # Panics
     ///
     /// Panics where the run fails, or lands other rows than the cell pushes.
@@ -308,15 +321,18 @@ impl Tables {
         let clock = InlineEnv;
         let (report, (readings, window)) = match self.cell {
             TablesCell::Followed(_) => {
-                let quiet = self.schedule.quiet;
+                let landed = Arc::new(AtomicU64::new(0));
+                let destination = Arc::new(Landing::new(destination, Arc::clone(&landed)));
+                let (quiet, rows) = (self.schedule.quiet, self.cell.rows());
                 let metered = async {
                     clock.sleep(quiet).await;
                     let (first, began) = (meter(), clock.instant());
                     clock.sleep(self.schedule.span.saturating_sub(quiet)).await;
                     let (last, ended) = (meter(), clock.instant());
+                    landing::until_landed(&landed, rows, LANDED_WITHIN).await;
                     ([first, last], ended.saturating_duration_since(began))
                 };
-                self.runner.load_beside(source, destination, metered)
+                self.runner.follow_beside(source, destination, metered)
             }
             TablesCell::Snapshot => {
                 let (first, began) = (meter(), clock.instant());
