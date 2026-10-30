@@ -278,15 +278,27 @@ impl Measure<'_> {
             })
     }
 
-    /// The next piece of the batch from row `first`: the longest run of rows whose stretches,
-    /// as they were measured, expand to no more than the limit together, and one row at least.
+    /// The next piece of the batch from row `first`: from its first row, the whole batch where
+    /// it expands to no more than the limit, measured once; otherwise the longest run of rows
+    /// whose stretches, as they were measured, expand to no more than the limit together, and
+    /// one row at least.
     ///
-    /// Stretches are measured each twice as long as the last while they fit, and half as long
-    /// once one did not, each no further than what the piece has left: a piece costs about one
-    /// measuring of its rows and of half as many again. The stretches' sum is never less than
-    /// what the rows expand to measured together.
+    /// A batch is measured whole first, no further than the limit, so one that does not fit
+    /// costs a piece's measuring once more. Then stretches are measured each twice as long as
+    /// the last while they fit, and half as long once one did not, each no further than what the
+    /// piece has left: a piece costs about one measuring of its rows and of half as many again.
+    /// The stretches' sum is never less than what the rows expand to measured together.
     pub fn piece(&mut self, first: usize) -> Piece {
         let (rows, limit) = (self.batch.num_rows(), self.meter.limit());
+        if first == 0 {
+            let whole = self.stretch(0..rows, limit);
+            if whole <= limit {
+                return Piece {
+                    end: rows,
+                    bytes: whole,
+                };
+            }
+        }
         let mut end = first.saturating_add(1).min(rows);
         let mut bytes = self.stretch(first..end, limit);
         // How many rows are tried next while every stretch fitted, and once one did not, how
