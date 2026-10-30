@@ -178,10 +178,10 @@ impl ShredCounts {
 /// Waits for room in a memory budget, by the share waited for.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct Waits {
-    /// Pushes waiting for room to be admitted.
+    /// Pushes of reads in the engine's process waiting for room to be admitted.
     pub intake: Waited,
-    /// Frames of served reads waiting for room among pushes to be decoded, apart from the
-    /// pushes they carry.
+    /// Frames of served reads waiting for room among pushes to be decoded, charged for the
+    /// pushes they carry, which then wait for none.
     pub decode: Waited,
     /// Pieces waiting for room to be lowered.
     pub work: Waited,

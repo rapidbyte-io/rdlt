@@ -33,8 +33,8 @@ budget before it is held, or bounded by a limit with a typed refusal.
   | cursors | 1/64 | 4 MiB | the cursors of seals waiting for a commit |
   | tables | 1/32 | 8 MiB | what a commit records of each changed table, its schema and names, from the change until the commit lands |
   | reads | 1/4 | 64 MiB | what reads keep beside their events: a decoder's schema and dictionaries |
-  | answers | 1/16 | 16 MiB | what decoding a remote connector's answers holds, but a read's frames, from before each is decoded until it is (ADR 0042) |
-  | data | the rest, 41/64 | 164 MiB | pushes waiting to be lowered, and what lowering makes of them; a read's frame from before it is decoded until it is |
+  | answers | 1/16 | 16 MiB | what decoding a remote connector's answers holds, until each is decoded, but a read's frames (ADR 0042) |
+  | data | the rest, 41/64 | 164 MiB | pushes waiting to be lowered, and what lowering makes of them; a served read's frame from before it is decoded, as the push it carries |
 
   - Within the data, one request for lowering takes a quarter of the budget at most, and
     pushes never take the last quarter: a request for lowering always fits once the pieces
@@ -387,6 +387,17 @@ budget before it is held, or bounded by a limit with a typed refusal.
 - **Admission takes the event.** `Admission::admit` is given the event, and the engine costs it
   before it waits: a push by what it keeps alive, a checkpoint by its cursor's bytes. The wait
   borrows nothing of the event, which the sink holds beside it.
+- **A served frame is charged once.** The host charges a read's frame, before it is decoded, what
+  decoding it holds or what the push it carries is charged, whichever is more: a batch's
+  allocation, the schema and dictionaries its read's decoder keeps and its arrays; a JSON push's
+  charge. It knows what a frame carries by the field its encoding sets first. The frame's charge
+  goes with its event: `Admission::admit_charged` holds a push within it, shrunk to the push's
+  charge, and waits for nothing, so a served push never waits for room once decoded. A push
+  charged more than its frame, which only an encoding that sets the frame twice makes, is
+  refused, `malformed_frame`, and freed before its charge goes. Any other event's frame charge
+  goes before the event is admitted; a dictionary's once the read's own charge holds it. Tests
+  hold every type and encoding the test kit draws, dictionaries and a thousand columns to a
+  frame charged no less than its push.
 - **A unit's pieces share what is charged.** A piece lowered from a unit is charged for the
   allocations it keeps alive beyond the unit's batches, each once, and for its batch's arrays;
   the pieces share what holds the unit, so its batches and permits hold until its last piece is
@@ -479,8 +490,9 @@ budget before it is held, or bounded by a limit with a typed refusal.
 ## The bound
 
 A run never reserves more than its memory budget, and its heap stays within the budget, a fifth
-of it and 32 MiB, beside what is not reserved: the push or frame each read holds before it is
-admitted, and what a remote connector's calls hold in transport.
+of it and 32 MiB, beside what is not reserved: the push a read in the engine's process holds
+before it is admitted, or the frame a served read holds whole before it is charged, and what a
+remote connector's calls hold in transport.
 
 - The first is one push or one frame a partition, within the wire's limits.
 - The second is each open call's stream window on a remote connection, `CREDIT_FLOOR` (4 MiB),
@@ -518,10 +530,10 @@ admitted, and what a remote connector's calls hold in transport.
   or a row is given room while it runs. Over each attempt, the most the thread holds beyond its
   charge stays within an allowance and, where the connectors listen on the simulated network or are
   played in processes and share the thread, what the reads hold between the source and the engine:
-  for each partition each run reads, 4 of the attempt's largest event, a push or a checkpoint's
-  cursor (the host's event waiting for admission, the batch being cut and its piece waiting for
-  credit, and a frame sent past its credit); what the connector's channel holds, 16 of the largest
-  event or, where it is less, the host's frame limit, the largest push and 16 of the largest cursor;
+  for each partition each run reads, 3 of the attempt's largest event, a push or a checkpoint's
+  cursor (the batch being cut and its piece waiting for credit, and a frame sent past its
+  credit); what the connector's channel holds, 16 of the largest event or, where it is less, the
+  host's frame limit, the largest push and 16 of the largest cursor;
   and the frames credit lets go before the host takes them, two of the largest or the host's credit
   floor of 4 MiB,
   whichever is more. The allowance is what the world holds beside the engine and keeps uncounted,
