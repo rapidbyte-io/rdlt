@@ -2,7 +2,7 @@
 //! lowered by plans into a table each batch evolves, for any destination's capabilities, against
 //! the reference lowering each value on its own.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -26,6 +26,7 @@ use crate::error::{ErrorKind, codes};
 use crate::naming::Naming;
 use crate::plan::{StreamPlan, WriteMode};
 use crate::policy::{Nested, SchemaPolicy, SchemaSettings};
+use crate::report::DiscardReason;
 use crate::table::resolve::Route;
 use crate::table::{
     ChangeLayout, Incoming, LineageColumns, MetaNames, Model, Resolver, Settings, TableView,
@@ -436,6 +437,24 @@ fn compare(
         (prepared.discarded_rows, prepared.discarded_values),
         (expected.discarded_rows, expected.discarded_values)
     );
+    let discards = prepared.discards.reported();
+    prop_assert!(
+        discards
+            .listed
+            .iter()
+            .all(|discard| *discard.table == *view.table.name)
+    );
+    let by_column: BTreeMap<(String, DiscardReason), (u64, u64)> = discards
+        .listed
+        .into_iter()
+        .map(|discard| {
+            (
+                (discard.column, discard.reason),
+                (discard.rows, discard.values),
+            )
+        })
+        .collect();
+    prop_assert_eq!(&by_column, &expected.discards);
     let keys = &beside.keys[first..];
     let ops = &beside.ops[first..];
     let flags: Vec<Option<BTreeSet<usize>>> = (0..rows)

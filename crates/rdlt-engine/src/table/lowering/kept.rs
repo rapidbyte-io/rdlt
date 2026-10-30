@@ -7,6 +7,10 @@ use arrow_schema::ArrowError;
 use arrow_select::filter::FilterBuilder;
 
 use super::super::resolve::Route;
+use super::split::Fitted;
+use super::unheld::Converted;
+use super::{LoweringPlan, both};
+use crate::report::ColumnDiscards;
 
 /// The rows of `batch` that `keep` keeps, its columns copied one at a time, each let go once it
 /// is: a batch nothing else holds is never held twice over while it is filtered.
@@ -60,4 +64,59 @@ pub(super) fn kept_by(
         None => kept,
     };
     Some(BooleanArray::new(kept, None))
+}
+
+/// The rows of a batch a schema policy keeps, and what keeping them found.
+pub(super) struct Kept {
+    pub(super) batch: RecordBatch,
+    /// Which rows those are, where it drops some.
+    pub(super) keep: Option<BooleanArray>,
+    /// How many rows it drops.
+    pub(super) dropped: u64,
+    /// Which values of its columns of JSON their own columns hold.
+    pub(super) fitted: Fitted,
+    /// The columns the policies decide, converted.
+    pub(super) converted: Converted,
+    /// The rows each incoming column drops, by its name and why.
+    pub(super) discards: ColumnDiscards,
+}
+
+impl LoweringPlan {
+    /// The rows of `batch` the schema policy keeps, which those are where it drops some, how many
+    /// it drops and how many each column drops, which values of its columns of JSON their own
+    /// columns hold, and what the columns the policies decide converted to, each of the kept
+    /// rows.
+    pub(super) fn kept_rows(&self, batch: RecordBatch) -> Result<Kept, ArrowError> {
+        let fitted = self.splits.fit(&batch, false)?;
+        let (held, mut converted, unheld) = self.held(&batch)?;
+        let split = both(self.splits.kept(&fitted, batch.num_rows()), held);
+        let Some(keep) = kept_by(&batch, &self.routes, split) else {
+            return Ok(Kept {
+                batch,
+                keep: None,
+                dropped: 0,
+                fitted,
+                converted,
+                discards: ColumnDiscards::default(),
+            });
+        };
+        let mut discards = ColumnDiscards::default();
+        for (index, reason, rows) in self.dropping(&batch, &fitted, unheld) {
+            self.discard(&mut discards, index, reason, (rows, 0));
+        }
+        let rows = batch.num_rows();
+        let own = converted.release(&batch);
+        let kept_batch = filtered(batch, &keep)?;
+        converted.filter(&own, &kept_batch, &keep)?;
+        let fitted = fitted.filtered(&keep)?;
+        let dropped = (rows - kept_batch.num_rows()) as u64;
+        Ok(Kept {
+            batch: kept_batch,
+            keep: Some(keep),
+            dropped,
+            fitted,
+            converted,
+            discards,
+        })
+    }
 }

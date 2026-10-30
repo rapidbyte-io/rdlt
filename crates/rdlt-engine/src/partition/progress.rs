@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 use crate::budget::{Denied, MemoryBudget};
 use crate::cost::Admitted;
 use crate::error::Error;
-use crate::report::ShredCounts;
+use crate::report::{ColumnDiscards, ShredCounts};
 
 /// What a partition tells the commit coordinator.
 #[derive(Debug, PartialEq)]
@@ -85,6 +85,8 @@ pub(crate) struct Seal {
     pub(crate) discarded_rows: u64,
     /// Values the schema policy nulled in the segment.
     pub(crate) discarded_values: u64,
+    /// What the schema policy discarded, by table, column and reason.
+    pub(crate) discards: ColumnDiscards,
     /// Deletes the stream ignores, dropped from the segment.
     pub(crate) deletes_ignored: u64,
     /// Truncates the stream ignores, dropped from the segment.

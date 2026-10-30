@@ -264,21 +264,19 @@ impl Error {
     /// [shown](rdlt_connector::text::shown), since a connector's words may be in any of
     /// them, and at most [`MAX_ERROR_CAUSES`] causes.
     pub fn report(&self) -> ErrorReport {
-        let shown =
-            |text: &dyn fmt::Display| rdlt_connector::text::shown(text, MAX_ERROR_TEXT_BYTES);
         let mut causes = Vec::new();
         let mut cause = StdError::source(self);
         while let Some(error) = cause {
             if causes.len() == MAX_ERROR_CAUSES {
                 break;
             }
-            causes.push(shown(&error));
+            causes.push(shown(error));
             cause = error.source();
         }
         ErrorReport {
             kind: self.kind,
             origin: self.origin,
-            stream: self.stream.as_ref().map(|stream| shown(stream)),
+            stream: self.stream.as_ref().map(shown),
             code: self.code(),
             connector_code: self.connector_code().map(str::to_owned),
             message: shown(&self.context),
@@ -292,11 +290,14 @@ impl Error {
 /// chose.
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&rdlt_connector::text::shown(
-            &self.context,
-            MAX_ERROR_TEXT_BYTES,
-        ))
+        f.write_str(&shown(&self.context))
     }
+}
+
+/// `text`, which a connector may have chosen, as an error report shows it: within
+/// [`MAX_ERROR_TEXT_BYTES`], every character printable.
+pub(crate) fn shown(text: impl fmt::Display) -> String {
+    rdlt_connector::text::shown(text, MAX_ERROR_TEXT_BYTES)
 }
 
 impl fmt::Debug for Error {

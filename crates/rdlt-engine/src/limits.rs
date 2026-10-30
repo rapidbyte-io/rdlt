@@ -1,5 +1,5 @@
 //! Limits the engine enforces on what it holds: the shares its memory budget is divided into,
-//! and how long a request waits for one.
+//! how long a request waits for one, and how much of a list its reports and events name.
 //!
 //! Each share is a fraction of the budget, given by its denominator, and is its holders' alone:
 //! bytes of one share are never reserved from another, so the shares together never pass the
@@ -121,3 +121,12 @@ pub(crate) const LEAST_CALLS: usize = OTHER_CALLS + 1;
 pub(crate) fn carried(calls: NonZeroUsize) -> NonZeroUsize {
     NonZeroUsize::new(calls.get().saturating_sub(OTHER_CALLS)).unwrap_or(NonZeroUsize::MIN)
 }
+
+/// How many of a run's latest attempts its report lists.
+pub const REPORTED_ATTEMPTS: usize = 128;
+
+/// How many of the partitions a stream's commits forgot during a run its report names.
+pub const REPORTED_FORGOTTEN: usize = 128;
+
+/// How many entries a list in a report's discards or an event names: the rest are counted.
+pub const REPORTED_LISTED: usize = 128;

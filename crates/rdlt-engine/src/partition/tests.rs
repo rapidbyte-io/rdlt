@@ -96,6 +96,10 @@ fn a_partition_that_read_nothing_and_never_checkpointed_records_no_position() {
 
 #[test]
 fn a_sealed_segment_carries_its_rows_state_and_discards() {
+    let mut discards = crate::report::ColumnDiscards::default();
+    let (table, column): (Arc<str>, Arc<str>) = (Arc::from("events"), Arc::from("d"));
+    let reason = crate::report::DiscardReason::OutOfRange;
+    discards.add((&table, &column), reason, (2, 1));
     let open = OpenSegment {
         id: SegmentId(4),
         rows: 7,
@@ -103,6 +107,7 @@ fn a_sealed_segment_carries_its_rows_state_and_discards() {
         received: 9,
         discarded_rows: 2,
         discarded_values: 1,
+        discards: discards.clone(),
         deletes_ignored: 0,
         truncates_ignored: 0,
         shred: crate::report::ShredCounts::default(),
@@ -120,6 +125,7 @@ fn a_sealed_segment_carries_its_rows_state_and_discards() {
     );
     assert_eq!(seal.state, PartitionState::Done);
     assert_eq!((seal.discarded_rows, seal.discarded_values), (2, 1));
+    assert_eq!(seal.discards, discards);
 }
 
 #[tokio::test]

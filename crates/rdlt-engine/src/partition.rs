@@ -33,7 +33,7 @@ use crate::cost::{Admitted, Charging};
 use crate::env::Env;
 use crate::error::{Error, ErrorKind, Side, codes};
 use crate::lane::Lanes;
-use crate::report::ShredCounts;
+use crate::report::{ColumnDiscards, ShredCounts};
 use crate::table::Tables;
 use crate::watch;
 
@@ -266,6 +266,8 @@ struct OpenSegment {
     received: u64,
     discarded_rows: u64,
     discarded_values: u64,
+    /// What the schema policy discarded, by table, column and reason.
+    discards: ColumnDiscards,
     /// Deletes and truncates the stream ignores, dropped from the segment.
     deletes_ignored: u64,
     truncates_ignored: u64,
@@ -297,6 +299,7 @@ impl OpenSegment {
             answers,
             discarded_rows: self.discarded_rows,
             discarded_values: self.discarded_values,
+            discards: self.discards,
             deletes_ignored: self.deletes_ignored,
             truncates_ignored: self.truncates_ignored,
             shred: self.shred,
