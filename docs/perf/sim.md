@@ -81,3 +81,19 @@ sweep's own four threads among it:
 The change runs the reference set 2.9 % faster: a transient commit answer no longer costs an
 attempt's reopen and re-read. The longest pull-request shard, at most the 9.7 min the table's run
 took times the same ratio, stays within its 12; the nightly floor holds.
+
+## Events told and checked
+
+Each run of a seed's phases tells its events to an environment that folds them into the run's
+trace and the events oracle's tallies, keeping none. Measured side by side with `main` at
+`01cd996b` on 2026-10-30, the reference set from each tree's archive, alternating on CPUs 0-3
+(base, branch, three times) under a one-minute load of 1.1 to 4.1, the sweep's own four threads
+among it:
+
+| Measure | `main` | This change |
+|---|---|---|
+| Exactly-once sweep, seeds 0-999, four P-cores | 21.28 seeds/s (46.99 s; 43.95-47.04) | 21.35 seeds/s (46.85 s; 46.39-47.02) |
+
+The medians differ by 0.3 %, less than the rounds tell apart: folding the events costs the
+simulation nothing these rounds can see. The longest pull-request shard stays within its 12
+minutes, and the nightly floor holds.
