@@ -400,6 +400,25 @@ fn a_batch_within_the_maximum_is_one_piece() {
 }
 
 #[test]
+fn a_batch_within_the_limit_is_measured_in_one_stretch() {
+    let ids = batch(Arc::new(Int64Array::from(vec![7; 1_000])));
+    let rendering = native();
+    // Eight bytes a row: well within the first limit, and exactly at the second.
+    for limit in [1 << 20, 8_000] {
+        let mut measure = rendering.measure(&ids, limit);
+        assert_eq!(
+            measure.piece(0),
+            Piece {
+                end: 1_000,
+                bytes: 8_000
+            }
+        );
+        // One stretch of its one column.
+        assert_eq!(measure.work().0, 1, "within {limit} bytes");
+    }
+}
+
+#[test]
 fn cuts_fall_where_the_rows_own_values_say() {
     // Rows 0..100 hold a small value, rows 100..110 one of 10 KB, the rest a small one.
     let large = "x".repeat(10_000);
@@ -765,8 +784,9 @@ fn a_piece_is_found_in_a_stretch_for_each_doubling_and_halving() {
     let cuts = measure.cuts();
     assert_eq!(ends(&cuts)[..7], [135, 270, 405, 540, 675, 810, 945]);
     // Each piece is found in a stretch for each doubling and each halving, about fifteen, and
-    // no more: a search that halves too far, or steps past the batch's end, takes more.
-    assert_eq!(measure.work().0, 118);
+    // the batch was measured whole once: a search that halves too far, or steps past the
+    // batch's end, takes more.
+    assert_eq!(measure.work().0, 119);
     // It shows nothing of the batch it measures.
     assert_eq!(format!("{measure:?}"), "Measure { .. }");
 }
@@ -846,7 +866,8 @@ fn offsets_only(rows: usize) -> RecordBatch {
 
 proptest! {
     /// A measure that reads no value cuts a piece in as many steps however many rows the batch
-    /// has: a stretch a doubling or a halving, each a step a column.
+    /// has: a stretch a doubling or a halving, and the whole batch from its first row, each a
+    /// step a column.
     #[test]
     fn a_measure_reading_no_value_cuts_a_piece_in_steps_by_its_stretches(
         rows in 1_usize..20_000,
@@ -860,7 +881,7 @@ proptest! {
         #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss, reason = "a fraction of the rows")]
         let first = (first * rows as f64) as usize;
         measure.piece(first);
-        let stretches = 2 * u64::from(usize::BITS - rows.leading_zeros()) + 2;
+        let stretches = 2 * u64::from(usize::BITS - rows.leading_zeros()) + 3;
         let columns = u64::try_from(batch.num_columns()).unwrap();
         prop_assert!(measure.work().0 <= stretches * columns, "{:?}", measure.work());
     }

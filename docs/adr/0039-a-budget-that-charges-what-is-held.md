@@ -347,13 +347,16 @@ budget before it is held, or bounded by a limit with a typed refusal.
     the work is bounded by the limit too, where list views or a union name the same items
     again: those are charged each time they are named, and the wire and the emitter bound what
     they name by a frame.
-  - A piece is cut from a running sum: stretches of rows are measured each twice as long as
-    the last while they fit, and half as long once one did not, each no further than what the
-    piece has left. A piece costs about one measuring of its rows and of half as many again,
-    and what it was measured to take is what it reserves. The cut runs on the compute pool, a
-    piece at a time, where measuring reads values. Where every column is measured by its rows
-    and offsets alone (a scalar, or strings and bytes as they are, converted to no JSON and read
-    from none), a piece takes as many steps however many rows it has, and is cut on the
+  - A batch is measured whole first, no further than the limit, and is one piece where it fits:
+    measured once, as a batch of a few rows of a wide table is. Otherwise its pieces are cut
+    from a running sum: stretches of rows are measured each twice as long as the last while they
+    fit, and half as long once one did not, each no further than what the piece has left. A
+    piece costs about one measuring of its rows and of half as many again, a batch beyond the
+    limit a piece's measuring more, and what a piece was measured to take is what it reserves: a
+    measure of rows together is never more than its stretches' sum. The cut runs on the compute
+    pool, a piece at a time, where measuring reads values. Where every column is measured by its
+    rows and offsets alone (a scalar, or strings and bytes as they are, converted to no JSON and
+    read from none), a piece takes as many steps however many rows it has, and is cut on the
     partition's task.
   - A measure borrows the batch it measures, how its table stores each column and the
     rendering, and copies none of them. The cutter builds one for each piece it cuts, and one
