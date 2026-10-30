@@ -16,6 +16,14 @@ const QUICK: Schedule = Schedule {
     span: Duration::from_millis(500),
 };
 
+/// Pushes so far apart that a stream's last is due long after a span of 150 ms.
+const LATE: Schedule = Schedule {
+    pace: Duration::from_millis(200),
+    interval: Duration::from_millis(20),
+    quiet: Duration::from_millis(50),
+    span: Duration::from_millis(150),
+};
+
 fn cores() -> Cores {
     Cores::new(NonZeroUsize::new(2).unwrap())
 }
@@ -106,6 +114,22 @@ fn a_followed_run_lands_every_push_before_its_streams_fall_quiet_and_nothing_whi
         assert_eq!(report.streams.len(), streams);
         assert!(report.counters.commits.interval > 0, "{report:?}");
     }
+}
+
+#[test]
+fn a_followed_run_still_pushing_at_its_span_s_end_follows_on_until_every_row_lands() {
+    let tables = Tables::try_new(cores(), followed(2), LATE).unwrap();
+    let (source, destination) = tables.block_on(tables.connectors());
+    let before = written();
+    // The rows a run lands are checked against the pushes inside.
+    let metered = tables.run(source, destination, written);
+    let [_, ended] = metered.readings;
+    let pushes = u64::try_from(followed(2).pushes()).unwrap();
+    assert!(
+        ended - before < pushes,
+        "the window ends at the span, before the last pushes are due: {} of {pushes} written",
+        ended - before
+    );
 }
 
 #[test]
