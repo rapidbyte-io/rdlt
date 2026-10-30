@@ -502,19 +502,9 @@ measured figure for the gains below.
 In batches of 1 000 and 8 000 rows the change's range lies above `main`'s. The pool's queue and
 way back fell from 272–1 428 % of the run to 0.1–16 %, its idle share from 78–96 % to 99–100 %.
 
-**JSON.** A driver outside the repository ran the nested and orders corpora into the null sink
-(nested 128 MiB of pushes, orders 320 000 rows normalized) from 1 and 16 partitions, nine runs a
-side each round, two rounds, ms a run:
-
-| Workload | `223b7f6a` | The change |
-|---|---|---|
-| nested, 1 partition | 199.0 [190.4–204.3] | 191.4 [187.8–192.6] |
-| nested, 16 partitions | 164.6 [158.1–175.2] | 158.4 [158.2–158.4] |
-| orders, 1 partition | 387.8 [372.8–400.1] | 374.6 [368.1–377.7] |
-| orders, 16 partitions | 222.0 [210.4–239.6] | 212.1 [211.8–215.0] |
-
-JSON's jobs all read or write values, so they stay on the pool: no workload is slower. The
-production slice is in [served.md](served.md).
+JSON's jobs all read or write values, so they stay on the pool; [JSON through the
+engine](#json-through-the-engine) measures them. The production slice is in
+[served.md](served.md).
 
 ## A compute thread per core
 
@@ -536,18 +526,6 @@ rounds' starts).
 
 Each side's range holds the other's median: a run of plain Arrow wakes the pool once a load, so
 its two more threads sleep through it.
-
-**JSON**, the driver above, two rounds, four runs a side, ms a run:
-
-| Workload | Before, 2 + 2 | This change, 2 + 4 | Change |
-|---|---|---|---|
-| nested, 1 partition | 190.9 [182.5–192.8] | 123.8 [122.9–126.4] | −35 % |
-| nested, 16 partitions | 159.6 [151.0–160.6] | 85.4 [83.9–86.1] | −46 % |
-| orders, 1 partition | 372.3 [357.0–379.9] | 347.3 [344.2–348.3] | −7 % |
-| orders, 16 partitions | 212.0 [206.2–214.1] | 185.9 [184.1–187.3] | −12 % |
-
-Shredding takes the cores the workers leave idle: nested JSON, all shredding, gains most;
-orders, normalized, less, its lowering and its lanes' writes on the workers.
 
 **Sixteen partitions**, the same rounds, MB/s:
 
