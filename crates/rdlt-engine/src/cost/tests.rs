@@ -1,6 +1,7 @@
 //! The invariant tying the cost model to the engine: no consumer of a batch materializes more
 //! than the model says the batch expands to.
 
+mod charged;
 pub(crate) mod lowering;
 mod prepared;
 

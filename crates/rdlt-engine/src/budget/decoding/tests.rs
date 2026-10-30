@@ -12,6 +12,7 @@ use rdlt_wire::tonic::Code;
 
 use super::Decoding;
 use crate::budget::MemoryBudget;
+use crate::cost::Admitted;
 use crate::env::SystemEnv;
 use crate::report::Waited;
 
@@ -95,4 +96,17 @@ async fn a_frame_waiting_to_be_decoded_is_counted_apart_from_pushes() {
     drop(push);
     assert_eq!(budget.waited().decode, decode);
     assert_eq!(budget.waited().intake.count, 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_frame_s_charge_is_what_admits_its_push_and_an_answer_s_is_not() {
+    let budget = budget();
+    let decoding = Decoding(budget.clone());
+    let frame = decoding.charge(Class::Data, 100).await.unwrap();
+    let admitted = Admitted::of(frame).expect("a frame's charge admits its push");
+    assert_eq!(admitted.bytes, 100);
+    drop(admitted);
+    let answer = decoding.charge(Class::Control, 100).await.unwrap();
+    assert!(Admitted::of(answer).is_none());
+    assert_eq!(budget.reserved(), 0);
 }

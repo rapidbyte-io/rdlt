@@ -10,9 +10,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use parking_lot::Mutex;
 use rdlt_connector::cost::{Rendering, push_charge};
+use rdlt_connector::wire::MALFORMED_FRAME;
 use rdlt_connector::{
     Admission, BoxFuture, Capabilities, ConnectorError, ConnectorErrorKind, LimitExceeded, Permit,
-    SourceEvent,
+    Push, SourceEvent,
 };
 use rdlt_wire::limits::count;
 
@@ -181,6 +182,29 @@ impl Admission for Charging {
             let reservation = self.admitted(reservation);
             Ok(Some(Box::new(Admitted::new(bytes, reservation)) as Permit))
         })
+    }
+
+    /// Holds a served read's push within its frame's charge, shrunk to the push's: a push charged
+    /// more than its frame was is a connector's malformed frame, refused.
+    fn admit_charged(&self, push: &Push, charge: &mut Permit) -> rdlt_connector::Result<()> {
+        let Some(framed) = charge.downcast_mut::<Admitted>() else {
+            return Err(ConnectorError::internal(
+                "a push came with a charge its admission did not make",
+            ));
+        };
+        let bytes = push_charge(push);
+        if bytes > framed.bytes {
+            let message = format!(
+                "a push charged {bytes} bytes arrived in a frame charged {} before it was decoded",
+                framed.bytes
+            );
+            return Err(ConnectorError::new(ConnectorErrorKind::Internal, message)
+                .with_code(MALFORMED_FRAME));
+        }
+        framed.shrink(bytes);
+        // A wait on the budget that failed before no longer explains how the read ends.
+        *self.exhausted.lock() = None;
+        Ok(())
     }
 
     fn limits(&self) -> rdlt_wire::Limits {
