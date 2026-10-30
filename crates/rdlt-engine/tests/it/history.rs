@@ -15,7 +15,7 @@ use crate::changes::{changes, orders};
 use crate::schema::{batch, ints, text};
 use crate::support::batches::{BatchStream, batches};
 use crate::support::destinations::limited;
-use crate::support::faults::{Fault, Rule, failing_commits};
+use crate::support::faults::{Failure, Fault, Rule, failing_commits};
 use crate::support::targets::Target;
 use crate::support::{commit_every, each, engine, memory, pipeline, retrying, stream};
 
@@ -174,10 +174,11 @@ async fn every_destination_keeps_each_version_a_change_stream_makes() {
 #[tokio::test(start_paused = true)]
 async fn a_history_keeps_each_version_once_through_lost_and_failed_commits_and_later_runs() {
     let spec = timed();
-    // The third commit lands but its response is lost; the fifth fails before it lands.
+    // The third commit lands but its connection is lost before its answer; the fifth fails
+    // transiently before it lands, and is sent again.
     let rule: Arc<Rule> = Arc::new(|n: usize, _: &CommitMeta| match n {
-        3 => Fault::After,
-        5 => Fault::Before,
+        3 => Fault::After(Failure::Host(rdlt_host::CONNECTOR_LOST)),
+        5 => Fault::Before(Failure::Transient),
         _ => Fault::None,
     });
     let destination = failing_commits(memory("history_retried").await, rule);
