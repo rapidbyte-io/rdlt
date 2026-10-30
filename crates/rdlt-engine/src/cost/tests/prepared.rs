@@ -40,6 +40,23 @@ fn preparing_a_batch_in_any_mode_allocates_no_more_than_its_charge() {
     assert!(beyond.is_empty(), "{}", beyond.join("\n"));
 }
 
+#[test]
+fn preparing_a_merge_lacking_most_of_its_tables_columns_allocates_no_more_than_its_charge() {
+    let mut beyond = Vec::new();
+    for storage in [Storage::Native, Storage::Text] {
+        let built = Case::sparse_merge(ROWS, 500, storage);
+        let charge = built.charge();
+        let (prepared, peak) = peak(|| built.prepare());
+        assert_eq!(prepared.unwrap().batch.num_rows(), built.kept().rows);
+        if peak > charge + SLACK {
+            beyond.push(format!(
+                "stored {storage:?}: charged {charge}, allocated {peak}"
+            ));
+        }
+    }
+    assert!(beyond.is_empty(), "{}", beyond.join("\n"));
+}
+
 /// The plan lowering `part`, a child table's, into a table of a destination that stores what
 /// `capabilities` say.
 fn child_plan(part: &Part, capabilities: &Capabilities) -> LoweringPlan {

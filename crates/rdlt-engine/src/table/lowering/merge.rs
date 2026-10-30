@@ -1,5 +1,6 @@
 //! The parts of a lowering plan only merge tables use: sequences, and the rows a merge keeps.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use arrow_array::builder::BinaryBuilder;
@@ -8,7 +9,7 @@ use arrow_array::types::UInt32Type;
 use arrow_array::{Array, ArrayRef, BooleanArray, UInt32Array};
 use arrow_buffer::{BooleanBuffer, BooleanBufferBuilder};
 use arrow_row::{RowConverter, Rows, SortField};
-use arrow_schema::ArrowError;
+use arrow_schema::{ArrowError, DataType};
 use arrow_select::filter::FilterBuilder;
 use rdlt_connector::LogicalType;
 
@@ -101,7 +102,8 @@ impl LoweringPlan {
     /// rows, to the rows the table's merges keep.
     ///
     /// Each column is let go as its rows are copied, so columns nothing else holds are not held
-    /// twice over.
+    /// twice over. A column of nulls is sliced, not copied: the columns of a type the batch holds
+    /// nothing in share one array, and keep sharing it.
     pub(super) fn merged(
         &self,
         columns: &mut [ArrayRef],
@@ -112,8 +114,18 @@ impl LoweringPlan {
             return Ok(());
         };
         let predicate = FilterBuilder::new(&keep).optimize().build();
-        for column in columns.iter_mut() {
-            *column = predicate.filter(column.as_ref())?;
+        let rows = keep.true_count();
+        let mut nulls: BTreeMap<DataType, ArrayRef> = BTreeMap::new();
+        for (column, source) in columns.iter_mut().zip(&self.sources) {
+            *column = if source.is_null() {
+                // Any rows of a column of nulls hold the same nulls as its first rows.
+                let sliced = nulls
+                    .entry(column.data_type().clone())
+                    .or_insert_with(|| column.slice(0, rows));
+                Arc::clone(sliced)
+            } else {
+                predicate.filter(column.as_ref())?
+            };
         }
         *changes = changes.take().map(|rows| rows.filter(&keep)).transpose()?;
         *kept = Some(within(kept.as_ref(), &keep));

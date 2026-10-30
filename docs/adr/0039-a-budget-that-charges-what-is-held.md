@@ -201,7 +201,8 @@ budget before it is held, or bounded by a limit with a typed refusal.
     and the batch's lacks costs a null a row. Stored as text it costs its JSON text beside.
   - A conversion between dates, times and instants holds its result beside the value: one slot
     a value, as its column's type takes.
-  - Every row costs the nulls of the table's columns the batch holds nothing in.
+  - Every row costs a null of each type among the table's columns the batch holds nothing in,
+    which share one array of nulls a type.
   - A piece costs, whatever its rows, the arrays of each batch lowering holds of it: its parts,
     each a slice of a batch of its unit; where it has several, the batch they are joined into;
     and the batch it is lowered to, the table's columns and their metadata. An array is charged
@@ -472,9 +473,11 @@ budget before it is held, or bounded by a limit with a typed refusal.
     writer flushes before it would send more. The connector decodes a frame only once its
     writer has taken the frame before it, so a write holds its staged bound and one decoded
     frame waiting for its writer.
-  - A column a batch holds nothing in is built as the destination stores it. Its nulls are part
-    of what each row costs, so a piece is cut by them and reserves them before they are built:
-    rows times the table's width is bounded by the budget, through a plan that normalizes too.
+  - The columns a batch holds nothing in are built as the destination stores them, one array
+    of nulls a type that every such column of the type shares, and a merge keeps its rows by
+    slicing it, never copying it a column at a time. Those nulls are part of what each row
+    costs, so a piece is cut by them and reserves them before they are built, through a plan
+    that normalizes too.
 - **What a charge covers is freed before the charge is released**, however the work holding it
   ends: done, failed, or let go by a cancelled attempt. Between a release and the free, another
   task may reserve those bytes and allocate them, and the process holds more than its budget.

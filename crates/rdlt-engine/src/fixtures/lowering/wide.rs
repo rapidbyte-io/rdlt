@@ -12,7 +12,7 @@ use arrow_array::{
 use arrow_buffer::{BooleanBuffer, Buffer, NullBuffer};
 use rdlt_connector::{ReadMode, TimeUnit};
 
-use super::{Case, Made, Meta, Pushed, Storage, changed, instant, stream, with_column};
+use super::{Case, Made, Meta, Pushed, Storage, changed, events, instant, stream, with_column};
 use crate::plan::WriteMode;
 use crate::policy::{SchemaPolicy, SchemaSettings};
 use crate::table::ChangeLayout;
@@ -57,6 +57,19 @@ impl Case {
         let batch = integers(rows, columns, |row| row % half);
         let made = Made::keyed(WriteMode::Merge, Meta::Merged, batch);
         let mut built = Self::planned(Storage::Native.capabilities(), made);
+        built.kept.rows = usize::try_from(half).expect("a row count");
+        built
+    }
+
+    /// A merge by `id` of `rows` rows holding `id` alone, each key held by two rows, into a
+    /// table of `columns` of the mixed columns, for a destination storing as `storage`: every
+    /// other column a column of nulls.
+    pub(crate) fn sparse_merge(rows: u32, columns: usize, storage: Storage) -> Self {
+        let half = i64::from(rows / 2).max(1);
+        let pushed = integers(rows, 1, |row| row % half);
+        let mut made = Made::keyed(WriteMode::Merge, Meta::Merged, events(0, rows, columns));
+        made.pushed = Pushed::Data(pushed);
+        let mut built = Self::planned(storage.capabilities(), made);
         built.kept.rows = usize::try_from(half).expect("a row count");
         built
     }
