@@ -15,6 +15,7 @@ mod lanes;
 mod names;
 mod owned;
 mod read;
+mod retried;
 mod rows;
 mod tables;
 mod widenings;
@@ -217,6 +218,7 @@ impl Bench<'_> {
                 self.landed_keys_are_answered_and_stale_commits_refused()
                     .await
             }
+            "D-RETRY" => self.failed_commits_are_taken_again().await,
             "D-STATE" => self.state_round_trips().await,
             "D-DISCARD" => self.earlier_staging_is_discarded().await,
             "D-REPLACE" => self.generations_swap_in_atomically().await,

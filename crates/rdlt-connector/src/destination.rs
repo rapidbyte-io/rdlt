@@ -343,11 +343,13 @@ pub trait Session: Send + 'static {
     /// receipt and publishes nothing; one of an older epoch fails with a fenced error; one whose
     /// `after` is not the key landed fails fenced, coded `commit_stale`, and publishes nothing;
     /// the rest apply, and write their receipt into the row in the same transaction (clause
-    /// `D-LANDED`). A segment this session never staged publishes nothing; the commit may instead fail. A
-    /// segment may hold rows for several tables, as a stream and its child tables share their
-    /// partition's segments, and its commit publishes each table's rows whole: where a table
-    /// lacks a column its rows were staged with, as one dropped outside the pipeline, the commit
-    /// fails with a `Data` error coded `column_missing` and publishes nothing (clause
+    /// `D-LANDED`). A commit answered `Transient` or `RateLimited` applies all of it or none of
+    /// it, even where it lands after the answer, and the session accepts the same commit again
+    /// (clause `D-RETRY`). A segment this session never staged publishes nothing; the commit may
+    /// instead fail. A segment may hold rows for several tables, as a stream and its child tables
+    /// share their partition's segments, and its commit publishes each table's rows whole: where
+    /// a table lacks a column its rows were staged with, as one dropped outside the pipeline, the
+    /// commit fails with a `Data` error coded `column_missing` and publishes nothing (clause
     /// `D-TABLES`).
     fn commit(&mut self, meta: &CommitMeta) -> impl Future<Output = Result<Receipt>> + Send;
 

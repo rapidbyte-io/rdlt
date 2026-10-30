@@ -34,6 +34,16 @@ pub const DESTINATION_CLAUSES: &[Clause] = &[
         unless: "",
     },
     Clause {
+        id: "D-RETRY",
+        statement: "a commit whose try failed is taken again from its session, the same commit \
+                    by the same key, the session's other work between: one lost before it \
+                    landed lands whole once, one that landed returns its receipt and publishes \
+                    nothing again, and, where the destination replaces and drops tables, one \
+                    that failed after swapping its generation in published nothing and lands \
+                    whole once what failed it is gone",
+        unless: "",
+    },
+    Clause {
         id: "D-STATE",
         statement: "committed state records are returned by the next open",
         unless: "",
@@ -150,10 +160,11 @@ pub const DESTINATION_CLAUSES: &[Clause] = &[
 
 /// The clauses that read what the destination published, which a probe that reads nothing
 /// cannot check.
-pub(super) const PROBED: [&str; 17] = [
+pub(super) const PROBED: [&str; 18] = [
     "D-STAGING",
     "D-COMMIT",
     "D-LANDED",
+    "D-RETRY",
     "D-DISCARD",
     "D-REPLACE",
     "D-SCHEMA",
