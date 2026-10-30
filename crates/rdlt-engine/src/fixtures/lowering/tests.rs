@@ -9,7 +9,7 @@ use rdlt_connector::{DecimalType, Epoch, LogicalType, TimeUnit};
 
 use super::{Case, Kept, LoweringCase, Made, Storage, events, stamp, with_column};
 use crate::cost::CHANGE_ROW;
-use crate::table::{ChangeLayout, Stamp, aligned};
+use crate::table::{ChangeLayout, LoweringPlan, Stamp, aligned};
 
 const ROWS: u32 = 64;
 
@@ -345,6 +345,12 @@ fn cases() -> Vec<(&'static str, Case)> {
         .collect()
 }
 
+/// Whether `plan` lowers `batch`, of the load `stamp` names, copying no value, as the write path
+/// asks of a piece of one part: the batch's schema once, its load's constant columns each time.
+fn copies_nothing(plan: &LoweringPlan, batch: &RecordBatch, stamp: &Stamp) -> bool {
+    plan.arrives_stored(batch.schema_ref()) && plan.constants_built(stamp, batch.num_rows())
+}
+
 #[test]
 fn a_plan_copies_nothing_only_where_it_hands_every_column_over_as_it_arrives() {
     for (name, case) in cases() {
@@ -353,11 +359,11 @@ fn a_plan_copies_nothing_only_where_it_hands_every_column_over_as_it_arrives() {
         let hands_over = matches!(name, "append_native" | "views");
         assert_eq!(plan.hands_over(), hands_over, "{name}");
         // A load's first piece builds the load's constant columns, a byte a row.
-        assert!(!plan.copies_nothing(pushed, &stamp()), "{name}");
+        assert!(!copies_nothing(plan, pushed, &stamp()), "{name}");
         case.prepare().unwrap();
-        let copies_nothing = plan.copies_nothing(pushed, &stamp());
-        assert_eq!(copies_nothing, name == "append_native", "{name}");
-        if copies_nothing {
+        let copied_nothing = copies_nothing(plan, pushed, &stamp());
+        assert_eq!(copied_nothing, name == "append_native", "{name}");
+        if copied_nothing {
             // Every column is the array it arrived as, beside the load's two constant ones.
             let prepared = case.prepare().unwrap().batch;
             assert!(handed_over(pushed, &prepared), "{name}");
@@ -371,11 +377,11 @@ fn a_plan_copies_nothing_for_rows_of_the_session_its_constants_were_built_for() 
     let case = Case::new(LoweringCase::AppendNative, ROWS);
     case.prepare().unwrap();
     let (plan, pushed) = (case.plan(), case.batch());
-    assert!(plan.copies_nothing(&pushed.slice(1, 10), &stamp()));
-    assert!(!plan.copies_nothing(&events(0, ROWS + 1, 10), &stamp()));
+    assert!(copies_nothing(plan, &pushed.slice(1, 10), &stamp()));
+    assert!(!copies_nothing(plan, &events(0, ROWS + 1, 10), &stamp()));
     let next = Stamp {
         epoch: Epoch(stamp().epoch.0 + 1),
         ..stamp()
     };
-    assert!(!plan.copies_nothing(pushed, &next));
+    assert!(!copies_nothing(plan, pushed, &next));
 }

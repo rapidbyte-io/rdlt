@@ -19,13 +19,14 @@ pub(crate) struct Schemas {
 #[derive(Debug)]
 struct Converted {
     arrow: SchemaRef,
-    schema: TableSchema,
-    paths: Vec<ColumnPath>,
+    schema: Arc<TableSchema>,
+    paths: Arc<[ColumnPath]>,
 }
 
 impl Schemas {
-    /// The table schema of `arrow` and its columns' paths, in order: those kept where `arrow`
-    /// is the schema converted last, the same `Arc` or equal to it, its metadata included.
+    /// The table schema of `arrow` and its columns' paths, in order: those kept, shared, where
+    /// `arrow` is the schema converted last, the same `Arc` or equal to it, its metadata
+    /// included.
     ///
     /// # Errors
     ///
@@ -33,28 +34,28 @@ impl Schemas {
     pub(crate) fn of(
         &mut self,
         arrow: &SchemaRef,
-    ) -> Result<(TableSchema, Vec<ColumnPath>), SchemaError> {
+    ) -> Result<(Arc<TableSchema>, Arc<[ColumnPath]>), SchemaError> {
         let kept = self
             .last
             .as_ref()
             .filter(|last| Arc::ptr_eq(&last.arrow, arrow) || *last.arrow == **arrow);
         if let Some(kept) = kept {
-            return Ok((kept.schema.clone(), kept.paths.clone()));
+            return Ok((Arc::clone(&kept.schema), Arc::clone(&kept.paths)));
         }
         #[cfg(test)]
         {
             self.misses += 1;
         }
-        let schema = TableSchema::from_arrow(arrow)?;
-        let paths: Vec<ColumnPath> = schema
+        let schema = Arc::new(TableSchema::from_arrow(arrow)?);
+        let paths: Arc<[ColumnPath]> = schema
             .fields()
             .iter()
             .map(|field| ColumnPath::from(field.name()))
             .collect();
         self.last = Some(Converted {
             arrow: Arc::clone(arrow),
-            schema: schema.clone(),
-            paths: paths.clone(),
+            schema: Arc::clone(&schema),
+            paths: Arc::clone(&paths),
         });
         Ok((schema, paths))
     }

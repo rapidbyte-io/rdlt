@@ -213,7 +213,7 @@ fn batch((columns, rows): &Drawn) -> (RecordBatch, Incoming) {
         .iter()
         .map(|(name, _)| ColumnPath::from(name.as_str()))
         .collect();
-    let incoming = Incoming::of(schema, paths, std::slice::from_ref(&batch));
+    let incoming = Incoming::of(Arc::new(schema), paths, std::slice::from_ref(&batch));
     (batch, incoming)
 }
 

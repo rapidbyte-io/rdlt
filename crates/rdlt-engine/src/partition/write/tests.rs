@@ -412,16 +412,20 @@ fn a_lowering_that_panics_on_the_calling_task_panics_it() {
 fn a_piece_copies_nothing_only_as_one_batch_of_a_stream_that_is_not_a_change_stream() {
     use crate::fixtures::lowering::{Case, LoweringCase};
     let case = Case::new(LoweringCase::AppendNative, 64);
-    case.prepare().unwrap();
     let stamp = crate::fixtures::lowering::stamp();
     let piece = |parts: Vec<RecordBatch>| super::Piece {
         rows: parts.iter().map(RecordBatch::num_rows).sum(),
         parts,
         bytes: 0,
     };
-    let batch = case.batch();
+    let (batch, plan) = (case.batch(), case.plan());
     let one = piece(vec![batch.slice(0, 32)]);
-    assert!(super::copies_nothing(&one, case.plan(), &stamp, None));
+    let handed = super::handed(plan, batch, None);
+    assert!(handed);
+    // A load's first piece builds the load's constant columns.
+    assert!(!super::copies_nothing(&one, plan, &stamp, handed));
+    case.prepare().unwrap();
+    assert!(super::copies_nothing(&one, plan, &stamp, handed));
     // A change stream's batch holds its change columns beside its data, split off first.
     let mode = Some(crate::partition::ChangeMode {
         merge: false,
@@ -429,10 +433,10 @@ fn a_piece_copies_nothing_only_as_one_batch_of_a_stream_that_is_not_a_change_str
         truncates: crate::plan::OnTruncate::Ignore,
         partial_updates: false,
     });
-    assert!(!super::copies_nothing(&one, case.plan(), &stamp, mode));
+    assert!(!super::handed(plan, batch, mode));
     // Two batches are concatenated into one, a copy of every value.
     let two = piece(vec![batch.slice(0, 16), batch.slice(16, 16)]);
-    assert!(!super::copies_nothing(&two, case.plan(), &stamp, None));
+    assert!(!super::copies_nothing(&two, plan, &stamp, handed));
 }
 
 #[test]

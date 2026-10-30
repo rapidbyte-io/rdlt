@@ -23,9 +23,22 @@ fn a_schema_equal_to_the_last_one_is_converted_once() {
     assert_eq!(schemas.of(&first).unwrap(), converted);
     assert_eq!(schemas.misses, 1);
     assert_eq!(
-        converted.1,
+        converted.1[..],
         [ColumnPath::from("id"), ColumnPath::from("doc")]
     );
+}
+
+#[test]
+fn a_schema_converted_last_is_shared_not_copied() {
+    let text = Field::new("doc", DataType::Utf8, true);
+    let (first, again) = (schema(text.clone()), schema(text));
+    let mut schemas = Schemas::default();
+    let (schema, paths) = schemas.of(&first).unwrap();
+    let (peak, (shared, shared_paths)) =
+        crate::cost::tests::peak_alone(|| schemas.of(&again).unwrap());
+    assert_eq!(peak, 0, "a hit allocates nothing");
+    assert!(Arc::ptr_eq(&schema, &shared));
+    assert!(Arc::ptr_eq(&paths, &shared_paths));
 }
 
 #[test]

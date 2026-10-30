@@ -1,7 +1,7 @@
 //! Whether lowering a batch hands its columns over as they arrive, reading and writing none of
 //! their values: what decides that it costs too little to leave the task that asks for it.
 
-use arrow_array::RecordBatch;
+use arrow_schema::Schema;
 use rdlt_connector::LogicalType;
 
 use super::super::resolve::Route;
@@ -42,27 +42,29 @@ impl LoweringPlan {
         plain && routed && !checked && sources
     }
 
-    /// Whether lowering `batch`, of the load `stamp` names, copies no value and reads none:
-    /// where the plan hands every column over, each of the batch's columns already is of the
-    /// type its table stores, and the load's constant columns are built for as many rows.
-    pub(crate) fn copies_nothing(&self, batch: &RecordBatch, stamp: &Stamp) -> bool {
-        let fields = self.view.schema.fields();
-        let stored = self
-            .sources
-            .iter()
-            .zip(fields)
-            .all(|(source, field)| match source {
-                Source::Incoming(index, _) => batch
-                    .columns()
-                    .get(*index)
-                    .is_some_and(|column| column.data_type() == field.data_type()),
-                Source::Read(_) | Source::Rest(_) | Source::Nulls => false,
-            });
-        let built = self.constants.lock();
-        let built = built
+    /// Whether batches of `schema` arrive as the plan's table stores them: the plan hands every
+    /// column over, and each of the batches' columns already is of the type its table stores.
+    pub(crate) fn arrives_stored(&self, schema: &Schema) -> bool {
+        let arriving = schema.fields();
+        let stored =
+            self.sources.iter().zip(self.view.schema.fields()).all(
+                |(source, field)| match source {
+                    Source::Incoming(index, _) => arriving
+                        .get(*index)
+                        .is_some_and(|arriving| arriving.data_type() == field.data_type()),
+                    Source::Read(_) | Source::Rest(_) | Source::Nulls => false,
+                },
+            );
+        self.handed && stored
+    }
+
+    /// Whether the load's constant columns are built for `rows` rows of the load `stamp` names,
+    /// so lowering them copies no value of those columns either.
+    pub(crate) fn constants_built(&self, stamp: &Stamp, rows: usize) -> bool {
+        self.constants
+            .lock()
             .as_ref()
-            .is_some_and(|built| built.fits(stamp, batch.num_rows()));
-        self.handed && stored && built
+            .is_some_and(|built| built.fits(stamp, rows))
     }
 }
 

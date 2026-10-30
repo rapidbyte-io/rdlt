@@ -71,7 +71,7 @@ impl Table {
             .collect();
         let schema =
             TableSchema::new(fields).map_err(|error| Error::internal(error.to_string()))?;
-        Ok(Incoming::of(schema, paths, &[]))
+        Ok(Incoming::of(Arc::new(schema), paths.into(), &[]))
     }
 }
 

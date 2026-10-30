@@ -470,7 +470,7 @@ fn incoming(batch: &RecordBatch) -> Incoming {
         .iter()
         .map(|field| ColumnPath::from(field.name()))
         .collect();
-    Incoming::of(schema, paths, std::slice::from_ref(batch))
+    Incoming::of(Arc::new(schema), paths, std::slice::from_ref(batch))
 }
 
 /// A timestamp of `unit` in UTC.

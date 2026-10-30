@@ -304,8 +304,8 @@ async fn plan_parts(
             context.tables.child(job.table, path).await?
         };
         let incoming = Incoming {
-            schema: schema_of(job, &pruned.part.batch)?,
-            paths: pruned.part.columns.clone(),
+            schema: Arc::new(schema_of(job, &pruned.part.batch)?),
+            paths: Arc::from(pruned.part.columns.as_slice()),
             rounding,
             creation: flush.creation(context, table),
         };

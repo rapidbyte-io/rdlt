@@ -183,10 +183,10 @@ proptest! {
             .expect("a drawn schema's child tables")
             .into_iter()
             .take(64)
-            .map(|(path, incoming)| (path, incoming.paths))
+            .map(|(path, incoming)| (path, incoming.paths.to_vec()))
             .collect();
         let root = root_columns(&schema, &shape).expect("a drawn schema's own table");
-        declared.insert(Vec::new(), root.paths);
+        declared.insert(Vec::new(), root.paths.to_vec());
         for part in normalize(&plain, &shape).expect("a plain batch normalizes") {
             prop_assert_eq!(declared.get(&part.path), Some(&part.columns), "{:?}", part.path);
         }
