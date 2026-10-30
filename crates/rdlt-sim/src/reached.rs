@@ -42,11 +42,16 @@ pub enum Reach {
     ReportOwed,
     /// A cursor owed to a partition recorded done was given up.
     OwedDropped,
+    /// A commit the destination answered transiently was sent again in place.
+    InPlaceRetried,
+    /// A try of a commit answered transiently ended at the destination after a later commit
+    /// landed, and was refused as stale.
+    DelayedCopyRefused,
 }
 
 impl Reach {
     /// Every path, in the order a timing line names them.
-    const ALL: [Self; 18] = [
+    const ALL: [Self; 20] = [
         Self::ConnectorStopped,
         Self::LinkCut,
         Self::Crashed,
@@ -65,6 +70,8 @@ impl Reach {
         Self::ServedAgain,
         Self::ReportOwed,
         Self::OwedDropped,
+        Self::InPlaceRetried,
+        Self::DelayedCopyRefused,
     ];
 
     fn bit(self) -> u32 {

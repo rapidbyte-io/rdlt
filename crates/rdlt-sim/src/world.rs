@@ -92,6 +92,8 @@ pub struct World {
     rng: Mutex<SplitMix64>,
     /// Which calls hang and which placements stall, drawn apart from `rng`.
     hangs: Mutex<Hangs>,
+    /// Which tries of commits answered transiently are left running, drawn apart from `rng`.
+    delays: Mutex<SplitMix64>,
     pub(crate) store: Mutex<Store>,
     violations: Mutex<Vec<String>>,
     /// The furthest offset acknowledged to each partition of a stream that cannot read again,
@@ -185,6 +187,9 @@ impl Pressure {
 /// What the draws of hangs mix into the fault draws' seed: "hangs" in ASCII.
 const HANGS: u64 = 0x0068_616e_6773;
 
+/// What the draws of tries left running mix into the fault draws' seed: "delays" in ASCII.
+const DELAYS: u64 = 0x6465_6c61_7973;
+
 static WORLDS: LazyLock<Mutex<BTreeMap<String, Arc<World>>>> = LazyLock::new(Mutex::default);
 
 /// A world's entry in the registry, under its name, which it leaves when this drops: when its
@@ -247,6 +252,7 @@ impl World {
             phase: AtomicUsize::new(0),
             faulty: AtomicBool::new(false),
             hangs: Mutex::new(Hangs::new(rng.clone().next_u64() ^ HANGS)),
+            delays: Mutex::new(SplitMix64::new(rng.clone().next_u64() ^ DELAYS)),
             rng: Mutex::new(SplitMix64::new(rng.next_u64())),
             store: Mutex::new(Store::default()),
             violations: Mutex::new(Vec::new()),
@@ -312,6 +318,7 @@ impl World {
             phase: AtomicUsize::new(0),
             faulty: AtomicBool::new(false),
             hangs: Mutex::new(Hangs::new(rng.clone().next_u64() ^ HANGS)),
+            delays: Mutex::new(SplitMix64::new(rng.clone().next_u64() ^ DELAYS)),
             rng: Mutex::new(SplitMix64::new(rng.next_u64())),
             store: Mutex::new(Store::default()),
             violations: Mutex::new(Vec::new()),
@@ -451,6 +458,16 @@ impl World {
             Some(cause) => fault.with_source(std::io::Error::other(cause)),
             None => fault,
         })
+    }
+
+    /// How many of its pipeline's commit calls a try answered transiently outlasts, where its
+    /// transaction still runs: in three draws of four, none, one or two alike, drawn apart from
+    /// every other fault, so the faults a seed met before fall as they did.
+    pub(crate) fn outlasts(&self) -> Option<u8> {
+        let drawn = self.delays.lock().below(4);
+        u8::try_from(drawn)
+            .ok()
+            .and_then(|drawn| drawn.checked_sub(1))
     }
 
     /// Sleeps a short random while, sometimes, when faults are on.

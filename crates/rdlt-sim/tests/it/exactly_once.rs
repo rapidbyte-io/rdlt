@@ -147,6 +147,23 @@ fn a_seed_whose_reports_fail_owes_their_cursors_and_passes() {
     }
 }
 
+/// The seed of [`a_seed_whose_commits_are_sent_again_and_whose_late_tries_are_refused_passes`].
+const RETRIED: u64 = 165;
+
+/// A seed whose runs send again in place commits the destination answered transiently, and whose
+/// destination refuses as stale a try that lands after a later commit, so neither path drops out
+/// of the simulation unseen.
+#[test]
+fn a_seed_whose_commits_are_sent_again_and_whose_late_tries_are_refused_passes() {
+    let checked = check_exactly_once(Seed::new(RETRIED));
+    for path in [Reach::InPlaceRetried, Reach::DelayedCopyRefused] {
+        assert!(
+            checked.reached.has(path),
+            "seed {RETRIED} no longer reaches {path:?}: keep a seed that does"
+        );
+    }
+}
+
 /// The seed of [`a_seed_whose_rows_only_the_source_held_passes`].
 const SERVED_AGAIN: u64 = 14;
 
