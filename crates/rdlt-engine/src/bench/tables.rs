@@ -311,7 +311,7 @@ impl Tables {
     ///
     /// # Panics
     ///
-    /// Panics where the run fails, or lands other rows than the cell pushes.
+    /// Panics where the run fails, retries, or lands other rows than the cell pushes.
     pub fn run<T>(
         &self,
         source: Arc<dyn Source>,
@@ -344,6 +344,13 @@ impl Tables {
                 )
             }
         };
+        // A retry may replay pushes an attempt landed, which receipts count again.
+        assert_eq!(
+            report.attempted,
+            1,
+            "tables/{}: a run lands in one attempt",
+            self.cell.name()
+        );
         assert_eq!(
             report.rows,
             self.cell.rows(),
