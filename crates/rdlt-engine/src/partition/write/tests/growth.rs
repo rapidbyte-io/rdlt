@@ -55,6 +55,7 @@ fn lowered_all(columns: Vec<ArrayRef>) -> Prepared {
         view: crate::table::testing::view("t"),
         discarded_rows: 0,
         discarded_values: 0,
+        discards: crate::report::ColumnDiscards::default(),
     }
 }
 

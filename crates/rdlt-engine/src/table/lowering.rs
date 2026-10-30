@@ -7,6 +7,7 @@ mod constants;
 mod costs;
 #[cfg(test)]
 mod differential;
+mod discards;
 mod handed;
 mod history;
 mod kept;
@@ -21,6 +22,7 @@ mod unheld;
 #[cfg(test)]
 pub(crate) use split::lowered as split_lowered;
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -46,7 +48,7 @@ use keys::keyed;
 pub(crate) use keys::{key_values, with_columns};
 use merge::{positions, sequence};
 pub(crate) use prepared::Prepared;
-use split::{Fitted, Splits};
+use split::Splits;
 #[cfg(test)]
 pub(crate) use unheld::{Check, nulled_at, refused};
 
@@ -110,6 +112,9 @@ pub(crate) struct LoweringPlan {
     /// Each incoming column's schema policy, which decides what becomes of a value its column
     /// cannot hold.
     policies: Vec<SchemaPolicy>,
+    /// The names of the incoming columns whose values the schema policy may discard, by place,
+    /// as the discards a batch reports name them.
+    discarding: BTreeMap<usize, Arc<str>>,
     /// Whether the plan hands every incoming column over as it arrives.
     handed: bool,
 }
@@ -134,7 +139,7 @@ impl LoweringPlan {
         routes: Vec<Route>,
     ) -> Self {
         let mut sources = vec![Source::Nulls; view.model.columns.len()];
-        let mut discarded = Vec::new();
+        let (mut discarded, mut discarding) = (Vec::new(), BTreeMap::new());
         for (index, (route, field)) in routes
             .iter()
             .zip(incoming.schema.fields().iter())
@@ -146,12 +151,21 @@ impl LoweringPlan {
                 }
                 Route::Split { own, rest } => {
                     sources[*own] = Source::Read(index);
-                    if let Rest::Column(column) = rest {
-                        sources[*column] = Source::Rest(index);
+                    match rest {
+                        Rest::Column(column) => sources[*column] = Source::Rest(index),
+                        Rest::DiscardValues | Rest::DiscardRows => {
+                            discarding.insert(index, Arc::from(field.name()));
+                        }
                     }
                 }
-                Route::DiscardValues => discarded.push(index),
-                Route::DiscardRows | Route::Skip => {}
+                Route::DiscardValues => {
+                    discarded.push(index);
+                    discarding.insert(index, Arc::from(field.name()));
+                }
+                Route::DiscardRows => {
+                    discarding.insert(index, Arc::from(field.name()));
+                }
+                Route::Skip => {}
             }
         }
         let types: Vec<LogicalType> = view
@@ -177,6 +191,7 @@ impl LoweringPlan {
             discarded,
             constants: Mutex::new(None),
             policies: Vec::new(),
+            discarding,
             handed: false,
         };
         plan.handed = plan.hands_over();
@@ -186,6 +201,16 @@ impl LoweringPlan {
     /// The same plan, its incoming columns following `policies`, in their order; a column with
     /// none refuses a value it cannot hold with its batch.
     pub(crate) fn with_policies(mut self, policies: Vec<SchemaPolicy>) -> Self {
+        let fields = self.incoming.schema.fields();
+        for (index, (policy, field)) in policies.iter().zip(fields.iter()).enumerate() {
+            if matches!(
+                policy,
+                SchemaPolicy::DiscardRow | SchemaPolicy::DiscardValue
+            ) {
+                let name = || Arc::from(field.name());
+                self.discarding.entry(index).or_insert_with(name);
+            }
+        }
         self.policies = policies;
         self.handed = self.hands_over();
         self
@@ -245,32 +270,27 @@ impl LoweringPlan {
         let failed = |error: arrow_schema::ArrowError| {
             Error::internal(format!("stream {stream}: preparing a batch")).with_source(error)
         };
-        let (batch, mut kept, discarded_rows, fitted, mut converted) =
-            self.kept_rows(batch).map_err(failed)?;
-        let (batch, nulled, left) = self.nulled(batch).map_err(failed)?;
-        converted.extend(left);
-        let mut changes = match (changes, &kept) {
-            (Some(changes), Some(kept)) => Some(changes.filter(kept).map_err(failed)?),
+        let mut kept = self.kept_rows(batch).map_err(failed)?;
+        let (batch, nulled, left) = self.nulled(kept.batch).map_err(failed)?;
+        kept.converted.extend(left);
+        let mut changes = match (changes, &kept.keep) {
+            (Some(changes), Some(keep)) => Some(changes.filter(keep).map_err(failed)?),
             (changes, _) => changes,
         };
         if batch.num_rows() == 0 {
-            return Ok(Prepared {
-                batch: RecordBatch::new_empty(Arc::clone(&view.schema)),
-                view: Arc::clone(view),
-                discarded_rows,
-                discarded_values: 0,
-            });
+            return Ok(self.emptied(kept.dropped, kept.discards));
         }
-        let discarded_values = self.discarded_values(&batch, &fitted) + nulled;
+        let discarded_values = self.discarded(&batch, &kept.fitted, &nulled, &mut kept.discards);
         let (batch, zeroed) = keyed(stream, view, batch, &self.sources, changes.as_ref())?;
         // A key column changed in a zero holds no longer what it converted to.
-        converted.forget(zeroed);
-        let (mut columns, held) = self.model_columns(&batch, &fitted, &converted)?;
+        kept.converted.forget(zeroed);
+        let (mut columns, held) = self.model_columns(&batch, &kept.fitted, &kept.converted)?;
         // Only a history table hashes its rows from the batch, and it keeps every row: any other
         // lets the batch go, so a merge's compaction lets each column go as it copies it.
         let (rows, batch) = (batch.num_rows(), held.is_some().then_some(batch));
-        drop((fitted, converted));
-        self.merged(&mut columns, &mut kept, &mut changes)
+        drop((kept.fitted, kept.converted));
+        let (mut keep, discards) = (kept.keep, kept.discards);
+        self.merged(&mut columns, &mut keep, &mut changes)
             .map_err(failed)?;
         let rows = columns.first().map_or(rows, Array::len);
         let (constants, loaded_at) = self.constants(stamp, rows).map_err(failed)?;
@@ -280,7 +300,7 @@ impl LoweringPlan {
                 Some(changes) => self
                     .source_sequence(changes, columns.len())
                     .map_err(failed)?,
-                None => self.sequence(lineage, kept.as_ref(), stamp, rows)?,
+                None => self.sequence(lineage, keep.as_ref(), stamp, rows)?,
             };
             columns.push(seq);
         }
@@ -293,25 +313,16 @@ impl LoweringPlan {
             columns.extend(history);
         }
         let first = columns.len();
-        columns.extend(self.lineage(lineage, kept.as_ref(), stamp, first)?);
+        columns.extend(self.lineage(lineage, keep.as_ref(), stamp, first)?);
         columns.extend(self.directives(changes.as_ref()));
         let prepared = RecordBatch::try_new(Arc::clone(&view.schema), columns).map_err(failed)?;
         Ok(Prepared {
             batch: prepared,
             view: Arc::clone(view),
-            discarded_rows,
+            discarded_rows: kept.dropped,
             discarded_values,
+            discards,
         })
-    }
-
-    /// How many values of `batch` the schema policy discards: of the columns it discards, and of
-    /// its columns of JSON, which `fitted` read, those their own columns do not hold.
-    fn discarded_values(&self, batch: &RecordBatch, fitted: &Fitted) -> u64 {
-        let columns = self.discarded.iter().map(|index| {
-            let column = batch.column(*index);
-            (column.len() - column.logical_null_count()) as u64
-        });
-        columns.sum::<u64>() + self.splits.discarded(batch, fitted)
     }
 
     /// The columns that only direct a change stream's merge, after its stored ones: its op, and
@@ -329,25 +340,6 @@ impl LoweringPlan {
             columns.push(changes.unchanged_over(&self.written));
         }
         columns
-    }
-
-    /// The rows of `batch` the schema policy keeps, which those are where it drops some, how many
-    /// it drops, which values of its columns of JSON their own columns hold, and what the
-    /// columns the policies decide converted to, each of the kept rows.
-    fn kept_rows(&self, batch: RecordBatch) -> Result<Kept, arrow_schema::ArrowError> {
-        let fitted = self.splits.fit(&batch, false)?;
-        let (held, mut converted) = self.held(&batch)?;
-        let split = both(self.splits.kept(&fitted, batch.num_rows()), held);
-        let Some(keep) = kept_by(&batch, &self.routes, split) else {
-            return Ok((batch, None, 0, fitted, converted));
-        };
-        let rows = batch.num_rows();
-        let own = converted.release(&batch);
-        let kept_batch = filtered(batch, &keep)?;
-        converted.filter(&own, &kept_batch, &keep)?;
-        let fitted = fitted.filtered(&keep)?;
-        let discarded_rows = (rows - kept_batch.num_rows()) as u64;
-        Ok((kept_batch, Some(keep), discarded_rows, fitted, converted))
     }
 
     /// The error for a value of a column of JSON that `column` holds in part that cannot be read,
@@ -483,17 +475,6 @@ fn kept_rows(
         None => Ok(Arc::clone(array)),
     }
 }
-
-/// The rows of a batch a schema policy keeps, which those are where it drops some, how many it
-/// drops, which values of its columns of JSON their own columns hold, and the columns the
-/// policies decide, converted.
-type Kept = (
-    RecordBatch,
-    Option<BooleanArray>,
-    u64,
-    Fitted,
-    unheld::Converted,
-);
 
 /// `array` of `logical` as the destination stores it: as it is, or as its text, which for nested
 /// values and JSON is JSON.

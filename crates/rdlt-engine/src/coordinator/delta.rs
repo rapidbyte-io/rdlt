@@ -12,7 +12,7 @@ use super::waiting::Standing;
 use super::{Coordinator, KEPT_COMPLETIONS};
 use crate::partition::CursorHold;
 use crate::plan::WriteMode;
-use crate::report::StreamReport;
+use crate::report::{ColumnDiscards, StreamReport};
 
 /// What the sealed segments of a commit add up to.
 pub(super) struct Collected {
@@ -63,6 +63,7 @@ impl Coordinator {
         self.due.committing();
         let (counted, standing) = self.sealed.take();
         self.sealing.clear();
+        let mut discards: BTreeMap<usize, ColumnDiscards> = BTreeMap::new();
         for seal in counted {
             let stream = self.parts.partitions[seal.partition].stream;
             // Each seal taken counts something of its stream's: rows, drops or shredding.
@@ -78,6 +79,13 @@ impl Coordinator {
             counts.deletes_ignored += seal.deletes_ignored;
             counts.truncates_ignored += seal.truncates_ignored;
             counts.shred.add(&seal.shred);
+            if !seal.discards.is_empty() {
+                discards.entry(stream).or_default().absorb(seal.discards);
+            }
+        }
+        for (stream, discards) in discards {
+            let counts = collected.streams.entry(stream).or_default();
+            counts.discards = discards.reported();
         }
         collected.stand(standing);
         // A partition done with no cursor among the seals is told the cursor it stood at: no

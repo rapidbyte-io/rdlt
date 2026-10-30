@@ -1,6 +1,7 @@
 //! What a run reports: its attempts and what they committed, counted only from receipts.
 
 mod counters;
+mod discards;
 #[cfg(test)]
 mod tests;
 
@@ -11,12 +12,15 @@ use rdlt_connector::{CommitKey, Epoch, Headroom, PartitionId, PipelineId, Receip
 use serde::Serialize;
 
 use crate::error::{Error, ErrorKind, ErrorReport, codes};
+use crate::limits::{REPORTED_ATTEMPTS, REPORTED_FORGOTTEN};
 
 pub use counters::{
     Acks, CommitPhases, Commits, Counters, Flushes, LaneCounters, PoolCounters, ShredCounts,
     Waited, Waits,
 };
 pub(crate) use counters::{Flush, Tally, Trigger};
+pub(crate) use discards::ColumnDiscards;
+pub use discards::{Discard, DiscardReason, Discards};
 
 /// How a run ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -63,9 +67,6 @@ pub struct Report {
     pub streams: BTreeMap<String, StreamReport>,
 }
 
-/// How many of a run's latest attempts its report lists.
-pub const REPORTED_ATTEMPTS: usize = 128;
-
 /// One attempt of a run.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct AttemptReport {
@@ -101,6 +102,8 @@ pub struct StreamReport {
     pub discarded_rows: u64,
     /// Values the schema policy nulled in committed segments.
     pub discarded_values: u64,
+    /// What the schema policy discarded from committed segments, by table, column and reason.
+    pub discards: Discards,
     /// Deletes a change stream ignores, dropped from committed segments.
     pub deletes_ignored: u64,
     /// Truncates a change stream ignores, dropped from committed segments.
@@ -120,9 +123,6 @@ pub struct StreamReport {
     /// What shredding the JSON of committed segments took, over every flush of them.
     pub shred: ShredCounts,
 }
-
-/// How many of the partitions a stream's commits forgot during a run its report names.
-pub const REPORTED_FORGOTTEN: usize = 128;
 
 /// The partitions a stream's commits forgot, as a run reports them: the latest named, the rest
 /// counted, so a run that forgets for ever keeps a bounded report.
@@ -241,6 +241,7 @@ impl StreamReport {
         self.generations_swapped += other.generations_swapped;
         self.discarded_rows += other.discarded_rows;
         self.discarded_values += other.discarded_values;
+        self.discards.absorb(&other.discards);
         self.deletes_ignored += other.deletes_ignored;
         self.truncates_ignored += other.truncates_ignored;
         self.shred.add(&other.shred);

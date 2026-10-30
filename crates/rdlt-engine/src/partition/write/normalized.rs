@@ -1,6 +1,7 @@
 //! Writing the units of a normalized stream: each normalized into its table's and child tables'
 //! parts, planned parents first so dropped rows change no schema, and lowered on the pool.
 
+mod discarded;
 mod keys;
 pub(super) mod split;
 
@@ -26,6 +27,7 @@ use crate::limits::MIN_PIECE;
 use crate::normalize::rounding::Rounding;
 use crate::normalize::{self, Dropped, Part, PartSchemas, Pruned, PushKind, Shape};
 use crate::table::{Admission, Creation, Incoming, LoweringPlan, Prepared, Stamp};
+use discarded::Discarded;
 
 /// Lowers `units`, written from pushes of `kind`, of a stream that normalizes as `shape` into its
 /// table and child tables, and queues them on their lanes.
@@ -68,6 +70,7 @@ pub(super) async fn write_normalized(
         let (unit, discarded) = plan_parts(job, context, (parts, schemas), &mut flush).await?;
         open.discarded_values += discarded.values;
         open.discarded_rows += discarded.rows;
+        open.discards.absorb(discarded.columns);
         let kept = kept(unit.iter().map(|(_, part, _)| part));
         let cutter = Cutter::within(context, request.saturating_sub(made));
         let rendering = context.rendering.as_ref().clone();
@@ -220,14 +223,6 @@ impl Flush {
 /// The parts of a unit, each with its table and plan.
 pub(super) type PlannedParts = Vec<(usize, Part, Arc<LoweringPlan>)>;
 
-/// What planning a unit's parts discarded: the values of new arrays, and the rows that went with
-/// dropped parents.
-#[derive(Default)]
-struct Discarded {
-    values: u64,
-    rows: u64,
-}
-
 /// What becomes of one of a unit's parts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Fate {
@@ -277,7 +272,7 @@ async fn plan_parts(
             pruned.map_err(|error| pruning_failed(job, &error))?
         };
         if fate == Fate::Discarded {
-            discarded.values += pruned.part.batch.num_rows() as u64;
+            discarded.array(&planned, &pruned.part);
             continue;
         }
         discarded.rows += pruned.count;

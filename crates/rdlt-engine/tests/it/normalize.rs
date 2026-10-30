@@ -11,8 +11,8 @@ use arrow_schema::Field;
 use rdlt_connector::{Destination, Field as RdltField, Fields, LogicalType, TableSchema};
 use rdlt_connector_reference::{published, schema};
 use rdlt_engine::{
-    BatchPolicy, ErrorKind, Nested, ResetScope, RunOutcome, RunStatus, SchemaPolicy,
-    SchemaSettings, StreamPlan, WriteMode, codes,
+    BatchPolicy, Discard, DiscardReason, ErrorKind, Nested, ResetScope, RunOutcome, RunStatus,
+    SchemaPolicy, SchemaSettings, StreamPlan, WriteMode, codes,
 };
 use serde_json::{Value, json};
 
@@ -1441,6 +1441,35 @@ async fn a_declared_schema_gaining_an_array_follows_the_policy_once_its_table_ex
     let second = BatchStream::json("events", &[r#"{"id":2,"items":[2]}"#]).declared(declared(true));
     succeeded(&load(store, vec![second], vec![plan(SchemaPolicy::Freeze)]).await);
     assert_eq!(published_json(store, "events__items").len(), 2);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_discarded_array_counts_under_the_table_that_would_hold_it_by_its_path_below() {
+    let plan = || {
+        stream("events").schema(
+            SchemaSettings::new()
+                .nested(Nested::normalize())
+                .policy(SchemaPolicy::DiscardValue),
+        )
+    };
+    let store = "discarded_array_path";
+    let first = BatchStream::json("events", &[r#"{"id":1,"tags":[1],"o":{"x":1}}"#]);
+    succeeded(&load(store, vec![first], vec![plan()]).await);
+    // The new array sits below an object of the root, beside the planned array of tags.
+    let second = BatchStream::json(
+        "events",
+        &[r#"{"id":2,"tags":[2],"o":{"x":2,"items":[7,8]}}"#],
+    );
+    let outcome = load(store, vec![second], vec![plan()]).await;
+    succeeded(&outcome);
+    let discard = Discard {
+        table: "events".to_owned(),
+        column: "o.items".to_owned(),
+        reason: DiscardReason::SchemaChange,
+        rows: 0,
+        values: 2,
+    };
+    assert_eq!(outcome.report.streams["events"].discards.listed, [discard]);
 }
 
 #[tokio::test(start_paused = true)]

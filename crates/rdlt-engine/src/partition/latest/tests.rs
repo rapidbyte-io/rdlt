@@ -14,6 +14,7 @@ fn moved(partition: usize, next: u64, answers: Option<u64>) -> Seal {
         answers,
         discarded_rows: 0,
         discarded_values: 0,
+        discards: crate::report::ColumnDiscards::default(),
         deletes_ignored: 0,
         truncates_ignored: 0,
         shred: crate::report::ShredCounts::default(),

@@ -2,10 +2,11 @@ use std::error::Error as _;
 use std::time::Duration;
 
 use proptest::prelude::*;
-use rdlt_connector::limits::MAX_ERROR_CODE_BYTES;
+use rdlt_connector::limits::{MAX_ERROR_CODE_BYTES, MAX_ERROR_TEXT_BYTES};
+use rdlt_connector::text::CUT;
 use rdlt_connector::{ConnectorError, ConnectorErrorKind, StreamName};
 
-use super::{Error, ErrorKind, Origin, Side, codes};
+use super::{Error, ErrorKind, Origin, Side, codes, shown};
 use crate::scope::ScopeError;
 
 fn connector(kind: ConnectorErrorKind) -> ConnectorError {
@@ -433,4 +434,13 @@ proptest! {
         prop_assert!(shown.len() <= MAX_ERROR_CODE_BYTES);
         prop_assert_eq!(error.report().connector_code, Some(shown));
     }
+}
+
+#[test]
+fn a_connector_s_text_is_shown_and_cut_to_its_bound() {
+    let long = "x".repeat(MAX_ERROR_TEXT_BYTES * 2);
+    let cut = shown(&long);
+    assert!(cut.len() <= MAX_ERROR_TEXT_BYTES, "{} bytes", cut.len());
+    assert!(cut.ends_with(CUT));
+    assert_eq!(shown("a\u{202e}b"), "a\\u{202e}b");
 }

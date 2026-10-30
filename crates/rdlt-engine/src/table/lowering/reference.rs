@@ -5,13 +5,14 @@
 //! column has and however the destination stores it. The reference says what each value means as
 //! a [`Canon`]; the differential reads every stored cell back to one and compares.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use rdlt_connector::{ChangeOp, ColumnKey, ColumnPath, LogicalType};
 use rdlt_testkit::canon::{Canon, canonical, holds};
 use rdlt_testkit::drawn::Scalar;
 
 use crate::policy::SchemaPolicy;
+use crate::report::DiscardReason;
 use crate::table::TableView;
 
 /// What lowering a batch into a view should give.
@@ -28,6 +29,8 @@ pub(super) struct Expected {
     pub(super) written: Vec<Option<usize>>,
     pub(super) discarded_rows: u64,
     pub(super) discarded_values: u64,
+    /// The rows each incoming column dropped and the values of it nulled, by its name and why.
+    pub(super) discards: BTreeMap<(String, DiscardReason), (u64, u64)>,
     /// Whether a kept value is beyond what its column's type holds where the column's policy
     /// refuses it, which refuses the batch: a time in a unit whose `i64` cannot hold it.
     pub(super) refused: bool,
@@ -52,57 +55,84 @@ pub(super) fn lower(
     let mut expected = outline(view, columns, &targets, &splits);
     let held = |value: &Scalar, split: &Option<usize>| held(view, value, *split);
     for (position, row) in rows.iter().enumerate() {
-        let (mut drops, mut discarded, mut refused) = (false, 0, false);
-        let mut nulled = vec![false; columns.len()];
+        let (mut refused, mut nulled) = (false, vec![false; columns.len()]);
+        let (mut dropping, mut discarding) = (Vec::new(), Vec::new());
         for (index, value) in row.iter().enumerate() {
             if *value == Scalar::Null || held(value, &splits[index]).is_some() {
                 continue;
             }
-            let unheld = match targets[index] {
-                // A change: no column of the view holds the value.
-                None => true,
-                Some(column) => {
-                    let to = view.model.columns[column].logical_type();
-                    !holds(value, &columns[index].1, to)
-                }
-            };
-            if !unheld {
+            let Some(reason) = unheld(
+                view,
+                value,
+                &columns[index].1,
+                (targets[index], splits[index]),
+            ) else {
                 continue;
-            }
+            };
+            let named = (columns[index].0.clone(), reason);
             match policies[index] {
-                SchemaPolicy::DiscardRow => drops = true,
+                SchemaPolicy::DiscardRow => dropping.push(named),
                 SchemaPolicy::DiscardValue => {
-                    discarded += 1;
                     nulled[index] = true;
+                    discarding.push(named);
                 }
                 // A change under another policy is applied or refused before lowering; a value
                 // its column cannot hold refuses the batch.
-                _ if targets[index].is_none() => discarded += 1,
+                _ if targets[index].is_none() => discarding.push(named),
                 _ => refused = true,
             }
+        }
+        let drops = !dropping.is_empty();
+        for named in dropping {
+            expected.discards.entry(named).or_default().0 += 1;
         }
         if drops {
             expected.discarded_rows += 1;
             continue;
         }
-        expected.discarded_values += discarded;
+        expected.discarded_values += u64::try_from(discarding.len()).unwrap_or(u64::MAX);
+        for named in discarding {
+            expected.discards.entry(named).or_default().1 += 1;
+        }
         expected.refused |= refused;
-        let mut cells = vec![Canon::Null; view.model.columns.len()];
-        for (index, ((value, target), (_, logical))) in
-            row.iter().zip(&targets).zip(columns).enumerate()
-        {
+        let mut kept = vec![Canon::Null; view.model.columns.len()];
+        for index in 0..row.len() {
+            let value = &row[index];
             if let Some((own, (scalar, from))) = held(value, &splits[index]) {
-                cells[own] = canonical(&scalar, &from);
-            } else if let Some(column) = target
-                && !nulled[index]
-            {
-                cells[*column] = canonical(value, logical);
+                kept[own] = canonical(&scalar, &from);
+            } else if let Some(column) = targets[index].filter(|_| !nulled[index]) {
+                kept[column] = canonical(value, &columns[index].1);
             }
         }
-        expected.rows.push(cells);
+        expected.rows.push(kept);
         expected.kept.push(position);
     }
     expected
+}
+
+/// Why `value`, of `logical`, whose column the view holds it in is `target` and whose own column
+/// is `split` where it is of a column of JSON, is discarded or refused: none where it is held.
+///
+/// A value no column of the view holds is a change, and so is one its column of JSON's own column
+/// does not hold, of a type the table has not; a value its column's type cannot hold is beyond it.
+fn unheld(
+    view: &TableView,
+    value: &Scalar,
+    logical: &LogicalType,
+    (target, split): (Option<usize>, Option<usize>),
+) -> Option<DiscardReason> {
+    match (target, split) {
+        (None, _) => Some(DiscardReason::SchemaChange),
+        (Some(column), split) => {
+            let to = view.model.columns[column].logical_type();
+            let held = holds(value, logical, to);
+            match split {
+                _ if held => None,
+                Some(_) => Some(DiscardReason::SchemaChange),
+                None => Some(DiscardReason::OutOfRange),
+            }
+        }
+    }
 }
 
 /// What lowering a batch whose columns are `columns` into `view` gives before any row: where each

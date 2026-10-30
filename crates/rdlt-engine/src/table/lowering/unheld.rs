@@ -152,40 +152,35 @@ impl LoweringPlan {
             .unwrap_or_default()
     }
 
-    /// Which rows of `batch` the policies of its columns keep, and the columns those policies
-    /// decide converted, each whose every value was held.
+    /// Which rows of `batch` the policies of its columns keep, the columns those policies decide
+    /// converted, each whose every value was held, and how many rows each column drops.
     ///
     /// No row holding a value its column cannot hold is kept where the column's policy drops
     /// rows; `None` keeps every row.
-    pub(super) fn held(
-        &self,
-        batch: &RecordBatch,
-    ) -> Result<(Option<BooleanArray>, Converted), ArrowError> {
+    pub(super) fn held(&self, batch: &RecordBatch) -> Result<Held, ArrowError> {
         let Checked { unheld, converted } = self.unheld(batch, SchemaPolicy::DiscardRow)?;
         let refused = unheld
             .iter()
             .map(|(_, rows)| rows.values().clone())
             .reduce(|left, right| &left | &right);
         let kept = refused.map(|refused| BooleanArray::new(!&refused, None));
-        Ok((kept, converted))
+        let dropping = unheld.iter().map(|(index, rows)| (*index, count(rows)));
+        Ok((kept, converted, dropping.collect()))
     }
 
     /// `batch` with each value its column cannot hold nulled, where the column's policy discards
-    /// values, how many it nulled, and the columns those policies decide that it left as they
-    /// were, converted.
-    pub(super) fn nulled(
-        &self,
-        batch: RecordBatch,
-    ) -> Result<(RecordBatch, u64, Converted), ArrowError> {
+    /// values, how many it nulled of each column, and the columns those policies decide that it
+    /// left as they were, converted.
+    pub(super) fn nulled(&self, batch: RecordBatch) -> Result<Nulled, ArrowError> {
         let Checked { unheld, converted } = self.unheld(&batch, SchemaPolicy::DiscardValue)?;
         if unheld.is_empty() {
-            return Ok((batch, 0, converted));
+            return Ok((batch, Vec::new(), converted));
         }
         let mut columns = batch.columns().to_vec();
         let mut fields: Vec<_> = batch.schema().fields().iter().cloned().collect();
-        let mut nulled = 0;
+        let mut nulled = Vec::with_capacity(unheld.len());
         for (index, rows) in unheld {
-            nulled += rows.true_count() as u64;
+            nulled.push((index, count(&rows)));
             columns[index] = nulled_at(&columns[index], &rows)?;
             let field = fields[index].as_ref().clone();
             let field = field.with_data_type(columns[index].data_type().clone());
@@ -197,6 +192,19 @@ impl LoweringPlan {
         ));
         Ok((RecordBatch::try_new(schema, columns)?, nulled, converted))
     }
+}
+
+/// Which rows of a batch its columns' policies keep, its columns those policies decide
+/// converted, and how many rows each column whose policy drops rows drops, by its place.
+pub(super) type Held = (Option<BooleanArray>, Converted, Vec<(usize, u64)>);
+
+/// A batch with the values its columns cannot hold nulled, how many each column nulled, by its
+/// place, and the columns the policies decide that it left as they were, converted.
+pub(super) type Nulled = (RecordBatch, Vec<(usize, u64)>, Converted);
+
+/// How many rows `rows` names.
+fn count(rows: &BooleanArray) -> u64 {
+    u64::try_from(rows.true_count()).unwrap_or(u64::MAX)
 }
 
 /// `array` with the values of the rows `rows` names null.

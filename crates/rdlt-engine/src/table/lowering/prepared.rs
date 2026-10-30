@@ -5,6 +5,7 @@ use std::sync::Arc;
 use arrow_array::RecordBatch;
 use rdlt_connector::cost::{Allocations, arrays};
 
+use crate::report::ColumnDiscards;
 use crate::table::TableView;
 
 /// A batch ready for its table, and what the schema policy discarded from it.
@@ -17,6 +18,8 @@ pub(crate) struct Prepared {
     pub(crate) discarded_rows: u64,
     /// Values nulled because they carried a discarded change.
     pub(crate) discarded_values: u64,
+    /// What the schema policy discarded, by the table's incoming column and why.
+    pub(crate) discards: ColumnDiscards,
 }
 
 impl Prepared {

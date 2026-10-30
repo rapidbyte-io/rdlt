@@ -20,6 +20,7 @@ fn seal(partition: usize, segment: u64, rows: u64, next: u64, answers: Option<u6
         answers,
         discarded_rows: 0,
         discarded_values: 0,
+        discards: crate::report::ColumnDiscards::default(),
         deletes_ignored: 0,
         truncates_ignored: 0,
         shred: crate::report::ShredCounts::default(),

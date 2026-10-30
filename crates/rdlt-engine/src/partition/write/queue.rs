@@ -36,6 +36,7 @@ pub(super) async fn queue(
 ) -> Result<(), Error> {
     open.discarded_rows += prepared.discarded_rows;
     open.discarded_values += prepared.discarded_values;
+    open.discards.absorb(prepared.discards);
     let rows = u64::try_from(prepared.batch.num_rows()).unwrap_or(u64::MAX);
     let bytes = written_bytes(&prepared.batch);
     // The batch is held with what holds it from here on, however the queueing ends.

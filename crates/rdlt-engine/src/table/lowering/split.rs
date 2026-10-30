@@ -82,21 +82,25 @@ impl Splits {
         Some(BooleanArray::new(kept, None))
     }
 
-    /// The values of `batch`'s split columns whose own column does not hold them and the policy
-    /// discards, as `fitted` says.
-    pub(super) fn discarded(&self, batch: &RecordBatch, fitted: &Fitted) -> u64 {
-        let discarding = self
-            .0
-            .iter()
-            .filter(|(_, _, rest)| *rest == Rest::DiscardValues);
-        discarding
+    /// The values of each of `batch`'s split columns whose own column does not hold them, of
+    /// those whose other values `rest` says go, by its place, as `fitted` says; none of a column
+    /// that holds every value.
+    pub(super) fn unfitted(
+        &self,
+        batch: &RecordBatch,
+        fitted: &Fitted,
+        rest: Rest,
+    ) -> Vec<(usize, u64)> {
+        let going = self.0.iter().filter(|(_, _, going)| *going == rest);
+        going
             .filter_map(|(index, _, _)| {
                 let fits = fitted.mask(*index)?;
                 let others =
                     (0..batch.num_rows()).filter(|row| fits.is_valid(*row) && !fits.value(*row));
-                Some(u64::try_from(others.count()).unwrap_or(u64::MAX))
+                let others = u64::try_from(others.count()).unwrap_or(u64::MAX);
+                (others > 0).then_some((*index, others))
             })
-            .fold(0, u64::saturating_add)
+            .collect()
     }
 }
 

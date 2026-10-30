@@ -1,13 +1,15 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
 use rdlt_connector::{CommitKey, Epoch, Headroom, PartitionId, PipelineId, Receipt, StreamName};
 
 use super::{
-    AttemptLog, AttemptRecord, CommitRecord, Committed, Forgotten, REPORTED_ATTEMPTS,
-    REPORTED_FORGOTTEN, Report, RunStatus, ShredCounts, StreamReport,
+    AttemptLog, AttemptRecord, ColumnDiscards, CommitRecord, Committed, DiscardReason, Discards,
+    Forgotten, Report, RunStatus, ShredCounts, StreamReport,
 };
 use crate::error::{Error, ErrorKind, codes};
+use crate::limits::{REPORTED_ATTEMPTS, REPORTED_FORGOTTEN, REPORTED_LISTED};
 
 fn commit(epoch: Epoch, rows: u64, streams: &[(&str, u64, u64)]) -> CommitRecord {
     CommitRecord {
@@ -27,6 +29,7 @@ fn commit(epoch: Epoch, rows: u64, streams: &[(&str, u64, u64)]) -> CommitRecord
                     generations_swapped: *swapped,
                     discarded_rows: 1,
                     discarded_values: 2,
+                    discards: Discards::default(),
                     deletes_ignored: 0,
                     truncates_ignored: 0,
                     behind: None,
@@ -293,4 +296,40 @@ fn receipts_counting_past_a_total_are_refused_and_change_nothing() {
         let listed = &report.attempts[0];
         assert_eq!((listed.rows, listed.bytes), (rows, bytes));
     }
+}
+
+#[test]
+fn discards_name_their_first_columns_and_count_the_rows_and_values_of_the_rest() {
+    let table: Arc<str> = Arc::from("orders");
+    let column = |index: usize| Arc::<str>::from(format!("c{index:03}"));
+    let mut segment = ColumnDiscards::default();
+    assert!(segment.is_empty());
+    for index in 0..REPORTED_LISTED + 2 {
+        segment.add(
+            (&table, &column(index)),
+            DiscardReason::SchemaChange,
+            (1, 2),
+        );
+    }
+    assert!(!segment.is_empty());
+    // A column already named counts on, however many are named.
+    segment.add((&table, &column(0)), DiscardReason::SchemaChange, (0, 5));
+    let reported = segment.reported();
+    assert_eq!(reported.listed.len(), REPORTED_LISTED);
+    assert_eq!((reported.listed[0].rows, reported.listed[0].values), (1, 7));
+    assert_eq!((reported.unlisted_rows, reported.unlisted_values), (2, 4));
+    // A run's report adds each commit's, naming columns while there is room.
+    let mut run = Discards::default();
+    run.absorb(&reported);
+    run.absorb(&reported);
+    assert_eq!(run.listed.len(), REPORTED_LISTED);
+    assert_eq!(run.listed[0].values, 14);
+    assert_eq!((run.unlisted_rows, run.unlisted_values), (4, 8));
+    // A column first met once the run names as many as it may is counted, not named.
+    let mut late = ColumnDiscards::default();
+    let column: Arc<str> = Arc::from("late");
+    late.add((&table, &column), DiscardReason::OutOfRange, (3, 4));
+    run.absorb(&late.reported());
+    assert_eq!(run.listed.len(), REPORTED_LISTED);
+    assert_eq!((run.unlisted_rows, run.unlisted_values), (7, 12));
 }

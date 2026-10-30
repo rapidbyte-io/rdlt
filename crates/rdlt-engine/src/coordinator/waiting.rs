@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use rdlt_connector::{Cursor, PartitionState, SegmentId};
 
 use crate::partition::{CursorHold, Seal};
-use crate::report::ShredCounts;
+use crate::report::{ColumnDiscards, ShredCounts};
 
 /// Seals as they arrive, until a commit takes them: what each sealed segment counts, and where
 /// each partition stands once they are committed.
@@ -31,6 +31,7 @@ pub(super) struct Counted {
     pub(super) bytes: u64,
     pub(super) discarded_rows: u64,
     pub(super) discarded_values: u64,
+    pub(super) discards: ColumnDiscards,
     pub(super) deletes_ignored: u64,
     pub(super) truncates_ignored: u64,
     pub(super) shred: ShredCounts,
@@ -70,6 +71,7 @@ impl WaitingSeals {
             answers: _,
             discarded_rows,
             discarded_values,
+            discards,
             deletes_ignored,
             truncates_ignored,
             shred,
@@ -83,6 +85,7 @@ impl WaitingSeals {
                 bytes,
                 discarded_rows,
                 discarded_values,
+                discards,
                 deletes_ignored,
                 truncates_ignored,
                 shred,
