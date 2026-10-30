@@ -21,8 +21,8 @@ use proptest::prelude::*;
 use rdlt_wire::limits::MESSAGE_ROOM;
 
 use super::{
-    Allocations, JSON_CHARGE, Piece, Rendering, Stored, array_bytes, arrays, batch_charge,
-    json_charge, nulls, push_charge, schema_bytes,
+    Allocations, JSON_CHARGE, Piece, Rendering, Stored, array_bytes, arrays, batch_arrays,
+    batch_charge, json_charge, nulls, push_charge, schema_bytes,
 };
 use crate::sink::Push;
 use crate::types::{self, LogicalType, TypeKind};
@@ -1019,6 +1019,8 @@ fn a_batch_s_arrays_are_counted_a_field_at_every_depth_and_a_push_s_dictionary_v
     ]);
     // An id, an object, its two fields, its list's items and a dictionary: 320 bytes each.
     assert_eq!(arrays(&fields), 6 * 320);
+    // A pushed batch of them holds the dictionary's values beside its keys too.
+    assert_eq!(batch_arrays(&fields), 7 * 320);
     assert_eq!(arrays(&Fields::empty()), 0);
     assert_eq!(array_bytes(u64::MAX), u64::MAX);
     // A batch holds a dictionary's values beside its keys, which a slice of it shares.
@@ -1029,5 +1031,6 @@ fn a_batch_s_arrays_are_counted_a_field_at_every_depth_and_a_push_s_dictionary_v
     let pushed = RecordBatch::try_from_iter([("id", ids), ("d", keyed)]).unwrap();
     let held = Allocations::of(&pushed).bytes();
     assert_eq!(arrays(pushed.schema_ref().fields()), 2 * 320);
+    assert_eq!(batch_arrays(pushed.schema_ref().fields()), 3 * 320);
     assert_eq!(batch_charge(&pushed), held + 3 * 320);
 }

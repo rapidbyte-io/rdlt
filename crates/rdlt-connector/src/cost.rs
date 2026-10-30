@@ -140,10 +140,16 @@ fn own_arrays(mut data_type: &DataType, values: bool) -> (u64, &DataType) {
     (arrays, data_type)
 }
 
+/// Bytes: what the arrays of a pushed batch of `fields` take beside the bytes of their buffers,
+/// an array a field at every depth and one for each dictionary's values.
+pub fn batch_arrays(fields: &Fields) -> u64 {
+    array_bytes(counted(fields, true))
+}
+
 /// The bytes holding `batch` is charged: every allocation it keeps alive, each counted once, and
 /// its arrays, a dictionary's values among them.
 pub fn batch_charge(batch: &RecordBatch) -> u64 {
-    let arrays = array_bytes(counted(batch.schema_ref().fields(), true));
+    let arrays = batch_arrays(batch.schema_ref().fields());
     Allocations::of(batch).bytes().saturating_add(arrays)
 }
 
