@@ -15,7 +15,7 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use parking_lot::Mutex;
-use rdlt_connector::{Destination, PipelineId, Source};
+use rdlt_connector::{Destination, Source};
 use tokio_util::sync::CancellationToken;
 
 use crate::attempt::{self, RunContext};
@@ -24,9 +24,11 @@ use crate::config::{EngineConfig, RetryPolicy};
 use crate::deadline::Waits;
 use crate::env::Env;
 use crate::error::Error;
+use crate::event::{Announcer, EventKind, Scope};
 use crate::plan::PipelinePlan;
-use crate::report::{AttemptEnd, AttemptLog, AttemptRecord, Pending, Report, RunStatus, Tally};
+use crate::report::{AttemptEnd, AttemptLog, Credit, Report, RunStatus, Tally};
 use crate::scope::contained;
+use crate::status::{Ended, Live, Status};
 
 pub use reset::{ResetReport, ResetScope};
 
@@ -84,6 +86,12 @@ impl Engine {
         let waits =
             Waits::new(Arc::clone(&self.env), self.config.connector_wait()).charging(&budget);
         let tally = Arc::new(Tally::default());
+        let live = Arc::new(Live::new(
+            Arc::clone(&self.env),
+            plan.pipeline().clone(),
+            budget.clone(),
+            Arc::clone(&tally),
+        ));
         let context = RunContext {
             env: Arc::clone(&self.env),
             config: Arc::clone(&self.config),
@@ -94,10 +102,12 @@ impl Engine {
             tally,
             stop: control.after_commit.clone(),
             cycles: Mutex::new(BTreeMap::new()),
+            live: Arc::clone(&live),
         };
         RunHandle {
-            future: Box::pin(deadlined(context, control.clone())),
+            future: Box::pin(ran(context, control.clone())),
             control,
+            live,
         }
     }
 }
@@ -162,12 +172,22 @@ pub struct RunOutcome {
 pub struct RunHandle {
     future: Pin<Box<dyn Future<Output = RunOutcome> + Send>>,
     control: RunControl,
+    live: Arc<Live>,
 }
 
 impl RunHandle {
     /// A control that stops this run.
     pub fn control(&self) -> RunControl {
         self.control.clone()
+    }
+
+    /// What the run is doing now, and its report so far.
+    ///
+    /// It never waits, and no decision of the run reads what it returns. Awaited through a
+    /// reference, the handle still answers once the run ended: the status then carries the
+    /// outcome's report.
+    pub fn status(&self) -> Status {
+        self.live.status()
     }
 }
 
@@ -201,81 +221,60 @@ pub(crate) fn backoff(
     )
 }
 
-/// A run's attempts as it makes them, each folded into its report as it ends, so a run that
-/// retries for ever stays bounded.
-struct Ledger {
-    report: Report,
-    /// A failed attempt's commit in flight, credited to it once a later attempt's open finds its
-    /// key landed.
-    unresolved: Option<Pending>,
+/// Tells, through `announcer`, what an attempt that `ended` left to tell: a commit whose report it
+/// ended before, and a commit of an earlier attempt it found landed; whether it progressed.
+fn told(announcer: &Announcer, ended: Ended) -> bool {
+    if let Some(unreported) = ended.unreported {
+        announcer.announce(|| unreported.cut_short(announcer.env().instant()));
+    }
+    if let Some(Credit { rows, bytes }) = ended.credited {
+        announcer.announce(|| EventKind::Credited { rows, bytes });
+    }
+    ended.progressed
 }
 
-impl Ledger {
-    fn new(pipeline: PipelineId) -> Self {
-        Self {
-            report: Report::new(pipeline),
-            unresolved: None,
-        }
-    }
-
-    /// Records `attempt`, which `failed` or not, and whether a commit of it moved the load on: a
-    /// commit that left every partition where it stood, and published nothing, is no progress.
-    ///
-    /// A failed attempt's commit in flight is credited, to the attempt whose epoch its key names,
-    /// once a later attempt's open finds that key the last that landed; where it finds another,
-    /// the commit never landed or a later one landed on it, and goes uncredited. An attempt that
-    /// never opened found nothing, so the commit stays in flight for the next.
-    ///
-    /// # Errors
-    ///
-    /// `receipt_overflow` where the attempt's receipts take the run's totals past what they
-    /// hold.
-    fn record(&mut self, mut attempt: AttemptRecord, failed: bool) -> Result<bool, Error> {
-        let log = &mut attempt.log;
-        if let Some((_, landed)) = &log.opened
-            && let Some(pending) = self.unresolved.take()
-            && let Some(commit) = landed.as_ref().and_then(|landed| pending.landed(landed))
-        {
-            self.report.credit(commit)?;
-        }
-        if failed && let Some(pending) = log.pending.take() {
-            self.unresolved = Some(pending);
-        }
-        let progressed = log.progressed;
-        self.report.absorb(attempt)?;
-        Ok(progressed)
-    }
-
-    /// The run's report.
-    fn report(self) -> Report {
-        self.report
-    }
-}
-
-/// Runs one attempt, which `log` records, unless the run is stopped now; dropping the attempt
-/// ends every task it started.
+/// Runs one attempt, which `log` records and `announcer` tells of, unless the run is stopped
+/// now; dropping the attempt ends every task it started.
 ///
-/// A connector that panics fails its attempt, not the caller awaiting the run.
+/// A connector that panics fails its attempt, not the caller awaiting the run, and so does an
+/// observer that panics at an event of the attempt.
 async fn attempted(
     context: &RunContext,
     control: &RunControl,
     log: Arc<Mutex<AttemptLog>>,
+    announcer: &Announcer,
 ) -> Result<AttemptEnd, Error> {
+    let attempt = async {
+        announcer.announce(|| EventKind::AttemptStarted);
+        attempt::run(context, log, announcer).await
+    };
     tokio::select! {
         biased;
         () = control.now.cancelled() => Err(Error::cancelled("the run was stopped")),
-        result = contained(attempt::run(context, log)) => result.unwrap_or_else(|panic| {
+        result = contained(attempt) => result.unwrap_or_else(|panic| {
             Err(Error::internal(format!("an attempt panicked: {panic}")))
         }),
     }
 }
 
+/// Runs the run as [`deadlined`] does, then ends it: its report, which every status from now on
+/// carries, and the event that tells it ended.
+async fn ran(context: RunContext, control: RunControl) -> RunOutcome {
+    context.live.begin();
+    let (status, error) = deadlined(&context, control).await;
+    let report = context.live.end(status);
+    let pipeline = context.plan.pipeline().clone();
+    let announcer = Announcer::new(Arc::clone(&context.env), pipeline, report.attempted);
+    announcer.announce(|| EventKind::RunEnded { status });
+    RunOutcome { report, error }
+}
+
 /// Runs attempts as `drive` does, and at the plan's deadline, where it has one, stops the run as
-/// a stop after a commit does.
+/// a stop after a commit does: how the run ended, and the error that ended it.
 ///
 /// A run the deadline stops read for as long as it was asked, so it succeeded; where its last
 /// attempt had failed and was waiting to be retried, it failed.
-async fn deadlined(context: RunContext, control: RunControl) -> RunOutcome {
+async fn deadlined(context: &RunContext, control: RunControl) -> (RunStatus, Option<Error>) {
     let Some(deadline) = context.plan.until().deadline() else {
         return drive(context, control).await;
     };
@@ -293,72 +292,71 @@ async fn deadlined(context: RunContext, control: RunControl) -> RunOutcome {
         }
     };
     let run = async {
-        let outcome = drive(context, control.clone()).await;
+        let ran = drive(context, control.clone()).await;
         ended.cancel();
-        outcome
+        ran
     };
-    let (mut outcome, ()) = tokio::join!(run, timer);
-    if reached.load(Ordering::SeqCst) && outcome.report.status == RunStatus::Stopped {
-        outcome.report.status = if outcome.error.is_some() {
+    let ((status, error), ()) = tokio::join!(run, timer);
+    if reached.load(Ordering::SeqCst) && status == RunStatus::Stopped {
+        let status = if error.is_some() {
             RunStatus::Failed
         } else {
             RunStatus::Succeeded
         };
+        return (status, error);
     }
-    outcome
+    (status, error)
 }
 
-/// Runs attempts until one finishes, the retry policy gives up, or the run is stopped.
-async fn drive(context: RunContext, control: RunControl) -> RunOutcome {
-    let started = context.env.instant();
+/// Runs attempts until one finishes, the retry policy gives up, or the run is stopped: how the
+/// run ended, and the error that ended it.
+async fn drive(context: &RunContext, control: RunControl) -> (RunStatus, Option<Error>) {
     let retry = *context.config.retry();
-    let mut ledger = Ledger::new(context.plan.pipeline().clone());
     let mut failures = 0;
-    let (status, error) = loop {
+    loop {
+        let pipeline = context.plan.pipeline().clone();
+        let attempt = context.live.attempted() + 1;
+        let announcer = Announcer::new(Arc::clone(&context.env), pipeline, attempt);
         let log = Arc::new(Mutex::new(AttemptLog::default()));
-        let started_at = context.env.now();
-        let result = attempted(&context, &control, Arc::clone(&log)).await;
-        let log = std::mem::take(&mut *log.lock());
-        let attempt = AttemptRecord {
-            started_at,
-            ended_at: context.env.now(),
-            log,
-            error: result.as_ref().err().map(Error::report),
-        };
-        let progressed = match ledger.record(attempt, result.is_err()) {
-            Ok(progressed) => progressed,
-            Err(error) => break (RunStatus::Failed, Some(error)),
+        context.live.started(Arc::clone(&log), context.env.now());
+        let result = attempted(context, &control, log, &announcer).await;
+        let ended = context
+            .live
+            .ended(result.as_ref().err().map(Error::report), result.is_err());
+        let progressed = match ended {
+            Ok(ended) => told(&announcer, ended),
+            Err(error) => return (RunStatus::Failed, Some(error)),
         };
         let error = match result {
-            Ok(AttemptEnd::Exhausted) => break (RunStatus::Succeeded, None),
-            Ok(AttemptEnd::Stopped) => break (RunStatus::Stopped, None),
+            Ok(AttemptEnd::Exhausted) => return (RunStatus::Succeeded, None),
+            Ok(AttemptEnd::Stopped) => return (RunStatus::Stopped, None),
             Err(error) => error,
         };
         if control.now.is_cancelled() {
-            break (RunStatus::Cancelled, Some(error));
+            return (RunStatus::Cancelled, Some(error));
         }
         if progressed && retry.resets_after_progress() {
             failures = 0;
         }
         failures += 1;
         if !error.is_retryable() || failures >= retry.attempts().get() {
-            break (RunStatus::Failed, Some(error));
+            return (RunStatus::Failed, Some(error));
         }
         let delay = backoff(&retry, &error, failures, context.env.as_ref());
+        let now = context.env.instant();
+        context
+            .live
+            .backing_off(now.checked_add(delay).unwrap_or(now), now);
+        announcer.announce(|| EventKind::Retrying {
+            scope: Scope::Attempt,
+            error: error.report(),
+            retry_in: delay,
+        });
         tokio::select! {
             biased;
-            () = control.now.cancelled() => break (RunStatus::Cancelled, Some(error)),
-            () = control.after_commit.cancelled() => break (RunStatus::Stopped, Some(error)),
+            () = control.now.cancelled() => return (RunStatus::Cancelled, Some(error)),
+            () = control.after_commit.cancelled() => return (RunStatus::Stopped, Some(error)),
             () = context.env.sleep(delay) => {}
         }
-    };
-    let mut report = ledger.report();
-    report.status = status;
-    report.elapsed = context.env.instant().saturating_duration_since(started);
-    report.peak_memory = context.budget.peak();
-    report.counters = context.tally.counters();
-    report.counters.waits = context.budget.waited();
-    report.counters.signals = context.budget.signals();
-    report.counters.kept_peak = context.budget.kept_peak();
-    RunOutcome { report, error }
+    }
 }

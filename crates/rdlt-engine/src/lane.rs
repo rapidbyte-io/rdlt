@@ -19,6 +19,7 @@ use crate::budget::MemoryBudget;
 use crate::env::Env;
 use crate::error::{Error, Side};
 use crate::report::{Flush, LaneCounters, Tally};
+use crate::status::{Call, LaneCalls};
 use crate::table::Tables;
 
 /// A batch for one table, tagged with its segment and the schema version it was lowered for; the
@@ -47,6 +48,8 @@ pub(crate) struct Lanes {
     env: Arc<dyn Env>,
     /// Where each lane's waits and times are counted.
     tally: Arc<Tally>,
+    /// Each lane's call into the destination in flight.
+    calls: Arc<LaneCalls>,
 }
 
 /// One lane's end: its queue, a writer for each table and schema version it writes, which of
@@ -74,6 +77,8 @@ pub(crate) struct Lane {
     counted: LaneCounters,
     /// Where the lane adds what it counted.
     tally: Arc<Tally>,
+    /// Where the lane notes its call into the destination in flight.
+    calls: Arc<LaneCalls>,
 }
 
 /// An open writer, and the count of the lane's writes when it was last written.
@@ -97,6 +102,7 @@ impl Lanes {
         (env, tally): (&Arc<dyn Env>, &Arc<Tally>),
     ) -> (Self, Vec<Lane>) {
         let share = NonZeroUsize::new(writers.get() / count.get()).unwrap_or(NonZeroUsize::MIN);
+        let calls = Arc::new(LaneCalls::new(env.instant(), count.get()));
         let (senders, lanes) = (0..count.get())
             .map(|index| {
                 let (sender, receiver) = mpsc::channel(window.get());
@@ -113,6 +119,7 @@ impl Lanes {
                     env: Arc::clone(env),
                     counted: LaneCounters::default(),
                     tally: Arc::clone(tally),
+                    calls: Arc::clone(&calls),
                 };
                 (sender, lane)
             })
@@ -121,8 +128,14 @@ impl Lanes {
             senders,
             env: Arc::clone(env),
             tally: Arc::clone(tally),
+            calls,
         };
         (ends, lanes)
+    }
+
+    /// Each lane's call into the destination in flight.
+    pub(crate) fn calls(&self) -> &Arc<LaneCalls> {
+        &self.calls
     }
 
     /// The lane for the writes to `table` of the partition at `place` in the attempt: a
@@ -219,9 +232,12 @@ impl Lane {
         for key in older {
             self.retire(key).await?;
         }
-        let (writer, env) = self.writer(write.table, write.version).await?;
+        let lane = self.index;
+        let (writer, env, calls) = self.writer(write.table, write.version).await?;
         let began = env.instant();
+        calls.calling(lane, Call::Write, began);
         let written = writer.write(write.segment, write.batch).await;
+        calls.returned(lane);
         let writing = env.instant().saturating_duration_since(began);
         self.counted.writing = self.counted.writing.saturating_add(writing);
         written.map_err(|error| Error::connector(Side::Destination, "writing a batch", error))?;
@@ -238,7 +254,8 @@ impl Lane {
             let Some(open) = self.writers.get_mut(&key) else {
                 continue;
             };
-            let (flushing, flushed) = flush(open.writer.as_mut(), self.env.as_ref()).await;
+            let calling = (self.calls.as_ref(), self.index);
+            let (flushing, flushed) = flush(open.writer.as_mut(), self.env.as_ref(), calling).await;
             self.flushed(asked, flushing);
             flushed?;
         }
@@ -259,7 +276,8 @@ impl Lane {
             return Ok(());
         };
         if self.written.remove(&key) {
-            let (flushing, flushed) = flush(open.writer.as_mut(), self.env.as_ref()).await;
+            let calling = (self.calls.as_ref(), self.index);
+            let (flushing, flushed) = flush(open.writer.as_mut(), self.env.as_ref(), calling).await;
             self.flushed(Flush::Retirement, flushing);
             flushed?;
         }
@@ -267,10 +285,17 @@ impl Lane {
     }
 }
 
-/// Flushes `writer`: how long the flush took on `env`'s clock.
-async fn flush(writer: &mut dyn DestinationWriter, env: &dyn Env) -> (Duration, Result<(), Error>) {
+/// Flushes `writer`, the flush noted as `lane`'s call in `calls`: how long it took on `env`'s
+/// clock.
+async fn flush(
+    writer: &mut dyn DestinationWriter,
+    env: &dyn Env,
+    (calls, lane): (&LaneCalls, usize),
+) -> (Duration, Result<(), Error>) {
     let began = env.instant();
+    calls.calling(lane, Call::Flush, began);
     let flushed = writer.flush().await.map(drop);
+    calls.returned(lane);
     let flushing = env.instant().saturating_duration_since(began);
     (
         flushing,
@@ -288,14 +313,14 @@ impl Drop for Lane {
 
 impl Lane {
     /// The lane's writer for `table`'s batches lowered for `version`, opened on the first of them,
-    /// and the clock its writes are timed on: a writer's table names the schema its writes
-    /// follow, and a partition may still write batches of an older version after the table
-    /// changes.
+    /// the clock its writes are timed on and where its calls are noted: a writer's table names
+    /// the schema its writes follow, and a partition may still write batches of an older version
+    /// after the table changes.
     async fn writer(
         &mut self,
         table: usize,
         version: SchemaVersion,
-    ) -> Result<(&mut dyn DestinationWriter, &dyn Env), Error> {
+    ) -> Result<(&mut dyn DestinationWriter, &dyn Env, &LaneCalls), Error> {
         self.writes = self.writes.saturating_add(1);
         let key = (table, version);
         if !self.writers.contains_key(&key) && self.writers.len() >= self.share.get() {
@@ -308,7 +333,7 @@ impl Lane {
             Entry::Occupied(open) => {
                 let open = open.into_mut();
                 open.used = self.writes;
-                Ok((open.writer.as_mut(), self.env.as_ref()))
+                Ok((open.writer.as_mut(), self.env.as_ref(), self.calls.as_ref()))
             }
             Entry::Vacant(vacant) => {
                 let view = self.tables.view(table);
@@ -316,20 +341,19 @@ impl Lane {
                     version,
                     ..view.table.clone()
                 };
-                let writer = self
-                    .tables
-                    .session()
-                    .writer(&table)
-                    .await?
-                    .map_err(|error| {
-                        let context = format!("creating a writer for table {}", view.table.name);
-                        Error::connector(Side::Destination, context, error)
-                    })?;
+                self.calls
+                    .calling(self.index, Call::Open, self.env.instant());
+                let writer = self.tables.session().writer(&table).await;
+                self.calls.returned(self.index);
+                let writer = writer?.map_err(|error| {
+                    let context = format!("creating a writer for table {}", view.table.name);
+                    Error::connector(Side::Destination, context, error)
+                })?;
                 let open = vacant.insert(Open {
                     writer,
                     used: self.writes,
                 });
-                Ok((open.writer.as_mut(), self.env.as_ref()))
+                Ok((open.writer.as_mut(), self.env.as_ref(), self.calls.as_ref()))
             }
         }
     }

@@ -66,6 +66,22 @@ pub(crate) enum Progress {
     },
 }
 
+impl Progress {
+    /// The index in the attempt of the partition it tells of.
+    pub(crate) fn partition(&self) -> usize {
+        match self {
+            Self::Started { partition }
+            | Self::Written { partition, .. }
+            | Self::Moved { partition, .. }
+            | Self::Signalled { partition }
+            | Self::RetentionReset { partition }
+            | Self::Abandoned { partition, .. }
+            | Self::Ended { partition, .. } => *partition,
+            Self::Sealed(seal) => seal.partition,
+        }
+    }
+}
+
 /// A sealed segment: every row written to it, and where to resume after it.
 #[derive(Debug, PartialEq)]
 pub(crate) struct Seal {

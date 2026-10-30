@@ -226,6 +226,8 @@ pub(crate) enum Step {
     InflateReceipts,
     /// Every write and flush waits for ever.
     StallWrites,
+    /// Every write is staged, and every flush waits for ever.
+    StallFlushes,
     /// Every open answers with a state record that is not one.
     GarbleState,
     /// Every open answers with an epoch past what a load's epoch column holds.
@@ -327,6 +329,12 @@ impl DestinationSession for FailingSession {
         }
         if self.step == Step::StallWrites {
             return Box::pin(async { Ok(Box::new(Stalled) as Box<dyn DestinationWriter>) });
+        }
+        if self.step == Step::StallFlushes {
+            return Box::pin(async move {
+                let writer = self.inner.writer(table).await?;
+                Ok(Box::new(Unflushed(writer)) as Box<dyn DestinationWriter>)
+            });
         }
         self.inner.writer(table)
     }
@@ -464,6 +472,19 @@ struct Stalled;
 impl DestinationWriter for Stalled {
     fn write(&mut self, _segment: SegmentId, _batch: RecordBatch) -> BoxFuture<'_, Result<()>> {
         Box::pin(std::future::pending())
+    }
+
+    fn flush(&mut self) -> BoxFuture<'_, Result<WriteStats>> {
+        Box::pin(std::future::pending())
+    }
+}
+
+/// A writer whose writes are its own's and whose flushes never return.
+struct Unflushed(Box<dyn DestinationWriter>);
+
+impl DestinationWriter for Unflushed {
+    fn write(&mut self, segment: SegmentId, batch: RecordBatch) -> BoxFuture<'_, Result<()>> {
+        self.0.write(segment, batch)
     }
 
     fn flush(&mut self) -> BoxFuture<'_, Result<WriteStats>> {

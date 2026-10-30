@@ -7,7 +7,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use rdlt_connector::{Headroom, PartitionId};
 
 use super::Coordinator;
-use crate::error::Error;
+use crate::error::{Error, shown};
+use crate::event::EventKind;
 
 impl Coordinator {
     /// Notes that `partition`'s source said its stream's partitions changed.
@@ -89,17 +90,22 @@ impl Coordinator {
         }
     }
 
-    /// Counts that `partition`'s source had dropped where its read would resume, for the report.
+    /// Counts that `partition`'s source had dropped where its read would resume, for the report,
+    /// and tells of it.
     pub(super) fn reset(&mut self, partition: usize) {
-        let stream = self.parts.partitions[partition].stream;
-        let name = self.parts.streams[stream].name.clone();
+        let run = &self.parts.partitions[partition];
+        let (name, id) = (self.parts.streams[run.stream].name.clone(), run.id.clone());
         *self
             .parts
             .log
             .lock()
             .retention_resets
-            .entry(name)
+            .entry(name.clone())
             .or_default() += 1;
+        self.parts.announcer.announce(|| EventKind::RetentionReset {
+            stream: shown(&name),
+            partition: shown(&id),
+        });
     }
 }
 

@@ -12,7 +12,8 @@ use rdlt_connector::{
 use super::delta::Collected;
 use super::{Coordinator, cancelled};
 use crate::error::{Error, Side};
-use crate::report::Trigger;
+use crate::report::{Acks, Trigger};
+use crate::status::Step;
 
 /// Where a commit falls among its attempt's commits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -141,7 +142,8 @@ impl Coordinator {
 
     /// Tells each stream's source, in one report, the cursors it is owed: those in `reported`,
     /// which a commit that landed with `positions` holds, and those of earlier reports that
-    /// failed; at a commit that falls at `turn`, which may have published nothing.
+    /// failed; at a commit that falls at `turn`, which may have published nothing: the reports
+    /// that failed and the owed cursors given up.
     ///
     /// Every partition a commit covers is told, moved or not, so a report that failed or was
     /// lost is made again by the next commit, else by the next attempt.
@@ -156,7 +158,7 @@ impl Coordinator {
         reported: BTreeMap<usize, Cursor>,
         positions: &BTreeMap<usize, PartitionState>,
         turn: Turn,
-    ) -> Result<(), Error> {
+    ) -> (Acks, Result<(), Error>) {
         for (place, cursor) in reported {
             let partition = &self.parts.partitions[place];
             let state = positions
@@ -165,7 +167,7 @@ impl Coordinator {
             self.owed
                 .owe(partition.stream, partition.id.clone(), cursor, state);
         }
-        let mut ended = None;
+        let (mut acks, mut ended) = (Acks::default(), None);
         for (stream, owed) in std::mem::take(&mut self.owed.0) {
             let cursors: Vec<(PartitionId, Cursor)> = owed
                 .iter()
@@ -176,16 +178,17 @@ impl Coordinator {
                 biased;
                 // An answer and the cancel together: the answer wins.
                 told = self.parts.source.committed(name, &cursors) => told,
-                () = self.parts.cancel.cancelled() => return Err(cancelled()),
+                () = self.parts.cancel.cancelled() => {
+                    ended = Some(cancelled());
+                    break;
+                }
             };
             let Err(error) = told else {
                 continue;
             };
             let failed = failed(owed, &error, turn, self.parts.retry.attempts());
-            self.parts.tally.add(|counters| {
-                counters.acks.failed = counters.acks.failed.saturating_add(1);
-                counters.acks.dropped = counters.acks.dropped.saturating_add(failed.dropped);
-            });
+            acks.failed = acks.failed.saturating_add(1);
+            acks.dropped = acks.dropped.saturating_add(failed.dropped);
             if !failed.owed.is_empty() {
                 self.owed.0.insert(stream, failed.owed);
             }
@@ -196,7 +199,11 @@ impl Coordinator {
                 ended = Some(error);
             }
         }
-        ended.map_or(Ok(()), Err)
+        self.parts.tally.add(|counters| {
+            counters.acks.failed = counters.acks.failed.saturating_add(acks.failed);
+            counters.acks.dropped = counters.acks.dropped.saturating_add(acks.dropped);
+        });
+        (acks, ended.map_or(Ok(()), Err))
     }
 
     /// Where a commit `trigger` made due falls: a commit made once every partition has ended is
@@ -220,7 +227,11 @@ impl Coordinator {
         if self.owed.0.is_empty() {
             return Ok(());
         }
-        self.acknowledge(BTreeMap::new(), &BTreeMap::new(), Turn::Last)
-            .await
+        self.step(Some(Step::Ack), self.parts.env.instant());
+        let (_, acknowledged) = self
+            .acknowledge(BTreeMap::new(), &BTreeMap::new(), Turn::Last)
+            .await;
+        self.step(None, self.parts.env.instant());
+        acknowledged
     }
 }

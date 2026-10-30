@@ -139,6 +139,8 @@ pub(crate) struct Script {
     pub(crate) limited_acks: AtomicUsize,
     /// The wait a refused acknowledgement asks for; a minute where unset.
     pub(crate) limited_wait: Mutex<Option<Duration>>,
+    /// How long each report of committed cursors takes before it is answered.
+    pub(crate) ack_wait: Duration,
     pub(crate) faults: Mutex<Vec<Fault>>,
     batches: AtomicU64,
     /// Every acknowledged cursor: stream, partition and resume offset.
@@ -169,6 +171,12 @@ impl Script {
             streams,
             ..Self::default()
         }
+    }
+
+    /// The script, each report of committed cursors taking `wait` before it is answered.
+    pub(crate) fn answering_after(mut self, wait: Duration) -> Self {
+        self.ack_wait = wait;
+        self
     }
 
     /// Adds `fault`.
@@ -324,6 +332,9 @@ impl ReadStream<ScriptSource> for Scripted {
         source: &ScriptSource,
         cursors: &[(PartitionId, Offset)],
     ) -> Result<()> {
+        if !source.script.ack_wait.is_zero() {
+            tokio::time::sleep(source.script.ack_wait).await;
+        }
         let limited =
             source
                 .script

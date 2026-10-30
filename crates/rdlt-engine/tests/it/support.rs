@@ -24,8 +24,9 @@ use rdlt_connector::{
 };
 use rdlt_connector_reference::{GeneratorSource, MemoryDestination, published};
 use rdlt_engine::{
-    CommitPolicy, ComputePool, Cores, Engine, EngineConfig, EngineConfigBuilder, Env, Job,
-    PipelinePlan, ResetReport, ResetScope, RunControl, RunOutcome, Sleep, StreamPlan, SystemEnv,
+    CommitPolicy, ComputePool, Cores, Engine, EngineConfig, EngineConfigBuilder, Env, Event,
+    EventKind, Job, PipelinePlan, ResetReport, ResetScope, RunControl, RunHandle, RunOutcome,
+    Sleep, Status, StreamPlan, SystemEnv,
 };
 use serde_json::{Value, json};
 
@@ -77,6 +78,50 @@ fn inline_system() -> SystemEnv {
     SystemEnv::try_new(INLINE).expect("the pool starts")
 }
 
+/// What the environment of an engine's runs was told, in order.
+#[derive(Clone, Default)]
+pub(crate) struct Told(Arc<parking_lot::Mutex<Vec<Event>>>);
+
+impl Told {
+    /// Every event told so far.
+    pub(crate) fn events(&self) -> Vec<Event> {
+        self.0.lock().clone()
+    }
+
+    /// The kinds of the events told so far.
+    pub(crate) fn kinds(&self) -> Vec<EventKind> {
+        self.0
+            .lock()
+            .iter()
+            .map(|event| event.kind.clone())
+            .collect()
+    }
+}
+
+/// An engine as [`engine`] makes it, its environment telling the events of its runs to what it
+/// returns.
+pub(crate) fn told_engine(config: EngineConfigBuilder) -> (TestEngine, Told) {
+    let told = Told::default();
+    let kept = Arc::clone(&told.0);
+    let observer = move |event: &Event| kept.lock().push(event.clone());
+    (observed_engine(config, Arc::new(observer)), told)
+}
+
+/// An engine as [`engine`] makes it, its environment telling `observer` the events of its runs.
+///
+/// Its wall clock follows the runtime's, so the times of events and of a status agree on a
+/// paused runtime.
+pub(crate) fn observed_engine(
+    config: EngineConfigBuilder,
+    observer: Arc<dyn Fn(&Event) + Send + Sync>,
+) -> TestEngine {
+    let system = inline_system().with_observer(observer);
+    let config = config.build().expect("the test configuration is valid");
+    let wall = Wall::Paused(system.now(), tokio::time::Instant::now());
+    let env = InlineEnv(system, Inline(Arc::default(), false), wall);
+    TestEngine::new(config, Arc::new(env))
+}
+
 /// An engine as [`engine`] makes it, declaring `cores` instead.
 pub(crate) fn engine_within(config: EngineConfigBuilder, cores: Cores) -> TestEngine {
     let system = SystemEnv::try_new(cores).expect("the pool starts");
@@ -86,7 +131,7 @@ pub(crate) fn engine_within(config: EngineConfigBuilder, cores: Cores) -> TestEn
 fn engine_on(config: EngineConfigBuilder, system: SystemEnv) -> (TestEngine, Arc<AtomicUsize>) {
     let config = config.build().expect("the test configuration is valid");
     let jobs = Arc::new(AtomicUsize::new(0));
-    let env = InlineEnv(system, Inline(Arc::clone(&jobs), false), None);
+    let env = InlineEnv(system, Inline(Arc::clone(&jobs), false), Wall::System);
     (TestEngine::new(config, Arc::new(env)), jobs)
 }
 
@@ -94,7 +139,7 @@ fn engine_on(config: EngineConfigBuilder, system: SystemEnv) -> (TestEngine, Arc
 /// partition that hands a job to the pool lets every other task run before it goes on.
 pub(crate) fn yielding_engine(config: EngineConfigBuilder) -> TestEngine {
     let config = config.build().expect("the test configuration is valid");
-    let env = InlineEnv(inline_system(), Inline(Arc::default(), true), None);
+    let env = InlineEnv(inline_system(), Inline(Arc::default(), true), Wall::System);
     TestEngine::new(config, Arc::new(env))
 }
 
@@ -128,28 +173,42 @@ pub(crate) fn ticking_engine(config: EngineConfigBuilder) -> TestEngine {
 pub(crate) fn stepping_engine(config: EngineConfigBuilder, step: i64) -> TestEngine {
     let config = config.build().expect("the test configuration is valid");
     let jobs = Arc::new(AtomicUsize::new(0));
-    let ticks = Some((Arc::new(AtomicU64::new(0)), step));
+    let ticks = Wall::Ticking(Arc::new(AtomicU64::new(0)), step);
     let env = InlineEnv(inline_system(), Inline(jobs, false), ticks);
     TestEngine::new(config, Arc::new(env))
 }
 
 /// The system's clock and randomness, with compute jobs run on the calling thread: the paused
-/// test runtime would otherwise advance its clock while a job runs on another thread.
-///
-/// With ticks, the clock moves its step of milliseconds more on each reading.
-struct InlineEnv(SystemEnv, Inline, Option<(Arc<AtomicU64>, i64)>);
+/// test runtime would otherwise advance its clock while a job runs on another thread; its wall
+/// clock as `Wall` says.
+struct InlineEnv(SystemEnv, Inline, Wall);
+
+/// What an [`InlineEnv`]'s wall clock reads.
+enum Wall {
+    /// The system's.
+    System,
+    /// The system's, moving its step of milliseconds more on each reading, counted.
+    Ticking(Arc<AtomicU64>, i64),
+    /// The system's time when the environment was made, and the runtime's time since, so a
+    /// paused runtime pauses it too.
+    Paused(std::time::SystemTime, tokio::time::Instant),
+}
 
 impl Env for InlineEnv {
     fn now(&self) -> std::time::SystemTime {
-        let Some((ticks, step)) = &self.2 else {
-            return self.0.now();
-        };
-        let ticked = i64::try_from(ticks.fetch_add(1, Ordering::SeqCst)).expect("few readings");
-        let moved = Duration::from_millis(ticked.saturating_mul(*step).unsigned_abs());
-        if *step < 0 {
-            self.0.now() - moved
-        } else {
-            self.0.now() + moved
+        match &self.2 {
+            Wall::System => self.0.now(),
+            Wall::Ticking(ticks, step) => {
+                let ticked =
+                    i64::try_from(ticks.fetch_add(1, Ordering::SeqCst)).expect("few readings");
+                let moved = Duration::from_millis(ticked.saturating_mul(*step).unsigned_abs());
+                if *step < 0 {
+                    self.0.now() - moved
+                } else {
+                    self.0.now() + moved
+                }
+            }
+            Wall::Paused(wall, began) => *wall + began.elapsed(),
         }
     }
 
@@ -171,6 +230,14 @@ impl Env for InlineEnv {
 
     fn cores(&self) -> NonZeroUsize {
         self.0.cores()
+    }
+
+    fn observe(&self, event: &Event) {
+        self.0.observe(event);
+    }
+
+    fn observes(&self) -> bool {
+        self.0.observes()
     }
 }
 
@@ -230,20 +297,10 @@ impl TestEngine {
         source: Arc<dyn Source>,
         destination: Arc<dyn Destination>,
     ) -> Guarded {
-        let handle = self.engine.run(plan, source, destination);
-        let control = handle.control();
-        let (budget, limit) = (self.budget, self.limit);
-        let future = async move {
-            let outcome = tokio::time::timeout(limit, handle)
-                .await
-                .expect("the run ends within the test's limit");
-            let peak = outcome.report.peak_memory;
-            assert!(peak <= budget, "{peak} bytes were reserved of {budget}");
-            outcome
-        };
         Guarded {
-            control,
-            future: Box::pin(future),
+            handle: self.engine.run(plan, source, destination),
+            limit: Box::pin(tokio::time::sleep(self.limit)),
+            budget: self.budget,
         }
     }
 }
@@ -273,15 +330,22 @@ impl TestEngine {
     }
 }
 
-/// A run awaited under a time limit.
+/// A run awaited under a time limit, which reserves no more than its memory budget.
 pub(crate) struct Guarded {
-    control: RunControl,
-    future: Pin<Box<dyn Future<Output = RunOutcome> + Send>>,
+    handle: RunHandle,
+    limit: Pin<Box<tokio::time::Sleep>>,
+    /// Bytes: the memory budget.
+    budget: u64,
 }
 
 impl Guarded {
     pub(crate) fn control(&self) -> RunControl {
-        self.control.clone()
+        self.handle.control()
+    }
+
+    /// What the run is doing now.
+    pub(crate) fn status(&self) -> Status {
+        self.handle.status()
     }
 }
 
@@ -289,7 +353,16 @@ impl Future for Guarded {
     type Output = RunOutcome;
 
     fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<RunOutcome> {
-        self.future.as_mut().poll(context)
+        if let Poll::Ready(outcome) = Pin::new(&mut self.handle).poll(context) {
+            let (peak, budget) = (outcome.report.peak_memory, self.budget);
+            assert!(peak <= budget, "{peak} bytes were reserved of {budget}");
+            return Poll::Ready(outcome);
+        }
+        assert!(
+            self.limit.as_mut().poll(context).is_pending(),
+            "the run ends within the test's limit"
+        );
+        Poll::Pending
     }
 }
 

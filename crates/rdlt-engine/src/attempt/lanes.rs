@@ -35,6 +35,7 @@ pub(super) fn start_lanes(
         &context.budget,
         (&context.env, &context.tally),
     );
+    context.live.lanes(Arc::clone(lanes.calls()));
     let cancel = scope.token().clone();
     // A change of a table's schema reserves what its commit records, until the attempt ends.
     tables.charge(context.budget.clone(), cancel.clone());

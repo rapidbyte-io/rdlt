@@ -89,11 +89,16 @@ pub struct CommitPhases {
 }
 
 /// What made a commit due.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Trigger {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Trigger {
+    /// The commit policy's interval.
     Interval,
+    /// The rows or bytes the commit policy allows.
     Size,
+    /// Checkpoints' cursors, waiting for room or holding half their share.
     Cursors,
+    /// The end of every partition reading: what was sealed once they all ended.
     End,
 }
 

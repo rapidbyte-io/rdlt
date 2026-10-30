@@ -7,7 +7,7 @@ mod tests;
 
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use tokio::sync::oneshot;
@@ -202,6 +202,11 @@ pub(super) struct Ledger {
     /// Changes sent to the tasks watching for pressure and for cursors' waits, each waking every
     /// task waiting on that value.
     pub(super) signals: u64,
+    /// The waits under way, each with its place, what it is counted as and when it began, the
+    /// earliest first: waits mostly end in the order they began, so each is found near the front.
+    under_way: VecDeque<(u64, Wait, Instant)>,
+    /// The place the next wait under way takes among them.
+    opened: u64,
     /// Where each change of what is reserved is told.
     #[cfg(feature = "sim")]
     observer: Option<Arc<dyn crate::env::Env>>,
@@ -238,6 +243,8 @@ impl Ledger {
             cursor_waits: watch::Sender::new(false),
             waited: Waits::default(),
             signals: 0,
+            under_way: VecDeque::new(),
+            opened: 0,
             #[cfg(feature = "sim")]
             observer: None,
         }
@@ -381,8 +388,33 @@ impl Ledger {
         Some((id, receiver))
     }
 
+    /// Notes that a wait counted as `wait` began at `began`: the place it takes among the waits
+    /// under way.
+    pub(super) fn open_wait(&mut self, wait: Wait, began: Instant) -> u64 {
+        let id = self.opened;
+        self.opened = self.opened.wrapping_add(1);
+        self.under_way.push_back((id, wait, began));
+        id
+    }
+
+    /// Notes that the wait counted as `wait` at place `id` ended, having waited `time`.
+    pub(super) fn close_wait(&mut self, wait: Wait, id: u64, time: Duration) {
+        if let Some(place) = self.under_way.iter().position(|(opened, ..)| *opened == id) {
+            self.under_way.remove(place);
+        }
+        self.count_wait(wait, time);
+    }
+
+    /// When the earliest wait under way counted as `wait` began.
+    pub(super) fn earliest(&self, wait: Wait) -> Option<Instant> {
+        let mut under_way = self.under_way.iter();
+        under_way
+            .find(|(_, counted, _)| *counted == wait)
+            .map(|(.., began)| *began)
+    }
+
     /// Notes that a request counted as `wait` waited `time`.
-    pub(super) fn count_wait(&mut self, wait: Wait, time: Duration) {
+    fn count_wait(&mut self, wait: Wait, time: Duration) {
         let waited = match wait {
             Wait::Decode => &mut self.waited.decode,
             Wait::Of(Class::Intake) => &mut self.waited.intake,

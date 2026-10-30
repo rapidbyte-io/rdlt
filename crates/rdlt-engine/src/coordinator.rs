@@ -13,6 +13,7 @@ mod commit;
 mod delta;
 mod done;
 mod due;
+mod noting;
 mod phases;
 mod pressure;
 mod replan;
@@ -24,6 +25,7 @@ mod waiting;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
 use parking_lot::Mutex;
@@ -40,10 +42,12 @@ use crate::config::{CommitPolicy, RetryPolicy};
 use crate::crash::crash_point;
 use crate::env::{Env, Sleep};
 use crate::error::Error;
+use crate::event::Announcer;
 use crate::lane::Lanes;
 use crate::partition::{Latest, Progress};
 use crate::plan::WriteMode;
-use crate::report::{AttemptEnd, AttemptLog, CommitRecord, Tally, Trigger};
+use crate::report::{AttemptEnd, AttemptLog, Tally, Trigger};
+use crate::status::{Live, Place, RunClock};
 use crate::stored::{Measured, Stored};
 use crate::table::Tables;
 use crate::watch;
@@ -118,6 +122,8 @@ pub(crate) struct PartitionRun {
     /// Where the partition stood when its read started, then the position of its last commit
     /// that landed: a commit that records it there again moves it nowhere.
     stands: Option<PartitionState>,
+    /// When the partition last told the coordinator anything, for the run's status.
+    stamp: Arc<AtomicU64>,
 }
 
 impl PartitionRun {
@@ -136,6 +142,7 @@ impl PartitionRun {
             answered: 0,
             stop,
             stands: None,
+            stamp: Arc::new(AtomicU64::new(Place::WAITING)),
         }
     }
 
@@ -200,6 +207,10 @@ pub(crate) struct CoordinatorParts {
     /// How long a commit in flight has to answer once the attempt is cancelled, so one that lands
     /// as another task fails is still recorded: the run's close wait.
     pub(crate) close_wait: Duration,
+    /// Where the coordinator notes what the run is doing, for its status.
+    pub(crate) live: Arc<Live>,
+    /// Tells the run's environment of each commit and what it changed.
+    pub(crate) announcer: Announcer,
 }
 
 pub(crate) struct Coordinator {
@@ -233,11 +244,19 @@ pub(crate) struct Coordinator {
     abandoned: SegmentSet,
     /// The cursors the source has yet to be told are committed.
     owed: acks::Owed,
+    /// The run's clock, which stamps each partition as it tells the coordinator anything.
+    clock: RunClock,
 }
 
 impl Coordinator {
     pub(crate) fn new(parts: CoordinatorParts) -> Self {
         let unended = parts.partitions.iter().filter(|run| !run.ended).count();
+        let places = parts.partitions.iter().map(|run| {
+            let stream = &parts.streams[run.stream].name;
+            run.place(stream)
+        });
+        parts.live.places(places.collect());
+        let clock = parts.live.clock();
         Self {
             cursors_may_free: true,
             key: CommitKey {
@@ -258,15 +277,18 @@ impl Coordinator {
             retired: BTreeSet::new(),
             abandoned: SegmentSet::new(),
             owed: acks::Owed::default(),
+            clock,
         }
     }
 
     /// Commits as the policy says until every partition has ended and no stream starts another
     /// phase, then closes the session.
     pub(crate) async fn run(mut self) -> Result<(), Error> {
+        self.step(None, self.parts.env.instant());
         loop {
             self.load().await?;
-            self.commit(Trigger::End).await?;
+            let began = self.parts.env.instant();
+            self.commit(Trigger::End, began).await?;
             self.advance_phases().await?;
             if self.done() {
                 break;
@@ -301,6 +323,7 @@ impl Coordinator {
                 () = self.parts.stop.cancelled(), if !self.stopping => {
                     self.stopping = true;
                     self.raise_barrier().await?;
+                    self.step(None, self.parts.env.instant());
                     self.parts.stop_reads.cancel();
                 }
                 // Planning again starts from the positions the last commit made durable: a
@@ -332,8 +355,9 @@ impl Coordinator {
     /// Commits what is sealed behind a barrier, as `trigger` made due, and advances the phases:
     /// the timer of the commit after it.
     async fn commit_now(&mut self, trigger: Trigger) -> Result<Sleep, Error> {
+        let began = self.parts.env.instant();
         self.raise_barrier().await?;
-        self.commit(trigger).await?;
+        self.commit(trigger, began).await?;
         self.advance_phases().await?;
         self.cursors_may_free = false;
         Ok(self.timer())
@@ -381,6 +405,7 @@ impl Coordinator {
     fn observe(&mut self, progress: Progress) {
         // Whatever arrives, wherever it is heard, may be a seal a commit frees cursors with.
         self.cursors_may_free = true;
+        self.stamp(&progress);
         match progress {
             Progress::Started { partition } => {
                 let run = &mut self.parts.partitions[partition];
@@ -476,39 +501,6 @@ impl Coordinator {
         };
         self.parts.done.landed(&meta.state_delta, &recorded);
         Ok(receipt)
-    }
-
-    /// Advances past a landed commit: what state now records.
-    ///
-    /// # Errors
-    ///
-    /// `receipt_overflow` where the receipt counts more than the attempt's totals hold.
-    fn record(
-        &mut self,
-        receipt: Receipt,
-        streams: BTreeMap<StreamName, crate::report::StreamReport>,
-        completing: &[usize],
-    ) -> Result<(), Error> {
-        self.after = Some(receipt.key);
-        self.key.seq = self
-            .key
-            .seq
-            .checked_add(1)
-            .expect("a session commits fewer than u64::MAX times");
-        for stream in &mut self.parts.streams {
-            if let Some(cycle) = &mut stream.cycle {
-                cycle.recorded = true;
-                cycle.stale.clear();
-            }
-        }
-        for index in completing {
-            if let Some(cycle) = &mut self.parts.streams[*index].cycle {
-                cycle.finished = true;
-            }
-        }
-        let mut log = self.parts.log.lock();
-        log.pending = None;
-        log.committed.add(CommitRecord { receipt, streams })
     }
 }
 

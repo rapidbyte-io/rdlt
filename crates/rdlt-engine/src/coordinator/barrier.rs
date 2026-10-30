@@ -2,11 +2,13 @@
 
 use super::{Coordinator, cancelled};
 use crate::error::Error;
+use crate::status::Step;
 
 impl Coordinator {
     /// Asks every reading on-demand partition to checkpoint, and waits until each has answered,
     /// ended, or `barrier_wait` has passed.
     pub(super) async fn raise_barrier(&mut self) -> Result<(), Error> {
+        self.step(Some(Step::Barrier), self.parts.env.instant());
         self.barrier += 1;
         let barrier = self.barrier;
         self.parts.barrier.send(barrier);

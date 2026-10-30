@@ -29,6 +29,7 @@ use crate::coordinator::{
 };
 use crate::env::Env;
 use crate::error::{Error, ErrorKind, Side, codes};
+use crate::event::Announcer;
 use crate::lane::Lanes;
 use crate::limits::LEAST_CALLS;
 use crate::naming::{Naming, recorded};
@@ -38,6 +39,7 @@ use crate::partition::{
 use crate::plan::PipelinePlan;
 use crate::report::{AttemptEnd, AttemptLog, Tally};
 use crate::scope::TaskScope;
+use crate::status::Live;
 use crate::stored::{StateLimits, Stored};
 use crate::table::{SharedSession, Tables};
 use crate::watch;
@@ -62,6 +64,8 @@ pub(crate) struct RunContext {
     /// completed does not read the stream again, with the epoch of the stream's last reset when
     /// the read began: a reset since ends the read, and a retry starts a new one.
     pub(crate) cycles: Mutex<BTreeMap<StreamName, (GenerationId, Option<Epoch>)>>,
+    /// What the run is doing, for its status.
+    pub(crate) live: Arc<Live>,
 }
 
 /// A stream ready to load, and the partitions to read.
@@ -88,15 +92,17 @@ struct Opened {
     stored: Stored,
 }
 
-/// Runs one attempt, recording its commits in `log` as they land.
+/// Runs one attempt, recording its commits in `log` as they land and telling of them through
+/// `announcer`.
 pub(crate) async fn run(
     context: &RunContext,
     log: Arc<Mutex<AttemptLog>>,
+    announcer: &Announcer,
 ) -> Result<AttemptEnd, Error> {
     within_calls(context)?;
     let opened = open(context).await?;
     let session = Arc::clone(&opened.session);
-    let ran = opened_run(context, opened, &log).await;
+    let ran = opened_run(context, opened, &log, announcer).await;
     if ran.is_err() {
         // A failed attempt's session releases what it holds now; the failure matters more than
         // any error from closing, and a session the coordinator closed stays closed.
@@ -145,6 +151,7 @@ async fn opened_run(
     context: &RunContext,
     opened: Opened,
     log: &Arc<Mutex<AttemptLog>>,
+    announcer: &Announcer,
 ) -> Result<AttemptEnd, Error> {
     log.lock().opened = Some((opened.epoch, opened.landed.clone()));
     let catalog = context
@@ -165,11 +172,20 @@ async fn opened_run(
     let tables = Tables::new(Arc::clone(&opened.session))
         .salted(opened.epoch)
         .growing(context.config.child_table_limit())
+        .announced(announcer.clone())
         .committed(&opened.state)?;
     let planned = planning.streams(context.plan.streams(), &tables).await?;
     let partitions = planned.iter().map(|stream| stream.partitions.len()).sum();
     within_partition_limit(partitions)?;
-    launch(context, opened, planned, Arc::new(tables), Arc::clone(log)).await?;
+    let tables = Arc::new(tables);
+    launch(
+        context,
+        (opened, planned),
+        tables,
+        Arc::clone(log),
+        announcer,
+    )
+    .await?;
     let end = log.lock().end;
     end.ok_or_else(|| Error::internal("the attempt ended without its coordinator finishing"))
 }
@@ -246,10 +262,10 @@ pub(crate) fn within_partition_limit(partitions: usize) -> Result<(), Error> {
 /// Runs the lanes, the partitions and the coordinator in one scope until all of them end.
 async fn launch(
     context: &RunContext,
-    opened: Opened,
-    planned: Vec<Planned>,
+    (opened, planned): (Opened, Vec<Planned>),
     tables: Arc<Tables>,
     log: Arc<Mutex<AttemptLog>>,
+    announcer: &Announcer,
 ) -> Result<(), Error> {
     let mut scope = TaskScope::new(&CancellationToken::new());
     let lanes = start_lanes(context, &tables, &mut scope);
@@ -293,6 +309,8 @@ async fn launch(
         tally: Arc::clone(&context.tally),
         retry: *context.config.retry(),
         close_wait: context.config.close_wait(),
+        live: Arc::clone(&context.live),
+        announcer: announcer.clone(),
     });
     scope.spawn(coordinator.run());
     scope.join_spawning(spawned).await

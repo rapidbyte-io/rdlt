@@ -247,6 +247,11 @@ fn committing_each_seal(partitions: usize) -> Setup {
     setup
 }
 
+/// Now, on the test's clock.
+fn now() -> std::time::Instant {
+    tokio::time::Instant::now().into_std()
+}
+
 /// Partition `p<at>`.
 fn id(at: usize) -> PartitionId {
     PartitionId::parse(format!("p{at}")).unwrap()
@@ -284,6 +289,21 @@ async fn a_report_that_fails_is_made_again_by_the_next_commit_and_counted() {
             dropped: 0
         }
     );
+    // Each commit is told with what became of its own report.
+    let told: Vec<Acks> = harness
+        .told
+        .lock()
+        .iter()
+        .filter_map(|event| match event.kind {
+            crate::event::EventKind::Committed { acks, .. } => Some(acks),
+            _ => None,
+        })
+        .collect();
+    let refused = Acks {
+        failed: 1,
+        dropped: 0,
+    };
+    assert_eq!(told, [refused, Acks::default()]);
 }
 
 #[tokio::test(start_paused = true)]
@@ -479,17 +499,17 @@ async fn a_done_partition_owed_as_its_phase_ends_is_told_by_a_later_commit_of_th
     harness.send(Progress::Started { partition: 0 });
     harness.seal(0, 1, 5, PartitionState::Cursor(cursor(5)), None);
     heard_all(&mut coordinator);
-    coordinator.commit(Trigger::Size).await.unwrap();
+    coordinator.commit(Trigger::Size, now()).await.unwrap();
     harness.seal(0, 2, 5, PartitionState::Done, None);
     harness.end(0, false);
     heard_all(&mut coordinator);
     // The phase has ended and another may follow, so the commit of its end is not the
     // attempt's last: the done partition's cursor stays owed.
     coordinator
-        .commit(Trigger::End)
+        .commit(Trigger::End, now())
         .await
         .expect("a commit another phase may follow ends nothing");
-    coordinator.commit(Trigger::Interval).await.unwrap();
+    coordinator.commit(Trigger::Interval, now()).await.unwrap();
     assert_eq!(asked(&harness), vec![vec![(id(0), cursor(5))]; 3]);
     assert_eq!(*harness.acks.lock(), [(name(), vec![(id(0), cursor(5))])]);
     let acks = harness.tally.counters().acks;
