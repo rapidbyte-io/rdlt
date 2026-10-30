@@ -53,6 +53,7 @@ mod crash;
 mod deadline;
 mod env;
 mod error;
+mod event;
 #[cfg(any(test, feature = "bench"))]
 mod fixtures;
 mod json;
@@ -68,6 +69,7 @@ mod report;
 mod run;
 mod scope;
 mod shred;
+mod status;
 mod stored;
 mod table;
 mod watch;
@@ -78,12 +80,14 @@ pub use config::{
 };
 pub use env::{Env, Sleep, SystemEnv};
 pub use error::{Code, Error, ErrorKind, ErrorReport, Origin, codes};
+pub use event::{ColumnChange, Event, EventKind, Listed, Scope};
 pub use limits::{REPORTED_ATTEMPTS, REPORTED_FORGOTTEN, REPORTED_LISTED};
 pub use plan::{DeleteMode, OnTruncate, PipelinePlan, RetentionLoss, StreamPlan, Until, WriteMode};
 pub use policy::{Nested, OnUnsupported, SchemaPolicy, SchemaSettings};
 pub use report::{
     Acks, AttemptReport, CommitPhases, Commits, Counters, Discard, DiscardReason, Discards,
     Flushes, Forgotten, LaneCounters, PoolCounters, Report, RunStatus, ShredCounts, StreamReport,
-    Waited, Waits,
+    Trigger, Waited, Waits,
 };
 pub use run::{Engine, ResetReport, ResetScope, RunControl, RunHandle, RunOutcome, StopMode};
+pub use status::{Call, LaneCall, OpenWaits, Partitions, Phase, Quiet, Status, Step, StreamStatus};

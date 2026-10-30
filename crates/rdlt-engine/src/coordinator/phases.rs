@@ -222,10 +222,12 @@ impl Coordinator {
         let tracked = PartitionRun::new(stream, id.clone(), template.on_demand, stop.clone())
             .starting(cursor.as_ref());
         let index = self.place(stream, &id);
+        let place = tracked.place(&self.parts.streams[stream].name);
         match self.parts.partitions.get_mut(index) {
             Some(place) => *place = tracked,
             None => self.parts.partitions.push(tracked),
         }
+        self.parts.live.place(index, place);
         self.unended += 1;
         let run = &mut self.parts.streams[stream];
         if let Some(phases) = run.phases.as_mut() {

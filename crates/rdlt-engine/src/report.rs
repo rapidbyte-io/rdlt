@@ -2,6 +2,7 @@
 
 mod counters;
 mod discards;
+mod ledger;
 #[cfg(test)]
 mod tests;
 
@@ -12,20 +13,24 @@ use rdlt_connector::{CommitKey, Epoch, Headroom, PartitionId, PipelineId, Receip
 use serde::Serialize;
 
 use crate::error::{Error, ErrorKind, ErrorReport, codes};
+use crate::event::Unreported;
 use crate::limits::{REPORTED_ATTEMPTS, REPORTED_FORGOTTEN};
 
 pub use counters::{
     Acks, CommitPhases, Commits, Counters, Flushes, LaneCounters, PoolCounters, ShredCounts,
-    Waited, Waits,
+    Trigger, Waited, Waits,
 };
-pub(crate) use counters::{Flush, Tally, Trigger};
+pub(crate) use counters::{Flush, Tally};
 pub(crate) use discards::ColumnDiscards;
 pub use discards::{Discard, DiscardReason, Discards};
+pub(crate) use ledger::{Credit, Ledger};
 
-/// How a run ended.
+/// How a run ended, or that it runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunStatus {
+    /// The run has not ended: its report is a status's, of the run so far.
+    Running,
     /// Every stream was read to its end and committed.
     Succeeded,
     /// The run stopped on request after committing what was sealed.
@@ -190,7 +195,7 @@ impl Pending {
 
 /// What an attempt committed, folded as each commit lands: an attempt that commits for ever
 /// keeps its totals, not every commit.
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Committed {
     pub(crate) commits: u64,
     pub(crate) rows: u64,
@@ -249,7 +254,7 @@ impl StreamReport {
 }
 
 /// What an attempt did, recorded as it happens so a failed attempt still reports its commits.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct AttemptLog {
     pub(crate) committed: Committed,
     /// Whether a commit of the attempt moved the load on: published a row, or recorded anything
@@ -268,6 +273,8 @@ pub(crate) struct AttemptLog {
     pub(crate) retention_resets: BTreeMap<StreamName, u64>,
     /// The partitions whose done markers each stream's commits forgot to make room in state.
     pub(crate) forgotten: BTreeMap<StreamName, Forgotten>,
+    /// The commit that landed whose report to the source has not ended, until it is told of.
+    pub(crate) unreported: Option<Unreported>,
 }
 
 /// A finished attempt.

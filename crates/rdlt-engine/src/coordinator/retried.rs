@@ -7,11 +7,13 @@ use rdlt_connector::{CommitMeta, Receipt};
 
 use super::{Coordinator, cancelled};
 use crate::error::{Error, Origin, Side};
+use crate::event::{EventKind, Scope};
 use crate::run::backoff;
 
 impl Coordinator {
     /// The receipt of `meta`, sent until the destination answers it other than transiently, as
-    /// many times at most as the run makes attempts, each wait between drawn as the run's are.
+    /// many times at most as the run makes attempts, each wait between drawn as the run's are
+    /// and told of, and each try sent again noted for the run's status.
     ///
     /// The session is locked for each try alone, so writers open and schema changes apply
     /// between them; partitions read on, and what they seal waits for the next commit. Once the
@@ -45,6 +47,11 @@ impl Coordinator {
                 return Err(error);
             }
             let wait = backoff(&retry, &error, tries, self.parts.env.as_ref());
+            self.parts.announcer.announce(|| EventKind::Retrying {
+                scope: Scope::Commit,
+                error: error.report(),
+                retry_in: wait,
+            });
             tokio::select! {
                 biased;
                 // Cancellation wins: the attempt is ending.
@@ -57,6 +64,7 @@ impl Coordinator {
             self.parts.tally.add(|counters| {
                 counters.commits.retried = counters.commits.retried.saturating_add(1);
             });
+            self.trying(tries.saturating_add(1), self.parts.env.instant());
         }
     }
 

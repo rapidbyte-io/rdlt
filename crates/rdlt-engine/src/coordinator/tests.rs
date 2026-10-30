@@ -11,6 +11,7 @@ mod retried;
 mod scale;
 mod seals;
 mod state;
+mod told;
 
 use std::collections::VecDeque;
 use std::num::NonZeroUsize;
@@ -22,8 +23,9 @@ use parking_lot::Mutex;
 use rdlt_connector::{
     BoxFuture, Catalog, CommitKey, CommitMeta, ConnectorError, ConnectorErrorKind, Cursor,
     DestinationSession, DestinationWriter, Epoch, GenerationId, PartitionId, PartitionSink,
-    PartitionState, ReadRequest, Receipt, Result, SchemaVersion, SegmentId, Source, StateChange,
-    StateEntry, StateKey, StreamName, StreamState, TableChange, TablePath, TableRef, TableSchema,
+    PartitionState, PipelineId, ReadRequest, Receipt, Result, SchemaVersion, SegmentId, Source,
+    StateChange, StateEntry, StateKey, StreamName, StreamState, TableChange, TablePath, TableRef,
+    TableSchema,
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -32,12 +34,14 @@ use super::{Coordinator, CoordinatorParts, Cycle, PartitionRun, StreamRun};
 use crate::config::{CommitPolicy, RetryPolicy};
 use crate::env::SystemEnv;
 use crate::error::{Error, ErrorKind, Origin, codes};
+use crate::event::Announcer;
 use crate::lane::Lanes;
 use crate::naming::Naming;
 use crate::partition::{CursorHold, Latest, Progress, Seal};
 use crate::plan::StreamPlan;
 use crate::plan::WriteMode;
 use crate::report::{AttemptEnd, AttemptLog, CommitPhases, Tally};
+use crate::status::Live;
 use crate::table::{Incoming, MetaNames, Model, Resolver, Settings, SharedSession, Tables};
 use crate::watch;
 
@@ -253,6 +257,8 @@ struct Harness {
     tally: Arc<Tally>,
     /// The destination session the coordinator commits through.
     session: Arc<SharedSession>,
+    /// What the coordinator told of, in order.
+    told: Arc<Mutex<Vec<crate::event::Event>>>,
 }
 
 struct Setup {
@@ -368,11 +374,13 @@ impl Setup {
             budget: crate::budget::budget(self.budget),
             tally: Arc::default(),
             session: Arc::clone(&session),
+            told: Arc::default(),
         };
         let tables = self.tables(session).await;
         let source = Arc::new(self.listener(acks, commits, &harness));
+        let (env, live, announcer) = told(&harness);
         let coordinator = Coordinator::new(CoordinatorParts {
-            env: Arc::new(SystemEnv::one_core()),
+            env: Arc::clone(&env),
             policy: self.policy,
             barrier_wait: self.barrier_wait,
             lanes: lanes(&tables),
@@ -398,9 +406,29 @@ impl Setup {
             tally: Arc::clone(&harness.tally),
             retry: self.retry,
             close_wait: CLOSE_WAIT,
+            live,
+            announcer,
         });
         (coordinator, harness)
     }
+}
+
+/// An environment that keeps what it is told in `harness`, and the live state and announcer of
+/// a run's first attempt on it.
+fn told(harness: &Harness) -> (Arc<dyn crate::env::Env>, Arc<Live>, Announcer) {
+    let told = Arc::clone(&harness.told);
+    let observer = move |event: &crate::event::Event| told.lock().push(event.clone());
+    let env: Arc<dyn crate::env::Env> =
+        Arc::new(SystemEnv::one_core().with_observer(Arc::new(observer)));
+    let pipeline = PipelineId::parse("coordinated").unwrap();
+    let live = Live::new(
+        Arc::clone(&env),
+        pipeline.clone(),
+        harness.budget.clone(),
+        Arc::clone(&harness.tally),
+    );
+    let announcer = Announcer::new(Arc::clone(&env), pipeline, 1);
+    (env, Arc::new(live), announcer)
 }
 
 impl Setup {

@@ -6,12 +6,12 @@ mod decoding;
 mod ledger;
 #[cfg(test)]
 mod tests;
+mod waiting;
 
 use std::fmt;
-use std::future::Future;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use parking_lot::Mutex;
 
@@ -73,30 +73,6 @@ impl Signal {
 struct Queued<'a> {
     shared: &'a Arc<Mutex<Ledger>>,
     id: u64,
-}
-
-/// A wait of a request, counted with its time once it ends, however it ends.
-struct Waiting<'a> {
-    budget: &'a MemoryBudget,
-    wait: Wait,
-    began: Instant,
-}
-
-impl Waiting<'_> {
-    /// How long the request has waited.
-    fn waited(&self) -> Duration {
-        self.budget
-            .env
-            .instant()
-            .saturating_duration_since(self.began)
-    }
-}
-
-impl Drop for Waiting<'_> {
-    fn drop(&mut self) {
-        let waited = self.waited();
-        self.budget.shared.lock().count_wait(self.wait, waited);
-    }
 }
 
 impl Drop for Queued<'_> {
@@ -248,7 +224,7 @@ impl MemoryBudget {
 
     async fn request(&self, wait: Wait, bytes: u64) -> Result<Reservation, Denied> {
         let class = wait.class();
-        let (queued, receiver) = {
+        let (queued, receiver, waiting) = {
             let mut ledger = self.shared.lock();
             if let Some(refused) = ledger.too_large(class, bytes) {
                 return Err(refused.into());
@@ -264,9 +240,9 @@ impl MemoryBudget {
                 shared: &self.shared,
                 id,
             };
-            (queued, receiver)
+            let waiting = self.waiting(&mut ledger, wait);
+            (queued, receiver, waiting)
         };
-        let waiting = self.waiting(wait);
         tokio::select! {
             biased;
             reservation = receiver => {
@@ -278,22 +254,6 @@ impl MemoryBudget {
                 Err(exhausted.into())
             }
         }
-    }
-
-    /// A wait counted as `wait` that begins now.
-    fn waiting(&self, wait: Wait) -> Waiting<'_> {
-        Waiting {
-            budget: self,
-            wait,
-            began: self.env.instant(),
-        }
-    }
-
-    /// Waits for `slot`, one of the places among which what reads keep is divided, which was not
-    /// free, for as long as it takes, counting the wait with what reads keep.
-    pub(crate) async fn read_slot<T>(&self, slot: impl Future<Output = T>) -> T {
-        let _waiting = self.waiting(Wait::Of(Class::Read));
-        slot.await
     }
 
     /// Raised while a request waits for bytes of pushes or of lowering, or a holder of queued

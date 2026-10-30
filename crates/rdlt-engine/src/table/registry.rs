@@ -1,6 +1,7 @@
 //! The tables of one attempt: their current views, the schema changes partitions make, and what
 //! the next commit records about them.
 
+mod changed;
 mod children;
 mod records;
 #[cfg(test)]
@@ -17,14 +18,16 @@ use rdlt_connector::{
 };
 
 use super::model::Model;
-use super::resolve::{Change, Incoming, Resolution, Resolver, Route};
+use super::resolve::{Incoming, Resolution, Resolver, Route};
 use super::session::SharedSession;
 use super::{LoweringPlan, TableView};
 use crate::config::GrowthLimits;
 use crate::error::{Error, ErrorKind, Side, codes};
+use crate::event::Announcer;
 use crate::naming::Naming;
 use crate::normalize::Shape;
 
+use changed::{changed, table_changes};
 pub(crate) use children::Admission;
 
 /// How many times a table's change is named around columns that attempts which never committed
@@ -34,6 +37,10 @@ pub(crate) const CONFLICT_RETRIES: usize = 4;
 /// A schema change the destination refused as `schema_conflict`, and the column it refused to
 /// widen, where it refused a widen.
 type Conflict = (Option<ColumnKey>, ConnectorError);
+
+/// A schema change the destination applied: the table's view after it, its batches' routes, and
+/// the changes as the destination applied them.
+type Evolved = (Arc<TableView>, Vec<Route>, Vec<TableChange>);
 
 /// Lowering plans kept per table: one per incoming schema its partitions send, for its current
 /// view.
@@ -96,6 +103,8 @@ pub(crate) struct Tables {
     /// What the hashes of names around conflicts are seeded from: the attempt's own, so no
     /// attempt meets the names an earlier one left behind at the same retries.
     salt: u64,
+    /// Tells the run's environment of each change the destination applied, where anything does.
+    announcer: Option<Announcer>,
 }
 
 /// What a commit records about the tables, and the schema versions it records.
@@ -120,6 +129,16 @@ impl Tables {
             charge: std::sync::OnceLock::new(),
             children_limit: GrowthLimits::default().child_tables().get(),
             salt: 0,
+            announcer: None,
+        }
+    }
+
+    /// The same tables, telling `announcer` of each change the destination applies.
+    #[must_use]
+    pub(crate) fn announced(self, announcer: Announcer) -> Self {
+        Self {
+            announcer: Some(announcer),
+            ..self
         }
     }
 
@@ -310,7 +329,7 @@ impl Tables {
         if unchanged(&resolution, &view) {
             return Ok((view, resolution.routes));
         }
-        let _evolving = slot.evolving.lock().await;
+        let evolving = slot.evolving.lock().await;
         let view = self.view(table);
         let kept = self.resolver(table);
         let resolution = kept.resolve(&view.model, incoming)?;
@@ -319,7 +338,7 @@ impl Tables {
         }
         let (mut resolver, mut resolution, mut retries) = (Cow::Borrowed(&*kept), resolution, 0);
         let mut blamed = Vec::new();
-        let next = loop {
+        let (next, routes, changes) = loop {
             match self.evolve(table, &view, resolution, &resolver).await? {
                 Ok(next) => break next,
                 // A widen the destination refuses keeps its column as it is, for the attempt.
@@ -342,8 +361,12 @@ impl Tables {
         if !blamed.is_empty() {
             *slot.resolver.lock() = Arc::new(kept.unwidening(blamed));
         }
-        *slot.current.lock() = Arc::clone(&next.0);
-        Ok(next)
+        *slot.current.lock() = Arc::clone(&next);
+        drop(evolving);
+        if let Some(announcer) = &self.announcer {
+            announcer.announce(|| changed(&next, &changes));
+        }
+        Ok((next, routes))
     }
 
     /// Applies what `resolution` changes in `view`; the destination's `schema_conflict` is
@@ -355,13 +378,13 @@ impl Tables {
         view: &TableView,
         resolution: Resolution,
         resolver: &Resolver,
-    ) -> Result<Result<(Arc<TableView>, Vec<Route>), Conflict>, Error> {
+    ) -> Result<Result<Evolved, Conflict>, Error> {
         let next = Arc::new(TableView::new(&view.table, resolution.model, resolver)?);
         // What the commit will record of the change is reserved before the destination sees it.
         self.reserve_records(table, &next).await?;
         let changes = table_changes(view, &next, &resolution.changes);
         match self.session.apply_each(&changes).await? {
-            Ok(()) => Ok(Ok((next, resolution.routes))),
+            Ok(()) => Ok(Ok((next, resolution.routes, changes))),
             Err((index, error)) if error.code() == Some(SCHEMA_CONFLICT) => {
                 let widened = match changes.get(index) {
                     Some(TableChange::Widen { column, .. }) => next.model.names.owner(column),
@@ -479,39 +502,5 @@ pub(crate) fn shared(state: &PipelineState) -> BTreeSet<&str> {
         .values()
         .filter_map(|table| table.physical.as_deref())
         .filter(|physical| !recorded.insert(*physical))
-        .collect()
-}
-
-/// The destination changes that take `before` to `after`: the whole table for its first version,
-/// then each added column and each widening that changes how the destination stores a column.
-fn table_changes(before: &TableView, after: &TableView, changes: &[Change]) -> Vec<TableChange> {
-    let table = after.table.clone();
-    if !before.model.created() {
-        return vec![TableChange::Create {
-            table,
-            schema: after.physical_schema(),
-        }];
-    }
-    let positions = after.model.positions();
-    changes
-        .iter()
-        .filter_map(|change| match change {
-            Change::Add { key } => {
-                let index = *positions.get(after.model.names.get(key)?)?;
-                Some(TableChange::AddColumn {
-                    table: table.clone(),
-                    field: after.physical[index].clone(),
-                })
-            }
-            Change::Widen { column, .. } => {
-                let (from, to) = (&before.lowered[*column], &after.lowered[*column]);
-                (from != to).then(|| TableChange::Widen {
-                    table: table.clone(),
-                    column: after.model.columns[*column].name().into(),
-                    from: from.clone(),
-                    to: to.clone(),
-                })
-            }
-        })
         .collect()
 }

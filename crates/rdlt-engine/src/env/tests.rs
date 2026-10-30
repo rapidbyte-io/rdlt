@@ -2,8 +2,12 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
+use parking_lot::Mutex;
+use rdlt_connector::PipelineId;
+
 use super::{Env, InlineEnv, SystemEnv};
 use crate::compute::Cores;
+use crate::event::{Event, EventKind};
 
 fn system_env() -> SystemEnv {
     SystemEnv::one_core()
@@ -57,4 +61,26 @@ fn system_env_declares_the_cores_it_was_given_not_the_host_s() {
 fn a_system_env_from_the_host_declares_the_host_s_cores() {
     let env = SystemEnv::try_from_host().unwrap();
     assert_eq!(env.cores(), Cores::try_from_host().unwrap().count());
+}
+
+#[test]
+fn a_system_env_observes_only_with_an_observer_and_tells_it_each_event() {
+    let plain = system_env();
+    assert!(!plain.observes());
+    assert!(format!("{plain:?}").contains("observed: false"));
+    let told = Arc::new(Mutex::new(Vec::new()));
+    let kept = Arc::clone(&told);
+    let keeping = move |event: &Event| kept.lock().push(event.clone());
+    let observed = system_env().with_observer(Arc::new(keeping));
+    assert!(observed.observes());
+    assert!(format!("{observed:?}").contains("observed: true"));
+    let event = Event {
+        at: UNIX_EPOCH,
+        pipeline: PipelineId::parse("observed").unwrap(),
+        attempt: 1,
+        kind: EventKind::AttemptStarted,
+    };
+    observed.observe(&event);
+    plain.observe(&event);
+    assert_eq!(*told.lock(), [event]);
 }

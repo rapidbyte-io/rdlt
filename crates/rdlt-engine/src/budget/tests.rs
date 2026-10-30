@@ -5,14 +5,15 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 #[cfg(feature = "sim")]
 mod observed;
 
 use super::{Denied, Exhausted, MemoryBudget, Reservation, Shares, TooLarge, budget};
-use crate::env::InlineEnv;
+use crate::env::{Env as _, InlineEnv};
 use crate::report::{Waited, Waits};
+use crate::status::OpenWaits;
 
 /// A budget whose shares are round: 100 for cursors, 200 for tables' records, 1,600 for reads,
 /// 400 for answers, and 4,100 for data, of which a request for lowering takes 1,600 at most and
@@ -731,6 +732,35 @@ async fn a_read_waits_for_its_slot_past_the_deadline_and_records_the_time_it_wai
         time: HOUR * 2 + Duration::from_secs(2),
     };
     assert_eq!(budget.waited().reads, reads);
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_earliest_open_wait_of_each_share_shows_when_it_began_until_it_ends() {
+    let budget = budget(BUDGET);
+    let started = InlineEnv.instant();
+    let at = |instant: std::time::Instant| SystemTime::UNIX_EPOCH + (instant - started);
+    assert_eq!(budget.open_waits(at), OpenWaits::default());
+    let held = budget.acquire(2_500).await.unwrap();
+    let mut first = Box::pin(budget.acquire(1));
+    assert!(waits(&mut first).await);
+    let mut second = Box::pin(budget.acquire(1));
+    assert!(waits(&mut second).await);
+    let mut slot = Box::pin(budget.read_slot(std::future::pending::<()>()));
+    assert!(waits(&mut slot).await);
+    let open = budget.open_waits(at);
+    let second_in = |seconds| Some(SystemTime::UNIX_EPOCH + Duration::from_secs(seconds));
+    assert_eq!(
+        open.intake,
+        second_in(0),
+        "the earliest wait of the pushes' share"
+    );
+    assert_eq!(open.reads, second_in(2));
+    assert_eq!((open.work, open.cursors, open.decode), (None, None, None));
+    // The earliest gone, the next earliest shows.
+    drop(first);
+    assert_eq!(budget.open_waits(at).intake, second_in(1));
+    drop((second, slot, held));
+    assert_eq!(budget.open_waits(at), OpenWaits::default());
 }
 
 #[tokio::test(start_paused = true)]

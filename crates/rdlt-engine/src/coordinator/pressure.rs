@@ -10,7 +10,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use rdlt_connector::{CommitMeta, PartitionId, StateChange, StateKey, StreamName};
 
 use super::Coordinator;
-use crate::error::{Error, codes};
+use crate::error::{Error, codes, shown};
+use crate::event::{EventKind, Listed};
 use crate::stored::Measured;
 
 impl Coordinator {
@@ -85,11 +86,25 @@ impl Coordinator {
         Ok((measured, forgotten))
     }
 
-    /// Notes for the report that the commit that landed forgot the done markers `forgotten`.
+    /// Notes for the report that the commit that landed forgot the done markers `forgotten`,
+    /// and tells of them, stream by stream.
     pub(super) fn forgot(&self, forgotten: BTreeMap<StreamName, Vec<PartitionId>>) {
+        let told = forgotten.iter().map(|(stream, ids)| EventKind::Forgotten {
+            stream: shown(stream),
+            partitions: Listed::first(ids).map(shown),
+        });
+        let told: Vec<EventKind> = if self.parts.announcer.observes() {
+            told.collect()
+        } else {
+            Vec::new()
+        };
         let mut log = self.parts.log.lock();
         for (stream, ids) in forgotten {
             log.forgotten.entry(stream).or_default().note(ids);
+        }
+        drop(log);
+        for forgot in told {
+            self.parts.announcer.announce(|| forgot);
         }
     }
 }
