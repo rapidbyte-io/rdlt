@@ -20,6 +20,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::cursor::Cursor;
 use crate::error::{ConnectorError, Result};
+use crate::exclusion::{Exclusion, Projection};
 use crate::spec::BoxFuture;
 
 /// One delivery of data from a source.
@@ -148,6 +149,7 @@ fn channel(
         limits: admission.as_ref().map(|admission| admission.limits()),
         admission,
         cut: false,
+        projection: Projection::default(),
     };
     let feed = PartitionFeed {
         events: receiver,
@@ -169,6 +171,8 @@ pub struct PartitionSink {
     limits: Option<Limits>,
     /// Whether what receives a batch sent here cuts it before anything holds it.
     cut: bool,
+    /// What projects the batches sent here without the columns their stream excludes.
+    projection: Projection,
 }
 
 impl fmt::Debug for PartitionSink {
@@ -187,6 +191,24 @@ impl PartitionSink {
     pub(crate) fn cut(mut self) -> Self {
         self.cut = true;
         self
+    }
+
+    /// The sink, every batch sent to it projected without `exclusion`'s columns before it is
+    /// admitted.
+    #[must_use]
+    pub fn excluding(mut self, exclusion: Exclusion) -> Self {
+        self.projection = Projection::new(exclusion);
+        self
+    }
+
+    /// The columns every batch sent here is projected without.
+    pub(crate) fn excluded(&self) -> &Exclusion {
+        self.projection.exclusion()
+    }
+
+    /// What projects the batches sent here without their stream's excluded columns.
+    pub(crate) fn projection(&mut self) -> &mut Projection {
+        &mut self.projection
     }
 
     /// The sink, what is sent to it kept within `limits`.
@@ -228,6 +250,9 @@ impl PartitionSink {
     /// to stop or dropped its end, and an `Internal` error coded `barrier_unrequested` for a
     /// checkpoint answering a barrier the engine never asked for. Where the channel's events are
     /// admitted, the error its admission refused the event with.
+    ///
+    /// A push's batch is projected without the columns its stream excludes before it waits for
+    /// admission, so what it holds of them is neither charged nor kept.
     pub async fn send(&mut self, event: SourceEvent) -> Result<()> {
         let answering = match &event {
             SourceEvent::Checkpoint {
@@ -245,6 +270,10 @@ impl PartitionSink {
                 Some(*barrier)
             }
             _ => None,
+        };
+        let event = match event {
+            SourceEvent::Push(push) => SourceEvent::Push(self.projection.push(push)?),
+            other => other,
         };
         let (event, permit) = match &self.admission {
             Some(admission) => {

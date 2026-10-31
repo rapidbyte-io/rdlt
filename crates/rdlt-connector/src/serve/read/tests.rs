@@ -354,3 +354,23 @@ async fn a_read_whose_host_takes_nothing_holds_a_frame_and_one_push_in_its_chann
             .expect("the pump does not panic");
     }
 }
+
+#[test]
+fn a_read_s_start_asks_for_a_read_without_the_columns_it_excludes() {
+    let start = v1::ReadStart {
+        stream: Some(v1::StreamName::from(
+            &StreamName::new("rows").expect("a valid name"),
+        )),
+        partition: "p0".to_owned(),
+        follow: true,
+        exclude: vec!["secret".to_owned(), "blob".to_owned()],
+        ..v1::ReadStart::default()
+    };
+    let asked = super::request(start).expect("a valid start");
+    assert_eq!(
+        asked,
+        request()
+            .following(true)
+            .excluding(crate::Exclusion::new(["blob", "secret"]))
+    );
+}

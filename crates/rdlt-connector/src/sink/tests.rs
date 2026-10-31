@@ -392,3 +392,70 @@ fn the_least_of_two_headrooms_is_the_least_of_each_measure_either_says() {
     assert_eq!(both.least(bytes), least);
     assert_eq!(Headroom::default().least(bytes), bytes);
 }
+
+/// Admits every event at once, recording the columns of each batch it is asked to admit.
+#[derive(Default)]
+struct Columns {
+    asked: Mutex<Vec<Vec<String>>>,
+}
+
+impl Admission for Columns {
+    fn admit(&self, event: &SourceEvent) -> BoxFuture<'_, crate::Result<Option<Permit>>> {
+        if let SourceEvent::Push(Push::Arrow(batch) | Push::Changes(batch)) = event {
+            let schema = batch.schema();
+            let names = schema.fields().iter().map(|field| field.name().clone());
+            self.asked.lock().unwrap().push(names.collect());
+        }
+        Box::pin(async { Ok(None) })
+    }
+
+    fn charge(&self, bytes: u64) -> crate::Result<Permit> {
+        Ok(Box::new(bytes))
+    }
+}
+
+#[tokio::test]
+async fn an_excluding_sink_admits_and_hands_over_each_batch_without_its_excluded_columns() {
+    use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
+    let columns = Arc::new(Columns::default());
+    let (sink, mut feed) =
+        admitted_partition_channel(NonZeroUsize::new(4).unwrap(), columns.clone());
+    let mut sink = sink.excluding(crate::Exclusion::new(["secret"]));
+    assert_eq!(sink.excluded(), &crate::Exclusion::new(["secret"]));
+    let id: ArrayRef = Arc::new(Int64Array::from(vec![1]));
+    let secret: ArrayRef = Arc::new(StringArray::from(vec!["s"]));
+    let batch = RecordBatch::try_from_iter([("id", id), ("secret", secret)]).unwrap();
+    sink.send(SourceEvent::Push(Push::Arrow(batch.clone())))
+        .await
+        .unwrap();
+    sink.send(json("[1]")).await.unwrap();
+    drop(sink);
+    assert_eq!(*columns.asked.lock().unwrap(), [vec!["id".to_owned()]]);
+    let Some(SourceEvent::Push(Push::Arrow(received))) = feed.recv().await else {
+        panic!("the push arrives first");
+    };
+    assert_eq!(received, batch.project(&[0]).unwrap());
+    assert_eq!(feed.recv().await, Some(json("[1]")));
+}
+
+#[tokio::test]
+async fn a_sink_that_excludes_nothing_admits_each_batch_whole() {
+    use arrow_array::{ArrayRef, Int64Array, RecordBatch};
+    let columns = Arc::new(Columns::default());
+    let (mut sink, mut feed) =
+        admitted_partition_channel(NonZeroUsize::new(4).unwrap(), columns.clone());
+    assert!(sink.excluded().is_empty());
+    let id: ArrayRef = Arc::new(Int64Array::from(vec![1]));
+    let batch = RecordBatch::try_from_iter([("id", id.clone()), ("secret", id)]).unwrap();
+    sink.send(SourceEvent::Push(Push::Changes(batch.clone())))
+        .await
+        .unwrap();
+    assert_eq!(
+        *columns.asked.lock().unwrap(),
+        [vec!["id".to_owned(), "secret".to_owned()]]
+    );
+    assert_eq!(
+        feed.recv().await,
+        Some(SourceEvent::Push(Push::Changes(batch)))
+    );
+}

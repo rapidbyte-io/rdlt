@@ -80,6 +80,7 @@ mod cursor;
 mod destination;
 mod emitter;
 mod error;
+mod exclusion;
 mod factory;
 mod id;
 pub mod instants;
@@ -139,6 +140,7 @@ pub use error::{
     DEADLINE_EXCEEDED, LimitExceeded, RETENTION_LOST, Result, ResultExt, SCHEMA_CONFLICT,
     TABLE_OWNED,
 };
+pub use exclusion::Exclusion;
 pub use factory::{RoleFactory, Serve};
 pub use id::{
     ConnectorId, Epoch, GenerationId, IdError, PartitionId, PipelineId, SchemaVersion, SegmentId,

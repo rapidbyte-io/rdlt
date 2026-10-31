@@ -14,6 +14,7 @@ use serde::Serialize;
 
 use crate::cursor::Cursor;
 use crate::error::{ConnectorError, Result, ResultExt};
+use crate::exclusion::Exclusion;
 use crate::sink::{Headroom, PartitionSink, Push, SourceEvent};
 
 /// Sends one partition's data and checkpoints to the engine, with cursors of type `C`.
@@ -63,6 +64,17 @@ impl<C: Serialize> Emitter<C> {
         self.follow
     }
 
+    /// The top-level columns the stream excludes, which a read may leave out of what it sends,
+    /// as a database source leaves them out of its query ([`ReadRequest::exclude`]).
+    ///
+    /// Whatever it sends, every batch it pushes is projected without them here, before anything
+    /// holds it; a JSON push keeps them, and the engine skips their values as it shreds it.
+    ///
+    /// [`ReadRequest::exclude`]: crate::ReadRequest::exclude
+    pub fn excluded(&self) -> &Exclusion {
+        self.sink.excluded()
+    }
+
     /// Resolves once the engine asks the read to stop, or stops listening: a read waiting for
     /// data selects on it, and returns.
     pub async fn stopped(&self) {
@@ -109,22 +121,25 @@ impl<C: Serialize> Emitter<C> {
         self.sink.send(SourceEvent::Push(Push::Json(json))).await
     }
 
-    /// Pushes an Arrow batch; an empty batch pushes nothing.
+    /// Pushes an Arrow batch, without the columns the stream excludes; an empty batch pushes
+    /// nothing.
     pub async fn batch(&mut self, batch: RecordBatch) -> Result<()> {
         if batch.num_rows() == 0 {
             return Ok(());
         }
+        let batch = self.sink.projection().arrow(batch)?;
         check_batch(&batch, &self.sink)?;
         self.check_schema(&batch)?;
         self.sink.send(SourceEvent::Push(Push::Arrow(batch))).await
     }
 
-    /// Pushes a change batch, which the engine validates where it reads it; an empty batch pushes
-    /// nothing.
+    /// Pushes a change batch, which the engine validates where it reads it, without the columns
+    /// the stream excludes; an empty batch pushes nothing.
     pub async fn changes(&mut self, batch: RecordBatch) -> Result<()> {
         if batch.num_rows() == 0 {
             return Ok(());
         }
+        let batch = self.sink.projection().changes(batch)?;
         check_batch(&batch, &self.sink)?;
         self.check_schema(&batch)?;
         self.sink

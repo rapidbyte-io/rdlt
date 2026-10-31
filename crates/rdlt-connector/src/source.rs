@@ -20,6 +20,7 @@ use crate::catalog::{Catalog, InvalidCatalog, StreamSpec};
 use crate::cursor::Cursor;
 use crate::emitter::Emitter;
 use crate::error::{ConnectorError, ConnectorErrorKind, Result};
+use crate::exclusion::Exclusion;
 use crate::id::{PartitionId, StreamName};
 use crate::sink::PartitionSink;
 use crate::spec::{BoxFuture, ConnectContext};
@@ -231,16 +232,22 @@ pub struct ReadRequest {
     ///
     /// A bounded partition's read ignores it.
     pub follow: bool,
+    /// The top-level columns the stream excludes, which the read may leave out of what it sends,
+    /// as a database source leaves them out of its query: whatever it sends, the engine drops
+    /// them.
+    pub exclude: Exclusion,
 }
 
 impl ReadRequest {
-    /// A read of `partition` of `stream` from `cursor`, which returns once caught up.
+    /// A read of `partition` of `stream` from `cursor`, which returns once caught up, of every
+    /// column.
     pub fn new(stream: StreamName, partition: Partition, cursor: Option<Cursor>) -> Self {
         Self {
             stream,
             partition,
             cursor,
             follow: false,
+            exclude: Exclusion::default(),
         }
     }
 
@@ -248,6 +255,13 @@ impl ReadRequest {
     #[must_use]
     pub fn following(mut self, follow: bool) -> Self {
         self.follow = follow;
+        self
+    }
+
+    /// This read, of a stream that excludes `exclusion`'s columns.
+    #[must_use]
+    pub fn excluding(mut self, exclusion: Exclusion) -> Self {
+        self.exclude = exclusion;
         self
     }
 }
