@@ -1308,6 +1308,11 @@ pub(crate) static READ_START: Form = Form {
             kind: Kind::Scalar(1),
             repeated: false,
         },
+        Field {
+            number: 7,
+            kind: Kind::String,
+            repeated: true,
+        },
     ],
 };
 
