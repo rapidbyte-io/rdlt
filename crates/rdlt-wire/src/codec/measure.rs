@@ -1,25 +1,27 @@
 //! Measures a batch or dictionary frame against its schema and the limits, as its receiver does
 //! before decoding it and its sender before sending it.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow_ipc::{Message, MetadataVersion, RecordBatch};
-use arrow_schema::{DataType, Field, Fields, Schema, SchemaRef};
+use arrow_schema::{DataType, Field, FieldRef, Fields, Schema, SchemaRef};
 use flatbuffers::InvalidFlatbuffer;
 
 use super::IpcFrame;
 use super::framing::{framing, kind};
+use super::held::schema_held_bytes;
 use super::shape::{Walked, walk};
 use crate::error::{Frame, Problem, WireError};
-use crate::limits::{Limit, Limits};
+use crate::limits::{Limit, Limits, count};
 
 /// What the frames in one schema hold: a batch's columns, and each dictionary's values.
 #[derive(Debug)]
 pub(super) struct Columns {
     schema: SchemaRef,
-    /// Each dictionary's values as a batch of one column, by the dictionary's id.
-    values: HashMap<i64, SchemaRef>,
+    /// The field giving each dictionary its type, by the dictionary's id, in the order of the ids.
+    dictionaries: Box<[(i64, FieldRef)]>,
+    /// Bytes: what the schema and `dictionaries` keep.
+    held: u64,
 }
 
 impl Columns {
@@ -28,11 +30,42 @@ impl Columns {
         &self.schema
     }
 
+    /// Bytes: what the columns keep while their schema lasts: the schema, and the field of each
+    /// dictionary.
+    pub(super) fn held_bytes(&self) -> u64 {
+        self.held
+    }
+
     /// The columns of frames in `schema`, as a receiver converts it from its message.
     pub(super) fn new(schema: SchemaRef) -> Self {
-        let mut values = HashMap::new();
-        dictionaries(schema.fields(), &mut values);
-        Self { schema, values }
+        let mut found = Vec::new();
+        dictionaries(schema.fields(), &mut found);
+        // The first field naming an id gives its dictionary's type, as in Arrow's reader.
+        found.sort_by_key(|(id, _)| *id);
+        found.dedup_by_key(|(id, _)| *id);
+        let dictionaries = found.into_boxed_slice();
+        let index = count(size_of_val::<[(i64, FieldRef)]>(&dictionaries));
+        let held = schema_held_bytes(&schema).saturating_add(index);
+        Self {
+            schema,
+            dictionaries,
+            held,
+        }
+    }
+
+    /// The columns of a frame of dictionary `id`, its values as a batch of one column: built for
+    /// each frame, so no dictionary keeps a schema of its own.
+    fn values(&self, id: i64) -> Option<SchemaRef> {
+        let at = self
+            .dictionaries
+            .binary_search_by_key(&id, |(id, _)| *id)
+            .ok()?;
+        let (_, field) = self.dictionaries.get(at)?;
+        let DataType::Dictionary(_, values) = field.data_type() else {
+            return None;
+        };
+        let column = Field::new("", values.as_ref().clone(), true);
+        Some(Arc::new(Schema::new(vec![column])))
     }
 }
 
@@ -76,8 +109,8 @@ pub(super) fn measured<'a>(
     }
     let columns = match framed.dictionary {
         None => Arc::clone(&columns.schema),
-        Some(id) => match columns.values.get(&id) {
-            Some(values) => Arc::clone(values),
+        Some(id) => match columns.values(id) {
+            Some(values) => values,
             None => return Err(malformed(Problem::UnknownDictionary { id })),
         },
     };
@@ -141,48 +174,45 @@ pub(super) fn verified(
     Ok(message)
 }
 
-/// Records, for each dictionary `fields` or the fields nested in them use, its values as a batch
-/// of one column; the first field naming an id gives its dictionary's type, as in Arrow's reader.
-fn dictionaries(fields: &Fields, values: &mut HashMap<i64, SchemaRef>) {
+/// Records each dictionary field of `fields` and of the fields nested in them, with its id, in the
+/// order they lie.
+fn dictionaries(fields: &Fields, found: &mut Vec<(i64, FieldRef)>) {
     for field in fields {
-        if let DataType::Dictionary(_, value) = field.data_type() {
+        if let DataType::Dictionary(..) = field.data_type() {
             #[expect(
                 deprecated,
                 reason = "Arrow's reader finds a column's dictionary by this id"
             )]
             let id = field.dict_id();
             if let Some(id) = id {
-                values.entry(id).or_insert_with(|| {
-                    let column = Field::new("", value.as_ref().clone(), true);
-                    Arc::new(Schema::new(vec![column]))
-                });
+                found.push((id, Arc::clone(field)));
             }
         }
-        nested(field.data_type(), values);
+        nested(field.data_type(), found);
     }
 }
 
-/// Records the dictionaries of the fields nested in a value of `data_type`.
-fn nested(data_type: &DataType, values: &mut HashMap<i64, SchemaRef>) {
+/// Records the dictionary fields nested in a value of `data_type`.
+fn nested(data_type: &DataType, found: &mut Vec<(i64, FieldRef)>) {
     match data_type {
-        DataType::Struct(fields) => dictionaries(fields, values),
+        DataType::Struct(fields) => dictionaries(fields, found),
         DataType::Union(fields, _) => {
             let fields: Fields = fields.iter().map(|(_, field)| Arc::clone(field)).collect();
-            dictionaries(&fields, values);
+            dictionaries(&fields, found);
         }
         DataType::List(item)
         | DataType::LargeList(item)
         | DataType::ListView(item)
         | DataType::LargeListView(item)
         | DataType::FixedSizeList(item, _)
-        | DataType::Map(item, _) => dictionaries(&Fields::from(vec![Arc::clone(item)]), values),
+        | DataType::Map(item, _) => dictionaries(&Fields::from(vec![Arc::clone(item)]), found),
         DataType::RunEndEncoded(ends, item) => {
             dictionaries(
                 &Fields::from(vec![Arc::clone(ends), Arc::clone(item)]),
-                values,
+                found,
             );
         }
-        DataType::Dictionary(_, value) => nested(value, values),
+        DataType::Dictionary(_, value) => nested(value, found),
         _ => {}
     }
 }

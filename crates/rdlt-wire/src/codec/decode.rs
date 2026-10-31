@@ -50,10 +50,23 @@ impl Decoder {
     }
 
     /// Bytes: what the dictionaries held count, at least the allocations they keep alive, which
-    /// batches decoded from now on share and whoever charges a budget charges while the decoder
-    /// lives.
+    /// batches decoded from now on share.
     pub fn dictionary_bytes(&self) -> u64 {
         self.held.values().copied().fold(0, u64::saturating_add)
+    }
+
+    /// Bytes: what the decoder keeps between frames, which whoever charges a budget charges while
+    /// the decoder lives: its schema, with the message it came from and the field of each of its
+    /// dictionaries, and what [`Decoder::dictionary_bytes`] counts of its dictionaries.
+    pub fn kept_bytes(&self) -> u64 {
+        let schema = self.columns.as_ref().map_or(0, Columns::held_bytes);
+        let message = self
+            .message
+            .as_ref()
+            .map_or(0, |message| count(message.len()));
+        schema
+            .saturating_add(message)
+            .saturating_add(self.dictionary_bytes())
     }
 
     /// The schema the frames that follow are in, from its IPC schema message.
