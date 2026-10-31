@@ -54,6 +54,19 @@ different types.
   cannot apply fails the stream (`merge_key_changed`).
 - **Hints fix a column's type.** A hinted column never widens; values that do not fit it are
   incompatible changes.
+- **A stream can exclude columns.** `StreamPlan::exclude` names top-level columns that never
+  reach the stream's table, its name map or its state. Each read's request carries them as a
+  projection the source may honour, as a database source leaves them out of its query. Whatever
+  it sends, the partition sink drops them from every Arrow and change batch before the budget
+  admits it, moving a change batch's unchanged flags to the ordinals its kept fields take, and
+  the shredder parses an excluded key's value, so a malformed one still refuses its record, but
+  neither observes nor builds it, and a record may name that key twice. A served source's SDK
+  drops them from its batches before they cross the wire, and the host drops them again, since a
+  connector is untrusted (ADR 0037). A declared schema is resolved without them. A key column, a change
+  column, the source's change time and a column the plan sets or hints cannot be excluded, nor
+  more names than a read's start carries (`EXCLUDED_BYTES`). A column the table holds already
+  stays, and later rows hold null in it, as when a source stops sending a column; a name no
+  column has excludes nothing.
 - **Columns are nullable except merge keys.** A source declaring a column non-null states
   something about its data, not a destination constraint, so a later batch with nulls needs no
   change.
