@@ -546,6 +546,8 @@ fn plan(workload: &Workload, relaxed: &[Relaxed], pipeline: usize) -> PipelinePl
                     plan = plan.hint(column, hint.clone());
                 }
             }
+            let excluded = stream.excluded.columns.iter();
+            plan = plan.exclude(excluded.map(|excluded| excluded.name.as_str()));
             if stream.keys > 0 && stream.plan_key {
                 plan.key(stream.key_columns())
             } else {

@@ -6,13 +6,13 @@ type Flag = fn(&Features) -> bool;
 
 #[test]
 fn every_feature_is_drawn_on_and_off_and_now_and_then_all_at_once() {
-    // Every feature at once is about one seed in 21 845: one in eight, by one in four for each of
-    // the network, sources that forget, streaming and resetting, three in four for no fat values,
-    // and one in two for each of a hostile host, churn and broken connectors.
+    // Every feature at once is about one seed in 29 127: 1/8, by 1/4 for each of the network,
+    // forgetting, streaming and resetting, 3/4 each for no fat values and no excluded columns, and
+    // 1/2 for each of a hostile host, churn and broken connectors.
     let drawn: Vec<Features> = (0..256_000)
         .map(|seed| Features::draw(&mut SplitMix64::new(seed)))
         .collect();
-    let flags: [(&str, Flag); 22] = [
+    let flags: [(&str, Flag); 23] = [
         ("drift", |features| features.drift),
         ("encodings", |features| features.encodings),
         ("json", |features| features.json),
@@ -35,6 +35,7 @@ fn every_feature_is_drawn_on_and_off_and_now_and_then_all_at_once() {
         ("fat", |features| features.fat),
         ("hostile", |features| features.hostile),
         ("framing", |features| features.framing),
+        ("exclude", |features| features.exclude),
     ];
     for (name, flag) in flags {
         assert!(drawn.iter().any(flag), "{name} is never on");
@@ -181,4 +182,34 @@ fn framing_is_drawn_apart_and_changes_nothing_a_workload_draws() {
         assert_eq!(format!("{framed:?}"), format!("{plain:?}"), "seed {seed}");
     }
     assert!(any, "some seed meets broken connectors");
+}
+
+#[test]
+fn excluded_columns_change_nothing_else_a_workload_draws() {
+    let (mut excluding, mut honouring) = (false, false);
+    for seed in 0..1000 {
+        let mut rng = SplitMix64::new(seed);
+        let features = Features::draw(&mut rng);
+        let lean = Features {
+            exclude: false,
+            ..features
+        };
+        let mut excluded = crate::workload::Workload::generate(&mut rng.clone(), features);
+        let plain = crate::workload::Workload::generate(&mut rng, lean);
+        for stream in &mut excluded.streams {
+            excluding |= !stream.excluded.columns.is_empty();
+            honouring |= stream.excluded.honours;
+            assert!(
+                features.exclude || stream.excluded.columns.is_empty(),
+                "seed {seed}"
+            );
+            stream.excluded = crate::workload::Excluding::default();
+        }
+        excluded.features = lean;
+        // Drawn floats include NaN, which is not equal to itself, so the workloads are compared
+        // by what they print.
+        assert_eq!(format!("{excluded:?}"), format!("{plain:?}"), "seed {seed}");
+    }
+    assert!(excluding, "some stream excludes columns");
+    assert!(honouring, "some source leaves them out");
 }

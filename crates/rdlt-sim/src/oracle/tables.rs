@@ -23,10 +23,10 @@ use cells::{Cell, fields, read, text};
 use ids::Ids;
 use slots::Slot;
 
-/// Checks every table of `stream` against the model: its own table holds each of `groups`, rows
-/// of `delivered`, every row delivered so far, as often as the group says, or where the runs
-/// `stopped` short at most as often; its child tables hold exactly the rows the rows it holds
-/// normalize into.
+/// Checks every table of `stream` against the model: no column it excludes is in any of them;
+/// its own table holds each of `groups`, rows of `delivered`, every row delivered so far, as
+/// often as the group says, or where the runs `stopped` short at most as often; its child tables
+/// hold exactly the rows the rows it holds normalize into.
 pub(super) fn check(
     world: &World,
     stream: &SimStream,
@@ -35,6 +35,7 @@ pub(super) fn check(
     stopped: bool,
     seed: Seed,
 ) {
+    check_excluded(world, stream, seed);
     let capabilities = world.capabilities();
     let root = vec![stream.name.clone()];
     let mut candidates: BTreeMap<String, &Row> = BTreeMap::new();
@@ -72,6 +73,38 @@ pub(super) fn check(
         lineage,
         seed,
     );
+}
+
+/// Checks that no column `stream` excludes is in any of its tables, whatever its source sent: no
+/// child table holds its arrays, and its own table's name map, which state records, names none of
+/// its columns or variants.
+fn check_excluded(world: &World, stream: &SimStream, seed: Seed) {
+    let excluded = |name: &str| {
+        let columns = &stream.excluded.columns;
+        columns.iter().any(|excluded| excluded.name == name)
+    };
+    for path in table_paths(world, &stream.name) {
+        if let Some(column) = path.get(1).filter(|column| excluded(column)) {
+            panic!(
+                "seed {seed}: stream {}: table {path:?} holds the arrays of excluded column \
+                 {column}",
+                stream.name
+            );
+        }
+        let table = TablePath::new(path.iter().map(String::as_str))
+            .expect("the destination's table paths are valid");
+        let Some(published) = published_table(world, &table).filter(|_| path.len() == 1) else {
+            continue;
+        };
+        for (key, physical) in published.names.iter() {
+            let column = key.column().segments().next().unwrap_or_default();
+            assert!(
+                !excluded(column),
+                "seed {seed}: stream {}: its table names excluded column {column} as {physical}",
+                stream.name
+            );
+        }
+    }
 }
 
 /// Checks each child table of `stream` against the rows its own table's `held` rows, of
