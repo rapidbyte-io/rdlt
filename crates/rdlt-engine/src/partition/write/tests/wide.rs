@@ -21,7 +21,7 @@ use super::super::held::shredded;
 use super::super::normalized::split::{kept, made, split};
 use super::super::pieces::Pieces;
 use crate::cost::tests::{held_alone, peak_alone};
-use crate::fixtures::lowering::wide::{dictionaries, flags, integers, views};
+use crate::fixtures::lowering::wide::{dictionaries, flags, integers, text, views};
 use crate::fixtures::lowering::{Case, Storage, stamp};
 use crate::normalize::{PartSchemas, Shape};
 use crate::partition::ChangeMode;
@@ -262,12 +262,14 @@ fn a_wide_push_holds_no_more_than_it_is_admitted_for() {
     let mut found = Vec::new();
     for columns in [COLUMNS, WIDEST] {
         // Booleans of many rows whose validity, holding no null, Arrow's data of them leaves out,
-        // and views each holding several data buffers.
-        let pushes: [(&str, &dyn Fn() -> RecordBatch); 4] = [
+        // views each holding several data buffers, and text with a validity, whose arrays take
+        // all their charge leaves beside its schema.
+        let pushes: [(&str, &dyn Fn() -> RecordBatch); 5] = [
             ("integers", &|| integers(1, columns, |row| row)),
             ("dictionaries", &|| dictionaries(1, columns)),
             ("booleans", &|| flags(1_024, columns)),
             ("views", &|| views(1, columns, VIEW_BUFFERS)),
+            ("text", &|| text(2, columns)),
         ];
         for (what, make) in pushes {
             let (held, built) = held_alone(make);
