@@ -65,3 +65,19 @@ is bounded in sum:
 | Test job, macos-15 | 24.8 min of 45 on main's run at `a92436bf` (run 39811772076), plus the same 41 s: about 25.5 |
 | Archive extraction per shard | 0.1 s |
 | Nightly floor for the reference set | 2 seeds/s, the whole number below half the reference job's rate: 5.92 seeds/s on the nightly at `cd2bb077` (run 39924989865, 169.1 s), estimated at about 5.8 here, divided by 1.02, so half is about 2.9 |
+
+## Commits answered transiently, sent again in place
+
+The simulated destination leaves some tries it answers transiently running, to land later, and the
+engine sends such a commit again in place rather than ending its attempt. Measured side by side
+with `main` at `ea57c46d` on 2026-10-31, the reference set from each tree's archive, alternating
+on CPUs 0-3 (base, branch; branch, base; base, branch) under a one-minute load of 4.05 to 4.14, the
+sweep's own four threads among it:
+
+| Measure | `main` | This change |
+|---|---|---|
+| Exactly-once sweep, seeds 0-999, four P-cores | 21.41 seeds/s (46.70 s; 21.40-21.55) | 22.04 seeds/s (45.37 s; 21.93-22.04) |
+
+The change runs the reference set 2.9 % faster: a transient commit answer no longer costs an
+attempt's reopen and re-read. The longest pull-request shard, at most the 9.7 min the table's run
+took times the same ratio, stays within its 12; the nightly floor holds.
