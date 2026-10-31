@@ -115,8 +115,12 @@ impl fmt::Debug for Engine {
 pub enum StopMode {
     /// Stop reading, commit what is sealed, and end cleanly.
     AfterCommit,
-    /// End the current attempt at once; its unpublished staging is discarded at the next open,
-    /// and a commit of it that landed unheard is not in the run's report.
+    /// End the current attempt at once; its unpublished staging is discarded at the next open.
+    ///
+    /// A commit of it that landed unheard is not in the run's report. An attempt that fails
+    /// otherwise waits up to [`EngineConfig::close_wait`](crate::EngineConfig::close_wait) for its
+    /// commit in flight, so a landed commit goes uncounted only under this mode, or where it
+    /// answered past the close wait and no later attempt opened to find it landed.
     Now,
 }
 

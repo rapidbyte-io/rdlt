@@ -41,6 +41,10 @@ use crate::report::{AttemptEnd, AttemptLog, CommitPhases, Tally};
 use crate::table::{Incoming, MetaNames, Model, Resolver, Settings, SharedSession, Tables};
 use crate::watch;
 
+/// How long a commit in flight has to answer once the attempt is cancelled: the run's default
+/// close wait.
+const CLOSE_WAIT: Duration = Duration::from_secs(60);
+
 type Commits = Arc<Mutex<Vec<CommitMeta>>>;
 /// Every try of a commit sent, with the instant it was, in order.
 type Sent = Arc<Mutex<Vec<(CommitMeta, tokio::time::Instant)>>>;
@@ -73,6 +77,8 @@ enum Try {
     LandThenFail(ConnectorErrorKind),
     /// Fails rate-limited, asking for the wait given, and lands nothing.
     Limited(Duration),
+    /// Lands the commit, then answers once the wait given has passed.
+    Late(Duration),
     /// Never answers.
     Hang,
 }
@@ -130,7 +136,7 @@ impl DestinationSession for Recorder {
                     return Err(ConnectorError::rate_limited("slow down", Some(after)));
                 }
                 Some(Try::Hang) => std::future::pending::<()>().await,
-                Some(Try::LandThenFail(_)) | None => {}
+                Some(Try::LandThenFail(_) | Try::Late(_)) | None => {}
             }
             if let Some(landed) = self.landed.as_ref().filter(|landed| landed.key == meta.key) {
                 return Ok(landed.clone());
@@ -149,6 +155,10 @@ impl DestinationSession for Recorder {
             self.landed = Some(receipt.clone());
             match answer {
                 Some(Try::LandThenFail(kind)) => Err(Try::error(kind, None)),
+                Some(Try::Late(wait)) => {
+                    tokio::time::sleep(wait).await;
+                    Ok(receipt)
+                }
                 _ => Ok(receipt),
             }
         })
@@ -387,6 +397,7 @@ impl Setup {
             replan: Duration::from_secs(60),
             tally: Arc::clone(&harness.tally),
             retry: self.retry,
+            close_wait: CLOSE_WAIT,
         });
         (coordinator, harness)
     }
@@ -451,20 +462,9 @@ impl Harness {
         state: PartitionState,
         answers: Option<u64>,
     ) {
-        self.send(Progress::Sealed(Seal {
-            partition,
-            segment: SegmentId(segment),
-            rows,
-            bytes: rows * 8,
-            state,
-            answers,
-            discarded_rows: 0,
-            discarded_values: 0,
-            deletes_ignored: 0,
-            truncates_ignored: 0,
-            shred: crate::report::ShredCounts::default(),
-            held: CursorHold::default(),
-        }));
+        self.send(Progress::Sealed(seal(
+            partition, segment, rows, state, answers,
+        )));
     }
 
     fn end(&self, partition: usize, stopped: bool) {
@@ -473,6 +473,31 @@ impl Harness {
 
     fn commit_count(&self) -> usize {
         self.commits.lock().len()
+    }
+}
+
+/// The seal of `rows` rows of `partition` in `segment`, standing at `state`, which discarded
+/// nothing.
+fn seal(
+    partition: usize,
+    segment: u64,
+    rows: u64,
+    state: PartitionState,
+    answers: Option<u64>,
+) -> Seal {
+    Seal {
+        partition,
+        segment: SegmentId(segment),
+        rows,
+        bytes: rows * 8,
+        state,
+        answers,
+        discarded_rows: 0,
+        discarded_values: 0,
+        deletes_ignored: 0,
+        truncates_ignored: 0,
+        shred: crate::report::ShredCounts::default(),
+        held: CursorHold::default(),
     }
 }
 

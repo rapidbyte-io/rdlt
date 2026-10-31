@@ -5,9 +5,12 @@ use std::time::Duration;
 
 use rdlt_connector::{COMMIT_STALE, ConnectorErrorKind, PartitionState};
 
-use super::{Answer, Harness, Setup, Try, cursor, ended, partition, stream, until};
+use super::{
+    Answer, CLOSE_WAIT, Harness, Setup, Try, cursor, ended, name, partition, seal, stream, until,
+};
 use crate::config::RetryPolicy;
 use crate::error::{ErrorKind, Origin};
+use crate::partition::{Progress, Seal};
 use crate::plan::WriteMode;
 
 /// The coordinator of one partition whose destination answers its first tries as `tries` says,
@@ -165,16 +168,56 @@ async fn the_session_takes_other_calls_while_a_commit_waits_to_be_sent_again() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn the_cancel_ends_an_attempt_whose_commit_hangs_at_once() {
+async fn the_cancel_ends_an_attempt_whose_commit_hangs_once_the_close_wait_passes() {
     let (task, harness) = sealed(vec![Try::Hang], RetryPolicy::default()).await;
     tried(&harness, 1).await;
     harness.cancel.cancel();
-    let error = tokio::time::timeout(Duration::from_secs(1), task)
+    let cancelled = tokio::time::Instant::now();
+    let error = tokio::time::timeout(CLOSE_WAIT + Duration::from_secs(1), task)
         .await
-        .expect("the attempt ends within a second of its cancel")
+        .expect("the attempt ends once the close wait has passed")
         .unwrap()
         .unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Cancelled);
+    assert!(
+        cancelled.elapsed() >= CLOSE_WAIT,
+        "the commit in flight has the close wait to answer"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_commit_that_lands_as_the_attempt_is_cancelled_is_recorded_with_what_it_discarded() {
+    let mut setup = Setup::new(
+        vec![stream(WriteMode::Append, None, 1)],
+        vec![partition("p0", false)],
+    );
+    setup.tries = vec![Try::Late(Duration::from_secs(1))];
+    let (task, harness) = setup.start().await;
+    harness.send(Progress::Sealed(Seal {
+        discarded_rows: 2,
+        discarded_values: 5,
+        ..seal(0, 1, 3, PartitionState::Cursor(cursor(3)), None)
+    }));
+    harness.end(0, false);
+    until(|| harness.commit_count() == 1).await;
+    harness.cancel.cancel();
+    // The commit answers a second after it landed; its report is heard at once, and with its only
+    // partition ended nothing is left for the attempt to do.
+    tokio::time::timeout(CLOSE_WAIT, task)
+        .await
+        .expect("the attempt ends once its commit answered")
+        .unwrap()
+        .unwrap();
+    let log = harness.log.lock();
+    assert_eq!(
+        log.committed.commits, 1,
+        "the commit that landed is the attempt's"
+    );
+    let counts = &log.committed.streams[&name()];
+    assert_eq!(
+        (counts.rows, counts.discarded_rows, counts.discarded_values),
+        (3, 2, 5)
+    );
 }
 
 #[tokio::test(start_paused = true)]
