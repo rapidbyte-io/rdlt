@@ -7,7 +7,7 @@ use rdlt_sim::{
 ///
 /// A seed fails if its defect comes back, unless its comment says otherwise: such a seed keeps
 /// only the path, and its defect may come back unseen.
-const FOUND: [(u64, Reach); 15] = [
+const FOUND: [(u64, Reach); 18] = [
     // Over the network: a host whose handshake a partition cut short held its connection, and
     // its connector's stop, forever.
     (743, Reach::LinkCut),
@@ -44,6 +44,12 @@ const FOUND: [(u64, Reach); 15] = [
     // transport frames, queued ahead of the echoes, took longer than that to cross the link, so a
     // run with nothing new took two attempts. The defect may not fail this seed.
     (583_907, Reach::Framing),
+    // A refusal ended a run for good while a commit was in flight: the attempt's cancel dropped
+    // the call, the commit landed after, and no open followed to find it, so no report counted
+    // what it discarded. Seeds 78121, 91101 and 98222 met the same path.
+    (43_421, Reach::Refused),
+    (51_355, Reach::Refused),
+    (68_626, Reach::Refused),
 ];
 
 #[test]
