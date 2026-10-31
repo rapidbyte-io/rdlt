@@ -1490,3 +1490,80 @@ What the rule does not gate, recorded:
   their pieces there. The new `wire/stream` case counted 823 681 instructions and 234
   allocations. `just resident` held its bound. The served line's host peaked at 100–136 MiB, its
   spawned source at 461–463 MiB and its destination at 47–54 MiB.
+
+## One charge a served frame
+
+A served read's frame is charged, before it is decoded, what decoding it holds; the charge goes
+once the frame is decoded, and its push is charged again as it waits for room among pushes. The
+change charged a frame once. Before decoding it, the host charged it what its push would be
+charged where that was more than decoding holds, knowing what the frame carried by the field its
+encoding set first: a batch's message with the schema and dictionaries the read's decoder kept and
+the batch's arrays, or a JSON push's charge. The engine's admission shrank that charge to the
+push's and waited for nothing, and refused as a malformed frame a push charged more than its frame.
+It was to be built only where frames waited for their charge at least a third as long as pushes
+waited for room, and they did: in "The production slice" above, `64×80000` from 16 partitions
+spends 29.0 % of its run in its frames' decode waits and 2.6 % in intake waits.
+
+The rule was set before measuring. Adopt only if every condition holds:
+
+- No production-slice case's median MB/s lies below `main`'s range.
+- The intake waits of `64×80000` from 16 partitions are no higher than `main`'s.
+- The served line of `just resident` is no higher than `main`'s.
+- `just instructions` holds every case within 2 %.
+
+- **Trees.** `main` at `01cd996b`, and the change on it. Each tree's benches were built before its
+  rounds, the spawned connectors among them.
+- **Running.** `just bench served 0-3 'process/socket/both/[0-9]+x[0-9]+(/[0-9]+-partitions)?$'
+  4-11`, the production slice's ten cases, on 2026-10-30 and -31 between 23:46 and 11:38: the
+  host on CPUs 0–3 and the connectors on 4–11, governor powersave with energy preference
+  performance. Each run took the measurement lock alone and started once the one-minute load
+  average fell below 1.0: 0.61–0.98 at the starts, 1.17–2.35 at the ends.
+- **Rounds.** Six a side, interleaved, each side first in three: three pairs, then three more with
+  the change first in two, as `main` had run first in two of the first three. A build of another
+  bench overlapped the opening of one of `main`'s runs; it was set aside and run again. The table
+  gives each side's median of its six runs and their range, in MB/s.
+
+| Case | `main` | Change | Medians | Decode waits, `main` / change |
+|---|---|---|---|---|
+| `both/64x80000` | 2 118 [2 073–2 208] | 2 125 [2 063–2 220] | +0.3 % | 3.1 / 3.2 % |
+| `both/64x80000/4-partitions` | 2 044 [1 991–2 080] | 2 078 [1 995–2 124] | +1.6 % | 7.6 / 8.7 % |
+| `both/64x80000/8-partitions` | 1 951 [1 888–1 982] | 1 933 [1 867–1 959] | −0.9 % | 13.4 / 16.2 % |
+| `both/64x80000/16-partitions` | 1 760 [1 731–1 919] | 1 790 [1 684–1 825] | +1.7 % | 28.1 / 29.0 % |
+| `both/512x10000` | 3 406 [3 269–3 673] | **3 229** [3 126–3 284] | −5.2 % | 1.2 / 1.3 % |
+| `both/512x10000/4-partitions` | 2 834 [2 768–3 050] | 2 786 [2 739–2 944] | −1.7 % | 1.9 / 2.6 % |
+| `both/512x10000/16-partitions` | 2 590 [2 551–2 844] | 2 581 [2 474–2 664] | −0.3 % | 1.7 / 1.9 % |
+| `both/5120x1000` | 1 904 [1 878–1 959] | 1 903 [1 814–1 972] | −0.1 % | 2.3 / 2.3 % |
+| `both/5120x1000/4-partitions` | 1 640 [1 601–1 661] | 1 634 [1 474–1 702] | −0.3 % | 2.2 / 2.1 % |
+| `both/5120x1000/16-partitions` | 1 565 [1 519–1 624] | 1 571 [1 543–1 614] | +0.4 % | 2.6 / 2.5 % |
+
+**Decision: closed.** One case's median falls below `main`'s range: `both/512x10000`, from one
+partition, moves 5.2 % less than `main`'s median, and five of its six runs are below all six of
+`main`'s (`main` 3 269–3 673, the change 3 126–3 284). The other cases' medians lie
+within `main`'s ranges, from 1.7 % below to 1.7 % above. The intake waits of `64×80000` from 16
+partitions are 0.0 % on both sides in every run. `just instructions`, counted against the `main`
+of its day (`05c69b59`, four charge fixes on), held every case within 2 %: `wide/arrow_1000` took
+1.34 % fewer instructions, and every other case moved 0.31 % or less, its allocations 0.85 % or
+less.
+
+What the rule does not gate, recorded:
+
+- **The decode waits did not fall.** `64×80000` from 16 partitions waits as long for its frames'
+  charges with one charge as with two: 28.1 % of the run on `main` and 29.0 % with the change.
+  What its frames wait for is room among pushes, which the change leaves as it was; the second
+  charge, the push's, waited for nothing on `main` either, its intake waits 0.0 %, where "The
+  production slice" measured 2.6 % on an earlier `main`.
+- **Where `512x10000` loses.** No profile was taken. Its waits and its lane's flushes are as on
+  `main`: decode waits of 1.2 and 1.3 %, four flushes for pressure and one for its commit. Every
+  process takes 2–3 % more CPU seconds a GB (the host 0.494 to 0.510, the source 0.459 to 0.470,
+  the destination 0.388 to 0.395) and keeps fewer CPUs busy (the host 1.67 to 1.64, the source
+  1.54 to 1.49, the destination 1.31 to 1.27). The change does less with the budget for each frame
+  than `main`, one reservation shrunk in place of one released and another taken, and changes
+  little that a spawned source or destination does a frame. That the spawned binaries' code moved,
+  and not the change's work, is not ruled out.
+- **The served line.** Five runs a side of each of its six configurations, interleaved, under the
+  measurement lock. The host's resident growth, `main`'s median against the change's: 220 and 228
+  MiB at two cores, 256 and 241 with the malloc tunables, 223 and 241 at four, 251 and 249 with
+  them, 296 and 285 at sixteen and 377 and 392 with them, against limits of 522–562 MiB. Every
+  configuration's ranges overlap, three medians lie higher and three lower, and the budget peaked
+  at 107–115 MiB alike. The spawned source peaked at 864–909 MiB and the destination at 75–89 MiB
+  on both sides.
