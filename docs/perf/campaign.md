@@ -175,7 +175,8 @@ The baselines the later rules read, and their records, are listed after the deci
   `flat_narrow`, `wide_200` and `string_heavy`, and no `shred_cliffs` corpus runs slower. jiter is
   preferred if it qualifies and meets four requirements: a nesting bound the caller holds, typed
   refusals that name the record, a number's written bytes, and no allocation a record outside the
-  meter; B wins only if it qualifies and is 1.05 times C, or if jiter fails a requirement.
+  meter, its string scratch reused across a chunk's records; B wins only if it qualifies and is
+  1.05 times C, or if jiter fails a requirement.
 - **Figures.** Over two rounds beside today's build, B 0.48–0.71 times on the five corpora and C
   0.62–0.80 times; on the cliffs both slower in both rounds on every corpus but `big_numbers`
   (B 1.00–1.01, C 0.98–1.00). jiter meets three requirements and not the fourth: each iterator
