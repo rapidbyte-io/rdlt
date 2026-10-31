@@ -29,7 +29,7 @@ use crate::coordinator::{
 };
 use crate::env::Env;
 use crate::error::{Error, ErrorKind, Side, codes};
-use crate::event::Announcer;
+use crate::event::{Announcer, Telling};
 use crate::lane::Lanes;
 use crate::limits::LEAST_CALLS;
 use crate::naming::{Naming, recorded};
@@ -66,6 +66,8 @@ pub(crate) struct RunContext {
     pub(crate) cycles: Mutex<BTreeMap<StreamName, (GenerationId, Option<Epoch>)>>,
     /// What the run is doing, for its status.
     pub(crate) live: Arc<Live>,
+    /// Whether the run told its end, after which it tells nothing.
+    pub(crate) telling: Arc<Telling>,
 }
 
 /// A stream ready to load, and the partitions to read.

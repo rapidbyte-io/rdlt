@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Instant, SystemTime};
 
-use parking_lot::Mutex;
+use parking_lot::{Mutex, MutexGuard};
 use rdlt_connector::{PartitionId, PipelineId, StreamName};
 
 use super::clock::{stamp, unstamp};
@@ -224,16 +224,26 @@ impl Live {
         })
     }
 
+    /// The state to note what the run does in, unless the run ended: a task its end left running
+    /// changes nothing a status then shows.
+    fn running(&self) -> Option<MutexGuard<'_, State>> {
+        let state = self.state.lock();
+        state.ended.is_none().then_some(state)
+    }
+
     /// Notes that the run is in `phase` from `at`.
     pub(crate) fn phase(&self, phase: Phase, at: Instant) {
-        let mut state = self.state.lock();
-        (state.phase, state.since) = (phase, at);
+        if let Some(mut state) = self.running() {
+            (state.phase, state.since) = (phase, at);
+        }
     }
 
     /// Notes that the commit at its commit step landed and reports its cursors from `at`, under
     /// its sequence and with the tries it took.
     pub(crate) fn reporting(&self, at: Instant) {
-        let mut state = self.state.lock();
+        let Some(mut state) = self.running() else {
+            return;
+        };
         if let Phase::Committing { seq, tries, .. } = state.phase {
             let step = Step::Ack;
             (state.phase, state.since) = (Phase::Committing { seq, step, tries }, at);
@@ -242,19 +252,25 @@ impl Live {
 
     /// Notes that the run waits to start its next attempt at `until`, from `at`.
     pub(crate) fn backing_off(&self, until: Instant, at: Instant) {
-        let mut state = self.state.lock();
+        let Some(mut state) = self.running() else {
+            return;
+        };
         let until = state.clock.wall(until);
         (state.phase, state.since) = (Phase::BackingOff { until }, at);
     }
 
     /// Notes the attempt's partitions, by their places.
     pub(crate) fn places(&self, places: Vec<Place>) {
-        self.state.lock().places = places;
+        if let Some(mut state) = self.running() {
+            state.places = places;
+        }
     }
 
     /// Notes that the partition at `index` holds `place`.
     pub(crate) fn place(&self, index: usize, place: Place) {
-        let mut state = self.state.lock();
+        let Some(mut state) = self.running() else {
+            return;
+        };
         match state.places.get_mut(index) {
             Some(held) => *held = place,
             None => state.places.push(place),
@@ -263,12 +279,16 @@ impl Live {
 
     /// Notes the attempt's lanes' calls.
     pub(crate) fn lanes(&self, calls: Arc<LaneCalls>) {
-        self.state.lock().lanes = Some(calls);
+        if let Some(mut state) = self.running() {
+            state.lanes = Some(calls);
+        }
     }
 
     /// Notes that a commit landing `streams`' rows or positions landed at `at`.
     pub(crate) fn landed(&self, streams: impl IntoIterator<Item = StreamName>, at: Instant) {
-        let mut state = self.state.lock();
+        let Some(mut state) = self.running() else {
+            return;
+        };
         for stream in streams {
             state.landed.insert(stream, at);
         }

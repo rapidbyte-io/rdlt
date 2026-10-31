@@ -11,7 +11,7 @@ use crate::event::{EventKind, Listed};
 use crate::limits::REPORTED_LISTED;
 use crate::partition::Progress;
 use crate::plan::WriteMode;
-use crate::report::{Acks, CommitPhases, Trigger};
+use crate::report::{Acks, CommitPhases, RunStatus, Trigger};
 use crate::status::{Partitions, Phase, Step};
 
 fn one_partition() -> Setup {
@@ -221,4 +221,26 @@ async fn between_commits_an_attempt_shows_reading_until_it_is_asked_to_stop() {
     coordinator.stopping = true;
     coordinator.step(None, coordinator.parts.env.instant());
     assert_eq!(live.status().phase, Phase::Stopping);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_coordinator_left_running_once_its_run_ended_tells_and_shows_nothing_more() {
+    let (mut coordinator, harness) = one_partition().coordinator().await;
+    let live = std::sync::Arc::clone(&coordinator.parts.live);
+    live.end(RunStatus::Cancelled);
+    coordinator.parts.announcer.end(RunStatus::Cancelled);
+    let ended = live.status();
+    coordinator.reset(0);
+    coordinator.step(Some(Step::Flush), coordinator.parts.env.instant());
+    let ended_only = [EventKind::RunEnded {
+        status: RunStatus::Cancelled,
+    }];
+    let told: Vec<EventKind> = harness
+        .told
+        .lock()
+        .iter()
+        .map(|event| event.kind.clone())
+        .collect();
+    assert_eq!(told, ended_only);
+    assert_eq!(live.status(), ended);
 }

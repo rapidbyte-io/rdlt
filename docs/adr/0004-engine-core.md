@@ -21,13 +21,15 @@ Building M2a surfaced decisions the spec leaves open or gets wrong.
   a retention reset, partitions forgotten, a retry of the attempt or of a commit sent again in place
   with its error and delay, and the run's end. `SystemEnv::with_observer` hands them to the
   embedder's function; an environment that observes nothing (`Env::observes`) has no event built for
-  it. The engine calls the observer on its own tasks, outside its locks, and holds no event for it,
-  so nothing waits outside the memory budget; it must not block, panic or call into the run, and
-  hands each event to a channel. A panic fails the attempt it was told in, as any panic of the
-  engine's tasks does; one told between attempts or at the run's end reaches the task awaiting the
-  run. Each list an event holds names its first 128 entries and counts the rest, and every text a
-  connector chose is shown as error reports show it. Export is the embedder's: the engine renders no
-  metrics.
+  it. The engine calls the observer on its own tasks, outside the locks of its state, and holds no
+  event for it, so nothing waits outside the memory budget. A run's events are told one at a time
+  under a lock of their own, which the run's end closes: a task the end left running tells nothing
+  after it, and nothing it notes changes the status then. The observer must not block, panic or call
+  into the run, and hands each event to a channel. A panic fails the attempt it was told in, as any
+  panic of the engine's tasks does; one told between attempts or at the run's end reaches the task
+  awaiting the run. Each list an event holds names its first 128 entries and counts the rest, and
+  every text a connector chose is shown as error reports show it. Export is the embedder's: the
+  engine renders no metrics.
 - **A run's status can be pulled.** `RunHandle::status()` never waits. It names what the run is in
   the middle of and since when (opening, reading, a commit's barrier, flush, commit with how many
   times it was sent, or report, backing off until its next attempt, stopping, ended), its partitions

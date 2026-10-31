@@ -4,9 +4,10 @@ use std::time::{Duration, SystemTime};
 use parking_lot::Mutex;
 use rdlt_connector::PipelineId;
 
-use super::{Announcer, Event, EventKind, Listed};
+use super::{Announcer, Event, EventKind, Listed, Telling};
 use crate::env::{Env, InlineEnv, Sleep};
 use crate::limits::REPORTED_LISTED;
+use crate::report::RunStatus;
 
 #[test]
 fn a_list_names_its_first_entries_and_counts_the_rest() {
@@ -60,7 +61,7 @@ fn an_announcer_tells_its_environment_of_its_attempt_at_the_environment_s_time()
     let kept = Arc::new(Kept::default());
     let pipeline = PipelineId::parse("told").unwrap();
     let env: Arc<dyn Env> = Arc::clone(&kept) as Arc<dyn Env>;
-    Announcer::new(env, pipeline.clone(), 3).announce(|| EventKind::AttemptStarted);
+    Announcer::new(env, pipeline.clone(), 3, Arc::default()).announce(|| EventKind::AttemptStarted);
     let told = kept.0.lock().clone();
     assert_eq!(
         told,
@@ -78,16 +79,41 @@ fn an_environment_told_nothing_has_no_event_built_for_it() {
     let pipeline = PipelineId::parse("untold").unwrap();
     let env: Arc<dyn Env> = Arc::new(InlineEnv);
     assert!(!env.observes());
-    Announcer::new(env, pipeline, 1).announce(|| unreachable!("no event is built"));
+    Announcer::new(env, pipeline, 1, Arc::default()).announce(|| unreachable!("no event is built"));
 }
 
 #[test]
 fn an_announcer_shows_its_pipeline_and_attempt_when_debugged() {
     let pipeline = PipelineId::parse("debugged").unwrap();
-    let announcer = Announcer::new(Arc::new(InlineEnv), pipeline, 42);
+    let announcer = Announcer::new(Arc::new(InlineEnv), pipeline, 42, Arc::default());
     let shown = format!("{announcer:?}");
     assert!(
         shown.contains("debugged") && shown.contains("42"),
         "{shown}"
     );
+}
+
+#[test]
+fn nothing_is_told_once_the_run_told_its_end() {
+    let kept = Arc::new(Kept::default());
+    let env: Arc<dyn Env> = Arc::clone(&kept) as Arc<dyn Env>;
+    let pipeline = PipelineId::parse("ended").unwrap();
+    let telling = Arc::new(Telling::default());
+    let attempt = Announcer::new(Arc::clone(&env), pipeline.clone(), 1, Arc::clone(&telling));
+    let run = Announcer::new(env, pipeline, 1, telling);
+    attempt.announce(|| EventKind::AttemptStarted);
+    run.end(RunStatus::Cancelled);
+    // A task the end left running tells nothing more, and the end is told once.
+    attempt.announce(|| unreachable!("no event is built after the end"));
+    run.end(RunStatus::Failed);
+    let kinds: Vec<EventKind> = kept
+        .0
+        .lock()
+        .iter()
+        .map(|event| event.kind.clone())
+        .collect();
+    let ended = EventKind::RunEnded {
+        status: RunStatus::Cancelled,
+    };
+    assert_eq!(kinds, [EventKind::AttemptStarted, ended]);
 }
