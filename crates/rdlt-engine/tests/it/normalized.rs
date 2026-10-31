@@ -286,6 +286,58 @@ pub(crate) async fn drops_only_the_rows_carrying_a_change_among_rows_sharing_a_k
 }
 
 #[tokio::test(start_paused = true)]
+async fn every_destination_applies_a_keys_older_row_with_its_children_where_the_policy_drops_its_newest()
+ {
+    each(
+        Target::IN_PROCESS,
+        applies_a_keys_older_row_with_its_children_where_the_policy_drops_its_newest,
+    )
+    .await;
+}
+
+pub(crate) async fn applies_a_keys_older_row_with_its_children_where_the_policy_drops_its_newest(
+    target: Target,
+) {
+    let store = "dropped_newest";
+    let first = r#"{"id":1,"v":0,"items":[{"sku":"z","tags":["s"]}]}"#;
+    let plan = || vec![dropping_merge()];
+    load(
+        target,
+        store,
+        vec![BatchStream::json("events", &[first])],
+        plan(),
+    )
+    .await;
+    let second = [
+        r#"{"id":1,"v":1,"items":[{"sku":"a"},{"sku":"b","tags":["t"]}]}"#,
+        r#"{"id":1,"v":2,"extra":1,"items":[{"sku":"c"}]}"#,
+    ]
+    .join("\n");
+    load(
+        target,
+        store,
+        vec![BatchStream::json("events", &[&second])],
+        plan(),
+    )
+    .await;
+    assert_eq!(
+        target.json(store, "events"),
+        [json!({"id": 1, "v": 1})],
+        "{target:?}: the newest row carried a new column"
+    );
+    assert_eq!(
+        target.json(store, "events__items"),
+        [json!({"sku": "a"}), json!({"sku": "b"})],
+        "{target:?}: the row before it applies with its children"
+    );
+    assert_eq!(
+        target.rows(store, "events__items__tags"),
+        1,
+        "{target:?}: and with their own"
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn every_destination_takes_a_normalized_stream_through_one_writer_open() {
     each(
         Target::IN_PROCESS,

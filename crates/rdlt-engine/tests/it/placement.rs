@@ -156,6 +156,15 @@ async fn drops_only_the_rows_carrying_a_change_among_rows_sharing_a_key() {
 }
 
 #[tokio::test]
+async fn applies_a_keys_older_row_with_its_children_where_the_policy_drops_its_newest() {
+    each(
+        Target::SPAWNED.into_iter().chain(Target::REMOTE),
+        normalized::applies_a_keys_older_row_with_its_children_where_the_policy_drops_its_newest,
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn merges_into_a_table_it_appended_to_and_appends_again() {
     each(
         Target::SPAWNED.into_iter().chain(Target::REMOTE),
