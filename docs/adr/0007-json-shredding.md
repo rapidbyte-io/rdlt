@@ -70,11 +70,12 @@ wrong.
   or until the first has waited `max_latency` on the environment's clock. A checkpoint, a push
   of the other kind or an Arrow schema that differs, and the end of the read flush them first, so
   a segment never spans coalesced pushes. A JSON push's rows are only known once it is shredded,
-  so JSON counts by bytes alone. Arrow batches of one schema are concatenated. Gathered pushes
-  hold their permits, which the next push's admission may be waiting for, so the budget signals
-  while any request waits and a partition then writes what it gathered at once: under memory
-  pressure batches are smaller, never late. The pushes' permits travel with an Arrow batch; each
-  batch shredded from JSON is charged its own bytes before the pushes' permits are released.
+  so JSON counts what its pushes were charged. Arrow batches of one schema are concatenated.
+  Gathered pushes hold their permits, which the next push's admission may be waiting for, so the
+  budget signals while any request waits and a partition then writes what it gathered at once:
+  under memory pressure batches are smaller, never late. The pushes' permits travel with an Arrow
+  batch; each batch shredded from JSON is charged its own bytes before the pushes' permits are
+  released.
 - **The reference shredder shares no code.** It parses with `serde_json` into a tree that keeps
   key order and repeated keys, reads each column's type off the whole set of its values, and
   builds the batch with `arrow-json`. A property test holds the shredder to it over generated
