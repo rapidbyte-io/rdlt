@@ -47,6 +47,7 @@ and method, and the verdict; the baselines themselves are in their benches' reco
 | Why does served throughput fall with partitions? | diagnosed once | per-partition and per-writer work in every process | Diagnosed |
 | Do shredding jobs sized by rows, cores and a limit pay? | the first of six candidates to hold five rules, else a fallback without the cores term, the 1.15 and the 1.3 | at a 4 MiB limit wide JSON 1.58–2.81×, one `wide_200` partition on eight cores 0.87–0.90×; `shred_cores/8` 1.13–1.18× | Failed: closed |
 | Does one tokenizer keep the shredder's speed? | an arm at least 0.97× today on five corpora, no cliff slower; jiter preferred if it meets four requirements | exact only 0.48–0.71×, jiter 0.62–0.80×; jiter meets three of its four requirements | Failed: closed |
+| Do hot keys multiply staged children? | staging only each key's last row's children takes ≥ 10 % less CPU a run spawned, no longer in process, and `normalize/keyed/with_arrays` and `lowering/merge_unique` within 2 % | −8.5 % CPU (−7.0 to −8.6 %); in process +2.8 % (+1.8 to +13.7 %) | Failed: closed |
 
 The baselines the later rules read, and their records, are listed after the decisions.
 
@@ -184,6 +185,20 @@ The baselines the later rules read, and their records, are listed after the deci
   ([shred.md](shred.md), "One tokenizer").
 - **Verdict.** Failed: closed. sonic-rs, its confirming scans and the exact parses after them stay.
 
+### Staging only each key's last row's children
+
+- **Rule.** A merge stream's piece stages only the rows descending from each key's last root row
+  its table keeps; it lands if `served/process/socket/both/normalized/merge/zipf` takes at least
+  10 % fewer CPU seconds a run, `normalized/merge/zipf` in process takes no longer, and
+  `normalize/keyed/with_arrays` and `lowering/merge_unique` take at most 2 % more.
+- **Figures.** Three interleaved rounds beside `main`: staged child rows 900 000 to 444 978 a
+  commit; the spawned destination's CPU a GB 37.6 % lower and the host's 1.0 % lower; the
+  pipeline's CPU a GB 7.0, 8.6 and 8.1 % lower; the run in process 13.7, 1.8 and 2.0 % longer,
+  and spawned 7.4 % longer by the medians ([normalized.md](normalized.md), "Staging only each
+  key's last row's children: closed").
+- **Verdict.** Failed: closed. Each piece stages each key's last root row and every row's
+  children; the destination keeps the children of each key's last row.
+
 ## Why served throughput falls with partitions
 
 Diagnosed once, from the production slice's rows through one writer and through a writer a core
@@ -204,8 +219,8 @@ writer and not the budget ([served.md](served.md), "Through a writer a core").
   profiles of five corpora: [shred.md](shred.md). Recorded; the arms ran against `main` beside
   them and closed ([shred.md](shred.md), "One tokenizer").
 - **A merge staging only each key's last row's children.** `normalized/merge/zipf` in process and
-  served, with what each commit stages: [normalized.md](normalized.md). Recorded; the change's
-  rule compares itself with it.
+  served, with what each commit stages: [normalized.md](normalized.md). Recorded; the change ran
+  beside `main` and closed (above).
 - **The latency cell**, both placements at both commit policies: [latency.md](latency.md).
 - **The log's cost** on a durable destination, with syncs by file: [sqlite.md](sqlite.md), "A
   source that cannot read again".
