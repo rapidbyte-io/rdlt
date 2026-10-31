@@ -16,6 +16,11 @@ The spec sketches the Rust SDK with streams registered as methods
   boxes futures only at the engine-facing traits (`Source`, `Destination`).
 - `ConnectorErrorKind` adds `Fenced` (a stale session's commit) and `Stopped` (the engine asked a
   read to stop) to the spec's kinds; the SDK turns `Stopped` into a clean end of the read.
+- A read's request names the columns its stream excludes (`ReadRequest::exclude`,
+  `Emitter::excluded`). A source may leave them out, as a database source leaves them out of its
+  query, and the SDK projects every batch it pushes without them before anything holds it, so a
+  served source's batches carry none of them; a JSON push keeps them, for the engine's shredder
+  to skip.
 - Destinations store state as opaque `StateRecord { key, value }` pairs; the engine owns their
   encoding (`StateEntry`), so destinations never interpret state.
 - `discard_staged` is not reachable from the engine-facing session: the SDK calls it inside
