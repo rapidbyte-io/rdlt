@@ -1493,8 +1493,10 @@ What the rule does not gate, recorded:
 
 ## One charge a served frame
 
-A served read's frame is charged, before it is decoded, what decoding it holds; the charge goes
-once the frame is decoded, and its push is charged again as it waits for room among pushes. The
+A served read's frame is charged, as it arrives, what decoding it holds; that charge goes as the
+read takes the frame, before its batch is decoded, and its push is charged again as it waits for
+room among pushes, while what the read's decoder keeps of schemas and dictionaries is charged
+apart. The
 change charged a frame once. Before decoding it, the host charged it what its push would be
 charged where that was more than decoding holds, knowing what the frame carried by the field its
 encoding set first: a batch's message with the schema and dictionaries the read's decoder kept and
@@ -1523,7 +1525,7 @@ The rule was set before measuring. Adopt only if every condition holds:
   bench overlapped the opening of one of `main`'s runs; it was set aside and run again. The table
   gives each side's median of its six runs and their range, in MB/s.
 
-| Case | `main` | Change | Medians | Decode waits, `main` / change |
+| Case | `main` | Change | Median change | Decode waits, `main` / change |
 |---|---|---|---|---|
 | `both/64x80000` | 2 118 [2 073–2 208] | 2 125 [2 063–2 220] | +0.3 % | 3.1 / 3.2 % |
 | `both/64x80000/4-partitions` | 2 044 [1 991–2 080] | 2 078 [1 995–2 124] | +1.6 % | 7.6 / 8.7 % |
@@ -1543,7 +1545,13 @@ within `main`'s ranges, from 1.7 % below to 1.7 % above. The intake waits of `64
 partitions are 0.0 % on both sides in every run. `just instructions`, counted against the `main`
 of its day (`05c69b59`, four charge fixes on), held every case within 2 %: `wide/arrow_1000` took
 1.34 % fewer instructions, and every other case moved 0.31 % or less, its allocations 0.85 % or
-less.
+less. The served line of `just resident`, five runs a side of each of its six configurations,
+interleaved under the measurement lock, does not hold either: the host's resident growth has a
+higher median than `main`'s in three, 220 and 228 MiB at two cores, 223 and 241 at four and 377
+and 392 at sixteen with the malloc tunables, and a lower one in the other three, 256 and 241 at
+two with them, 251 and 249 at four with them and 296 and 285 at sixteen, every configuration's
+ranges overlapping, against limits of 522–562 MiB. The budget peaked at 107–115 MiB alike, the
+spawned source at 864–909 MiB and the destination at 75–89 MiB on both sides.
 
 What the rule does not gate, recorded:
 
@@ -1560,10 +1568,3 @@ What the rule does not gate, recorded:
   than `main`, one reservation shrunk in place of one released and another taken, and changes
   little that a spawned source or destination does a frame. That the spawned binaries' code moved,
   and not the change's work, is not ruled out.
-- **The served line.** Five runs a side of each of its six configurations, interleaved, under the
-  measurement lock. The host's resident growth, `main`'s median against the change's: 220 and 228
-  MiB at two cores, 256 and 241 with the malloc tunables, 223 and 241 at four, 251 and 249 with
-  them, 296 and 285 at sixteen and 377 and 392 with them, against limits of 522–562 MiB. Every
-  configuration's ranges overlap, three medians lie higher and three lower, and the budget peaked
-  at 107–115 MiB alike. The spawned source peaked at 864–909 MiB and the destination at 75–89 MiB
-  on both sides.
