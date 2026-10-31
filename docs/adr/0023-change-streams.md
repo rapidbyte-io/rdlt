@@ -60,8 +60,16 @@ merges, the wire and the simulation must agree on what each change does and in w
   plan's starts every run.
 - **A `cdc` stream accepts only change pushes.** Any other push is a typed Source error
   (`push_unexpected`), and so is a change push on a stream not read as `cdc`.
-- **Normalizing a `cdc` stream is refused** (`normalize_changes_unsupported`) until child tables
-  learn deletes and truncates. This applies to change logs as well, for one rule.
+- **Normalizing a `cdc` stream is refused** (`normalize_changes_unsupported`): child tables
+  follow a merge's root rows, and know no delete, truncate or column left unchanged. Change logs
+  are refused too, so one rule covers every change stream. Under `nested: native`, the default,
+  a change stream keeps its nested values whole in each row. Normalized change streams wait for
+  a production pipeline that needs them. Then a published child row's root id and `seq` are its
+  published root row's, for merges and change merges alike, and a change that carries no image
+  of a child table (a soft delete, or an update that leaves its column unchanged) keeps that
+  table's rows of its key. The refusal goes, and with it the form of the child rule `sqlgen` and
+  the SDK's merge implement, by each root's greatest staged sequence, which matches the published
+  root row only while no sequence guard applies.
 - **`Source::plan` returns a `PartitionPlan`**:
   `{ phase: Option<u16>, partitions, starts: BTreeMap<PartitionId, Cursor> }`. It converts from a
   `Vec<Partition>`. `starts` says where each partition of a new phase begins, such as the changes
