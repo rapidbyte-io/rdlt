@@ -160,6 +160,103 @@ runtime worker, which only waits. The median, with the range in brackets.
 The bound of 0.7·N holds up to four cores of either kind; at eight efficient cores it is 5.6×,
 which the pool does not reach.
 
+### Jobs sized by rows, cores and a limit
+
+A flush's fixed 1 MiB chunks are both its unit of parallelism and the batches it makes. A rule
+sizing each job from the flush was built and held to rules written before its sweep ran; no
+candidate held them, so nothing landed and the fixed 1 MiB job stays.
+
+**The rule.** `chunk = min(limit, max(ROWS × r, ⌈text ÷ 2T⌉))`, computed in the cut's pool job:
+`r` the bytes a record takes, by the records ending in the flush's first 64 KiB (line ends, or an
+array's top-level commas; the limit where none ends there), `T` the engine's cores and `limit`
+`BatchPolicy::chunk_bytes`. The fallback drops the cores term:
+`chunk = min(limit, max(ROWS × r, 1 MiB))`.
+
+**The rules of the sweep.** Six candidates, `ROWS` in {1 024, 4 096} by limit in {2, 4, 8} MiB,
+the smallest limit first and then the smallest `ROWS`; the first to hold every rule lands:
+
+- (a) `wide/json/1000` and `wide/json/5000` ([wide.md](wide.md)) at least 1.5 times the base's
+  rows a second, with at most half its allocations a row.
+- (b) `shred_cores/8` on the efficient cores (`4-11`) at least 1.3 times the base.
+- (c) The JSON cells ([passthrough.md](passthrough.md), "JSON through the engine") on `4-11`: one
+  `nested` partition at least 1.15 times the base; sixteen partitions within its range or above,
+  on `0-3` too; one `wide_200` partition within 3 % on both.
+- (d) `shred_cores` at N ≤ 4 on `0-3` within the base's range.
+- (e) `just instructions` within 2 %, `just resident` within its bound, the heap-peak tests green
+  and the paired passthrough cell within its 19 %.
+
+If none holds them all, the fallback runs on (a), on (c) without its 1.15 and on (d) and (e); if
+that fails too, nothing lands.
+
+**Method.** `main` at `257004c8` against a build of each candidate's two constants, release
+profile. Each round held the measurement lock once, started once no build ran and the one-minute
+load was under 3.0 (2.45, 1.93 and 1.64 at the three starts, 2026-10-31 01:36, 02:27 and 04:22),
+and ran each bench's criterion pass under `taskset` (`--bench --noplot` and the filter the rule
+reads): `wide` on `0-3`, `shred_cores` on `0-3` and `4-11`, the JSON cells on both, the base and
+the candidates interleaved bench by bench, the base first in the first and third rounds and last
+in the second. A figure is criterion's point estimate, and a speedup the base's time over the
+candidate's in the same round. Allocations a row come from the `allocations` bench at full size on
+`0-3`, alike on every run. A candidate's rounds stopped once a rule it failed was settled. Rules
+that read cuts the candidates share were read once a cut: wide JSON's job is the limit whatever
+`ROWS` and with or without the cores term, since a thousand of its 14 or 74 KB records pass every
+limit; `shred_cores/8` cuts its 8 MiB pushes alike at every limit, 16 jobs at `ROWS` 1 024 and 12
+at 4 096; and `wide_200`'s records, about 2.7 KB, make 2.7 MB jobs at `ROWS` 1 024 under a 4 MiB
+limit with or without the cores term.
+
+**Wide JSON on `0-3`** (rule (a); the base's allocations a row are 225.2 and 6 528.6):
+
+| Limit | Builds | `json/1000` | `json/5000` | Allocations a row |
+|---|---|---|---|---|
+| 2 MiB | (1 024, 2 MiB) | 163.1 → 114.5 ms, 1.43× | 696.0 → 490.1 ms, 1.42× | 120.6 and 3 648: 0.54 and 0.56 |
+| 4 MiB | (4 096, 4 MiB); fallback (1 024, 4 MiB) | 1.63×; 1.58× | 2.81×; 2.74× | 68.3 and 1 809: 0.30 and 0.28 |
+| 8 MiB | (4 096, 8 MiB); fallback (1 024, 8 MiB) | 1.17×; 1.11× | 2.93×; 2.99× | 42.2 and 1 115: 0.19 and 0.17 |
+
+**`shred_cores/8` on `4-11`** (rule (b); the base cuts each 8 MiB push into eight jobs):
+
+| `ROWS` | Jobs a push | Rounds |
+|---|---|---|
+| 1 024 | 16 | 15.64 → 13.24 ms, 1.18×; 15.38 → 13.58 ms, 1.13× |
+| 4 096 | 12 | 15.38 → 13.48 ms, 1.14×; 15.79 → 13.71 ms, 1.15× |
+
+**One partition of the JSON cells** (rule (c)):
+
+| Build | `wide_200` jobs | `wide_200` on `4-11` | `wide_200` on `0-3` | `nested` on `4-11` |
+|---|---|---|---|---|
+| (1 024, 2 MiB) | 2 MiB | 1.00× | 1.09× | 1.08× |
+| (1 024, 4 MiB) | 2.7 MB | 0.87× | 1.16× | 1.09× |
+| Fallback (1 024, 4 MiB) | 2.7 MB | 0.90× | 1.14× | 0.98×, the base's cut |
+| (4 096, 4 MiB) | 4 MiB | 0.68×; 0.69× | 0.96× | 1.08×; 1.02× |
+| (4 096, 8 MiB) | 8 MiB | 0.38× | 0.56× | 1.03× |
+
+Sixteen `wide_200` partitions ran 1.11–1.19 times the base on both kinds of core with jobs of up to
+4 MiB, and 0.79 times on `4-11` at 8 MiB; sixteen `nested` partitions 0.95–1.01 times.
+`shred_cores` at N ≤ 4 on `0-3` read 0.95–1.03 times in every build (rule (d)).
+
+**Verdicts.** Rule (e) was not read, since no candidate held (a) to (d).
+
+| Candidate | Fails |
+|---|---|
+| (1 024, 2 MiB) | (a): allocations 0.54 and 0.56, time 1.42–1.43×; (b): 1.18×, 1.13×; (c): `nested` 1.08× |
+| (4 096, 2 MiB) | (a), the same cut; (b): 1.14×, 1.15× |
+| (1 024, 4 MiB) | (b), the same cut as at 2 MiB; (c): `wide_200` 0.87× on `4-11`, `nested` 1.09× |
+| (4 096, 4 MiB) | (b): 1.14×, 1.15×; (c): `wide_200` 0.68× and 0.69× on `4-11`, 0.96× on `0-3` |
+| (1 024, 8 MiB), (4 096, 8 MiB) | (a): `json/1000` 1.17×, 1.11× |
+| Fallback at 2 MiB | (a), the same cut |
+| Fallback (1 024, 4 MiB) | (c): `wide_200` 0.90× on `4-11`, 0.87× on the same cut a round before |
+| Fallback (4 096, 4 MiB) | (c): `wide_200` 0.68× and 0.69× on `4-11`, on the same cut |
+| Fallback at 8 MiB | (a), the same cut |
+
+**What the runs show.** Wide JSON wants larger jobs: at 4 MiB, `json/5000` loads 2.7–2.8 times
+the rows a second with 0.28 of the allocations a row, each 8 MiB push making two batches where it
+made eight. The same jobs leave one partition of 200-column records on eight cores two jobs a
+flush where it had eight, and it loads 10–13 % slower; 2 MiB jobs keep it whole, but cut wide
+JSON's allocations only to 0.54–0.56. Two jobs a core of a `nested` flush ran `shred_cores/8`
+1.13–1.18 times, short of 1.3. Smaller jobs also cost what is done once a job: a merge compacts
+each job's batch alone, so the merged bench's 2 000-row flush cut into two jobs at two cores staged
+1 295 root rows of 1 192 keys, against one a key in one job; and each batch of a sparse flush holds
+a null for every column the others hold, 21.3 MB beyond the text of 1 500 records of a key each
+in two jobs against 20.3 MB in one.
+
 ### Cliffs
 
 `shred_cliffs` on core `0` in the same three rounds and tree, the median with the range in
