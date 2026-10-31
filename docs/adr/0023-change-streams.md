@@ -4,38 +4,22 @@ Status: accepted, 2026-09-28.
 
 ## Context
 
-M5 (§22) brings CDC, sources that cannot read again, continuous runs and history: change streams
-merged with deletes, partial updates and truncates (§9.3, §9.4), `until` (§9.6), SCD2 (§9.5), and
-the clauses and failpoints that check them. That is too much for one plan, so it is split. The
-owner confirmed two streaming directions for M5 (2026-09-28): continuous runs re-plan their
-partitions, and a source's lost retention is a typed error by default, with an opt-in reset that
-is counted.
+Change streams carry what a source captures of a database's changes: inserts, updates, partial
+updates, deletes and truncates, merged by key with each delete and truncate applied, or appended
+to a log. Such a source reads a snapshot first and its changes after, from the position the
+snapshot captured, for as long as the database changes. The engine, every destination that
+merges, the wire and the simulation must agree on what each change does and in which order.
 
 ## Decision
 
-- **M5 is split into six milestones.** M5a is fixed here; the rest are re-cut when each is
-  planned.
-  - **M5a**, change streams through the engine: the contract (ops, truncate, phases, change
-    columns on `MergeKey`), the engine's path from push to commit, phases with re-planning, the
-    memory, JSON lines and Arrow IPC destinations, a reference CDC source, the wire, and a
-    simulated CDC workload checked against a model.
-  - **M5b**, change streams for the SQL destinations (`sqlgen`, SQLite), and the clauses
-    `S-ACK`, `D-DELETE`, `D-PARTIAL`, `D-TRUNCATE`, and `D-MERGE`'s seq guard.
-  - **M5c**, sources that cannot read again, each told a cursor once the commit holding the rows
-    before it lands (ADR 0030).
-  - **M5d**, continuous runs (`until`) and the owner's streaming items 1–4, and `S-PARTITION`.
-  - **M5e**, history (SCD2) and `D-HIST`. ADR 0035 leaves history
-    for normalized streams and updates leaving columns unchanged to M5e2.
-  - **M5f**, the failpoint sweep, the kill matrix with spawned connectors, and M5's exit
-    criterion (ADR 0036).
 - **Truncate is op 3 in `_rdlt_op`**, in band and ordered by `_rdlt_seq`, and its rows name no
   key. A truncate at seq `s` removes every row whose seq is below `s`, or soft-deletes it, even
-  rows staged earlier in the same commit. §9.4's "deletes all rows" is refined this way so that a
-  truncate sent again cannot remove rows that changes after it wrote.
+  rows staged earlier in the same commit. Bounded by its seq, a truncate sent again cannot remove
+  rows that changes after it wrote.
 - **A destination learns the merge semantics from `MergeKey.changes`**:
-  `Option<ChangeColumns { op, unchanged, deletion: Hard | Soft { at } }>`, a compatible addition
-  to the proto. When it is set, seq is compared across commits: a row applies only if its seq is
-  greater than the stored row's (the seq guard).
+  `Option<ChangeColumns { op, unchanged, deletion: Hard | Soft { at } }>`. When it is set, seq is
+  compared across commits: a row applies only if its seq is greater than the stored row's (the seq
+  guard).
 - **`_rdlt_op` and `_rdlt_unchanged` are directive columns on a merged table.** Written batches
   carry them, after the stored columns; the table never stores them, and they are not part of its
   schema changes. A change log (`cdc` read, `append` write) stores `_rdlt_op`, `_rdlt_seq` and
@@ -80,15 +64,15 @@ is counted.
   learn deletes and truncates. This applies to change logs as well, for one rule.
 - **`Source::plan` returns a `PartitionPlan`**:
   `{ phase: Option<u16>, partitions, starts: BTreeMap<PartitionId, Cursor> }`. It converts from a
-  `Vec<Partition>`, and the proto gains compatible fields for it. `starts` says where each
-  partition of a new phase begins, such as the changes starting from the position the snapshot
-  captured. A plan whose phase differs from the recorded one is a transition. The commit that
-  first records it puts the phase and deletes the old phase's partition entries.
+  `Vec<Partition>`. `starts` says where each partition of a new phase begins, such as the changes
+  starting from the position the snapshot captured. A plan whose phase differs from the recorded
+  one is a transition. The commit that first records it puts the phase and deletes the old phase's
+  partition entries.
 - **Phases advance within an attempt.** Once every partition of a phased stream's phase has ended
   and its end is committed, the coordinator plans the stream again. A plan naming a new phase
   launches that phase's partitions, from their starts, into the attempt's scope. A plan naming the
   same phase settles the stream for the attempt. The partitions run under the same supervision,
-  so M5d's interval re-plans reuse this machinery.
+  and a following run's interval re-plans reuse this machinery (ADR 0031).
 - **A new phase is recorded with its starts.** The commit that records a phase also records each
   of its partitions at its start. An attempt that ends before a partition's first checkpoint
   then resumes the partition where the plan said, not from the beginning, which would re-read
@@ -100,29 +84,28 @@ is counted.
 - **Compaction of change rows.** Within a coalesced batch, the engine drops a row that a later
   row of its key supersedes: an insert or update that flags nothing unchanged, or a hard delete.
   Partial updates and soft deletes are kept for the destination, which applies rows in seq order.
-  §9.3's column-wise merging of partial updates is left to the destination, which has the stored
-  row. A batch holding a truncate is not compacted.
+  Merging a partial update into its key's row column by column is left to the destination, which
+  has the stored row. A batch holding a truncate is not compacted.
 - **The reference CDC source** is `io.rapidbyte.changes` (`ChangesSource`). It reads a snapshot in
   partitions, taken after its first `captured` changes and carrying that position, then a `changes`
   partition starting after it. The simulation's `io.rapidbyte.sim.changes` serves a seeded workload
   of inserts, updates, partial updates, deletes and truncates over two rounds, through faults,
   crashes, stops and racing runs, on the simulated network one seed in four (ADR 0019). It captures
-  its snapshot partway through the changes, as §9.4 says a CDC source does. Snapshot rows carry the
-  captured position, so a change read again from before it lands twice in a log. `check_changes`
-  compares each merged table and each log with a model of the workload.
+  its snapshot partway through the changes, as a database's change capture does. Snapshot rows
+  carry the captured position, so a change read again from before it lands twice in a log.
+  `check_changes` compares each merged table and each log with a model of the workload.
 
 ## Consequences
 
 - A CDC source loads into the memory, JSON lines and Arrow IPC destinations with every delete and
   truncate mode: in process, spawned, and remote. The SQL destinations take change merges too
   (ADR 0027).
-- `ChangeColumns`, `Deletion` and `PartitionPlan` are public contract. Connectors built on
-  `Vec<Partition>` still compile through `From`.
+- `ChangeColumns`, `Deletion` and `PartitionPlan` are public contract; a source without phases
+  plans a `Vec<Partition>`, which converts through `From`.
 - A destination that implements change merges must honour the seq guard across commits, and a
-  truncate's seq bound. M5b's clauses check this for any destination.
+  truncate's seq bound. `D-MERGE` and `D-TRUNCATE` check this for any destination.
 - A destination declares that it merges change streams (`Capabilities::merge_changes`; ADR 0027),
-  which a remote destination built before M5a does not, so none is sent change rows to upsert as
-  data.
+  and one that does not is sent no change stream to merge, so none upserts change rows as data.
 - State records name their format and refuse fields their reader does not know, so a build
   reading another's state refuses it (ADR 0041).
 - Switching an existing merge table to CDC needs a new table: a `ResetScope::Tables` reset drops
