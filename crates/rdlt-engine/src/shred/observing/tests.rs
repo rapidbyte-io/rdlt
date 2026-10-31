@@ -18,6 +18,7 @@ fn every_observing_visitor_says_what_it_expects() {
         expected(&RecordSeed(Record {
             shape: &mut shape,
             context: &context,
+            excluded: None,
         })),
         "a record"
     );
@@ -27,6 +28,7 @@ fn every_observing_visitor_says_what_it_expects() {
             context: &context,
             object: 1,
             fields: None,
+            skipped: (),
         }),
         "an object key"
     );

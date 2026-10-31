@@ -58,7 +58,7 @@ impl Coordinator {
             return Ok(());
         };
         let named: BTreeSet<&PartitionId> = planned.partitions.iter().map(Partition::id).collect();
-        let template = phases.template;
+        let template = phases.template.clone();
         let committed = phases.committed.clone();
         let mut dropped = BTreeSet::new();
         let mut retired = Vec::new();
@@ -105,7 +105,7 @@ impl Coordinator {
             }
         }
         for (partition, cursor) in starts {
-            self.launch(stream, template, partition, cursor)?;
+            self.launch(stream, &template, partition, cursor)?;
         }
         self.forget_lag(stream, Some(&dropped));
         Ok(())

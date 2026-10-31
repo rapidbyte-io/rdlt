@@ -101,6 +101,7 @@ async fn phased(plans: Vec<Vec<String>>, follow: bool) -> Coordinator {
                 partial_updates: false,
             }),
             reset_retention: false,
+            exclude: rdlt_connector::Exclusion::default(),
         },
     });
     let (mut coordinator, _) = Setup::new(vec![changes], Vec::new()).coordinator().await;

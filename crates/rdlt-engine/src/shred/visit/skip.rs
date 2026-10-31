@@ -1,5 +1,6 @@
-//! Values of a column that stopped building: only their nesting is checked, and whether they hold
-//! a float, which building them again as JSON text needs written as it was.
+//! Values nothing builds, a column's that stopped building or an excluded key's: only their
+//! nesting is checked, and whether they hold a float, which building a column again as JSON text
+//! needs written as it was.
 
 use std::fmt;
 
@@ -7,7 +8,7 @@ use serde::de::{DeserializeSeed, Deserializer, IgnoredAny, MapAccess, SeqAccess,
 
 use super::{Context, nest, within_depth};
 
-/// One value, `depth` levels deep, of a column that stopped building.
+/// One value, `depth` levels deep, that nothing builds.
 pub(crate) struct Skip<'a> {
     pub(crate) context: &'a Context,
     pub(crate) depth: u64,

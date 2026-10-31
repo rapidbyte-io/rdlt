@@ -169,7 +169,7 @@ pub const PARTITIONS_TOO_FEW: Code = Code("partitions_too_few");
 pub const PHASE_UNEXPECTED: Code = Code("phase_unexpected");
 
 /// The code of the error for a plan or a catalog naming a nested column in a stream's settings,
-/// hints or key.
+/// hints, key or exclusion.
 pub const PLAN_COLUMN_NESTED: Code = Code("plan_column_nested");
 
 /// The code of the error for a delete or truncate mode on a stream that applies neither.
@@ -180,6 +180,11 @@ pub const PLAN_DUPLICATE_STREAM: Code = Code("plan_duplicate_stream");
 
 /// The code of the error for a plan that selects no streams.
 pub const PLAN_EMPTY: Code = Code("plan_empty");
+
+/// The code of the error for a stream excluding a column it cannot be without: a key column, a
+/// change column or its source's change time, or one it sets or hints; or excluding more than a
+/// read's start carries.
+pub const PLAN_EXCLUDE_INVALID: Code = Code("plan_exclude_invalid");
 
 /// The code of the error for a column hinted as null.
 pub const PLAN_HINT_INVALID: Code = Code("plan_hint_invalid");

@@ -8,23 +8,25 @@
 
 use std::fmt;
 
-use rdlt_connector::LogicalType;
+use rdlt_connector::{Exclusion, LogicalType};
 use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 
 use super::ShredError;
 use super::build::Scalar;
 use super::meter::{KEY, Meter, OBJECT_SHAPE};
 use super::observe::{Observed, Shape};
-use super::visit::{Context, Fields, Skip, digits, nest, scalar_of_digits, within_depth};
+use super::visit::{Context, Fields, Skip, Skipped, digits, nest, scalar_of_digits, within_depth};
 use crate::limits::QUOTED_BYTES;
 
 #[cfg(test)]
 mod tests;
 
-/// One record, which is an object, observed into `shape`.
+/// One record, which is an object, observed into `shape`, without the values of the top-level
+/// keys `excluded` names.
 pub(crate) struct Record<'a> {
     pub(crate) shape: &'a mut Shape,
     pub(crate) context: &'a Context,
+    pub(crate) excluded: Option<&'a Exclusion>,
 }
 
 impl Fields for Record<'_> {
@@ -33,27 +35,41 @@ impl Fields for Record<'_> {
     }
 
     fn fields<'de, A: MapAccess<'de>>(self, map: A) -> Result<(), A::Error> {
-        object(self.shape, map, self.context, 1, None)
+        match self.excluded {
+            Some(excluded) => object(self.shape, map, self.context, 1, None, excluded),
+            None => object(self.shape, map, self.context, 1, None, ()),
+        }
     }
 }
 
 /// Observes the object `map`, `depth` levels deep, into `shape`; a key it names twice is refused,
 /// and so is one that `fields`, the struct the value is fitted to where it is, lacks.
-fn object<'de, A: MapAccess<'de>>(
+///
+/// The value of a key `skipped` names is parsed and checked, and not observed.
+fn object<'de, A: MapAccess<'de>, S: Skipped>(
     shape: &mut Shape,
     mut map: A,
     context: &Context,
     depth: u64,
     fields: Option<&rdlt_connector::Fields>,
+    skipped: S,
 ) -> Result<(), A::Error> {
     nest(move || {
         let object = context.object();
-        while let Some((position, target)) = map.next_key_seed(Key {
+        while let Some(key) = map.next_key_seed(Key {
             shape: &mut *shape,
             context,
             object,
             fields,
+            skipped,
         })? {
+            let Some((position, target)) = key else {
+                map.next_value_seed(Skip {
+                    context,
+                    depth: depth + 1,
+                })?;
+                continue;
+            };
             map.next_value_seed(Look {
                 node: shape.field_mut(position),
                 context,
@@ -66,31 +82,36 @@ fn object<'de, A: MapAccess<'de>>(
 }
 
 /// The position of an object key among the fields observed, a new field counted among the
-/// chunk's columns, and the type its value is fitted to; a key the object `object` named before
-/// is refused, and so is one `fields` lacks.
-struct Key<'a, 'f> {
+/// chunk's columns, and the type its value is fitted to; none for a key whose value is `skipped`.
+///
+/// A key the object `object` named before is refused, and so is one `fields` lacks.
+struct Key<'a, 'f, S> {
     shape: &'a mut Shape,
     context: &'a Context,
     object: u64,
     fields: Option<&'f rdlt_connector::Fields>,
+    skipped: S,
 }
 
-impl<'de, 'f> DeserializeSeed<'de> for Key<'_, 'f> {
-    type Value = (usize, Option<&'f LogicalType>);
+impl<'de, 'f, S: Skipped> DeserializeSeed<'de> for Key<'_, 'f, S> {
+    type Value = Option<(usize, Option<&'f LogicalType>)>;
 
     fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
         deserializer.deserialize_str(self)
     }
 }
 
-impl<'f> Visitor<'_> for Key<'_, 'f> {
-    type Value = (usize, Option<&'f LogicalType>);
+impl<'f, S: Skipped> Visitor<'_> for Key<'_, 'f, S> {
+    type Value = Option<(usize, Option<&'f LogicalType>)>;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("an object key")
     }
 
     fn visit_str<E: de::Error>(self, name: &str) -> Result<Self::Value, E> {
+        if self.skipped.skips(name) {
+            return Ok(None);
+        }
         let target = match self.fields {
             Some(fields) => match fields.get(name) {
                 Some(field) => Some(field.logical_type()),
@@ -99,7 +120,7 @@ impl<'f> Visitor<'_> for Key<'_, 'f> {
             None => None,
         };
         match self.shape.name(name, self.object) {
-            Some((position, false)) => return Ok((position, target)),
+            Some((position, false)) => return Ok(Some((position, target))),
             Some((_, true)) => return Err(repeated(self.context, name)),
             None => {}
         }
@@ -108,7 +129,10 @@ impl<'f> Visitor<'_> for Key<'_, 'f> {
             .add()
             .map_err(|error| self.context.fail(error))?;
         self.context.held(Meter::key(name))?;
-        Ok((self.shape.push_named(name.into(), self.object), target))
+        Ok(Some((
+            self.shape.push_named(name.into(), self.object),
+            target,
+        )))
     }
 }
 
@@ -236,7 +260,7 @@ impl<'de> Visitor<'de> for Look<'_> {
             *self.node = Observed::Object(Shape::default());
         }
         if let Observed::Object(shape) = self.node {
-            return object(shape, map, self.context, self.depth, fields);
+            return object(shape, map, self.context, self.depth, fields, ());
         }
         self.join(&Observed::Object(Shape::default()));
         self.skip().visit_map(map)

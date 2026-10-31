@@ -9,6 +9,7 @@ mod tests;
 use std::cell::{Cell, RefCell, RefMut};
 use std::fmt;
 
+use rdlt_connector::Exclusion;
 use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 
 use super::ShredError;
@@ -16,7 +17,7 @@ use super::build::{Column, List, Record, Scalar};
 use super::meter::{Columns, KEY, Meter, Over};
 use super::observe::{Observed, Shape};
 use super::render::{Render, Rendering};
-pub(crate) use shared::{Fields, RecordSeed, digits, scalar_of_digits, within_depth};
+pub(crate) use shared::{Fields, RecordSeed, Skipped, digits, scalar_of_digits, within_depth};
 pub(crate) use skip::Skip;
 
 /// Stack a nesting level may use before [`nest`] grows the stack, 128 KiB: more than any one level
@@ -211,41 +212,49 @@ pub(crate) fn over<E: de::Error>(_: Over) -> E {
     E::custom("the chunk's builders would take more than it was admitted for")
 }
 
-/// The position of an object key among a record's fields, trying `hint` first.
-struct Field<'a> {
+/// The position of an object key among a record's fields, trying `hint` first; none for a key
+/// whose value is `skipped`.
+struct Field<'a, S> {
     record: &'a mut Record,
     hint: usize,
     context: &'a Context,
+    skipped: S,
 }
 
-impl<'de> DeserializeSeed<'de> for Field<'_> {
-    type Value = usize;
+impl<'de, S: Skipped> DeserializeSeed<'de> for Field<'_, S> {
+    type Value = Option<usize>;
 
-    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<usize, D::Error> {
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Option<usize>, D::Error> {
         deserializer.deserialize_str(self)
     }
 }
 
-impl Visitor<'_> for Field<'_> {
-    type Value = usize;
+impl<S: Skipped> Visitor<'_> for Field<'_, S> {
+    type Value = Option<usize>;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("an object key")
     }
 
-    fn visit_str<E: de::Error>(self, name: &str) -> Result<usize, E> {
+    fn visit_str<E: de::Error>(self, name: &str) -> Result<Option<usize>, E> {
+        if self.skipped.skips(name) {
+            return Ok(None);
+        }
         let context = self.context;
         self.record
             .position(name, self.hint, &context.columns, &context.meter)
             .map_err(|error| context.fail(error))?
             .ok_or_else(|| over(Over))
+            .map(Some)
     }
 }
 
-/// One record, which is an object, appended as a row of `record`.
+/// One record, which is an object, appended as a row of `record`, without the values of the
+/// top-level keys `excluded` names.
 pub(crate) struct Row<'a> {
     pub(crate) record: &'a mut Record,
     pub(crate) context: &'a Context,
+    pub(crate) excluded: Option<&'a Exclusion>,
 }
 
 impl Fields for Row<'_> {
@@ -254,16 +263,21 @@ impl Fields for Row<'_> {
     }
 
     fn fields<'de, A: MapAccess<'de>>(self, map: A) -> Result<(), A::Error> {
-        object(self.record, map, self.context, 1)
+        match self.excluded {
+            Some(excluded) => object(self.record, map, self.context, 1, excluded),
+            None => object(self.record, map, self.context, 1, ()),
+        }
     }
 }
 
-/// Appends the object `map`, `depth` levels deep, as one row of `record`.
-fn object<'de, A: MapAccess<'de>>(
+/// Appends the object `map`, `depth` levels deep, as one row of `record`; the value of a key
+/// `skipped` names is parsed and checked, and neither observed nor built.
+fn object<'de, A: MapAccess<'de>, S: Skipped>(
     record: &mut Record,
     mut map: A,
     context: &Context,
     depth: u64,
+    skipped: S,
 ) -> Result<(), A::Error> {
     nest(move || {
         let capacity = record.capacity();
@@ -272,7 +286,15 @@ fn object<'de, A: MapAccess<'de>>(
             record: &mut *record,
             hint: fields,
             context,
+            skipped,
         })? {
+            let Some(position) = position else {
+                map.next_value_seed(Skip {
+                    context,
+                    depth: depth + 1,
+                })?;
+                continue;
+            };
             let column = record
                 .field(position)
                 .map_err(|error| context.fail(error))?;
@@ -436,7 +458,7 @@ impl<'de> Visitor<'de> for Value<'_> {
     fn visit_map<A: MapAccess<'de>>(mut self, map: A) -> Result<(), A::Error> {
         self.make(|| Observed::Object(Shape::default()))?;
         match self.column {
-            Column::Struct(record) => object(record, map, self.context, self.depth),
+            Column::Struct(record) => object(record, map, self.context, self.depth, ()),
             _ => self.spoil().visit_map(map),
         }
     }

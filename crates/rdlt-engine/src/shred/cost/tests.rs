@@ -1,4 +1,5 @@
 use bytes::Bytes;
+use rdlt_connector::Exclusion;
 
 use super::{
     built, fitted, floats_in_json, holds_json, holds_text, rendering, renders_json, sized,
@@ -13,7 +14,7 @@ fn observed(text: &str) -> (Shape, u64) {
     let chunk = chunks(&[Bytes::from(text.to_owned())], 1 << 30)
         .unwrap()
         .remove(0);
-    let parsed = parse(chunk, limits(), &limits().beyond()).unwrap();
+    let parsed = parse(chunk, limits(), &limits().beyond(), &Exclusion::default()).unwrap();
     let rows = u64::try_from(parsed.rows).unwrap();
     (parsed.shape, rows)
 }
@@ -35,7 +36,7 @@ fn a_batch_built_again_holds_no_more_than_its_build_was_reckoned_to_take() {
         let mut parsed: Vec<_> = chunks(&pushes, chunk_bytes)
             .unwrap()
             .into_iter()
-            .map(|chunk| parse(chunk, limits(), &limits().beyond()).unwrap())
+            .map(|chunk| parse(chunk, limits(), &limits().beyond(), &Exclusion::default()).unwrap())
             .collect();
         let (joined, plans, _) = join(&parsed, limits()).unwrap();
         for (chunk, plan) in parsed.drain(..).zip(plans) {
@@ -46,7 +47,14 @@ fn a_batch_built_again_holds_no_more_than_its_build_was_reckoned_to_take() {
             let reckoned = built(&joined, &chunk.shape, rows).bytes + 2 * text + rounding;
             let local = sized(&joined, &chunk.shape);
             let exact = plan.exact || chunk.exact;
-            let columns = again(&chunk.chunk, chunk.rows, &local, exact).unwrap();
+            let columns = again(
+                &chunk.chunk,
+                chunk.rows,
+                &local,
+                exact,
+                &Exclusion::default(),
+            )
+            .unwrap();
             let held: usize = columns
                 .iter()
                 .map(|column| column.get_array_memory_size())
@@ -71,7 +79,7 @@ fn a_chunk_fitted_to_the_join_holds_no_more_beside_its_columns_than_was_reckoned
         let mut parsed: Vec<_> = chunks(&pushes, chunk_bytes)
             .unwrap()
             .into_iter()
-            .map(|chunk| parse(chunk, roomy, &roomy.beyond()).unwrap())
+            .map(|chunk| parse(chunk, roomy, &roomy.beyond(), &Exclusion::default()).unwrap())
             .collect();
         let (joined, plans, _) = join(&parsed, roomy).unwrap();
         let mut rendered = 0;

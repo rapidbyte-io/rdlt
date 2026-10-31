@@ -8,11 +8,11 @@ use std::sync::Arc;
 
 use rdlt_connector::{
     Capabilities, Catalog, Checkpointing, ColumnKey, ColumnPath, GenerationId, PipelineState,
-    ReadMode, SchemaVersion, StreamSpec, TablePath, TableRef,
+    ReadMode, SchemaVersion, StreamSpec, TablePath, TableRef, TableSchema,
 };
 
 use self::reads::{Partitioned, Read, Sourced, read, sourced};
-use super::check::check_stream;
+use super::check::{check_excluded, check_stream};
 use super::{Planned, RunContext, sequences, together};
 use crate::coordinator::{Cycle, Phases, StreamRun, Template};
 use crate::error::{Error, codes};
@@ -88,8 +88,8 @@ impl<'a> Planning<'a> {
     /// `sourced` planned.
     ///
     /// The table keeps its committed identifier and names; a new one gets a free identifier. A
-    /// declared schema is resolved like a batch, so it creates the table or changes it under the
-    /// stream's policy before anything is read.
+    /// declared schema, without the columns the stream excludes, is resolved like a batch, so it
+    /// creates the table or changes it under the stream's policy before anything is read.
     async fn stream(
         &mut self,
         plan: &StreamPlan,
@@ -116,6 +116,7 @@ impl<'a> Planning<'a> {
         let index = tables.add_normalized(resolver, &table, model, shape.clone())?;
         let mut children = Vec::new();
         if let Some(declared) = spec.schema() {
+            let declared = &kept(declared, plan)?;
             let incoming = match &shape {
                 Some(shape) => {
                     let made = normalize::declared::children(declared, shape)?;
@@ -223,6 +224,7 @@ fn checked<'a>(
     catalog: &'a Catalog,
 ) -> Result<Checked<'a>, Error> {
     let spec = check_stream(context, plan, catalog)?;
+    check_excluded(plan, spec)?;
     let max_depth = normalized_depth(context, plan);
     unnormalizable(plan, max_depth.is_some())?;
     let key = merge_key(plan, spec)?;
@@ -245,6 +247,7 @@ fn planned(
 ) -> Planned {
     let cdc = plan.read_mode() == ReadMode::Cdc;
     let reset_retention = plan.retention_loss() == RetentionLoss::Reset;
+    let exclude = plan.exclusion();
     // A history table's hashes need whole rows, which an update leaving columns unchanged lacks.
     let changes = cdc.then(|| ChangeMode {
         merge: plan.keyed(),
@@ -265,6 +268,7 @@ fn planned(
             on_demand,
             changes,
             reset_retention,
+            exclude: exclude.clone(),
         },
     });
     Planned {
@@ -283,6 +287,7 @@ fn planned(
         changes,
         follow: follow && tracked,
         reset_retention,
+        exclude,
         partitions: partitioned.partitions,
     }
 }
@@ -343,6 +348,20 @@ fn shape(plan: &StreamPlan, max_depth: u8, key: &[ColumnPath]) -> Shape {
         whole,
         key,
     }
+}
+
+/// `declared`, a stream's declared schema, without the columns `plan` excludes.
+fn kept(declared: &TableSchema, plan: &StreamPlan) -> Result<TableSchema, Error> {
+    let exclusion = plan.exclusion();
+    let fields = declared.fields().iter();
+    let kept = fields.filter(|field| !exclusion.contains(field.name()));
+    TableSchema::new(kept.cloned().collect()).map_err(|error| {
+        let name = plan.name();
+        Error::internal(format!(
+            "stream {name}: its declared schema without the columns it excludes: {error}"
+        ))
+        .with_stream(name)
+    })
 }
 
 /// How a change stream's table holds its changes: merged by key for a merge or history stream,

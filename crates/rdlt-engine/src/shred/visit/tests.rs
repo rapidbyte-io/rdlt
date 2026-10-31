@@ -23,6 +23,7 @@ fn every_visitor_says_what_it_expects() {
             record: &mut record,
             hint: 0,
             context: &context,
+            skipped: (),
         }),
         "an object key"
     );
@@ -30,6 +31,7 @@ fn every_visitor_says_what_it_expects() {
         expected(&RecordSeed(Row {
             record: &mut record,
             context: &context,
+            excluded: None,
         })),
         "a record"
     );
@@ -124,6 +126,7 @@ fn every_visitor_tree_refuses_a_record_that_is_not_an_object() {
         let row = Row {
             record: &mut record,
             context: &context,
+            excluded: None,
         };
         not_object(RecordSeed(row), kind)
     });
@@ -133,6 +136,7 @@ fn every_visitor_tree_refuses_a_record_that_is_not_an_object() {
         let record = observing::Record {
             shape: &mut shape,
             context: &context,
+            excluded: None,
         };
         not_object(RecordSeed(record), kind)
     });

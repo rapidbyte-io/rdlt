@@ -177,12 +177,16 @@ async fn read_and_ingest(
     let admission = Arc::new(Charging::new(context.budget.clone(), keeping));
     let charging = Arc::clone(&admission) as Arc<dyn rdlt_connector::Admission>;
     let (sink, feed) = admitted_partition_channel(context.buffer, charging);
+    // What the stream excludes is dropped before anything is charged for it, whether or not the
+    // source leaves it out.
+    let sink = sink.excluding(job.exclude.clone());
     let request = ReadRequest::new(
         job.stream.clone(),
         job.partition.clone(),
         job.cursor.clone(),
     )
-    .following(job.follow);
+    .following(job.follow)
+    .excluding(job.exclude.clone());
     // An ingest failure ends the read rather than waiting for a source that may not emit again
     // for a long time. A read failure lets ingest drain what the source already sent. A read
     // asked to stop that has not ended within the stop wait is dropped, which ends its feed.

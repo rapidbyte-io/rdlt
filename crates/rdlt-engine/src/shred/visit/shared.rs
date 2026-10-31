@@ -1,9 +1,10 @@
-//! What the visitor trees share: a record that must be an object, a value's nesting limit and
-//! an integer's digits read as the narrowest scalar holding them.
+//! What the visitor trees share: a record that must be an object, the keys whose values it skips,
+//! a value's nesting limit and an integer's digits read as the narrowest scalar holding them.
 
 use std::fmt;
 
 use arrow_buffer::i256;
+use rdlt_connector::Exclusion;
 use rdlt_wire::limits::NESTING_DEPTH;
 use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 
@@ -13,6 +14,26 @@ use crate::shred::build::Scalar;
 
 /// The most digits of an integer a decimal holds.
 const VAST_DIGITS: usize = 76;
+
+/// The keys of a record's object whose values a parse skips, neither observing nor building them:
+/// none, or the keys an exclusion names; a walk is made for each apart, so one that skips none
+/// looks no key up.
+pub(crate) trait Skipped: Copy {
+    /// Whether the value of the key `name` is skipped.
+    fn skips(self, name: &str) -> bool;
+}
+
+impl Skipped for () {
+    fn skips(self, _: &str) -> bool {
+        false
+    }
+}
+
+impl Skipped for &Exclusion {
+    fn skips(self, name: &str) -> bool {
+        self.contains(name)
+    }
+}
 
 /// What a record's object is walked into.
 pub(crate) trait Fields {

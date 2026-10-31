@@ -32,6 +32,7 @@ fn job() -> PartitionJob {
         stop: tokio_util::sync::CancellationToken::new(),
         follow: false,
         reset_retention: false,
+        exclude: rdlt_connector::Exclusion::default(),
     }
 }
 

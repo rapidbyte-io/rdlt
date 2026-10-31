@@ -167,6 +167,7 @@ async fn a_read_ending_at_its_last_cursor_holds_that_cursor_in_the_cursors_share
         stop: CancellationToken::new(),
         follow: false,
         reset_retention: false,
+        exclude: rdlt_connector::Exclusion::default(),
     };
     let ran = tokio::time::timeout(WAIT, super::run(job, Arc::new(context))).await;
     ran.expect("the read ends in time")
