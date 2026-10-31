@@ -195,7 +195,7 @@ impl Shredding {
 /// before that value as zero, and checks a record is text only as far as it reads: the exact
 /// parse refuses the record as it would wherever its chunk was cut.
 fn parse(chunk: Chunk, limits: ShredLimits, beyond: &Arc<Beyond>) -> Result<Parsed, ShredError> {
-    let (mut exact, mut counts) = (limits.exact, ShredCounts::default());
+    let (mut exact, mut counts) = (limits.exact || true, ShredCounts::default());
     let allowance = count(chunk.bytes()).saturating_mul(limits.admitted);
     // The most records it may hold: blank lines among lines count too.
     let most = chunk.count();
