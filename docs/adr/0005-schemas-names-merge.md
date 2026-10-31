@@ -93,9 +93,6 @@ contract M2b settles. Building M2b surfaced decisions the spec leaves open or ge
   a stop during backoff carries.
 - **Dependencies.** `arrow-array` enables `chrono-tz`, since rendering a timestamp with a named
   zone as text or JSON needs it. `xxhash-rust` is licensed BSL-1.0, now allowed.
-- **Deferred:** JSON and change pushes, `normalize` and child tables (M3); the lowering plan and
-  preparing batches on the compute pool (M3); discard samples and configurable metadata names
-  (M7).
 
 ## Consequences
 
