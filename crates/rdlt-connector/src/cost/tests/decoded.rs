@@ -5,9 +5,9 @@ use std::sync::Arc;
 
 use arrow_array::types::Int32Type;
 use arrow_array::{ArrayRef, DictionaryArray, Int32Array, Int64Array, RecordBatch, StringArray};
-use rdlt_wire::{Decoder, Encoder, Limits};
+use rdlt_wire::{Decoder, Encoder, Limits, schema_held_bytes};
 
-use crate::cost::{Allocations, schema_bytes};
+use crate::cost::Allocations;
 
 /// What `batch` holds once decoded from frames held as a receiver holds them, as the decoder
 /// measures it and as its allocations count: the batch's own allocation, what its dictionaries
@@ -25,7 +25,7 @@ fn decoded(batch: &RecordBatch) -> (u64, u64, u64, u64) {
                 assert_eq!(&read, batch);
                 // Beside its buffers a batch holds its schema, which the decoder's count leaves
                 // out.
-                let buffers = Allocations::of(&read).bytes() - schema_bytes(&read.schema());
+                let buffers = Allocations::of(&read).bytes() - schema_held_bytes(&read.schema());
                 held = Some((shape.held_bytes, buffers));
             }
             None => dictionaries += shape.held_bytes,

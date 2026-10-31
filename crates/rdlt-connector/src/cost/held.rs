@@ -1,15 +1,16 @@
 //! The allocations a batch keeps alive, each counted once however many arrays share it, and the
 //! data buffers its views hold.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use arrow_array::cast::AsArray as _;
 use arrow_array::types::{Int16Type, Int32Type, Int64Type};
 use arrow_array::{Array, RecordBatch};
 use arrow_buffer::Buffer;
-use arrow_schema::{DataType, Field, Schema};
+use arrow_schema::DataType;
 use rdlt_wire::limits::count;
+use rdlt_wire::schema_held_bytes;
 
 /// A set of allocations and the bytes they take.
 ///
@@ -72,7 +73,7 @@ impl Allocations {
         let schema = batch.schema_ref();
         let start = Arc::as_ptr(schema).addr();
         if !held_by(beyond, start) && self.seen.insert(start) {
-            self.bytes = self.bytes.saturating_add(schema_bytes(schema));
+            self.bytes = self.bytes.saturating_add(schema_held_bytes(schema));
         }
         self.bytes - before
     }
@@ -194,49 +195,4 @@ fn children<'a>(array: &'a dyn Array, below: &mut Vec<&'a dyn Array>) {
 /// Whether `held`, where there is one, holds the allocation that starts at `start`.
 fn held_by(held: Option<&Allocations>, start: usize) -> bool {
     held.is_some_and(|held| held.seen.contains(&start))
-}
-
-/// Bytes: what one field of a schema takes beside its name and its metadata.
-const FIELD: u64 = 128;
-
-/// Bytes: what one entry of a schema's or a field's metadata takes beside its text.
-const ENTRY: u64 = 48;
-
-/// Bytes: about what `schema` takes: each of its fields, nested ones too, with its name, its
-/// metadata and its time zone, and the schema's own metadata.
-pub fn schema_bytes(schema: &Schema) -> u64 {
-    let text = |metadata: &HashMap<String, String>| {
-        let entries = metadata.iter();
-        let bytes = entries.map(|(key, value)| count(key.len() + value.len()) + ENTRY);
-        bytes.fold(0, u64::saturating_add)
-    };
-    let mut bytes = text(schema.metadata());
-    // A stack of the fields still to count, so a deep type costs no call stack.
-    let mut pending: Vec<&Field> = schema.fields().iter().map(AsRef::as_ref).collect();
-    while let Some(field) = pending.pop() {
-        let own = FIELD + count(field.name().len()) + text(field.metadata());
-        bytes = bytes.saturating_add(own);
-        let mut data_type = field.data_type();
-        while let DataType::Dictionary(_, values) = data_type {
-            data_type = values;
-        }
-        match data_type {
-            DataType::List(item)
-            | DataType::LargeList(item)
-            | DataType::ListView(item)
-            | DataType::LargeListView(item)
-            | DataType::FixedSizeList(item, _)
-            | DataType::Map(item, _) => pending.push(item),
-            DataType::Struct(fields) => pending.extend(fields.iter().map(AsRef::as_ref)),
-            DataType::Union(fields, _) => {
-                pending.extend(fields.iter().map(|(_, field)| field.as_ref()));
-            }
-            DataType::RunEndEncoded(ends, values) => {
-                pending.extend([ends.as_ref(), values.as_ref()]);
-            }
-            DataType::Timestamp(_, Some(zone)) => bytes = bytes.saturating_add(count(zone.len())),
-            _ => {}
-        }
-    }
-    bytes
 }

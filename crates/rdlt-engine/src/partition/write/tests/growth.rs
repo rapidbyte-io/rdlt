@@ -166,7 +166,7 @@ fn a_units_parts_grow_it_by_their_lineage_their_schemas_and_their_arrays() {
     // Each part's batch has a schema of its own, which it keeps alive too.
     let schemas: u64 = parts
         .iter()
-        .map(|part| rdlt_connector::cost::schema_bytes(&part.batch.schema()))
+        .map(|part| rdlt_wire::schema_held_bytes(&part.batch.schema()))
         .sum();
     let mut piece = Allocations::default();
     let grown: u64 = parts

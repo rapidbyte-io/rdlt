@@ -247,7 +247,7 @@ fn a_sliced_batch_normalizes_as_the_rows_it_keeps() {
     for part in &sliced[1..] {
         assert_eq!(
             held.add(&part.batch),
-            rdlt_connector::cost::schema_bytes(&part.batch.schema())
+            rdlt_wire::schema_held_bytes(&part.batch.schema())
         );
     }
 }

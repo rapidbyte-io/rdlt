@@ -21,7 +21,7 @@ use arrow_array::{Array, RecordBatch};
 use arrow_schema::{DataType, Field, Fields};
 use rdlt_wire::limits::{MESSAGE_ROOM, count};
 
-pub use held::{Allocations, ViewBuffers, schema_bytes};
+pub use held::{Allocations, ViewBuffers};
 
 use crate::sink::Push;
 use crate::types::{LogicalType, TypeKind};

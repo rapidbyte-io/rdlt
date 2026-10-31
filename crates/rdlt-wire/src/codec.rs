@@ -8,6 +8,7 @@ mod compact;
 mod contain;
 mod decode;
 mod framing;
+mod held;
 mod in_place;
 mod measure;
 mod schema;
@@ -31,6 +32,7 @@ use crate::error::{Frame, Problem, WireError};
 use crate::limits::{MESSAGE_ROOM, count};
 
 pub use decode::Decoder;
+pub use held::schema_held_bytes;
 pub use shape::Shape;
 pub use split::Cut;
 pub use weigh::{Weigher, Weight};
