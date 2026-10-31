@@ -65,8 +65,11 @@ impl Redactions {
         let mut shared = self.secrets.lock().unwrap_or_else(PoisonError::into_inner);
         let secrets = Arc::make_mut(&mut shared);
         for value in std::iter::once(secret).chain(lines) {
-            let json = serde_json::to_string(value).unwrap_or_default();
-            let json = json.trim_matches('"').to_owned();
+            let quoted = serde_json::to_string(value).unwrap_or_default();
+            let json = quoted
+                .strip_prefix('"')
+                .and_then(|json| json.strip_suffix('"'));
+            let json = json.unwrap_or_default().to_owned();
             let debug: String = value.escape_debug().collect();
             let forms = [value.to_owned(), json, debug, shown(value, usize::MAX)];
             for form in forms.map(Zeroizing::new) {
