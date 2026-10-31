@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use rdlt_connector::{PartitionState, PipelineId, ReadMode, StateEntry, StreamName};
+use rdlt_connector::{PartitionState, PipelineId, ReadMode, StateEntry, StreamName, TablePath};
 use rdlt_engine::{DeleteMode, Engine, Env as _, PipelinePlan, StreamPlan, WriteMode};
 use rdlt_testkit::canon::Canon;
 use rdlt_wire::Limits;
@@ -21,9 +21,10 @@ use super::scenario::{Scenario, execute_all, pick};
 use super::{Checked, kept_to_the_protocol, settled};
 use crate::canary::Canary;
 use crate::changes::{
-    CHANGES_PARTITION, CHANGES_PHASE, ChangeStream, Logged, Merged, Position, ROUNDS, Version,
+    CHANGES_PARTITION, CHANGES_PHASE, ChangeStream, Logged, Merged, Position, ROUNDS, Value,
+    Version,
 };
-use crate::destination::Stored;
+use crate::destination::{Stored, published_table};
 use crate::env::SimEnv;
 use crate::network::{Net, Peers, Serving, run_networked};
 use crate::placing::Placing;
@@ -263,6 +264,10 @@ fn plan(streams: &[ChangeStream]) -> PipelinePlan {
         let plan = StreamPlan::new(StreamName::new(&stream.name).expect("a valid stream name"))
             .read(ReadMode::Cdc)
             .write(write);
+        let plan = match stream.value {
+            Value::Loaded => plan,
+            Value::Excluded | Value::LeftOut => plan.exclude(["value"]),
+        };
         if stream.write == WriteMode::Merge {
             plan.deletes(stream.deletes).on_truncate(stream.truncates)
         } else {
@@ -273,12 +278,22 @@ fn plan(streams: &[ChangeStream]) -> PipelinePlan {
         .expect("the change plan is valid")
 }
 
-/// Checks `stream`'s table after `round` against the model.
+/// Checks `stream`'s table after `round` against the model: a table whose stream excludes
+/// `value` names no such column.
 fn check(world: &World, stream: &ChangeStream, round: usize, seed: Seed) {
     let store = world.store.lock();
     let rows: Vec<Stored> = store.published(&stream.name);
     drop(store);
     let context = || format!("seed {seed}: round {round}: stream {}", stream.name);
+    let path = TablePath::new([stream.name.as_str()]).expect("a valid table path");
+    let excluded = stream.value != Value::Loaded;
+    if let Some(published) = published_table(world, &path).filter(|_| excluded) {
+        let named = published
+            .names
+            .iter()
+            .find(|(key, _)| key.column().segments().next() == Some("value"));
+        assert!(named.is_none(), "{}: names {named:?}", context());
+    }
     if stream.history {
         let mut versions: Vec<Version> = rows.iter().map(version).collect();
         versions.sort();

@@ -9,7 +9,7 @@ use rdlt_engine::{DeleteMode, OnTruncate, WriteMode};
 
 use super::history::whole;
 use crate::rng::SplitMix64;
-use crate::swarm::Features;
+use crate::swarm::{EXCLUDE, Features};
 
 #[cfg(test)]
 mod tests;
@@ -62,6 +62,22 @@ pub struct ChangeStream {
     /// Whether a merge stream keeps every version of each key instead: its changes carry their
     /// position as their change time, and set whole rows.
     pub history: bool,
+    /// Whether the stream excludes `value`, the field its partial updates flag unchanged, so the
+    /// flags of the fields after it move, and whether its source sends it.
+    pub value: Value,
+}
+
+/// Whether a change stream excludes its `value` column, and whether its source sends it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Value {
+    /// Loaded.
+    #[default]
+    Loaded,
+    /// Excluded, though the source sends it.
+    Excluded,
+    /// Excluded, and left out by the source, as one honouring its read's projection does,
+    /// flagging nothing it leaves out.
+    LeftOut,
 }
 
 /// One change.
@@ -129,12 +145,14 @@ impl ChangeWorkload {
     /// was told.
     ///
     /// `apart` draws which merge streams keep history instead, and what their events send again,
-    /// so every other draw falls as it did before they did.
+    /// so every other draw falls as it did before they did; where `features` exclude columns, a
+    /// generator of its own draws which other streams exclude `value`.
     pub(crate) fn generate(
         rng: &mut SplitMix64,
         features: Features,
         apart: &mut SplitMix64,
     ) -> Self {
+        let mut excluding = SplitMix64::new(apart.clone().next_u64() ^ EXCLUDE);
         let streams = (0..=rng.below(3))
             .map(|index| {
                 let replayable = !(features.forgetting && index.is_multiple_of(2));
@@ -142,6 +160,14 @@ impl ChangeWorkload {
                 stream.history = apart.chance(400) && stream.write == WriteMode::Merge;
                 if stream.history {
                     whole(&mut stream.events, stream.keys, apart);
+                }
+                // A history table's versions compare whole rows, which the model keeps `value` in.
+                if features.exclude && !stream.history {
+                    stream.value = match (excluding.chance(500), excluding.chance(500)) {
+                        (false, _) => Value::Loaded,
+                        (true, false) => Value::Excluded,
+                        (true, true) => Value::LeftOut,
+                    };
                 }
                 stream
             })
@@ -202,6 +228,7 @@ impl ChangeStream {
             replay,
             replayable,
             history: false,
+            value: Value::Loaded,
         }
     }
 
@@ -230,18 +257,23 @@ impl ChangeStream {
         &self.events[self.captured..self.rounds[round]]
     }
 
-    /// The table a merge leaves once the changes of `round` apply, by key: each row's value,
-    /// counter, and whether a soft delete marked it deleted.
+    /// The table a merge leaves once the changes of `round` apply, by key: each row's value, none
+    /// where the stream excludes it, counter, and whether a soft delete marked it deleted.
     pub(crate) fn merged(&self, round: usize) -> BTreeMap<i64, Merged> {
         let mut table = self.snapshot();
         for event in self.read(round) {
             apply(&mut table, event, self.deletes, self.truncates);
         }
+        if self.value != Value::Loaded {
+            for row in table.values_mut() {
+                row.value = None;
+            }
+        }
         table
     }
 
     /// The log appending leaves once the changes of `round` are read: every snapshot row and
-    /// change, as its op, key, value and counter, sorted.
+    /// change, as its op, key, value, none where the stream excludes it, and counter, sorted.
     pub(crate) fn log(&self, round: usize) -> Vec<Logged> {
         let mut log: Vec<Logged> = self
             .snapshot()
@@ -253,6 +285,11 @@ impl ChangeStream {
                 .iter()
                 .map(|event| (event.op.code(), event.key, event.value.clone(), event.n)),
         );
+        if self.value != Value::Loaded {
+            for row in &mut log {
+                row.2 = None;
+            }
+        }
         log.sort();
         log
     }

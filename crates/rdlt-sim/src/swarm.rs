@@ -35,6 +35,10 @@ const PROCESS: u64 = 0x0070_726f_6365_7373;
 /// What churn's draw mixes into the seed's generator: "churn" in ASCII.
 const CHURN: u64 = 0x0063_6875_726e;
 
+/// What excluded columns' draw mixes into the seed's generator, and the draw of each stream's
+/// into its own: "exclude" in ASCII.
+pub(crate) const EXCLUDE: u64 = 0x0065_7863_6c75_6465;
+
 /// Which of the simulation's features one seed exercises.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[expect(
@@ -108,6 +112,9 @@ pub struct Features {
     /// that break the protocol to the engine's host, one met beside each attempt's runs; one time
     /// in two of the hostile seeds.
     pub framing: bool,
+    /// Streams that exclude columns their source sends, or leaves out as its read's projection
+    /// asks, and a change stream that excludes a column its updates flag unchanged.
+    pub exclude: bool,
 }
 
 impl Features {
@@ -136,19 +143,20 @@ impl Features {
         fat: false,
         hostile: true,
         framing: true,
+        exclude: false,
     };
 
     /// The features one seed exercises: every feature one time in eight, else each on or off by
-    /// a coin, drift more often than not, the network, sources that forget, streaming, resetting
-    /// and fat values one time in four each, churn one time in two of the streaming seeds,
-    /// process placement one time in four of the seeds the network leaves, a hostile host one
-    /// time in two, and broken connectors one time in two of the hostile seeds.
+    /// a coin, drift more often than not, the network, sources that forget, streaming, resetting,
+    /// fat values and excluded columns one time in four each, churn one time in two of the
+    /// streaming seeds, process placement one time in four of the seeds the network leaves, a
+    /// hostile host one time in two, and broken connectors one time in two of the hostile seeds.
     ///
     /// The network, process placement, sources that forget, streaming, churn, resetting, fat
-    /// values, a hostile host and broken connectors are drawn apart from the rest, from the value
-    /// the next draw takes but without taking it, so a seed's workload is the same over either
-    /// transport, its sources forgetting or not, streamed or not, churned or not, reset or not,
-    /// and with fat values or without but for those values.
+    /// values, excluded columns, a hostile host and broken connectors are drawn apart from the
+    /// rest, from the value the next draw takes but without taking it, so a seed's workload is
+    /// the same over either transport, its sources forgetting or not, streamed or not, churned or
+    /// not, reset or not, and with fat values or excluded columns or without but for those.
     pub fn draw(rng: &mut SplitMix64) -> Self {
         let next = rng.clone().next_u64();
         let network = SplitMix64::new(next ^ NETWORK).chance(250);
@@ -160,6 +168,7 @@ impl Features {
         let hostile = SplitMix64::new(next ^ HOSTILE).chance(500);
         let framing = hostile && SplitMix64::new(next ^ FRAMING).chance(500);
         let process = !network && SplitMix64::new(next ^ PROCESS).chance(250);
+        let exclude = SplitMix64::new(next ^ EXCLUDE).chance(250);
         if rng.chance(125) {
             return Self {
                 network,
@@ -171,6 +180,7 @@ impl Features {
                 fat,
                 hostile,
                 framing,
+                exclude,
                 ..Self::ALL
             };
         }
@@ -198,6 +208,7 @@ impl Features {
             fat,
             hostile,
             framing,
+            exclude,
         }
     }
 
