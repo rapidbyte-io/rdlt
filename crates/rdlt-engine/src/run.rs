@@ -119,8 +119,9 @@ pub enum StopMode {
     ///
     /// A commit of it that landed unheard is not in the run's report. An attempt that fails
     /// otherwise waits up to [`EngineConfig::close_wait`](crate::EngineConfig::close_wait) for its
-    /// commit in flight, so a landed commit goes uncounted only under this mode, or where it
-    /// answered past the close wait and no later attempt opened to find it landed.
+    /// commit in flight, so a landed commit goes uncounted only under this mode, or, where no
+    /// later attempt opens to find it landed, where it answered past the close wait, where its
+    /// last try was answered transiently though it landed, or where its answer was lost.
     Now,
 }
 

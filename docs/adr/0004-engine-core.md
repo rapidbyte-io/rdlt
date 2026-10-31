@@ -86,9 +86,11 @@ Building M2a surfaced decisions the spec leaves open or gets wrong.
   flight has the close wait (60 s by default) to answer: one that lands then is in the report
   though no attempt may follow to find it landed, as when a refusal ends the run for good, and one
   that hangs ends the attempt at that wait rather than the connector wait; the commit's reports
-  race the cancel. A landed commit goes uncounted only in a run stopped at once
-  (`StopMode::Now`), which opens nothing after, or where it answered past the close wait and no
-  later attempt opened to find it landed.
+  race the cancel. A landed commit goes uncounted only where its attempt ended without hearing it
+  land and no later attempt opened to find it landed: in a run stopped at once (`StopMode::Now`),
+  which opens nothing after, where it answered past the close wait, where the last try the retry
+  policy allows was answered transiently though the commit landed (at one attempt, or on the
+  run's last), or where its answer was lost.
 - **The report's counters are written, never read.** What a run waited for and spent its time on
   is counted as it happens and summed into its report; no decision of the engine reads a
   counter, so measuring a run never changes what it does.

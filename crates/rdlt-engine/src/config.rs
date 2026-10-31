@@ -27,8 +27,10 @@ pub use growth::GrowthLimits;
 ///
 /// An attempt another task's failure ends waits up to [`EngineConfig::close_wait`] for its commit
 /// in flight to answer, so a commit that lands then is in the report even where no attempt
-/// follows. A landed commit goes uncounted only under [`StopMode::Now`](crate::StopMode::Now), or
-/// where it answered past the close wait and no later attempt opened to find it landed.
+/// follows. A landed commit goes uncounted only where its attempt ended without hearing it land
+/// and no later attempt opened to find it landed: under [`StopMode::Now`](crate::StopMode::Now),
+/// where it answered past the close wait, where the last try this policy allows was answered
+/// transiently though the commit landed, or where its answer was lost.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RetryPolicy {
     max_attempts: NonZeroU32,
