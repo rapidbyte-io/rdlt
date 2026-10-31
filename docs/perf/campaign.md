@@ -45,6 +45,7 @@ and method, and the verdict; the baselines themselves are in their benches' reco
 | What does a wide table pay a column? | closes if under 10 % of allocations and time in every case | time 8.6 %, 18.3 %, 17.0 %; allocations 6.6 %, 34.3 %, 34.3 % | Not closed |
 | Is a pure commit value worth reopening? | positions' encoding and decoding > a quarter of `commit/1024`'s instructions | at most 12.3 % | Not reopened |
 | Why does served throughput fall with partitions? | diagnosed once | per-partition and per-writer work in every process | Diagnosed |
+| Do shredding jobs sized by rows, cores and a limit pay? | the first of six candidates to hold five rules, else a fallback without the cores term | at a 4 MiB limit wide JSON 1.58–2.81×, one `wide_200` partition on eight cores 0.87–0.90×; `shred_cores/8` 1.13–1.18× | Failed: closed |
 
 The baselines the later rules read, and their records, are listed after the decisions.
 
@@ -152,6 +153,20 @@ The baselines the later rules read, and their records, are listed after the deci
   cases").
 - **Verdict.** Not reopened.
 
+### Shredding jobs sized by rows, cores and a limit
+
+- **Rule.** Of six candidates, `ROWS` in {1 024, 4 096} by a limit in {2, 4, 8} MiB, the first to
+  hold every rule lands: wide JSON at least 1.5 times as fast with at most half the allocations a
+  row; `shred_cores/8` on the efficient cores at least 1.3 times; one `nested` partition at least
+  1.15 times, one `wide_200` partition within 3 % and sixteen partitions within range; four cores
+  or fewer within range; instructions, resident memory, the heap-peak tests and the paired cell
+  held. Else the cores term goes and the sweep runs again without the 1.15 and the 1.3.
+- **Figures.** Wide JSON 1.42–1.43 times at 2 MiB with 0.54–0.56 of the allocations, 1.58–2.81
+  times at 4 MiB with 0.28–0.30, 1.11–2.99 times at 8 MiB; `shred_cores/8` 1.13–1.18 times; one
+  `wide_200` partition on the efficient cores 1.00 times with 2 MiB jobs, 0.87–0.90 with 2.7 MB
+  jobs, 0.68–0.69 with 4 MiB ([shred.md](shred.md), "Jobs sized by rows, cores and a limit").
+- **Verdict.** Failed: closed, with and without the cores term. The fixed 1 MiB job stays.
+
 ## Why served throughput falls with partitions
 
 Diagnosed once, from the production slice's rows through one writer and through a writer a core
@@ -166,7 +181,8 @@ writer and not the budget ([served.md](served.md), "Through a writer a core").
   thread a core, the per-stage profile of `json/5000` (shredding 65 % of its time), `shred_cores`
   from one to four threads on the performance cores and from one to eight on the efficient ones,
   and the JSON cells in process on both: [wide.md](wide.md), [shred.md](shred.md),
-  [passthrough.md](passthrough.md). Recorded; the sweep runs against them.
+  [passthrough.md](passthrough.md). Recorded; the sweep ran against `main` beside them and closed
+  ([shred.md](shred.md), "Jobs sized by rows, cores and a limit").
 - **One tokenizer.** `shred_cliffs` and the one-core group on this tree, with per-function
   profiles of five corpora: [shred.md](shred.md). Recorded; the arms run against them.
 - **A merge staging only each key's last row's children.** `normalized/merge/zipf` in process and
