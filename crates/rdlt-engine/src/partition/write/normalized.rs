@@ -34,8 +34,8 @@ use discarded::Discarded;
 ///
 /// - Each unit is cut, before its tables are known, into pieces whose split makes no more than a
 ///   piece may hold.
-/// - Each piece then asks its room once, for all a request may take: what its split makes and
-///   an allowance for lowering its parts. It is split on the compute pool, its parts' tables and
+/// - Each piece then asks its room once, for all a request may take: what its planned parts hold
+///   and an allowance for lowering them. It is split on the compute pool, its parts' tables and
 ///   plans are found in order, parents first, and each part is cut by what lowering it into its
 ///   own table holds. What the piece asked for beyond what it needs is given back.
 /// - The allowance is lent to the parts' pieces, each taking what lowering it holds and giving it
@@ -61,7 +61,6 @@ pub(super) async fn write_normalized(
     for (piece, held) in pieces.into_iter().enumerate() {
         let mut reserved = reserve(job, context, &room, request).await?;
         let parts = split_kept(job, context, schemas, shape, &held.batches).await?;
-        let made = made(&held.batches, &parts);
         let received = parts.first().map_or(0, |part| part.batch.num_rows() as u64);
         if received == 0 {
             continue;
@@ -71,7 +70,9 @@ pub(super) async fn write_normalized(
         open.discarded_values += discarded.values;
         open.discarded_rows += discarded.rows;
         open.discards.absorb(discarded.columns);
-        let kept = kept(unit.iter().map(|(_, part, _)| part));
+        // Measured once planned: a part that lost rows is a copy of those it kept.
+        let planned = unit.iter().map(|(_, part, _)| part);
+        let (made, kept) = (made(&held.batches, planned.clone()), kept(planned));
         let cutter = Cutter::within(context, request.saturating_sub(made));
         let rendering = context.rendering.as_ref().clone();
         let cut = on_pool(context, move || cutter.cut(&rendering, unit)).await;
@@ -85,9 +86,9 @@ pub(super) async fn write_normalized(
             // No piece asks for more: what the room has left goes back to the budget.
             room.close();
         }
-        // The piece's parts on their lanes share what holds them, the piece's batches and what
-        // its split made, until the last of them is written: the parts go first, then the
-        // piece's rows and with them its share of the unit, then what the split made.
+        // The piece's parts on their lanes share what holds them, the piece's batches and its
+        // planned parts, until the last of them is written: the parts go first, then the
+        // piece's rows and with them its share of the unit, then their charge.
         let hold = Arc::new(Mutex::new((kept, held, reserved)));
         let mut cut = cut.into_iter().peekable();
         while let Some(piece) = cut.next() {

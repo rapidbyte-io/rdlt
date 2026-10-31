@@ -67,7 +67,7 @@ async fn normalizing(name: &str, steps: Steps) -> (usize, RunOutcome) {
     let run = engine(config).run(pipeline(name, [normalized("events")]), source, null().await);
     let (peak, outcome) = measured(run).await;
     // A piece asks once for all a request may take, before it is split, while the parts of
-    // the piece before it still hold what their split made and their allowance.
+    // the piece before it still hold their charge and their allowance.
     let reserved = outcome.report.peak_memory;
     assert!(
         reserved >= BUDGET / 4 + BUDGET / 16,
