@@ -1,7 +1,8 @@
 //! What a connector was given that no log, error or report may hold.
 
-use std::fmt;
+use std::ops::Range;
 use std::sync::{Arc, Mutex, PoisonError};
+use std::{fmt, mem};
 
 use rdlt_connector::text::{CUT, shown};
 use zeroize::Zeroizing;
@@ -38,8 +39,7 @@ pub(crate) const DROPPED: &str = "[cut] ";
 /// elsewhere, is beyond this.
 #[derive(Clone, Default)]
 pub struct Redactions {
-    /// The values' forms, the longest first, so that one holding another is replaced whole;
-    /// a text is scrubbed with the forms there were as it began.
+    /// The values' forms; a text is scrubbed with the forms there were as it began.
     secrets: Arc<Mutex<Arc<Vec<Zeroizing<String>>>>>,
 }
 
@@ -75,7 +75,6 @@ impl Redactions {
                 }
             }
         }
-        secrets.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
     }
 
     /// `text` with every secret in it replaced by `***`, and with it the start of a secret
@@ -120,54 +119,51 @@ pub(super) fn maskable(text: &str) -> bool {
         .any(|c| !REDACTED.contains(c) && !c.is_whitespace())
 }
 
-/// `text` with every secret in it replaced, and then, where it holds the `cut` marks, the
-/// part of one at each, and whether anything was.
-fn step(mut text: String, secrets: &[Zeroizing<String>], cut: bool) -> (String, bool) {
-    let mut found = false;
+/// `text` with every secret in it replaced, and, where it holds the `cut` marks, the part of
+/// one at each, and whether anything was.
+///
+/// All are found in `text` as it is, and those that overlap are replaced by one mask: a secret
+/// within the part of one at a cut, or such a part within a secret, leaves nothing of the other.
+fn step(text: String, secrets: &[Zeroizing<String>], cut: bool) -> (String, bool) {
+    // What held a secret is wiped, not only freed.
+    let mut held = Zeroizing::new(text);
+    let mut covered: Vec<Range<usize>> = Vec::new();
     for secret in secrets {
-        if text.contains(secret.as_str()) {
-            found = true;
-            // What held the secret is wiped, not only freed.
-            let held = Zeroizing::new(text);
-            text = held.replace(secret.as_str(), REDACTED);
-        }
+        let found = held.match_indices(secret.as_str());
+        covered.extend(found.map(|(at, _)| at..at + secret.len()));
     }
     if cut {
-        let held = Zeroizing::new(text);
-        text = at_cuts(&held, secrets);
-        found |= text != *held;
+        covered.extend(at_cuts(&held, secrets));
     }
-    (text, found)
-}
-
-/// `text` with the part of a secret left before each mark of a cut, and after each mark of a
-/// dropped beginning, replaced.
-fn at_cuts(text: &str, secrets: &[Zeroizing<String>]) -> String {
-    let mut scrubbed = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(at) = rest.find(CUT) {
-        let before = &rest[..at];
-        let left = starts(before, secrets);
-        scrubbed.push_str(&before[..before.len() - left]);
-        if left > 0 {
+    covered.retain(|range| !range.is_empty());
+    if covered.is_empty() {
+        return (mem::take(&mut *held), false);
+    }
+    covered.sort_by_key(|range| range.start);
+    let (mut scrubbed, mut written) = (String::with_capacity(held.len()), 0);
+    for range in covered {
+        if range.start >= written {
+            scrubbed.push_str(&held[written..range.start]);
             scrubbed.push_str(REDACTED);
         }
-        scrubbed.push_str(CUT);
-        rest = &rest[at + CUT.len()..];
+        written = written.max(range.end);
     }
-    scrubbed.push_str(rest);
-    let (mut ended, mut rest) = (String::with_capacity(scrubbed.len()), scrubbed.as_str());
-    while let Some(at) = rest.find(DROPPED) {
-        let after = &rest[at + DROPPED.len()..];
-        let left = ends(after, secrets);
-        ended.push_str(&rest[..at + DROPPED.len()]);
-        if left > 0 {
-            ended.push_str(REDACTED);
-        }
-        rest = &after[left..];
+    scrubbed.push_str(&held[written..]);
+    (scrubbed, true)
+}
+
+/// The bytes of `text` that are the part of a secret left before each mark of a cut, and
+/// after each mark of a dropped beginning.
+fn at_cuts(text: &str, secrets: &[Zeroizing<String>]) -> Vec<Range<usize>> {
+    let mut parts = Vec::new();
+    for (at, _) in text.match_indices(CUT) {
+        parts.push(at - starts(&text[..at], secrets)..at);
     }
-    ended.push_str(rest);
-    ended
+    for (at, mark) in text.match_indices(DROPPED) {
+        let from = at + mark.len();
+        parts.push(from..from + ends(&text[from..], secrets));
+    }
+    parts
 }
 
 /// How many bytes at the end of `text` are the start of a secret, at most, one the mask would
