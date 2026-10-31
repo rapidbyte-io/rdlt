@@ -61,7 +61,13 @@ where names collide, and where destinations store different types.
   else as Arrow renders it. Nested values stay native only when the policy is `native` and every
   type inside them is native; otherwise they, and `Json`, become `Json`, or JSON text where the
   destination has no JSON type. The `json` nested policy only lowers: the logical type stays a
-  struct or list.
+  struct or list. Capabilities name a type's kind, not the digits within it: a destination
+  declaring `Decimal` is sent each decimal at its own precision, up to 76 digits. One whose
+  decimals hold fewer, as Snowflake's, Redshift's and Databricks' hold 38, either declares no
+  `Decimal`, so every decimal lands as its exact text, or refuses a wider column as the engine
+  creates or widens it, which fails the run. A limit on a decimal's digits joins the
+  capabilities with the first destination that declares one: a wider decimal then lands as its
+  exact text, the path an undeclared kind takes, and that choice goes.
 - **Metadata columns.** Every row carries `_rdlt_load_epoch` (the epoch of the session that
   wrote it, `Int64`) and `_rdlt_loaded_at` (the attempt's start, microseconds, UTC); merge rows
   carry `_rdlt_seq`, 16 bytes of `Binary`: the segment id then the row's index in the segment,
