@@ -289,7 +289,7 @@ fn a_line_of_a_secret_is_found_on_its_own_from_eight_characters_other_than_white
 }
 
 #[test]
-fn redactions_replace_every_secret_the_longest_first_and_show_none() {
+fn redactions_replace_every_secret_whole_and_show_none() {
     let redactions = Redactions::new();
     assert_eq!(redactions.scrubbed("nothing yet".to_owned()), "nothing yet");
     for secret in ["pass", "password-long", "", "x"] {
@@ -892,6 +892,29 @@ fn the_part_of_a_secret_left_where_a_beginning_was_dropped_is_scrubbed_too() {
     assert_eq!(whole, "ter2 was said");
     let unrelated = redactions.scrubbed_end("was the password hunter2".to_owned(), true);
     assert_eq!(unrelated, "was the password ***");
+}
+
+#[test]
+fn a_secret_and_the_part_of_one_at_a_cut_that_overlap_are_hidden_whole() {
+    use rdlt_connector::text::CUT;
+    let redactions = Redactions::new();
+    for secret in ["ab\nfirst-line-0\nyz", "abcdef12", "cdef12gh"] {
+        redactions.add(secret);
+    }
+    let cases = [
+        // A line of a secret, a secret of its own, within the part of it a cut left.
+        (format!(r"<ab\nfirst-line-0\ny{CUT}"), format!("<***{CUT}")),
+        (
+            r"[cut] b\nfirst-line-0\nyz>".to_owned(),
+            "[cut] ***>".to_owned(),
+        ),
+        // The part of a secret at a cut within another secret.
+        (format!("<abcdef12{CUT}"), format!("<***{CUT}")),
+        ("[cut] cdef12gh>".to_owned(), "[cut] ***>".to_owned()),
+    ];
+    for (said, scrubbed) in cases {
+        assert_eq!(redactions.scrubbed(said.clone()), scrubbed, "{said}");
+    }
 }
 
 /// A store that reads secrets from `directory`, as a store of files does.
