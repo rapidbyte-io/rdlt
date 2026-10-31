@@ -5,7 +5,7 @@ use arrow_array::types::Int8Type;
 use arrow_array::{ArrayRef, DictionaryArray, RecordBatch, StringArray};
 use bytes::{BufMut, Bytes, BytesMut};
 use proptest::prelude::*;
-use rdlt_connector::cost::push_charge;
+use rdlt_connector::cost::{Allocations, push_charge};
 use rdlt_connector::wire::{MALFORMED_FRAME, v1};
 use rdlt_connector::{Admission, BoxFuture, Permit, Push, SourceEvent, admitted_partition_channel};
 use rdlt_wire::bounded::{Bounded, Bounds};
@@ -13,7 +13,7 @@ use rdlt_wire::limits::{Class, JSON_PUSH_BYTES, MESSAGE_ROOM, count};
 use rdlt_wire::plane::{Incoming, Outgoing};
 use rdlt_wire::prost::Message as _;
 use rdlt_wire::prost::encoding::{WireType, encode_key, encode_varint};
-use rdlt_wire::{Decoder, Encoder, Limits};
+use rdlt_wire::{Decoder, Encoder, Limits, schema_held_bytes};
 
 use super::{Kept, Read, Reader};
 
@@ -290,7 +290,7 @@ fn a_read_s_schema_and_dictionaries_are_charged_while_its_decoder_holds_them() {
         panic!("the frame is a schema");
     };
     let message = u64::try_from(message.ipc_schema.len()).expect("a length");
-    let schema = rdlt_wire::schema_held_bytes(&first.schema()) + message + 16;
+    let schema = schema_held_bytes(&first.schema()) + message + 16;
     assert!(message > 0 && schema > message);
     assert_eq!(read(frame), schema);
     assert_eq!(*charges.0.lock().unwrap(), [schema]);
@@ -346,8 +346,6 @@ fn a_read_that_would_keep_more_than_it_may_is_refused_and_holds_nothing_more() {
 
 #[test]
 fn batches_of_a_schema_sent_again_before_each_keep_one_schema_alive() {
-    use rdlt_connector::cost::Allocations;
-    use rdlt_wire::schema_held_bytes;
     // Sixteen columns named in sixty kilobytes each: about a megabyte of schema.
     let columns = (0..16).map(|index| {
         let name = format!("{index:02}{}", "n".repeat(59_998));
