@@ -41,7 +41,7 @@ partition inside a run; the second is an operator's command between runs. So the
   `Exhausted` as the default. The deadline is run-wide and measured from the run's start with
   `Env`, so it is deterministic in the simulation.
 - **The follow contract.**
-  - `ReadRequest::follow` (wire `ReadStart.follow = 7`, authors `Emitter::follows()`) says
+  - `ReadRequest::follow` (wire `ReadStart.follow = 6`, authors `Emitter::follows()`) says
     whether a read of an unbounded partition follows it once caught up, waiting for more until
     asked to stop.
   - Otherwise the read returns once caught up to where its source stood when the read started:
