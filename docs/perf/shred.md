@@ -328,6 +328,99 @@ Functions under 0.5 % of a profile's samples are left out, so a row sums to unde
 is parsed fast first and again exactly; `big_numbers` parses exactly throughout, Arrow's
 big-integer parse 12.9 % of it.
 
+### One tokenizer
+
+The shredder reads records with two parsers: sonic-rs's, fast, which reads an integer beyond 64
+bits as the float nearest it and keeps no float's text, and the engine's own reader, exact, which
+keeps every number as it is written. Scans of each record's text decide where a chunk is parsed
+again exactly, and a float under a column of JSON has its chunk built again exactly. Two arms with
+one parser each were built and held to a rule written before their rounds ran; neither held it,
+so both parsers stay.
+
+**The arms.**
+
+- A: `main` at `05c69b59`, today's build.
+- B, exact only: every chunk parsed through the engine's reader from its first parse.
+- C, jiter: B with the engine's reader swapped for jiter 0.17.0, its newest release at least two
+  weeks old, under the same serde walk, `known_number_bytes` handing each number's text to the
+  exact number path; the walk holds the nesting limit and the exponent's 18 digits itself.
+
+**The rule.** An arm qualifies if it runs at least 0.97 times A on `nested`, `sparse`,
+`flat_narrow`, `wide_200` and `string_heavy`, and no `shred_cliffs` corpus runs slower. jiter is
+preferred if it qualifies and meets four requirements: a nesting bound the caller holds, with no
+recursion it does not control; typed refusals that name the record; a number's written bytes; and
+no allocation a record outside the meter, its string scratch reused across a chunk's records. B
+wins only if it qualifies and is at least 1.05 times C, or if jiter fails a requirement. If
+neither qualifies, nothing changes.
+
+**Method.** A against B and C, each built from its own commit with the release profile, B and C
+being the two commits of the branch `refactor/one-tokenizer-closed`. Each round held the
+measurement lock once, started once no build ran, and ran each arm's `shred` bench on core `0`
+(`--bench --noplot`, filtered to the five corpora and `shred_cliffs`), A first in the first round
+and last in the second, 2026-10-31 09:41 and 10:44; the one-minute load was 6.18 at the first
+round's start, falling to 1.37 by its third arm, and 1.05 at the second's. A figure is criterion's
+throughput point estimate, and a ratio an arm's figure over A's in the same round. The rounds
+stopped at two, which settle the rule for both arms. Each arm's passes were alike in both rounds.
+
+**Figures**, each round's in order, MiB/s:
+
+| Corpus | A | B | C | B against A | C against A |
+|---|---|---|---|---|---|
+| `nested` | 559, 623 | 298, 298 | 389, 397 | 0.53, 0.48 | 0.70, 0.64 |
+| `sparse` | 562, 615 | 297, 297 | 388, 380 | 0.53, 0.48 | 0.69, 0.62 |
+| `flat_narrow` | 461, 497 | 258, 261 | 345, 326 | 0.56, 0.53 | 0.75, 0.66 |
+| `wide_200` | 466, 489 | 242, 255 | 333, 315 | 0.52, 0.52 | 0.72, 0.64 |
+| `string_heavy` | 579, 595 | 393, 421 | 465, 459 | 0.68, 0.71 | 0.80, 0.77 |
+| `array_form` | 388, 401 | 246, 257 | 274, 279 | 0.63, 0.64 | 0.71, 0.69 |
+| `drift_json` | 214, 214 | 164, 169 | 190, 191 | 0.77, 0.79 | 0.89, 0.89 |
+| `drift_scalar` | 582, 593 | 319, 329 | 368, 374 | 0.55, 0.55 | 0.63, 0.63 |
+| `int_arrays` | 67, 68 | 43, 44 | 46, 46 | 0.64, 0.64 | 0.69, 0.68 |
+| `big_numbers` | 266, 269 | 267, 271 | 261, 270 | 1.00, 1.01 | 0.98, 1.00 |
+| `pretty` | 399, 401 | 306, 311 | 321, 322 | 0.77, 0.77 | 0.80, 0.80 |
+
+B and C parse each chunk once, exactly: `big_numbers` 32 parses where A makes 64. `drift_json`
+still builds all 32 chunks again, since its column turns to JSON whatever the parser, parsing
+exactly both times; `int_arrays`' three passes a chunk are all exact. Under the same walk, jiter
+runs 1.03 to 1.38 times the engine's reader, round against round, on every corpus but
+`big_numbers` (0.98 and 0.99).
+
+**jiter's requirements**, read in its 0.17.0 source, paths under its `src/`:
+
+- *A nesting bound the caller holds, with no recursion it does not control*: met. The iterator
+  keeps no containers of its own (`parse.rs:61-65`), and each call the walk makes reads one token
+  without recursing (`jiter.rs:82-85`, `:181-190`, `:202-210`, `:311-319`, `:335-362`;
+  `parse.rs:81-177`); only `known_value` and `known_skip` recurse, to a depth of 200
+  (`jiter.rs:239-274`, `errors.rs:177`), and the walk calls neither.
+- *Typed refusals that name the record*: met. An error is a kind and a byte offset
+  (`errors.rs:207-228`), the kinds an enum (`errors.rs:6-76`); the shredder numbers the record.
+- *A number's written bytes*: met. `known_number_bytes` hands over the number's text once its
+  grammar is checked (`jiter.rs:181-190`, `number_decoder.rs:490-582`). Its limits differ from the
+  reader's: an integer of more than 4 300 digits is refused (`number_decoder.rs:557-558`), and an
+  exponent may have any number of digits (`number_decoder.rs:584-609`), so the walk keeps the
+  18-digit bound.
+- *No allocation a record outside the meter, its string scratch reused across a chunk's
+  records*: not met. Each `Jiter` decodes escaped strings and keys onto a buffer of its own,
+  begun empty (`jiter.rs:39-47`, and `:20-30` for a clone; `string_decoder.rs:130-131`,
+  `:137-149`), which no call takes from the caller (`string_decoder.rs:7`, private to the crate at
+  `lib.rs:164`). A `Jiter` a record therefore grows that buffer, outside the meter, for each record
+  that holds an escape. One `Jiter` over a chunk's records would keep it, stepping lines with
+  `peek` and an array's elements with `array_step` (`parse.rs:81-126`), but would walk a record
+  that does not end on its line into the next before it could tell, so a refusal's kind would
+  depend on where the chunk was cut. The calls that hand over a string's raw bytes take no buffer
+  (`jiter.rs:222-227`, `:358-362`; `string_decoder.rs:283-325`), but check no UTF-8
+  (`string_decoder.rs:282`) and leave the escapes to the caller, which would keep the engine's
+  own string reading beside jiter. A value tree's parse keeps its buffer between documents
+  (`value.rs:170-182`); the iterator's does not.
+
+jiter passes `cargo deny` as the workspace configures it (advisories, bans, licences and sources),
+adding `bitvec` and its four crates to the lock file.
+
+**Verdict.** Neither arm qualifies. On the five corpora B runs 0.48 to 0.71 times A and C 0.62 to
+0.80 times, against 0.97; on the cliffs both are slower in both rounds on every corpus but
+`big_numbers`. jiter does not meet its fourth requirement either. Nothing changes: sonic-rs, the
+scans that confirm its numbers and the exact parses after them stay, and `json::Reader` stays the
+engine's reader of JSON text.
+
 ### Rows pushed as lines
 
 `Emitter::rows` pushes a row a line, which the engine cuts at its line ends as it cuts any JSON
