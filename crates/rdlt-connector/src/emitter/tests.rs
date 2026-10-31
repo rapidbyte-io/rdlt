@@ -475,3 +475,34 @@ async fn a_batch_too_wide_is_refused_as_schema_columns_in_process_and_on_the_wir
     );
     assert!(drain(out, feed).await.is_empty());
 }
+
+#[tokio::test]
+async fn a_batch_is_checked_and_pushed_without_the_columns_its_stream_excludes() {
+    let id: ArrayRef = Arc::new(Int64Array::from(vec![1, 2]));
+    let wide =
+        RecordBatch::try_from_iter([("id", Arc::clone(&id)), ("secret", Arc::clone(&id))]).unwrap();
+    let limits = rdlt_wire::Limits {
+        schema_columns: 1,
+        ..rdlt_wire::Limits::default()
+    };
+    let exclusion = crate::Exclusion::new(["secret"]);
+    let (sink, feed) = partition_channel(NonZeroUsize::new(16).unwrap());
+    let mut out = Emitter::<u64>::new(sink.within(limits).excluding(exclusion.clone()), 7, false);
+    assert_eq!(out.excluded(), &exclusion);
+    out.batch(wide.clone()).await.unwrap();
+    out.changes(wide.clone()).await.unwrap();
+    let narrow = wide.project(&[0]).unwrap();
+    assert_eq!(
+        drain(out, feed).await,
+        [
+            SourceEvent::Push(Push::Arrow(narrow.clone())),
+            SourceEvent::Push(Push::Changes(narrow))
+        ]
+    );
+    // Without the exclusion, its second column passes the limit.
+    let (sink, _feed) = partition_channel(NonZeroUsize::new(16).unwrap());
+    let mut out = Emitter::<u64>::new(sink.within(limits), 7, false);
+    assert!(out.excluded().is_empty());
+    let refused = out.batch(wide).await.unwrap_err().limit().unwrap();
+    assert_eq!(refused.name, "schema columns");
+}

@@ -24,6 +24,7 @@ use super::noted::Read;
 use super::service::invalid;
 use crate::Cursor;
 use crate::error::ConnectorErrorKind;
+use crate::exclusion::Exclusion;
 use crate::id::{PartitionId, StreamName};
 use crate::sink::{
     Admission, LogLevel, PartitionFeed, Push, SourceEvent, admitted_partition_channel,
@@ -81,7 +82,8 @@ fn request(start: v1::ReadStart) -> Result<ReadRequest, Invalid> {
         partition,
         start.cursor.map(Cursor::try_from).transpose()?,
     )
-    .following(start.follow))
+    .following(start.follow)
+    .excluding(Exclusion::new(start.exclude)))
 }
 
 /// Frames waiting for credit, and what encodes them.
@@ -250,8 +252,9 @@ async fn pump(
 ) {
     let mut outbox = Outbox::new(admission.limits());
     let (sink, mut feed) = admitted_partition_channel(EVENTS, admission);
-    // What the source pushes is cut to the host's frames as it is sent.
-    let sink = sink.cut();
+    // What the source pushes is cut to the host's frames as it is sent, its batches without the
+    // columns its stream excludes, whether or not the source left them out.
+    let sink = sink.cut().excluding(request.exclude.clone());
     // A barrier pending when the read started is the source's to answer from its first push.
     if let Some(barrier) = std::num::NonZeroU64::new(barrier) {
         feed.request_checkpoint(barrier.get());
