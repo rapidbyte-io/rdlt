@@ -4,13 +4,12 @@ Status: accepted, 2026-09-30.
 
 ## Context
 
-Spec §9.5 gives streams a `history` write mode: every version of each key, a change closing the
-key's current version where the next begins (SCD2), with `_rdlt_valid_from`, `_rdlt_valid_to`,
-`_rdlt_is_current` and `_rdlt_row_hash` (§8.5), the chain implemented once in `sqlgen` and checked
-by `D-HIST`. ADR 0023 planned it as M5e. Two parts of §9.5 need designs of their own and are
-**M5e2**: history for normalized streams, whose child rows would need versions of their own, and
-updates that leave columns unchanged, whose hash the engine cannot compute without the columns it
-never sees.
+A `history` write mode keeps every version of each key: a change closes the key's current
+version where the next begins (SCD2), with `_rdlt_valid_from`, `_rdlt_valid_to`,
+`_rdlt_is_current` and `_rdlt_row_hash`, and every destination that keeps history publishes the
+same chain, which `D-HIST` checks. Two cases need more than a row's versions: a normalized
+stream, whose child rows would need versions of their own, and an update that leaves columns
+unchanged, whose hash the engine cannot compute without the columns it never sees.
 
 ## Decision
 
@@ -34,11 +33,12 @@ never sees.
 - **The engine writes whole versions**: every row carries `valid_from`, a null `valid_to`, a true
   `is_current` and its `row_hash`; batches are not compacted, since every version counts.
   - `valid_from` is the stream's change time (`StreamSpec::with_change_time`), a top-level date or
-    timestamp column, or else when its batch arrived. The spec's `_rdlt_loaded_at` would begin
-    every version of a run at its start, so a run following its source for days would leave each
-    version an empty span. A change time of another type, or beyond what microseconds hold, is
-    `change_time_invalid`, refused where the catalog declares it and else at the batch; a null one
-    is `change_time_null`. Versions follow the sequence, whatever their times.
+    timestamp column, or else when its batch arrived. Beginning versions at `_rdlt_loaded_at`
+    would begin every version of a run at its start, so a run following its source for days
+    would leave each version an empty span. A change time of another type, or beyond what
+    microseconds hold, is `change_time_invalid`, refused where the catalog declares it and else
+    at the batch; a null one is `change_time_null`. Versions follow the sequence, whatever their
+    times.
   - A version begins no earlier than the latest instant its key's versions hold, so none ends
     before it begins; a change time no version can begin at follows its column's schema policy
     row by row; versions begun when their batch arrived follow a load clock that never reads
@@ -49,15 +49,15 @@ never sees.
     encoding a merge key's id hashes (ADR 0009), JSON by the values its text says: an added null
     column, a wider type, another encoding or JSON rendered again changes no hash, so schema
     changes open no versions. The change time is left out: when a change happened is not what it
-    changed. It is 32 bytes of `Binary`, as a merge root's id is (ADR 0009), not the spec's
-    `FixedSizeBinary(16)`; a delete's row carries none.
+    changed. It is 32 bytes of `Binary`, as a merge root's id is (ADR 0009); a delete's row
+    carries none.
   - A table records whether it keeps history with its sequences' state record. A history stream
     into a table created without history, or any other stream into a history table, is refused as
     `table_history_mismatch`: its rows have no versions to close, or a merge would take its
     versions for one row. `ResetScope::Tables` converts a table.
   - A full read keeps the current version of a key it no longer reads, as a full read merged
     keeps its row.
-  - Refused for M5e2: a normalized history stream (`history_normalize_unsupported`), and an
+  - Refused: a normalized history stream (`history_normalize_unsupported`), and an
     update leaving columns unchanged (`partial_updates_unsupported`).
 - **Destinations.** `sqlgen` publishes history through window functions over each key's staged
   rows in sequence order, each step decided by the key's last version or upsert before it and
@@ -82,5 +82,5 @@ never sees.
 
 - A pipeline can keep the history of every key of a table, from any read mode, exactly once
   through retries, crashes and replays.
-- A Postgres source whose updates leave TOAST columns unchanged cannot load into a history table
-  until M5e2.
+- A Postgres source whose updates leave TOAST columns unchanged cannot load into a history
+  table.
