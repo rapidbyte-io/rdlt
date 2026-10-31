@@ -57,8 +57,12 @@ unchanged, whose hash the engine cannot compute without the columns it never see
     versions for one row. `ResetScope::Tables` converts a table.
   - A full read keeps the current version of a key it no longer reads, as a full read merged
     keeps its row.
-  - Refused: a normalized history stream (`history_normalize_unsupported`), and an
-    update leaving columns unchanged (`partial_updates_unsupported`).
+  - Refused: a normalized history stream (`history_normalize_unsupported`), and an update
+    leaving columns unchanged (`partial_updates_unsupported`). Under `nested: native`, the
+    default, a history stream keeps its nested values whole in each version. Normalized history
+    waits for a production pipeline that needs it; then each version takes child rows of its
+    own, which name it by the id its position gives it (ADR 0009), validity stays on the root,
+    and the refusal goes.
 - **Destinations.** `sqlgen` publishes history through window functions over each key's staged
   rows in sequence order, each step decided by the key's last version or upsert before it and
   whether a delete came since: a skipped upsert holds the data of the version it matched, and a
