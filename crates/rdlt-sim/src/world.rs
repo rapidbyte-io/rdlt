@@ -94,6 +94,8 @@ pub struct World {
     hangs: Mutex<Hangs>,
     /// Which tries of commits answered transiently are left running, drawn apart from `rng`.
     delays: Mutex<SplitMix64>,
+    /// The point whose next call a test has fail, faults on or off.
+    failing: Mutex<Option<FaultPoint>>,
     pub(crate) store: Mutex<Store>,
     violations: Mutex<Vec<String>>,
     /// The furthest offset acknowledged to each partition of a stream that cannot read again,
@@ -253,6 +255,7 @@ impl World {
             faulty: AtomicBool::new(false),
             hangs: Mutex::new(Hangs::new(rng.clone().next_u64() ^ HANGS)),
             delays: Mutex::new(SplitMix64::new(rng.clone().next_u64() ^ DELAYS)),
+            failing: Mutex::new(None),
             rng: Mutex::new(SplitMix64::new(rng.next_u64())),
             store: Mutex::new(Store::default()),
             violations: Mutex::new(Vec::new()),
@@ -319,6 +322,7 @@ impl World {
             faulty: AtomicBool::new(false),
             hangs: Mutex::new(Hangs::new(rng.clone().next_u64() ^ HANGS)),
             delays: Mutex::new(SplitMix64::new(rng.clone().next_u64() ^ DELAYS)),
+            failing: Mutex::new(None),
             rng: Mutex::new(SplitMix64::new(rng.next_u64())),
             store: Mutex::new(Store::default()),
             violations: Mutex::new(Vec::new()),
@@ -417,13 +421,22 @@ impl World {
         *self.reached.lock()
     }
 
-    /// A failure at `point`, when faults are on and the draw says so: mostly transient or
-    /// rate-limited, sometimes permanent, and now and then a panic.
+    /// A failure at `point`, where a test failed it, or when faults are on and the draw says so:
+    /// mostly transient or rate-limited, sometimes permanent, and now and then a panic.
     ///
     /// # Panics
     ///
     /// Panics when the draw says the connector panics.
     pub(crate) fn fault(&self, point: FaultPoint) -> Option<ConnectorError> {
+        if self
+            .failing
+            .lock()
+            .take_if(|failing| *failing == point)
+            .is_some()
+        {
+            let message = format!("a test failed the call at {point:?}");
+            return Some(ConnectorError::new(ConnectorErrorKind::Data, message));
+        }
         if !self.faulty.load(Ordering::SeqCst) {
             return None;
         }
@@ -458,6 +471,12 @@ impl World {
             Some(cause) => fault.with_source(std::io::Error::other(cause)),
             None => fault,
         })
+    }
+
+    /// Has the next call at `point` fail for good, faults on or off.
+    #[cfg(test)]
+    pub(crate) fn fail_next(&self, point: FaultPoint) {
+        *self.failing.lock() = Some(point);
     }
 
     /// How many of its pipeline's commit calls a try answered transiently outlasts, where its

@@ -194,6 +194,8 @@ impl Session for SimSession {
         self.world.hang(FaultPoint::CommitBefore).await;
         running::begun(&self.world, &self.pipeline);
         if let Some(fault) = self.world.fault(FaultPoint::CommitBefore) {
+            // The call ends here: the tries left running count it before this one joins them.
+            running::ended(&self.world, &self.pipeline);
             if fault.kind() == ConnectorErrorKind::Transient
                 && let Some(outlasts) = self.world.outlasts()
             {

@@ -12,9 +12,9 @@ use rdlt_connector::limits::ListenLimits;
 use rdlt_connector::{
     ChildTable, ColumnKey, ColumnPath, CommitKey, CommitMeta, ConnectContext, ConnectorErrorKind,
     Cursor, DestinationConnector, Epoch, Field, LogicalType, MergeKey, NameMap, OpenContext,
-    PartitionId, PartitionState, PipelineId, ReadMode, RootKey, SCHEMA_CONFLICT, SchemaVersion,
-    SegmentId, SegmentSet, Session, StateChange, StateEntry, StreamName, TableChange, TablePath,
-    TableRef, TableSchema, TableWriter, source_factory,
+    Opened, PartitionId, PartitionState, PipelineId, ReadMode, RootKey, SCHEMA_CONFLICT,
+    SchemaVersion, SegmentId, SegmentSet, Session, StateChange, StateEntry, StreamName,
+    TableChange, TablePath, TableRef, TableSchema, TableWriter, source_factory,
 };
 use rdlt_testkit::canon::Canon;
 use serde::Serialize;
@@ -28,7 +28,7 @@ use crate::reached::Reach;
 use crate::rng::SplitMix64;
 use crate::seed::{Seed, run};
 use crate::source::{SimCursor, SimSource};
-use crate::world::{Registered, World};
+use crate::world::{FaultPoint, Registered, World};
 
 fn table() -> TableRef {
     TableRef {
@@ -1029,6 +1029,29 @@ fn segment_commit(epoch: Epoch, seq: u64, after: Option<CommitKey>) -> CommitMet
     }
 }
 
+/// A session opened on `world`'s destination as [`opening`] says, its table created and holding
+/// segments 1 and 2 staged, a row each.
+async fn staging(world: &Arc<World>) -> Opened<SimSession> {
+    let destination = destination(Arc::clone(world));
+    let mut opened = destination.open(&opening()).await.unwrap();
+    let create = TableChange::Create {
+        table: table(),
+        schema: TableSchema::new(vec![Field::new("id", LogicalType::Int64, false)]).unwrap(),
+    };
+    opened.session.apply_schema(&create).await.unwrap();
+    let mut writer = opened.session.writer(&table()).await.unwrap();
+    for segment in [1, 2] {
+        let ids = Arc::new(Int64Array::from(vec![segment])) as ArrayRef;
+        let segment = u64::try_from(segment).unwrap();
+        writer
+            .write(SegmentId(segment), batch(vec![("id", ids)]))
+            .await
+            .unwrap();
+    }
+    writer.flush().await.unwrap();
+    opened
+}
+
 #[test]
 fn a_try_left_running_lands_before_its_retry_applies_nothing_after_it_and_is_refused_later() {
     // The calls a try left running outlasts: none, and it lands before its retry; one, and it
@@ -1040,28 +1063,8 @@ fn a_try_left_running_lands_before_its_retry_applies_nothing_after_it_and_is_ref
         let (rows, running) = run(Seed::new(1), {
             let world = Arc::clone(&world);
             |_env| async move {
-                let destination = destination(Arc::clone(&world));
-                let pipeline = PipelineId::parse("sim").unwrap();
-                let context = OpenContext {
-                    pipeline: pipeline.clone(),
-                };
-                let mut opened = destination.open(&context).await.unwrap();
-                let create = TableChange::Create {
-                    table: table(),
-                    schema: TableSchema::new(vec![Field::new("id", LogicalType::Int64, false)])
-                        .unwrap(),
-                };
-                opened.session.apply_schema(&create).await.unwrap();
-                let mut writer = opened.session.writer(&table()).await.unwrap();
-                for segment in [1, 2] {
-                    let ids = Arc::new(Int64Array::from(vec![segment])) as ArrayRef;
-                    let segment = u64::try_from(segment).unwrap();
-                    writer
-                        .write(SegmentId(segment), batch(vec![("id", ids)]))
-                        .await
-                        .unwrap();
-                }
-                writer.flush().await.unwrap();
+                let mut opened = staging(&world).await;
+                let pipeline = opening().pipeline;
                 let first = segment_commit(opened.epoch, 1, None);
                 world
                     .store
@@ -1087,4 +1090,33 @@ fn a_try_left_running_lands_before_its_retry_applies_nothing_after_it_and_is_ref
         );
         drop(registered);
     }
+}
+
+#[test]
+fn a_try_left_running_lands_as_the_next_call_ends_though_it_failed_before_committing() {
+    let registered = World::register("running-failed", &mut SplitMix64::new(1));
+    let world = Arc::clone(registered.world());
+    let (first, landed, running) = run(Seed::new(1), {
+        let world = Arc::clone(&world);
+        |_env| async move {
+            let mut opened = staging(&world).await;
+            let pipeline = opening().pipeline;
+            let first = segment_commit(opened.epoch, 1, None);
+            world
+                .store
+                .lock()
+                .leave_running(&pipeline, opened.epoch, &first, 1);
+            world.fail_next(FaultPoint::CommitBefore);
+            let failed = opened.session.commit(&first).await;
+            assert!(failed.is_err(), "{failed:?}");
+            let store = world.store.lock();
+            let landed = store.pipelines[&pipeline]
+                .landed
+                .as_ref()
+                .map(|landed| landed.key);
+            (first.key, landed, store.running.len())
+        }
+    });
+    assert_eq!((landed, running), (Some(first), 0));
+    drop(registered);
 }
