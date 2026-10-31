@@ -45,7 +45,7 @@ and method, and the verdict; the baselines themselves are in their benches' reco
 | What does a wide table pay a column? | closes if under 10 % of allocations and time in every case | time 8.6 %, 18.3 %, 17.0 %; allocations 6.6 %, 34.3 %, 34.3 % | Not closed |
 | Is a pure commit value worth reopening? | positions' encoding and decoding > a quarter of `commit/1024`'s instructions | at most 12.3 % | Not reopened |
 | Why does served throughput fall with partitions? | diagnosed once | per-partition and per-writer work in every process | Diagnosed |
-| Do shredding jobs sized by rows, cores and a limit pay? | the first of six candidates to hold five rules, else a fallback without the cores term | at a 4 MiB limit wide JSON 1.58–2.81×, one `wide_200` partition on eight cores 0.87–0.90×; `shred_cores/8` 1.13–1.18× | Failed: closed |
+| Do shredding jobs sized by rows, cores and a limit pay? | the first of six candidates to hold five rules, else a fallback without the cores term, the 1.15 and the 1.3 | at a 4 MiB limit wide JSON 1.58–2.81×, one `wide_200` partition on eight cores 0.87–0.90×; `shred_cores/8` 1.13–1.18× | Failed: closed |
 
 The baselines the later rules read, and their records, are listed after the decisions.
 

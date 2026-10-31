@@ -167,8 +167,9 @@ sizing each job from the flush was built and held to rules written before its sw
 candidate held them, so nothing landed and the fixed 1 MiB job stays.
 
 **The rule.** `chunk = min(limit, max(ROWS × r, ⌈text ÷ 2T⌉))`, computed in the cut's pool job:
-`r` the bytes a record takes, by the records ending in the flush's first 64 KiB (line ends, or an
-array's top-level commas; the limit where none ends there), `T` the engine's cores and `limit`
+`r` the bytes a record takes: the flush's first 64 KiB over the records that end in them (line
+ends, or an array's top-level commas), rounded up, and the limit where none ends there; `T` the
+engine's cores and `limit`
 `BatchPolicy::chunk_bytes`. The fallback drops the cores term:
 `chunk = min(limit, max(ROWS × r, 1 MiB))`.
 
@@ -232,7 +233,8 @@ Sixteen `wide_200` partitions ran 1.11–1.19 times the base on both kinds of co
 4 MiB, and 0.79 times on `4-11` at 8 MiB; sixteen `nested` partitions 0.95–1.01 times.
 `shred_cores` at N ≤ 4 on `0-3` read 0.95–1.03 times in every build (rule (d)).
 
-**Verdicts.** Rule (e) was not read, since no candidate held (a) to (d).
+**Verdicts.** Every candidate failed one of (a) to (d), and every fallback build (a) or (c)
+without its 1.15, so rule (e) was not read.
 
 | Candidate | Fails |
 |---|---|
