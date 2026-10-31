@@ -247,7 +247,9 @@ budget before it is held, or bounded by a limit with a typed refusal.
     rows of text with a validity, holds no more than it is admitted for, built in its source's
     process or decoded from its frame; a JSON push's batches no more than they keep charged once
     shredded; a normalized split, in one part and in two, of integers keyed or not, and of those
-    views at a thousand columns, no more than it keeps charged once its parts are planned; a
+    views at a thousand columns, no more than it keeps charged once its parts are planned, whole
+    and with a row planning drops, which copies the rest of each part; a normalized piece holding
+    such copies no more than it reserved while it waits for its first pieces to be written; a
     piece of those views, and of one column of views holding four thousand buffers, in one part
     and in two, no more than it reserved; and what holds and cuts a unit, a change stream's and a
     merge's, keeps nothing a column beside its batches.
@@ -271,20 +273,22 @@ budget before it is held, or bounded by a limit with a typed refusal.
   - Once lowered a piece holds what it keeps alive beyond its unit's batches and its batch's
     arrays, in place of what was reserved, and its frame what the frame takes. The unit's
     batches and its own reservation stay with its last piece until that is written.
-  - **Normalized streams follow the same rule.** A unit's tables are known only once it is
-    split, so it is measured twice. It is first cut, as it arrives, into pieces whose split makes
-    no more than a piece: each row with its lineage, each item an array holds with its own, for
-    the two copies a split may hold. Each such piece then asks the budget once for all a
-    request may take, is split, and each of its parts is cut by its own table: its columns as
-    the table stores them, the nulls of the columns it lacks and the metadata lowering adds.
-    What the piece asked for beyond what its split made and an allowance for two of its parts'
-    pieces is given back. What the split made is counted beyond the unit's batches, with the
-    arrays of the piece's slices of them, of its parts' batches and of their lineage, and a place
-    in a list for each data buffer of its parts' views beyond the first of each view array, and
-    the piece and the parts it planned are held until the last of their pieces is written. The
-    allowance is lent to its parts' pieces: each takes the bytes lowering it holds and gives
-    them back as it is written, so the partition waits for its own pieces to be written, never
-    for the budget, while it holds them, and the allowance goes back with the last of them.
+  - **Normalized streams follow the same rule.** A unit's tables are known only once it is split,
+    so it is measured twice. It is first cut, as it arrives, into pieces whose split makes no more
+    than a piece: each row with its lineage, each item an array holds with its own, for the two
+    copies a split may hold. Each such piece then asks the budget once for all a request may take,
+    is split, its parts are planned, parents first, each losing the rows planning drops with their
+    descendants, and each part is cut by its own table: its columns as the table stores them, the
+    nulls of the columns it lacks and the metadata lowering adds. What the piece asked for beyond
+    what its planned parts hold and an allowance for two of its parts' pieces is given back. What
+    the planned parts hold is counted beyond the unit's batches once they are planned, so a part
+    that lost rows counts the copy of those it kept, with the arrays of the piece's slices of
+    them, of its parts' batches and of their lineage, and a place in a list for each data buffer
+    of its parts' views beyond the first of each view array, and the piece and its planned parts
+    are held until the last of their pieces is written. The allowance is lent to its parts'
+    pieces: each takes the bytes lowering it holds and gives them back as it is written, so the
+    partition waits for its own pieces to be written, never for the budget, while it holds them,
+    and the allowance goes back with the last of them.
   - A change stream's unit is judged and cut where it lies: it is split into its data and its
     change columns, and loses the rows its stream ignores, only as each piece is lowered.
   - A JSON push reserves three times its text and `MESSAGE_ROOM` when it is admitted: the text and
