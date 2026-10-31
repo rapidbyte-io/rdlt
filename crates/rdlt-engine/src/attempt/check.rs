@@ -1,6 +1,6 @@
 //! Checking a planned stream against the source's catalog and the destination's capabilities.
 
-use rdlt_connector::{Catalog, Field, LogicalType, ReadMode, StreamSpec, TypeKind};
+use rdlt_connector::{Catalog, ColumnPath, Field, LogicalType, ReadMode, StreamSpec, TypeKind};
 
 use super::RunContext;
 use crate::error::{Code, Error, codes};
@@ -74,23 +74,29 @@ pub(super) fn check_stream<'a>(
     Ok(spec)
 }
 
-/// Refuses `plan`'s exclusion of a column its stream, `spec`, needs: one of the source's primary
-/// key, or the source's change time.
+/// Refuses `plan`'s exclusion of a column its stream, `spec`, needs, or of the top-level column
+/// that holds one: a column of the source's primary key, or the source's change time, either of
+/// which may be nested.
 pub(super) fn check_excluded(plan: &StreamPlan, spec: &StreamSpec) -> Result<(), Error> {
-    let mut key = spec.primary_key().into_iter().flatten();
-    let needed = match key.find(|column| plan.excludes(column)) {
-        Some(column) => format!("column {column} is of the source's primary key"),
-        None => match spec.change_time().filter(|time| plan.excludes(time)) {
-            Some(time) => format!("column {time} is the source's change time"),
-            None => return Ok(()),
-        },
+    let key = spec.primary_key().into_iter().flatten();
+    let keyed = key.map(|column| (column, "of the source's primary key"));
+    let timed = spec
+        .change_time()
+        .map(|column| (column, "the source's change time"));
+    let held = |column: &ColumnPath| {
+        let root = column.segments().next().unwrap_or_default();
+        plan.excludes(&ColumnPath::from(root))
+    };
+    let Some((column, what)) = keyed.chain(timed).find(|(column, _)| held(column)) else {
+        return Ok(());
     };
     let name = plan.name();
-    Err(
-        Error::config(format!("stream {name}: {needed}, which it cannot exclude"))
-            .with_code(codes::PLAN_EXCLUDE_INVALID)
-            .with_stream(name),
-    )
+    Err(Error::config(format!(
+        "stream {name}: column {column} is {what}, which it cannot exclude, nor the column that \
+         holds it"
+    ))
+    .with_code(codes::PLAN_EXCLUDE_INVALID)
+    .with_stream(name))
 }
 
 /// Why the destination cannot merge `plan`'s change stream as planned, if it is one and cannot.

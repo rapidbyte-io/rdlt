@@ -286,6 +286,13 @@ fn a_column_the_stream_needs_or_sets_cannot_be_excluded() {
     for plan in others {
         PipelinePlan::new(pipeline(), [plan]).unwrap();
     }
+    // A merge key names top-level columns alone, so no exclusion takes one's parent.
+    let nested_key = stream("a")
+        .write(WriteMode::Merge)
+        .key([nested()])
+        .exclude(["a"]);
+    let error = PipelinePlan::new(pipeline(), [nested_key]).unwrap_err();
+    assert_eq!(error.code(), Some(codes::PLAN_COLUMN_NESTED));
 }
 
 #[test]
