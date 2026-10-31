@@ -19,6 +19,7 @@ mod continuous;
 mod destinations;
 mod engine;
 mod exactness;
+mod excluded;
 mod exponents;
 mod following;
 mod following_changes;
