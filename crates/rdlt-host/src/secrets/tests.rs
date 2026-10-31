@@ -313,6 +313,10 @@ fn redactions_replace_every_secret_whole_and_show_none() {
     ] {
         assert_eq!(quoted.scrubbed(format!("<{said}>")), "<***>", "{said}");
     }
+    // As JSON writes one that ends in a quote, it ends in the quote's escape.
+    let ending = Redactions::new();
+    ending.add("a\u{1b}b\"");
+    assert_eq!(ending.scrubbed(r#"<a\u001bb\">"#.to_owned()), "<***>");
     // A copy shares what is added after it was made.
     let shared = redactions.clone();
     redactions.add("later");
