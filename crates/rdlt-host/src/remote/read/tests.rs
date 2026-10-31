@@ -23,7 +23,6 @@ fn reader() -> Reader {
         decoder: Decoder::new(limits),
         limits,
         epoch: None,
-        schema: 0,
         quiet: 0,
         free: 0,
     }
@@ -284,13 +283,14 @@ fn a_read_s_schema_and_dictionaries_are_charged_while_its_decoder_holds_them() {
         reader.kept()
     };
     let (first, second) = (keyed("x"), keyed("y"));
-    // The schema is held from its frame on, with the message it came from.
+    // The schema is held from its frame on, with the message it came from and its dictionary's
+    // field, sixteen bytes.
     let frame = schema_frame(&mut encoder, &first, 1);
     let Some(v1::read_frame::Frame::Schema(message)) = &frame.frame else {
         panic!("the frame is a schema");
     };
     let message = u64::try_from(message.ipc_schema.len()).expect("a length");
-    let schema = rdlt_wire::schema_held_bytes(&first.schema()) + message;
+    let schema = rdlt_wire::schema_held_bytes(&first.schema()) + message + 16;
     assert!(message > 0 && schema > message);
     assert_eq!(read(frame), schema);
     assert_eq!(*charges.0.lock().unwrap(), [schema]);

@@ -385,7 +385,8 @@ budget before it is held, or bounded by a limit with a typed refusal.
   - *What does holding this keep alive?* `cost::Allocations`: each allocation once. For a batch
     decoded from a frame it equals the decoder's `Shape::held_bytes`, the allocation the frame
     arrived in, and the allocations of the dictionaries its keys name, which a test holds it to;
-    the decoder's count of those dictionaries is at least that.
+    the decoder's count of those dictionaries is at least that. A batch's schema is counted by
+    `rdlt_wire::schema_held_bytes`, by which the decoder counts the schema it keeps too.
   - *What do these rows become?* `Rendering::expanded` and `Rendering::measure` before their
     table is known, and `Rendering::lowering` once it is, whose `Measure::piece` says where a
     piece of that size ends. A cut of this kind bounds what the engine lowers at once; the
@@ -466,9 +467,12 @@ budget before it is held, or bounded by a limit with a typed refusal.
   - How far a read is behind, and that a stream's partitions changed, are each partition's
     newest state, with one message queued a partition. Signals heard together plan a stream
     once (ADR 0032).
-  - A decoder's dictionaries are within one frame's bytes together, and the host charges them
-    and the decoder's schema, with the message it came from, to the read's part of what reads
-    keep while the decoder holds them.
+  - A decoder's dictionaries are within one frame's bytes together, and the host charges what
+    the decoder says it keeps (`Decoder::kept_bytes`) to the read's part of what reads keep while
+    the decoder holds it: its dictionaries, its schema with the message it came from, and the
+    field giving each dictionary its type, sixteen bytes an id. No dictionary keeps a schema of
+    its values: the decoder builds one as each dictionary's frame is measured. Tests hold what a
+    decoder keeps for schemas of every shape, and with a thousand dictionaries, to what it says.
   - A JSON push is cut into chunks that keep a span of each push and, of an array, how many
     elements it holds, not a range a record; each chunk's job finds its records again.
   - Row identity reads integers, temporal values and decimals where they lie.

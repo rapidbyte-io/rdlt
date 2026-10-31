@@ -43,7 +43,6 @@ pub(super) async fn run(
         decoder: Decoder::new(limits),
         limits,
         epoch: None,
-        schema: 0,
         quiet: 0,
         free: 0,
     };
@@ -214,8 +213,6 @@ struct Reader {
     decoder: Decoder,
     limits: Limits,
     epoch: Option<u64>,
-    /// Bytes: what the schema the decoder holds takes, with the message it came from.
-    schema: u64,
     /// Frames since the last event of a read's data that carried no event.
     quiet: u64,
     /// Frames since the last event of a read's data that carried an event the engine takes for
@@ -230,7 +227,7 @@ pub const MAX_FREE_FRAMES: u64 = 1024;
 impl Reader {
     /// Bytes: what the decoder keeps between batches, its schema and its dictionaries.
     fn kept(&self) -> u64 {
-        self.schema.saturating_add(self.decoder.dictionary_bytes())
+        self.decoder.kept_bytes()
     }
 
     /// What `frame` means to the read.
@@ -328,13 +325,9 @@ impl Reader {
             return Err(ConnectorError::new(ConnectorErrorKind::Internal, message)
                 .with_code(rdlt_connector::wire::MALFORMED_FRAME));
         }
-        let held = self
-            .decoder
+        self.decoder
             .schema(&schema.ipc_schema)
             .map_err(|error| frame_error(&error))?;
-        // The decoder keeps the schema, and its message to know it by.
-        let message = u64::try_from(schema.ipc_schema.len()).unwrap_or(u64::MAX);
-        self.schema = rdlt_wire::schema_held_bytes(&held).saturating_add(message);
         self.epoch = Some(schema.schema_epoch);
         Ok(Read::Nothing)
     }

@@ -1,11 +1,14 @@
 //! What a schema holds, in the `Arc` a batch keeps it in, is within what its count says, at every
-//! shape the count walks.
+//! shape the count walks; and what a decoder keeps for its schema and dictionaries, within what
+//! it says it keeps.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use arrow_array::types::Int32Type;
+use arrow_array::{ArrayRef, DictionaryArray, Int32Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Fields, Schema, TimeUnit, UnionFields, UnionMode};
-use rdlt_wire::schema_held_bytes;
+use rdlt_wire::{Decoder, Encoder, IpcFrame, Limits, schema_held_bytes};
 
 use super::HEAP;
 
@@ -208,4 +211,55 @@ fn a_schema_holds_no_more_than_its_count_and_not_much_less() {
         }
     }
     assert!(found.is_empty(), "{}", found.join("\n"));
+}
+
+#[test]
+fn a_decoder_keeps_no_more_than_it_says_for_its_schema_and_not_much_less() {
+    let mut found = Vec::new();
+    for (what, make) in shapes() {
+        let message = Encoder::default()
+            .schema(&make())
+            .expect("the schema encodes");
+        let (held, decoder) = held_alone(|| {
+            let mut decoder = Decoder::new(Limits::default());
+            decoder.schema(&message).expect("the schema decodes");
+            decoder
+        });
+        let said = decoder.kept_bytes();
+        if held > said || said > held + held / 16 {
+            found.push(format!("{what}: {said} said, {held} held"));
+        }
+    }
+    assert!(found.is_empty(), "{}", found.join("\n"));
+}
+
+#[test]
+fn a_decoder_keeps_no_more_than_it_says_once_it_holds_its_dictionaries() {
+    // A thousand columns behind keys, each its own dictionary of a word.
+    let columns = (0..1_000).map(|column| {
+        let words = Arc::new(StringArray::from(vec![format!("w{column}")]));
+        let keyed = DictionaryArray::<Int32Type>::try_new(Int32Array::from(vec![0]), words);
+        (
+            format!("c{column}"),
+            Arc::new(keyed.expect("a key within")) as ArrayRef,
+        )
+    });
+    let batch = RecordBatch::try_from_iter(columns).expect("columns of one length");
+    let mut encoder = Encoder::default();
+    let message = encoder.schema(&batch.schema()).expect("the schema encodes");
+    let mut frames = encoder.batch(&batch).expect("the batch encodes");
+    // The batch's own frame: what the decoder keeps is its dictionaries.
+    frames.pop();
+    let frames: Vec<IpcFrame> = frames.iter().map(IpcFrame::aligned).collect();
+    let (held, decoder) = held_alone(|| {
+        let mut decoder = Decoder::new(Limits::default());
+        decoder.schema(&message).expect("the schema decodes");
+        for frame in &frames {
+            let batch = decoder.frame(frame).expect("the dictionary decodes");
+            assert!(batch.is_none(), "a dictionary's frame makes no batch");
+        }
+        decoder
+    });
+    let said = decoder.kept_bytes();
+    assert!(held <= said, "{said} said, {held} held");
 }
