@@ -137,6 +137,7 @@ async fn start(
         barrier,
         unbounded: request.partition.is_unbounded(),
         follow: request.follow,
+        exclude: Vec::new(),
     };
     let control = |control| v1::ReadControl {
         control: Some(control),

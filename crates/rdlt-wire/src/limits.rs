@@ -66,6 +66,10 @@ pub const JSON_PUSH_BYTES: u64 = 64 * 1024 * 1024;
 /// Bytes: bounds one cursor.
 pub const CURSOR_BYTES: u64 = 4 * 1024 * 1024;
 
+/// Bytes: bounds the names of the columns a stream excludes, as a read's start carries them
+/// ([`excluded_bytes`]); a plan whose exclusion takes more is refused.
+pub const EXCLUDED_BYTES: u64 = 256 * 1024;
+
 /// Bytes: bounds the configuration document.
 pub const CONFIG_BYTES: u64 = 8 * 1024 * 1024;
 
@@ -126,6 +130,21 @@ pub const HEADER_LIST_BYTES: u32 = 256 * 1024;
 /// A count or a length as the `u64` every limit is in, saturating where a `usize` is wider.
 pub fn count(value: usize) -> u64 {
     u64::try_from(value).unwrap_or(u64::MAX)
+}
+
+/// Bytes: what the excluded columns `names` take in a read's start, each with its field's key
+/// and length, which [`EXCLUDED_BYTES`] bounds.
+pub fn excluded_bytes<'a>(names: impl IntoIterator<Item = &'a str>) -> u64 {
+    /// The read start's field of excluded columns.
+    const FIELD: u32 = 7;
+    let key = count(prost::encoding::key_len(FIELD));
+    names.into_iter().fold(0, |bytes, name| {
+        let length = count(prost::encoding::encoded_len_varint(count(name.len())));
+        bytes
+            .saturating_add(key)
+            .saturating_add(length)
+            .saturating_add(count(name.len()))
+    })
 }
 
 /// The code of every refusal.
@@ -302,7 +321,7 @@ pub enum Class {
     Config,
     /// A schema change.
     Schema,
-    /// A read's start, its cursor.
+    /// A read's start: its cursor, and the columns its stream excludes.
     Cursor,
     /// A stream of frames.
     Data,
@@ -436,7 +455,7 @@ impl Limits {
             Class::State => bytes(self.state_bytes),
             Class::Config => around(self.config_bytes),
             Class::Schema => around(self.schema_bytes),
-            Class::Cursor => around(self.cursor_bytes),
+            Class::Cursor => around(self.cursor_bytes).saturating_add(bytes(EXCLUDED_BYTES)),
             Class::Data => around(self.frame_bytes),
         }
     }

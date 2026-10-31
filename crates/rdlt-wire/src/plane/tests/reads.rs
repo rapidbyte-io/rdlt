@@ -221,9 +221,10 @@ fn read_control() -> impl Strategy<Value = v1::ReadControl> {
         proptest::option::of((any::<u32>(), bytes(256))),
         any::<u64>(),
         any::<(bool, bool)>(),
+        proptest::collection::vec(".{0,8}", 0..4),
     )
         .prop_map(
-            |(namespace, name, partition, cursor, barrier, (unbounded, follow))| {
+            |(namespace, name, partition, cursor, barrier, (unbounded, follow), exclude)| {
                 C::Start(v1::ReadStart {
                     stream: Some(v1::StreamName { namespace, name }),
                     partition,
@@ -231,6 +232,7 @@ fn read_control() -> impl Strategy<Value = v1::ReadControl> {
                     barrier,
                     unbounded,
                     follow,
+                    exclude,
                 })
             },
         );
