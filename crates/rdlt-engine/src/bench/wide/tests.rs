@@ -92,30 +92,57 @@ fn pushed(wide: &Wide) -> Vec<(BTreeSet<String>, usize)> {
 }
 
 #[test]
-fn a_kept_table_pushes_its_kept_columns_then_the_wide_bench_s_pushes() {
-    assert_eq!((Wide::PUSHES, Wide::KEPT_PUSHES), (8, 9));
-}
-
-#[test]
-fn a_table_kept_to_its_first_columns_discards_every_value_of_the_rest() {
+fn a_table_kept_to_its_first_columns_pushes_every_column_and_excludes_the_rest() {
     let per_push = Wide::rows_of(Form::Arrow, Wide::SPARSE, 1);
     let kept = Wide::keeping(cores(), 300, 100, 3).unwrap();
-    assert_eq!(
-        (kept.rows(), kept.discards()),
-        (3 * per_push, 400 * per_push)
-    );
+    assert_eq!(kept.rows(), 3 * per_push);
     let widths: Vec<usize> = pushed(&kept)
         .iter()
         .map(|(columns, _)| columns.len())
         .collect();
-    assert_eq!(widths, [100, 300, 300]);
-    let all = Wide::keeping(cores(), 100, 100, 3).unwrap();
-    assert_eq!((all.rows(), all.discards()), (3 * per_push, 0));
+    assert_eq!(widths, [300, 300, 300]);
+    // Into a destination that keeps what it loads, the table holds the first columns alone.
+    for (wide, store) in [(&kept, "wide_kept"), (&all_of(), "wide_all")] {
+        let (source, destination) = wide.block_on(async {
+            let replayed = wide.replayed.clone();
+            (
+                crate::bench::replay(store, replayed).await,
+                memory(store).await,
+            )
+        });
+        wide.load(source, destination);
+        let table = rdlt_connector_reference::schema(store, "events").unwrap();
+        let data = table
+            .fields()
+            .iter()
+            .filter(|field| !field.name().starts_with("_rdlt_"));
+        let names: Vec<&str> = data.map(rdlt_connector::Field::name).collect();
+        let first = &pushed(wide)[0].0;
+        assert_eq!(names.len(), 100, "{store}");
+        assert!(names.iter().all(|name| first.contains(*name)), "{store}");
+    }
+    let all = all_of();
     let rows = 3 * per_push;
     for _ in 0..2 {
         assert_eq!(kept.run(), rows);
         assert_eq!(all.run(), rows);
     }
+}
+
+/// A table of 100 columns keeping them all.
+fn all_of() -> Wide {
+    Wide::keeping(cores(), 100, 100, 3).unwrap()
+}
+
+/// A memory destination writing to `store`.
+async fn memory(store: &str) -> std::sync::Arc<dyn rdlt_connector::Destination> {
+    let factory =
+        rdlt_connector::destination_factory::<rdlt_connector_reference::MemoryDestination>();
+    let config = serde_json::json!({ "store": store });
+    let connected = factory
+        .connect(config, rdlt_connector::ConnectContext::new())
+        .await;
+    std::sync::Arc::from(connected.expect("the memory destination connects"))
 }
 
 #[test]
@@ -147,7 +174,6 @@ fn a_sparse_table_s_pushes_take_each_window_of_its_columns_in_turn() {
 fn a_sparse_table_loads_every_row_of_its_pushes() {
     for form in [Form::Arrow, Form::Json] {
         let sparse = Wide::sparse(cores(), form, 3).unwrap();
-        assert_eq!(sparse.discards(), 0);
         for _ in 0..2 {
             assert_eq!(sparse.run(), sparse.rows(), "{form:?}");
         }
