@@ -150,7 +150,8 @@ pub(super) async fn built(
     let chunk_bytes = context.batch.chunk_bytes().get();
     let limits = ShredLimits::new(context.budget.limits().schema_columns);
     let observe = || async {
-        shred::observe(pool, pushes.to_vec(), chunk_bytes, limits)
+        let excluded = job.exclude.clone();
+        shred::observe(pool, pushes.to_vec(), chunk_bytes, limits, excluded)
             .await
             .map_err(failed)
     };

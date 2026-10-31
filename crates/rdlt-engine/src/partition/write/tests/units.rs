@@ -49,9 +49,16 @@ async fn a_partition_waiting_to_build_its_json_holds_none_of_what_observing_it_t
     let _permit = super::json_text(&budget, push.clone()).await;
     let limits = ShredLimits::new(budget.limits().schema_columns);
     let chunk_bytes = BatchPolicy::default().chunk_bytes().get();
-    let observed = shred::observe(&Pool::inline(), vec![push.clone()], chunk_bytes, limits)
-        .await
-        .expect("the push is observed");
+    let excluded = rdlt_connector::Exclusion::default();
+    let observed = shred::observe(
+        &Pool::inline(),
+        vec![push.clone()],
+        chunk_bytes,
+        limits,
+        excluded,
+    )
+    .await
+    .expect("the push is observed");
     let (observing, building) = (limits.beyond_bytes(), observed.excess());
     assert!(
         building > observing,
@@ -79,9 +86,16 @@ async fn json_whose_build_and_what_is_asked_beside_take_all_a_request_may_is_bui
     let push = Bytes::from(records.join("\n"));
     let chunk_bytes = BatchPolicy::default().chunk_bytes().get();
     let limits = ShredLimits::new(10_000);
-    let observed = shred::observe(&Pool::inline(), vec![push.clone()], chunk_bytes, limits)
-        .await
-        .expect("the push is observed");
+    let excluded = rdlt_connector::Exclusion::default();
+    let observed = shred::observe(
+        &Pool::inline(),
+        vec![push.clone()],
+        chunk_bytes,
+        limits,
+        excluded,
+    )
+    .await
+    .expect("the push is observed");
     let request = observed.excess() + 1;
     let capacity = request * crate::limits::REQUEST_SHARE;
     let budget = MemoryBudget::new(capacity, Arc::new(InlineEnv), Duration::from_secs(60));

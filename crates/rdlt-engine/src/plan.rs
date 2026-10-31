@@ -6,8 +6,13 @@ mod tests;
 mod until;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
-use rdlt_connector::{ColumnPath, LogicalType, PipelineId, ReadMode, StreamName};
+use rdlt_connector::{
+    ColumnPath, Exclusion, LogicalType, OP_COLUMN, PipelineId, ReadMode, SEQ_COLUMN, StreamName,
+    UNCHANGED_COLUMN,
+};
+use rdlt_wire::limits::{EXCLUDED_BYTES, excluded_bytes};
 
 use crate::error::{Code, Error, codes};
 use crate::policy::{Nested, SchemaSettings};
@@ -68,6 +73,8 @@ pub struct StreamPlan {
     schema: SchemaSettings,
     columns: BTreeMap<ColumnPath, SchemaSettings>,
     hints: BTreeMap<ColumnPath, LogicalType>,
+    /// Shared, so the many copies of the plan a run makes copy no name.
+    excluded: Arc<BTreeSet<ColumnPath>>,
     retention: RetentionLoss,
 }
 
@@ -84,6 +91,7 @@ impl StreamPlan {
             schema: SchemaSettings::default(),
             columns: BTreeMap::new(),
             hints: BTreeMap::new(),
+            excluded: Arc::default(),
             retention: RetentionLoss::default(),
         }
     }
@@ -164,6 +172,21 @@ impl StreamPlan {
         self
     }
 
+    /// Excludes `columns`, top-level columns, beside any it excludes already: a read may leave
+    /// them out of what it sends, and none of them reaches the stream's table, whatever it sends.
+    ///
+    /// A column the table holds already stays, and later rows hold null in it. A name no column
+    /// has excludes nothing. A key column, a change column, the source's change time and a
+    /// column the plan sets or hints cannot be excluded, nor more names than a read's start
+    /// carries ([`EXCLUDED_BYTES`]).
+    ///
+    /// [`EXCLUDED_BYTES`]: rdlt_wire::limits::EXCLUDED_BYTES
+    #[must_use]
+    pub fn exclude<C: Into<ColumnPath>>(mut self, columns: impl IntoIterator<Item = C>) -> Self {
+        Arc::make_mut(&mut self.excluded).extend(columns.into_iter().map(Into::into));
+        self
+    }
+
     /// The stream.
     pub fn name(&self) -> &StreamName {
         &self.name
@@ -206,6 +229,22 @@ impl StreamPlan {
     /// The type hinted for `column`, if any.
     pub fn hinted(&self, column: &ColumnPath) -> Option<&LogicalType> {
         self.hints.get(column)
+    }
+
+    /// The columns the stream excludes, in order.
+    pub fn excluded(&self) -> impl Iterator<Item = &ColumnPath> {
+        self.excluded.iter()
+    }
+
+    /// Whether the stream excludes `column`.
+    pub(crate) fn excludes(&self, column: &ColumnPath) -> bool {
+        self.excluded.contains(column)
+    }
+
+    /// The columns the stream excludes, as its reads and the shredder take them: top-level ones,
+    /// as the plan checks.
+    pub(crate) fn exclusion(&self) -> Exclusion {
+        Exclusion::new(self.excluded.iter().map(ToString::to_string))
     }
 
     /// How the stream is read.
@@ -258,8 +297,10 @@ impl PipelinePlan {
     /// Validates `streams` of `pipeline`: at least one stream, distinct names and tables, supported
     /// combinations of read and write modes (`full` with `append`, `replace` or `merge`,
     /// `incremental` and `cdc` with `append` or `merge`), a key only on merge streams, delete and
-    /// truncate modes only on `cdc` streams merged by key, and settings, hints and keys naming
-    /// top-level columns.
+    /// truncate modes only on `cdc` streams merged by key, settings, hints, keys and exclusions
+    /// naming top-level columns, no excluded column the stream needs or sets (a change column, a
+    /// key column, or one it sets or hints), and no more excluded names than a read's start
+    /// carries.
     pub fn new(
         pipeline: PipelineId,
         streams: impl IntoIterator<Item = StreamPlan>,
@@ -293,6 +334,7 @@ impl PipelinePlan {
             }
             check_modes(stream)?;
             check_columns(stream)?;
+            check_exclusion(stream)?;
         }
         Ok(Self {
             pipeline,
@@ -373,8 +415,8 @@ fn check_modes(stream: &StreamPlan) -> Result<(), Error> {
     }
 }
 
-/// Refuses column settings, hints and keys that name nested columns, which only top-level
-/// columns may have until nested columns can be normalized, and null hints.
+/// Refuses column settings, hints, keys and exclusions that name nested columns, which only
+/// top-level columns may have until nested columns can be normalized, and null hints.
 fn check_columns(stream: &StreamPlan) -> Result<(), Error> {
     let refuse = |code: Code, reason: String| {
         Err(Error::config(format!("stream {}: {reason}", stream.name))
@@ -385,13 +427,15 @@ fn check_columns(stream: &StreamPlan) -> Result<(), Error> {
         .columns
         .keys()
         .chain(stream.hints.keys())
-        .chain(stream.key.iter().flatten());
+        .chain(stream.key.iter().flatten())
+        .chain(stream.excluded.iter());
     for column in named {
         if column.segments().count() > 1 {
             return refuse(
                 codes::PLAN_COLUMN_NESTED,
                 format!(
-                    "column {column} is nested; settings, hints and keys name top-level columns"
+                    "column {column} is nested; settings, hints, keys and exclusions name \
+                     top-level columns"
                 ),
             );
         }
@@ -421,6 +465,42 @@ fn check_columns(stream: &StreamPlan) -> Result<(), Error> {
             codes::PLAN_KEY_EMPTY,
             "the merge key names no column".to_owned(),
         );
+    }
+    Ok(())
+}
+
+/// Refuses excluding a column the stream needs or sets: a change column, a column of the plan's
+/// key, or one the plan sets or hints; and an exclusion whose names a read's start cannot carry.
+fn check_exclusion(stream: &StreamPlan) -> Result<(), Error> {
+    let refuse = |reason: String| {
+        Err(Error::config(format!("stream {}: {reason}", stream.name))
+            .with_code(codes::PLAN_EXCLUDE_INVALID)
+            .with_stream(&stream.name))
+    };
+    for column in stream.excluded.iter() {
+        let name = column.to_string();
+        let held = if matches!(name.as_str(), OP_COLUMN | SEQ_COLUMN | UNCHANGED_COLUMN) {
+            "a change column"
+        } else if stream.key.iter().flatten().any(|key| key == column) {
+            "a column of its key"
+        } else if stream.columns.contains_key(column) {
+            "a column it sets"
+        } else if stream.hints.contains_key(column) {
+            "a column it hints"
+        } else {
+            continue;
+        };
+        return refuse(format!(
+            "column {column} is {held}, which it cannot exclude"
+        ));
+    }
+    let names: Vec<String> = stream.excluded.iter().map(ToString::to_string).collect();
+    let bytes = excluded_bytes(names.iter().map(String::as_str));
+    if bytes > EXCLUDED_BYTES {
+        return refuse(format!(
+            "the columns it excludes take {bytes} bytes as a read's start carries them, beyond \
+             the limit of {EXCLUDED_BYTES}"
+        ));
     }
     Ok(())
 }

@@ -1,6 +1,6 @@
 //! One partition to read, as an attempt asks for it.
 
-use rdlt_connector::{Cursor, Partition, StreamName};
+use rdlt_connector::{Cursor, Exclusion, Partition, StreamName};
 use tokio_util::sync::CancellationToken;
 
 /// One partition to read.
@@ -29,6 +29,9 @@ pub(crate) struct PartitionJob {
     /// Whether the partition reads again from its source's earliest where the source's retention
     /// dropped where it would resume, rather than failing.
     pub(crate) reset_retention: bool,
+    /// The columns the stream excludes: its read may leave them out, and they are dropped from
+    /// whatever it sends.
+    pub(crate) exclude: Exclusion,
 }
 
 impl PartitionJob {

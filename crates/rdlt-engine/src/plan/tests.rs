@@ -1,4 +1,7 @@
-use rdlt_connector::{ColumnPath, LogicalType, PipelineId, ReadMode, StreamName};
+use rdlt_connector::{
+    ColumnPath, Exclusion, LogicalType, OP_COLUMN, PipelineId, ReadMode, SEQ_COLUMN, StreamName,
+    UNCHANGED_COLUMN,
+};
 
 use super::{DeleteMode, OnTruncate, PipelinePlan, StreamPlan, Until, WriteMode};
 use crate::error::{ErrorKind, codes};
@@ -83,6 +86,10 @@ fn unsupported_plans_are_configuration_errors() {
         (
             vec![stream("a").column("n", SchemaSettings::new().nested(Nested::normalize()))],
             codes::PLAN_NESTED_NORMALIZE_COLUMN,
+        ),
+        (
+            vec![stream("a").exclude([nested()])],
+            codes::PLAN_COLUMN_NESTED,
         ),
     ];
     for (streams, code) in cases {
@@ -244,4 +251,68 @@ fn a_run_commits_as_a_stream_where_it_follows_its_source_or_reads_changes() {
             "{read:?} {until:?}"
         );
     }
+}
+
+#[test]
+fn a_column_the_stream_needs_or_sets_cannot_be_excluded() {
+    let merged = || stream("a").write(WriteMode::Merge).key(["id", "tag"]);
+    let cases = [
+        stream("a").exclude([OP_COLUMN]),
+        stream("a").exclude([SEQ_COLUMN]),
+        stream("a")
+            .read(ReadMode::Cdc)
+            .exclude(["n", UNCHANGED_COLUMN]),
+        merged().exclude(["tag"]),
+        stream("a")
+            .column("n", SchemaSettings::new().policy(SchemaPolicy::Freeze))
+            .exclude(["n"]),
+        stream("a").hint("n", LogicalType::Int64).exclude(["n"]),
+    ];
+    for plan in cases {
+        let error = PipelinePlan::new(pipeline(), [plan.clone()]).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Config, "{plan:?}");
+        assert_eq!(error.code(), Some(codes::PLAN_EXCLUDE_INVALID), "{plan:?}");
+        assert_eq!(error.stream(), Some(&StreamName::new("a").unwrap()));
+    }
+    // A column named like one the stream needs is excluded where it needs none of them.
+    let others = [
+        merged().exclude(["n"]),
+        stream("a")
+            .column("n", SchemaSettings::new())
+            .exclude(["m"]),
+        stream("a").hint("n", LogicalType::Int64).exclude(["m"]),
+        stream("a").exclude(["_rdlt_loaded_at"]),
+    ];
+    for plan in others {
+        PipelinePlan::new(pipeline(), [plan]).unwrap();
+    }
+}
+
+#[test]
+fn an_exclusion_is_refused_where_a_read_s_start_could_not_carry_its_names() {
+    // Each name takes 17 bytes, its 15 and its field's key and length: 262,140 bytes together,
+    // and the last name's 4 or 5 more make the limit exactly, or pass it.
+    let names = |last: &str| {
+        let names = (0..15_420).map(|index| format!("column_{index:08}"));
+        let names: Vec<String> = names.chain([last.to_owned()]).collect();
+        names
+    };
+    let carried = names("xy");
+    let carried = stream("a").exclude(carried.iter().map(String::as_str));
+    PipelinePlan::new(pipeline(), [carried]).unwrap();
+    let beyond = names("xyz");
+    let beyond = stream("a").exclude(beyond.iter().map(String::as_str));
+    let error = PipelinePlan::new(pipeline(), [beyond]).unwrap_err();
+    assert_eq!(error.code(), Some(codes::PLAN_EXCLUDE_INVALID));
+}
+
+#[test]
+fn a_stream_carries_the_columns_it_excludes_once_each() {
+    let plan = stream("a").exclude(["b"]).exclude(["c", "b"]);
+    let excluded: Vec<&ColumnPath> = plan.excluded().collect();
+    assert_eq!(excluded, [&ColumnPath::from("b"), &ColumnPath::from("c")]);
+    assert_eq!(plan.exclusion(), Exclusion::new(["b", "c"]));
+    assert!(stream("a").exclusion().is_empty());
+    let plan = PipelinePlan::new(pipeline(), [plan.clone()]).unwrap();
+    assert_eq!(plan.streams()[0].exclusion(), Exclusion::new(["c", "b"]));
 }
