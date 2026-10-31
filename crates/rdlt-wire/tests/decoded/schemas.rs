@@ -8,12 +8,16 @@ use std::sync::Arc;
 use arrow_array::types::Int32Type;
 use arrow_array::{ArrayRef, DictionaryArray, Int32Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Fields, Schema, TimeUnit, UnionFields, UnionMode};
-use rdlt_wire::{Decoder, Encoder, IpcFrame, Limits, schema_held_bytes};
+use rdlt_wire::{Decoder, Encoder, IpcFrame, Limits, child_fields, schema_held_bytes};
 
 use super::HEAP;
 
 /// How to make a schema, again for each window it is measured in.
 type Make = Box<dyn Fn() -> Schema>;
+
+/// Bytes: the most a map of metadata's table is counted beyond what it takes.
+// 28 where hashbrown's control group is 16 bytes (SSE2), 8 more where it is 8 bytes (aarch64).
+const MAP_SLACK: u64 = 28 + 8;
 
 /// A schema's shape, by what it holds, and how to make one.
 type Shaped = (&'static str, fn() -> Schema);
@@ -33,6 +37,18 @@ fn held_alone<T>(make: impl Fn() -> T) -> (u64, T) {
     }
     let held = least.expect("a window ended with the heap holding what it began with");
     (u64::try_from(held).expect("a size"), make())
+}
+
+/// The maps of metadata `schema` holds a table in: its own, and its fields' at any depth.
+fn tables(schema: &Schema) -> u64 {
+    let mut tables = u64::from(schema.metadata().capacity() > 0);
+    // A stack of the fields still to look at, so a deep type costs no call stack.
+    let mut pending: Vec<&Field> = schema.fields().iter().map(AsRef::as_ref).collect();
+    while let Some(field) = pending.pop() {
+        tables += u64::from(field.metadata().capacity() > 0);
+        pending.extend(child_fields(field.data_type()));
+    }
+    tables
 }
 
 /// A schema of `fields` fields, each made by `field` from its place.
@@ -205,8 +221,7 @@ fn a_schema_holds_no_more_than_its_count_and_not_much_less() {
     for (what, make) in shapes() {
         let (held, schema) = held_alone(|| Arc::new(make()));
         let counted = schema_held_bytes(&schema);
-        // A map's table is counted at most a few bytes a slot beyond what it takes.
-        if held > counted || counted > held + held / 16 {
+        if held > counted || counted - held > tables(&schema) * MAP_SLACK {
             found.push(format!("{what}: {counted} counted, {held} held"));
         }
     }
@@ -220,13 +235,14 @@ fn a_decoder_keeps_no_more_than_it_says_for_its_schema_and_not_much_less() {
         let message = Encoder::default()
             .schema(&make())
             .expect("the schema encodes");
-        let (held, decoder) = held_alone(|| {
+        let decoding = || {
             let mut decoder = Decoder::new(Limits::default());
-            decoder.schema(&message).expect("the schema decodes");
-            decoder
-        });
+            let schema = decoder.schema(&message).expect("the schema decodes");
+            (decoder, schema)
+        };
+        let (held, (decoder, schema)) = held_alone(decoding);
         let said = decoder.kept_bytes();
-        if held > said || said > held + held / 16 {
+        if held > said || said - held > tables(&schema) * MAP_SLACK {
             found.push(format!("{what}: {said} said, {held} held"));
         }
     }
