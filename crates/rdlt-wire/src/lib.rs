@@ -45,7 +45,8 @@ pub mod tls;
 pub mod v1;
 
 pub use codec::{
-    Cut, Decoder, Encoder, IpcFrame, Shape, Weigher, Weight, child_fields, schema_message_bytes,
+    Cut, Decoder, Encoder, IpcFrame, Shape, Weigher, Weight, child_fields, schema_held_bytes,
+    schema_message_bytes,
 };
 pub use error::{Frame, Part, Problem, WireError};
 pub use limits::{Limit, Limits, Refusal, Shortfall};

@@ -290,7 +290,7 @@ fn a_read_s_schema_and_dictionaries_are_charged_while_its_decoder_holds_them() {
         panic!("the frame is a schema");
     };
     let message = u64::try_from(message.ipc_schema.len()).expect("a length");
-    let schema = rdlt_connector::cost::schema_bytes(&first.schema()) + message;
+    let schema = rdlt_wire::schema_held_bytes(&first.schema()) + message;
     assert!(message > 0 && schema > message);
     assert_eq!(read(frame), schema);
     assert_eq!(*charges.0.lock().unwrap(), [schema]);
@@ -346,7 +346,8 @@ fn a_read_that_would_keep_more_than_it_may_is_refused_and_holds_nothing_more() {
 
 #[test]
 fn batches_of_a_schema_sent_again_before_each_keep_one_schema_alive() {
-    use rdlt_connector::cost::{Allocations, schema_bytes};
+    use rdlt_connector::cost::Allocations;
+    use rdlt_wire::schema_held_bytes;
     // Sixteen columns named in sixty kilobytes each: about a megabyte of schema.
     let columns = (0..16).map(|index| {
         let name = format!("{index:02}{}", "n".repeat(59_998));
@@ -354,7 +355,7 @@ fn batches_of_a_schema_sent_again_before_each_keep_one_schema_alive() {
         (name, ones)
     });
     let batch = RecordBatch::try_from_iter(columns).expect("a valid batch");
-    let schema = schema_bytes(&batch.schema());
+    let schema = schema_held_bytes(&batch.schema());
     assert!(schema >= 960_000);
     let (mut reader, mut encoder) = (reader(), Encoder::default());
     let mut kept = Allocations::default();

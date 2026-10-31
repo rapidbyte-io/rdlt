@@ -90,7 +90,7 @@ fn allocated(batch: &RecordBatch) -> u64 {
 
 /// The bytes the columns of `batch` keep alive.
 fn buffers(batch: &RecordBatch) -> u64 {
-    allocated(batch) - rdlt_connector::cost::schema_bytes(&batch.schema())
+    allocated(batch) - rdlt_wire::schema_held_bytes(&batch.schema())
 }
 
 fn ids(rows: i64) -> RecordBatch {
@@ -244,7 +244,7 @@ fn a_change_stream_s_unit_is_judged_and_cut_where_it_lies() {
     // they keep alive only a schema of their own.
     let judged = data(&unit).unwrap();
     assert_eq!(judged.num_columns(), 1);
-    let schema = rdlt_connector::cost::schema_bytes(&judged.schema());
+    let schema = rdlt_wire::schema_held_bytes(&judged.schema());
     assert_eq!(
         Allocations::default().add_beyond(&judged, &Allocations::of(&unit)),
         schema

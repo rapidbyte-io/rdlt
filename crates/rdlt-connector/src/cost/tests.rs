@@ -19,10 +19,11 @@ use arrow_schema::{DataType, Field, Fields, IntervalUnit, UnionFields};
 use bytes::Bytes;
 use proptest::prelude::*;
 use rdlt_wire::limits::MESSAGE_ROOM;
+use rdlt_wire::schema_held_bytes;
 
 use super::{
     Allocations, JSON_CHARGE, Piece, Rendering, Stored, ViewBuffers, array_bytes, arrays,
-    batch_charge, json_charge, nulls, push_charge, schema_bytes,
+    batch_charge, json_charge, nulls, push_charge,
 };
 use crate::sink::Push;
 use crate::types::{self, LogicalType, TypeKind};
@@ -489,8 +490,8 @@ fn a_batch_holds_every_allocation_it_pins_once() {
     assert_eq!(Allocations::default().add_array(slice.as_ref()), bytes);
     let shared = RecordBatch::try_from_iter([("a", Arc::clone(&slice)), ("b", slice)]).unwrap();
     // The batch holds its schema beside: two fields named in a byte each.
-    let held = bytes + schema_bytes(&shared.schema());
-    assert_eq!(schema_bytes(&shared.schema()), 2 * 129);
+    let held = bytes + schema_held_bytes(&shared.schema());
+    assert_eq!(schema_held_bytes(&shared.schema()), 2 * 129);
     assert_eq!(Allocations::of(&shared).bytes(), held);
     // A push holds its two arrays beside, 320 bytes each.
     assert_eq!(push_charge(&Push::Arrow(shared)), held + 2 * 320);
@@ -583,7 +584,7 @@ fn allocations_count_only_what_a_set_did_not_hold() {
     assert_eq!(held.bytes(), before + added);
     // A batch of an array the set holds adds its schema alone, and once.
     let second = batch(second);
-    assert_eq!(held.add(&second), schema_bytes(&second.schema()));
+    assert_eq!(held.add(&second), schema_held_bytes(&second.schema()));
     assert_eq!(held.add(&second.slice(0, 5)), 0);
 }
 
@@ -606,7 +607,7 @@ fn allocations_beyond_a_set_count_what_it_does_not_hold_once_and_leave_it_as_it_
     assert_eq!(beyond.bytes(), bytes);
     // A batch of both adds its own schema beyond, once.
     let both = RecordBatch::try_from_iter([("a", unit), ("b", made)]).unwrap();
-    let schema = schema_bytes(&both.schema());
+    let schema = schema_held_bytes(&both.schema());
     assert_eq!(beyond.add_beyond(&both, &held), schema);
     assert_eq!(beyond.add_beyond(&both.slice(0, 5), &held), 0);
     assert_eq!(beyond.bytes(), bytes + schema);
@@ -643,7 +644,7 @@ fn a_validity_holding_no_null_counts_where_an_array_keeps_it() {
     ]);
     let nested = StructArray::new(fields, vec![Arc::new(valid), Arc::new(other)], None);
     let nested = batch(Arc::new(nested));
-    let schema = schema_bytes(&nested.schema());
+    let schema = schema_held_bytes(&nested.schema());
     assert_eq!(Allocations::of(&nested).bytes(), bytes + more + schema);
     // A slice holding no null of an array that holds one keeps the whole validity alive.
     let (some, bytes) = flags(NullBuffer::from_iter((0..rows).map(|row| row > 0)));
@@ -737,42 +738,6 @@ fn a_batch_nested_beyond_any_the_limits_admit_costs_more_than_any_limit() {
     let admitted = nested(64);
     let column = Arc::clone(admitted.column(0));
     assert!(expanded(&native(), &column) < 10_000);
-}
-
-#[test]
-fn a_schema_counts_its_names_and_metadata_at_any_depth() {
-    use std::collections::HashMap;
-    let named = |name: &str, data_type| Field::new(name, data_type, true);
-    let plain = arrow_schema::Schema::new(vec![named("ab", DataType::Int8)]);
-    assert_eq!(schema_bytes(&plain), 128 + 2);
-    // A megabyte of name is a megabyte held, wherever the field lies.
-    let long = "n".repeat(1 << 20);
-    let inner = named(&long, DataType::Int8);
-    let item = Arc::new(named("item", DataType::Struct(Fields::from(vec![inner]))));
-    let keyed = DataType::Dictionary(Box::new(DataType::Int8), Box::new(DataType::List(item)));
-    let nested = arrow_schema::Schema::new(vec![named("c", keyed)]);
-    assert_eq!(schema_bytes(&nested), 3 * 128 + 1 + 4 + (1 << 20));
-    // Metadata of the schema and of a field, and a time zone.
-    let zoned = DataType::Timestamp(arrow_schema::TimeUnit::Second, Some("Europe/Warsaw".into()));
-    let field = named("t", zoned).with_metadata(HashMap::from([("k".to_owned(), "vv".to_owned())]));
-    let schema = arrow_schema::Schema::new(vec![field])
-        .with_metadata(HashMap::from([("key".to_owned(), "value".to_owned())]));
-    assert_eq!(schema_bytes(&schema), (48 + 8) + 128 + 1 + (48 + 3) + 13);
-    // A type nested deeper than any stack walks is counted to its end.
-    let deep = crate::cost::tests::nested(3_000).schema();
-    assert_eq!(schema_bytes(&deep), 3_000 * 128 + 6 + 2_999);
-    // A union's members are fields of it, and so are a run-end encoding's ends and values.
-    let members = [named("i", DataType::Int8), named("s", DataType::Utf8)];
-    let members = UnionFields::try_new([0, 1], members).unwrap();
-    let union = DataType::Union(members, arrow_schema::UnionMode::Dense);
-    let ends = Arc::new(Field::new("run_ends", DataType::Int16, false));
-    let runs = DataType::RunEndEncoded(ends, Arc::new(named("values", DataType::Int8)));
-    let encoded = arrow_schema::Schema::new(vec![named("u", union), named("r", runs)]);
-    let texts = 1 + 1 + 1 + 1 + "run_ends".len() + "values".len();
-    assert_eq!(
-        schema_bytes(&encoded),
-        6 * 128 + u64::try_from(texts).unwrap()
-    );
 }
 
 #[test]

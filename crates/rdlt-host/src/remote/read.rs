@@ -334,7 +334,7 @@ impl Reader {
             .map_err(|error| frame_error(&error))?;
         // The decoder keeps the schema, and its message to know it by.
         let message = u64::try_from(schema.ipc_schema.len()).unwrap_or(u64::MAX);
-        self.schema = rdlt_connector::cost::schema_bytes(&held).saturating_add(message);
+        self.schema = rdlt_wire::schema_held_bytes(&held).saturating_add(message);
         self.epoch = Some(schema.schema_epoch);
         Ok(Read::Nothing)
     }
