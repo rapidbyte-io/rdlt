@@ -188,6 +188,12 @@ is built and read as it was written:
     single value rendering beyond 2 GiB is not data a pipeline loads.
   - Naming an unusable key's child table by escaping or hashing it: any mapping either aliases a
     real key or renames tables that exist.
+  - A table of the records the shredder refuses, chosen by a stream setting and published in the
+    commit of the segment each came from, until a production source that pushes untrusted JSON,
+    such as a webhook, a third-party API or a topic, is named. The first one brings it, which
+    removes the outage one refused record causes.
+  - A dead-letter queue outside the destination: it is a second destination, which needs
+    exactly-once of its own, where a table published in the same commit needs none.
 
 ## Consequences
 
