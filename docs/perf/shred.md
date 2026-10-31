@@ -168,8 +168,8 @@ candidate held them, so nothing landed and the fixed 1 MiB job stays.
 
 **The rule.** `chunk = min(limit, max(ROWS × r, ⌈text ÷ 2T⌉))`, computed in the cut's pool job:
 `r` the bytes a record takes: the flush's first 64 KiB over the records that end in them (line
-ends, or an array's top-level commas), rounded up, and the limit where none ends there; `T` the
-engine's cores and `limit`
+ends, or an array's top-level commas), rounded up, and the limit where none ends there; `text` the
+bytes of the flush's pushes together; `T` the engine's cores and `limit`
 `BatchPolicy::chunk_bytes`. The fallback drops the cores term:
 `chunk = min(limit, max(ROWS × r, 1 MiB))`.
 
