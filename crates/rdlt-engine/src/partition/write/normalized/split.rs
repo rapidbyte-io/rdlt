@@ -1,5 +1,5 @@
-//! A normalized piece split into its tables' parts on the compute pool, and what the split
-//! holds beyond the unit the piece is cut from.
+//! A normalized piece split into its tables' parts on the compute pool, and what its planned
+//! parts hold beyond the unit the piece is cut from.
 
 use std::sync::Arc;
 
@@ -72,13 +72,16 @@ pub(in crate::partition::write) fn split(
     normalize::normalize(&batch, shape, schemas).map_err(failed)
 }
 
-/// Bytes: what splitting `piece`, slices of a unit, into `parts` holds beyond the unit until the
-/// last of their pieces is written: the allocations of the parts' batches and lineage that the
-/// piece's batches do not keep alive, each counted once, the arrays of `piece`'s batches, of the
-/// parts' and of their lineage, and a place in a list for each data buffer of the parts' views
-/// beyond the first of each view array: the split joins the piece's lists, and a part's arrays
-/// hold the first.
-pub(in crate::partition::write) fn made(piece: &[RecordBatch], parts: &[Part]) -> u64 {
+/// Bytes: what `parts`, split from `piece`, slices of a unit, and planned, hold beyond the unit
+/// until the last of their pieces is written: the allocations of the parts' batches and lineage
+/// that the piece's batches do not keep alive, each counted once, the rows a part kept where it
+/// lost some among them, the arrays of `piece`'s batches, of the parts' and of their lineage, and
+/// a place in a list for each data buffer of the parts' views beyond the first of each view
+/// array: the split joins the piece's lists, and a part's arrays hold the first.
+pub(in crate::partition::write) fn made<'a>(
+    piece: &[RecordBatch],
+    parts: impl IntoIterator<Item = &'a Part>,
+) -> u64 {
     // A split reads only its piece, so what its parts share with the unit is the piece's.
     let (unit, mut made): (Allocations, _) = (piece.iter().collect(), Allocations::default());
     let sliced = piece
@@ -113,8 +116,8 @@ pub(in crate::partition::write) fn part_growth(
         .fold(batch, u64::saturating_add)
 }
 
-/// What a split's `parts` hold, their batches and lineage, kept until the last of their pieces
-/// is written, as what the split made is charged until then.
+/// What a piece's planned `parts` hold, their batches and lineage, kept until the last of their
+/// pieces is written, as [`made`] charges them until then.
 pub(in crate::partition::write) fn kept<'a>(
     parts: impl IntoIterator<Item = &'a Part>,
 ) -> Vec<(RecordBatch, Lineage)> {
