@@ -112,8 +112,11 @@ merges, the wire and the simulation must agree on what each change does and in w
   plans a `Vec<Partition>`, which converts through `From`.
 - A destination that implements change merges must honour the seq guard across commits, and a
   truncate's seq bound. `D-MERGE` and `D-TRUNCATE` check this for any destination.
-- A destination declares that it merges change streams (`Capabilities::merge_changes`; ADR 0027),
-  and one that does not is sent no change stream to merge, so none upserts change rows as data.
+- A destination declares that it merges change streams (`Capabilities::merge_changes`; ADR 0027).
+  A change stream written by key (`merge` or `history`) into one that does not is refused when
+  the attempt plans it, before any of its rows are read (`change_merge_unsupported`, a Config
+  error), so no destination upserts change rows as data. A change log appends its rows and needs
+  no such capability.
 - State records name their format and refuse fields their reader does not know, so a build
   reading another's state refuses it (ADR 0041).
 - Switching an existing merge table to CDC needs a new table: a `ResetScope::Tables` reset drops
