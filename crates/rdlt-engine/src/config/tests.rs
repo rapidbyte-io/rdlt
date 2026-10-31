@@ -137,10 +137,10 @@ fn memory_below_what_the_protocol_s_least_limits_need_is_refused_naming_the_leas
             "{said}"
         );
     }
-    // About thirty-eight mebibytes at the default sixteen partitions, and the default is far
+    // About thirty-seven mebibytes at the default sixteen partitions, and the default is far
     // above it. A frame sets it: a byte below, each of more partitions' reads still keeps twice
     // the least dictionary.
-    assert_eq!(EngineConfig::least_memory(16), 39_545_528);
+    assert_eq!(EngineConfig::least_memory(16), 38_414_264);
     let below = EngineConfig::least_memory(19) - 1;
     let limits = admitted(Shares::of(below), 19);
     assert!(limits.frame_bytes < MIN_FRAME_BYTES, "{limits:?}");
@@ -158,12 +158,12 @@ fn the_limits_are_the_lesser_of_those_configured_and_those_the_memory_admits() {
     assert_eq!(
         defaults,
         Limits {
-            frame_bytes: (32 << 20) - 7_489 * 33 - 3 * 937 - 10 - 1_024 - (2 * 7_489 + 16) * 320,
+            frame_bytes: (32 << 20) - 6_241 * 33 - 3 * 781 - 10 - 1_024 - (2 * 6_241 + 16) * 320,
             json_push_bytes: ((100 << 20) - MESSAGE_ROOM) / 3,
             cursor_bytes: (4 << 20) / 34,
             dictionary_bytes: 2 << 20,
-            schema_bytes: (2 << 20) / 5,
-            schema_columns: 7_489,
+            schema_bytes: (2 << 20) / 6,
+            schema_columns: 6_241,
             catalog_bytes: 1 << 20,
             ..Limits::default()
         }
@@ -237,12 +237,12 @@ fn reading_more_partitions_at_once_lowers_what_each_read_may_send() {
 #[test]
 fn partitions_beyond_the_parts_the_memory_holds_need_no_more_memory() {
     let most = EngineConfig::least_memory(18);
-    assert_eq!(most, 38_780_592);
+    assert_eq!(most, 37_810_920);
     for partitions in [19, 128, 129, 257, MAX_PLAN_PARTITIONS] {
         assert_eq!(EngineConfig::least_memory(partitions), most, "{partitions}");
     }
     // 257 partitions, as a run following 256 unbounded ones reads, within the default memory:
-    // each read keeps twice the least dictionary, a schema of 936 columns at most.
+    // each read keeps twice the least dictionary, a schema of 780 columns at most.
     let many = EngineConfig::builder()
         .partitions(257)
         .build()
@@ -254,13 +254,13 @@ fn partitions_beyond_the_parts_the_memory_holds_need_no_more_memory() {
             many.schema_bytes,
             many.schema_columns
         ),
-        (MIN_DICTIONARY_BYTES, 52_428, 936)
+        (MIN_DICTIONARY_BYTES, 43_690, 780)
     );
     assert_eq!(many.admit_peer(), Ok(()));
     let defaults = EngineConfig::default().limits();
     assert_eq!(
         (defaults.schema_bytes, defaults.schema_columns),
-        (419_430, 7_489)
+        (349_525, 6_241)
     );
 }
 

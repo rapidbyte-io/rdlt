@@ -3,15 +3,16 @@ use std::sync::Arc;
 use arrow_array::builder::StringViewBuilder;
 use arrow_array::types::Int32Type;
 use arrow_array::{ArrayRef, DictionaryArray, Int32Array, RecordBatch};
+use arrow_schema::{DataType, Field, Fields, Schema, UnionFields, UnionMode};
 use proptest::prelude::*;
 use rdlt_connector::cost::{Allocations, batch_charge, json_charge};
-use rdlt_wire::Limits;
 use rdlt_wire::limits::{Class, MESSAGE_ROOM, MIN_DICTIONARY_BYTES, MIN_FRAME_BYTES};
+use rdlt_wire::{Decoder, Encoder, Limits};
 
 use super::{HALVED, admitted, kept, least, parts, pushed_arrays, row_overhead};
 use crate::budget::Shares;
 use crate::fixtures::lowering::wide::{dictionaries, integers};
-use crate::limits::COLUMN_RECORD;
+use crate::limits::{COLUMN_RECORD, SCHEMA_KEPT};
 
 const MIB: u64 = 1 << 20;
 
@@ -21,21 +22,21 @@ fn the_default_budget_admits_these_limits() {
     assert_eq!(
         limits,
         Limits {
-            // Half the 64 MiB a request takes, less a row's nulls, flags (937 bytes and their
+            // Half the 64 MiB a request takes, less a row's nulls, flags (781 bytes and their
             // hex), metadata and its piece's arrays (320 bytes each, two a column and sixteen),
             // in a table of every column: that binds, not the 96 MiB pushes may take.
-            frame_bytes: 32 * MIB - 7_489 * 33 - 3 * 937 - 10 - 1_024 - (2 * 7_489 + 16) * 320,
+            frame_bytes: 32 * MIB - 6_241 * 33 - 3 * 781 - 10 - 1_024 - (2 * 6_241 + 16) * 320,
             // A third of the 100 MiB pushes may take, less a message's room.
             json_push_bytes: (100 * MIB - MESSAGE_ROOM) / 3,
             // A cursor waiting and an answer for each of sixteen reads, and half the share.
             cursor_bytes: 4 * MIB / 34,
             // A read keeps 4 MiB: half for its dictionaries, half for its schema, whose
-            // message is a fifth of that.
+            // message is a sixth of that.
             dictionary_bytes: 2 * MIB,
-            schema_bytes: 2 * MIB / 5,
-            // What the 0.4 MiB of a schema's message carries of short names, fewer than the
-            // 16,384 that 8 MiB of tables' records holds at half a kilobyte a column.
-            schema_columns: 7_489,
+            schema_bytes: 2 * MIB / 6,
+            // What the third of a mebibyte of a schema's message carries of short names, fewer
+            // than the 16,384 that 8 MiB of tables' records holds at half a kilobyte a column.
+            schema_columns: 6_241,
             // What the 16 MiB of answers being decoded holds of one decoded: a catalog at
             // sixteen times its bytes; state, bounded decoded, the protocol's, as is any other
             // control message.
@@ -66,7 +67,7 @@ fn a_push_s_arrays_and_views_take_at_most_what_each_of_its_columns_leaves_room_f
     // Columns of dictionaries of views take the most a column of a frame may beside its buffers:
     // the keys' array, the values' and the values' one data buffer. Dictionaries of text take
     // the two arrays, and integers one.
-    for columns in [1, 100, 7_489] {
+    for columns in [1, 100, 6_241] {
         let keyed = keyed_views(columns);
         let (keyed, words) = (&keyed, &dictionaries(1, columns));
         let plain = &integers(1, columns, |row| row);
@@ -81,7 +82,7 @@ fn a_push_s_arrays_and_views_take_at_most_what_each_of_its_columns_leaves_room_f
 
 #[test]
 fn the_least_memory_admits_these_limits() {
-    assert_eq!(least(16), 39_545_528);
+    assert_eq!(least(16), 38_414_264);
     // One read keeps all of the reads' share, so a table may have more columns, whose nulls,
     // flags and arrays a row of a frame takes beside it.
     assert_eq!(least(1), 50_060_952);
@@ -95,7 +96,7 @@ fn the_least_memory_admits_these_limits() {
             limits.schema_bytes,
             limits.schema_columns
         ),
-        (MIN_FRAME_BYTES, 5_149_072, 18_173, 308_949, 61_789, 1_103)
+        (MIN_FRAME_BYTES, 5_001_772, 17_653, 300_111, 50_018, 893)
     );
     // What a sixteenth of the budget holds of one answer decoded.
     assert_eq!(
@@ -104,7 +105,7 @@ fn the_least_memory_admits_these_limits() {
             limits.state_bytes,
             limits.control_message_bytes
         ),
-        (154_474, 2_471_595, 154_474)
+        (150_055, 2_400_891, 150_055)
     );
 }
 
@@ -125,7 +126,7 @@ fn what_reads_keep_is_a_part_a_read_or_twice_the_least_dictionary_where_it_holds
         )
     };
     let most = kept_limits(admitted(shares, 128));
-    assert_eq!(most, (most.0, MIN_DICTIONARY_BYTES, 52_428, 936));
+    assert_eq!(most, (most.0, MIN_DICTIONARY_BYTES, 43_690, 780));
     for readers in [129, 257, 16_384, usize::MAX] {
         assert_eq!(kept(shares, readers), least, "{readers} reads");
         assert_eq!(kept_limits(admitted(shares, readers)), most, "{readers}");
@@ -200,9 +201,9 @@ fn what_each_limit_admits_all_at_once_fits_the_share_it_draws_on() {
         let reads = u64::try_from(readers).expect("a count");
         let cursors = limits.cursor_bytes.saturating_mul(2 * (reads + 1));
         assert!(cursors <= shares.cursors, "{what}");
-        // A schema's message, the schema decoded from it and the dictionaries fit what a read
-        // keeps.
-        let schema = limits.schema_bytes.saturating_mul(5);
+        // A schema's message, what its decoder keeps for the schema decoded from it and the
+        // dictionaries fit what a read keeps.
+        let schema = limits.schema_bytes.saturating_mul(SCHEMA_KEPT);
         assert!(
             schema.saturating_add(limits.dictionary_bytes) <= kept,
             "{what}"
@@ -299,7 +300,7 @@ fn the_least_budget_admits_the_protocol_s_least_limits_and_a_byte_less_does_not(
     }
     // Many reads each keep a part of twice the least dictionary at least: a frame sets their
     // least, the same from eighteen reads up, whose share holds eighteen parts there.
-    assert_eq!(least(18), 38_780_592);
+    assert_eq!(least(18), 37_810_920);
     for readers in [19, HALVED, HALVED + 1, 128, 600_000, 1 << 43, usize::MAX] {
         assert_eq!(least(readers), least(18), "{readers} readers");
         let limits = admitted(Shares::of(least(18) - 1), readers);
@@ -309,4 +310,77 @@ fn the_least_budget_admits_the_protocol_s_least_limits_and_a_byte_less_does_not(
             "{readers} readers"
         );
     }
+}
+
+/// Schemas of a thousand fields as Arrow's writer encodes densest beside what a decoder keeps of
+/// them: each of a type of no parameters or an empty struct, behind keys or not, named in up to
+/// three bytes, with no metadata or an entry or two of up to three bytes each; and a struct nested
+/// sixty-three deep, and unions of a hundred and twenty-seven members, each with an entry.
+fn densest_schemas() -> Vec<(String, Schema)> {
+    let empty = || DataType::Struct(Fields::empty());
+    let keyed = |values| DataType::Dictionary(Box::new(DataType::Int8), Box::new(values));
+    let types = [
+        DataType::Null,
+        DataType::Boolean,
+        DataType::Utf8,
+        empty(),
+        keyed(DataType::Null),
+        keyed(empty()),
+    ];
+    let entries: [&[(&str, &str)]; 3] = [&[], &[("abc", "abc")], &[("a", ""), ("b", "")]];
+    let field = |name: &str, data_type: DataType, entries: &[(&str, &str)]| {
+        let metadata = entries
+            .iter()
+            .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()));
+        Field::new(name, data_type, true).with_metadata(metadata.collect())
+    };
+    let mut schemas = Vec::new();
+    for data_type in &types {
+        for name in ["", "abc"] {
+            for described in entries {
+                let fields = (0..1_000).map(|_| field(name, data_type.clone(), described));
+                let what = format!("{data_type} named {name:?} with {described:?}");
+                schemas.push((what, Schema::new(fields.collect::<Vec<_>>())));
+            }
+        }
+    }
+    let one = [("abc", "abc")];
+    let mut deep = DataType::Null;
+    for _ in 1..63 {
+        deep = DataType::Struct(Fields::from(vec![field("abc", deep, &one)]));
+    }
+    schemas.push((
+        "nested 63 deep".into(),
+        Schema::new(vec![field("abc", deep, &one)]),
+    ));
+    let members = (0..127).map(|_| field("abc", DataType::Null, &one));
+    let members = UnionFields::try_new(0..127, members).unwrap();
+    let union = DataType::Union(members, UnionMode::Dense);
+    let unions = (0..8).map(|_| field("abc", union.clone(), &one));
+    schemas.push(("unions".into(), Schema::new(unions.collect::<Vec<_>>())));
+    schemas
+}
+
+#[test]
+fn what_a_decoder_keeps_for_a_schema_and_its_message_fit_what_a_read_keeps_for_them() {
+    let mut densest = (0, 1, String::new());
+    for (what, schema) in densest_schemas() {
+        let message = Encoder::default().schema(&schema).unwrap();
+        let mut decoder = Decoder::new(Limits::default());
+        decoder.schema(&message).unwrap();
+        let (kept, message) = (decoder.kept_bytes(), u64::try_from(message.len()).unwrap());
+        assert!(
+            kept <= SCHEMA_KEPT * message,
+            "{what}: {kept} kept for a message of {message}"
+        );
+        if kept * densest.1 > densest.0 * message {
+            densest = (kept, message, what);
+        }
+    }
+    // A read keeping its schema's message one time fewer would be refused the densest.
+    let (kept, message, what) = densest;
+    assert!(
+        kept > (SCHEMA_KEPT - 1) * message,
+        "{what}: {kept} kept for a message of {message}"
+    );
 }

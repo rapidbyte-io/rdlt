@@ -181,8 +181,8 @@ impl EngineConfig {
     /// partition, or into as many parts of twice the protocol's least dictionary as it holds where
     /// those are fewer: 4 MiB a part at the defaults, and 512 KiB from 128 partitions up at the
     /// default memory. The cursor, schema, column and dictionary limits [`EngineConfig::limits`]
-    /// gives fall as this rises, to a schema's message of 52,428 bytes and a table of 936 columns
-    /// at the default memory, against 419,430 bytes and 7,489 columns at the default 16.
+    /// gives fall as this rises, to a schema's message of 43,690 bytes and a table of 780 columns
+    /// at the default memory, against 349,525 bytes and 6,241 columns at the default 16.
     ///
     /// A read that is not followed holds a whole part while it reads, so no more of them read at
     /// once than the parts. A following run follows fewer unbounded partitions than this, however

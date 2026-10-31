@@ -236,7 +236,7 @@ still taken largely on trust:
   fails with `state_bytes_exceeded` until the memory is raised or its state shrinks; nothing of
   that commit lands. The handshake, a configuration's answer and calls made outside a run are
   not charged.
-- An engine reading one partition at once needs 53.7 MB rather than 39.5 MB, and pushes may take
+- An engine reading one partition at once needs 50.1 MB rather than 38.4 MB, and pushes may take
   a sixteenth of the budget less.
 - A pipeline whose stream, partition or recorded identifier holds a hidden or reordering
   character, or whose recorded table name falls under a prefix its destination reserves, must be
