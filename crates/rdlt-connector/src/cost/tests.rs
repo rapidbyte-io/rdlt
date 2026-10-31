@@ -489,9 +489,12 @@ fn a_batch_holds_every_allocation_it_pins_once() {
     // One row keeps the whole buffer alive, and two columns sharing it hold it once.
     assert_eq!(Allocations::default().add_array(slice.as_ref()), bytes);
     let shared = RecordBatch::try_from_iter([("a", Arc::clone(&slice)), ("b", slice)]).unwrap();
-    // The batch holds its schema beside: two fields named in a byte each.
+    // The batch holds its schema beside: its list of two fields, each named in a byte.
     let held = bytes + schema_held_bytes(&shared.schema());
-    assert_eq!(schema_held_bytes(&shared.schema()), 2 * 129);
+    assert_eq!(
+        schema_held_bytes(&shared.schema()),
+        80 + 16 + 2 * (8 + 128 + 1)
+    );
     assert_eq!(Allocations::of(&shared).bytes(), held);
     // A push holds its two arrays beside, 320 bytes each.
     assert_eq!(push_charge(&Push::Arrow(shared)), held + 2 * 320);

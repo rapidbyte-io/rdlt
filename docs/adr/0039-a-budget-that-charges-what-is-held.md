@@ -177,12 +177,16 @@ budget before it is held, or bounded by a limit with a typed refusal.
       capabilities say which, so a column stored as it is costs its Arrow bytes.
     - A fixed-width value is its width, nulls included.
   - Every Arrow type has a cost: the match over types has no default.
-  - A batch holds its schema too: each field, nested ones too, with its name, its metadata and
-    its time zone, counted once for the batches that share it. A decoder returns the schema it
-    holds for a schema message the same, byte for byte, as the one that schema came from, so the
-    batches of a sender that sends its schema before each keep one schema alive between them.
-    Schemas that only compare equal are not shared: they may name their dictionaries by other
-    ids.
+  - A batch holds its schema too, counted once for the batches that share it
+    (`rdlt_wire::schema_held_bytes`): the schema's `Arc`, each list of fields and each field's
+    place in it, a union's member beside its id, and each field's `Arc` with its name, its
+    metadata and what its type boxes, a dictionary's two types and a time zone. Text counts by its
+    capacity, and a map of metadata by the entries it has room for, its table at most 28 bytes
+    beyond what it takes; a test holds the count to what schemas of every shape it walks hold on
+    the heap, and an exact one each part's figure. A decoder returns the schema it holds for a
+    schema message the same, byte for byte, as the one that schema came from, so the batches of a
+    sender that sends its schema before each keep one schema alive between them. Schemas that
+    only compare equal are not shared: they may name their dictionaries by other ids.
 - **A push is admitted for what it holds, and lowered for what it becomes.** A push of Arrow
   batches reserves what it keeps alive when it is admitted, before its table is known, and its
   arrays: `ARRAY` (below) for each, a field at every depth and a dictionary's values beside its
@@ -233,14 +237,14 @@ budget before it is held, or bounded by a limit with a typed refusal.
     7,489: a change stream's, as a log and merged, stored as it is and as text, with its flags
     and the deletes it ignores, a merge's of repeated keys, a history table's, and one dropping
     rows. At both widths a push of a row of integers, of dictionaries or of views each holding
-    sixteen data buffers, or of a thousand rows of booleans whose validity holds no null, holds no
-    more than it is admitted for, built in its source's process or decoded from its frame; a JSON
-    push's batches no more than they keep charged once shredded; a normalized split, in one part
-    and in two, of integers keyed or not, and of those views at a thousand columns, no more than
-    it keeps charged once its parts are planned; a piece of those views, and of one column of
-    views holding four thousand buffers, in one part and in two, no more than it reserved; and
-    what holds and cuts a unit, a change stream's and a merge's, keeps nothing a column beside its
-    batches.
+    sixteen data buffers, of a thousand rows of booleans whose validity holds no null, or of two
+    rows of text with a validity, holds no more than it is admitted for, built in its source's
+    process or decoded from its frame; a JSON push's batches no more than they keep charged once
+    shredded; a normalized split, in one part and in two, of integers keyed or not, and of those
+    views at a thousand columns, no more than it keeps charged once its parts are planned; a
+    piece of those views, and of one column of views holding four thousand buffers, in one part
+    and in two, no more than it reserved; and what holds and cuts a unit, a change stream's and a
+    merge's, keeps nothing a column beside its batches.
   - Judging which columns of 64-bit integers a batch holds a value a float would round in reads
     each column where it lies, in any encoding, and holds nothing a row, so nothing is charged
     for it; a normalized flush is judged so before any of it is split, and tests hold its peak

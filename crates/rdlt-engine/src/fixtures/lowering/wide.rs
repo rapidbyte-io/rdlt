@@ -145,6 +145,18 @@ pub(crate) fn flags(rows: u32, columns: usize) -> RecordBatch {
     RecordBatch::try_from_iter(named).expect("columns of one length")
 }
 
+/// `rows` rows of `columns` columns of text, `c0` on, each with a validity holding a null: its
+/// first row's.
+pub(crate) fn text(rows: u32, columns: usize) -> RecordBatch {
+    let rows = usize::try_from(rows).expect("a row count");
+    let named = (0..columns).map(|column| {
+        let values = (0..rows).map(|row| (row > 0).then_some("text"));
+        let text: ArrayRef = Arc::new(StringArray::from_iter(values));
+        (format!("c{column}"), text)
+    });
+    RecordBatch::try_from_iter(named).expect("columns of one length")
+}
+
 /// `rows` rows of `columns` columns of text as views, `c0` on, each holding `buffers` data buffers
 /// of sixteen bytes that no view names: every value is short enough to be held in its view.
 pub(crate) fn views(rows: u32, columns: usize, buffers: usize) -> RecordBatch {
