@@ -1,8 +1,8 @@
 //! Wide tables: rows of a thousand and of five thousand columns, pushed as Arrow batches and as
 //! JSON, loaded through the engine into a destination that discards them; a table of a hundred
-//! columns, and one of five thousand kept to its first hundred by discarding the others' values,
-//! both in batches of the five thousand columns' rows; and a sparse table of five thousand
-//! columns whose rows each hold a hundred, pushed as Arrow and as JSON.
+//! columns, and one of five thousand kept to its first hundred by excluding the others, both in
+//! batches of the five thousand columns' rows; and a sparse table of five thousand columns whose
+//! rows each hold a hundred, pushed as Arrow and as JSON.
 //!
 //! Throughput counts rows; each case prints the bytes a run pushes.
 
@@ -90,12 +90,11 @@ fn wide(c: &mut Criterion) {
                 let bench = (case.made)(cores);
                 println!(
                     "wide/{}/{}: {workers} runtime workers, {threads} compute threads, {} rows \
-                     of {} bytes a run, {} values discarded",
+                     of {} bytes a run",
                     case.group,
                     case.name,
                     bench.rows(),
                     bench.bytes(),
-                    bench.discards(),
                     workers = cores.runtime_workers(),
                     threads = cores.count(),
                 );
