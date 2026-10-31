@@ -46,11 +46,11 @@ never sees.
     (ADR 0046).
   - `row_hash` is the BLAKE3-256 of the row's data columns as their logical types hold them,
     before they are lowered (ADR 0046), as one object of its non-null columns by name, the
-    encoding row ids use (ADR 0009), JSON by the values its text says: an added null column, a
-    wider type, another encoding or JSON rendered again changes no hash, so schema changes open
-    no versions. The change time is left out: when a change happened is not what it changed. It
-    is 32 bytes of `Binary`, as lineage ids are (ADR 0046), not the spec's `FixedSizeBinary(16)`;
-    a delete's row carries none.
+    encoding a merge key's id hashes (ADR 0009), JSON by the values its text says: an added null
+    column, a wider type, another encoding or JSON rendered again changes no hash, so schema
+    changes open no versions. The change time is left out: when a change happened is not what it
+    changed. It is 32 bytes of `Binary`, as a merge root's id is (ADR 0009), not the spec's
+    `FixedSizeBinary(16)`; a delete's row carries none.
   - A table records whether it keeps history with its sequences' state record. A history stream
     into a table created without history, or any other stream into a history table, is refused as
     `table_history_mismatch`: its rows have no versions to close, or a merge would take its
