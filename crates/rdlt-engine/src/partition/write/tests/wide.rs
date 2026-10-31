@@ -11,7 +11,9 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use arrow_array::{Int8Array, RecordBatch};
+use arrow_array::{Array, Int8Array, Int64Array, ListArray, RecordBatch};
+use arrow_buffer::{NullBuffer, OffsetBuffer};
+use arrow_schema::{DataType, Field, Schema};
 use rdlt_connector::cost::push_charge;
 use rdlt_connector::{ChangeOp, OP_COLUMN, Push, StreamName};
 use rdlt_wire::{Decoder, Encoder, Limits};
@@ -23,7 +25,7 @@ use super::super::pieces::Pieces;
 use crate::cost::tests::{held_alone, peak_alone};
 use crate::fixtures::lowering::wide::{dictionaries, flags, integers, text, views};
 use crate::fixtures::lowering::{Case, Storage, stamp};
-use crate::normalize::{PartSchemas, Shape};
+use crate::normalize::{Dropped, Part, PartSchemas, PushKind, Shape};
 use crate::partition::ChangeMode;
 use crate::plan::{DeleteMode, OnTruncate};
 use crate::table::ChangeLayout;
@@ -317,11 +319,13 @@ fn a_wide_split_keeps_no_more_than_it_is_charged_once_its_parts_are_planned() {
             };
             // Views split as they are, their buffers' list joined, whatever the table's width: a
             // stream keyed by `id` has none of them.
-            let mut batches = vec![integers(2, columns, |row| row)];
+            let integers = |rows| integers(rows, columns, |row| row);
+            let views = |rows| views(rows, columns, VIEW_BUFFERS);
+            let mut batches: Vec<&dyn Fn(u32) -> RecordBatch> = vec![&integers];
             if key.is_none() && columns == COLUMNS {
-                batches.push(views(2, columns, VIEW_BUFFERS));
+                batches.push(&views);
             }
-            for batch in &batches {
+            for batch in batches {
                 within_split(&stream, &shape, batch, &mut found);
             }
         }
@@ -329,27 +333,84 @@ fn a_wide_split_keeps_no_more_than_it_is_charged_once_its_parts_are_planned() {
     assert!(found.is_empty(), "{}", found.join("\n"));
 }
 
-/// Where splitting `batch` normalized as `shape`, in one part and in two, keeps more than it is
-/// charged once its parts are planned: what it held and was charged, added to `found`.
-fn within_split(stream: &StreamName, shape: &Shape, batch: &RecordBatch, found: &mut Vec<String>) {
-    for parts in [1, 2] {
-        // The piece cut before the split, its slices of the unit, and what the split's parts
-        // keep once they are planned, while their pieces are lowered.
-        let (held, (_, _, charged)) = held_alone(|| {
-            let piece = sliced(batch, parts);
-            let split = split(stream, &piece, shape, &mut PartSchemas::default()).unwrap();
-            let charged = made(&piece, &split);
-            (piece, kept(&split), charged)
-        });
-        if held > charged {
-            let (columns, key) = (batch.num_columns(), &shape.key);
-            let at = format!(
-                "{columns} columns of {} keyed by {key:?} in {parts} parts",
-                batch.schema().field(0).data_type()
-            );
-            found.push(format!("{at}: {charged} charged, {held} held"));
+/// Where splitting the rows `batch` makes, normalized as `shape`, in one part and in two, keeps
+/// more than it is charged once its parts are planned, what it held and was charged, added to
+/// `found`: two rows as they are, and `KEPT` rows after one that planning drops.
+fn within_split(
+    stream: &StreamName,
+    shape: &Shape,
+    batch: &dyn Fn(u32) -> RecordBatch,
+    found: &mut Vec<String>,
+) {
+    let cases = [
+        ("every row", batch(2)),
+        ("its first row dropped", with_new_array(&batch(KEPT + 1))),
+    ];
+    for (what, batch) in &cases {
+        for parts in [1, 2] {
+            // The piece cut before the split, its slices of the unit, and what the split's parts
+            // keep once they are planned, while their pieces are lowered.
+            let (held, (_, _, charged)) = held_alone(|| {
+                let piece = sliced(batch, parts);
+                let split = split(stream, &piece, shape, &mut PartSchemas::default()).unwrap();
+                let planned = planned(split);
+                let charged = made(&piece, &planned);
+                (piece, kept(&planned), charged)
+            });
+            if held > charged {
+                let (columns, key) = (batch.num_columns(), &shape.key);
+                let at = format!(
+                    "{columns} columns of {} keyed by {key:?}, {what}, in {parts} parts",
+                    batch.schema().field(0).data_type()
+                );
+                found.push(format!("{at}: {charged} charged, {held} held"));
+            }
         }
     }
+}
+
+/// Rows a split keeps after one that planning drops: the copies of them take more than what is
+/// charged for their arrays leaves over.
+const KEPT: u32 = 64;
+
+/// The column of an array whose rows a stream drops.
+const NEW: &str = "new";
+
+/// `batch` beside a column of arrays `NEW`, only its first row holding one.
+fn with_new_array(batch: &RecordBatch) -> RecordBatch {
+    let rows = batch.num_rows();
+    let item = Arc::new(Field::new("item", DataType::Int64, true));
+    let offsets = OffsetBuffer::from_lengths((0..rows).map(|row| usize::from(row == 0)));
+    let held = NullBuffer::from_iter((0..rows).map(|row| row == 0));
+    let new = ListArray::new(
+        item,
+        offsets,
+        Arc::new(Int64Array::from(vec![7])),
+        Some(held),
+    );
+    let mut fields = batch.schema().fields().to_vec();
+    fields.push(Arc::new(Field::new(NEW, new.data_type().clone(), true)));
+    let mut columns = batch.columns().to_vec();
+    columns.push(Arc::new(new));
+    RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap()
+}
+
+/// A split's `parts` planned as a stream that drops the rows holding a new array plans them: the
+/// array's part goes, and every other loses the rows that held it and their descendants, pruned
+/// parents first.
+fn planned(parts: Vec<Part>) -> Vec<Part> {
+    let mut dropped = Dropped::new(PushKind::Arrow);
+    let mut kept = Vec::with_capacity(parts.len());
+    for part in parts {
+        if matches!(part.path.as_slice(), [column] if column.as_ref() == NEW) {
+            dropped.parents_of(&part);
+        } else {
+            kept.push(part);
+        }
+    }
+    kept.into_iter()
+        .map(|part| dropped.prune(part).unwrap().part)
+        .collect()
 }
 
 #[test]
