@@ -12,25 +12,26 @@ mod schemas;
 #[cfg(test)]
 mod tests;
 mod units;
+mod window;
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
 use rdlt_connector::cost::{Rendering, arrays};
-use rdlt_connector::{ColumnPath, Permit, SchemaError};
+use rdlt_connector::{ColumnPath, SchemaError};
 use tokio_util::sync::CancellationToken;
 
 use self::changes::{Ignored, split_changes};
-use self::held::{Held, Share};
+use self::held::Held;
 use self::pieces::{Lowered, Piece, Pieces, RowTooLarge};
 use self::queue::queue;
 pub(super) use self::schemas::Schemas;
 use self::units::Units;
+use self::window::{Lowering, Window, full};
 use super::coalesce::{Flushed, Unit};
 use super::{ChangeMode, OpenSegment, PartitionContext, PartitionJob};
 use crate::budget::{Denied, Lent, MemoryBudget, Reservation, Shares, TooLarge};
-use crate::compute::Pool;
 use crate::cost::CHANGE_ROW;
 use crate::error::{Error, ErrorKind, codes};
 use crate::limits::MAX_PIECE_BYTES;
@@ -189,7 +190,7 @@ async fn reserving(
 ///   takes more than one request of the units' room may fails the write.
 /// - Each piece reserves that from the room before it is lowered. The partition waits for a
 ///   piece only while it holds none it has not handed to its lane; pieces the room has space
-///   for at once are lowered together, [`LOWERING_WINDOW`] at most.
+///   for at once are lowered together, [`window::LOWERING_WINDOW`] at most.
 /// - A cut that reads no value, and a window of pieces whose lowering copies none, run on the
 ///   partition's task: their steps grow with the columns alone, fewer than a trip to the
 ///   compute pool takes. Every other cut and window runs on the pool.
@@ -386,120 +387,6 @@ async fn next(
     piece.map_err(|row| row_too_large(job, &row))
 }
 
-/// What holds a piece while it is lowered and until it is written: dropped, what it reserved is
-/// released before its unit, whose batches go before their permits.
-struct Lowering {
-    /// What lowering the piece holds, reserved before it is lowered.
-    reserved: Reservation,
-    /// A share of what holds its unit, so the unit's batches and permits hold until all of it is
-    /// written.
-    unit: Share,
-}
-
-/// A piece's lowering, and the bytes of what it keeps alive beyond the parts it was lowered from.
-type Run = Box<dyn FnOnce() -> Result<(Prepared, u64), Error> + Send>;
-
-/// Pieces reserved from a room and not yet lowered, in order: the runs are declared before what
-/// holds their pieces, so they go first.
-struct Window {
-    room: Room,
-    runs: Vec<Run>,
-    held: Vec<Lowering>,
-    /// Whether lowering a piece of the window copies values.
-    copies: bool,
-}
-
-impl Window {
-    fn new(room: Room) -> Self {
-        Self {
-            room,
-            runs: Vec::new(),
-            held: Vec::new(),
-            copies: false,
-        }
-    }
-
-    /// Adds a piece, lowered by `run`, held by `lowering`, whose lowering `copies` values or not.
-    fn push(&mut self, run: Run, lowering: Lowering, copies: bool) {
-        self.runs.push(run);
-        self.held.push(lowering);
-        self.copies |= copies;
-    }
-
-    fn len(&self) -> usize {
-        self.runs.len()
-    }
-
-    /// Reserves `bytes` for a piece to lower with those the window holds, where the budget has
-    /// them at once; nothing where the window is empty, or the piece must wait: a partition
-    /// waits only while it holds no piece it has not handed over.
-    fn reserve(&self, budget: &MemoryBudget, bytes: u64) -> Option<Reservation> {
-        if self.held.is_empty() {
-            return None;
-        }
-        self.room.try_reserve(budget, bytes)
-    }
-
-    /// Reserves `bytes` for a piece: with those the window holds where the budget has them at
-    /// once, or after the window's pieces are lowered and handed to their lane, so the wait is
-    /// for bytes a write releases and this partition holds none of them.
-    async fn reserved(
-        &mut self,
-        job: &PartitionJob,
-        context: &PartitionContext,
-        open: &mut OpenSegment,
-        bytes: u64,
-    ) -> Result<Reservation, Error> {
-        if let Some(reserved) = self.reserve(&context.budget, bytes) {
-            return Ok(reserved);
-        }
-        self.lower(job, context, open).await?;
-        reserve(job, context, &self.room, bytes).await
-    }
-
-    /// The window's pieces lowered, in order, each beside what holds it: on the calling task
-    /// where lowering none copies a value, on the compute pool otherwise.
-    async fn lowered(&mut self, pool: &Pool) -> Vec<(Result<(Prepared, u64), Error>, Lowering)> {
-        let (runs, held) = (
-            std::mem::take(&mut self.runs),
-            std::mem::take(&mut self.held),
-        );
-        let prepared = if std::mem::take(&mut self.copies) {
-            pool.run_all(runs).await
-        } else {
-            runs.into_iter().map(|run| run()).collect()
-        };
-        prepared.into_iter().zip(held).collect()
-    }
-
-    /// Lowers the window's pieces and queues them, in order: each then holds what it was lowered
-    /// to beyond its unit's batches, where that is less than was reserved for lowering it.
-    async fn lower(
-        &mut self,
-        job: &PartitionJob,
-        context: &PartitionContext,
-        open: &mut OpenSegment,
-    ) -> Result<(), Error> {
-        let lowered: Vec<_> = self
-            .lowered(&context.pool)
-            .await
-            .into_iter()
-            .map(|(prepared, mut lowering)| {
-                prepared.map(|(prepared, grown)| {
-                    lowering.reserved.shrink(grown);
-                    (prepared, lowering)
-                })
-            })
-            .collect();
-        for lowered in lowered {
-            let (prepared, lowering) = lowered?;
-            let reservation: Permit = Box::new((lowering.reserved, lowering.unit));
-            queue(job, context, open, job.table, prepared, reservation).await?;
-        }
-        Ok(())
-    }
-}
-
 /// A unit with rows and its columns as they arrive.
 struct Judged {
     incoming: Incoming,
@@ -563,15 +450,6 @@ fn stamp(context: &PartitionContext, open: &mut OpenSegment, received: u64) -> S
     };
     open.received += received;
     stamp
-}
-
-/// Pieces lowered on the pool at once, at most: what bounds the memory they hold together is
-/// what each reserved before it was lowered.
-const LOWERING_WINDOW: usize = 8;
-
-/// Whether a window of `pieces` holds as many as are lowered together.
-fn full(pieces: usize) -> bool {
-    pieces >= LOWERING_WINDOW
 }
 
 /// The error for a row that alone takes more to lower than a request may take of the budget:

@@ -319,13 +319,13 @@ fn a_piece_and_a_row_take_their_shares() {
 
 #[test]
 fn eight_pieces_are_lowered_together_at_most() {
-    assert!(!super::full(7));
-    assert!(super::full(8));
-    assert!(super::full(9));
+    assert!(!super::window::full(7));
+    assert!(super::window::full(8));
+    assert!(super::window::full(9));
 }
 
 /// A piece held in a window: a run that lowers nothing, holding `bytes` of `budget`.
-fn windowed(window: &mut super::Window, budget: &MemoryBudget, bytes: u64) {
+fn windowed(window: &mut super::window::Window, budget: &MemoryBudget, bytes: u64) {
     held_by(
         window,
         budget,
@@ -338,13 +338,13 @@ fn windowed(window: &mut super::Window, budget: &MemoryBudget, bytes: u64) {
 /// A piece held in a window, lowered by `run`, which `copies` values or not, holding `bytes` of
 /// `budget`.
 fn held_by(
-    window: &mut super::Window,
+    window: &mut super::window::Window,
     budget: &MemoryBudget,
     bytes: u64,
-    run: super::Run,
+    run: super::window::Run,
     copies: bool,
 ) {
-    let lowering = super::Lowering {
+    let lowering = super::window::Lowering {
         reserved: budget.try_acquire_working(bytes).unwrap(),
         unit: Arc::default(),
     };
@@ -361,7 +361,7 @@ fn a_window_is_lowered_on_the_pool_only_where_a_piece_s_lowering_copies_values()
     let budget = crate::budget::budget(64 << 20);
     for (copies, jobs) in [([false, false], 0), ([false, true], 2), ([true, false], 2)] {
         let tally = Arc::new(crate::report::Tally::default());
-        let mut window = super::Window::new(super::Room::Budget);
+        let mut window = super::window::Window::new(super::Room::Budget);
         for copies in copies {
             held_by(
                 &mut window,
@@ -391,7 +391,7 @@ fn a_window_is_lowered_on_the_pool_only_where_a_piece_s_lowering_copies_values()
 fn a_lowering_that_panics_on_the_calling_task_panics_it() {
     let budget = crate::budget::budget(64 << 20);
     let tally = Arc::new(crate::report::Tally::default());
-    let mut window = super::Window::new(super::Room::Budget);
+    let mut window = super::window::Window::new(super::Room::Budget);
     held_by(
         &mut window,
         &budget,
@@ -442,7 +442,7 @@ fn a_piece_copies_nothing_only_as_one_batch_of_a_stream_that_is_not_a_change_str
 #[test]
 fn a_window_reserves_a_piece_beside_those_it_holds_only_where_the_budget_has_room_at_once() {
     let budget = crate::budget::budget(64 << 20);
-    let mut window = super::Window::new(super::Room::Budget);
+    let mut window = super::window::Window::new(super::Room::Budget);
     // An empty window reserves nothing: its piece waits for the budget like any request.
     assert!(window.reserve(&budget, 1).is_none());
     windowed(&mut window, &budget, 1 << 20);
