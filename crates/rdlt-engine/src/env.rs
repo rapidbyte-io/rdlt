@@ -50,7 +50,8 @@ pub trait Env: Send + Sync + 'static {
     ///
     /// It must not block, panic or call into the run; it hands the event on, to a channel. A
     /// panic fails the attempt it was told in, as any panic of the engine's tasks does, and one
-    /// told between attempts or at the run's end reaches the task awaiting the run.
+    /// told between attempts or at the run's end reaches the task awaiting the run. A run's
+    /// events are told one at a time, and none after its end.
     fn observe(&self, _event: &Event) {}
 
     /// Whether [`Env::observe`] is told anything: where it is not, the engine builds no event; by

@@ -427,7 +427,7 @@ fn told(harness: &Harness) -> (Arc<dyn crate::env::Env>, Arc<Live>, Announcer) {
         harness.budget.clone(),
         Arc::clone(&harness.tally),
     );
-    let announcer = Announcer::new(Arc::clone(&env), pipeline, 1);
+    let announcer = Announcer::new(Arc::clone(&env), pipeline, 1, Arc::default());
     (env, Arc::new(live), announcer)
 }
 

@@ -103,6 +103,7 @@ impl Engine {
             stop: control.after_commit.clone(),
             cycles: Mutex::new(BTreeMap::new()),
             live: Arc::clone(&live),
+            telling: Arc::default(),
         };
         RunHandle {
             future: Box::pin(ran(context, control.clone())),
@@ -262,10 +263,18 @@ async fn attempted(
 async fn ran(context: RunContext, control: RunControl) -> RunOutcome {
     context.live.begin();
     let (status, error) = deadlined(&context, control).await;
+    // A task the attempt's end left running may still run: from here on it changes nothing a
+    // status shows and tells nothing.
     let report = context.live.end(status);
     let pipeline = context.plan.pipeline().clone();
-    let announcer = Announcer::new(Arc::clone(&context.env), pipeline, report.attempted);
-    announcer.announce(|| EventKind::RunEnded { status });
+    let telling = Arc::clone(&context.telling);
+    Announcer::new(
+        Arc::clone(&context.env),
+        pipeline,
+        report.attempted,
+        telling,
+    )
+    .end(status);
     RunOutcome { report, error }
 }
 
@@ -316,7 +325,8 @@ async fn drive(context: &RunContext, control: RunControl) -> (RunStatus, Option<
     loop {
         let pipeline = context.plan.pipeline().clone();
         let attempt = context.live.attempted() + 1;
-        let announcer = Announcer::new(Arc::clone(&context.env), pipeline, attempt);
+        let telling = Arc::clone(&context.telling);
+        let announcer = Announcer::new(Arc::clone(&context.env), pipeline, attempt, telling);
         let log = Arc::new(Mutex::new(AttemptLog::default()));
         context.live.started(Arc::clone(&log), context.env.now());
         let result = attempted(context, &control, log, &announcer).await;

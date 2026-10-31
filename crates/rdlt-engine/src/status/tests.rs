@@ -170,3 +170,26 @@ async fn a_run_s_clock_starts_again_when_the_run_begins() {
     assert_eq!(later.report.elapsed, Duration::from_secs(2));
     assert_eq!(later.since, begun.since, "it opens from when it began");
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_task_the_end_left_running_changes_nothing_the_status_then_shows() {
+    let live = live();
+    live.places(vec![place("a", "p0", Place::ENDED)]);
+    let report = live.end(RunStatus::Stopped);
+    let ended = live.status();
+    tokio::time::advance(Duration::from_secs(1)).await;
+    let at = InlineEnv.instant();
+    let phase = Phase::Committing {
+        seq: 1,
+        step: Step::Commit,
+        tries: 1,
+    };
+    live.phase(phase, at);
+    live.reporting(at);
+    live.place(0, place("a", "p1", stamp(live.clock().began(), at)));
+    live.places(Vec::new());
+    live.landed([StreamName::new("a").unwrap()], at);
+    let later = live.status();
+    assert_eq!(later, ended);
+    assert_eq!(later.report, report);
+}

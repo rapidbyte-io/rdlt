@@ -9,6 +9,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
+use parking_lot::Mutex;
 use rdlt_connector::PipelineId;
 use serde::Serialize;
 
@@ -212,21 +213,39 @@ impl Unreported {
     }
 }
 
+/// Whether a run told its end, after which it tells nothing more.
+///
+/// Each event of the run is told holding it, so none follows the end, though a task the end left
+/// running still runs, and the run's events are told one at a time.
+#[derive(Debug, Default)]
+pub(crate) struct Telling {
+    ended: Mutex<bool>,
+}
+
 /// Tells a run's environment what happens in one of its attempts.
 #[derive(Clone)]
 pub(crate) struct Announcer {
     env: Arc<dyn Env>,
     pipeline: PipelineId,
     attempt: u64,
+    /// The run's telling, which every announcer of the run shares.
+    telling: Arc<Telling>,
 }
 
 impl Announcer {
-    /// Tells `env` what happens in attempt `attempt` of a run of `pipeline`.
-    pub(crate) fn new(env: Arc<dyn Env>, pipeline: PipelineId, attempt: u64) -> Self {
+    /// Tells `env` what happens in attempt `attempt` of a run of `pipeline`, whose telling is
+    /// `telling`.
+    pub(crate) fn new(
+        env: Arc<dyn Env>,
+        pipeline: PipelineId,
+        attempt: u64,
+        telling: Arc<Telling>,
+    ) -> Self {
         Self {
             env,
             pipeline,
             attempt,
+            telling,
         }
     }
 
@@ -235,17 +254,35 @@ impl Announcer {
         self.env.observes()
     }
 
-    /// Tells the environment that what `kind` makes happened, now, where it is told anything;
-    /// the caller holds none of the engine's locks, since an observer may take its time.
+    /// Tells the environment that what `kind` makes happened, now, where it is told anything and
+    /// the run has not told its end; the caller holds none of the locks of the engine's state,
+    /// since an observer may take its time.
     pub(crate) fn announce(&self, kind: impl FnOnce() -> EventKind) {
         if !self.observes() {
             return;
         }
+        let ended = self.telling.ended.lock();
+        if !*ended {
+            self.tell(kind());
+        }
+    }
+
+    /// Tells the environment that the run ended as `status`, unless it was told so: nothing is
+    /// told after.
+    pub(crate) fn end(&self, status: RunStatus) {
+        let mut ended = self.telling.ended.lock();
+        if !std::mem::replace(&mut *ended, true) && self.observes() {
+            self.tell(EventKind::RunEnded { status });
+        }
+    }
+
+    /// Tells the environment that `kind` happened, now.
+    fn tell(&self, kind: EventKind) {
         let event = Event {
             at: self.env.now(),
             pipeline: self.pipeline.clone(),
             attempt: self.attempt,
-            kind: kind(),
+            kind,
         };
         self.env.observe(&event);
     }
