@@ -46,8 +46,8 @@ struct Served {
     pushes: Vec<RecordBatch>,
     honours: bool,
     declared: Option<TableSchema>,
-    key: Option<&'static str>,
-    change_time: Option<&'static str>,
+    key: Option<ColumnPath>,
+    change_time: Option<ColumnPath>,
 }
 
 impl Served {
@@ -116,11 +116,11 @@ impl ReadStream<Excluding> for People {
         if let Some(schema) = &self.0.declared {
             spec = spec.with_schema(schema.clone());
         }
-        if let Some(key) = self.0.key {
-            spec = spec.with_primary_key([key]);
+        if let Some(key) = &self.0.key {
+            spec = spec.with_primary_key([key.clone()]);
         }
-        if let Some(column) = self.0.change_time {
-            spec = spec.with_change_time(column);
+        if let Some(column) = &self.0.change_time {
+            spec = spec.with_change_time(column.clone());
         }
         spec
     }
@@ -354,7 +354,7 @@ async fn an_update_s_flags_move_past_an_excluded_column() {
         ];
         let mut served = Served::new(Form::Changes, pushes);
         served.honours = honours;
-        served.key = Some("id");
+        served.key = Some(ColumnPath::from("id"));
         let plan = pipeline(
             &store,
             [stream("people")
@@ -393,12 +393,19 @@ async fn an_update_s_flags_move_past_an_excluded_column() {
 }
 
 #[tokio::test]
-async fn a_source_s_key_and_change_time_cannot_be_excluded() {
-    for (column, case) in [("id", "key"), ("at", "time")] {
+async fn a_source_s_key_and_change_time_cannot_be_excluded_nor_the_columns_holding_them() {
+    let path = |segments: &[&str]| ColumnPath::new(segments.iter().copied()).expect("a segment");
+    let cases = [
+        ("key", path(&["id"]), path(&["at"]), "id"),
+        ("time", path(&["id"]), path(&["at"]), "at"),
+        ("nested_key", path(&["a", "b"]), path(&["at"]), "a"),
+        ("nested_time", path(&["id"]), path(&["t", "at"]), "t"),
+    ];
+    for (case, key, change_time, column) in cases {
         let store = format!("excluded_needed_{case}");
         let mut served = Served::new(Form::Arrow, vec![people(0, 1)]);
-        served.key = Some("id");
-        served.change_time = Some("at");
+        served.key = Some(key);
+        served.change_time = Some(change_time);
         let plan = pipeline(&store, [stream("people").exclude([column])]);
         let source = source(&store, served).await;
         let outcome = engine(commit_every(4))
