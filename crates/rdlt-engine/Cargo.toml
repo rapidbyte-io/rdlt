@@ -28,6 +28,7 @@ blake3.workspace = true
 bytes.workspace = true
 fail = { workspace = true, optional = true }
 getrandom.workspace = true
+jiter.workspace = true
 memchr.workspace = true
 parking_lot.workspace = true
 rayon.workspace = true

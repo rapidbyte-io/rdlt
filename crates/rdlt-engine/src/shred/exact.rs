@@ -19,7 +19,7 @@ where
     let Ok(text) = std::str::from_utf8(bytes) else {
         return Err(de::Error::custom("the record is not valid UTF-8"));
     };
-    super::tokens::visit(text, seed, context)
+    super::jiter_tokens::visit(text.as_bytes(), seed, context)
 }
 
 /// Visits the number written `text`, whose exponent the reader found within the limit, as the

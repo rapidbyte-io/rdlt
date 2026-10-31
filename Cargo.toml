@@ -95,6 +95,7 @@ tracing = { version = "0.1.44", default-features = false, features = [
   "std",
 ] } # a spawned connector's output
 sonic-rs = "0.5.10" # SIMD JSON parsing and rendering for the shredder
+jiter = { version = "0.17.0", default-features = false } # JSON read a token at a time
 stacker = "0.1.25" # stack grown on demand, so JSON at the nesting limit parses in every build
 thiserror = "2.0.20" # typed error derives
 tokio = { version = "1.53.3", default-features = false } # async runtime, timers and task sets

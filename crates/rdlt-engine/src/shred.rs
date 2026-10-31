@@ -18,6 +18,7 @@ mod cost;
 mod differential;
 mod error;
 mod exact;
+mod jiter_tokens;
 mod keys;
 mod meter;
 #[cfg(test)]
