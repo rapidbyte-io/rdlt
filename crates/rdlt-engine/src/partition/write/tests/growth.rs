@@ -10,7 +10,7 @@ use arrow_buffer::{Buffer, NullBuffer, ScalarBuffer};
 use proptest::prelude::*;
 use rdlt_connector::cost::{Allocations, arrays};
 
-use super::super::normalized::{kept, made, part_growth};
+use super::super::normalized::split::{kept, made, part_growth};
 use super::{allocated, buffers, ids};
 use crate::table::Prepared;
 
