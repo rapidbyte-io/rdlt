@@ -594,10 +594,10 @@ fn around() -> impl Strategy<Value = String> {
     ]
 }
 
-/// Whether `text` ends with a start of `form`, a part of it a mask would hold.
-fn ends_in_a_start(text: &str, form: &str) -> bool {
-    form.char_indices()
-        .map(|(at, _)| &form[..at])
+/// Whether `text` ends with `kept` or a start of it, a part a mask would hold.
+fn ends_with_a_start(text: &str, kept: &str) -> bool {
+    kept.char_indices()
+        .map(|(at, c)| &kept[..at + c.len_utf8()])
         .any(|start| maskable(start) && text.ends_with(start))
 }
 
@@ -606,6 +606,15 @@ fn begins_with_an_end(text: &str, kept: &str) -> bool {
     kept.char_indices()
         .map(|(at, _)| &kept[at..])
         .any(|end| maskable(end) && text.starts_with(end))
+}
+
+/// The part of `said`, written from byte `at` of an output, that the output's first read keeps
+/// where it stops within `said`: to the last character it keeps whole.
+fn read_of(said: &str, at: usize) -> Option<&str> {
+    let to = TAIL_BYTES.checked_sub(at)?;
+    (1..said.len())
+        .contains(&to)
+        .then(|| &said[..said.floor_char_boundary(to)])
 }
 
 /// The part of `said`, written from byte `at` of an output of `bytes`, that the tail keeps
@@ -635,8 +644,8 @@ proptest! {
     /// text holds that form or the secret, each trimmed of its whitespace; a line of the secret
     /// with fewer than eight characters other than whitespace may show on its own.
     ///
-    /// Where a read cuts a line, no part of the form said is left but a mask, and where the tail
-    /// begins within it, none of the part the tail kept.
+    /// Where a read stops within the form said, none of the part the read kept is left but a
+    /// mask, and where the tail begins within it, none of the part the tail kept.
     #[test]
     fn nothing_said_of_a_secret_survives_scrubbing_and_what_follows_it(
         secret in secret(),
@@ -697,15 +706,15 @@ fn nothing_said_survives(
     }
     // A part of a form is seen at a cut only in a form that showing leaves as it is.
     if shown_as_it_is(said) {
-        for line in drained.lines() {
-            if let Some(cut) = line.strip_suffix(CUT)
-                && !cut.ends_with("***")
-            {
-                prop_assert!(
-                    !ends_in_a_start(cut, said),
-                    "{said:?} ends {line:?}, from {output:?}"
-                );
-            }
+        // Elsewhere what ends a read was written around the form, and may read like its start.
+        if let Some(kept) = read_of(said, before.len())
+            && let Some(line) = drained.lines().first()
+        {
+            let end = line.strip_suffix(CUT).unwrap_or(line);
+            prop_assert!(
+                end.ends_with("***") || !ends_with_a_start(end, kept),
+                "{kept:?} of {said:?} ends {line:?}, from {output:?}"
+            );
         }
         // Elsewhere what begins the tail was written around the form, and may read like its end.
         if let Some(kept) = kept_of(said, before.len(), output.len())
@@ -732,5 +741,23 @@ fn the_start_of_a_tail_that_cut_no_secret_may_read_like_a_secret_s_end() {
     ];
     for (secret, said, before, after, ending) in cases {
         nothing_said_survives(secret, said, before, after, ending).unwrap();
+    }
+}
+
+#[test]
+fn the_end_of_a_read_that_cut_no_secret_may_read_like_a_secret_s_start() {
+    // A read that kept the form whole and stopped at the carriage return of the line's end
+    // shows it as `\r`, which reads like the start of a form that starts with `r` or `\r`.
+    let cases = [
+        (
+            "a00aa-\"a\n0_a0\\=\"0\nr_==0_\"}0a",
+            "r_==0_\"}0a",
+            ".,;A;,,;.;A",
+        ),
+        (r"\r0ab", r"\r0ab", ""),
+    ];
+    for (secret, said, before) in cases {
+        let after = " ".repeat(TAIL_BYTES - before.len() - said.len() - 1);
+        nothing_said_survives(secret, said, before, &after, "\r\n").unwrap();
     }
 }
