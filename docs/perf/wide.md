@@ -14,15 +14,15 @@ sparse one whose rows each hold 100 of 5 000.
     integers and short strings by turns, 606 rows a push at 1 000 columns and 114 at 5 000, 67 MB a
     run.
   - `arrow/100`: nine batches of 166 rows of 100 such columns.
-  - `arrow/5000_keep_100`: nine batches of 166 rows of 5 000 columns, the first holding the first
-    100 columns alone, so the table exists with those; the stream keeps them by discarding every
-    other column's values (`SchemaPolicy::DiscardValue`), which it counts.
+  - `arrow/5000_keep_100`: nine batches of 166 rows of 5 000 columns; the stream keeps the first
+    100 by excluding the other 4 900 (`StreamPlan::exclude`), which the source pushes and the
+    engine drops as each push arrives.
   - `sparse/arrow` and `sparse/json`: 100 pushes of 166 rows of a table of 5 000 columns whose rows
     each hold 100, every row of a push the same window of 100 columns, the pushes taking the 50
     windows in turn, twice; as Arrow batches and as JSON lines.
 - **Engine.** `Engine::run` from the replay source into a sink that counts rows and drops them,
   within the four cores (2 runtime workers and a compute thread a core), a budget of 1 GiB, one
-  commit. Every run checks every row arrives and every discarded value is counted.
+  commit. Every run checks every row arrives and no value is discarded.
 - **Throughput.** Rows a second; the bench prints the bytes a run pushes, Arrow's logical bytes or
   JSON's text.
 - **Allocations.** The `allocations` bench runs each case once under its counting allocator, on
@@ -46,7 +46,6 @@ its end though no build ran; it is kept. The median of the five rounds and their
 | `json/1000` | 4 848 | 186.14 ms (183.03–273.45) | 26.0 k | 360 | 252 |
 | `json/5000` | 912 | 852.32 ms (848.33–1 169.20) | 1 070 | 79 | 8 033 |
 | `arrow/100` | 1 494 | 2.20 ms (2.19–2.23) | 679 k | 597 | 12.7 |
-| `arrow/5000_keep_100` | 1 494 | 55.01 ms (54.07–58.44) | 27.2 k | 1 110 | 334 |
 | `sparse/arrow` | 16 600 | 560.22 ms (553.30–606.42) | 29.6 k | 27 | 406 |
 | `sparse/json` | 16 600 | 646.89 ms (639.24–693.64) | 25.7 k | 38 | 426 |
 
@@ -54,10 +53,34 @@ its end though no build ran; it is kept. The median of the five rounds and their
   the engine's work grows with the columns a flush holds, not with its bytes. A row of 5 000
   columns makes 617 allocations pushed as Arrow, 0.12 a column, and 8 033 pushed as JSON, 1.6 a
   column.
-- Kept to its first 100 columns, the 5 000-column table loads 27.2 k rows a second, 4.0 % of a
-  100-column table's 679 k, discarding 6.5 million values a run.
 - Served, `arrow/5000` loads 8.58 k rows a second (8.27–8.67 k), 54 % of its rate in process,
   at 5.25 CPU seconds a GB: the host's process 2.71, the source's 1.60, the destination's 0.93.
+
+### A table kept by excluding columns
+
+The tree that adds exclusion beside `main` at `05c69b59`, whose kept cell discarded the 4 900
+columns' values instead, 2026-10-31: three rounds of `arrow/100` and `arrow/5000_keep_100`, each
+tree's bench run in turn on CPUs 0–3 and the order swapped every round, under the measurement
+lock, the one-minute load average 1.29 to 3.43 at the runs' starts. The median of the three
+rounds and their range; allocations from the `allocations` bench, as above.
+
+| Case | Tree | Time a run | Rows a second | Allocations a row |
+|---|---|---|---|---|
+| `arrow/100` | excluding | 1.864 ms (1.846–1.877) | 802 k | 11.3 |
+| `arrow/5000_keep_100` | excluding | 6.508 ms (6.508–6.554) | 230 k | 21.4 |
+| `arrow/5000_keep_100` | `main`, discarding | 47.194 ms (47.157–47.237) | 31.7 k | 281 |
+
+- Excluded, the 4 900 columns cost the kept table 7.3 times less time than discarding their
+  values did, and 13 times fewer allocations; it loads 28.6 % of the 100-column table's rows a
+  second, short of the 90 % its change set out to reach.
+- A profile of the kept cell (`perf record -e cycles:u -F 999`, ten seconds on CPUs 0–3, each
+  sample counted once, at its own function) puts what is left in the bench's source, not the
+  engine: 30.2 % of the samples copy and free the replay's batches of 5 000 columns, which each
+  run clones three times, for the run, for its source and as each push (`RecordBatch::clone`
+  16.8 %, dropping their column vectors 13.4 %), and most of the 28.9 % in libc allocates and
+  frees those vectors; the projection's comparison of each push's schema of 5 000 fields with the
+  last one's takes 17.6 % (`Projection::kept`), since the replay builds every batch with a schema
+  of its own, where a source that keeps one schema `Arc` is matched by pointer.
 
 ## Where a wide run's time goes
 
