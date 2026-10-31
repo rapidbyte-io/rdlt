@@ -91,3 +91,110 @@ setup told apart by the frames that make the pushes; the calls it counts for a r
 calls, all of them `Schemas::of`'s, 4.3 % of `json/5000`'s, and 34.3 % of each sparse case's, 33.7
 points of it the null fill. Other stages are not split: heaptrack names inlined frames by their
 own short names and files, which repeat across crates.
+
+## Schema-shaped work done once a schema
+
+Four changes took the work that has the schema's shape off each batch: a unit's table schema and
+column paths are shared, not copied, and its plan is found by pointer; a batch that fits its piece
+is measured once, not in doubling stretches; the columns of one type a batch lacks share one array
+of nulls, charged once; and a normalized stream keeps the schemas of the parts its batches split
+into for the batches of one Arrow schema. Each was kept only where its own pair, the change against
+the tree before it, showed at least 2 % of its case.
+
+- **Trees.** `main` at `ea57c46d` (the base), then each change's commit on it in turn. The
+  changes land on a later `main`, whose newer commits charge what cutting a unit keeps and change
+  no figure's case here but the allocations, given again on it below.
+- **Rounds.** Each tree's `wide` and `lowering` benches built beforehand; their criterion pass
+  run as `just bench <bench> 0-3` runs it, under `taskset -c 0-3`. Five rounds of the wide bench,
+  each one hold of the measurement lock: the base and the branch on every case, and between them
+  each change's case on the trees before and after it, the order reversed between rounds; the
+  one-minute load average 1.60 to 2.98 at their starts, and the first round's end disturbed (7.64
+  as it ended). A figure is the median of the rounds' point estimates; a change is also given as
+  the median of its rounds' own ratios.
+- **Allocations.** The `allocations` bench, one run of each case on each tree.
+- **Normalizing.** The `normalize/*` cases under callgrind as `just instructions` counts them, at
+  one and three iterations, halved.
+
+**Allocations a row.**
+
+| Case | Base | Schemas shared | Nulls shared | Change |
+|---|---:|---:|---:|---:|
+| `arrow/1000` | 21.686 | 20.505 | 20.505 | −5.4 % |
+| `arrow/5000` | 550.989 | 520.849 | 520.855 | −5.5 % |
+| `json/1000` | 225.243 | 212.005 | 212.006 | −5.9 % |
+| `json/5000` | 7 317.319 | 6 965.375 | 6 966.168 | −4.8 % |
+| `arrow/100` | 11.254 | 10.637 | 10.641 | −5.4 % |
+| `arrow/5000_keep_100` | 280.864 | 253.747 | 253.770 | −9.6 % |
+| `sparse/arrow` | 402.673 | 402.003 | 257.662 | −36.0 % |
+| `sparse/json` | 420.775 | 420.099 | 268.842 | −36.1 % |
+
+Measuring a fitting batch once allocates nothing either way, and the part schemas a normalized
+stream keeps touch none of these cases. On the `main` the changes land on (`05c69b59`) the counts
+are the same to within a few hundredths, `json/5000` aside, which that `main` already makes fewer:
+6 528.054 a row there, 6 177.758 with the changes (−5.4 %); `sparse/arrow` 402.620 to 257.662 and
+`sparse/json` 420.633 to 268.841 (−36.0 % and −36.1 %).
+
+**Time a run.** The base against the tree holding the first three changes, five rounds; the
+fourth, which only normalized streams take, ran beside them in the last two rounds:
+`arrow/5000` −8.9 %, `json/5000` −3.8 % and `sparse/arrow` −32.6 % against the base there.
+
+| Case | Base | Range | Branch | Range | Change | Ratio of the rounds |
+|---|---:|---|---:|---|---:|---|
+| `arrow/1000` | 15.35 ms | 15.16–18.54 | 14.05 ms | 13.14–16.27 | −8.4 % | −11.2 % (−14.4 to −6.7) |
+| `arrow/5000` | 73.10 ms | 71.12–88.05 | 66.21 ms | 63.25–89.79 | −9.4 % | −9.4 % (−11.1 to +2.0) |
+| `json/1000` | 172.22 ms | 170.45–224.99 | 167.88 ms | 158.33–282.37 | −2.5 % | −3.0 % (−8.1 to +25.5) |
+| `json/5000` | 793.69 ms | 776.61–1 087 | 781.70 ms | 727.12–1 048 | −1.5 % | −4.2 % (−6.4 to −1.5) |
+| `arrow/100` | 1.88 ms | 1.87–1.97 | 1.70 ms | 1.67–1.81 | −9.6 % | −9.4 % (−10.9 to −5.6) |
+| `arrow/5000_keep_100` | 46.10 ms | 45.37–59.22 | 41.10 ms | 39.35–42.76 | −10.8 % | −13.3 % (−27.8 to −9.9) |
+| `sparse/arrow` | 526.28 ms | 517.48–681.79 | 353.70 ms | 338.97–432.63 | −32.8 % | −32.6 % (−36.5 to −31.9) |
+| `sparse/json` | 606.70 ms | 603.50–713.97 | 431.41 ms | 421.57–494.66 | −28.9 % | −29.7 % (−30.7 to −28.5) |
+
+**Each change against the tree before it**, on its case, five rounds:
+
+| Change | Case | Before | After | Change | Kept |
+|---|---|---:|---:|---|---|
+| Schemas shared, plans found by pointer | `arrow/5000` | 73.10 ms, 550.989 a row | 70.88 ms, 520.849 a row | −3.0 % time, −5.5 % allocations | Yes |
+| A fitting batch measured once | `arrow/5000` | 70.88 ms | 65.54 ms | −7.5 % (ratio −7.4 %, −8.8 to −3.9) | Yes |
+| One array of nulls a type | `sparse/arrow` | 520.37 ms, 400.944 a row | 353.70 ms, 257.662 a row | −32.0 % time, −35.7 % allocations | Yes |
+| One array of nulls a type | `sparse/json` | 608.37 ms, 420.132 a row | 431.41 ms, 268.842 a row | −29.1 % time, −36.0 % allocations | Yes |
+
+**Part schemas kept a normalized stream's batch schema**, its rule fewer instructions or
+allocations by at least 5 % in `normalize/*`, each case's batches normalized as a partition keeps
+their schemas:
+
+| Case | Instructions before | After | Allocations before | After |
+|---|---:|---:|---:|---:|
+| `normalize/keyless/nested` | 29 974 | 20 068 (−33.0 %) | 74 | 27 (−63.5 %) |
+| `normalize/keyless/with_arrays` | 690 267 | 675 047 (−2.2 %) | 146 | 77 (−47.3 %) |
+| `normalize/keyed/with_arrays` | 5 676 978 | 5 661 343 (−0.3 %) | 155 | 84 (−45.8 %) |
+| `normalize/dropped/with_arrays` | 1 864 031 | 1 847 502 (−0.9 %) | 201 | 132 (−34.3 %) |
+
+It is kept. The `normalized` bench allocates about 9 % less a batch with it: 883.3 to 801.0 at
+2 000 rows a push, 1 777.6 to 1 618.0 at 10 000 and 7 798.0 to 7 084.0 at 50 000, on `05c69b59`.
+
+**Lowering.** `just bench lowering`'s cases, the base against the branch: their allocations are the
+same in every case. Whole rounds of the bench, one tree after the other, put the tree run first
+up to 17 % behind, so the verdict reads two rounds that run each case on the base, the branch,
+the branch and the base in turn (04:14 and 06:06 starts, load 1.92 and 2.84), each case's change
+the ratio of the two pairs' geometric means:
+
+| Case | First round | Second | Case | First round | Second |
+|---|---:|---:|---|---:|---:|
+| `append_native` | +3.1 % | +4.4 % | `merge_unique` | +0.6 % | +0.7 % |
+| `append_text` | −2.3 % | −3.0 % | `one_bad_value` | +1.8 % | +0.1 % |
+| `changes` | +1.9 % | −0.9 % | `one_dropped_row` | +1.1 % | +1.0 % |
+| `history` | −1.2 % | −0.7 % | `split_json` | +0.1 % | +2.1 % |
+| `merge_duplicates` | +13.0 % | +14.1 % | `temporal_widening` | +2.7 % | +0.9 % |
+
+`merge_duplicates` does the same work on both: 10 974 445 and 10 976 174 instructions an
+iteration under callgrind, the same branch misses, and 6 % more first-level data misses in its
+cache simulation. Its large buffers go where glibc's moving mmap threshold puts them, which what
+was allocated before them decides; with the threshold fixed (`glibc.malloc.mmap_threshold=65536`)
+the branch is 1.3 % faster than the base. `append_native` measured equal in a further round in
+the same order: 1.342 and 1.347 µs on the base, 1.344 and 1.348 on the branch.
+
+- The sparse table gains most: each of its batches built an array of nulls for each of the 4 900
+  columns it lacks, and now builds one for each of their six types.
+- `arrow/5000` is 9.4 % faster and makes 5.5 % fewer allocations a row, short of the 10 % and
+  15 % its own clause asks; the sparse table's 36 % fewer allocations a row pass the rule's third.
+  The JSON cases are no slower.
