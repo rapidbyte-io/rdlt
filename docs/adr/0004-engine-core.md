@@ -82,10 +82,13 @@ Building M2a surfaced decisions the spec leaves open or gets wrong.
   (clause `D-RETRY`). Without progress a commit is sent at most the square of the attempts, 25
   times at the default policy. The wait races the attempt's cancel, which ends the attempt, then a
   stop after commit, which ends it with the commit's error, so the run ends stopped as when a stop
-  meets the wait between attempts; every connector call of a commit, its reports included, races
-  the cancel, so another task's failure ends the attempt at once. A run stopped at once
-  (`StopMode::Now`) opens nothing after, so a commit of it that landed unheard is not in its
-  report.
+  meets the wait between attempts. Once another task's failure cancels the attempt, a commit in
+  flight has the close wait (60 s by default) to answer: one that lands then is in the report
+  though no attempt may follow to find it landed, as when a refusal ends the run for good, and one
+  that hangs ends the attempt at that wait rather than the connector wait; the commit's reports
+  race the cancel. A landed commit goes uncounted only in a run stopped at once
+  (`StopMode::Now`), which opens nothing after, or where it answered past the close wait and no
+  later attempt opened to find it landed.
 - **The report's counters are written, never read.** What a run waited for and spent its time on
   is counted as it happens and summed into its report; no decision of the engine reads a
   counter, so measuring a run never changes what it does.

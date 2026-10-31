@@ -197,6 +197,9 @@ pub(crate) struct CoordinatorParts {
     /// failed reports in a row of a partition's cursor end the attempt, or give up the cursor of a
     /// partition recorded done.
     pub(crate) retry: RetryPolicy,
+    /// How long a commit in flight has to answer once the attempt is cancelled, so one that lands
+    /// as another task fails is still recorded: the run's close wait.
+    pub(crate) close_wait: Duration,
 }
 
 pub(crate) struct Coordinator {
