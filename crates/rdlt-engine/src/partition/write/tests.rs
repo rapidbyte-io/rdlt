@@ -17,6 +17,7 @@ use crate::shred::ShredError;
 
 mod given_up;
 mod growth;
+mod planned;
 mod units;
 mod wide;
 
