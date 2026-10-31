@@ -46,6 +46,7 @@ and method, and the verdict; the baselines themselves are in their benches' reco
 | Is a pure commit value worth reopening? | positions' encoding and decoding > a quarter of `commit/1024`'s instructions | at most 12.3 % | Not reopened |
 | Why does served throughput fall with partitions? | diagnosed once | per-partition and per-writer work in every process | Diagnosed |
 | Do shredding jobs sized by rows, cores and a limit pay? | the first of six candidates to hold five rules, else a fallback without the cores term, the 1.15 and the 1.3 | at a 4 MiB limit wide JSON 1.58–2.81×, one `wide_200` partition on eight cores 0.87–0.90×; `shred_cores/8` 1.13–1.18× | Failed: closed |
+| Does one tokenizer keep the shredder's speed? | an arm at least 0.97× today on five corpora, no cliff slower; jiter preferred if it meets four requirements | exact only 0.48–0.71×, jiter 0.62–0.80×; jiter meets three of its four requirements | Failed: closed |
 
 The baselines the later rules read, and their records, are listed after the decisions.
 
@@ -167,6 +168,21 @@ The baselines the later rules read, and their records, are listed after the deci
   jobs, 0.68–0.69 with 4 MiB ([shred.md](shred.md), "Jobs sized by rows, cores and a limit").
 - **Verdict.** Failed: closed, with and without the cores term. The fixed 1 MiB job stays.
 
+### One tokenizer
+
+- **Rule.** Arm B parses every chunk exactly through the engine's reader, arm C does so through
+  jiter; an arm qualifies if it runs at least 0.97 times today on `nested`, `sparse`,
+  `flat_narrow`, `wide_200` and `string_heavy`, and no `shred_cliffs` corpus runs slower. jiter is
+  preferred if it qualifies and meets four requirements: a nesting bound the caller holds, typed
+  refusals that name the record, a number's written bytes, and no allocation a record outside the
+  meter; B wins only if it qualifies and is 1.05 times C, or if jiter fails a requirement.
+- **Figures.** Over two rounds beside today's build, B 0.48–0.71 times on the five corpora and C
+  0.62–0.80 times; on the cliffs both slower in both rounds on every corpus but `big_numbers`
+  (B 1.00–1.01, C 0.98–1.00). jiter meets three requirements and not the fourth: each iterator
+  decodes escapes onto a buffer of its own, which no call takes from the caller
+  ([shred.md](shred.md), "One tokenizer").
+- **Verdict.** Failed: closed. sonic-rs, its confirming scans and the exact parses after them stay.
+
 ## Why served throughput falls with partitions
 
 Diagnosed once, from the production slice's rows through one writer and through a writer a core
@@ -184,7 +200,8 @@ writer and not the budget ([served.md](served.md), "Through a writer a core").
   [passthrough.md](passthrough.md). Recorded; the sweep ran against `main` beside them and closed
   ([shred.md](shred.md), "Jobs sized by rows, cores and a limit").
 - **One tokenizer.** `shred_cliffs` and the one-core group on this tree, with per-function
-  profiles of five corpora: [shred.md](shred.md). Recorded; the arms run against them.
+  profiles of five corpora: [shred.md](shred.md). Recorded; the arms ran against `main` beside
+  them and closed ([shred.md](shred.md), "One tokenizer").
 - **A merge staging only each key's last row's children.** `normalized/merge/zipf` in process and
   served, with what each commit stages: [normalized.md](normalized.md). Recorded; the change's
   rule compares itself with it.
