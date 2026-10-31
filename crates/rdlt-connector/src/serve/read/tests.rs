@@ -298,7 +298,7 @@ fn strings(bytes: usize, rows: usize) -> RecordBatch {
 async fn a_read_whose_host_takes_nothing_holds_a_frame_and_one_push_in_its_channel() {
     // The frame limit of an engine's host at its default budget.
     let limits = Limits {
-        frame_bytes: 28_505_370,
+        frame_bytes: 29_345_742,
         ..Limits::default()
     };
     let frame = limits.frame_bytes;

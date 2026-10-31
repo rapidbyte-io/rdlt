@@ -74,9 +74,11 @@ pub(crate) const MIN_PIECE: u64 = 64 << 10;
 /// long waits for bytes nothing will release.
 pub(crate) const BUDGET_WAIT: Duration = Duration::from_secs(3600);
 
-/// Times a schema's message that a read keeps for it: the message, and the schema decoded from
-/// it, which takes up to four times as much where its fields are many and their names short.
-pub(crate) const SCHEMA_KEPT: u64 = 5;
+/// Times a schema's message that a read keeps for it: the message, and what its decoder keeps for
+/// the schema decoded from it, which is under five times the message where Arrow's writer encoded
+/// it, most where its fields are many, each of a type of no parameters, a short name and an entry
+/// of metadata.
+pub(crate) const SCHEMA_KEPT: u64 = 6;
 
 /// Bytes: what the records of a child table of a few columns take in state, its schema and
 /// names, as the child tables a stream may have are derived from the stored state limit.

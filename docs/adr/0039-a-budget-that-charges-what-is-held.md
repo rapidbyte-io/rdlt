@@ -100,15 +100,15 @@ budget before it is held, or bounded by a limit with a typed refusal.
 
   | Limit | Derived from | Least memory, 16 partitions | Default 256 MiB, 16 partitions | Wire default |
   |---|---|---|---|---|
-  | frame bytes | what pushes may take less what a read keeps, `MESSAGE_ROOM` and the arrays of a batch of every column, two a column, with a view's data buffer a column, and half a request less what a row of the widest table takes beside its values | 4,194,304 | 28,505,370 | 64 MiB |
-  | json push bytes | a third of what pushes may take less `MESSAGE_ROOM` | 5,149,072 | 34,952,448 | 64 MiB |
-  | cursor bytes | the cursors' share over twice one more than the partitions | 18,173 | 123,361 | 4 MiB |
-  | dictionary bytes | half of what a read keeps | 308,949 | 2,097,152 | 64 MiB |
-  | schema bytes | a fifth of the other half, for the message and the schema it decodes to | 61,789 | 419,430 | 4 MiB |
-  | schema columns | the tables' share over half a kilobyte a column, and schema bytes over 56 a column | 1,103 | 7,489 | 10,000 |
-  | catalog bytes | the answers' share over sixteen, what a catalog may hold decoded for each byte | 154,474 | 1,048,576 | 4 MiB |
-  | state bytes | the answers' share: state is bounded on what it holds decoded, and a commit leaves no more | 2,471,595 | 16,777,216 | 16 MiB |
-  | control message bytes | the answers' share over sixteen | 154,474 | 262,144 | 256 KiB |
+  | frame bytes | what pushes may take less what a read keeps, `MESSAGE_ROOM` and the arrays of a batch of every column, two a column, with a view's data buffer a column, and half a request less what a row of the widest table takes beside its values | 4,194,304 | 29,345,742 | 64 MiB |
+  | json push bytes | a third of what pushes may take less `MESSAGE_ROOM` | 5,001,772 | 34,952,448 | 64 MiB |
+  | cursor bytes | the cursors' share over twice one more than the partitions | 17,653 | 123,361 | 4 MiB |
+  | dictionary bytes | half of what a read keeps | 300,111 | 2,097,152 | 64 MiB |
+  | schema bytes | a sixth of the other half, for the message and what the decoder keeps for the schema it decodes to, under five times the message | 50,018 | 349,525 | 4 MiB |
+  | schema columns | the tables' share over half a kilobyte a column, and schema bytes over 56 a column | 893 | 6,241 | 10,000 |
+  | catalog bytes | the answers' share over sixteen, what a catalog may hold decoded for each byte | 150,055 | 1,048,576 | 4 MiB |
+  | state bytes | the answers' share: state is bounded on what it holds decoded, and a commit leaves no more | 2,400,891 | 16,777,216 | 16 MiB |
+  | control message bytes | the answers' share over sixteen | 150,055 | 262,144 | 256 KiB |
 
   - **Cursors.** Every partition may hold a cursor waiting for a commit and a barrier's answer
     at once, with room for one more: a barrier's answers always fit, so a source that keeps to
@@ -131,6 +131,12 @@ budget before it is held, or bounded by a limit with a typed refusal.
     the allocation a receiver holds it in. The sender counts what its receiver holds from every
     batch since the last schema, and a batch whose dictionaries would pass it is refused before
     it is sent.
+  - **Schemas.** What a decoder keeps for the schema decoded from a message Arrow's writer
+    encoded is under five times the message: most, 4.66 times, where every field is of a type of
+    no parameters or an empty struct, with a short name and an entry of metadata, whose table
+    takes 212 bytes for the 40 its entry takes in the message. A test holds the densest shapes
+    Arrow's writer makes to it. A denser encoding is charged what its decoder keeps, and refused
+    at `read kept bytes` where that passes a read's part.
 
   Rows, values and nesting are not the budget's: a batch is lowered a piece at a time,
   whatever it holds. Where a wire default is above what the budget admits, the derived value is
@@ -147,11 +153,11 @@ budget before it is held, or bounded by a limit with a typed refusal.
   (`MIN_FRAME_BYTES`, 4 MiB), or whose dictionary limit is below the protocol's least
   (`MIN_DICTIONARY_BYTES`, 256 KiB), is refused when the engine's configuration is built, with
   `memory_below_minimum` naming the least memory from which every memory up admits it:
-  39,545,528 bytes at the default sixteen partitions, 38,780,592 from eighteen up and 50,060,952
+  38,414,264 bytes at the default sixteen partitions, 37,810,920 from eighteen up and 50,060,952
   at one (`EngineConfig::least_memory`). Half a request for lowering must hold a frame and the
   row beside it, so the least is about nine frames at sixteen partitions; fewer partitions each
   keep more, so a schema may have more columns and the row beside a frame takes more, which
-  raises the least to 50,060,952 from one to seven partitions. A part holds twice the least
+  raises the least to 50,060,952 from one to six partitions. A part holds twice the least
   dictionary wherever the share holds one, so the dictionaries never set it, and more partitions
   need no more memory: at the least, the share holds eighteen parts, and the reads that are not
   followed read no more at once than the parts. Partitions above 16,384, the most an attempt
@@ -234,7 +240,7 @@ budget before it is held, or bounded by a limit with a typed refusal.
     it reserved, slicing its parts included, and keeps no more once lowered than it is charged:
     two thousand rows in two parts of a table of a thousand columns, and one row in one part and
     two in two of a table of a thousand and of the widest a schema may have at the defaults,
-    7,489: a change stream's, as a log and merged, stored as it is and as text, with its flags
+    6,241: a change stream's, as a log and merged, stored as it is and as text, with its flags
     and the deletes it ignores, a merge's of repeated keys, a history table's, and one dropping
     rows. At both widths a push of a row of integers, of dictionaries or of views each holding
     sixteen data buffers, of a thousand rows of booleans whose validity holds no null, or of two
@@ -606,14 +612,14 @@ admitted, and what a remote connector's calls hold in transport.
 - What lowering reserves is a sum, the value decoded, converted and rendered: a column stored as
   text is lowered in smaller pieces.
 - A piece of a wide table costs its arrays whatever its rows: a row alone of the widest table at
-  the defaults reserves 4.8 MB beside its values, each part of a piece of it 2.4 MB and the batch
+  the defaults reserves 4.0 MB beside its values, each part of a piece of it 2.0 MB and the batch
   several are joined into as much again, so a unit of many small batches of a wide table is
-  lowered in more pieces, and a frame at the defaults is at most 28.5 MB.
+  lowered in more pieces, and a frame at the defaults is at most 29.3 MB.
 - A view array is charged each of its data buffers, and a part of a piece the lists of them
   lowering copies: a source whose views hold a buffer for every few rows loads in smaller
   pieces, and a peer whose frame holds views it did not narrow is charged 80 bytes a buffer,
   though their bytes share the frame and the decoded list takes 24.
-- No engine runs on less than about thirty-eight mebibytes, the price of a row as long as a
+- No engine runs on less than about thirty-seven mebibytes, the price of a row as long as a
   frame lowering within half a request. The simulator draws budgets between the least for one
   partition and twice that, and gives a run one slot more than the unbounded partitions it
   follows. Its in-process sources press on them, in three worlds of four: pushes keeping alive
@@ -634,13 +640,13 @@ admitted, and what a remote connector's calls hold in transport.
   retransmission timeout ends such a socket in minutes; the simulator's never does. A deadline
   on a stopping connector's drain would bound it.
 - A source may keep 2 MiB of dictionaries a read at the defaults, where a frame may hold
-  27 MiB. More memory or fewer partitions raise it.
+  28 MiB. More memory or fewer partitions raise it.
 - A following run needs more partitions than the unbounded partitions it follows, and is
   refused with `partitions_too_few` where it has too few. Its memory does not bound how many it
   follows, only what they keep together: 256 followed partitions read by 257 partitions run
   within the default 256 MiB. Each read then keeps a part of twice the least dictionary, so a
-  schema's message may take 52,428 bytes and a table 936 columns, against 419,430 bytes and
-  7,489 columns at the defaults. Followed reads that would keep more than the parts no other
+  schema's message may take 43,690 bytes and a table 780 columns, against 349,525 bytes and
+  6,241 columns at the defaults. Followed reads that would keep more than the parts no other
   read holds, less one, fail with `limit_exceeded`: within the default memory, 63.5 MiB
   together, about 250 KiB each of 256. A served source carries the engine 199 calls at once (ADR 0042), so
   a run follows at most 197 of its unbounded partitions, however much memory it has: beyond them
@@ -649,7 +655,7 @@ admitted, and what a remote connector's calls hold in transport.
 - Where the reads' share holds fewer parts of twice the least dictionary than the partitions,
   the reads that are not followed read no more at once than the parts, each waiting for one: at
   the default memory, 128.
-- A table wider than the derived column limit, 7,489 at the defaults, is refused where its
+- A table wider than the derived column limit, 6,241 at the defaults, is refused where its
   source pushes it.
 - A partition that ends where it last checkpointed seals that cursor again: the commit records
   it, and the commit's frame holds it, so the seal waits for room in the cursors' share as a

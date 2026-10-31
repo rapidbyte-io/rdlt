@@ -48,7 +48,7 @@ one run to the next, broke both:
   later build refuses (ADR 0042) therefore never reaches the engine from state written before it.
 - **A table is never wider than a schema.** A change that would make a table's columns, every
   nested field counted, more than the schema columns `EngineConfig::limits` derives from the
-  memory budget (ADR 0039; 7,489 at the defaults) is refused as `table_columns_exceeded` before
+  memory budget (ADR 0039; 6,241 at the defaults) is refused as `table_columns_exceeded` before
   its records are reserved or the destination sees it; a struct column's union of fields counts.
   The metadata columns lowering adds are the engine's, and not counted. A table already wider
   takes batches that change nothing. Resolution finds a table's columns, and conversion a

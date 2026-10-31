@@ -67,7 +67,7 @@ Arrow columns and the rows normalizing makes of both escaped that in several way
   `json_exceeds_budget` (`ErrorKind::Source`). Shredding is two steps, `observe` and `build`, and
   the partition reserves between them.
 - **Columns and cells are counted where they are built.** The shredder's column limit is the
-  engine's derived `schema_columns` (7,489 at the default budget, 1,103 at the least), counted as
+  engine's derived `schema_columns` (6,241 at the default budget, 893 at the least), counted as
   the emitter counts a schema: every field at any depth, and every list's items. It holds while a
   chunk is parsed, and again for the joined shape. Cells are counted a level at a time, the rows
   of the level times its leaves, a list's items being the rows of its items' level, and bounded
@@ -193,7 +193,7 @@ Arrow columns and the rows normalizing makes of both escaped that in several way
 - No JSON push builds or observes what it was not admitted or reserved for, and no check of an
   Arrow column of JSON holds what was not, so ADR 0039's bound holds for JSON without exception;
   a JSON flush whose batches take more than a quarter of the budget beyond twice its text is
-  refused. Thirteen records of 7,480 keys, each in a chunk of 2 MiB, are refused so; four load.
+  refused. Thirteen records of 6,232 keys, each in a chunk of 2 MiB, are refused so; four load.
 - A chunk built again with a column of JSON reckons about ten times its longest record beside
   its batch, what rendering a value of objects with one-byte keys could hold. A flush of
   records of megabytes whose column drifts to JSON takes that much more of a request, and may

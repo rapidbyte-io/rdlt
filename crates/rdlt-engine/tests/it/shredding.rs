@@ -206,10 +206,10 @@ async fn narrow_records_after_a_wide_one_fill_its_table_within_the_budget() {
     assert!(peak <= bound(LEAST), "the heap held {peak} bytes");
 }
 
-/// A push of `chunks` records of 7,480 keys, each followed by a record of filler that fills its
+/// A push of `chunks` records of 6,232 keys, each followed by a record of filler that fills its
 /// chunk of `chunk_bytes`.
 fn wide_chunks(chunks: usize, chunk_bytes: usize) -> String {
-    let wide = wide_object(0, 7_480, "1");
+    let wide = wide_object(0, 6_232, "1");
     let fill = chunk_bytes.saturating_sub(wide.len()).max(1);
     let filler = format!("{{\"pad\":\"{}\"}}", "x".repeat(fill));
     let mut text = String::new();
@@ -225,7 +225,7 @@ fn wide_chunks(chunks: usize, chunk_bytes: usize) -> String {
 #[tokio::test(start_paused = true)]
 async fn wide_records_in_small_chunks_are_held_within_the_bound() {
     const BUDGET: u64 = 256 << 20;
-    // Three hundred and eighty chunks of 64 KiB, each with all seven thousand columns.
+    // Three hundred and eighty chunks of 64 KiB, each with all six thousand columns.
     let text = wide_chunks(380, 64 << 10);
     let (peak, outcome) = run_chunked("wide_small_chunks", BUDGET, 64 << 10, text).await;
     if let Some(error) = &outcome.error {
@@ -234,7 +234,7 @@ async fn wide_records_in_small_chunks_are_held_within_the_bound() {
     assert!(peak <= bound(BUDGET), "the heap held {peak} bytes");
 }
 
-/// Loads `chunks` chunks of two megabytes, each with all seven thousand columns, under the default
+/// Loads `chunks` chunks of two megabytes, each with all six thousand columns, under the default
 /// budget: their columns' parts a chunk are charged, so the heap stays within what the budget
 /// held, a fifth and 32 MiB, and what takes more than a request is refused before it is built.
 async fn wide_full_chunks(chunks: usize) -> RunOutcome {
@@ -268,12 +268,12 @@ async fn wide_records_in_many_full_chunks_are_refused_charged_what_they_hold() {
 #[tokio::test(start_paused = true)]
 async fn observing_a_push_reserves_what_its_columns_may_hold_beyond_its_text() {
     // However small, a push's chunks may hold a shape of every column the records may hold
-    // beyond what the push was admitted for: 752 bytes a column, of the 7,489 a schema may hold
+    // beyond what the push was admitted for: 752 bytes a column, of the 6,241 a schema may hold
     // under the default budget, reserved while the push is observed.
     let (_, outcome) = run("observing_reserved", 256 << 20, "{\"a\":1}".to_owned()).await;
     assert!(outcome.error.is_none(), "{:?}", outcome.error);
     assert!(
-        outcome.report.peak_memory >= 7_489 * 752,
+        outcome.report.peak_memory >= 6_241 * 752,
         "the budget held at most {} bytes",
         outcome.report.peak_memory
     );

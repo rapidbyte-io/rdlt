@@ -142,11 +142,11 @@ async fn wide_child_tables_passing_the_state_limit_are_refused_as_child_tables()
     let config =
         least().commit(rdlt_engine::CommitPolicy::new(None, Some(1), None).expect("valid"));
     let limits = config.clone().build().expect("a valid config");
-    // Fewer child tables than the limit counts, each of a hundred columns: nine a document, whose
+    // Fewer child tables than the limit counts, each of a hundred columns: eight a document, whose
     // columns, nested ones counted, are within what one JSON push may hold.
-    let documents: Vec<Value> = (0..45)
+    let documents: Vec<Value> = (0..51)
         .map(|document| {
-            let mut fields: Map<String, Value> = (0..9)
+            let mut fields: Map<String, Value> = (0..8)
                 .map(|array| (format!("a{document}_{array}"), json!([record("f", 100)])))
                 .collect();
             fields.insert("id".to_owned(), json!(document));
@@ -154,9 +154,9 @@ async fn wide_child_tables_passing_the_state_limit_are_refused_as_child_tables()
         })
         .collect();
     // The record's `id`, and each array's list, its items and their hundred fields.
-    let columns = 1 + 9 * (2 + 100);
+    let columns = 1 + 8 * (2 + 100);
     assert!(columns <= column_limit());
-    assert!(documents.len() * 9 < limits.child_table_limit());
+    assert!(documents.len() * 8 < limits.child_table_limit());
     let outcome = load(store, &documents, config, Nested::normalize()).await;
     refused(&outcome, codes::CHILD_TABLES_EXCEEDED);
 }

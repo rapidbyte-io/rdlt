@@ -32,7 +32,7 @@ use crate::table::ChangeLayout;
 const COLUMNS: usize = 1_000;
 
 /// Columns of the widest table a schema may have at the default budget.
-const WIDEST: usize = 7_489;
+const WIDEST: usize = 6_241;
 
 /// Rows of a piece of many: what each holds beyond its charge adds up past the room a piece's
 /// fixed parts leave.

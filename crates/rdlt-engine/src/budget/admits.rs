@@ -23,7 +23,8 @@ use crate::limits::{COLUMN_RECORD, SCHEMA_KEPT};
 /// Each is what lets the worst case it admits, all at once, fit the share it draws on:
 ///
 /// - What a read keeps is half its dictionaries and half its schema: the schema's message is a
-///   fifth of that half, since the schema decoded from it takes up to four times the message.
+///   sixth of that half, since what its decoder keeps for the schema decoded from it is under
+///   five times the message where Arrow's writer encoded it.
 /// - A frame's batch keeps alive the message it arrived in, its own bytes and at most
 ///   `MESSAGE_ROOM` beside them, the dictionaries its keys name and its schema, and holds its
 ///   arrays, two a column where every column is a dictionary's keys beside its values, and a data
