@@ -5,7 +5,7 @@ use arrow_array::cast::AsArray;
 use arrow_array::types::{Decimal128Type, Decimal256Type, Float64Type, Int64Type};
 use arrow_array::{Array, RecordBatch};
 use bytes::Bytes;
-use rdlt_connector::{DecimalType, Field, LogicalType, TableSchema};
+use rdlt_connector::{DecimalType, Exclusion, Field, LogicalType, TableSchema};
 use rdlt_wire::limits::{NESTING_DEPTH, SCHEMA_COLUMNS, count};
 
 use super::differential::shredded;
@@ -46,6 +46,7 @@ fn parsed(text: &str) -> Parsed {
         chunks(&[records], 1 << 20).unwrap().remove(0),
         roomy,
         &roomy.beyond(),
+        &Exclusion::default(),
     )
     .unwrap()
 }
@@ -303,7 +304,7 @@ fn a_number_whose_exponent_is_too_long_is_refused_naming_it_where_the_chunk_is_p
     let number = "1e-1234567890123456789";
     let records = Bytes::from(format!("{{\"n\":18446744073709551616,\"x\":[{number}]}}"));
     let chunk = chunks(&[records], 1 << 20).unwrap().remove(0);
-    let refused = parse(chunk, limits(), &limits().beyond()).err();
+    let refused = parse(chunk, limits(), &limits().beyond(), &Exclusion::default()).err();
     assert_eq!(
         refused,
         Some(super::ShredError::Exponent(number.to_owned()))
@@ -826,7 +827,7 @@ fn cells_are_bounded_at_the_limit_before_anything_is_built() {
     let at = |rows: usize| {
         let push = format!("{}{}", "{}\n".repeat(rows - 1), wide_object(0, 8192));
         let chunk = chunks(&[Bytes::from(push)], 1 << 30).unwrap().remove(0);
-        let parsed = parse(chunk, limits(), &limits().beyond()).unwrap();
+        let parsed = parse(chunk, limits(), &limits().beyond(), &Exclusion::default()).unwrap();
         assert!(parsed.record.is_none(), "observed, not built");
         super::join(&[parsed], limits()).map(|_| ())
     };
@@ -880,7 +881,14 @@ fn a_chunk_planned_to_fit_takes_the_columns_it_was_parsed_into_not_its_bytes_aga
     let (shape, plans, _) = super::join(std::slice::from_ref(&swapped), limits()).unwrap();
     assert!(!plans[0].again);
     let schema = TableSchema::new(shape.logical_fields()).unwrap().to_arrow();
-    let fitted = super::batch(swapped, plans[0], &shape, Arc::new(schema.clone())).unwrap();
+    let fitted = super::batch(
+        swapped,
+        plans[0],
+        &shape,
+        Arc::new(schema.clone()),
+        &Exclusion::default(),
+    )
+    .unwrap();
     assert_eq!(fitted.column(0).as_primitive::<Int64Type>().values(), &[1]);
 
     let mut again = parsed(r#"{"a":1}"#);
@@ -889,7 +897,8 @@ fn a_chunk_planned_to_fit_takes_the_columns_it_was_parsed_into_not_its_bytes_aga
         again: true,
         ..plans[0]
     };
-    let rebuilt = super::batch(again, plan, &shape, Arc::new(schema)).unwrap();
+    let rebuilt =
+        super::batch(again, plan, &shape, Arc::new(schema), &Exclusion::default()).unwrap();
     assert_eq!(rebuilt.column(0).as_primitive::<Int64Type>().values(), &[2]);
 }
 
@@ -1008,6 +1017,7 @@ fn blank_lines_among_records_cost_passes_but_not_their_batch() {
             pushes,
             1 << 20,
             limits(),
+            Exclusion::default(),
         ))
         .unwrap()
         .counts()
@@ -1148,6 +1158,7 @@ fn a_push_takes_more_than_it_was_admitted_for_only_where_its_batches_hold_more()
             pushes,
             1 << 20,
             limits(),
+            Exclusion::default(),
         ))
         .unwrap()
         .excess()
@@ -1238,7 +1249,7 @@ fn held_within_charge(keys: usize, value: &str) {
             ..limits()
         };
         let (held, (record, spent)) = crate::cost::tests::peak_alone(|| {
-            let parsed = parse(chunk(), limits, &limits.beyond()).unwrap();
+            let parsed = parse(chunk(), limits, &limits.beyond(), &Exclusion::default()).unwrap();
             (parsed.record.is_some(), parsed.spent)
         });
         assert_eq!(record, admitted > 0, "{keys} {value}");
@@ -1248,7 +1259,7 @@ fn held_within_charge(keys: usize, value: &str) {
         );
     }
     // The batch: its columns' arrays, beside the values they hold.
-    let parsed = parse(chunk(), limits(), &limits().beyond()).unwrap();
+    let parsed = parse(chunk(), limits(), &limits().beyond(), &Exclusion::default()).unwrap();
     let shape = parsed.shape.clone();
     drop(parsed);
     let (held, _) = crate::cost::tests::held_alone(|| {
@@ -1350,7 +1361,13 @@ fn parse_peak(records: &str, columns: u64) -> ParsePeak {
     let allowed = count(chunk.bytes()) * limits.admitted + limits.beyond_bytes();
     let mut chunk = Some(chunk);
     let (peak, (built, exact, spent)) = crate::cost::tests::peak_alone(|| {
-        let parsed = parse(chunk.take().unwrap(), limits, &limits.beyond()).unwrap();
+        let parsed = parse(
+            chunk.take().unwrap(),
+            limits,
+            &limits.beyond(),
+            &Exclusion::default(),
+        )
+        .unwrap();
         let parse = (parsed.record.is_some(), parsed.exact, parsed.spent);
         chunk = Some(parsed.chunk);
         parse
@@ -1399,8 +1416,9 @@ fn a_record_parsed_exactly_past_the_column_limit_is_refused_within_its_allowance
             .remove(0)
     };
     let allowed = count(chunk().bytes()) * limits.admitted + limits.beyond_bytes();
-    let (peak, refused) =
-        crate::cost::tests::peak_alone(|| parse(chunk(), limits, &limits.beyond()).err());
+    let (peak, refused) = crate::cost::tests::peak_alone(|| {
+        parse(chunk(), limits, &limits.beyond(), &Exclusion::default()).err()
+    });
     assert_eq!(
         refused,
         Some(super::ShredError::TooManyColumns(1_001, 1_000))
@@ -1468,6 +1486,7 @@ fn a_chunk_whose_rendering_finds_no_room_is_built_again_to_the_same_batch() {
         vec![Bytes::from(text)],
         1 << 20,
         roomy,
+        Exclusion::default(),
     ))
     .unwrap();
     assert_eq!(
@@ -1491,7 +1510,13 @@ fn an_object_repeating_a_key_in_a_drifted_column_is_refused_as_before() {
 fn built_again(push: &str) -> (u64, RecordBatch) {
     let pool = crate::compute::Pool::inline();
     let pushes = vec![Bytes::from(push.to_owned())];
-    let observed = crate::compute::ready(super::observe(&pool, pushes, 1 << 20, limits()));
+    let observed = crate::compute::ready(super::observe(
+        &pool,
+        pushes,
+        1 << 20,
+        limits(),
+        Exclusion::default(),
+    ));
     let observed = observed.unwrap();
     let rebuilt = observed.counts().rebuilt;
     let mut batches = crate::compute::ready(observed.build(&pool)).unwrap();
@@ -1511,7 +1536,13 @@ fn hundreds(first: &str, then: &str) -> String {
 fn an_observation_counts_its_passes_apart_from_the_chunks_building_will_build_again() {
     let pool = crate::compute::Pool::inline();
     let pushes = vec![Bytes::from(hundreds("1", r#"{"b":1}"#))];
-    let observed = crate::compute::ready(super::observe(&pool, pushes, 1 << 20, limits()));
+    let observed = crate::compute::ready(super::observe(
+        &pool,
+        pushes,
+        1 << 20,
+        limits(),
+        Exclusion::default(),
+    ));
     let observed = observed.unwrap();
     let passes = ShredCounts {
         parsed: 1,
@@ -1565,7 +1596,13 @@ fn counted(push: &'static [u8]) -> ShredCounts {
 fn counted_within(push: &'static [u8], chunk_bytes: usize, limits: ShredLimits) -> ShredCounts {
     let pool = crate::compute::Pool::inline();
     let pushes = vec![Bytes::from_static(push)];
-    let observed = crate::compute::ready(super::observe(&pool, pushes, chunk_bytes, limits));
+    let observed = crate::compute::ready(super::observe(
+        &pool,
+        pushes,
+        chunk_bytes,
+        limits,
+        Exclusion::default(),
+    ));
     observed.unwrap().counts()
 }
 
@@ -1648,6 +1685,7 @@ fn observed_only(text: &str) -> Result<Parsed, super::ShredError> {
         chunks(&[records], 1 << 20).unwrap().remove(0),
         tight,
         &tight.beyond(),
+        &Exclusion::default(),
     )
 }
 
@@ -1770,7 +1808,7 @@ fn an_observation_made_again_exactly_takes_the_flush_s_room_once() {
         ..ShredLimits::new(10)
     };
     let chunk = chunks(&[records], 1 << 20).unwrap().remove(0);
-    let observed = parse(chunk, tight, &tight.beyond()).unwrap();
+    let observed = parse(chunk, tight, &tight.beyond(), &Exclusion::default()).unwrap();
     assert!(observed.exact && observed.record.is_none());
     assert_eq!(observed.shape.columns(), 6);
 }
@@ -1787,7 +1825,7 @@ fn an_observation_past_its_chunk_s_room_and_the_flush_s_is_refused_naming_the_fl
         ..ShredLimits::new(10)
     };
     let chunk = chunks(&[records], 1 << 20).unwrap().remove(0);
-    let error = parse(chunk, tight, &tight.beyond()).err();
+    let error = parse(chunk, tight, &tight.beyond(), &Exclusion::default()).err();
     assert_eq!(
         error,
         Some(super::ShredError::ColumnsBeyondText(
@@ -1810,13 +1848,13 @@ fn a_chunk_built_again_where_it_needs_exact_numbers_but_was_not_planned_so_is_re
     let text = "{\"a\":100000000000000000000.0}";
     let shape = parsed(text).shape;
     let chunk = || chunks(&[Bytes::from(text)], 1 << 20).unwrap().remove(0);
-    let built = super::again(&chunk(), 1, &shape, true).unwrap();
+    let built = super::again(&chunk(), 1, &shape, true, &Exclusion::default()).unwrap();
     assert_eq!(
         built[0].as_primitive::<Float64Type>().value(0).to_bits(),
         1e20_f64.to_bits()
     );
     assert!(matches!(
-        super::again(&chunk(), 1, &shape, false),
+        super::again(&chunk(), 1, &shape, false, &Exclusion::default()),
         Err(super::ShredError::Internal(_))
     ));
 }
@@ -1829,7 +1867,8 @@ fn a_build_refuses_arrays_nested_past_the_limit_as_it_parses_them() {
             ..limits()
         };
         let chunk = chunks(&[Bytes::from(text)], 1 << 20).unwrap().remove(0);
-        parse(chunk, roomy, &roomy.beyond()).map(|parsed| parsed.record.is_some())
+        let excluded = Exclusion::default();
+        parse(chunk, roomy, &roomy.beyond(), &excluded).map(|parsed| parsed.record.is_some())
     };
     assert_eq!(parse_once(nested(NESTING_DEPTH, "[", "]")), Ok(true));
     assert_eq!(
@@ -2008,7 +2047,13 @@ fn roomy_batch(push: &str, chunk_bytes: usize) -> (u64, RecordBatch) {
     };
     let pool = crate::compute::Pool::inline();
     let pushes = vec![Bytes::from(push.to_owned())];
-    let observed = crate::compute::ready(super::observe(&pool, pushes, chunk_bytes, roomy));
+    let observed = crate::compute::ready(super::observe(
+        &pool,
+        pushes,
+        chunk_bytes,
+        roomy,
+        Exclusion::default(),
+    ));
     let observed = observed.unwrap();
     let rebuilt = observed.counts().rebuilt;
     let batches = crate::compute::ready(observed.build(&pool)).unwrap();
@@ -2073,7 +2118,14 @@ fn built_within_reckoning(text: &str, columns: u64) {
     let pool = crate::compute::Pool::inline();
     let limits = ShredLimits::new(columns);
     let pushes = vec![Bytes::from(text.to_owned())];
-    let observed = crate::compute::ready(super::observe(&pool, pushes, 1 << 20, limits)).unwrap();
+    let observed = crate::compute::ready(super::observe(
+        &pool,
+        pushes,
+        1 << 20,
+        limits,
+        Exclusion::default(),
+    ))
+    .unwrap();
     let reckoned = count(text.len()) * limits.admitted + observed.excess();
     heap.reset_peak_usage();
     let before = heap.current_usage();
@@ -2107,7 +2159,14 @@ fn kept_within_admission_and_excess(texts: &[&str], chunk_bytes: usize) -> Vec<b
         .map(|text| Bytes::from((*text).to_owned()))
         .collect();
     let (kept, observed) = crate::cost::tests::held_alone(|| {
-        crate::compute::ready(super::observe(&pool, pushes.clone(), chunk_bytes, limits())).unwrap()
+        crate::compute::ready(super::observe(
+            &pool,
+            pushes.clone(),
+            chunk_bytes,
+            limits(),
+            Exclusion::default(),
+        ))
+        .unwrap()
     });
     let total: usize = texts.iter().map(|text| text.len()).sum();
     let allowed = count(total) * limits().admitted + observed.excess();
@@ -2175,5 +2234,112 @@ fn a_chunks_parse_is_held_until_its_build_whether_it_is_built_again_or_fitted() 
     ] {
         let (_, _, excess) = super::join(&chunks(spent), limits).unwrap();
         assert_eq!(excess, base + held, "{spent:?}");
+    }
+}
+
+/// What `push` shreds into without the values of the top-level keys `excluded` names, each way
+/// a push is shredded: the batch, or the code it is refused with, the same every way.
+fn excluding(push: &str, excluded: &[&str]) -> Result<Option<RecordBatch>, Code> {
+    let pushes = [Bytes::from(push.to_owned())];
+    let exclusion = Exclusion::new(excluded.iter().copied());
+    let [first, rest @ ..] = ways().map(|(chunk_bytes, limits)| {
+        super::differential::shredded_excluding(&pushes, chunk_bytes, limits, &exclusion)
+    });
+    for other in rest {
+        assert_eq!(other, first, "{push:?}");
+    }
+    first
+}
+
+#[test]
+fn an_excluded_key_s_value_is_neither_observed_nor_built() {
+    let push = "{\"id\":1,\"secret\":{\"a\":[1.5,\"x\"]},\"n\":\"a\"}\n\
+                {\"secret\":18446744073709551616,\"id\":2}\n\
+                {\"id\":3,\"secret\":null,\"n\":\"b\"}";
+    let batch = excluding(push, &["secret"]).unwrap().unwrap();
+    let expected = batch_of(
+        &["{\"id\":1,\"n\":\"a\"}\n{\"id\":2}\n{\"id\":3,\"n\":\"b\"}"],
+        1,
+    );
+    assert_eq!(types(&batch), types(&expected));
+    assert_eq!(batch, expected);
+}
+
+#[test]
+fn a_nested_key_named_as_an_excluded_one_is_kept() {
+    let batch = excluding("{\"o\":{\"secret\":1},\"secret\":2}", &["secret"])
+        .unwrap()
+        .unwrap();
+    let names: Vec<String> = types(&batch).into_iter().map(|(name, _)| name).collect();
+    assert_eq!(names, ["o"]);
+    let object = batch.column(0).as_struct();
+    assert_eq!(object.column_names(), ["secret"]);
+}
+
+#[test]
+fn a_record_whose_keys_are_all_excluded_is_a_row_of_no_columns() {
+    let batch = excluding(
+        "{\"secret\":1}\n{\"secret\":2,\"other\":3}",
+        &["secret", "other"],
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!((batch.num_rows(), batch.num_columns()), (2, 0));
+}
+
+#[test]
+fn an_excluded_value_that_is_not_json_or_passes_a_limit_still_refuses_its_record() {
+    let too_deep = nested(NESTING_DEPTH + 1, "[", "]").replacen("\"a\"", "\"secret\"", 1);
+    let cases = [
+        ("{\"id\":1,\"secret\":[1,}".to_owned(), codes::JSON_INVALID),
+        (
+            "{\"id\":1,\"secret\":1e400}".to_owned(),
+            codes::JSON_INVALID,
+        ),
+        ("{\"secret\":\"\\x\"}".to_owned(), codes::JSON_INVALID),
+        (too_deep, codes::LIMIT_EXCEEDED),
+    ];
+    for (push, code) in cases {
+        assert_eq!(excluding(&push, &["secret"]), Err(code), "{push:?}");
+    }
+}
+
+#[test]
+fn a_record_may_name_an_excluded_key_twice_but_no_other() {
+    let batch = excluding("{\"secret\":1,\"id\":2,\"secret\":3}", &["secret"])
+        .unwrap()
+        .unwrap();
+    assert_eq!(batch, batch_of(&["{\"id\":2}"], 1));
+    assert_eq!(
+        excluding("{\"id\":1,\"secret\":1,\"id\":2}", &["secret"]),
+        Err(codes::JSON_DUPLICATE_KEY)
+    );
+}
+
+#[test]
+fn each_parse_refuses_an_excluded_value_nested_past_the_limit_as_it_reads_it() {
+    // With no room, a chunk's builders trip at its first kept value and it is observed; with
+    // room, it is built.
+    let roomy = ShredLimits {
+        admitted: 1 << 20,
+        ..limits()
+    };
+    let tight = ShredLimits {
+        admitted: 0,
+        ..limits()
+    };
+    let excluded = Exclusion::new(["secret"]);
+    for (limits, built) in [(roomy, true), (tight, false)] {
+        let parse_once = |levels: u64| {
+            let text = nested(levels, "[", "]").replacen("{\"a\":", "{\"id\":1,\"secret\":", 1);
+            let chunk = chunks(&[Bytes::from(text)], 1 << 20).unwrap().remove(0);
+            parse(chunk, limits, &limits.beyond(), &excluded).map(|parsed| parsed.record.is_some())
+        };
+        assert_eq!(parse_once(NESTING_DEPTH), Ok(built), "built {built}");
+        assert_eq!(
+            parse_once(NESTING_DEPTH + 1).err(),
+            Some(super::ShredError::TooDeep),
+            "built {built}"
+        );
     }
 }

@@ -7,10 +7,10 @@ use arrow_array::{Array, ArrayRef, ListArray, RecordBatch, StringArray, StructAr
 use arrow_schema::{DataType, Field as ArrowField};
 use bytes::Bytes;
 use proptest::prelude::*;
-use rdlt_connector::{Field, LogicalType};
+use rdlt_connector::{Exclusion, Field, LogicalType};
 
 use super::reference::{self, Json};
-use super::shred;
+use super::{observe, shred};
 use crate::compute::{Pool, ready};
 use crate::error::Code;
 
@@ -27,13 +27,37 @@ pub(super) fn shredded_within(
 ) -> Result<Option<RecordBatch>, Code> {
     let batches =
         ready(shred(&Pool::inline(), pushes, chunk_bytes, limits)).map_err(|error| error.code())?;
-    let Some(first) = batches.first() else {
-        return Ok(None);
-    };
-    Ok(Some(
-        arrow_select::concat::concat_batches(&first.schema(), &batches)
+    Ok(concatenated(&batches))
+}
+
+/// The batches of `pushes`, shredded as [`shredded_within`] does without the values of the keys
+/// `excluded` names.
+pub(super) fn shredded_excluding(
+    pushes: &[Bytes],
+    chunk_bytes: usize,
+    limits: super::ShredLimits,
+    excluded: &Exclusion,
+) -> Result<Option<RecordBatch>, Code> {
+    let pool = Pool::inline();
+    let observing = observe(
+        &pool,
+        pushes.to_vec(),
+        chunk_bytes,
+        limits,
+        excluded.clone(),
+    );
+    let built = async { observing.await?.build(&pool).await };
+    let batches = ready(built).map_err(|error| error.code())?;
+    Ok(concatenated(&batches))
+}
+
+/// `batches`, which share a schema, as one; none where there are none.
+fn concatenated(batches: &[RecordBatch]) -> Option<RecordBatch> {
+    let first = batches.first()?;
+    Some(
+        arrow_select::concat::concat_batches(&first.schema(), batches)
             .expect("the batches share a schema"),
-    ))
+    )
 }
 
 /// `batch` with its JSON text normalized, so renderings that differ only in formatting compare
@@ -272,6 +296,54 @@ proptest! {
                 (Ok(expected), Ok(None)) => prop_assert_eq!(expected.num_rows(), 0),
                 (Err(expected), Err(actual)) => prop_assert_eq!(actual, expected),
                 (expected, actual) => prop_assert!(false, "reference {expected:?}, shredder {actual:?}"),
+            }
+        }
+    }
+}
+
+/// `record`, an object, without its top-level keys `excluded` names; any other value as it is.
+fn without(record: &Json, excluded: &std::collections::BTreeSet<String>) -> Json {
+    match record {
+        Json::Object(pairs) => Json::Object(
+            pairs
+                .iter()
+                .filter(|(key, _)| !excluded.contains(key))
+                .cloned()
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(512))]
+
+    #[test]
+    fn shredding_without_excluded_keys_is_shredding_records_that_lack_them(
+        records in prop::collection::vec(object(value()), 0..24),
+        cuts in prop::collection::vec((0_usize..10, any::<bool>()), 1..4),
+        excluded in prop::collection::btree_set(key(), 0..3),
+        chunk_bytes in 1_usize..400,
+    ) {
+        let lacking: Vec<Json> = records.iter().map(|record| without(record, &excluded)).collect();
+        let exclusion = Exclusion::new(excluded.iter().cloned());
+        let roomy = super::ShredLimits {
+            admitted: 1 << 20,
+            ..super::tests::limits()
+        };
+        let exactly = super::ShredLimits {
+            exact: true,
+            ..roomy
+        };
+        for limits in [super::tests::limits(), roomy, exactly] {
+            let expected = shredded_within(&pushes(&lacking, &cuts, None, 0), chunk_bytes, limits);
+            let actual =
+                shredded_excluding(&pushes(&records, &cuts, None, 0), chunk_bytes, limits, &exclusion);
+            match (expected, actual) {
+                (Ok(Some(expected)), Ok(Some(actual))) => {
+                    prop_assert_eq!(normalized(&actual), normalized(&expected));
+                }
+                (expected, actual) => prop_assert_eq!(actual, expected),
             }
         }
     }

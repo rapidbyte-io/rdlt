@@ -6,8 +6,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use rdlt_connector::{
-    BoxFuture, Cursor, Partition, PartitionId, PartitionPlan, PartitionState, Source, StateChange,
-    StateEntry, StateKey, StreamName, StreamState,
+    BoxFuture, Cursor, Exclusion, Partition, PartitionId, PartitionPlan, PartitionState, Source,
+    StateChange, StateEntry, StateKey, StreamName, StreamState,
 };
 use tokio::sync::mpsc;
 
@@ -42,13 +42,15 @@ pub(crate) struct Begun {
 }
 
 /// What every partition of a stream is read with.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct Template {
     pub(crate) table: usize,
     pub(crate) on_demand: bool,
     pub(crate) changes: Option<ChangeMode>,
     /// Whether its partitions read again from their source's earliest after a retention loss.
     pub(crate) reset_retention: bool,
+    /// The columns the stream excludes.
+    pub(crate) exclude: Exclusion,
 }
 
 /// What `source` plans for the stream `name` from `state`, checked as
@@ -195,11 +197,11 @@ impl Coordinator {
         // The phase's partitions have ended, their ends committed: their places are free.
         self.retired
             .extend(std::mem::take(&mut phases.reading).into_values());
-        let template = phases.template;
+        let template = phases.template.clone();
         self.forget_lag(stream, None);
         for partition in planned.partitions {
             let cursor = planned.starts.get(partition.id()).cloned();
-            self.launch(stream, template, partition, cursor)?;
+            self.launch(stream, &template, partition, cursor)?;
         }
         Ok(())
     }
@@ -212,7 +214,7 @@ impl Coordinator {
     pub(super) fn launch(
         &mut self,
         stream: usize,
-        template: Template,
+        template: &Template,
         partition: Partition,
         cursor: Option<Cursor>,
     ) -> Result<(), Error> {
@@ -245,6 +247,7 @@ impl Coordinator {
             stop,
             follow: self.parts.follow,
             reset_retention: template.reset_retention,
+            exclude: template.exclude.clone(),
         };
         (self.parts.launcher)(job)
     }

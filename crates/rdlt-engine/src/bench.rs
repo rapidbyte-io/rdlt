@@ -169,6 +169,7 @@ pub fn shred_counted(pushes: &[Bytes], chunk_bytes: usize) -> Result<crate::Shre
         pushes.to_vec(),
         chunk_bytes,
         limits,
+        rdlt_connector::Exclusion::default(),
     ))?;
     Ok(shredding.counts())
 }

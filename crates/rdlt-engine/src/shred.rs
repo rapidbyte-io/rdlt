@@ -39,7 +39,7 @@ use std::sync::Arc;
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use bytes::Bytes;
-use rdlt_connector::TableSchema;
+use rdlt_connector::{Exclusion, TableSchema};
 use rdlt_wire::limits::count;
 use serde::de::DeserializeSeed;
 
@@ -139,6 +139,8 @@ pub(crate) struct Shredding {
     plans: Vec<Plan>,
     shape: Arc<Shape>,
     schema: SchemaRef,
+    /// The top-level keys whose values are neither observed nor built.
+    excluded: Exclusion,
     excess: u64,
     /// The passes observing the chunks took.
     passes: ShredCounts,
@@ -174,12 +176,14 @@ impl Shredding {
             plans,
             shape,
             schema,
+            excluded,
             ..
         } = self;
         let built = pool
             .run_all(parsed.into_iter().zip(plans).map(|(chunk, plan)| {
                 let (shape, schema) = (Arc::clone(&shape), Arc::clone(&schema));
-                move || job(|| batch(chunk, plan, &shape, schema))
+                let excluded = excluded.clone();
+                move || job(|| batch(chunk, plan, &shape, schema, &excluded))
             }))
             .await;
         numbered(built, RecordBatch::num_rows)
@@ -194,7 +198,12 @@ impl Shredding {
 /// is one it refuses, since it stops at the first value it refuses, may have read a vast exponent
 /// before that value as zero, and checks a record is text only as far as it reads: the exact
 /// parse refuses the record as it would wherever its chunk was cut.
-fn parse(chunk: Chunk, limits: ShredLimits, beyond: &Arc<Beyond>) -> Result<Parsed, ShredError> {
+fn parse(
+    chunk: Chunk,
+    limits: ShredLimits,
+    beyond: &Arc<Beyond>,
+    excluded: &Exclusion,
+) -> Result<Parsed, ShredError> {
     let (mut exact, mut counts) = (limits.exact, ShredCounts::default());
     let allowance = count(chunk.bytes()).saturating_mul(limits.admitted);
     // The most records it may hold: blank lines among lines count too.
@@ -207,6 +216,7 @@ fn parse(chunk: Chunk, limits: ShredLimits, beyond: &Arc<Beyond>) -> Result<Pars
             let row = Row {
                 record: &mut record,
                 context: &context,
+                excluded: any(excluded),
             };
             visit(bytes, RecordSeed(row), exact, &context)
         });
@@ -220,7 +230,7 @@ fn parse(chunk: Chunk, limits: ShredLimits, beyond: &Arc<Beyond>) -> Result<Pars
         if appended.tripped {
             drop(record);
             counts.tripped = counts.tripped.saturating_add(1);
-            return observed(chunk, (exact, counts), limits, beyond);
+            return observed(chunk, (exact, counts), limits, beyond, excluded);
         }
         if appended.imprecise && !exact {
             exact = true;
@@ -248,6 +258,7 @@ fn observed(
     (mut exact, mut counts): (bool, ShredCounts),
     limits: ShredLimits,
     beyond: &Arc<Beyond>,
+    excluded: &Exclusion,
 ) -> Result<Parsed, ShredError> {
     let allowance = count(chunk.bytes()).saturating_mul(limits.admitted);
     loop {
@@ -259,6 +270,7 @@ fn observed(
             let row = observing::Record {
                 shape: &mut shape,
                 context: &context,
+                excluded: any(excluded),
             };
             visit(bytes, RecordSeed(row), exact, &context)
         });
@@ -452,13 +464,15 @@ fn join(parsed: &[Parsed], limits: ShredLimits) -> Result<(Shape, Vec<Plan>, u64
     Ok((joined, plans, excess))
 }
 
-/// The batch of `parsed`'s records against `shape`: the columns built as it was parsed, fitted to
-/// `shape`, or the records built again against it, as `plan` says.
+/// The batch of `parsed`'s records against `shape`, of `schema`: the columns built as it was
+/// parsed, fitted to `shape`, or the records built again against it without the values of the
+/// keys `excluded` names, as `plan` says.
 fn batch(
     parsed: Parsed,
     plan: Plan,
     shape: &Shape,
     schema: SchemaRef,
+    excluded: &Exclusion,
 ) -> Result<RecordBatch, ShredError> {
     let Parsed {
         chunk,
@@ -473,7 +487,13 @@ fn batch(
         }
         speculative => {
             drop(speculative);
-            again(&chunk, rows, &cost::sized(shape, &local), plan.exact)?
+            again(
+                &chunk,
+                rows,
+                &cost::sized(shape, &local),
+                plan.exact,
+                excluded,
+            )?
         }
     };
     let options = arrow_array::RecordBatchOptions::new().with_row_count(Some(rows));
@@ -481,8 +501,9 @@ fn batch(
         .map_err(|error| ShredError::Internal(format!("building a batch: {error}")))
 }
 
-/// The columns of `chunk`'s `rows` records built against `shape`, presized for what they hold:
-/// every value fits it, so no column stops building and no builder grows past what was reserved.
+/// The columns of `chunk`'s `rows` records built against `shape`, presized for what they hold,
+/// without the values of the keys `excluded` names: every value fits it, so no column stops
+/// building and no builder grows past what was reserved.
 ///
 /// Its meter has no limit, so the build never trips.
 fn again(
@@ -490,6 +511,7 @@ fn again(
     rows: usize,
     shape: &Shape,
     exact: bool,
+    excluded: &Exclusion,
 ) -> Result<Vec<arrow_array::ArrayRef>, ShredError> {
     let unbuilt = |what: &str| ShredError::Internal(format!("building a chunk again: {what}"));
     let context = Context::new(Meter::reserved(), Columns::new(u64::MAX));
@@ -499,6 +521,7 @@ fn again(
         let row = Row {
             record: &mut record,
             context: &context,
+            excluded: any(excluded),
         };
         visit(bytes, RecordSeed(row), exact, &context)
     })?;
@@ -506,6 +529,11 @@ fn again(
         return Err(unbuilt("its records"));
     }
     record.finish_columns()
+}
+
+/// `excluded`, where it excludes any key: a parse looks a key up in it only then.
+fn any(excluded: &Exclusion) -> Option<&Exclusion> {
+    (!excluded.is_empty()).then_some(excluded)
 }
 
 /// Stack a shredding job is sure of before it starts, 4 MiB: building and checking the columns of
@@ -527,7 +555,9 @@ pub(crate) fn job<T>(work: impl FnOnce() -> T) -> T {
 /// A push is a JSON array of objects, or objects on their own lines; blank lines are skipped. The
 /// pushes are cut into chunks without walking their records, and each chunk's job finds and
 /// counts its own: a record refused is numbered among the pushes from the rows of the chunks
-/// before its own.
+/// before its own. The value of a record's key that `excluded` names is parsed, so a malformed
+/// or too deep one refuses its record, but neither observed nor built, and a record may name
+/// such a key twice.
 ///
 /// # Errors
 ///
@@ -537,6 +567,7 @@ pub(crate) async fn observe(
     pushes: Vec<Bytes>,
     chunk_bytes: usize,
     limits: ShredLimits,
+    excluded: Exclusion,
 ) -> Result<Shredding, ShredError> {
     let chunks = pool
         .run_all([move || chunks(&pushes, chunk_bytes)])
@@ -549,7 +580,8 @@ pub(crate) async fn observe(
     let parsed = pool
         .run_all(chunks.into_iter().map(|chunk| {
             let beyond = Arc::clone(&beyond);
-            move || job(|| parse(chunk, limits, &beyond))
+            let excluded = excluded.clone();
+            move || job(|| parse(chunk, limits, &beyond, &excluded))
         }))
         .await;
     let parsed = numbered(parsed, |parsed: &Parsed| parsed.rows)?;
@@ -569,6 +601,7 @@ pub(crate) async fn observe(
         plans,
         shape: Arc::new(shape),
         schema: Arc::new(schema.to_arrow()),
+        excluded,
         excess,
         passes,
         counts,
@@ -584,8 +617,14 @@ pub(crate) async fn shred(
     chunk_bytes: usize,
     limits: ShredLimits,
 ) -> Result<Vec<RecordBatch>, ShredError> {
-    observe(pool, pushes.to_vec(), chunk_bytes, limits)
-        .await?
-        .build(pool)
-        .await
+    observe(
+        pool,
+        pushes.to_vec(),
+        chunk_bytes,
+        limits,
+        Exclusion::default(),
+    )
+    .await?
+    .build(pool)
+    .await
 }

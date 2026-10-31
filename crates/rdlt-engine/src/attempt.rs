@@ -15,8 +15,8 @@ use std::sync::atomic::AtomicU64;
 
 use parking_lot::Mutex;
 use rdlt_connector::{
-    Cursor, Destination, Epoch, GenerationId, OpenContext, OpenedSession, Partition, PipelineState,
-    Receipt, Source, StreamName,
+    Cursor, Destination, Epoch, Exclusion, GenerationId, OpenContext, OpenedSession, Partition,
+    PipelineState, Receipt, Source, StreamName,
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -81,6 +81,8 @@ struct Planned {
     follow: bool,
     /// Whether its partitions read again from their source's earliest after a retention loss.
     reset_retention: bool,
+    /// The columns it excludes.
+    exclude: Exclusion,
     partitions: Vec<(Partition, Option<Cursor>)>,
 }
 
@@ -388,6 +390,7 @@ fn spawn_partitions(
                 stop: context.stop.child_token(),
                 follow: stream.follow,
                 reset_retention: stream.reset_retention,
+                exclude: stream.exclude.clone(),
             };
             if let Some(phases) = stream.stream.phases.as_mut() {
                 phases.reading.insert(id.clone(), partitions.len());

@@ -38,6 +38,7 @@ fn job(index: usize, followed: bool) -> PartitionJob {
         stop: CancellationToken::new(),
         follow: followed,
         reset_retention: false,
+        exclude: rdlt_connector::Exclusion::default(),
     }
 }
 
