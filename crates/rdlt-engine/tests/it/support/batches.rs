@@ -14,6 +14,7 @@ use rdlt_connector::{
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
+use tokio::sync::Semaphore;
 
 /// One stream of a batch source.
 #[derive(Clone, Debug)]
@@ -28,6 +29,8 @@ pub(crate) struct BatchStream {
     pub(crate) unchecked: bool,
     /// The column saying when each row changed, which a history table's versions begin at.
     pub(crate) change_time: Option<String>,
+    /// The push the stream holds back until a permit arrives, and where the permit comes from.
+    pub(crate) held: Option<(usize, Arc<Semaphore>)>,
 }
 
 impl BatchStream {
@@ -41,6 +44,7 @@ impl BatchStream {
             one_segment: false,
             unchecked: false,
             change_time: None,
+            held: None,
         }
     }
 
@@ -82,6 +86,12 @@ impl BatchStream {
     /// Declares `schema` in the catalog.
     pub(crate) fn declared(mut self, schema: TableSchema) -> Self {
         self.schema = Some(schema);
+        self
+    }
+
+    /// Holds back push `push` (from 0) until `permits` grants one.
+    pub(crate) fn held(mut self, push: usize, permits: Arc<Semaphore>) -> Self {
+        self.held = Some((push, permits));
         self
     }
 }
@@ -177,6 +187,10 @@ impl ReadStream<BatchSource> for Pushing {
     ) -> Result<()> {
         let stream = &source.streams[self.index];
         for (index, push) in stream.pushes.iter().enumerate().skip(next) {
+            if let Some((_, permits)) = stream.held.as_ref().filter(|(held, _)| *held == index) {
+                let permit = permits.acquire().await;
+                drop(permit);
+            }
             match push {
                 Push::Json(json) => out.json(json.clone()).await?,
                 Push::Arrow(batch) | Push::Changes(batch) => out.batch(batch.clone()).await?,

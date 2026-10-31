@@ -181,8 +181,8 @@ still taken largely on trust:
     a writer whose flush went unanswered takes no more calls.
   - A served connection whose writes make no progress for its send wait (60 s) is closed, and a
     stopping connector's drain ends at its drain wait (30 minutes), both `ListenLimits` fields.
-  - A failed attempt closes the session it opened, waiting for the close no longer than
-    `EngineConfig::close_wait` (60 s).
+  - A failed attempt waits for its commit in flight to answer, then closes the session it opened,
+    waiting for each no longer than `EngineConfig::close_wait` (60 s).
 - **What a connector says cannot silently change what was committed.**
   - A receipt must answer its own commit, by its key, or the commit fails as
     `receipt_mismatch`; receipt counters are summed with checked arithmetic.

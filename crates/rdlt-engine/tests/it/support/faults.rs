@@ -21,6 +21,8 @@ pub(crate) enum Fault {
     Before(Failure),
     /// The try lands, then fails.
     After(Failure),
+    /// The try lands, then answers once the wait has passed.
+    Late(Duration),
 }
 
 /// What a try that fails answers.
@@ -137,10 +139,14 @@ impl DestinationSession for FaultySession {
                 return Err(failure.answered().await);
             }
             let receipt = self.inner.commit(meta).await?;
-            if let Fault::After(failure) = fault {
-                return Err(failure.answered().await);
+            match fault {
+                Fault::After(failure) => Err(failure.answered().await),
+                Fault::Late(wait) => {
+                    tokio::time::sleep(wait).await;
+                    Ok(receipt)
+                }
+                Fault::None | Fault::Before(_) => Ok(receipt),
             }
-            Ok(receipt)
         })
     }
 

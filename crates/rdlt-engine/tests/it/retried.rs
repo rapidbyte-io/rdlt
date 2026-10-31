@@ -1,20 +1,34 @@
 //! A commit the destination answered transiently, sent again in place by the same key: the run
 //! loads in one attempt, opening the destination once and reading nothing again; a commit whose
-//! answer is lost, or whose wait ends, ends its attempt; and the attempt's end and a stop are
-//! heard while a commit is in flight.
+//! answer is lost, or whose wait ends, ends its attempt; the attempt's end and a stop are heard
+//! while a commit is in flight; and a commit that lands as a refusal ends the run is in its
+//! report.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+use arrow_array::{ArrayRef, Date64Array};
 use rdlt_connector::wire::TRANSPORT;
 use rdlt_connector::{CommitMeta, ConnectorErrorKind, ReadMode};
-use rdlt_engine::{ErrorKind, Origin, PipelinePlan, RetryPolicy, RunStatus, StopMode, codes};
+use rdlt_engine::{
+    ErrorKind, Origin, PipelinePlan, RetryPolicy, RunStatus, SchemaPolicy, SchemaSettings,
+    StopMode, codes,
+};
+use tokio::sync::Semaphore;
 
+use crate::schema::{batch, ints};
+use crate::support::batches::{BatchStream, batches};
 use crate::support::destinations::{Gate, counting, gated};
 use crate::support::faults::{Failure, Fault, Rule, failing_commits, first_tries};
 use crate::support::script::{self, Script, ScriptStream};
 use crate::support::{commit_every, engine, memory, pipeline, published_ids, stream, until};
+
+/// A day of milliseconds.
+const DAY: i64 = 86_400_000;
+
+/// How long a commit in flight has to answer once its attempt fails.
+const CLOSE_WAIT: Duration = Duration::from_secs(2);
 
 fn incremental(name: &str) -> PipelinePlan {
     pipeline(name, [stream("events").read(ReadMode::Incremental)])
@@ -122,12 +136,14 @@ async fn a_commit_whose_answer_is_lost_or_whose_wait_ends_ends_its_attempt_each_
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_partition_failing_while_a_commit_hangs_ends_the_attempt_within_a_second() {
+async fn a_partition_failing_while_a_commit_hangs_ends_the_attempt_at_the_close_wait() {
     let gate = Gate::closed();
     let mut events = ScriptStream::new("events", 1, 20, 10);
     events.idle = true;
     let (script, source) = Script::new(vec![events]).connect("hung_commit").await;
-    let config = commit_every(10).retry(RetryPolicy::default().max_attempts(1));
+    let config = commit_every(10)
+        .retry(RetryPolicy::default().max_attempts(1))
+        .close_wait(CLOSE_WAIT);
     let destination = gated(memory("hung_commit").await, Arc::clone(&gate));
     let run = engine(config).run(incremental("hung-commit"), source, destination);
     let failing = async {
@@ -143,9 +159,59 @@ async fn a_partition_failing_while_a_commit_hangs_ends_the_attempt_within_a_seco
     };
     let (outcome, failed_at) = tokio::join!(run, failing);
     let ended = failed_at.elapsed();
-    assert!(ended < Duration::from_secs(1), "{ended:?}");
+    // The commit in flight has the close wait to answer, not the connector wait's 30 min.
+    assert!(
+        (CLOSE_WAIT..CLOSE_WAIT + Duration::from_millis(500)).contains(&ended),
+        "{ended:?}"
+    );
     let error = outcome.error.expect("the partition's failure ends the run");
     assert_eq!(error.kind(), ErrorKind::Source);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_commit_that_lands_as_a_refusal_ends_the_run_is_reported_with_what_it_discarded() {
+    let permits = Arc::new(Semaphore::new(0));
+    let begun = Arc::clone(&permits);
+    let rule: Arc<Rule> = Arc::new(move |n: usize, _: &CommitMeta| {
+        if n == 1 {
+            // The stream's second push goes on once the first commit is in flight.
+            begun.add_permits(1);
+            Fault::Late(Duration::from_secs(1))
+        } else {
+            Fault::None
+        }
+    });
+    // Ids 1 to 3, whose second date no date holds; then a row with a column the frozen stream
+    // has not got, which no attempt after mends.
+    let dates: ArrayRef = Arc::new(Date64Array::from(vec![0, i64::MAX, DAY]));
+    let first = batch(vec![("id", ints(&[1, 2, 3])), ("d", dates)]);
+    let day: ArrayRef = Arc::new(Date64Array::from(vec![DAY]));
+    let second = batch(vec![("id", ints(&[4])), ("d", day), ("e", ints(&[1]))]);
+    let events = BatchStream::new("events", vec![first, second]).held(1, permits);
+    let plan = stream("events")
+        .schema(SchemaSettings::new().policy(SchemaPolicy::Freeze))
+        .column("d", SchemaSettings::new().policy(SchemaPolicy::DiscardRow));
+    let outcome = engine(commit_every(1))
+        .run(
+            pipeline("late_refusal", [plan]),
+            batches("late_refusal", vec![events]).await,
+            failing_commits(memory("late_refusal").await, rule),
+        )
+        .await;
+    let error = outcome.error.expect("the refusal ends the run");
+    assert_eq!(
+        (error.kind(), error.code()),
+        (ErrorKind::Schema, Some(codes::SCHEMA_FROZEN))
+    );
+    let report = &outcome.report;
+    assert_eq!(
+        (report.status, report.attempted, report.commits),
+        (RunStatus::Failed, 1, 1),
+        "{report:?}"
+    );
+    let events = &report.streams["events"];
+    assert_eq!((events.rows, events.discarded_rows), (2, 1));
+    assert_eq!(published_ids("late_refusal", "events"), [1, 3]);
 }
 
 #[tokio::test(start_paused = true)]
