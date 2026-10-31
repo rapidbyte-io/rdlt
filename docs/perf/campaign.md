@@ -196,8 +196,8 @@ The baselines the later rules read, and their records, are listed after the deci
   pipeline's CPU a GB 7.0, 8.6 and 8.1 % lower; the run in process 13.7, 1.8 and 2.0 % longer,
   and spawned 7.4 % longer by the medians ([normalized.md](normalized.md), "Staging only each
   key's last row's children: closed").
-- **Verdict.** Failed: closed. Each piece stages each key's last root row and every row's
-  children; the destination keeps the children of each key's last row.
+- **Verdict.** Failed: closed. As on `main`, each piece stages each key's last root row and every
+  row's children, and the destination keeps the children of each key's last row.
 
 ## Why served throughput falls with partitions
 
