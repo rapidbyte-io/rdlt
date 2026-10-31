@@ -57,6 +57,9 @@ message ReadStart {
   // Whether a read of an unbounded partition follows it once caught up, until asked to stop;
   // otherwise it returns once caught up to where the source stood when the read started.
   bool follow = 6;
+  // The names of the top-level columns the stream excludes, which the read may leave out of what
+  // it sends; the host drops them from whatever it sends.
+  repeated string exclude = 7;
 }
 
 // Asks for a checkpoint answering a barrier.

@@ -857,6 +857,10 @@ pub struct ReadStart {
     /// otherwise it returns once caught up to where the source stood when the read started.
     #[prost(bool, tag = "6")]
     pub follow: bool,
+    /// The names of the top-level columns the stream excludes, which the read may leave out of what
+    /// it sends; the host drops them from whatever it sends.
+    #[prost(string, repeated, tag = "7")]
+    pub exclude: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 /// Asks for a checkpoint answering a barrier.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]

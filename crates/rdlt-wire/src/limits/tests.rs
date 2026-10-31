@@ -408,6 +408,7 @@ fn each_class_of_message_is_decoded_within_its_own_limit() {
         ..Limits::default()
     };
     let overhead = 65_536;
+    let excluded = 262_144;
     let expected = [
         (Class::Handshake, usize::try_from(HANDSHAKE_BYTES).unwrap()),
         (Class::Control, 7),
@@ -415,7 +416,7 @@ fn each_class_of_message_is_decoded_within_its_own_limit() {
         (Class::State, 6),
         (Class::Config, 3 + overhead),
         (Class::Schema, 4 + overhead),
-        (Class::Cursor, 2 + overhead),
+        (Class::Cursor, 2 + overhead + excluded),
         (Class::Data, 1 + overhead),
     ];
     for (class, bytes) in expected {
@@ -555,4 +556,69 @@ fn every_limit_has_one_name_and_is_found_by_it() {
     assert_eq!(Limit::named("batch columns"), None);
     assert_eq!(Limit::named(""), None);
     assert_eq!(Limit::named("frame bytes "), None);
+}
+
+#[test]
+fn excluded_columns_are_measured_as_a_read_s_start_carries_them() {
+    use super::excluded_bytes;
+    use prost::Message as _;
+    for names in [
+        vec![],
+        vec!["a".to_owned()],
+        vec!["secret".to_owned(), "x".repeat(200), "é".repeat(70_000)],
+    ] {
+        let start = v1::ReadStart {
+            exclude: names.clone(),
+            ..v1::ReadStart::default()
+        };
+        let measured = excluded_bytes(names.iter().map(String::as_str));
+        assert_eq!(
+            measured,
+            count(start.encoded_len()),
+            "{} names",
+            names.len()
+        );
+    }
+}
+
+#[test]
+fn a_read_s_start_at_its_cursor_and_exclusion_limits_fits_its_class() {
+    use super::{CURSOR_BYTES, Class, EXCLUDED_BYTES, excluded_bytes};
+    use prost::Message as _;
+    let limits = Limits::default();
+    let longest = |bytes: usize| "n".repeat(bytes);
+    // One-byte names, three bytes each with their key and length, are the most entries the
+    // exclusion's bytes hold, and decode to the most.
+    let exclude = vec!["x".to_owned(); usize::try_from(EXCLUDED_BYTES / 3).unwrap()];
+    assert!(excluded_bytes(exclude.iter().map(String::as_str)) <= EXCLUDED_BYTES);
+    let start = v1::ReadStart {
+        stream: Some(v1::StreamName {
+            namespace: Some(longest(256)),
+            name: longest(256),
+        }),
+        partition: longest(256),
+        cursor: Some(v1::Cursor {
+            version: u32::MAX,
+            bytes: vec![7; usize::try_from(CURSOR_BYTES).unwrap()].into(),
+        }),
+        barrier: u64::MAX,
+        unbounded: true,
+        follow: true,
+        exclude,
+    };
+    let control = v1::ReadControl {
+        control: Some(v1::read_control::Control::Start(start)),
+    };
+    let encoded = control.encode_to_vec();
+    assert!(
+        encoded.len() <= limits.decoding(Class::Cursor),
+        "{} bytes",
+        encoded.len()
+    );
+    let form = crate::scan::request("Read").unwrap();
+    let decoded = crate::scan::decoded(form, &encoded, usize::MAX).unwrap();
+    assert!(
+        decoded <= limits.decoded(Class::Cursor),
+        "{decoded} bytes decoded"
+    );
 }

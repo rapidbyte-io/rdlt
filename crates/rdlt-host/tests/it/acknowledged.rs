@@ -148,6 +148,7 @@ pub(crate) async fn read_from(
         barrier: 0,
         unbounded: false,
         follow: false,
+        exclude: Vec::new(),
     };
     let controls = [
         Control::Start(start),
