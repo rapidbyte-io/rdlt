@@ -4,10 +4,11 @@ Status: accepted, 2026-09-24.
 
 ## Context
 
-M2b of the spec gives the engine schema resolution and evolution, persisted name maps, native
-nested data and merge. It was split once more: M2b is the engine side, and M2c brings `sqlgen`
-with the `sqlite` reference destination and the `files` reference connector, which build on the
-contract M2b settles. Building M2b surfaced decisions the spec leaves open or gets wrong.
+The engine resolves and evolves each table's schema, keeps a persisted map from source columns to
+destination identifiers, stores nested data natively and merges rows by key. Every destination,
+those built on `sqlgen` and the reference connectors among them, builds on the contract these
+settle, which needs rules where attempts crash between applying a change and committing it,
+where names collide, and where destinations store different types.
 
 ## Decision
 
@@ -72,17 +73,16 @@ contract M2b settles. Building M2b surfaced decisions the spec leaves open or ge
   and the destination keeps one row per key: the newest commit's, and within a commit the
   greatest sequence's. When one key appears in several partitions within one commit, the row from
   the segment the engine opened later wins, since the engine assigns sequences before it knows
-  the order segments seal in; the spec said the later-sealed segment.
+  the order segments seal in.
 - **One session, shared.** The coordinator's commits and the partitions' schema changes share the
   destination session behind an async lock. Changes to one table are worked out and applied one
   at a time, each against the table's latest version, and a commit records every table's schema
   and names as they stand when it collects its segments.
-- **Growth is charged at once** (spec §7.5): preparing a batch may make it larger than its push,
-  and the difference is reserved without waiting.
+- **Growth is charged at once**: preparing a batch may make it larger than its push, and the
+  difference is reserved without waiting.
 - **Discards are counted per stream** in the commit that publishes their segment, by table,
   column and reason: a change the policy refused, or a value its column cannot hold. A stream's
   report and each commit's `Committed` event name the first 128 and count the rest (ADR 0004).
-  Samples arrive with M7.
 - **Identifiers.** A source name is folded and cleaned under the destination's rules; a taken
   or reserved identifier gets `_` and six base32 digits of the xxh3 hash of the exact source path,
   extended while still taken. A source column whose name folds and cleans to a metadata column's
@@ -92,7 +92,8 @@ contract M2b settles. Building M2b surfaced decisions the spec leaves open or ge
   budget waiter that gave up does not count toward `peak_memory`; `RunOutcome` documents the error
   a stop during backoff carries.
 - **Dependencies.** `arrow-array` enables `chrono-tz`, since rendering a timestamp with a named
-  zone as text or JSON needs it. `xxhash-rust` is licensed BSL-1.0, now allowed.
+  zone as text or JSON needs it. `xxhash-rust` is licensed BSL-1.0, which the license policy
+  (`deny.toml`) allows.
 
 ## Consequences
 
