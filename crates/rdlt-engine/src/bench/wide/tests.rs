@@ -116,10 +116,16 @@ fn a_table_kept_to_its_first_columns_pushes_every_column_and_excludes_the_rest()
             .fields()
             .iter()
             .filter(|field| !field.name().starts_with("_rdlt_"));
-        let names: Vec<&str> = data.map(rdlt_connector::Field::name).collect();
-        let first = &pushed(wide)[0].0;
-        assert_eq!(names.len(), 100, "{store}");
-        assert!(names.iter().all(|name| first.contains(*name)), "{store}");
+        let names: BTreeSet<&str> = data.map(rdlt_connector::Field::name).collect();
+        let Replayed::Batches(batches) = &wide.replayed else {
+            panic!("a kept table's pushes are batches");
+        };
+        let schema = batches[0].schema();
+        let kept: BTreeSet<&str> = schema.fields()[..100]
+            .iter()
+            .map(|field| field.name().as_str())
+            .collect();
+        assert_eq!(names, kept, "{store}");
     }
     let all = all_of();
     let rows = 3 * per_push;
