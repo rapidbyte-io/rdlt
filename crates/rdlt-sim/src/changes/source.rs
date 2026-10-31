@@ -17,7 +17,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::history;
-use super::workload::{ChangeStream, Event, Merged};
+use super::workload::{ChangeStream, Event, Merged, Value};
 use crate::owners::Live;
 use crate::world::{FaultPoint, World};
 
@@ -393,8 +393,10 @@ impl Change {
 }
 
 /// `rows` of `stream` as a change batch: `id`, `value` and `n`, with a history stream's change
-/// time, then the op, sequence and unchanged columns, a partial row flagging `value`, field 1.
+/// time, then the op, sequence and unchanged columns, a partial row flagging `value`, field 1;
+/// where the stream's source leaves `value` out, without it, flagging nothing.
 fn batch(stream: &ChangeStream, rows: &[Change]) -> RecordBatch {
+    let left_out = stream.value == Value::LeftOut;
     let ids: Int64Array = rows.iter().map(|row| row.key).collect();
     let values: StringArray = rows.iter().map(|row| row.value.clone()).collect();
     let n: Int64Array = rows.iter().map(|row| row.n).collect();
@@ -407,21 +409,23 @@ fn batch(stream: &ChangeStream, rows: &[Change]) -> RecordBatch {
     .expect("sequences are 16 bytes");
     let mut unchanged = BinaryBuilder::new();
     for row in rows {
-        if row.partial {
+        if row.partial && !left_out {
             unchanged.append_value([0b10]);
         } else {
             unchanged.append_null();
         }
     }
-    let batch = RecordBatch::try_from_iter([
-        ("id", Arc::new(ids) as ArrayRef),
-        ("value", Arc::new(values) as ArrayRef),
+    let mut columns = vec![("id", Arc::new(ids) as ArrayRef)];
+    if !left_out {
+        columns.push(("value", Arc::new(values) as ArrayRef));
+    }
+    columns.extend([
         ("n", Arc::new(n) as ArrayRef),
         (OP_COLUMN, Arc::new(ops) as ArrayRef),
         (SEQ_COLUMN, Arc::new(seqs) as ArrayRef),
         (UNCHANGED_COLUMN, Arc::new(unchanged.finish()) as ArrayRef),
-    ])
-    .expect("a valid change batch");
+    ]);
+    let batch = RecordBatch::try_from_iter(columns).expect("a valid change batch");
     if stream.history {
         history::timed(&batch)
     } else {

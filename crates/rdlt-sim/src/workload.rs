@@ -18,7 +18,7 @@ use settings::resolve;
 pub use settings::{Level, Relaxed, Resolved};
 
 use crate::rng::SplitMix64;
-use crate::swarm::Features;
+use crate::swarm::{EXCLUDE, Features};
 
 /// How many phases a simulation runs; the source changes between them.
 pub const PHASES: usize = 2;
@@ -39,6 +39,10 @@ const ENGINE_NAMES: [&str; 4] = [
     "_rdlt_rank",
     "_rdlt_staging__x",
 ];
+
+/// Names excluded columns draw from: one a metadata column has, which no source column may ask
+/// for unless it is excluded.
+const EXCLUDED_NAMES: [&str; 3] = ["secret", "blob", "_rdlt_loaded_at"];
 
 /// Everything a simulated source serves.
 #[derive(Clone, Debug, PartialEq)]
@@ -121,8 +125,28 @@ pub struct SimStream {
     /// Both chosen by the stream's read and place, not drawn, so streaming leaves a seed's
     /// workload as it was.
     pub unbounded: bool,
+    /// The columns the plan excludes, none of which lands.
+    pub excluded: Excluding,
     /// Each partition's rows in each phase.
     rows: Vec<[Vec<Row>; PHASES]>,
+}
+
+/// The columns a stream excludes, which its source sends unless it honours the projection.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Excluding {
+    /// The columns; none where the stream excludes none.
+    pub columns: Vec<Excluded>,
+    /// Whether the source leaves them out, as a source honouring its read's projection does.
+    pub honours: bool,
+}
+
+/// A column the source sends that the plan excludes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Excluded {
+    /// The column's name.
+    pub name: String,
+    /// Its shape, in every batch.
+    pub shape: Shape,
 }
 
 /// A column that comes and goes and changes type.
@@ -227,11 +251,7 @@ impl SimStream {
         let partitions = partition_rows(rng, read);
         let json = features.json && rng.chance(500);
         let schema = schema::level(rng, features);
-        let drift = if features.drift {
-            drift(rng, partitions.len(), features, json)
-        } else {
-            Vec::new()
-        };
+        let drift = drift(rng, partitions.len(), features, json);
         let mut stream = Self {
             name: format!("s{index}"),
             read,
@@ -268,6 +288,7 @@ impl SimStream {
                 && index.is_multiple_of(2),
             drift,
             partitions,
+            excluded: Excluding::drawn(features, json, mix(salt ^ EXCLUDE ^ index)),
             rows: Vec::new(),
         };
         if features.settings {
@@ -283,6 +304,26 @@ impl SimStream {
             .map(|partition| stream.draw_rows(salt, partition))
             .collect();
         stream
+    }
+
+    /// The value excluded column `column` holds in `row`: any its shape holds, and for a JSON
+    /// stream one JSON holds as a number.
+    pub fn excluded_value(&self, column: usize, row: &Row) -> Scalar {
+        let excluded = &self.excluded.columns[column];
+        let seed = mix(u64::from_ne_bytes(row.value.to_ne_bytes()) ^ EXCLUDE ^ column as u64);
+        values::drawn(&excluded.shape, seed, |value| {
+            !self.json || values::finite(value)
+        })
+    }
+
+    /// The columns the source sends that the plan excludes: none where it honours the
+    /// projection.
+    pub fn sent_excluded(&self) -> &[Excluded] {
+        if self.excluded.honours {
+            &[]
+        } else {
+            &self.excluded.columns
+        }
     }
 
     /// Whether the stream's arrays land in child tables.
@@ -473,6 +514,34 @@ impl SimStream {
     }
 }
 
+impl Excluding {
+    /// The columns a stream of JSON where `json` says excludes, where `features` exclude any,
+    /// drawn from `seed` apart from every other draw: none, or up to two, each of a shape its
+    /// pushes hold, and whether its source leaves them out.
+    fn drawn(features: Features, json: bool, seed: u64) -> Self {
+        let mut rng = SplitMix64::new(seed);
+        if !features.exclude || !rng.chance(700) {
+            return Self::default();
+        }
+        let mut names = EXCLUDED_NAMES.to_vec();
+        let columns = (0..=rng.below(2))
+            .map(|_| {
+                let name =
+                    names.remove(usize::try_from(rng.below(names.len() as u64)).unwrap_or(0));
+                let shape = fresh(&mut rng, features, json);
+                Excluded {
+                    name: name.to_owned(),
+                    shape,
+                }
+            })
+            .collect();
+        Self {
+            columns,
+            honours: rng.chance(500),
+        }
+    }
+}
+
 /// How a stream is read and written.
 fn modes(rng: &mut SplitMix64) -> (ReadMode, WriteMode) {
     match rng.below(5) {
@@ -495,28 +564,22 @@ fn normalized(rng: &mut SplitMix64) -> Nested {
     Nested::Normalize { max_depth }
 }
 
-/// Zero to three drift columns, each present in some partitions and phases with a drawn shape:
-/// its first shape, a type the lattice joins it with, or another; for a JSON stream, only types
-/// JSON holds.
+/// Zero to three drift columns where `features` drift, none otherwise, each present in some
+/// partitions and phases with a drawn shape: its first shape, a type the lattice joins it with,
+/// or another; for a JSON stream, only types JSON holds.
 fn drift(rng: &mut SplitMix64, partitions: usize, features: Features, json: bool) -> Vec<Drift> {
+    if !features.drift {
+        return Vec::new();
+    }
     let mut names: Vec<&str> = DRIFT_NAMES.to_vec();
     if features.identifiers {
         names.extend(WIDE_NAMES);
         names.extend(ENGINE_NAMES);
     }
-    let fresh = |rng: &mut SplitMix64| -> Shape {
-        let seed = rng.next_u64();
-        if json {
-            draw(&json::shape(features.depth), seed)
-        } else {
-            let shape = draw(&rdlt_testkit::drawn::values::shape(features.depth), seed);
-            values::plain_unless(shape, features.encodings)
-        }
-    };
     (0..rng.below(4))
         .map(|_| {
             let name = names.remove(usize::try_from(rng.below(names.len() as u64)).unwrap_or(0));
-            let first = fresh(rng);
+            let first = fresh(rng, features, json);
             let shapes = (0..partitions)
                 .map(|_| {
                     std::array::from_fn(|_| {
@@ -529,7 +592,7 @@ fn drift(rng: &mut SplitMix64, partitions: usize, features: Features, json: bool
                             let neighbor = draw(&neighbors::neighbor(&first), seed);
                             Some(values::plain_unless(neighbor, features.encodings))
                         } else {
-                            Some(fresh(rng))
+                            Some(fresh(rng, features, json))
                         }
                     })
                 })
@@ -543,4 +606,16 @@ fn drift(rng: &mut SplitMix64, partitions: usize, features: Features, json: bool
             }
         })
         .collect()
+}
+
+/// A column's shape drawn from `rng`, nested as deep as `features` let it; for a JSON stream,
+/// only types JSON holds.
+fn fresh(rng: &mut SplitMix64, features: Features, json: bool) -> Shape {
+    let seed = rng.next_u64();
+    if json {
+        draw(&json::shape(features.depth), seed)
+    } else {
+        let shape = draw(&rdlt_testkit::drawn::values::shape(features.depth), seed);
+        values::plain_unless(shape, features.encodings)
+    }
 }

@@ -14,9 +14,9 @@ use serde_json::{Value, json};
 use crate::fat;
 use crate::workload::{Row, SimStream};
 
-/// `rows` of `stream` as one batch: the base columns, the key of a merge stream, and every drift
-/// column present where the rows were delivered; for a sliced stream, a slice of a batch holding
-/// the rows three times.
+/// `rows` of `stream` as one batch: the base columns, the key of a merge stream, every drift
+/// column present where the rows were delivered, and the excluded columns the source sends; for a
+/// sliced stream, a slice of a batch holding the rows three times.
 ///
 /// Its ids lie in an allocation of `ballast` bytes where that is more than they take, which the
 /// batch keeps alive.
@@ -79,6 +79,15 @@ fn whole(stream: &SimStream, rows: &[Row], ballast: usize) -> RecordBatch {
             columns.push(array);
         }
     }
+    for (index, excluded) in stream.sent_excluded().iter().enumerate() {
+        let values: Vec<Scalar> = rows
+            .iter()
+            .map(|row| stream.excluded_value(index, row))
+            .collect();
+        let array = array(&excluded.shape, &values.iter().collect::<Vec<_>>());
+        fields.push(field(&excluded.name, &excluded.shape, &array, true));
+        columns.push(array);
+    }
     let options = RecordBatchOptions::new().with_row_count(Some(rows.len()));
     RecordBatch::try_new_with_options(Arc::new(Schema::new(fields)), columns, &options)
         .expect("equal-length columns make a batch")
@@ -134,6 +143,13 @@ fn objects(stream: &SimStream, rows: &[Row]) -> Vec<String> {
         }
         if stream.fat > 0 && fat::carried(row) {
             fields.push((fat::COLUMN, fat::value(row, stream.fat)));
+        }
+        for (index, excluded) in stream.sent_excluded().iter().enumerate() {
+            let value = stream.excluded_value(index, row);
+            fields.push((
+                excluded.name.as_str(),
+                text(&value, &excluded.shape.logical),
+            ));
         }
         let fields: Vec<String> = fields
             .iter()

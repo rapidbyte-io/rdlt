@@ -25,7 +25,7 @@ use push::{batch, json_rows};
 
 use crate::oracle::aside;
 use crate::owners::Live;
-use crate::workload::{Row, SimStream};
+use crate::workload::{Excluded, Row, SimStream};
 use crate::world::{FaultPoint, World};
 
 /// Configuration of [`SimSource`]: the world to serve, and the secrets it was told.
@@ -98,8 +98,8 @@ impl SourceConnector for SimSource {
     }
 }
 
-/// The schema a simulated stream declares: its base columns, the key of a merge stream, and the
-/// drift columns it declares.
+/// The schema a simulated stream declares: its base columns, the key of a merge stream, the
+/// drift columns it declares, and the columns its plan excludes.
 ///
 /// Other drift columns are left out, so they are schema changes the pipeline's policy handles.
 #[expect(
@@ -127,6 +127,9 @@ pub fn schema(stream: &SimStream) -> TableSchema {
     }
     if stream.fat > 0 {
         columns.push(Field::new(crate::fat::COLUMN, LogicalType::Json, true));
+    }
+    for Excluded { name, shape } in &stream.excluded.columns {
+        columns.push(Field::new(name.as_str(), shape.logical.clone(), true));
     }
     TableSchema::new(columns).expect("the simulated schema has distinct names")
 }

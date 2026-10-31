@@ -49,7 +49,7 @@ mod workload;
 mod world;
 
 pub use changes::{
-    ChangeStream, ChangeWorkload, Event, Position, SimChangeSource, SimChangeSourceConfig,
+    ChangeStream, ChangeWorkload, Event, Position, SimChangeSource, SimChangeSourceConfig, Value,
 };
 pub use destination::{
     Cells, Digest, SimDestination, SimDestinationConfig, SimSession, SimWriter, Stored, completions,
@@ -64,5 +64,7 @@ pub use seed::{
 };
 pub use source::{SimCursor, SimSource, SimSourceConfig, schema};
 pub use swarm::Features;
-pub use workload::{Drift, Level, PHASES, Relaxed, Resolved, Row, SimStream, Workload};
+pub use workload::{
+    Drift, Excluded, Excluding, Level, PHASES, Relaxed, Resolved, Row, SimStream, Workload,
+};
 pub use world::{Told, World};
