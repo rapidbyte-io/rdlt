@@ -183,8 +183,8 @@ What the rule does not gate, recorded:
   (0.29), and so did the host (6.55 to 6.48, −1.0 %), which still converted every child row
   before keeping the rows it staged.
 - **Why the run took longer.** Spawned, too, the run took 7.4 % longer (105.4 to 113.3 ms). With
-  the host's CPU unchanged, that is time on each piece's serial path, as far as these figures
-  tell: the key sort moved from the stream's own table's lowering, which ran on the pool beside the
+  the host's CPU unchanged, this may be time on each piece's serial path, which these figures do
+  not establish: the key sort moved from the stream's own table's lowering, which ran on the pool beside the
   child tables' lowering, to planning, before any of the piece's parts is lowered. No profile was
   taken. Pruning the rows left out from the parts before planning them would stage the same rows
   and sort at the same point.
