@@ -133,3 +133,61 @@ idle pool threads and blocking its caller.
 It closes: it misses the 25 % it was to gain at four cores, costs a single core 2–3 % and every
 run a quarter more CPU, slows callers outside the pool, and adds a pool method and a pool argument
 through normalizing for it.
+
+## Staging only each key's last row's children: closed
+
+A merge stream's piece staged each key's last row in the stream's own table, and every row's
+children in its child tables, for the destination to drop the children of the rows it did not
+keep. The change staged only the children of each key's last row. Once the stream's table's
+policy had dropped rows, its plan found which root rows were the last of their key among those it
+kept, sorting once on the key values the split normalized, and every part of the piece carried
+one bit for each root row; each table's lowering kept only the rows descending from a set root,
+the stream's own table in place of its second key sort. The rows left out still met their tables'
+policies, counted among the discards and made their tables' columns, so the flush's cut decided
+nothing but what was staged.
+
+The rule was set before measuring. Adopt only if every condition holds:
+
+- The CPU seconds a run of `served/process/socket/both/normalized/merge/zipf` fall at least 10 %.
+- `normalized/merge/zipf` in process takes no longer a run.
+- `normalize/keyed/with_arrays` and `lowering/merge_unique` take at most 2 % more.
+
+- **Trees.** `main` at `405c0214`, and the change on it. Each tree's `normalized` and `served`
+  benches were built in a target directory of its own before the rounds.
+- **Running.** Each bench's binary as `just bench` runs its timed pass: under `taskset -c 0-3` with
+  its cell's filter, the spawned connectors on CPUs 4–11, governor powersave with energy
+  preference performance. One hold of the measurement lock on 2026-10-31, 18:51 to 18:53, the
+  one-minute load average 2.25 at its start and 3.52 at its end.
+- **Rounds.** Three, each running both cells of one side and then of the other, `main` first in
+  the first and third. A figure is criterion's point estimate, or the served bench's median CPU
+  seconds a GB over its samples; the same JSON each run, so CPU a GB compares as CPU a run.
+
+| Round | In process: `main` / change | Spawned: `main` / change | CPU s a GB spawned: `main` / change |
+|---|---|---|---|
+| 1 | 97.6 / 111.0 ms | 103.1 / 112.7 ms | 8.48 / 7.89 (−7.0 %) |
+| 2 | 102.5 / 104.3 ms | 105.5 / 113.3 ms | 8.62 / 7.88 (−8.6 %) |
+| 3 | 103.3 / 105.3 ms | 105.4 / 114.5 ms | 8.64 / 7.94 (−8.1 %) |
+
+Each run's commit staged 98 776 root rows on both sides, and 900 000 child rows on `main` against
+444 978 with the change, for 39 099 distinct keys.
+
+**Decision: closed.** The CPU a run fell 8.5 % (the medians, 8.62 to 7.89 CPU seconds a GB), short
+of 10 % in every round, and the run in process took longer in every round: 2.8 % by the medians,
+each round's interval above `main`'s (+13.7, +1.8 and +2.0 %). The two settled the rule, and the
+instruction counts were not taken.
+
+What the rule does not gate, recorded:
+
+- **Where the CPU went.** The spawned destination took 37.6 % less a GB (1.79 to 1.11 CPU
+  seconds, the medians), decoding and merging half the child rows; the source took the same
+  (0.29), and so did the host (6.55 to 6.48, −1.0 %), which still converted every child row
+  before keeping the rows it staged.
+- **Why the run took longer.** Spawned, too, the run took 7.4 % longer (105.4 to 113.3 ms). With
+  the host's CPU unchanged, that is time on each piece's serial path, as far as these figures
+  tell: the key sort moved from the stream's own table's lowering, which ran on the pool beside the
+  child tables' lowering, to planning, before any of the piece's parts is lowered. No profile was
+  taken. Pruning the rows left out from the parts before planning them would stage the same rows
+  and sort at the same point.
+- **What a commit stages across pieces.** Of the commit's 98 776 staged root rows, 59 677
+  (60.4 %) have a later staged row of their key: each piece keeps the last row of each of its
+  keys, and the commit holds four pushes' pieces.
