@@ -125,5 +125,5 @@ is counted.
   data.
 - State records name their format and refuse fields their reader does not know, so a build
   reading another's state refuses it (ADR 0041).
-- Switching an existing merge table to CDC needs a new table; a reset that clears a stream's
-  table and state is owed with M5d's retention reset.
+- Switching an existing merge table to CDC needs a new table: a `ResetScope::Tables` reset drops
+  the stream's tables, and the next run creates them anew (ADR 0033).
