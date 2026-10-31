@@ -75,9 +75,10 @@ pub(in crate::partition::write) fn split(
 /// Bytes: what splitting `piece`, slices of a unit, into `parts` holds beyond the unit until the
 /// last of their pieces is written: the allocations of the parts' batches and lineage that the
 /// piece's batches do not keep alive, each counted once, the arrays of `piece`'s batches, of the
-/// parts' and of their lineage, and a place in a list for each data buffer of the parts' views
+/// parts' and of their lineage, a place in a list for each data buffer of the parts' views
 /// beyond the first of each view array: the split joins the piece's lists, and a part's arrays
-/// hold the first.
+/// hold the first; and for a merge stream, the bit for each root row its parts share once its
+/// table has found which rows its merge keeps.
 pub(in crate::partition::write) fn made(piece: &[RecordBatch], parts: &[Part]) -> u64 {
     // A split reads only its piece, so what its parts share with the unit is the piece's.
     let (unit, mut made): (Allocations, _) = (piece.iter().collect(), Allocations::default());
@@ -93,7 +94,17 @@ pub(in crate::partition::write) fn made(piece: &[RecordBatch], parts: &[Part]) -
             .saturating_add(array_bytes(count(lineage)))
             .saturating_add(listed_bytes(ViewBuffers::of(&part.batch).beyond_first));
     }
+    if let Some(keys) = parts.first().and_then(|root| root.lineage.keys.as_ref()) {
+        held = held
+            .saturating_add(array_bytes(1))
+            .saturating_add(bitmap_bytes(keys.len()));
+    }
     made.bytes().saturating_add(held)
+}
+
+/// Bytes: a buffer of a bit for each of `rows` rows, as Arrow allocates it, in 64-byte blocks.
+fn bitmap_bytes(rows: usize) -> u64 {
+    count(rows.div_ceil(8).next_multiple_of(64))
 }
 
 /// The bytes of the allocations `part`'s batch and lineage keep alive beyond those `unit` holds

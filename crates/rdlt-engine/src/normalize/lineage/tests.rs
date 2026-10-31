@@ -29,6 +29,7 @@ fn child(part: u32, row: &[u32], (parent_part, parent): (u32, &[u32]), root: &[u
         part,
         row: positions(row),
         keys: None,
+        last: None,
         parent: Some(Parent {
             path: vec![Arc::from("items")],
             part: parent_part,
@@ -82,6 +83,7 @@ fn a_merge_streams_roots_are_their_keys_ids_and_its_children_name_them_by_their_
         part: 0,
         row: positions(&[1, 0]),
         keys: None,
+        last: None,
         parent: None,
     });
     let (own, parent) = roots.columns(&at).unwrap();
@@ -133,6 +135,7 @@ fn the_widest_id_takes_thirty_seven_bytes() {
         part: u32::MAX,
         row: positions(&[u32::MAX]),
         keys: None,
+        last: None,
         parent: None,
     };
     let at = received(u64::MAX, u64::MAX, u64::MAX);

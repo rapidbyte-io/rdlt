@@ -132,6 +132,7 @@ pub(crate) fn normalize(
         part: 0,
         row: Arc::new(positions(batch.num_rows())),
         keys: keys.clone(),
+        last: None,
         parent: None,
     };
     parts.push(root.part(Vec::new(), batch.num_rows(), lineage, schemas)?);
@@ -329,6 +330,7 @@ fn expand(
         part,
         row: Arc::new(positions(values.len())),
         keys: keys.cloned(),
+        last: None,
         parent: Some(Parent {
             path: parents.path.to_vec(),
             part: parents.part,

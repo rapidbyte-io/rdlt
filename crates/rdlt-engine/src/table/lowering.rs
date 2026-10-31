@@ -229,10 +229,10 @@ impl LoweringPlan {
     /// `batch`, whose columns are the plan's incoming ones, as rows of its table.
     ///
     /// Every column goes where the plan's routes send it, converted exactly and lowered to how
-    /// the destination stores it; a merge table's batch then keeps the rows its merge keeps,
-    /// and the metadata columns follow for those rows, `lineage` last for the tables of
-    /// normalized streams. Each step that keeps some rows lets go of what it copied them from,
-    /// a column at a time, where nothing else holds it.
+    /// the destination stores it; a merge table's batch then keeps the rows its merge keeps, a
+    /// normalized stream's those `lineage` says, and the metadata columns follow for those rows,
+    /// `lineage` last for the tables of normalized streams. Each step that keeps some rows lets
+    /// go of what it copied them from, a column at a time, where nothing else holds it.
     pub(crate) fn prepare(
         &self,
         batch: RecordBatch,
@@ -270,9 +270,10 @@ impl LoweringPlan {
         // lets the batch go, so a merge's compaction lets each column go as it copies it.
         let (rows, batch) = (batch.num_rows(), held.is_some().then_some(batch));
         drop((fitted, converted));
-        self.merged(&mut columns, &mut kept, &mut changes)
+        self.merged(&mut columns, &mut kept, &mut changes, lineage)
             .map_err(failed)?;
-        let rows = columns.first().map_or(rows, Array::len);
+        // Rows of items holding no value have no column, so the mask counts them.
+        let rows = kept.as_ref().map_or(rows, BooleanArray::true_count);
         let (constants, loaded_at) = self.constants(stamp, rows).map_err(failed)?;
         columns.extend(constants);
         if view.meta.seq.is_some() {

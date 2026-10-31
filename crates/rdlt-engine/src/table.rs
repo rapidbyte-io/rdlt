@@ -127,9 +127,9 @@ impl TableView {
         })
     }
 
-    /// Whether batches keep only the last row of each key: a merge table's do, but not a child
-    /// table's, which keeps every row of its roots' winning rows for the destination to pick, nor
-    /// a history table's, which keeps every version.
+    /// Whether batches keep only the last row of each value of the table's own key: a merge
+    /// table's do, but not a child table's, whose rows follow their roots', nor a history
+    /// table's, which keeps every version.
     pub(crate) fn compacts(&self) -> bool {
         self.table
             .merge

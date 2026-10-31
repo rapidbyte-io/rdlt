@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use arrow_array::cast::AsArray;
 use arrow_array::{ArrayRef, BinaryArray, UInt32Array};
-use arrow_buffer::{Buffer, OffsetBuffer};
+use arrow_buffer::{BooleanBuffer, Buffer, OffsetBuffer};
 use arrow_schema::ArrowError;
 use arrow_select::filter::FilterPredicate;
 use rdlt_connector::{Epoch, SegmentId};
@@ -34,6 +34,10 @@ pub(crate) struct Lineage {
     /// A merge stream's root rows' ids, by their position among the batch's: one array every part
     /// of the batch shares, which no cut or drop of a part changes.
     pub(crate) keys: Option<ArrayRef>,
+    /// Which of a merge stream's root rows, by their position among the batch's, are the last its
+    /// table keeps of their key, each table keeping only the rows of those roots: one buffer every
+    /// part of the batch shares, set once the table's policy has dropped rows.
+    pub(crate) last: Option<BooleanBuffer>,
     /// For a child table, each row's parent and root.
     pub(crate) parent: Option<Parent>,
 }
@@ -116,6 +120,7 @@ impl Lineage {
             part: self.part,
             row: each(&self.row)?,
             keys: self.keys.clone(),
+            last: self.last.clone(),
             parent,
         })
     }

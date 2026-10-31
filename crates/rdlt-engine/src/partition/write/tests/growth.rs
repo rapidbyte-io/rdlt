@@ -189,7 +189,7 @@ fn a_units_parts_grow_it_by_their_lineage_their_schemas_and_their_arrays() {
 }
 
 #[test]
-fn each_part_of_a_merge_s_split_holds_the_keys_array_beside_its_lineage() {
+fn each_part_of_a_merge_s_split_holds_the_keys_and_the_kept_roots_beside_its_lineage() {
     let unit = ids(1_000);
     let held = Allocations::of(&unit);
     let keyed = crate::normalize::Shape {
@@ -205,10 +205,11 @@ fn each_part_of_a_merge_s_split_holds_the_keys_array_beside_its_lineage() {
     for part in &parts {
         part_growth(part, &held, &mut grown);
     }
-    // The piece's array, the part's column, its positions and the keys the parts share.
+    // The piece's array, the part's column, its positions and the keys the parts share, and the
+    // bit for each of its thousand roots they share once its table finds the rows its merge keeps.
     let piece = std::slice::from_ref(&unit);
     let made = made(piece, &parts);
-    assert_eq!(made, grown.bytes() + 4 * 320);
+    assert_eq!(made, grown.bytes() + 5 * 320 + 128);
 }
 
 /// What one column of a piece is.

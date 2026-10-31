@@ -7,6 +7,7 @@ pub(super) mod split;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use arrow_buffer::BooleanBuffer;
 use arrow_schema::ArrowError;
 use parking_lot::Mutex;
 use rdlt_connector::Permit;
@@ -253,6 +254,10 @@ enum Refused {
 /// neither planned nor given a table, so dropped rows change no schema. The rows its own policy
 /// drops then go for the parts below. A discarded array's items count as discarded values only
 /// where their rows load.
+///
+/// A merge stream's own part then finds which of its rows are the last of their key, and every
+/// part keeps only the rows of those: rows a later one supersedes still meet their tables'
+/// policies and make their columns, so where a flush is cut decides no column and no count.
 async fn plan_parts(
     job: &PartitionJob,
     context: &PartitionContext,
@@ -263,6 +268,7 @@ async fn plan_parts(
     let (admitted, mut dropped) = admit(job, context, parts, flush);
     let mut discarded = Discarded::default();
     let mut planned = Vec::with_capacity(admitted.len());
+    let mut last = None;
     for (part, fate) in admitted {
         let rounding = flush.rounding.get(&part.path).cloned().unwrap_or_default();
         let pruned = if dropped.is_empty() {
@@ -308,31 +314,46 @@ async fn plan_parts(
             creation: flush.creation(context, table),
         };
         let plan = context.tables.plan(table, incoming).await?;
-        if plan.drops_rows() {
-            unkept(job, context, &plan, &pruned, &mut dropped).await?;
+        if let Some(roots) = decide(job, context, &plan, &pruned, &mut dropped).await? {
+            last = Some(roots);
         }
-        planned.push((table, pruned.part, plan));
+        let mut part = pruned.part;
+        part.lineage.last.clone_from(&last);
+        planned.push((table, part, plan));
     }
     Ok((planned, discarded))
 }
 
-/// Records as dropped the rows of `pruned` that `plan`'s schema policy drops.
-async fn unkept(
+/// Records as dropped the rows of `pruned` that `plan`'s schema policy drops, and where `plan`'s
+/// table is a merge stream's own, gives which of the batch's root rows are the last of their key
+/// among those it keeps.
+///
+/// The last rows are found once the policy has dropped rows: a key's newest row the policy drops
+/// leaves the row before it to apply, with its children.
+async fn decide(
     job: &PartitionJob,
     context: &PartitionContext,
     plan: &Arc<LoweringPlan>,
     pruned: &Pruned,
     dropped: &mut Dropped,
-) -> Result<(), Error> {
-    let (batch, rows) = (pruned.part.batch.clone(), Arc::clone(plan));
-    let kept = on_pool(context, move || rows.kept(&batch)).await;
-    let kept = kept.map_err(|error| {
+) -> Result<Option<BooleanBuffer>, Error> {
+    let (drops, merges) = (plan.drops_rows(), plan.view().compacts());
+    if !drops && !merges {
+        return Ok(None);
+    }
+    let (part, plan) = (pruned.part.clone(), Arc::clone(plan));
+    let deciding = move || {
+        let kept = if drops { plan.kept(&part.batch)? } else { None };
+        let last = plan.last_roots(&part.batch, &part.lineage, kept.as_ref())?;
+        Ok::<_, ArrowError>((kept, last))
+    };
+    let (kept, last) = on_pool(context, deciding).await.map_err(|error| {
         Error::internal(format!("stream {}: reading kept rows: {error}", job.stream))
     })?;
     if let Some(kept) = kept {
         dropped.unkept(pruned, &kept);
     }
-    Ok(())
+    Ok(last)
 }
 
 /// Each of `parts`, parents first, with its fate, and the rows holding new arrays whose rows the

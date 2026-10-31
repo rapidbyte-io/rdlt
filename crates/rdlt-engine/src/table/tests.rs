@@ -23,6 +23,8 @@ mod keys;
 mod laws;
 mod limits;
 mod merged_json;
+mod normalized_merges;
+mod staged_children;
 mod unwidened;
 mod widenings;
 

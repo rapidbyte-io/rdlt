@@ -19,9 +19,10 @@ open.
   resolution; a schema change makes a new view and drops the old view's plans. Per batch, a plan
   discards, converts and lowers columns; a merge table's plan then keeps the rows its merge keeps,
   compared by the key as the table stores it (the last row of each key, or for a change stream
-  the rows no later row of their key supersedes), and adds the metadata columns for those rows. A
-  row's sequence is its position among the rows received, and a change stream's row's is its
-  source's position.
+  the rows no later row of their key supersedes), or for a normalized stream's tables, those of
+  the root rows its own table found the last of their key (ADR 0010), and adds the metadata
+  columns for those rows. A row's sequence is its position among the rows received, and a change
+  stream's row's is its source's position.
 - **Lowering that copies values runs on the compute pool.** A partition finds each batch's plan
   in order, since finding it may change the table, then lowers the flush's batches eight at a
   time, Arrow batches concatenated there too. Each window's lowered batches are charged to the

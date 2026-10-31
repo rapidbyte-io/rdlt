@@ -30,8 +30,15 @@ minors.
   JSON is now an object; the array form of earlier records still reads.
 - **Sequences count rows received.** A row's sequence is its position among the rows its segment
   received, before the schema policy drops any, so a child row, which takes its root row's
-  position, keeps matching its root when earlier rows are dropped. Only a stream's own table
-  compacts a batch to the last row of each key; a child table's key is shared by its root's rows.
+  position, keeps matching its root when earlier rows are dropped.
+- **A merge stages the rows of each key's last row alone.** Once the stream's own table's policy
+  has dropped rows, the key values the split normalized find which of a piece's root rows are the
+  last of their key among those it keeps, in one sort, and every table of the stream, its own and
+  its child tables at every depth, keeps only the rows descending from them: a key's newest row
+  the policy drops leaves the row before it to apply, with its children. A row left out still
+  meets its table's policy, counts among the stream's discards and makes its table's columns, so
+  where a flush is cut into pieces decides no column and no count, only what is staged; across
+  pieces, the destination keeps each key's greatest sequence.
 - **Dropped rows take their descendants.** A unit's parts are lowered parents first. A part first
   loses the rows whose parent was dropped, then meets its table's policy; every row dropped
   either way is kept, by its part and position, for the parts below. Rows are never known by

@@ -1,4 +1,9 @@
 //! The parts of a lowering plan only merge tables use: sequences, and the rows a merge keeps.
+//!
+//! A merge table keeps the last row of each key a batch holds. The tables of a normalized
+//! stream keep the rows of the root rows that are the last of their key: the stream's own table
+//! finds those once its policy has dropped rows, and every table of the stream keeps the rows
+//! descending from them, so no table stages the children of a row a later one supersedes.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -6,14 +11,15 @@ use std::sync::Arc;
 use arrow_array::builder::BinaryBuilder;
 use arrow_array::cast::AsArray;
 use arrow_array::types::UInt32Type;
-use arrow_array::{Array, ArrayRef, BooleanArray, UInt32Array};
+use arrow_array::{Array, ArrayRef, BooleanArray, RecordBatch, UInt32Array};
 use arrow_buffer::{BooleanBuffer, BooleanBufferBuilder};
 use arrow_row::{RowConverter, Rows, SortField};
 use arrow_schema::{ArrowError, DataType};
 use arrow_select::filter::FilterBuilder;
 use rdlt_connector::LogicalType;
 
-use super::{ChangeRows, LoweringPlan, Stamp, lower_array};
+use super::{ChangeRows, LoweringPlan, Source, Stamp, lower_array};
+use crate::normalize::Lineage;
 use crate::table::TableView;
 
 /// The positions of the rows `kept` keeps.
@@ -96,10 +102,91 @@ pub(super) fn within(outer: Option<&BooleanArray>, inner: &BooleanArray) -> Bool
     BooleanArray::new(kept.finish(), None)
 }
 
+/// Which of the rows `kept` keeps, where the schema policy dropped some, descend from a root row
+/// `last` sets, by the positions of their roots `roots` gives: none where every such row does.
+fn descending(
+    last: &BooleanBuffer,
+    roots: &ArrayRef,
+    kept: Option<&BooleanArray>,
+) -> Option<BooleanArray> {
+    let roots = roots.as_primitive::<UInt32Type>().values();
+    let root = |row: usize| last.value(at(roots[row]));
+    let descending: BooleanBuffer = match kept {
+        Some(kept) => kept.values().set_indices().map(root).collect(),
+        None => (0..roots.len()).map(root).collect(),
+    };
+    kept_or_none(descending)
+}
+
+/// `row`, a position among a batch's rows, as an index.
+fn at(row: u32) -> usize {
+    usize::try_from(row).expect("a 32-bit position fits in an index")
+}
+
 impl LoweringPlan {
+    /// Which of a normalized batch's root rows, by their position among the batch's, the plan's
+    /// table keeps: of `batch`, the stream's own part, whose rows `lineage` places, those that are
+    /// the last of their key among the rows `kept` keeps where the schema policy drops some.
+    ///
+    /// Keys compare as the split normalized them: a key column stored as JSON, whose values the
+    /// table would compare otherwise, is refused for a normalized stream. None where the table
+    /// does not merge by a key of its own, or takes a key column from no column the batch holds
+    /// as it arrives, as where it lacks one, which lowering refuses.
+    ///
+    /// # Errors
+    ///
+    /// Where `lineage` holds no root ids, as a merge stream's always does, or the keys cannot be
+    /// compared.
+    pub(crate) fn last_roots(
+        &self,
+        batch: &RecordBatch,
+        lineage: &Lineage,
+        kept: Option<&BooleanArray>,
+    ) -> Result<Option<BooleanBuffer>, ArrowError> {
+        let view = &self.view;
+        if !view.compacts() || view.key.len() < view.key_len {
+            return Ok(None);
+        }
+        let mut keys = Vec::with_capacity(view.key.len());
+        for column in &view.key {
+            let Source::Incoming(index, _) = &self.sources[*column] else {
+                return Ok(None);
+            };
+            keys.push(Arc::clone(batch.column(*index)));
+        }
+        let mut rows = Arc::clone(&lineage.row);
+        if let Some(kept) = kept {
+            let predicate = FilterBuilder::new(kept).optimize().build();
+            for key in &mut keys {
+                *key = predicate.filter(key.as_ref())?;
+            }
+            rows = predicate.filter(rows.as_ref())?;
+        }
+        let roots = lineage.keys.as_ref().ok_or_else(|| {
+            ArrowError::InvalidArgumentError("a merge stream's batch holds no root ids".to_owned())
+        })?;
+        let mut last = BooleanBufferBuilder::new(roots.len());
+        last.append_n(roots.len(), false);
+        let rows = rows.as_primitive::<UInt32Type>().values();
+        match last_of_each_key(&keys)? {
+            Some(kept) => {
+                for row in kept.values().set_indices() {
+                    last.set_bit(at(rows[row]), true);
+                }
+            }
+            None => {
+                for row in rows {
+                    last.set_bit(at(*row), true);
+                }
+            }
+        }
+        Ok(Some(last.finish()))
+    }
+
     /// Cuts `columns`, a batch's model columns as its table stores them, `kept`, which of the
     /// rows received they are where the schema policy dropped some, and `changes`, their change
-    /// rows, to the rows the table's merges keep.
+    /// rows, to the rows the table's merges keep; for a normalized stream's table, those
+    /// `lineage` says descend from the root rows that are the last of their key.
     ///
     /// Each column is let go as its rows are copied, so columns nothing else holds are not held
     /// twice over. A column of nulls is sliced, not copied: the columns of a type the batch holds
@@ -109,8 +196,16 @@ impl LoweringPlan {
         columns: &mut [ArrayRef],
         kept: &mut Option<BooleanArray>,
         changes: &mut Option<ChangeRows>,
+        lineage: Option<&Lineage>,
     ) -> Result<(), ArrowError> {
-        let Some(keep) = self.compaction(columns, changes.as_ref())? else {
+        let compaction = match lineage {
+            Some(lineage) => lineage
+                .last
+                .as_ref()
+                .and_then(|last| descending(last, lineage.root_row(), kept.as_ref())),
+            None => self.compaction(columns, changes.as_ref())?,
+        };
+        let Some(keep) = compaction else {
             return Ok(());
         };
         let predicate = FilterBuilder::new(&keep).optimize().build();
@@ -132,9 +227,10 @@ impl LoweringPlan {
         Ok(())
     }
 
-    /// Which rows of a batch whose model columns, as stored, are `columns` its table's merges
-    /// keep: the last row of each key, or for a change stream's, the rows no later row of their
-    /// key supersedes; none where the table keeps every row, as history and child tables do.
+    /// Which rows of a batch of a stream that does not normalize, whose model columns, as
+    /// stored, are `columns`, its table's merges keep: the last row of each key, or for a change
+    /// stream's, the rows no later row of their key supersedes; none where the table keeps every
+    /// row, as a history table does.
     fn compaction(
         &self,
         columns: &[ArrayRef],
