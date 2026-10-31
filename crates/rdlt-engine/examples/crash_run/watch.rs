@@ -132,8 +132,10 @@ impl Watch {
     }
 
     /// After the commit the destination was last asked for landed, before its answer is heard:
-    /// kills the destination where the answer is the chosen one, and tells the commit landed;
+    /// tells the commit landed and kills the destination where the answer is the chosen one;
     /// whether it killed it.
+    ///
+    /// The commit is told first: the attempt the kill ends drops the call this runs in.
     async fn answering(&self) -> bool {
         let Some((kills, kill)) = &self.kill else {
             return false;
@@ -144,8 +146,8 @@ impl Watch {
         if kill.victim != Victim::Destination || self.asked.load(Ordering::SeqCst) != answer {
             return false;
         }
-        self.kills(kills).await;
         writeln!(std::io::stdout(), "landed unanswered {answer}").ok();
+        self.kills(kills).await;
         true
     }
 

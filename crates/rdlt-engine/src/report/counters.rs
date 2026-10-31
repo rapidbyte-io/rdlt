@@ -14,7 +14,7 @@ pub struct Counters {
     pub waits: Waits,
     /// The jobs the run gave its compute pool.
     pub pool: PoolCounters,
-    /// The run's commits, by what made each due.
+    /// The run's commits, by what made each due, and the tries it sent again.
     pub commits: Commits,
     /// The run's reports to its source of the cursors its commits landed with that failed, and
     /// the cursors it gave up.
@@ -48,7 +48,7 @@ pub struct PoolCounters {
     pub returned: Duration,
 }
 
-/// Commits that landed, by what made each due.
+/// Commits that landed, by what made each due, and the tries of commits sent again.
 ///
 /// A commit counts once it lands, whatever becomes of the report of its cursors.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
@@ -61,6 +61,9 @@ pub struct Commits {
     pub cursors: u64,
     /// Of what was sealed once every partition reading had ended.
     pub end: u64,
+    /// Tries of commits sent again in place, each after the destination answered the try before
+    /// it transiently.
+    pub retried: u64,
 }
 
 /// Reports of committed cursors to the source that failed, and owed cursors given up.

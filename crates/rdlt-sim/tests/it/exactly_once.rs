@@ -7,7 +7,7 @@ use rdlt_sim::{
 ///
 /// A seed fails if its defect comes back, unless its comment says otherwise: such a seed keeps
 /// only the path, and its defect may come back unseen.
-const FOUND: [(u64, Reach); 16] = [
+const FOUND: [(u64, Reach); 18] = [
     // Over the network: a host whose handshake a partition cut short held its connection, and
     // its connector's stop, forever.
     (743, Reach::LinkCut),
@@ -34,9 +34,6 @@ const FOUND: [(u64, Reach); 16] = [
     // the types they were written as.
     (11_754, Reach::Widened),
     (302, Reach::Widened),
-    // A child table no row had reached yet was merged by its roots' commit, under no columns,
-    // which the merge refused. The defect may not fail this seed.
-    (86_557, Reach::EmptyChild),
     // A date written into timestamps, whose column then widens to JSON, holds a timestamp's text.
     (642_848, Reach::Widened),
     // A run held more than the heap's allowance beside what it charged. The defect may not fail
@@ -47,6 +44,12 @@ const FOUND: [(u64, Reach); 16] = [
     // transport frames, queued ahead of the echoes, took longer than that to cross the link, so a
     // run with nothing new took two attempts. The defect may not fail this seed.
     (583_907, Reach::Framing),
+    // A refusal ended a run for good while a commit was in flight: the attempt's cancel dropped
+    // the call, the commit landed after, and no open followed to find it, so no report counted
+    // what it discarded. Seeds 78121, 91101 and 98222 met the same path.
+    (43_421, Reach::Refused),
+    (51_355, Reach::Refused),
+    (68_626, Reach::Refused),
 ];
 
 #[test]
@@ -143,6 +146,23 @@ fn a_seed_whose_reports_fail_owes_their_cursors_and_passes() {
         assert!(
             checked.reached.has(path),
             "seed {OWED} no longer reaches {path:?}: keep a seed that does"
+        );
+    }
+}
+
+/// The seed of [`a_seed_whose_commits_are_sent_again_and_whose_late_tries_are_refused_passes`].
+const RETRIED: u64 = 165;
+
+/// A seed whose runs send again in place commits the destination answered transiently, and whose
+/// destination refuses as stale a try that lands after a later commit, so neither path drops out
+/// of the simulation unseen.
+#[test]
+fn a_seed_whose_commits_are_sent_again_and_whose_late_tries_are_refused_passes() {
+    let checked = check_exactly_once(Seed::new(RETRIED));
+    for path in [Reach::InPlaceRetried, Reach::DelayedCopyRefused] {
+        assert!(
+            checked.reached.has(path),
+            "seed {RETRIED} no longer reaches {path:?}: keep a seed that does"
         );
     }
 }

@@ -9,8 +9,8 @@ use rdlt_connector::{
     ConnectorError, Cursor, POSITION_UNSENT, PartitionId, PartitionState, StateChange, StateKey,
 };
 
-use super::Coordinator;
 use super::delta::Collected;
+use super::{Coordinator, cancelled};
 use crate::error::{Error, Side};
 use crate::report::Trigger;
 
@@ -150,7 +150,7 @@ impl Coordinator {
     ///
     /// The source's error where a partition at a cursor is still owed at the attempt's last
     /// commit, or after as many failed reports in a row as the run makes attempts; every stream
-    /// is told first.
+    /// is told first. A cancelled error where the attempt is cancelled while a report is made.
     pub(super) async fn acknowledge(
         &mut self,
         reported: BTreeMap<usize, Cursor>,
@@ -172,10 +172,16 @@ impl Coordinator {
                 .map(|(partition, owing)| (partition.clone(), owing.cursor.clone()))
                 .collect();
             let name = &self.parts.streams[stream].name;
-            let Err(error) = self.parts.source.committed(name, &cursors).await else {
+            let told = tokio::select! {
+                biased;
+                // An answer and the cancel together: the answer wins.
+                told = self.parts.source.committed(name, &cursors) => told,
+                () = self.parts.cancel.cancelled() => return Err(cancelled()),
+            };
+            let Err(error) = told else {
                 continue;
             };
-            let failed = failed(owed, &error, turn, self.parts.attempts);
+            let failed = failed(owed, &error, turn, self.parts.retry.attempts());
             self.parts.tally.add(|counters| {
                 counters.acks.failed = counters.acks.failed.saturating_add(1);
                 counters.acks.dropped = counters.acks.dropped.saturating_add(failed.dropped);

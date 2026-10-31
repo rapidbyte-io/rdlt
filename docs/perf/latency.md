@@ -125,3 +125,44 @@ after it landed, and "highest" the most of any run.
   - Landed p99 is lower than `main`'s at 10 s and equal spawned at 1 s. In process at 1 s it is
     2 ms (0.2 %) higher, in every round for the stream that cannot read again (1.012–1.014 s
     against 1.009–1.010 s): there the rule's second half misses by 2 ms.
+
+## Transient commits
+
+The `transient-10` cases, whose destination answers one commit in ten, drawn, `Transient` before
+it lands, and the plain cases beside them, on `main` at `ea57c46d` and with such a commit sent
+again in place. Intel Core Ultra X7 358H, 2026-10-31, three rounds interleaved (base, branch;
+branch, base; base, branch, for the plain cases and then for the `transient-10` ones), each
+tree's cases run as `taskset -c 0-3` with spawned connectors on CPUs 4-11, each round in a hold of
+the measurement lock of its own, started at a one-minute load of 1.46, 0.88 and 1.45, the bench
+lifting it to 2-3.7. Push to landed p99, seconds, the median of three rounds and their range,
+each round's figure the median of its ten runs:
+
+| Case | Stream | `main` | Sent again | `main`, `transient-10` | Sent again, `transient-10` |
+|---|---|---|---|---|---|
+| `in-process/10s` | `replayable` | 1.052 (1.046–1.055) | 1.059 (1.053–1.064) | 2.272 (2.263–2.320) | 1.687 (1.540–2.591) |
+| `in-process/10s` | `unreplayable` | 1.056 (1.049–1.058) | 1.063 (1.056–1.068) | 2.272 (2.265–2.321) | 1.687 (1.540–2.592) |
+| `in-process/1s` | `replayable` | 1.009 (1.009–1.010) | 1.009 (1.007–1.014) | 1.009 (1.008–1.011) | 1.010 (1.007–1.013) |
+| `in-process/1s` | `unreplayable` | 1.010 (1.009–1.010) | 1.011 (1.008–1.014) | 1.010 (1.010–1.011) | 1.016 (1.009–1.017) |
+| `process/10s` | `replayable` | 4.088 (4.053–4.099) | 4.100 (4.083–4.105) | 6.385 (6.113–6.469) | 4.166 (4.099–4.369) |
+| `process/10s` | `unreplayable` | 4.088 (4.052–4.099) | 4.100 (4.083–4.105) | 6.383 (6.113–6.469) | 4.166 (4.099–4.369) |
+| `process/1s` | `replayable` | 0.996 (0.996–0.996) | 0.996 (0.996–0.996) | 0.996 (0.996–0.996) | 0.996 (0.996–0.996) |
+| `process/1s` | `unreplayable` | 0.996 (0.996–0.996) | 0.996 (0.996–0.996) | 0.996 (0.995–0.996) | 0.996 (0.996–0.996) |
+
+- On `main` a transient answer ends its attempt: the last run of a round made two to four
+  attempts in the 10 s cases. Sent again in place, every last run made one attempt.
+- The rule: with one commit in ten answered `Transient`, p99 push to landed is not above `main`'s
+  plus the retry budget, 15 s; without it, not above `main`'s.
+  - With it, p99 is below `main`'s own: 1.69 s against 2.27 s in process at 10 s, 4.17 s against
+    6.38 s spawned. At 1 s the interval governs both.
+  - Without it, at 10 s p99 is 7 ms (0.7 %) above `main`'s in process and 12 ms (0.3 %) spawned.
+    It is the time the policy's 1 GiB takes to arrive at the rate each case pushes, half what an
+    unpaced run of its own landed: the branch's plain cases pushed 0.4-0.9 % fewer pushes a second
+    than the base's in each round (96,184-97,166 in process against 97,054-97,797), and pushes a
+    second times p99, the pushes 1 GiB holds, agrees within 0.1 % in every round and placement
+    (102,301-102,694 against 102,325-102,690). Where both pushed alike, spawned in the third
+    round (25,048 against 25,051 a second), p99 was 4.0999 s against 4.0992 s. Over all six
+    unpaced runs of each tree the rates match: a median of 97,174 pushes a second against 97,185.
+    At 1 s p99 is `main`'s within 2 ms.
+- Three of the branch's 1 s `transient-10` rounds ran a run again: the draw failed the commit the
+  stop at the run's end asked for, and a stop ends such a commit rather than sends it again, as on
+  `main`, where a failed attempt meets the stop.

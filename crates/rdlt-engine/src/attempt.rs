@@ -291,7 +291,8 @@ async fn launch(
         follow: context.plan.until().follows(),
         replan: context.config.replan(),
         tally: Arc::clone(&context.tally),
-        attempts: context.config.retry().attempts(),
+        retry: *context.config.retry(),
+        close_wait: context.config.close_wait(),
     });
     scope.spawn(coordinator.run());
     scope.join_spawning(spawned).await

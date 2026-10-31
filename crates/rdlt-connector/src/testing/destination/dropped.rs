@@ -5,7 +5,7 @@ use crate::commit::DroppedTable;
 use crate::error::{ConnectorError, ConnectorErrorKind, TABLE_OWNED};
 use crate::id::{PipelineId, SegmentId};
 use crate::testing::{Violation, bounded};
-use crate::{CommitMeta, OpenContext, OpenedSession};
+use crate::{CommitMeta, OpenContext, OpenedSession, TableRef};
 
 impl Bench<'_> {
     /// A commit dropping the clause's table leaves nothing of it; dropping it again changes
@@ -55,18 +55,11 @@ impl Bench<'_> {
 
     /// A commit that drops the clause's table.
     pub(super) fn dropping(&self) -> CommitMeta {
-        let table = self.table();
-        CommitMeta {
-            drop_tables: vec![DroppedTable {
-                path: table.path,
-                name: table.name,
-            }],
-            ..meta(&[], Vec::new())
-        }
+        dropping_of(&self.table())
     }
 
     /// A session of another pipeline.
-    async fn other(&self) -> Result<OpenedSession, Violation> {
+    pub(super) async fn other(&self) -> Result<OpenedSession, Violation> {
         let context = OpenContext {
             pipeline: PipelineId::parse(format!("{}_next", self.name()))
                 .expect("certification pipeline ids are valid"),
@@ -74,6 +67,17 @@ impl Bench<'_> {
         bounded("open", self.peer.open(&context))
             .await?
             .map_err(|error| Violation::from(format!("another pipeline's open: {error}")))
+    }
+}
+
+/// A commit that drops `table`.
+pub(super) fn dropping_of(table: &TableRef) -> CommitMeta {
+    CommitMeta {
+        drop_tables: vec![DroppedTable {
+            path: table.path.clone(),
+            name: table.name.clone(),
+        }],
+        ..meta(&[], Vec::new())
     }
 }
 

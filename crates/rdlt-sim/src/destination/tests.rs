@@ -24,6 +24,7 @@ use super::store::{Staged, Store};
 use super::{SimDestination, SimSession};
 use crate::changes::{Position, SimChangeSource};
 use crate::owners::Live;
+use crate::reached::Reach;
 use crate::rng::SplitMix64;
 use crate::seed::{Seed, run};
 use crate::source::{SimCursor, SimSource};
@@ -1014,4 +1015,76 @@ fn a_source_told_late_of_a_cursor_a_newer_full_read_restarted_hears_what_was_com
     drop(registered);
     // Told late, it heard a cursor a commit landed; a cursor past every commit is a violation.
     assert_eq!(heard, [0, 1], "{:#?}", world.violations());
+}
+
+/// The commit `seq` of a load at `epoch`, of segment `seq`, expecting `after` landed.
+fn segment_commit(epoch: Epoch, seq: u64, after: Option<CommitKey>) -> CommitMeta {
+    let mut segments = SegmentSet::new();
+    segments.insert(SegmentId(seq));
+    CommitMeta {
+        key: CommitKey { epoch, seq },
+        after,
+        segments,
+        ..first_commit(Vec::new())
+    }
+}
+
+#[test]
+fn a_try_left_running_lands_before_its_retry_applies_nothing_after_it_and_is_refused_later() {
+    // The calls a try left running outlasts: none, and it lands before its retry; one, and it
+    // ends after its retry; two, and it ends after the commit that follows.
+    for outlasts in [0, 1, 2] {
+        let name = format!("running-{outlasts}");
+        let registered = World::register(&name, &mut SplitMix64::new(1));
+        let world = Arc::clone(registered.world());
+        let (rows, running) = run(Seed::new(1), {
+            let world = Arc::clone(&world);
+            |_env| async move {
+                let destination = destination(Arc::clone(&world));
+                let pipeline = PipelineId::parse("sim").unwrap();
+                let context = OpenContext {
+                    pipeline: pipeline.clone(),
+                };
+                let mut opened = destination.open(&context).await.unwrap();
+                let create = TableChange::Create {
+                    table: table(),
+                    schema: TableSchema::new(vec![Field::new("id", LogicalType::Int64, false)])
+                        .unwrap(),
+                };
+                opened.session.apply_schema(&create).await.unwrap();
+                let mut writer = opened.session.writer(&table()).await.unwrap();
+                for segment in [1, 2] {
+                    let ids = Arc::new(Int64Array::from(vec![segment])) as ArrayRef;
+                    let segment = u64::try_from(segment).unwrap();
+                    writer
+                        .write(SegmentId(segment), batch(vec![("id", ids)]))
+                        .await
+                        .unwrap();
+                }
+                writer.flush().await.unwrap();
+                let first = segment_commit(opened.epoch, 1, None);
+                world
+                    .store
+                    .lock()
+                    .leave_running(&pipeline, opened.epoch, &first, outlasts);
+                let retried = opened.session.commit(&first).await.unwrap();
+                assert_eq!(retried.key, first.key, "outlasting {outlasts}");
+                let next = segment_commit(opened.epoch, 2, Some(first.key));
+                opened.session.commit(&next).await.unwrap();
+                let store = world.store.lock();
+                (store.tables["t"].published.len(), store.running.len())
+            }
+        });
+        assert_eq!(
+            (rows, running),
+            (2, 0),
+            "outlasting {outlasts}: each row once"
+        );
+        assert_eq!(
+            world.reached().has(Reach::DelayedCopyRefused),
+            outlasts == 2,
+            "outlasting {outlasts}"
+        );
+        drop(registered);
+    }
 }

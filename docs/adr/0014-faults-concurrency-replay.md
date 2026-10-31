@@ -33,6 +33,12 @@ The owner chose to keep all of this in one milestone.
   - Besides transient and rate-limited failures, one fault in ten is permanent and one in twenty
     is a panic.
   - A run may be stopped at once (`StopMode::Now`).
+  - A commit's try the destination answers transiently before it lands may leave its transaction
+    running, in three draws of four, drawn from a generator of its own: it lands as its
+    pipeline's next commit call begins, before the retry, or once one or two calls have ended,
+    after the retry or after the commit that follows it. The destination answers it by the key
+    landed as any commit, so one after its retry applies nothing and one after a later commit is
+    refused as stale.
   - Now and then a call the engine bounds never returns until its caller gives up on it: two
     calls in a thousand at every fault point but a read, while faults are on. The hangs are drawn
     from a generator of their own, so the faults a seed met before fall as they did. The engine

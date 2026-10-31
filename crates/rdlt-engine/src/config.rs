@@ -19,7 +19,16 @@ pub use batch::BatchPolicy;
 pub use commit::CommitPolicy;
 pub use growth::GrowthLimits;
 
-/// How many attempts a run makes and how long it waits between them.
+/// How many attempts a run makes and how long it waits between them; a commit the destination
+/// answers transiently is sent again in place as many times, with as long between its tries.
+///
+/// A run that makes no progress sends a commit at most the square of its attempts times: each
+/// attempt sends it as many times as the run makes attempts.
+///
+/// An attempt another task's failure ends waits up to [`EngineConfig::close_wait`] for its commit
+/// in flight to answer, so a commit that lands then is in the report even where no attempt
+/// follows. A landed commit goes uncounted only under [`StopMode::Now`](crate::StopMode::Now), or
+/// where it answered past the close wait and no later attempt opened to find it landed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RetryPolicy {
     max_attempts: NonZeroU32,
@@ -29,7 +38,8 @@ pub struct RetryPolicy {
 }
 
 impl RetryPolicy {
-    /// Sets the number of attempts, the first included; zero means one.
+    /// Sets the number of attempts, the first included, and of tries of a commit; zero means
+    /// one.
     #[must_use]
     pub fn max_attempts(mut self, attempts: u32) -> Self {
         self.max_attempts = NonZeroU32::new(attempts).unwrap_or(NonZeroU32::MIN);
@@ -57,7 +67,7 @@ impl RetryPolicy {
         self
     }
 
-    /// The number of attempts, the first included.
+    /// The number of attempts, the first included, and of tries of a commit.
     pub fn attempts(&self) -> NonZeroU32 {
         self.max_attempts
     }
@@ -224,8 +234,9 @@ impl EngineConfig {
         self.stop_wait
     }
 
-    /// How long a failed attempt waits for the destination to close the session it opened; one
-    /// that takes longer is left to the destination to release.
+    /// How long a failed attempt waits on the destination: for a commit in flight to answer, so
+    /// one that lands is in the report, then for the session it opened to close; a commit that
+    /// takes longer goes unheard, and a session is left to the destination to release.
     pub fn close_wait(&self) -> Duration {
         self.close_wait
     }
@@ -371,7 +382,8 @@ impl EngineConfigBuilder {
         self
     }
 
-    /// How long a failed attempt waits for its session to close (default 60 s); more than zero.
+    /// How long a failed attempt waits for its commit in flight to answer, and for its session to
+    /// close (default 60 s); more than zero.
     #[must_use]
     pub fn close_wait(mut self, wait: Duration) -> Self {
         self.close_wait = Some(wait);

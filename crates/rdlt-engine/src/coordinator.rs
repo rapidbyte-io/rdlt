@@ -2,9 +2,10 @@
 //!
 //! It tracks every partition's sealed segments, decides when a commit is due, asks on-demand
 //! partitions to checkpoint (a barrier), flushes the lanes, commits the sealed segments with their
-//! state, and acknowledges the committed cursors to the source, owing it those of a report that
-//! failed until a later commit's report carries them. At most one commit is in flight;
-//! partitions keep reading while it runs.
+//! state, sending the commit again in place where the destination answers it transiently, and
+//! acknowledges the committed cursors to the source, owing it those of a report that failed until
+//! a later commit's report carries them. At most one commit is in flight; partitions keep reading
+//! while it runs.
 
 mod acks;
 mod barrier;
@@ -15,13 +16,13 @@ mod due;
 mod phases;
 mod pressure;
 mod replan;
+mod retried;
 mod signals;
 #[cfg(test)]
 mod tests;
 mod waiting;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -35,10 +36,10 @@ use tokio_util::sync::CancellationToken;
 
 use crate::attempt::Keying;
 use crate::budget::MemoryBudget;
-use crate::config::CommitPolicy;
+use crate::config::{CommitPolicy, RetryPolicy};
 use crate::crash::crash_point;
 use crate::env::{Env, Sleep};
-use crate::error::{Error, Side};
+use crate::error::Error;
 use crate::lane::Lanes;
 use crate::partition::{Latest, Progress};
 use crate::plan::WriteMode;
@@ -191,9 +192,14 @@ pub(crate) struct CoordinatorParts {
     pub(crate) replan: Duration,
     /// Where the commits count what made each due and the time their phases took.
     pub(crate) tally: Arc<Tally>,
-    /// The attempts the run makes: as many failed reports in a row of a partition's cursor end
-    /// the attempt, or give up the cursor of a partition recorded done.
-    pub(crate) attempts: NonZeroU32,
+    /// The run's retry policy: a commit the destination answers transiently is sent as many
+    /// times as the run makes attempts, the waits between drawn as the run's are, and as many
+    /// failed reports in a row of a partition's cursor end the attempt, or give up the cursor of a
+    /// partition recorded done.
+    pub(crate) retry: RetryPolicy,
+    /// How long a commit in flight has to answer once the attempt is cancelled, so one that lands
+    /// as another task fails is still recorded: the run's close wait.
+    pub(crate) close_wait: Duration,
 }
 
 pub(crate) struct Coordinator {
@@ -444,7 +450,8 @@ impl Coordinator {
     }
 
     /// Commits `meta`, whose state changes are `measured` and whose partitions stand at
-    /// `positions`, in the destination's session.
+    /// `positions`, in the destination's session, sent again in place where the destination
+    /// answers it transiently.
     async fn committed(
         &mut self,
         meta: &CommitMeta,
@@ -452,13 +459,7 @@ impl Coordinator {
         positions: &BTreeMap<usize, PartitionState>,
     ) -> Result<Receipt, Error> {
         crash_point!("engine.commit.before");
-        let receipt = self
-            .parts
-            .tables
-            .session()
-            .commit(meta)
-            .await?
-            .map_err(|error| Error::connector(Side::Destination, "committing", error))?;
+        let receipt = self.tried(meta).await?;
         crash_point!("engine.commit.after");
         self.parts.stored.apply(measured);
         let states: BTreeMap<(StreamName, PartitionId), PartitionState> = positions
