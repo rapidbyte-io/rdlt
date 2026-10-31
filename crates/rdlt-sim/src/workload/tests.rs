@@ -359,22 +359,24 @@ fn a_read_resumes_where_the_last_phases_ended_in_batches_of_the_streams_size() {
     assert_eq!(stream.read(0, 0).len(), first);
 }
 
+/// Whether `stream` normalizes and a column of it holds arrays somewhere.
+fn has_arrays(stream: &SimStream) -> bool {
+    stream.normalized()
+        && stream.drift.iter().any(|drift| {
+            drift
+                .shapes
+                .iter()
+                .flatten()
+                .flatten()
+                .any(|shape| matches!(shape.logical, LogicalType::List(_)))
+        })
+}
+
 #[test]
 fn some_streams_normalize_arrays_under_every_write_mode_and_policy() {
     let streams: Vec<_> = (0..300)
         .flat_map(|seed| Workload::generate(&mut SplitMix64::new(seed), Features::ALL).streams)
         .collect();
-    let has_arrays = |stream: &SimStream| {
-        stream.normalized()
-            && stream.drift.iter().any(|drift| {
-                drift
-                    .shapes
-                    .iter()
-                    .flatten()
-                    .flatten()
-                    .any(|shape| matches!(shape.logical, LogicalType::List(_)))
-            })
-    };
     for json in [false, true] {
         assert!(
             streams
@@ -399,6 +401,32 @@ fn some_streams_normalize_arrays_under_every_write_mode_and_policy() {
             "some normalized stream with arrays has policy {policy:?}"
         );
     }
+}
+
+#[test]
+fn some_normalized_merges_push_a_key_twice_in_one_batch_under_every_policy() {
+    // A key's rows in one push are in one piece, where only the last's children are staged.
+    let repeating = |stream: &SimStream| {
+        has_arrays(stream) && stream.write == WriteMode::Merge && stream.batch_rows > stream.keys
+    };
+    let mut unmet = vec![
+        SchemaPolicy::Evolve,
+        SchemaPolicy::DiscardRow,
+        SchemaPolicy::DiscardValue,
+    ];
+    let streams = (0..2_000)
+        .flat_map(|seed| Workload::generate(&mut SplitMix64::new(seed), Features::ALL).streams);
+    for stream in streams.filter(repeating) {
+        let met = policies(&stream);
+        unmet.retain(|policy| !met.contains(policy));
+        if unmet.is_empty() {
+            break;
+        }
+    }
+    assert!(
+        unmet.is_empty(),
+        "no normalized merge with arrays pushes a key twice in a batch under {unmet:?}"
+    );
 }
 
 /// Every type and encoding the shape of a column or anything inside it takes.
