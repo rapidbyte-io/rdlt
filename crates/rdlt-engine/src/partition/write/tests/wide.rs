@@ -18,7 +18,7 @@ use rdlt_wire::{Decoder, Encoder, Limits};
 
 use super::super::Held;
 use super::super::held::shredded;
-use super::super::normalized::{kept, made, split};
+use super::super::normalized::split::{kept, made, split};
 use super::super::pieces::Pieces;
 use crate::cost::tests::{held_alone, peak_alone};
 use crate::fixtures::lowering::wide::{dictionaries, flags, integers, views};
