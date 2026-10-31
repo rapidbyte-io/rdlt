@@ -5,10 +5,11 @@ Status: accepted, 2026-09-24.
 ## Context
 
 The engine resolves and evolves each table's schema, keeps a persisted map from source columns to
-destination identifiers, stores nested data natively and merges rows by key. Every destination,
-those built on `sqlgen` and the reference connectors among them, builds on the contract these
-settle, which needs rules where attempts crash between applying a change and committing it,
-where names collide, and where destinations store different types.
+destination identifiers, stores nested data natively and merges rows by key. The engine's rules
+for these settle the contract every destination builds on, those built on `sqlgen` and the
+reference connectors among them, and they need cases of their own where attempts crash between
+applying a change and committing it, where names collide, and where destinations store
+different types.
 
 ## Decision
 
@@ -65,9 +66,11 @@ where names collide, and where destinations store different types.
   declaring `Decimal` is sent each decimal at its own precision, up to 76 digits. One whose
   decimals hold fewer, as Snowflake's, Redshift's and Databricks' hold 38, either declares no
   `Decimal`, so every decimal lands as its exact text, or refuses a wider column as the engine
-  creates or widens it, which fails the run. A limit on a decimal's digits joins the
-  capabilities with the first destination that declares one: a wider decimal then lands as its
-  exact text, the path an undeclared kind takes, and that choice goes.
+  creates or widens it, which fails the run. Capabilities gain a limit on a decimal's digits
+  when the first destination that declares one comes. That destination then declares `Decimal`
+  and stores each decimal within its limit natively; a wider decimal lands as its exact text,
+  the path an undeclared kind takes, and a column whose values outgrow the limit takes its
+  variant, stored as text. Neither text for every decimal nor a refused wider column remains.
 - **Metadata columns.** Every row carries `_rdlt_load_epoch` (the epoch of the session that
   wrote it, `Int64`) and `_rdlt_loaded_at` (the attempt's start, microseconds, UTC); merge rows
   carry `_rdlt_seq`, 16 bytes of `Binary`: the segment id then the row's index in the segment,
