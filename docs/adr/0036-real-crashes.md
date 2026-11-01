@@ -1,15 +1,14 @@
-# ADR 0036: Real crashes, and M5's exit
+# ADR 0036: Real crashes
 
 Status: accepted, 2026-10-01.
 
 ## Context
 
-Spec §20.6 asks for two tests of real crashes, and the M5 exit gate names them: a failpoint
-sweep, crashing a run at every durability step and checking the run after it loads every row
-once, and a kill matrix, killing the process running a pipeline or its spawned connectors as it
-loads, then checking every row landed once and no connector outlived its run. ADR 0023 planned
-them as M5f. The simulation models crashes (ADR 0014); these crash real processes, with real
-files, sockets and child processes.
+Two tests crash real processes: a failpoint sweep, crashing a run at every durability step and
+checking the run after it loads every row once, and a kill matrix, killing the process running a
+pipeline or its spawned connectors as it loads, then checking every row landed once and no
+connector outlived its run. The simulation models crashes (ADR 0014); these crash real
+processes, with real files, sockets and child processes.
 
 ## Decision
 
@@ -24,10 +23,9 @@ files, sockets and child processes.
   goodbye to a connector. The harness turns its core dumps off before it runs, so an abort costs
   the system's dump handler nothing, and each process a test starts is killed with its group
   when the test's own process ends.
-- **The harness stands for the CLI** until M7 has one: the engine's `crash_run` example runs one
-  pipeline from a configuration file, its source and destination in its process or spawned, tells
-  each read and commit as it happens, and exits 0 once the run succeeded. When the CLI exists, the
-  sweep and the matrix run it instead.
+- **A harness stands for a CLI**, which the engine does not have: its `crash_run` example runs
+  one pipeline from a configuration file, its source and destination in its process or spawned,
+  tells each read and commit as it happens, and exits 0 once the run succeeded.
 - **State outlives a process only on disk.** The reference change source keeps its slot, and the
   log source its group, in a file where configured (`slot_path`, `group_path`), written whole
   beside it and renamed over it, so a crash leaves it as it was or as it is; a damaged file is
@@ -73,8 +71,6 @@ files, sockets and child processes.
   Mutation testing and coverage leave it out: it takes minutes, its runs are processes of their
   own whose profiles coverage would merge by the hundred, and it catches nothing the other tests
   do not first.
-- **M5 exits** with the simulation of change and forgetting sources (M5a–M5e), this sweep and this
-  matrix green.
 
 ## Consequences
 
