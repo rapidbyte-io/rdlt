@@ -45,13 +45,14 @@ unchanged, whose hash the engine cannot compute without the columns it never see
     row by row; versions begun when their batch arrived follow a load clock that never reads
     earlier; validity a destination stores without timestamps is integer microseconds
     (ADR 0046).
-  - `row_hash` is the BLAKE3-256 of the row's data columns as their logical types hold them,
-    before they are lowered (ADR 0046), as one object of its non-null columns by name, the
-    encoding a merge key's id hashes (ADR 0009), JSON by the values its text says: an added null
-    column, a wider type, another encoding or JSON rendered again changes no hash, so schema
-    changes open no versions. The change time is left out: when a change happened is not what it
-    changed. It is 32 bytes of `Binary`, as a merge root's id is (ADR 0009); a delete's row
-    carries none.
+  - `row_hash` is the BLAKE3-256, under the version tag, of the row's whole data: its data
+    columns as their logical types hold them, before they are lowered (ADR 0046), as one object
+    of its non-null columns by name in the canonical encoding (ADR 0009), JSON by the values its
+    text says. An added null column, a wider type, another encoding or JSON rendered again
+    changes no hash, so schema changes open no versions. The change time is left out: when a
+    change happened is not what it changed. It is 32 bytes of `Binary`, and a delete's row
+    carries none. It is no row's id: a merge root's id hashes only its key's columns, under a
+    tag of its own.
   - A table records whether it keeps history with its sequences' state record. A history stream
     into a table created without history, or any other stream into a history table, is refused as
     `table_history_mismatch`: its rows have no versions to close, or a merge would take its
