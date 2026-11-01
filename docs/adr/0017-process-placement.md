@@ -118,9 +118,9 @@ over a network ADR 0019's.
   - A spawned generator feeds one scenario.
   - The spawned connectors are examples of the tests' crates, which the test build builds. The
     reference crate ships the real binaries, `rdlt-connector-{memory,generator,files,sqlite}`.
-- **The host's process tests** run against a scripted connector:
-  `sigint_leaves_no_orphaned_connectors`, `connector_writing_stdout_keeps_running`,
-  `connector_crash_error_carries_stderr_tail` and `env_passthrough_reaches_connector`.
+- **The host's tests against a scripted connector** include `sigint_leaves_no_orphaned_connectors`,
+  `connector_writing_stdout_keeps_running`, `connector_crash_error_carries_stderr_tail` and
+  `env_passthrough_reaches_connector`.
 - **The soak** (`just soak`, twenty minutes nightly): connectors spawned through `Local` load while
   they are killed, stopped with `SIGSTOP`, crashing and flooding their output, saying a secret that
   ends in whitespace. Starts race on real threads for the last of a process's groups. Real
