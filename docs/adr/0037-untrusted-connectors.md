@@ -4,17 +4,12 @@ Status: accepted, 2026-10-01.
 
 ## Context
 
-Until now a connector's code was trusted and only its output was not: the operator chose which
-binaries ran, and rdlt neither sandboxed them nor defended itself against one that misbehaved on
-purpose. The product will run connectors written by third parties. An engine that trusts
-connector code cannot do that: one connector could crash it, starve it, or reach another
-pipeline's data.
-
-A security review of `main` after M5 measured the distance. Output that passed every stated limit
-could still exhaust, hang or abort the engine; control messages, state and receipts were taken at
-their word; a spawned connector ran with the host's own access. The findings are fixed by a
-hardening program, H2, whose milestones each have an ADR after this one. This record is the
-decision they implement.
+The product runs connectors written by third parties. An engine that trusts connector code, and
+defends only against its output, cannot: one connector could crash it, starve it, or reach
+another pipeline's data. Output within every stated limit can still exhaust, hang or abort an
+engine that bounds each piece alone; control messages, state and receipts taken at their word
+can change what it commits; and a spawned connector with the host's own access reaches whatever
+the host can. ADR 0038 to ADR 0050 implement this decision.
 
 ## Decision
 
@@ -87,11 +82,9 @@ Rejected:
 
 ## Consequences
 
-- A weakness that needs a connector to misbehave is a defect, not an accepted risk. Earlier
-  records that accepted one on those grounds are reopened by H2: the host-certificate allowlist
-  of ADR 0018, the items ADR 0025 deferred, and the acknowledgement order of ADR 0034.
+- A weakness that needs a connector to misbehave is a defect, not an accepted risk.
 - Limits are part of the contract. A connector that is refused for exceeding one was told the
   limit in the protocol's documentation, and certification checks it.
 - An embedder who registers a connector in process vouches for it as for their own code.
-- `SECURITY.md` states this model, and that it is being put in place: until H2 is complete, an
-  operator should run only connectors they trust.
+- `SECURITY.md` states this model and the mechanisms in place, and that until the hardening is
+  complete an operator should run only connectors they trust.
