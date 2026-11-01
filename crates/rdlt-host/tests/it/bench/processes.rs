@@ -71,9 +71,12 @@ impl Asked {
     /// Makes the replay's pushes and registers them under its name.
     fn register(self) {
         match self {
-            Self::Frames(frames) => register(frames.replay(), Replayed::Batches(frames.batches())),
-            Self::Shaped(shaped) => register(shaped.replay(), shaped.replayed()),
-            Self::Tables(cell) => register(&cell.replay(), cell.replayed()),
+            Self::Frames(frames) => register(
+                frames.replay(),
+                Arc::new(Replayed::Batches(frames.batches())),
+            ),
+            Self::Shaped(shaped) => register(shaped.replay(), Arc::new(shaped.replayed())),
+            Self::Tables(cell) => register(&cell.replay(), Arc::new(cell.replayed())),
         }
     }
 }

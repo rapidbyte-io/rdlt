@@ -6,6 +6,7 @@
 mod tests;
 
 use std::num::NonZeroUsize;
+use std::sync::Arc;
 
 use arrow_array::RecordBatch;
 use rdlt_connector::ReadMode;
@@ -96,7 +97,7 @@ impl Mixed {
         let (partitions, streams) = (self.cell.partitions, self.cell.streams);
         let source = self.runner.block_on(mixed_replay(
             "mixed",
-            replayed,
+            Arc::new(replayed),
             partitions,
             streams,
             self.unreplayable,

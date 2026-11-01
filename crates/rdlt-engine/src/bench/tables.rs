@@ -292,7 +292,7 @@ impl Tables {
     /// The cell's source and sink in this process, its pushes registered.
     pub async fn connectors(&self) -> (Arc<dyn Source>, Arc<dyn Destination>) {
         let replayed = self.replayed.get_or_init(|| self.cell.replayed());
-        register(&self.cell.replay(), replayed.clone());
+        register(&self.cell.replay(), Arc::new(replayed.clone()));
         let source = connect_replay(self.replay_config()).await;
         (source, sink(Sinking::Ipc, self.writers).await)
     }

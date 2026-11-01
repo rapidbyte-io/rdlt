@@ -219,7 +219,7 @@ impl Wide {
         let replayed = self.replayed.clone();
         let (source, destination) = self
             .runner
-            .block_on(async { (replay("wide", replayed).await, null_sink().await) });
+            .block_on(async { (replay("wide", Arc::new(replayed)).await, null_sink().await) });
         self.load(source, destination).rows
     }
 
