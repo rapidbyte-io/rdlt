@@ -160,12 +160,12 @@ The owner chose to keep all of this in one milestone.
 - Tokio draws from its random generator in two places: an unbiased `select!` and a waiting
   `watch` receiver. Every `select!` in the engine is biased, and clippy now bans the waiting
   receiver, so neither can quietly break replay again.
-- Loom and turmoil stay out of M3h:
-  - §20.5's loom models of the memory budget, credit windows, seal bookkeeping and the
-    coordinator's handshake check every interleaving of those primitives, where the stress run
-    only samples some. ADR 0004 defers the budget's to M9, and the others belong with it.
-  - Turmoil simulates networks, and belongs to the milestone that runs connectors over the
-    network (M4).
+- No loom model checks the memory budget, credit windows, seal bookkeeping or the coordinator's
+  handshake: loom needs every primitive swapped under a `cfg`, the simulation explores the races
+  between tasks at every await, and the stress run samples interleavings on real threads. Kani
+  proves the credit's and the budget's arithmetic, and property tests hold the budget's ledger
+  (ADR 0052).
+- Turmoil simulates the network the host speaks over (ADR 0019).
 - The simulation reaches least of JSON shredding's rarer paths, temporal text, plan validation
   and state records other than cursors.
 - The nightly workflow runs the stress seeds, the replay's thousand seeds and the coverage run
