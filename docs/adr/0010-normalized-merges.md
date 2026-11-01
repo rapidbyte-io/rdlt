@@ -21,13 +21,12 @@ minors.
   skipped with `D-MERGE` for destinations that cannot merge.
 - **Every child table is listed.** A commit may stage nothing for a child table, or a grandchild,
   whose rows its roots' new rows no longer hold. `CommitMeta::child_tables` lists every child table
-  of the attempt's merge streams with its key, so destinations replace those rows too. The field
-  defaults to empty, so earlier commit records still read.
+  of the attempt's merge streams with its key, so destinations replace those rows too.
 - **Reference destinations.** Memory and files share one Arrow implementation of the rule. SQLite
   deletes the published child rows whose root id is among the root staging's ids, inserts the staged
   child rows whose root id and sequence match a root's greatest, and publishes child tables before
-  it drops the root staging they read. The root link travels in the merge key it records, whose
-  JSON is now an object; the array form of earlier records still reads.
+  it drops the root staging they read. The root link travels in the merge key it records, a JSON
+  object of the recorded key's format; a key recorded in another format is refused (ADR 0041).
 - **Sequences count rows received.** A row's sequence is its position among the rows its segment
   received, before the schema policy drops any, so a child row, which takes its root row's
   position, keeps matching its root when earlier rows are dropped. Only a stream's own table
