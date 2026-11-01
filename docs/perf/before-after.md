@@ -182,8 +182,9 @@ base's ran through its port. Their spawned processes' peaks, in the same runs, M
   growth did not follow: level for the passthrough workload, and lower for the normalized one in
   five lines of six (33 to 21 MiB on 16 cores with the tunables).
 - **The served host grows more at two and four cores**, 181 to 240 and 186 to 257 MiB without the
-  tunables, its ranges apart; with them and at 16 cores the ranges overlap. The spawned source and
-  destination peak alike on both.
+  tunables, its ranges apart; with them and at 16 cores the ranges overlap. The spawned processes'
+  peaks overlap in every line but one: the source at four cores without the tunables, 907 to
+  930 MiB, its ranges apart by 2 MiB.
 
 ## Timed cells
 
