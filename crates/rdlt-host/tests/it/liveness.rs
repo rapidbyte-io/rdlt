@@ -1,8 +1,11 @@
 //! The heartbeat's verdict against connectors that answer it wrongly, and hosts that stall.
 
 use std::num::NonZeroU32;
+use std::sync::Arc;
+use std::task::Waker;
 use std::time::Duration;
 
+use parking_lot::Mutex;
 use rdlt_connector::serve::Served;
 use rdlt_connector::{Role, Source as _, source_factory};
 use rdlt_connector_reference::MemorySource;
@@ -76,7 +79,7 @@ async fn a_host_that_stalls_with_a_ping_unanswered_keeps_a_live_connector() {
         tokio::net::UnixStream::from_std(connector).expect("the socket registers")
     };
     serving.spawn(rdlt_connector::serve::serve_connection(
-        std::sync::Arc::new(Served::new().with_source(source_factory::<MemorySource>())),
+        Arc::new(Served::new().with_source(source_factory::<MemorySource>())),
         connector,
         rdlt_wire::Limits::default(),
     ));
@@ -107,15 +110,15 @@ async fn a_host_that_stalls_with_a_ping_unanswered_keeps_a_live_connector() {
 
 /// A network partition between the host and a connector, which can come and go.
 #[derive(Clone, Default)]
-struct Partition(std::sync::Arc<std::sync::Mutex<(bool, Vec<std::task::Waker>)>>);
+struct Partition(Arc<Mutex<(bool, Vec<Waker>)>>);
 
 impl Partition {
     fn cut(&self) {
-        self.0.lock().expect("not poisoned").0 = true;
+        self.0.lock().0 = true;
     }
 
     fn heal(&self) {
-        let mut state = self.0.lock().expect("not poisoned");
+        let mut state = self.0.lock();
         state.0 = false;
         for waker in state.1.drain(..) {
             waker.wake();
@@ -124,7 +127,7 @@ impl Partition {
 
     /// Whether the partition holds, keeping `context`'s task to wake once it heals.
     fn holds(&self, context: &std::task::Context<'_>) -> bool {
-        let mut state = self.0.lock().expect("not poisoned");
+        let mut state = self.0.lock();
         if state.0 {
             state.1.push(context.waker().clone());
         }
@@ -192,10 +195,10 @@ async fn across(
     runtime: &tokio::runtime::Runtime,
     served: Served,
     config: &serde_json::Value,
-) -> (std::sync::Arc<Connection>, Partition) {
+) -> (Arc<Connection>, Partition) {
     let (host, connector) = tokio::io::duplex(64 * 1024);
     runtime.spawn(rdlt_connector::serve::serve_connection(
-        std::sync::Arc::new(served),
+        Arc::new(served),
         connector,
         rdlt_wire::Limits::default(),
     ));

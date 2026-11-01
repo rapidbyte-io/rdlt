@@ -3,9 +3,10 @@
 //! nothing.
 
 use std::num::NonZeroUsize;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 
+use parking_lot::Mutex;
 use rdlt_connector::wire::v1;
 use rdlt_connector::{
     Admission, BoxFuture, Partition, Permit, PipelineId, ReadRequest, Source as _, SourceEvent,
@@ -124,7 +125,7 @@ struct Watching(Arc<Tally>);
 impl Admission for Watching {
     fn admit(&self, _: &SourceEvent) -> BoxFuture<'_, rdlt_connector::Result<Option<Permit>>> {
         let held = self.0.held.load(Ordering::SeqCst);
-        self.0.seen.lock().expect("not poisoned").push(held);
+        self.0.seen.lock().push(held);
         Box::pin(async { Ok(None) })
     }
 
@@ -150,7 +151,7 @@ async fn each_frame_is_charged_and_released_before_its_event_waits_for_room() {
         tally.frames.load(Ordering::SeqCst) > 0,
         "frames are charged"
     );
-    let seen = tally.seen.lock().expect("not poisoned").clone();
+    let seen = tally.seen.lock().clone();
     assert!(!seen.is_empty(), "events are admitted");
     assert!(
         seen.iter().all(|held| *held == 0),
@@ -201,5 +202,5 @@ async fn a_writer_releases_each_answer_s_charge_once_it_is_decoded() {
         );
     })
     .await;
-    assert!(tally.seen.lock().expect("not poisoned").is_empty());
+    assert!(tally.seen.lock().is_empty());
 }

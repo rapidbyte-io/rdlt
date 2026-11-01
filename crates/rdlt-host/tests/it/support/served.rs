@@ -4,6 +4,7 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
+use parking_lot::Mutex;
 use rdlt_connector::serve::{Served, serve_connection};
 use rdlt_connector::{Role, destination_factory, source_factory};
 use rdlt_connector_reference::{MemoryDestination, MemorySource};
@@ -57,9 +58,9 @@ pub(crate) async fn plane_client(io: UnixStream) -> rdlt_host::remote::Client {
 
 /// A channel to the connector served on the other end of `io`.
 pub(crate) async fn raw_channel(io: UnixStream) -> Channel {
-    let slot = std::sync::Mutex::new(Some(io));
+    let slot = Mutex::new(Some(io));
     let connector = tower::service_fn(move |_| {
-        let io = slot.lock().expect("the lock is not poisoned").take();
+        let io = slot.lock().take();
         async move {
             io.map(hyper_util::rt::TokioIo::new)
                 .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotConnected))
