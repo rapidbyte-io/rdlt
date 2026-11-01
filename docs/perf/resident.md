@@ -87,4 +87,6 @@ The spawned connector processes' peaks, in the same runs:
   rounds of each in-process line interleaved, base and branch alike: `normalized` grows 1 to 5
   MiB more without the tunables (15 to 20 against 19 to 23 MiB) and up to 8 MiB more with them
   (16 to 32 against 21 to 34 MiB), at the same peak_memory, 144 MiB; `passthrough` is unchanged
-  (10 to 13 against 11 to 13 MiB).
+  (10 to 13 against 11 to 13 MiB). A unit's batches now go with the pieces cut from them, and the
+  served host grows 52 to 75 MiB less for it ([served.md](served.md), "A unit's batches freed as
+  their pieces go").
