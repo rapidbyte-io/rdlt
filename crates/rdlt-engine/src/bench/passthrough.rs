@@ -143,7 +143,10 @@ impl Passthrough {
     /// A source replaying the batches from the cell's partitions and streams, checkpointing as
     /// the cell says.
     pub async fn source(&self) -> Arc<dyn Source> {
-        register("passthrough", Replayed::Batches(self.batches.clone()));
+        register(
+            "passthrough",
+            Arc::new(Replayed::Batches(self.batches.clone())),
+        );
         connect_replay(self.cell.replay_config("passthrough")).await
     }
 

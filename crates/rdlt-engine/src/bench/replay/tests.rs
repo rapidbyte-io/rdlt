@@ -13,7 +13,7 @@ use rdlt_connector::{
 use serde_json::value::RawValue;
 use serde_json::{Value, json};
 
-use super::{Replay, following};
+use super::{Replay, connect_replay, following};
 use crate::bench::runner::streams;
 use crate::bench::{
     CHUNK_BYTES, Corpus, Replayed, ipc_sink, null_sink, register, replay, replay_config,
@@ -39,12 +39,24 @@ async fn replayed_batches_pass_through_the_engine_into_the_sink() {
     let outcome = engine
         .run(
             plan,
-            replay("replay", Replayed::Batches(batches)).await,
+            replay("replay", Arc::new(Replayed::Batches(batches))).await,
             ipc_sink().await,
         )
         .await;
     assert!(outcome.error.is_none(), "{:?}", outcome.error);
     assert_eq!(outcome.report.rows, 30);
+}
+
+#[tokio::test]
+async fn a_replay_is_shared_by_the_sources_it_connects_never_copied() {
+    let replayed = Arc::new(Replayed::Batches(ten_row_batches(3)));
+    register("shared", Arc::clone(&replayed));
+    let sources = [
+        connect_replay(replay_config("shared")).await,
+        connect_replay(replay_config("shared")).await,
+    ];
+    // Held here, by the registry and by each source.
+    assert_eq!(Arc::strong_count(&replayed), 2 + sources.len());
 }
 
 #[tokio::test]
@@ -55,7 +67,7 @@ async fn the_replay_source_resumes_after_each_checkpoint() {
             RecordBatch::try_from_iter([("id", ids)]).unwrap()
         })
         .collect();
-    replay("certified", Replayed::Batches(batches)).await;
+    replay("certified", Arc::new(Replayed::Batches(batches))).await;
     certify_source::<Replay>(json!({ "name": "certified" }))
         .await
         .assert_passed();
@@ -73,7 +85,7 @@ fn ten_row_batches(count: i64) -> Vec<RecordBatch> {
 
 #[tokio::test]
 async fn a_split_replay_plans_its_partitions_and_pushes_every_batch_once() {
-    register("split", Replayed::Batches(ten_row_batches(8)));
+    register("split", Arc::new(Replayed::Batches(ten_row_batches(8))));
     let four = NonZeroUsize::new(4).unwrap();
     let source = replay_factory()
         .connect(
@@ -98,7 +110,10 @@ async fn a_split_replay_plans_its_partitions_and_pushes_every_batch_once() {
 
 #[tokio::test]
 async fn a_split_replay_resumes_each_partition_after_each_checkpoint() {
-    register("certified-split", Replayed::Batches(ten_row_batches(7)));
+    register(
+        "certified-split",
+        Arc::new(Replayed::Batches(ten_row_batches(7))),
+    );
     certify_source::<Replay>(json!({ "name": "certified-split", "partitions": 3 }))
         .await
         .assert_passed();
@@ -107,7 +122,7 @@ async fn a_split_replay_resumes_each_partition_after_each_checkpoint() {
 #[tokio::test]
 async fn a_replay_of_several_streams_pushes_every_batch_once_across_them() {
     // Seven batches over three streams of two partitions: shares that do not divide.
-    register("streams", Replayed::Batches(ten_row_batches(7)));
+    register("streams", Arc::new(Replayed::Batches(ten_row_batches(7))));
     let (two, three) = (NonZeroUsize::new(2).unwrap(), NonZeroUsize::new(3).unwrap());
     let source = replay_factory()
         .connect(
@@ -127,7 +142,10 @@ async fn a_replay_of_several_streams_pushes_every_batch_once_across_them() {
 
 #[tokio::test]
 async fn a_replay_of_several_streams_resumes_each_partition_after_each_checkpoint() {
-    register("certified-streams", Replayed::Batches(ten_row_batches(7)));
+    register(
+        "certified-streams",
+        Arc::new(Replayed::Batches(ten_row_batches(7))),
+    );
     let config = json!({ "name": "certified-streams", "partitions": 3, "streams": 2 });
     certify_source::<Replay>(config).await.assert_passed();
 }
@@ -161,7 +179,10 @@ async fn read_partition(config: Value, partition: Partition) -> Vec<Option<usize
 
 #[tokio::test]
 async fn a_replay_checkpoints_after_every_kth_push_of_a_partition_and_after_its_last() {
-    register("every-third", Replayed::Batches(ten_row_batches(7)));
+    register(
+        "every-third",
+        Arc::new(Replayed::Batches(ten_row_batches(7))),
+    );
     let config = json!({ "name": "every-third", "every": 3 });
     let sent = read_one(config).await;
     let pushed = [None, None, None];
@@ -172,7 +193,10 @@ async fn a_replay_checkpoints_after_every_kth_push_of_a_partition_and_after_its_
     let checkpoints: Vec<usize> = each.into_iter().flatten().collect();
     assert_eq!(checkpoints, (1..=7).collect::<Vec<_>>());
     // Nine pushes over two partitions: the second's share is pushes 5 to 9.
-    register("every-third-split", Replayed::Batches(ten_row_batches(9)));
+    register(
+        "every-third-split",
+        Arc::new(Replayed::Batches(ten_row_batches(9))),
+    );
     let config = json!({ "name": "every-third-split", "partitions": 2, "every": 3 });
     let second = Partition::new(PartitionId::parse("1").unwrap());
     let sent = read_partition(config, second).await;
@@ -182,7 +206,10 @@ async fn a_replay_checkpoints_after_every_kth_push_of_a_partition_and_after_its_
 
 #[tokio::test]
 async fn a_replay_checkpointing_every_few_pushes_resumes_after_each_checkpoint() {
-    register("certified-every", Replayed::Batches(ten_row_batches(11)));
+    register(
+        "certified-every",
+        Arc::new(Replayed::Batches(ten_row_batches(11))),
+    );
     let config = json!({ "name": "certified-every", "partitions": 2, "every": 3 });
     certify_source::<Replay>(config).await.assert_passed();
 }
@@ -195,7 +222,7 @@ fn the_first_stream_is_events_and_the_rest_are_numbered() {
 
 #[tokio::test]
 async fn a_split_replay_refuses_a_partition_it_never_planned() {
-    register("unplanned", Replayed::Batches(ten_row_batches(4)));
+    register("unplanned", Arc::new(Replayed::Batches(ten_row_batches(4))));
     let two = NonZeroUsize::new(2).unwrap();
     let source = replay_factory()
         .connect(
@@ -228,7 +255,11 @@ async fn replayed_json_pushes_pass_through_the_engine_into_the_null_sink() {
     )
     .unwrap();
     let outcome = engine
-        .run(plan, replay("json", replayed).await, null_sink().await)
+        .run(
+            plan,
+            replay("json", Arc::new(replayed)).await,
+            null_sink().await,
+        )
         .await;
     assert!(outcome.error.is_none(), "{:?}", outcome.error);
     assert_eq!(outcome.report.rows, 3);
@@ -321,7 +352,11 @@ async fn replayed_rows_pass_through_the_engine_a_push_of_rows_each() {
     )
     .unwrap();
     let outcome = engine
-        .run(plan, replay("rows", replayed).await, null_sink().await)
+        .run(
+            plan,
+            replay("rows", Arc::new(replayed)).await,
+            null_sink().await,
+        )
         .await;
     assert!(outcome.error.is_none(), "{:?}", outcome.error);
     assert_eq!(outcome.report.rows, 3);
@@ -332,7 +367,7 @@ async fn a_replay_of_rows_that_are_not_json_fails_its_read() {
     for text in [&b"{\"id\":1}\nnot json"[..], &[0xff, b'\n']] {
         register(
             "broken-rows",
-            Replayed::Rows(vec![Bytes::copy_from_slice(text)]),
+            Arc::new(Replayed::Rows(vec![Bytes::copy_from_slice(text)])),
         );
         let source = replay_factory()
             .connect(replay_config("broken-rows"), ConnectContext::new())
@@ -400,7 +435,7 @@ async fn read_followed(config: Value, stream: usize, follow: bool) -> Followed {
 
 #[tokio::test(start_paused = true)]
 async fn a_followed_replay_pushes_its_share_a_pace_apart_then_waits_until_stopped() {
-    register("followed", Replayed::Batches(ten_row_batches(6)));
+    register("followed", Arc::new(Replayed::Batches(ten_row_batches(6))));
     let two = NonZeroUsize::new(2).unwrap();
     let pace = Duration::from_secs(1);
     let config = following(
@@ -424,7 +459,10 @@ async fn a_followed_replay_pushes_its_share_a_pace_apart_then_waits_until_stoppe
 
 #[tokio::test(start_paused = true)]
 async fn a_followed_replay_not_asked_to_follow_returns_once_its_share_is_pushed() {
-    register("unfollowed", Replayed::Batches(ten_row_batches(3)));
+    register(
+        "unfollowed",
+        Arc::new(Replayed::Batches(ten_row_batches(3))),
+    );
     let pace = Duration::from_secs(1);
     let config = following(replay_config("unfollowed"), pace);
     let read = read_followed(config, 0, false).await;
@@ -446,7 +484,10 @@ async fn a_followed_replay_not_asked_to_follow_returns_once_its_share_is_pushed(
 
 #[tokio::test]
 async fn a_followed_replay_plans_one_unbounded_partition_a_stream_read_incrementally() {
-    register("planned-followed", Replayed::Batches(ten_row_batches(4)));
+    register(
+        "planned-followed",
+        Arc::new(Replayed::Batches(ten_row_batches(4))),
+    );
     let two = NonZeroUsize::new(2).unwrap();
     let config = split_replay_config("planned-followed", NonZeroUsize::MIN, two);
     let source = replay_factory()
@@ -469,14 +510,20 @@ async fn a_followed_replay_plans_one_unbounded_partition_a_stream_read_increment
 
 #[tokio::test(start_paused = true)]
 async fn a_followed_replay_resumes_after_each_checkpoint() {
-    register("certified-followed", Replayed::Batches(ten_row_batches(5)));
+    register(
+        "certified-followed",
+        Arc::new(Replayed::Batches(ten_row_batches(5))),
+    );
     let config = following(replay_config("certified-followed"), Duration::from_secs(1));
     certify_source::<Replay>(config).await.assert_passed();
 }
 
 #[tokio::test(start_paused = true)]
 async fn a_followed_replay_stopped_between_its_pushes_returns_at_once() {
-    register("stopped-followed", Replayed::Batches(ten_row_batches(3)));
+    register(
+        "stopped-followed",
+        Arc::new(Replayed::Batches(ten_row_batches(3))),
+    );
     let config = following(replay_config("stopped-followed"), Duration::from_hours(1));
     let source = replay_factory()
         .connect(config, ConnectContext::new())

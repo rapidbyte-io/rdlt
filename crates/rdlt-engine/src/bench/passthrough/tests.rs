@@ -53,7 +53,7 @@ fn the_engine_moves_the_batches_from_any_source_into_any_destination() {
     let passthrough = Passthrough::try_new(cores, cell).unwrap();
     register(
         "anywhere",
-        Replayed::Batches(passthrough.batches().to_vec()),
+        Arc::new(Replayed::Batches(passthrough.batches().to_vec())),
     );
     let (source, destination) = passthrough.block_on(async {
         let source = replay_factory()

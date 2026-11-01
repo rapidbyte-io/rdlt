@@ -44,7 +44,7 @@ async fn a_tallying_sink_tallies_each_table_s_rows_and_each_commit() {
     let outcome = engine
         .run(
             plan.unwrap(),
-            replay("tallied", Replayed::Batches(batches)).await,
+            replay("tallied", Arc::new(Replayed::Batches(batches))).await,
             Arc::from(sink),
         )
         .await;

@@ -116,7 +116,7 @@ impl Merged {
     /// Panics where the run fails or commits more than once.
     pub fn run(&self) -> (Report, Staging) {
         let (source, destination) = self.block_on(async {
-            let source = replay("merged", Replayed::Json(self.pushes.clone())).await;
+            let source = replay("merged", Arc::new(Replayed::Json(self.pushes.clone()))).await;
             let config = Sinking::Ipc.tallied("merged");
             let sink = sink_factory().connect(config, ConnectContext::new()).await;
             let destination: Arc<dyn Destination> = Arc::from(sink.expect("the sink connects"));

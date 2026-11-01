@@ -6,6 +6,7 @@
 mod tests;
 
 use std::num::{NonZeroU64, NonZeroUsize};
+use std::sync::Arc;
 
 use bytes::Bytes;
 
@@ -116,7 +117,7 @@ impl JsonPassthrough {
     /// Panics where the run fails or loads other rows than the pushes hold.
     pub fn run(&self) -> Report {
         let (source, destination) = self.runner.block_on(async {
-            register("json", Replayed::Json(self.pushes.clone()));
+            register("json", Arc::new(Replayed::Json(self.pushes.clone())));
             let config = split_replay_config("json", self.cell.partitions, NonZeroUsize::MIN);
             let source = connect_replay(config).await;
             (source, sink(Sinking::Discard, Passthrough::WRITERS).await)

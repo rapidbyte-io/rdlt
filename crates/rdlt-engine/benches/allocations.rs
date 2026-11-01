@@ -395,7 +395,7 @@ fn passed_through(times: usize) {
     let passthrough = Passthrough::try_new(LAYOUT, cell).expect("the pool starts");
     for _ in 0..times {
         let replayed = Replayed::Batches(passthrough.batches().to_vec());
-        let source = passthrough.block_on(replay("passthrough", replayed));
+        let source = passthrough.block_on(replay("passthrough", Arc::new(replayed)));
         black_box(passthrough.run(source, passthrough.block_on(null_sink())));
     }
 }

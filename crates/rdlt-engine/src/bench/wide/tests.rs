@@ -106,7 +106,7 @@ fn a_table_kept_to_its_first_columns_pushes_every_column_and_excludes_the_rest()
         let (source, destination) = wide.block_on(async {
             let replayed = wide.replayed.clone();
             (
-                crate::bench::replay(store, replayed).await,
+                crate::bench::replay(store, std::sync::Arc::new(replayed)).await,
                 memory(store).await,
             )
         });

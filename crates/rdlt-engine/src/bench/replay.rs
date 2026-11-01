@@ -24,7 +24,7 @@ use serde_json::{Deserializer, Value, json};
 
 use crate::env::{Env, InlineEnv};
 
-static REPLAYS: LazyLock<Mutex<BTreeMap<String, Replayed>>> = LazyLock::new(Mutex::default);
+static REPLAYS: LazyLock<Mutex<BTreeMap<String, Arc<Replayed>>>> = LazyLock::new(Mutex::default);
 
 /// The factory this process's replays connect through, made once: making one writes out its
 /// configuration's schema, work no counted run should repeat.
@@ -63,7 +63,7 @@ pub fn rows_pushed(records: Vec<Bytes>) -> Vec<Bytes> {
         .build()
         .expect("a runtime starts");
     runtime.block_on(async {
-        register("rows", Replayed::Rows(records));
+        register("rows", Arc::new(Replayed::Rows(records)));
         let source = connect_replay(replay_config("rows")).await;
         let (sink, mut feed) = partition_channel(NonZeroUsize::MIN);
         let request = ReadRequest::new(stream_name(0), Partition::single(), None);
@@ -82,9 +82,9 @@ pub fn rows_pushed(records: Vec<Bytes>) -> Vec<Bytes> {
     })
 }
 
-/// Registers `replayed` as the replay `name`, which a source connected with
-/// [`replay_config`]`(name)` pushes, in this process or served from it.
-pub fn register(name: &str, replayed: Replayed) {
+/// Registers `replayed` as the replay `name`, which each source connected with
+/// [`replay_config`]`(name)` shares, never copies, and pushes, in this process or served from it.
+pub fn register(name: &str, replayed: Arc<Replayed>) {
     REPLAYS.lock().insert(name.to_owned(), replayed);
 }
 
@@ -132,7 +132,7 @@ pub fn replay_factory() -> Box<dyn SourceFactory> {
 
 /// A source of one stream, `events`, of one partition, pushing `replayed` in order with a
 /// checkpoint after each push; registered as `name`.
-pub async fn replay(name: &str, replayed: Replayed) -> Arc<dyn Source> {
+pub async fn replay(name: &str, replayed: Arc<Replayed>) -> Arc<dyn Source> {
     register(name, replayed);
     connect_replay(replay_config(name)).await
 }
@@ -142,7 +142,7 @@ pub async fn replay(name: &str, replayed: Replayed) -> Arc<dyn Source> {
 /// cannot read again, each read incrementally; registered as `name`.
 pub(super) async fn mixed_replay(
     name: &str,
-    replayed: Replayed,
+    replayed: Arc<Replayed>,
     partitions: NonZeroUsize,
     streams: NonZeroUsize,
     unreplayable: usize,
@@ -196,7 +196,7 @@ pub(super) struct ReplayConfig {
 
 /// The source a replay's configuration connects.
 pub(super) struct Replay {
-    replayed: Replayed,
+    replayed: Arc<Replayed>,
     partitions: NonZeroUsize,
     streams: NonZeroUsize,
     unreplayable: usize,
@@ -222,7 +222,7 @@ impl SourceConnector for Replay {
         let replayed = REPLAYS
             .lock()
             .get(&config.name)
-            .cloned()
+            .map(Arc::clone)
             .ok_or_else(|| ConnectorError::config("no such replay"))?;
         Ok(Self {
             replayed,
@@ -312,7 +312,7 @@ impl ReadStream<Replay> for Events {
                 }
                 due += pace;
             }
-            match &source.replayed {
+            match &*source.replayed {
                 Replayed::Batches(batches) => out.batch(batches[index].clone()).await?,
                 Replayed::Json(pushes) => out.json(pushes[index].clone()).await?,
                 Replayed::Rows(pushes) => out.rows(&records(&pushes[index])?).await?,

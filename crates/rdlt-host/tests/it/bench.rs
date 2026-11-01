@@ -680,7 +680,7 @@ impl Workload {
         let passthrough = passthrough.expect("the pool starts");
         register(
             frames.replay(),
-            Replayed::Batches(passthrough.batches().to_vec()),
+            Arc::new(Replayed::Batches(passthrough.batches().to_vec())),
         );
         Self {
             passthrough,

@@ -7,6 +7,7 @@
 mod tests;
 
 use std::num::{NonZeroU64, NonZeroUsize};
+use std::sync::Arc;
 
 use bytes::Bytes;
 
@@ -170,7 +171,7 @@ impl Normalized {
     /// Panics where the run fails or loads other rows than [`Normalized::rows`].
     pub fn report(&self) -> Report {
         let (source, destination) = self.runner.block_on(async {
-            register("normalized", Replayed::Json(self.pushes.clone()));
+            register("normalized", Arc::new(Replayed::Json(self.pushes.clone())));
             let config = split_replay_config("normalized", self.partitions, NonZeroUsize::MIN);
             let source = connect_replay(config).await;
             let destination = if self.partitions == NonZeroUsize::MIN {

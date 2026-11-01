@@ -132,7 +132,7 @@ impl Loading {
     pub fn run(&self, destination: Arc<dyn Destination>) -> Report {
         let replayed = Replayed::Batches(self.batches.clone());
         let one = NonZeroUsize::MIN;
-        let replay = mixed_replay("loading", replayed, one, one, self.unreplayable);
+        let replay = mixed_replay("loading", Arc::new(replayed), one, one, self.unreplayable);
         let source = self.runner.block_on(replay);
         let report = self.runner.load(source, destination);
         assert_eq!(report.rows, self.rows());
