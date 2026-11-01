@@ -38,12 +38,12 @@ This record decides what holds each statement, and says where a check ends.
     they are in place: a `close_range` system call with `CLOSE_RANGE_CLOEXEC`, through `libc`, for
     each range between them, on Linux 5.11 and later. Where that call fails, the hook fails the
     spawn (`Marking::AtOnce`, for a sandboxed connector), or marks each descriptor with `fcntl` up
-    to the soft limit capped at 65,536 (`Marking::OrOneByOne`, for a trusted one). After the fork it
-    makes only plain system calls, `close_range`, `getrlimit` and `fcntl`, which take no lock and
-    allocate nothing, as is all that matters there; it reads only what was allocated before the
-    fork, and closes nothing. `marks_at_once` asks the kernel once, in the parent, through the same
-    call. `rdlt-host` alone may use it; the dependency rule names `rdlt-connector` and `rdlt-host`
-    as the only users of the crate.
+    to the soft limit or 65,536, whichever is less (`Marking::OrOneByOne`, for a trusted one). After
+    the fork it makes only plain system calls, `close_range`, `getrlimit` and `fcntl`, which take no
+    lock and allocate nothing, as is all that matters there; it reads only what was allocated before
+    the fork, and closes nothing. `marks_at_once` asks the kernel once, in the parent, through the
+    same call. `rdlt-host` alone may use it; the dependency rule names `rdlt-connector` and
+    `rdlt-host` as the only users of the crate.
   - `rdlt_adopt::adopt` is a safe function, so that a crate forbidding `unsafe` code can call
     it. It checks what it can: the descriptor is open, a socket, not a standard stream, not
     close-on-exec, and taken once. Each is asked of the descriptor through `fcntl` and
