@@ -65,6 +65,11 @@ fn a_record_that_names_a_milestone_or_a_spec_section_is_refused_where_it_does() 
         ("Each is a plan's worth.\nM4d is split again.\n", &[2]),
         ("The rest is left for H1b.\n", &[1]),
         ("M5d2 takes the rest of it.\n", &[1]),
+        ("M4 is split in four.\n", &[1]),
+        ("The rest waits for\nM5's exit gate.\n", &[2]),
+        ("It lands in milestone M7.\n", &[1]),
+        ("The work takes step M3 next.\n", &[1]),
+        ("The budget's model is deferred (M9).\n", &[1]),
         (
             "It differs from spec §9.3, where it is unsupported.\n",
             &[1],
@@ -101,6 +106,8 @@ fn a_record_stating_its_decision_passes() {
         "HTTP/2 frames are 1 MiB at most, and h2's server waits for the preface.\n",
         "Both ends prefer the X25519MLKEM768 key exchange.\n",
         "STYLE.md § Concurrency holds the rule for locks.\n",
+        "The tests run against the H2 database.\n",
+        "It builds on an Apple M1 laptop, and an M2 runs it as fast.\n",
     ] {
         assert_eq!(flagged(text), Vec::<usize>::new(), "{text:?}");
     }
