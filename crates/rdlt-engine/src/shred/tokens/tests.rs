@@ -132,7 +132,7 @@ fn text_that_is_not_one_value_is_refused_by_the_walk_and_the_fast_parse() {
         "01",
         "nul",
         r#"{"a":1,"a":2}"#,
-        r#"{"a":1,"a":2}"#,
+        r#"{"\u0061":1,"a":2}"#,
     ];
     for text in refused {
         assert_eq!(walked(text), None, "{text}");
