@@ -130,21 +130,26 @@ pub(super) struct Pieces {
     cut: Option<Run>,
     /// Pieces cut ahead, in order, before any of them is lowered.
     ready: VecDeque<Piece>,
-    /// What holds the unit, its batches among it, which each of its pieces shares: last, so the
-    /// pieces cut ahead go before it.
+    /// The unit's batches, which nothing else of the unit holds: each piece's slices keep alive
+    /// what they cut, so a batch goes once the cutter and the pieces cut from it do.
+    parts: Vec<RecordBatch>,
+    /// What was charged for the unit, which each of its pieces shares: last, so the pieces cut
+    /// ahead and the batches go before it.
     unit: Share,
 }
 
 impl Pieces {
     /// `unit`, batches of one schema, to be cut as `lowered` measures them.
     pub(super) fn new(unit: Held, lowered: Lowered) -> Self {
+        let Held { batches, permits } = unit;
         Self {
             lowered,
             part: 0,
             row: 0,
             cut: None,
             ready: VecDeque::new(),
-            unit: Arc::new(Mutex::new(unit)),
+            parts: batches,
+            unit: Arc::new(Mutex::new(permits)),
         }
     }
 
@@ -172,16 +177,16 @@ impl Pieces {
 
     /// Whether every row has been cut into a piece.
     fn cut_all(&self) -> bool {
-        self.part >= self.unit.lock().batches.len()
+        self.part >= self.parts.len()
     }
 
-    /// Holds `unit`, the same batches, in place of what held them.
+    /// Holds what was charged for `unit`, the same batches, in place of what was charged for them.
     pub(super) fn held_by(&mut self, unit: Held) {
-        self.unit = Arc::new(Mutex::new(unit));
+        self.unit = Arc::new(Mutex::new(unit.permits));
     }
 
-    /// A share of what holds the unit, for one of its pieces: the unit goes once the last share
-    /// does.
+    /// A share of what was charged for the unit, for one of its pieces: the charge goes once the
+    /// last share does.
     pub(super) fn share(&self) -> Share {
         Arc::clone(&self.unit)
     }
@@ -220,10 +225,8 @@ impl Pieces {
             rows: 0,
             bytes: self.lowered.piece,
         };
-        let unit = Arc::clone(&self.unit);
-        let unit = unit.lock();
         let mut measured = None;
-        while let Some(batch) = unit.batches.get(self.part) {
+        while let Some(batch) = self.parts.get(self.part) {
             if self.row >= batch.num_rows() {
                 (self.part, self.row, measured) = (self.part + 1, 0, None);
                 continue;
@@ -258,15 +261,14 @@ impl Pieces {
     /// Whether cutting the batches left reads their values, or measures them by their rows and
     /// offsets alone: the unit's batches are of one schema, so the batch being cut says.
     pub(super) fn reads_values(&self) -> bool {
-        let unit = self.unit.lock();
-        let batch = unit.batches.get(self.part);
+        let batch = self.parts.get(self.part);
         batch.is_some_and(|batch| self.lowered.measure(batch, 0).reads_values())
     }
 }
 
 /// `unit` cut into pieces as `lowered` measures them, before its tables are known: what holds
-/// each piece's batches, in order, each with a share of what holds the unit, so its permits hold
-/// until all of it is written.
+/// each piece's batches, in order, each with a share of what was charged for the unit, so the
+/// charge holds until all of it is written.
 ///
 /// # Errors
 ///

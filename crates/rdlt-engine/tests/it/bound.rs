@@ -321,3 +321,39 @@ async fn a_commit_that_fails_staged_again_into_writers_that_buffer_stays_within_
     assert_eq!(outcome.report.attempts.len(), 2, "{:?}", outcome.error);
     within(&outcome, BATCHES as u64, peak, bound());
 }
+
+#[tokio::test(start_paused = true)]
+async fn written_batches_go_before_the_flush_that_releases_their_charge() {
+    const BATCHES: usize = 256;
+    const BLOB: usize = 1 << 20;
+    // A fresh blob a push, into a destination that keeps no write, within a budget that never
+    // presses its lane: the lane flushes once, for the run's one commit.
+    let steps: Steps = Arc::new(move |step| match step {
+        step if step < BATCHES => {
+            let blob = BinaryArray::from_iter_values([vec![7_u8; BLOB]]);
+            Some(Step::Batch(batch(Arc::new(blob))))
+        }
+        step if step == BATCHES => Some(Step::Checkpoint(8)),
+        _ => None,
+    });
+    let config = commit_every(1 << 40).memory(1 << 30).lanes(1);
+    let source = making("bound_written", steps).await;
+    let plan = pipeline(
+        "bound-written",
+        [stream("events").read(ReadMode::Incremental)],
+    );
+    let (peak, outcome) = measured(engine(config).run(plan, source, null().await)).await;
+    let pushed = BATCHES * BLOB;
+    within(&outcome, BATCHES as u64, peak, pushed);
+    // What was charged for the pushes held until that flush; what they held went as each was
+    // written, so the heap holds the pieces being lowered and written, not every push.
+    let charged = usize::try_from(outcome.report.peak_memory).expect("a charge in memory");
+    assert!(
+        charged >= pushed,
+        "{charged} bytes charged of {pushed} pushed"
+    );
+    assert!(
+        peak < pushed / 2,
+        "the heap held {peak} bytes of {pushed} pushed"
+    );
+}

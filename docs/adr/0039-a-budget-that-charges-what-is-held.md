@@ -270,8 +270,9 @@ budget before it is held, or bounded by a limit with a typed refusal.
     schema policy drops, those a merge keeps) copies them a column at a time and lets each
     column it copied from go once it has, so the piece never holds its rows twice over.
   - Once lowered a piece holds what it keeps alive beyond its unit's batches and its batch's
-    arrays, in place of what was reserved, and its frame what the frame takes. The unit's
-    batches and its own reservation stay with its last piece until that is written.
+    arrays, in place of what was reserved. What was charged for the unit and the piece's own
+    reservation stay with its last piece until that is flushed; each of the unit's batches goes
+    once the pieces cut from it do, not when the lane flushes.
   - **Normalized streams follow the same rule.** A unit's tables are known only once it is split,
     so it is measured twice. It is first cut, as it arrives, into pieces whose split makes no more
     than a piece: each row with its lineage, each item an array holds with its own, for the two
@@ -376,13 +377,13 @@ budget before it is held, or bounded by a limit with a typed refusal.
     partition's task.
   - A measure borrows the batch it measures, how its table stores each column and the
     rendering, and copies none of them. The cutter builds one for each piece it cuts, and one
-    for a row beyond a piece, and reads the unit's batches through what holds the unit: what
+    for a row beyond a piece, and holds the unit's batches itself, each piece its slices: what
     measuring learns of the values keys and runs name lasts the piece, and cutting keeps nothing
     a column beside the unit between its pieces. How a table stores each column is built once
     with its plan, and every unit the plan cuts shares it; a change stream's, aligned to its
     batches' columns, the plan keeps for the batches whose change columns sit where the last
-    one's did. What holds a unit keeps its batches and its permits, and no set of what they keep
-    alive.
+    one's did. What the pieces share holds the unit's permits, and no set of what its batches
+    keep alive.
   - No more values are remembered than take an eighth of the limit measured against; a value
     beyond those is measured each time it is named.
   - Tests count the steps and the values remembered for dictionaries of every key type, nested
@@ -426,8 +427,10 @@ budget before it is held, or bounded by a limit with a typed refusal.
   borrows nothing of the event, which the sink holds beside it.
 - **A unit's pieces share what is charged.** A piece lowered from a unit is charged for the
   allocations it keeps alive beyond the unit's batches, each once, and for its batch's arrays;
-  the pieces share what holds the unit, so its batches and permits hold until its last piece is
-  flushed. The constant columns' buffers of a load count for none.
+  the pieces share what was charged for the unit, so its permits hold until its last piece is
+  flushed, while each of its batches goes with the pieces cut from it: a unit's charge may
+  outlive what it holds, never the reverse. The constant columns' buffers of a load count for
+  none.
 - **A set of allocations names only what is alive.** `cost::Allocations` tells allocations
   apart by where they start, and the allocator hands a freed address out again, so a set is kept
   only while its holder keeps alive what it names. No set is kept beside a unit: a piece's growth
@@ -504,9 +507,9 @@ budget before it is held, or bounded by a limit with a typed refusal.
     frees what it covers first: a unit's batches with the permits they were admitted with, a JSON
     flush's text with its permits, a flush's batches with what was reserved beyond them, an event
     with its admission while it waits for it, a lowered batch with what holds it on its lane.
-  - A unit's pieces share what holds the unit, each holder of a piece's rows declaring its share
-    last: the unit's permits go once the last piece is written or let go, wherever it is, on the
-    compute pool, in the window being lowered or on its lane.
+  - A unit's pieces share what was charged for it, each holder of a piece's rows declaring its
+    share last: the unit's permits go once the last piece is written or let go, wherever it is,
+    on the compute pool, in the window being lowered or on its lane.
   - No job on the compute pool outlives the caller waiting for it: a caller that stops waiting
     drops its jobs not yet started, and waits for those running to end, so what a job reads and
     makes goes before what the caller holds.
