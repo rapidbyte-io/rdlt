@@ -175,10 +175,11 @@ impl StreamPlan {
     /// Excludes `columns`, top-level columns, beside any it excludes already: a read may leave
     /// them out of what it sends, and none of them reaches the stream's table, whatever it sends.
     ///
-    /// A column the table holds already stays, and later rows hold null in it. A name no column
-    /// has excludes nothing. A key column, a change column, the source's change time, the column
-    /// holding a nested key column or change time, and a column the plan sets or hints cannot be
-    /// excluded, nor more names than a read's start carries ([`EXCLUDED_BYTES`]).
+    /// A column the table holds already stays, and later rows hold null in it; rows left with no
+    /// column load into a table of the engine's own columns. A name no column has excludes
+    /// nothing. A key column, a change column, the source's change time, the column holding a
+    /// nested key column or change time, and a column the plan sets or hints cannot be excluded,
+    /// nor more names than a read's start carries ([`EXCLUDED_BYTES`]).
     ///
     /// [`EXCLUDED_BYTES`]: rdlt_wire::limits::EXCLUDED_BYTES
     #[must_use]

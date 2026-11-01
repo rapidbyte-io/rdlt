@@ -1173,7 +1173,7 @@ proptest! {
 }
 
 #[test]
-fn only_a_normalized_table_is_created_by_a_batch_without_values() {
+fn a_column_of_nulls_creates_only_a_normalized_table() {
     let plain = resolver(capabilities(), plan(), &[]);
     let nulls = schema(&[("unknown", LogicalType::Null)]);
     let resolution = plain.resolve(&Model::default(), &nulls).unwrap();
@@ -1193,6 +1193,21 @@ fn only_a_normalized_table_is_created_by_a_batch_without_values() {
         .resolve(&wider.model, &schema(&[("a", LogicalType::Int64)]))
         .unwrap();
     assert_eq!(again.model.version, 2, "a batch that fits changes nothing");
+}
+
+#[test]
+fn rows_of_no_column_create_their_table() {
+    let plain = resolver(capabilities(), plan(), &[]);
+    let first = plain.resolve(&Model::default(), &schema(&[])).unwrap();
+    assert_eq!(first.model.version, 1, "the engine's columns hold its rows");
+    assert!(first.model.columns.is_empty());
+    let again = plain.resolve(&first.model, &schema(&[])).unwrap();
+    assert_eq!(again.model.version, 1, "a batch that fits changes nothing");
+    let wider = plain
+        .resolve(&first.model, &schema(&[("a", LogicalType::Int64)]))
+        .unwrap();
+    assert_eq!(wider.model.version, 2);
+    assert!(matches!(wider.changes[..], [Change::Add { .. }]));
 }
 
 #[test]

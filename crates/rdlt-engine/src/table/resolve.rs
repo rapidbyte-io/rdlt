@@ -247,8 +247,9 @@ impl Resolver {
         let stream = |error: Error| error.with_stream(&self.stream);
         let mut resolution = draft.finish(routes, &self.naming).map_err(stream)?;
         // A normalized stream's table holds its rows' lineage even where they hold no other value,
-        // so its first batch creates it.
-        if self.meta.id.is_some() && !resolution.model.created() {
+        // and rows of no column, as when a stream excludes every column, hold the engine's columns
+        // alone, so the first batch of either creates the table.
+        if (self.meta.id.is_some() || fields.is_empty()) && !resolution.model.created() {
             resolution.model.version = 1;
         }
         if resolution.model.version != model.version {

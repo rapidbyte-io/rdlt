@@ -40,12 +40,14 @@ different types.
   commit per barrier. A widen the destination refuses keeps that column as it is for the attempt,
   its values routed to variant columns; a refused new column still has new names hashed
   (ADR 0041).
-- **The first batch, or the declared schema, creates the table.** A stream needs no
-  declared schema; a declared one is resolved like a batch before anything is read. After the
-  table exists, a new column or a value its column cannot hold is a change, which the column's
-  policy applies (`evolve`), refuses (`freeze`) or discards (`discard_row`, `discard_value`).
-  Settings resolve column → stream → pipeline in one function. A child table's columns take the
-  settings of the stream's column whose arrays the table holds.
+- **The first batch, or the declared schema, creates the table.** A stream needs no declared schema;
+  a declared one is resolved like a batch before anything is read. A batch whose columns hold only
+  nulls creates only a normalized stream's table, which holds its rows' lineage; rows of no column,
+  as an empty object's or those of a stream that excludes every column, create a table of the
+  engine's own columns. After the table exists, a new column or a value its column cannot hold is a
+  change, which the column's policy applies (`evolve`), refuses (`freeze`) or discards
+  (`discard_row`, `discard_value`). Settings resolve column → stream → pipeline in one function. A
+  child table's columns take the settings of the stream's column whose arrays the table holds.
 - **Evolution widens in place or adds a variant.** A change the destination can apply, or that
   does not change how it stores the column, widens the column. Otherwise, under `variant_column`,
   values land in `<name>__<kind>`, the variant of the joined type's kind, widened while the
@@ -62,11 +64,12 @@ different types.
   excluded key's value, so a malformed one still refuses its record, but neither observes nor builds
   it, and a record may name that key twice. A served source's SDK drops them from its batches before
   they cross the wire, and the host drops them again, since a connector is untrusted (ADR 0037). A
-  declared schema is resolved without them. A key column, a change column, the source's change time,
-  the top-level column holding a nested key column or change time, and a column the plan sets or
-  hints cannot be excluded, nor more names than a read's start carries (`EXCLUDED_BYTES`). A column
-  the table holds already stays, and later rows hold null in it, as when a source stops sending a
-  column; a name no column has excludes nothing.
+  declared schema is resolved without them, and one left with no column creates a table of the
+  engine's own columns, as rows of no column do. A key column, a change column, the source's change
+  time, the top-level column holding a nested key column or change time, and a column the plan sets
+  or hints cannot be excluded, nor more names than a read's start carries (`EXCLUDED_BYTES`). A
+  column the table holds already stays, and later rows hold null in it, as when a source stops
+  sending a column; a name no column has excludes nothing.
 - **Columns are nullable except merge keys.** A source declaring a column non-null states
   something about its data, not a destination constraint, so a later batch with nulls needs no
   change.
