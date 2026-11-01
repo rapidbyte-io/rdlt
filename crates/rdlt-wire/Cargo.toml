@@ -33,6 +33,7 @@ serve = ["tonic/server"]
 tls = ["dep:nix", "dep:rustls", "dep:webpki"]
 
 [dev-dependencies]
+parking_lot.workspace = true
 peak_alloc.workspace = true
 proptest.workspace = true
 rdlt-testkit.workspace = true
