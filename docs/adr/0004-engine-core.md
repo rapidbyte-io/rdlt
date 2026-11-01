@@ -123,10 +123,6 @@ Building M2a surfaced decisions the spec leaves open or gets wrong.
   handed over but the engine has not read stays within the budget (spec §7.5).
 - **One table per stream.** Until name maps (M2b), a stream's table is named after the stream, so
   a plan whose streams would share a table is refused.
-- **Declared schemas and Arrow only.** Until the shredder (M3), a stream must declare its schema,
-  JSON and change pushes are refused, and every batch must match the declared schema exactly.
-  Until schema evolution (M2b), a committed schema that differs from the declared one is refused.
-  Each stream loads one table named after the stream; naming arrives with name maps in M2b.
 - **The lattice never rounds.** `Int64 ∨ Float` joins to `Json`: `Float64` holds integers exactly
   only up to 2^53. `Int8`, `Int16` and `Int32` still join floats as `Float64`.
 - **Tests fail instead of hanging.** Engine tests run on tokio's paused clock with time limits,
@@ -138,9 +134,6 @@ Building M2a surfaced decisions the spec leaves open or gets wrong.
 - **Reports** add `peak_memory`, the most of the memory budget the run reserved at once across
   all its shares, and `counters.kept_peak`, the most its reads kept at once beside their events,
   so budget accounting is observable.
-- **Deferred:** the loom model of the memory budget (M9); the configuration size limit, which
-  needs the byte boundary of documents (M7) and the wire (M4); the simulator's JSON, change and
-  manifest workloads, which arrive with those features.
 
 ## Consequences
 
