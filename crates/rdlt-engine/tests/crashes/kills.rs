@@ -8,11 +8,12 @@
 use std::io::{BufRead as _, BufReader};
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use nix::sys::signal::killpg;
 use nix::unistd::Pid;
+use parking_lot::Mutex;
 use serde_json::{Value, json};
 
 use super::harness;
@@ -70,7 +71,7 @@ impl Watched {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 let connector = line.strip_prefix("connector ");
                 if let Some(connector) = connector.and_then(|pid| pid.parse().ok()) {
-                    told.lock().expect("unpoisoned").push(connector);
+                    told.lock().push(connector);
                 } else if sender.send(line).is_err() {
                     break;
                 }
@@ -163,7 +164,7 @@ fn lives(group: u32) -> bool {
 /// Waits for every process of each connector's group the run told to end; kills what outlives
 /// `ENDING` and says whether anything did.
 fn orphans(connectors: &Arc<Mutex<Vec<u32>>>) -> bool {
-    let connectors = connectors.lock().expect("unpoisoned").clone();
+    let connectors = connectors.lock().clone();
     assert!(
         !connectors.is_empty(),
         "the run told no connector it spawned"
@@ -392,7 +393,7 @@ fn what_a_connector_started_ends_with_a_run_that_ends_and_is_an_orphan_of_one_ki
     run.ended();
     // Each connector ended by itself: it is the member the launcher started that lives on,
     // in the group of the source it became, and in no other.
-    let told = connectors.lock().expect("unpoisoned").clone();
+    let told = connectors.lock().clone();
     let process_lives = |connector: &&u32| {
         let connector = Pid::from_raw(i32::try_from(**connector).expect("process ids fit"));
         nix::sys::signal::kill(connector, None).is_ok()
@@ -518,7 +519,7 @@ fn stand_in_starting_a_run_that_waits() {
     let run = Watched::spawn(&config);
     assert!(run.progressed(1), "the run never began to read");
     rdlt_testkit::process::started(run.child.id());
-    let connectors = run.connectors.lock().expect("unpoisoned").clone();
+    let connectors = run.connectors.lock().clone();
     assert_eq!(connectors.len(), 2, "{connectors:?}");
     connectors
         .into_iter()

@@ -1,8 +1,9 @@
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant, SystemTime};
 
+use parking_lot::Mutex;
 use proptest::prelude::*;
 use tokio::task::JoinSet;
 
@@ -46,7 +47,7 @@ async fn results_come_back_in_the_order_of_the_work_whatever_order_jobs_finish_i
     // The first job finishes only once the last has run.
     let jobs: Vec<Box<dyn FnOnce() -> u8 + Send>> = vec![
         Box::new(move || {
-            wait.lock().unwrap().recv().unwrap();
+            wait.lock().recv().unwrap();
             0
         }),
         Box::new(|| 1),
@@ -208,7 +209,7 @@ struct Kept(Mutex<Vec<super::Job>>);
 
 impl ComputePool for Kept {
     fn execute(&self, job: super::Job) {
-        self.0.lock().unwrap().push(job);
+        self.0.lock().push(job);
     }
 }
 
@@ -230,7 +231,7 @@ struct Noted(&'static str, Arc<Mutex<Vec<&'static str>>>);
 
 impl Drop for Noted {
     fn drop(&mut self) {
-        self.1.lock().unwrap().push(self.0);
+        self.1.lock().push(self.0);
     }
 }
 
@@ -259,11 +260,11 @@ fn a_job_its_caller_stops_waiting_for_is_dropped_unrun_as_the_caller_lets_go() {
     let mut call = Box::pin(pool.run_all([job]));
     waiting(call.as_mut());
     drop(call);
-    order.lock().unwrap().push("let go");
-    for job in std::mem::take(&mut *kept.0.0.lock().unwrap()) {
+    order.lock().push("let go");
+    for job in std::mem::take(&mut *kept.0.0.lock()) {
         job();
     }
-    assert_eq!(*order.lock().unwrap(), ["the job's", "let go"]);
+    assert_eq!(*order.lock(), ["the job's", "let go"]);
     assert!(!ran.load(Ordering::SeqCst), "the job ran once let go");
 }
 
@@ -300,5 +301,5 @@ fn a_caller_that_stops_waiting_waits_for_its_running_job_to_end() {
         go.send(()).unwrap();
         has_gone.recv_timeout(WAIT).unwrap();
     });
-    assert_eq!(*order.lock().unwrap(), ["ended", "let go"]);
+    assert_eq!(*order.lock(), ["ended", "let go"]);
 }
