@@ -29,11 +29,20 @@ static NARRATED: LazyLock<Regex> = LazyLock::new(|| {
     .expect("the pattern is a valid regular expression")
 });
 
-/// Tags that name a step of the work rather than its decision, as `M4c`, `H1b` or `M5d2`, and a
-/// numbered section of a document outside the records, as `§12.5`.
+/// Tags that name a step of the work rather than its decision, and a numbered section of a
+/// document outside the records, as `§12.5`.
+///
+/// A step's tag has a letter after its number, as `M4c`, `H1b` or `M5d2`; a bare one, as `M4`,
+/// counts only beside what marks a step: "M4 is split", "M5's exit", "milestone M7", "(M9)". A
+/// letter and a number alone name other things, as the H2 database or an Apple M1.
 static SEQUENCED: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?m)\b[MH][0-9]+[a-z]?[0-9]*\b|§\s*[0-9]")
-        .expect("the pattern is a valid regular expression")
+    Regex::new(concat!(
+        r"(?m)\b[MH][0-9]+[a-z][0-9]*\b",
+        r"|\bM[0-9]+(?:'s)?\s+(?:is\s+|was\s+)?(?i:split|exits?|milestones?|steps?)\b",
+        r"|(?i:\b(?:milestones?|steps?|split)\s+)M[0-9]+\b|\(M[0-9]+\)",
+        r"|§\s*[0-9]",
+    ))
+    .expect("the pattern is a valid regular expression")
 });
 
 /// Every finding in the records under `root`, with paths relative to `root`.
