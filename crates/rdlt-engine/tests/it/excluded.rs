@@ -27,6 +27,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
 
+use crate::support::targets::Target;
 use crate::support::{commit_every, engine, memory, pipeline, spawned_generator, stream};
 
 /// How the test's source pushes its stream, `people`.
@@ -450,5 +451,54 @@ async fn a_source_served_in_a_process_of_its_own_sends_no_excluded_column() {
     assert_eq!(columns.len(), 5);
     for pushed in columns {
         assert_eq!(pushed, ["id"]);
+    }
+}
+
+/// Runs pipeline `store` of `target`, whose stream appends `served` excluding every column.
+async fn excluding_every_column(target: Target, store: &str, served: Served) -> RunOutcome {
+    let name = target.name(store);
+    let every = stream("people")
+        .write(WriteMode::Append)
+        .exclude(["id", "secret", "note"]);
+    let source = source(&name, served).await;
+    engine(commit_every(4))
+        .run(
+            pipeline(&name, [every]),
+            source,
+            target.destination(store).await,
+        )
+        .await
+}
+
+#[tokio::test]
+async fn rows_that_keep_no_column_load_into_a_table_of_the_engine_s_columns() {
+    let cases = [(false, false), (false, true), (true, false), (true, true)];
+    for target in Target::IN_PROCESS {
+        for form in [Form::Arrow, Form::Json] {
+            for (declares, honours) in cases {
+                let store = format!("excluded_every_{form:?}_{declares}_{honours}").to_lowercase();
+                let served = |pushes| Served {
+                    honours,
+                    declared: declares.then(people_schema),
+                    ..Served::new(form, pushes)
+                };
+                let pushes = vec![people(0, 3), people(3, 2)];
+                succeeded(&excluding_every_column(target, &store, served(pushes)).await);
+                // The table the first run created takes the next run's rows.
+                let pushes = vec![people(5, 1)];
+                succeeded(&excluding_every_column(target, &store, served(pushes)).await);
+                let published = target.published(&store, "people");
+                let rows: usize = published.iter().map(RecordBatch::num_rows).sum();
+                assert_eq!(rows, 6, "{target:?} {store}");
+                for batch in &published {
+                    let schema = batch.schema();
+                    let mut names = schema.fields().iter().map(|field| field.name());
+                    assert!(
+                        names.all(|name| name.starts_with("_rdlt_")),
+                        "{target:?} {store}: {schema:?}"
+                    );
+                }
+            }
+        }
     }
 }
