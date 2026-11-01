@@ -8,6 +8,7 @@ mod json;
 mod normalized;
 mod pieces;
 mod queue;
+mod refused;
 mod schemas;
 #[cfg(test)]
 mod tests;
@@ -18,14 +19,15 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
+use rdlt_connector::ColumnPath;
 use rdlt_connector::cost::{Rendering, arrays};
-use rdlt_connector::{ColumnPath, SchemaError};
 use tokio_util::sync::CancellationToken;
 
 use self::changes::{Ignored, split_changes};
 use self::held::Held;
 use self::pieces::{Lowered, Piece, Pieces, RowTooLarge};
 use self::queue::queue;
+use self::refused::{RequestHeld, row_beside, row_too_large, schema_invalid};
 pub(super) use self::schemas::Schemas;
 use self::units::Units;
 use self::window::{Lowering, Window, full};
@@ -33,7 +35,7 @@ use super::coalesce::{Flushed, Unit};
 use super::{ChangeMode, OpenSegment, PartitionContext, PartitionJob};
 use crate::budget::{Denied, Lent, MemoryBudget, Reservation, Shares, TooLarge};
 use crate::cost::CHANGE_ROW;
-use crate::error::{Error, ErrorKind, codes};
+use crate::error::Error;
 use crate::limits::MAX_PIECE_BYTES;
 use crate::normalize::PushKind;
 use crate::table::{Incoming, LoweringPlan, Prepared, Stamp};
@@ -446,16 +448,6 @@ fn judged(
     Ok(judged)
 }
 
-/// The error for a batch of `job`'s stream holding a column with no table schema.
-pub(super) fn schema_invalid(job: &PartitionJob, error: &SchemaError) -> Error {
-    Error::schema(format!(
-        "stream {}: a batch has no table schema: {error}",
-        job.stream
-    ))
-    .with_code(codes::BATCH_SCHEMA_INVALID)
-    .with_stream(&job.stream)
-}
-
 /// The stamp of the next `received` rows written to `open`, which counts them.
 fn stamp(context: &PartitionContext, open: &mut OpenSegment, received: u64) -> Stamp {
     let stamp = Stamp {
@@ -467,63 +459,6 @@ fn stamp(context: &PartitionContext, open: &mut OpenSegment, received: u64) -> S
     };
     open.received += received;
     stamp
-}
-
-/// The error for a row that alone takes more to lower than a request may take of the budget:
-/// no piece of it can be reserved.
-fn row_too_large(job: &PartitionJob, row: &RowTooLarge) -> Error {
-    Error::new(
-        ErrorKind::Source,
-        format!(
-            "stream {}: lowering one row takes more than {} bytes, beyond the {} one request may \
-             take of the memory budget",
-            job.stream, row.expanded, row.limit
-        ),
-    )
-    .with_code(codes::ROW_EXCEEDS_BUDGET)
-    .with_stream(&job.stream)
-}
-
-/// Bytes: what one request of the budget holds beside a row that does not fit what it leaves.
-#[derive(Clone, Copy, Debug)]
-struct RequestHeld {
-    /// What one request may take of the budget.
-    request: u64,
-    /// What building a JSON flush's batches took beyond their text.
-    built: u64,
-    /// What is kept for the row's piece's split: what it holds, or may make.
-    held: u64,
-}
-
-/// The error for a row that takes more to lower than what a request leaves it beside what
-/// `beside` says it holds: what the row takes against the room it had, and what took the rest.
-fn row_beside(job: &PartitionJob, row: &RowTooLarge, beside: RequestHeld) -> Error {
-    let mut taken = Vec::new();
-    if beside.built > 0 {
-        let built = beside.built;
-        taken.push(format!(
-            "the {built} its JSON's batches take beyond their text"
-        ));
-    }
-    if beside.held > 0 {
-        let held = beside.held;
-        taken.push(format!("the {held} kept for its piece's split"));
-    }
-    let taken = if taken.is_empty() {
-        String::new()
-    } else {
-        format!(", beside {}", taken.join(" and "))
-    };
-    Error::new(
-        ErrorKind::Source,
-        format!(
-            "stream {}: lowering one row takes at least {} bytes, more than the {} left to it of \
-             the {} one request may take of the memory budget{taken}",
-            job.stream, row.expanded, row.limit, beside.request
-        ),
-    )
-    .with_code(codes::ROW_EXCEEDS_BUDGET)
-    .with_stream(&job.stream)
 }
 
 /// `parts`, a piece of a unit, one batch once concatenated, as `plan` lowers it; a change
