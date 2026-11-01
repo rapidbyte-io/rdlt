@@ -61,8 +61,12 @@ only at its end. The owner also asked for the host to be simulated over a networ
     it has one.
   - The trait returns boxed futures, as every engine-facing trait does, so `Registry::fallback`
     can hold any provider.
-  - `ProviderError` is `NotFound`, `VersionMismatch`, `SpawnFailed` or `HandshakeFailed`, each
-    with its source. `Unreachable` and `Tls` come with remote placement.
+  - `ProviderError` says why a connector was not placed, with a stable code and the cause as its
+    source where there is one: `NotFound`, `VersionMismatch`, `SpawnFailed` and
+    `HandshakeFailed` for any placement; `Endpoint`, `Unreachable` and `Tls` for one over the
+    network (ADR 0018); `Unsupported`, `Secret`, `Shared`, `Sandbox`, `DigestMismatch` and
+    `Replaced` where a reference's requirement, its secrets, its binary or its sandbox refuse it
+    (ADR 0043).
   - A version that is not semver matches only a reference that accepts any version.
 - **The registry** places connectors linked into the binary in process, and every other with its
   fallback, else `NotFound` (§13.2).
