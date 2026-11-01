@@ -361,20 +361,18 @@ what no bound names.
   Cost: simulation is slower, so `just quint` samples fewer runs than a faster evaluator would
   allow.
 - **The exactly-once spec is tied to the code by its invariants' names alone,** each named with its
-  check under *Specifications*. Checking the simulation's runs against it was tried: a seed's
-  sessions, commits and positions told, written as observations a checker searches the spec for. It
-  was held to four criteria: reach, 25 seeds within what the spec models among the first 500;
-  admission, each of those admitted within 10 minutes; teeth, a seeded engine bug caught where the
-  simulation's oracle passes; and size, a hook of at most 300 lines. Reach held, as 68 of the first
-  500 seeds lay within what the spec models, and the other three failed. Of the first 25 seeds in
-  scope, in file-name order, TLC admitted 19 in 7 to 163 seconds, rejected none, and ran out of 10
-  minutes on 6, as Apalache did. No seeded engine bug was caught where the oracle passes: one that
-  tells sources that read again before the destination's commit was refused by the observer only on
-  seeds the oracle fails too, and one that replays every commit whole was refused on none. The
-  hook was 393 lines. The observer's last form admitted more than its first: replays of held
-  commits, tellings of commits that move no source of their kind, taken unobserved, and commits
-  with no ends dropped, fenced and failed ones among them. Cost: a design defect the simulation
-  does not meet is found only by the spec's own checks.
+  check under *Specifications*. Checking the simulation's runs against it, a seed's sessions,
+  commits and positions told written as observations a checker searches the spec for, does not
+  pay: of four criteria set for it, it meets one. Reach, 25 seeds within what the spec models
+  among the first 500, holds: 68 are. Admission, each of those admitted within 10 minutes, fails:
+  of the first 25 seeds in scope, in file-name order, TLC admits 19 in 7 to 163 seconds, rejects
+  none, and runs out of 10 minutes on 6, as Apalache does. Teeth, a seeded engine bug caught where
+  the simulation's oracle passes, fails: one that tells sources that read again before the
+  destination's commit is refused by the observer only on seeds the oracle fails too, and one that
+  replays every commit whole is refused on none. Size, a hook of at most 300 lines, fails at 393,
+  with an observer that admits replays of held commits, tellings of commits that move no source of
+  their kind, taken unobserved, and commits with no ends, dropped, fenced and failed ones among
+  them. Cost: a design defect the simulation does not meet is found only by the spec's own checks.
 - **The re-planning spec is tied to the code by its invariants' names, the simulation's checks that
   take them, and the engine's tests.** A read placed apart ends only once its stop crosses the wire,
   and sends into what the wire holds meanwhile. A stopped one's sends are dropped there. So the
@@ -401,21 +399,22 @@ what no bound names.
   `Local` as real processes (killed, stopped with SIGSTOP, crashing, flooding their output, saying a
   secret that ends in whitespace) and does not replay, so a failure names its round. A start's check
   and its listing are a section no single-threaded seed interleaves, so the soak races starts on
-  real threads. Evidence: a played seed replays alike over 64 seeds, and over a sweep of 1 000 once
-  a process's exit and the close of its standard error wake their waiters in the order they waited,
-  where two seeds of the sweep had replayed apart; a played seed took 206 ms and a networked seed
-  432 ms, the means over the 185 played seeds and over the networked seeds of one 1 000-seed sweep,
-  timed before that change; with a drained line trimmed before it is scrubbed, 37 of the first 200
-  seeds fail on the canary in the exactly-once sweep and 38 in the change sweep, each a played seed;
-  and 1 000 seeds reach 58 % of `local.rs`, 52 % of `local/provide.rs`, 50 % of `local/binary.rs`,
-  55 % of `local/grants.rs`, 94 % of `local/process/output.rs`, 76 % of `local/process/played.rs`,
-  98 % of `kills/landing.rs` and 80 % of `supervise.rs`, `supervise::spawn` among it. Two criteria
-  set before it was built were passed over. The seam adds 312 lines outside tests where 280 were
-  allowed, about 30 of them moved, not new. `kills.rs` is reached in 49 % of its lines and
-  `local/process.rs` in 45 %, short of half: the first's rest is the kill path of a remote
-  placement, which the simulation's network does not wire up, and the second's is the spawn that
-  only the operating system runs. Both stay out of the simulation's coverage (ADR 0019). Cost if
-  wrong: a feature's worth of code beside `Process`, removed with the feature.
+  real threads. Evidence: a played seed replays alike over 64 seeds, and over a sweep of 1 000, as a
+  process's exit and the close of its standard error wake their waiters in the order they waited;
+  woken in another order, two seeds of the sweep replay apart. A played seed takes 206 ms and a
+  networked seed 432 ms, the means over the 185 played seeds and over the networked seeds of one
+  1 000-seed sweep, timed with waiters woken in another order. With a drained line trimmed before it
+  is scrubbed, 37 of the first 200 seeds fail on the canary in the exactly-once sweep and 38 in the
+  change sweep, each a played seed. 1 000 seeds reach 58 % of `local.rs`, 52 % of
+  `local/provide.rs`, 50 % of `local/binary.rs`, 55 % of `local/grants.rs`, 94 % of
+  `local/process/output.rs`, 76 % of `local/process/played.rs`, 98 % of `kills/landing.rs` and 80 %
+  of `supervise.rs`, `supervise::spawn` among it. The seam is kept though two criteria set before it
+  was built are not met. It adds 312 lines outside tests where 280 were allowed, about 30 of them
+  moved, not new. `kills.rs` is reached in 49 % of its lines and `local/process.rs` in 45 %, short
+  of half: the first's rest is the kill path of a remote placement, which the simulation's network
+  does not wire up, and the second's is the spawn that only the operating system runs. Both stay out
+  of the simulation's coverage (ADR 0019). Cost if wrong: a feature's worth of code beside
+  `Process`, removed with the feature.
 
 ## Consequences
 
@@ -429,4 +428,4 @@ what no bound names.
   fetches a nightly toolchain.
 - Updating Kani is its version and `mise lock`; its nightly comes with its bundle. Updating
   Apalache is its version, `mise lock`, and its checksum compared with its `sha256sum.txt`.
-- `formal` is a new check: the repository's ruleset has to require it beside `lint`.
+- The repository's ruleset must require the `formal` check beside `lint`.
