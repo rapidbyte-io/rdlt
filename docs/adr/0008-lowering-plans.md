@@ -1,14 +1,13 @@
 # ADR 0008: Lowering plans, constant metadata and the JSON fast path
 
-Status: accepted, 2026-09-24; the per-value differential it defers is ADR 0011's.
+Status: accepted, 2026-09-24.
 
 ## Context
 
-M3 of the spec was split three ways: M3a shreds JSON (ADR 0007); M3b makes lowering a plan
-computed once per table view and incoming schema, runs it off the runtime, dictionary-encodes
-the constant metadata columns, and evaluates `arrow-json` as a fast path for flat JSON; M3c
-brings `normalize`, child tables and lineage ids. Building M3b surfaced decisions the spec leaves
-open.
+Lowering turns a batch into the columns its table stores. Worked out afresh for every batch, it
+would resolve the same schema again and again on the runtime's threads, and the constant
+metadata columns would cost every row their full width. `arrow-json` also decodes flat
+JSON of a known schema, a candidate fast path beside the shredder (ADR 0007).
 
 ## Decision
 
@@ -48,7 +47,7 @@ open.
   dictionary-encoded and its values are what the column stores; clause `D-ENCODING` checks it.
   The SQLite destination decodes them; the memory and files destinations already store them.
 - **No `arrow-json` fast path.** On flat JSON of a known schema the shredder is faster than
-  `arrow-json`'s decoder, which also needs the schema up front. The spec allows the fast path only
+  `arrow-json`'s decoder, which also needs the schema up front. A fast path earns its place only
   where it is faster, so the engine keeps one shredder; the `fast_path` bench group measures both,
   and [docs/perf/shred.md](../perf/shred.md) records the figures.
 - **Passthrough is measured as a matrix, its paired cell against a bare loop.** The `passthrough`
@@ -69,7 +68,7 @@ over the bare loop, against its bound, is recorded in
 [docs/perf/passthrough.md](../perf/passthrough.md). Destinations must decode dictionary-encoded
 columns they cannot store as such.
 
-The spec's lowering differential (§20.4) checks here that a plan reused across batches of any
-size and load lowers each as a fresh plan does, value by value for the metadata columns. A
-reference lowering each value on its own, independent of the conversions plans share, is left to
-M3c, whose `normalize` changes what lowering produces.
+The lowering differential checks that a plan reused across batches of any size and load lowers
+each as a fresh plan does, value by value for the metadata columns. A reference that lowers each
+value on its own, independent of the conversions plans share, checks every type and encoding
+(ADR 0011).
