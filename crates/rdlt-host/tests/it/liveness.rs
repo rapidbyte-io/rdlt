@@ -1,8 +1,10 @@
 //! The heartbeat's verdict against connectors that answer it wrongly, and hosts that stall.
 
+use std::io;
 use std::num::NonZeroU32;
+use std::pin::Pin;
 use std::sync::Arc;
-use std::task::Waker;
+use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
 use parking_lot::Mutex;
@@ -126,7 +128,7 @@ impl Partition {
     }
 
     /// Whether the partition holds, keeping `context`'s task to wake once it heals.
-    fn holds(&self, context: &std::task::Context<'_>) -> bool {
+    fn holds(&self, context: &Context<'_>) -> bool {
         let mut state = self.0.lock();
         if state.0 {
             state.1.push(context.waker().clone());
@@ -145,47 +147,41 @@ struct Across {
 
 impl tokio::io::AsyncRead for Across {
     fn poll_read(
-        mut self: std::pin::Pin<&mut Self>,
-        context: &mut std::task::Context<'_>,
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
         buffer: &mut tokio::io::ReadBuf<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
+    ) -> Poll<io::Result<()>> {
         if self.partition.holds(context) {
-            return std::task::Poll::Pending;
+            return Poll::Pending;
         }
-        std::pin::Pin::new(&mut self.pipe).poll_read(context, buffer)
+        Pin::new(&mut self.pipe).poll_read(context, buffer)
     }
 }
 
 impl tokio::io::AsyncWrite for Across {
     fn poll_write(
-        mut self: std::pin::Pin<&mut Self>,
-        context: &mut std::task::Context<'_>,
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
         buffer: &[u8],
-    ) -> std::task::Poll<std::io::Result<usize>> {
+    ) -> Poll<io::Result<usize>> {
         if self.partition.holds(context) {
-            return std::task::Poll::Pending;
+            return Poll::Pending;
         }
-        std::pin::Pin::new(&mut self.pipe).poll_write(context, buffer)
+        Pin::new(&mut self.pipe).poll_write(context, buffer)
     }
 
-    fn poll_flush(
-        mut self: std::pin::Pin<&mut Self>,
-        context: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
+    fn poll_flush(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
         if self.partition.holds(context) {
-            return std::task::Poll::Pending;
+            return Poll::Pending;
         }
-        std::pin::Pin::new(&mut self.pipe).poll_flush(context)
+        Pin::new(&mut self.pipe).poll_flush(context)
     }
 
-    fn poll_shutdown(
-        mut self: std::pin::Pin<&mut Self>,
-        context: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
+    fn poll_shutdown(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
         if self.partition.holds(context) {
-            return std::task::Poll::Pending;
+            return Poll::Pending;
         }
-        std::pin::Pin::new(&mut self.pipe).poll_shutdown(context)
+        Pin::new(&mut self.pipe).poll_shutdown(context)
     }
 }
 
