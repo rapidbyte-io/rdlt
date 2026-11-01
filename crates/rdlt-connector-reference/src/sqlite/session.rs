@@ -194,11 +194,11 @@ impl Session for SqliteSession {
             (Arc::clone(&self.planner), self.pipeline.clone(), self.epoch);
         let ended = [meta.segments.clone(), meta.abandoned.clone()];
         let (meta, noted) = (meta.clone(), self.written.of(&meta.segments));
-        let receipt = self
+        let (receipt, published) = self
             .database
             .transaction(move |transaction| {
                 if let Some(landed) = fence(transaction, &planner, &pipeline)?.decide(&meta)? {
-                    return Ok(landed);
+                    return Ok((landed, false));
                 }
                 if meta.key.epoch != epoch {
                     return Err(ConnectorError::fenced(format!(
@@ -222,11 +222,14 @@ impl Session for SqliteSession {
                     bytes: u64::try_from(bytes).unwrap_or_default(),
                 };
                 run(transaction, &planner.land(&pipeline, &receipt))?;
-                Ok(receipt)
+                Ok((receipt, true))
             })
             .await?;
-        for segments in &ended {
-            self.written.forget(segments);
+        // A commit answered as landed publishes nothing, so its segments' columns stay noted.
+        if published {
+            for segments in &ended {
+                self.written.forget(segments);
+            }
         }
         Ok(receipt)
     }

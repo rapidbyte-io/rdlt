@@ -599,3 +599,36 @@ async fn a_column_dropped_between_two_commits_of_a_session_fails_the_second() {
     assert_eq!(error.code(), Some(COLUMN_MISSING), "{error}");
     assert_eq!(published(&path, "events"), 2);
 }
+
+#[tokio::test]
+async fn a_column_dropped_after_a_commit_is_answered_as_landed_fails_the_next_commit() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let path = directory.path().join("answered.db");
+    let mut opened = open_session(&path).await;
+    staged_names(&mut opened, &table("events", None), &[1, 2]).await;
+    let first = commit_of(opened.epoch, 1, 1);
+    let receipt = opened
+        .session
+        .commit(&first)
+        .await
+        .expect("the commit lands");
+    // Sent again naming segment 2, it is answered as landed and publishes nothing.
+    let again = CommitMeta {
+        segments: [SegmentId(2)].into_iter().collect(),
+        ..first
+    };
+    let answered = opened.session.commit(&again).await;
+    assert_eq!(answered.expect("answered as landed"), receipt);
+    let outside = rusqlite::Connection::open(&path).expect("the database opens");
+    outside
+        .execute("ALTER TABLE \"events\" DROP COLUMN \"name\"", [])
+        .expect("the column is dropped");
+    let second = commit_of(opened.epoch, 2, 2);
+    let error = opened
+        .session
+        .commit(&second)
+        .await
+        .expect_err("the commit is refused");
+    assert_eq!(error.code(), Some(COLUMN_MISSING), "{error}");
+    assert_eq!(published(&path, "events"), 2);
+}
