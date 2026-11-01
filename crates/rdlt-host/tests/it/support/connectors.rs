@@ -414,8 +414,7 @@ impl std::fmt::Debug for Gate {
     }
 }
 
-/// What a test has a [`Writes`] destination do at one of its writes, once, and at its next
-/// commit.
+/// What a test has a [`Writes`] destination do at one of its writes, once.
 pub(crate) struct Hook {
     /// The write, counted from one, at which `then` runs before the write is staged.
     pub(crate) at: usize,
@@ -423,8 +422,6 @@ pub(crate) struct Hook {
     pub(crate) writes: std::sync::atomic::AtomicUsize,
     /// What runs at that write, once; an error fails the write.
     then: std::sync::Mutex<Option<Then>>,
-    /// Whether the next commit fails before it lands.
-    pub(crate) failing_commit: std::sync::atomic::AtomicBool,
 }
 
 type Then = Box<dyn FnOnce() -> Result<()> + Send>;
@@ -442,7 +439,6 @@ impl Hook {
             at,
             writes: std::sync::atomic::AtomicUsize::new(0),
             then: std::sync::Mutex::new(None),
-            failing_commit: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -588,13 +584,6 @@ impl DestinationSession for WrongSession {
     }
 
     fn commit<'a>(&'a mut self, meta: &'a CommitMeta) -> BoxFuture<'a, Result<Receipt>> {
-        use std::sync::atomic::Ordering;
-        if let Writing::Hooked(hook) = self.writing
-            && hook.failing_commit.swap(false, Ordering::SeqCst)
-        {
-            let lost = ConnectorError::new(ConnectorErrorKind::Transient, "the commit was lost");
-            return Box::pin(async { Err(lost) });
-        }
         self.inner.commit(meta)
     }
 
