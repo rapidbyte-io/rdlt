@@ -59,16 +59,48 @@ fn a_record_that_narrates_a_change_is_refused_where_it_does() {
 }
 
 #[test]
+fn a_record_that_names_a_milestone_or_a_spec_section_is_refused_where_it_does() {
+    let cases: &[(&str, &[usize])] = &[
+        ("Building M2a surfaced decisions.\n", &[1]),
+        ("Each is a plan's worth.\nM4d is split again.\n", &[2]),
+        ("The rest is left for H1b.\n", &[1]),
+        ("M5d2 takes the rest of it.\n", &[1]),
+        (
+            "It differs from spec §9.3, where it is unsupported.\n",
+            &[1],
+        ),
+        ("- **Credit** (§12.5).\n", &[1]),
+        (
+            "The lattice differs from spec §8.2: `Int64 ∨ Float64` is `Json`.\n",
+            &[1],
+        ),
+    ];
+    for (text, lines) in cases {
+        assert_eq!(flagged(text), lines.to_vec(), "{text:?}");
+    }
+}
+
+#[test]
+fn a_record_s_findings_follow_its_lines_whatever_their_kind() {
+    assert_eq!(
+        flagged("M4c is split.\nThis ADR amends both.\nIt differs from §9.3.\n"),
+        vec![1, 2, 3]
+    );
+}
+
+#[test]
 fn a_record_stating_its_decision_passes() {
     for text in [
         "A commit removes what it supersedes.\n",
         "A row of its key supersedes the one before it.\n",
         "A plan made for a view already superseded is used but not cached.\n",
-        "The lattice differs from spec §8.2: `Int64 ∨ Float64` is `Json`.\n",
         "- A table replaced whole, by a rule\n  (ADR 0049). It holds.\n",
         "  (ADR 0045): the landed key answers its commit.\n",
         "A stream is refused\n(ADR 0029, `change_read_unreplayable`).\n",
         "\n\n(ADR 0021).\n",
+        "HTTP/2 frames are 1 MiB at most, and h2's server waits for the preface.\n",
+        "Both ends prefer the X25519MLKEM768 key exchange.\n",
+        "STYLE.md § Concurrency holds the rule for locks.\n",
     ] {
         assert_eq!(flagged(text), Vec::<usize>::new(), "{text:?}");
     }
