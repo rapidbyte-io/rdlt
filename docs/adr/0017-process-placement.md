@@ -4,26 +4,15 @@ Status: accepted, 2026-09-26.
 
 ## Context
 
-ADR 0015 split M4 in four. Its third part, M4c, held all of `rdlt-host` (§13):
-- the `Provider` and `Registry`;
-- process placement, supervision and respawn;
-- remote placement over TCP with mTLS;
-- the placement matrix, and ledger items P1–P4.
-
-That is two transports, each with its own lifecycle and its own tests. One plan would review both
-only at its end. The owner also asked for the host to be simulated over a network, which
-`rdlt-sim` does not do yet.
+Production runs connectors as processes of their own over a socket pair. `rdlt-host` finds a
+connector through a `Provider` and the `Registry`, spawns its binary with its socket, supervises
+it and spawns it again when it is lost, and the placement matrix runs the engine's suite against
+connectors placed so. Placing connectors on the network is ADR 0018's, and simulating the host
+over a network ADR 0019's.
 
 ## Decision
 
-- **M4c is split again.**
-  - **M4c** (this record): the `Provider` and `Registry`, `serve::<C>()`, process placement,
-    supervision and respawn, the placement matrix's in-process and spawned legs, and P1–P4.
-  - **M4d**: remote placement over TCP with mTLS, `--listen` and TLS on the served end, redialing,
-    the matrix's remote leg, and a network simulation of the host under turmoil. It settles
-    whether the host's timers go through `Env`.
-  - **M4e** is what ADR 0015 called M4d: `rdlt-certify`, and the `K` kill matrix.
-- **`serve::<C>()` is a connector binary's whole `main`** (§11.7).
+- **`serve::<C>()` is a connector binary's whole `main`.**
   - It takes the host's socket with `--rdlt-fd N`, and serves it with its own runtime, so a
     connector's manifest lists `rdlt-connector` alone.
   - It shuts down gracefully once its standard input ends or it receives `SIGTERM`.
@@ -37,7 +26,7 @@ only at its end. The owner also asked for the host to be simulated over a networ
   - The `#[source]` and `#[destination]` attributes implement `Serve` for the connector, so the
     binary names only its type. A binary serving two types, or a type with both roles, uses
     `serve::Served::serve`, given a closure that builds the roles it serves.
-- **The workspace's `unsafe` code is one audited crate, `rdlt-adopt`** (§20.14; ADR 0048).
+- **The workspace's `unsafe` code is one audited crate, `rdlt-adopt`** (ADR 0048).
   - `serve::<C>()`, before it builds the connector's factory, turns file descriptor 3 into an
     owned socket through `rdlt_adopt::adopt`, which needs `OwnedFd::from_raw_fd` and checks what
     it can, leaving to its caller that nothing else in the process owns the descriptor (ADR
@@ -54,7 +43,7 @@ only at its end. The owner also asked for the host to be simulated over a networ
   - The host passes the descriptor with `command-fds`, whose API is safe, and the child
     inherits no descriptor but its standard streams and its socket: `rdlt_adopt::inheriting_only`
     marks every other close-on-exec between `fork` and `exec` (ADR 0043).
-- **Providers** (§13.1).
+- **Providers.**
   - A `Provider` places the source or destination a `ConnectorRef` names. A `ConnectorRef` has an
     id, the versions it accepts (a semver requirement), and a path or endpoint. The result is a
     `Placed`: the connector, its spec, its `Placement`, and the SHA-256 digest of its binary when
@@ -69,9 +58,9 @@ only at its end. The owner also asked for the host to be simulated over a networ
     (ADR 0043).
   - A version that is not semver matches only a reference that accepts any version.
 - **The registry** places connectors linked into the binary in process, and every other with its
-  fallback, else `NotFound` (§13.2).
-- **`Local` places connectors in processes** (§13.3), in a sandbox unless its binaries are
-  stated to be trusted (`Local::sandboxed`, `Local::trusting_binaries`; ADR 0043).
+  fallback, else `NotFound`.
+- **`Local` places connectors in processes**, in a sandbox unless its binaries are stated to be
+  trusted (`Local::sandboxed`, `Local::trusting_binaries`; ADR 0043).
   - Resolution takes the reference's path first. Without one, it looks for
     `rdlt-connector-<the id's last segment>` in the connector directories alone; `PATH` and the
     working directory are never searched. The binary is opened once and hashed from that open
@@ -110,7 +99,7 @@ only at its end. The owner also asked for the host to be simulated over a networ
     thread that owns the group sends `SIGKILL`. That kill needs a host still running, so a host
     calls `rdlt_host::stop_spawned` before it exits (ADR 0050).
   - A connector whose binary serves another id, or another version than accepted, is refused.
-- **Supervision** (§13.5).
+- **Supervision.**
   - A connector is lost when its transport fails, it misses heartbeats, or it exits. An exit loses
     it at once.
   - The next call respawns it and handshakes again. The engine's retry of the attempt reaches the
@@ -120,7 +109,7 @@ only at its end. The owner also asked for the host to be simulated over a networ
   launch whose process is a script in the host's own process. The host checks, drains, witnesses,
   stops and kills it as it does a spawned one, and only `rdlt-sim` enables the feature. One seed
   in four of those the network leaves, in either oracle, places its connectors so (ADR 0052).
-- **The placement matrix** (§20.9) runs the engine's destination-facing scenarios in two legs.
+- **The placement matrix** runs the engine's destination-facing scenarios in two legs.
   - In process, against every reference destination, on the paused clock.
   - Spawned, against the SQLite and files destinations, on the real clock (the `placement`
     module). A spawned connector's heartbeat and deadlines run on the real clock, and a paused
@@ -129,7 +118,7 @@ only at its end. The owner also asked for the host to be simulated over a networ
   - A spawned generator feeds one scenario.
   - The spawned connectors are examples of the tests' crates, which the test build builds. The
     reference crate ships the real binaries, `rdlt-connector-{memory,generator,files,sqlite}`.
-- **P1–P4** are `rdlt-host` tests against a scripted connector:
+- **The host's process tests** run against a scripted connector:
   `sigint_leaves_no_orphaned_connectors`, `connector_writing_stdout_keeps_running`,
   `connector_crash_error_carries_stderr_tail` and `env_passthrough_reaches_connector`.
 - **The soak** (`just soak`, twenty minutes nightly): connectors spawned through `Local` load while
@@ -143,8 +132,9 @@ only at its end. The owner also asked for the host to be simulated over a networ
   host, which outlives the runtime that spawned the connector and stops a process whose runtime
   ends first; the groups a process owns are one list, so `stop_spawned` stops the connectors of
   every `Local` in it (ADR 0050).
-- A debug build's binaries are hundreds of megabytes, and hashing one took seconds, so `sha2` is
-  optimised in the dev profile.
+- A debug build's binaries are hundreds of megabytes, and hashing one with unoptimised code takes
+  seconds, so `sha2` is optimised in the dev profile.
 - The spawned leg adds about a minute of wall-clock time to the tests. Mutation testing gives it,
   and the host's process tests, 30 s a test.
-- Connectors written in Python (§13.3's `python:` references) are resolved with M8.
+- A reference names a binary or an endpoint, never a Python module: a connector written in Python
+  is placed as a script, run by the interpreter its first line names (ADR 0043).

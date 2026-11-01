@@ -4,23 +4,14 @@ Status: accepted, 2026-09-26.
 
 ## Context
 
-ADR 0017 left two things to M4d:
-- remote placement: connectors listening on the network, reached over TCP with mutual TLS (§13.4);
-- a network simulation of the host under turmoil.
-
-Each is a plan's worth.
-- Remote placement brings TLS, a listening mode for the served binary, redialing, and the placement matrix's third leg.
-- The simulation brings a harness that composes turmoil's simulated network with the simulation's own runtime and clock.
-
-TLS is security-sensitive, so the owner decided its policy before this milestone started.
+Connectors may listen on the network, reached over TCP with mutual TLS. That needs TLS on both
+ends, a listening mode for the served binary, redialing, and the placement matrix's third leg.
+TLS is security-sensitive, so its policy is fixed, in one place, with no plaintext mode.
+Simulating the host over a network is ADR 0019's.
 
 ## Decision
 
-- **M4d is split again.**
-  - M4d (this record) is remote placement.
-  - M4e is the network simulation of the host.
-  - M4f is `rdlt-certify` and the `K` kill matrix, which ADR 0017 called M4e.
-- **The TLS policy is the owner's** (2026-09-26; the provider, 2026-10-09):
+- **The TLS policy:**
   - rustls, TLS 1.3 alone, on aws-lc-rs, and no OpenSSL or other system library. aws-lc-rs is
     rustls's own default provider and the production standard: a FIPS-capable build of it
     exists, and it has the X25519MLKEM768 post-quantum hybrid key exchange, which both ends
@@ -28,7 +19,7 @@ TLS is security-sensitive, so the owner decided its policy before this milestone
   - Mutual authentication always: a host presents a certificate, and a listening connector requires one. There is no plaintext mode, not even behind a flag.
   - A host verifies the connector's certificate against its CA bundle and the endpoint's host name. A connector verifies each host's certificate against its own CA bundle, and accepts it only where it names a host the connector was told to accept (ADR 0044).
   - Neither end resumes a session: every connection is a full handshake, so a certificate is verified, and must be valid, each time it is presented. A connector may be given revocation lists.
-  - Certificates and keys come from PEM files named by path; secret references come with M7's secrets. A private key is read only from a regular file of the user's alone.
+  - Certificates and keys come from PEM files named by path, not from secret references. A private key is read only from a regular file of the user's alone.
   - Tests make their CA at test time; no key is ever committed.
 - **The policy is in one place: `rdlt_wire::tls`**, behind `rdlt-wire`'s `tls` feature.
   - `provider` is the cryptography of every TLS connection: both ends of the protocol.
@@ -52,9 +43,9 @@ TLS is security-sensitive, so the owner decided its policy before this milestone
   - A lost connector is started again for the next call: respawned when this process spawned it, redialed when it listens elsewhere.
   - A connector that ends its heartbeat stream is stopping. The host lets its calls in flight finish, and starts it again for the next call. A connection whose transport closed is started again too.
   - Whatever is started again must serve the spec that was checked at placement: the same id, version and configuration schema. A redial reaches whatever listens at the endpoint now; another connector there is a configuration error, which no retry mends.
-  - The host's connections ping over HTTP/2 every heartbeat interval, and give up after the heartbeat's patience (§12.6).
+  - The host's connections ping over HTTP/2 every heartbeat interval, and give up after the heartbeat's patience.
 - **The placement matrix has its third leg.** The engine's destination-facing scenarios run against the SQLite and files destinations spawned, and listening on the network over mutual TLS. Each run of the remote leg starts its own listening connector, with a CA made for it.
-- **The host's timers stay on tokio's clock.** The simulation's `SimEnv` is tokio's paused clock, and turmoil drives tokio's clock, so M4e's simulation runs the host's heartbeat and deadlines on simulated time.
+- **The host's timers stay on tokio's clock.** The simulation's `SimEnv` is tokio's paused clock, and turmoil drives tokio's clock, so the network simulation (ADR 0019) runs the host's heartbeat and deadlines on simulated time.
 
 ## Consequences
 
