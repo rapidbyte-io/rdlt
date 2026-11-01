@@ -7,7 +7,8 @@ Status: accepted, 2026-09-30.
 An operator must be able to reload a stream from its beginning, to switch an existing merge table
 to a change stream, which needs a new table (ADR 0023), and to hand a table to another pipeline,
 since a table belongs to the pipeline that created it (ADR 0025). Each needs an admin reset: a
-commit that clears the named streams' state and, for `replace` streams, starts a new generation.
+commit that clears the named streams' state, after which a `replace` stream's next run fills a new
+generation.
 
 ## Decision
 
