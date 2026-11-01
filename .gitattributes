@@ -1,3 +1,0 @@
-# Traces Quint writes of each spec: `just quint write` rewrites them, and a diff of them is no
-# review.
-specs/traces/** linguist-generated=true
