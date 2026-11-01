@@ -70,16 +70,23 @@ pub(super) enum Room {
 
 impl Room {
     /// The shares of `budget` as the flush's lowering takes them: a request is at most what is
-    /// lent, and a piece no more.
+    /// lent, and a piece the part of it a piece is of a request, so what a piece's split and its
+    /// planned parts make leaves their lowering as large a part of what is lent.
     fn shares(&self, budget: &MemoryBudget) -> Shares {
         let shares = budget.shares();
         match self {
             Self::Budget => shares,
-            Self::Lent(lent) => Shares {
-                request: lent.bytes(),
-                piece: shares.piece.min(lent.bytes()),
-                ..shares
-            },
+            Self::Lent(lent) => {
+                let request = lent.bytes();
+                let part = u128::from(shares.piece) * u128::from(request);
+                let piece = part / u128::from(shares.request.max(1));
+                Shares {
+                    request,
+                    piece: u64::try_from(piece)
+                        .expect("a piece is at most a request, so its part of what is lent is too"),
+                    ..shares
+                }
+            }
         }
     }
 

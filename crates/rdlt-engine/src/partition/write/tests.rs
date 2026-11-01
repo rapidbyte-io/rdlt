@@ -539,7 +539,7 @@ fn only_a_partition_that_seals_when_asked_tells_the_rows_it_writes() {
 }
 
 #[tokio::test]
-async fn lowering_inside_lent_bytes_takes_no_request_or_piece_larger_than_they_are() {
+async fn lowering_inside_lent_bytes_takes_a_request_of_them_and_a_piece_in_proportion() {
     let budget = crate::budget::budget(1 << 24);
     let shares = budget.shares();
     assert_eq!(super::Room::Budget.shares(&budget), shares);
@@ -547,11 +547,12 @@ async fn lowering_inside_lent_bytes_takes_no_request_or_piece_larger_than_they_a
     let wide = super::Room::Lent(lend(shares.request));
     let wide = wide.shares(&budget);
     assert_eq!((wide.request, wide.piece), (shares.request, shares.piece));
-    let narrow = super::Room::Lent(lend(shares.piece / 2));
+    // A request's quarter lent: a piece is a quarter of what a piece is of a request.
+    let narrow = super::Room::Lent(lend(shares.request / 4));
     let narrow = narrow.shares(&budget);
     assert_eq!(
         (narrow.request, narrow.piece),
-        (shares.piece / 2, shares.piece / 2)
+        (shares.request / 4, shares.piece / 4)
     );
     assert_eq!(narrow.data, shares.data);
 }

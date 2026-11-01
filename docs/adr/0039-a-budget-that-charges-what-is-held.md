@@ -310,7 +310,9 @@ budget before it is held, or bounded by a limit with a typed refusal.
       again once what they take and that room fit together.
     - A normalized flush's splits each ask for a request, so it asks for a whole request
       before its pushes are observed, holding only them, and is observed and built inside it,
-      whatever its batches take.
+      whatever its batches take. Its pieces are cut before their splits to the part of what
+      the batches leave of it that a piece is of a request, so what a split and its planned
+      parts make leaves their lowering as large a part of it.
     - That room is lent to the pieces, or the splits: each is reserved from it and goes back
       to it as it is written, so the partition waits for its own pieces, never for the
       budget, while it holds the batches. A piece or a split may also take what the budget
