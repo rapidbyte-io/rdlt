@@ -4,18 +4,18 @@ Status: accepted, 2026-09-29.
 
 ## Context
 
-`sqlgen` plans a SQL destination's statements once for every database, through a dialect. ADR
-0027 made change merges portable from the start and split the rest of the portable work from M5b:
-- the catalog writes rows whose key a row may hold with `INSERT … ON CONFLICT`, which SQLite and
-  PostgreSQL know and SQL Server, Oracle, Snowflake and MySQL do not;
-- a merge deleted the published rows of its staged keys, and a child table kept only the children
-  of each root's winning row, by comparing row values (`(a, b) IN (SELECT …)`), which SQL Server
-  and older databases lack;
-- a commit publishing a child table created its root index, a schema change, and a commit
-  finishing a replace generation renames and drops tables, both inside the commit's transaction;
-- the root index was named `{target}__rdlt_root`, which a user table of that name collides with;
-- a derived table's name is cut to the dialect's longest identifier and ends in a 32-bit hash of
-  the whole, so two long table names can derive one staging table.
+`sqlgen` plans a SQL destination's statements once for every database, through a dialect, so
+what it plans must not lean on what only some databases have, nor on names that may collide:
+- `INSERT … ON CONFLICT`, for catalog rows whose key a row may hold, which SQLite and PostgreSQL
+  know and SQL Server, Oracle, Snowflake and MySQL do not;
+- row values (`(a, b) IN (SELECT …)`), which SQL Server and older databases lack, for a merge's
+  delete of its staged keys' published rows and a child table's children of each root's winning
+  row;
+- schema changes inside a commit's transaction, as a child table's root index created by the
+  commit that publishes it, or the renames and drops that finish a replace generation, which not
+  every database commits with its transaction;
+- derived names that meet a user table's, as `{target}__rdlt_root` would, or each other's once cut
+  to the dialect's longest identifier, as two long table names cut under a 32-bit hash may.
 
 ## Decision
 
@@ -66,8 +66,8 @@ Status: accepted, 2026-09-29.
     the swap drops them (the dialect's `drop_index`), and the next writer indexes the table under
     its own name, so a table never holds two indexes on one key.
 - **A change stream's tombstones widen with its key.** A widen applies to the table, its staging
-  and its tombstones, each that has the column, as ADR 0027 left for this milestone; a dialect
-  widening in place would otherwise fail the commit that buries a widened key.
+  and its tombstones, each that has the column; a dialect widening in place would otherwise fail
+  the commit that buries a widened key.
 - **Tables whose derived tables would share a name are refused** when the second is created, as
   `table_name_clash`, a configuration error renaming either resolves (`SqlPlanner::distinct`):
   their staging, tombstones, root index or key indexes, and a generation table with its

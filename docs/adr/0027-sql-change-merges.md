@@ -4,18 +4,18 @@ Status: accepted, 2026-09-29.
 
 ## Context
 
-M5a merged change streams in the memory and files destinations only. The SQLite destination, and
-any SQL one `sqlgen` plans for, refused them, and a destination that did not know
-`MergeKey::changes` would have upserted change rows as data: nothing in its capabilities told the
-engine otherwise, since the engine took "no delete mode" to mean "cannot merge changes".
+Change streams merge into the memory and files destinations through the Arrow merge, and into
+SQL destinations through what `sqlgen` plans. A destination that does not know
+`MergeKey::changes` would upsert change rows as data, and its delete modes cannot tell the engine
+otherwise: "no delete mode" does not mean "cannot merge changes".
 
-The Arrow merge applies a change only past the sequence of the row its key holds. After a
-hard delete or a hard truncate no row holds the key, so a change sequenced before the delete, sent
-again by a source delivering at least once, brought the row back. Soft deletes kept their rows,
-whose sequences guard them.
+The Arrow merge applies a change only past the sequence of the row its key holds. After a hard
+delete or a hard truncate no row holds the key, so without a record of the removal a change
+sequenced before it, sent again by a source delivering at least once, would bring the row back.
+Soft deletes keep their rows, whose sequences guard them.
 
-Certification checked merges by key (`D-MERGE`) but no delete, partial update or truncate, and
-the spec's `D-MERGE` names the seq guard, which the clause never exercised.
+Certification must check deletes, partial updates and truncates, and the seq guard across
+commits, beside merges by key.
 
 ## Decision
 
@@ -25,9 +25,8 @@ the spec's `D-MERGE` names the seq guard, which the clause never exercised.
   `change_merge_unsupported`, whatever its delete modes: ignoring every delete and truncate still
   needs the seq guard and the change columns. A destination that merges changes needs no delete
   mode for a stream that removes nothing.
-  - `partial_updates_unsupported` is a configuration error, which differs from spec §9.3, where
-    it is unsupported: the plan asks for something the destination cannot do, which the operator
-    fixes.
+  - `partial_updates_unsupported` is a configuration error rather than an unsupported one: the
+    plan asks for something the destination cannot do, which the operator fixes.
 - **Tombstones.** A change stream's table remembers each key a hard delete removed, with the
   delete's sequence, and the latest hard truncate's sequence, the bound. A change sequenced at or
   before its key's tombstone, or before the bound, never applies. A later change of the key lifts
@@ -45,7 +44,7 @@ the spec's `D-MERGE` names the seq guard, which the clause never exercised.
   - Changes the snapshot holds are never sent again: a source resumes past its position, so
     tombstones start with the changes, not the snapshot.
 - **SQL change merges** (`sqlgen`, and the SQLite destination through it).
-  - A change table's staging gains the op column and the unchanged flags, which the writer stores
+  - A change table's staging has the op column and the unchanged flags, which the writer stores
     as bytes, one per target column, set where it is flagged, which a commit reads at a position
     (ADR 0049). It resolves them when it stages, in the transaction that stages the rows; a flag
     naming a column the table lacks, or its key or sequence column, is a `Data` error. The
@@ -61,7 +60,7 @@ the spec's `D-MERGE` names the seq guard, which the clause never exercised.
     only to apply a truncate. That holds where deletes are soft too, and a commit meets its
     truncates in one ordered pass, not once a row (ADR 0049). A commit of a thousand changes to a
     table of a million rows takes about 50 ms in SQLite, as it does at a hundred thousand rows;
-    without the indexes it took 28 s at a hundred thousand.
+    without the indexes, 28 s at a hundred thousand.
   - A staged row whose op is none of a change stream's is refused where it is staged: the codes
     past a truncate's are those the commit computes its rows under.
   - A change stream merges into its table, never a generation, and a generation swapped in clears
@@ -72,29 +71,25 @@ the spec's `D-MERGE` names the seq guard, which the clause never exercised.
     either in SQL; the reference takes the first written.
   - A soft delete of a key no row holds marks nothing, and leaves nothing a change sequenced before
     it would meet: soft deletes keep no tombstones.
-- **Certification** gains `D-DELETE`, `D-PARTIAL` and `D-TRUNCATE`, each sending changes again
-  from before the removal they check, each commit in a session of its own as a load started again
-  is, and `D-MERGE` checks the seq guard across commits where the destination merges changes.
-  `D-DELETE` also checks that a table replaced whole forgets its tombstones, where the destination
-  replaces. Each is skipped where the destination declares it does not do what it checks.
-  `D-PARTIAL` and `D-MERGE` merge into a table whose deletes would remove rows, which a
-  destination merging changes takes whatever its delete modes: a stream ignoring its deletes and
-  truncates writes one. `D-TRUNCATE` is added to spec §19's clause list.
+- **Certification** has `D-DELETE`, `D-PARTIAL` and `D-TRUNCATE`, each sending changes again from
+  before the removal they check, each commit in a session of its own as a load started again is, and
+  `D-MERGE` checks the seq guard across commits where the destination merges changes. `D-DELETE`
+  also checks that a table replaced whole forgets its tombstones, where the destination replaces.
+  Each is skipped where the destination declares it does not do what it checks. `D-PARTIAL` and
+  `D-MERGE` merge into a table whose deletes would remove rows, which a destination merging changes
+  takes whatever its delete modes: a stream ignoring its deletes and truncates writes one.
 - **The simulation's change source sends a window of earlier changes again** whenever it resumes
   past them, for merged streams; the model expects the table unchanged. Without tombstones the
   simulation fails.
-- **Split.** The portable `sqlgen` work M5b named, a dialect's upsert style in place of
-  `ON CONFLICT`, row values, DDL out of the commit, and the child table's root index name
-  `{target}__rdlt_root`, which a user table of that name collides with, move to M5b2. `S-ACK`, a
-  source advancing its position only in `committed`, needs a probe of what a source acknowledged,
-  across the wire as read-back is; it moves to M5c.
+- **Portable planning** is ADR 0028's, and `S-ACK`, a source advancing its position only in
+  `committed`, ADR 0030's.
 
 ## Consequences
 
 - The SQLite destination loads change streams with every delete mode, partial updates and
   truncates.
-- A connector built before this reads as merging no change stream, so the engine refuses change
-  merges into it until it declares them.
+- A connector that does not declare `merge_changes` reads as merging no change stream, so the
+  engine refuses change merges into it.
 - Destinations store tombstones: a hard delete costs a row that stays until a later change of the
   key or a hard truncate.
 - A change sent again cannot bring back a removed row, in any destination.
