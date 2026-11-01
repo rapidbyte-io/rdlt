@@ -533,7 +533,7 @@ struct Script {
     says: tokio::io::DuplexStream,
     exited: Arc<super::Ended<std::process::ExitStatus>>,
     /// What the host was given as the process started.
-    given: Arc<std::sync::Mutex<Option<super::Playing>>>,
+    given: Arc<parking_lot::Mutex<Option<super::Playing>>>,
 }
 
 /// A play that hands out one played process, and what its script holds.
@@ -552,13 +552,13 @@ fn played_once() -> (super::Play, Script) {
         exit,
     };
     assert_eq!(format!("{played:?}"), "Played { id: 7, .. }");
-    let handed = std::sync::Mutex::new(Some(played));
-    let given = Arc::new(std::sync::Mutex::new(None));
+    let handed = parking_lot::Mutex::new(Some(played));
+    let given = Arc::new(parking_lot::Mutex::new(None));
     let play = super::Play::new({
         let given = Arc::clone(&given);
         move |playing| {
-            *given.lock().expect("no panic holds it") = Some(playing);
-            let played = handed.lock().expect("no panic holds it").take();
+            *given.lock() = Some(playing);
+            let played = handed.lock().take();
             played.ok_or_else(|| std::io::Error::other("it is played once"))
         }
     });
@@ -587,12 +587,7 @@ async fn a_played_connector_is_given_checked_drained_stopped_and_killed_as_a_spa
     let redactions = Redactions::new();
     redactions.add("hunter2-canary \t");
     let (mut host, process) = Process::played(&launch, &play, redactions).expect("it plays");
-    let playing = script
-        .given
-        .lock()
-        .expect("no panic holds it")
-        .take()
-        .expect("it was played");
+    let playing = script.given.lock().take().expect("it was played");
     assert_eq!(playing.id, launch.id);
     assert_eq!(playing.args, ["--rdlt-fd=3", "--max-state-bytes=33554432"]);
     // It says its secret where a trim would cut it, then exits by itself.

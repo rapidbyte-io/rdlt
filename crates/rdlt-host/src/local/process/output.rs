@@ -3,9 +3,10 @@
 //! kept for the errors of its transport.
 
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
+use parking_lot::Mutex;
 use rdlt_connector::ConnectorId;
 use rdlt_connector::text::{CUT, shown};
 use tokio::io::{AsyncBufReadExt as _, AsyncRead, AsyncReadExt as _, BufReader};
@@ -29,10 +30,7 @@ pub(crate) struct Tail {
 
 impl Tail {
     fn push(&self, line: &[u8]) {
-        let mut bytes = self
-            .bytes
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut bytes = self.bytes.lock();
         bytes.extend(line);
         let excess = bytes.len().saturating_sub(TAIL_BYTES);
         bytes.drain(..excess);
@@ -41,10 +39,7 @@ impl Tail {
     /// The end of the kept bytes as an error shows it: scrubbed of `redactions`, each character
     /// a reader could be deceived by escaped, in [`LAST_WORDS_BYTES`] at most.
     pub(crate) fn words(&self, redactions: &Redactions) -> String {
-        let bytes = self
-            .bytes
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let bytes = self.bytes.lock();
         let (front, back) = bytes.as_slices();
         let kept = [front, back].concat();
         // A tail that is full may start within what the connector wrote, a secret included.

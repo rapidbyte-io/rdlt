@@ -1,9 +1,10 @@
 //! A remote writer's write and flush cut at every point they wait, then the writer used again.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use arrow_array::RecordBatch;
+use parking_lot::Mutex;
 use rdlt_connector::wire::v1;
 use rdlt_connector::wire::v1::write_frame::Frame;
 use rdlt_connector::{DestinationWriter as _, SegmentId, WriteStats};
@@ -50,7 +51,7 @@ impl Writing {
     /// What the connector took, at once; never held across an await, which the connector would
     /// wait on.
     fn took<R>(&self, read: impl FnOnce(&Took) -> R) -> R {
-        read(&self.took.lock().expect("the record is whole"))
+        read(&self.took.lock())
     }
 }
 
@@ -62,7 +63,7 @@ fn record(
     decoded: Result<Option<RecordBatch>, WireError>,
     staged: &mut u64,
 ) {
-    let mut took = took.lock().expect("the record is whole");
+    let mut took = took.lock();
     took.bytes += bytes;
     match decoded {
         Ok(Some(batch)) => {
@@ -96,7 +97,7 @@ async fn connector(
             }
             Frame::Flush(_) => {
                 {
-                    let mut took = took.lock().expect("the record is whole");
+                    let mut took = took.lock();
                     took.bytes += bytes;
                     took.flushes.push(staged);
                 }

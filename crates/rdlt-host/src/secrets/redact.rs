@@ -1,9 +1,10 @@
 //! What a connector was given that no log, error or report may hold.
 
 use std::ops::Range;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 use std::{fmt, mem};
 
+use parking_lot::Mutex;
 use rdlt_connector::text::{CUT, shown};
 use zeroize::Zeroizing;
 
@@ -45,7 +46,7 @@ pub struct Redactions {
 
 impl fmt::Debug for Redactions {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let secrets = self.secrets.lock().unwrap_or_else(PoisonError::into_inner);
+        let secrets = self.secrets.lock();
         write!(formatter, "Redactions({})", secrets.len())
     }
 }
@@ -62,7 +63,7 @@ impl Redactions {
     pub fn add(&self, secret: &str) {
         let long = |line: &&str| line.chars().filter(|c| !c.is_whitespace()).count() >= LEAST_LINE;
         let lines = secret.lines().filter(long);
-        let mut shared = self.secrets.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut shared = self.secrets.lock();
         let secrets = Arc::make_mut(&mut shared);
         for value in std::iter::once(secret).chain(lines) {
             let quoted = serde_json::to_string(value).unwrap_or_default();
@@ -85,7 +86,7 @@ impl Redactions {
     /// was dropped, until nothing of a secret is left in it; a text that says it was withheld
     /// if the few steps scrubbing is given leave something.
     pub fn scrubbed(&self, mut text: String) -> String {
-        let secrets = Arc::clone(&self.secrets.lock().unwrap_or_else(PoisonError::into_inner));
+        let secrets = Arc::clone(&self.secrets.lock());
         let cut = text.contains(CUT) || text.contains(DROPPED);
         for _ in 0..STEPS {
             let found;
