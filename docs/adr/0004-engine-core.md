@@ -58,9 +58,15 @@ a run reports and tells must show what it did without changing what it does.
 - **One writer per table per lane.** A lane opens a table's writer when it first writes to the
   table, since normalized streams add child tables as their rows arrive. Each attempt routes a
   partition's batches for a table to lane `(place + table) mod lanes`, the place being the
-  partition's index in the attempt. A partition read again takes its ended read's place, and a
-  new one a place whose seals all committed, so a partition's writes to a table stay in order on
-  one lane, and as many partitions as lanes take a lane each.
+  partition's index in the attempt, so as many partitions as lanes take a lane each. A partition
+  read again takes its ended read's place, and a new one a place whose seals all committed, so a
+  run that reads for ever tracks no more partitions than its plans name at once. A partition
+  writes a table through one lane since spreading its writes over more reaches nothing: on the
+  production path four partitions through four writers, the most one partition spread over four
+  lanes could reach, move 0.98 times what one partition moves
+  ([docs/perf/campaign.md](../perf/campaign.md), "Spilling a hot partition's writes to lanes with
+  room"). No order rests on the lane: merges, histories, change streams and child tables decide
+  by each row's sequence, never by the order rows were staged in.
 - **Barriers wait only for partitions that are reading.** A partition waiting for a read slot, or
   already ended, owes no answer, so many queued partitions never make every commit wait out
   `barrier_wait`.
