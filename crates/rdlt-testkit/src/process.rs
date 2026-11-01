@@ -9,7 +9,8 @@
 use std::io;
 use std::os::unix::process::CommandExt as _;
 use std::process::{Child, Command, Stdio};
-use std::sync::Mutex;
+
+use parking_lot::Mutex;
 
 /// The guardians of this process's children, held for as long as the process lives: each
 /// holds the pipe whose closing ends its group.
@@ -49,10 +50,7 @@ pub fn guard(leader: u32) -> io::Result<()> {
         // Outside the group it guards, and outside the test's own, which a runner may kill.
         .process_group(0)
         .spawn()?;
-    let mut guardians = GUARDIANS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    guardians.push(guardian);
+    GUARDIANS.lock().push(guardian);
     Ok(())
 }
 

@@ -5,8 +5,8 @@ use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 
+use parking_lot::Mutex;
 use rcgen::{
     BasicConstraints, CertificateParams, CertificateRevocationListParams, CertifiedIssuer, DnType,
     ExtendedKeyUsagePurpose, IsCa, KeyIdMethod, KeyPair, KeyUsagePurpose, RevokedCertParams,
@@ -134,7 +134,7 @@ impl Pki {
 
     /// The list of `revoked`, whose next update is due in the year `next_update`.
     fn revocations(&self, file: &str, revoked: &[&Files], next_update: i32) -> PathBuf {
-        let issued = self.issued.lock().expect("no test panicked issuing");
+        let issued = self.issued.lock();
         let revoked_certs = revoked
             .iter()
             .map(|files| RevokedCertParams {
@@ -173,7 +173,7 @@ impl Pki {
             key: self.dir.path().join(format!("{file}.key")),
         };
         let serial = {
-            let mut issued = self.issued.lock().expect("no test panicked issuing");
+            let mut issued = self.issued.lock();
             issued.count += 1;
             let serial = issued.count;
             issued.serials.insert(files.cert.clone(), serial);
