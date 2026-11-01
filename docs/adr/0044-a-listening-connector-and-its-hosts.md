@@ -4,23 +4,23 @@ Status: accepted, 2026-10-01.
 
 ## Context
 
-ADR 0018 placed connectors on the network over mutual TLS, and left a listening connector weaker
-than the model ADR 0037 now sets:
+ADR 0018 places connectors on the network over mutual TLS. A listening connector must hold to the
+model ADR 0037 sets, where a weaker one would:
 
-- It took a handshake permit before it accepted a connection, and had as many permits as a
-  process usually has file descriptors. Peers that connected and said nothing held every permit:
-  an authenticated host waited for a handshake to time out, and the same peers could fill the
-  descriptor table and fail the files of sessions already served. Each refused connection wrote a
-  line of its own.
-- It accepted every certificate its CA had issued, resumed TLS sessions without checking the
-  certificate again, had no revocation, said nothing of which host a session served, and read its
-  private key from a file anyone could read. One certificate could hold every session.
-- Certification's probes, a destination reading back what it published and a source telling where
-  it stands, were compiled into every served connector and switched on by the host's handshake.
-  The read-back built a whole table in memory. The generator and memory test connectors were
-  ordinary binaries, and the memory destination's stores were one process's, shared by its hosts.
-- A host could report any position committed, read or not, and a source moved its position to it.
-- An endpoint refused for carrying credentials was repeated whole in the error.
+- take a handshake permit before it accepts a connection, with as many permits as a process
+  usually has file descriptors, so peers that connect and say nothing hold every permit: an
+  authenticated host waits for a handshake to time out, the same peers fill the descriptor table
+  and fail the files of sessions already served, and each refused connection writes a line of its
+  own;
+- accept every certificate its CA issued, resume TLS sessions without checking the certificate
+  again, have no revocation, say nothing of which host a session serves, and read its private key
+  from a file anyone can read, so one certificate holds every session;
+- compile certification's probes, a destination reading back what it published and a source
+  telling where it stands, into every served connector, switched on by the host's handshake, with
+  a read-back that builds a whole table in memory, ship the generator and memory test connectors
+  as ordinary binaries, and share the memory destination's stores among its hosts;
+- let a host report any position committed, read or not, and move a source's position to it;
+- repeat whole in its error an endpoint refused for carrying credentials.
 
 ## Decision
 
@@ -223,9 +223,8 @@ Rejected:
 - A source that refuses every report can still see a run succeed where its partition ends
   done: the attempt gives the done partition's cursor up and counts it in `acks.dropped`. No
   row is lost or doubled, and the position that trails is the refusing source's own.
-- A source that accepts a cursor it did not issue, and acts on reports, can be moved there by
-  a host named to it. The rule is the connector author's to keep; certification does not yet
-  check it.
+- A source that accepts a cursor it did not issue, and acts on reports, can be moved there by a host
+  named to it. The rule is the connector author's to keep; certification does not check it.
 - A session used after three newer ones were opened on its connection is gone, and answers
   `no_session`.
 - An Open beyond three on a connection waits for the calls in flight on its oldest session, for
@@ -236,7 +235,7 @@ Rejected:
   Hosts that must not trust each other get a connector each.
 - The reference log and change sources keep their consumer groups and slots for the process,
   by name, whichever host names them, and never free one: a named host can read and move
-  another's. They are examples; their stores should be kept for each host as the memory
-  destination's are, which the milestone that owns those sources does.
-- The bytes a host stages before a commit are bounded by the memory-accounting milestone, not
-  here.
+  another's. They are examples; a source built on them keeps its stores for each host, as the
+  memory destination does.
+- The bytes a host's writes stage in a listening connector are bounded by the staged limit, four
+  frames' bytes between two flushes (ADR 0039).
