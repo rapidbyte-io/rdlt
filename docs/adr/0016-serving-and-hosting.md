@@ -10,7 +10,7 @@ Both ends speak the wire protocol (ADR 0015):
 - The engine drives a served connector through `RemoteSource` and `RemoteDestination` in
   `rdlt-host`.
 
-Where a connector runs is its placement's (ADR 0017, ADR 0018). The tests of serving and hosting
+Placement decides where a connector runs (ADR 0017, ADR 0018). The tests of serving and hosting
 serve connectors over in-process socket pairs, which is what a spawned connector's pre-connected
 socket is.
 
