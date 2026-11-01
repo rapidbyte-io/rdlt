@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
+use parking_lot::Mutex;
 use rdlt_connector::{
     Field, LogicalType, OpenContext, PipelineId, SchemaVersion, SegmentId, TableChange, TablePath,
     TableRef, TableSchema,
@@ -135,7 +136,7 @@ fn a_session_held_past_the_bound_fails_naming_the_seed() {
 fn released_over_a_host_that_runs(seed: u64, task: Duration) -> Option<String> {
     let registered = World::register("released-host", &mut SplitMix64::new(seed));
     let world = Arc::clone(registered.world());
-    let handle = Arc::new(std::sync::Mutex::new(None::<Handle>));
+    let handle = Arc::new(Mutex::new(None::<Handle>));
     let mut sim = turmoil::Builder::new()
         .simulation_duration(Duration::from_secs(150))
         .build();
@@ -143,7 +144,7 @@ fn released_over_a_host_that_runs(seed: u64, task: Duration) -> Option<String> {
     sim.host("connector", move || {
         let host = Arc::clone(&host);
         async move {
-            *host.lock().unwrap() = Some(Handle::current());
+            *host.lock() = Some(Handle::current());
             tokio::spawn(tokio::time::sleep(task));
             tokio::time::sleep(Duration::from_secs(130)).await;
             Ok(())
@@ -151,7 +152,7 @@ fn released_over_a_host_that_runs(seed: u64, task: Duration) -> Option<String> {
     });
     sim.client("engine", async move {
         tokio::time::sleep(Duration::from_millis(10)).await;
-        let hosts = [handle.lock().unwrap().clone().expect("the host began")];
+        let hosts = [handle.lock().clone().expect("the host began")];
         released(Seed::new(seed), &world, &hosts).await;
         Ok(())
     });
