@@ -8,19 +8,21 @@ ADR 0037 makes the engine and the host the trusted computing base. What builds t
 that base: a contributor's change, a dependency's update, a tool's release and a workflow's
 action each bring code that runs with a maintainer's access, or decides whether a change merges.
 
-The repository made four statements about them, each weaker than it read:
+The repository makes four statements about them, each weaker than it reads unless something
+holds it:
 
-- `unsafe` code was said to be in one audited module (ADR 0017). The module sat in
-  `rdlt-connector`, so that crate's root could not forbid `unsafe` code, and tests, examples,
-  benches and fuzz targets had no root that did. There the only check was a pattern over
-  `cargo xtask lint`'s own reading of the text, which skipped directories by name and read no
-  file brought in with `include!`.
-- Tools and actions were said to be pinned. A tool was pinned to a version label and an action
-  to a commit, with nothing holding the label to bytes or the commit to the release named
-  beside it.
-- Dependencies were checked against advisories, for one of the repository's two lockfiles, and
-  only when someone pushed a change.
-- CI's token was read-only, and was in the environment of every build script the lint ran.
+- `unsafe` code is in one audited place. An audited module inside a crate that holds other code
+  leaves that crate's root unable to forbid `unsafe` code; tests, examples, benches and fuzz
+  targets forbid nothing without a root that does; and a pattern over `cargo xtask lint`'s own
+  reading of the text, skipping directories by name and reading no file brought in with
+  `include!`, checks only what it reads.
+- Tools and actions are pinned. A tool pinned to a version label and an action to a commit hold
+  nothing to bytes, nor the commit to the release named beside it.
+- Dependencies are checked against advisories. A check of one of the repository's two lockfiles,
+  run only when someone pushes a change, leaves the other lockfile and the days between pushes
+  unchecked.
+- CI's token is read-only. In the environment of every build script the lint runs, it reaches
+  whatever it can read.
 
 This record decides what holds each statement, and says where a check ends.
 
@@ -72,7 +74,7 @@ This record decides what holds each statement, and says where a check ends.
     ones, and any `include!`, `include_str!`, `include_bytes!` or `#[path]` in them.
   - Neither check is enough alone. Without the forbid, the lint is a pattern again. Without the
     lint, a macro's body is unchecked.
-  - Workspace-wide `forbid` in `[workspace.lints]` was not used: a package inherits that table
+  - Workspace-wide `forbid` in `[workspace.lints]` is not used: a package inherits that table
     whole or restates it, so the audited crate would restate every lint, and the fuzzing crate
     has no such table.
   - The lexer, which the comment and style rules use, ends a raw C string where the compiler
@@ -187,8 +189,7 @@ This record decides what holds each statement, and says where a check ends.
   when one must be updated.
 - The `pins` job's recipe and tools come from the pull request, as the whole workflow does under
   `pull_request`. What bounds it is the token: read-only, for a public repository.
-- `pins` is a new check: the repository's ruleset has to require it beside `lint`.
-- `instructions` is a new check: the repository's ruleset has to require it beside `lint`.
+- The repository's ruleset must require the `pins` and `instructions` checks beside `lint`.
 - Every clean build, each build directory of cargo-mutants included, compiles AWS-LC's C.
 - The nightly advisory job builds xtask, about two minutes.
 - Each job logs the installer's warning that it has no token.

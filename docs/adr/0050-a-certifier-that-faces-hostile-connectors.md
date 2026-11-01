@@ -5,16 +5,16 @@ Status: accepted, 2026-10-01.
 ## Context
 
 `rdlt-certify` and the clauses of `rdlt_connector::testing` are run against connectors nobody
-trusts yet. ADR 0020 to 0022 wrote them for a connector that is trusted code with untrusted
-output; ADR 0037 holds every connector that is not compiled into its host to be untrusted. Four
-things did not hold to that:
+trusts yet, and ADR 0037 holds every connector that is not compiled into its host to be
+untrusted code, not only its output. A certifier written for trusted code with untrusted output
+falls short four ways:
 
-- some waits had no deadline, and synchronous work could outlast a clause's bound;
-- what a connector sent was bounded in wire bytes at most, then held, expanded and rendered
+- some waits have no deadline, and synchronous work can outlast a clause's bound;
+- what a connector sends is bounded in wire bytes at most, then held, expanded and rendered
   whole, and quoted whole in reports;
-- connector data could panic the certifier;
-- a clause could pass without the behaviour it names having been seen, and a report passed, and
-  the binary exited 0, with any number of clauses skipped.
+- connector data can panic the certifier;
+- a clause can pass without the behaviour it names having been seen, and a report pass, and the
+  binary exit 0, with any number of clauses skipped.
 
 ## Decision
 
@@ -75,7 +75,7 @@ things did not hold to that:
     other kind fails the clause as a column of the wrong kind. A test casts the extreme values of
     every numeric and temporal kind, in each encoding admitted, to every kind a clause reads:
     each cast the list admits is exact or refused, and none panics. A date read where an
-    instant was written, which overflowed in Arrow's cast, is refused.
+    instant was written, which overflows in Arrow's cast, is refused.
   - The accessors check a cast answered a value for each row and refuse a null where none may
     be. `K-DESTINATION` reads its table through the same admission as every other clause.
   - The renderer reads instants, dates, times and spans as integers, at any depth, so Arrow's
@@ -141,8 +141,8 @@ things did not hold to that:
   its pipelines and tables `certify_…`, offers the read-back and acknowledged features, makes
   calls no engine makes, and holds a connector to its limits on purpose. A connector built to
   pass can keep the clauses only while it is certified. The names stay, so an operator knows
-  what certification left in a store; the tell removed is the unknown feature every
-  handshake offered, which only `P-HANDSHAKE`'s now does, under a name of its own each time.
+  what certification left in a store; only `P-HANDSHAKE`'s handshake offers a feature no host
+  defines, under a name of its own each time, so no other handshake tells it.
   Certification finds the defects of a connector that does not hide them. What holds against one
   that does is the engine's own limits, deadlines and confinement.
 
