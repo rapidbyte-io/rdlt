@@ -4,12 +4,12 @@ Status: accepted, 2026-09-30.
 
 ## Context
 
-Spec §20.8 lists `S-ACK`, "CDC position advanced only in `committed`", among the source clauses.
+A source's CDC position must advance only in `committed`, which the source clause `S-ACK` certifies.
 Exactly-once delivery depends on it: a replication slot or consumer group that moves as the source
 reads, or moves anywhere other than the cursor the engine committed, loses rows when a load fails
 before the destination commits. It matters most for a source that cannot read again, where that
-position is the only record of what was delivered. The engine cannot see the position, because
-the source keeps it outside the engine.
+position is the only record of what was delivered. The engine cannot see the position, because the
+source keeps it outside the engine.
 
 ## Decision
 
@@ -105,13 +105,10 @@ the source keeps it outside the engine.
   sources of the process that name it, moving only in `committed` and never back. It passes
   `S-ACK` in process and served through the protocol. A slot of its process is not one a spawned
   change source shares, so such a source is certified served, not spawned.
-
-## Deviations from the spec
-
 - **The clause reads a stream's first phases itself**, rather than reading a stream in the engine,
   so it certifies a source alone; the phases it reads follow the engine's rule.
-- **A partition may keep no position**, as the spec's clause did not say, where no partition of
-  its phase keeps one and a later phase is read. A source whose last phase keeps none fails.
+- **A partition may keep no position** where no partition of its phase keeps one and a later
+  phase is read. A source whose last phase keeps none fails.
 
 ## Consequences
 
@@ -119,5 +116,5 @@ the source keeps it outside the engine.
   group of its own (`SourceConnector::ACKNOWLEDGES` says so).
 - A source that cannot read again, read wholly by the clauses before `S-ACK`, has nothing ahead to
   commit, and the clause checks only that those reads moved nothing.
-- A source's position is now tested, not only its data: M5d's streaming sources, which read without
-  end and forget what they acknowledged, answer the probe and are certified by it.
+- A source's position is tested, not only its data: streaming sources, which read without end and
+  forget what they acknowledged, answer the probe and are certified by it.

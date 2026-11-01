@@ -4,28 +4,20 @@ Status: accepted, 2026-09-30.
 
 ## Context
 
-Spec §16.1 gives the engine an admin `reset(streams)`: "a commit that clears the named streams'
-state and, for `replace` streams, starts a new generation". Two earlier decisions wait on it:
-
-- ADR 0023: switching an existing merge table to a change stream needs a new table; "a reset that
-  clears a stream's table and state is owed".
-- ADR 0025: a table belongs to the pipeline that created it, and "handing a table over waits for
-  reset".
-
-ADR 0031 and 0032 planned M5d3 as this reset plus change streams whose source cannot read again.
-This ADR splits them. M5d3 is the reset. The change streams are **M5d4** (ADR 0034): the M5 exit
-gate ("simulation with CDC and non-replayable sources green") requires them.
+An operator must be able to reload a stream from its beginning, to switch an existing merge table
+to a change stream, which needs a new table (ADR 0023), and to hand a table to another pipeline,
+since a table belongs to the pipeline that created it (ADR 0025). Each needs an admin reset: a
+commit that clears the named streams' state and, for `replace` streams, starts a new generation.
 
 ## Decision
 
-- **`Engine::reset(pipeline, streams, scope, source, destination) -> ResetReport`** (engine API,
-  §16.2; the facade's and the CLI's `state reset` are M7's). One admin commit: the first of a
-  session of its own, expecting the key the open found landed, with no segments.
-  - **`ResetScope::Positions`**, the spec's reset, deletes each stream's phase, partition
-    positions, full read in progress and completed reads. The next run reads the stream from its
-    beginning into the tables it has; a replace stream fills a new generation, swapped in when
-    complete, so its old rows stay visible until then. The spec's "starts a new generation" is
-    read this way: no generation is recorded until the next run starts one.
+- **`Engine::reset(pipeline, streams, scope, source, destination) -> ResetReport`**, on the
+  engine's API. One admin commit: the first of a session of its own, expecting the key the open
+  found landed, with no segments.
+  - **`ResetScope::Positions`** deletes each stream's phase, partition positions, full read in
+    progress and completed reads. The next run reads the stream from its beginning into the tables
+    it has; a replace stream fills a new generation, swapped in when complete, so its old rows stay
+    visible until then: no generation is recorded until the next run starts one.
   - **`ResetScope::Tables`** also drops the stream's tables, its child tables with them, and
     deletes their schemas, names and sequences, so the next run creates them anew: a merge table
     may become a change table, and any pipeline may create a table of the name.
@@ -45,8 +37,7 @@ gate ("simulation with CDC and non-replayable sources green") requires them.
     `drop_unsupported`, and a reset naming no streams is refused as `no_streams`.
   - These refusals, and `reset_unreplayable`, come before the destination opens, fencing
     nothing. `stream_not_found` can only come after: the pipeline's state is read by opening the
-    destination, which fences its older sessions as any reset does. A state read that fences
-    nothing lands with M7.
+    destination, which fences its older sessions as any reset does.
   - A full read a run began before the stream was reset is over: a retry of that run, which the
     reset fenced, starts a new read in a generation of its own rather than resuming the one it
     remembered, whose rows were the stream's before the reset. The run keeps each read's
@@ -83,7 +74,7 @@ gate ("simulation with CDC and non-replayable sources green") requires them.
     before it does (ADR 0049).
   - A session a newer one fenced may not claim a table no pipeline owns: its schema change or
     writer fails as fenced. Otherwise a load the reset fenced, still writing, claims the table
-    the reset just released, and another pipeline stays shut out. The simulation found this.
+    the reset just released, and another pipeline stays shut out.
 - **Certification.** `D-DROP`: a dropped table leaves nothing, dropping again changes nothing, a
   session fenced before cannot claim it again, another pipeline may create a table of the name,
   and dropping another pipeline's table is refused as `table_owned`. `D-OWNED` also refuses a
@@ -103,5 +94,5 @@ gate ("simulation with CDC and non-replayable sources green") requires them.
 - A stream loaded from a source that cannot read again cannot be reset: rows its source
   acknowledged are gone, so there is nothing to read again.
 - `Engine` is `Clone`: it holds its configuration and environment behind `Arc`s.
-- A state inspection that does not fence running loads (`state show`) needs a new destination
-  call, and lands with M7's surface.
+- A state inspection that does not fence running loads needs a destination call the contract
+  does not have.

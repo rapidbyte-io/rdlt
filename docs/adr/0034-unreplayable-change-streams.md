@@ -8,8 +8,7 @@ A change stream's phases move its partitions' positions other than forward. A co
 begins a phase deletes the previous phase's partition positions and puts the new phase's start
 cursors, and partition ids may recur across phases. A source that cannot read again, a
 replication slot or a queue, drops what it was told was committed. Such a stream has to load a
-snapshot and then its changes exactly once through crashes, failed commits and racing runs. The
-M5 exit gate asks for a simulation with change sources and sources that cannot read again.
+snapshot and then its changes exactly once through crashes, failed commits and racing runs.
 
 ## Decision
 
@@ -44,4 +43,4 @@ M5 exit gate asks for a simulation with change sources and sources that cannot r
   changes exactly once through crashes and failed commits.
 - Its source is told one destination commit later than the rows were read, and a slot keeps that
   much more of its database's log.
-- Such a stream still cannot be reset (ADR 0033): what its source was told is gone.
+- Such a stream cannot be reset (ADR 0033): what its source was told is gone.
