@@ -98,16 +98,26 @@ impl Room {
         }
     }
 
-    /// The error for a row that alone takes more to lower than a request of the room may.
-    fn refusal(&self, job: &PartitionJob, budget: &MemoryBudget, row: &RowTooLarge) -> Error {
-        match self {
-            Self::Budget => row_too_large(job, row),
-            Self::Lent(lent) => {
-                let request = budget.shares().request;
-                let built = request.saturating_sub(lent.bytes());
-                json::row_beside_built(job, row, built, request)
-            }
-        }
+    /// The error for a row that alone takes more to lower than a request of the room leaves it
+    /// beside the `held` bytes kept for its piece's split.
+    fn refusal(
+        &self,
+        job: &PartitionJob,
+        budget: &MemoryBudget,
+        row: &RowTooLarge,
+        held: u64,
+    ) -> Error {
+        let request = budget.shares().request;
+        let built = match self {
+            Self::Budget => 0,
+            Self::Lent(lent) => request.saturating_sub(lent.bytes()),
+        };
+        let beside = RequestHeld {
+            request,
+            built,
+            held,
+        };
+        row_beside(job, row, beside)
     }
 
     /// Reserves `bytes` where they are free now, of what is lent or else of the budget; nothing
@@ -468,6 +478,48 @@ fn row_too_large(job: &PartitionJob, row: &RowTooLarge) -> Error {
             "stream {}: lowering one row takes more than {} bytes, beyond the {} one request may \
              take of the memory budget",
             job.stream, row.expanded, row.limit
+        ),
+    )
+    .with_code(codes::ROW_EXCEEDS_BUDGET)
+    .with_stream(&job.stream)
+}
+
+/// Bytes: what one request of the budget holds beside a row that does not fit what it leaves.
+#[derive(Clone, Copy, Debug)]
+struct RequestHeld {
+    /// What one request may take of the budget.
+    request: u64,
+    /// What building a JSON flush's batches took beyond their text.
+    built: u64,
+    /// What is kept for the row's piece's split: what it holds, or may make.
+    held: u64,
+}
+
+/// The error for a row that takes more to lower than what a request leaves it beside what
+/// `beside` says it holds: what the row takes against the room it had, and what took the rest.
+fn row_beside(job: &PartitionJob, row: &RowTooLarge, beside: RequestHeld) -> Error {
+    let mut taken = Vec::new();
+    if beside.built > 0 {
+        let built = beside.built;
+        taken.push(format!(
+            "the {built} its JSON's batches take beyond their text"
+        ));
+    }
+    if beside.held > 0 {
+        let held = beside.held;
+        taken.push(format!("the {held} kept for its piece's split"));
+    }
+    let taken = if taken.is_empty() {
+        String::new()
+    } else {
+        format!(", beside {}", taken.join(" and "))
+    };
+    Error::new(
+        ErrorKind::Source,
+        format!(
+            "stream {}: lowering one row takes at least {} bytes, more than the {} left to it of \
+             the {} one request may take of the memory budget{taken}",
+            job.stream, row.expanded, row.limit, beside.request
         ),
     )
     .with_code(codes::ROW_EXCEEDS_BUDGET)

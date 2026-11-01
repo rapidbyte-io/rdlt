@@ -76,7 +76,7 @@ pub(super) async fn write_normalized(
         let cutter = Cutter::within(context, request.saturating_sub(made));
         let rendering = context.rendering.as_ref().clone();
         let cut = on_pool(context, move || cutter.cut(&rendering, unit)).await;
-        let cut = cut.map_err(|row| room.refusal(job, &context.budget, &row))?;
+        let cut = cut.map_err(|row| room.refusal(job, &context.budget, &row, made))?;
         // The allowance is as much as the pieces lowered at once take: the rest is given back,
         // and the allowance is lent to the pieces.
         let allowance = cutter.allowance(&cut);
@@ -163,7 +163,10 @@ async fn sliced(
     (room, shape): (&Room, &Shape),
     units: Vec<Held>,
 ) -> Result<Vec<Held>, Error> {
-    let (max, limit) = split_bounds(room.shares(&context.budget));
+    let shares = room.shares(&context.budget);
+    let (max, limit) = split_bounds(shares);
+    // What the split may make of a piece is kept from what its rows may take.
+    let split = shares.request.saturating_sub(limit);
     let lowered = Lowered {
         rendering: context.rendering.as_ref().clone(),
         stored: Arc::default(),
@@ -180,7 +183,7 @@ async fn sliced(
     for unit in units {
         let lowered = lowered.clone();
         let pieces = on_pool(context, move || pieces::sliced(unit, lowered)).await;
-        cut.extend(pieces.map_err(|row| room.refusal(job, &context.budget, &row))?);
+        cut.extend(pieces.map_err(|row| room.refusal(job, &context.budget, &row, split))?);
     }
     Ok(cut)
 }
