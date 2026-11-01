@@ -1,11 +1,11 @@
 //! Configurations that run beside each other on one connection, in a build with
 //! certification's probes.
 
-use std::sync::mpsc;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, mpsc};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use parking_lot::Mutex;
 use rdlt_wire::Limits;
 use rdlt_wire::plane::Plane as _;
 use rdlt_wire::tonic::{Request, Status};
@@ -124,7 +124,7 @@ impl Holding {
             self.entered
                 .send(())
                 .expect("the test waits for the held configuration");
-            let released = self.released.lock().unwrap_or_else(PoisonError::into_inner);
+            let released = self.released.lock();
             released
                 .recv_timeout(WAIT)
                 .expect("the test releases the held configuration");

@@ -28,6 +28,9 @@ mod tests;
 
 use std::fmt;
 use std::future::Future;
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 
 pub use allowance::Allowance;
 pub use denoted::denoted;
@@ -93,7 +96,7 @@ pub struct ClauseResult {
 /// Whoever cuts a certification short reads it, to report what was found before the cut.
 #[derive(Clone, Debug, Default)]
 pub struct Observed {
-    found: std::sync::Arc<std::sync::Mutex<(Option<String>, Vec<ClauseResult>)>>,
+    found: Arc<Mutex<(Option<String>, Vec<ClauseResult>)>>,
 }
 
 impl Observed {
@@ -104,27 +107,22 @@ impl Observed {
 
     /// Tells the id of the connector under certification.
     pub fn named(&self, connector: &str) {
-        self.found().0 = Some(connector.to_owned());
+        self.found.lock().0 = Some(connector.to_owned());
     }
 
     /// Tells a clause's result, as its check ends.
     pub fn tell(&self, result: ClauseResult) {
-        self.found().1.push(result);
+        self.found.lock().1.push(result);
     }
 
     /// The connector's id, once it is known.
     pub fn connector(&self) -> Option<String> {
-        self.found().0.clone()
+        self.found.lock().0.clone()
     }
 
     /// The results told so far, in the order their checks ended.
     pub fn results(&self) -> Vec<ClauseResult> {
-        self.found().1.clone()
-    }
-
-    fn found(&self) -> std::sync::MutexGuard<'_, (Option<String>, Vec<ClauseResult>)> {
-        let found = self.found.lock();
-        found.unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.found.lock().1.clone()
     }
 }
 

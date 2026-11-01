@@ -13,7 +13,8 @@ mod tests;
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::hash::{BuildHasher as _, RandomState};
-use std::sync::{Mutex, PoisonError};
+
+use parking_lot::Mutex;
 
 use crate::cursor::Cursor;
 use crate::error::{ConnectorError, ConnectorErrorKind, Result};
@@ -100,7 +101,7 @@ impl Sent {
         cursor: &Cursor,
     ) {
         let hash = self.hash(stream, partition, cursor);
-        let mut hosts = self.hosts.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut hosts = self.hosts.lock();
         let noted = hosts.entry(host.map(str::to_owned)).or_default();
         if noted.order.len() >= self.limit
             && let Some(oldest) = noted.order.pop_front()
@@ -129,7 +130,7 @@ impl Sent {
     ) {
         let place = self.place(stream, partition);
         let hash = self.hash(stream, partition, cursor);
-        let mut hosts = self.hosts.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut hosts = self.hosts.lock();
         let noted = hosts.entry(host.map(str::to_owned)).or_default();
         noted.started.retain(|started| *started != place);
         if noted.started.len() >= self.limit
@@ -151,7 +152,7 @@ impl Sent {
     ) -> bool {
         let hash = self.hash(stream, partition, cursor);
         let place = self.place(stream, partition);
-        let hosts = self.hosts.lock().unwrap_or_else(PoisonError::into_inner);
+        let hosts = self.hosts.lock();
         hosts.get(&host.map(str::to_owned)).is_some_and(|noted| {
             noted.times.contains_key(&hash) || noted.starts.get(&place) == Some(&hash)
         })

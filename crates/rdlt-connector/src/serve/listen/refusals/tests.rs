@@ -1,5 +1,7 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
+
+use parking_lot::Mutex;
 
 use super::{Log, Refusals, Refused};
 
@@ -66,10 +68,10 @@ fn every_reason_refused_is_one_line_with_their_total() {
 fn a_log_writes_each_line_where_it_was_told() {
     let lines = Arc::new(Mutex::new(Vec::new()));
     let written = Arc::clone(&lines);
-    let log = Log::new(move |line| written.lock().expect("no panic").push(line.to_owned()));
+    let log = Log::new(move |line| written.lock().push(line.to_owned()));
     log.line("one");
     log.clone().line("two");
-    assert_eq!(*lines.lock().expect("no panic"), ["one", "two"]);
+    assert_eq!(*lines.lock(), ["one", "two"]);
     assert!(format!("{log:?}").starts_with("Log"));
     Log::stderr().line("a listening connector's line, written by a test");
 }

@@ -1,12 +1,13 @@
 use std::collections::VecDeque;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
 use arrow_array::{Int64Array, RecordBatch};
 use bytes::Bytes;
+use parking_lot::Mutex;
 use rdlt_wire::bounded::{Bounded, Bounds};
 use rdlt_wire::flow::Granting;
 use rdlt_wire::limits::{CREDIT_FLOOR, Class, MIN_FRAME_BYTES};
@@ -51,11 +52,11 @@ struct Log(Arc<Mutex<Vec<String>>>);
 
 impl Log {
     fn push(&self, event: String) {
-        self.0.lock().expect("the log is not poisoned").push(event);
+        self.0.lock().push(event);
     }
 
     fn events(&self) -> Vec<String> {
-        self.0.lock().expect("the log is not poisoned").clone()
+        self.0.lock().clone()
     }
 }
 

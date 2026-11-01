@@ -1307,6 +1307,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "chrono",
+ "parking_lot",
  "rdlt-connector-macros",
  "rdlt-wire",
  "schemars",
