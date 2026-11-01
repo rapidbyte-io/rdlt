@@ -79,6 +79,8 @@ commit.
 | `main` at `a5cb0617`, logged | 3.057 s (3.029–3.067 s) | 585 | 285 SQLite's, 313 the log's, 3 the directory's | flush 13.6 ms, horizon 0.15 ms, log 1.8 ms, commit 14.1 ms |
 | this change | 2.839 s (2.830–2.957 s) | 272 | 285 SQLite's, 2 the directory's | flush 12.9 ms, commit 15.0 ms, ack 0.01 ms |
 
+- The base's row is the earlier design's: its commit timed a horizon and a log between its flush
+  and its commit, phases today's commit does not have.
 - Every round of this change ran faster than every round of the base, 7 % at the medians: the
   log's 313 syncs and 7 300 file opens a run are gone, and nothing outside SQLite's own files is
   synced.

@@ -1265,20 +1265,21 @@ the largest of the in-process counts within that.
 - **Running.** `just bench served 0-3 tables 4-11`. A followed run lasts its ten-second span, so
   each followed cell takes about two minutes: a warm-up run and ten samples of one run each.
 - **Readings.** Over a cell's ten runs, the median and range of each commit phase's time a commit
-  (the flush, the horizon, the log, the commit and the acknowledgement, which is one `committed`
-  call a stream); the CPU seconds a wall second of the bench's process, the source's and the
-  destination's, while the streams are quiet, from seven seconds to ten, or over the snapshot's
-  run; the most the reads kept of their share, from the report's `kept_peak`, against the share,
-  a quarter of the budget; each process's resident peak, and the bench's above its base before
-  the run; then the last run's readings, lane flushes by cause, retirements among them.
+  (the flush, the commit and the acknowledgement, which is one `committed` call a stream); the CPU
+  seconds a wall second of the bench's process, the source's and the destination's, while the
+  streams are quiet, from seven seconds to ten, or over the snapshot's run; the most the reads kept
+  of their share, from the report's `kept_peak`, against the share, a quarter of the budget; each
+  process's resident peak, and the bench's above its base before the run; then the last run's
+  readings, lane flushes by cause, retirements among them.
 - **Checks.** Every run checks every row its streams pushed lands.
 
-Measured in the same three rounds as the production slice above, where each read took a part of
-its own, so the cell of 192 streams ran within the least budget that admitted its partitions; the
-medians of each cell's ten runs in each round, then the median of the rounds and their range. A commit's phases are its
-flush, its log and its commit (the horizon reads 0.000 throughout) and the acknowledgement, one
-`committed` call a stream; idle CPU is each process's CPU seconds a wall second while the streams
-are quiet, or over the snapshot's run.
+Measured in the same three rounds as the production slice above, where each read took a part of its
+own, so the cell of 192 streams ran within the least budget that admitted its partitions; the
+medians of each cell's ten runs in each round, then the median of the rounds and their range. A
+commit's phases are its flush, its commit and the acknowledgement, one `committed` call a stream.
+The tree these rounds ran, a design before today's, also timed a horizon, which read 0.000
+throughout, and a log between the flush and the commit, which the table leaves out; idle CPU is each
+process's CPU seconds a wall second while the streams are quiet, or over the snapshot's run.
 
 | Cell | Budget | Flush | Commit | Acknowledgement | Idle CPU: bench / source / destination | Reads kept at most, of their share | Flushes: commit + retired |
 |---|---|---|---|---|---|---|---|
