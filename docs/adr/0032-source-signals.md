@@ -4,20 +4,19 @@ Status: accepted, 2026-09-30.
 
 ## Context
 
-ADR 0031 split the owner's four streaming items (2026-09-26, confirmed 2026-09-28) across M5d,
-M5d2 and M5d3. M5d built continuous runs, interval re-planning and the offset-log source. M5d2
-takes the rest of what a streaming source must be able to tell a run:
+A run that follows a streaming source plans its streams again at an interval (ADR 0031). A
+streaming source must also be able to tell the run more than its data:
 
-1. **The re-plan signal** (the rest of item 1). A topic whose partitions were increased, or a
-   consumer group that rebalanced, knows its partitions changed long before the next interval.
-2. **The lag hook** (item 3). Only the source knows how far a read is behind its newest data:
-   cursors are opaque to the engine.
-3. **Retention loss** (item 4). A log that dropped the messages a read would resume from must
-   fail the run with a typed error by default; an opt-in policy resets to the earliest offset,
-   and the report counts each reset.
-4. **`S-PARTITION`** (ADR 0021): planned partitions cover each stream exactly once. It waited for
-   M5 because its truth, a stream planned again from where its partitions stood, needs
-   re-planning.
+1. **The re-plan signal.** A topic whose partitions were increased, or a consumer group that
+   rebalanced, knows its partitions changed long before the next interval.
+2. **The lag hook.** Only the source knows how far a read is behind its newest data: cursors are
+   opaque to the engine.
+3. **Retention loss.** A log that dropped the messages a read would resume from must fail the run
+   with a typed error by default; an opt-in policy resets to the earliest offset, and the report
+   counts each reset.
+
+Certification must check that planned partitions cover each stream exactly once (`S-PARTITION`),
+whose truth, a stream planned again from where its partitions stood, needs re-planning.
 
 ## Decision
 
@@ -52,15 +51,14 @@ takes the rest of what a streaming source must be able to tell a run:
     run, resets too. The rows in between are lost; `StreamReport::retention_resets` counts each
     reset. A read from the beginning that fails so before any checkpoint fails the run: there is
     nothing earlier to reset to.
-  - Only a stream read incrementally, from a source that can read it again, may reset; any
-    other is refused before the run reads, as `retention_reset_unsupported`. A full read would
-    load its rows twice into its cycle, a change stream would miss changes its table needs (a
-    re-snapshot is M5d3's `reset(streams)`), and a source that cannot read again has no earliest
-    to serve.
+  - Only a stream read incrementally, from a source that can read it again, may reset; any other is
+    refused before the run reads, as `retention_reset_unsupported`. A full read would load its rows
+    twice into its cycle, a change stream would miss changes its table needs (a re-snapshot is a
+    reset, ADR 0033), and a source that cannot read again has no earliest to serve.
   - The failed read's open segment is abandoned, as a stopped partition's is: no checkpoint
     seals its rows. An abandoned segment's rows do not count toward the commit policy's
     thresholds (`Progress::Abandoned`), so a long run's abandoned rows never keep a commit due.
-- **The reference offset-log source** gains `retention` (messages each partition keeps). A read
+- **The reference offset-log source** has `retention` (messages each partition keeps). A read
   from before its earliest offset fails as `retention_lost`; a read with no cursor starts at the
   earliest. It reports `behind` after each checkpoint, and partition p0's following read signals
   a re-plan when the partition count changes, waking for it as it wakes for a message.
@@ -75,8 +73,8 @@ takes the rest of what a streaming source must be able to tell a run:
     any other from each partition's recorded cursor, or else its beginning.
   - A stream with unbounded partitions in its first plan is skipped (no single read covers one),
     and so is one none of whose partitions checkpoints. The clause passes if it checked a stream.
-  - A source that ignores its cursor now fails `S-PARTITION` as well as `S-RESUME`: it repeats
-    rows however it is planned.
+  - A source that ignores its cursor fails `S-PARTITION` as well as `S-RESUME`: it repeats rows
+    however it is planned.
 - **The simulation's streaming reads** report how far behind they are and signal a re-plan after
   every checkpoint of a following read. Where the seed's source does not churn (ADR 0031), the
   partitions never change, so each signalled plan must change nothing, through every crash and
@@ -87,7 +85,4 @@ takes the rest of what a streaming source must be able to tell a run:
 - A source can bring a new partition into a following run at once, report its lag, and say that
   its retention overtook a read; an operator chooses per stream whether that fails the run or
   loses the dropped rows and counts them.
-- `S-PARTITION` completes the source clauses ADR 0021 named, so certification now checks that
-  re-planning neither skips nor repeats rows.
-- M5d3 remains: `reset(streams)` (ADR 0023, 0025) and change streams whose source cannot read
-  again.
+- Certification checks that re-planning neither skips nor repeats rows (`S-PARTITION`).
