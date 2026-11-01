@@ -138,9 +138,9 @@ impl Lanes {
         &self.calls
     }
 
-    /// The lane for the writes to `table` of the partition at `place` in the attempt: a
-    /// partition keeps its place while it reads, and one read again takes its ended read's, so
-    /// its writes to a table stay in order on one lane; places up to the lanes take a lane each.
+    /// The lane for the writes to `table` of the partition at `place` in the attempt, so places
+    /// up to the lanes take a lane each; one lane a partition and table, since spreading a
+    /// partition's writes over more lanes gains nothing (ADR 0004), and no order rests on it.
     pub(crate) fn route(&self, table: usize, place: usize) -> usize {
         place.wrapping_add(table) % self.senders.len()
     }
