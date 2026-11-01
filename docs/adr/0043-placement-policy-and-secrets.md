@@ -152,8 +152,8 @@ given. A host enforces that only where it closes each of these:
   where that call works, and is refused otherwise (`sandbox_descriptors`): the host asks the
   kernel once, and the child fails the spawn should the call fail there. A trusted connector,
   on an older kernel and on macOS, has each descriptor marked in turn up to the process's
-  soft limit, capped at 65,536: a measure of hygiene, which misses a descriptor numbered
-  above the cap, for a binary trusted as the host is. This hook, `rdlt_adopt::inheriting_only`,
+  soft limit or 65,536, whichever is less: a measure of hygiene, which misses a descriptor numbered
+  above that, for a binary trusted as the host is. This hook, `rdlt_adopt::inheriting_only`,
   is the workspace's only `pre_exec` hook, audited in `rdlt-adopt` (ADR 0048). It marks and
   closes nothing, so a program executed through `/proc/self/fd` is open still when `exec`
   opens it, and the host's own descriptors are untouched.

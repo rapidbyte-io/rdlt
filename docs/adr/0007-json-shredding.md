@@ -13,7 +13,7 @@ and a throughput bound. Pushes also coalesce into batches.
 
 - **One pass parses, observes and builds.** Parsing each chunk into a tape, walking it to observe
   types and building against the joined types in a second walk is rejected: walking sonic-rs's
-  document costs as much as parsing it, which caps that design near 3.5 times the old engine.
+  document costs as much as parsing it, which limits that design to near 3.5 times the old engine.
   Each chunk is parsed once through serde seeds over sonic-rs, and every value goes
   straight into a column typed by the values the chunk held so far: a column starts as nulls and
   takes its first value's type, and converts itself when a later value widens it without loss (a

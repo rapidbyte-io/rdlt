@@ -178,7 +178,7 @@ is built and read as it was written:
   `evolve` it fails its batch, and `discard_row` or `discard_value` on that column drop it and
   count it.
 - Rejected:
-  - Two passes for every chunk (observe, then build): the throughput gate of ADR 0007 needs the
+  - Two passes for every chunk (observe, then build): the throughput bound of ADR 0007 needs the
     single pass, and only chunks that pass their allowance pay a second.
   - A second byte limit inside the shredder: the budget's request bound already says how much one
     write may take.
