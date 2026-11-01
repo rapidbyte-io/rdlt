@@ -105,9 +105,10 @@ they are built apart.
   - Each phase begins with runs `until: For(d)`, disrupted and faulted as the seed says, the network
     included, while a production future joined with them makes rows arrive. The source serves what
     has arrived, and a following read waits on the world's notification, or a stop.
-  - The source serves only whole checkpoint groups (whole batches where the stream checkpoints
-    on demand) until every row has arrived. Every read then sends the batches and checkpoints the
-    model infers types and discards by.
+  - Until every row has arrived, the source serves only whole checkpoint groups (whole batches
+    where the stream checkpoints on demand). So every read sends the batches and checkpoints the
+    model expects, and the model infers each column's type and the values its policy discards
+    from those same batches.
   - Then every row arrives, and the phase converges. The model's checks cover
     exactly-once.
   - A refusal the model says every run must meet only may happen in a following run, which may
@@ -116,10 +117,12 @@ they are built apart.
   - In one streaming seed in two (`churn`), the source's followed streams churn while runs follow
     them. Each phase begins with one to three of their partitions retired or named again, and a
     third of the ticks that make rows arrive retire, add or name again one more. Once the following
-    runs end, the source names every partition again, and the phase's last runs read every row. A
-    churned stream's plans name a start for each partition at its newest arrived row, which a plan
-    in the recorded phase must not start a partition from. The runs are held to re-planning's
-    invariants (ADR 0052).
+    runs end, the source names every partition again, and the phase's last runs read every row.
+  - A churned stream's plans give each partition a start at its newest arrived row. Re-planning
+    within the phase the stream's state records ignores those starts: a partition it starts
+    begins at its committed position, or at its beginning, never at the start the plan names,
+    which would skip the rows before it. Only a new phase's partitions start where a plan says.
+    The runs are held to re-planning's invariants (ADR 0052).
 
 ## Consequences
 
