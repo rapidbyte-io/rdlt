@@ -71,7 +71,9 @@ JSON exactness ADR 0026's.
 
 ## Consequences
 
-- **A removed row stays removed.** A change sequenced before a hard delete or truncate, sent
-  again, never brings its row back: every destination keeps tombstones (ADR 0027), which
-  `D-DELETE` and `D-TRUNCATE` certify.
+- **A removed row stays removed while its table is merged.** A change stream merges only into a
+  destination that declares it merges changes (`change_merge_unsupported` otherwise), and every
+  such destination keeps tombstones (ADR 0027), so a change sequenced before a hard delete or
+  truncate, sent again, never brings its row back; `D-DELETE` and `D-TRUNCATE` certify it. A table
+  replaced whole by a generation forgets its tombstones, as `D-DELETE` checks.
 - **Portable sqlgen** is ADR 0028's.
