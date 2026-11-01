@@ -4,11 +4,11 @@ Status: accepted, 2026-09-26.
 
 ## Context
 
-M3f made the simulation draw every type in every encoding (ADR 0012), but its streams only evolved,
-dropped rows or dropped values, set once per stream. No run was ever refused. No drift column was
-declared, hinted or set on its own, and merge keys were integers no two partitions shared. M3g is
-the second of the three simulation milestones: every schema policy and setting, and odd schema
-sequences.
+The simulation draws every type in every encoding (ADR 0012). Streams that only evolve, drop rows
+or drop values, set once per stream, are never refused, so a simulation of them checks no
+refusal. The simulation must also draw every schema policy and setting at every level, drift
+columns declared, hinted or set on their own, merge keys that change type and collide across
+partitions, and odd schema sequences, and predict the refusals they cause.
 
 ## Decision
 
@@ -63,30 +63,25 @@ sequences.
   - Reserved words include base and metadata column names.
   - Tables avoid reserved prefixes.
   - Some destinations cannot add columns.
-- **Found and fixed in the engine.**
-  - A normalized stream's column settings covered only the column's own path, so a policy on an
-    object or array reached neither the columns it flattens into nor its child tables. A stream's
-    column settings now apply to everything the column becomes.
-  - A normalized stream ignored the hint on a column whose values were objects or arrays, and
-    normalized them. A hinted column is now stored whole, as its hint.
-  - A new array a column discards counted its items as discarded values even when another column
-    dropped their row. Now only items whose rows load count, as a dropped row's other values never
-    did.
-  - A float written into JSON took the text arrow-json gives it, which for some values has more
-    digits than reading it back needs: `2.71492836553152e19` became `2.7149283655315202e19`, the
-    same double but another number to a destination that keeps JSON numbers exact. Floats are
-    now written as the shortest text that reads back as them.
-  - A merge key widened even where the schema was frozen, altering the destination's key column
-    where freezing promises no change. A frozen key now refuses any type it does not hold with
-    `schema_frozen`, which an operator can relax.
-- **Found and fixed in the oracle.** Reserved words are compared after the destination's rules
-  fold case. Before, the oracle compared them ignoring case, and so wrongly flagged `D0` where a
-  case-preserving destination reserves `d0`.
+- **A normalized stream's column settings apply to everything the column becomes**: a policy on
+  an object or array reaches the columns it flattens into and its child tables.
+- **A hinted column is stored whole, as its hint**, in a normalized stream too, whether its
+  values are objects or arrays.
+- **Only items whose rows load count as discarded values**: a new array a column discards counts
+  no item whose row another column dropped, as a dropped row's other values never count.
+- **Floats are written into JSON as the shortest text that reads back as them.** The text
+  arrow-json gives some values has more digits than reading it back needs:
+  `2.71492836553152e19` as `2.7149283655315202e19`, the same double but another number to a
+  destination that keeps JSON numbers exact.
+- **A frozen merge key refuses any type it does not hold** with `schema_frozen`, which an operator
+  can relax, rather than alter the destination's key column where freezing promises no change.
+- **The oracle compares reserved words after the destination's rules fold case**, so it flags
+  `D0` only where the destination reserves it, never because a case-preserving destination
+  reserves `d0`.
 
 ## Consequences
 
-- Rows that go with a dropped row count as discarded rows, as the engine has counted them since
-  normalized streams arrived. The model counts them too.
+- Rows that go with a dropped row count as discarded rows, in the engine and in the model.
 - About one seed in twelve stops at a key refusal, about half of them in the first phase.
 - A normalized stream's child tables are created by their first rows in whatever order partitions
   send them, so the oracle predicts the refusals of a column holding objects or arrays only as
@@ -96,7 +91,7 @@ sequences.
   and a unit left with none of the stream's rows resolves none of its columns. Which columns
   arrive then depends on how the engine groups a flush's batches, so where rows go the oracle
   predicts refusals, keys' too, only as possible.
-- Seeds that once found a defect are replayed on every change, in the test job; the simulation's
-  shards run only the sweeps.
+- Seeds that found a defect are replayed on every change, in the test job; the simulation's shards
+  run only the sweeps.
 - Faults beyond connector calls, multi-threaded runs, replay and the simulation's own coverage
   are ADR 0014's.
