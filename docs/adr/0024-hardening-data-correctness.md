@@ -4,21 +4,16 @@ Status: accepted, 2026-09-28.
 
 ## Context
 
-An adversarial review the owner ran after M5a found thirteen defects and five test gaps. Five
-were reproduced by running:
-- a column named `_rdlt_rank` dropping rows from SQLite merges;
-- a widened merge key duplicating rows;
-- JSON integers beyond 64 bits rounding into one key;
-- run-end encoded columns exceeding the memory budget a hundredfold;
-- one JSON field landing in two columns.
+The write and merge paths must keep data exact against inputs that look ordinary:
+- a column named as one of the planner's internal names, such as `_rdlt_rank`, which would drop
+  rows from SQLite merges;
+- a merge key whose type widens, which would duplicate rows;
+- JSON integers beyond 64 bits, which would round into one key;
+- run-end encoded columns, which would hold a hundred times what they are charged;
+- one JSON field, which would land in two columns.
 
-The rest were confirmed by reading the code. The findings are split in two:
-- **H1a** (this ADR): data correctness in the write and merge paths.
-- **H1b**: isolation and robustness: table ownership across pipelines, validation of what a
-  connector sends, the handshake's order, the files destination's durability, certification that
-  compares content, and the int-then-float columns.
-
-M5b follows H1b.
+Isolation between pipelines, what a connector sends and the protocol's order are ADR 0025's, and
+JSON exactness ADR 0026's.
 
 ## Decision
 
@@ -29,7 +24,7 @@ M5b follows H1b.
     prefix `_rdlt_fit_` and the SHA-256 of the whole name in base 32: no name the planner derives
     uncut and no catalog table begins with that prefix, so a cut name meets only another cut name
     (ADR 0049).
-  - The name functions became planner methods.
+  - The name functions are planner methods.
   - User columns may start with `_rdlt_`, but one named exactly as a metadata column, folded and
     cleaned, is refused, whatever metadata columns its table has yet (ADR 0046).
 - **A merge key changes type only where equal keys keep matching.**

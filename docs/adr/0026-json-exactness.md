@@ -4,20 +4,15 @@ Status: accepted, 2026-09-29.
 
 ## Context
 
-ADR 0025 split JSON exactness from H1b. Each of its findings needs values, not only types, to be
-judged:
-- A column of integers that later meets floats sends them to JSON text, since the lattice joins
-  `Int64` and a float as `Json`: a 64-bit float rounds integers beyond 2⁵³. The floats lose
-  nothing as floats, yet land as text.
-- An integer beyond 38 digits fails its push as `value_unrepresentable`, even in a column already
-  of JSON text, which holds it.
-- A merge key decimal the destination stores as text is refused a wider precision at the same
-  scale, though its values render alike and keep matching.
-- The simulation never pushes JSON integers beyond 64 bits, and the test kit writes a scaled
-  decimal's JSON text without its point.
-
-Drafting this found the exact parse reading a record of invalid UTF-8 unchecked, which aborted the
-process; H1b fixed it (ADR 0025).
+Some JSON values are judged exactly only by value, not by type:
+- The lattice joins `Int64` and a float as `Json`, since a 64-bit float rounds integers beyond
+  2⁵³. Judged by type alone, a column of integers that meets floats sends them to JSON text,
+  though the floats lose nothing as floats.
+- An integer beyond 38 digits fits no 128-bit decimal, though a column of JSON text holds it.
+- A merge key decimal the destination stores as text renders alike at a wider precision of the
+  same scale, so its values keep matching.
+- The simulation must push JSON integers of every width, and the test kit write a scaled
+  decimal's JSON text with its point.
 
 ## Decision
 
@@ -100,4 +95,4 @@ process; H1b fixed it (ADR 0025).
 
 - Tables take floats after 64-bit integers in a `__float64` column, whatever integers an
   earlier flush held.
-- A push holding an integer beyond 38 digits loads instead of failing.
+- A push holding an integer beyond 38 digits loads.
