@@ -769,15 +769,15 @@ which one served connection cannot carry ([served.md](served.md), "Many tables")
   share no other read holds, so the memory bounds what they keep, not how many a run follows
   (ADR 0039). Every cell writes through as many writers as the host has cores, so as many lanes,
   four on CPUs 0–3.
-- **Readings.** Over a cell's ten runs, its warm-up's left out, the median and range of: each
-  commit phase's time a commit, the flush, the horizon, the log, the commit and the
-  acknowledgement; the process's CPU seconds a wall second while the streams are quiet, from
-  seven seconds to ten, or over the snapshot's run; and the process's resident peak and how far
-  it rose above the run's base. With them, the budget the cell runs within and the least that
-  admits its partitions, the most its reads kept at once (the report's `kept_peak`) against their
-  share, a quarter of the budget, and the last run's readings, lane flushes by cause, retirements
-  among them. Reads in the engine's process keep nothing beside their events, so in-process cells
-  read zero there; served reads keep their decoders' schemas and dictionaries.
+- **Readings.** Over a cell's ten runs, its warm-up's left out, the median and range of: each commit
+  phase's time a commit, the flush, the commit and the acknowledgement; the process's CPU seconds a
+  wall second while the streams are quiet, from seven seconds to ten, or over the snapshot's run;
+  and the process's resident peak and how far it rose above the run's base. With them, the budget
+  the cell runs within and the least that admits its partitions, the most its reads kept at once
+  (the report's `kept_peak`) against their share, a quarter of the budget, and the last run's
+  readings, lane flushes by cause, retirements among them. Reads in the engine's process keep
+  nothing beside their events, so in-process cells read zero there; served reads keep their
+  decoders' schemas and dictionaries.
 - **Checks.** Every run checks every row its streams pushed lands.
 - **Running.** `just bench passthrough 0-3 tables`. A followed run lasts ten seconds, so each
   followed cell takes about two minutes. As a test, each cell runs once with the same pushes 20 ms
@@ -786,11 +786,11 @@ which one served connection cannot carry ([served.md](served.md), "Many tables")
 
 Measured in the three rounds of the chosen cells above, on their tree and cores, where each read
 took a part of its own, so the cells of 192 and 256 streams ran within the least budget that
-admitted their partitions; the medians of each cell's ten runs in each round, then the median of
-the rounds and their range. A commit's
-phases are its flush, its log and its commit (the horizon reads 0.000 throughout) and the
-acknowledgement; idle CPU is the process's CPU seconds a wall second while the streams are quiet,
-or over the snapshot's run.
+admitted their partitions; the medians of each cell's ten runs in each round, then the median of the
+rounds and their range. A commit's phases are its flush, its commit and the acknowledgement. The
+tree these rounds ran, a design before today's, also timed a horizon, which read 0.000 throughout,
+and a log between the flush and the commit, which the table leaves out; idle CPU is the process's
+CPU seconds a wall second while the streams are quiet, or over the snapshot's run.
 
 | Cell | Budget | Flush | Commit | Acknowledgement | Idle CPU | Flushes: commit + retired + pressure |
 |---|---|---|---|---|---|---|
