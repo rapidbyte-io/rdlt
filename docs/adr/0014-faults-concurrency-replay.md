@@ -4,26 +4,21 @@ Status: accepted, 2026-09-26.
 
 ## Context
 
-M3h is the third of the three simulation milestones (ADR 0012, ADR 0013). The simulation injected
-transient and rate-limited failures into connector calls, crashed, stopped and raced runs, and ran
-on one thread with a paused clock. It never met:
+The simulation draws every type, encoding, policy and setting (ADR 0012, ADR 0013), injects
+transient and rate-limited failures into connector calls, and crashes, stops and races runs, on
+one thread with a paused clock. A simulation that stops there never meets:
 
 - a permanent failure or a panic;
 - a failure while a schema change applies, a writer opens or a session closes;
 - a run stopped at once;
 - a destination two pipelines share;
 - a scheduler that runs tasks in another order;
-- real threads.
+- real threads;
+- a NaN or an infinity, which proptest's `any::<f64>()` never yields;
+- the engine shredding a checkpoint's worth of JSON pushes together, where a model that infers
+  a push's types push by push is wrong.
 
-Nothing checked that a seed replays alike, or measured how much of the engine the simulation
-reaches. Two gaps were also carried from M3g:
-
-- **No float edges.** No test drew a NaN or an infinity: proptest's `any::<f64>()` never yields
-  them.
-- **Unmodelled shredding.** The model inferred a JSON push's types push by push, while the engine
-  shreds a checkpoint's worth of pushes together.
-
-The owner chose to keep all of this in one milestone.
+Nor does it check that a seed replays alike, or measure how much of the engine it reaches.
 
 ## Decision
 
@@ -137,29 +132,24 @@ The owner chose to keep all of this in one milestone.
 - **The simulation's own coverage.** `just sim-coverage` measures the engine, connector, host and
   data-plane code the simulation alone reaches over 1 000 seeds, leaving out test code and what
   the simulation never runs, and the nightly workflow holds it to the floor ADR 0019 states.
-- **Found and fixed in the engine.**
-  - A connector that panicked while an attempt opened or planned panicked the caller awaiting the
-    run: its `open`, its listing of partitions, or its applying of a declared schema all run on
-    the run's own task. An attempt now contains a panic and fails with an internal error, "an
-    attempt panicked", like a panic in any of its tasks.
-  - A seed did not replay alike, since M2a. Tokio's `watch` channel, which carried the
-    coordinator's barriers to the partitions and the memory budget's pressure, spreads its
-    waiters over eight queues, picked by a generator tokio seeds at random. Partitions woken by
-    one barrier therefore ran in a random order. The replay test found it, and a sweep of `main`
-    showed 3 seeds in 200 replaying differently.
-    - The engine now uses a watch of its own (`watch.rs`), a value and version behind a mutex
-      and one `Notify`, which wakes waiters in the order they began to wait, and only when its
-      value changes.
-    - The engine's clippy configuration bans awaiting tokio's `watch` receivers.
-    - The connector's sink keeps tokio's channel, as it only reads the value.
+- **An attempt contains a connector's panic.** A connector's `open`, its listing of partitions and
+  its applying of a declared schema run on the run's own task; a panic there fails the attempt
+  with an internal error, "an attempt panicked", like a panic in any of its tasks, and never
+  panics the caller awaiting the run.
+- **The engine's watch wakes its waiters in order.** Tokio's `watch` channel spreads its waiters
+  over eight queues, picked by a generator tokio seeds at random, so partitions woken by one
+  barrier would run in a random order and a seed would not replay alike.
+  - The coordinator's barriers and the memory budget's pressure reach their waiters through the
+    engine's own watch (`watch.rs`), a value and version behind a mutex and one `Notify`, which
+    wakes waiters in the order they began to wait, and only when its value changes.
+  - The engine's clippy configuration bans awaiting tokio's `watch` receivers.
+  - The connector's sink keeps tokio's channel, as it only reads the value.
 
 ## Consequences
 
-- The engine already handled float edges and the new fault points: 200 000 cases of the lowering
-  differential with NaN and infinities drawn found nothing.
 - Tokio draws from its random generator in two places: an unbiased `select!` and a waiting
-  `watch` receiver. Every `select!` in the engine is biased, and clippy now bans the waiting
-  receiver, so neither can quietly break replay again.
+  `watch` receiver. Every `select!` in the engine is biased, and clippy bans the waiting
+  receiver, so neither can quietly break replay.
 - No loom model checks the memory budget, credit windows, seal bookkeeping or the coordinator's
   handshake: loom needs every primitive swapped under a `cfg`, the simulation explores the races
   between tasks at every await, and the stress run samples interleavings on real threads. Kani
