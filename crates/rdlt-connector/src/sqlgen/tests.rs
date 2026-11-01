@@ -229,7 +229,11 @@ fn a_commit_publishes_child_tables_first_and_those_listed_that_follow_a_staged_r
         .map(|staged| staged.name.as_str())
         .collect();
     assert_eq!(names, ["items", "tags", "roots", "plain"]);
-    assert_eq!(published[1], staged("tags", None, Some(child("roots"))));
+    let follows = Staged {
+        rows: 0,
+        ..staged("tags", None, Some(child("roots")))
+    };
+    assert_eq!(published[1], follows);
     // Nothing staged, nothing published, whatever the commit lists.
     assert!(
         planner
@@ -1618,6 +1622,7 @@ fn staged(name: &str, generation: Option<GenerationId>, merge: Option<MergeKey>)
         name: name.to_owned(),
         generation,
         merge,
+        rows: 1,
     }
 }
 

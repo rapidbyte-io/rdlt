@@ -38,7 +38,9 @@ landed key must hold across a database's transactions and a file system's operat
   columns; a generation is checked as a table is. The destination says what the rows were
   written with: the SQLite session notes the columns its writers stage each segment's rows with,
   since a commit publishes only its own session's rows and the catalog records no columns of
-  them, and forgets a segment once a commit publishes or abandons it. A column the staging holds
+  them, and forgets a segment once a commit publishes or abandons it. A publish of staged rows
+  told none of the columns they were written with fails as `Internal`, since it could check
+  nothing. A column the staging holds
   that the rows were not written with, as a change stream's flags after the table is appended
   to, or a column an abandoned generation added, holds none of their values and stops nothing;
   a change stream's op and unchanged flags direct its merge, and no table holds them.

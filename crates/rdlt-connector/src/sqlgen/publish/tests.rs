@@ -1,5 +1,6 @@
 use super::super::tests::{pipeline, segments};
 use super::super::{Column, SqlPlanner, Sqlite, Staged, Statement};
+use crate::commit::ChildTable;
 use crate::destination::{ChangeColumns, Deletion, HistoryColumns, MergeKey, RootKey};
 use crate::error::{COLUMN_MISSING, ConnectorErrorKind, Result};
 use crate::id::{Epoch, GenerationId};
@@ -112,6 +113,7 @@ fn published(
         name: "orders".to_owned(),
         generation,
         merge: merge.cloned(),
+        rows: 1,
     };
     planner.publish(&owned, &orders, target, written, Epoch(1), &segments(&[1]))
 }
@@ -163,6 +165,48 @@ fn a_generation_lacking_columns_its_rows_were_written_with_is_refused() {
     // The staging it shares with its table may hold other columns, which its rows hold no value
     // in.
     published(None, generation, &target, &["id"]).unwrap();
+}
+
+#[test]
+fn a_publish_of_staged_rows_told_none_of_their_columns_is_refused() {
+    for (way, merge) in ways() {
+        let error = published(merge.as_ref(), None, &columns(&HELD), &[]).unwrap_err();
+        assert_eq!(error.kind(), ConnectorErrorKind::Internal, "{way}: {error}");
+    }
+}
+
+#[test]
+fn a_child_table_that_follows_its_root_publishes_told_no_columns() {
+    let planner = SqlPlanner::try_new(Sqlite).unwrap();
+    let (_, child) = ways().pop().expect("the last way is a child's");
+    let child = child.expect("a child table merges");
+    let root = child.root.clone().expect("a child table has a root");
+    let roots = Staged {
+        name: root.table.to_string(),
+        generation: None,
+        merge: Some(MergeKey {
+            root: None,
+            ..child.clone()
+        }),
+        rows: 1,
+    };
+    let listed = ChildTable {
+        table: "orders".into(),
+        merge: child,
+    };
+    let publishing = planner.publishing(vec![roots], &[listed]);
+    let follows = publishing.iter().find(|staged| staged.name == "orders");
+    let follows = follows.expect("the child table follows its root");
+    let owned = planner.own(&pipeline("mine"), "orders");
+    let plan = planner.publish(
+        &owned,
+        follows,
+        &columns(&HELD),
+        &[],
+        Epoch(1),
+        &segments(&[1]),
+    );
+    plan.unwrap();
 }
 
 #[test]

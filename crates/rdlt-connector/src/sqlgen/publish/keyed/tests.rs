@@ -104,6 +104,7 @@ fn published(key: &MergeKey, names: &[&str]) -> crate::error::Result<()> {
         name: "orders".to_owned(),
         generation: None,
         merge: Some(key.clone()),
+        rows: 1,
     };
     planner
         .publish_as(
@@ -211,6 +212,7 @@ fn a_child_table_s_root_takes_no_reserved_name() {
         name: "orders".to_owned(),
         generation: None,
         merge: Some(key),
+        rows: 1,
     };
     let error = planner
         .publish_as(

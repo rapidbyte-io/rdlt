@@ -59,17 +59,17 @@ pub(super) fn publish(
     (pipeline, epoch): (&PipelineId, Epoch),
     meta: &CommitMeta,
     noted: &Columns,
-) -> Result<(i64, i64)> {
+) -> Result<(u64, u64)> {
     let (mut rows, mut bytes) = (0, 0);
     let mut staged = Vec::new();
     for row in query(
         transaction,
         &planner.staged(pipeline, epoch, &meta.segments)?,
     )? {
-        let (table, count, size) = staged_segment(&row)?;
-        staged.push(table);
-        rows += count;
+        let (table, size) = staged_segment(&row)?;
+        rows += table.rows;
         bytes += size;
+        staged.push(table);
     }
     let written: Vec<String> = staged.iter().map(|staged| staged.name.clone()).collect();
     for staged in planner.publishing(staged, &meta.child_tables) {
@@ -112,7 +112,7 @@ fn abandon(
         return Ok(());
     }
     for row in query(transaction, &planner.staged(pipeline, epoch, abandoned)?)? {
-        let (staged, ..) = staged_segment(&row)?;
+        let (staged, _) = staged_segment(&row)?;
         let table = owned(transaction, planner, pipeline, &staged.name)?;
         run(
             transaction,
@@ -124,7 +124,7 @@ fn abandon(
 }
 
 /// A row of [`SqlPlanner::staged`]: what a table staged, with its rows and bytes.
-fn staged_segment(row: &[Value]) -> Result<(Staged, i64, i64)> {
+fn staged_segment(row: &[Value]) -> Result<(Staged, u64)> {
     let [name, generation, key, seq, count, size] = row else {
         return Err(ConnectorError::internal(
             "a staged segment has missing fields",
@@ -142,8 +142,9 @@ fn staged_segment(row: &[Value]) -> Result<(Staged, i64, i64)> {
         name: text(name)?,
         generation,
         merge,
+        rows: sqlgen::unsigned(integer(count)?),
     };
-    Ok((staged, integer(count)?, integer(size)?))
+    Ok((staged, sqlgen::unsigned(integer(size)?)))
 }
 
 /// Swaps in each generation `meta` finishes as the table its pipeline registered for the path.

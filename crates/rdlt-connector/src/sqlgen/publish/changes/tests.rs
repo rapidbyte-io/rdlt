@@ -37,6 +37,7 @@ fn a_change_stream_merges_into_its_table_never_a_generation() {
         name: "orders".to_owned(),
         generation: Some(GenerationId(3)),
         merge: Some(key(Deletion::Hard)),
+        rows: 1,
     };
     let error = planner
         .publish_as(
@@ -65,6 +66,7 @@ fn soft_deletes_into_a_table_without_their_column_are_refused() {
         merge: Some(key(Deletion::Soft {
             at: "deleted_at".into(),
         })),
+        rows: 1,
     };
     let error = planner
         .publish_as(
@@ -106,6 +108,7 @@ fn orders(deletion: Deletion) -> (Connection, SqlPlanner<Sqlite>, Staged) {
         name: "orders".to_owned(),
         generation: None,
         merge: orders.merge,
+        rows: 1,
     };
     (connection, planner, staged)
 }
@@ -278,6 +281,7 @@ fn wide_orders(width: usize, hard: bool) -> (Connection, SqlPlanner<Sqlite>, Sta
         name: "orders".to_owned(),
         generation: None,
         merge: orders.merge,
+        rows: 1,
     };
     (connection, planner, staged)
 }

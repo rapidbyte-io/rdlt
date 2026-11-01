@@ -218,8 +218,8 @@ impl Session for SqliteSession {
                 let receipt = Receipt {
                     key: meta.key,
                     committed_at: UNIX_EPOCH + Duration::from_micros(committed_at),
-                    rows: u64::try_from(rows).unwrap_or_default(),
-                    bytes: u64::try_from(bytes).unwrap_or_default(),
+                    rows,
+                    bytes,
                 };
                 run(transaction, &planner.land(&pipeline, &receipt))?;
                 Ok((receipt, true))
