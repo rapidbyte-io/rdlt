@@ -4,16 +4,15 @@ Status: accepted, 2026-09-26.
 
 ## Context
 
-M4a (ADR 0015) defined the wire protocol, and nothing spoke it yet. M4b makes both ends speak
-it:
+Both ends speak the wire protocol (ADR 0015):
 
-- A connector serves it, from `rdlt-connector`'s `serve` feature (§11.7).
-- The engine drives a served connector through `RemoteSource` and `RemoteDestination` in a new
-  crate, `rdlt-host` (§4.2, §13).
+- A connector serves it, from `rdlt-connector`'s `serve` feature.
+- The engine drives a served connector through `RemoteSource` and `RemoteDestination` in
+  `rdlt-host`.
 
-Placements are M4c's: spawning processes, `--rdlt-fd`, `--listen` and remote mTLS. M4b's tests
+Where a connector runs is its placement's (ADR 0017, ADR 0018). The tests of serving and hosting
 serve connectors over in-process socket pairs, which is what a spawned connector's pre-connected
-socket will be.
+socket is.
 
 ## Decision
 
@@ -46,7 +45,7 @@ socket will be.
     limit, so its trailers fit the host's header limit (`HEADER_LIST_BYTES`, 256 KiB).
   - A write the connector ended answers with the error its last answers carry, not a transport
     failure.
-- **Credit** (§12.5).
+- **Credit.**
   - A receiver grants each call a window of credit: its floor at first, then two of the largest
     frames it has taken, never more than its own data wire bound. Each frame it takes, a flush
     included, comes back as credit with any growth of the window, a flush's before its stats; the
@@ -70,22 +69,21 @@ socket will be.
   - Both ends take transport frames of up to `TRANSPORT_FRAME_BYTES` (1 MiB): a frame of the
     protocol crosses in few reads and writes, and a ping waits for at most one transport frame.
     Neither end lets HTTP/2 size its windows itself, which would override both.
-- **Liveness and deadlines** (§12.6).
+- **Liveness and deadlines.**
   - The host sends a heartbeat every interval (5 s by default). Once as many as it allows (6) are
     unanswered when the next is due, or the heartbeat's stream has not opened within as many
     intervals, the connector is lost, and every call on the connection fails with a transient
     `connector_lost` error. A heartbeat its queue has no room for counts as unanswered: the
-    heartbeat never waits on its transport. That lets the engine retry the attempt, and M4c's
-    supervision respawn the connector.
+    heartbeat never waits on its transport. That lets the engine retry the attempt, and supervision
+    respawn the connector (ADR 0017).
   - An echo is a frame of a call like any other: it waits its turn behind a transport frame of
     each call with data queued on its connection. A patience shorter than the link takes to carry
     those loses a connector that answers every beat; the default's 30 s carries a transport frame
     of all 199 calls on any link of 7 MiB a second or more.
-  - Each call has its deadline from §12.6, and fails past it with a transient
-    `deadline_exceeded` error. The connect deadline bounds a connection's setup, HTTP/2's
-    preface and settings, and the handshake's answer together; the configuration has a connect
-    deadline of its own. Reporting committed cursors, which §12.6 does not list, takes the
-    commit's deadline.
+  - Each call has a deadline of its own, and fails past it with a transient `deadline_exceeded`
+    error. The connect deadline bounds a connection's setup, HTTP/2's preface and settings, and the
+    handshake's answer together; the configuration has a connect deadline of its own. Reporting
+    committed cursors takes the commit's deadline.
   - A started read has no deadline: silence on a data stream is never fatal. A read asked to
     stop is dropped once the engine's stop wait passes (ADR 0042).
   - Each frame of a write is sent within the write-ack deadline, as the transport's windows fill
@@ -105,12 +103,11 @@ socket will be.
     the heartbeat's patience. After a stall, HTTP/2 checks a ping's deadline before it reads
     the pong waiting, where the heartbeat reads its echoes first: with the longer patience, the
     heartbeat alone judges whether a connector is lost.
-  - A commit longer than the heartbeat's patience succeeds while the connector answers
-    heartbeats, which is ledger item L3 (`slow_commit_within_deadline_succeeds`).
+  - A commit longer than the heartbeat's patience succeeds while the connector answers heartbeats
+    (`slow_commit_within_deadline_succeeds`).
 - **Reads.**
-  - The host forwards the engine's barriers and stops to the connector through two new public
-    items of the partition sink: `send`, and `requested`, which waits for the engine's next
-    request.
+  - The host forwards the engine's barriers and stops to the connector through two public items of
+    the partition sink: `send`, and `requested`, which waits for the engine's next request.
   - The served read feeds the source's partition channel and sends its events as frames.
   - Arrow batches open a new schema epoch when their schema changes, and the host requires
     epochs to grow.
@@ -139,9 +136,9 @@ socket will be.
 
 - Any gRPC implementation can serve a connector: the protocol's behaviour is in its messages,
   its statuses and this record.
-- `serve::<C>()`, a connector binary's whole `main` (§11.7), with `--rdlt-fd` and `--listen`, lands
-  with M4c's placements. Taking a pre-connected socket from file descriptor 3 needs the audited
-  `unsafe` §20.14 allows.
-- `rdlt_connector::testing::certify` over a real socket (§11.8) needs a client, and a client
-  needs `rdlt-host`, which the connector crate cannot depend on. It lands with `rdlt-certify` in
-  M4d.
+- `serve::<C>()`, a connector binary's whole `main`, takes its socket with `--rdlt-fd` or listens
+  with `--listen` (ADR 0017, ADR 0018). Adopting a pre-connected socket from a file descriptor is
+  the audited `unsafe` of `rdlt-adopt` (ADR 0048).
+- Certifying a connector over a real socket needs a client, and a client needs `rdlt-host`, which
+  the connector crate cannot depend on, so `rdlt-certify` does it (ADR 0020);
+  `rdlt_connector::testing` certifies in process.
