@@ -16,7 +16,7 @@ use arrow_array::{ArrayRef, Decimal256Array, Int8Array, Int64Array, RecordBatch}
 use arrow_buffer::i256;
 use bytes::Bytes;
 use rdlt_connector::cost::batch_charge;
-use rdlt_connector::{Permit, SchemaVersion, TablePath, TableRef};
+use rdlt_connector::{Exclusion, Permit, SchemaVersion, TablePath, TableRef};
 use tokio_util::sync::CancellationToken;
 
 use super::super::super::coalesce::{Flushed, Unit};
@@ -204,7 +204,8 @@ async fn excess(pushes: &[Bytes]) -> u64 {
     let limits = ShredLimits::new(10_000);
     let chunk_bytes = BatchPolicy::default().chunk_bytes().get();
     let pool = Pool::inline();
-    let observed = shred::observe(&pool, pushes.to_vec(), chunk_bytes, limits);
+    let excluded = Exclusion::default();
+    let observed = shred::observe(&pool, pushes.to_vec(), chunk_bytes, limits, excluded);
     observed.await.unwrap().excess()
 }
 
