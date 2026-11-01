@@ -3,7 +3,7 @@
 
 use super::super::{Owned, Sql, SqlDialect, SqlPlanner, Statement};
 use super::keyed::Of;
-use super::{Staged, keyless};
+use super::keyless;
 use crate::destination::{MergeKey, RootKey, TableRef};
 use crate::error::{ConnectorError, Result};
 
@@ -57,8 +57,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
             self.quote(root_id),
             self.quote(&root.id),
         ));
-        let roots = root_staged(root, of.staged);
-        self.rows_of(&mut sql, &roots, of.pipeline, of.epoch, of.segments);
+        self.rows_of(&mut sql, of.staged, of.pipeline, of.epoch, of.segments);
         sql.push(")");
         Ok(sql.finish())
     }
@@ -80,8 +79,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
              FROM {staging} WHERE ",
             self.quote(&root.seq),
         ));
-        let roots = root_staged(root, of.staged);
-        self.rows_of(sql, &roots, of.pipeline, of.epoch, of.segments);
+        self.rows_of(sql, of.staged, of.pipeline, of.epoch, of.segments);
         sql.push(&format!(
             " GROUP BY {id}) _rdlt_winners WHERE _rdlt_winners._rdlt_id = {children}.{} AND \
              _rdlt_winners._rdlt_newest = {children}.{})",
@@ -100,14 +98,5 @@ fn child_key<'a>(table: &str, key: &'a MergeKey) -> Result<(&'a str, &'a RootKey
         (_, None) => Err(ConnectorError::internal(
             "a child table's key names its root",
         )),
-    }
-}
-
-/// The root table's rows, staged beside a child table's `staged` rows.
-fn root_staged(root: &RootKey, staged: &Staged) -> Staged {
-    Staged {
-        name: root.table.to_string(),
-        generation: staged.generation,
-        merge: None,
     }
 }
