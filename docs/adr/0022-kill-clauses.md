@@ -4,23 +4,23 @@ Status: accepted, 2026-09-28.
 
 ## Context
 
-ADR 0021 split M4g, leaving M4h the `K` clauses (§20.8: "connector killed at random points;
-engine converges exactly-once") and `S-ARROW-JSON`. A kill clause needs an engine to load
-through the connector, and a host that can kill what it placed.
+The `K` clauses certify that a connector killed at random points still lets an engine converge
+exactly once. A kill clause needs an engine to load through the connector, and a host that can
+kill what it placed.
 
 ## Decision
 
-- **The crate map differs from spec §4.2 and §4.3.** `rdlt-certify` depends on `rdlt-connector`,
-  `rdlt-host`, `rdlt-wire`, `rdlt-engine` and `rdlt-connector-reference`, in every build: the
-  kill clauses load through an engine, into a reference memory destination or from a reference
-  generator source, so the library and the binary certify the same clauses.
-- **A host kills what it placed.** `rdlt_host::Kills` is a shared handle. `Local::kills`
-  sends `SIGKILL` to the process group of each connector the provider spawned, which the host
-  owns (ADR 0050); `Remote::kills` and the new `Connect::kills` cut
-  each connection they opened, which is all a host can do to a connector it did not start. The
-  supervisor then starts or reaches the connector again for the next call, as it does for one
-  that crashed. `Connect` is a provider of connectors reached through a function that opens a
-  stream, placed as `Placement::Connected`: certification places a served connector with it.
+- **`rdlt-certify` links an engine.** It depends on `rdlt-connector`, `rdlt-host`, `rdlt-wire`,
+  `rdlt-engine` and `rdlt-connector-reference`, in every build: the kill clauses load through an
+  engine, into a reference memory destination or from a reference generator source, so the library
+  and the binary certify the same clauses.
+- **A host kills what it placed.** `rdlt_host::Kills` is a shared handle. `Local::kills` sends
+  `SIGKILL` to the process group of each connector the provider spawned, which the host owns
+  (ADR 0050); `Remote::kills` and `Connect::kills` cut each connection they opened, which is all a
+  host can do to a connector it did not start. The supervisor then starts or reaches the connector
+  again for the next call, as it does for one that crashed. `Connect` is a provider of connectors
+  reached through a function that opens a stream, placed as `Placement::Connected`: certification
+  places a served connector with it.
 - **`K-SOURCE`**: the target source is loaded into a memory destination twice, placed and
   supervised as an engine's placement is: once never killed, and once killed at scheduled
   points. The second load's tables must equal the first's, row for row, without the engine's
@@ -58,19 +58,16 @@ through the connector, and a host that can kill what it placed.
   read to its end, as on a busy machine whose commits come late, leaves nothing to resume. A clause
   takes at most 300 s, or what `--kill-timeout` (`Target::kill_timeout`) gives it: a connector
   slower than about two seconds a commit needs more.
-- **`S-ARROW-JSON` waits for M8.** The engine infers the types of JSON pushes where Arrow pushes
-  carry their own, so the same data rendered both ways publishes the same values only once a
-  schema pins both; certification has no way to ask a source for both renderings. The Python
-  SDK (M8), which renders records as JSON, settles the clause with its first JSON source.
+- **`S-ARROW-JSON` is not checked.** The engine infers the types of JSON pushes where Arrow
+  pushes carry their own, so the same data rendered both ways publishes the same values only once
+  a schema pins both, and certification has no way to ask a source for both renderings.
 
 ## Consequences
 
-- M4's exit criterion is met:
-  - the placement matrix is the engine's integration suite in process, spawned and remote
-    (`rdlt-engine/tests/it/placement.rs`);
-  - the `P` and `K` clauses are green against the reference connectors served, spawned and
-    listening (`rdlt-certify/tests/it`);
-  - P1–P4 and L3 are pinned by `rdlt-host/tests/it/process.rs` and `protocol.rs`.
+- The placement matrix is the engine's integration suite in process, spawned and remote
+  (`rdlt-engine/tests/it/placement.rs`); the `P` and `K` clauses run against the reference
+  connectors served, spawned and listening (`rdlt-certify/tests/it`); the host's process and
+  protocol tests are `rdlt-host/tests/it/process.rs` and `protocol.rs`.
 - A connector author learns from the binary whether the connector survives being killed. A
   source must hold enough data for a kill to land mid-read, or the clause is unobserved, and must
   read the same data both times, as a fixture does: `K-SOURCE` compares two loads.
