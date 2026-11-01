@@ -1,4 +1,12 @@
+# rdlt-engine and rdlt-testkit repeat these settings in clippy.toml files of their own, the only
+# ones clippy reads for them.
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 allow-print-in-tests = true
 too-many-lines-threshold = 60
+
+disallowed-types = [
+  { path = "std::sync::Mutex", reason = "STYLE.md: blocking locks are parking_lot's, which do not poison" },
+  { path = "std::sync::RwLock", reason = "STYLE.md: blocking locks are parking_lot's, which do not poison" },
+  { path = "std::sync::Condvar", reason = "STYLE.md: blocking locks are parking_lot's, which do not poison" },
+]
