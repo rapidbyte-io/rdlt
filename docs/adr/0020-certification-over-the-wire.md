@@ -4,22 +4,17 @@ Status: accepted, 2026-09-27.
 
 ## Context
 
-ADR 0018 left `rdlt-certify` and the `K` kill clauses to M4f. ADR 0016 left certification over a
-real socket to the same crate: the connector crate cannot hold a client of the protocol, since the
-client lives in `rdlt-host`. §20.8 names the clause families and the entry points: a library, and
-a binary that certifies any connector binary or endpoint and also runs `K`.
+A connector is certified by clause families: source (`S`), destination (`D`), protocol (`P`)
+and kill (`K`) clauses. Certifying one over a real socket needs a client of the protocol, which
+lives in `rdlt-host`, where the connector crate cannot reach it. So `rdlt-certify` holds a
+library and a binary that certifies any connector binary or endpoint over the wire; the `K`
+clauses are ADR 0022's.
 
 ## Decision
 
-- **M4f is split.**
-  - M4f (this record) is `rdlt-certify`'s library and binary, with the source (`S`), destination
-    (`D`) and protocol (`P`) clauses over the wire.
-  - M4g is the `K` clauses: a connector killed at random points while an engine converges
-    exactly once. Converging needs an engine, and the spec's crate map (§4) gives `rdlt-certify`
-    none; M4g settles that.
 - **A target is how a connector is reached**, each connection a fresh one:
   - served in this process over a socket pair (`Target::served`): the certification through the
-    full protocol ADR 0016 deferred;
+    full protocol;
   - spawned from its binary (`Target::spawned`), or listening at an endpoint over mutual TLS
     (`Target::listening`);
   - or opened by any function (`Target::connected`), for another transport, or a connector that
@@ -47,9 +42,9 @@ a binary that certifies any connector binary or endpoint and also runs `K`.
   - `P-CREDIT`: a read sends nothing more once its credit is spent, until more is granted. One
     frame after the grant shows it went on; the read is then stopped, so a partition of any
     length is certified in bounded time.
-  - Per-operation deadlines (§12.6) are the host's to keep, and its own tests pin them (ledger
-    item L3); no clause checks them of a connector.
-- **`rdlt-host` gains raw wires** for clients that speak the protocol themselves: `Local::wire`,
+  - Per-operation deadlines are the host's to keep, and its own tests pin them
+    (`slow_commit_within_deadline_succeeds`); no clause checks them of a connector.
+- **`rdlt-host` has raw wires** for clients that speak the protocol themselves: `Local::wire`,
   `Remote::wire`, `remote::client`, and `Connection::connector_spec`.
 - **The binary**: `rdlt-certify <binary | grpcs://host:port>` certifies every role the connector
   serves, or `--role`'s, with one configuration, read from a file or standard input
@@ -58,27 +53,26 @@ a binary that certifies any connector binary or endpoint and also runs `K`.
   plain text or JSON (`--output`), and exits 0 when every report passed, 2 when one is
   incomplete and none failed, 1 on findings or when the connector serves none of the roles
   asked, 64 on a wrong command line and 74 when the connector or a file named cannot be read
-  (§19; ADR 0050); `--require partial` exits 0 for an incomplete run in which a clause passed.
+  (ADR 0050); `--require partial` exits 0 for an incomplete run in which a clause passed.
   `--clauses` prints the registry.
   - A clause passes, fails, is inapplicable by the connector's declaration, or is unobserved.
     A report passes when no clause failed, none was unobserved and one passed; otherwise it is
     incomplete, in the library as in the binary, and its JSON says so (ADR 0050).
   - No clause of a role the connector does not serve applies. Without `--role`, its report is
     left out; with `--role` naming such a role, nothing was certified, and it exits 1 saying so.
-  - Plain output shows what the connector said, not obeys it (§19): its controls, line breaks
-    among them, and the marks that reorder text are escaped. JSON output carries it verbatim.
-    A reason is shown where it is made, so the plain report, its `Display` and the JSON carry
-    the same escaped text (ADR 0043).
-    A closed standard output ends quietly; one that cannot be written exits 74.
+  - Plain output shows what the connector said, not obeys it: its controls, line breaks among them,
+    and the marks that reorder text are escaped. JSON output carries it verbatim. A reason is shown
+    where it is made, so the plain report, its `Display` and the JSON carry the same escaped text
+    (ADR 0043). A closed standard output ends quietly; one that cannot be written exits 74.
   - A malformed endpoint is a wrong command line, and exits 64.
-  - Its help and its reports are snapshots (§20.11), with `insta`.
+  - Its help and its reports are snapshots, with `insta`.
 - **The clauses' documentation is generated from the registry**: `docs/certify/clauses.md`, which
   a test holds equal to `rdlt-certify --clauses`.
-- **What certification found**: a barrier pending when a read starts was forwarded after the
-  read's start, so a read too short to see it never answered it, where in the engine's process it
-  always does. `ReadStart` carries the barrier pending at the start (`barrier`, field 5), and the
-  host also sends it as a control, before the read's credit. A connector that does not know the
-  field reads 0 and answers the control; one that knows both answers the barrier once.
+- **A read starts with the barrier pending.** `ReadStart` carries the barrier pending at the
+  start (`barrier`, field 5), and the host also sends it as a control, before the read's credit,
+  so a read too short to see a later control still answers it, as it does in the engine's
+  process. A connector that does not know the field reads 0 and answers the control; one that
+  knows both answers the barrier once.
 
 ## Consequences
 
@@ -88,4 +82,3 @@ a binary that certifies any connector binary or endpoint and also runs `K`.
   as each connection is a process of its own; certify it served, or listening.
 - A connector binary serving both roles is certified with one configuration unless `--role`
   picks one.
-- M4's exit criterion (`P` and `K` clauses green) completes with M4g.
