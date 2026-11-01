@@ -7,30 +7,29 @@ Status: accepted, 2026-10-01.
 ADR 0037 makes the host a peer a connector does not trust, and one database or one store a place
 several pipelines load into. The SQL planner `sqlgen`, the SQLite and memory destinations, the
 SDK's Arrow merge (`rdlt_connector::merge`), which the memory and files destinations use, and the
-generated sources were written before it, and each took something as given:
+generated sources each take something as given unless they check it:
 
-- `sqlgen` planned a statement for any table name a session sent. The owner record
-  (ADR 0025) was read by the connector, in some calls and not in others: a commit's child tables,
-  a generation swap resolved through a path every pipeline shared, the staging discarded at open,
-  and a drop of a table with no owner record all went unchecked. A table could be named as the
+- `sqlgen` would plan a statement for any table name a session sends. An owner record (ADR 0025)
+  read by the connector in some calls and not in others leaves a commit's child tables, a
+  generation swap resolved through a path every pipeline shares, the staging discarded at open,
+  and a drop of a table with no owner record unchecked, and a table could be named as the
   catalog's own.
-- A derived table's name was cut to the dialect's identifier limit with a 32-bit hash, which
-  two table names can share.
-- Statements carried text the database or the host supplied: a column's declared type copied
-  from the catalog into DDL, and a merge key's columns, whether or not the table held them.
-- SQLite was opened as its defaults leave it: a file readable by whoever the process's mask
-  allowed, a path read as a URI where it started with `file:`, a schema that could carry triggers and
-  views run with the connection's rights, and double-quoted text taken for a string where no
-  column matched.
+- A derived table's name cut to the dialect's identifier limit with a 32-bit hash is one two
+  table names can share.
+- Statements would carry text the database or the host supplies: a column's declared type copied
+  from the catalog into DDL, and a merge key's columns, whether or not the table holds them.
+- SQLite opened as its defaults leave it is a file readable by whoever the process's mask allows,
+  reads a path as a URI where it starts with `file:`, runs a schema's triggers and views with the
+  connection's rights, and takes double-quoted text for a string where no column matches.
 - SQLite binds a float that is no number as `NULL` and stores negative zero in a `REAL` column
-  as the integer 0. A batch was bound column by column, so a refused value left the rows before
-  it staged.
-- The Arrow merge retyped stored rows with Arrow's cast, which nulls a value the wider type
-  cannot hold and panics at the edge of the calendar, and it paired every truncate of a commit
-  with every row, every flag with every column. The statements `sqlgen` planned for a change
-  stream did the same in SQL, and read the table whole in every commit.
-- The generator, log, changes and memory sources took partition counts, batch sizes, key counts,
-  cursors and keeper paths as given.
+  as the integer 0. A batch bound column by column leaves the rows before a refused value
+  staged.
+- Arrow's cast, retyping stored rows, nulls a value the wider type cannot hold and panics at the
+  edge of the calendar. A merge that pairs every truncate of a commit with every row, and every
+  flag with every column, pays for every pair, in Arrow or in the SQL `sqlgen` plans for a change
+  stream, and statements that read the table whole pay for the whole table in every commit.
+- The generator, log, changes and memory sources would take partition counts, batch sizes, key
+  counts, cursors and keeper paths as given.
 
 ## Decision
 
@@ -147,7 +146,7 @@ generated sources were written before it, and each took something as given:
 - **SQLite stages a row at a time and refuses a float it would change.** A float that is no
   number, or negative zero, is a `Data` error coded `float_unstorable` before its row is bound,
   and nothing of its batch stays. Storing them exactly needs a column without `REAL` affinity,
-  which changes what users query; a destination has no way yet to ask the engine to lower them.
+  which changes what users query; a destination has no way to ask the engine to lower them.
 - **The Arrow merge converts exactly or fails.** A stored column becomes its table's wider
   type by an allow-list: the lattice's widenings and re-encodings, temporal units through
   checked arithmetic, a wall-clock time placed in a zone as the instant it names there. A value
@@ -169,7 +168,7 @@ generated sources were written before it, and each took something as given:
     of one set of names a group, and keeps fewer of the largest batches as they are, so it
     gives back no more batches than its bound unless the sets outnumber it. A test pins the
     merge's text to the engine's for every type it draws, stored as itself or as text.
-  - A reader is given every stored column at its column's type now, however its batch was
+  - A reader is given every stored column at its column's type, however its batch was
     written: an append table's batches, never merged again, are converted as they are read,
     and a value that does not convert is an error, never the batch as it was.
   - A destination of JSON lines refuses a widen to `Json` of a column whose table holds rows,
