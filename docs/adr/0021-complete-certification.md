@@ -59,12 +59,12 @@ in process:
     sent within the clause's 30 s, so a link slower than about 20 Mbit/s times it out.
 - **A served source refuses a cursor beyond its declared limit** with `limit_exceeded`, as every
   limit is enforced on receive, not as an invalid message.
-- **Clauses read the protocol as any transport delivers it**: `P-HEARTBEAT` reads one answer per
-  ping, whatever the answers' stream does after; a streaming call's refusal is read whether it
-  comes before its answer's headers or as its first message; a clause that never ends is pinned
-  to its bound; the binary refuses a URL other than `grpcs://`, TLS flags with a binary, and
-  `--env` with an endpoint as usage errors, and a connector file that cannot be executed as an
-  I/O error.
+- **The clauses and the binary keep to the protocol and their bounds**: `P-HEARTBEAT` reads one
+  answer per ping, whatever the answers' stream does after; a streaming call's refusal is read
+  whether it comes before its answer's headers or as its first message; a clause that never ends is
+  pinned to its bound; the binary refuses a URL other than `grpcs://`, TLS flags with a binary, and
+  `--env` with an endpoint as usage errors, and a connector file that cannot be executed as an I/O
+  error.
 
 ## Consequences
 
