@@ -1,9 +1,10 @@
 use std::collections::BTreeMap;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock};
 use std::time::UNIX_EPOCH;
 
 use arrow_array::{Int64Array, RecordBatch};
 use bytes::Bytes;
+use parking_lot::Mutex;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
@@ -26,7 +27,7 @@ type Journal = Arc<Mutex<Vec<String>>>;
 static JOURNALS: LazyLock<Mutex<BTreeMap<String, Journal>>> = LazyLock::new(Mutex::default);
 
 fn journal(name: &str) -> Journal {
-    Arc::clone(JOURNALS.lock().unwrap().entry(name.to_owned()).or_default())
+    Arc::clone(JOURNALS.lock().entry(name.to_owned()).or_default())
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -66,14 +67,13 @@ impl DestinationConnector for Recorder {
     }
 
     async fn check(&self) -> Result<()> {
-        self.journal.lock().unwrap().push("check".to_owned());
+        self.journal.lock().push("check".to_owned());
         Ok(())
     }
 
     async fn open(&self, context: &OpenContext) -> Result<Opened<RecorderSession>> {
         self.journal
             .lock()
-            .unwrap()
             .push(format!("open {}", context.pipeline));
         let state = vec![StateRecord {
             key: "k".to_owned(),
@@ -98,23 +98,17 @@ impl Session for RecorderSession {
         let TableChange::Create { table, .. } = change else {
             return Err(ConnectorError::internal("only creates are expected"));
         };
-        self.journal
-            .lock()
-            .unwrap()
-            .push(format!("create {}", table.name));
+        self.journal.lock().push(format!("create {}", table.name));
         Ok(())
     }
 
     async fn writer(&mut self, table: &TableRef) -> Result<RecorderWriter> {
-        self.journal
-            .lock()
-            .unwrap()
-            .push(format!("writer {}", table.name));
+        self.journal.lock().push(format!("writer {}", table.name));
         Ok(RecorderWriter(Arc::clone(&self.journal)))
     }
 
     async fn discard_staged(&mut self) -> Result<()> {
-        self.journal.lock().unwrap().push("discard".to_owned());
+        self.journal.lock().push("discard".to_owned());
         if self.fail_discard {
             return Err(
                 ConnectorError::internal("staging is unreachable").with_code("discard_failed")
@@ -124,10 +118,7 @@ impl Session for RecorderSession {
     }
 
     async fn commit(&mut self, meta: &CommitMeta) -> Result<Receipt> {
-        self.journal
-            .lock()
-            .unwrap()
-            .push(format!("commit {}", meta.key.seq));
+        self.journal.lock().push(format!("commit {}", meta.key.seq));
         Ok(Receipt {
             key: meta.key,
             committed_at: UNIX_EPOCH,
@@ -137,7 +128,7 @@ impl Session for RecorderSession {
     }
 
     async fn close(self) -> Result<()> {
-        self.journal.lock().unwrap().push("close".to_owned());
+        self.journal.lock().push("close".to_owned());
         Ok(())
     }
 }
@@ -146,13 +137,12 @@ impl TableWriter for RecorderWriter {
     async fn write(&mut self, segment: SegmentId, batch: RecordBatch) -> Result<()> {
         self.0
             .lock()
-            .unwrap()
             .push(format!("write {segment} {}", batch.num_rows()));
         Ok(())
     }
 
     async fn flush(&mut self) -> Result<WriteStats> {
-        self.0.lock().unwrap().push("flush".to_owned());
+        self.0.lock().push("flush".to_owned());
         Ok(WriteStats { rows: 1, bytes: 8 })
     }
 }
@@ -186,7 +176,7 @@ async fn open_discards_staging_before_the_engine_sees_the_session() {
     );
     assert_eq!(opened.epoch, Epoch(3));
     assert_eq!(opened.state.len(), 1);
-    assert_eq!(*journal("open").lock().unwrap(), ["open orders", "discard"]);
+    assert_eq!(*journal("open").lock(), ["open orders", "discard"]);
 }
 
 #[tokio::test]
@@ -229,7 +219,7 @@ async fn sessions_forward_every_call() {
     assert_eq!(session.commit(&meta).await.unwrap().rows, 1);
     session.close().await.unwrap();
     assert_eq!(
-        *journal("forward").lock().unwrap(),
+        *journal("forward").lock(),
         [
             "check",
             "open orders",
@@ -256,7 +246,7 @@ async fn a_failed_discard_closes_the_session_and_reports_the_discard_error() {
     let error = destination.open(&context()).await.unwrap_err();
     assert_eq!(error.code(), Some("discard_failed"));
     assert_eq!(
-        *journal("discard_fails").lock().unwrap(),
+        *journal("discard_fails").lock(),
         ["open orders", "discard", "close"]
     );
 }

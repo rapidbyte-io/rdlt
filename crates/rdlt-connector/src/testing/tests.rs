@@ -6,13 +6,14 @@ mod read_back;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock};
 use std::time::UNIX_EPOCH;
 
 use arrow_array::RecordBatch;
 use arrow_array::cast::AsArray;
 use arrow_schema::DataType;
 use bytes::Bytes;
+use parking_lot::Mutex;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
@@ -851,7 +852,7 @@ type SharedVault = Arc<Mutex<VaultStore>>;
 static VAULTS: LazyLock<Mutex<BTreeMap<String, SharedVault>>> = LazyLock::new(Mutex::default);
 
 fn vault(name: &str) -> SharedVault {
-    Arc::clone(VAULTS.lock().unwrap().entry(name.to_owned()).or_default())
+    Arc::clone(VAULTS.lock().entry(name.to_owned()).or_default())
 }
 
 /// The shared store, and this connection's private one for the `local_*` flags.
@@ -908,7 +909,7 @@ impl VaultConfig {
     fn epoch(&self, shared: &VaultStore, stores: &VaultStores, pipeline: &PipelineId) -> u64 {
         let epochs = |store: &VaultStore| store.epochs.get(pipeline).copied().unwrap_or_default();
         if self.local_epoch {
-            epochs(&stores.local.lock().unwrap())
+            epochs(&stores.local.lock())
         } else {
             epochs(shared)
         }
@@ -942,7 +943,7 @@ impl VaultConfig {
     ) -> Option<Receipt> {
         let landed = |store: &VaultStore| store.landed.get(&self.landing(pipeline)).cloned();
         if self.local_landed {
-            landed(&stores.local.lock().unwrap())
+            landed(&stores.local.lock())
         } else {
             landed(shared)
         }
@@ -958,7 +959,7 @@ impl VaultConfig {
     ) {
         let key = self.landing(pipeline);
         if self.local_landed {
-            stores.local.lock().unwrap().landed.insert(key, receipt);
+            stores.local.lock().landed.insert(key, receipt);
         } else {
             shared.landed.insert(key, receipt);
         }
@@ -1070,7 +1071,7 @@ impl DestinationConnector for Vault {
             &self.stores.shared
         };
         let epoch = {
-            let mut store = epochs.lock().unwrap();
+            let mut store = epochs.lock();
             let epoch = store.epochs.entry(context.pipeline.clone()).or_default();
             *epoch += 1;
             *epoch
@@ -1079,7 +1080,6 @@ impl DestinationConnector for Vault {
             .config
             .state_store(&self.stores)
             .lock()
-            .unwrap()
             .state
             .get(&context.pipeline)
             .map(|state| state.values().cloned().collect())
@@ -1093,7 +1093,7 @@ impl DestinationConnector for Vault {
             tombstones: Mutex::default(),
         };
         let landed = {
-            let shared = self.stores.shared.lock().unwrap();
+            let shared = self.stores.shared.lock();
             self.config.landed(&shared, &self.stores, &context.pipeline)
         };
         Ok(Opened {
@@ -1122,7 +1122,7 @@ impl VaultSession {
 
     /// Applies the state changes of `meta`, to this connection's store with `local_state`.
     fn apply_state(&self, shared: &mut VaultStore, meta: &CommitMeta) {
-        let mut local = self.stores.local.lock().unwrap();
+        let mut local = self.stores.local.lock();
         let states = if self.config.local_state {
             &mut local.state
         } else {
@@ -1334,7 +1334,7 @@ impl VaultSession {
                     let changes = key.changes.as_ref().expect("a change stream's key");
                     let batches: Vec<RecordBatch> =
                         incoming.into_iter().map(|(_, batch)| batch).collect();
-                    let mut own = self.tombstones.lock().unwrap();
+                    let mut own = self.tombstones.lock();
                     let tombstones = if self.config.session_tombstones {
                         own.entry(table).or_default()
                     } else {
@@ -1414,7 +1414,7 @@ impl Session for VaultSession {
             let message = format!("column {} breaks the identifier rules", field.name());
             return Err(ConnectorError::data(message));
         }
-        let mut store = self.stores.shared.lock().unwrap();
+        let mut store = self.stores.shared.lock();
         self.claimed(&mut store, &change.table().name)?;
         let first = store.changes.insert(format!("{change:?}"));
         let alters = !matches!(change, TableChange::Create { .. });
@@ -1457,7 +1457,7 @@ impl Session for VaultSession {
 
     async fn writer(&mut self, table: &TableRef) -> Result<VaultWriter> {
         {
-            let mut store = self.stores.shared.lock().unwrap();
+            let mut store = self.stores.shared.lock();
             let claimed = self.claimed(&mut store, &table.name);
             let intruded = claimed
                 .as_ref()
@@ -1490,7 +1490,6 @@ impl Session for VaultSession {
             self.stores
                 .shared
                 .lock()
-                .unwrap()
                 .staged
                 .retain(|(pipeline, _), _| *pipeline != self.pipeline);
         }
@@ -1498,7 +1497,7 @@ impl Session for VaultSession {
     }
 
     async fn commit(&mut self, meta: &CommitMeta) -> Result<Receipt> {
-        let mut store = self.stores.shared.lock().unwrap();
+        let mut store = self.stores.shared.lock();
         let current = self.config.epoch(&store, &self.stores, &self.pipeline);
         let fence = Fence {
             epoch: self.config.reported(current),
@@ -1643,7 +1642,7 @@ impl VaultWriter {
 
 impl TableWriter for VaultWriter {
     async fn write(&mut self, segment: SegmentId, batch: RecordBatch) -> Result<()> {
-        let mut store = self.stores.shared.lock().unwrap();
+        let mut store = self.stores.shared.lock();
         let current = self.config.epoch(&store, &self.stores, &self.pipeline);
         if !self.config.stale_writes && current != self.epoch {
             return Err(ConnectorError::fenced("stale"));
@@ -1994,7 +1993,7 @@ struct VaultProbe(SharedVault);
 
 impl Probe for VaultProbe {
     fn published<'a>(&'a self, table: &'a TableRef) -> BoxFuture<'a, Result<Vec<RecordBatch>>> {
-        let store = self.0.lock().unwrap();
+        let store = self.0.lock();
         let name = table.name.to_string();
         let batches = store.published.get(&name).cloned().unwrap_or_default();
         let kept = |batch: RecordBatch| {
@@ -2021,7 +2020,7 @@ impl Probe for VaultProbe {
         column: &'a str,
     ) -> BoxFuture<'a, Result<()>> {
         let column = (table.name.to_string(), column.to_owned());
-        let mut store = self.0.lock().unwrap();
+        let mut store = self.0.lock();
         store.drops.push(column.clone());
         store.dropped.insert(column);
         Box::pin(async { Ok(()) })
@@ -2234,7 +2233,7 @@ async fn a_probe_that_drops_no_column_passes_d_tables_on_what_it_reads_with_a_no
         assert_eq!(noted, expected, "{report}");
     }
     // A column was dropped for each write mode the vault declares, in turn.
-    let drops = vault("noted_true_correct").lock().unwrap().drops.clone();
+    let drops = vault("noted_true_correct").lock().drops.clone();
     let modes = [
         "_dropped_append__items",
         "_dropped_merge",
@@ -2260,7 +2259,7 @@ async fn a_probe_drops_no_column_unless_it_says_it_does() {
     };
     let error = probe.drop_column(&table, "name").await.unwrap_err();
     assert_eq!(error.kind(), ConnectorErrorKind::Unsupported);
-    assert!(vault("undropped").lock().unwrap().drops.is_empty());
+    assert!(vault("undropped").lock().drops.is_empty());
 }
 
 #[tokio::test]

@@ -2149,6 +2149,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "nix",
+ "parking_lot",
  "proptest",
  "prost",
  "rdlt-adopt",

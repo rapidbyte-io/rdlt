@@ -1,12 +1,11 @@
 mod cancelled;
 
 use std::num::NonZeroUsize;
+use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-
-use std::sync::{Arc, Mutex};
-
+use parking_lot::Mutex;
 use tokio::sync::Notify;
 
 use super::{
@@ -108,14 +107,14 @@ impl Admission for Gate {
         };
         Box::pin(async move {
             let bytes = u64::try_from(bytes).unwrap();
-            self.asked.lock().unwrap().push(bytes);
+            self.asked.lock().push(bytes);
             self.open.notified().await;
             Ok(Some(Box::new(bytes) as Permit))
         })
     }
 
     fn charge(&self, bytes: u64) -> crate::Result<Permit> {
-        self.asked.lock().unwrap().push(bytes);
+        self.asked.lock().push(bytes);
         if bytes > 1_000 {
             return Err(crate::ConnectorError::data("more than a read may keep"));
         }
@@ -130,11 +129,7 @@ async fn an_admitted_push_waits_for_admission_and_carries_its_permit() {
         admitted_partition_channel(NonZeroUsize::new(4).unwrap(), gate.clone());
     let sending = tokio::spawn(async move { sink.send(json("[1]")).await });
     tokio::task::yield_now().await;
-    assert_eq!(
-        *gate.asked.lock().unwrap(),
-        [3],
-        "the push asks for its bytes"
-    );
+    assert_eq!(*gate.asked.lock(), [3], "the push asks for its bytes");
     assert!(
         !sending.is_finished(),
         "the push waits until it is admitted"
@@ -164,7 +159,7 @@ async fn a_checkpoint_waits_for_admission_and_carries_its_permit() {
     let sent = checkpoint.clone();
     let sending = tokio::spawn(async move { sink.send(sent).await });
     tokio::task::yield_now().await;
-    assert_eq!(*gate.asked.lock().unwrap(), [5]);
+    assert_eq!(*gate.asked.lock(), [5]);
     assert!(!sending.is_finished());
     gate.open.notify_one();
     sending.await.unwrap().unwrap();
@@ -193,7 +188,7 @@ async fn an_event_its_admission_charges_nothing_enters_without_a_permit() {
         assert_eq!(received, event);
         assert!(permit.is_none());
     }
-    assert!(gate.asked.lock().unwrap().is_empty());
+    assert!(gate.asked.lock().is_empty());
 }
 
 #[test]
@@ -202,11 +197,11 @@ fn a_sink_reserves_bytes_from_whoever_admits_its_events() {
     let (sink, _feed) = admitted_partition_channel(NonZeroUsize::new(4).unwrap(), gate.clone());
     let permit = sink.reserve(64).unwrap().unwrap();
     assert_eq!(permit.downcast::<u64>().ok().map(|bytes| *bytes), Some(64));
-    assert_eq!(*gate.asked.lock().unwrap(), [64]);
+    assert_eq!(*gate.asked.lock(), [64]);
     // What the admission refuses to hold is refused the sink, with why.
     let refused = sink.reserve(1_001).unwrap_err();
     assert_eq!(refused.to_string(), "more than a read may keep");
-    assert_eq!(*gate.asked.lock().unwrap(), [64, 1_001]);
+    assert_eq!(*gate.asked.lock(), [64, 1_001]);
     let (plain, _feed) = partition_channel(NonZeroUsize::new(4).unwrap());
     assert!(plain.reserve(64).unwrap().is_none());
     assert!(plain.reserve(u64::MAX).unwrap().is_none());
@@ -233,7 +228,7 @@ struct Noted {
 
 impl Drop for Noted {
     fn drop(&mut self) {
-        self.order.lock().unwrap().push(self.what);
+        self.order.lock().push(self.what);
     }
 }
 
@@ -281,11 +276,7 @@ async fn a_send_given_up_while_it_is_admitted_frees_its_event_before_its_charge(
         }
         let sent = tokio::time::timeout(Duration::from_secs(1), sink.send(push)).await;
         assert_eq!(sent.is_err(), !stopped, "{sent:?}");
-        assert_eq!(
-            *order.lock().unwrap(),
-            ["text", "charge"],
-            "stopped: {stopped}"
-        );
+        assert_eq!(*order.lock(), ["text", "charge"], "stopped: {stopped}");
     }
 }
 
@@ -404,7 +395,7 @@ impl Admission for Columns {
         if let SourceEvent::Push(Push::Arrow(batch) | Push::Changes(batch)) = event {
             let schema = batch.schema();
             let names = schema.fields().iter().map(|field| field.name().clone());
-            self.asked.lock().unwrap().push(names.collect());
+            self.asked.lock().push(names.collect());
         }
         Box::pin(async { Ok(None) })
     }
@@ -430,7 +421,7 @@ async fn an_excluding_sink_admits_and_hands_over_each_batch_without_its_excluded
         .unwrap();
     sink.send(json("[1]")).await.unwrap();
     drop(sink);
-    assert_eq!(*columns.asked.lock().unwrap(), [vec!["id".to_owned()]]);
+    assert_eq!(*columns.asked.lock(), [vec!["id".to_owned()]]);
     let Some(SourceEvent::Push(Push::Arrow(received))) = feed.recv().await else {
         panic!("the push arrives first");
     };
@@ -451,7 +442,7 @@ async fn a_sink_that_excludes_nothing_admits_each_batch_whole() {
         .await
         .unwrap();
     assert_eq!(
-        *columns.asked.lock().unwrap(),
+        *columns.asked.lock(),
         [vec!["id".to_owned(), "secret".to_owned()]]
     );
     assert_eq!(

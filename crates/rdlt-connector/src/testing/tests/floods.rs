@@ -2,7 +2,7 @@
 //! holds: certification bounds what it holds and renders, and never panics.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 use arrow_array::types::Int32Type;
@@ -12,6 +12,7 @@ use arrow_array::{
 };
 use arrow_buffer::OffsetBuffer;
 use arrow_schema::{DataType, Field};
+use parking_lot::Mutex;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
@@ -31,13 +32,13 @@ use crate::testing::{Outcome, Verdict, certify_source};
 static TAKEN: LazyLock<Mutex<BTreeMap<String, u64>>> = LazyLock::new(Mutex::default);
 
 fn took(name: &str, pushes: u64) {
-    let mut taken = TAKEN.lock().expect("unpoisoned");
+    let mut taken = TAKEN.lock();
     let most = taken.entry(name.to_owned()).or_default();
     *most = (*most).max(pushes);
 }
 
 fn taken(name: &str) -> u64 {
-    let taken = TAKEN.lock().expect("unpoisoned");
+    let taken = TAKEN.lock();
     taken.get(name).copied().unwrap_or_default()
 }
 

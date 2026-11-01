@@ -3,8 +3,9 @@
 mod phased;
 
 use std::collections::BTreeMap;
-use std::sync::{LazyLock, Mutex};
+use std::sync::LazyLock;
 
+use parking_lot::Mutex;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
@@ -24,13 +25,13 @@ static KEPT: LazyLock<Mutex<BTreeMap<(String, PartitionId), u64>>> = LazyLock::n
 
 /// Where `name` keeps `partition`.
 pub(super) fn kept(name: &str, partition: &PartitionId) -> Option<u64> {
-    let kept = KEPT.lock().expect("unpoisoned");
+    let kept = KEPT.lock();
     kept.get(&(name.to_owned(), partition.clone())).copied()
 }
 
 /// Keeps `partition` of `name` at `position`.
 pub(super) fn keep(name: &str, partition: &PartitionId, position: u64) {
-    let mut kept = KEPT.lock().expect("unpoisoned");
+    let mut kept = KEPT.lock();
     kept.insert((name.to_owned(), partition.clone()), position);
 }
 
@@ -89,7 +90,7 @@ impl Queue {
 
     fn position(&self, partition: &PartitionId) -> Option<u64> {
         if self.config.per_connection {
-            self.own.lock().expect("unpoisoned").get(partition).copied()
+            self.own.lock().get(partition).copied()
         } else {
             kept(&self.config.name, partition)
         }
@@ -97,7 +98,7 @@ impl Queue {
 
     fn set(&self, partition: &PartitionId, position: u64) {
         if self.config.per_connection {
-            let mut own = self.own.lock().expect("unpoisoned");
+            let mut own = self.own.lock();
             own.insert(partition.clone(), position);
         } else {
             keep(&self.config.name, partition, position);
