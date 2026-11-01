@@ -65,8 +65,8 @@ every stored cell by type.
   check; one in four also pushes floats JSON cannot hold, by name.
 - Draws fix the settings proptest otherwise reads from `PROPTEST_*` variables, so a seed replays
   alike wherever it runs.
-- A child's id derives from its parent's and its position, so two arrays of one row give their
-  children the same ids; a child table's rows are read against their parent table.
+- A child row's id is its own position, which no other row the pipeline loads shares (ADR 0009),
+  so the oracle matches each child row to its parent row through its lineage ids.
 - A text column widened in place keeps the text of its older type: dates stay `YYYY-MM-DD` in a
   column since widened to timestamps. Each row's `rdlt:logical_type` says which.
 - Every policy and setting, hints and odd schema sequences are ADR 0013's; faults beyond
