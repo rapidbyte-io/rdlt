@@ -69,7 +69,7 @@ clauses are ADR 0022's.
 - **The clauses' documentation is generated from the registry**: `docs/certify/clauses.md`, which
   a test holds equal to `rdlt-certify --clauses`.
 - **A read starts with the barrier pending.** `ReadStart` carries the barrier pending at the
-  start (`barrier`, field 5), and the host also sends it as a control, before the read's credit,
+  start (`barrier`, field 4), and the host also sends it as a control, before the read's credit,
   so a read too short to see a later control still answers it, as it does in the engine's
   process. A connector that does not know the field reads 0 and answers the control; one that
   knows both answers the barrier once.
