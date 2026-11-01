@@ -327,7 +327,7 @@ async fn a_schema_that_could_not_be_sent_is_sent_again_with_the_next_write() {
         .flush()
         .await
         .expect("the connector decoded every frame");
-    let kept = GATE.kept.lock().expect("the lock is not poisoned");
+    let kept = GATE.kept.lock();
     let rows: Vec<_> = kept.iter().map(|(_, batch)| batch.num_rows()).collect();
     assert_eq!(rows, [600_000, 600_000, 600_000, 10]);
 }

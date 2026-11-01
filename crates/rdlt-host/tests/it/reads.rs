@@ -89,7 +89,7 @@ async fn a_served_read_learns_whether_its_partition_ends_and_whether_to_follow_i
         while feed.recv().await.is_some() {}
         read.expect("the read ends");
     }
-    let seen = READS.lock().expect("the lock is not poisoned").clone();
+    let seen = READS.lock().clone();
     assert_eq!(seen, [(false, false), (true, false), (true, true)]);
 }
 
@@ -189,7 +189,7 @@ async fn committed_cursors_reach_the_source() {
         )
         .await
         .unwrap();
-    assert_eq!(COMMITTED.lock().unwrap().as_slice(), [3]);
+    assert_eq!(COMMITTED.lock().as_slice(), [3]);
 }
 
 #[tokio::test]

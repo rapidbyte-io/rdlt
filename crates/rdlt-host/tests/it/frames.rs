@@ -280,7 +280,7 @@ async fn the_host_cuts_a_batch_of_more_values_than_a_connectors_frame_may_hold()
         .await
         .expect("the batch is written");
     writer.flush().await.expect("the writes are staged");
-    let kept = std::mem::take(&mut *KEPT.lock().expect("the lock is not poisoned"));
+    let kept = std::mem::take(&mut *KEPT.lock());
     // Each piece is a write of the segment its batch was.
     assert!(kept.iter().all(|(segment, _)| *segment == 7));
     let pieces: Vec<_> = kept.into_iter().map(|(_, batch)| batch).collect();
@@ -314,7 +314,7 @@ async fn a_batch_no_schema_message_describes_is_refused_before_any_of_it_is_sent
         .await
         .expect("a batch is written");
     writer.flush().await.expect("the write is staged");
-    let kept = std::mem::take(&mut *KEPT.lock().expect("the lock is not poisoned"));
+    let kept = std::mem::take(&mut *KEPT.lock());
     assert_eq!(kept, [(2, plain)]);
 }
 

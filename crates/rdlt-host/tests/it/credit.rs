@@ -130,7 +130,7 @@ async fn a_remote_writer_sends_two_frames_ahead_of_what_its_destination_took() {
             .expect("the write goes on the credit granted")
             .expect("the write is sent");
     }
-    let staged = GATE.kept.lock().expect("the lock is not poisoned").len();
+    let staged = GATE.kept.lock().len();
     assert_eq!(staged, 1);
     // A fifth waits: two frames are the window, and the writer took neither the third nor the
     // fourth.
@@ -144,7 +144,7 @@ async fn a_remote_writer_sends_two_frames_ahead_of_what_its_destination_took() {
         .await
         .expect("the flush ends")
         .expect("the flush answers");
-    let kept = GATE.kept.lock().expect("the lock is not poisoned");
+    let kept = GATE.kept.lock();
     let segments: Vec<_> = kept.iter().map(|(segment, _)| *segment).collect();
     assert_eq!(segments, [1, 2, 3, 4]);
 }
