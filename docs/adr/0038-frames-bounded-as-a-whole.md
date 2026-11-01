@@ -240,11 +240,11 @@ connector, a served connector reading from a host, and certification's read-back
   room.
 - The wire does not bound what a dictionary or a run-end encoding multiplies: keys or runs that
   each name a large value. What a batch expands to is the cost model's to charge.
-- Left for the cost model, which charges what is held:
-  - A batch's `held_bytes` leaves out the dictionaries its keys name.
-  - The decoder keeps each dictionary until its schema epoch ends, uncounted and uncharged: at
-    most a frame for each dictionary a schema names, so up to its columns times the frame limit.
+- The cost model charges what the wire leaves:
+  - A batch's `held_bytes` leaves out the dictionaries its keys name. The decoder keeps each
+    dictionary until its schema epoch ends and counts it in `Decoder::kept_bytes`, which the
+    dictionary limit bounds and the budget charges as what a read keeps (ADR 0039).
   - Arrow validates a batch's keys against their dictionary, and each column naming a shared
-    dictionary does so in each batch. What that costs was not measured.
+    dictionary does so in each batch. What that costs is unmeasured.
 - An embedder that installs a panic hook after the decoder's first use replaces the decoder's,
   and contained panics are printed again by theirs.
