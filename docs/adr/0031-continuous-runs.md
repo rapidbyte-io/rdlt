@@ -4,36 +4,24 @@ Status: accepted, 2026-09-30.
 
 ## Context
 
-Spec §9.6 gives a run `until: exhausted | forever | <duration>`. It defines `exhausted` for CDC
-("caught up to the change-stream position observed when the run started"), and says a timer
-keeps quiet streams committing and that the retry budget resets after progress. Until now a run
-ended once every partition's read returned: `exhausted` was all the engine had.
+The specification gives a run `until: exhausted | forever | <duration>`. It defines `exhausted`
+for CDC ("caught up to the change-stream position observed when the run started"), and says a
+timer keeps quiet streams committing and that the retry budget resets after progress. A run that
+ends once every partition's read returns serves `exhausted` alone.
 
-The owner asked (2026-09-26, confirmed 2026-09-28) that M5 make streaming sources, such as Kafka,
-first-class. Four items settle what the spec leaves open:
+Streaming sources, such as Kafka, are first-class: a pipeline follows one for as long as it is
+asked, exactly once through crashes, stops and faults. So a continuous run:
 
-1. **Partitions that appear or change mid-run.** A continuous run plans its partitions again on an
-   interval and when the source signals a change. Running partitions keep their segments, and
-   removed ones drain to a commit.
-2. **A reference streaming source** in the reference connectors and the simulation.
-3. **A lag hook**, for a source to report its high-water mark per partition.
-4. **Retention loss** is a typed error by default. An opt-in policy resets to the earliest
-   offset, and the report counts each reset.
+- plans its partitions again while it runs, since a stream's partitions appear, change and go:
+  running partitions keep their segments, and removed ones drain to a commit;
+- has a streaming source to run against, in the reference connectors and in the simulation;
+- keeps what it holds and what it reports bounded, however long it runs.
 
-M5d is split by what each part needs:
-
-- **M5d (this ADR): continuous runs.**
-  - `until`, and how a source learns to follow.
-  - Interval re-planning, including item 1's removed partitions.
-  - Read slots, the streaming commit default and bounded reports.
-  - The reference offset-log source (item 2), and the simulation's streaming feature.
-- **M5d2:** the source's re-plan signal (the rest of item 1), `S-PARTITION`, the lag hook (item 3)
-  and retention loss (item 4). `S-PARTITION` needs re-planning for a truth to compare with
-  (ADR 0021).
-- **M5d3:** `reset(streams)` (ADR 0023, 0025) and change streams whose source cannot read again.
-
-Item 4's reset and a stream reset share only the clearing of state entries. The first acts on one
-partition inside a run; the second is an operator's command between runs. So they are built apart.
+What a source tells a run beside its data, its re-plan signal, its lag and its retention loss, is
+ADR 0032's. Resetting streams is ADR 0033's, and change streams whose source cannot read again
+ADR 0034's. A partition whose retention dropped its position resets inside a run, while a stream
+reset is an operator's command between runs: the two share only the clearing of state entries, so
+they are built apart.
 
 ## Decision
 
@@ -45,14 +33,13 @@ partition inside a run; the second is an operator's command between runs. So the
     whether a read of an unbounded partition follows it once caught up, waiting for more until
     asked to stop.
   - Otherwise the read returns once caught up to where its source stood when the read started:
-    the spec's `exhausted`, now for every unbounded partition, not only CDC's.
+    the spec's `exhausted`, for every unbounded partition, CDC's or not.
   - `exhausted` reads without following; `forever` and `<duration>` follow the streams they plan
     again as they read (incremental and change streams). A full read ends at its head, so its
     cycle completes and a replace stream's generation is swapped in. A bounded partition ignores
     the flag.
   - `Emitter::stopped()` resolves once the engine asks the read to stop or drops its end, so a
-    read waiting for data can return. Before this, a stop reached a waiting read only at its next
-    emit.
+    read waiting for data can return.
 - **`until: <duration>` ends the run `Succeeded`.** At the deadline the engine stops as
   `StopMode::AfterCommit` does: a last commit of everything checkpointed. The run read for as long
   as it was asked, so `Stopped` stays the status of an external stop. A deadline that finds the
@@ -120,8 +107,7 @@ partition inside a run; the second is an operator's command between runs. So the
     has arrived, and a following read waits on the world's notification, or a stop.
   - The source serves only whole checkpoint groups (whole batches where the stream checkpoints
     on demand) until every row has arrived. Every read then sends the batches and checkpoints the
-    model infers types and discards by. Seed 4516 found reads that cut batches wherever rows had
-    arrived.
+    model infers types and discards by.
   - Then every row arrives, and the phase converges. The model's checks cover
     exactly-once.
   - A refusal the model says every run must meet only may happen in a following run, which may
@@ -132,17 +118,13 @@ partition inside a run; the second is an operator's command between runs. So the
     third of the ticks that make rows arrive retire, add or name again one more. Once the following
     runs end, the source names every partition again, and the phase's last runs read every row. A
     churned stream's plans name a start for each partition at its newest arrived row, which a plan
-    in the recorded phase must not start a partition from. Over 10 000 seeds, 658 re-planned a
-    changed set, 296 of them with their connectors placed apart. The runs are held to re-planning's
-    invariants (ADR 0052). With the fix that starts a partition added mid-run from its beginning
-    undone, 21 of 1 000 seeds lose the rows before the start their source named.
+    in the recorded phase must not start a partition from. The runs are held to re-planning's
+    invariants (ADR 0052).
 
 ## Consequences
 
 - A pipeline can load a Kafka-style topic, a change stream or a polled table continuously, with
   exactly-once delivery through crashes, stops, faults and partitions that come and go.
-- The first run of the simulation's streaming feature found a report-folding defect: a failed
-  attempt's commit in flight can wait several attempts for its credit. It is fixed as above.
 - A following run calls `plan` once per stream every `replan` interval.
-- `ReadRequest` is `#[non_exhaustive]` with a constructor, so later fields need no change to
-  callers.
+- `ReadRequest` grows with what a read is asked, so it is `#[non_exhaustive]` and built with its
+  constructor.
