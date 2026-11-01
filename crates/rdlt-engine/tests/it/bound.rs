@@ -5,8 +5,11 @@
 
 use std::sync::Arc;
 
-use arrow_array::{ArrayRef, Decimal256Array, Int8Array, ListArray, RecordBatch};
-use arrow_buffer::{OffsetBuffer, i256};
+use arrow_array::{
+    ArrayRef, BinaryArray, BooleanArray, Decimal256Array, Int8Array, ListArray, ListViewArray,
+    RecordBatch,
+};
+use arrow_buffer::{BooleanBuffer, OffsetBuffer, ScalarBuffer, i256};
 use arrow_schema::{DataType, Field};
 use rdlt_connector::ReadMode;
 use rdlt_engine::{Nested, RunOutcome, RunStatus, SchemaSettings, StreamPlan, codes};
@@ -247,8 +250,7 @@ async fn a_row_whose_items_normalize_past_a_request_fails_unsplit_within_the_bou
     let steps: Steps = Arc::new(|step| {
         (step < 1).then(|| {
             let items = 8 << 20;
-            let flags =
-                arrow_array::BooleanArray::new(arrow_buffer::BooleanBuffer::new_unset(items), None);
+            let flags = BooleanArray::new(BooleanBuffer::new_unset(items), None);
             let list = ListArray::new(
                 Arc::new(Field::new("item", DataType::Boolean, true)),
                 OffsetBuffer::from_lengths([items]),
@@ -277,11 +279,11 @@ async fn list_views_naming_shared_items_normalize_within_the_bound() {
     // few kilobytes pushed.
     let steps: Steps = Arc::new(|step| {
         (step < 1).then(|| {
-            let views = arrow_array::ListViewArray::new(
+            let views = ListViewArray::new(
                 Arc::new(Field::new("item", DataType::Boolean, true)),
-                arrow_buffer::ScalarBuffer::from(vec![0_i32; 500]),
-                arrow_buffer::ScalarBuffer::from(vec![4_000_i32; 500]),
-                Arc::new(arrow_array::BooleanArray::from(vec![true; 4_000])),
+                ScalarBuffer::from(vec![0_i32; 500]),
+                ScalarBuffer::from(vec![4_000_i32; 500]),
+                Arc::new(BooleanArray::from(vec![true; 4_000])),
                 None,
             );
             Step::Batch(batch(Arc::new(views)))
@@ -297,12 +299,8 @@ async fn a_commit_that_fails_staged_again_into_writers_that_buffer_stays_within_
     // One commit takes every batch, about four times the budget; it fails before it lands, and
     // the next attempt reads and stages it again through writers that hold every batch until
     // they flush.
-    let blob = |_: usize| -> ArrayRef {
-        Arc::new(arrow_array::BinaryArray::from_iter_values([vec![
-            7_u8;
-            1 << 20
-        ]]))
-    };
+    let blob =
+        |_: usize| -> ArrayRef { Arc::new(BinaryArray::from_iter_values([vec![7_u8; 1 << 20]])) };
     let steps: Steps = Arc::new(move |step| match step {
         step if step < BATCHES => Some(Step::Batch(batch(blob(step)))),
         step if step == BATCHES => Some(Step::Checkpoint(8)),
