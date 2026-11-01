@@ -5,17 +5,17 @@ Status: accepted, 2026-10-02.
 ## Context
 
 ADR 0037 holds a connector to be untrusted code, and says where one may run and what it is
-given. The host did not enforce it:
+given. A host enforces that only where it closes each of these:
 
-- A reference's digest, endpoint and path were ignored by a provider that did not implement
-  them, and a raw wire spawned a binary without comparing its digest.
-- A local connector ran with its host's own access. It was looked up on `PATH`, the working
-  directory included when `PATH` was unset or held an empty entry; its binary was hashed by
-  path and then executed by path; it inherited every descriptor of the host that was not
-  closed on exec; and its output became one log event a line, raw and without a bound.
-- A configuration was plain JSON that the host kept and copied, a secret was a literal in it,
-  configuration errors quoted the values they refused, and whatever a connector said, its
-  secrets included, reached errors, logs and reports as it wrote it.
+- A provider that ignores a reference's digest, endpoint and path where it does not implement
+  them, and a raw wire that spawns a binary without comparing its digest.
+- A local connector with its host's own access: looked up on `PATH`, the working directory
+  included when `PATH` is unset or holds an empty entry; its binary hashed by path and then
+  executed by path; inheriting every descriptor of the host not closed on exec; and its output
+  one log event a line, raw and without a bound.
+- A configuration as plain JSON that the host keeps and copies, a secret as a literal in it,
+  configuration errors that quote the values they refuse, and whatever a connector says, its
+  secrets included, reaching errors, logs and reports as it wrote it.
 
 ## Decision
 
@@ -238,15 +238,12 @@ Rejected:
 
 ## Consequences
 
-- `Local::new`, `Registry::new`, `Registry::source` and `destination`, the search of `PATH`,
-  and `rdlt-certify --config` are gone; `Local::wire` is async. ADR 0017's lookup and ADR
-  0025's check-then-execute are replaced, and ADR 0020's `--config` is withdrawn.
 - A binary upgraded by a rename is not picked up by a running host: a trusted connector is
   spawned again from the file it was placed from, a sandboxed one is refused until it is
   placed again.
-- An embedder that granted a provider write access, or relied on the default resolver,
-  states grants per reference, names the roots they may lie in and the directories it keeps
-  its own files in, and gives its resolvers.
+- An embedder states grants per reference, names the roots they may lie in and the directories
+  it keeps its own files in, and gives its resolvers: no provider grants write access, and none
+  resolves the host's environment or files by default.
 - A grant through a link binds what the link led to at placement for the placement's life;
   placing it again follows the link again.
 - A binary or interpreter with a second name is placed beside no write grant or write root
@@ -271,5 +268,5 @@ Rejected:
   - a secret a connector transforms before it says it, or one an in-process connector
     panics with: an in-process connector is trusted code;
   - the buffers of the transport a configuration is sent through, which are not wiped.
-- A reference with a requirement its placement cannot honour now fails where it was placed
-  before. A connector finds nothing at a number the host holds a descriptor at.
+- A reference with a requirement its placement cannot honour is refused before anything runs. A
+  connector finds nothing at a number the host holds a descriptor at.
