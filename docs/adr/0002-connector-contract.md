@@ -4,9 +4,9 @@ Status: accepted, 2026-09-23.
 
 ## Context
 
-The spec sketches the Rust SDK with streams registered as methods
-(`Streams::new().add("tickets", Self::tickets)`). Stable Rust cannot store a borrowed-argument
-`async fn` with a `Send` future behind a name without boxing tricks that leak into author code.
+Streams registered as methods (`Streams::new().add("tickets", Self::tickets)`) would read well,
+but stable Rust cannot store a borrowed-argument `async fn` with a `Send` future behind a name
+without boxing tricks that leak into author code.
 
 ## Decision
 
@@ -14,8 +14,8 @@ The spec sketches the Rust SDK with streams registered as methods
   `CURSOR_VERSION`; `Streams::new().with(TicketsStream)` registers it.
 - Author traits declare `-> impl Future<Output = _> + Send`; authors write `async fn`. The SDK
   boxes futures only at the engine-facing traits (`Source`, `Destination`).
-- `ConnectorErrorKind` adds `Fenced` (a stale session's commit) and `Stopped` (the engine asked a
-  read to stop) to the spec's kinds; the SDK turns `Stopped` into a clean end of the read.
+- `ConnectorErrorKind` has `Fenced` (a stale session's commit) and `Stopped` (the engine asked a
+  read to stop) beside its other kinds; the SDK turns `Stopped` into a clean end of the read.
 - Destinations store state as opaque `StateRecord { key, value }` pairs; the engine owns their
   encoding (`StateEntry`), so destinations never interpret state.
 - `discard_staged` is not reachable from the engine-facing session: the SDK calls it inside
