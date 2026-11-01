@@ -15,9 +15,11 @@ and a throughput bound. Pushes also coalesce into batches.
   walking it to observe types and building against the joined types in a second walk is rejected:
   walking sonic-rs's document costs as much as parsing it, which limits that design to near 3.5
   times the old engine. Each chunk is parsed first through serde seeds over sonic-rs, and every
-  value goes straight into a column typed by the values the chunk held so far: a column starts as
-  nulls and takes its first value's type, and converts itself when a later value widens it without
-  loss (a float after integers exact as floats, a large unsigned integer after integers). Any other
+  value a stream keeps goes straight into a column typed by the values the chunk held so far, while
+  that column builds; a value under an excluded top-level key is parsed and its nesting checked but
+  neither observed nor built. A column starts as nulls and takes its first value's type, and
+  converts itself when a later value widens it without loss (a float after integers exact as
+  floats, a large unsigned integer after integers). Any other
   value makes the column `Json`. A column of scalars but floats renders the values it took as JSON
   text, which holds them as they were read, and goes on building as JSON. Any other column cannot: a
   float's text as it was written, an object and an array are gone, so it stops building and only
@@ -29,9 +31,9 @@ and a throughput bound. Pushes also coalesce into batches.
   one the join made another kind, or `Json` over floats, objects or arrays, is parsed again and
   built against the joined shape. Batches therefore always have the joined shape, and optional keys
   cost no second parse. The pass is metered: builders charge what they are made with and grow by,
-  within twice the chunk's text; a chunk that would pass that is read again observing kinds and
-  counts, and what the batches take beyond the push's admission is reserved before any of them is
-  built (ADR 0040).
+  within twice the chunk's text; a chunk whose builders would grow past that allowance is read
+  again observing kinds and counts, and what the batches take beyond the push's admission is
+  reserved before any of them is built (ADR 0040).
 - **Pushes are cut into chunks on the pool without walking their records.** JSON lines are cut
   at the first line end past each chunk's bytes, found by jumping past those bytes; a JSON
   array's top-level commas are found by one scan of its structure, without recursion however
