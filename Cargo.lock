@@ -2117,6 +2117,7 @@ dependencies = [
  "hyper-util",
  "insta",
  "nix",
+ "parking_lot",
  "rdlt-connector",
  "rdlt-connector-reference",
  "rdlt-engine",

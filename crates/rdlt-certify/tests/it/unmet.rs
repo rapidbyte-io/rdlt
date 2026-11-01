@@ -1,8 +1,9 @@
 //! Connectors that cannot be certified as asked: silent, refusing the configuration, serving
 //! another role, or vouched for by no authority the host trusts.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
+use parking_lot::Mutex;
 use rdlt_certify::{
     DESTINATION_CLAUSES, Outcome, PROTOCOL_CLAUSES, SOURCE_CLAUSES, Target, Unprobed, Verdict,
     certify_destination, certify_source,
@@ -28,7 +29,7 @@ async fn a_connector_that_never_answers_fails_every_clause_in_time() {
         let silent = Arc::clone(&silent);
         Box::pin(async move {
             let (host, connector) = tokio::io::duplex(1 << 20);
-            silent.lock().expect("the silent ends").push(connector);
+            silent.lock().push(connector);
             Ok(Box::new(host) as Box<dyn rdlt_host::Stream>)
         })
     });

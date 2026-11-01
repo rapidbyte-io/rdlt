@@ -6,10 +6,11 @@
 mod tests;
 
 use std::num::NonZeroUsize;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
 
 use arrow_array::RecordBatch;
+use parking_lot::Mutex;
 use rdlt_connector::{
     BoxFuture, Capabilities, CommitMeta, ConnectorError, ConnectorErrorKind, Destination,
     DestinationSession, DestinationWriter, OpenContext, OpenedSession, Receipt, Result, SegmentId,
@@ -78,11 +79,7 @@ impl Killing {
 
     /// Each table written, by name, as last written.
     pub(crate) fn tables(&self) -> Vec<TableRef> {
-        self.points
-            .tables
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+        self.points.tables.lock().clone()
     }
 }
 
@@ -106,7 +103,7 @@ impl Points {
     }
 
     fn written(&self, table: &TableRef) {
-        let mut tables = self.tables.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut tables = self.tables.lock();
         tables.retain(|written| written.name != table.name);
         tables.push(table.clone());
     }
