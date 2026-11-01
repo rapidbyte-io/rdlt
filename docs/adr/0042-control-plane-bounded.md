@@ -5,21 +5,21 @@ Status: accepted, 2026-10-02.
 ## Context
 
 ADR 0037 makes everything a connector sends hostile input, and ADR 0038 bounds its Arrow frames.
-The rest of what crosses between the engine, its host and a connector, the control plane, was
-still taken largely on trust:
+The rest of what crosses between the engine, its host and a connector, the control plane, is not
+to be taken on trust either. Without the rules below:
 
-- every message of every call was decoded within the limit sized for a frame, 64 MiB, and a
+- every message of every call is decoded within the limit sized for a frame, 64 MiB, and a
   decoder builds what a message's fields become before anything checks them, 30 to 90 times the
   bytes for empty repeated entries;
-- catalogs, plans, identifier rules and coordinator bookkeeping were unbounded in count and
+- catalogs, plans, identifier rules and coordinator bookkeeping are unbounded in count and
   checked in quadratic time;
-- names took any character but controls, and destination identifiers from the wire none at all;
-- some waits had no deadline: a call into a connector in process, a read asked to stop, a write
-  whose credit trickled in, and a served connection whose peer took nothing;
-- what a connector said could change what was committed, or how the engine retried: a receipt for
-  another commit was taken as its answer, a catalog's new key re-keyed a merge table, a connector's
-  error claimed a fence or set any wait, and a partition that lost its place looped without end;
-- tonic panicked on status details that were not base64.
+- names take any character but controls, and destination identifiers from the wire any at all;
+- some waits have no deadline: a call into a connector in process, a read asked to stop, a write
+  whose credit trickles in, and a served connection whose peer takes nothing;
+- what a connector says can change what is committed, or how the engine retries: a receipt for
+  another commit is taken as its answer, a catalog's new key re-keys a merge table, a connector's
+  error claims a fence or sets any wait, and a partition that loses its place loops without end;
+- tonic panics on status details that are not base64.
 
 ## Decision
 
@@ -243,7 +243,8 @@ still taken largely on trust:
   renamed or reset.
 - A destination's identifier rules beyond their limits, or with a maximum length under 16, are
   refused at the handshake and before any run or reset.
-- A connector built before the protocol's version was answered is refused; none is published.
+- A connector whose handshake answers another protocol major, or none, is refused as
+  `protocol_version`.
 - A failed attempt's close waits at most the close wait, a minute by default, before the retry
   begins, for a destination that never answers it.
 - A pipeline following more than 197 unbounded partitions of one served source is refused,
@@ -253,4 +254,5 @@ still taken largely on trust:
   partitions beyond the slots are read in turn, and an attempt with more tables than it holds
   writers open writes them through at most 198 writers of a served destination, 128 at the
   default `GrowthLimits::writers`, each lane retiring, and so flushing, a writer to open another.
-- H2b's state limits must fit within `state_bytes`, and its dictionary limit takes field 11.
+- The state limit is `state_bytes` (ADR 0041), and the dictionary limit is field 11 of the
+  handshake's limits (ADR 0039).

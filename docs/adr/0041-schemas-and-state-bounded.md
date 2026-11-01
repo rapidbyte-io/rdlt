@@ -6,25 +6,25 @@ Status: accepted, 2026-10-03.
 
 ADR 0037 has the engine survive any connector, and asks that persistent state is never written
 in a form its reader cannot read back. What a pipeline keeps from one push to the next, and from
-one run to the next, broke both:
+one run to the next, puts both at risk:
 
-- Stored forms that their readers refused. A table schema was stored as derived JSON, three levels
-  of nesting a struct, which a JSON reader stops reading at 128: a document nested 42 levels deep,
-  within the limit of 64, left state no later run could open and a catalog no change could
-  follow. The wire's encoder could not send a schema nested past about
-  fifteen levels at all. Records read a field they did not know as nothing, and fields with
-  meaning had been added under one format number.
-- Growth with no limit on the whole. Limits held one push: a table's columns and a struct's
-  fields grew by thousands a push for as long as pushes came, a normalized stream added a child
-  table for every array path, a lane kept a destination writer open for every schema version,
-  and the entries of partitions no plan named stayed in state for good.
-- State no message could carry. An open answers with all of a pipeline's state, a commit's
-  request carries its changes, a plan's request a stream's positions. Cursors within their limit,
-  long column names and abandoned partitions grew state past what any of these could take, and a
-  commit too large for its request failed at its send: every later run failed the same way.
-- Recorded values taken on trust: a schema version of `u32::MAX` wrapped to "not created", and
-  two tables recorded under one identifier wrote into one table.
-- A widen the destination refused was retried unchanged until the load failed.
+- Stored forms their readers refuse. A table schema stored as derived JSON takes three levels of
+  nesting a struct, and a JSON reader stops reading at 128, so a document nested 42 levels deep,
+  within the limit of 64, would leave state no later run could open and a catalog no change could
+  follow; a schema message read back at a fixed verifier depth stops a schema nested past about
+  fifteen levels from crossing the wire. A record that reads a field it does not know as nothing,
+  or a field with meaning added under one format number, is read as what it is not.
+- Growth with no limit on the whole. Limits on one push alone let a table's columns and a
+  struct's fields grow by thousands a push for as long as pushes come, a normalized stream add a
+  child table for every array path, a lane keep a destination writer open for every schema
+  version, and the entries of partitions no plan names stay in state for good.
+- State no message can carry. An open answers with all of a pipeline's state, a commit's request
+  carries its changes, a plan's request a stream's positions. Cursors within their limit, long
+  column names and abandoned partitions can grow state past what any of these can take, and a
+  commit too large for its request fails at its send, as every later run's would.
+- Recorded values taken on trust: a schema version of `u32::MAX` would wrap to "not created",
+  and two tables recorded under one identifier would write into one table.
+- A widen the destination refuses, retried unchanged, fails the load.
 
 ## Decision
 
@@ -38,14 +38,13 @@ one run to the next, broke both:
   the files catalog reads back, and writing a record cannot fail. The wire's encoder verifies
   the schema message it reads back to the schema's own depth.
 - **Persisted forms are versioned and strict.** Every persisted struct refuses a field it does not
-  know, and fields that defaulted for records written before them are required. A member that may
-  hold nothing is written as `null` and required on read too: a record lacking it is refused, not
-  read as holding nothing. State records are of format 6; the files destination's manifests and
-  catalog versions carry a format, 2, and the merge key a SQL destination's staged segment
-  records a format, 1, each checked on read. What an earlier build wrote is refused, as
-  `state_invalid`, `manifest_invalid`, `catalog_invalid` or an internal error for a staged key;
-  nothing is published, so nothing earlier needs reading. A stream or table name a
-  later build refuses (ADR 0042) therefore never reaches the engine from state written before it.
+  know, and no field defaults. A member that may hold nothing is written as `null` and required on
+  read too: a record lacking it is refused, not read as holding nothing. State records are of
+  format 6; the files destination's manifests and catalog versions carry a format, 2, and the
+  merge key a SQL destination's staged segment records a format, 1, each checked on read. A record
+  of another format is refused, as `state_invalid`, `manifest_invalid`, `catalog_invalid` or an
+  internal error for a staged key: no reader of another format is kept, so a stream or table name
+  the build refuses (ADR 0042) never reaches the engine from state.
 - **A table is never wider than a schema.** A change that would make a table's columns, every
   nested field counted, more than the schema columns `EngineConfig::limits` derives from the
   memory budget (ADR 0039; 6,241 at the defaults) is refused as `table_columns_exceeded` before
@@ -128,7 +127,7 @@ Rejected:
   ones whether or not state is pressed: a plan may omit a partition for a moment, a listing that
   failed in part, and a partition named again without its entry is read from its beginning, its
   rows twice. Keeping an entry for some number of plans would make the count state, written by
-  every plan. Forgetting a cursor under pressure was rejected for the same reason.
+  every plan. Forgetting a cursor under pressure is rejected for the same reason.
 
 ## Consequences
 
