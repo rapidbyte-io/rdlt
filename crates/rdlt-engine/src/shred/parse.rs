@@ -1,6 +1,9 @@
 //! One chunk parsed: its records observed and, where its builders have room, built into columns
 //! as they arrive, fast or with exact numbers.
 
+#[cfg(test)]
+mod tests;
+
 use std::sync::Arc;
 
 use rdlt_connector::Exclusion;
