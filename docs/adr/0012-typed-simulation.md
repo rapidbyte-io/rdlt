@@ -74,6 +74,5 @@ faults, concurrency, replay and coverage.
   give their children the same ids; a child table's rows are read against their parent table.
 - A text column widened in place keeps the text of its older type: dates stay `YYYY-MM-DD` in a
   column since widened to timestamps. Each row's `rdlt:logical_type` says which.
-- Policies other than evolve, drop row and drop value, column-level settings, hints and odd schema
-  sequences are M3g; faults beyond connector calls, multi-threaded runs, replay and the
-  simulation's own coverage are M3h.
+- Every policy and setting, hints and odd schema sequences are ADR 0013's; faults beyond
+  connector calls, multi-threaded runs, replay and the simulation's own coverage ADR 0014's.

@@ -31,9 +31,7 @@ sequences.
 
   The model follows the same batches, since a read resumes only at checkpoints, which fall between
   batches. The engine shreds a checkpoint's worth of pushes or more together and joins their
-  types, which is the same as long as every push of a column in one partition and phase arrives
-  alike; a test holds the workload to that. Non-finite floats pushed by name, which would break
-  it, are M3h's, with a model of the pushes the engine shreds together.
+  types, so the model follows the span of pushes it may gather with each one (ADR 0014).
 - **Where each value sits.** A value whose type fits its column's fixed type must sit in the own
   column, written as exactly that type. A column's type is fixed when it is hinted, when it is
   declared and every batch fits it, or when its every batch arrived as one type. A value a hint
@@ -101,4 +99,4 @@ sequences.
 - Seeds that once found a defect are replayed on every change, in the test job; the simulation's
   shards run only the sweeps.
 - Faults beyond connector calls, multi-threaded runs, replay and the simulation's own coverage
-  are M3h.
+  are ADR 0014's.
