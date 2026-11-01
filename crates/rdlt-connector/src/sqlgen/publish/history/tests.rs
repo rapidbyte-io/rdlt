@@ -178,6 +178,7 @@ impl History {
             name: "orders".to_owned(),
             generation,
             merge: self.table.merge.clone(),
+            rows: 1,
         }
     }
 

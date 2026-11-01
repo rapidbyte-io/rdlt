@@ -359,6 +359,7 @@ fn a_commit_finds_the_rows_its_changes_touch_by_their_key() {
         name: "orders".into(),
         generation: None,
         merge: orders.merge.clone(),
+        rows: 1,
     };
     let plan = planner
         .publish_as(

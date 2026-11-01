@@ -35,6 +35,9 @@ pub struct Staged {
     pub generation: Option<GenerationId>,
     /// How the table merges; `None` appends.
     pub merge: Option<MergeKey>,
+    /// The rows the commit's segments staged for the table; none for a child table that follows
+    /// its root, staging nothing of its own.
+    pub rows: u64,
 }
 
 impl<D: SqlDialect> SqlPlanner<D> {
@@ -166,6 +169,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
                     name: child.table.to_string(),
                     generation: None,
                     merge: Some(child.merge.clone()),
+                    rows: 0,
                 });
             }
         }
@@ -182,7 +186,8 @@ impl<D: SqlDialect> SqlPlanner<D> {
     /// pipeline, is a `Data` error coded `column_missing` that names each: the commit publishes
     /// nothing rather than the rows without it. A change stream's op and unchanged flags direct
     /// its merge, and no target holds them. A column the staging holds that the rows were not
-    /// written with, as one an earlier write mode left, holds none of their values.
+    /// written with, as one an earlier write mode left, holds none of their values. Staged rows
+    /// with no `written` columns are an `Internal` error, since nothing could be checked.
     ///
     /// While a table's writer appends, a commit reads its own staged rows by the staging table's
     /// index of who staged them, which [`SqlPlanner::staged_index`] creates where the rows are
@@ -221,7 +226,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
                 "table {name} does not exist to publish into"
             )));
         }
-        self.holds_written(&name, staged.merge.as_ref(), columns, written)?;
+        self.holds_written(&name, staged, columns, written)?;
         let names: Vec<String> = columns
             .iter()
             .map(|column| self.quote(&column.name))
@@ -256,21 +261,28 @@ impl<D: SqlDialect> SqlPlanner<D> {
         self.bounded(plan)
     }
 
-    /// Refuses the columns of `written` that `target`, the columns of the table `table` written
-    /// by `merge`, lacks, compared as the database compares names, beside a change stream's op
-    /// and unchanged flags: a `Data` error coded `column_missing` that names them.
+    /// Refuses the columns of `written` that `target`, the columns of the table `table` the rows
+    /// of `staged` publish into, lacks, compared as the database compares names, beside a change
+    /// stream's op and unchanged flags: a `Data` error coded `column_missing` that names them;
+    /// staged rows with no `written` columns, an `Internal` error.
     fn holds_written(
         &self,
         table: &str,
-        merge: Option<&MergeKey>,
+        staged: &Staged,
         target: &[Column],
         written: &[&str],
     ) -> Result<()> {
+        if written.is_empty() && staged.rows > 0 {
+            return Err(ConnectorError::internal(format!(
+                "table {table}: the columns its {} staged rows were written with are not given",
+                staged.rows
+            )));
+        }
         let mut held: BTreeSet<String> = target
             .iter()
             .map(|column| self.dialect.folds(&column.name))
             .collect();
-        if let Some(changes) = merge.and_then(|key| key.changes.as_ref()) {
+        if let Some(changes) = staged.merge.as_ref().and_then(|key| key.changes.as_ref()) {
             let directing = [Some(&*changes.op), changes.unchanged.as_deref()];
             held.extend(
                 directing
