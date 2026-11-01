@@ -260,4 +260,17 @@ async fn a_normalized_json_flush_whose_planned_rows_pass_its_narrow_room_is_refu
         (refused.kind(), refused.code()),
         (ErrorKind::Source, Some(codes::ROW_EXCEEDS_BUDGET))
     );
+    // What the row takes, the room left to it, the request, what building the batches took
+    // beyond their text, and what the piece's split holds, as the refusal names them.
+    let said = refused.to_string();
+    let counts: Vec<u64> = said
+        .split(|character: char| !character.is_ascii_digit())
+        .filter_map(|count| count.parse().ok())
+        .collect();
+    let [needed, room, request, built, held] = counts[..] else {
+        panic!("the refusal names five counts: {said}");
+    };
+    assert!(held > 0, "the split holds nothing: {said}");
+    assert!(needed > room, "the row fits its room: {said}");
+    assert_eq!(room, request - built - held, "{said}");
 }

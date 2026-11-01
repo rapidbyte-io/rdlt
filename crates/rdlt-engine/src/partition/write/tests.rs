@@ -183,6 +183,42 @@ async fn shredded_batches_hold_what_was_reserved_beyond_their_pushes_for_what_th
 }
 
 #[test]
+fn a_row_beyond_its_room_names_what_it_takes_the_room_and_what_took_the_rest() {
+    let row = super::pieces::RowTooLarge {
+        expanded: 9_000,
+        limit: 4_096,
+    };
+    let beside = |built, held| super::RequestHeld {
+        request: 8_192,
+        built,
+        held,
+    };
+    let cases = [
+        (beside(0, 0), vec![9_000, 4_096, 8_192]),
+        (beside(1_000, 0), vec![9_000, 4_096, 8_192, 1_000]),
+        (beside(0, 3_000), vec![9_000, 4_096, 8_192, 3_000]),
+        (
+            beside(1_000, 3_000),
+            vec![9_000, 4_096, 8_192, 1_000, 3_000],
+        ),
+    ];
+    for (beside, counts) in cases {
+        let error = super::row_beside(&job(), &row, beside);
+        assert_eq!(
+            (error.kind(), error.code()),
+            (ErrorKind::Source, Some(codes::ROW_EXCEEDS_BUDGET))
+        );
+        assert_eq!(error.stream(), Some(&job().stream));
+        let said = error.to_string();
+        let named: Vec<u64> = said
+            .split(|character: char| !character.is_ascii_digit())
+            .filter_map(|count| count.parse().ok())
+            .collect();
+        assert_eq!(named, counts, "{said}");
+    }
+}
+
+#[test]
 fn a_row_beyond_what_a_request_may_take_is_a_source_error_naming_its_stream() {
     let row = super::pieces::RowTooLarge {
         expanded: 9_000,

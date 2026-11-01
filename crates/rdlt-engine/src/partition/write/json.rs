@@ -9,10 +9,11 @@ use super::held::{self, Held};
 use super::pieces::{Pieces, RowTooLarge};
 use super::units::{self, Beside, Built, Units};
 use super::{
-    OpenSegment, PartitionContext, PartitionJob, Planned, Room, Schemas, lowered, planned, write,
+    OpenSegment, PartitionContext, PartitionJob, Planned, RequestHeld, Room, Schemas, lowered,
+    planned, row_beside, write,
 };
 use crate::budget::Shares;
-use crate::error::{Error, ErrorKind, codes};
+use crate::error::Error;
 use crate::normalize::PushKind;
 
 /// A flush's JSON pushes held with the permits they were admitted with, until their text is let
@@ -123,7 +124,12 @@ async fn measured(
         .iter()
         .map(|batch| Held::of(vec![batch.clone()], Vec::new()));
     let mut planned = planned(job, context, open, schemas, unheld.collect(), shares).await?;
-    let refused = |row: RowTooLarge| row_beside_built(job, &row, excess, request);
+    let beside = RequestHeld {
+        request,
+        built: excess,
+        held: 0,
+    };
+    let refused = |row: RowTooLarge| row_beside(job, &row, beside);
     let largest = cut(context, &mut planned, refused).await?;
     Ok((planned, largest))
 }
@@ -169,25 +175,4 @@ async fn cut(
         largest = largest.max(cut.map_err(&refused)?);
     }
     Ok(largest)
-}
-
-/// The error for a row of a JSON flush that takes more to lower than a request of `request`
-/// bytes leaves beside the `built` bytes building the flush's batches took beyond its pushes.
-pub(super) fn row_beside_built(
-    job: &PartitionJob,
-    row: &RowTooLarge,
-    built: u64,
-    request: u64,
-) -> Error {
-    Error::new(
-        ErrorKind::Source,
-        format!(
-            "stream {}: lowering one row takes more than {} bytes, more than the {} one request \
-             may take of the memory budget leaves beside the {} its JSON's batches take beyond \
-             their text",
-            job.stream, row.limit, request, built
-        ),
-    )
-    .with_code(codes::ROW_EXCEEDS_BUDGET)
-    .with_stream(&job.stream)
 }
