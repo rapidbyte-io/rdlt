@@ -4,19 +4,17 @@ Status: accepted, 2026-09-24.
 
 ## Context
 
-M3 of the spec makes JSON pushes load. It was split: M3a shreds JSON pushes end to end,
-coalescing pushes, shredding them in parallel on the compute pool and holding the shredder to a
-reference implementation, fuzzing and the throughput gate; M3b brings `normalize` with child
-tables and lineage ids, the `LoweringPlan`, the dictionary-encoded constant columns and the
-`arrow-json` fast-path evaluation. Building M3a surfaced decisions the spec leaves open or gets
-wrong.
+A JSON push carries records whose types the engine infers. Shredding them into Arrow batches
+runs in parallel on the compute pool, types every value exactly, refuses hostile input by name,
+gives the same answer however a push is cut, and is held to a reference implementation, a fuzzer
+and a throughput bound. Pushes also coalesce into batches.
 
 ## Decision
 
-- **One pass parses, observes and builds.** The spec parses each chunk into a tape, walks it to
-  observe types, and builds against the joined types in a second walk. Walking sonic-rs's
+- **One pass parses, observes and builds.** Parsing each chunk into a tape, walking it to observe
+  types and building against the joined types in a second walk is rejected: walking sonic-rs's
   document costs as much as parsing it, which caps that design near 3.5 times the old engine.
-  Instead each chunk is parsed once through serde seeds over sonic-rs, and every value goes
+  Each chunk is parsed once through serde seeds over sonic-rs, and every value goes
   straight into a column typed by the values the chunk held so far: a column starts as nulls and
   takes its first value's type, and converts itself when a later value widens it without loss (a
   float after integers exact as floats, a large unsigned integer after integers). Any other value
@@ -30,7 +28,7 @@ wrong.
   text where the join made their column `Json`. Only a chunk holding a column that stopped
   building, or one the join made another kind, or `Json` over floats, objects or arrays, is
   parsed again and built against the joined shape. Batches therefore always have the joined
-  shape, as the spec requires, and optional keys cost no second parse. The pass is metered:
+  shape, and optional keys cost no second parse. The pass is metered:
   builders charge what they are made with and grow by, within twice the chunk's text; a chunk
   that would pass that is read again observing kinds and counts, and what the batches take
   beyond the push's admission is reserved before any of them is built (ADR 0040).
