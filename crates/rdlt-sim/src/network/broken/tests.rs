@@ -7,7 +7,8 @@ use rdlt_connector::{ConnectorError, ConnectorErrorKind, ConnectorId};
 use rdlt_host::{CONNECTOR_LOST, ConnectorRef};
 use rdlt_wire::Limits;
 
-use super::{Breaker, Ended, Expect, ID, attacking, bound, catalogue, judge, port};
+use super::attack::{Breaker, Ended, attacking, bound, judge};
+use super::{Expect, ID, catalogue, port};
 use crate::canary::Canary;
 use crate::network::faults::cut;
 use crate::network::{
