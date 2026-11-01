@@ -4,10 +4,10 @@ Status: accepted, 2026-09-24.
 
 ## Context
 
-M2c of the spec brings `sqlgen`, the planner every SQL destination shares, the transactional
-`sqlite` reference destination built on it, and the `files` reference source and destination,
-which publish with manifests. They are the first destinations that keep data outside the process,
-and building them surfaced decisions the spec leaves open.
+`sqlgen` is the planner every SQL destination shares, and the transactional `sqlite` reference
+destination is built on it; the `files` reference source and destination publish with
+manifests. These destinations keep data outside the process, so publishing, fencing and the
+landed key must hold across a database's transactions and a file system's operations.
 
 ## Decision
 
@@ -47,13 +47,13 @@ and building them surfaced decisions the spec leaves open.
   each staged segment records its merge key, so a table that switches between append and merge
   follows its writer. A merge needs no unique key, which a table that appended repeated keys
   could not take: the key indexes a writer creates are not unique (ADR 0028). SQLite and
-  Postgres share the form; the spec's `MERGE` style waits for a dialect that needs it.
+  Postgres share the form; `sqlgen` plans no `MERGE`, which no dialect needs.
 - **Generations are tables.** Rows of a replace generation fill their own table, created with the
   table's columns if the generation was never declared; the finishing commit drops the table and
   renames the generation over it, and drops older generations. A generation with no table leaves
   the table empty.
 - **Ids keep every bit.** SQL integers are signed, so ids are stored with the same bits and read
-  back unsigned; the engine's generation ids use the full range, and `D-REPLACE` now uses one
+  back unsigned; the engine's generation ids use the full range, and `D-REPLACE` uses one
   beyond the signed range, so a destination that narrows ids fails certification.
 - **SQLite stores storage classes.** Columns are declared `BOOLEAN`, `INTEGER`, `REAL`, `TEXT` or
   `BLOB`, so widening within the integer or float family changes nothing, and the engine lowers

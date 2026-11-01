@@ -36,7 +36,7 @@ different types.
   every new identifier hash-suffixed, the hash seeded with a fresh salt on each of up to four
   retries, and a further conflict fails the run. The salts are drawn from the attempt's load, so
   no attempt names its retries where an earlier attempt left columns at its own. Recording names
-  in state before applying changes was rejected: it needs a commit per schema change, against one
+  in state before applying changes is rejected: it needs a commit per schema change, against one
   commit per barrier. A widen the destination refuses keeps that column as it is for the attempt,
   its values routed to variant columns; a refused new column still has new names hashed
   (ADR 0041).

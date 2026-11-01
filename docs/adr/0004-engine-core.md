@@ -4,11 +4,10 @@ Status: accepted, 2026-09-23.
 
 ## Context
 
-M2 of the spec is the in-process engine: planning, segments, barriers, the commit coordinator,
-fencing, the memory budget, lanes, write modes, schemas, retries and reports. It is split in two:
-M2a delivers the exactly-once core over streams with declared schemas; M2b adds merge, schema
-evolution, name maps, nested data, `sqlgen` and the `sqlite` and `files` reference connectors.
-Building M2a surfaced decisions the spec leaves open or gets wrong.
+The engine runs a pipeline in process: planning, segments, barriers, the commit coordinator,
+fencing, the memory budget, lanes, write modes, schemas, retries and reports. It delivers every
+stream exactly once through failed attempts, lost answers, crashes and concurrent runs, and what
+a run reports and tells must show what it did without changing what it does.
 
 ## Decision
 
@@ -72,14 +71,14 @@ Building M2a surfaced decisions the spec leaves open or gets wrong.
   incremental read resumes past it next run. Rows after the last checkpoint have no cursor that
   resumes past them, so committing them marks the partition `Done`. A partition that read nothing
   and never checkpointed records no position, so a stream that starts empty still loads rows added
-  later. The spec said `Done` always, which would stop incremental streams from ever growing.
+  later. Marking it `Done` always would stop incremental streams from ever growing.
 - **Full reads are cycles.** A `full` read records its generation when it first commits and
   deletes the previous cycle's partition entries; its last commit records it as `completed`. Each
   run remembers the cycle it started or resumed per stream, and state keeps the stream's sixteen
   most recently completed cycles, so a retry after a landed final commit (a lost response, a
   failed acknowledgement) does not read the stream again, even when another run completed a cycle
-  in between. Without this, `full` + `append` appended a second copy. `TableRef` carries the
-  generation `replace` writes fill, and the contract gains `StateKey::Completed`.
+  in between. Without this, `full` + `append` would append a second copy. `TableRef` carries the
+  generation `replace` writes fill, and the contract has `StateKey::Completed`.
 - **Every commit is keyed and expects the key landed before it.** A commit's key is its
   session's epoch and its place among the session's commits, from 1, and it names `after`, the
   key it expects the destination to hold landed: the open's landed key for a session's first
@@ -120,9 +119,9 @@ Building M2a surfaced decisions the spec leaves open or gets wrong.
   counter, an event or a status, so measuring a run never changes what it does.
 - **The budget is charged before a push enters its partition channel.** The contract's
   `admitted_partition_channel` waits for admission of each push's bytes, so data a source has
-  handed over but the engine has not read stays within the budget (spec §7.5).
-- **One table per stream.** Until name maps (M2b), a stream's table is named after the stream, so
-  a plan whose streams would share a table is refused.
+  handed over but the engine has not read stays within the budget.
+- **One table per stream.** A stream's table is named after the stream, so a plan whose streams
+  would share a table is refused.
 - **The lattice never rounds.** `Int64 ∨ Float` joins to `Json`: `Float64` holds integers exactly
   only up to 2^53. `Int8`, `Int16` and `Int32` still join floats as `Float64`.
 - **Tests fail instead of hanging.** Engine tests run on tokio's paused clock with time limits,
@@ -137,6 +136,6 @@ Building M2a surfaced decisions the spec leaves open or gets wrong.
 
 ## Consequences
 
-The simulation oracle checks every stream mode M2a supports through faults, crashes, stops and
-concurrent runs. A source that ends with rows after its last checkpoint is read once; a
-well-behaved incremental source checkpoints after its last row.
+The simulation oracle checks every stream mode through faults, crashes, stops and concurrent
+runs. A source that ends with rows after its last checkpoint is read once; a well-behaved
+incremental source checkpoints after its last row.
