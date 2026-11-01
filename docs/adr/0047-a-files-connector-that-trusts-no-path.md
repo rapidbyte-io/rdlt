@@ -6,11 +6,11 @@ Status: accepted, 2026-10-01.
 
 The files source and destination (ADR 0006) and the position keeper of the log and change
 sources (ADR 0036) are reference code that connector authors copy, and the files connectors ship
-as a binary. They built paths by joining names: table names from the host, file paths from
-manifests, entries of the directory tree. Whoever could create an entry under a root, or change a
-manifest, could make the connector read, write or delete elsewhere, wait on a pipe, or read a
-file of any size into memory; a reader of a lock file could hold the lock for good; and a
-session kept every file a later commit superseded. ADR 0037 asks that persistent state is checked
+as a binary. A connector that builds paths by joining names, table names from the host, file
+paths from manifests, entries of the directory tree, lets whoever can create an entry under a
+root, or change a manifest, make it read, write or delete elsewhere, wait on a pipe, or read a
+file of any size into memory; a reader of a lock file could hold the lock for good; and a session
+would keep every file a later commit supersedes. ADR 0037 asks that persistent state is checked
 when it is read and never written in a form its reader refuses.
 
 ## Decision
