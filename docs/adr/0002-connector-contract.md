@@ -4,9 +4,9 @@ Status: accepted, 2026-09-23.
 
 ## Context
 
-The spec sketches the Rust SDK with streams registered as methods
-(`Streams::new().add("tickets", Self::tickets)`). Stable Rust cannot store a borrowed-argument
-`async fn` with a `Send` future behind a name without boxing tricks that leak into author code.
+Streams registered as methods (`Streams::new().add("tickets", Self::tickets)`) would read well,
+but stable Rust cannot store a borrowed-argument `async fn` with a `Send` future behind a name
+without boxing tricks that leak into author code.
 
 ## Decision
 
@@ -14,8 +14,8 @@ The spec sketches the Rust SDK with streams registered as methods
   `CURSOR_VERSION`; `Streams::new().with(TicketsStream)` registers it.
 - Author traits declare `-> impl Future<Output = _> + Send`; authors write `async fn`. The SDK
   boxes futures only at the engine-facing traits (`Source`, `Destination`).
-- `ConnectorErrorKind` adds `Fenced` (a stale session's commit) and `Stopped` (the engine asked a
-  read to stop) to the spec's kinds; the SDK turns `Stopped` into a clean end of the read.
+- `ConnectorErrorKind` has `Fenced` (a stale session's commit) and `Stopped` (the engine asked a
+  read to stop) beside its other kinds; the SDK turns `Stopped` into a clean end of the read.
 - A read's request names the columns its stream excludes (`ReadRequest::exclude`,
   `Emitter::excluded`). A source may leave them out, as a database source leaves them out of its
   query, and the SDK projects every batch it pushes without them before anything holds it, so a

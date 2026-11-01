@@ -4,9 +4,10 @@ Status: accepted, 2026-09-23.
 
 ## Context
 
-rdlt is a from-scratch rewrite of an earlier engine whose core idea held up (cursors committed in
-the same destination transaction as the data, each commit applied once) but whose
-implementation had silent correctness bugs, a serial data path and inconsistent code.
+rdlt is written from scratch around one idea of an earlier engine: cursors committed in the same
+destination transaction as the data, each commit applied once. It takes none of that engine's
+code, whose silent correctness bugs, serial data path and inconsistent code the decisions below
+are made to avoid.
 
 ## Decision
 

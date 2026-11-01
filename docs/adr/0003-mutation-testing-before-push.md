@@ -4,10 +4,10 @@ Status: accepted, 2026-09-23.
 
 ## Context
 
-The spec runs `cargo mutants --in-diff` on every pull request and requires zero surviving
-mutants. The job's cost grows with the size of the change, while every other check finishes in
-minutes. Until rdlt is production ready, the speed of development matters more than a second,
-redundant run of the same check on a CI runner.
+Mutation testing of every change (`cargo mutants --in-diff`) must leave no surviving mutant. The
+job's cost grows with the size of the change, while every other check finishes in minutes. Until
+rdlt is production ready, the speed of development matters more than a second, redundant run of the
+same check on a CI runner.
 
 ## Decision
 

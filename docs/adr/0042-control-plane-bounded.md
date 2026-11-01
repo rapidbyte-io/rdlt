@@ -23,7 +23,7 @@ to be taken on trust either. Without the rules below:
 
 ## Decision
 
-- **Each call's messages are decoded within the limit of what the call carries.** `Limits` gains
+- **Each call's messages are decoded within the limit of what the call carries.** `Limits` has
   `catalog_bytes` (4 MiB), `state_bytes` (16 MiB: an open's answer, a plan and its request, a
   commit's request, a report of committed positions) and `control_message_bytes` (256 KiB),
   carried in the handshake as fields 12 to 14. A handshake and its answer, and a configuration's
