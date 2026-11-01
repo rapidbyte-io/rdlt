@@ -15,8 +15,10 @@ sparse one whose rows each hold 100 of 5 000.
     run.
   - `arrow/100`: nine batches of 166 rows of 100 such columns.
   - `arrow/5000_keep_100`: nine batches of 166 rows of 5 000 columns; the stream keeps the first
-    100 by excluding the other 4 900 (`StreamPlan::exclude`), which the source pushes and the
-    engine drops as each push arrives.
+    100 by excluding the other 4 900 (`StreamPlan::exclude`). The replay source hands each batch
+    whole to the connector SDK's `Emitter::batch`, which drops the 4 900 columns in the source,
+    before the push reaches the engine, so the cell times a source that honours the exclusion,
+    not the engine dropping the columns of a source that pushes them.
   - `sparse/arrow` and `sparse/json`: 100 pushes of 166 rows of a table of 5 000 columns whose rows
     each hold 100, every row of a push the same window of 100 columns, the pushes taking the 50
     windows in turn, twice; as Arrow batches and as JSON lines.
@@ -78,9 +80,10 @@ rounds and their range; allocations from the `allocations` bench, as above.
   engine: 30.2 % of the samples copy and free the replay's batches of 5 000 columns, which each
   run clones three times, for the run, for its source and as each push (`RecordBatch::clone`
   16.8 %, dropping their column vectors 13.4 %), and most of the 28.9 % in libc allocates and
-  frees those vectors; the projection's comparison of each push's schema of 5 000 fields with the
-  last one's takes 17.6 % (`Projection::kept`), since the replay builds every batch with a schema
-  of its own, where a source that keeps one schema `Arc` is matched by pointer.
+  frees those vectors; the SDK's projection, in the source's `Emitter::batch`, compares each
+  push's schema of 5 000 fields with the last one's in 17.6 % (`Projection::kept`), since the
+  replay builds every batch with a schema of its own, where a source that keeps one schema `Arc`
+  is matched by pointer.
 
 ## Where a wide run's time goes
 
