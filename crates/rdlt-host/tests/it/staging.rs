@@ -146,7 +146,7 @@ async fn a_served_write_whose_writer_falls_behind_refuses_the_same_frame() {
     assert_eq!(flushes, 0);
     // Every frame before the refused frame is written, and none after it: fifteen frames of a
     // mebibyte and their headers fit the sixteen mebibytes, and a sixteenth does not.
-    let kept = GATE.kept.lock().expect("the lock is not poisoned");
+    let kept = GATE.kept.lock();
     assert_eq!(kept.len(), 15);
 }
 

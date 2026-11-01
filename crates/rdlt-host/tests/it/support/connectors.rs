@@ -1,13 +1,18 @@
 //! Connectors that behave as a test needs: one that checkpoints only when asked, one whose check
 //! fails, and a memory destination whose commit is slow.
 
+use std::collections::BTreeMap;
+use std::fmt;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::time::Duration;
 
+use arrow_array::{ArrayRef, BooleanArray, Int64Array, RecordBatch, StringArray};
+use parking_lot::Mutex;
 use rdlt_connector::prelude::*;
 use rdlt_connector::{
     BoxFuture, ConnectContext, ConnectorSpec, Destination, DestinationFactory, DestinationSession,
-    DestinationWriter, OpenContext, OpenedSession, destination_factory,
+    DestinationWriter, OpenContext, OpenedSession, SegmentId, destination_factory,
 };
 use rdlt_connector_reference::MemoryDestination;
 use schemars::JsonSchema;
@@ -20,7 +25,7 @@ pub(crate) const LAGGED: Headroom = Headroom {
 };
 
 /// How often [`Counted`]'s check has been called.
-pub(crate) static CHECKS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+pub(crate) static CHECKS: AtomicU32 = AtomicU32::new(0);
 
 /// Configuration of [`Counted`]: none.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -39,7 +44,7 @@ impl SourceConnector for Counted {
     }
 
     async fn check(&self) -> Result<()> {
-        CHECKS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        CHECKS.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 
@@ -84,31 +89,30 @@ pub(crate) struct Ticks {
 }
 
 /// Each read of [`Ticks`]: whether its partition never ends, and whether it was asked to follow.
-pub(crate) static READS: std::sync::Mutex<Vec<(bool, bool)>> = std::sync::Mutex::new(Vec::new());
+pub(crate) static READS: Mutex<Vec<(bool, bool)>> = Mutex::new(Vec::new());
 
 /// How many idle reads of [`Ticks`] are running: only those, so other tests' reads in the same
 /// process never count.
-pub(crate) static IDLE_READING: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
+pub(crate) static IDLE_READING: AtomicUsize = AtomicUsize::new(0);
 
 /// Counts an idle read of [`Ticks`] as running until it is dropped.
 struct Running;
 
 impl Running {
     fn start() -> Self {
-        IDLE_READING.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        IDLE_READING.fetch_add(1, Ordering::SeqCst);
         Self
     }
 }
 
 impl Drop for Running {
     fn drop(&mut self) {
-        IDLE_READING.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        IDLE_READING.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
 /// The next ticks each committed report said were committed, in order.
-pub(crate) static COMMITTED: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
+pub(crate) static COMMITTED: Mutex<Vec<u64>> = Mutex::new(Vec::new());
 
 #[source(id = "test.ticks")]
 impl SourceConnector for Ticks {
@@ -136,17 +140,15 @@ pub(crate) struct Tick {
 }
 
 /// How many rows reads of [`Ticks`] sent as batches of flags, by the tag of their configuration.
-pub(crate) static FLAGGED: std::sync::Mutex<std::collections::BTreeMap<String, u64>> =
-    std::sync::Mutex::new(std::collections::BTreeMap::new());
+pub(crate) static FLAGGED: Mutex<BTreeMap<String, u64>> = Mutex::new(BTreeMap::new());
 
 /// Rows `0..rows` as one batch: their ids, then `flags` columns of flags, a bit a value.
-pub(crate) fn flagged(rows: u64, flags: usize) -> arrow_array::RecordBatch {
+pub(crate) fn flagged(rows: u64, flags: usize) -> RecordBatch {
     flagged_from(0, rows, flags)
 }
 
 /// Rows `first..rows` as one batch, as [`flagged`] makes it.
-fn flagged_from(first: u64, rows: u64, flags: usize) -> arrow_array::RecordBatch {
-    use arrow_array::{ArrayRef, BooleanArray, Int64Array};
+fn flagged_from(first: u64, rows: u64, flags: usize) -> RecordBatch {
     let first = i64::try_from(first).expect("ticks fit an i64");
     let rows = i64::try_from(rows).expect("ticks fit an i64");
     let ids: ArrayRef = Arc::new(Int64Array::from_iter_values(first..rows));
@@ -154,13 +156,12 @@ fn flagged_from(first: u64, rows: u64, flags: usize) -> arrow_array::RecordBatch
         (first..rows).map(|row| Some(row % 3 == 0)),
     ));
     let columns = (0..flags).map(|at| (format!("f{at}"), Arc::clone(&flag)));
-    arrow_array::RecordBatch::try_from_iter(std::iter::once(("id".to_owned(), ids)).chain(columns))
+    RecordBatch::try_from_iter(std::iter::once(("id".to_owned(), ids)).chain(columns))
         .expect("a valid batch")
 }
 
 /// Row `id` as a batch; with `extra`, a second column too.
-fn tick_batch(id: u64, extra: bool) -> arrow_array::RecordBatch {
-    use arrow_array::{ArrayRef, Int64Array, StringArray};
+fn tick_batch(id: u64, extra: bool) -> RecordBatch {
     let id = i64::try_from(id).expect("ticks fit an i64");
     let mut columns: Vec<(&str, ArrayRef)> = vec![("id", Arc::new(Int64Array::from(vec![id])))];
     if extra {
@@ -169,7 +170,7 @@ fn tick_batch(id: u64, extra: bool) -> arrow_array::RecordBatch {
             Arc::new(StringArray::from(vec![format!("tick {id}")])),
         ));
     }
-    arrow_array::RecordBatch::try_from_iter(columns).expect("a valid batch")
+    RecordBatch::try_from_iter(columns).expect("a valid batch")
 }
 
 impl ReadStream<Ticks> for TickStream {
@@ -188,10 +189,7 @@ impl ReadStream<Ticks> for TickStream {
         out: &mut Emitter<Tick>,
     ) -> Result<()> {
         let _running = source.config.idle.then(Running::start);
-        READS
-            .lock()
-            .expect("the lock is not poisoned")
-            .push((partition.is_unbounded(), out.follows()));
+        READS.lock().push((partition.is_unbounded(), out.follows()));
         let config = &source.config;
         if config.chatty {
             out.behind(7, LAGGED).await?;
@@ -200,7 +198,7 @@ impl ReadStream<Ticks> for TickStream {
         if let Some(rows) = config.rows.filter(|_| config.flags > 0) {
             if cursor.next < rows {
                 {
-                    let mut flagged = FLAGGED.lock().expect("the lock is not poisoned");
+                    let mut flagged = FLAGGED.lock();
                     *flagged.entry(config.tag.clone()).or_default() += rows - cursor.next;
                 }
                 out.batch(flagged_from(cursor.next, rows, config.flags))
@@ -238,7 +236,7 @@ impl ReadStream<Ticks> for TickStream {
     }
 
     async fn committed(&self, _source: &Ticks, cursors: &[(PartitionId, Tick)]) -> Result<()> {
-        let mut committed = COMMITTED.lock().expect("the lock is not poisoned");
+        let mut committed = COMMITTED.lock();
         committed.extend(cursors.iter().map(|(_, tick)| tick.next));
         Ok(())
     }
@@ -381,9 +379,9 @@ pub(crate) enum Writing {
 
 /// Where a [`Writes`] destination's writes wait until a test lets them through.
 pub(crate) struct Gate {
-    open: std::sync::atomic::AtomicBool,
+    open: AtomicBool,
     /// The writes let through before the gate holds the rest.
-    ahead: std::sync::atomic::AtomicUsize,
+    ahead: AtomicUsize,
     /// The writes let through.
     pub(crate) kept: Kept,
 }
@@ -396,20 +394,20 @@ impl Gate {
     /// A gate that lets `writes` through, then holds the rest until it is opened.
     pub(crate) const fn after(writes: usize) -> Self {
         Self {
-            open: std::sync::atomic::AtomicBool::new(false),
-            ahead: std::sync::atomic::AtomicUsize::new(writes),
+            open: AtomicBool::new(false),
+            ahead: AtomicUsize::new(writes),
             kept: Kept::new(Vec::new()),
         }
     }
 
     /// Lets every write through from now on.
     pub(crate) fn open(&self) {
-        self.open.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.open.store(true, Ordering::SeqCst);
     }
 }
 
-impl std::fmt::Debug for Gate {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for Gate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("a gate")
     }
 }
@@ -419,15 +417,15 @@ pub(crate) struct Hook {
     /// The write, counted from one, at which `then` runs before the write is staged.
     pub(crate) at: usize,
     /// The writes so far.
-    pub(crate) writes: std::sync::atomic::AtomicUsize,
+    pub(crate) writes: AtomicUsize,
     /// What runs at that write, once; an error fails the write.
-    then: std::sync::Mutex<Option<Then>>,
+    then: Mutex<Option<Then>>,
 }
 
 type Then = Box<dyn FnOnce() -> Result<()> + Send>;
 
-impl std::fmt::Debug for Hook {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for Hook {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "a hook at write {}", self.at)
     }
 }
@@ -437,19 +435,19 @@ impl Hook {
     pub(crate) const fn at(at: usize) -> Self {
         Self {
             at,
-            writes: std::sync::atomic::AtomicUsize::new(0),
-            then: std::sync::Mutex::new(None),
+            writes: AtomicUsize::new(0),
+            then: Mutex::new(None),
         }
     }
 
     /// Sets what runs at the hooked write.
     pub(crate) fn then(&self, then: impl FnOnce() -> Result<()> + Send + 'static) {
-        *self.then.lock().expect("the lock is not poisoned") = Some(Box::new(then));
+        *self.then.lock() = Some(Box::new(then));
     }
 
     /// The writes so far.
     pub(crate) fn writes(&self) -> usize {
-        self.writes.load(std::sync::atomic::Ordering::SeqCst)
+        self.writes.load(Ordering::SeqCst)
     }
 }
 
@@ -460,21 +458,10 @@ struct HookedWriter {
 }
 
 impl DestinationWriter for HookedWriter {
-    fn write(
-        &mut self,
-        segment: rdlt_connector::SegmentId,
-        batch: arrow_array::RecordBatch,
-    ) -> BoxFuture<'_, Result<()>> {
-        use std::sync::atomic::Ordering;
+    fn write(&mut self, segment: SegmentId, batch: RecordBatch) -> BoxFuture<'_, Result<()>> {
         let write = self.hook.writes.fetch_add(1, Ordering::SeqCst) + 1;
         let then = (write == self.hook.at)
-            .then(|| {
-                self.hook
-                    .then
-                    .lock()
-                    .expect("the lock is not poisoned")
-                    .take()
-            })
+            .then(|| self.hook.then.lock().take())
             .flatten();
         Box::pin(async move {
             if let Some(then) = then {
@@ -490,7 +477,7 @@ impl DestinationWriter for HookedWriter {
 }
 
 /// The writes a [`Writes`] destination that keeps them was given, in order, each with its segment.
-pub(crate) type Kept = std::sync::Mutex<Vec<(u64, arrow_array::RecordBatch)>>;
+pub(crate) type Kept = Mutex<Vec<(u64, RecordBatch)>>;
 
 /// The memory destination, whose writers go wrong as `writing` says.
 pub(crate) struct Writes {
@@ -595,11 +582,7 @@ impl DestinationSession for WrongSession {
 struct WrongWriter(Writing);
 
 impl DestinationWriter for WrongWriter {
-    fn write(
-        &mut self,
-        segment: rdlt_connector::SegmentId,
-        batch: arrow_array::RecordBatch,
-    ) -> BoxFuture<'_, Result<()>> {
+    fn write(&mut self, segment: SegmentId, batch: RecordBatch) -> BoxFuture<'_, Result<()>> {
         let writing = self.0;
         Box::pin(async move {
             match writing {
@@ -608,19 +591,20 @@ impl DestinationWriter for WrongWriter {
                 Writing::Panics => panic!("the writer panicked"),
                 Writing::Hooked(_) => Ok(()),
                 Writing::Keeps(kept) => {
-                    let mut kept = kept.lock().expect("the lock is not poisoned");
+                    let mut kept = kept.lock();
                     kept.push((segment.0, batch));
                     Ok(())
                 }
                 Writing::Gated(gate) => {
-                    use std::sync::atomic::Ordering::SeqCst;
                     let ahead = gate
                         .ahead
-                        .try_update(SeqCst, SeqCst, |left| left.checked_sub(1));
-                    while ahead.is_err() && !gate.open.load(SeqCst) {
+                        .try_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                            left.checked_sub(1)
+                        });
+                    while ahead.is_err() && !gate.open.load(Ordering::SeqCst) {
                         tokio::time::sleep(Duration::from_millis(10)).await;
                     }
-                    let mut kept = gate.kept.lock().expect("the lock is not poisoned");
+                    let mut kept = gate.kept.lock();
                     kept.push((segment.0, batch));
                     Ok(())
                 }
@@ -647,8 +631,8 @@ pub(crate) struct EchoConfig {
 #[derive(Debug)]
 pub(crate) struct Refused(String);
 
-impl std::fmt::Display for Refused {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for Refused {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "the driver refused {}", self.0)
     }
 }
