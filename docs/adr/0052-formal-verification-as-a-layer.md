@@ -362,12 +362,12 @@ what no bound names.
   allow.
 - **The exactly-once spec is tied to the code by its invariants' names alone,** each named with its
   check under *Specifications*. Checking the simulation's runs against it, a seed's sessions,
-  commits and positions told written as observations a checker searches the spec for, does not
-  pay: of four criteria set for it, it meets one. Reach, 25 seeds within what the spec models
-  among the first 500, holds: 68 are. Admission, each of those admitted within 10 minutes, fails:
-  of the first 25 seeds in scope, in file-name order, TLC admits 19 in 7 to 163 seconds, rejects
-  none, and runs out of 10 minutes on 6, as Apalache does. Teeth, a seeded engine bug caught where
-  the simulation's oracle passes, fails: one that tells sources that read again before the
+  commits and positions told written as observations a checker searches the spec for, does not pay:
+  of four criteria set for it, it meets one. Reach, at least 25 of the first 500 seeds within what
+  the spec models, holds: 68 of the 500 are. Admission, each of the first 25 seeds in scope admitted
+  within 10 minutes, fails: of those 25, in file-name order, TLC admits 19 in 7 to 163 seconds,
+  rejects none, and runs out of 10 minutes on 6, as Apalache does. Teeth, a seeded engine bug caught
+  where the simulation's oracle passes, fails: one that tells sources that read again before the
   destination's commit is refused by the observer only on seeds the oracle fails too, and one that
   replays every commit whole is refused on none. Size, a hook of at most 300 lines, fails at 393,
   with an observer that admits replays of held commits, tellings of commits that move no source of
