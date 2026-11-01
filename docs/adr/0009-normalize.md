@@ -4,25 +4,20 @@ Status: accepted, 2026-09-25.
 
 ## Context
 
-Spec §8.7 lets a stream `normalize` its nested data: arrays of objects become child tables at any
-depth, objects flatten into `a__b` columns, arrays of values become child tables with a single
-`value` column, and containers deeper than `max_depth` (default 8) are stored as `Json`. Every row
-carries its lineage (§8.5, §7.4): `_rdlt_id`, and in child tables `_rdlt_parent_id`,
-`_rdlt_root_id` and `_rdlt_idx`. Ledger defect D4 is child tables aliasing across parents.
-
-M3 was split again (owner's decision, 2026-09-25): M3c normalizes for `append` and `replace`
-streams; M3d brings merges that replace a root's child rows, `discard_row` cascading to children,
-and the per-value reference lowering differential of §20.4. Building M3c took decisions the spec
-leaves open, and one it words otherwise.
+A stream may `normalize` its nested data: arrays of objects become child tables at any depth,
+objects flatten into `a__b` columns, arrays of values become child tables with a single `value`
+column, and containers deeper than `max_depth` (default 8) are stored as `Json`. Every row
+carries its lineage: `_rdlt_id`, and in child tables `_rdlt_parent_id`, `_rdlt_root_id` and
+`_rdlt_idx`. Child tables of different parents must never alias.
 
 ## Decision
 
-- **Normalizing follows shredding, on Arrow.** Spec §7.4 has the shredder compute lineage ids as it
-  observes JSON. Normalizing Arrow batches after shredding instead, owner-approved, serves Arrow and
-  JSON pushes with one implementation and keeps the shredder's single pass as it is. A partition of
-  a normalized stream concatenates and normalizes each unit on the compute pool, finds each part's
-  table and plan in order, then lowers the parts on the pool; a plain stream's batches are cut and
-  lowered on the pool only where that reads or writes values (ADR 0008).
+- **Normalizing follows shredding, on Arrow.** Normalizing Arrow batches after shredding, rather
+  than computing lineage ids in the shredder as it observes JSON, serves Arrow and JSON pushes with
+  one implementation and keeps the shredder's single pass as it is. A partition of a normalized
+  stream concatenates and normalizes each unit on the compute pool, finds each part's table and plan
+  in order, then lowers the parts on the pool; a plain stream's batches are cut and lowered on the
+  pool only where that reads or writes values (ADR 0008).
 - **Depth.** Entering an object or an array is one level; a container deeper than `max_depth` stays
   whole and lowers to `Json`, or text where the destination has no JSON type, and an object or
   array held in a dictionary or runs stays a whole column at any depth. Only pipelines and streams
@@ -73,17 +68,16 @@ leaves open, and one it words otherwise.
     leave their children behind, so it is refused, `table_identity_mismatch`, a Config error,
     until the stream's tables are reset. A normalized load that does not merge records that its
     table holds such roots in the table's sequences' record, and takes a table a merge loaded.
-- **Lineage columns' types.** Ids are `Binary`: a merge root's the 32 bytes of BLAKE3, every
-  other row's the 5 to 37 bytes of its position. The position in the parent's array is `Int32`,
-  as every array is cast to 32-bit offsets before it normalizes. The contract has no fixed-size
-  binary or unsigned logical types, so the spec's `FixedSizeBinary(16)` and `UInt32` are not
-  used, as `_rdlt_seq` is `Binary` too. Every destination stores both. The column set is the
-  same in every write mode: a stream's own table carries `_rdlt_id`; child tables carry all
-  four. They are nullable: a stream that starts to normalize keeps its table, to which planning
-  adds the lineage columns, and its earlier rows have none.
+- **Lineage columns' types.** Ids are `Binary`: a merge root's the 32 bytes of BLAKE3, every other
+  row's the 5 to 37 bytes of its position. The position in the parent's array is `Int32`, as every
+  array is cast to 32-bit offsets before it normalizes. The contract has no fixed-size binary or
+  unsigned logical types, so neither is used, as `_rdlt_seq` is `Binary` too. Every destination
+  stores both. The column set is the same in every write mode: a stream's own table carries
+  `_rdlt_id`; child tables carry all four. They are nullable: a stream that starts to normalize
+  keeps its table, to which planning adds the lineage columns, and its earlier rows have none.
 - **Child tables.** A child table's path is its parent table's path and the array's path within
   the parent row, and its name comes from the naming rules for that path, so `a__b` as a key and
-  `a.b` as nesting never alias (D4). Tables that state records keep their names. A child table is
+  `a.b` as nesting never alias. Tables that state records keep their names. A child table is
   added the first time its rows arrive, creating it through the session, even when its rows hold
   nothing but their lineage (an array of arrays); lanes open a table's writer on its first write
   rather than at the attempt's start.
@@ -92,8 +86,8 @@ leaves open, and one it words otherwise.
   that state records is a schema change the stream's policy decides: `freeze` refuses it with
   `schema_frozen`, `discard_value` drops its rows and counts them, `evolve` adds its table.
 - **Segments span tables.** A partition's rows and its child rows share the partition's segments.
-  The destination contract now says a segment may hold rows for several tables, and certification
-  clause `D-TABLES` checks it; the reference destinations already met it.
+  The destination contract says a segment may hold rows for several tables, and certification
+  clause `D-TABLES` checks it.
 - **Replace.** A replace stream's child tables fill the same generation as its table and swap in
   with it. Child tables state records are added when the attempt plans the stream, so one the new
   cycle never writes swaps in empty.

@@ -4,15 +4,13 @@ Status: accepted, 2026-09-25.
 
 ## Context
 
-Spec §8.7 has a merge on a normalized stream replace all child rows of each affected root in the
-same commit, and `discard_row` on a parent discard its children, resolved parents first. M3c
-refused both (ADR 0009). M3 was split once more (owner's decision, 2026-09-25): M3d lifts the two
-refusals; M3e brings the per-value reference lowering differential of §20.4 and M3c's deferred
-minors.
+On a normalized stream, a merge replaces all child rows of each affected root in the same commit,
+and `discard_row` on a parent discards its children, resolved parents first: a root row's
+children follow it wherever a merge or a policy takes it.
 
 ## Decision
 
-- **Child tables merge by their root.** `MergeKey` gains `root: Option<RootKey>`, naming the root
+- **Child tables merge by their root.** `MergeKey` has `root: Option<RootKey>`, naming the root
   table and its id and sequence columns. A child table's key is its root-id column, and its
   `_rdlt_seq` holds its root row's sequence. A commit that publishes root rows removes every
   published child row of those roots, then publishes the staged child rows of each root's winning
@@ -40,28 +38,26 @@ minors.
   holding it, with their descendants; the array's own rows are never written. A new array that
   is discarded, under either policy, takes the arrays within it along, uncounted, as part of the
   value already discarded.
-- **New arrays meet the policy once the stream's table exists.** ADR 0009 governed a new array only
-  once state recorded the stream's table. A new column is governed once the table has been created,
-  whether by a declared schema, an earlier flush, or an earlier load; a new array now is too,
-  judged as each flush starts, so every flush that finds the table not yet created takes every
+- **New arrays meet the policy once the stream's table exists.** A new column or array is governed
+  once the table has been created, whether by a declared schema, an earlier flush, or an earlier
+  load, judged as each flush starts, so every flush that finds the table not yet created takes every
   array any of its chunks or pieces holds, and each table it finds not yet created takes every
-  column they hold. A column whose first kept value lies in a later piece of such a flush is
-  added to the table an earlier piece created, and two partitions whose flushes both find the
-  table not yet created both take every column, the second adding to the table the first
-  created; a destination that cannot add columns refuses either addition,
-  `schema_change_unsupported`. That is the price of letting the cut into chunks and pieces
-  decide no column's existence or type. A table's column order, and which of two colliding names
-  takes a hashed suffix, follow the order in which its columns are first valued: a column first
-  valued in a later piece follows every column the table was created with, metadata included. A
-  declared array is taken as given only while the stream's table is created, which creates its
-  table too, or where state records its table; after that a new one is a change its column's
-  policy decides. An array deeper than the stream normalizes is stored whole and has no table.
+  column they hold. A column whose first kept value lies in a later piece of such a flush is added
+  to the table an earlier piece created, and two partitions whose flushes both find the table not
+  yet created both take every column, the second adding to the table the first created; a
+  destination that cannot add columns refuses either addition, `schema_change_unsupported`. That is
+  the price of letting the cut into chunks and pieces decide no column's existence or type. A
+  table's column order, and which of two colliding names takes a hashed suffix, follow the order in
+  which its columns are first valued: a column first valued in a later piece follows every column
+  the table was created with, metadata included. A declared array is taken as given only while the
+  stream's table is created, which creates its table too, or where state records its table; after
+  that a new one is a change its column's policy decides. An array deeper than the stream normalizes
+  is stored whole and has no table.
 - **Simulation.** Simulated streams normalize under every write mode and policy. The simulated
   destination merges child tables by their root, through the SDK's Arrow merge, and the oracle
   checks each child table against the rows the model keeps: each key's last kept row for merges.
 
 ## Consequences
 
-Merge streams can normalize, and every schema policy applies to normalized streams, so the
-refusals `normalize_merge_unsupported` and `normalize_discard_row_unsupported` are gone. A
-destination that merges must now replace child rows by root; `D-CHILDREN` holds it to that.
+Merge streams can normalize, and every schema policy applies to normalized streams. A destination
+that merges replaces child rows by root; `D-CHILDREN` holds it to that.

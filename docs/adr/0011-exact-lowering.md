@@ -4,13 +4,10 @@ Status: accepted, 2026-09-25.
 
 ## Context
 
-Spec §20.4 compares `LoweringPlan` against direct per-value lowering; M3b deferred it (ADR 0008).
-The owner asked, while M3e was drafted, that tests cover every data type and variant rather than a
-sample. The first differential, drawing a handful of types, found a panic at once; drawing every
-logical type, in every Arrow encoding a source may send, found eight more defects in lowering and
-three in normalizing; mutation testing found one more in lowering, and the branch's review four
-more. M3e also takes the minors M3c
-and M3d deferred.
+A `LoweringPlan` must store what each value means, exactly as lowering that value on its own
+would, for every logical type in every Arrow encoding a source may send, and normalizing must not
+depend on the encoding. Tests that draw a sample of types miss whole classes of defect, from
+panics to values silently changed, so the tests draw every type and variant.
 
 ## Decision
 
@@ -23,36 +20,36 @@ and M3d deferred.
   exact decimal, times in nanoseconds. A test asserts the generator draws every type in every
   encoding. The comparison is meaning-based because text formats are Arrow's contract; values
   are ours.
-- **Found and fixed in lowering.**
-  - A `Null` column arriving at a `Json` column panicked in arrow-json: it converts to nulls.
-  - Map columns failed every batch: maps, at any depth, become the list of key and value structs
-    they hold before any cast.
-  - arrow-json encodes a list's items with the list's field, so JSON and UUID items lost their
-    extension types (JSON came out double-encoded): the engine encodes such lists itself.
-  - Temporal text beyond the years `chrono` holds failed the batch (dates, timestamps) or was
-    written as `<invalid>` (durations), and times of day outside a day failed it too: the engine
-    renders every temporal value itself, as Arrow renders those in range (a zero duration as
-    `PT0S`, where Arrow writes `P0D`), exactly, with expanded years and signed clocks, and an
-    instant chrono cannot place in its zone in UTC.
-  - A named zone's historical offset with seconds (Asia/Kolkata before 1941) lost them in text,
-    naming another instant: such instants are rendered in UTC.
-  - JSON has no non-finite numbers, and arrow-json wrote them as `null`: they are the JSON
+- **Lowering converts values itself where Arrow's kernels lose or refuse them.**
+  - A `Null` column arriving at a `Json` column converts to nulls, which arrow-json panics on.
+  - Maps, at any depth, become the list of key and value structs they hold before any cast, which
+    a map column otherwise fails.
+  - arrow-json encodes a list's items with the list's field, so JSON and UUID items would lose
+    their extension types (JSON double-encoded): the engine encodes such lists itself.
+  - The engine renders every temporal value itself, as Arrow renders those in range (a zero
+    duration as `PT0S`, where Arrow writes `P0D`), exactly, with expanded years and signed clocks,
+    and an instant chrono cannot place in its zone in UTC. Arrow fails a batch whose dates or
+    timestamps lie beyond the years `chrono` holds, or whose times of day lie outside a day, and
+    writes such durations as `<invalid>`.
+  - Text loses a named zone's historical offset seconds (Asia/Kolkata before 1941), naming
+    another instant, so such instants are rendered in UTC.
+  - JSON has no non-finite numbers, and arrow-json writes them as `null`: they are the JSON
     strings `"NaN"`, `"Infinity"` and `"-Infinity"`, which a typed reader parses back.
-  - Run-end and dictionary encodings hold their nulls in their values, so discards counted, and
-    `discard_row` dropped, rows that held nothing, and a null merge key went unseen: every null
-    check on incoming arrays uses logical nulls.
-  - Arrow multiplies dates into timestamps unchecked, wrapping silently in release builds: dates
-    and wall-clock times are placed in their columns' units with checked arithmetic.
-  - Arrow refuses a wall-clock timestamp that its column's named zone skips or repeats, failing
-    the batch: a widening never consults a zone (below), so no such time is refused.
+  - Every null check on incoming arrays uses logical nulls: run-end and dictionary encodings hold
+    their nulls in their values, so a physical check would count discards of, and drop under
+    `discard_row`, rows that hold nothing, and miss a null merge key.
+  - Dates and wall-clock times are placed in their columns' units with checked arithmetic: Arrow
+    multiplies dates into timestamps unchecked, wrapping silently in release builds.
+  - A widening never consults a zone (below), so no wall-clock timestamp is refused for a time its
+    column's named zone skips or repeats, as Arrow's would be.
   - A `Date64` is the day it is within wherever it goes, a struct's and a list's included, and one
     a `Date32` cannot hold is refused; a decimal beyond its declared precision is refused.
-  - Arrow widens times of day outside a day unchecked (`Time64` microseconds to nanoseconds
-    overflowed, panicking in debug builds): times are rescaled here and refused where the finer
-    type cannot hold them.
-  - Filtering rows out of a dictionary leaves their values in it, and converting a dictionary
-    converts every value, so a value only a dropped row held could refuse the batch: dictionary
-    and run-end encodings are decoded, keeping only the values rows hold, before any conversion.
+  - Times are rescaled by the engine and refused where the finer type cannot hold them: Arrow
+    widens times of day outside a day unchecked (`Time64` microseconds to nanoseconds overflows,
+    panicking in debug builds).
+  - Dictionary and run-end encodings are decoded, keeping only the values rows hold, before any
+    conversion: filtering rows out of a dictionary leaves their values in it, and converting a
+    dictionary converts every value, so a value only a dropped row held could refuse the batch.
 - **Conversions that leave a unit's range are refused.** The lattice joins time units to the
   finer one, which holds every value only within the `i64` of that unit; a value beyond it is
   refused with `value_unrepresentable` rather than wrapped or rounded. The differential predicts
@@ -63,12 +60,10 @@ and M3d deferred.
   history hash.
 - **Normalizing does not depend on encodings.** A property test normalizes every drawn batch as
   drawn and with every encoding plain, and requires the same parts, ids, lineage and values; its
-  dates stay within a `Date32`'s days, as a far `Date64` has no other encoding. It
-  found that run-end values and list views were hashed by their Arrow type's name, list views
-  were never split into child tables, and dates, times, timestamps and durations were hashed by
-  their unit and date type. Identity now encodes temporal values as their kind and nanoseconds and
-  decimals from their integer value, and unwraps run-end encodings as it does dictionaries. Ids
-  of rows keyed by temporal values therefore differ from those M3c wrote, before 0.1.
+  dates stay within a `Date32`'s days, as a far `Date64` has no other encoding. Identity encodes
+  temporal values as their kind and nanoseconds and decimals from their integer value, unwraps
+  run-end encodings as it does dictionaries, and splits list views into child tables as it does
+  lists, so no id depends on an Arrow type's name, a value's unit or its date type.
 - **Correctness.**
   - A stream that appended to a table may merge into it: planning adds the sequence column,
     nullable, as it adds lineage columns.
