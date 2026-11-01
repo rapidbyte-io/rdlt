@@ -93,5 +93,5 @@ and M3d deferred.
 
 Every value a source may send, in any encoding, lowers into a column that holds exactly it, or the
 batch is refused by name; nothing is silently lost, rounded or wrapped. The differentials run
-1 024 and 512 cases in CI and hundreds of thousands locally. The simulation does not yet draw
-every type and encoding, nor column-level policies and nested arrays in its drift; that is M3f.
+1 024 and 512 cases in CI and hundreds of thousands locally. The simulation draws every type and
+encoding, nested arrays among them (ADR 0012), under column-level policies (ADR 0013).
