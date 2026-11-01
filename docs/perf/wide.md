@@ -25,6 +25,9 @@ sparse one whose rows each hold 100 of 5 000.
 - **Engine.** `Engine::run` from the replay source into a sink that counts rows and drops them,
   within the four cores (2 runtime workers and a compute thread a core), a budget of 1 GiB, one
   commit. Every run checks every row arrives and no value is discarded.
+- **Source.** The replay source hands a run its batches shared, not copied, and a case's batches
+  of one schema hold one schema `Arc`, as a source that keeps its schema sends them; the records
+  below say which harness they ran.
 - **Throughput.** Rows a second; the bench prints the bytes a run pushes, Arrow's logical bytes or
   JSON's text.
 - **Allocations.** The `allocations` bench runs each case once under its counting allocator, on
@@ -84,6 +87,28 @@ rounds and their range; allocations from the `allocations` bench, as above.
   push's schema of 5 000 fields with the last one's in 17.6 % (`Projection::kept`), since the
   replay builds every batch with a schema of its own, where a source that keeps one schema `Arc`
   is matched by pointer.
+
+**A harness that hands its batches over shared.** The replay then hands a run the batches it
+pushes behind one `Arc` rather than a copy for the run and another for its source, and a case
+whose batches hold the same columns builds them on the first one's schema, one `Arc`, as a source
+that keeps its schema does; each push is still copied as the source hands it to `Emitter::batch`. Every other figure in
+this record was taken with the copying harness, each batch of a schema of its own. `main` at
+`d14726a0` against that harness on it, 2026-11-01: three rounds of the two cells, each tree's
+criterion pass in turn on CPUs 0–3 and the order swapped every round, under the measurement lock,
+the one-minute load average 0.72 to 1.01 at the runs' starts. The median of the three rounds and
+their range.
+
+| Case | Harness | Time a run | Rows a second |
+|---|---|---|---|
+| `arrow/100` | copying | 1.680 ms (1.675–1.694) | 889 k |
+| `arrow/100` | sharing | 1.556 ms (1.550–1.573) | 960 k |
+| `arrow/5000_keep_100` | copying | 5.752 ms (5.739–5.757) | 260 k |
+| `arrow/5000_keep_100` | sharing | 3.710 ms (3.685–3.753) | 403 k |
+
+- Without the harness's copies the kept table runs 35.5 % faster and the 100-column table 7.4 %.
+- The kept table loads 41.9 % (41.3–42.7) of the 100-column table's rows a second, against
+  29.2 % (29.1–29.5) through the copying harness: still short of the 90 % its change set out to
+  reach.
 
 ## Where a wide run's time goes
 
