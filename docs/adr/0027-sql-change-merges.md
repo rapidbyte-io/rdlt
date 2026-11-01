@@ -72,12 +72,13 @@ commits, beside merges by key.
   - A soft delete of a key no row holds marks nothing, and leaves nothing a change sequenced before
     it would meet: soft deletes keep no tombstones.
 - **Certification** has `D-DELETE`, `D-PARTIAL` and `D-TRUNCATE`, each sending changes again from
-  before the removal they check, each commit in a session of its own as a load started again is, and
-  `D-MERGE` checks the seq guard across commits where the destination merges changes. `D-DELETE`
-  also checks that a table replaced whole forgets its tombstones, where the destination replaces.
-  Each is skipped where the destination declares it does not do what it checks. `D-PARTIAL` and
-  `D-MERGE` merge into a table whose deletes would remove rows, which a destination merging changes
-  takes whatever its delete modes: a stream ignoring its deletes and truncates writes one.
+  before the removal they check and making each commit in a session of its own, as a restarted load
+  does, and `D-MERGE` checks the seq guard across commits where the destination merges changes.
+  `D-DELETE` also checks that a table replaced whole forgets its tombstones, where the destination
+  replaces. Each is skipped where the destination declares it does not do what it checks.
+  `D-PARTIAL` and `D-MERGE` merge into a table whose deletes would remove rows, which a destination
+  merging changes takes whatever its delete modes: a stream ignoring its deletes and truncates
+  writes one.
 - **The simulation's change source sends a window of earlier changes again** whenever it resumes
   past them, for merged streams; the model expects the table unchanged. Without tombstones the
   simulation fails.
