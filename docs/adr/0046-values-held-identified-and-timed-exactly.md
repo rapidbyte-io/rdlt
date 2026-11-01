@@ -4,40 +4,39 @@ Status: accepted, 2026-10-03.
 
 ## Context
 
-ADR 0037 treats everything a connector sends as hostile. The engine's handling of values had
-trusted them in ways that broke data quietly or failed whole streams on one row:
+ADR 0037 treats everything a connector sends as hostile. Values handled on trust break data
+quietly, or fail whole streams on one row:
 
-- Row ids and history row hashes were the unseeded XXH3-128 of a row's encoding, which resists no
-  chosen input: two binary values two bytes apart could share an id, so a history skipped the
-  change between them and a child table took another root's rows. A Float32 hashed as its own
-  shortest text, so widening it to Float64 rehashed every row; a history hashed what the
-  destination stored, so JSON re-spelled, or a decimal whose scale grew, opened versions for
-  values that had not changed.
-- A source column could take the identifier of a metadata column its table did not have yet,
-  such as `_rdlt_seq` while the stream appended; when the stream later merged or normalized, the
-  engine named its own column the same, one column served for two, and creating a generation
-  panicked.
-- A date widened into a zoned timestamp column became its midnight in the column's zone, while
-  identity and history hashes read it as its midnight in UTC, and each reference destination
-  placed it with arithmetic of its own: a widened key left its old child rows, and an unchanged
-  value opened a history version. A key of `-0.0` shared its row id with `0.0`, which
-  destinations comparing bit for bit kept as another row.
-- Arrow's temporal formatter panicked on a zoned instant whose local time chrono cannot hold,
-  and wrote a Time64 of 2^32 seconds or more as an ordinary time of day. Dates held as Date64
-  were divided toward zero where they became timestamps and floored where they became text; a
-  history change time held as Date64 was multiplied into microseconds unchecked. A decimal
-  beyond its declared precision was widened, rescaled and rendered as it was.
-- One value its column could not hold, or one null or far change time, failed the whole batch
+- An unseeded hash of a row's encoding, as XXH3-128 is, resists no chosen input: two binary values
+  two bytes apart could share an id, so a history would skip the change between them and a child
+  table take another root's rows. A Float32 hashed as its own shortest text rehashes every row
+  when widened to Float64, and a history that hashes what the destination stored opens versions
+  for values that did not change: JSON re-spelled, or a decimal whose scale grew.
+- A source column may take the identifier of a metadata column its table does not have yet, such
+  as `_rdlt_seq` while the stream appends; when the stream later merges or normalizes, the engine
+  would name its own column the same, one column serving for two, and creating a generation would
+  panic.
+- A date widened into a zoned timestamp column placed at its midnight in the column's zone, while
+  identity and history hashes read it as its midnight in UTC and each reference destination
+  places it with arithmetic of its own, leaves a widened key's old child rows and opens a history
+  version for an unchanged value. A key of `-0.0` sharing its row id with `0.0` is kept as another
+  row by destinations comparing bit for bit.
+- Arrow's temporal formatter panics on a zoned instant whose local time chrono cannot hold, and
+  writes a Time64 of 2^32 seconds or more as an ordinary time of day. Dates held as Date64 divided
+  toward zero where they become timestamps and floored where they become text disagree, a history
+  change time held as Date64 multiplied into microseconds unchecked wraps, and a decimal beyond its
+  declared precision widened, rescaled and rendered as it is changes.
+- One value its column cannot hold, or one null or far change time, must not fail the whole batch
   whatever the stream's policy.
-- A history took change times as sent and closed versions at them without comparing anything:
-  a time earlier than the version it replaced made that version end before it began. A stream
-  naming no change time read a wall clock that may step back. SQLite stored validity as text of
-  varying width, whose order is not the instants'.
-- Keys were refused when missing or null, but a NaN key, which equals nothing, reached the
-  destination; a change could flag its key unchanged; a normalized stream identified rows lacking
-  their key by one shared id.
-- A declared schema that gained an array added a child table under a frozen policy, and rows a
-  reset or replan abandoned stayed staged until the next session.
+- A history that takes change times as sent and closes versions at them without comparing
+  anything ends a version before it began where a time is earlier than the version it replaces. A
+  stream naming no change time would read a wall clock that may step back. Validity stored as text
+  of varying width, as SQLite would store it, does not order as the instants do.
+- Keys are refused when missing or null, but a NaN key, which equals nothing, would reach the
+  destination; a change could flag its key unchanged; a normalized stream would identify rows
+  lacking their key by one shared id.
+- A declared schema that gains an array would add a child table under a frozen policy, and rows a
+  reset or replan abandons would stay staged until the next session.
 
 ## Decision
 
