@@ -4,8 +4,9 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
+use parking_lot::Mutex;
 use rdlt_connector::{BoxFuture, PipelineId, Secret, StreamName};
 use rdlt_engine::{
     CommitPolicy, Engine, EngineConfig, PipelinePlan, RetryPolicy, RunStatus, StreamPlan,
@@ -81,12 +82,12 @@ pub(crate) struct Logged(Arc<Mutex<String>>);
 
 impl tracing::field::Visit for Logged {
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-        let mut logged = self.0.lock().expect("no panic holds it");
+        let mut logged = self.0.lock();
         writeln!(logged, "{}={value:?}", field.name()).ok();
     }
 
     fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
-        let mut logged = self.0.lock().expect("no panic holds it");
+        let mut logged = self.0.lock();
         writeln!(logged, "{}={value}", field.name()).ok();
     }
 }
@@ -115,12 +116,12 @@ impl tracing::Subscriber for Logged {
 
 impl Logged {
     pub(crate) fn text(&self) -> String {
-        self.0.lock().expect("no panic holds it").clone()
+        self.0.lock().clone()
     }
 
     /// Takes what was logged, leaving nothing.
     pub(crate) fn take(&self) -> String {
-        std::mem::take(&mut *self.0.lock().expect("no panic holds it"))
+        std::mem::take(&mut *self.0.lock())
     }
 
     /// Waits, for five seconds at most, until what was logged holds `expected`.

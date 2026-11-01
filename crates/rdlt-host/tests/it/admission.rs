@@ -3,11 +3,12 @@
 
 use std::net::SocketAddr;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
+use parking_lot::Mutex;
 use rdlt_connector::limits::ListenLimits;
 use rdlt_connector::serve::{Listener, Listening, Log, Served, serve_listener};
 use rdlt_connector::wire::v1;
@@ -167,7 +168,7 @@ impl Connector {
         let written = Arc::clone(&lines);
         let listening = Listening {
             limits,
-            log: Log::new(move |line| written.lock().expect("no panic").push(line.to_owned())),
+            log: Log::new(move |line| written.lock().push(line.to_owned())),
             ..Listening::new(Arc::new(tls), accepted.hosts).expect("the hosts have their shares")
         };
         let (connections, accepted) = mpsc::unbounded_channel();
@@ -212,7 +213,7 @@ impl Connector {
     }
 
     fn lines(&self) -> Vec<String> {
-        self.lines.lock().expect("no panic").clone()
+        self.lines.lock().clone()
     }
 
     /// How many connections the lines reported so far count as refused.
@@ -458,7 +459,7 @@ async fn a_certificate_the_listener_cannot_name_a_host_by_is_refused_and_counted
     // Its TLS accepts the host, and its list of hosts does not name it.
     let listening = Listening {
         hosts: rdlt_wire::tls::Hosts::new(["another"]).expect("a host is named"),
-        log: Log::new(move |line| written.lock().expect("no panic").push(line.to_owned())),
+        log: Log::new(move |line| written.lock().push(line.to_owned())),
         ..listening(&pki, &server)
     };
     let (connections, accepted) = mpsc::unbounded_channel();
@@ -482,7 +483,7 @@ async fn a_certificate_the_listener_cannot_name_a_host_by_is_refused_and_counted
         "{refused}"
     );
     settle(ListenLimits::default().report_every + Duration::from_millis(1)).await;
-    let lines = lines.lock().expect("no panic").clone();
+    let lines = lines.lock().clone();
     assert_eq!((lines.len(), self::refused(&lines)), (1, 1), "{lines:?}");
     drop(connections);
 }
@@ -533,7 +534,7 @@ impl Noting {
 
     fn note(&self, context: &ConnectContext) {
         let host = context.host().map(str::to_owned);
-        self.asked.lock().expect("no panic").push(host);
+        self.asked.lock().push(host);
     }
 }
 
@@ -642,7 +643,7 @@ async fn a_connector_is_told_which_host_it_serves_in_either_role_and_with_either
         let configured = client.rpc.configure(v1::ConfigureRequest { config_json });
         configured.await.expect("it is configured");
     }
-    let asked = asked.lock().expect("no panic").clone();
+    let asked = asked.lock().clone();
     let hosts: Vec<Option<&str>> = asked.iter().map(Option::as_deref).collect();
     assert_eq!(
         hosts,
@@ -714,7 +715,7 @@ impl rdlt_host::Network for Handed {
         _host: &'a str,
         _port: u16,
     ) -> BoxFuture<'a, std::io::Result<Box<dyn rdlt_host::Stream>>> {
-        let stream = self.0.lock().expect("no panic").take();
+        let stream = self.0.lock().take();
         Box::pin(async move {
             stream
                 .map(|stream| Box::new(stream) as Box<dyn rdlt_host::Stream>)
@@ -822,7 +823,7 @@ async fn a_session_that_panics_gives_its_host_its_place_back() {
     let written = Arc::clone(&lines);
     let listening = Listening {
         limits,
-        log: Log::new(move |line| written.lock().expect("no panic").push(line.to_owned())),
+        log: Log::new(move |line| written.lock().push(line.to_owned())),
         ..listening(&pki, &certificate)
     };
     let (connections, accepted) = mpsc::unbounded_channel();
@@ -854,7 +855,7 @@ async fn a_session_that_panics_gives_its_host_its_place_back() {
     let again = remote.source(&reference, &config).await;
     again.expect("the host is served again");
     settle(limits.report_every).await;
-    let lines = lines.lock().expect("no panic").clone();
+    let lines = lines.lock().clone();
     assert_eq!(refused(&lines), 1, "{lines:?}");
     drop(connections);
 }
@@ -903,7 +904,7 @@ async fn refusal_line(pki: &Pki, crl: Option<std::path::PathBuf>, host: &str) ->
     let lines = Arc::new(Mutex::new(Vec::new()));
     let written = Arc::clone(&lines);
     let listening = Listening {
-        log: Log::new(move |line| written.lock().expect("no panic").push(line.to_owned())),
+        log: Log::new(move |line| written.lock().push(line.to_owned())),
         ..Listening::new(Arc::new(tls), accepted.hosts).expect("the hosts have their shares")
     };
     let (connections, accepting) = mpsc::unbounded_channel();
@@ -931,7 +932,7 @@ async fn refusal_line(pki: &Pki, crl: Option<std::path::PathBuf>, host: &str) ->
         .await;
     assert!(refused.is_err(), "the host was served");
     settle(ListenLimits::default().report_every + Duration::from_millis(1)).await;
-    let lines = lines.lock().expect("no panic").clone();
+    let lines = lines.lock().clone();
     assert_eq!((lines.len(), self::refused(&lines)), (1, 1), "{lines:?}");
     drop(connections);
     lines[0].clone()

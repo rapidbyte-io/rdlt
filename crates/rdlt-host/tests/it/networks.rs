@@ -4,6 +4,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use parking_lot::Mutex;
 use rdlt_connector::serve::{Listener, Listening, Log, Served, serve_listener};
 use rdlt_connector::{BoxFuture, ConnectorId, source_factory};
 use rdlt_connector_reference::MemorySource;
@@ -22,10 +23,10 @@ pub(crate) fn listening(pki: &Pki, server: &Files) -> Listening {
 }
 
 /// `listening`, reporting to the lines returned.
-fn logged(listening: Listening) -> (Listening, Arc<std::sync::Mutex<Vec<String>>>) {
-    let lines = Arc::new(std::sync::Mutex::new(Vec::new()));
+fn logged(listening: Listening) -> (Listening, Arc<Mutex<Vec<String>>>) {
+    let lines = Arc::new(Mutex::new(Vec::new()));
     let written = Arc::clone(&lines);
-    let log = Log::new(move |line| written.lock().expect("no panic").push(line.to_owned()));
+    let log = Log::new(move |line| written.lock().push(line.to_owned()));
     (Listening { log, ..listening }, lines)
 }
 
@@ -137,7 +138,7 @@ async fn a_host_that_never_completes_http2_preface_after_its_handshake_is_droppe
         .expect("the listener stops");
     drop(silent);
     // Its session is the only refusal reported.
-    let lines = lines.lock().expect("no panic").clone();
+    let lines = lines.lock().clone();
     assert_eq!(crate::admission::refused(&lines), 1, "{lines:?}");
 }
 
@@ -176,7 +177,7 @@ async fn a_listener_that_keeps_failing_is_tried_again_after_a_pause() {
         "{accepted} accepts in a second"
     );
     // Each is counted, in a single line written as the listener stops.
-    let lines = lines.lock().expect("no panic").clone();
+    let lines = lines.lock().clone();
     assert_eq!(lines.len(), 1, "{lines:?}");
     assert_eq!(crate::admission::refused(&lines), u64::from(accepted));
 }
