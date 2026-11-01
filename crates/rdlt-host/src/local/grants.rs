@@ -16,7 +16,9 @@ use std::io;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock, Mutex, PoisonError};
+use std::sync::{Arc, LazyLock};
+
+use parking_lot::Mutex;
 
 pub(crate) use opened::{Chain, Opened};
 
@@ -67,11 +69,7 @@ impl Lease {
     /// the name it is run by; not `binary`, which is run from the file placed, whatever its
     /// name leads to now.
     pub(crate) fn exposed(&self, binary: &Path) -> Option<PathBuf> {
-        let held = self
-            .leases
-            .held
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let held = self.leases.held.lock();
         let held = held.iter().find(|held| held.id == self.id)?;
         let named = |path: &Path| std::fs::metadata(path).is_ok_and(|now| now.nlink() > 1);
         held.programs
@@ -84,11 +82,7 @@ impl Lease {
 
 impl Drop for Lease {
     fn drop(&mut self) {
-        let mut held = self
-            .leases
-            .held
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut held = self.leases.held.lock();
         held.retain(|held| held.id != self.id);
     }
 }
@@ -213,7 +207,7 @@ impl Leases {
         reads: Vec<(&Path, Opened)>,
         writes: Vec<(&Path, Opened)>,
     ) -> Result<Lease, SandboxError> {
-        let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut held = self.held.lock();
         for other in held.iter() {
             refused_by(other, claim, &programs, &reads, &writes)?;
         }

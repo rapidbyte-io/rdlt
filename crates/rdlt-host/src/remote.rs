@@ -15,10 +15,11 @@ mod tests;
 
 use std::future::Future;
 use std::num::{NonZeroU32, NonZeroUsize};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use hyper_util::rt::TokioIo;
+use parking_lot::Mutex;
 use rdlt_connector::wire::{Invalid, error as status_error, v1};
 use rdlt_connector::{ConnectorError, ConnectorErrorKind, Role};
 use rdlt_wire::flow::Transport;
@@ -382,7 +383,7 @@ where
 {
     let slot = Arc::new(Mutex::new(Some(severed::Severed::new(io, cut))));
     let connector = tower::service_fn(move |_| {
-        let io = slot.lock().map(|mut slot| slot.take()).ok().flatten();
+        let io = slot.lock().take();
         // The channel reconnects once its one connection has closed: the connection is spent.
         if io.is_none() {
             spent.cancel();

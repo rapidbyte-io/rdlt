@@ -1,6 +1,7 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
+use parking_lot::Mutex;
 use proptest::prelude::*;
 use tokio::io::AsyncWriteExt as _;
 
@@ -43,10 +44,10 @@ async fn drained(output: impl tokio::io::AsyncRead + Unpin, redactions: &Redacti
     let draining = Draining {
         kept: Some((Arc::clone(&tail), Arc::clone(&closed))),
         redactions: redactions.clone(),
-        log: move |said| saying.lock().expect("no panic holds it").push(said),
+        log: move |said| saying.lock().push(said),
     };
     drain(output, draining).await;
-    let said = std::mem::take(&mut *said.lock().expect("no panic holds it"));
+    let said = std::mem::take(&mut *said.lock());
     Drained {
         said,
         tail,
@@ -431,7 +432,7 @@ impl tracing::Subscriber for Events {
             ..Event::default()
         };
         event.record(&mut kept);
-        self.0.lock().expect("no panic holds it").push(kept);
+        self.0.lock().push(kept);
     }
 
     fn enter(&self, _: &tracing::span::Id) {}
@@ -455,7 +456,7 @@ fn a_connectors_line_reaches_the_log_as_a_field_of_an_event_the_host_words() {
         let mut stdout = logging(id.clone(), 4242, Stream::Stdout);
         stdout(Said::Line("a line".to_owned()));
     });
-    let events = events.0.lock().expect("no panic holds it");
+    let events = events.0.lock();
     let seen: Vec<(&str, &str, Option<&str>)> = events
         .iter()
         .map(|event| {

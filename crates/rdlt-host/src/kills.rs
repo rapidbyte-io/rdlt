@@ -5,8 +5,9 @@ mod landing;
 #[cfg(test)]
 mod tests;
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
+use parking_lot::Mutex;
 use rdlt_connector::BoxFuture;
 use tokio_util::sync::CancellationToken;
 
@@ -43,33 +44,33 @@ impl Kills {
     /// Kills every process spawned with this handle, and cuts every stream it severed, that is
     /// alive now.
     pub fn kill(&self) {
-        let mut generation = self.lock();
+        let mut generation = self.inner.lock();
         generation.count += 1;
         std::mem::take(&mut generation.next).cancel();
     }
 
     /// How many kills there have been.
     pub fn count(&self) -> u64 {
-        self.lock().count
+        self.inner.lock().count
     }
 
     /// How many connections a kill was to end have been seen to end, after it, from this
     /// host's end: a connection to a spawned connector ends once no process holds its other
     /// end, so one that outlives its kill was not reached by it.
     pub fn landed(&self) -> u64 {
-        self.lock().landed
+        self.inner.lock().landed
     }
 
     /// How many of the connections that [landed](Self::landed) a kill this host cut itself,
     /// which is all it can do to a connector it did not start: a cut says nothing of what held
     /// the connection's other end.
     pub fn cut(&self) -> u64 {
-        self.lock().cut
+        self.inner.lock().cut
     }
 
     /// Counts a connection a kill ended: one this host `cut`, or one that ended by itself.
     fn land(&self, cut: bool) {
-        let mut generation = self.lock();
+        let mut generation = self.inner.lock();
         generation.landed += 1;
         generation.cut += u64::from(cut);
     }
@@ -89,13 +90,7 @@ impl Kills {
 
     /// What the next kill cancels.
     pub(crate) fn next(&self) -> CancellationToken {
-        self.lock().next.clone()
-    }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, Generation> {
-        self.inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.inner.lock().next.clone()
     }
 }
 

@@ -14,10 +14,11 @@ mod registry;
 mod tests;
 
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus};
+use std::sync::Arc;
 use std::sync::mpsc::{SyncSender, sync_channel};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
+use parking_lot::{Mutex, MutexGuard};
 use rustix::process::{
     Pid, Signal, WaitId, WaitIdOptions, WaitIdStatus, kill_process, kill_process_group, waitid,
 };
@@ -71,17 +72,13 @@ struct State {
 }
 
 impl Held {
-    fn state(&self) -> MutexGuard<'_, State> {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
     /// Asks the group to stop, before it returns: the end of its leader's standard input and,
     /// where the connector is stopped by it, `SIGTERM` to every member, sent once, while its
     /// leader is seen to be this process's unreaped child, running or exited.
     ///
     /// The thread that owns the group kills it once its grace has passed.
     pub(super) fn stop(&self) {
-        let mut state = self.state();
+        let mut state = self.state.lock();
         let Some(leader) = state.leader else {
             return;
         };
@@ -98,7 +95,7 @@ impl Held {
 
     /// Has the thread that owns the group kill it now, whatever is left of its grace.
     pub(super) fn kill(&self) {
-        self.state().killing = Some(Instant::now());
+        self.state.lock().killing = Some(Instant::now());
     }
 }
 
@@ -257,7 +254,7 @@ impl Owned {
     pub(super) fn discarded(mut self) {
         let group = Pid::from_child(&self.child);
         let held = self.held();
-        let state = held.state();
+        let state = held.state.lock();
         if Leader::of(&asked(group)) != Leader::Lost {
             reap(&mut self.child, group, state);
         }
@@ -270,7 +267,7 @@ impl Owned {
         let held = self.held();
         // Until the leader has exited, a kill has come, or a stop's grace has passed.
         loop {
-            let mut state = held.state();
+            let mut state = held.state.lock();
             let due = match Leader::of(&asked(group)) {
                 Leader::Running => self.due(&state),
                 Leader::Exited => true,

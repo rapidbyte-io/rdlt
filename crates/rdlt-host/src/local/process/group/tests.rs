@@ -225,12 +225,12 @@ fn a_group_stopped_again_keeps_the_grace_its_first_stop_began() {
     let owned = owned(child, Duration::from_secs(1000));
     let held = owned.held();
     held.stop();
-    let killing = held.state().killing;
+    let killing = held.state.lock().killing;
     assert!(killing.is_some());
     std::thread::sleep(Duration::from_millis(20));
     // Its leader, ended and unreaped, is still this process's child: only the sending is done.
     held.stop();
-    assert_eq!(held.state().killing, killing);
+    assert_eq!(held.state.lock().killing, killing);
     kill(member, Signal::SIGKILL).ok();
     owned.discarded();
 }

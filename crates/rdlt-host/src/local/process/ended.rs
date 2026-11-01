@@ -10,8 +10,7 @@
     )
 )]
 
-use std::sync::{Mutex, PoisonError};
-
+use parking_lot::Mutex;
 use tokio::sync::Notify;
 
 #[cfg(test)]
@@ -27,16 +26,13 @@ pub struct Ended<T> {
 impl<T: Copy> Ended<T> {
     /// Sets the value, unless it is set already, and wakes every waiter.
     pub fn set(&self, value: T) {
-        self.value
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get_or_insert(value);
+        self.value.lock().get_or_insert(value);
         self.set.notify_waiters();
     }
 
     /// The value, if it is set.
     pub fn get(&self) -> Option<T> {
-        *self.value.lock().unwrap_or_else(PoisonError::into_inner)
+        *self.value.lock()
     }
 
     /// The value, once it is set.

@@ -1,7 +1,8 @@
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::task::{Context, Poll};
 
+use parking_lot::Mutex;
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
 
 use super::Wire;
@@ -20,12 +21,6 @@ struct Recorder {
     vectored: bool,
 }
 
-impl Recorder {
-    fn record(&self) -> std::sync::MutexGuard<'_, Record> {
-        self.record.lock().expect("the record is never poisoned")
-    }
-}
-
 impl AsyncRead for Recorder {
     fn poll_read(
         self: Pin<&mut Self>,
@@ -42,12 +37,12 @@ impl AsyncWrite for Recorder {
         _context: &mut Context<'_>,
         buffer: &[u8],
     ) -> Poll<std::io::Result<usize>> {
-        self.record().written.extend_from_slice(buffer);
+        self.record.lock().written.extend_from_slice(buffer);
         Poll::Ready(Ok(buffer.len()))
     }
 
     fn poll_flush(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        self.record().flushes += 1;
+        self.record.lock().flushes += 1;
         Poll::Ready(Ok(()))
     }
 
@@ -55,7 +50,7 @@ impl AsyncWrite for Recorder {
         self: Pin<&mut Self>,
         _context: &mut Context<'_>,
     ) -> Poll<std::io::Result<()>> {
-        self.record().shutdowns += 1;
+        self.record.lock().shutdowns += 1;
         Poll::Ready(Ok(()))
     }
 
@@ -64,7 +59,7 @@ impl AsyncWrite for Recorder {
         _context: &mut Context<'_>,
         buffers: &[std::io::IoSlice<'_>],
     ) -> Poll<std::io::Result<usize>> {
-        let mut record = self.record();
+        let mut record = self.record.lock();
         let mut count = 0;
         for buffer in buffers {
             record.written.extend_from_slice(buffer);
@@ -117,6 +112,6 @@ async fn a_wire_writes_its_stream_vectored_as_the_stream_writes() {
             flushes: 1,
             shutdowns: 1,
         };
-        assert_eq!(*record.lock().expect("not poisoned"), expected);
+        assert_eq!(*record.lock(), expected);
     }
 }

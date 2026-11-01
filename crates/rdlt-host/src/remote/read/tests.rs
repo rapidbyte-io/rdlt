@@ -1,9 +1,10 @@
 use std::num::NonZeroUsize;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use arrow_array::types::Int8Type;
 use arrow_array::{ArrayRef, DictionaryArray, RecordBatch, StringArray};
 use bytes::{BufMut, Bytes, BytesMut};
+use parking_lot::Mutex;
 use proptest::prelude::*;
 use rdlt_connector::cost::{Allocations, push_charge};
 use rdlt_connector::wire::{MALFORMED_FRAME, v1};
@@ -199,7 +200,7 @@ struct Charged(Arc<Charges>);
 
 impl Drop for Charged {
     fn drop(&mut self) {
-        self.0.0.lock().unwrap().push(0);
+        self.0.0.lock().push(0);
     }
 }
 
@@ -223,7 +224,7 @@ impl Admission for Charging {
                 },
             ));
         }
-        self.0.0.lock().unwrap().push(bytes);
+        self.0.0.lock().push(bytes);
         Ok(Box::new(Charged(Arc::clone(&self.0))))
     }
 }
@@ -293,23 +294,23 @@ fn a_read_s_schema_and_dictionaries_are_charged_while_its_decoder_holds_them() {
     let schema = schema_held_bytes(&first.schema()) + message + 16;
     assert!(message > 0 && schema > message);
     assert_eq!(read(frame), schema);
-    assert_eq!(*charges.0.lock().unwrap(), [schema]);
+    assert_eq!(*charges.0.lock(), [schema]);
     let frames = batch_frames(&mut encoder, &first, 1);
     let held: Vec<u64> = frames.into_iter().map(&mut read).collect();
     assert!(held[0] >= schema + 1_000);
     // What was held is released before the schema and its dictionary are charged together, once;
     // the batch that uses the dictionary changes nothing.
-    assert_eq!(*charges.0.lock().unwrap(), [schema, 0, held[0]]);
+    assert_eq!(*charges.0.lock(), [schema, 0, held[0]]);
     // A dictionary that replaces it is charged in its place.
     let replaced: Vec<u64> = batch_frames(&mut encoder, &second, 1)
         .into_iter()
         .map(&mut read)
         .collect();
     assert_eq!(replaced, [held[0], held[0]]);
-    assert_eq!(*charges.0.lock().unwrap(), [schema, 0, held[0]]);
+    assert_eq!(*charges.0.lock(), [schema, 0, held[0]]);
     // A new schema forgets the dictionaries, and what held them is released.
     assert_eq!(read(schema_frame(&mut encoder, &second, 2)), schema);
-    assert_eq!(*charges.0.lock().unwrap(), [schema, 0, held[0], 0, schema]);
+    assert_eq!(*charges.0.lock(), [schema, 0, held[0], 0, schema]);
 }
 
 #[test]
@@ -327,7 +328,7 @@ fn a_read_that_would_keep_more_than_it_may_is_refused_and_holds_nothing_more() {
         ("read kept bytes", LIMIT, LIMIT + 1)
     );
     // What was kept before was released for the charge, and nothing is held in its place.
-    assert_eq!(*charges.0.lock().unwrap(), [60_000, 0]);
+    assert_eq!(*charges.0.lock(), [60_000, 0]);
     assert!(kept.held.is_none());
     assert_eq!(kept.bytes, 0);
     // A schema alone beyond the limit is refused at its frame.

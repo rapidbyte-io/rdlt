@@ -4,9 +4,11 @@
 mod tests;
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+
+use parking_lot::{Condvar, Mutex, MutexGuard};
 
 use super::{EMPTYING, Held, WATCH};
 
@@ -56,7 +58,7 @@ pub(in crate::local::process) struct Slot(());
 
 impl Drop for Slot {
     fn drop(&mut self) {
-        groups().get_or_insert_default().reserved -= 1;
+        GROUPS.lock().get_or_insert_default().reserved -= 1;
     }
 }
 
@@ -66,7 +68,7 @@ impl Drop for Slot {
 ///
 /// This process owns or is starting as many groups as it may: [`OWNED`].
 pub(in crate::local::process) fn reserve() -> std::io::Result<Slot> {
-    let mut guard = groups();
+    let mut guard = GROUPS.lock();
     let groups = guard.get_or_insert_default();
     room(groups.live.len() + groups.reserved)?;
     groups.reserved += 1;
@@ -96,13 +98,13 @@ fn join(mut guard: MutexGuard<'static, Option<Groups>>) {
 /// How many threads own a group or are yet to be joined.
 #[cfg(test)]
 pub(in crate::local::process) fn threads() -> usize {
-    groups().get_or_insert_default().threads.len()
+    GROUPS.lock().get_or_insert_default().threads.len()
 }
 
 /// How many places starts hold.
 #[cfg(test)]
 pub(in crate::local::process) fn reserved() -> usize {
-    groups().get_or_insert_default().reserved
+    GROUPS.lock().get_or_insert_default().reserved
 }
 
 static GROUPS: Mutex<Option<Groups>> = Mutex::new(None);
@@ -110,14 +112,10 @@ static GROUPS: Mutex<Option<Groups>> = Mutex::new(None);
 /// Signalled when a group ends.
 static ENDED: Condvar = Condvar::new();
 
-fn groups() -> MutexGuard<'static, Option<Groups>> {
-    GROUPS.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
 /// Lists the group `id` names, which `held` stops and `thread` owns, as one this process
 /// spawned, in the place `slot` held; the threads of groups that have ended are joined.
 pub(super) fn enter(slot: Slot, id: u32, held: Arc<Held>, thread: JoinHandle<()>) {
-    let mut guard = groups();
+    let mut guard = GROUPS.lock();
     let groups = guard.get_or_insert_default();
     // The place moves to the live group under one lock: no start sees it free between.
     std::mem::forget(slot);
@@ -129,7 +127,7 @@ pub(super) fn enter(slot: Slot, id: u32, held: Arc<Held>, thread: JoinHandle<()>
 
 /// Unlists the group `id` names, whose thread never had it, and joins the thread.
 pub(super) fn disown(id: u32) {
-    let mut guard = groups();
+    let mut guard = GROUPS.lock();
     guard.get_or_insert_default().live.remove(&id);
     ENDED.notify_all();
     join(guard);
@@ -138,7 +136,7 @@ pub(super) fn disown(id: u32) {
 /// Unlists the group `id` names, which ended: one that was not seen `emptied` is kept as
 /// remaining.
 pub(super) fn leave(id: u32, emptied: bool) {
-    let mut groups = groups();
+    let mut groups = GROUPS.lock();
     let groups = groups.get_or_insert_default();
     groups.live.remove(&id);
     if !emptied {
@@ -151,7 +149,7 @@ pub(super) fn leave(id: u32, emptied: bool) {
 /// The process ids of the connectors this process spawned and has not seen end, each the id of
 /// the process group its connector leads.
 pub fn spawned() -> Vec<u32> {
-    let groups = groups();
+    let groups = GROUPS.lock();
     groups
         .as_ref()
         .map(|groups| groups.live.keys().copied().collect())
@@ -185,15 +183,15 @@ const KILLED: Duration = EMPTYING.saturating_add(Duration::from_secs(1));
 /// [`Lingering`] names the groups not seen to end once killed, and those that kept a living
 /// member after they were.
 pub fn stop_spawned(patience: Duration) -> Result<(), Lingering> {
-    let mut guard = groups();
+    let mut guard = GROUPS.lock();
     for held in guard.get_or_insert_default().live.values() {
         held.stop();
     }
-    guard = ended(guard, patience);
+    ended(&mut guard, patience);
     for held in guard.get_or_insert_default().live.values() {
         held.kill();
     }
-    guard = ended(guard, KILLED);
+    ended(&mut guard, KILLED);
     let groups = guard.get_or_insert_default();
     let mut lingering: Vec<u32> = groups.live.keys().copied().collect();
     lingering.append(&mut groups.remaining);
@@ -206,20 +204,16 @@ pub fn stop_spawned(patience: Duration) -> Result<(), Lingering> {
 }
 
 /// Waits until every group has ended, for `patience` at most.
-fn ended(
-    mut guard: MutexGuard<'static, Option<Groups>>,
-    patience: Duration,
-) -> MutexGuard<'static, Option<Groups>> {
+fn ended(guard: &mut MutexGuard<'static, Option<Groups>>, patience: Duration) {
     let until = Instant::now().checked_add(patience);
     loop {
         let left = until.map_or(WATCH, |until| {
             until.saturating_duration_since(Instant::now())
         });
         if guard.get_or_insert_default().live.is_empty() || left.is_zero() {
-            return guard;
+            return;
         }
-        let waited = ENDED.wait_timeout(guard, left);
-        guard = waited.unwrap_or_else(PoisonError::into_inner).0;
+        ENDED.wait_for(guard, left);
     }
 }
 
