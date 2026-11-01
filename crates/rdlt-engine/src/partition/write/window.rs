@@ -14,12 +14,11 @@ use crate::error::Error;
 use crate::table::Prepared;
 
 /// What holds a piece while it is lowered and until it is written: dropped, what it reserved is
-/// released before its unit, whose batches go before their permits.
+/// released before what was charged for its unit.
 pub(super) struct Lowering {
     /// What lowering the piece holds, reserved before it is lowered.
     pub(super) reserved: Reservation,
-    /// A share of what holds its unit, so the unit's batches and permits hold until all of it is
-    /// written.
+    /// A share of what was charged for its unit, so the charge holds until all of it is written.
     pub(super) unit: Share,
 }
 

@@ -22,10 +22,12 @@ pub(super) struct Held {
     pub(super) permits: Vec<Permit>,
 }
 
-/// What holds a unit, shared by each of its pieces, each declaring its share after its rows:
-/// the unit's batches, then its permits, go once the last piece is written or let go, whichever
-/// piece that is and wherever it is.
-pub(super) type Share = Arc<Mutex<Held>>;
+/// What was charged for a unit, shared by each of its pieces, each declaring its share after its
+/// rows: the charge goes once the last piece is written or let go, whichever piece that is and
+/// wherever it is.
+///
+/// The unit's batches are not in it: each goes with the pieces cut from it.
+pub(super) type Share = Arc<Mutex<Vec<Permit>>>;
 
 impl Held {
     /// What holds `batches`, a unit `permits` were admitted for.
@@ -60,7 +62,7 @@ pub(super) fn shredded(
         beyond.shrink(alive);
         permits.push(Box::new(beyond));
     }
-    let shared = Arc::new(Mutex::new(permits));
+    let shared: Share = Arc::new(Mutex::new(permits));
     batches
         .into_iter()
         .map(|batch| {

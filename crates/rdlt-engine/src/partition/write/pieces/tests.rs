@@ -312,21 +312,27 @@ fn a_unit_is_cut_by_what_lowering_it_into_its_table_holds() {
 }
 
 #[test]
-fn what_holds_a_unit_keeps_its_batches_whole_until_its_last_piece_goes() {
+fn a_unit_keeps_no_batch_beside_its_pieces_and_its_charge_until_its_last_piece_goes() {
     let budget = crate::budget::budget(1 << 30);
-    let batch = encoded(0, 100);
-    let mut pieces = sliced(vec![held(&budget, vec![batch.clone()], 64)], 2_000).into_iter();
-    let last = pieces.next_back().unwrap();
-    assert!(pieces.len() > 1);
+    let batches = [encoded(0, 100), encoded(100, 100)];
+    let mut pieces = sliced(vec![held(&budget, batches.to_vec(), 64)], 2_000);
+    let last = pieces.pop().unwrap();
+    assert!(pieces.len() > 2);
     drop(pieces);
-    // Every address in the unit's set is alive while a piece counted beyond it is: the batch
-    // whole, not only the rows the last piece cut.
-    let unit = last.permits[0]
-        .downcast_ref::<super::super::held::Share>()
-        .expect("a piece's permit is its share of the unit");
-    let kept = unit.lock().batches.clone();
-    assert_eq!(kept, [batch]);
-    drop(kept);
+    // The last piece holds slices of its own rows; nothing else of the unit holds a batch, so
+    // each goes with the pieces cut from it rather than with the unit's last piece.
+    for batch in &batches {
+        assert_eq!(
+            Arc::strong_count(batch.column(0)),
+            1,
+            "a batch the unit held"
+        );
+    }
+    assert_eq!(
+        budget.reserved(),
+        64,
+        "the unit's charge went before its last piece"
+    );
     drop(last);
     assert_eq!(budget.reserved(), 0);
 }
@@ -414,7 +420,7 @@ fn pieces_held_anew_share_their_new_hold_and_its_permits() {
     );
     pieces.held_by(held(&budget, vec![batch], 64));
     let share = pieces.share();
-    assert_eq!(share.lock().permits.len(), 1);
+    assert_eq!(share.lock().len(), 1);
     assert_eq!(pieces.next().unwrap().map(|piece| piece.rows), Some(3));
     // A piece's share holds the unit's permits once the pieces are gone.
     drop(pieces);
