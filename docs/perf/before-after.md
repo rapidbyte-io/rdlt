@@ -184,7 +184,11 @@ base's ran through its port. Their spawned processes' peaks, in the same runs, M
 - **The served host grows more at two and four cores**, 181 to 240 and 186 to 257 MiB without the
   tunables, its ranges apart; with them and at 16 cores the ranges overlap. The spawned processes'
   peaks overlap in every line but one: the source at four cores without the tunables, 907 to
-  930 MiB, its ranges apart by 2 MiB.
+  930 MiB, its ranges apart by 2 MiB. The cause is the one the timed cells below found: `main`
+  kept every frame a served read decoded until its lane's next flush. With each frame freed as
+  the pieces cut from it go, the host grows 174 and 191 MiB at two and four cores, the medians of
+  five runs a line beside `main`'s 234 and 244 ([served.md](served.md), "A unit's batches freed
+  as their pieces go").
 
 ## Timed cells
 
@@ -231,15 +235,27 @@ CPU seconds a GB moved, every process's together and the host's alone:
   process's together is costlier, by 1.02 times, only from sixteen partitions.
 - **Frames of 1 000 rows are slower from four partitions**, 0.94 times the base's, and level from
   one and from sixteen.
-- **Not located.** No change's record measured these cells across the changes between the trees.
-  The served read bounded by bytes was held to 3 % of its `main` on them and measured 10 000-row
-  frames from one partition 2.4 % slower at its median ([served.md](served.md), "A served read
-  bounded by bytes"); a change since closed fell below its `main`'s range on this cell alone
-  ([served.md](served.md), "One charge a served frame"). A profile of the host on each tree
-  (`perf record -e cycles:u` at 999 Hz with frame pointers, criterion's profiling mode) gave
-  35–36 % of the host's samples to hashing the connector's binary as each run spawns it and most
-  of the rest to making the runs' inputs, which leaves the runs' own work too small a share to say
-  where the added CPU goes. Which change costs it is not resolved here.
+- **Located and removed.** The host's added CPU is the kernel's: run in this record's order,
+  `64x80000` first in the process, a run of `512x10000` took 2.4 to 3.1 times the base's page faults
+  on `main` and fewer user instructions. A bisection of the 346 commits on those faults, counted
+  over the runs alone, found one change, `348b5b649`: what a unit's pieces share came to hold the
+  unit's batches, so every frame a served read decoded stayed allocated until its lane's next flush,
+  and freed together, the allocator gave their pages back for the next frames to fault in again.
+  With each frame freed as the pieces cut from it go, and the charge as it was, five rounds beside
+  `main`, two of them with the base, put `512x10000` at 3 535 MB/s against `main`'s 3 061 and the
+  base's 3 528, the host taking 0.451 CPU seconds a GB against 0.542 and 0.465; 10 000-row frames
+  from four and sixteen partitions at the base's, 1.11 and 1.07 times `main`'s; 1 000-row frames
+  1.08 to 1.14 times `main`'s and 1.04 to 1.05 times the base's. One cell pays for it, a known
+  trade-off: 80 000-row frames from one partition, run alone and alternated with `main`, move about
+  7 % less (1 900 against 2 040 MB/s at the medians of four runs each) and take about 7 % more of
+  the host's CPU a GB (0.745 against 0.695). Freed as their pieces go, one partition's 6.9 MB frames
+  leave memory that glibc, at its default thresholds, gives back to the kernel, and the next frames
+  fault it in again on huge pages, twice as many huge-page faults a run as `main`'s; with the
+  connectors' malloc tunables set for the host the cost goes, and the base paid it too (its medians
+  above, 0.723 against 0.674). From more partitions those frames are level ([served.md](served.md),
+  "A unit's batches freed as their pieces go"). The profile this record took could not say it:
+  35–36 % of the host's samples were the connector's binary hashed as each run spawns it, and the
+  kernel's work is not sampled.
 
 ### In process
 
@@ -486,8 +502,10 @@ log is gone from `main`, every stream told its cursor once its commit lands.
 
 **In memory:** in process, a run's growth is level for the passthrough workload and lower for the
 normalized one in five lines of six; the served host grows more at two and four cores without the
-tunables, 181 to 240 and 186 to 257 MiB at the medians, within limits of 522 and 526 MiB; and
-the engine reserves more of the same budget for the same work, 86 to 106 MiB and 144 to 163.
+tunables, 181 to 240 and 186 to 257 MiB at the medians, within limits of 522 and 526 MiB, as
+`main` kept a served read's frames until its lane's flush, and grows 174 and 191 MiB with them
+freed as their pieces go; and the engine reserves more of the same budget for the same work, 86 to
+106 MiB and 144 to 163.
 
 **In time**, direction only, on a shared machine:
 
@@ -500,6 +518,8 @@ the engine reserves more of the same budget for the same work, 86 to 106 MiB and
   CPU seconds a GB, of 10 000 rows from four partitions and of 1 000 rows from one and sixteen.
 - **Slower.** The production slice in frames of 10 000 rows from one and from sixteen partitions,
   0.86 and 0.94 times the base's MB/s, the host taking 1.07 to 1.16 times its CPU a GB; and in
-  frames of 1 000 rows from four partitions, 0.94 times. No record measured these cells across
-  the changes, and a profile did not locate the host's added work; which change costs it is not
-  resolved here.
+  frames of 1 000 rows from four partitions, 0.94 times. One change cost them, `348b5b649`, which
+  kept every frame a served read decoded until its lane's next flush; with the frames freed as
+  their pieces go, those cells move as fast as the base's or faster, and 80 000-row frames from
+  one partition about 7 % slower than `main`'s, the price of glibc giving their pages back
+  ([served.md](served.md), "A unit's batches freed as their pieces go").

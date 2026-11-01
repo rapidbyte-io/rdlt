@@ -1569,3 +1569,226 @@ What the rule does not gate, recorded:
   than `main`, one reservation shrunk in place of one released and another taken, and changes
   little that a spawned source or destination does a frame. That the spawned binaries' code moved,
   and not the change's work, is not ruled out.
+
+## A unit's batches freed as their pieces go
+
+[before-after.md](before-after.md) found the production slice's frames of 10 000 rows slower on
+`main` at `10669fa9` than on the engine before the improvements, `41284517`: 0.86 and 0.94 times
+its MB/s from one and from sixteen partitions, the host's process taking 1.07 to 1.16 times its
+CPU seconds a GB, and the served host growing more in `just resident`. This section finds the
+change that cost it and removes the cost.
+
+### A count, not a time
+
+The machine ran a virtual machine and its owner's other work throughout, so each tree was judged
+by what load does not move: counts.
+
+- **Counting the host alone.** A patch of the served bench, applied outside the tree, had
+  `perf stat` count only while `passthrough.run` ran (`--control` over a fifo, enabled and
+  disabled around each run) and logged each run's `getrusage` of the bench's process: user and
+  system time, minor faults and context switches. The host ran on CPUs 0–3 and the spawned
+  connectors on 4–11; the performance cores' PMU (`cpu_core`) counts nothing the efficient cores
+  run, so `cpu_core/instructions/u` is the host's alone. Kernel instructions cannot be counted
+  here (`perf_event_paranoid` 2); faults, switches and system time stand for the kernel's work.
+- **In the record's order.** Alone in a fresh process, `512x10000` did not separate the trees: the
+  base moved between two regimes from one process to the next, 104 000 and 29 000 minor faults a GB
+  and 0.663 and 0.512 host CPU seconds a GB over two sessions of 58 runs. The record ran the slice's
+  ten cells in one process, `64x80000` first; run so, `64x80000` then `512x10000` in one process,
+  both trees held steady and the record's gap appeared. Per run of `512x10000`, the median over its
+  runs from the fourth on, two sessions a tree:
+
+| Tree | MB/s | Host CPU s a GB | Minor faults | User instructions | System time |
+|---|---|---|---|---|---|
+| `41284517` | 3 418, 3 433 | 0.469, 0.475 | 4 372, 4 628 | 2.06, 2.05 G | 94, 96 ms |
+| `10669fa9` | 2 969, 2 992 | 0.546, 0.542 | 11 201, 13 668 | 1.86, 1.87 G | 119, 116 ms |
+
+`main` executed fewer user instructions and took 2.4 to 3.1 times the page faults: the host's
+added CPU was the kernel's, faulting pages in.
+
+### Bisection
+
+`git bisect run` over the 346 commits, each step built as `just bench served` builds the bench and
+counted twice under the measurement lock, a third time where the two disagreed: good below 7 000
+minor faults a run of `512x10000` (after `64x80000`, the median from its fourth run), bad above
+9 000. Nine steps, none skipped, ended at `348b5b649` ("fix(engine): charge each piece for what it
+keeps alive beyond its unit"): its parent `8e09a16ff` took 4 120 and 4 176 faults a run and 2.07
+and 2.06 G user instructions, as the base does, and it 19 957 and 15 703, and 1.96 and 1.94 G, as
+`main` does. Every bad step counted 10 000 to 25 000.
+
+### Cause
+
+That change made what a unit's pieces share hold the unit's batches beside its permits, so that
+the set of allocations each piece's growth was counted against named only live addresses. A
+written piece's share waits on its lane with the piece's reservation until the lane flushes, so
+every batch a partition pushed stayed allocated until the lane's next flush (on `main` four for
+pressure and one for the commit in a run of `512x10000`), where before a batch went once the
+pieces cut from it were lowered or written and only its permit waited. `257004c8b` later deleted
+the set; the retention stayed.
+
+- **What lived longer.** DHAT (`valgrind --tool=dhat`) over one run of `512x10000`: the frames'
+  allocations (`Aligned::grow` from `Bounded::poll_arrived`, about 1 500 blocks and 436 MB a run)
+  held 5.3 MB at the heap's peak at `8e09a16ff`, each living 2.8 million instructions on average,
+  and 87.5 MB at `348b5b649`, each living 102.5 million; the heap's peak rose from 452.8 to
+  536.2 MB (the bench's own batches, about 440 MB, in both), and nothing else moved: the same
+  3.374 GB in 27.38 million blocks.
+- **What it cost.** Freed together at each flush, the frames' pages went back to the kernel and
+  the next frames faulted them in again: `perf record -e page-faults` over `512x10000`'s runs
+  counted the host about 38 000 faults in ten runs at `8e09a16ff` and 182 000 at `348b5b649`,
+  99 % on its two runtime workers, first touches in libc's copies where `Bounded::poll_arrived`
+  gathers a frame, arrow-ipc's `encode_sink_buffer` encodes one and a vector grows. The served
+  host's higher resident growth is the same retention.
+
+### The change
+
+The cutter owns a unit's batches and each piece's slices keep alive what they cut, so a batch
+goes once the pieces cut from it do; the pieces share only what was charged for the unit, which
+holds until the last piece is flushed, as before. What is charged, when, and the pressure flushes
+it makes are unchanged: a unit's charge may outlive what it holds, never the reverse. It is not
+the closed proposal of freeing a consuming writer's write as it returns
+([campaign.md](campaign.md)), which would release the charge early.
+
+- **Tests.** `a_unit_keeps_no_batch_beside_its_pieces_and_its_charge_until_its_last_piece_goes`:
+  once every piece but the last is gone, nothing of the unit holds either of its batches, and its
+  charge holds until the last piece goes.
+  `written_batches_go_before_the_flush_that_releases_their_charge`: 256 fresh 1 MiB pushes into a
+  destination that keeps nothing, within 1 GiB, one commit; the charge still reaches all 256 MiB and
+  the heap stays under half of it, where `main`'s held more than every push (in a first form of 128
+  pushes, `main`'s heap peaked at 185.7 MB and the change's at 69.3 MB).
+
+### On the production slice
+
+`main` at `10669fa9` against the change on it, 2026-11-01. The counts first: one process a
+session, the ten cells in the record's order, each for 15 seconds of criterion's profiling mode
+under the counting patch, two sessions a tree interleaved; a figure is the median a run over a
+cell's runs from the fourth on, the host's CPU seconds a GB over those runs, the change's two
+sessions then `main`'s.
+
+| Cell | Minor faults a run, change | `main` | Host CPU s a GB, change | `main` |
+|---|---|---|---|---|
+| `64x80000` | 10 090, 18 896 | 10 491, 37 074 | 0.721, 0.761 | 0.699, 0.726 |
+| `64x80000`, 4 partitions | 10 309, 15 314 | 13 304, 44 621 | 0.756, 0.767 | 0.726, 0.791 |
+| `64x80000`, 8 partitions | 8 782, 12 265 | 16 936, 53 676 | 0.749, 0.752 | 0.754, 0.855 |
+| `64x80000`, 16 partitions | 12 362, 18 101 | 34 491, 64 935 | 0.746, 0.761 | 0.816, 0.875 |
+| `512x10000` | 4 530, 4 347 | 28 546, 32 689 | 0.468, 0.470 | 0.547, 0.612 |
+| `512x10000`, 4 partitions | 5 468, 4 928 | 26 294, 15 790 | 0.505, 0.505 | 0.569, 0.558 |
+| `512x10000`, 16 partitions | 8 644, 8 187 | 30 932, 21 279 | 0.569, 0.568 | 0.626, 0.601 |
+| `5120x1000` | 2 982, 2 884 | 40 696, 38 012 | 0.899, 0.899 | 0.991, 0.982 |
+| `5120x1000`, 4 partitions | 8 034, 7 932 | 43 865, 39 940 | 1.007, 1.007 | 1.116, 1.108 |
+| `5120x1000`, 16 partitions | 27 960, 28 061 | 49 417, 50 962 | 1.088, 1.087 | 1.152, 1.159 |
+
+- **Every cell faults less**, `512x10000` from one partition 4 347 to 4 530 times a run against
+  28 546 to 32 689, as the base did; frames of 1 000 rows, which the record found about level,
+  fault far less too, from one partition 2 884 to 2 982 against 38 012 to 40 696.
+- **The host's CPU a GB falls in eight cells of ten**, by 6 to 19 % at the medians; in `64x80000`
+  from one and from four partitions the two trees' sessions overlap, the change's figures a little
+  above `main`'s in three of four.
+- The change executes more user instructions where it faults less, 1.99 G a run of `512x10000`
+  against 1.74 to 1.85 G.
+
+Then the time: the plain benches, built as `just bench served` builds them, the host on CPUs 0–3
+and the connectors on 4–11, criterion's pass over the ten cells (ten samples of one run each),
+each round one hold of the measurement lock started at a one-minute load under 1.0: five rounds
+of the change and `main`, the order alternating, and in two of them the base `41284517` too.
+The loads at the starts were 0.83 to 2.55, the benches' own threads after a round's first tree.
+MB/s, the median of the rounds and their range; a verdict where the ranges are apart.
+
+| Cell | Base (2) | `main` (5) | Change (5) | Change ÷ `main` | Verdict | Change ÷ base |
+|---|---|---|---|---|---|---|
+| `64x80000` | 1 917 [1 892–1 943] | 1 940 [1 808–2 141] | 1 731 [1 671–2 029] | 0.89 | level | 0.90 |
+| `64x80000`, 4 partitions | 1 644 [1 537–1 750] | 1 880 [1 640–2 004] | 1 893 [1 512–1 938] | 1.01 | level | 1.15 |
+| `64x80000`, 8 partitions | 1 613 [1 596–1 630] | 1 683 [1 629–1 899] | 1 868 [1 617–1 905] | 1.11 | level | 1.16 |
+| `64x80000`, 16 partitions | 1 594 [1 578–1 610] | 1 572 [1 477–1 636] | 1 640 [1 484–1 723] | 1.04 | level | 1.03 |
+| `512x10000` | 3 528 [3 493–3 563] | 3 061 [2 841–3 206] | 3 535 [3 326–3 654] | 1.15 | faster | 1.00 |
+| `512x10000`, 4 partitions | 2 995 [2 979–3 011] | 2 703 [2 660–2 769] | 3 012 [2 741–3 044] | 1.11 | level | 1.01 |
+| `512x10000`, 16 partitions | 2 669 [2 649–2 689] | 2 487 [2 432–2 532] | 2 665 [2 575–2 785] | 1.07 | faster | 1.00 |
+| `5120x1000` | 1 995 [1 991–1 999] | 1 873 [1 812–1 901] | 2 071 [2 025–2 101] | 1.11 | faster | 1.04 |
+| `5120x1000`, 4 partitions | 1 770 [1 764–1 776] | 1 623 [1 598–1 632] | 1 847 [1 791–1 881] | 1.14 | faster | 1.04 |
+| `5120x1000`, 16 partitions | 1 603 [1 594–1 613] | 1 567 [1 548–1 587] | 1 686 [1 657–1 756] | 1.08 | faster | 1.05 |
+
+The host's CPU seconds a GB, the same rounds:
+
+| Cell | Base (2) | `main` (5) | Change (5) | Verdict |
+|---|---|---|---|---|
+| `64x80000` | 0.752 [0.748–0.756] | 0.739 [0.673–0.780] | 0.850 [0.710–0.901] | level |
+| `64x80000`, 4 partitions | 0.896 [0.844–0.948] | 0.764 [0.720–0.853] | 0.747 [0.731–0.964] | level |
+| `64x80000`, 8 partitions | 0.871 [0.865–0.876] | 0.817 [0.739–0.848] | 0.731 [0.707–0.878] | level |
+| `64x80000`, 16 partitions | 0.815 [0.796–0.833] | 0.822 [0.815–0.882] | 0.800 [0.738–0.883] | level |
+| `512x10000` | 0.465 [0.463–0.466] | 0.542 [0.516–0.583] | 0.451 [0.447–0.452] | leaner |
+| `512x10000`, 4 partitions | 0.497 [0.493–0.502] | 0.543 [0.542–0.556] | 0.486 [0.477–0.534] | leaner |
+| `512x10000`, 16 partitions | 0.564 [0.560–0.567] | 0.602 [0.591–0.616] | 0.553 [0.546–0.578] | leaner |
+| `5120x1000` | 0.944 [0.943–0.945] | 0.990 [0.983–1.018] | 0.897 [0.886–0.917] | leaner |
+| `5120x1000`, 4 partitions | 1.052 [1.048–1.057] | 1.122 [1.108–1.145] | 1.011 [0.985–1.037] | leaner |
+| `5120x1000`, 16 partitions | 1.139 [1.136–1.142] | 1.156 [1.143–1.166] | 1.087 [1.050–1.106] | leaner |
+
+- **Frames of 10 000 rows are back at the base's**: `512x10000` 3 535 MB/s against `main`'s 3 061
+  and the base's 3 528, the host 0.451 CPU seconds a GB against 0.542 and 0.465; from sixteen
+  partitions 1.07 times `main`'s, from four 1.11 at the medians.
+- **Frames of 1 000 rows move 1.08 to 1.14 times as much** as on `main`, and 1.04 to 1.05 times the
+  base's, the host leaner than both.
+- **Frames of 80 000 rows from one partition cost about 7 % more.** Their rounds split by order:
+  run first in a hold 2 026 and 2 029 MB/s, after another tree 1 671 to 1 731. Run alone, a fresh
+  process each, the two trees alternating in one hold (change, `main`, `main`, change, twice),
+  the change moved 1 960, 1 932, 1 867 and 1 839 MB/s, the host taking 0.740, 0.730, 0.749 and
+  0.755 CPU seconds a GB, and `main` 2 062, 2 079, 2 017 and 1 911, taking 0.695, 0.685, 0.695
+  and 0.721: each of the change's runs below the `main` runs beside it. From four, eight and
+  sixteen partitions they are level.
+
+### Why large frames from one partition pay
+
+**A known trade-off.** 80 000-row frames from one partition are the one cell the change makes
+costlier: run alone, alternating with `main`, about 7 % fewer MB/s (1 900 against 2 040 at the
+medians of four runs each) and about 7 % more host CPU a GB (0.745 against 0.695).
+
+Counted with the system's huge-page faults beside the process's own (`thp_fault_alloc` in
+`/proc/vmstat` over each run; this machine's transparent huge pages are `always`, and a fault on
+one zeroes 2 MiB and counts once), `64x80000` then `512x10000` then `64x80000` from four
+partitions in one process, three sessions a tree: the change halves `64x80000`'s 4 KiB faults
+(8 513 to 15 454 a run against 13 206 to 19 260) and doubles its huge-page faults (196 to 306
+against 74 to 143), its host CPU level (0.690 to 0.740 against 0.714 to 0.728 seconds a GB).
+Freed as their pieces go, one partition's frames of 6.9 MB leave memory that glibc, at its
+default dynamic thresholds, gives back to the kernel, and the next frames fault it back in, on
+huge pages; from more partitions the frees interleave and the cells are level. With the
+connectors' malloc tunables set for the host too (a trim threshold of 256 MiB and a mapping
+threshold of 32 MiB, two sessions a tree), the change's huge-page faults on `64x80000` fall to 40
+and 42 a run against `main`'s 46 and 73, and the change is leaner in every cell counted:
+`64x80000` 0.633 and 0.666 CPU seconds a GB against 0.663 and 0.695, from four partitions 0.675
+and 0.701 against 0.690 and 0.736, `512x10000` 0.463 and 0.476 against 0.540 and 0.565. The cost
+is glibc's, at its default thresholds; the base paid it too (the record's medians, 0.723 against
+`main`'s 0.674). What would remove it in the engine is the host reusing its frames' allocations
+rather than handing them back to the allocator, a design of its own.
+
+### Memory
+
+The served line of `just resident`, `main` and the change alternating line by line, five runs a
+line each, the host's resident growth in MiB, the median and range:
+
+| Line | `main` | Change | Limit | Verdict |
+|---|---|---|---|---|
+| 2 cores | 234 [223–264] | 174 [155–205] | 522 | lower |
+| 2 cores, tunables | 277 [230–291] | 202 [180–248] | 522 | level |
+| 4 cores | 244 [238–263] | 191 [174–199] | 526 | lower |
+| 4 cores, tunables | 261 [233–280] | 204 [201–219] | 526 | lower |
+| 16 cores | 305 [276–346] | 247 [202–350] | 562 | level |
+| 16 cores, tunables | 400 [351–411] | 342 [332–378] | 562 | level |
+
+Every line's median is 52 to 75 MiB lower, at two and four cores back at the base's 181 and 186
+([before-after.md](before-after.md), "Resident memory"); `peak_memory` reads 100 to 115 MiB on
+both, as the charge is unchanged, and the spawned processes peak alike.
+
+### Instructions and the rules
+
+`just instructions` against `main` holds every case within 0.63 %, the allocations unchanged:
+`passthrough/null_sink` takes 0.63 % fewer instructions and `wide/arrow_1000` 0.03 % more. No case
+holds the change itself: callgrind counts no page fault, and the change allocates as `main` does;
+`written_batches_go_before_the_flush_that_releases_their_charge` holds it, by the heap's peak.
+
+The rules were set before the rounds. The change, which removes a retention whose reason had
+gone, would land unless measured to cost: (1) the host's faults a run of `512x10000` fall to at
+most half of `main`'s and no cell's rise by more than 10 %; (2) `512x10000`'s median MB/s lies
+above `main`'s range and no cell's median below it; (3) `just instructions` within 2 %; (4) the
+served line of `just resident` no higher than `main`'s at two and four cores.
+
+**Decision: landed.** (1), (3) and (4) hold. (2) holds but for `64x80000` from one partition,
+whose median, 1 731 MB/s, lies below `main`'s range, 1 808 to 2 141: a known trade-off of about
+7 % on that cell, glibc's at its default thresholds and paid by the base too, against gains of 7
+to 15 % in six cells and the regression this section set out to remove.
