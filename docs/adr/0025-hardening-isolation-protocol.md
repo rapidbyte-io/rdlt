@@ -4,39 +4,25 @@ Status: accepted, 2026-09-28.
 
 ## Context
 
-ADR 0024 fixed the data-correctness findings of the owner's adversarial review after M5a (H1a)
-and left the rest for H1b. They are:
-- two pipelines sharing a table, where one's replace wipes the rows the other committed;
-- connector input that goes unchecked:
+Pipelines share destinations, and what a connector sends is not to be taken on trust. Without the
+decisions below:
+- two pipelines share a table, and one's replace wipes the rows the other committed;
+- connector input goes unchecked:
   - a checkpoint answering a barrier never asked for switches off checkpoints on demand;
   - a `retry_after` of any length parks a run;
   - a heartbeat interval of zero, or zero missed heartbeats, loses every connector;
-- a connector receiving its configuration, secrets included, before the host checks which
-  connector it is, and a binary's digest recorded but never compared;
-- the files destination leaving new directories unsynced, and treating a lost file as transient;
-- test gaps:
-  - no fault between a commit's data and its state;
-  - certification clauses that count rows, so publishing the wrong segment passes;
-  - a merge clause passed by keeping the first row of a key;
-  - the reference connectors outside mutation testing.
+- a connector receives its configuration, secrets included, before the host checks which
+  connector it is, and a binary's digest is recorded but never compared;
+- a served read loses whether its partition ends;
+- the files destination leaves new directories unsynced, and treats a lost file as transient;
+- identifier fitting cuts into the reserved prefix below a 15-byte limit;
+- tests miss a fault between a commit's data and its state, certification clauses that count
+  rows pass a destination publishing the wrong segment, a merge clause passes one keeping the
+  first row of a key, and the reference connectors escape mutation testing.
 
-H1a's review deferred more:
-- a served read losing whether its partition ends;
-- identifier fitting that cuts into the reserved prefix below a 15-byte limit;
-- JSON exactness across pushes, and big integers in the simulation.
+JSON exactness, which needs values judged and not only types, is ADR 0026's.
 
 ## Decision
-
-The findings split in two, as ADR 0024 split H1a from H1b:
-- **H1b** (this ADR): isolation and the protocol.
-- **H1c**: JSON exactness. It covers:
-  - int-then-float columns;
-  - integers beyond 64 bits in the simulation, and the test kit's JSON text of scaled decimals;
-  - a decimal key changing precision at the same scale;
-  - integers beyond 128 bits in `Json` columns.
-
-Each needs values judged, not only types, and a model of them in the simulation. M5b follows
-H1c.
 
 - **A table belongs to the pipeline that created it.**
   - A schema change or writer of another pipeline's session fails with a `Config` error coded
@@ -44,7 +30,7 @@ H1c.
     table again, as a retry does, succeeds.
   - Each destination records the owner:
     - memory and the simulation in the table;
-    - sqlgen in a new catalog table, `_rdlt_owners`, keyed by the table's name; the planner takes
+    - sqlgen in a catalog table, `_rdlt_owners`, keyed by the table's name; the planner takes
       the owner for every statement that changes a table, child tables, swaps, drops and discarded
       staging included, and writes the record only where a table is created (ADR 0049);
     - the files destination in an `owner` file in the table's catalog, created exclusively.
@@ -52,8 +38,8 @@ H1c.
     pipeline loads one of the first pipeline's tables. It must be refused as `table_owned` and
     change no table.
   - Rejected: scoping table names by pipeline. Names are what users query; two pipelines meeting
-    at one name is a configuration mistake to report, not to hide. Handing a table over waits for
-    reset (M5d).
+    at one name is a configuration mistake to report, not to hide. A table is handed over by a
+    reset that drops it (ADR 0033).
 - **Connector input is validated.**
   - A checkpoint answering a barrier greater than any requested fails:
     - in process, as `barrier_unrequested`;
@@ -68,7 +54,7 @@ H1c.
 - **The handshake answers who the connector is before it sees its configuration.**
   - `Handshake` agrees the version, role and features, and answers the spec without the
     capabilities that configuration decides.
-  - A new `Configure` call carries the configuration, connects the connector, and answers the
+  - A `Configure` call carries the configuration, connects the connector, and answers the
     full spec. Its id and version must be the handshake's; otherwise it is refused as
     `invalid_message`.
   - Calls are refused as follows:
@@ -82,7 +68,7 @@ H1c.
   - The host checks the handshake's spec against the reference before configuring. On a respawn
     or redial, the spec must be the id and version first placed, or the connector is refused as
     `connector_changed` before it sees the configuration.
-  - `ConnectorRef` gains an optional `digest`, which the binary must match before it spawns.
+  - `ConnectorRef` has an optional `digest`, which the binary must match before it spawns.
   - Every respawn hashes the binary again and refuses one changed since placement
     (`DigestMismatch`, and `connector_changed` to the engine).
   - On Linux a binary is hashed and executed as one open file, so what runs is what was hashed,
@@ -97,54 +83,28 @@ H1c.
     no retry finds it.
   - A manifest removed by garbage collection while listed stays transient, and so does a source
     file removed between listing and opening.
-- **Tests close the gaps.**
+- **Tests hold these rules.**
   - The files destination's commit, the one reference commit that writes data before state, is
     failed between its merged files and its manifest. The table stays as it was, and the retry
     publishes once.
-  - The simulation's destination commits atomically, as the contract requires. A fault inside
-    such a commit is one before or after it, which the simulation already injects.
-  - Certification clauses compare whole rows, ids and values: each segment's rows carry ids of
-    their own. A destination publishing another staged segment now fails `D-COMMIT`,
-    `D-REPLACE`, `D-MERGE` and `D-CHILDREN`, and one that loses a value fails every clause that
-    reads its rows back.
+  - The simulation's destination commits atomically, as the contract requires. A fault inside such a
+    commit is one before or after it, which the simulation injects.
+  - Certification clauses compare whole rows, ids and values: each segment's rows carry ids of their
+    own. A destination publishing another staged segment fails `D-COMMIT`, `D-REPLACE`, `D-MERGE`
+    and `D-CHILDREN`, and one that loses a value fails every clause that reads its rows back.
   - `D-MERGE` puts one key's newest row first and another's last. A merge keeping either the
     first or the last row of a key fails it.
-  - `rdlt-connector-reference` is mutated and its tests run against mutants. Its full runs left
-    mutants alive in every reference connector:
-    - the change source's defaults, validation, keys and draws, batches, and partitions;
-    - the generator's hash, defaults and partitions;
-    - merges of children and change rows, and the columns a change stream stores;
-    - SQLite's error kinds, widenings and read-back, a replace that staged nothing, and a child
-      table following a root where it staged nothing;
-    - the files destination's read-back, formats, discards, manifest links, and unlistable
-      manifests and catalogs, and the files source's reads;
-    - the memory destination's read-back, tables, and staging a newer session discards;
-    - the writers' and commits' statistics, and which pipeline's staging an open discards.
-
-    Tests catch each now. Branches whose mutants changed nothing are written plainly:
-    - a cast to a column's own type;
-    - the newest sequence taken as a maximum;
-    - batches kept when not empty;
-    - an owner file created whenever it cannot be read;
-    - a snapshot's changes skipped;
-    - a directory's missing ancestors found by whether they exist;
-    - a new file's link judged in one place, for manifests and catalogs alike;
-    - and a `Debug` implementation nothing uses, and SQLite reading integers as reals where no
-      column declared real ever holds them, removed.
-
-    Mutants a loaded machine counts as caught, by a test timing out, prove nothing, so mutation
-    results are taken from a quiet run. Mutated against its own and the engine's tests only, the
-    crate showed which mutants only certification's tests had caught; its own tests catch them
-    now.
+  - `rdlt-connector-reference` is mutated, and its own tests, not only certification's, catch
+    its mutants. A branch whose mutants change nothing is written plainly. Mutants a loaded
+    machine counts as caught, by a test timing out, prove nothing, so mutation results are taken
+    from a quiet run.
 - **Dialects' identifiers hold at least 63 bytes.** A name too long is cut to a SHA-256 of the
   whole name under a prefix no table may take, which fits them; `SqlPlanner::try_new` refuses a
   dialect below that as `Unsupported` (ADR 0049).
 
 ## Consequences
 
-- The protocol has `Configure`, which spec §12.3 lacks, and `ConnectorRef` has `digest`, which
-  §13.1 lacks.
-- A table another pipeline created cannot be loaded until that pipeline releases it, which reset
-  brings in M5d.
+- A table another pipeline created cannot be loaded until that pipeline releases it with a reset
+  that drops it (ADR 0033).
 - The hash of a spawned connector's binary is computed again at every respawn. That is a cost for
   large debug binaries only.
