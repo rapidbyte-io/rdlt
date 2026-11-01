@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 use std::num::NonZeroUsize;
+use std::sync::Arc;
 
 use super::{Form, Wide};
 use crate::Cores;
@@ -35,7 +36,7 @@ fn the_ids_of_a_wide_table_s_batches_run_on_from_one_to_the_next() {
         Wide::keeping(cores, 300, 100, 3).unwrap(),
         Wide::sparse(cores, Form::Arrow, windows + 1).unwrap(),
     ] {
-        let Replayed::Batches(batches) = &wide.replayed else {
+        let Replayed::Batches(batches) = &*wide.replayed else {
             panic!("Arrow pushes are batches");
         };
         // Each push's first column is an id column, `id_<round>` shifted by its round beyond
@@ -58,13 +59,32 @@ fn the_ids_of_a_wide_table_s_batches_run_on_from_one_to_the_next() {
     }
 }
 
+#[test]
+fn the_batches_of_a_wide_table_of_one_schema_share_it_as_a_source_s_do() {
+    for wide in [
+        Wide::try_new(cores(), Form::Arrow, 10, 3).unwrap(),
+        Wide::keeping(cores(), 300, 100, 3).unwrap(),
+    ] {
+        let Replayed::Batches(batches) = &*wide.replayed else {
+            panic!("Arrow pushes are batches");
+        };
+        let first = batches[0].schema();
+        for batch in batches {
+            assert!(
+                Arc::ptr_eq(&batch.schema(), &first),
+                "a batch of its own schema"
+            );
+        }
+    }
+}
+
 fn cores() -> Cores {
     Cores::new(NonZeroUsize::new(2).unwrap())
 }
 
 /// The names of the columns each push of `wide` holds, and its rows.
 fn pushed(wide: &Wide) -> Vec<(BTreeSet<String>, usize)> {
-    match &wide.replayed {
+    match &*wide.replayed {
         Replayed::Batches(batches) => batches
             .iter()
             .map(|batch| {
@@ -106,7 +126,7 @@ fn a_table_kept_to_its_first_columns_pushes_every_column_and_excludes_the_rest()
         let (source, destination) = wide.block_on(async {
             let replayed = wide.replayed.clone();
             (
-                crate::bench::replay(store, std::sync::Arc::new(replayed)).await,
+                crate::bench::replay(store, replayed).await,
                 memory(store).await,
             )
         });
@@ -117,7 +137,7 @@ fn a_table_kept_to_its_first_columns_pushes_every_column_and_excludes_the_rest()
             .iter()
             .filter(|field| !field.name().starts_with("_rdlt_"));
         let names: BTreeSet<&str> = data.map(rdlt_connector::Field::name).collect();
-        let Replayed::Batches(batches) = &wide.replayed else {
+        let Replayed::Batches(batches) = &*wide.replayed else {
             panic!("a kept table's pushes are batches");
         };
         let schema = batches[0].schema();
@@ -141,14 +161,14 @@ fn all_of() -> Wide {
 }
 
 /// A memory destination writing to `store`.
-async fn memory(store: &str) -> std::sync::Arc<dyn rdlt_connector::Destination> {
+async fn memory(store: &str) -> Arc<dyn rdlt_connector::Destination> {
     let factory =
         rdlt_connector::destination_factory::<rdlt_connector_reference::MemoryDestination>();
     let config = serde_json::json!({ "store": store });
     let connected = factory
         .connect(config, rdlt_connector::ConnectContext::new())
         .await;
-    std::sync::Arc::from(connected.expect("the memory destination connects"))
+    Arc::from(connected.expect("the memory destination connects"))
 }
 
 #[test]

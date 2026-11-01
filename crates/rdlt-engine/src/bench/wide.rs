@@ -10,6 +10,7 @@ use std::num::{NonZeroU32, NonZeroU64};
 use std::ops::Range;
 use std::sync::Arc;
 
+use arrow_array::RecordBatch;
 use rdlt_connector::{Destination, Source};
 
 use super::corpora::wide_lines;
@@ -31,7 +32,7 @@ pub enum Form {
 #[derive(Debug)]
 pub struct Wide {
     runner: Runner,
-    replayed: Replayed,
+    replayed: Arc<Replayed>,
     rows: u64,
     bytes: u64,
 }
@@ -80,14 +81,7 @@ impl Wide {
     pub fn replayed(form: Form, columns: u16, pushes: u32) -> Replayed {
         let per_push = per_push(form, columns);
         match form {
-            Form::Arrow => Replayed::Batches(
-                (0..pushes)
-                    .map(|push| {
-                        let first = i64::from(push) * i64::from(per_push);
-                        events(first, per_push, usize::from(columns))
-                    })
-                    .collect(),
-            ),
+            Form::Arrow => Replayed::Batches(batches(per_push, columns, pushes)),
             Form::Json => {
                 let rows = u64::from(per_push) * u64::from(pushes);
                 let per_push = NonZeroU64::from(NonZeroU32::new(per_push).expect("a row a push"));
@@ -118,12 +112,7 @@ impl Wide {
             "a table keeps from one to all of its {columns} columns, not {kept}"
         );
         let per_push = per_push(Form::Arrow, Self::SPARSE);
-        let batches: Vec<_> = (0..pushes)
-            .map(|push| {
-                let first = i64::from(push) * i64::from(per_push);
-                events(first, per_push, usize::from(columns))
-            })
-            .collect();
+        let batches = batches(per_push, columns, pushes);
         let excluded: Vec<String> = batches.first().map_or_else(Vec::new, |batch| {
             let schema = batch.schema();
             let fields = schema.fields().iter().skip(usize::from(kept));
@@ -187,7 +176,7 @@ impl Wide {
         };
         Ok(Self {
             runner: Runner::try_new(cores, "wide", stream, None)?,
-            replayed,
+            replayed: Arc::new(replayed),
             rows,
             bytes,
         })
@@ -216,10 +205,10 @@ impl Wide {
     ///
     /// Panics where the run fails, loads other rows than the pushes hold, or discards a value.
     pub fn run(&self) -> u64 {
-        let replayed = self.replayed.clone();
+        let replayed = Arc::clone(&self.replayed);
         let (source, destination) = self
             .runner
-            .block_on(async { (replay("wide", Arc::new(replayed)).await, null_sink().await) });
+            .block_on(async { (replay("wide", replayed).await, null_sink().await) });
         self.load(source, destination).rows
     }
 
@@ -244,6 +233,22 @@ impl Wide {
     pub fn block_on<F: Future>(&self, future: F) -> F::Output {
         self.runner.block_on(future)
     }
+}
+
+/// `pushes` batches of `per_push` rows of `columns` columns, their ids running on from one to the
+/// next, each holding the first's schema, as a source that builds its batches on one schema does.
+fn batches(per_push: u32, columns: u16, pushes: u32) -> Vec<RecordBatch> {
+    let mut schema = None;
+    (0..pushes)
+        .map(|push| {
+            let first = i64::from(push) * i64::from(per_push);
+            let batch = events(first, per_push, usize::from(columns));
+            let schema = schema.get_or_insert_with(|| batch.schema());
+            batch
+                .with_schema(Arc::clone(schema))
+                .expect("every batch has the first's columns")
+        })
+        .collect()
 }
 
 /// The seed of a sparse table's JSON values.
