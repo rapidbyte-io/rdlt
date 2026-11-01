@@ -3,11 +3,12 @@
 //! the decoder's first use.
 
 use std::panic::{self, PanicHookInfo};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
 
 use arrow_schema::ArrowError;
+use parking_lot::{Mutex, MutexGuard};
 
 use super::{contained, quieted};
 use crate::error::{Frame, WireError};
@@ -34,7 +35,7 @@ fn counting(counted: impl Fn(&thread::Thread) -> bool + Send + Sync + 'static) -
     // The decoder wraps the hook once, on whichever thread decodes first: that is over before
     // this test takes the hook, so the two cannot each take it and one lose the other's.
     super::QUIET.call_once(quieted);
-    let turn = TURN.lock().unwrap_or_else(PoisonError::into_inner);
+    let turn = TURN.lock();
     let count = Arc::new(AtomicUsize::new(0));
     let (seen, before) = (Arc::clone(&count), panic::take_hook());
     panic::set_hook(Box::new(move |info: &PanicHookInfo<'_>| {

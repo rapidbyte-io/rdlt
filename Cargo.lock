@@ -2380,6 +2380,7 @@ dependencies = [
  "flatbuffers",
  "http-body",
  "nix",
+ "parking_lot",
  "peak_alloc",
  "proptest",
  "prost",

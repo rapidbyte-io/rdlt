@@ -4,11 +4,11 @@
 use std::convert::Infallible;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Mutex;
 use std::task::{Context, Poll};
 
 use bytes::Bytes;
 use http_body::Frame;
+use parking_lot::Mutex;
 use prost::Message;
 use tonic::codec::Streaming;
 use tonic::codegen::http::{self, HeaderMap, HeaderValue, StatusCode};
@@ -89,7 +89,7 @@ impl Service<http::Request<tonic::body::Body>> for Answering {
     }
 
     fn call(&mut self, _: http::Request<tonic::body::Body>) -> Self::Future {
-        let answer = self.0.lock().unwrap().take().expect("one call");
+        let answer = self.0.lock().take().expect("one call");
         Box::pin(async move { Ok(answer) })
     }
 }

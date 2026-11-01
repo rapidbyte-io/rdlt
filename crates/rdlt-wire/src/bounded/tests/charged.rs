@@ -1,6 +1,7 @@
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 
+use parking_lot::Mutex;
 use tokio::sync::Semaphore;
 
 use super::{Bounded, Passed, bounds, chunks, fed, message, poll};
@@ -52,7 +53,7 @@ impl Gate {
 impl Charge for Gate {
     fn charge(&self, class: Class, bytes: usize) -> Charging {
         let held_before = self.holds();
-        self.asked.lock().unwrap().push((class, bytes, held_before));
+        self.asked.lock().push((class, bytes, held_before));
         let (permits, refuse) = (Arc::clone(&self.permits), self.refuse);
         let holding = Arc::clone(&self.holding);
         Box::pin(async move {
@@ -95,7 +96,7 @@ fn a_message_is_passed_on_once_what_its_scan_counts_is_charged_and_held_until_de
     gate.permits.add_permits(1);
     assert_eq!(poll(&mut body), Passed::Data(second));
     let one = size_of::<crate::v1::Catalog>() + 4 * size_of::<crate::v1::StreamSpec>();
-    let asked = gate.asked.lock().unwrap().clone();
+    let asked = gate.asked.lock().clone();
     assert_eq!(
         asked,
         [
@@ -163,7 +164,7 @@ fn a_message_is_charged_no_less_than_the_allocation_it_arrived_in() {
     let mut body = Bounded::new(chunks(&[&whole]), unscanned, None)
         .charged(Some(Arc::clone(&gate) as Arc<dyn Charge>));
     assert_eq!(poll(&mut body), Passed::Data(whole.clone()));
-    let asked = gate.asked.lock().unwrap().clone();
+    let asked = gate.asked.lock().clone();
     assert_eq!(
         asked,
         [(Class::Catalog, whole.len() + ALIGNMENT - 1, false)]
