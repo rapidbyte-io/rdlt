@@ -7,10 +7,8 @@ use rdlt_connector::{
     partition_channel,
 };
 
-use super::{
-    DRAIN, ENGINE, LEAST_PATIENCE, Networked, Peers, Serving, Side, options, patience,
-    run_networked,
-};
+use super::networked::LEAST_PATIENCE;
+use super::{DRAIN, ENGINE, Networked, Peers, Serving, Side, options, patience, run_networked};
 use crate::canary::Canary;
 use crate::rng::SplitMix64;
 use crate::seed::Seed;
