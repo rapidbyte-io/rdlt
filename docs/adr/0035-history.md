@@ -37,8 +37,9 @@ unchanged, whose hash the engine cannot compute without the columns it never see
     would begin every version of a run at its start, so a run following its source for days
     would leave each version an empty span. A change time of another type, or beyond what
     microseconds hold, is `change_time_invalid`, refused where the catalog declares it and else
-    at the batch; a null one is `change_time_null`. Versions follow the sequence, whatever their
-    times.
+    at the batch. A null one begins its version when its batch arrived where the change time's
+    column is set to `discard_value`, and is otherwise refused, `change_time_null`. Versions
+    follow the sequence, whatever their times.
   - A version begins no earlier than the latest instant its key's versions hold, so none ends
     before it begins; a change time no version can begin at follows its column's schema policy
     row by row; versions begun when their batch arrived follow a load clock that never reads
