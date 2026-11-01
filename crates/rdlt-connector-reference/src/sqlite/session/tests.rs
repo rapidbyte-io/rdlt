@@ -632,3 +632,23 @@ async fn a_column_dropped_after_a_commit_is_answered_as_landed_fails_the_next_co
     assert_eq!(error.code(), Some(COLUMN_MISSING), "{error}");
     assert_eq!(published(&path, "events"), 2);
 }
+
+#[tokio::test]
+async fn a_commit_removes_what_its_abandoned_segments_staged_and_publishes_none_of_it() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let path = directory.path().join("abandoning.db");
+    let mut opened = open_session(&path).await;
+    staged_names(&mut opened, &table("events", None), &[1, 2]).await;
+    let meta = CommitMeta {
+        abandoned: [SegmentId(2)].into_iter().collect(),
+        ..commit_of(opened.epoch, 1, 1)
+    };
+    opened
+        .session
+        .commit(&meta)
+        .await
+        .expect("the commit lands");
+    assert_eq!(published(&path, "events"), 2);
+    let planner = SqlPlanner::try_new(Sqlite).expect("a planner");
+    assert_eq!(published(&path, &planner.staging_table("events")), 0);
+}
