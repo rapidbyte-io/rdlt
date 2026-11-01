@@ -105,7 +105,8 @@ their range.
 | `arrow/5000_keep_100` | copying | 5.752 ms (5.739–5.757) | 260 k |
 | `arrow/5000_keep_100` | sharing | 3.710 ms (3.685–3.753) | 403 k |
 
-- Without the harness's copies the kept table runs 35.5 % faster and the 100-column table 7.4 %.
+- Without the harness's copies the kept table's run time fell 35.5 % and the 100-column table's
+  7.4 %: they load 1.55 and 1.08 times the rows a second.
 - The kept table loads 41.9 % (41.3–42.7) of the 100-column table's rows a second, against
   29.2 % (29.1–29.5) through the copying harness: still short of the 90 % its change set out to
   reach.
