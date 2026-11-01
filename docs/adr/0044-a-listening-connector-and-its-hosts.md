@@ -169,11 +169,11 @@ Rejected:
 - **`invalid_message` for a position no read sent.** A connector started again remembers nothing
   it sent, and an engine whose commit was in flight reports checkpoints of the process before.
   That is no fault of the engine's, and the refusal must be one it can retry.
-- **Reporting to a source only the positions a commit moved.** A report that failed once was
-  then never made again while its partition stayed idle, and a source that refused every
-  report gave runs that succeeded.
+- **Reporting to a source only the positions a commit moved.** A report that fails once is then
+  never made again while its partition stays idle, and a source that refuses every report gives
+  runs that succeed.
 - **Failing the attempt for a report that fails.** A report lost, or refused by a source that
-  forgot it, then cost a reopen, the discard of everything staged since the commit, and its
+  forgot it, then costs a reopen, the discard of everything staged since the commit, and its
   read again, though the next commit's report carries it.
 - **Retrying a report in place.** The next commit is at most an interval away, and a wait on
   the coordinator would only delay it.
@@ -183,8 +183,8 @@ Rejected:
   pipelines' state, and what a destination stores would depend on how it was reached.
 - **Remembering sent checkpoints for a connection.** A dropped connection would refuse the report
   of a commit that landed while the connector kept running.
-- **A flag that restores acceptance of every certificate of the CA.** Nothing is published, so
-  nothing needs the old behaviour.
+- **A flag that accepts every certificate of the CA.** Nothing is published, so nothing needs
+  it.
 - **Reading certificates and revocation lists again without a restart.** It needs a signal or
   a watch in every served binary, and a certificate and its key replaced as one. A listening
   connector stops gracefully and frees its address at once, so a restart is the rotation. The

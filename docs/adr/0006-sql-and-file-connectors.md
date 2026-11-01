@@ -58,7 +58,7 @@ landed key must hold across a database's transactions and a file system's operat
 - **SQLite stores storage classes.** Columns are declared `BOOLEAN`, `INTEGER`, `REAL`, `TEXT` or
   `BLOB`, so widening within the integer or float family changes nothing, and the engine lowers
   every other type to text. Identifiers fold to lower case, since SQLite compares them without
-  case. `IdentifierRules` gains `reserved_table_prefixes`, and the engine prefixes a table
+  case. `IdentifierRules` has `reserved_table_prefixes`, and the engine prefixes a table
   identifier with `_` until it starts with none of them: SQLite reserves `_rdlt_`, which every
   `sqlgen` table starts with, and `sqlite_`, which SQLite keeps for itself, and reserves the
   staging columns' names as words. Calls run on the blocking pool, each in an
