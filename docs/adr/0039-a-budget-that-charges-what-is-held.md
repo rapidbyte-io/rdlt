@@ -4,8 +4,7 @@ Status: accepted, 2026-10-01.
 
 ## Context
 
-An estimate of a push's decoded rows (ADR 0024) cannot bound what the engine holds; it fails
-four ways:
+An estimate of a push's decoded rows cannot bound what the engine holds; it fails four ways:
 
 - It undercounts what the engine materializes: views and list views naming the same bytes or
   items many times, a null dictionary key that still takes its value's slot, a dictionary or run

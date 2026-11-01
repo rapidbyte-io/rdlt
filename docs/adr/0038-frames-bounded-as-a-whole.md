@@ -4,10 +4,10 @@ Status: accepted, 2026-10-01.
 
 ## Context
 
-ADR 0015's decoder checked a frame piece by piece: each buffer against the body, each node's
-length against a bound of its own, the schema's columns and depth once Arrow had converted it.
-Nothing bounded what the pieces imply together, so a frame within every limit could ask far more
-of its receiver than its bytes:
+A decoder that checks a frame piece by piece, each buffer against the body, each node's length
+against a bound of its own, the schema's columns and depth once Arrow has converted it, bounds
+nothing the pieces imply together, so a frame within every limit can ask far more of its
+receiver than its bytes:
 
 - columns naming one misaligned region of the body, which Arrow copies once a column;
 - views naming one data buffer, which Arrow validates as text once a view;
@@ -17,8 +17,8 @@ of its receiver than its bytes:
 - a schema whose fields share one long name, copied once a field before the column limit is
   checked.
 
-The typed error for a frame Arrow panics on rested on unwinding, which no build checked, and the
-panic was printed.
+A typed error for a frame Arrow panics on rests on unwinding, which a build that aborts on panic
+loses, and the panic it contains must not be printed.
 
 ADR 0037 (untrusted connectors) makes everything a connector sends hostile input, bounded before
 it is held. This ADR is that rule for Arrow frames, on every receiver: the host reading from a
