@@ -4,10 +4,10 @@ Status: accepted, 2026-09-27.
 
 ## Context
 
-ADR 0018 left the network simulation of the host to M4e. Remote placement had been tested only
-over the operating system's network, where partitions, held messages and connectors that vanish
-mid-conversation are hard to cause and cannot be replayed. The simulation (§20.2) already runs
-the whole engine on a paused clock from a seed, with connectors in the engine's process.
+Over the operating system's network, partitions, held messages and connectors that vanish
+mid-conversation are hard to cause and cannot be replayed, so remote placement (ADR 0018) tested
+there alone meets few of them. The simulation runs the whole engine on a paused clock from a
+seed, with connectors in the engine's process.
 
 ## Decision
 
@@ -41,7 +41,7 @@ the whole engine on a paused clock from a seed, with connectors in the engine's 
     the host too, and holds the rest to equal. hyper's server has no setting for these limits, and
     tonic's client does not set them.
   - The feature is drawn apart from the others, so a seed's workload is the same over either
-    transport, and seeds found before keep their workload.
+    transport and whether or not the feature is drawn.
   - Each seed draws its messages' latency, and the host's heartbeat, patience and connect deadline.
     The patience is a second or more: the slowest link, 20 ms of latency with turmoil's 64
     segments in flight, carries about 1 MiB every 20 ms, and an echo waits behind a transport frame
@@ -84,16 +84,15 @@ the whole engine on a paused clock from a seed, with connectors in the engine's 
     queue as missed undone, 2 of 1 000 seeds fail.
   - The exactly-once oracle is the same over either transport: the destination holds exactly what
     the model says, whatever the network did.
-- **What the simulation found**, each fixed with a regression test:
-  - A served writer that panicked ended its write as though it were done, so the host reported a
-    protocol violation. The panic now fails the write as an internal error, as a read's does.
-  - A host that completed its TLS handshake and never began HTTP/2, its network gone, held its
-    connection forever: HTTP/2's server waits for the preface with no deadline and pings no host
-    before it has the whole preface. It held a session, and a graceful stop never ended. A host
-    now has as long to send HTTP/2's preface as it had for its handshake.
-- **`rdlt-sim` depends on `rdlt-host` and `rdlt-wire`.** The spec's crate map (§4) lists the
-  engine and the connector contract; simulating the host needs the host. `rdlt-sim` stays a leaf,
-  and the engine still links no gRPC.
+- **A served writer's panic fails its write** as an internal error, as a read's does, rather than
+  ending the write as though it were done, which the host would report as a protocol violation.
+- **A host has as long to send HTTP/2's preface as it has for its TLS handshake.** HTTP/2's
+  server waits for the preface with no deadline and pings no host before it has the preface
+  whole, so a host whose network went after its handshake would hold its connection and a session
+  for ever, and a graceful stop would never end.
+- **`rdlt-sim` depends on `rdlt-host` and `rdlt-wire`**, beside the engine and the connector
+  contract: simulating the host needs the host. `rdlt-sim` stays a leaf, and the engine links no
+  gRPC.
 - **A run that breaks the wire protocol is a finding**, faults or not: a connector and a host that
   keep to the protocol never answer out of turn, however the network or the connector fails.
 - **The simulation's coverage leaves out what it never runs**: generated wire code, what process
