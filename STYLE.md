@@ -144,8 +144,8 @@ forever, `#[non_exhaustive]` everywhere) are adapted below.
 
 - **Blocking locks are `parking_lot`'s** (`Mutex`, `RwLock`, `Condvar`). They do not poison, so no
   code reaches past a poisoned lock and no code handles `PoisonError`. `std::sync`'s `Mutex`,
-  `RwLock` and `Condvar` are not used. Google's Fuchsia rule (`fuchsia_sync::Mutex`) has this
-  form in rdlt.
+  `RwLock` and `Condvar` are not used (clippy `disallowed-types`). Google's Fuchsia rule
+  (`fuchsia_sync::Mutex`) has this form in rdlt.
 - **A blocking lock is never held across `.await`** (clippy `await_holding_lock`). A lock a task
   must hold across `.await`, such as a destination session's, is `tokio::sync::Mutex`.
 - **A guard stays inside its type.** A method takes the lock, does the work and releases it;

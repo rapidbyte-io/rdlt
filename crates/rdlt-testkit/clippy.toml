@@ -8,4 +8,7 @@ too-many-lines-threshold = 60
 disallowed-types = [
   { path = "std::collections::HashMap", reason = "iteration order breaks deterministic simulation; use BTreeMap" },
   { path = "std::collections::HashSet", reason = "iteration order breaks deterministic simulation; use BTreeSet" },
+  { path = "std::sync::Mutex", reason = "STYLE.md: blocking locks are parking_lot's, which do not poison" },
+  { path = "std::sync::RwLock", reason = "STYLE.md: blocking locks are parking_lot's, which do not poison" },
+  { path = "std::sync::Condvar", reason = "STYLE.md: blocking locks are parking_lot's, which do not poison" },
 ]
