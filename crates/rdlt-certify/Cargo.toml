@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 arrow-array.workspace = true
 clap.workspace = true
+parking_lot.workspace = true
 rdlt-connector = { workspace = true, features = ["serve", "testing", "wire"] }
 rdlt-connector-reference.workspace = true
 rdlt-engine.workspace = true

@@ -1,4 +1,6 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 
 use super::report;
 
@@ -7,14 +9,11 @@ fn panicking(raise: impl FnOnce() + std::panic::UnwindSafe) -> String {
     let printed = Arc::new(Mutex::new(Vec::new()));
     let printing = Arc::clone(&printed);
     report(move |said| {
-        printing
-            .lock()
-            .expect("no panic holds it")
-            .push(said.to_owned());
+        printing.lock().push(said.to_owned());
     });
     std::panic::catch_unwind(raise).expect_err("it panics");
     drop(std::panic::take_hook());
-    let mut printed = printed.lock().expect("no panic holds it");
+    let mut printed = printed.lock();
     assert_eq!(printed.len(), 1, "{printed:?}");
     printed.remove(0)
 }

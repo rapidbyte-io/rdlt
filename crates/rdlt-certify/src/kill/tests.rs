@@ -2,6 +2,7 @@ use std::future::Future;
 use std::sync::Arc;
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
+use parking_lot::Mutex;
 use rdlt_connector::testing::render::{RenderError, Rendering};
 
 use super::destination::{Fault, ROWS, every_row_once};
@@ -268,9 +269,9 @@ fn a_load_proves_something_only_once_a_kill_landed_and_interrupted_it() {
 /// Runs [`proven`] over loads that `interrupts` says each draw interrupts, returning its outcome
 /// and the runs and seeds of the loads it ran.
 fn drew(chosen: Option<u64>, interrupts: impl Fn(usize) -> bool) -> (Loaded, Vec<(u64, u64)>) {
-    let loads = std::sync::Mutex::new(Vec::new());
+    let loads = Mutex::new(Vec::new());
     let outcome = ready(proven(chosen, 100, |run, seed| {
-        let mut loads = loads.lock().expect("unpoisoned");
+        let mut loads = loads.lock();
         loads.push((run, seed));
         let interrupted = interrupts(loads.len());
         async move {
@@ -281,7 +282,7 @@ fn drew(chosen: Option<u64>, interrupts: impl Fn(usize) -> bool) -> (Loaded, Vec
             }
         }
     }));
-    (outcome, loads.into_inner().expect("unpoisoned"))
+    (outcome, loads.into_inner())
 }
 
 /// The output of `future`, which never waits.
