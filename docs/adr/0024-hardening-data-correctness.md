@@ -76,10 +76,7 @@ M5b follows H1b.
 
 ## Consequences
 
-- **Deferred to M5b: tombstones for hard deletes and truncates.**
-  - A row that arrives later with a lower sequence than a hard delete or truncate would come back.
-  - No path delivers one today: one changes partition, the snapshot before its changes, and runs
-    fenced by epoch.
-  - The design belongs with M5b's change merges for the SQL destinations and the `D-DELETE`
-    clause.
+- **A removed row stays removed.** A change sequenced before a hard delete or truncate, sent
+  again, never brings its row back: every destination keeps tombstones (ADR 0027), which
+  `D-DELETE` and `D-TRUNCATE` certify.
 - **Portable sqlgen** is ADR 0028's.
