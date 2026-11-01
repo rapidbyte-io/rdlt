@@ -26,8 +26,8 @@ quietly, or fail whole streams on one row:
   toward zero where they become timestamps and floored where they become text disagree, a history
   change time held as Date64 multiplied into microseconds unchecked wraps, and a decimal beyond its
   declared precision widened, rescaled and rendered as it is changes.
-- One value its column cannot hold, or one null or far change time, must not fail the whole batch
-  whatever the stream's policy.
+- One value its column cannot hold, or one null or far change time, would fail the whole batch
+  whatever the stream's policy, where a policy that discards asks to lose only its row or value.
 - A history that takes change times as sent and closes versions at them without comparing
   anything ends a version before it began where a time is earlier than the version it replaces. A
   stream naming no change time would read a wall clock that may step back. Validity stored as text
