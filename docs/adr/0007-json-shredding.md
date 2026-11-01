@@ -11,27 +11,27 @@ and a throughput bound. Pushes also coalesce into batches.
 
 ## Decision
 
-- **One pass parses, observes and builds.** Parsing each chunk into a tape, walking it to observe
-  types and building against the joined types in a second walk is rejected: walking sonic-rs's
-  document costs as much as parsing it, which limits that design to near 3.5 times the old engine.
-  Each chunk is parsed once through serde seeds over sonic-rs, and every value goes
-  straight into a column typed by the values the chunk held so far: a column starts as nulls and
-  takes its first value's type, and converts itself when a later value widens it without loss (a
-  float after integers exact as floats, a large unsigned integer after integers). Any other value
-  makes the column `Json`. A column of scalars but floats renders the values it took as JSON text,
-  which holds them as they were read, and goes on building as JSON. Any other column cannot: a
+- **One pass parses, observes and builds where a chunk fits.** Parsing each chunk into a tape,
+  walking it to observe types and building against the joined types in a second walk is rejected:
+  walking sonic-rs's document costs as much as parsing it, which limits that design to near 3.5
+  times the old engine. Each chunk is parsed first through serde seeds over sonic-rs, and every
+  value goes straight into a column typed by the values the chunk held so far: a column starts as
+  nulls and takes its first value's type, and converts itself when a later value widens it without
+  loss (a float after integers exact as floats, a large unsigned integer after integers). Any other
+  value makes the column `Json`. A column of scalars but floats renders the values it took as JSON
+  text, which holds them as they were read, and goes on building as JSON. Any other column cannot: a
   float's text as it was written, an object and an array are gone, so it stops building and only
   checks its later values' nesting. The chunks' shapes are joined in push order. A chunk whose
   columns fit the joined shape keeps them, fitted without its text: columns are matched by name,
-  columns it lacks or held only nulls in become nulls of the joined type, integers are cast to
-  the floats or decimals the join widened them to, and scalars but floats are rendered as JSON
-  text where the join made their column `Json`. Only a chunk holding a column that stopped
-  building, or one the join made another kind, or `Json` over floats, objects or arrays, is
-  parsed again and built against the joined shape. Batches therefore always have the joined
-  shape, and optional keys cost no second parse. The pass is metered:
-  builders charge what they are made with and grow by, within twice the chunk's text; a chunk
-  that would pass that is read again observing kinds and counts, and what the batches take
-  beyond the push's admission is reserved before any of them is built (ADR 0040).
+  columns it lacks or held only nulls in become nulls of the joined type, integers are cast to the
+  floats or decimals the join widened them to, and scalars but floats are rendered as JSON text
+  where the join made their column `Json`. Only a chunk holding a column that stopped building, or
+  one the join made another kind, or `Json` over floats, objects or arrays, is parsed again and
+  built against the joined shape. Batches therefore always have the joined shape, and optional keys
+  cost no second parse. The pass is metered: builders charge what they are made with and grow by,
+  within twice the chunk's text; a chunk that would pass that is read again observing kinds and
+  counts, and what the batches take beyond the push's admission is reserved before any of them is
+  built (ADR 0040).
 - **Pushes are cut into chunks on the pool without walking their records.** JSON lines are cut
   at the first line end past each chunk's bytes, found by jumping past those bytes; a JSON
   array's top-level commas are found by one scan of its structure, without recursion however
