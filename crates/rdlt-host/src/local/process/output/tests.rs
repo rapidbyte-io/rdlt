@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use proptest::prelude::*;
+use rdlt_connector::text::CUT;
 use tokio::io::AsyncWriteExt as _;
 
 use super::{Allowance, Draining, Ended, Said, Tail, drain, ending};
@@ -11,7 +12,6 @@ use crate::limits::{
     OUTPUT_LINES_BURST, OUTPUT_LINES_PER_SECOND, TAIL_BYTES,
 };
 use crate::secrets::Redactions;
-use rdlt_connector::text::CUT;
 
 /// What a drain gave the log, the tail it kept, and whether it told its stream closed.
 struct Drained {
