@@ -292,10 +292,22 @@ fn every_type_has_a_null_slot() {
 #[test]
 fn a_null_key_costs_its_values_slot_whatever_the_dictionary_holds() {
     const WIDTH: i32 = 1_000_000;
-    let values = new_null_array(&DataType::FixedSizeBinary(WIDTH), 0);
-    let keys = Int8Array::from(vec![None::<i8>; 300]);
-    let nulls: ArrayRef = Arc::new(DictionaryArray::<Int8Type>::try_new(keys, values).unwrap());
-    assert!(expanded(&native(), &nulls) >= 300 * u64::try_from(WIDTH).unwrap());
+    let wide = DataType::FixedSizeBinary(WIDTH);
+    let keyed = DataType::Dictionary(Box::new(DataType::Int8), Box::new(wide.clone()));
+    let ends = Arc::new(Field::new("run_ends", DataType::Int16, false));
+    let runs = DataType::RunEndEncoded(ends, Arc::new(Field::new("values", wide.clone(), true)));
+    let member = |kind: DataType| DataType::Struct(Fields::from(vec![Field::new("a", kind, true)]));
+    // Decoding gives the wide bytes a slot wherever they lie in the values, keyed or in runs.
+    for values in [wide.clone(), member(wide), member(keyed), member(runs)] {
+        let values = new_null_array(&values, 0);
+        let keys = Int8Array::from(vec![None::<i8>; 300]);
+        let nulls: ArrayRef = Arc::new(DictionaryArray::<Int8Type>::try_new(keys, values).unwrap());
+        assert!(
+            expanded(&native(), &nulls) >= 300 * u64::try_from(WIDTH).unwrap(),
+            "{}",
+            nulls.data_type()
+        );
+    }
 }
 
 #[test]
