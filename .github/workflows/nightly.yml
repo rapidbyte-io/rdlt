@@ -397,6 +397,12 @@ jobs:
           cache_key_prefix: mise-v2-mutants
       - name: Make a sandbox available
         run: ./.github/sandbox.sh
+      # Each mutant at once copies the tree and builds it whole, more than the runner leaves free
+      # on the disk `/tmp` lies on; the toolchains no step uses give it back.
+      - name: Free the disk the mutants' builds take
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h / /tmp
       # Two mutants at once on four cores, each tested on two threads, and linked by mold.
       - run: |
           night="${NIGHT:-$(( $(date -u +%s) / 86400 % 4 ))}"
