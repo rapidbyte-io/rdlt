@@ -1071,6 +1071,35 @@ fn the_text_of_a_nested_array_is_measured_as_its_json_text() {
 }
 
 #[test]
+fn the_text_of_a_decimal_holds_its_longest_value_quoted_at_any_scale() {
+    // A type's longest value is negative and has every digit its precision allows: whole, all
+    // fraction, part fraction, or followed by the zeros a negative scale adds.
+    let longest = |precision: u8| format!("-{}", "9".repeat(usize::from(precision)));
+    let mut decimals: Vec<(ArrayRef, String)> = Vec::new();
+    for (precision, scale) in [(1, 0), (38, 0), (38, 19), (38, 38), (38, -10)] {
+        let value = longest(precision).parse::<i128>().unwrap();
+        let column = Decimal128Array::from(vec![value])
+            .with_precision_and_scale(precision, scale)
+            .unwrap();
+        let text = column.value_as_string(0);
+        decimals.push((Arc::new(column), text));
+    }
+    for (precision, scale) in [(76, 0), (76, 76), (76, -20)] {
+        let value = arrow_buffer::i256::from_string(&longest(precision)).unwrap();
+        let column = Decimal256Array::from(vec![value])
+            .with_precision_and_scale(precision, scale)
+            .unwrap();
+        let text = column.value_as_string(0);
+        decimals.push((Arc::new(column), text));
+    }
+    for (column, text) in decimals {
+        let quoted = u64::try_from(text.len()).unwrap() + 2;
+        let measured = super::text_bytes(column.as_ref(), true);
+        assert!(measured >= quoted, "{}: {text}", column.data_type());
+    }
+}
+
+#[test]
 fn a_list_s_layouts_cost_their_offsets_brackets_and_commas_beside_their_items() {
     use super::widths::{BRACKETS, OFFSET};
     let ints: ArrayRef = Arc::new(Int64Array::from(vec![1, 2, 3]));
