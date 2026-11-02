@@ -205,3 +205,13 @@ fn a_sparse_table_loads_every_row_of_its_pushes() {
         }
     }
 }
+
+#[test]
+fn the_kept_table_and_the_table_of_its_columns_load_the_rows_their_record_measures() {
+    // Both take the rows of a push of the sparse width, and the record measures nine pushes of 166.
+    let cores = cores();
+    for columns in [Wide::KEPT, Wide::SPARSE] {
+        let kept = Wide::keeping(cores, columns, Wide::KEPT, Wide::KEPT_PUSHES).unwrap();
+        assert_eq!(kept.rows(), 1_494, "{columns} columns");
+    }
+}
