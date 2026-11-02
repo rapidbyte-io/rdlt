@@ -2289,7 +2289,8 @@ fn a_record_whose_keys_are_all_excluded_is_a_row_of_no_columns() {
 
 #[test]
 fn an_excluded_value_that_is_not_json_or_passes_a_limit_still_refuses_its_record() {
-    let too_deep = nested(NESTING_DEPTH + 1, "[", "]").replacen("\"a\"", "\"secret\"", 1);
+    let too_deep =
+        |open, close| nested(NESTING_DEPTH + 1, open, close).replacen("\"a\"", "\"secret\"", 1);
     let cases = [
         ("{\"id\":1,\"secret\":[1,}".to_owned(), codes::JSON_INVALID),
         (
@@ -2297,7 +2298,8 @@ fn an_excluded_value_that_is_not_json_or_passes_a_limit_still_refuses_its_record
             codes::JSON_INVALID,
         ),
         ("{\"secret\":\"\\x\"}".to_owned(), codes::JSON_INVALID),
-        (too_deep, codes::LIMIT_EXCEEDED),
+        (too_deep("[", "]"), codes::LIMIT_EXCEEDED),
+        (too_deep("{\"b\":", "}"), codes::LIMIT_EXCEEDED),
     ];
     for (push, code) in cases {
         assert_eq!(excluding(&push, &["secret"]), Err(code), "{push:?}");
@@ -2329,17 +2331,20 @@ fn each_parse_refuses_an_excluded_value_nested_past_the_limit_as_it_reads_it() {
         ..limits()
     };
     let excluded = Exclusion::new(["secret"]);
-    for (limits, built) in [(roomy, true), (tight, false)] {
+    for ((limits, built), (open, close)) in [(roomy, true), (tight, false)]
+        .into_iter()
+        .flat_map(|parse| [(parse, ("[", "]")), (parse, ("{\"b\":", "}"))])
+    {
         let parse_once = |levels: u64| {
-            let text = nested(levels, "[", "]").replacen("{\"a\":", "{\"id\":1,\"secret\":", 1);
+            let text = nested(levels, open, close).replacen("{\"a\":", "{\"id\":1,\"secret\":", 1);
             let chunk = chunks(&[Bytes::from(text)], 1 << 20).unwrap().remove(0);
             parse(chunk, limits, &limits.beyond(), &excluded).map(|parsed| parsed.record.is_some())
         };
-        assert_eq!(parse_once(NESTING_DEPTH), Ok(built), "built {built}");
+        assert_eq!(parse_once(NESTING_DEPTH), Ok(built), "built {built} {open}");
         assert_eq!(
             parse_once(NESTING_DEPTH + 1).err(),
             Some(super::ShredError::TooDeep),
-            "built {built}"
+            "built {built} {open}"
         );
     }
 }
