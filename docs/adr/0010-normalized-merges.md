@@ -27,8 +27,21 @@ children follow it wherever a merge or a policy takes it.
   object of the recorded key's format; a key recorded in another format is refused (ADR 0041).
 - **Sequences count rows received.** A row's sequence is its position among the rows its segment
   received, before the schema policy drops any, so a child row, which takes its root row's
-  position, keeps matching its root when earlier rows are dropped. Only a stream's own table
-  compacts a batch to the last row of each key; a child table's key is shared by its root's rows.
+  position, keeps matching its root when earlier rows are dropped.
+- **A flush stages each key's last row with its children alone.** Every piece of a flush is
+  written to one segment, which a commit publishes whole, so a root row that a later row of its
+  flush shares a key with never publishes, nor do its children. Before any piece of a merge
+  stream's flush is split, the root rows' key columns are compared on the compute pool, as the
+  split holds them, keys of different types apart; every table of the stream, its own and its
+  child tables at every depth, then stages only the rows descending from the root rows no later
+  row of the flush shares a key with. Every row still meets its table's policy, counts among the
+  stream's discards and makes its table's columns, so only what is staged changes, and where the
+  flush is cut into pieces decides none of it. The comparison holds what the budget grants it at
+  once, and the bits it leaves a piece are charged with the piece's split. A stream whose policy
+  drops rows stages as each piece's tables keep, a stream's own table the last row of each key of
+  a piece and a child table every row: a key's newest row the policy drops leaves an older row to
+  apply, which only planning its piece finds. So does a flush the budget has no room for at once,
+  or whose key columns are of a type whose comparable rows their values do not bound.
 - **Dropped rows take their descendants.** A unit's parts are lowered parents first. A part first
   loses the rows whose parent was dropped, then meets its table's policy; every row dropped
   either way is kept, by its part and position, for the parts below. Rows are never known by
