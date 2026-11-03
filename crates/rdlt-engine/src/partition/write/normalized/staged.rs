@@ -42,6 +42,13 @@ impl Staged {
         }
         Some(bits)
     }
+
+    /// Gives up the bits no piece has taken, and then their charge: those pieces each keep what
+    /// their own merge keeps, which stages each key's last row of the flush as surely.
+    pub(super) fn give_up(&mut self) {
+        self.pieces.fill(None);
+        self.held = None;
+    }
 }
 
 /// A flush's pieces as finding their staged root rows reads them: the key columns of each of

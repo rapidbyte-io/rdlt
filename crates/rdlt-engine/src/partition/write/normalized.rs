@@ -14,7 +14,7 @@ use parking_lot::Mutex;
 use rdlt_connector::Permit;
 
 use self::split::{kept, made, split_kept};
-use self::staged::Keys;
+use self::staged::{Keys, Staged};
 use super::allowance::{Cutter, PartPiece};
 use super::pieces::{self, Lowered};
 use super::units::Units;
@@ -22,7 +22,7 @@ use super::{
     Held, OpenSegment, PartitionContext, PartitionJob, Room, full, queue, reserve, schema_invalid,
     stamp, taking,
 };
-use crate::budget::{Shares, TooLarge};
+use crate::budget::{Reservation, Shares, TooLarge};
 use crate::cost::{LINEAGE_ITEM, SPLIT_COPIES, lineage_row};
 use crate::error::{Error, codes};
 use crate::limits::MIN_PIECE;
@@ -38,7 +38,8 @@ use discarded::Discarded;
 ///   piece may hold.
 /// - A merge stream's flush, where no policy of the stream drops a row, then finds which of its
 ///   root rows no later row of the flush shares a key with: every table stages only the rows of
-///   those, though every row meets its table's policy.
+///   those, though every row meets its table's policy. A piece that must wait for its room first
+///   gives up what was found for the pieces not yet split, which keep what their own merge keeps.
 /// - Each piece then asks its room once, for all a request may take: what its planned parts hold
 ///   and an allowance for lowering them. It is split on the compute pool, its parts' tables and
 ///   plans are found in order, parents first, and each part is cut by what lowering it into its
@@ -65,7 +66,7 @@ pub(super) async fn write_normalized(
     let request = room.shares(&context.budget).request;
     let last = pieces.len().saturating_sub(1);
     for (piece, held) in pieces.into_iter().enumerate() {
-        let mut reserved = reserve(job, context, &room, request).await?;
+        let mut reserved = piece_room(job, context, &room, &mut staged, request).await?;
         let mut parts = split_kept(job, context, schemas, shape, &held.batches).await?;
         let staging = staged.take(piece);
         for part in &mut parts {
@@ -124,6 +125,23 @@ pub(super) async fn write_normalized(
         }
     }
     Ok(())
+}
+
+/// Reserves `request` of `room` for a piece of a flush that found `staged`: at once, or after
+/// giving up what was found for the pieces not yet split, so the partition waits only while it
+/// holds nothing lowering waits for.
+async fn piece_room(
+    job: &PartitionJob,
+    context: &PartitionContext,
+    room: &Room,
+    staged: &mut Staged,
+    request: u64,
+) -> Result<Reservation, Error> {
+    if let Some(reserved) = room.try_reserve(&context.budget, request) {
+        return Ok(reserved);
+    }
+    staged.give_up();
+    reserve(job, context, room, request).await
 }
 
 /// `pieces` lowered on the compute pool, in order: each in a job of its own, or all in one where
