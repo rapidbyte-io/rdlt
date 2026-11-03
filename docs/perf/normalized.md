@@ -74,9 +74,10 @@ in the production slice's three rounds.
 | In process | 111.7 ms (111.4–112.1) | 1.79 M | |
 | Spawned | 129.1 ms (125.0–130.2) | 1.55 M | 8.86 (8.77–8.99): host 6.68, source 0.29, destination 1.84 |
 
-Each run's commit stages 98 776 root rows and 900 000 child rows for 39 099 distinct keys, the same
-in every round: the root rows keep each key's last row within a push, and every row's children
-are staged.
+Each run's commit staged 98 776 root rows and 900 000 child rows for 39 099 distinct keys, the same
+in every round: each piece kept the last row of each of its keys, and every row's children were
+staged. Each flush now stages each key's last row and its children alone, 61 844 root rows and
+279 486 child rows a commit ("Each key's last row of a flush", below).
 
 The `allocations` bench's counts of one run of each, on the same tree and cores:
 
@@ -191,3 +192,83 @@ What the rule does not gate, recorded:
 - **What a commit stages across pieces.** Of the commit's 98 776 staged root rows, 59 677
   (60.4 %) have a later staged row of their key: each piece keeps the last row of each of its
   keys, and the commit holds four pushes' pieces.
+
+## Each key's last row of a flush
+
+Each piece of a merge stream's flush staged the last row of each of its keys in the stream's own
+table and every row's children in its child tables, for the destination to keep each key's row
+of the greatest sequence and its children. Every piece of a flush is written to one segment,
+which a commit publishes whole, so a root row that a later row of its flush shares a key with
+never publishes, nor do its children. The change compares the key columns of a flush's root
+rows on the compute pool before any of its pieces is split, as the split holds them and keys of
+different types apart, and every table of the stream stages only the rows descending from the
+root rows no later row of the flush shares a key with. Every row still meets its table's policy,
+counts among the discards and makes its table's columns; a stream whose policy drops rows stages
+as before, as does a flush the budget has no room for at once.
+
+The rule was set before measuring. Adopt only if every condition holds:
+
+- The CPU seconds a run of `served/process/socket/both/normalized/merge/zipf` fall at least 10 %.
+- `normalized/merge/zipf` in process takes no longer a run.
+- `normalize/keyed/with_arrays` and `lowering/merge_unique` take at most 2 % more, and every
+  `just instructions` case is within 2 %.
+- Nothing is held outside the memory budget: the zipf cells' peak memory and `just resident`'s
+  lines no higher than `main`'s beyond their ranges.
+- The latency cells' p99 no worse than `main`'s at equal push rates.
+- No second staging path, and no staged row held across a commit.
+
+- **Trees.** `main` at `1ea1e3c5`, and the change on it, each tree's benches built in a target
+  directory of its own, both with a line printing the run's peak memory added for the
+  measurement.
+- **Running.** Each bench's binary as `just bench` runs its timed pass: under `taskset -c 0-3`
+  with its cell's filter, the spawned connectors on CPUs 4–11. One hold of the measurement lock
+  on 2026-11-03, 04:11 to 04:14, the one-minute load average 0.61 at its start and 2.69 at its
+  highest.
+- **Rounds.** Three, each running both cells of one side and then of the other, the change first
+  in the first and third. A figure is criterion's point estimate, or the served bench's median
+  CPU seconds a GB over its samples; the same JSON each run, so CPU a GB compares as CPU a run.
+
+| Round | In process: `main` / change | Spawned: `main` / change | CPU s a GB spawned: `main` / change |
+|---|---|---|---|
+| 1 | 93.3 / 91.6 ms | 105.2 / 109.3 ms | 8.38 / 6.94 (−17.2 %) |
+| 2 | 95.4 / 94.2 ms | 104.7 / 109.7 ms | 8.43 / 7.00 (−16.9 %) |
+| 3 | 95.9 / 96.0 ms | 113.0 / 109.2 ms | 8.38 / 6.98 (−16.8 %) |
+
+Each run's commit staged 98 776 root rows and 900 000 child rows on `main` against 61 844 and
+279 486 with the change, for 39 099 distinct keys: of the change's root rows, 22 745 (36.8 %)
+still have a later staged row of their key, each in a later push, whose flush is a segment of its
+own. Three earlier rounds of a first build of the change, on the same trees, 02:56 to 02:58, the
+load average 1.70 to 2.51, gave the same: CPU a GB −17.0, −17.9 and −17.8 %, in process +0.35,
+−1.06 and −0.23 %.
+
+- **Instructions.** `just instructions` against `1ea1e3c5`: `normalize/keyed/with_arrays` −0.01 %,
+  `lowering/merge_unique` +0.00 %, every case within 2 % (the largest `commit/1024`, +0.59 %), and
+  allocations within 0.03 %.
+- **Memory.** The run's peak memory in process 686 091 717 bytes on `main`, the same in each round,
+  and 686 100 229 with the change: 8 512 bytes more, the bits of a flush's pieces, charged from
+  the comparison until each piece's split takes them. `just resident`'s twelve engine lines on
+  both trees: the same peak memory, and resident growth within 2 MiB of `main`'s, either side;
+  its six served lines, of a workload that merges nothing, as far apart on each side as between
+  them.
+- **Latency.** `latency/in-process/1s` and `latency/process/1s`, two runs of each tree
+  interleaved (`main`, change, change, `main`) in one hold, 04:21 to 04:26, the load average 2.10
+  to 3.04, at the same push rates (25 431 to 25 821 pushes a second spawned, 110 512 to 113 066 in
+  process): p99 push to landed spawned 995.7 and 995.4 ms on `main` against 995.8 and 995.8 with
+  the change, within `main`'s runs' ranges, and in process 931.1 and 918.4 against 918.7 and
+  909.3. The ten-second cells were not run: their workload is a stream that neither normalizes
+  nor merges, whose path the change does not reach.
+- **Staging.** The bits are found before any piece is split and dropped once each piece is lowered;
+  every staged row goes through the lanes as before.
+
+**Decision: adopted.** The CPU a run fell 16.8 % (the medians, 8.38 to 6.98 CPU seconds a GB),
+over 10 % in every round, and the run in process took 1.2 % less by the medians, no round more
+than 0.1 % longer.
+
+What the rule does not gate, recorded:
+
+- **Where the CPU went.** The spawned destination took 53.1 % less a GB (1.70 to 0.80 CPU
+  seconds, the medians), decoding and merging two thirds fewer rows, and the host 8.1 % less
+  (6.41 to 5.89), lowering and encoding fewer rows; the source took the same (0.29).
+- **The run spawned took longer.** 3.9 % by the medians (105.2 to 109.3 ms), in two rounds of
+  three: the comparison runs on each flush's serial path before its first piece is split. In
+  process the time it adds is made back by lowering and encoding fewer rows.
