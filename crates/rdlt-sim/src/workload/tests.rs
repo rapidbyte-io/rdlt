@@ -359,22 +359,24 @@ fn a_read_resumes_where_the_last_phases_ended_in_batches_of_the_streams_size() {
     assert_eq!(stream.read(0, 0).len(), first);
 }
 
+/// Whether `stream` normalizes and a column of it holds arrays somewhere.
+fn has_arrays(stream: &SimStream) -> bool {
+    stream.normalized()
+        && stream.drift.iter().any(|drift| {
+            drift
+                .shapes
+                .iter()
+                .flatten()
+                .flatten()
+                .any(|shape| matches!(shape.logical, LogicalType::List(_)))
+        })
+}
+
 #[test]
 fn some_streams_normalize_arrays_under_every_write_mode_and_policy() {
     let streams: Vec<_> = (0..300)
         .flat_map(|seed| Workload::generate(&mut SplitMix64::new(seed), Features::ALL).streams)
         .collect();
-    let has_arrays = |stream: &SimStream| {
-        stream.normalized()
-            && stream.drift.iter().any(|drift| {
-                drift
-                    .shapes
-                    .iter()
-                    .flatten()
-                    .flatten()
-                    .any(|shape| matches!(shape.logical, LogicalType::List(_)))
-            })
-    };
     for json in [false, true] {
         assert!(
             streams
@@ -399,6 +401,36 @@ fn some_streams_normalize_arrays_under_every_write_mode_and_policy() {
             "some normalized stream with arrays has policy {policy:?}"
         );
     }
+}
+
+#[test]
+fn some_normalized_merges_push_a_key_in_two_pushes_of_a_segment_under_every_policy() {
+    // A segment's pushes are flushed together, so a later push's row of a key leaves an earlier
+    // push's unstaged where the stream's policy drops no row, and staged where it does.
+    let repeating = |stream: &SimStream| {
+        has_arrays(stream)
+            && stream.write == WriteMode::Merge
+            && stream.checkpoint_every > 1
+            && stream.batch_rows * stream.checkpoint_every > stream.keys
+    };
+    let mut unmet = vec![
+        SchemaPolicy::Evolve,
+        SchemaPolicy::DiscardRow,
+        SchemaPolicy::DiscardValue,
+    ];
+    let streams = (0..2_000)
+        .flat_map(|seed| Workload::generate(&mut SplitMix64::new(seed), Features::ALL).streams);
+    for stream in streams.filter(repeating).take(10_000) {
+        let met = policies(&stream);
+        unmet.retain(|policy| !met.contains(policy));
+        if unmet.is_empty() {
+            break;
+        }
+    }
+    assert!(
+        unmet.is_empty(),
+        "no normalized merge with arrays pushes a key in two pushes of a segment under {unmet:?}"
+    );
 }
 
 /// Every type and encoding the shape of a column or anything inside it takes.
