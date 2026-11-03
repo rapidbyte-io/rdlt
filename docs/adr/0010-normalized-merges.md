@@ -37,7 +37,10 @@ children follow it wherever a merge or a policy takes it.
   row of the flush shares a key with. Every row still meets its table's policy, counts among the
   stream's discards and makes its table's columns, so only what is staged changes, and where the
   flush is cut into pieces decides none of it. The comparison holds what the budget grants it at
-  once, and the bits it leaves a piece are charged with the piece's split. A stream whose policy
+  once, and the bits it leaves a piece are charged with the piece's split. A piece that must
+  wait for its room gives up the bits of the pieces not yet split first, as a partition waits
+  only while it holds nothing lowering waits for; those pieces stage as their own merges keep,
+  which still stages each key's last row of the flush. A stream whose policy
   drops rows stages as each piece's tables keep, a stream's own table the last row of each key of
   a piece and a child table every row: a key's newest row the policy drops leaves an older row to
   apply, which only planning its piece finds. So does a flush the budget has no room for at once,
