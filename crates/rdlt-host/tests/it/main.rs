@@ -36,6 +36,7 @@ mod sandbox;
 mod secrets;
 mod sessions;
 mod soak;
+mod spared;
 mod staging;
 mod started;
 mod support;
