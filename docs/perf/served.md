@@ -1792,3 +1792,144 @@ served line of `just resident` no higher than `main`'s at two and four cores.
 whose median, 1 731 MB/s, lies below `main`'s range, 1 808 to 2 141: a known trade-off of about
 7 % on that cell, glibc's at its default thresholds and paid by the base too, against gains of 7
 to 15 % in six cells and the regression this section set out to remove.
+
+## A served read's frame allocations kept for the next
+
+The section above ends on the single cell it left costlier: one partition's 6.9 MB frames, freed
+as their pieces go, leave memory that glibc, at its default thresholds, gives back to the kernel,
+and the next frames fault it in again on huge pages. The host's process is the embedder's, so the
+engine cannot set its allocator's thresholds. The change measured here had the host reuse its
+frames' allocations instead of handing them back.
+
+### The change
+
+- **Where a frame lies.** A served read's frame is gathered into an allocation of its own length,
+  decoded where it lies, and kept alive whole by the arrays decoded from it until the pieces cut
+  from its batch are written ("Frames decoded where they arrive", above).
+- **Kept for the next.** Where a body's frames are charged, the host's reads' and read-backs', each
+  frame's allocation went back to the charge once nothing held it. The run's budget kept one such
+  spare, the largest offered, beside a reservation of its bytes of what pushes may take, made only
+  where they fit and no request for the data waited. A frame needing from half its room to all of it
+  arrived in it, shrunk to the frame's own length, so every check and charge after saw the
+  allocation a fresh one would be; the reservation went as the spare was taken, the frame then held
+  as any arriving frame is. A push, a frame's decode charge or lowering that would wait had the
+  spare given up first, freed before its reservation went: a spare never made anything wait, never
+  passed a share and was never held uncharged. No `unsafe`, no dependency, no setting: 259 lines
+  added in the wire and engine crates and 746 of tests.
+- **Weighed and set aside before building.**
+  - A reused `BytesMut` reclaimed at the next frame's start (`try_reclaim`) reuses only when the
+    frame before is already freed, which a pipelined read's never is: the next frame starts
+    arriving as the one before is admitted; and the handle keeps the allocation alive, uncharged,
+    in between.
+  - A bounded pool of frame buffers a connection, uncharged, adds a term to ADR 0039's bound.
+  - A spare charged to its read's part of what reads keep needs no giving up, but a part is 4 MiB
+    at the default sixteen partitions, below the 6.9 MB frame of the cell it is for.
+  - A spare charged of what pushes may take and never given up could hold room a waiting push
+    needs, which only the read holding it would release.
+- **Tests.** Over a served source paced one batch at a time, the seven frames after the first each
+  arrived in the allocation the frame before left once its batch was dropped; a read whose charge
+  keeps spares held, at its peak and once done, no more than one whose charge keeps none and the one
+  allocation kept, within 64 KiB. In the budget, a spare was reserved of what pushes may take until
+  a frame took it, kept only where it fit and nothing for the data waited, a larger in place of a
+  smaller; a push, a decode charge and lowering, asked or tried, that would wait took its room at
+  once; and a spare given up was freed before its charge was released, by the heap as the release
+  was told (its first form released the charge first, outside the lock, and failed that test).
+
+### The rule
+
+Set before measuring, by counts, as "A count, not a time" counts: the machine carried its
+owner's virtual machine and other work. Each condition is judged against `main` measured beside
+the change, with the bench patched as that section patched it, the host's process under glibc's
+defaults, at least three sessions a tree; adopt only if every condition holds:
+
+1. `process/socket/both/64x80000`: the host's CPU seconds a GB fall at least 5 %, the sessions'
+   ranges apart, and its huge-page faults a run fall.
+2. No other cell of the production slice costs the host more CPU a GB beyond the ranges, nor
+   moves less beyond them.
+3. `just resident`'s served lines: each median no higher than `main`'s plus 10 MiB, and within its
+   limit.
+4. Every `just instructions` case within 2 %, allocations included.
+5. Nothing kept outside the memory budget; no new `unsafe`.
+
+### Counts
+
+`main` at `1ea1e3c5` against the change on it, 2026-11-03 from 03:12 to 03:32: one process a
+session, the ten cells of the production slice in the record's order (`64x80000`, `512x10000` and
+`64x80000` from four partitions first, as the rule names them), each for 15 seconds of criterion's
+profiling mode under the counting patch, the host on CPUs 0–3 and the spawned connectors on 4–11,
+six sessions interleaved, the change first (change, `main`, `main`, change, change, `main`), each in
+a hold of the measurement lock started at a one-minute load of 0.80 to 0.89. A figure is the median
+a run over a cell's runs from the fourth on, the host's CPU seconds a GB over those runs; each
+cell's three sessions of the change, then `main`'s, in session order.
+
+| Cell | Host CPU s a GB, change | `main` | MB/s, change | `main` |
+|---|---|---|---|---|
+| `64x80000` | 0.642, 0.768, 0.782 | 0.709, 0.719, 1.072 | 2 244, 1 948, 1 911 | 2 056, 2 002, 1 384 |
+| `512x10000` | 0.464, 0.462, 0.462 | 0.463, 0.464, 0.461 | 3 461, 3 467, 3 480 | 3 491, 3 433, 3 521 |
+| `64x80000`, 4 partitions | 0.696, 0.842, 0.882 | 0.752, 0.865, 1.087 | 2 046, 1 739, 1 687 | 1 911, 1 679, 1 351 |
+| `64x80000`, 8 partitions | 0.713, 0.800, 0.861 | 0.724, 0.918, 0.879 | 1 943, 1 735, 1 628 | 1 908, 1 520, 1 570 |
+| `64x80000`, 16 partitions | 0.767, 0.853, 0.849 | 0.783, 0.871, 0.843 | 1 711, 1 530, 1 568 | 1 661, 1 518, 1 542 |
+| `512x10000`, 4 partitions | **0.503, 0.505, 0.510** | 0.497, 0.501, 0.502 | 2 953, 2 911, 2 949 | 2 979, 2 921, 2 905 |
+| `512x10000`, 16 partitions | 0.565, 0.576, 0.568 | 0.567, 0.566, 0.559 | 2 705, 2 637, 2 684 | 2 628, 2 644, 2 688 |
+| `5120x1000` | 0.901, 0.893, 0.894 | 0.894, 0.892, 0.897 | 2 083, 2 104, 2 097 | 2 095, 2 104, 2 093 |
+| `5120x1000`, 4 partitions | 0.997, 0.988, 0.982 | 0.998, 0.995, 0.991 | 1 868, 1 885, 1 896 | 1 843, 1 873, 1 877 |
+| `5120x1000`, 16 partitions | 1.074, 1.082, 1.071 | 1.066, 1.081, 1.083 | 1 715, 1 704, 1 724 | 1 731, 1 706, 1 707 |
+
+Minor and huge-page faults a run of the large frames' cells, the same sessions:
+
+| Cell | Minor faults, change | `main` | Huge-page faults, change | `main` |
+|---|---|---|---|---|
+| `64x80000` | 5 360, 44 562, 39 314 | 10 812, 11 296, 116 883 | 144, 58, 46 | 194, 320, 64 |
+| `64x80000`, 4 partitions | 7 047, 55 825, 68 300 | 12 245, 30 002, 114 470 | 241, 24, 15 | 304, 274, 24 |
+| `512x10000`, 4 partitions | 5 344, 5 596, 5 604 | 4 846, 4 830, 5 056 | 0, 0, 0 | 0, 0, 0 |
+
+- **The machine changed under the sessions.** From about 03:21, in the middle of `main`'s second
+  session, whose later cells show it, every session of either tree took few huge-page faults and
+  many 4 KiB ones in the large frames' cells: the kernel had no free 2 MiB block for a fault to
+  take, and with defragmentation set to `madvise` it fell back to small pages
+  (`thp_fault_fallback` in `/proc/vmstat` rose 13 267 from just before `main`'s third session to
+  its end). `main`'s
+  `64x80000` went from 0.709 and 0.719 CPU seconds a GB to 1.072, its minor faults from 11 000 a
+  run to 117 000.
+- **Within either state the change is leaner on `64x80000`**: with huge pages to take, 0.642
+  against 0.709 and 0.719 (−10 %), its huge-page faults 144 against 194 and 320 and its minor
+  faults 5 360 against 11 000; without them, 0.768 and 0.782 against 1.072 (−27 %). From four
+  partitions, 0.696 against 0.752 with huge pages and 0.842 and 0.882 against 1.087 without; from
+  eight, 0.713 against 0.724 with them and 0.800 and 0.861 against 0.918 and 0.879 without.
+- **`512x10000` from four partitions costs a little more**, in both states: every session of the
+  change above every one of `main`'s, 0.503 to 0.510 against 0.497 to 0.502 CPU seconds a GB
+  (+0.9 % at the medians), with 5 344 to 5 604 minor faults a run against 4 830 to 5 056.
+
+Three-cell sessions of the change's first form, which released a spare's reservation before
+freeing it and otherwise did the same (`64x80000`, `512x10000` and `64x80000` from four partitions
+in one process, the same patch and cores, 02:38 to 02:46, `main` first, loads 0.79 to 0.95 at the
+starts, all six before the machine's change): `64x80000` 0.659, 0.646 and 0.634 CPU seconds a GB
+against `main`'s 0.769, 0.717 and 0.729, huge-page faults 78 to 118 a run against 128 to 190;
+from four partitions 0.789 to 0.794 against 0.892 to 0.927; `512x10000` 0.459 to 0.465 against
+0.454 to 0.466.
+
+**Decision: closed.** Two conditions fail as they were set:
+
+- (1) `64x80000`'s sessions' ranges overlap, 0.642 to 0.782 against 0.709 to 1.072, across the
+  machine's change of state, though within each state the change is 10 and 27 % leaner and its
+  huge-page faults fall.
+- (2) `512x10000` from four partitions costs the host more CPU a GB beyond the ranges, by 0.9 % at
+  the medians, every session of the change above every one of `main`'s.
+
+(3) and (4) were not measured: the rule was settled. (5) held: the spare was charged while kept and
+no `unsafe` was added. The code is kept on `perf/reuse-served-receive-buffers-closed`.
+
+What the rule does not gate, recorded:
+
+- **Huge pages decide the cell more than the allocator's thresholds.** Whether the host's process
+  found free 2 MiB blocks moved `main`'s `64x80000` by half again, more than the change did. A
+  spare's pages, once faulted, serve the frames that take it after, so the change saves most where
+  a fault costs most: without huge pages a 6.9 MB frame faults some 1 700 pages of 4 KiB.
+- **Where `512x10000` from four partitions pays.** No profile was taken. Its 0.86 MB frames take
+  the spare from one partition's frame to another's, and its 750 more minor faults a run at the
+  medians say that pages are faulted more often with the spare than with glibc's own reuse, not
+  why. Keeping only large frames' allocations was not tried: the rule was set for the design
+  built.
+- **Reopen** where the host's CPU on large frames from one partition matters more than a 1 % cost
+  on small frames from several partitions, or with a rule that compares sessions within one
+  machine state.
