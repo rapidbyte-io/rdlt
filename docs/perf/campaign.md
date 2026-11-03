@@ -48,6 +48,7 @@ and method, and the verdict; the baselines themselves are in their benches' reco
 | Do shredding jobs sized by rows, cores and a limit pay? | the first of six candidates to hold five rules, else a fallback without the cores term, the 1.15 and the 1.3 | at a 4 MiB limit wide JSON 1.58–2.81×, one `wide_200` partition on eight cores 0.87–0.90×; `shred_cores/8` 1.13–1.18× | Failed: closed |
 | Does one tokenizer keep the shredder's speed? | an arm at least 0.97× today on five corpora, no cliff slower; jiter preferred if it meets four requirements | exact only 0.48–0.71×, jiter 0.62–0.80×; jiter meets three of its four requirements | Failed: closed |
 | Do hot keys multiply staged children? | staging only each key's last row's children takes ≥ 10 % less CPU a run spawned, no longer in process, and `normalize/keyed/with_arrays` and `lowering/merge_unique` within 2 % | −8.5 % CPU (−7.0 to −8.6 %); in process +2.8 % (+1.8 to +13.7 %) | Failed: closed |
+| Do a flush's pieces stage rows a later piece supersedes? | staging each key's last row of a flush takes ≥ 10 % less CPU a run spawned, no longer in process, every `just instructions` case within 2 %, nothing held outside the budget, latency p99 no worse, and no second staging path | −16.8 % CPU (−16.8 to −17.2 %); in process −1.2 % (−1.8 to +0.1 %); instructions within 2 %; peak memory +8 512 bytes | Passed: adopted |
 
 The baselines the later rules read, and their records, are listed after the decisions.
 
@@ -198,6 +199,23 @@ The baselines the later rules read, and their records, are listed after the deci
   key's last row's children: closed").
 - **Verdict.** Failed: closed. As on `main`, each piece stages each key's last root row and every
   row's children, and the destination keeps the children of each key's last row.
+
+### Each key's last row of a flush
+
+- **Rule.** A merge stream's flush stages only the rows descending from each key's last root row
+  of the flush, where the stream's policy drops no row; it lands if
+  `served/process/socket/both/normalized/merge/zipf` takes at least 10 % fewer CPU seconds a run,
+  `normalized/merge/zipf` in process takes no longer, `normalize/keyed/with_arrays` and
+  `lowering/merge_unique` take at most 2 % more and every `just instructions` case is within 2 %,
+  the zipf cells' peak memory and `just resident`'s lines are no higher than `main`'s beyond their
+  ranges, the latency cells' p99 is no worse at equal push rates, and it adds no second staging
+  path and holds no staged row across a commit.
+- **Figures.** Three interleaved rounds beside `main`: staged root rows 98 776 to 61 844 and child
+  rows 900 000 to 279 486 a commit; the pipeline's CPU a GB 17.2, 16.9 and 16.8 % lower, the
+  destination's 53.1 % and the host's 8.1 % by the medians; the run in process 1.8 and 1.2 %
+  shorter and 0.1 % longer, and spawned 3.9 % longer by the medians ([normalized.md](normalized.md),
+  "Each key's last row of a flush").
+- **Verdict.** Passed: adopted.
 
 ## Why served throughput falls with partitions
 
