@@ -97,6 +97,21 @@ fn filled(budget: &MemoryBudget) -> Vec<Reservation> {
     held
 }
 
+/// Every byte the pushes' share holds beyond one request for lowering, as a full share of pushes
+/// leaves it: the next request fits only where nothing else holds any of what lowering takes.
+fn pushes_full(budget: &MemoryBudget) -> Vec<Reservation> {
+    let shares = budget.shares();
+    let mut held = Vec::new();
+    let mut left = shares.data - shares.request;
+    while left > 0 {
+        let reserved = budget.try_acquire_working(left.min(shares.request));
+        let reserved = reserved.expect("the pushes' share has room");
+        left -= reserved.bytes();
+        held.push(reserved);
+    }
+    held
+}
+
 /// A partition's context over `budget` with a table to write, normalized as `shape` where one
 /// is given, its jobs run on `pool`.
 async fn context(
@@ -399,4 +414,43 @@ async fn a_json_write_given_up_waiting_for_room_frees_its_text_before_its_charge
     };
     given_up(&context, flushed).await;
     assert_eq!(*order.lock(), ["text", "charge"]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_merge_s_flush_waiting_for_room_holds_nothing_lowering_waits_for() {
+    // The pushes' share is full: a request for lowering fits only beside nothing else, so the
+    // flush gives up the bits it found for its pieces before its piece waits.
+    let budget = budget();
+    let _pushes = pushes_full(&budget);
+    let shape = crate::normalize::Shape {
+        max_depth: 8,
+        whole: std::collections::BTreeSet::new(),
+        key: vec!["id".into()],
+    };
+    let mut context = context(budget, Pool::inline(), Some(shape)).await;
+    let env: Arc<dyn Env> = Arc::new(InlineEnv);
+    let writers = crate::config::GrowthLimits::default().writers();
+    let (lanes, _ends) = crate::lane::Lanes::new(
+        (NonZeroUsize::MIN, writers),
+        &context.tables,
+        NonZeroUsize::new(1_024).unwrap(),
+        &context.budget,
+        (&env, &Arc::default()),
+    );
+    context.lanes = lanes;
+    let batch = ids(0, 1_000);
+    let (permit, _freed) = charge(std::slice::from_ref(&batch));
+    let (job, mut open, mut schemas) = (job(), OpenSegment::default(), Schemas::default());
+    let write = write_flushed(
+        &job,
+        &context,
+        &mut open,
+        &mut schemas,
+        flushed(vec![batch], permit),
+    );
+    let written = tokio::time::timeout(WAIT, write).await;
+    assert!(
+        matches!(written, Ok(Ok(()))),
+        "the write waited for room it held: {written:?}"
+    );
 }
