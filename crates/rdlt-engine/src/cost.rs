@@ -53,6 +53,23 @@ pub(crate) const LINEAGE_ITEM: u64 = 20;
 /// its flags, each with its offset.
 pub(crate) const CHANGE_ROW: u64 = 64;
 
+/// Bytes: what comparing a row's merge key holds beside its key columns' values: the row's offset
+/// among the comparable rows, its place in their order and its place among its flush's rows.
+pub(crate) const KEY_ROW: u64 = 24;
+
+/// Bytes: what a key column's value takes as a comparable row beside twice its own bytes, which
+/// bound its padding: a sentinel and the padding of a value of at most a block.
+pub(crate) const KEY_VALUE: u64 = 37;
+
+/// Bytes: what comparing a batch's merge keys holds whatever its rows: its place in the lists of
+/// batches, its key columns as the split holds them, and a converter where its keys' types are
+/// new.
+pub(crate) const KEY_BATCH: u64 = 512;
+
+/// Bytes: what comparing a flush's merge keys holds whatever its batches: the map of key types to
+/// batches and the lists of them.
+pub(crate) const KEY_FLUSH: u64 = 2_048;
+
 /// Bytes: what a row of a column of bytes or of text takes beside its value: its offset and its
 /// validity.
 const OFFSET_AND_VALIDITY: u64 = 5;

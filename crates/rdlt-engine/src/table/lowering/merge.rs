@@ -14,6 +14,8 @@ use arrow_select::filter::FilterBuilder;
 use rdlt_connector::LogicalType;
 
 use super::{ChangeRows, LoweringPlan, Stamp, lower_array};
+use crate::cost::{KEY_BATCH, KEY_FLUSH, KEY_ROW, KEY_VALUE};
+use crate::normalize::Lineage;
 use crate::table::TableView;
 
 /// The positions of the rows `kept` keeps.
@@ -60,6 +62,104 @@ pub(super) fn last_of_each_key(keys: &[ArrayRef]) -> Result<Option<BooleanArray>
     Ok(kept_or_none(kept.finish()))
 }
 
+/// Which rows of `batches`, each a batch's key columns, every batch holding one at least, are the
+/// last of their key among the rows of every batch in order: a bit for each, set where no later
+/// row holds the same key.
+///
+/// Keys of different types are never one key: where a key column's type differs between batches,
+/// the rows of each type are compared apart, which leaves more rows the last of their key than a
+/// merge by the values the types convert to would, never fewer. What it holds is within what
+/// [`comparing`] says, where that says.
+pub(crate) fn last_across(batches: &[Vec<ArrayRef>]) -> Result<BooleanBuffer, ArrowError> {
+    let mut alike: BTreeMap<Vec<DataType>, Vec<usize>> = BTreeMap::new();
+    let mut firsts = Vec::with_capacity(batches.len());
+    let mut total = 0;
+    for (index, keys) in batches.iter().enumerate() {
+        let types = keys.iter().map(|key| key.data_type().clone()).collect();
+        alike.entry(types).or_default().push(index);
+        firsts.push(total);
+        total += keys.first().map_or(0, Array::len);
+    }
+    let mut last = BooleanBufferBuilder::new(total);
+    last.append_n(total, false);
+    for (types, members) in alike {
+        let converter = RowConverter::new(types.into_iter().map(SortField::new).collect())?;
+        let count = members.iter().map(|index| batches[*index][0].len()).sum();
+        let bytes = members.iter().map(|index| {
+            let keys = &batches[*index];
+            encoded(keys, keys[0].len()).unwrap_or(0)
+        });
+        // Sized to the most its rows take, so it is never grown: growing holds it twice over.
+        let mut rows = converter.empty_rows(count, bytes.sum());
+        for index in &members {
+            converter.append(&mut rows, &batches[*index])?;
+        }
+        // The rows of a type are its batches' in order: a row's place among every batch's rows is
+        // its batch's first place and its place among its batch's.
+        let mut places = Vec::with_capacity(rows.num_rows());
+        for index in members {
+            places.extend(firsts[index]..firsts[index] + batches[index][0].len());
+        }
+        let mut order: Vec<usize> = (0..rows.num_rows()).collect();
+        order.sort_unstable_by(|left, right| {
+            rows.row(*left).cmp(&rows.row(*right)).then(left.cmp(right))
+        });
+        for run in order.chunk_by(|left, right| rows.row(*left) == rows.row(*right)) {
+            if let Some(row) = run.last() {
+                last.set_bit(places[*row], true);
+            }
+        }
+    }
+    Ok(last.finish())
+}
+
+/// Bytes: the most finding the last row of each key of `batches`' rows holds, as [`last_across`]
+/// finds them: their keys as comparable rows, their offsets and order, and a bit for each; none
+/// where a key column is of a type whose comparable row its own bytes do not bound, as a
+/// dictionary's or a nested value's.
+pub(crate) fn comparing(batches: &[Vec<ArrayRef>]) -> Option<u64> {
+    let mut held = KEY_FLUSH;
+    for keys in batches {
+        let rows = keys.first().map_or(0, Array::len);
+        let encoded = u64::try_from(encoded(keys, rows)?).ok()?;
+        let rows = u64::try_from(rows).ok()?;
+        held = held
+            .saturating_add(KEY_BATCH)
+            .saturating_add(encoded)
+            .saturating_add(rows.saturating_mul(KEY_ROW))
+            .saturating_add(rows.div_ceil(8));
+    }
+    Some(held)
+}
+
+/// Bytes: the most `keys`, the key columns of `rows` rows, take as comparable rows: each value a
+/// sentinel and the padding of a block at most beside twice its own bytes; none where a column's
+/// type does not bound its comparable row so.
+fn encoded(keys: &[ArrayRef], rows: usize) -> Option<usize> {
+    let mut bytes = 0_usize;
+    for key in keys {
+        let flat = key.data_type().is_primitive()
+            || matches!(
+                key.data_type(),
+                DataType::Boolean
+                    | DataType::Utf8
+                    | DataType::LargeUtf8
+                    | DataType::Utf8View
+                    | DataType::Binary
+                    | DataType::LargeBinary
+                    | DataType::BinaryView
+                    | DataType::FixedSizeBinary(_)
+            );
+        if !flat {
+            return None;
+        }
+        let values = key.to_data().get_slice_memory_size().ok()?;
+        let padding = usize::try_from(KEY_VALUE).ok()?.saturating_mul(rows);
+        bytes = bytes.saturating_add(padding.saturating_add(values.saturating_mul(2)));
+    }
+    Some(bytes)
+}
+
 /// The keys of a batch whose key columns are `keys`, as rows, and its rows' positions ordered by
 /// key, then by position.
 pub(super) fn sorted(keys: &[ArrayRef]) -> Result<(Rows, Vec<usize>), ArrowError> {
@@ -96,10 +196,33 @@ pub(super) fn within(outer: Option<&BooleanArray>, inner: &BooleanArray) -> Bool
     BooleanArray::new(kept.finish(), None)
 }
 
+/// Which of the rows `kept` keeps, where the schema policy dropped some, descend from a root row
+/// `staged` sets, by the positions of their roots `roots` gives: none where every such row does.
+fn descending(
+    staged: &BooleanBuffer,
+    roots: &ArrayRef,
+    kept: Option<&BooleanArray>,
+) -> Option<BooleanArray> {
+    let roots = roots.as_primitive::<UInt32Type>().values();
+    let root = |row: usize| staged.value(at(roots[row]));
+    let descending: BooleanBuffer = match kept {
+        Some(kept) => kept.values().set_indices().map(root).collect(),
+        None => (0..roots.len()).map(root).collect(),
+    };
+    kept_or_none(descending)
+}
+
+/// `row`, a position among a batch's rows, as an index.
+fn at(row: u32) -> usize {
+    usize::try_from(row).expect("a 32-bit position fits in an index")
+}
+
 impl LoweringPlan {
     /// Cuts `columns`, a batch's model columns as its table stores them, `kept`, which of the
     /// rows received they are where the schema policy dropped some, and `changes`, their change
-    /// rows, to the rows the table's merges keep.
+    /// rows, to the rows the table's merges keep: where `lineage` says which of a normalized
+    /// merge's root rows its flush stages, the rows descending from those, in every table of the
+    /// stream.
     ///
     /// Each column is let go as its rows are copied, so columns nothing else holds are not held
     /// twice over. A column of nulls is sliced, not copied: the columns of a type the batch holds
@@ -109,8 +232,14 @@ impl LoweringPlan {
         columns: &mut [ArrayRef],
         kept: &mut Option<BooleanArray>,
         changes: &mut Option<ChangeRows>,
+        lineage: Option<&Lineage>,
     ) -> Result<(), ArrowError> {
-        let Some(keep) = self.compaction(columns, changes.as_ref())? else {
+        let staged = lineage.and_then(|lineage| Some((lineage.last.as_ref()?, lineage.root_row())));
+        let compaction = match staged {
+            Some((staged, roots)) => descending(staged, roots, kept.as_ref()),
+            None => self.compaction(columns, changes.as_ref())?,
+        };
+        let Some(keep) = compaction else {
             return Ok(());
         };
         let predicate = FilterBuilder::new(&keep).optimize().build();

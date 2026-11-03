@@ -23,6 +23,7 @@ mod keys;
 mod laws;
 mod limits;
 mod merged_json;
+mod staged_flush;
 mod unwidened;
 mod widenings;
 

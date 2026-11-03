@@ -323,3 +323,31 @@ fn a_stream_carries_the_columns_it_excludes_once_each() {
     let plan = PipelinePlan::new(pipeline(), [plan.clone()]).unwrap();
     assert_eq!(plan.streams()[0].exclusion(), Exclusion::new(["c", "b"]));
 }
+
+#[test]
+fn a_streams_policy_drops_rows_where_the_level_that_decides_for_any_column_discards_them() {
+    let (discard, value) = (
+        SchemaSettings::new().policy(SchemaPolicy::DiscardRow),
+        SchemaSettings::new().policy(SchemaPolicy::DiscardValue),
+    );
+    let cases = [
+        (SchemaSettings::new(), stream("s"), false),
+        (discard, stream("s"), true),
+        (SchemaSettings::new(), stream("s").schema(discard), true),
+        (
+            SchemaSettings::new(),
+            stream("s").column("a", discard),
+            true,
+        ),
+        (discard, stream("s").schema(value), false),
+        (discard, stream("s").schema(value).column("a", value), false),
+        (value, stream("s").schema(value).column("a", discard), true),
+    ];
+    for (pipeline, stream, drops) in cases {
+        assert_eq!(
+            stream.drops_rows(pipeline),
+            drops,
+            "{pipeline:?} {stream:?}"
+        );
+    }
+}

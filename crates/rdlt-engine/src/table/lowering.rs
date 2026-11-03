@@ -46,6 +46,7 @@ pub(crate) use kept::filtered;
 use kept::kept_by;
 use keys::keyed;
 pub(crate) use keys::{key_values, with_columns};
+pub(crate) use merge::{comparing, last_across};
 use merge::{positions, sequence};
 pub(crate) use prepared::Prepared;
 use split::Splits;
@@ -290,9 +291,10 @@ impl LoweringPlan {
         let (rows, batch) = (batch.num_rows(), held.is_some().then_some(batch));
         drop((kept.fitted, kept.converted));
         let (mut keep, discards) = (kept.keep, kept.discards);
-        self.merged(&mut columns, &mut keep, &mut changes)
+        self.merged(&mut columns, &mut keep, &mut changes, lineage)
             .map_err(failed)?;
-        let rows = columns.first().map_or(rows, Array::len);
+        // A part whose items hold no value has no column, so the rows kept count its rows.
+        let rows = keep.as_ref().map_or(rows, BooleanArray::true_count);
         let (constants, loaded_at) = self.constants(stamp, rows).map_err(failed)?;
         columns.extend(constants);
         if view.meta.seq.is_some() {

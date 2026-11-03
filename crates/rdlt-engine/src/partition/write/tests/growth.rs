@@ -212,6 +212,25 @@ fn each_part_of_a_merge_s_split_holds_the_keys_array_beside_its_lineage() {
     assert_eq!(made, grown.bytes() + 4 * 320);
 }
 
+#[test]
+fn each_part_of_a_merge_s_split_holds_the_bits_of_its_staged_roots_once() {
+    let unit = ids(1_000);
+    let keyed = crate::normalize::Shape {
+        key: vec![Arc::from("id")],
+        ..keyless()
+    };
+    let mut parts =
+        crate::normalize::normalize(&unit, &keyed, &mut crate::normalize::PartSchemas::default())
+            .unwrap();
+    let piece = std::slice::from_ref(&unit);
+    // Two parts sharing the bits, as every part of a piece does.
+    let twice = |parts: &[crate::normalize::Part]| made(piece, [&parts[0], &parts[0]]);
+    let without = twice(&parts);
+    parts[0].lineage.last = Some((0..1_000).map(|row| row % 2 == 0).collect());
+    // An array's place, and a bit a root in blocks of 64 bytes: 125 bytes in two blocks.
+    assert_eq!(twice(&parts), without + 320 + 128);
+}
+
 /// What one column of a piece is.
 #[derive(Clone, Copy, Debug)]
 enum Column {

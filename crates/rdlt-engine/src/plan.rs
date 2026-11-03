@@ -15,7 +15,7 @@ use rdlt_connector::{
 use rdlt_wire::limits::{EXCLUDED_BYTES, excluded_bytes};
 
 use crate::error::{Code, Error, codes};
-use crate::policy::{Nested, SchemaSettings};
+use crate::policy::{self, Nested, SchemaPolicy, SchemaSettings};
 
 pub use retention::RetentionLoss;
 pub use until::Until;
@@ -206,6 +206,16 @@ impl StreamPlan {
     /// The schema settings of `column`, if the plan sets any.
     pub fn column_settings(&self, column: &ColumnPath) -> Option<&SchemaSettings> {
         self.columns.get(column)
+    }
+
+    /// Whether the schema policy of any of the stream's columns, those it names and those it does
+    /// not, drops rows, its settings inheriting `pipeline`'s.
+    pub(crate) fn drops_rows(&self, pipeline: SchemaSettings) -> bool {
+        let named = self.columns.values().map(Some);
+        named.chain([None]).any(|column| {
+            let levels = [column, Some(&self.schema), Some(&pipeline)];
+            policy::resolve(levels).policy == SchemaPolicy::DiscardRow
+        })
     }
 
     /// The same stream without its hints, which name columns of its own table: its child

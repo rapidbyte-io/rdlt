@@ -4,12 +4,14 @@
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
+use arrow_buffer::BooleanBuffer;
 use arrow_schema::ArrowError;
 use rdlt_connector::StreamName;
 use rdlt_connector::cost::{Allocations, ViewBuffers, array_bytes, arrays, listed_bytes};
 use rdlt_wire::limits::count;
 
 use super::super::{PartitionContext, PartitionJob};
+use super::staged::bits_bytes;
 use super::{keys, on_pool};
 use crate::error::{Error, codes};
 use crate::normalize::{self, Lineage, Part, PartSchemas, Shape};
@@ -75,9 +77,10 @@ pub(in crate::partition::write) fn split(
 /// Bytes: what `parts`, split from `piece`, slices of a unit, and planned, hold beyond the unit
 /// until the last of their pieces is written: the allocations of the parts' batches and lineage
 /// that the piece's batches do not keep alive, each counted once, the rows a part kept where it
-/// lost some among them, the arrays of `piece`'s batches, of the parts' and of their lineage, and
-/// a place in a list for each data buffer of the parts' views beyond the first of each view
-/// array: the split joins the piece's lists, and a part's arrays hold the first.
+/// lost some among them, the arrays of `piece`'s batches, of the parts' and of their lineage, a
+/// place in a list for each data buffer of the parts' views beyond the first of each view array:
+/// the split joins the piece's lists, and a part's arrays hold the first; and the bits saying
+/// which of a merge's root rows its flush stages, which every part shares.
 pub(in crate::partition::write) fn made<'a>(
     piece: &[RecordBatch],
     parts: impl IntoIterator<Item = &'a Part>,
@@ -88,6 +91,7 @@ pub(in crate::partition::write) fn made<'a>(
         .iter()
         .map(|batch| arrays(batch.schema_ref().fields()));
     let mut held = sliced.fold(0, u64::saturating_add);
+    let mut staged = None;
     for part in parts {
         part_growth(part, &unit, &mut made);
         let lineage = part.lineage.arrays().len() + usize::from(part.lineage.keys.is_some());
@@ -95,8 +99,10 @@ pub(in crate::partition::write) fn made<'a>(
             .saturating_add(arrays(part.batch.schema_ref().fields()))
             .saturating_add(array_bytes(count(lineage)))
             .saturating_add(listed_bytes(ViewBuffers::of(&part.batch).beyond_first));
+        staged = staged.or(part.lineage.last.as_ref().map(BooleanBuffer::len));
     }
-    made.bytes().saturating_add(held)
+    let staged = staged.map_or(0, bits_bytes);
+    made.bytes().saturating_add(held).saturating_add(staged)
 }
 
 /// The bytes of the allocations `part`'s batch and lineage keep alive beyond those `unit` holds
