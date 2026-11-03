@@ -9,6 +9,7 @@
 #[cfg(test)]
 mod tests;
 
+use rdlt_wire::aligned::Spare;
 use rdlt_wire::bounded::{Charge, Charging, Held};
 use rdlt_wire::limits::Class;
 use rdlt_wire::tonic::Status;
@@ -36,5 +37,13 @@ impl Charge for Decoding {
                     }
                 })
         })
+    }
+
+    fn keep_spare(&self, spare: Spare) {
+        self.0.keep_spare(spare);
+    }
+
+    fn take_spare(&self, room: usize) -> Option<Spare> {
+        self.0.take_spare(room)
     }
 }

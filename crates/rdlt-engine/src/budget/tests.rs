@@ -9,6 +9,7 @@ use std::time::{Duration, SystemTime};
 
 #[cfg(feature = "sim")]
 mod observed;
+mod spared;
 
 use super::{Denied, Exhausted, MemoryBudget, Reservation, Shares, TooLarge, budget};
 use crate::env::{Env as _, InlineEnv};

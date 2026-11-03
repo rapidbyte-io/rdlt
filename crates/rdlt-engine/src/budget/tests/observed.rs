@@ -75,3 +75,71 @@ fn a_reservation_lent_and_closed_is_told_as_its_parts_go_back() {
     drop(lent);
     assert_eq!(*told.changes.lock(), [100, -70, -30]);
 }
+
+/// An environment that keeps, with each change of a budget's reservations it is told, what the
+/// heap held as it was told.
+#[derive(Default)]
+struct Weighed {
+    changes: Mutex<Vec<(i64, usize)>>,
+}
+
+impl Env for Weighed {
+    fn now(&self) -> SystemTime {
+        InlineEnv.now()
+    }
+
+    fn instant(&self) -> Instant {
+        InlineEnv.instant()
+    }
+
+    fn sleep(&self, duration: std::time::Duration) -> Sleep {
+        InlineEnv.sleep(duration)
+    }
+
+    fn random(&self) -> u64 {
+        InlineEnv.random()
+    }
+
+    fn compute(&self) -> &dyn ComputePool {
+        &crate::compute::Inline
+    }
+
+    fn cores(&self) -> NonZeroUsize {
+        NonZeroUsize::MIN
+    }
+
+    fn charged(&self, change: i64) {
+        let heap = crate::cost::tests::HEAP.current_usage();
+        self.changes.lock().push((change, heap));
+    }
+}
+
+#[tokio::test]
+async fn a_spare_given_up_is_freed_before_its_charge_is_released() {
+    const ROOM: usize = 1 << 20;
+    let weighed = Arc::new(Weighed::default());
+    let budget = MemoryBudget::new(64 << 20, Arc::clone(&weighed) as Arc<dyn Env>, HOUR);
+    let spare = crate::budget::spare(ROOM);
+    let bytes = i64::try_from(spare.bytes()).unwrap();
+    budget.keep_spare(spare);
+    let intake = budget.shares().intake;
+    let pushes = budget
+        .acquire(intake - u64::try_from(bytes).unwrap())
+        .await
+        .unwrap();
+    let before = crate::cost::tests::HEAP.current_usage();
+    // A push the share holds room for only once the spare is given up.
+    let push = budget.acquire(1).await.unwrap();
+    let released = weighed
+        .changes
+        .lock()
+        .iter()
+        .find(|(change, _)| *change == -bytes)
+        .copied();
+    let (_, heap) = released.expect("the spare's charge was released");
+    assert!(
+        heap + ROOM <= before,
+        "the heap held {heap} bytes as the spare's charge went, of {before} with the spare"
+    );
+    drop((push, pushes));
+}

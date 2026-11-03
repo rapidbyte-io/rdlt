@@ -4,6 +4,7 @@
 mod admits;
 mod decoding;
 mod ledger;
+mod spare;
 #[cfg(test)]
 mod tests;
 mod waiting;
@@ -19,6 +20,7 @@ pub(crate) use self::admits::{admitted, least};
 pub(crate) use self::decoding::Decoding;
 pub(crate) use self::ledger::{Class, Denied, Exhausted, Shares, TooLarge};
 use self::ledger::{Ledger, Wait, admit_waiting};
+use self::spare::Kept;
 use crate::env::Env;
 use crate::report::Waits;
 use crate::watch;
@@ -54,6 +56,8 @@ pub(crate) struct MemoryBudget {
     readers: usize,
     /// The limits on what a read sends, where they are fewer than what the budget admits.
     limits: Option<rdlt_wire::Limits>,
+    /// The allocation a served read's frame arrived in, kept for a later frame with its charge.
+    spare: Arc<Mutex<Option<Kept>>>,
 }
 
 /// A value of the budget a task watches across its loop, through one receiver it keeps.
@@ -98,6 +102,7 @@ impl MemoryBudget {
             wait,
             readers: 1,
             limits: None,
+            spare: Arc::default(),
         }
     }
 
@@ -164,13 +169,12 @@ impl MemoryBudget {
 
     /// As [`MemoryBudget::acquire_working`], where that needs no wait; nothing otherwise.
     pub(crate) fn try_acquire_working(&self, bytes: u64) -> Option<Reservation> {
-        let mut ledger = self.shared.lock();
-        let admitted =
-            ledger.too_large(Class::Work, bytes).is_none() && ledger.open(Class::Work, bytes);
-        admitted.then(|| {
-            ledger.reserve(Class::Work, bytes);
-            Reservation::of(&self.shared, Class::Work, bytes)
-        })
+        let admitted = self.admit(Class::Work, bytes).ok()?;
+        match admitted {
+            Some(reservation) => Some(reservation),
+            None if self.yields(Class::Work) => self.admit(Class::Work, bytes).ok()?,
+            None => None,
+        }
     }
 
     /// Reserves the `bytes` of a cursor only a commit releases, from the cursors' own share.
@@ -222,13 +226,34 @@ impl MemoryBudget {
         Ok(Reservation::of(&self.shared, Class::Read, bytes))
     }
 
+    /// Reserves `bytes` of `class` where they may be reserved now; nothing otherwise.
+    ///
+    /// # Errors
+    ///
+    /// A [`TooLarge`] for more than one request of the class may take.
+    fn admit(&self, class: Class, bytes: u64) -> Result<Option<Reservation>, TooLarge> {
+        let mut ledger = self.shared.lock();
+        if let Some(refused) = ledger.too_large(class, bytes) {
+            return Err(refused);
+        }
+        Ok(ledger.open(class, bytes).then(|| {
+            ledger.reserve(class, bytes);
+            Reservation::of(&self.shared, class, bytes)
+        }))
+    }
+
     async fn request(&self, wait: Wait, bytes: u64) -> Result<Reservation, Denied> {
         let class = wait.class();
+        if let Some(reservation) = self.admit(class, bytes)? {
+            return Ok(reservation);
+        }
+        if self.yields(class)
+            && let Some(reservation) = self.admit(class, bytes)?
+        {
+            return Ok(reservation);
+        }
         let (queued, receiver, waiting) = {
             let mut ledger = self.shared.lock();
-            if let Some(refused) = ledger.too_large(class, bytes) {
-                return Err(refused.into());
-            }
             if ledger.open(class, bytes) {
                 ledger.reserve(class, bytes);
                 return Ok(Reservation::of(&self.shared, class, bytes));
@@ -243,6 +268,9 @@ impl MemoryBudget {
             let waiting = self.waiting(&mut ledger, wait);
             (queued, receiver, waiting)
         };
+        // A spare kept since another was given up, while nothing waited, holds room this request
+        // may need.
+        self.yields(class);
         tokio::select! {
             biased;
             reservation = receiver => {
@@ -310,6 +338,18 @@ impl MemoryBudget {
     pub(crate) fn kept_peak(&self) -> u64 {
         self.shared.lock().kept_peak
     }
+}
+
+/// A spare of `room` bytes' room, as a frame of that room leaves once nothing holds it.
+#[cfg(test)]
+pub(crate) fn spare(room: usize) -> rdlt_wire::aligned::Spare {
+    let kept = Arc::new(Mutex::new(None));
+    let home = Arc::clone(&kept);
+    let frozen = rdlt_wire::aligned::Aligned::with_room(room)
+        .freeze_returning(move |spare| *home.lock() = Some(spare));
+    drop(frozen);
+    let spare = kept.lock().take();
+    spare.expect("a frozen allocation goes back once nothing holds it")
 }
 
 /// A budget of `capacity` bytes whose requests wait a day at most, on a test's clock.

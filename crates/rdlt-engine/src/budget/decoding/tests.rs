@@ -96,3 +96,16 @@ async fn a_frame_waiting_to_be_decoded_is_counted_apart_from_pushes() {
     assert_eq!(budget.waited().decode, decode);
     assert_eq!(budget.waited().intake.count, 1);
 }
+
+#[tokio::test]
+async fn a_frame_s_spare_is_kept_by_the_budget_and_given_to_a_frame_it_fits() {
+    let budget = budget();
+    let decoding = Decoding(budget.clone());
+    let spare = crate::budget::spare(1_000);
+    let bytes = u64::try_from(spare.bytes()).unwrap();
+    decoding.keep_spare(spare);
+    assert_eq!(budget.reserved(), bytes);
+    assert!(decoding.take_spare(400).is_none());
+    assert!(decoding.take_spare(1_000).is_some());
+    assert_eq!(budget.reserved(), 0);
+}
