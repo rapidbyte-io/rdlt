@@ -4,6 +4,7 @@
 mod discarded;
 mod keys;
 pub(super) mod split;
+mod staged;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -13,6 +14,7 @@ use parking_lot::Mutex;
 use rdlt_connector::Permit;
 
 use self::split::{kept, made, split_kept};
+use self::staged::Keys;
 use super::allowance::{Cutter, PartPiece};
 use super::pieces::{self, Lowered};
 use super::units::Units;
@@ -34,6 +36,9 @@ use discarded::Discarded;
 ///
 /// - Each unit is cut, before its tables are known, into pieces whose split makes no more than a
 ///   piece may hold.
+/// - A merge stream's flush, where no policy of the stream drops a row, then finds which of its
+///   root rows no later row of the flush shares a key with: every table stages only the rows of
+///   those, though every row meets its table's policy.
 /// - Each piece then asks its room once, for all a request may take: what its planned parts hold
 ///   and an allowance for lowering them. It is split on the compute pool, its parts' tables and
 ///   plans are found in order, parents first, and each part is cut by what lowering it into its
@@ -56,11 +61,16 @@ pub(super) async fn write_normalized(
     let Units { units, room } = units;
     let pieces = sliced(job, context, (&room, shape), units).await?;
     let mut flush = Flush::new(context, job.table, judged(job, &pieces, shape)?, kind);
+    let mut staged = staged::staged(job, context, shape, Keys::of(&pieces, shape)).await?;
     let request = room.shares(&context.budget).request;
     let last = pieces.len().saturating_sub(1);
     for (piece, held) in pieces.into_iter().enumerate() {
         let mut reserved = reserve(job, context, &room, request).await?;
-        let parts = split_kept(job, context, schemas, shape, &held.batches).await?;
+        let mut parts = split_kept(job, context, schemas, shape, &held.batches).await?;
+        let staging = staged.take(piece);
+        for part in &mut parts {
+            part.lineage.last.clone_from(&staging);
+        }
         let received = parts.first().map_or(0, |part| part.batch.num_rows() as u64);
         if received == 0 {
             continue;

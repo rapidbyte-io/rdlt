@@ -272,6 +272,12 @@ impl Tables {
         self.slot(table).shape.clone()
     }
 
+    /// Whether the schema policy drops rows of the stream whose table is `table`.
+    pub(crate) fn drops_rows(&self, table: usize) -> bool {
+        let settings = &self.resolver(table).settings;
+        settings.stream.drops_rows(settings.pipeline)
+    }
+
     /// The plan lowering batches of `incoming` into `table`: the plan made for the table's current
     /// view and `incoming`, or a new one once the schema changes `incoming` needs are applied.
     pub(crate) async fn plan(

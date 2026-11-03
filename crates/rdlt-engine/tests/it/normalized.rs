@@ -1,6 +1,8 @@
 //! Normalized streams against every reference destination.
 
-use rdlt_engine::{Nested, RunStatus, SchemaPolicy, SchemaSettings, StreamPlan, WriteMode, codes};
+use rdlt_engine::{
+    Nested, Report, RunStatus, SchemaPolicy, SchemaSettings, StreamPlan, WriteMode, codes,
+};
 use serde_json::json;
 
 use crate::support::batches::{BatchStream, batches};
@@ -13,6 +15,16 @@ fn normalized(name: &str) -> StreamPlan {
 
 /// Loads `streams` into `target`'s `store` as `plans` say, and checks the run succeeded.
 async fn load(target: Target, store: &str, streams: Vec<BatchStream>, plans: Vec<StreamPlan>) {
+    loaded(target, store, streams, plans).await;
+}
+
+/// Loads as [`load`] does, returning the run's report.
+async fn loaded(
+    target: Target,
+    store: &str,
+    streams: Vec<BatchStream>,
+    plans: Vec<StreamPlan>,
+) -> Report {
     let source = batches(&target.name(store), streams).await;
     let outcome = engine(commit_every(1))
         .run(
@@ -27,6 +39,7 @@ async fn load(target: Target, store: &str, streams: Vec<BatchStream>, plans: Vec
         "{target:?}: {:?}",
         outcome.error
     );
+    outcome.report
 }
 
 #[tokio::test(start_paused = true)]
@@ -282,6 +295,132 @@ pub(crate) async fn drops_only_the_rows_carrying_a_change_among_rows_sharing_a_k
         target.json(store, "events__items"),
         [json!({"sku": "c"})],
         "{target:?}: the kept row keeps its children"
+    );
+}
+
+/// A push of `rows` rows, the key of row `n` `key(n)`, each holding as many items as its
+/// position modulo three, and padded so the push shreds into several units, each a piece; the
+/// rows `newest` names carry a column the table lacks.
+fn padded(rows: u64, key: impl Fn(u64) -> u64, newest: &[u64]) -> String {
+    let pad = "x".repeat(1_000);
+    let rows: Vec<String> = (0..rows)
+        .map(|row| {
+            let items: Vec<String> = (0..row % 3)
+                .map(|item| json!({ "sku": format!("{row}-{item}") }).to_string())
+                .collect();
+            let extra = if newest.contains(&row) {
+                r#""extra":1,"#
+            } else {
+                ""
+            };
+            format!(
+                r#"{{"id":{},"row":{row},{extra}"pad":"{pad}","items":[{}]}}"#,
+                key(row),
+                items.join(",")
+            )
+        })
+        .collect();
+    rows.join("\n")
+}
+
+/// The skus of the items of `rows`, as [`padded`] makes them, sorted as text.
+fn skus(rows: impl IntoIterator<Item = u64>) -> Vec<serde_json::Value> {
+    let skus = rows
+        .into_iter()
+        .flat_map(|row| (0..row % 3).map(move |item| json!(format!("{row}-{item}"))));
+    sorted(skus.collect())
+}
+
+/// `rows`, as JSON numbers sorted as text.
+fn numbers(rows: impl IntoIterator<Item = u64>) -> Vec<serde_json::Value> {
+    sorted(rows.into_iter().map(|row| json!(row)).collect())
+}
+
+#[tokio::test(start_paused = true)]
+async fn every_destination_stages_each_keys_last_row_of_a_flush_cut_into_pieces() {
+    each(
+        Target::IN_PROCESS,
+        stages_each_keys_last_row_of_a_flush_cut_into_pieces,
+    )
+    .await;
+}
+
+pub(crate) async fn stages_each_keys_last_row_of_a_flush_cut_into_pieces(target: Target) {
+    let store = "flush_pieces";
+    let push = padded(4_000, |row| row % 8, &[]);
+    let report = loaded(
+        target,
+        store,
+        vec![BatchStream::json("events", &[&push])],
+        vec![merged("events")],
+    )
+    .await;
+    let last = 3_992..4_000;
+    assert_eq!(
+        values(&target.json(store, "events"), "row"),
+        numbers(last.clone()),
+        "{target:?}"
+    );
+    assert_eq!(
+        values(&target.json(store, "events__items"), "sku"),
+        skus(last.clone()),
+        "{target:?}: each key keeps its last row's items"
+    );
+    let children: u64 = last.map(|row| row % 3).sum();
+    assert_eq!(
+        report.rows,
+        8 + children,
+        "{target:?}: the flush staged each key's last row and its items alone"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn every_destination_applies_a_keys_row_in_an_earlier_piece_where_the_policy_drops_its_last()
+{
+    each(
+        Target::IN_PROCESS,
+        applies_a_keys_row_in_an_earlier_piece_where_the_policy_drops_its_last,
+    )
+    .await;
+}
+
+pub(crate) async fn applies_a_keys_row_in_an_earlier_piece_where_the_policy_drops_its_last(
+    target: Target,
+) {
+    let store = "dropped_last";
+    // Key 1 is the first row's and the newest's alone, the other rows a ninth key's.
+    let key = |row: u64| match row % 8 {
+        1 if row != 1 && row != 3_993 => 8,
+        rest => rest,
+    };
+    // The first load's row of key 1 is its row 0, which holds no item.
+    let first = padded(8, |row| (row + 1) % 8, &[]);
+    load(
+        target,
+        store,
+        vec![BatchStream::json("events", &[&first])],
+        vec![dropping_merge()],
+    )
+    .await;
+    // Key 1's newest row, pieces after its first, carries a new column, so the policy drops it.
+    let push = padded(4_000, key, &[3_993]);
+    load(
+        target,
+        store,
+        vec![BatchStream::json("events", &[&push])],
+        vec![dropping_merge()],
+    )
+    .await;
+    let applied = [3_992, 1, 3_994, 3_995, 3_996, 3_997, 3_998, 3_999, 3_985];
+    assert_eq!(
+        values(&target.json(store, "events"), "row"),
+        numbers(applied),
+        "{target:?}: key 1's row before its dropped one applies"
+    );
+    assert_eq!(
+        values(&target.json(store, "events__items"), "sku"),
+        skus(applied),
+        "{target:?}: with its items"
     );
 }
 

@@ -89,6 +89,7 @@ fn widest(rows: usize) -> Lineage {
         part: u32::MAX,
         row: positions(),
         keys: None,
+        last: None,
         parent: Some(Parent {
             path: vec![Arc::from("items")],
             part: u32::MAX - 1,

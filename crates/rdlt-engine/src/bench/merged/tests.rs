@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroUsize;
 
 use super::{Merged, Staging};
@@ -31,24 +31,44 @@ fn a_run_s_ids_repeat_hot_keys_and_are_the_same_in_any_process() {
     assert!(hottest > 6_000, "the hottest key {hottest} times");
 }
 
+/// The rows of each key's last row of each push of the first `rows` orders, each push a flush:
+/// the root rows and their child rows, an item and its two tags for each of a row's items.
+fn last_rows(rows: u64) -> (u64, u64) {
+    let (mut roots, mut children, mut first) = (0, 0, 0);
+    for push in Merged::pushes(rows) {
+        let mut last = BTreeMap::new();
+        let lines = push
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty());
+        for (index, line) in (first..).zip(lines) {
+            let row: serde_json::Value = serde_json::from_slice(line).unwrap();
+            last.insert(row["id"].as_u64().unwrap(), index);
+            first = index + 1;
+        }
+        roots += u64::try_from(last.len()).unwrap();
+        children += last.values().map(|index| index % 4 * 3).sum::<u64>();
+    }
+    (roots, children)
+}
+
 #[test]
-fn a_merge_stages_a_root_row_a_key_of_each_flush_and_every_child() {
+fn a_merge_stages_each_keys_last_row_of_a_flush_and_its_children() {
     let cores = Cores::new(NonZeroUsize::new(2).unwrap());
-    let merged = Merged::try_new(cores, 2_000).unwrap();
-    for _ in 0..2 {
+    // A flush of two thousand rows is one piece, and one of twelve thousand several.
+    for rows in [2_000, 12_000] {
+        let merged = Merged::try_new(cores, rows).unwrap();
+        let (roots, children) = last_rows(rows);
+        assert_eq!(roots, merged.keys(), "one push");
+        assert!(children < Normalized::loaded(rows) - rows);
         let (report, staging) = merged.run();
-        assert_eq!(report.commits, 1);
-        let keys = merged.keys();
-        assert!(keys < 2_000, "{keys} keys");
-        let children = Normalized::loaded(2_000) - 2_000;
         let expected = Staging {
-            roots: keys,
+            roots,
             children,
-            keys,
+            keys: merged.keys(),
             commits: 1,
         };
-        assert_eq!(staging, expected);
-        assert_eq!(report.rows, keys + children);
+        assert_eq!(staging, expected, "{rows} rows");
+        assert_eq!(report.rows, roots + children);
     }
 }
 
