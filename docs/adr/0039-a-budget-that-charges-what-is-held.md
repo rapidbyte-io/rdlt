@@ -481,6 +481,16 @@ budget before it is held, or bounded by a limit with a typed refusal.
   - How far a read is behind, and that a stream's partitions changed, are each partition's
     newest state, with one message queued a partition. Signals heard together plan a stream
     once (ADR 0032).
+  - The allocation a served read's frame arrived in is kept, once nothing holds it, for a later
+    frame of the run's served reads: the budget keeps one, the largest offered, beside a
+    reservation of its bytes of what pushes may take, made only where they fit and no request
+    for the data waits. A frame needing from half its room to all of it arrives there, shrunk in
+    place to its own length, and the reservation goes as it is taken: the frame is then held as
+    any frame arriving is. A push, a frame's decode charge or lowering that would wait has the
+    allocation given up first, freed before its reservation goes, so what is kept never makes a
+    request wait, never passes a share and is never held uncharged. What it saves is the
+    allocator's: glibc, at its default thresholds, gives the pages of a partition's freed large
+    frames back to the kernel, and the next frames fault them in again.
   - A decoder's dictionaries are within one frame's bytes together, and the host charges what
     the decoder says it keeps (`Decoder::kept_bytes`) to the read's part of what reads keep while
     the decoder holds it: its dictionaries, its schema with the message it came from, and the

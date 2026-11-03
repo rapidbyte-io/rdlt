@@ -43,7 +43,9 @@ to be taken on trust either. Without the rules below:
     `state_bytes` is that bound, and its bytes on the wire are bounded by the same. A
     message arriving is held from a first byte at a 64-byte address, in room that doubles and
     goes straight to the message's end once within twice what it holds, so a frame at its limit
-    holds less than twice its bytes. What arrives past its end waits for the next message,
+    holds less than twice its bytes; a frame of a read whose decoding is charged arrives instead
+    in an earlier frame's allocation the charge kept, where one fits it, shrunk to its length
+    (ADR 0039). What arrives past its end waits for the next message,
     outside its room, so each message is passed on in an allocation of its own length and the
     alignment's 63 bytes. A message holding a frame may take at most `MESSAGE_ROOM` (256) bytes
     beside the frame's header and body, or the frame is refused before it is decoded, since what
