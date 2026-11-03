@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use tonic::Status;
 
+use crate::aligned::Spare;
 use crate::limits::Class;
 
 /// What holds a charge until it is dropped.
@@ -29,6 +30,18 @@ pub trait Charge: Send + Sync {
     ///
     /// A status the call fails with, where the bytes may not be held.
     fn charge(&self, class: Class, bytes: usize) -> Charging;
+
+    /// Keeps `spare`, the allocation of a frame nothing holds any more, for a later frame to
+    /// arrive in, where its bytes may be held charged without anyone waiting; frees it otherwise.
+    fn keep_spare(&self, spare: Spare) {
+        drop(spare);
+    }
+
+    /// The spare kept for a frame needing `room` bytes, where one [fits](Spare::fits) it: taken,
+    /// it is charged no more.
+    fn take_spare(&self, _room: usize) -> Option<Spare> {
+        None
+    }
 }
 
 tokio::task_local! {

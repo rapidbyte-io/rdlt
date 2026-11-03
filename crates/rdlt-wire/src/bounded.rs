@@ -10,6 +10,10 @@
 //!
 //! A message is held from a first byte at a 64-byte address, and what arrives past its end waits
 //! for the message after it, so each message is passed on in an allocation of its own length.
+//! Where the body is [charged](charging) and its messages are frames, each frame's allocation goes
+//! back to the charge once nothing holds it, as a [spare](crate::aligned::Spare), and a later
+//! frame the spare fits arrives in it, shrunk to that frame's own length, in place of an
+//! allocation of its own.
 //!
 //! Where a connection shares a window, a message takes room in it for its whole length once its
 //! prefix is whole, before any more of it is held, and gives it back once passed on. A body that
@@ -28,6 +32,7 @@ mod proofs;
 mod tests;
 
 use std::future::Future;
+use std::mem;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -121,7 +126,8 @@ pub struct Bounded {
     bounds: Bounds,
     window: Option<Window>,
     /// What has arrived of the message being received, from a first byte at a 64-byte address,
-    /// in no more room than four times what arrived and no more than the message's whole length.
+    /// in no more room than four times what arrived and no more than the message's whole length,
+    /// or in a spare shrunk to that length.
     arriving: Aligned,
     /// What arrived past what the message being received is known to lack, waiting for it and
     /// the messages after it.
@@ -218,7 +224,14 @@ impl Bounded {
     /// The arriving message of `length`, taken whole, checked against what it decodes to: the
     /// message, and what its scan counts it holds decoded, its length where it has no form.
     fn whole(&mut self, length: usize) -> Result<(Arrived, usize), Status> {
-        let Frozen { bytes, allocation } = std::mem::take(&mut self.arriving).freeze();
+        let arriving = mem::take(&mut self.arriving);
+        let Frozen { bytes, allocation } = match self.keeper() {
+            Some(charge) => {
+                let charge = Arc::clone(charge);
+                arriving.freeze_returning(move |spare| charge.keep_spare(spare))
+            }
+            None => arriving.freeze(),
+        };
         let arrived = Arrived { bytes, allocation };
         // Its room is given back as it is passed on.
         self.room = Room::Free;
@@ -267,6 +280,28 @@ impl Bounded {
             }
             Err(status) => Some(Err(status)),
         })
+    }
+
+    /// Whoever keeps the allocations of this body's messages once nothing holds them: its charge,
+    /// where its messages are frames.
+    fn keeper(&self) -> Option<&Arc<dyn Charge>> {
+        self.charge
+            .as_ref()
+            .filter(|_| self.bounds.class == Class::Data)
+    }
+
+    /// Holds the arriving message, of `room` bytes with its prefix, in a spare its keeper gives
+    /// it, where one fits: what arrived of it moves there.
+    fn spared(&mut self, room: usize) {
+        if self.arriving.room() >= room {
+            return;
+        }
+        let Some(spare) = self.keeper().and_then(|charge| charge.take_spare(room)) else {
+            return;
+        };
+        let mut arriving = Aligned::in_spare(spare, room);
+        arriving.extend(self.arriving.as_slice());
+        self.arriving = arriving;
     }
 
     /// Holds `data` as arriving: room doubles, and goes to the arriving message's end once
@@ -332,6 +367,10 @@ impl Bounded {
                         return Poll::Ready(Some(Ok(Frame::data(arrived))));
                     }
                     continue;
+                }
+                // Before anything past its prefix is copied, so a spare takes all of it.
+                if self.arriving.len() <= PREFIX {
+                    self.spared(PREFIX + length);
                 }
             }
             if !self.unread.is_empty() {
