@@ -18,7 +18,8 @@ JSON of a known schema, a candidate fast path beside the shredder (ADR 0007).
   resolution; a schema change makes a new view and drops the old view's plans. Per batch, a plan
   discards, converts and lowers columns; a merge table's plan then keeps the rows its merge keeps,
   compared by the key as the table stores it (the last row of each key, or for a change stream
-  the rows no later row of their key supersedes), and adds the metadata columns for those rows. A
+  the rows no later row of their key supersedes), or for the tables of a normalized merge the rows
+  of the root rows its flush stages (ADR 0010), and adds the metadata columns for those rows. A
   row's sequence is its position among the rows received, and a change stream's row's is its
   source's position.
 - **Lowering that copies values runs on the compute pool.** A partition finds each batch's plan
