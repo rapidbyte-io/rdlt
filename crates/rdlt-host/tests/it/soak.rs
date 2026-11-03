@@ -125,6 +125,10 @@ fn of_starts_racing_for_the_last_group_of_a_process_one_alone_starts() {
 /// How long a round's run may take.
 const ROUND: Duration = Duration::from_secs(120);
 
+/// How many disruptions a round draws, some forty seconds of them and fewer than [`engine`]'s
+/// attempts: disrupted for as long as it lasted, a load on a slow machine might never end.
+const DISRUPTIONS: usize = 60;
+
 /// The source's options: a heartbeat every 100 ms, three missed losing a connector, so that a stall
 /// of a few hundred milliseconds loses one and a shorter one does not.
 fn options() -> Options {
@@ -135,9 +139,9 @@ fn options() -> Options {
     }
 }
 
-/// An engine that commits every 500 rows and tries a failed attempt again a hundred times, never
-/// waiting a second for one: a streak of attempts killed before a commit would otherwise back off
-/// for minutes, past the round's bound, and read as a hang.
+/// An engine whose commit falls due every 500 rows, and that tries a failed attempt again a
+/// hundred times, never waiting a second for one: a streak of attempts killed before a commit
+/// would otherwise back off for minutes, past the round's bound, and read as a hang.
 fn engine() -> Engine {
     let policy = CommitPolicy::new(None, Some(500), None).expect("a row threshold is valid");
     let retry = RetryPolicy::default()
@@ -175,11 +179,11 @@ fn soaking() -> Duration {
     Duration::from_secs(seconds)
 }
 
-/// Kills and stalls the round's connector as `seed` draws, until dropped: a stall is `SIGSTOP`
-/// for up to 600 ms, twice the host's patience, then `SIGCONT`.
+/// Kills and stalls the round's connector [`DISRUPTIONS`] times as `seed` draws, then waits to be
+/// dropped: a stall is `SIGSTOP` for up to 600 ms, twice the host's patience, then `SIGCONT`.
 async fn disrupting(seed: u64, kills: &Kills) -> Infallible {
     let mut draws = Draws(seed);
-    loop {
+    for _ in 0..DISRUPTIONS {
         tokio::time::sleep(Duration::from_millis(100 + draws.below(900))).await;
         match draws.below(3) {
             0 => kills.kill(),
@@ -197,6 +201,7 @@ async fn disrupting(seed: u64, kills: &Kills) -> Infallible {
             _ => {}
         }
     }
+    std::future::pending().await
 }
 
 /// Waits, for twenty seconds at most, until every connector round `round` spawned has ended.
@@ -289,18 +294,27 @@ async fn loading(round: u64, logged: &Logged) {
     let stream = StreamPlan::new(StreamName::new("rows").expect("a valid stream name"));
     let plan = PipelinePlan::new(PipelineId::parse("soak").expect("a valid id"), [stream])
         .expect("a valid plan");
-    let running = engine().run(plan, Arc::from(source), Arc::new(destination));
+    let mut running = engine().run(plan, Arc::from(source), Arc::new(destination));
     let disrupted = draws.below(u64::MAX);
     let outcome = tokio::time::timeout(ROUND, async {
         tokio::select! {
             biased;
             // The run wins: the disruptions end with it.
-            outcome = running => outcome,
+            outcome = &mut running => outcome,
             never = disrupting(disrupted, &kills) => match never {},
         }
     })
     .await
-    .unwrap_or_else(|_| panic!("round {round}: the run did not end within {ROUND:?}"));
+    .unwrap_or_else(|_| {
+        let status = running.status();
+        panic!(
+            "round {round}: the run did not end within {ROUND:?}: {:?} after {} attempts, {} of \
+             {rows} rows published",
+            status.phase,
+            status.report.attempts.len(),
+            published_ids(&store).len(),
+        )
+    });
     landed(round, rows, &store, &outcome, logged).await;
     ended(round).await;
 }
