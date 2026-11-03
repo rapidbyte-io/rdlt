@@ -5,6 +5,7 @@
 mod tests;
 
 use std::io::Read as _;
+use std::mem;
 
 use bytes::Bytes;
 
@@ -33,6 +34,44 @@ pub struct Aligned {
     room: usize,
 }
 
+/// An allocation nothing holds any more, kept for a later message to arrive in.
+#[derive(Debug)]
+pub struct Spare(Vec<u8>);
+
+impl Spare {
+    /// Bytes: what it takes.
+    pub fn bytes(&self) -> usize {
+        self.0.capacity()
+    }
+
+    /// Whether a message needing `room` bytes may arrive in it: one needing no more than its room
+    /// and at least half of it, so taking it frees no more than half.
+    pub fn fits(&self, room: usize) -> bool {
+        let held = self.0.capacity().saturating_sub(ALIGNMENT - 1);
+        room <= held && held / 2 <= room
+    }
+}
+
+/// An allocation frozen, handed to its home once the last of what holds it drops.
+struct Returning<F: FnOnce(Spare)> {
+    bytes: Vec<u8>,
+    home: Option<F>,
+}
+
+impl<F: FnOnce(Spare)> AsRef<[u8]> for Returning<F> {
+    fn as_ref(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+impl<F: FnOnce(Spare)> Drop for Returning<F> {
+    fn drop(&mut self) {
+        if let Some(home) = self.home.take() {
+            home(Spare(mem::take(&mut self.bytes)));
+        }
+    }
+}
+
 /// What an [`Aligned`] held, frozen.
 #[derive(Clone, Debug)]
 pub struct Frozen {
@@ -47,6 +86,24 @@ impl Aligned {
     /// Room for `room` bytes, none held.
     pub fn with_room(room: usize) -> Self {
         let mut aligned = Self::default();
+        aligned.grow(room);
+        aligned
+    }
+
+    /// Room for `room` bytes in `spare`'s allocation, none held: the allocation shrunk to what
+    /// [`Aligned::with_room`] takes where it takes more, and grown where it takes less.
+    pub fn in_spare(spare: Spare, room: usize) -> Self {
+        if room == 0 {
+            return Self::default();
+        }
+        let mut bytes = spare.0;
+        bytes.clear();
+        bytes.shrink_to(ALIGNMENT - 1 + room);
+        let mut aligned = Self {
+            bytes,
+            skip: 0,
+            room: 0,
+        };
         aligned.grow(room);
         aligned
     }
@@ -138,12 +195,35 @@ impl Aligned {
     }
 
     /// What it held, and the allocation it lies in, zeroed to its end.
-    pub fn freeze(mut self) -> Frozen {
+    pub fn freeze(self) -> Frozen {
+        let (skip, len, bytes) = self.zeroed_to_end();
+        Frozen::of(Bytes::from(bytes), skip, len)
+    }
+
+    /// What it held, frozen as [`Aligned::freeze`] freezes it, its allocation handed to `home`
+    /// once nothing holds any of it.
+    pub fn freeze_returning(self, home: impl FnOnce(Spare) + Send + 'static) -> Frozen {
+        let (skip, len, bytes) = self.zeroed_to_end();
+        let returning = Returning {
+            bytes,
+            home: Some(home),
+        };
+        Frozen::of(Bytes::from_owner(returning), skip, len)
+    }
+
+    /// Where what it holds starts, how much it holds, and its allocation zeroed past that.
+    fn zeroed_to_end(mut self) -> (usize, usize, Vec<u8>) {
         let (skip, len) = (self.skip, self.len());
         let capacity = self.bytes.capacity();
         self.bytes.resize(capacity, 0);
-        let allocation = Bytes::from(self.bytes);
-        Frozen {
+        (skip, len, self.bytes)
+    }
+}
+
+impl Frozen {
+    /// The `len` bytes at `skip` of `allocation`, and the allocation.
+    fn of(allocation: Bytes, skip: usize, len: usize) -> Self {
+        Self {
             bytes: allocation.slice(skip..skip + len),
             allocation,
         }
