@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use arrow_array::cast::AsArray;
-use arrow_array::types::{Float64Type, Int32Type, Int64Type};
+use arrow_array::types::{Decimal128Type, Float64Type, Int32Type, Int64Type};
 use arrow_array::{Array, ArrayRef, RecordBatch};
 use arrow_schema::{DataType, FieldRef};
 use rdlt_connector::{Epoch, SegmentId};
@@ -148,6 +148,11 @@ fn json_of(field: &FieldRef, array: &ArrayRef, row: usize) -> Result<Json, Disag
         DataType::Null => Json::Null,
         DataType::Boolean => Json::from(array.as_boolean().value(row)),
         DataType::Int64 => Json::from(array.as_primitive::<Int64Type>().value(row)),
+        // An integer past 64 bits' signed range, as the shredder holds one.
+        DataType::Decimal128(_, 0) => {
+            let value = array.as_primitive::<Decimal128Type>().value(row);
+            Json::from(u64::try_from(value).map_err(|error| Disagreement(error.to_string()))?)
+        }
         DataType::Float64 => {
             let value = array.as_primitive::<Float64Type>().value(row);
             serde_json::Number::from_f64(value).map_or(Json::Null, Json::Number)
