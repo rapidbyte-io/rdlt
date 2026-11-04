@@ -44,8 +44,9 @@ rdlt evolves each table's schema as data arrives, loads nested data and change s
 every value exactly. A value its column cannot hold is refused with a typed error, or dropped or
 nulled and counted, as the schema policy says. Connectors are the code that reads a source or
 writes a destination, and the program that embeds rdlt is their host. The host places each
-connector in its own process, in a separate process (sandboxed on Linux, or trusted), or on another
-machine over mutual TLS. rdlt is the core of the Rapidbyte data platform.
+connector in the host's own process (compiled in and trusted), in a separate process (sandboxed
+on Linux, or trusted), or on another machine over mutual TLS. rdlt is the core of the Rapidbyte
+data platform.
 
 > [!WARNING]
 > rdlt is pre-release: no crate is published, and the project makes no promise of API
