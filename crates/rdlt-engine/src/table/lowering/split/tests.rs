@@ -115,6 +115,38 @@ fn a_plan_s_split_columns_are_fitted_and_filtered_each_at_its_position() {
     }
 }
 
+/// Only a column holding a value its own column does not is counted, so a report lists no column
+/// that discarded nothing.
+#[test]
+fn a_column_whose_own_column_holds_every_value_has_no_others_to_count() {
+    let split = |own, rest| Route::Split { own, rest };
+    let routes = [
+        split(0, Rest::DiscardValues),
+        split(1, Rest::DiscardValues),
+        split(2, Rest::DiscardRows),
+        split(3, Rest::DiscardRows),
+    ];
+    let splits = Splits::of(&routes, &vec![LogicalType::Int64; routes.len()]);
+    let holding = || -> ArrayRef { Arc::new(StringArray::from(vec![Some("1"), None])) };
+    let spilling = || -> ArrayRef { Arc::new(StringArray::from(vec!["1", "\"text\""])) };
+    let batch = RecordBatch::try_from_iter([
+        ("a", holding()),
+        ("b", spilling()),
+        ("c", holding()),
+        ("d", spilling()),
+    ])
+    .unwrap();
+    let fitted = splits.fit(&batch, false).unwrap();
+    assert_eq!(
+        splits.unfitted(&batch, &fitted, Rest::DiscardValues),
+        [(1, 1)]
+    );
+    assert_eq!(
+        splits.unfitted(&batch, &fitted, Rest::DiscardRows),
+        [(3, 1)]
+    );
+}
+
 /// A fit that is null in a row whose value bit is set keeps that row, as a null fit in any row
 /// does; only a row whose fit is false is dropped.
 #[test]

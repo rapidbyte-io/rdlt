@@ -620,6 +620,66 @@ proptest! {
     }
 }
 
+/// A key of any kind names its row's root as the reference's own encoding of it does: of a number
+/// in each of its forms, of a text whose length takes two bytes, of an object's fields but its null
+/// ones and of an array's items.
+#[test]
+fn a_key_of_any_kind_identifies_its_root_as_the_reference_identifies_it() {
+    let keys = [
+        json!(true),
+        json!(false),
+        json!(-5),
+        json!(i64::MIN),
+        json!(u64::MAX),
+        json!(0.0),
+        json!(-0.0),
+        json!(1.5),
+        json!(-2.5),
+        json!(0.001),
+        json!(1500.25),
+        json!(1e30),
+        json!(1.5e-7),
+        json!("short"),
+        json!("x".repeat(200)),
+        json!({"b": 1.5, "a": null}),
+        json!([1, "a", null, {"c": true}]),
+    ];
+    for key in keys {
+        let records = [json!({"id": key})];
+        let batches = shredded(&records, 1 << 20);
+        let shape = keyed("id");
+        assert_eq!(
+            tables_of(&batches, &shape),
+            expected(&records, &batches, &shape),
+            "{key}"
+        );
+    }
+}
+
+/// The comparison reads values by this text on both of its sides, so a text that told no values
+/// apart would pass whatever normalizing wrote.
+#[test]
+fn the_reference_writes_each_number_in_one_form_and_no_object_s_null_fields() {
+    let cases = [
+        (json!(7), "7"),
+        (json!(7.0), "7"),
+        (json!(-7.0), "-7"),
+        (json!(1.5), "1.5"),
+        (json!(1e17), "100000000000000000"),
+        (json!(1e18), "1e+18"),
+        (json!(-1e18), "-1e+18"),
+        (json!("text"), "\"text\""),
+        (json!([1.0, null, 2.5]), "[1,null,2.5]"),
+        (
+            json!({"a": null, "b": {"c": null, "d": 3.0}}),
+            r#"{"b":{"d":3}}"#,
+        ),
+    ];
+    for (value, text) in cases {
+        assert_eq!(reference::canonical_text(&value), text, "{value}");
+    }
+}
+
 #[test]
 fn the_reference_names_child_tables_by_their_arrays_paths() {
     let records = [json!({"a": {"b": [1]}, "a__b": [2]})];

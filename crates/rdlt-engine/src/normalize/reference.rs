@@ -220,7 +220,7 @@ fn hash(domain: u8, bytes: &[u8]) -> Vec<u8> {
 fn length(out: &mut Vec<u8>, bytes: &[u8]) {
     let mut rest = bytes.len();
     while rest >= 0x80 {
-        out.push(u8::try_from(rest & 0x7f).expect("seven bits") | 0x80);
+        out.push(u8::try_from(0x80 + (rest & 0x7f)).expect("one byte"));
         rest >>= 7;
     }
     out.push(u8::try_from(rest).expect("under 0x80"));
