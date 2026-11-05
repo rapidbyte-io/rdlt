@@ -381,9 +381,10 @@ async fn a_destination_is_killed_in_a_write_mode_it_declares_whichever_that_is()
 
 #[tokio::test]
 async fn a_change_source_is_killed_as_it_reads_its_changes() {
+    // Its source has sent every change by the first commit, so a kill fails an attempt only while
+    // the host has frames left to read: the clause draws its kill points again until one does.
     let target = Target::served(Served::new().with_source(source_factory::<ChangesSource>()))
-        .credit_watch(crate::BRIEF)
-        .kill_seed(SETTLED_LATE);
+        .credit_watch(crate::BRIEF);
     let config = json!({
         "seed": 5,
         "streams": [{ "name": "accounts", "keys": 400, "changes": 4000, "batch_rows": 20 }],
