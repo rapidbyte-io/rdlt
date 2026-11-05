@@ -7,6 +7,11 @@ nightly := "nightly-2026-09-20"
 # connectors from the engine and certification too
 mutated := "rdlt-engine rdlt-connector rdlt-adopt rdlt-wire rdlt-host rdlt-certify rdlt-connector-reference"
 
+# What a test runs under while mutants are tested: an address space of 6 GiB, room for the most any
+# test takes (about 3.5 GiB). A mutant that allocates without end aborts its test there, which
+# catches it, where filling the machine would end the tests beside it and the run with them
+mutant_test_runner := "prlimit --as=6442450944"
+
 # List the recipes
 default:
     @just --list
@@ -180,7 +185,8 @@ mutants crate *args:
     for package in $linking; do
         if [[ " {{ mutated }} " == *" $package "* ]]; then tests+=(--test-package "$package"); fi
     done
-    CARGO_INCREMENTAL=1 cargo mutants --package "{{ crate }}" "${tests[@]}" {{ args }} -- --profile "mutants-{{ crate }}"
+    CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="{{ mutant_test_runner }}" CARGO_INCREMENTAL=1 \
+        cargo mutants --package "{{ crate }}" "${tests[@]}" {{ args }} -- --profile "mutants-{{ crate }}"
 
 # Mutation testing over this branch's changes, including uncommitted ones, against `base`, in
 # `jobs` parallel builds; incremental builds are what make rebuilding per mutant cheap. Each changed
@@ -208,7 +214,8 @@ mutants-diff base="origin/main" jobs="4":
         grep -q "^+++ b/crates/$crate/" target/mutants.diff || continue
         tests=()
         for package in $(catching "$crate"); do tests+=(--test-package "$package"); done
-        CARGO_INCREMENTAL=1 cargo mutants --package "$crate" "${tests[@]}" \
+        CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="{{ mutant_test_runner }}" CARGO_INCREMENTAL=1 \
+            cargo mutants --package "$crate" "${tests[@]}" \
             --in-diff target/mutants.diff -j {{ jobs }} --output "target/mutants/$crate" \
             -- --profile "mutants-$crate" || failed=1
     done

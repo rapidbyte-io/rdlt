@@ -220,8 +220,6 @@ fn hash(domain: u8, bytes: &[u8]) -> Vec<u8> {
 fn length(out: &mut Vec<u8>, bytes: &[u8]) {
     let mut rest = bytes.len();
     while rest >= 0x80 {
-        // A loop past its end would push until memory ran out, ending every test beside this one.
-        assert!(rest > 0, "a bug here: a length's loop ran past its end");
         out.push(u8::try_from(0x80 + (rest & 0x7f)).expect("one byte"));
         rest >>= 7;
     }
