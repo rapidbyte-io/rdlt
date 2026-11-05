@@ -34,6 +34,11 @@ same check on a CI runner.
   reference connectors' tests that sync to disk and the others the profile names. A mutant a
   loaded machine counts as caught by a test timing out proves nothing, so mutation results are
   taken from an otherwise idle machine.
+- A test of a mutant runs with an address space of 6 GiB, room for the most any test takes, on a
+  host with `prlimit`, and the recipes warn on one without. A mutant that allocates without end
+  aborts its test there, which catches it. Filling the machine would end the run with it and
+  report none of its mutants, so no mutant is left out, and no test ordered first, for running
+  away.
 - Rejected: a RAM disk for mutation runs, which the development machine's memory cannot spare.
 
 ## Consequences
