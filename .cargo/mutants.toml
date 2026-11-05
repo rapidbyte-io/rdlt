@@ -51,23 +51,6 @@ all_features = true
 # them finds what the check finds, and so does one that checks again, and creates the generation
 # table where it exists, each time a writer readies a table.
 #
-# One mutant is excluded because it never ends rather than because it is the code as it is: one
-# that writes a length in LEB128 while the length is under 0x80 pushes bytes until memory runs out,
-# which kills a whole run, not just its test. A bound on the loop would cost every value's length
-# about 4 % more instructions to normalize. The length's test pins every other mutant of the loop.
-#
-# So are the mutants of the JSON scanner's step that stop it moving forward: one that steps back
-# or stays where it is, by `-` or `*` for `+` in where the next mark is found or where looking
-# resumes, and one that sends a string's end to the text's start. The scanner then gives the
-# same marks forever and what reads them grows until memory runs out. A bound on the loop would
-# cost every byte the shredder scans; the scanner's tests pin every other mutant of the step.
-#
-# So is the mutant that has a call's reader of messages give a default message on every read
-# instead of the next one, or the end: each caller reads messages until the call ends, so it
-# reads forever, holding what each message asks, until memory runs out. Its callers' tests fail
-# first, but the run is killed. A check on progress cannot sit in the reader the mutant replaces
-# whole, only in each of its callers' loops.
-#
 # A rendering's text takes a string by its worst case when that fits and by its escaped length
 # when not, and the escaped length never exceeds the worst case, so a mutant that sends a string
 # of exactly the worst case's room the long way finds it has the room.
@@ -77,9 +60,6 @@ all_features = true
 # is one that joins a byte to the bits of base 32 held before it, shifted left eight bits first, or
 # a count to a process's id in a staging's token, shifted above it.
 exclude_re = [
-  "crates/rdlt-connector/src/json/structure\\.rs:4[67]:[0-9]+: replace \\+ with [-*] in <impl Iterator for Structure<'_>>::next$",
-  "crates/rdlt-connector/src/json/structure\\.rs:.*replace string_end -> usize with [01]$",
-  "crates/rdlt-wire/src/plane/incoming\\.rs:.*replace Incoming<M>::message -> Result<Option<M>, Status> with Ok\\(Some\\(Default::default\\(\\)\\)\\)$",
   "crates/rdlt-engine/src/json/text\\.rs:.*replace \\| with \\^ in hex$",
   "crates/rdlt-adopt/src/exec\\.rs:.*replace marks_at_once -> bool with true",
   "crates/rdlt-connector-reference/src/files/format/held/keys\\.rs:54:[0-9]+: replace && with \\|\\| in Pass<'l>::step$",
@@ -97,7 +77,6 @@ exclude_re = [
   "crates/rdlt-connector/src/sqlgen/tables\\.rs:.*replace \\| with \\^ in base32$",
   "crates/rdlt-connector/src/sqlgen\\.rs:.*replace SqlDialect::reserves_table -> bool with false",
   "crates/rdlt-engine/src/env/inline\\.rs:.*replace <impl Env for InlineEnv>::cores -> NonZeroUsize with 1\\.try_into\\(\\)\\.unwrap\\(\\)",
-  "crates/rdlt-engine/src/normalize/identity\\.rs:.*replace >= with < in leb128$",
   "crates/rdlt-engine/src/shred/render\\.rs:.*replace > with >= in Rendering::string$",
   "crates/rdlt-engine/src/normalize/identity\\.rs:.*replace match guard short < 0x80 with false in length_of$",
   "crates/rdlt-engine/src/normalize/rounding\\.rs:.*replace integers -> bool with true$",

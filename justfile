@@ -7,6 +7,17 @@ nightly := "nightly-2026-09-20"
 # connectors from the engine and certification too
 mutated := "rdlt-engine rdlt-connector rdlt-adopt rdlt-wire rdlt-host rdlt-certify rdlt-connector-reference"
 
+# What a test runs under while mutants are tested: an address space of 6 GiB, room for the most any
+# test takes (about 3.5 GiB). A mutant that allocates without end aborts its test there, which
+# catches it, where filling the machine would end the tests beside it and the run with them
+mutant_test_limit := '''
+    if command -v prlimit > /dev/null; then
+        export "CARGO_TARGET_$(rustc -vV | sed -n 's/host: //p' | tr 'a-z-' 'A-Z_')_RUNNER=prlimit --as=6442450944"
+    else
+        echo "no prlimit here: a mutant that allocates without end can fill this machine" >&2
+    fi
+'''
+
 # List the recipes
 default:
     @just --list
@@ -180,6 +191,7 @@ mutants crate *args:
     for package in $linking; do
         if [[ " {{ mutated }} " == *" $package "* ]]; then tests+=(--test-package "$package"); fi
     done
+    {{ mutant_test_limit }}
     CARGO_INCREMENTAL=1 cargo mutants --package "{{ crate }}" "${tests[@]}" {{ args }} -- --profile "mutants-{{ crate }}"
 
 # Mutation testing over this branch's changes, including uncommitted ones, against `base`, in
@@ -203,6 +215,7 @@ mutants-diff base="origin/main" jobs="4":
             *) echo "$1" ;;
         esac
     }
+    {{ mutant_test_limit }}
     failed=0
     for crate in rdlt-engine rdlt-connector rdlt-adopt rdlt-connector-reference rdlt-wire rdlt-host rdlt-certify; do
         grep -q "^+++ b/crates/$crate/" target/mutants.diff || continue
