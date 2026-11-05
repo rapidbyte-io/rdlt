@@ -1,7 +1,6 @@
 //! Weighs a stretch of a column's items: by arithmetic on widths and offsets where a layout
 //! allows, and item by item only where each names something of its own.
 
-use super::build::VALID;
 use super::column::Column;
 use super::{State, Weight};
 use crate::limits::count;
@@ -32,17 +31,17 @@ impl Column {
                 let bits = items.saturating_mul(*bits);
                 own(weight, items, bits.saturating_add(bytes.saturating_mul(8)));
             }
-            Self::Views { views } => {
+            Self::Views { views, valid } => {
                 for index in start..end {
                     if state.over(weight) {
                         return;
                     }
-                    view(views, index, weight);
+                    view(views, index, *valid, weight);
                     state.visit();
                 }
             }
-            Self::Sized { size, item } => {
-                each(weight, items, VALID);
+            Self::Sized { size, valid, item } => {
+                each(weight, items, *valid);
                 let (start, end) = (start.saturating_mul(*size), end.saturating_mul(*size));
                 item.span(start, end, state, weight);
             }
@@ -172,12 +171,12 @@ impl Column {
 
 /// Adds what view `index` of `views` weighs: itself, and the bytes it names beyond those it
 /// holds.
-fn view(views: &[u128], index: usize, weight: &mut Weight) {
+fn view(views: &[u128], index: usize, valid: u64, weight: &mut Weight) {
     let length = views
         .get(index)
         .map_or(0, |view| *view & u128::from(u32::MAX));
     let named = u64::try_from(length).ok().filter(|length| *length > 12);
     let named = named.unwrap_or(0);
-    own(weight, 1, 128 + VALID + 8 * named);
+    own(weight, 1, 128 + valid + 8 * named);
     weight.view_bytes = weight.view_bytes.saturating_add(named);
 }

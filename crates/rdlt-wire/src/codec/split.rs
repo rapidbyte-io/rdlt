@@ -111,8 +111,9 @@ impl Cut {
                 && weight.frame_bytes().saturating_add(overhead) <= limits.frame_bytes
         };
         self.weigher.begin();
-        // A row's values and view bytes are weighed as its receiver counts them, and its bytes
-        // are no more than its frame's: a row beyond a limit is refused before it is copied.
+        // A row's values and view bytes are weighed as its receiver counts them, and its bytes,
+        // but for validity bits its frame need not send, are no more than its frame's: a row
+        // beyond a limit is refused before it is copied.
         let mut weight = self.weighed(self.sent, 1);
         Limits::admit(Limit::BatchValues, limits.batch_values, weight.values)?;
         Limits::admit(Limit::ViewBytes, limits.frame_bytes, weight.view_bytes)?;

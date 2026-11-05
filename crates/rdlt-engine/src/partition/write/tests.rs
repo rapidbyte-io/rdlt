@@ -237,8 +237,8 @@ fn a_row_beyond_what_a_request_may_take_is_a_source_error_naming_its_stream() {
 #[test]
 fn written_bytes_count_a_slices_own_rows() {
     let whole = ids(1000);
-    assert_eq!(written_bytes(&whole), 8_125);
-    assert_eq!(written_bytes(&whole.slice(0, 10)), 82);
+    assert_eq!(written_bytes(&whole), 8_000);
+    assert_eq!(written_bytes(&whole.slice(0, 10)), 80);
 }
 
 /// A change batch of `rows` inserts of one id each, and `deletes` deletes after them.

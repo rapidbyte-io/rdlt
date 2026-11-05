@@ -377,12 +377,14 @@ proptest! {
                 let received = received(&batch, &frames, limits);
                 let pieces = in_order(&batch, &received);
                 // No piece but the last could have taken the row after it: its receiver would
-                // refuse the longer piece, or the longer piece weighs more than a frame takes.
+                // refuse the longer piece, or the longer piece weighs, as the cut weighs it, more
+                // than a frame takes.
                 let mut start = 0;
+                let mut weigher = Weigher::new(&batch);
                 for piece in &pieces[..pieces.len() - 1] {
-                    let longer = batch.slice(start, piece + 1);
-                    let (weight, overhead) = weighed(&compacted(&longer).unwrap());
-                    let heavy = weight.frame_bytes() + overhead > limits.frame_bytes;
+                    weigher.begin();
+                    let weight = weigher.weigh_rows(start..start + piece + 1);
+                    let heavy = weight.frame_bytes() + weigher.overhead() > limits.frame_bytes;
                     let most = u64::try_from(*piece).unwrap() == most_rows;
                     prop_assert!(most || heavy || !part_fits(&batch, start, piece + 1, limits));
                     start += piece;
@@ -661,8 +663,8 @@ fn no_frame_larger_than_the_limit_is_encoded_where_row_sizes_jump() {
 
 #[test]
 fn a_piece_whose_frame_outweighs_its_rows_is_halved_a_bounded_number_of_times() {
-    // Rows of two bits in sixteen buffers: with a frame's padding and header left out of the
-    // weighing, all 4096 rows seem to fit a frame that half of them fill.
+    // Rows of a bit in eight buffers: with a frame's padding and header left out of the weighing,
+    // all 4096 rows seem to fit a frame they overfill by a byte.
     let batch = flags(8, 4_096);
     let whole = bytes(&cut(&batch, &Limits::default()).unwrap());
     let limits = Limits {

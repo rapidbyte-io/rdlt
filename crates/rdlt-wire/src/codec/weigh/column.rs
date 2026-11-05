@@ -30,12 +30,15 @@ pub(super) type Named<T> = Box<dyn Fn(usize) -> T + Send + Sync>;
 
 /// A column as its rows are weighed.
 pub(super) enum Column {
-    /// Values of `bits` bits each, and a validity bit.
+    /// Values of `bits` bits each.
     Fixed { bits: u64 },
     /// Offsets of `bits` bits each into bytes; `offset` is where an item's bytes begin.
     Bytes { bits: u64, offset: Named<usize> },
-    /// Views of bytes.
-    Views { views: ScalarBuffer<u128> },
+    /// Views of bytes, of `valid` validity bits each.
+    Views {
+        views: ScalarBuffer<u128>,
+        valid: u64,
+    },
     /// Lists and maps: `bits` bits a row, and the items a row spans from `offset`; a row null
     /// by `nulls` spans none.
     List {
@@ -44,8 +47,12 @@ pub(super) enum Column {
         nulls: Option<NullBuffer>,
         item: Box<Column>,
     },
-    /// Fixed-size lists of `size` items a row.
-    Sized { size: usize, item: Box<Column> },
+    /// Fixed-size lists of `size` items a row, of `valid` validity bits each.
+    Sized {
+        size: usize,
+        valid: u64,
+        item: Box<Column>,
+    },
     /// List views: `bits` bits a row, and the items a row that is not null names.
     ListView {
         bits: u64,
@@ -101,16 +108,19 @@ impl Column {
         use DataType as T;
         counts.nodes += 1;
         counts.buffers += buffers(array.data_type());
+        let valid = build::validity(array);
         match array.data_type() {
-            T::Utf8 => build::bytes(array.as_string::<i32>().offsets()),
-            T::Binary => build::bytes(array.as_binary::<i32>().offsets()),
-            T::LargeUtf8 => build::bytes(array.as_string::<i64>().offsets()),
-            T::LargeBinary => build::bytes(array.as_binary::<i64>().offsets()),
+            T::Utf8 => build::bytes(array.as_string::<i32>().offsets(), valid),
+            T::Binary => build::bytes(array.as_binary::<i32>().offsets(), valid),
+            T::LargeUtf8 => build::bytes(array.as_string::<i64>().offsets(), valid),
+            T::LargeBinary => build::bytes(array.as_binary::<i64>().offsets(), valid),
             T::Utf8View => Self::Views {
                 views: array.as_string_view().views().clone(),
+                valid,
             },
             T::BinaryView => Self::Views {
                 views: array.as_binary_view().views().clone(),
+                valid,
             },
             T::List(_) => build::lists(array.as_list::<i32>(), rebuilt, counts),
             T::LargeList(_) => build::lists(array.as_list::<i64>(), rebuilt, counts),
@@ -125,7 +135,7 @@ impl Column {
                 let columns = array.as_struct().columns().iter();
                 let children = columns.map(|column| Self::of(column.as_ref(), rebuilt, counts));
                 Self::Each {
-                    bits: build::VALID,
+                    bits: valid,
                     children: children.collect(),
                 }
             }
@@ -145,7 +155,7 @@ impl Column {
                 T::UInt32 => build::keyed::<UInt32Type>(array, counts),
                 _ => build::keyed::<UInt64Type>(array, counts),
             },
-            leaf => build::fixed(leaf),
+            _ => build::fixed(array),
         }
     }
 }

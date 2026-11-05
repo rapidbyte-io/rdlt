@@ -10,8 +10,11 @@ use super::column::{Column, Counts, Named};
 use crate::codec::compact::plain;
 use crate::limits::count;
 
-/// Bits: a validity bit, which Arrow's writer sends for every value of a column that has one.
-pub(super) const VALID: u64 = 1;
+/// Bits a value of `array` takes for its validity: Arrow's writer sends a bit a value of a column
+/// holding a null, and none for a column holding none.
+pub(super) fn validity(array: &dyn Array) -> u64 {
+    u64::from(array.null_count() > 0)
+}
 
 /// Where item `index` begins by `offsets`; nowhere where they do not reach.
 fn offset<O: OffsetSizeTrait>(offsets: &OffsetBuffer<O>) -> Named<usize> {
@@ -19,22 +22,23 @@ fn offset<O: OffsetSizeTrait>(offsets: &OffsetBuffer<O>) -> Named<usize> {
     Box::new(move |index: usize| offsets.get(index).map_or(0, |offset| offset.as_usize()))
 }
 
-/// A column of the fixed-width type `data_type`: nulls, booleans and values of whole bytes.
-pub(super) fn fixed(data_type: &DataType) -> Column {
-    let bytes = match data_type {
+/// A fixed-width column `array`: nulls, booleans and values of whole bytes.
+pub(super) fn fixed(array: &dyn Array) -> Column {
+    let valid = validity(array);
+    let bytes = match array.data_type() {
         DataType::Null => return Column::Fixed { bits: 0 },
-        DataType::Boolean => return Column::Fixed { bits: 1 + VALID },
+        DataType::Boolean => return Column::Fixed { bits: 1 + valid },
         DataType::FixedSizeBinary(bytes) => usize::try_from(*bytes).unwrap_or(0),
         fixed => fixed.primitive_width().unwrap_or(0),
     };
     Column::Fixed {
-        bits: 8 * count(bytes) + VALID,
+        bits: 8 * count(bytes) + valid,
     }
 }
 
-pub(super) fn bytes<O: OffsetSizeTrait>(offsets: &OffsetBuffer<O>) -> Column {
+pub(super) fn bytes<O: OffsetSizeTrait>(offsets: &OffsetBuffer<O>, valid: u64) -> Column {
     Column::Bytes {
-        bits: 8 * count(size_of::<O>()) + VALID,
+        bits: 8 * count(size_of::<O>()) + valid,
         offset: offset(offsets),
     }
 }
@@ -56,11 +60,12 @@ pub(super) fn listed<O: OffsetSizeTrait>(
     rebuilt: bool,
     counts: &mut Counts,
 ) -> Column {
-    let nulls = nulls.filter(|nulls| rebuilt && nulls.null_count() > 0);
+    let nulls = nulls.filter(|nulls| nulls.null_count() > 0);
+    let valid = u64::from(nulls.is_some());
     Column::List {
-        bits: 8 * count(size_of::<O>()) + VALID,
+        bits: 8 * count(size_of::<O>()) + valid,
         offset: offset(offsets),
-        nulls: nulls.cloned(),
+        nulls: nulls.filter(|_| rebuilt).cloned(),
         item: Box::new(Column::of(items, rebuilt, counts)),
     }
 }
@@ -75,6 +80,7 @@ pub(super) fn fixed_lists(
     let items = array.as_fixed_size_list().values().as_ref();
     Column::Sized {
         size: usize::try_from(size).unwrap_or(0),
+        valid: validity(array),
         item: Box::new(Column::of(items, rebuilt, counts)),
     }
 }
@@ -84,6 +90,7 @@ pub(super) fn list_views<O: OffsetSizeTrait>(
     rebuilt: bool,
     counts: &mut Counts,
 ) -> Column {
+    let valid = validity(lists);
     let (offsets, sizes, nulls) = (
         lists.offsets().clone(),
         lists.sizes().clone(),
@@ -101,7 +108,7 @@ pub(super) fn list_views<O: OffsetSizeTrait>(
         }
     };
     Column::ListView {
-        bits: 16 * count(size_of::<O>()) + VALID,
+        bits: 16 * count(size_of::<O>()) + valid,
         range: Box::new(range),
         item: Box::new(Column::of(lists.values().as_ref(), rebuilt, counts)),
     }
@@ -149,7 +156,7 @@ pub(super) fn runs<R: RunEndIndexType>(
     rebuilt: bool,
     counts: &mut Counts,
 ) -> Column {
-    // The run ends are a column of their own in a frame.
+    // The run ends are a column of their own in a frame, and none of them is null.
     counts.nodes += 1;
     counts.buffers += 2;
     let place = counts.runs;
@@ -162,7 +169,7 @@ pub(super) fn runs<R: RunEndIndexType>(
         (run, end.saturating_sub(ends.offset()))
     };
     Column::Runs {
-        bits: 8 * count(size_of::<R::Native>()) + VALID,
+        bits: 8 * count(size_of::<R::Native>()),
         reach: Box::new(reach),
         place,
         values: Box::new(Column::of(runs.values().as_ref(), rebuilt, counts)),
@@ -180,7 +187,7 @@ pub(super) fn keyed<K: ArrowDictionaryKeyType>(array: &dyn Array, counts: &mut C
     let column = Column::of(values.as_ref(), !plain(values.data_type()), &mut apart);
     counts.runs = apart.runs;
     Column::Keyed {
-        bits: 8 * count(size_of::<K::Native>()) + VALID,
+        bits: 8 * count(size_of::<K::Native>()) + validity(array),
         length: values.len(),
         values: Box::new(column),
     }

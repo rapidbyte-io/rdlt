@@ -27,6 +27,9 @@ pub struct Weight {
     pub view_bytes: u64,
     /// Bits: the buffers such a frame holds for the rows, before the padding of each buffer and
     /// the frame's header: a dictionary column's keys, a run's value once for the run.
+    ///
+    /// A value of a column holding a null anywhere takes a validity bit, though a frame whose rows
+    /// hold none of them is sent without one.
     pub frame_bits: u64,
 }
 
@@ -100,9 +103,9 @@ impl State {
 /// let mut weigher = Weigher::new(&batch);
 /// weigher.begin();
 /// let row = weigher.weigh(0);
-/// assert_eq!((row.values, row.frame_bytes()), (1, 5));
+/// assert_eq!((row.values, row.frame_bytes()), (1, 4));
 /// let rest = weigher.weigh_rows(1..3);
-/// assert_eq!((rest.values, rest.frame_bytes()), (2, 9));
+/// assert_eq!((rest.values, rest.frame_bytes()), (2, 8));
 /// # Ok::<(), arrow_schema::ArrowError>(())
 /// ```
 #[derive(Debug)]
