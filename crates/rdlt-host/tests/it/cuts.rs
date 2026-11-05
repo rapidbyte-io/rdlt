@@ -226,9 +226,9 @@ impl tokio::io::AsyncWrite for Severed {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_source_lost_between_a_batchs_pieces_commits_none_of_them_and_the_next_attempt_all() {
-    // The source's rows reach the host as three pieces, of about 312, 312 and 185 kilobytes,
+    // The source's rows reach the host as three pieces, of about 177, 177 and 108 kilobytes,
     // after a schema of 13; its window is two pieces once the first is taken. Its first
-    // connection fails once the host has read 700 kilobytes: two pieces, and part of the third.
+    // connection fails once the host has read 420 kilobytes: two pieces, and part of the third.
     static SEVERED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     static HOOK: Hook = Hook::at(usize::MAX);
     let options = Options {
@@ -244,7 +244,7 @@ async fn a_source_lost_between_a_batchs_pieces_commits_none_of_them_and_the_next
         let left = if SEVERED.swap(true, Ordering::SeqCst) {
             usize::MAX
         } else {
-            700_000
+            420_000
         };
         let stream = Severed { inner, left };
         Box::pin(async move { Ok(Box::new(stream) as Box<dyn rdlt_host::Stream>) })

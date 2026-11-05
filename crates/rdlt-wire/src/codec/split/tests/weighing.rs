@@ -154,7 +154,7 @@ fn a_key_is_weighed_without_holding_anything_for_the_values_before_it() {
         weigher.begin();
         weigher.weigh(0)
     });
-    assert_eq!((weight.values, weight.frame_bytes()), (1, 5));
+    assert_eq!((weight.values, weight.frame_bytes()), (1, 4));
     assert!(grown < 16 << 10, "weighing one key held {grown} KiB");
 }
 
@@ -172,7 +172,7 @@ fn keys_are_weighed_by_arithmetic_whatever_the_value_they_name_holds() {
     let mut weigher = crate::codec::weigh::Weigher::new(&batch);
     weigher.begin();
     let weight = weigher.weigh_rows(0..2_000);
-    assert_eq!((weight.values, weight.frame_bits), (2_000, 2_000 * 33));
+    assert_eq!((weight.values, weight.frame_bits), (2_000, 2_000 * 32));
     assert!(weigher.visits() <= 4, "{}", weigher.visits());
 }
 
