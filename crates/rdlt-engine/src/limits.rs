@@ -130,3 +130,12 @@ pub const REPORTED_FORGOTTEN: usize = 128;
 
 /// How many entries a list in a report's discards or an event names: the rest are counted.
 pub const REPORTED_LISTED: usize = 128;
+
+/// The most transforms a stream may list, each run on every batch in turn.
+pub const TRANSFORMS_PER_STREAM: usize = 64;
+
+/// The most columns one op names, or a stream includes.
+pub const NAMED_COLUMNS: usize = 10_000;
+
+/// Bytes: the longest literal an op holds, a constant's text or a redaction's.
+pub const LITERAL_BYTES: usize = 4 << 10;

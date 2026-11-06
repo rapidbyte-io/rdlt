@@ -189,6 +189,10 @@ pub const PLAN_EXCLUDE_INVALID: Code = Code("plan_exclude_invalid");
 /// The code of the error for a column hinted as null.
 pub const PLAN_HINT_INVALID: Code = Code("plan_hint_invalid");
 
+/// The code of the error for a stream that includes columns while it excludes some, or includes
+/// none.
+pub const PLAN_INCLUDE_INVALID: Code = Code("plan_include_invalid");
+
 /// The code of the error for a source's partition plan the engine refuses, or streams that read
 /// more partitions at once than the limit.
 pub const PLAN_INVALID: Code = Code("plan_invalid");
@@ -294,6 +298,31 @@ pub const TABLE_PATH_INVALID: Code = Code("table_path_invalid");
 /// The code of the error for a change stream ordered by its source's positions into a table of
 /// rows the engine merged.
 pub const TABLE_SEQUENCES_MISMATCH: Code = Code("table_sequences_mismatch");
+
+/// The code of the error for a transform whose output took more than the bound it declares: a
+/// bug in the transform, never a tenant's doing.
+pub const TRANSFORM_BOUND: Code = Code("transform_bound");
+
+/// The code of the error for a transform whose output breaks its contract: other rows than its
+/// input, a filter answering another count of rows, or a schema other than it declares.
+pub const TRANSFORM_CONTRACT: Code = Code("transform_contract");
+
+/// The code of the error for a transform that failed on a batch.
+pub const TRANSFORM_FAILED: Code = Code("transform_failed");
+
+/// The code of the error for a transform the plan cannot carry: an op naming a column the stream
+/// keeps as it arrives, names that collide, a filter on a stream whose rows it would leave
+/// stale, or a query a SQL transform may not hold.
+pub const TRANSFORM_INVALID: Code = Code("transform_invalid");
+
+/// The code of the error for a change batch whose updates leave columns unchanged, met by a
+/// transform that says nothing of which columns it reads.
+pub const TRANSFORM_PARTIAL: Code = Code("transform_partial");
+
+/// The code of the error for a transform that refuses the schema of its input, whose output
+/// drops or retypes a column the stream keeps as it arrives, or an op naming a column the
+/// stream's declared schema lacks.
+pub const TRANSFORM_SCHEMA: Code = Code("transform_schema");
 
 /// The code of the error for a value of a batch that its column cannot hold.
 pub const VALUE_UNREPRESENTABLE: Code = Code("value_unrepresentable");

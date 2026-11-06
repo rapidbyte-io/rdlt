@@ -81,7 +81,10 @@ pub use config::{
 pub use env::{Env, Sleep, SystemEnv};
 pub use error::{Code, Error, ErrorKind, ErrorReport, Origin, codes};
 pub use event::{ColumnChange, Event, EventKind, Listed, Scope};
-pub use limits::{REPORTED_ATTEMPTS, REPORTED_FORGOTTEN, REPORTED_LISTED};
+pub use limits::{
+    LITERAL_BYTES, NAMED_COLUMNS, REPORTED_ATTEMPTS, REPORTED_FORGOTTEN, REPORTED_LISTED,
+    TRANSFORMS_PER_STREAM,
+};
 pub use plan::{DeleteMode, OnTruncate, PipelinePlan, RetentionLoss, StreamPlan, Until, WriteMode};
 pub use policy::{Nested, OnUnsupported, SchemaPolicy, SchemaSettings};
 pub use report::{
