@@ -5,7 +5,8 @@ mod tests;
 
 use std::collections::BTreeMap;
 
-use arrow_array::{Array, RecordBatch};
+use arrow_array::{Array, RecordBatch, make_array};
+use arrow_schema::DataType;
 use rdlt_connector::cost::Allocations;
 
 /// Bytes a transform allocates at most for a batch, linear in it: a fixed part, a part for each
@@ -82,13 +83,46 @@ impl Bound {
 }
 
 /// Bytes: what the rows of `array` hold in its buffers, a slice's own rows alone where its
-/// layout says which bytes they are.
+/// layout says which bytes they are, and for a view layout the bytes its views reference.
 pub fn column_bytes(array: &dyn Array) -> u64 {
     let data = array.to_data();
     let bytes = data
         .get_slice_memory_size()
         .unwrap_or_else(|_| array.get_buffer_memory_size());
-    u64::try_from(bytes).unwrap_or(u64::MAX)
+    u64::try_from(bytes)
+        .unwrap_or(u64::MAX)
+        .saturating_add(viewed_bytes(array))
+}
+
+/// The longest value, in bytes, a view holds inline.
+const INLINE: u32 = 12;
+
+/// Bytes: the text and bytes stored outside the views of `array` and its children, which are
+/// the views longer than they hold inline.
+fn viewed_bytes(array: &dyn Array) -> u64 {
+    let data = array.to_data();
+    let own = if matches!(data.data_type(), DataType::Utf8View | DataType::BinaryView) {
+        data.buffers()
+            .first()
+            .and_then(|views| {
+                views
+                    .typed_data::<u128>()
+                    .get(data.offset()..data.offset() + data.len())
+            })
+            .map_or(0, |views| {
+                views
+                    .iter()
+                    .map(|view| u32::try_from(view & u128::from(u32::MAX)).unwrap_or(0))
+                    .filter(|length| *length > INLINE)
+                    .map(u64::from)
+                    .sum()
+            })
+    } else {
+        0
+    };
+    data.child_data().iter().fold(own, |bytes, child| {
+        bytes.saturating_add(viewed_bytes(make_array(child.clone()).as_ref()))
+    })
 }
 
 /// Bytes: the buffers `output` keeps alive that `input` does not, each counted once; the schema
