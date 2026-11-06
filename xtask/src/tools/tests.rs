@@ -49,7 +49,7 @@ fn linux(tool: &str) -> (String, String) {
 
 #[test]
 fn tools_locked_to_a_digest_on_every_platform_pass() {
-    assert_eq!(check(CONFIG, &locked()).unwrap(), Vec::new());
+    assert_eq!(check(CONFIG, &locked(), &|_| None).unwrap(), Vec::new());
 }
 
 #[test]
@@ -73,7 +73,11 @@ fn a_download_without_a_digest_is_reported() {
         let lock = lock(&platform("just", "linux-x64", checksum, url));
         let (tool, platform) = linux("just");
         let expected = vec![Unlocked::Checksum { tool, platform }];
-        assert_eq!(check(CONFIG, &lock).unwrap(), expected, "{checksum:?}");
+        assert_eq!(
+            check(CONFIG, &lock, &|_| None).unwrap(),
+            expected,
+            "{checksum:?}"
+        );
     }
 }
 
@@ -98,7 +102,11 @@ fn a_platform_without_a_download_is_reported() {
     for case in cases {
         let (tool, platform) = linux("just");
         let expected = vec![Unlocked::Platform { tool, platform }];
-        assert_eq!(check(CONFIG, &lock(&case)).unwrap(), expected, "{case:?}");
+        assert_eq!(
+            check(CONFIG, &lock(&case), &|_| None).unwrap(),
+            expected,
+            "{case:?}"
+        );
     }
 }
 
@@ -115,7 +123,7 @@ fn a_tool_whose_backend_locks_no_download_is_reported_for_every_platform() {
             platform: (*platform).to_owned(),
         })
         .collect();
-    assert_eq!(check(config, lock).unwrap(), expected);
+    assert_eq!(check(config, lock, &|_| None).unwrap(), expected);
 }
 
 #[test]
@@ -123,19 +131,19 @@ fn a_tool_missing_from_the_lockfile_or_locked_at_another_version_is_reported() {
     let config = format!("{CONFIG}typos = \"1.50.2\"\n");
     let tool = "typos".to_owned();
     assert_eq!(
-        check(&config, &locked()).unwrap(),
+        check(&config, &locked(), &|_| None).unwrap(),
         vec![Unlocked::Missing { tool }]
     );
     let config = CONFIG.replace("1.58.0", "1.59.0");
     let tool = "just".to_owned();
     assert_eq!(
-        check(&config, &locked()).unwrap(),
+        check(&config, &locked(), &|_| None).unwrap(),
         vec![Unlocked::Version { tool }]
     );
     let config = CONFIG.replace("0.13.2", "0.13.3");
     let tool = FUZZ.to_owned();
     assert_eq!(
-        check(&config, &locked()).unwrap(),
+        check(&config, &locked(), &|_| None).unwrap(),
         vec![Unlocked::Version { tool }]
     );
 }
@@ -158,14 +166,15 @@ fn a_platform_is_excused_only_for_the_tools_listed() {
         tool: "just".to_owned(),
         platform: "macos-arm64".to_owned(),
     }];
-    assert_eq!(check(CONFIG, &without_mac).unwrap(), expected);
+    assert_eq!(check(CONFIG, &without_mac, &|_| None).unwrap(), expected);
 }
 
 // A platform nobody listed is installed from the lockfile all the same.
 #[test]
 fn every_platform_the_lockfile_names_has_a_download_and_a_digest() {
     let url = Some("https://example.com/asset.tar.gz");
-    let unlocked = |extra: &str| check(CONFIG, &format!("{}\n{extra}", locked())).unwrap();
+    let unlocked =
+        |extra: &str| check(CONFIG, &format!("{}\n{extra}", locked()), &|_| None).unwrap();
     let (tool, other) = ("just".to_owned(), "linux-arm64".to_owned());
     assert_eq!(
         unlocked(&platform("just", "linux-arm64", Some(SHA256), url)),
@@ -210,16 +219,21 @@ fn every_platform_the_lockfile_names_has_a_download_and_a_digest() {
 
 #[test]
 fn a_file_that_is_not_what_mise_writes_is_an_error() {
-    assert!(check("[tools", &locked()).is_err());
-    assert!(check(CONFIG, "[[tools.just]").is_err());
-    assert!(check("[tools]\njust = 1\n", &locked()).is_err());
-    assert!(check("[tools]\njust = { os = [\"linux\"] }\n", &locked()).is_err());
-    assert!(check(CONFIG, "tools = 1\n").is_err());
+    assert!(check("[tools", &locked(), &|_| None).is_err());
+    assert!(check(CONFIG, "[[tools.just]", &|_| None).is_err());
+    assert!(check("[tools]\njust = 1\n", &locked(), &|_| None).is_err());
+    assert!(
+        check("[tools]\njust = { os = [\"linux\"] }\n", &locked(), &|_| {
+            None
+        })
+        .is_err()
+    );
+    assert!(check(CONFIG, "tools = 1\n", &|_| None).is_err());
 }
 
 #[test]
 fn a_configuration_or_lockfile_without_tools_has_none_unlocked() {
-    assert_eq!(check("", "").unwrap(), Vec::new());
+    assert_eq!(check("", "", &|_| None).unwrap(), Vec::new());
     let expected = vec![
         Unlocked::Missing {
             tool: FUZZ.to_owned(),
@@ -228,7 +242,7 @@ fn a_configuration_or_lockfile_without_tools_has_none_unlocked() {
             tool: "just".to_owned(),
         },
     ];
-    assert_eq!(check(CONFIG, "").unwrap(), expected);
+    assert_eq!(check(CONFIG, "", &|_| None).unwrap(), expected);
 }
 
 #[test]
@@ -236,7 +250,8 @@ fn this_repository_locks_every_tool() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let config = fs::read_to_string(root.join("mise.toml")).unwrap();
     let lock = fs::read_to_string(root.join("mise.lock")).unwrap();
-    assert_eq!(check(&config, &lock).unwrap(), Vec::new());
+    let read = |path: &str| fs::read(root.join(path)).ok();
+    assert_eq!(check(&config, &lock, &read).unwrap(), Vec::new());
     assert!(config.contains("[tools]"));
 }
 
@@ -254,4 +269,57 @@ fn this_repository_locks_archives_built_for_their_platform() {
             assert!(!line.contains("x86_64"), "{line}");
         }
     }
+}
+
+const PYRIGHT: &str = "npm:pyright";
+
+const NPM_CONFIG: &str = "[tools]\n\"npm:pyright\" = \"1.1.414\"\n";
+
+/// npm's lockfile of one package, with its integrity.
+const PACKAGES: &str = "lockfileVersion: '9.0'\npackages:\n\n  pyright@1.1.414:\n    resolution: {integrity: sha512-FPZZb51jepDX4eP7TEYDeNFtmE3Wgwkk}\n";
+
+/// The package lockfile at the path an `aube` entry names.
+const PACKAGES_AT: &str = ".mise/locks/npm-pyright/1.1.414/aube-lock.yaml";
+
+fn npm_lock(digest: &str) -> String {
+    format!(
+        "[[tools.\"npm:pyright\"]]\nversion = \"1.1.414\"\nbackend = \"npm:pyright\"\n\
+         aube = {{ path = \".mise/locks/npm-pyright/1.1.414\", digest = \"{digest}\" }}\n"
+    )
+}
+
+fn sha256(bytes: &[u8]) -> String {
+    use sha2::Digest as _;
+    format!("sha256:{:x}", sha2::Sha256::digest(bytes))
+}
+
+#[test]
+fn an_npm_tool_is_held_by_its_package_lockfile_and_each_package_integrity() {
+    let reading = |content: &'static str| {
+        move |path: &str| (path == PACKAGES_AT).then(|| content.as_bytes().to_vec())
+    };
+    let held = check(
+        NPM_CONFIG,
+        &npm_lock(&sha256(PACKAGES.as_bytes())),
+        &reading(PACKAGES),
+    );
+    assert_eq!(held.unwrap(), vec![]);
+    let unheld = vec![Unlocked::Packages {
+        tool: PYRIGHT.to_owned(),
+    }];
+    let other = format!("sha256:{}", "0".repeat(64));
+    let of_other_bytes = check(NPM_CONFIG, &npm_lock(&other), &reading(PACKAGES));
+    assert_eq!(of_other_bytes.unwrap(), unheld, "a lockfile of other bytes");
+    let absent = check(NPM_CONFIG, &npm_lock(&sha256(PACKAGES.as_bytes())), &|_| {
+        None
+    });
+    assert_eq!(absent.unwrap(), unheld, "no lockfile");
+    let unhashed =
+        "packages:\n  pyright@1.1.414:\n    resolution: {tarball: https://example.com/p.tgz}\n";
+    let without = check(
+        NPM_CONFIG,
+        &npm_lock(&sha256(unhashed.as_bytes())),
+        &reading(unhashed),
+    );
+    assert_eq!(without.unwrap(), unheld, "a package without its integrity");
 }

@@ -92,6 +92,15 @@ This record decides what holds each statement, and says where a check ends.
     does not hold at that version, and on any platform in the lockfile without a download and
     a digest. Where a release publishes no digest, the checksum is computed from the archive
     and added by hand (CONTRIBUTING.md).
+  - pyright is an npm package and has no release archive. mise locks it through npm's own
+    lockfile, `.mise/locks/npm-pyright/<version>/aube-lock.yaml`, which names each package with
+    its `integrity`, and `mise.lock` holds that file's digest. `cargo xtask tools` holds the file
+    to the digest and refuses a package in it without an integrity; node, which runs pyright,
+    is locked as any tool.
+  - The Python packages the development environment, its lints and its tests use are held by
+    `uv.lock`, each with its hashes, and `uv sync --locked` refuses one of other bytes. uv, locked
+    as a tool, installs the test matrix's interpreters from the downloads its release names and
+    checks each against the checksum that release holds.
   - CI installs with `--locked`, from a mise binary of a fixed version whose SHA-256 the
     workflow states for each runner platform. The tool caches have new keys.
   - Locked mode is not a project setting: mise would apply it to a contributor's own tools. A
