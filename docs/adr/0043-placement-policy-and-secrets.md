@@ -21,18 +21,22 @@ given. A host enforces that only where it closes each of these:
 
 - **A reference states requirements, and a provider honours each or refuses.** A
   `ConnectorRef` names an id and may name a version, a path, an endpoint, a digest, an
-  `Isolation` (`Process`, `Sandbox`, `Remote`) and what its pipeline grants its connector in
-  a sandbox (`Grants`). `ProviderError::Unsupported`
+  `Isolation` (`Process`, `Sandbox`, `Remote`) and the access its pipeline asks for its
+  connector in a sandbox (`Access`). `ProviderError::Unsupported`
   (`placement_unsupported`) refuses a requirement the placement does not implement, before
   anything is spawned, dialed or connected, on a raw wire too.
   - In process honours none of them, and its names say what it is: `Registry::trusted`,
     `trusted_source`, `trusted_destination`.
   - Remote honours an endpoint and `Isolation::Remote`. The name a connector's certificate
     must carry is the endpoint's host: a reference has no second name for it.
-  - Local honours a path, a digest where the platform executes an open file, grants, and
+  - Local honours a path, a digest where the platform executes an open file, access, and
     `Isolation::Process`; `Isolation::Sandbox` only when it was built with a sandbox. A
-    trusted binary has the host's access, so what it is granted it already reaches.
+    trusted binary has the host's access, so the access it asks for it already has.
   - A stream a function opens honours none.
+  - **Placement follows the reference.** A `Registry` places a registered id in process, a
+    reference with an endpoint remotely (`Registry::remote`), and any other as a local binary
+    (`Registry::local`). A placement the registry was not given is refused
+    (`ProviderError::Refused`, `placement_refused`), never made another way.
   - Every `ProviderError` has a stable `code()`.
 - **A local connector runs in a sandbox, or its operator says its binaries are trusted.**
   `Local::sandboxed(sandbox)` and `Local::trusting_binaries()` are the only constructors.
@@ -43,13 +47,12 @@ given. A host enforces that only where it closes each of these:
     and how the connector is asked to stop; and it lists the files that decide how it
     confines (`Sandbox::programs`, the launcher). It puts no value of the environment where
     another user may read it, as a command line.
-  - **Grants belong to a pipeline, within roots its operator names.** A provider grants only
-    paths every connector it spawns may read, as system directories are (`Local::grant_read`).
-    What one connector may write, read beyond those, or reach on the network is asked for on
-    the reference that places it (`ConnectorRef::grant_write`, `grant_read`,
-    `grant_network`). A pipeline's author may write that reference, so a path is granted only
-    within a root the operator names on the provider (`Local::grantable_read`,
-    `grantable_write`): a read within a read or a write root, a write within a write root, or
+  - **Access belongs to a pipeline, within roots its operator names.** A provider gives only
+    paths every connector it spawns may read, as system directories are
+    (`Local::always_readable`). What one connector may write, read beyond those, or reach on
+    the network is asked for on the reference that places it (`ConnectorRef::write`, `read`,
+    `network`). A pipeline's author may write that reference, so a path is given only
+    within a root the operator names on the provider (`Local::readable`, `writable`): a read within a read or a write root, a write within a write root, or
     the placement is refused (`grant_outside`). By default no root is named, and nothing is
     granted.
   - **A root that may be written holds nothing that decides what the host runs or keeps.** It
@@ -76,7 +79,7 @@ given. A host enforces that only where it closes each of these:
     the sandbox's launcher among them, from its placement until it is dropped and its last
     connector reaped, not only until a handle drops. A grant that overlaps, contains or lies
     within a path another placement holds is refused (`grant_overlap`), unless both
-    references state their grants are shared (`share_grants`); so is a write grant over a path
+    references state their grants are shared (`share_access`); so is a write grant over a path
     the provider lets every connector read.
     A write grant over a program another placement runs is refused (`grant_covers`), and so is
     a placement whose program lies where a held grant may write (`program_exposed`), whichever
@@ -183,10 +186,10 @@ given. A host enforces that only where it closes each of these:
     pipeline's configuration may not be the operator, as in a service whose tenants write
     their pipelines, and a reference sends what it names to a connector the author may
     control. `Secrets::new()` therefore resolves nothing. The operator gives each resolver,
-    scoped: `EnvSecrets::allowing` the variables listed, or `prefixed` those under a
-    non-empty prefix; `FileSecrets::within` the private directories listed, beneath which a
+    scoped: `Secrets::allow_env` the variables listed, or `allow_env_prefix` those under a
+    non-empty prefix; `allow_files` the private directories listed, beneath which a
     file is reached one name at a time through no link, `..` refused; and for `${secret:..}`
-    a store of named secrets (`Secrets::named`; `EnvSecrets::named("RDLT_SECRET_")` reads
+    a store of named secrets (`Secrets::secret_store`; `EnvSecrets::named("RDLT_SECRET_")` reads
     `RDLT_SECRET_<NAME>`). A reference outside them is refused (`secret_refused`), naming the
     field, never the reference. An author reaches what the operator listed, and the
     connector's own configuration; nothing else of the host's.
@@ -207,7 +210,7 @@ given. A host enforces that only where it closes each of these:
     went to. An in-process connector's errors are flattened to text and scrubbed the same way.
   - `rdlt-certify` reads a configuration from a file or standard input, never the command
     line, resolves the references `--secret-env` and `--secret-dir` allow, scrubs what it
-    prints, and certifies a binary inside the sandbox, with the grants its command line gives,
+    prints, and certifies a binary inside the sandbox, with the access its command line gives,
     unless told it is trusted.
 
 Rejected:

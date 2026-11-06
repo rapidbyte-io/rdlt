@@ -48,17 +48,18 @@ over a network ADR 0019's.
     id, the versions it accepts (a semver requirement), and a path or endpoint. The result is a
     `Placed`: the connector, its spec, its `Placement`, and the SHA-256 digest of its binary when
     it has one.
-  - The trait returns boxed futures, as every engine-facing trait does, so `Registry::fallback`
+  - The trait returns boxed futures, as every engine-facing trait does, so `Registry::remote` and `local`
     can hold any provider.
   - `ProviderError` says why a connector was not placed, with a stable code and the cause as its
     source where there is one: `NotFound`, `VersionMismatch`, `SpawnFailed` and
     `HandshakeFailed` for any placement; `Endpoint`, `Unreachable` and `Tls` for one over the
-    network (ADR 0018); `Unsupported`, `Secret`, `Shared`, `Sandbox`, `DigestMismatch` and
-    `Replaced` where a reference's requirement, its secrets, its binary or its sandbox refuse it
+    network (ADR 0018); `Unsupported`, `Refused`, `Secret`, `Shared`, `Sandbox`, `DigestMismatch`
+    and `Replaced` where a reference's requirement, its secrets, its binary or its sandbox refuse it
     (ADR 0043).
   - A version that is not semver matches only a reference that accepts any version.
-- **The registry** places connectors linked into the binary in process, and every other with its
-  fallback, else `NotFound`.
+- **The registry** places connectors linked into the binary in process, and every other where its
+  reference says: remotely for an endpoint, as a local binary otherwise, else
+  `Refused` (ADR 0043).
 - **`Local` places connectors in processes**, in a sandbox unless its binaries are stated to be
   trusted (`Local::sandboxed`, `Local::trusting_binaries`; ADR 0043).
   - Resolution takes the reference's path first. Without one, it looks for
