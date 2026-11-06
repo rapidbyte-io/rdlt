@@ -1,0 +1,98 @@
+[build-system]
+requires = ["maturin>=1.16,<2"]
+build-backend = "maturin"
+
+[project]
+name = "rdlt"
+description = "Move data exactly once: rdlt's pipelines, Python sources, transforms and connector SDK"
+readme = "python/README.md"
+license = "Apache-2.0"
+requires-python = ">=3.11"
+dynamic = ["version"]
+dependencies = ["pyarrow>=14", "pydantic>=2.7,<3"]
+classifiers = [
+  "Operating System :: MacOS",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: Free Threading :: 2 - Beta",
+  "Programming Language :: Rust",
+  "Typing :: Typed",
+]
+
+[dependency-groups]
+dev = [
+  "hypothesis==6.170.15",
+  "mypy==2.4.1",
+  "pyarrow==26.0.1",
+  "pyarrow-stubs==20.0.0.20260819",
+  "pydantic==2.14.3",
+  "pytest==9.2.0",
+  "pytest-timeout==2.4.0",
+]
+# Arrow producers the tests read from, where they publish wheels for the interpreter.
+producers = ["duckdb==2.0.0", "pandas==3.1.1", "polars==2.1.0"]
+
+[tool.uv]
+package = false
+default-groups = ["dev", "producers"]
+
+[tool.maturin]
+manifest-path = "crates/rdlt-python/Cargo.toml"
+module-name = "rdlt._native"
+python-source = "python"
+python-packages = ["rdlt"]
+
+[tool.pytest.ini_options]
+testpaths = ["python/tests"]
+timeout = 120
+addopts = ["--strict-markers", "--strict-config", "-ra"]
+markers = ["network: installs from PyPI, with a wheel of this tree built"]
+xfail_strict = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["python"]
+# The rest of the repository holds Rust, and Markdown whose code blocks are examples.
+extend-exclude = ["crates", "docs", "fuzz", "xtask"]
+
+[tool.ruff.lint]
+select = [
+  "A",
+  "ANN",
+  "B",
+  "BLE",
+  "C4",
+  "D",
+  "E",
+  "F",
+  "FBT",
+  "I",
+  "N",
+  "PERF",
+  "PL",
+  "PT",
+  "PTH",
+  "RET",
+  "RUF",
+  "S",
+  "SIM",
+  "T20",
+  "TRY",
+  "UP",
+  "W",
+]
+ignore = ["D105", "D107", "PLR0913", "TRY003"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"python/tests/**" = ["D103", "PLR2004", "S101", "S603"]
+
+[tool.pyright]
+include = ["python"]
+pythonVersion = "3.11"
+typeCheckingMode = "strict"
+venvPath = "."
+venv = ".venv"

@@ -35,6 +35,22 @@ fmt:
 python-env:
     UV_PYTHON_DOWNLOADS=never uv sync --locked --python "$(mise which python)"
 
+# Build the native extension into `python/rdlt` and install the package into `.venv`, editable
+python-develop: python-env
+    VIRTUAL_ENV="{{ justfile_directory() }}/.venv" maturin develop --uv
+
+# The Python package's static checks: ruff's format and lint, pyright strict over the package,
+# its tests and its examples, and stubtest of the native module's stub against the module built
+python-checks: python-develop
+    ruff format --check
+    ruff check
+    pyright
+    .venv/bin/python -m mypy.stubtest rdlt._native
+
+# The Python package's tests, against the editable install; extra arguments go to pytest
+python-test *args: python-develop
+    .venv/bin/python -m pytest {{ args }}
+
 # Run every static check CI runs
 lint: checks pins
 
@@ -62,6 +78,7 @@ checks: locked python-env
     RUSTFLAGS="-D warnings" cargo hack check --workspace --each-feature --no-dev-deps
     RUSTFLAGS="-D warnings" cargo check --package rdlt-engine --lib --tests
     actionlint
+    just python-checks
 
 # Check that each action is pinned to the commit of the version beside it; GITHUB_TOKEN, where
 # set, keeps the lookups within GitHub's rate limit. CI runs this in a job of its own, the only
@@ -83,6 +100,7 @@ test *args: python-env
     cargo test --workspace --all-features --doc
     cargo nextest run --workspace --all-features --benches -E 'kind(bench)'
     cargo nextest run --package rdlt-connector --features serve -E 'test(serve::probes)'
+    just python-test
 
 # Build the simulation's integration tests in the `sim` profile, optimised with its overflow
 # checks and debug assertions kept, into the archive `sim`, `sim-replay`, `stress` and `sim-rate`
