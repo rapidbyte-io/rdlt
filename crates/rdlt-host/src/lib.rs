@@ -36,7 +36,7 @@ pub use remote::{
     RemoteDestination, RemoteSource,
 };
 pub use secrets::{
-    Config, EnvSecrets, FileSecrets, Redactions, ReferenceFault, SecretError, SecretFault, SecretKind,
+    Config, EnvSecrets, Redactions, ReferenceFault, SecretError, SecretFault, SecretKind,
     SecretReference, SecretResolver, Secrets,
 };
 pub use supervise::TLS;

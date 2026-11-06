@@ -16,17 +16,27 @@ use crate::limits::SECRET_BYTES;
 /// one name at a time through no link, that neither its group nor others may read or write,
 /// of [`SECRET_BYTES`] at most; one line end at its end is not the secret's.
 #[derive(Clone, Debug)]
-pub struct FileSecrets {
+pub(crate) struct FileSecrets {
     directories: Vec<PathBuf>,
 }
 
 impl FileSecrets {
     /// Reads private files beneath `directories`, each an absolute path, and refuses every
     /// other file.
-    pub fn within(directories: impl IntoIterator<Item = impl Into<PathBuf>>) -> Self {
+    pub(crate) fn within(directories: impl IntoIterator<Item = impl Into<PathBuf>>) -> Self {
         Self {
             directories: directories.into_iter().map(Into::into).collect(),
         }
+    }
+
+    /// The resolver, reaching `directories` too.
+    pub(crate) fn extended(
+        mut self,
+        directories: impl IntoIterator<Item = impl Into<PathBuf>>,
+    ) -> Self {
+        self.directories
+            .extend(directories.into_iter().map(Into::into));
+        self
     }
 
     /// The directory listed that holds `path`, and the names beneath it that lead there.

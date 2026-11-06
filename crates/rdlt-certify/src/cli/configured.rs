@@ -46,12 +46,8 @@ pub(super) fn config(args: &Args) -> Result<serde_json::Value, Ended> {
         .build()
         .map_err(|error| Ended(IO, format!("starting the runtime failed: {error}")))?;
     let secrets = rdlt_host::Secrets::new()
-        .env(rdlt_host::EnvSecrets::allowing(
-            args.secret_env.iter().cloned(),
-        ))
-        .files(rdlt_host::FileSecrets::within(
-            args.secret_dir.iter().cloned(),
-        ));
+        .allow_env(args.secret_env.iter().cloned())
+        .allow_files(args.secret_dir.iter().cloned());
     let resolved = resolving
         .block_on(held.resolved(&secrets, redactions()))
         .map_err(&unusable)?;

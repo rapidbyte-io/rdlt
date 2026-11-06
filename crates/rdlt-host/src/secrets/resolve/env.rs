@@ -43,20 +43,20 @@ impl EnvSecrets {
     }
 
     /// Resolves `${env:NAME}` for each of `names`, and refuses every other variable.
-    pub fn allowing(names: impl IntoIterator<Item = impl Into<String>>) -> Self {
+    pub(crate) fn allowing(names: impl IntoIterator<Item = impl Into<String>>) -> Self {
         Self::scoped(Scope::Names(names.into_iter().map(Into::into).collect()))
     }
 
     /// Resolves `${env:NAME}` for each name that starts with `prefix`, which may not be
     /// empty, and refuses every other variable.
-    pub fn prefixed(prefix: impl Into<String>) -> Self {
+    pub(crate) fn prefixed(prefix: impl Into<String>) -> Self {
         Self::scoped(Scope::Prefix(prefix.into()))
     }
 
     /// Resolves `${secret:name}` from the variable `<prefix><NAME>`, the name in upper case
     /// with `_` for every character that is neither a letter nor a digit, as
     /// `EnvSecrets::named("RDLT_SECRET_")` does; to be given as a store of named secrets
-    /// ([`Secrets::named`](super::Secrets::named)).
+    /// ([`Secrets::secret_store`](super::Secrets::secret_store)).
     ///
     /// The prefix may not be empty: under an empty one every reference is refused.
     pub fn named(prefix: impl Into<String>) -> Self {
