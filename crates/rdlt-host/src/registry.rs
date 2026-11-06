@@ -1,5 +1,5 @@
-//! The registry: connectors linked into the engine's binary, placed in process, and a fallback
-//! provider for every other.
+//! The registry: connectors linked into the engine's binary, placed in process, and the
+//! placements every other reference names.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -17,16 +17,18 @@ use crate::guard::{Guarded, received};
 use crate::provider::{ConnectorRef, Honours, Placed, Placement, Provider, ProviderError, accepts};
 use crate::secrets::{Config, Redactions, SecretResolver, Secrets};
 
-/// Resolves an id to an in-process connector first, then to the fallback provider.
+/// Places each connector as its reference says: in process where its id is registered, remotely
+/// where the reference names an endpoint, and as a local binary otherwise.
 ///
-/// `Registry::trusted().trusted_source::<Tickets>().fallback(Local::sandboxed(Bubblewrap::new()))`.
+/// `Registry::trusted().trusted_source::<Tickets>().local(Local::sandboxed(Bubblewrap::new()))`.
 /// A connector placed in process shares the engine's address space and all its access: only
-/// code its embedder trusts as its own is registered, which the names say. In-process
-/// connectors are first-class, and pay no serialization.
+/// code its embedder trusts as its own is registered, which the names say. A reference whose
+/// placement the registry was not given is refused, never placed another way.
 pub struct Registry {
-    sources: HashMap<ConnectorId, Box<dyn SourceFactory>>,
-    destinations: HashMap<ConnectorId, Box<dyn DestinationFactory>>,
-    fallback: Option<Box<dyn Provider>>,
+    sources: HashMap<ConnectorId, Arc<dyn SourceFactory>>,
+    destinations: HashMap<ConnectorId, Arc<dyn DestinationFactory>>,
+    remote: Option<Box<dyn Provider>>,
+    local: Option<Box<dyn Provider>>,
     secrets: Arc<dyn SecretResolver>,
 }
 
@@ -51,43 +53,62 @@ impl fmt::Debug for Registry {
             .debug_struct("Registry")
             .field("sources", &sources)
             .field("destinations", &destinations)
-            .field("fallback", &self.fallback.is_some())
+            .field("remote", &self.remote.is_some())
+            .field("local", &self.local.is_some())
             .finish_non_exhaustive()
     }
 }
 
 impl Registry {
     /// A registry of the connectors its embedder trusts as its own code: none yet, and no
-    /// fallback.
+    /// other placement.
     pub fn trusted() -> Self {
         Self {
             sources: HashMap::new(),
             destinations: HashMap::new(),
-            fallback: None,
+            remote: None,
+            local: None,
             secrets: Arc::new(Secrets::new()),
         }
     }
 
     /// Places source `C`, which its embedder trusts, in process.
     #[must_use]
-    pub fn trusted_source<C: SourceConnector>(mut self) -> Self {
-        let factory = source_factory::<C>();
+    pub fn trusted_source<C: SourceConnector>(self) -> Self {
+        self.trusted_source_factory(Arc::from(source_factory::<C>()))
+    }
+
+    /// Places the source `factory` connects, which its embedder trusts, in process.
+    #[must_use]
+    pub fn trusted_source_factory(mut self, factory: Arc<dyn SourceFactory>) -> Self {
         self.sources.insert(factory.spec().id.clone(), factory);
         self
     }
 
     /// Places destination `C`, which its embedder trusts, in process.
     #[must_use]
-    pub fn trusted_destination<C: DestinationConnector>(mut self) -> Self {
-        let factory = destination_factory::<C>();
+    pub fn trusted_destination<C: DestinationConnector>(self) -> Self {
+        self.trusted_destination_factory(Arc::from(destination_factory::<C>()))
+    }
+
+    /// Places the destination `factory` connects, which its embedder trusts, in process.
+    #[must_use]
+    pub fn trusted_destination_factory(mut self, factory: Arc<dyn DestinationFactory>) -> Self {
         self.destinations.insert(factory.spec().id.clone(), factory);
         self
     }
 
-    /// Places every other connector with `provider`.
+    /// Places every reference that names an endpoint, and no registered id, with `provider`.
     #[must_use]
-    pub fn fallback(mut self, provider: impl Provider + 'static) -> Self {
-        self.fallback = Some(Box::new(provider));
+    pub fn remote(mut self, provider: impl Provider + 'static) -> Self {
+        self.remote = Some(Box::new(provider));
+        self
+    }
+
+    /// Places every reference that names no endpoint and no registered id with `provider`.
+    #[must_use]
+    pub fn local(mut self, provider: impl Provider + 'static) -> Self {
+        self.local = Some(Box::new(provider));
         self
     }
 
@@ -99,11 +120,17 @@ impl Registry {
         self
     }
 
-    fn not_found(reference: &ConnectorRef) -> ProviderError {
-        ProviderError::NotFound {
+    /// The placement `reference`, which no registered connector answers to, names: remote for
+    /// an endpoint, a local process otherwise; refused where this registry was given none.
+    fn placing(&self, reference: &ConnectorRef) -> Result<&dyn Provider, ProviderError> {
+        let (provider, placement) = match reference.endpoint {
+            Some(_) => (&self.remote, "remote"),
+            None => (&self.local, "process"),
+        };
+        provider.as_deref().ok_or_else(|| ProviderError::Refused {
             id: reference.id.clone(),
-            source: None,
-        }
+            placement,
+        })
     }
 
     /// The configuration an in-process connector named by `reference`, of `version`, is
@@ -151,10 +178,7 @@ impl Provider for Registry {
     ) -> BoxFuture<'a, Result<Placed<Box<dyn Source>>, ProviderError>> {
         Box::pin(async move {
             let Some(factory) = self.sources.get(&reference.id) else {
-                return match &self.fallback {
-                    Some(fallback) => fallback.source(reference, config).await,
-                    None => Err(Self::not_found(reference)),
-                };
+                return self.placing(reference)?.source(reference, config).await;
             };
             let version = &factory.spec().version;
             let (config, redactions) = self.configured(reference, version, config).await?;
@@ -178,10 +202,10 @@ impl Provider for Registry {
     ) -> BoxFuture<'a, Result<Placed<Box<dyn Destination>>, ProviderError>> {
         Box::pin(async move {
             let Some(factory) = self.destinations.get(&reference.id) else {
-                return match &self.fallback {
-                    Some(fallback) => fallback.destination(reference, config).await,
-                    None => Err(Self::not_found(reference)),
-                };
+                return self
+                    .placing(reference)?
+                    .destination(reference, config)
+                    .await;
             };
             let version = &factory.spec().version;
             let (config, redactions) = self.configured(reference, version, config).await?;

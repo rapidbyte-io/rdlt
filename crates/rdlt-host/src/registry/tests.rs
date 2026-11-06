@@ -13,8 +13,8 @@ fn memory() -> ConnectorRef {
     ConnectorRef::new(ConnectorId::parse("io.rapidbyte.memory").expect("a valid id"))
 }
 
-/// A provider that places nothing, and says which reference it was asked for.
-struct Refusing;
+/// A provider that places nothing, and names itself in its refusal.
+struct Refusing(&'static str);
 
 impl Provider for Refusing {
     fn source<'a>(
@@ -22,7 +22,7 @@ impl Provider for Refusing {
         reference: &'a ConnectorRef,
         _config: &'a serde_json::Value,
     ) -> BoxFuture<'a, Result<Placed<Box<dyn Source>>, ProviderError>> {
-        Box::pin(async move { Err(refused(reference)) })
+        Box::pin(async move { Err(refused(self.0, reference)) })
     }
 
     fn destination<'a>(
@@ -30,33 +30,35 @@ impl Provider for Refusing {
         reference: &'a ConnectorRef,
         _config: &'a serde_json::Value,
     ) -> BoxFuture<'a, Result<Placed<Box<dyn Destination>>, ProviderError>> {
-        Box::pin(async move { Err(refused(reference)) })
+        Box::pin(async move { Err(refused(self.0, reference)) })
     }
 }
 
-fn refused(reference: &ConnectorRef) -> ProviderError {
+fn refused(by: &'static str, reference: &ConnectorRef) -> ProviderError {
     ProviderError::NotFound {
         id: reference.id.clone(),
-        source: Some(std::io::Error::other("asked the fallback")),
+        source: Some(std::io::Error::other(by)),
     }
 }
 
-fn asked_the_fallback(error: &ProviderError) -> bool {
-    matches!(
-        error,
+/// Which provider refused `error`, where one of the doubles did.
+fn asked(error: &ProviderError) -> Option<String> {
+    match error {
         ProviderError::NotFound {
-            source: Some(_),
+            source: Some(source),
             ..
-        }
-    )
+        } => Some(source.to_string()),
+        _ => None,
+    }
 }
 
 #[tokio::test]
-async fn a_linked_connector_is_placed_in_process_before_the_fallback_is_asked() {
+async fn a_registered_connector_is_placed_in_process_and_asks_no_other_placement() {
     let registry = Registry::trusted()
         .trusted_source::<MemorySource>()
         .trusted_destination::<MemoryDestination>()
-        .fallback(Refusing);
+        .remote(Refusing("remote"))
+        .local(Refusing("local"));
     let config = serde_json::json!({ "streams": {} });
     let source = Provider::source(&registry, &memory(), &config)
         .await
@@ -73,39 +75,36 @@ async fn a_linked_connector_is_placed_in_process_before_the_fallback_is_asked() 
 }
 
 #[tokio::test]
-async fn any_other_connector_goes_to_the_fallback_or_is_not_found() {
+async fn an_unregistered_reference_goes_where_it_names_or_is_refused() {
     let other = ConnectorRef::new(ConnectorId::parse("io.example.other").expect("a valid id"));
+    let remote = other.clone().endpoint("grpcs://connector.example:7443");
     let config = serde_json::json!({});
-    let with = Registry::trusted()
-        .trusted_source::<MemorySource>()
-        .fallback(Refusing);
-    assert!(asked_the_fallback(
-        &Provider::source(&with, &other, &config)
+    let both = Registry::trusted()
+        .remote(Refusing("remote"))
+        .local(Refusing("local"));
+    for (reference, by) in [(&other, "local"), (&remote, "remote")] {
+        let source = Provider::source(&both, reference, &config)
             .await
             .err()
-            .expect("refused")
-    ));
-    assert!(asked_the_fallback(
-        &Provider::destination(&with, &other, &config)
+            .expect("refused");
+        let destination = Provider::destination(&both, reference, &config)
             .await
             .err()
-            .expect("refused")
-    ));
-    let without = Registry::trusted();
-    for refused in [
-        Provider::source(&without, &other, &config)
+            .expect("refused");
+        assert_eq!(asked(&source).as_deref(), Some(by), "{source}");
+        assert_eq!(asked(&destination).as_deref(), Some(by), "{destination}");
+    }
+    let none = Registry::trusted();
+    for (reference, placement) in [(&other, "process"), (&remote, "remote")] {
+        let refused = Provider::source(&none, reference, &config)
             .await
             .err()
-            .expect("refused"),
-        Provider::destination(&without, &other, &config)
-            .await
-            .err()
-            .expect("refused"),
-    ] {
+            .expect("refused");
         assert!(
-            matches!(refused, ProviderError::NotFound { source: None, .. }),
+            matches!(&refused, ProviderError::Refused { placement: by, .. } if *by == placement),
             "{refused}"
         );
+        assert_eq!(refused.code(), "placement_refused");
     }
 }
 
@@ -155,11 +154,12 @@ fn a_registry_debugs_its_connectors_by_id() {
     let registry = Registry::trusted()
         .trusted_source::<MemorySource>()
         .trusted_destination::<MemoryDestination>()
-        .fallback(Refusing);
+        .remote(Refusing("remote"))
+        .local(Refusing("local"));
     assert_eq!(
         format!("{registry:?}"),
         "Registry { sources: [\"io.rapidbyte.memory\"], destinations: \
-         [\"io.rapidbyte.memory\"], fallback: true, .. }"
+         [\"io.rapidbyte.memory\"], remote: true, local: true, .. }"
     );
 }
 

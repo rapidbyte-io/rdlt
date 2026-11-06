@@ -330,14 +330,10 @@ async fn dropped_after_handshake(reset: bool) {
 #[test]
 fn a_remote_provider_debugs_what_it_holds() {
     let pki = Pki::new("ca");
-    let remote = Remote::new(identity(&pki.client("host")), pki.ca())
-        .fallback(rdlt_host::Local::trusting_binaries());
+    let remote = Remote::new(identity(&pki.client("host")), pki.ca());
     let shown = format!("{remote:?}");
     assert!(shown.starts_with("Remote { identity: Identity"), "{shown}");
-    assert!(
-        shown.contains("fallback: true, secrets: Secrets"),
-        "{shown}"
-    );
+    assert!(shown.contains("secrets: Secrets"), "{shown}");
 }
 
 #[tokio::test]
@@ -386,7 +382,7 @@ async fn an_endpoint_nothing_listens_on_is_unreachable_and_what_is_no_endpoint_i
 }
 
 #[tokio::test]
-async fn a_reference_without_an_endpoint_goes_to_the_fallback() {
+async fn a_reference_without_an_endpoint_is_not_found_remotely() {
     let pki = Pki::new("ca");
     let id = ConnectorId::parse("test.scripted").expect("a valid id");
     let local = ConnectorRef::new(id).path(example("scripted_connector"));
@@ -400,13 +396,6 @@ async fn a_reference_without_an_endpoint_goes_to_the_fallback() {
         matches!(refused, ProviderError::NotFound { .. }),
         "{refused}"
     );
-    let spawning = Remote::new(identity(&pki.client("host")), pki.ca())
-        .fallback(rdlt_host::Local::trusting_binaries().env_passthrough("LLVM_PROFILE_FILE"));
-    let placed = spawning
-        .source(&local, &serde_json::json!({}))
-        .await
-        .expect("the fallback spawns it");
-    assert!(matches!(placed.placement, Placement::Process { .. }));
 }
 
 #[tokio::test]

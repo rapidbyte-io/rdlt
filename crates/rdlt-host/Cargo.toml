@@ -54,6 +54,7 @@ http.workspace = true
 http-body.workspace = true
 hyper = { workspace = true, features = ["client", "http2", "server"] }
 hyper-util = { workspace = true, features = ["service", "tokio"] }
+insta.workspace = true
 nix = { workspace = true, features = ["process", "resource", "sched", "signal", "time"] }
 peak_alloc.workspace = true
 proptest.workspace = true

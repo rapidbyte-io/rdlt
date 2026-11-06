@@ -201,11 +201,12 @@ async fn a_connector_reached_through_a_function_is_placed_for_a_bare_reference_a
 }
 
 #[tokio::test]
-async fn a_requirement_is_refused_before_a_fallback_or_a_kill_is_reached() {
-    // The registry knows the connector, so the fallback that could honour a path is not asked.
+async fn a_requirement_is_refused_before_another_placement_or_a_kill_is_reached() {
+    // The registry knows the connector, so the local placement that could honour a path is
+    // never asked.
     let registry = Registry::trusted()
         .trusted_source::<MemorySource>()
-        .fallback(Local::trusting_binaries().kills(&Kills::new()));
+        .local(Local::trusting_binaries().kills(&Kills::new()));
     let memory = ConnectorRef::new(ConnectorId::parse("io.rapidbyte.memory").expect("a valid id"));
     let reference = memory.path(example("scripted_connector"));
     let placed = registry

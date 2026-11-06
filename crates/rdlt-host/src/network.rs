@@ -79,7 +79,6 @@ pub struct Remote {
     ca: PathBuf,
     network: Arc<dyn Network>,
     options: Options,
-    fallback: Option<Arc<dyn Provider>>,
     secrets: Arc<dyn SecretResolver>,
 }
 
@@ -102,7 +101,6 @@ impl fmt::Debug for Remote {
             .field("ca", &self.ca)
             .field("network", &self.network)
             .field("options", &self.options)
-            .field("fallback", &self.fallback.is_some())
             .field("secrets", &self.secrets)
             .finish()
     }
@@ -117,7 +115,6 @@ impl Remote {
             ca: ca.into(),
             network: Arc::new(Tcp),
             options: Options::default(),
-            fallback: None,
             secrets: Arc::new(Secrets::new()),
         }
     }
@@ -150,13 +147,6 @@ impl Remote {
     #[must_use]
     pub fn options(mut self, options: Options) -> Self {
         self.options = options;
-        self
-    }
-
-    /// Places connectors whose reference has no endpoint with `provider`.
-    #[must_use]
-    pub fn fallback(mut self, provider: impl Provider + 'static) -> Self {
-        self.fallback = Some(Arc::new(provider));
         self
     }
 
@@ -261,10 +251,7 @@ impl Provider for Remote {
     ) -> BoxFuture<'a, Result<Placed<Box<dyn Source>>, ProviderError>> {
         Box::pin(async move {
             let Some(endpoint) = &reference.endpoint else {
-                return match &self.fallback {
-                    Some(fallback) => fallback.source(reference, config).await,
-                    None => Err(not_found(reference)),
-                };
+                return Err(not_found(reference));
             };
             let supervisor = self
                 .start(reference, endpoint, Role::Source, config)
@@ -288,10 +275,7 @@ impl Provider for Remote {
     ) -> BoxFuture<'a, Result<Placed<Box<dyn Destination>>, ProviderError>> {
         Box::pin(async move {
             let Some(endpoint) = &reference.endpoint else {
-                return match &self.fallback {
-                    Some(fallback) => fallback.destination(reference, config).await,
-                    None => Err(not_found(reference)),
-                };
+                return Err(not_found(reference));
             };
             let supervisor = self
                 .start(reference, endpoint, Role::Destination, config)

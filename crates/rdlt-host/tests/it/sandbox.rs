@@ -693,3 +693,24 @@ pub(crate) mod bubblewrap {
         assert_eq!(connectors, 1);
     }
 }
+
+/// Where no sandbox exists, a local connector that is not trusted is refused, and the refusal
+/// names both ways to run it.
+#[cfg(not(target_os = "linux"))]
+#[tokio::test]
+async fn without_a_sandbox_a_local_connector_is_refused_naming_both_remedies() {
+    let local = Local::sandboxed(Bubblewrap::new());
+    let refused = local
+        .source(&scripted(), &serde_json::json!({}))
+        .await
+        .err()
+        .expect("refused");
+    assert_eq!(refused.code(), "sandbox_unsupported");
+    let ProviderError::Sandbox { source, .. } = &refused else {
+        panic!("not a sandbox refusal: {refused}");
+    };
+    insta::assert_snapshot!(
+        source.to_string(),
+        @"this platform has no sandbox for a local connector: run it remotely, or trust its binaries"
+    );
+}
