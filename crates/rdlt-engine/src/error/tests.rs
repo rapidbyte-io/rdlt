@@ -444,3 +444,32 @@ fn a_connector_s_text_is_shown_and_cut_to_its_bound() {
     assert!(cut.ends_with(CUT));
     assert_eq!(shown("a\u{202e}b"), "a\\u{202e}b");
 }
+
+#[test]
+fn a_transform_failure_is_its_own_kind_and_never_retried() {
+    let failed = Error::new(ErrorKind::Transform, "stream s: transform t failed on a batch")
+        .with_code(codes::TRANSFORM_FAILED);
+    assert_eq!(failed.kind(), ErrorKind::Transform);
+    assert_eq!(failed.origin(), Origin::Engine);
+    assert!(!failed.is_retryable());
+    assert_eq!(
+        serde_json::to_string(&ErrorKind::Transform).unwrap(),
+        "\"transform\""
+    );
+}
+
+#[test]
+fn the_transform_codes_read_as_their_names() {
+    let named = [
+        (codes::PLAN_INCLUDE_INVALID, "plan_include_invalid"),
+        (codes::TRANSFORM_BOUND, "transform_bound"),
+        (codes::TRANSFORM_CONTRACT, "transform_contract"),
+        (codes::TRANSFORM_FAILED, "transform_failed"),
+        (codes::TRANSFORM_INVALID, "transform_invalid"),
+        (codes::TRANSFORM_PARTIAL, "transform_partial"),
+        (codes::TRANSFORM_SCHEMA, "transform_schema"),
+    ];
+    for (code, text) in named {
+        assert_eq!(code.as_str(), text);
+    }
+}

@@ -38,6 +38,8 @@ pub enum ErrorKind {
     Internal,
     /// The memory budget had no room for what the run holds, for as long as a request waits.
     Memory,
+    /// A transform failed on a batch; the same batch fails the same way again.
+    Transform,
 }
 
 /// Who failed: the engine, or the connector on one side of it.
