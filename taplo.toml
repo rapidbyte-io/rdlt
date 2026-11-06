@@ -1,3 +1,6 @@
+# The Python environment holds other projects' manifests.
+exclude = [".venv/**"]
+
 [formatting]
 column_width = 100
 array_auto_collapse = true

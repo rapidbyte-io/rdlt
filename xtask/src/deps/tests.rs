@@ -91,3 +91,37 @@ fn only_the_connector_and_host_crates_use_the_audited_crate() {
         );
     }
 }
+
+#[test]
+fn the_python_extension_uses_the_sdk_and_certification_and_nothing_uses_it() {
+    let crates = crates(&[
+        "rdlt-certify",
+        "rdlt-connector",
+        "rdlt-engine",
+        "rdlt-host",
+        "rdlt-python",
+    ]);
+    for allowed in [
+        edge("rdlt-python", "rdlt-certify", false),
+        edge("rdlt-python", "rdlt-connector", false),
+        edge("rdlt-python", "rdlt-engine", true),
+    ] {
+        let forbidden = check(&crates, std::slice::from_ref(&allowed));
+        assert!(
+            !forbidden.contains(&Violation::Forbidden(allowed.clone())),
+            "{allowed:?}"
+        );
+    }
+    for refused in [
+        edge("rdlt-python", "rdlt-engine", false),
+        edge("rdlt-python", "rdlt-host", false),
+        edge("rdlt-connector", "rdlt-python", false),
+        edge("rdlt-certify", "rdlt-python", true),
+    ] {
+        let found = check(&crates, std::slice::from_ref(&refused));
+        assert!(
+            found.contains(&Violation::Forbidden(refused.clone())),
+            "{refused:?}"
+        );
+    }
+}

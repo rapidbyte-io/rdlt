@@ -276,7 +276,7 @@ const PYRIGHT: &str = "npm:pyright";
 const NPM_CONFIG: &str = "[tools]\n\"npm:pyright\" = \"1.1.414\"\n";
 
 /// npm's lockfile of one package, with its integrity.
-const PACKAGES: &str = "lockfileVersion: '9.0'\npackages:\n\n  pyright@1.1.414:\n    resolution: {integrity: sha512-FPZZb51jepDX4eP7TEYDeNFtmE3Wgwkk}\n";
+const PACKAGES: &str = "lockfileVersion: '9.0'\npackages:\n\n  pyright@1.1.414:\n    resolution: {integrity: sha512-cHlyaWdodC0xLjEuNDE0}\n";
 
 /// The package lockfile at the path an `aube` entry names.
 const PACKAGES_AT: &str = ".mise/locks/npm-pyright/1.1.414/aube-lock.yaml";
