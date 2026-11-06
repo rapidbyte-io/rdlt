@@ -14,9 +14,7 @@ use zeroize::{Zeroize as _, Zeroizing};
 pub(crate) use redact::DROPPED;
 pub use redact::Redactions;
 pub use reference::ReferenceFault;
-pub use resolve::{
-    EnvSecrets, FileSecrets, SecretFault, SecretKind, SecretReference, SecretResolver, Secrets,
-};
+pub use resolve::{EnvSecrets, SecretFault, SecretKind, SecretReference, SecretResolver, Secrets};
 
 use crate::limits::SECRET_REFERENCES;
 use rdlt_wire::limits::{CONFIG_BYTES, count};

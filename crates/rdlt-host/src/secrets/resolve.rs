@@ -13,7 +13,7 @@ use rdlt_connector::{BoxFuture, Secret};
 use crate::limits::SECRET_BYTES;
 
 pub use env::EnvSecrets;
-pub use file::FileSecrets;
+pub(crate) use file::FileSecrets;
 
 /// What a secret reference names its secret by.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -118,17 +118,18 @@ fn admit(bytes: usize) -> Result<(), SecretFault> {
     Ok(())
 }
 
-/// The resolvers a provider uses, each given by the operator: none by default, so that a
-/// configuration's author reaches no secret of the host's but those the operator lets them.
+/// The resolvers a provider uses, each allowed by the operator: none by default, so that a
+/// configuration's author reaches no secret of the host's but those the operator allows.
 ///
-/// `${env:NAME}` goes to [`env`](Self::env), `${file:/path}` to [`files`](Self::files), and
-/// `${secret:name}` to [`named`](Self::named); a reference of a kind no resolver was given for
-/// is refused.
+/// `${env:NAME}` reaches the variables [`allow_env`](Self::allow_env) and
+/// [`allow_env_prefix`](Self::allow_env_prefix) allow, `${file:/path}` the directories
+/// [`allow_files`](Self::allow_files) allows, and `${secret:name}` the
+/// [`secret_store`](Self::secret_store); every other reference is refused.
 #[derive(Clone, Default)]
 pub struct Secrets {
-    env: Option<EnvSecrets>,
+    env: Vec<EnvSecrets>,
     files: Option<FileSecrets>,
-    named: Option<Arc<dyn SecretResolver>>,
+    store: Option<Arc<dyn SecretResolver>>,
 }
 
 impl fmt::Debug for Secrets {
@@ -137,7 +138,7 @@ impl fmt::Debug for Secrets {
             .debug_struct("Secrets")
             .field("env", &self.env)
             .field("files", &self.files)
-            .field("named", &self.named.is_some())
+            .field("store", &self.store.is_some())
             .finish()
     }
 }
@@ -148,24 +149,40 @@ impl Secrets {
         Self::default()
     }
 
-    /// Resolves `${env:NAME}` with `env`, which reaches only the variables it lists.
+    /// Lets `${env:NAME}` reach each of `names`, beside what was allowed before.
     #[must_use]
-    pub fn env(mut self, env: EnvSecrets) -> Self {
-        self.env = Some(env);
+    pub fn allow_env(mut self, names: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.env.push(EnvSecrets::allowing(names));
         self
     }
 
-    /// Resolves `${file:/path}` with `files`, which reaches only the directories it lists.
+    /// Lets `${env:NAME}` reach each variable whose name starts with `prefix`, which may not be
+    /// empty: under an empty one nothing is reached.
     #[must_use]
-    pub fn files(mut self, files: FileSecrets) -> Self {
-        self.files = Some(files);
+    pub fn allow_env_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.env.push(EnvSecrets::prefixed(prefix));
+        self
+    }
+
+    /// Lets `${file:/path}` reach private files beneath each of `directories`, each an absolute
+    /// path, beside those allowed before.
+    #[must_use]
+    pub fn allow_files(
+        mut self,
+        directories: impl IntoIterator<Item = impl Into<PathBuf>>,
+    ) -> Self {
+        let allowed = match self.files.take() {
+            Some(files) => files.extended(directories),
+            None => FileSecrets::within(directories),
+        };
+        self.files = Some(allowed);
         self
     }
 
     /// Resolves `${secret:name}` with `resolver`: the operator's store of named secrets.
     #[must_use]
-    pub fn named(mut self, resolver: impl SecretResolver + 'static) -> Self {
-        self.named = Some(Arc::new(resolver));
+    pub fn secret_store(mut self, resolver: impl SecretResolver + 'static) -> Self {
+        self.store = Some(Arc::new(resolver));
         self
     }
 }
@@ -175,18 +192,32 @@ impl SecretResolver for Secrets {
         &'a self,
         reference: &'a SecretReference,
     ) -> BoxFuture<'a, Result<Secret<String>, SecretFault>> {
-        match reference.kind {
-            SecretKind::Env if let Some(env) = &self.env => env.resolve(reference),
-            SecretKind::File if let Some(files) = &self.files => files.resolve(reference),
-            SecretKind::Named if let Some(named) = &self.named => named.resolve(reference),
-            SecretKind::Env | SecretKind::File | SecretKind::Named => {
-                Box::pin(async { Err(SecretFault::Refused) })
+        Box::pin(async move {
+            match reference.kind {
+                SecretKind::Env => {
+                    for env in &self.env {
+                        match env.resolve(reference).await {
+                            Err(SecretFault::Refused) => {}
+                            answered => return answered,
+                        }
+                    }
+                    Err(SecretFault::Refused)
+                }
+                SecretKind::File => match &self.files {
+                    Some(files) => files.resolve(reference).await,
+                    None => Err(SecretFault::Refused),
+                },
+                SecretKind::Named => match &self.store {
+                    Some(store) => store.resolve(reference).await,
+                    None => Err(SecretFault::Refused),
+                },
             }
-        }
+        })
     }
+
     fn directories(&self) -> Vec<PathBuf> {
         let files = self.files.iter().flat_map(SecretResolver::directories);
-        let named = self.named.iter().flat_map(|named| named.directories());
-        files.chain(named).collect()
+        let store = self.store.iter().flat_map(|store| store.directories());
+        files.chain(store).collect()
     }
 }

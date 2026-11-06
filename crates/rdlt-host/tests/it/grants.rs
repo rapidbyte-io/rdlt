@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use rdlt_host::{ConnectorRef, FileSecrets, Local, Provider as _, Secrets};
+use rdlt_host::{ConnectorRef, Local, Provider as _, Secrets};
 
 use crate::process::{example, local, scripted, scripted_in};
 
@@ -49,7 +49,6 @@ async fn no_placement_is_made_while_a_root_that_may_be_written_holds_what_the_ho
     let host = executable.parent().expect("it is in a directory");
     let elsewhere = tempfile::tempdir().expect("a temporary directory");
     let alone = scripted_in(elsewhere.path());
-    let secrets = FileSecrets::within([held.join("secrets")]);
     for (local, reference, what) in [
         (
             under().connectors(held.join("bin")),
@@ -62,7 +61,7 @@ async fn no_placement_is_made_while_a_root_that_may_be_written_holds_what_the_ho
             "the host's state",
         ),
         (
-            under().secrets(Secrets::new().files(secrets)),
+            under().secrets(Secrets::new().allow_files([held.join("secrets")])),
             alone.clone(),
             "secrets",
         ),

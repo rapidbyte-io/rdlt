@@ -7,9 +7,10 @@ use rdlt_connector::{BoxFuture, Secret};
 use serde_json::json;
 
 use super::reference::{Piece, pieces};
+use super::resolve::FileSecrets;
 use super::{
-    Config, EnvSecrets, FileSecrets, Redactions, ReferenceFault, SecretError, SecretFault,
-    SecretKind, SecretReference, SecretResolver, Secrets, Wiping, wipe,
+    Config, EnvSecrets, Redactions, ReferenceFault, SecretError, SecretFault, SecretKind,
+    SecretReference, SecretResolver, Secrets, Wiping, wipe,
 };
 use crate::limits::{SECRET_BYTES, SECRET_NAME_BYTES, SECRET_REFERENCES};
 use rdlt_wire::limits::CONFIG_BYTES;
@@ -560,7 +561,8 @@ async fn the_environment_resolves_only_the_variables_its_operator_lists() {
 
 #[tokio::test]
 async fn named_secrets_come_from_the_store_the_operator_gives_and_from_nothing_else() {
-    let by_prefix = Secrets::new().named(EnvSecrets::named("RDLT_SECRET_").reading(variables));
+    let by_prefix =
+        Secrets::new().secret_store(EnvSecrets::named("RDLT_SECRET_").reading(variables));
     let found = resolve(&by_prefix, SecretKind::Named, "api-key.2").await;
     assert_eq!(found.expect("set"), "k-12345");
     let fault = resolve(&by_prefix, SecretKind::Env, "DB_PASSWORD")
@@ -568,12 +570,12 @@ async fn named_secrets_come_from_the_store_the_operator_gives_and_from_nothing_e
         .expect_err("no env");
     assert!(matches!(fault, SecretFault::Refused));
     // An empty prefix reaches no variable, as `DB_PASSWORD` would be reached by `db_password`.
-    let unprefixed = Secrets::new().named(EnvSecrets::named("").reading(variables));
+    let unprefixed = Secrets::new().secret_store(EnvSecrets::named("").reading(variables));
     let fault = resolve(&unprefixed, SecretKind::Named, "db_password")
         .await
         .expect_err("no prefix, nothing");
     assert!(matches!(fault, SecretFault::Refused), "{fault:?}");
-    let vaulted = Secrets::new().named(vault());
+    let vaulted = Secrets::new().secret_store(vault());
     let found = resolve(&vaulted, SecretKind::Named, "api-key").await;
     assert_eq!(found.expect("the vault holds it"), "k-12345");
     // Not read from the environment once a store is given.
@@ -583,7 +585,7 @@ async fn named_secrets_come_from_the_store_the_operator_gives_and_from_nothing_e
     assert!(matches!(fault, SecretFault::Missing));
     let shown = format!("{vaulted:?}");
     assert!(
-        shown.contains("named: true") && shown.contains("env: None"),
+        shown.contains("store: true") && shown.contains("env: []"),
         "{shown}"
     );
 }
@@ -616,8 +618,8 @@ async fn a_configuration_author_reaches_no_secret_of_the_host_the_operator_did_n
         "home": "${env:HOME}",
     });
     let scoped = Secrets::new()
-        .env(EnvSecrets::allowing(["PGPASSWORD"]))
-        .files(FileSecrets::within([listed.path()]));
+        .allow_env(["PGPASSWORD"])
+        .allow_files([listed.path()]);
     for secrets in [Secrets::new(), scoped.clone()] {
         let redactions = Redactions::new();
         let sent = Config::from(&document)
@@ -704,7 +706,7 @@ async fn a_private_file_resolves_to_its_text_without_the_line_end_at_its_end() {
         ("empty", b"", ""),
     ] {
         let files = FileSecrets::within([directory.path()]);
-        let secrets = Secrets::new().files(files.clone());
+        let secrets = Secrets::new().allow_files([directory.path()]);
         for resolver in [&files as &dyn SecretResolver, &secrets] {
             let found = resolve(resolver, SecretKind::File, &at(name, text)).await;
             assert_eq!(found.expect("it reads"), secret, "{name}");
@@ -942,9 +944,9 @@ impl SecretResolver for Filed {
 fn the_resolvers_list_every_directory_they_read_secrets_from() {
     let (listed, stored) = (std::path::PathBuf::from("/files"), "/stored".into());
     let both = Secrets::new()
-        .env(EnvSecrets::allowing(["HOME"]))
-        .files(FileSecrets::within([listed.clone()]))
-        .named(Filed(std::path::PathBuf::from("/stored")));
+        .allow_env(["HOME"])
+        .allow_files([listed.clone()])
+        .secret_store(Filed(std::path::PathBuf::from("/stored")));
     assert_eq!(both.directories(), [listed.clone(), stored]);
     assert_eq!(
         FileSecrets::within([listed.clone()]).directories(),
@@ -1022,4 +1024,59 @@ fn a_document_under_resolution_is_wiped_however_its_resolution_ends() {
         document,
         json!({ "token": "", "nested": ["", {"deeper": ""}] })
     );
+}
+
+/// What `secrets` answers for a reference of `kind` to `name`: `Missing` where it reaches the
+/// name and nothing is there, `Refused` where it does not reach it.
+async fn answer(secrets: &Secrets, kind: SecretKind, name: &str) -> SecretFault {
+    let reference = SecretReference {
+        kind,
+        name: name.to_owned(),
+    };
+    secrets
+        .resolve(&reference)
+        .await
+        .expect_err("no test secret is set")
+}
+
+#[tokio::test]
+async fn a_host_reaches_the_variables_files_and_store_it_allows_and_nothing_else() {
+    let files = tempfile::tempdir().expect("a directory");
+    let secrets = Secrets::new()
+        .allow_env(["RDLT_TEST_UNSET_A"])
+        .allow_env(["RDLT_TEST_UNSET_B"])
+        .allow_env_prefix("RDLT_TEST_PREFIXED_")
+        .allow_files([files.path()])
+        .secret_store(EnvSecrets::named("RDLT_TEST_STORE_"));
+    let absent = files.path().join("absent");
+    let reached = [
+        (SecretKind::Env, "RDLT_TEST_UNSET_A".to_owned()),
+        (SecretKind::Env, "RDLT_TEST_UNSET_B".to_owned()),
+        (SecretKind::Env, "RDLT_TEST_PREFIXED_X".to_owned()),
+        (SecretKind::File, absent.display().to_string()),
+        (SecretKind::Named, "anything".to_owned()),
+    ];
+    for (kind, name) in reached {
+        let fault = answer(&secrets, kind, &name).await;
+        assert!(
+            matches!(fault, SecretFault::Missing),
+            "{kind} {name}: {fault}"
+        );
+    }
+    let refused = [
+        (SecretKind::Env, "HOME".to_owned()),
+        (SecretKind::File, "/etc/passwd".to_owned()),
+    ];
+    for (kind, name) in refused {
+        let fault = answer(&secrets, kind, &name).await;
+        assert!(
+            matches!(fault, SecretFault::Refused),
+            "{kind} {name}: {fault}"
+        );
+    }
+    let nothing = Secrets::new();
+    assert!(matches!(
+        answer(&nothing, SecretKind::Named, "anything").await,
+        SecretFault::Refused
+    ));
 }
