@@ -263,6 +263,15 @@ pub enum ProviderError {
         /// The placement that would have run it.
         placement: &'static str,
     },
+    /// The reference needs a placement this host was not given: remote for a reference that
+    /// names an endpoint, a local process for any other that names no registered connector.
+    #[error("connector `{id}` needs {placement} placement, which this host does not allow")]
+    Refused {
+        /// The connector's id.
+        id: ConnectorId,
+        /// The placement it needs: `remote` or `process`.
+        placement: &'static str,
+    },
     /// A secret the connector's configuration refers to did not resolve, or the configuration
     /// cannot be held.
     #[error("the configuration of connector `{id}` could not be prepared")]
@@ -396,6 +405,7 @@ impl ProviderError {
     pub fn code(&self) -> &'static str {
         match self {
             Self::Unsupported { .. } => "placement_unsupported",
+            Self::Refused { .. } => "placement_refused",
             Self::Secret { source, .. } => source.code(),
             Self::Sandbox { source, .. } => source.code(),
             Self::Shared { .. } => "binary_shared",

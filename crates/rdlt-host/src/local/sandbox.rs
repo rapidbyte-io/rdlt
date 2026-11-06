@@ -107,8 +107,11 @@ pub struct Launcher {
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum SandboxError {
-    /// This platform has no sandbox: untrusted connectors run remotely.
-    #[error("this platform has no sandbox for a local connector")]
+    /// This platform has no sandbox: untrusted connectors run remotely, or the operator trusts
+    /// the binaries.
+    #[error(
+        "this platform has no sandbox for a local connector: run it remotely, or trust its binaries"
+    )]
     Unsupported,
     /// The sandbox's launcher is not where it is expected.
     #[error("the sandbox launcher is not at {}", path.display())]
