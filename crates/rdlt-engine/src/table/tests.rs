@@ -1910,15 +1910,31 @@ fn a_list_view_of_maps_normalizes_as_the_list_it_views() {
         None,
     ));
     let view: ArrayRef = Arc::new(arrow_array::ListViewArray::new(
-        item,
+        Arc::clone(&item),
         ScalarBuffer::from(vec![0_i32]),
         ScalarBuffer::from(vec![2_i32]),
+        Arc::clone(&maps),
+        None,
+    ));
+    let large_list: ArrayRef = Arc::new(arrow_array::LargeListArray::new(
+        Arc::clone(&item),
+        OffsetBuffer::from_lengths([2]),
+        Arc::clone(&maps),
+        None,
+    ));
+    let large_view: ArrayRef = Arc::new(arrow_array::LargeListViewArray::new(
+        item,
+        ScalarBuffer::from(vec![0_i64]),
+        ScalarBuffer::from(vec![2_i64]),
         maps,
         None,
     ));
-    let field = Field::from_arrow(&ArrowField::new("m", list.data_type().clone(), true)).unwrap();
-    let normalize = |array| super::convert::normalize(array, field.logical_type()).unwrap();
-    assert_eq!(normalize(&view).as_ref(), normalize(&list).as_ref());
+    for (view, list) in [(view, list), (large_view, large_list)] {
+        let field =
+            Field::from_arrow(&ArrowField::new("m", list.data_type().clone(), true)).unwrap();
+        let normalize = |array| super::convert::normalize(array, field.logical_type()).unwrap();
+        assert_eq!(normalize(&view).as_ref(), normalize(&list).as_ref());
+    }
 }
 
 /// The plan lowering `batch` into `model`, as a partition finds it.
