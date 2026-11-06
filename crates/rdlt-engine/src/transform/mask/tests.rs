@@ -124,7 +124,67 @@ fn a_nested_field_is_masked_with_its_siblings_and_its_parents_nulls_shared() {
     let parent = output.column(0).as_struct();
     assert!(Arc::ptr_eq(parent.column(1), &count));
     assert_eq!(parent.nulls(), Some(&nulls));
-    assert_eq!(parent.column(0).data_type(), &DataType::Utf8);
+    assert_eq!(
+        parent
+            .column(0)
+            .as_string::<i32>()
+            .iter()
+            .collect::<Vec<_>>(),
+        [Some("x"); 3]
+    );
+}
+
+#[test]
+fn a_mask_two_structs_deep_through_a_required_middle_struct_builds_what_output_says() {
+    let leaf: ArrayRef = Arc::new(StringArray::from(vec!["a", "b"]));
+    let inner_fields = Fields::from(vec![Field::new("c", DataType::Utf8, false)]);
+    let inner = StructArray::new(inner_fields.clone(), vec![leaf], None);
+    let outer_fields = Fields::from(vec![Field::new("b", DataType::Struct(inner_fields), false)]);
+    let outer = StructArray::new(outer_fields, vec![Arc::new(inner)], None);
+    let input = one("a", Arc::new(outer));
+    let op = Op::mask([path("a.b.c")], Mask::redact("x"));
+    let output = op.apply(input.clone()).unwrap();
+    assert_eq!(output.schema(), op.output(input.schema_ref()).unwrap());
+    let middle = output.column(0).as_struct().column(0).as_struct();
+    assert_eq!(
+        middle
+            .column(0)
+            .as_string::<i32>()
+            .iter()
+            .collect::<Vec<_>>(),
+        [Some("x"); 2]
+    );
+}
+
+#[test]
+fn a_masked_column_no_longer_names_an_extension_type() {
+    let marked = |name: &str, column: ArrayRef| {
+        let field = Field::new(name, column.data_type().clone(), true).with_metadata(
+            [
+                ("ARROW:extension:name".to_owned(), "arrow.json".to_owned()),
+                ("ARROW:extension:metadata".to_owned(), String::new()),
+                ("other".to_owned(), "kept".to_owned()),
+            ]
+            .into(),
+        );
+        RecordBatch::try_new(
+            Arc::new(arrow_schema::Schema::new(vec![field])),
+            vec![column],
+        )
+        .unwrap()
+    };
+    for mask in [key("k"), Mask::redact("x"), Mask::Null] {
+        let input = marked("j", Arc::new(StringArray::from(vec!["{}"])));
+        let op = Op::mask(["j"], mask);
+        let from_output = op.output(input.schema_ref()).unwrap();
+        let from_apply = op.apply(input).unwrap().schema();
+        for schema in [from_output, from_apply] {
+            let metadata = schema.field(0).metadata();
+            assert!(!metadata.contains_key("ARROW:extension:name"));
+            assert!(!metadata.contains_key("ARROW:extension:metadata"));
+            assert_eq!(metadata.get("other").map(String::as_str), Some("kept"));
+        }
+    }
 }
 
 #[test]
