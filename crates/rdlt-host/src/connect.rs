@@ -125,7 +125,7 @@ const HONOURS: Honours = Honours {
     path: false,
     endpoint: false,
     digest: false,
-    grants: false,
+    access: false,
     isolation: &[],
 };
 

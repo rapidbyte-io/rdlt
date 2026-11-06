@@ -22,7 +22,7 @@ mod wire;
 pub use connect::{Connect, Open};
 pub use kills::Kills;
 pub use local::{
-    Bubblewrap, Confined, Grants, Interrupts, LastWords, Launcher, Lingering, Local, NetworkGrant,
+    Access, Bubblewrap, Confined, Interrupts, LastWords, Launcher, Lingering, Local, NetworkAccess,
     OsError, Sandbox, SandboxError, Stops, StopsSpawned, Witness, spawned, stop_spawned,
 };
 #[cfg(feature = "sim")]
@@ -36,8 +36,8 @@ pub use remote::{
     RemoteDestination, RemoteSource,
 };
 pub use secrets::{
-    Config, EnvSecrets, FileSecrets, Redactions, ReferenceFault, SecretError, SecretFault,
-    SecretKind, SecretReference, SecretResolver, Secrets,
+    Config, EnvSecrets, FileSecrets, Redactions, ReferenceFault, SecretError, SecretFault, SecretKind,
+    SecretReference, SecretResolver, Secrets,
 };
 pub use supervise::TLS;
 pub use wire::Wire;

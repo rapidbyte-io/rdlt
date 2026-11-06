@@ -422,20 +422,14 @@ fn target(args: &Args) -> Result<Target, Ended> {
 /// `reference` with what the command line grants its connector, shared among its spawns: a
 /// certification spawns its connector many times, at once too.
 fn granted(args: &Args, reference: ConnectorRef) -> ConnectorRef {
-    let reference = args
-        .grant_read
-        .iter()
-        .fold(reference, ConnectorRef::grant_read);
-    let reference = args
-        .grant_write
-        .iter()
-        .fold(reference, ConnectorRef::grant_write);
+    let reference = args.grant_read.iter().fold(reference, ConnectorRef::read);
+    let reference = args.grant_write.iter().fold(reference, ConnectorRef::write);
     let reference = if args.grant_network {
-        reference.grant_network()
+        reference.network()
     } else {
         reference
     };
-    reference.share_grants()
+    reference.share_access()
 }
 
 /// What spawns the connector's binary: inside a sandbox, unless the command line states the
@@ -453,8 +447,8 @@ fn local(args: &Args) -> Result<Local, Ended> {
     };
     // What the command line grants is where it lets grants be made, and where no secret
     // directory it names may be written.
-    let local = args.grant_read.iter().fold(local, Local::grantable_read);
-    let local = args.grant_write.iter().fold(local, Local::grantable_write);
+    let local = args.grant_read.iter().fold(local, Local::readable);
+    let local = args.grant_write.iter().fold(local, Local::writable);
     let local = args.secret_dir.iter().fold(local, Local::guarded_dir);
     Ok(args.env.iter().fold(local, Local::env_passthrough))
 }

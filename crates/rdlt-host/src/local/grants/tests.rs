@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use super::{Chain, Claim, Guarded, Lease, Leases, Opened, Program, Roots};
-use crate::local::sandbox::{Grants, SandboxError};
+use crate::local::sandbox::{Access, SandboxError};
 
 fn dir(root: &Path, name: &str) -> PathBuf {
     let path = root.join(name);
@@ -18,7 +18,7 @@ fn file(path: &Path) -> PathBuf {
 /// and the programs it runs.
 #[derive(Default)]
 struct Asked {
-    grants: Grants,
+    access: Access,
     shared_reads: Vec<PathBuf>,
     roots: Roots,
     guarded: Guarded,
@@ -26,7 +26,7 @@ struct Asked {
 }
 
 impl Asked {
-    /// Grants under `root` alone, which may be written.
+    /// Access under `root` alone, which may be written.
     fn under(root: &Path) -> Self {
         Self {
             roots: Roots {
@@ -38,17 +38,17 @@ impl Asked {
     }
 
     fn writing(mut self, path: &Path) -> Self {
-        self.grants.write.push(path.to_owned());
+        self.access.write.push(path.to_owned());
         self
     }
 
     fn reading(mut self, path: &Path) -> Self {
-        self.grants.read.push(path.to_owned());
+        self.access.read.push(path.to_owned());
         self
     }
 
     fn shared(mut self) -> Self {
-        self.grants.shared = true;
+        self.access.shared = true;
         self
     }
 
@@ -67,7 +67,7 @@ impl Asked {
             })
             .collect();
         leases.take(&Claim {
-            grants: &self.grants,
+            access: &self.access,
             shared_reads: &self.shared_reads,
             roots: &self.roots,
             guarded: &self.guarded,

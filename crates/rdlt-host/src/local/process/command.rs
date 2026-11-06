@@ -14,7 +14,7 @@ use command_fds::{CommandFdExt as _, FdMapping};
 use rdlt_adopt::Marking;
 
 use super::super::binary::Binary;
-use super::super::sandbox::{Bind, Confined, NetworkGrant, Sandbox, SandboxError, Stops};
+use super::super::sandbox::{Bind, Confined, NetworkAccess, Sandbox, SandboxError, Stops};
 use super::{GRANTS_FD, Launch, PROGRAM_FD, SOCKET_FD};
 use crate::provider::Digest;
 
@@ -23,7 +23,7 @@ use crate::provider::Digest;
 #[derive(Clone, Debug)]
 pub(crate) struct Confinement {
     pub(crate) sandbox: Arc<dyn Sandbox>,
-    pub(crate) network: NetworkGrant,
+    pub(crate) network: NetworkAccess,
 }
 
 /// Why a connector's command could not be made.

@@ -209,8 +209,8 @@ pub(crate) mod bubblewrap {
         std::fs::create_dir(&read).expect("a directory");
         std::fs::create_dir(&write).expect("a directory");
         std::fs::write(read.join("given"), "given").expect("it writes");
-        let granting = local.clone().grant_read(&read).grantable_write(&write);
-        let granted_ref = alone.clone().grant_write(&write).grant_network();
+        let granting = local.clone().always_readable(&read).writable(&write);
+        let granted_ref = alone.clone().write(&write).network();
         let reaching = serde_json::json!({
             "readable": [read.join("given")],
             "writes": write.join("made"),
@@ -246,14 +246,14 @@ pub(crate) mod bubblewrap {
         // A grant of a path that is not there refuses the spawn, the provider's or the
         // reference's.
         let absent = granted.path().join("absent");
-        let provider = local.clone().grant_read(&absent);
+        let provider = local.clone().always_readable(&absent);
         let refused = provider
             .source(&scripted(), &reaching)
             .await
             .err()
             .expect("refused");
         assert_eq!(refused.code(), "sandbox_grant");
-        let reference = scripted().grant_write(&absent);
+        let reference = scripted().write(&absent);
         let refused = local
             .source(&reference, &reaching)
             .await
@@ -320,8 +320,8 @@ pub(crate) mod bubblewrap {
             "only_its_descriptors": true,
         });
         let source = local
-            .grantable_write(kept.path())
-            .source(&alone.grant_write(kept.path()), &script)
+            .writable(kept.path())
+            .source(&alone.write(kept.path()), &script)
             .await
             .expect("the connector starts")
             .connector;

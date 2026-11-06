@@ -29,7 +29,7 @@ use process::{Launch, Process};
 pub(crate) use provide::refused;
 use provide::{binary_name, handshake_failed, spawn_failed};
 pub use sandbox::{
-    Bind, Confined, Grants, Launcher, NetworkGrant, OsError, Sandbox, SandboxError, Stops,
+    Access, Bind, Confined, Launcher, NetworkAccess, OsError, Sandbox, SandboxError, Stops,
 };
 
 use crate::provider::{ConnectorRef, Digest, Honours, Isolation, ProviderError};
@@ -52,7 +52,7 @@ pub struct Local {
     sandbox: Option<Arc<dyn Sandbox>>,
     /// Paths every connector may read.
     shared_reads: Vec<PathBuf>,
-    /// Where a reference's grants may be made.
+    /// Where a reference's access may lie.
     roots: Roots,
     /// Where the host keeps its own files.
     guarded_dirs: Vec<PathBuf>,
@@ -89,9 +89,9 @@ impl Local {
         }
     }
 
-    /// Spawns each connector inside `sandbox`, with nothing of the host's but what is granted
-    /// every connector ([`grant_read`](Self::grant_read)) and what its reference grants it;
-    /// stops them with a grace period of 10 s.
+    /// Spawns each connector inside `sandbox`, with nothing of the host's but what is given
+    /// every connector ([`always_readable`](Self::always_readable)) and the access its
+    /// reference asks for; stops them with a grace period of 10 s.
     pub fn sandboxed(sandbox: impl Sandbox + 'static) -> Self {
         Self::new(Some(Arc::new(sandbox)))
     }
@@ -105,30 +105,30 @@ impl Local {
     /// Looks for connectors named without a path in `dir`, an absolute path to a directory no
     /// other user may write; nowhere else is searched.
     #[must_use]
-    pub fn connector_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+    pub fn connectors(mut self, dir: impl Into<PathBuf>) -> Self {
         self.dirs.push(dir.into());
         self
     }
 
     /// Lets every sandboxed connector read `path`, an absolute path, as a system directory is
-    /// read: what one pipeline's connector alone may read or write is granted on its
-    /// reference ([`ConnectorRef::grant_write`]).
+    /// read: what one pipeline's connector alone may read or write is asked for on its
+    /// reference ([`ConnectorRef::write`]).
     #[must_use]
-    pub fn grant_read(mut self, path: impl Into<PathBuf>) -> Self {
+    pub fn always_readable(mut self, path: impl Into<PathBuf>) -> Self {
         self.shared_reads.push(path.into());
         self
     }
 
-    /// Lets a reference grant its connector reads within `root`, an absolute path: a
-    /// reference's grants lie within the roots its operator names, and none are made where
-    /// none is named.
+    /// Lets a reference ask to read within `root`, an absolute path: a reference's
+    /// access lies within the roots its operator names, and none is given where none is
+    /// named.
     #[must_use]
-    pub fn grantable_read(mut self, root: impl Into<PathBuf>) -> Self {
+    pub fn readable(mut self, root: impl Into<PathBuf>) -> Self {
         self.roots.read.push(root.into());
         self
     }
 
-    /// Lets a reference grant its connector reads and writes within `root`, an absolute path.
+    /// Lets a reference ask to read and write within `root`, an absolute path.
     ///
     /// No placement is made while `root` holds, or lies within, what decides what the host
     /// runs or keeps: a connector directory, a binary placed or its directory, a script's
@@ -136,13 +136,13 @@ impl Local {
     /// the host keeps its own files in ([`guarded_dir`](Self::guarded_dir)), or one secrets
     /// are read from.
     #[must_use]
-    pub fn grantable_write(mut self, root: impl Into<PathBuf>) -> Self {
+    pub fn writable(mut self, root: impl Into<PathBuf>) -> Self {
         self.roots.write.push(root.into());
         self
     }
 
     /// Names `dir`, an absolute path, as a directory the host keeps its own files in, as its
-    /// state or secrets it reads itself: no root grants may write within may hold it or lie
+    /// state or secrets it reads itself: no root a reference may write within may hold it or lie
     /// within it.
     #[must_use]
     pub fn guarded_dir(mut self, dir: impl Into<PathBuf>) -> Self {
@@ -227,7 +227,7 @@ impl Local {
             path: true,
             endpoint: false,
             digest: cfg!(target_os = "linux"),
-            grants: true,
+            access: true,
             isolation: match self.sandbox {
                 Some(_) => &[Isolation::Process, Isolation::Sandbox],
                 None => &[Isolation::Process],
@@ -321,7 +321,7 @@ impl Local {
     }
 
     /// What confines the connector `reference` names: the provider's sandbox, and the
-    /// network the reference grants; none for a trusted binary, which has the host's access.
+    /// network the reference asks for; none for a trusted binary, which has the host's access.
     fn confinement(
         &self,
         reference: &ConnectorRef,
@@ -337,12 +337,12 @@ impl Local {
         }
         Ok(Some(process::Confinement {
             sandbox: Arc::clone(sandbox),
-            network: reference.grants.network,
+            network: reference.access.network,
         }))
     }
 
     /// What a placement of `reference`, run from `binary`, holds while it lives: the programs
-    /// it runs and, where it is `confined`, what it is granted, each path opened once and
+    /// it runs and, where it is `confined`, what it is given, each path opened once and
     /// checked against the roots, what is guarded, and what other placements hold now.
     fn lease(
         &self,
@@ -352,14 +352,14 @@ impl Local {
     ) -> Result<Lease, ProviderError> {
         let programs =
             programs(binary).map_err(|source| spawn_failed(reference, binary.path(), source))?;
-        let ungranted = Grants::default();
-        let (grants, shared_reads) = if confined {
-            (&reference.grants, self.shared_reads.as_slice())
+        let unconfined = Access::default();
+        let (access, shared_reads) = if confined {
+            (&reference.access, self.shared_reads.as_slice())
         } else {
-            (&ungranted, &[][..])
+            (&unconfined, &[][..])
         };
         let claim = Claim {
-            grants,
+            access,
             shared_reads,
             roots: &self.roots,
             guarded: &self.guarded(),
@@ -373,7 +373,7 @@ impl Local {
             })
     }
 
-    /// What no root grants may write within may hold: where connectors are found, the
+    /// What no root a reference may write within may hold: where connectors are found, the
     /// host's executable is, the host keeps its own files, and secrets are read from; and what
     /// confines a connector.
     fn guarded(&self) -> Guarded {

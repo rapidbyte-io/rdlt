@@ -11,21 +11,21 @@ use rdlt_connector::ConnectorId;
 use super::{Confinement, Launch, Process, Steps, Unspawned};
 use crate::local::binary::Binary;
 use crate::local::grants::{Claim, Guarded, Lease, Leases, Roots};
-use crate::local::sandbox::{Confined, Grants, Launcher, NetworkGrant, Sandbox, SandboxError};
+use crate::local::sandbox::{Access, Confined, Launcher, NetworkAccess, Sandbox, SandboxError};
 use crate::secrets::Redactions;
 
 /// What `leases` hold for a placement granted to write `written`.
 fn writing(leases: &Leases, written: &Path) -> Result<Lease, SandboxError> {
-    let grants = Grants {
+    let access = Access {
         write: vec![written.to_owned()],
-        ..Grants::default()
+        ..Access::default()
     };
     let roots = Roots {
         read: Vec::new(),
         write: vec![written.to_owned()],
     };
     leases.take(&Claim {
-        grants: &grants,
+        access: &access,
         shared_reads: &[],
         roots: &roots,
         guarded: &Guarded::default(),
@@ -157,7 +157,7 @@ fn a_sandboxed_connector_is_not_spawned_where_descriptors_cannot_be_marked_at_on
     let mut launch = sleeper(directory.path());
     launch.confinement = Some(Confinement {
         sandbox: Arc::new(Unasked),
-        network: NetworkGrant::Denied,
+        network: NetworkAccess::Denied,
     });
     let unmarked = Steps {
         marks_at_once: || false,
@@ -218,9 +218,9 @@ fn a_sandboxed_connector_is_not_spawned_once_its_launcher_has_a_second_name() {
     let launcher = bin.join("bwrap");
     std::fs::write(&launcher, "x").expect("the launcher writes");
     let mut launch = sleeper(&bin);
-    let grants = Grants {
+    let access = Access {
         write: vec![data.clone()],
-        ..Grants::default()
+        ..Access::default()
     };
     let roots = Roots {
         read: Vec::new(),
@@ -231,7 +231,7 @@ fn a_sandboxed_connector_is_not_spawned_once_its_launcher_has_a_second_name() {
         files: vec![launcher.clone()],
     };
     let lease = Leases::default().take(&Claim {
-        grants: &grants,
+        access: &access,
         shared_reads: &[],
         roots: &roots,
         guarded: &guarded,
@@ -240,7 +240,7 @@ fn a_sandboxed_connector_is_not_spawned_once_its_launcher_has_a_second_name() {
     launch.lease = Arc::new(lease.expect("one name, beside"));
     launch.confinement = Some(Confinement {
         sandbox: Arc::new(Unavailable),
-        network: NetworkGrant::Denied,
+        network: NetworkAccess::Denied,
     });
     let marking = Steps {
         marks_at_once: || true,
@@ -298,7 +298,7 @@ async fn a_scripts_interpreter_given_a_second_name_since_it_was_placed_is_not_sp
         let binary = Binary::at(&path).expect("the script opens");
         let programs = crate::local::programs(&binary).expect("its programs");
         let lease = leases.take(&Claim {
-            grants: &Grants::default(),
+            access: &Access::default(),
             shared_reads: &[],
             roots: &Roots::default(),
             guarded: &Guarded::default(),

@@ -1,4 +1,4 @@
-//! Sandboxes: what confines a connector's process to what it was granted.
+//! Sandboxes: what confines a connector's process to the access it was given.
 
 use std::ffi::OsString;
 use std::fmt;
@@ -6,36 +6,36 @@ use std::os::fd::{OwnedFd, RawFd};
 use std::path::PathBuf;
 use std::process::Command;
 
-/// What a sandboxed connector may reach beyond its own program: nothing unless granted.
+/// What a sandboxed connector may reach beyond its own program: nothing unless it has access.
 ///
 /// A pipeline asks for what its own connector needs, on the reference that places it
-/// ([`ConnectorRef::grant_write`](crate::ConnectorRef::grant_write)), and is granted it only
+/// ([`ConnectorRef::write`](crate::ConnectorRef::write)), and is given it only
 /// within the roots the provider's operator names
-/// ([`Local::grantable_write`](crate::Local::grantable_write)); a provider grants only paths
-/// every connector it spawns may read ([`Local::grant_read`](crate::Local::grant_read)).
+/// ([`Local::writable`](crate::Local::writable)); a provider gives every connector it spawns
+/// only paths it may read ([`Local::always_readable`](crate::Local::always_readable)).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Grants {
+pub struct Access {
     /// Paths it may read, each absolute.
     pub read: Vec<PathBuf>,
     /// Paths it may read and write, each absolute.
     pub write: Vec<PathBuf>,
     /// Whether it may reach the network.
-    pub network: NetworkGrant,
-    /// Whether its paths may overlap those another connector of this process was granted,
-    /// that connector's grants being shared too: otherwise such a placement is refused.
+    pub network: NetworkAccess,
+    /// Whether its paths may overlap those another connector of this process was given,
+    /// that connector's access being shared too: otherwise such a placement is refused.
     pub shared: bool,
 }
 
-impl Grants {
-    /// Whether nothing is granted.
+impl Access {
+    /// Whether it asks for nothing.
     pub fn is_empty(&self) -> bool {
-        self.read.is_empty() && self.write.is_empty() && self.network == NetworkGrant::Denied
+        self.read.is_empty() && self.write.is_empty() && self.network == NetworkAccess::Denied
     }
 }
 
 /// Whether a sandboxed connector may reach the network.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum NetworkGrant {
+pub enum NetworkAccess {
     /// It has no network but a loopback of its own.
     #[default]
     Denied,
@@ -60,7 +60,7 @@ pub struct Confined<'a> {
     /// What the connector is granted of the host's files, read grants first.
     pub binds: &'a [Bind<'a>],
     /// Whether it may reach the network.
-    pub network: NetworkGrant,
+    pub network: NetworkAccess,
 }
 
 /// A path a connector is granted, open at a descriptor the launcher finds it at: what was

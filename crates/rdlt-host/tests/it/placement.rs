@@ -25,9 +25,9 @@ fn requiring(reference: &ConnectorRef) -> [(&'static str, ConnectorRef); 9] {
         ("an isolation", from().isolation(Isolation::Process)),
         ("an isolation", from().isolation(Isolation::Sandbox)),
         ("an isolation", from().isolation(Isolation::Remote)),
-        ("grants", from().grant_read("/granted")),
-        ("grants", from().grant_write("/granted")),
-        ("grants", from().grant_network()),
+        ("access", from().read("/granted")),
+        ("access", from().write("/granted")),
+        ("access", from().network()),
     ]
 }
 

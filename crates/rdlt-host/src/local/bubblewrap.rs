@@ -13,7 +13,7 @@ use super::binary::{Binary, Unfit};
 use super::process::{PROGRAM_FD, SOCKET_FD, inheriting};
 #[cfg(target_os = "linux")]
 use super::sandbox::Stops;
-use super::sandbox::{Confined, Launcher, NetworkGrant, Sandbox, SandboxError};
+use super::sandbox::{Confined, Launcher, NetworkAccess, Sandbox, SandboxError};
 
 #[cfg(test)]
 mod tests;
@@ -93,7 +93,7 @@ impl Bubblewrap {
             args.extend(values.iter().map(|value| OsString::from(*value)));
         };
         flag("--unshare-all", &[]);
-        if confined.network == NetworkGrant::Granted {
+        if confined.network == NetworkAccess::Granted {
             flag("--share-net", &[]);
         }
         // Its own user namespace, in which it may make none: each is a surface of the kernel.
@@ -180,7 +180,7 @@ impl Bubblewrap {
             env: &[],
             socket: SOCKET_FD,
             binds: &[],
-            network: NetworkGrant::Denied,
+            network: NetworkAccess::Denied,
         };
         let Launcher {
             mut command,
