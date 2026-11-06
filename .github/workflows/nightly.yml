@@ -262,7 +262,7 @@ jobs:
           version: ${{ env.SETUP_MISE_VERSION }}
           sha256: ${{ runner.os == 'macOS' && env.SETUP_MISE_SHA256_MACOS || env.SETUP_MISE_SHA256_LINUX }}
           github_token: ""
-          install_args: --locked just aqua:nextest-rs/nextest/cargo-nextest aqua:taiki-e/cargo-llvm-cov
+          install_args: --locked just aqua:nextest-rs/nextest/cargo-nextest aqua:taiki-e/cargo-llvm-cov python uv
           cache_key_prefix: mise-v2-coverage
       - run: just sim-coverage 1000
 
@@ -383,6 +383,7 @@ jobs:
           - { crate: rdlt-certify, part: 0, of: 2, every: 1 }
           - { crate: rdlt-certify, part: 1, of: 2, every: 1 }
           - { crate: rdlt-adopt, part: 0, of: 1, every: 1 }
+          - { crate: rdlt-python, part: 0, of: 1, every: 1 }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -393,11 +394,13 @@ jobs:
           version: ${{ env.SETUP_MISE_VERSION }}
           sha256: ${{ runner.os == 'macOS' && env.SETUP_MISE_SHA256_MACOS || env.SETUP_MISE_SHA256_LINUX }}
           github_token: ""
-          install_args: --locked just github:sourcefrog/cargo-mutants aqua:nextest-rs/nextest/cargo-nextest aqua:rui314/mold
+          install_args: --locked just github:sourcefrog/cargo-mutants aqua:nextest-rs/nextest/cargo-nextest aqua:rui314/mold python uv
           cache_key_prefix: mise-v2-mutants
       - name: Make a sandbox available
         timeout-minutes: 15
         run: ./.github/sandbox.sh
+      # Every crate rdlt-python links is tested by its tests too, which embed this interpreter.
+      - run: just python-env
       # Each mutant at once copies the tree and builds it whole, more than the runner leaves free
       # on the disk `/tmp` lies on; the toolchains no step uses give it back.
       - name: Free the disk the mutants' builds take
