@@ -1,6 +1,7 @@
 //! Reshaping a stream's batches in flight, before the engine fits them to their table.
 
 mod bound;
+mod mask;
 mod op;
 #[cfg(test)]
 mod tests;
@@ -13,6 +14,7 @@ use arrow_buffer::BooleanBuffer;
 use arrow_schema::{Schema, SchemaRef};
 
 pub use self::bound::{Bound, allocated_beyond, column_bytes};
+pub use self::mask::Mask;
 pub use self::op::{Literal, Op};
 
 /// A pure function of a batch that reshapes it, and may filter its rows, before the engine fits
