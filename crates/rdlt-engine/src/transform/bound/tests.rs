@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
+use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray, StringViewArray};
 
 use super::{Bound, allocated_beyond, column_bytes};
 
@@ -69,4 +69,15 @@ fn allocated_beyond_counts_new_buffers_and_not_shared_ones() {
         allocated_beyond(&alone, &input)
     );
     assert!(allocated_beyond(&grown, &input) >= 800);
+}
+
+#[test]
+fn a_view_column_counts_the_text_its_views_reference() {
+    let long = "x".repeat(40);
+    let views = StringViewArray::from_iter_values((0..100).map(|_| long.as_str()));
+    assert!(column_bytes(&views) >= 100 * 40);
+    let short = StringViewArray::from_iter_values((0..100).map(|_| "tiny"));
+    assert!(column_bytes(&short) < 100 * 40);
+    let slice = views.slice(0, 10);
+    assert!(column_bytes(&slice) < 20 * 40);
 }
