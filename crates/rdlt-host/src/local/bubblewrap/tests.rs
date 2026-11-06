@@ -3,11 +3,11 @@ use std::path::Path;
 
 use super::{Bubblewrap, PROGRAM};
 use crate::local::process::{GRANTS_FD, PROGRAM_FD, SOCKET_FD};
-use crate::local::sandbox::{Bind, Confined, NetworkGrant, Sandbox, SandboxError};
+use crate::local::sandbox::{Bind, Confined, NetworkAccess, Sandbox, SandboxError};
 
 fn confined<'a>(
     binds: &'a [Bind<'a>],
-    network: NetworkGrant,
+    network: NetworkAccess,
     env: &'a [(OsString, OsString)],
     args: &'a [OsString],
 ) -> Confined<'a> {
@@ -22,7 +22,7 @@ fn confined<'a>(
 }
 
 /// The arguments that confine a connector granted `binds` and `network`, as text.
-fn arguments(binds: &[Bind<'_>], network: NetworkGrant) -> Vec<String> {
+fn arguments(binds: &[Bind<'_>], network: NetworkAccess) -> Vec<String> {
     let env = [(OsString::from("KEPT"), OsString::from("a value"))];
     let args = [OsString::from("--rdlt-fd=3")];
     let arguments = Bubblewrap::confinement(&confined(binds, network, &env, &args));
@@ -44,7 +44,7 @@ fn holds(arguments: &[String], sequence: &[&str]) -> bool {
 
 #[test]
 fn a_connector_is_confined_to_what_it_is_granted_and_run_from_its_descriptor() {
-    let arguments = arguments(&[], NetworkGrant::Denied);
+    let arguments = arguments(&[], NetworkAccess::Denied);
     for alone in [
         "--unshare-all",
         "--die-with-parent",
@@ -119,7 +119,7 @@ fn what_is_granted_is_bound_from_its_descriptor_and_nothing_else_of_the_hosts() 
             write: true,
         },
     ];
-    let arguments = arguments(&binds, NetworkGrant::Granted);
+    let arguments = arguments(&binds, NetworkAccess::Granted);
     let (read, write) = (GRANTS_FD.to_string(), (GRANTS_FD + 1).to_string());
     assert!(holds(&arguments, &["--ro-bind-fd", &read, "/granted/read"]));
     assert!(holds(&arguments, &["--bind-fd", &write, "/granted/write"]));
@@ -136,7 +136,7 @@ fn what_is_granted_is_bound_from_its_descriptor_and_nothing_else_of_the_hosts() 
 
 #[test]
 fn a_launcher_that_is_not_there_or_makes_no_sandbox_is_refused_with_its_reason() {
-    let asked = confined(&[], NetworkGrant::Denied, &[], &[]);
+    let asked = confined(&[], NetworkAccess::Denied, &[], &[]);
     let launcher = |path: &str| Bubblewrap::at(path).launcher(&asked).map(|_| ());
     let refused = launcher("/nonexistent/bwrap").expect_err("it is missing");
     assert_eq!(
@@ -179,7 +179,7 @@ fn whether_a_launcher_makes_a_sandbox_is_tried_once() {
 #[test]
 fn bubblewrap_where_it_runs_stops_its_connector_by_the_end_of_its_input() {
     let sandbox = Bubblewrap::new();
-    match sandbox.launcher(&confined(&[], NetworkGrant::Denied, &[], &[])) {
+    match sandbox.launcher(&confined(&[], NetworkAccess::Denied, &[], &[])) {
         Ok(launcher) => {
             assert_eq!(launcher.stops, crate::local::sandbox::Stops::ByInputEnd);
             let program = launcher
@@ -206,7 +206,7 @@ fn no_argument_and_no_value_of_the_environment_is_on_the_launchers_command_line(
     let env = [(OsString::from("SECRET"), OsString::from("hunter2-in-env"))];
     let args = [OsString::from("--rdlt-fd=3")];
     let launcher = sandbox
-        .launcher(&confined(&[], NetworkGrant::Denied, &env, &args))
+        .launcher(&confined(&[], NetworkAccess::Denied, &env, &args))
         .expect("a launcher");
     let line: Vec<String> = std::iter::once(launcher.command.get_program())
         .chain(launcher.command.get_args())
@@ -274,7 +274,7 @@ fn the_launcher_runs_from_a_descriptor_above_every_one_it_is_given() {
         let confined = Confined {
             program,
             socket,
-            ..confined(&binds, NetworkGrant::Denied, &[], &[])
+            ..confined(&binds, NetworkAccess::Denied, &[], &[])
         };
         let launcher = sandbox.launcher(&confined).expect("a launcher");
         let executed: i32 = launcher
@@ -299,7 +299,7 @@ fn a_step_the_system_refuses_is_kept_as_the_cause_not_as_text() {
     // A value the launcher's file of arguments cannot hold.
     let env = [(OsString::from("HELD"), OsString::from("a\0b"))];
     let refused = sandbox
-        .launcher(&confined(&[], NetworkGrant::Denied, &env, &[]))
+        .launcher(&confined(&[], NetworkAccess::Denied, &env, &[]))
         .expect_err("refused");
     assert_eq!(refused.code(), "sandbox_failed");
     let cause = std::error::Error::source(&refused).expect("a cause");
@@ -325,7 +325,7 @@ fn a_launcher_given_names_since_it_was_opened_launches_nothing_whatever_its_path
     std::fs::write(&path, "#!/bin/sh\n").expect("the launcher writes");
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("a mode");
     let opened = Binary::at(&path).expect("the launcher opens");
-    let launching = || super::launched(&opened, &confined(&[], NetworkGrant::Denied, &[], &[]));
+    let launching = || super::launched(&opened, &confined(&[], NetworkAccess::Denied, &[], &[]));
     assert_eq!(launching().map(drop), Ok(()));
     // The file opened gains two names in data, and a fresh file of one name takes its path:
     // nothing the path names has a second name, and what runs has two.

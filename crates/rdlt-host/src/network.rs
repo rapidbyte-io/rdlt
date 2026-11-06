@@ -90,7 +90,7 @@ const HONOURS: Honours = Honours {
     path: false,
     endpoint: true,
     digest: false,
-    grants: false,
+    access: false,
     isolation: &[Isolation::Remote],
 };
 

@@ -22,7 +22,7 @@ use parking_lot::Mutex;
 
 pub(crate) use opened::{Chain, Opened};
 
-use super::sandbox::{Grants, SandboxError};
+use super::sandbox::{Access, SandboxError};
 
 /// What a placement holds, by identity.
 #[derive(Debug)]
@@ -119,11 +119,11 @@ pub(crate) struct Program {
 /// What a placement asks to hold.
 #[derive(Debug)]
 pub(crate) struct Claim<'a> {
-    /// What the reference grants.
-    pub(crate) grants: &'a Grants,
+    /// The access the reference asks for.
+    pub(crate) access: &'a Access,
     /// What every connector of the provider may read.
     pub(crate) shared_reads: &'a [PathBuf],
-    /// Where the provider's operator lets grants be made.
+    /// Where the provider's operator lets access be given.
     pub(crate) roots: &'a Roots,
     /// What no root that may be written may hold.
     pub(crate) guarded: &'a Guarded,
@@ -169,8 +169,8 @@ impl Leases {
         let within = |granted: &Opened, roots: &[&Chain]| {
             roots.iter().any(|root| granted.chain.within(root))
         };
-        let reads = all_opened(&claim.grants.read)?;
-        let writes = all_opened(&claim.grants.write)?;
+        let reads = all_opened(&claim.access.read)?;
+        let writes = all_opened(&claim.access.write)?;
         let outside = reads
             .iter()
             .find(|(_, read)| !within(read, &readable) && !within(read, &writable))
@@ -220,7 +220,7 @@ impl Leases {
                 .map(|(_, write)| write.chain.clone())
                 .collect(),
             programs,
-            shared: claim.grants.shared,
+            shared: claim.access.shared,
         });
         let bound = |write: bool| {
             move |(at, opened): (&Path, Opened)| Bound {
@@ -275,7 +275,7 @@ fn refused_by(
     writes: &[(&Path, Opened)],
 ) -> Result<(), SandboxError> {
     let path = |path: &Path| path.to_path_buf();
-    if !(other.shared && claim.grants.shared) {
+    if !(other.shared && claim.access.shared) {
         let theirs: Vec<&Chain> = other.write.iter().chain(&other.read).collect();
         let written = writes
             .iter()

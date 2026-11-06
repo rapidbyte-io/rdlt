@@ -438,7 +438,7 @@ async fn a_connector_named_without_a_path_is_found_in_a_connector_dir_and_nowher
     let binary = dir.path().join("rdlt-connector-scripted");
     std::fs::copy(example("scripted_connector"), &binary).expect("the binary copies");
     let id = ConnectorId::parse("test.scripted").expect("a valid id");
-    let in_dir = local().connector_dir(dir.path());
+    let in_dir = local().connectors(dir.path());
     let found = in_dir
         .resolve(&ConnectorRef::new(id.clone()))
         .expect("found");

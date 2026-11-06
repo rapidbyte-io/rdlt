@@ -280,8 +280,8 @@ impl Target {
             endpoint: from.and_then(|reference| reference.endpoint.clone()),
             digest: from.and_then(|reference| reference.digest),
             isolation: from.and_then(|reference| reference.isolation),
-            grants: from
-                .map(|reference| reference.grants.clone())
+            access: from
+                .map(|reference| reference.access.clone())
                 .unwrap_or_default(),
         };
         let options = Options {

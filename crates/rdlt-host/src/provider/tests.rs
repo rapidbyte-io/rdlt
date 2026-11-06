@@ -30,3 +30,23 @@ fn a_reference_shows_its_endpoint_by_host_and_port_and_never_one_that_is_refused
     let unplaced = format!("{reference:?}");
     assert!(unplaced.contains("endpoint: None"), "{unplaced}");
 }
+
+#[test]
+fn a_reference_holds_the_access_its_builders_ask_for() {
+    let id = rdlt_connector::ConnectorId::parse("io.example.asks").expect("a valid id");
+    let reference = ConnectorRef::new(id)
+        .read("/in")
+        .write("/out")
+        .network()
+        .share_access();
+    assert_eq!(
+        reference.access,
+        crate::Access {
+            read: vec!["/in".into()],
+            write: vec!["/out".into()],
+            network: crate::NetworkAccess::Granted,
+            shared: true,
+        }
+    );
+    assert!(!reference.access.is_empty());
+}

@@ -7,7 +7,7 @@ use std::path::PathBuf;
 #[cfg(test)]
 mod tests;
 
-use crate::local::{Grants, NetworkGrant};
+use crate::local::{Access, NetworkAccess};
 use rdlt_connector::limits::MAX_ERROR_CODE_BYTES;
 use rdlt_connector::{BoxFuture, ConnectorError, ConnectorId, ConnectorSpec, Destination, Source};
 
@@ -30,9 +30,9 @@ pub struct ConnectorRef {
     pub digest: Option<Digest>,
     /// The isolation its placement must give; whatever the provider gives when absent.
     pub isolation: Option<Isolation>,
-    /// What its pipeline grants its connector in a sandbox, beyond what the provider grants
-    /// every connector; nothing when empty.
-    pub grants: Grants,
+    /// The access its pipeline asks for its connector in a sandbox, beyond what the provider
+    /// gives every connector; nothing when empty.
+    pub access: Access,
 }
 
 impl fmt::Debug for ConnectorRef {
@@ -53,7 +53,7 @@ impl fmt::Debug for ConnectorRef {
             .field("endpoint", &endpoint)
             .field("digest", &self.digest)
             .field("isolation", &self.isolation)
-            .field("grants", &self.grants)
+            .field("access", &self.access)
             .finish()
     }
 }
@@ -68,39 +68,39 @@ impl ConnectorRef {
             endpoint: None,
             digest: None,
             isolation: None,
-            grants: Grants::default(),
+            access: Access::default(),
         }
     }
 
     /// Lets the connector read `path`, an absolute path, in its sandbox.
     #[must_use]
-    pub fn grant_read(mut self, path: impl Into<PathBuf>) -> Self {
-        self.grants.read.push(path.into());
+    pub fn read(mut self, path: impl Into<PathBuf>) -> Self {
+        self.access.read.push(path.into());
         self
     }
 
     /// Lets the connector read and write `path`, an absolute path, in its sandbox: no other
-    /// connector of the provider may be granted it, or a path within or above it, while this
-    /// one runs, unless both grants are [shared](Self::share_grants).
+    /// connector of the provider may be given it, or a path within or above it, while this
+    /// one runs, unless both references' access is [shared](Self::share_access).
     #[must_use]
-    pub fn grant_write(mut self, path: impl Into<PathBuf>) -> Self {
-        self.grants.write.push(path.into());
+    pub fn write(mut self, path: impl Into<PathBuf>) -> Self {
+        self.access.write.push(path.into());
         self
     }
 
     /// Lets the connector share the host's network, its loopback services and abstract Unix
     /// sockets included.
     #[must_use]
-    pub fn grant_network(mut self) -> Self {
-        self.grants.network = NetworkGrant::Granted;
+    pub fn network(mut self) -> Self {
+        self.access.network = NetworkAccess::Granted;
         self
     }
 
-    /// Lets the paths granted overlap those of other connectors whose grants are shared too:
+    /// Lets the paths asked for overlap those of other connectors whose access is shared too:
     /// the operator states the connectors may reach each other's files.
     #[must_use]
-    pub fn share_grants(mut self) -> Self {
-        self.grants.shared = true;
+    pub fn share_access(mut self) -> Self {
+        self.access.shared = true;
         self
     }
 
@@ -146,7 +146,7 @@ pub enum Isolation {
     /// A process of its own on the host's machine, sandboxed or not.
     Process,
     /// A process of its own inside a sandbox: no file, network or process of the host's but
-    /// what it was granted.
+    /// what it was given.
     Sandbox,
     /// Another machine or container, reached over mutual TLS.
     Remote,
@@ -163,8 +163,8 @@ pub(crate) struct Honours {
     pub(crate) path: bool,
     pub(crate) endpoint: bool,
     pub(crate) digest: bool,
-    /// Whether it gives a connector what its pipeline grants it.
-    pub(crate) grants: bool,
+    /// Whether it gives a connector the access its pipeline asks for.
+    pub(crate) access: bool,
     /// The isolations it gives.
     pub(crate) isolation: &'static [Isolation],
 }
@@ -183,7 +183,7 @@ impl Honours {
             ),
             ("a digest", reference.digest.is_some() && !self.digest),
             ("an isolation", !isolated),
-            ("grants", !reference.grants.is_empty() && !self.grants),
+            ("access", !reference.access.is_empty() && !self.access),
         ];
         match unhonoured.into_iter().find(|(_, unhonoured)| *unhonoured) {
             Some((requirement, _)) => Err(ProviderError::Unsupported {
@@ -258,7 +258,7 @@ pub enum ProviderError {
         /// The connector's id.
         id: ConnectorId,
         /// What the reference requires: `a path`, `an endpoint`, `a digest`, `an isolation`,
-        /// `grants`.
+        /// `access`.
         requirement: &'static str,
         /// The placement that would have run it.
         placement: &'static str,
