@@ -72,6 +72,7 @@ mod shred;
 mod status;
 mod stored;
 mod table;
+mod transform;
 mod watch;
 
 pub use compute::{ComputePool, ComputePoolError, Cores, Job, RayonPool};
@@ -94,3 +95,6 @@ pub use report::{
 };
 pub use run::{Engine, ResetReport, ResetScope, RunControl, RunHandle, RunOutcome, StopMode};
 pub use status::{Call, LaneCall, OpenWaits, Partitions, Phase, Quiet, Status, Step, StreamStatus};
+pub use transform::{
+    Bound, Literal, Op, Transform, TransformError, TransformStep, allocated_beyond, column_bytes,
+};

@@ -447,8 +447,11 @@ fn a_connector_s_text_is_shown_and_cut_to_its_bound() {
 
 #[test]
 fn a_transform_failure_is_its_own_kind_and_never_retried() {
-    let failed = Error::new(ErrorKind::Transform, "stream s: transform t failed on a batch")
-        .with_code(codes::TRANSFORM_FAILED);
+    let failed = Error::new(
+        ErrorKind::Transform,
+        "stream s: transform t failed on a batch",
+    )
+    .with_code(codes::TRANSFORM_FAILED);
     assert_eq!(failed.kind(), ErrorKind::Transform);
     assert_eq!(failed.origin(), Origin::Engine);
     assert!(!failed.is_retryable());
