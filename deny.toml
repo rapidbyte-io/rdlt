@@ -23,6 +23,9 @@ exceptions = [
   # Built only: psm, under stacker, archives its assembly with it. LLVM's exception to Apache-2.0
   # only relaxes it.
   { crate = "ar_archive_writer", allow = ["Apache-2.0 WITH LLVM-exception"] },
+  # Built only: pyo3's build configuration reads the target triple with it. LLVM's exception to
+  # Apache-2.0 only relaxes it.
+  { crate = "target-lexicon", allow = ["Apache-2.0 WITH LLVM-exception"] },
   # Fuzzing only: libFuzzer's own license, which the fuzz targets link.
   { crate = "libfuzzer-sys", allow = ["NCSA"] },
 ]

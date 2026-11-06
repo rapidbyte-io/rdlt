@@ -32,6 +32,7 @@ const RULES: &[(&str, &[&str])] = &[
         ],
     ),
     ("rdlt-connector-reference", &["rdlt-connector", "rdlt-wire"]),
+    ("rdlt-python", &["rdlt-certify", "rdlt-connector"]),
     (
         "rdlt-sim",
         &[
@@ -48,7 +49,7 @@ const RULES: &[(&str, &[&str])] = &[
 
 /// Crates nothing may use as a dev-dependency: those nothing depends on at all, and the audited
 /// `unsafe` crate, which only the crates [`RULES`] names may use.
-const LEAVES: &[&str] = &["rdlt-adopt", "rdlt-sim", "xtask"];
+const LEAVES: &[&str] = &["rdlt-adopt", "rdlt-python", "rdlt-sim", "xtask"];
 
 /// A dependency of one workspace crate on another.
 #[derive(Clone, Debug, PartialEq, Eq)]

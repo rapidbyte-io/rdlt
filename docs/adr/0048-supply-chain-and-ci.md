@@ -74,6 +74,14 @@ This record decides what holds each statement, and says where a check ends.
     ones, and any `include!`, `include_str!`, `include_bytes!` or `#[path]` in them.
   - Neither check is enough alone. Without the forbid, the lint is a pattern again. Without the
     lint, a macro's body is unchecked.
+  - **Python is reached through PyO3, and Arrow crosses to it through arrow-pyarrow.**
+    `rdlt-python`, the `rdlt._native` extension, is a crate like any other: its roots, the
+    library's and the build script's, forbid `unsafe` code, and its tokens hold none. PyO3's
+    attributes and macros expand to `unsafe` code of PyO3's own, which the compiler does not
+    report under the forbid and the lint never reads: PyO3 is the workspace's foreign-function
+    surface, and its `unsafe` code is PyO3's, as a dependency's is. Arrow's batches cross the C
+    Data Interface through arrow-pyarrow, whose `unsafe` code reads the capsules; the workspace
+    calls no `pyo3::ffi` function and reads no capsule's pointer.
   - Workspace-wide `forbid` in `[workspace.lints]` is not used: a package inherits that table
     whole or restates it, so the audited crate would restate every lint, and the fuzzing crate
     has no such table.
@@ -204,3 +212,5 @@ This record decides what holds each statement, and says where a check ends.
 - Each job logs the installer's warning that it has no token.
 - Restricting which actions the repository may run is a repository setting, outside the tree,
   and left to the owner.
+- A test of `rdlt-python` embeds the development environment's interpreter, `.venv`, which
+  `just python-env` makes; every job that builds the whole workspace installs Python and uv first.
