@@ -38,7 +38,7 @@ complete, run only connectors you trust. The mechanisms in place today:
 ## Placement
 
 A reference to a connector states what it requires: an id, and optionally a version, a path,
-an endpoint, a digest, an isolation, and what its pipeline grants its connector. Every provider
+an endpoint, a digest, an isolation, and the access its pipeline asks for its connector. Every provider
 honours each requirement it is given or refuses the reference with a typed error before
 anything runs; none is ignored.
 
@@ -56,11 +56,11 @@ anything runs; none is ignored.
     descriptor, never a command line another user could read. The launcher is checked as a
     connector's binary is, and run from the file opened. Where bubblewrap is missing, older
     than 0.8, or cannot make user namespaces, the placement is refused.
-  - **Grants belong to a pipeline, within the operator's roots**: a provider grants every
+  - **Access belongs to a pipeline, within the operator's roots**: a provider gives every
     connector only paths to read, as system directories; what a connector may write, or read
     beyond those, is asked for on the reference that places it, which a pipeline's author may
     write, and granted only within the roots the operator names on the provider
-    (`grantable_read`, `grantable_write`). By default none is named and nothing is granted.
+    (`Local::readable`, `writable`). By default none is named and nothing is granted.
   - A root that may be written may hold nothing that decides what the host runs or keeps: no
     connector directory or binary, no script's interpreter, no launcher, not the host's
     executable's directory, a directory the host keeps its log, state or secrets in, or one a
@@ -102,9 +102,9 @@ anything runs; none is ignored.
 
 - **Whoever writes a pipeline's configuration is not trusted with the host's secrets.** A
   configuration value may refer to a secret, `${env:NAME}`, `${file:/absolute/path}` or
-  `${secret:name}`, and reaches only what the operator lists: the variables an `EnvSecrets`
-  names, files beneath the private directories a `FileSecrets` names, and the named secrets of
-  the store the operator gives. By default no reference resolves.
+  `${secret:name}`, and reaches only what the operator lists: the variables `allow_env` and
+  `allow_env_prefix` name, files beneath the private directories `allow_files` names, and the
+  named secrets of the `secret_store` the operator gives. By default no reference resolves.
 - References are resolved when the configuration is sent to a connector whose identity the
   host has checked: its id and version, and its binary's digest or its certificate's name. A
   connector receives only its own configuration.

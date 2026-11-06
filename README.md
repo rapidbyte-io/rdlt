@@ -592,9 +592,11 @@ cargo add --git https://github.com/rapidbyte-io/rdlt rdlt-host
 | Trusted process | `Local::trusting_binaries()` | The host's own files, network and processes | Linux, macOS |
 | Remote | `Remote::new(identity, ca)` | What its own machine allows; reached over mutual TLS 1.3 and dialled again when lost | Any machine the host can reach; a connector served by `rdlt_connector::serve` runs on Linux or macOS |
 
-A provider falls back from one placement to the next. The program below runs the generator in
-process, dials any connector whose reference names a `grpcs://` endpoint, and runs every other
-connector in bubblewrap. On Linux it needs `rdlt-connector-sqlite` in a directory no other user may
+A `Registry` places each connector where its reference says: in process for a registered id,
+remotely for a reference with an endpoint, and as a local binary otherwise. A placement it was not
+given is refused (`placement_refused`), never made another way. The program below runs the
+generator in process, dials any connector whose reference names a `grpcs://` endpoint, and runs
+every other connector in bubblewrap. On Linux it needs `rdlt-connector-sqlite` in a directory no other user may
 write. This command, run as root or as the host's user, puts it in `/opt/rdlt/bin`:
 
 ```sh
@@ -610,8 +612,7 @@ use rdlt_connector::{ConnectorId, PipelineId, StreamName};
 use rdlt_connector_reference::GeneratorSource;
 use rdlt_engine::{Engine, EngineConfig, PipelinePlan, StreamPlan, SystemEnv};
 use rdlt_host::{
-    Bubblewrap, ConnectorRef, EnvSecrets, Identity, Local, Provider, Registry, Remote, Secrets,
-    StopsSpawned,
+    Bubblewrap, ConnectorRef, Identity, Local, Provider, Registry, Remote, Secrets, StopsSpawned,
 };
 use serde_json::json;
 
@@ -624,21 +625,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 async fn load() -> Result<(), Box<dyn std::error::Error>> {
     // A spawned or remote connector's "${env:DB_PASSWORD}" resolves, and no other variable does.
-    let secrets = Secrets::new().env(EnvSecrets::allowing(["DB_PASSWORD"]));
+    let secrets = Secrets::new().allow_env(["DB_PASSWORD"]);
     let sandboxed = Local::sandboxed(Bubblewrap::new())
-        .connector_dir("/opt/rdlt/bin")
-        .grantable_write("/data")
+        .connectors("/opt/rdlt/bin")
+        .writable("/data")
         .secrets(secrets.clone());
     let identity = Identity {
         cert: "/etc/rdlt/host.pem".into(),
         key: "/etc/rdlt/host.key".into(),
     };
-    let remote = Remote::new(identity, "/etc/rdlt/ca.pem")
-        .secrets(secrets)
-        .fallback(sandboxed);
+    let remote = Remote::new(identity, "/etc/rdlt/ca.pem").secrets(secrets);
+    // The generator is placed in process, a reference with an endpoint remotely, and every
+    // other connector in bubblewrap.
     let provider = Registry::trusted()
         .trusted_source::<GeneratorSource>()
-        .fallback(remote);
+        .remote(remote)
+        .local(sandboxed);
 
     let generator = ConnectorRef::new(ConnectorId::parse("io.rapidbyte.generator")?);
     let source = provider
@@ -650,7 +652,7 @@ async fn load() -> Result<(), Box<dyn std::error::Error>> {
         .connector;
     // Found as `rdlt-connector-sqlite` in /opt/rdlt/bin, hashed, and spawned in the sandbox,
     // which may write beneath /data and in a /tmp of its own, and nowhere else.
-    let sqlite = ConnectorRef::new(ConnectorId::parse("io.rapidbyte.sqlite")?).grant_write("/data");
+    let sqlite = ConnectorRef::new(ConnectorId::parse("io.rapidbyte.sqlite")?).write("/data");
     let destination = provider
         .destination(&sqlite, &json!({ "path": "/data/out.db" }))
         .await?
@@ -682,14 +684,14 @@ async fn load() -> Result<(), Box<dyn std::error::Error>> {
 ### Host enforcement
 
 - A sandboxed connector reaches the system directories, the paths the provider lets every connector
-  read (`Local::grant_read`), and what its reference grants (`grant_read`, `grant_write`,
-  `grant_network`) within a root the provider names (`grantable_read`, `grantable_write`). By
-  default no root is named and nothing is granted. A network grant shares the host's network
+  read (`Local::always_readable`), and the access its reference asks for (`ConnectorRef::read`,
+  `write`, `network`) within a root the provider names (`Local::readable`, `writable`). By
+  default no root is named and no access is given. Network access shares the host's network
   namespace whole: every interface and route, the host's loopback services and its abstract Unix
   sockets.
 - A provider honours or refuses every requirement a reference states.
-  `.isolation(Isolation::Sandbox)` or `.isolation(Isolation::Remote)` keeps a fallback from running
-  a connector with the host's access, and `.digest(..)` accepts only the binary with that SHA-256.
+  `.isolation(Isolation::Sandbox)` or `.isolation(Isolation::Remote)` keeps a reference from being placed
+  as a connector with the host's access, and `.digest(..)` accepts only the binary with that SHA-256.
   `.version(..)` accepts only the versions a `semver::VersionReq` matches, from the `semver` crate,
   which rdlt does not re-export.
 - `Local` finds a binary at the reference's path, or as `rdlt-connector-` and the last segment of
@@ -748,9 +750,9 @@ at the `grpcs://` endpoint its reference names.
 
 A configuration's text values may hold the secret references `${env:NAME}`,
 `${file:/absolute/path}` and `${secret:name}`, and `$${` writes a literal `${`. None resolves by
-default: `${env:..}` resolves only for the variables an `EnvSecrets` allows, `${file:..}` only
-beneath the private directories a `FileSecrets` names, and `${secret:..}` only from the store the
-operator gives. A spawned or remote connector's references resolve only after the handshake has
+default: `${env:..}` resolves only for the variables `Secrets::allow_env` and `allow_env_prefix` allow,
+`${file:..}` only beneath the private directories `allow_files` names, and `${secret:..}` only
+from the `secret_store` the operator gives. A spawned or remote connector's references resolve only after the handshake has
 shown which connector it is, and an in-process one's once its id and version match the reference.
 Each resolved value then appears only as `***` in the connector's errors and output, the engine's
 reports and certification reports ([ADR 0043](docs/adr/0043-placement-policy-and-secrets.md)).
