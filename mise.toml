@@ -1,4 +1,4 @@
-min_version = "2026.9.12"
+min_version = "2026.10.21"
 
 [settings]
 lockfile = true
@@ -21,7 +21,13 @@ cargo-deny = "0.20.2"
 "github:taiki-e/cargo-hack" = "0.6.45"
 java = "temurin-21.0.12+101.0.LTS"                                                                             # the runtime of Apalache and TLC
 just = "1.58.0"
+maturin = "1.16.0"                                                                                             # builds the rdlt wheel
+node = "24.11.1"                                                                                               # pyright's runtime
+"npm:pyright" = "1.1.414"                                                                                      # locked by npm's lockfile under .mise/locks
 pinact = "5.0.0"
+python = "3.14.10"                                                                                             # the development interpreter, which rdlt-python's tests embed
+ruff = "0.17.4"
 shellcheck = "0.11.0"
 taplo = "0.10.0"
 typos = "1.50.2"
+uv = "0.13.7"                                                                                                  # the Python environment, and the test matrix's interpreters

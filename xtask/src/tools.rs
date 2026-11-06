@@ -31,13 +31,22 @@ pub(crate) enum Unlocked {
     Platform { tool: String, platform: String },
     /// The entry's download for a platform has no checksum, or one that is no digest.
     Checksum { tool: String, platform: String },
+    /// The entry locks an npm package through a package lockfile that is missing, of other bytes
+    /// than its digest, or names a package without its integrity.
+    Packages { tool: String },
 }
 
 /// Digest algorithms a checksum may use, each with the length of its digest in hex digits.
 const DIGESTS: &[(&str, usize)] = &[("sha256:", 64), ("blake3:", 64)];
 
-/// Every tool of the configuration `config` that the lockfile `lock` does not hold to one download.
-pub(crate) fn check(config: &str, lock: &str) -> anyhow::Result<Vec<Unlocked>> {
+/// Every tool of the configuration `config` that the lockfile `lock` does not hold to one
+/// download, reading a package lockfile it names, by its path from the repository root, with
+/// `read`.
+pub(crate) fn check(
+    config: &str,
+    lock: &str,
+    read: &dyn Fn(&str) -> Option<Vec<u8>>,
+) -> anyhow::Result<Vec<Unlocked>> {
     let config: Table = config.parse().context("reading mise.toml")?;
     let lock: Table = lock.parse().context("reading mise.lock")?;
     let empty = Table::new();
@@ -61,6 +70,10 @@ pub(crate) fn check(config: &str, lock: &str) -> anyhow::Result<Vec<Unlocked>> {
             all.push(Unlocked::Version { tool: tool.clone() });
             continue;
         };
+        if entry.get("aube").is_some() {
+            all.extend(unlocked_packages(tool, entry, read));
+            continue;
+        }
         let built = |platform: &&&str| !UNBUILT.contains(&(tool.as_str(), **platform));
         for platform in PLATFORMS.iter().filter(built) {
             all.extend(unlocked_on(tool, entry, platform));
@@ -94,6 +107,40 @@ fn unlocked_on(tool: &str, entry: &Value, platform: &str) -> Option<Unlocked> {
     }
 }
 
+/// What the entry `entry` of `tool`, an npm package mise locks through npm's own lockfile, lacks:
+/// that lockfile at the path it names, bytes that hash to its digest, or an integrity for each
+/// package the lockfile resolves.
+fn unlocked_packages(
+    tool: &str,
+    entry: &Value,
+    read: &dyn Fn(&str) -> Option<Vec<u8>>,
+) -> Option<Unlocked> {
+    use sha2::Digest as _;
+    let aube = entry.get("aube")?;
+    let path = aube.get("path").and_then(Value::as_str);
+    let digest = aube
+        .get("digest")
+        .and_then(Value::as_str)
+        .filter(|digest| digest.starts_with("sha256:") && is_digest(digest));
+    let held = path.zip(digest).and_then(|(path, digest)| {
+        let lockfile = read(&format!("{path}/aube-lock.yaml"))?;
+        let found = format!("sha256:{:x}", sha2::Sha256::digest(&lockfile));
+        (found == digest).then_some(lockfile)
+    });
+    let unheld = || Unlocked::Packages {
+        tool: tool.to_owned(),
+    };
+    let Some(lockfile) = held else {
+        return Some(unheld());
+    };
+    let text = String::from_utf8_lossy(&lockfile);
+    let unhashed = text
+        .lines()
+        .filter(|line| line.trim_start().starts_with("resolution:"))
+        .any(|line| !line.contains("integrity: sha512-"));
+    unhashed.then(unheld)
+}
+
 /// The `tools` table of a mise configuration or lockfile, when it has one.
 fn tools_of(file: &Table) -> anyhow::Result<Option<&Table>> {
     file.get("tools")
@@ -120,7 +167,8 @@ pub(crate) fn run(root: &Path) -> anyhow::Result<ExitCode> {
         let path = root.join(name);
         fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))
     };
-    let unlocked = check(&read("mise.toml")?, &read("mise.lock")?)?;
+    let read_tracked = |path: &str| fs::read(root.join(path)).ok();
+    let unlocked = check(&read("mise.toml")?, &read("mise.lock")?, &read_tracked)?;
     for tool in &unlocked {
         match tool {
             Unlocked::Missing { tool } => println!("error: mise.lock has no entry for {tool}"),
@@ -133,6 +181,10 @@ pub(crate) fn run(root: &Path) -> anyhow::Result<ExitCode> {
             Unlocked::Checksum { tool, platform } => {
                 println!("error: mise.lock has no checksum of {tool} for {platform}");
             }
+            Unlocked::Packages { tool } => println!(
+                "error: mise.lock's package lockfile of {tool} is missing, of other bytes than \
+                 its digest, or names a package without its integrity"
+            ),
         }
     }
     Ok(if unlocked.is_empty() {

@@ -222,6 +222,42 @@ checksum = "sha256:50ae3e996c974a0bf32ea7d10f495070df33f1b43e0616b2769e3d4821ed8
 url = "https://github.com/casey/just/releases/download/1.58.0/just-1.58.0-aarch64-apple-darwin.tar.gz"
 url_api = "https://api.github.com/repos/casey/just/releases/assets/500509965"
 
+[[tools.maturin]]
+version = "1.16.0"
+backend = "github:PyO3/maturin"
+specifiers = ["1.16.0"]
+
+[tools.maturin."platforms.linux-x64"]
+checksum = "sha256:804add817bf3b8a3760324ace2e2c39c345f7a99b3ace1296aeed1abc3a1d8c4"
+url = "https://github.com/PyO3/maturin/releases/download/v1.16.0/maturin-x86_64-unknown-linux-musl.tar.gz"
+url_api = "https://api.github.com/repos/PyO3/maturin/releases/assets/688760466"
+provenance = "github-attestations"
+
+[tools.maturin."platforms.macos-arm64"]
+checksum = "sha256:1abe6c9d188b674103a4c3d9bbaa6817cc45c4b7e2ecd5908643624ff5cbf657"
+url = "https://github.com/PyO3/maturin/releases/download/v1.16.0/maturin-aarch64-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/PyO3/maturin/releases/assets/688760470"
+provenance = "github-attestations"
+
+[[tools.node]]
+version = "24.11.1"
+backend = "core:node"
+specifiers = ["24.11.1"]
+
+[tools.node."platforms.linux-x64"]
+checksum = "sha256:58a5ff5cc8f2200e458bea22e329d5c1994aa1b111d499ca46ec2411d58239ca"
+url = "https://nodejs.org/dist/v24.11.1/node-v24.11.1-linux-x64.tar.gz"
+
+[tools.node."platforms.macos-arm64"]
+checksum = "sha256:b05aa3a66efe680023f930bd5af3fdbbd542794da5644ca2ad711d68cbd4dc35"
+url = "https://nodejs.org/dist/v24.11.1/node-v24.11.1-darwin-arm64.tar.gz"
+
+[[tools."npm:pyright"]]
+version = "1.1.414"
+aube = { path = ".mise/locks/npm-pyright/1.1.414", digest = "sha256:69cd62e5613c907964fbb78b05a85eb9d12a503285d716f6529144cc884cf656" }
+backend = "npm:pyright"
+specifiers = ["1.1.414"]
+
 [[tools.pinact]]
 version = "5.0.0"
 backend = "aqua:suzuki-shunsuke/pinact"
@@ -237,6 +273,38 @@ provenance = "github-attestations"
 checksum = "sha256:3437ebfc9db720e431e86fd03ed19173b88dcb80b0f177d11a892126108661b5"
 url = "https://github.com/suzuki-shunsuke/pinact/releases/download/v5.0.0/pinact_darwin_arm64.tar.gz"
 url_api = "https://api.github.com/repos/suzuki-shunsuke/pinact/releases/assets/558638064"
+provenance = "github-attestations"
+
+[[tools.python]]
+version = "3.14.10"
+backend = "core:python"
+specifiers = ["3.14.10"]
+
+[tools.python."platforms.linux-x64"]
+checksum = "sha256:4d3c16c59ed0802a3d1d34d8bce504b15ceeaff39d62dadecc6a9fa803412aed"
+url = "https://github.com/astral-sh/python-build-standalone/releases/download/20261026/cpython-3.14.10+20261026-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz"
+provenance = "github-attestations"
+
+[tools.python."platforms.macos-arm64"]
+checksum = "sha256:95eb8c87d16af37c54e9765e31d8c56c0d8ffa9968ea0f704f73a9b83f84e9f9"
+url = "https://github.com/astral-sh/python-build-standalone/releases/download/20261026/cpython-3.14.10+20261026-aarch64-apple-darwin-install_only_stripped.tar.gz"
+provenance = "github-attestations"
+
+[[tools.ruff]]
+version = "0.17.4"
+backend = "aqua:astral-sh/ruff"
+specifiers = ["0.17.4"]
+
+[tools.ruff."platforms.linux-x64"]
+checksum = "sha256:3ab2b34aeacdbc1ea5c529cdbda3e05792633d587228123fd09f3b5a0facb27a"
+url = "https://github.com/astral-sh/ruff/releases/download/0.17.4/ruff-x86_64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/astral-sh/ruff/releases/assets/714447482"
+provenance = "github-attestations"
+
+[tools.ruff."platforms.macos-arm64"]
+checksum = "sha256:6ef8b3a7fd5294f5e8384ceb29784a6f5657da0853824312b1d2cef53aef17af"
+url = "https://github.com/astral-sh/ruff/releases/download/0.17.4/ruff-aarch64-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/astral-sh/ruff/releases/assets/714447192"
 provenance = "github-attestations"
 
 [[tools.shellcheck]]
@@ -283,3 +351,20 @@ url_api = "https://api.github.com/repos/crate-ci/typos/releases/assets/565795694
 checksum = "sha256:70d61e9d682034133f0aa56f5a02bae0de168495f3cce62a87054aa7186c1901"
 url = "https://github.com/crate-ci/typos/releases/download/v1.50.2/typos-v1.50.2-aarch64-apple-darwin.tar.gz"
 url_api = "https://api.github.com/repos/crate-ci/typos/releases/assets/565802016"
+
+[[tools.uv]]
+version = "0.13.7"
+backend = "aqua:astral-sh/uv"
+specifiers = ["0.13.7"]
+
+[tools.uv."platforms.linux-x64"]
+checksum = "sha256:c5221ff41b7892bfc223543883600125f6a47fe845093e0f5bdff4f359196d83"
+url = "https://github.com/astral-sh/uv/releases/download/0.13.7/uv-x86_64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/astral-sh/uv/releases/assets/704009823"
+provenance = "github-attestations"
+
+[tools.uv."platforms.macos-arm64"]
+checksum = "sha256:81b811b57e4624df7ed3aac148e0359100d9962f3d9dce00aec533dc2e086731"
+url = "https://github.com/astral-sh/uv/releases/download/0.13.7/uv-aarch64-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/astral-sh/uv/releases/assets/704009442"
+provenance = "github-attestations"
