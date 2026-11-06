@@ -1,0 +1,1 @@
+"""Fixtures every suite shares."""
