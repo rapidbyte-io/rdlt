@@ -51,6 +51,22 @@ python-checks: python-develop
 python-test *args: python-develop
     .venv/bin/python -m pytest {{ args }}
 
+# Build the release wheel and test it as it ships: installed with the test dependencies into an
+# environment of its own on CPython `version`, which uv installs from the downloads its release
+# names, never the editable package
+python-wheel version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    rm -rf target/wheels target/wheel-env
+    # The wheel is built without `.venv`, which the exported PYO3_PYTHON names
+    export PYO3_PYTHON="$(mise which python)"
+    maturin build --release --out target/wheels --interpreter "$(mise which python)"
+    uv python install "{{ version }}"
+    uv venv --python "{{ version }}" target/wheel-env
+    VIRTUAL_ENV=target/wheel-env uv sync --locked --active --only-group dev
+    uv pip install --python target/wheel-env/bin/python target/wheels/*.whl
+    target/wheel-env/bin/python -m pytest -p no:cacheprovider
+
 # Run every static check CI runs
 lint: checks pins
 
