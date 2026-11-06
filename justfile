@@ -2,10 +2,13 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 
 nightly := "nightly-2026-09-20"
 
+# The interpreter rdlt-python's build reads and its tests embed: the development environment's
+export PYO3_PYTHON := justfile_directory() / ".venv/bin/python"
+
 # The crates mutation testing mutates, and the crates whose tests may catch a mutant: the
 # protocol's served end is tested from the host, where a client exists, and the reference
 # connectors from the engine and certification too
-mutated := "rdlt-engine rdlt-connector rdlt-adopt rdlt-wire rdlt-host rdlt-certify rdlt-connector-reference"
+mutated := "rdlt-engine rdlt-connector rdlt-adopt rdlt-wire rdlt-host rdlt-certify rdlt-connector-reference rdlt-python"
 
 # What a test runs under while mutants are tested: an address space of 6 GiB, room for the most any
 # test takes (about 3.5 GiB). A mutant that allocates without end aborts its test there, which
@@ -27,6 +30,11 @@ fmt:
     cargo fmt --all
     taplo fmt
 
+# Make the Python environment, `.venv`, as `uv.lock` holds it, on the interpreter mise.toml names:
+# the Python package's lints and tests, and the interpreter rdlt-python's tests embed, use it
+python-env:
+    UV_PYTHON_DOWNLOADS=never uv sync --locked --python "$(mise which python)"
+
 # Run every static check CI runs
 lint: checks pins
 
@@ -38,7 +46,7 @@ locked:
 
 # Every static check that needs no credential: these build and run the workspace's and its
 # dependencies' code
-checks: locked
+checks: locked python-env
     cargo fmt --all --check
     taplo fmt --check
     typos
@@ -70,7 +78,7 @@ deny: locked
 # counts, then runs once as a test in a process of its own beside the others, so every bench's
 # setup, checks and counts run on every change; the last run is of a connector built without
 # certification's probes, which a build with every feature never is: it must serve none
-test *args:
+test *args: python-env
     cargo nextest run --workspace --all-features {{ args }}
     cargo test --workspace --all-features --doc
     cargo nextest run --workspace --all-features --benches -E 'kind(bench)'
@@ -131,7 +139,7 @@ sim-rate floor="2" cores=env("RDLT_SIM_CORES", ""): sim-archive
 # reach in under half their lines, and a served binary's entry).
 # Each sweep's seeds run side by side on the host's cores, or on `cores` (by default
 # `RDLT_SIM_CORES`) when given
-sim-coverage seeds="1000" cores=env("RDLT_SIM_CORES", ""):
+sim-coverage seeds="1000" cores=env("RDLT_SIM_CORES", ""): python-env
     rustup toolchain install {{ nightly }} --profile minimal --component llvm-tools-preview
     RDLT_SIM_SEEDS="{{ seeds }}" RDLT_SIM_CORES="{{ cores }}" cargo +{{ nightly }} llvm-cov nextest --branch --workspace --all-features --json --summary-only --output-path target/sim-coverage.json --ignore-filename-regex '(rdlt-sim|rdlt-testkit|rdlt-connector-reference|rdlt-adopt|xtask)/|/tests?(\.rs|/)|differential|reference(\.rs|/)|/bench|/testing|sqlgen|encodings\.rs|/generated/|rdlt-engine/src/(env/inline|shred/numbers)\.rs|rdlt-connector/src/(strategy|serve/live)\.rs|rdlt-host/src/(kills\.rs|local/(bubblewrap|sandbox)|local/grants/opened\.rs|local/process\.rs|local/process/(command|group)|connect|sink)|rdlt-certify/|serve/(args|binary)|rdlt-connector/src/required\.rs|rdlt-engine/src/fixtures(\.rs|/)' -E 'package(rdlt-sim) & test(through_faults)'
     cargo xtask coverage-gate target/sim-coverage.json --lines 80 --branches 71
@@ -217,7 +225,7 @@ mutants-diff base="origin/main" jobs="4":
     }
     {{ mutant_test_limit }}
     failed=0
-    for crate in rdlt-engine rdlt-connector rdlt-adopt rdlt-connector-reference rdlt-wire rdlt-host rdlt-certify; do
+    for crate in rdlt-engine rdlt-connector rdlt-adopt rdlt-connector-reference rdlt-wire rdlt-host rdlt-certify rdlt-python; do
         grep -q "^+++ b/crates/$crate/" target/mutants.diff || continue
         tests=()
         for package in $(catching "$crate"); do tests+=(--test-package "$package"); done

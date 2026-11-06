@@ -165,3 +165,10 @@ inherits = "mutants"
 [[profile.mutants-rdlt-connector-reference.overrides]]
 filter = "package(rdlt-connector-reference)"
 priority = 1
+
+[profile.mutants-rdlt-python]
+inherits = "mutants"
+
+[[profile.mutants-rdlt-python.overrides]]
+filter = "package(rdlt-python)"
+priority = 1
