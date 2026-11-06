@@ -10,7 +10,9 @@ use arrow_array::builder::StringBuilder;
 use arrow_array::{ArrayRef, BooleanArray, Int64Array, RecordBatch, RecordBatchOptions};
 use arrow_buffer::BooleanBuffer;
 use arrow_schema::{DataType, Field, FieldRef, Schema, SchemaRef};
+use rdlt_connector::ColumnPath;
 
+use super::mask::{self, Mask};
 use super::{Bound, Transform, TransformError};
 
 /// Bytes an output array takes beyond its values: its buffers' rounding and its first offset.
@@ -24,6 +26,13 @@ pub enum Op {
     Rename(Vec<(String, String)>),
     /// Adds top-level columns, each holding its literal in every row.
     Constant(Vec<(String, Literal)>),
+    /// Masks the values of columns, nested struct fields among them.
+    Mask {
+        /// The columns, each a path from a top-level column through structs.
+        columns: Vec<ColumnPath>,
+        /// How each value is masked.
+        with: Mask,
+    },
 }
 
 /// The value a constant column holds.
@@ -60,6 +69,14 @@ impl Op {
                 .collect(),
         )
     }
+
+    /// Masks `columns` as `with` says.
+    pub fn mask<C: Into<ColumnPath>>(columns: impl IntoIterator<Item = C>, with: Mask) -> Self {
+        Self::Mask {
+            columns: columns.into_iter().map(Into::into).collect(),
+            with,
+        }
+    }
 }
 
 impl Literal {
@@ -86,6 +103,7 @@ impl Transform for Op {
         match self {
             Self::Rename(_) => "rename",
             Self::Constant(_) => "constant",
+            Self::Mask { .. } => "mask",
         }
     }
 
@@ -93,6 +111,7 @@ impl Transform for Op {
         match self {
             Self::Rename(pairs) => renamed(input, pairs),
             Self::Constant(columns) => constants(input, columns),
+            Self::Mask { columns, with } => mask::output(input, columns, with),
         }
     }
 
@@ -106,6 +125,7 @@ impl Transform for Op {
                 columns.extend(constants.iter().map(|(_, value)| repeated(value, rows)));
                 columns
             }
+            Self::Mask { columns, with } => mask::apply(&batch, columns, with)?,
         };
         built(self.name(), schema, columns, rows)
     }
@@ -120,9 +140,10 @@ impl Transform for Op {
         Some(lineage)
     }
 
-    fn bound(&self, _input: &Schema) -> Option<Bound> {
+    fn bound(&self, input: &Schema) -> Option<Bound> {
         Some(match self {
             Self::Rename(_) => Bound::new(0),
+            Self::Mask { columns, with } => mask::bound(input, columns, with),
             Self::Constant(columns) => columns.iter().fold(Bound::new(0), |bound, (_, value)| {
                 bound.plus(&literal_bound(value))
             }),
@@ -143,7 +164,7 @@ fn built(
 }
 
 /// `input`'s fields as an op passes them on.
-fn fields(input: &Schema) -> Vec<FieldRef> {
+pub(super) fn fields(input: &Schema) -> Vec<FieldRef> {
     input.fields().iter().cloned().collect()
 }
 
