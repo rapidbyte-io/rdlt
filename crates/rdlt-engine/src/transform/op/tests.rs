@@ -101,6 +101,18 @@ fn an_op_reports_each_column_read_from_its_own_place_and_a_constant_from_none() 
 }
 
 #[test]
+fn an_op_is_named_for_what_it_does() {
+    let names = [
+        (Op::rename([("a", "b")]), "rename"),
+        (Op::constant([("a", Literal::Integer(1))]), "constant"),
+        (Op::mask(["a"], crate::transform::Mask::Null), "mask"),
+    ];
+    for (op, name) in names {
+        assert_eq!(op.name(), name);
+    }
+}
+
+#[test]
 fn a_constant_meeting_a_column_the_batch_holds_is_refused_naming_it() {
     let refused = Op::constant([("note", Literal::Integer(1))])
         .output(people(1).schema_ref())

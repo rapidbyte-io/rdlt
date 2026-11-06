@@ -69,3 +69,12 @@ fn a_code_step_shows_as_its_name() {
         "Code(\"identity\")"
     );
 }
+
+#[test]
+fn a_transform_error_reads_as_its_message_beside_its_column() {
+    assert_eq!(TransformError::new("refused").to_string(), "refused");
+    assert_eq!(
+        TransformError::new("refused").with_column("id").to_string(),
+        "column id: refused"
+    );
+}
