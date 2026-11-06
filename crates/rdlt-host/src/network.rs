@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use rdlt_connector::{BoxFuture, Destination, Role, Source};
+use rdlt_connector::{BoxFuture, ConnectorSpec, Destination, Role, Source};
 use rdlt_wire::tls::Identity;
 use rustls::ClientConfig;
 use rustls::pki_types::ServerName;
@@ -299,6 +299,26 @@ impl Provider for Remote {
                 },
                 digest: None,
             })
+        })
+    }
+
+    fn spec<'a>(
+        &'a self,
+        reference: &'a ConnectorRef,
+        role: Role,
+    ) -> BoxFuture<'a, Result<ConnectorSpec, ProviderError>> {
+        Box::pin(async move {
+            let wire = self.wire(reference).await?;
+            let at = reference
+                .endpoint
+                .as_deref()
+                .and_then(|endpoint| Endpoint::parse(endpoint).ok())
+                .map_or_else(String::new, |endpoint| endpoint.to_string());
+            let gate = Gate {
+                reference,
+                found_at: &at,
+            };
+            crate::supervise::spoken(wire, role, &self.options, &gate).await
         })
     }
 }

@@ -110,7 +110,7 @@ pub(crate) struct Gate<'a> {
 impl Gate<'_> {
     /// Whether the handshake's `spec` is the connector the reference names, of a version it
     /// accepts.
-    fn admit(&self, spec: &v1::ConnectorSpec) -> Result<(), ProviderError> {
+    pub(crate) fn admit(&self, spec: &v1::ConnectorSpec) -> Result<(), ProviderError> {
         if spec.id != self.reference.id.as_str() {
             let serves = rdlt_connector::text::shown(&spec.id, MAX_ERROR_CODE_BYTES);
             let message = format!("{} serves `{serves}`", self.found_at);
@@ -119,12 +119,30 @@ impl Gate<'_> {
         accepts(self.reference, &spec.version)
     }
 
-    fn refused(&self, source: ConnectorError) -> ProviderError {
+    pub(crate) fn refused(&self, source: ConnectorError) -> ProviderError {
         ProviderError::HandshakeFailed {
             id: self.reference.id.clone(),
             source: Box::new(source),
         }
     }
+}
+
+/// What the connector at the other end of `io` says it is, as `role`, once `gate` admits it;
+/// the connection is cut before any configuration is sent.
+pub(crate) async fn spoken<IO>(
+    io: IO,
+    role: Role,
+    options: &Options,
+    gate: &Gate<'_>,
+) -> Result<ConnectorSpec, ProviderError>
+where
+    IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
+{
+    let handshaken = Connection::handshake(io, role, *options)
+        .await
+        .map_err(|source| gate.refused(source))?;
+    gate.admit(handshaken.spec())?;
+    crate::remote::contract_spec(handshaken.spec()).map_err(|source| gate.refused(source))
 }
 
 impl Supervisor {

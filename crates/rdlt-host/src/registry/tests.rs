@@ -32,6 +32,14 @@ impl Provider for Refusing {
     ) -> BoxFuture<'a, Result<Placed<Box<dyn Destination>>, ProviderError>> {
         Box::pin(async move { Err(refused(self.0, reference)) })
     }
+
+    fn spec<'a>(
+        &'a self,
+        reference: &'a ConnectorRef,
+        _role: rdlt_connector::Role,
+    ) -> BoxFuture<'a, Result<rdlt_connector::ConnectorSpec, ProviderError>> {
+        Box::pin(async move { Err(refused(self.0, reference)) })
+    }
 }
 
 fn refused(by: &'static str, reference: &ConnectorRef) -> ProviderError {
@@ -441,4 +449,17 @@ async fn a_linked_connector_s_configuration_beyond_its_limit_is_refused() {
         "{:?}",
         placed.err().map(|error| error.to_string())
     );
+}
+
+#[tokio::test]
+async fn a_registered_connector_says_what_it_is_with_no_configuration() {
+    let registry = Registry::trusted().trusted_source::<MemorySource>();
+    let spec = Provider::spec(&registry, &memory(), rdlt_connector::Role::Source)
+        .await
+        .expect("spoken");
+    assert_eq!(spec.id, memory().id);
+    let unregistered = Provider::spec(&registry, &memory(), rdlt_connector::Role::Destination)
+        .await
+        .expect_err("refused");
+    assert_eq!(unregistered.code(), "placement_refused");
 }

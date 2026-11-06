@@ -215,3 +215,32 @@ async fn a_requirement_is_refused_before_another_placement_or_a_kill_is_reached(
     unsupported(placed, "a path", "in-process").expect("refused");
     assert!(rdlt_host::spawned().is_empty());
 }
+
+#[tokio::test]
+async fn spawned_and_listening_connectors_say_what_they_are_before_any_configuration() {
+    let spawned = local()
+        .spec(&scripted(), rdlt_connector::Role::Source)
+        .await
+        .expect("spoken");
+    assert_eq!(spawned.id.as_str(), "test.scripted");
+    let pki = Pki::new("ca");
+    let (_connector, address) =
+        listening(&pki, &pki.server("server", &["localhost"]), "127.0.0.1:0").await;
+    let endpoint = format!("grpcs://localhost:{}", port(&address));
+    let remote = Remote::new(identity(&pki.client("host")), pki.ca());
+    let listened = remote
+        .spec(
+            &crate::network::scripted(&endpoint),
+            rdlt_connector::Role::Source,
+        )
+        .await
+        .expect("spoken");
+    assert_eq!(listened.id.as_str(), "test.scripted");
+    let other = ConnectorRef::new(ConnectorId::parse("io.example.other").expect("a valid id"))
+        .path(example("scripted_connector"));
+    let impostor = local()
+        .spec(&other, rdlt_connector::Role::Source)
+        .await
+        .expect_err("refused");
+    assert_eq!(impostor.code(), "handshake_failed");
+}

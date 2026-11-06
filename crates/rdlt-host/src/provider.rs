@@ -441,6 +441,14 @@ pub trait Provider: Send + Sync {
         reference: &'a ConnectorRef,
         config: &'a serde_json::Value,
     ) -> BoxFuture<'a, Result<Placed<Box<dyn Destination>>, ProviderError>>;
+
+    /// What the connector `reference` names says it is, as `role`, before any configuration
+    /// reaches it: its id, version and configuration's JSON Schema, from its handshake.
+    fn spec<'a>(
+        &'a self,
+        reference: &'a ConnectorRef,
+        role: rdlt_connector::Role,
+    ) -> BoxFuture<'a, Result<ConnectorSpec, ProviderError>>;
 }
 
 /// Whether `version` is one `reference` accepts; a version that is not semver matches only when
