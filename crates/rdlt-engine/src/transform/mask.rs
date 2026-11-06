@@ -105,6 +105,19 @@ pub(super) fn output(
     )))
 }
 
+/// `field` holding masked values of `data_type`: nullable, and no longer the extension type its
+/// metadata names.
+fn masked_leaf(field: &Field, data_type: DataType) -> Field {
+    let mut metadata = field.metadata().clone();
+    metadata.remove("ARROW:extension:name");
+    metadata.remove("ARROW:extension:metadata");
+    field
+        .clone()
+        .with_data_type(data_type)
+        .with_nullable(true)
+        .with_metadata(metadata)
+}
+
 fn masked_field(
     field: &Field,
     below: &[usize],
@@ -120,7 +133,7 @@ fn masked_field(
             Mask::HmacSha256(_) | Mask::Redact(_) => DataType::Utf8,
             Mask::Null => DataType::Null,
         };
-        return Ok(field.clone().with_data_type(data_type).with_nullable(true));
+        return Ok(masked_leaf(field, data_type));
     };
     let DataType::Struct(children) = field.data_type() else {
         let refused = TransformError::new("a mask reaches nested fields only through structs");
@@ -163,12 +176,13 @@ fn masked_at(
     let (fields, mut children, nulls) = array.as_struct().clone().into_parts();
     let replaced = masked_at(&children[*child], rest, with, path)?;
     let mut fields: Vec<FieldRef> = fields.iter().cloned().collect();
-    let field = fields[*child].as_ref().clone();
-    fields[*child] = Arc::new(
-        field
-            .with_data_type(replaced.data_type().clone())
-            .with_nullable(true),
-    );
+    let field = fields[*child].as_ref();
+    let data_type = replaced.data_type().clone();
+    fields[*child] = Arc::new(if rest.is_empty() {
+        masked_leaf(field, data_type)
+    } else {
+        field.clone().with_data_type(data_type)
+    });
     children[*child] = replaced;
     let rebuilt = StructArray::try_new(Fields::from(fields), children, nulls).map_err(|_| {
         TransformError::new("a masked struct cannot be rebuilt").with_column(path.to_string())
