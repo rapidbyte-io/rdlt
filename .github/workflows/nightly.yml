@@ -396,6 +396,7 @@ jobs:
           install_args: --locked just github:sourcefrog/cargo-mutants aqua:nextest-rs/nextest/cargo-nextest aqua:rui314/mold
           cache_key_prefix: mise-v2-mutants
       - name: Make a sandbox available
+        timeout-minutes: 15
         run: ./.github/sandbox.sh
       # Each mutant at once copies the tree and builds it whole, more than the runner leaves free
       # on the disk `/tmp` lies on; the toolchains no step uses give it back.

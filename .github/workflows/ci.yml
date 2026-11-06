@@ -90,6 +90,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Make a sandbox available
         if: runner.os == 'Linux'
+        timeout-minutes: 15
         run: ./.github/sandbox.sh
       # On Linux a test that needs a sandbox fails where none can be made, rather than skip.
       - run: just test --profile ci
@@ -191,6 +192,7 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Make a sandbox available
+        timeout-minutes: 15
         run: ./.github/sandbox.sh
       - run: just coverage
         env:

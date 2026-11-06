@@ -1,11 +1,14 @@
 #!/bin/sh
 # Makes the sandbox rdlt ships available on a GitHub Ubuntu runner, so that the tests that need
 # one run, and, with RDLT_REQUIRE_SANDBOX set, fail rather than skip where it cannot be made.
-set -eu
+#
+# Each command and each download is printed as it runs, so a step that stalls shows where; the
+# steps that run this give it the minutes Ubuntu's archive mirror can take, and no more.
+set -eux
 
 # Bubblewrap from Ubuntu's signed archive, at /usr/bin/bwrap, where the host looks for it.
-sudo apt-get update -qq
-sudo apt-get install -y -qq --no-install-recommends bubblewrap
+sudo apt-get update -q
+sudo apt-get install -y -q --no-install-recommends bubblewrap
 
 # Ubuntu 24.04 lets a program make an unprivileged user namespace only where an AppArmor
 # profile names it. This profile names bubblewrap alone, and grants it that and nothing more:
