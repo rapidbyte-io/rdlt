@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use rdlt_connector::{BoxFuture, Destination, Role, Source};
+use rdlt_connector::{BoxFuture, ConnectorSpec, Destination, Role, Source};
 
 use crate::kills::Kills;
 use crate::network::Stream;
@@ -174,6 +174,28 @@ impl Provider for Connect {
                 placement: Placement::Connected,
                 digest: None,
             })
+        })
+    }
+
+    fn spec<'a>(
+        &'a self,
+        reference: &'a ConnectorRef,
+        role: Role,
+    ) -> BoxFuture<'a, Result<ConnectorSpec, ProviderError>> {
+        Box::pin(async move {
+            HONOURS.admit(reference)?;
+            let stream = (self.open)()
+                .await
+                .map_err(|source| ProviderError::Unreachable {
+                    id: reference.id.clone(),
+                    endpoint: CONNECTED.to_owned(),
+                    source,
+                })?;
+            let gate = Gate {
+                reference,
+                found_at: CONNECTED,
+            };
+            crate::supervise::spoken(stream, role, &self.options, &gate).await
         })
     }
 }

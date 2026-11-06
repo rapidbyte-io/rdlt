@@ -6,8 +6,9 @@ use std::fmt;
 use std::sync::Arc;
 
 use rdlt_connector::{
-    BoxFuture, ConnectContext, ConnectorId, Destination, DestinationConnector, DestinationFactory,
-    Source, SourceConnector, SourceFactory, destination_factory, source_factory,
+    BoxFuture, ConnectContext, ConnectorId, ConnectorSpec, Destination, DestinationConnector,
+    DestinationFactory, Source, SourceConnector, SourceFactory, destination_factory,
+    source_factory,
 };
 
 #[cfg(test)]
@@ -219,6 +220,31 @@ impl Provider for Registry {
                 placement: Placement::InProcess,
                 digest: None,
             })
+        })
+    }
+
+    fn spec<'a>(
+        &'a self,
+        reference: &'a ConnectorRef,
+        role: rdlt_connector::Role,
+    ) -> BoxFuture<'a, Result<ConnectorSpec, ProviderError>> {
+        Box::pin(async move {
+            let registered = match role {
+                rdlt_connector::Role::Source => self
+                    .sources
+                    .get(&reference.id)
+                    .map(|factory| factory.spec()),
+                rdlt_connector::Role::Destination => self
+                    .destinations
+                    .get(&reference.id)
+                    .map(|factory| factory.spec()),
+            };
+            let Some(spec) = registered else {
+                return self.placing(reference)?.spec(reference, role).await;
+            };
+            HONOURS.admit(reference)?;
+            accepts(reference, &spec.version)?;
+            Ok(spec.clone())
         })
     }
 }

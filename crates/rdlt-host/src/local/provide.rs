@@ -4,12 +4,14 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use rdlt_connector::{BoxFuture, ConnectorError, ConnectorId, Destination, Role, Source};
+use rdlt_connector::{
+    BoxFuture, ConnectorError, ConnectorId, ConnectorSpec, Destination, Role, Source,
+};
 
 use super::Local;
 use super::process::{Launch, Unspawned};
 use crate::provider::{ConnectorRef, Placed, Placement, Provider, ProviderError};
-use crate::supervise::{SupervisedDestination, SupervisedSource};
+use crate::supervise::{Gate, SupervisedDestination, SupervisedSource};
 
 /// The provider's error for a connector that was not spawned.
 pub(crate) fn refused(launch: &Launch, unspawned: Unspawned) -> ProviderError {
@@ -92,6 +94,22 @@ impl Provider for Local {
                 placement: Placement::Process { path },
                 digest,
             })
+        })
+    }
+
+    fn spec<'a>(
+        &'a self,
+        reference: &'a ConnectorRef,
+        role: Role,
+    ) -> BoxFuture<'a, Result<ConnectorSpec, ProviderError>> {
+        Box::pin(async move {
+            let found_at = self.resolve(reference)?.display().to_string();
+            let wire = self.wire(reference).await?;
+            let gate = Gate {
+                reference,
+                found_at: &found_at,
+            };
+            crate::supervise::spoken(wire, role, &self.options, &gate).await
         })
     }
 }
