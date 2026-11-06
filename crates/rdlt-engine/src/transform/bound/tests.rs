@@ -81,3 +81,12 @@ fn a_view_column_counts_the_text_its_views_reference() {
     let slice = views.slice(0, 10);
     assert!(column_bytes(&slice) < 20 * 40);
 }
+
+#[test]
+fn a_view_of_twelve_bytes_is_inline_and_references_nothing() {
+    let twelve = StringViewArray::from_iter_values((0..100).map(|_| "123456789012"));
+    let short = StringViewArray::from_iter_values((0..100).map(|_| "tiny"));
+    assert_eq!(column_bytes(&twelve), column_bytes(&short));
+    let thirteen = StringViewArray::from_iter_values((0..100).map(|_| "1234567890123"));
+    assert!(column_bytes(&thirteen) >= column_bytes(&short) + 100 * 13);
+}

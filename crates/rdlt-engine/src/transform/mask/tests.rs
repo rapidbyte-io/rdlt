@@ -3,8 +3,9 @@ use std::sync::Arc;
 use arrow_array::cast::AsArray as _;
 use arrow_array::types::Int32Type;
 use arrow_array::{
-    Array, ArrayRef, BinaryArray, DictionaryArray, Int64Array, LargeStringArray, ListArray,
-    RecordBatch, StringArray, StringViewArray, StructArray,
+    Array, ArrayRef, BinaryArray, BinaryViewArray, DictionaryArray, FixedSizeBinaryArray,
+    Int64Array, LargeBinaryArray, LargeStringArray, ListArray, RecordBatch, StringArray,
+    StringViewArray, StructArray,
 };
 use arrow_buffer::NullBuffer;
 use arrow_schema::{DataType, Field, Fields};
@@ -55,7 +56,8 @@ fn an_hmac_mask_matches_hmac_sha256_computed_elsewhere() {
 fn an_hmac_mask_hashes_every_layout_of_text_and_bytes_alike_and_keeps_nulls() {
     let values = [Some("a"), None, Some("b"), Some("a")];
     let dictionary: DictionaryArray<Int32Type> = values.iter().copied().collect();
-    let layouts: [ArrayRef; 5] = [
+    let bytes: Vec<Option<&[u8]>> = values.iter().map(|v| v.map(str::as_bytes)).collect();
+    let layouts: [ArrayRef; 8] = [
         Arc::new(StringArray::from(values.to_vec())),
         Arc::new(LargeStringArray::from(values.to_vec())),
         Arc::new(StringViewArray::from(values.to_vec())),
@@ -66,6 +68,11 @@ fn an_hmac_mask_hashes_every_layout_of_text_and_bytes_alike_and_keeps_nulls() {
                 .collect::<Vec<_>>(),
         )),
         Arc::new(dictionary),
+        Arc::new(LargeBinaryArray::from(bytes.clone())),
+        Arc::new(BinaryViewArray::from(bytes.clone())),
+        Arc::new(
+            FixedSizeBinaryArray::try_from_sparse_iter_with_size(bytes.into_iter(), 1).unwrap(),
+        ),
     ];
     let expected = hex(
         &Op::mask(["s"], key("k"))
@@ -233,4 +240,21 @@ proptest! {
             }
         }
     }
+}
+
+#[test]
+fn an_hmac_mask_bounds_a_row_at_its_hex_digits_and_dictionary_values_twice() {
+    let values = ["a", "b", "a", "b"];
+    let plain: ArrayRef = Arc::new(StringArray::from(values.to_vec()));
+    let dictionary: DictionaryArray<Int32Type> = values.iter().copied().map(Some).collect();
+    let dictionary: ArrayRef = Arc::new(dictionary);
+    let bound = |column: ArrayRef| {
+        let input = one("s", column);
+        let op = Op::mask(["s"], key("k"));
+        (op.bound(input.schema_ref()).unwrap().of(&input), input)
+    };
+    assert_eq!(bound(plain).0, 256 + 69 * 4);
+    let (bytes, input) = bound(dictionary);
+    let held = crate::transform::column_bytes(input.column(0).as_ref());
+    assert_eq!(bytes, 512 + 69 * 4 + 69 * held);
 }

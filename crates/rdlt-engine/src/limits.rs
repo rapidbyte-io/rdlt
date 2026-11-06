@@ -5,6 +5,9 @@
 //! bytes of one share are never reserved from another, so the shares together never pass the
 //! budget.
 
+#[cfg(test)]
+mod tests;
+
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
