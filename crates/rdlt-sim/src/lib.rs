@@ -49,7 +49,8 @@ mod workload;
 mod world;
 
 pub use changes::{
-    ChangeStream, ChangeWorkload, Event, Position, SimChangeSource, SimChangeSourceConfig, Value,
+    ChangeStream, ChangeWorkload, Event, Filter, Filtered, Position, SimChangeSource,
+    SimChangeSourceConfig, Value,
 };
 pub use destination::{
     Cells, Digest, SimDestination, SimDestinationConfig, SimSession, SimWriter, Stored, completions,

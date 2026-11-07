@@ -5,17 +5,22 @@
 //! A seed in four runs them on the simulated network, its faulty runs disrupting it, and one in
 //! four of the rest in played processes.
 
+#[cfg(test)]
+mod tests;
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use rdlt_connector::{PartitionState, PipelineId, ReadMode, StateEntry, StreamName, TablePath};
-use rdlt_engine::{DeleteMode, Env as _, PipelinePlan, StreamPlan, WriteMode};
+use rdlt_engine::{DeleteMode, Env as _, PipelinePlan, Report, StreamPlan, WriteMode};
+use rdlt_sql::Sql;
 use rdlt_testkit::canon::Canon;
 use rdlt_wire::Limits;
 
 use super::config::{config, growth, waited};
 use super::events::Runs;
 use super::faulty::Faulty;
+use super::filtered;
 use super::ledger::Ledger;
 use super::reports::Reported;
 use super::scenario::{Scenario, execute_all, pick};
@@ -159,10 +164,12 @@ impl Changing<'_> {
         let (seed, world) = (self.seed, self.world);
         for round in 0..ROUNDS {
             world.set_phase(round);
-            self.converge(round, rng).await;
+            let reports = self.converge(round, rng).await;
             settled(seed, world, self.placing).await;
+            let complete = world.workload.features.reports_complete();
             for stream in &world.changes.streams {
                 check(world, stream, round, seed);
+                filtered::check_changes(stream, round, &reports, complete, seed);
             }
             check_acknowledged(world, round, seed);
         }
@@ -189,11 +196,14 @@ impl Changing<'_> {
     }
 
     /// Runs `round` until a run succeeds: the first four to sixteen runs with faults and
-    /// disruptions where the seed has them, the rest without.
-    async fn converge(&mut self, round: usize, rng: &mut SplitMix64) {
+    /// disruptions where the seed has them, the rest without; the reports of the runs that
+    /// ended.
+    async fn converge(&mut self, round: usize, rng: &mut SplitMix64) -> Vec<Report> {
+        let mut reports = Vec::new();
         let (seed, features) = (self.seed, self.world.workload.features);
         let mut faults = Faulty::draw(seed.value() ^ CHANGES, round);
-        for runs in 0.. {
+        let mut runs = 0;
+        loop {
             let disrupted = faults.faulty(runs);
             self.world.set_faulty(disrupted && features.faults);
             let draws = faults.draws(runs, rng);
@@ -225,10 +235,13 @@ impl Changing<'_> {
                     failure.text
                 );
             }
-            if executed.iter().all(|executed| executed.succeeded) {
-                return;
+            let succeeded = executed.iter().all(|executed| executed.succeeded);
+            reports.extend(executed.into_iter().flat_map(|executed| executed.reports));
+            if succeeded {
+                return reports;
             }
             assert!(runs < 32, "seed {seed}: round {round} did not converge");
+            runs += 1;
         }
     }
 }
@@ -254,7 +267,7 @@ fn stands(world: &World, stream: &str, partition: &str) -> Option<u64> {
     positions.map(|position| position.next).max()
 }
 
-/// The pipeline of every change stream, each written as the workload says.
+/// The pipeline of every change stream, each written and filtered as the workload says.
 fn plan(streams: &[ChangeStream]) -> PipelinePlan {
     let streams = streams.iter().map(|stream| {
         let write = if stream.history {
@@ -268,6 +281,16 @@ fn plan(streams: &[ChangeStream]) -> PipelinePlan {
         let plan = match stream.value {
             Value::Loaded => plan,
             Value::Excluded | Value::LeftOut => plan.exclude(["value"]),
+            Value::Unlisted => plan.include_only(["n"]),
+        };
+        // A partial update flags `value` unchanged, never the key or `n`, so the filter judges
+        // every row; a merge whose updates leave a column unchanged filters on its key alone.
+        let plan = match stream.filter {
+            Some(filter) => {
+                let sql = Sql::parse(&filter.query()).expect("the simulation's filter parses");
+                plan.transform(sql)
+            }
+            None => plan,
         };
         if stream.write == WriteMode::Merge {
             plan.deletes(stream.deletes).on_truncate(stream.truncates)
@@ -279,7 +302,7 @@ fn plan(streams: &[ChangeStream]) -> PipelinePlan {
         .expect("the change plan is valid")
 }
 
-/// Checks `stream`'s table after `round` against the model: a table whose stream excludes
+/// Checks `stream`'s table after `round` against the model: a table whose stream leaves out
 /// `value` names no such column.
 fn check(world: &World, stream: &ChangeStream, round: usize, seed: Seed) {
     let store = world.store.lock();
@@ -287,8 +310,8 @@ fn check(world: &World, stream: &ChangeStream, round: usize, seed: Seed) {
     drop(store);
     let context = || format!("seed {seed}: round {round}: stream {}", stream.name);
     let path = TablePath::new([stream.name.as_str()]).expect("a valid table path");
-    let excluded = stream.value != Value::Loaded;
-    if let Some(published) = published_table(world, &path).filter(|_| excluded) {
+    let left_out = stream.value != Value::Loaded;
+    if let Some(published) = published_table(world, &path).filter(|_| left_out) {
         let named = published
             .names
             .iter()

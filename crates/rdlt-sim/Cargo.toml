@@ -49,6 +49,7 @@ tokio = { workspace = true, features = [
 
 [dev-dependencies]
 rdlt-connector = { workspace = true, features = ["serve", "merge", "testing"] }
+rdlt-engine = { workspace = true, features = ["sim", "bench"] }
 
 [lints]
 workspace = true
