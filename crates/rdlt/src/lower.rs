@@ -1,14 +1,142 @@
 //! How a pipeline's document becomes what the engine runs: its plan, its configuration, and its
 //! two connectors' references, by this path alone.
+//!
+//! A document is lowered in two passes. [`prepare`] checks and lowers everything that needs no
+//! connector, before one is placed; [`Prepared::bind`] selects the streams from the source's
+//! catalog, each taking what its entry lowered once.
 
+mod settings;
+mod streams;
 #[cfg(test)]
 mod tests;
+mod transforms;
 
-use rdlt_connector::{ConnectorId, Role};
+use rdlt_connector::{Catalog, ConnectorId, PipelineId, Role};
+use rdlt_engine::{CommitPolicy, EngineConfig, PipelinePlan, RetryPolicy};
 use rdlt_host::{ConnectorRef, Digest};
 
 use crate::error::noun;
-use crate::{Connector, Error, Side, codes};
+use crate::{Connector, Document, Error, Host, Side, codes};
+
+/// What the engine runs of a document: its plan and its configuration.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "a pipeline is built from its document through it")
+)]
+#[derive(Debug)]
+pub(crate) struct Lowered {
+    pub(crate) plan: PipelinePlan,
+    pub(crate) config: EngineConfig,
+}
+
+/// A document checked and lowered as far as it can be without its connectors: its pipeline, the
+/// engine's configuration, and each stream entry's transforms and hints, lowered once.
+pub(crate) struct Prepared<'a> {
+    document: &'a Document,
+    pipeline: PipelineId,
+    config: EngineConfig,
+    entries: Vec<streams::Entry>,
+}
+
+/// `document` checked and lowered as far as it can be without its connectors: its version, its
+/// pipeline's name, its commit, resources and retry, its connectors' references, and each stream
+/// entry's name, hints and transforms, with mask keys resolved through `host`'s secrets, SQL
+/// parsed and code transforms found among the host's; then its modes, keys, columns and
+/// transforms as the engine checks them, each entry under the name it is written with.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "a pipeline is built from its document through it")
+)]
+pub(crate) async fn prepare<'a>(
+    document: &'a Document,
+    host: &Host,
+) -> Result<Prepared<'a>, Error> {
+    if document.version != 1 {
+        let message = format!("a document's version is 1, not {}", document.version);
+        return Err(Error::config(codes::DOCUMENT_VERSION, message));
+    }
+    let pipeline = PipelineId::parse(&document.pipeline).map_err(|error| {
+        let message = format!("the pipeline's name is not one: {error}");
+        Error::config_caused(codes::REFERENCE_INVALID, message, error)
+    })?;
+    let config = engine_config(document)?;
+    reference(&document.source, Role::Source)?;
+    reference(&document.destination, Role::Destination)?;
+    let mut entries = Vec::new();
+    for stream in &document.streams {
+        entries.push(streams::Entry::lowered(stream, host).await?);
+    }
+    let mut plans = Vec::new();
+    for (stream, entry) in document.streams.iter().zip(&entries) {
+        plans.push(entry.plan(entry.name().clone(), stream, &document.defaults)?);
+    }
+    PipelinePlan::new(pipeline.clone(), plans).map_err(Error::engine)?;
+    Ok(Prepared {
+        document,
+        pipeline,
+        config,
+        entries,
+    })
+}
+
+impl Prepared<'_> {
+    /// What the engine runs: the streams the document selects from `catalog`, the source's,
+    /// each planned from its entry.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "a pipeline is built from its document through it")
+    )]
+    pub(crate) fn bind(self, catalog: &Catalog) -> Result<Lowered, Error> {
+        let document = self.document;
+        let mut plans = Vec::new();
+        for (name, index) in streams::selected(document, &self.entries, catalog)? {
+            let (stream, entry) = (&document.streams[index], &self.entries[index]);
+            plans.push(entry.plan(name, stream, &document.defaults)?);
+        }
+        let defaults = &document.defaults;
+        let plan = PipelinePlan::new(self.pipeline, plans)
+            .map_err(Error::engine)?
+            .schema(settings::schema(defaults.schema.as_ref(), defaults.nested))
+            .with_until(settings::until(document.until));
+        Ok(Lowered {
+            plan,
+            config: self.config,
+        })
+    }
+}
+
+/// The engine's configuration `document`'s commit, resources and retry say.
+fn engine_config(document: &Document) -> Result<EngineConfig, Error> {
+    let mut builder = EngineConfig::builder();
+    let resources = &document.resources;
+    if let Some(memory) = resources.memory {
+        builder = builder.memory(memory);
+    }
+    if let Some(writers) = resources.writers {
+        builder = builder.writers(writers);
+    }
+    if let Some(partitions) = resources.partitions {
+        builder = builder.partitions(partitions);
+    }
+    if let Some(commit) = &document.commit {
+        let policy = CommitPolicy::new(commit.every, commit.rows, commit.bytes);
+        builder = builder.commit(policy.map_err(Error::engine)?);
+    }
+    if let Some(retry) = &document.retry {
+        let mut policy = RetryPolicy::default();
+        if let Some(attempts) = retry.max_attempts {
+            policy = policy.max_attempts(attempts);
+        }
+        if let Some(initial) = retry.initial {
+            policy = policy.initial(initial);
+        }
+        if let Some(longest) = retry.max_delay {
+            policy = policy.max_delay(longest);
+        }
+        builder = builder.retry(policy);
+    }
+    builder.build().map_err(Error::engine)
+}
 
 /// The reference `side`, the pipeline's `role`, names: its connector, what its placement must
 /// honour, and what it may reach.

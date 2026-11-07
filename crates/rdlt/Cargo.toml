@@ -13,17 +13,22 @@ default = ["local"]
 local = []
 # Connectors reached over mutual TLS.
 remote = []
+# SQL transforms, planned by rdlt-sql.
+sql = ["dep:rdlt-sql"]
 
 [dependencies]
 rdlt-connector.workspace = true
 rdlt-engine.workspace = true
 rdlt-host.workspace = true
+rdlt-sql = { workspace = true, optional = true }
 schemars.workspace = true
 semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+wildmatch.workspace = true
 
 [dev-dependencies]
+arrow-schema.workspace = true
 proptest.workspace = true
 rdlt-connector-reference.workspace = true
 rdlt-testkit.workspace = true

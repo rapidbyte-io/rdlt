@@ -3182,11 +3182,13 @@ dependencies = [
 name = "rdlt"
 version = "0.0.0"
 dependencies = [
+ "arrow-schema",
  "proptest",
  "rdlt-connector",
  "rdlt-connector-reference",
  "rdlt-engine",
  "rdlt-host",
+ "rdlt-sql",
  "rdlt-testkit",
  "schemars",
  "semver",
@@ -3195,6 +3197,7 @@ dependencies = [
  "serde_path_to_error",
  "tempfile",
  "tokio",
+ "wildmatch",
 ]
 
 [[package]]
@@ -4690,6 +4693,12 @@ dependencies = [
  "js-sys",
  "wasm-bindgen",
 ]
+
+[[package]]
+name = "wildmatch"
+version = "2.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f18219fbd41a807dec044965d4106bb4fdb1d3a4b70aac4e5510aacc80a9f140"
 
 [[package]]
 name = "winapi"

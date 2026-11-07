@@ -62,6 +62,9 @@ all_features = true
 # value is shifted left four bits first, so its low four bits are clear and both give one result. So
 # is one that joins a byte to the bits of base 32 held before it, shifted left eight bits first, or
 # a count to a process's id in a staging's token, shifted above it.
+#
+# The facade's refusal of a SQL transform is built only without its `sql` feature, which a
+# mutant's build never lacks, so a mutant of it is the code as it is there; `just test` tests it.
 exclude_re = [
   "crates/rdlt-engine/src/json/text\\.rs:.*replace \\| with \\^ in hex$",
   "crates/rdlt-adopt/src/exec\\.rs:.*replace marks_at_once -> bool with true",
@@ -98,6 +101,7 @@ exclude_re = [
   "crates/rdlt-host/src/secrets/resolve\\.rs:.*replace SecretResolver::directories -> Vec<PathBuf> with vec!\\[\\]$",
   "crates/rdlt-sql/src/dialect\\.rs:.*replace <impl Dialect for Guarded>::(supports|support|allow)_([^f]\\w*|filter_during_aggregation) -> bool with true$",
   "crates/rdlt/src/lower\\.rs:.*replace \\| with \\^ in digest_of$",
+  "crates/rdlt/src/lower/transforms\\.rs:137:5: replace sql -> Result<Step, Error> with ",
 ]
 # A mutant that hangs a test is caught when nextest terminates the test, which it does well within
 # this; cargo-mutants' own timeout would count it as a timeout instead. It is above what a mutant

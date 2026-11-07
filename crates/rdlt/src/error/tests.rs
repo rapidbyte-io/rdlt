@@ -201,3 +201,36 @@ fn an_engine_error_names_its_stream_as_the_stream_displays() {
     assert_eq!(error.stream(), Some("public.orders"));
     assert_eq!(error.report().stream.as_deref(), Some("public.orders"));
 }
+
+#[test]
+fn a_stream_given_to_an_error_names_it_where_the_error_names_none() {
+    let built = Error::config(codes::STREAM_INVALID, "refused")
+        .in_stream("a")
+        .in_stream("b");
+    assert_eq!(built.stream(), Some("a"));
+    assert_eq!(built.report().stream.as_deref(), Some("a"));
+    let unnamed = EngineConfig::builder().memory(0).build().unwrap_err();
+    let unnamed = Error::engine(unnamed).in_stream("orders");
+    assert_eq!(unnamed.stream(), Some("orders"));
+    assert_eq!(unnamed.report().stream.as_deref(), Some("orders"));
+    let stream = StreamName::with_namespace("public", "orders").unwrap();
+    let modes = StreamPlan::new(stream)
+        .read(ReadMode::Incremental)
+        .write(WriteMode::Replace);
+    let refused = PipelinePlan::new(PipelineId::parse("modes").unwrap(), [modes]).unwrap_err();
+    let named = Error::engine(refused).in_stream("other");
+    assert_eq!(named.stream(), Some("public.orders"));
+    assert_eq!(named.report().stream.as_deref(), Some("public.orders"));
+}
+
+#[test]
+fn a_secret_that_does_not_resolve_is_config_coded_as_the_host_codes_it() {
+    let refused = rdlt_host::SecretError::Refused {
+        field: "key".to_owned(),
+        kind: rdlt_host::SecretKind::Env,
+    };
+    let error = Error::secret(refused);
+    assert_eq!(error.kind(), ErrorKind::Config);
+    assert_eq!(error.code(), Some(Code::new("secret_refused")));
+    assert!(error.source().is_some());
+}

@@ -9,7 +9,7 @@ use std::fmt;
 use rdlt_connector::limits::{MAX_ERROR_CAUSES, MAX_ERROR_TEXT_BYTES};
 use rdlt_connector::{ConnectorErrorKind, Role, text};
 use rdlt_engine::{Code, ErrorKind, ErrorReport, Origin};
-use rdlt_host::ProviderError;
+use rdlt_host::{ProviderError, SecretError};
 
 /// Why a pipeline could not be built, or why its run failed: a kind, who failed, a code and the
 /// stream it belongs to, as the engine's own errors say them.
@@ -38,13 +38,6 @@ struct Built {
 
 impl Error {
     /// The engine's `error`, as the facade reports it.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the lowering and the runs hand the facade the engine's errors"
-        )
-    )]
     pub(crate) fn engine(error: rdlt_engine::Error) -> Self {
         let stream = error.stream().map(ToString::to_string);
         Self(Box::new(Inner::Engine(error, stream)))
@@ -115,6 +108,23 @@ impl Error {
         Self::built(kind, origin, code, message, Some(Box::new(error)))
     }
 
+    /// A secret reference the host would not, or could not, resolve: the field, never the value.
+    pub(crate) fn secret(error: SecretError) -> Self {
+        let message = format!("resolving a mask key: {error}");
+        Self::config_caused(Code::new(error.code()), message, error)
+    }
+
+    /// The error, belonging to `stream`, where it names no stream of its own.
+    #[must_use]
+    pub(crate) fn in_stream(mut self, stream: impl Into<String>) -> Self {
+        let named = match &mut *self.0 {
+            Inner::Engine(_, named) => named,
+            Inner::Built(built) => &mut built.stream,
+        };
+        named.get_or_insert_with(|| stream.into());
+        self
+    }
+
     /// The failure's kind.
     pub fn kind(&self) -> ErrorKind {
         match &*self.0 {
@@ -166,7 +176,11 @@ impl Error {
     /// The failure and its causes as data that serializes, every text shown and bounded.
     pub fn report(&self) -> ErrorReport {
         match &*self.0 {
-            Inner::Engine(error, _) => error.report(),
+            Inner::Engine(error, named) => {
+                let mut report = error.report();
+                report.stream = report.stream.or_else(|| named.as_deref().map(shown));
+                report
+            }
             Inner::Built(built) => ErrorReport {
                 kind: built.kind,
                 origin: built.origin,
