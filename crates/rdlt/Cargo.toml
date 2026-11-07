@@ -25,6 +25,9 @@ schemars.workspace = true
 semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+tokio-stream = { workspace = true, features = ["sync"] }
 wildmatch.workspace = true
 
 [dev-dependencies]
@@ -34,7 +37,7 @@ rdlt-connector-reference.workspace = true
 rdlt-testkit.workspace = true
 serde_path_to_error.workspace = true
 tempfile.workspace = true
-tokio = { workspace = true, features = ["macros", "rt", "test-util", "time"] }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "test-util", "time"] }
 
 [lints]
 workspace = true

@@ -1,8 +1,9 @@
-//! Pipelines: built from a document on a host, then checked, discovered and reset.
+//! Pipelines: built from a document on a host, then checked, discovered, reset and run.
 
 #[cfg(test)]
 mod tests;
 
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -10,8 +11,11 @@ use rdlt_connector::{Catalog, Destination, Role, Source, StreamName};
 use rdlt_engine::{Engine, EngineConfig, Env, PipelinePlan, ResetReport, ResetScope, SystemEnv};
 use rdlt_host::{Placed, Provider as _};
 use serde::Serialize;
+use tokio::sync::broadcast;
 
+use crate::limits::{EVENT_BUFFER, EVENT_BUFFER_MAX};
 use crate::lower::{self, Lowered};
+use crate::run::{Observed, Run};
 use crate::{
     Commit, Defaults, Document, Error, Host, Resources, Retry, Side, Stream, Until, codes,
 };
@@ -126,9 +130,16 @@ impl PipelineBuilder {
             destination,
             placed: (source_placed, destination_placed),
             env,
+            event_buffer: EVENTS,
         })
     }
 }
+
+/// The events each run of a pipeline keeps, unless it says.
+const EVENTS: NonZeroUsize = NonZeroUsize::new(EVENT_BUFFER).expect("a run keeps events");
+
+/// The most events a run keeps.
+const MOST_EVENTS: NonZeroUsize = NonZeroUsize::new(EVENT_BUFFER_MAX).expect("a run keeps events");
 
 /// A placed connector, shared by every run of the pipeline, and what it says it is.
 fn shared<T: ?Sized>(placed: Placed<Box<T>>) -> (Arc<T>, PlacedConnector) {
@@ -166,6 +177,7 @@ pub struct Pipeline {
     destination: Arc<dyn Destination>,
     placed: (PlacedConnector, PlacedConnector),
     env: Arc<SystemEnv>,
+    event_buffer: NonZeroUsize,
 }
 
 impl Pipeline {
@@ -194,6 +206,29 @@ impl Pipeline {
     /// The destination, placed.
     pub fn destination(&self) -> &PlacedConnector {
         &self.placed.1
+    }
+
+    /// The pipeline, each of its runs keeping its last `events` events for subscribers that
+    /// fall behind: [`EVENT_BUFFER`] unless set, and at most [`EVENT_BUFFER_MAX`].
+    #[must_use]
+    pub fn with_event_buffer(mut self, events: NonZeroUsize) -> Self {
+        self.event_buffer = events.min(MOST_EVENTS);
+        self
+    }
+
+    /// Starts a run; nothing happens until it is awaited, and dropping it cancels it.
+    ///
+    /// Runs of one pipeline share its connectors; each opens the destination, which fences the
+    /// runs begun before it.
+    pub fn start(&self) -> Run {
+        let (events, _) = broadcast::channel(self.event_buffer.get());
+        let env = Observed {
+            base: Arc::clone(&self.env),
+            events: events.clone(),
+        };
+        let engine = Engine::new(self.config.clone(), Arc::new(env));
+        let (source, destination) = (Arc::clone(&self.source), Arc::clone(&self.destination));
+        Run::new(engine.run(self.plan.clone(), source, destination), events)
     }
 
     fn engine(&self) -> Engine {
