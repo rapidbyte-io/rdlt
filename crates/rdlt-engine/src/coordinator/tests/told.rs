@@ -35,7 +35,7 @@ async fn each_commit_that_lands_is_told_with_its_counts_its_phases_and_its_repor
         panic!("one commit is told: {told:?}");
     };
     let EventKind::Committed {
-        seq,
+        commit,
         trigger,
         rows,
         bytes,
@@ -48,7 +48,7 @@ async fn each_commit_that_lands_is_told_with_its_counts_its_phases_and_its_repor
         panic!("a commit is told: {event:?}");
     };
     let log = harness.log.lock();
-    assert_eq!((*seq, *trigger), (1, Trigger::End));
+    assert_eq!((*commit, *trigger), (1, Trigger::End));
     assert_eq!((*rows, *bytes), (log.committed.rows, log.committed.bytes));
     let paced = CommitPhases {
         flush: Duration::ZERO,

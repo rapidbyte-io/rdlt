@@ -452,7 +452,7 @@ async fn a_commit_answered_transiently_is_told_retried_in_place_before_it_is_tol
     assert_eq!(events[retried].attempt, 1);
     let committed = events
         .iter()
-        .position(|event| matches!(event.kind, EventKind::Committed { seq: 1, .. }))
+        .position(|event| matches!(event.kind, EventKind::Committed { commit: 1, .. }))
         .expect("the commit lands");
     assert!(
         retried < committed,

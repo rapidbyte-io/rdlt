@@ -103,6 +103,12 @@ fn disagreements(told: &Told, report: &Report, status: &Status) -> Vec<String> {
             (told.rows, told.bytes)
         ));
     }
+    if told.gaps > 0 {
+        wrong.push(format!(
+            "a run's events skipped or repeated a number {} times",
+            told.gaps
+        ));
+    }
     if told.ended != Some(report.status) || told.late > 0 {
         wrong.push(format!(
             "a run that ended {:?} told it ended {:?}, and {} events after",
@@ -135,6 +141,10 @@ fn disagreements(told: &Told, report: &Report, status: &Status) -> Vec<String> {
 /// What a run told, folded as it is told: no event is kept.
 #[derive(Default)]
 struct Told {
+    /// The number of the last event told.
+    last: u64,
+    /// Events whose number did not follow the last event's.
+    gaps: u64,
     /// The rows and bytes its commits and credits counted.
     rows: u128,
     bytes: u128,
@@ -153,6 +163,10 @@ impl Told {
         serde_json::to_string(event)
             .expect("an event serializes")
             .hash(&mut self.trace);
+        if event.seq != self.last + 1 {
+            self.gaps += 1;
+        }
+        self.last = event.seq;
         if self.ended.is_some() {
             self.late += 1;
         }

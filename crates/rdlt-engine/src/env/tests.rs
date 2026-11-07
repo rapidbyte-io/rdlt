@@ -75,6 +75,7 @@ fn a_system_env_observes_only_with_an_observer_and_tells_it_each_event() {
     assert!(observed.observes());
     assert!(format!("{observed:?}").contains("observed: true"));
     let event = Event {
+        seq: 1,
         at: UNIX_EPOCH,
         pipeline: PipelineId::parse("observed").unwrap(),
         attempt: 1,

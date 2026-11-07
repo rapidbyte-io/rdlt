@@ -66,6 +66,7 @@ fn an_announcer_tells_its_environment_of_its_attempt_at_the_environment_s_time()
     assert_eq!(
         told,
         [Event {
+            seq: 1,
             at: SystemTime::UNIX_EPOCH + Duration::from_secs(7),
             pipeline,
             attempt: 3,
@@ -116,4 +117,20 @@ fn nothing_is_told_once_the_run_told_its_end() {
         status: RunStatus::Cancelled,
     };
     assert_eq!(kinds, [EventKind::AttemptStarted, ended]);
+}
+
+#[test]
+fn a_run_s_events_are_numbered_from_one_without_a_gap_across_its_announcers() {
+    let kept = Arc::new(Kept::default());
+    let env: Arc<dyn Env> = Arc::clone(&kept) as Arc<dyn Env>;
+    let pipeline = PipelineId::parse("numbered").unwrap();
+    let telling = Arc::new(Telling::default());
+    let first = Announcer::new(Arc::clone(&env), pipeline.clone(), 1, Arc::clone(&telling));
+    let second = Announcer::new(env, pipeline, 2, Arc::clone(&telling));
+    first.announce(|| EventKind::AttemptStarted);
+    second.announce(|| EventKind::AttemptStarted);
+    first.announce(|| EventKind::Credited { rows: 1, bytes: 8 });
+    second.end(RunStatus::Succeeded);
+    let seqs: Vec<u64> = kept.0.lock().iter().map(|event| event.seq).collect();
+    assert_eq!(seqs, [1, 2, 3, 4]);
 }
