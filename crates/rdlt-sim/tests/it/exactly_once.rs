@@ -1,6 +1,6 @@
 use rdlt_sim::{
-    Features, Reach, Recorded, Seed, SplitMix64, Weight, Workload, check_exactly_once,
-    for_each_seed, seeds,
+    Features, Reach, Recorded, Seed, SimStream, SplitMix64, Weight, Workload, check_exactly_once,
+    for_each_seed, picked, seeds,
 };
 
 /// Seeds on which the simulation once found a defect, each held to the path it found it on.
@@ -229,5 +229,27 @@ fn seeds_whose_source_churns_replan_changed_sets_and_pass() {
         replanned > 0,
         "none of {} churning seeds re-planned",
         checked.len()
+    );
+}
+
+/// Every seed whose streams list the columns they include, filter, rename or add one lands each
+/// row the model keeps exactly once: a tenth as many seeds as the other sweeps run, each one that
+/// transforms, past every seed they run, so the nightly's million seeds add a hundred thousand
+/// transforming ones to theirs.
+#[test]
+fn seeds_whose_streams_transform_land_exactly_once_through_faults() {
+    let transforming = picked(200, |seed| {
+        let mut rng = SplitMix64::new(seed.value());
+        let features = Features::draw(&mut rng);
+        features.transform && {
+            let workload = Workload::generate(&mut rng, features);
+            workload.streams.iter().any(SimStream::reshapes)
+        }
+    });
+    for_each_seed(
+        "transforming",
+        transforming,
+        Weight::One,
+        check_exactly_once,
     );
 }

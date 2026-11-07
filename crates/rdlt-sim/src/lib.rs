@@ -61,7 +61,7 @@ pub use reached::{Reach, Reached};
 pub use rng::SplitMix64;
 pub use seed::{
     CORES_VAR, Recorded, SEED_VAR, SEEDS_FROM_VAR, SEEDS_VAR, Seed, SeedVarError, Weight,
-    for_each_seed, run, run_threaded, seeds,
+    for_each_seed, picked, run, run_threaded, seeds,
 };
 pub use source::{SimCursor, SimSource, SimSourceConfig, schema};
 pub use swarm::Features;
