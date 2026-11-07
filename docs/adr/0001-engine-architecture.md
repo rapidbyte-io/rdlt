@@ -13,7 +13,7 @@ are made to avoid.
 
 | Topic | Decision |
 |---|---|
-| Deployment | Open-core library and CLI; the managed cloud runs the same engine as stateless workers |
+| Deployment | Open-core library and CLI, each a face over one facade (ADR 0054); the managed cloud runs the same engine as stateless workers |
 | Trust | Connectors not compiled into the host's binary are untrusted code, and every connector's output untrusted data: the engine and the host survive any connector they do not link (ADR 0037) |
 | Runtime | A purpose-built Arrow dataflow with engine-driven checkpoint barriers; DataFusion only as an optional transform stage |
 | Exactly-once | Segments sealed by checkpoints, published atomically with state; epoch fencing in the destination |

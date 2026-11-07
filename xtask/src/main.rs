@@ -10,6 +10,7 @@ mod deps;
 mod instructions;
 mod lexer;
 mod lint;
+mod public_api;
 mod rules;
 mod shipped;
 mod sim_rate;
@@ -70,6 +71,15 @@ enum Command {
         #[arg(long)]
         branches: f64,
     },
+    /// Compare the facade's public API with its snapshot, or record it.
+    PublicApi {
+        /// The nightly toolchain that builds rustdoc's JSON.
+        #[arg(long)]
+        toolchain: String,
+        /// Write the snapshot instead of comparing.
+        #[arg(long)]
+        update: bool,
+    },
     /// Fail when a simulation sweep's timing file shows fewer seeds a second than a floor.
     SimRate {
         /// Path to the timing file a sweep wrote, `target/sim-timings/<sweep>.jsonl`.
@@ -95,6 +105,7 @@ fn main() -> anyhow::Result<ExitCode> {
             lines,
             branches,
         } => coverage::run(&export, lines, branches),
+        Command::PublicApi { toolchain, update } => public_api::run(&root, &toolchain, update),
         Command::SimRate { timings, floor } => sim_rate::run(&timings, floor),
     }
 }

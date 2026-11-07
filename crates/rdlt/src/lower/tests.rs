@@ -553,7 +553,7 @@ async fn a_pattern_lowers_its_transforms_once_and_every_stream_it_selects_shares
 async fn each_stream_a_pattern_selects_plans_its_sql_once_for_its_own_schema() {
     use std::sync::Arc;
 
-    use arrow_schema::{DataType, Field, Schema};
+    use arrow::datatypes::{DataType, Field, Schema};
 
     let query = TransformStep::Sql("SELECT id FROM input".to_owned());
     let entry = Stream::new("public.*").transform(query);

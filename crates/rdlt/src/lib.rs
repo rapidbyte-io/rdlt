@@ -33,7 +33,8 @@
 //! # }
 //! ```
 //!
-//! The facade runs on tokio: build and await pipelines inside a tokio runtime.
+//! The facade runs on tokio: build and await pipelines inside a tokio runtime. A code transform
+//! the host registers speaks Arrow, which [`arrow`] re-exports.
 //!
 //! # Features
 //!
@@ -55,6 +56,7 @@ mod lower;
 mod pipeline;
 mod run;
 
+pub use arrow;
 pub use document::{
     Access, Column, Commit, Connector, ConnectorReference, Defaults, DeleteMode, Document, Hint,
     MaskStep, MaskWith, Nested, OnTruncate, OnUnsupported, ReadMode, Resources, RetentionLoss,
