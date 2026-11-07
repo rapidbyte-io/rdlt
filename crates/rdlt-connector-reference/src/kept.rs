@@ -132,7 +132,7 @@ impl<P: Copy + Ord + Serialize + DeserializeOwned> Kept<P> {
     fn open(dir: Dir, name: OsString) -> io::Result<Self> {
         let lock = alone(&dir, &name)?;
         let positions = read(&dir, &name)?;
-        // No other writer shares the file: every temporary of it is one a crash left.
+        // No other process writes the file: every temporary of it is one a crash left.
         dir.sweep_of(&name.to_string_lossy(), Duration::ZERO)?;
         let began = began(&lock)?;
         let opened = (Instant::now(), SystemTime::now());

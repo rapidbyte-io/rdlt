@@ -44,7 +44,7 @@ async fn nan_and_negative_zero_are_refused_and_nothing_of_their_batch_is_staged(
             .session
             .writer(&floats)
             .await
-            .expect("a writer opens");
+            .expect("a table writer opens");
         writer
             .write(SegmentId(1), batch)
             .await

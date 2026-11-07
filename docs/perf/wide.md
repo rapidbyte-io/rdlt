@@ -120,9 +120,9 @@ in the first stage its stack holds, in this order: the per-batch work that has t
 a hit; a batch measured into pieces, `Measure::piece`; the check that lowering copies nothing,
 `copies_nothing`; and a null array built for each column a batch lacks); then the table fitted to a
 schema a plan misses, which creates columns; the allocation sets that count what each batch keeps
-alive; shredding; the rest of lowering; the lanes and the sink.
+alive; shredding; the rest of lowering; the writers and the sink.
 
-| Case | `Schemas::of` | `Tables::plan`, a hit | `Measure::piece` | `copies_nothing` | Null fill | Fitting on a miss | Allocation sets | Shredding | Lowering, the rest | Lanes and sink | The rest |
+| Case | `Schemas::of` | `Tables::plan`, a hit | `Measure::piece` | `copies_nothing` | Null fill | Fitting on a miss | Allocation sets | Shredding | Lowering, the rest | Writers and sink | The rest |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | `arrow/5000` | 0.7 % | 0.0 % | 7.5 % | 0.4 % | 0.0 % | 24.4 % | 24.9 % | – | 7.0 % | 6.4 % | 28.6 % |
 | `json/5000` | 0.3 % | 0.0 % | 1.4 % | 0.2 % | 0.0 % | 1.6 % | 9.8 % | 65.4 % | 2.6 % | 3.5 % | 15.1 % |

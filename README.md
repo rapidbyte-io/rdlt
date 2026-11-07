@@ -56,7 +56,7 @@ data platform.
 
 ## Capabilities
 
-Checkpoint, segment, commit, receipt, epoch, staging and lane each mean one thing here, as the
+Checkpoint, segment, commit, receipt, epoch, staging and writer each mean one thing here, as the
 [vocabulary in CONTRIBUTING.md](CONTRIBUTING.md#vocabulary) defines them.
 
 | Capability | Behaviour | Checked by |
@@ -257,7 +257,7 @@ output after (ADR 0053).
 | Setting | Default | Change it with |
 |---|---|---|
 | Memory budget | 256 MiB | `EngineConfig::builder().memory(bytes)` |
-| Lanes (concurrent destination writers) | One per core, up to the destination's limit | `.lanes(n)` |
+| Writers (concurrent destination writers) | One per core, up to the destination's limit | `.writers(n)` |
 | Partitions read at once | 16 | `.partitions(n)` |
 | Commits | Every 60 s or 1 GiB; every 10 s or 1 GiB when a run follows its source or reads changes | `.commit(CommitPolicy::new(every, rows, bytes)?)`, each an `Option` and one at least set |
 | Retries | 5 attempts; each delay is drawn from zero up to a limit that doubles from 1 s to 5 min, and a commit resets the count | `.retry(policy)` |
@@ -338,7 +338,7 @@ A source implements `SourceConnector` and one `ReadStream` per stream. A destina
 what the engine drives. It owns cursor versions and stopping, marks which barrier a checkpoint
 answers, and calls `Session::discard_staged` at each open. A destination keeps the rest itself: it
 raises its epoch at each open, removes only older sessions' staging, and never publishes what a
-writer of an older session staged. It publishes each commit atomically with its state and answers
+table writer of an older session staged. It publishes each commit atomically with its state and answers
 it through `rdlt_connector::answer`, as the documentation of `DestinationConnector::open`,
 `Session` and `TableWriter` states. The `#[source]` and `#[destination]` attributes add the
 connector's id and version and let a binary serve it.
@@ -787,7 +787,7 @@ reports and certification reports ([ADR 0043](docs/adr/0043-placement-policy-and
 
 The engine reads a source's partitions in parallel. A source seals a segment of a partition with a
 checkpoint, on its own or when the engine raises a barrier, a request to checkpoint at the next safe
-point. Lanes stage a partition's pushes as they arrive, gathered into batches of a useful size. A
+point. Writers stage a partition's pushes as they arrive, gathered into batches of a useful size. A
 commit publishes the sealed segments together with the state they imply (cursors, schemas, name
 maps), in one transaction of the destination's.
 

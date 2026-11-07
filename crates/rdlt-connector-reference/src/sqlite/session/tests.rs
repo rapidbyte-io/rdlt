@@ -1,6 +1,6 @@
-//! A session's writers index what a commit finds rows in, so a commit changes no table or
-//! index: an appending writer the staging by who staged its rows, which a keyed writer drops, and
-//! a keyed writer its tables by key.
+//! A session's table writers index what a commit finds rows in, so a commit changes no table or
+//! index: an appending table writer the staging by who staged its rows, which a keyed table writer
+//! drops, and a keyed table writer its tables by key.
 //!
 //! A commit runs a fixed count of statements for each table it publishes.
 
@@ -179,7 +179,7 @@ async fn a_staging_index_stands_while_its_table_s_writer_appends() {
                 .session
                 .writer(written)
                 .await
-                .expect("a writer opens"),
+                .expect("a table writer opens"),
         );
         let objects = schema_objects(&path);
         assert_eq!(
@@ -204,7 +204,11 @@ async fn writers_index_what_a_commit_finds_and_the_commit_changes_no_schema() {
             .apply_schema(&create)
             .await
             .expect("the table is created");
-        let mut writer = opened.session.writer(table).await.expect("a writer opens");
+        let mut writer = opened
+            .session
+            .writer(table)
+            .await
+            .expect("a table writer opens");
         writer
             .write(SegmentId(1), batch(key))
             .await
@@ -279,7 +283,7 @@ async fn a_commit_of_an_append_a_merge_and_a_child_table_runs_23_statements_two_
             .apply_schema(&create(table, key))
             .await
             .expect("the table is created");
-        let mut writer = session.writer(table).await.expect("a writer opens");
+        let mut writer = session.writer(table).await.expect("a table writer opens");
         writer
             .write(SegmentId(1), batch(key))
             .await
@@ -335,7 +339,11 @@ async fn staged_names(opened: &mut OpenedSession, table: &TableRef, segments: &[
         ("name", Arc::new(StringArray::from(vec!["a", "b"])) as _),
     ])
     .expect("a valid batch");
-    let mut writer = opened.session.writer(table).await.expect("a writer opens");
+    let mut writer = opened
+        .session
+        .writer(table)
+        .await
+        .expect("a table writer opens");
     for segment in segments {
         writer
             .write(SegmentId(*segment), written.clone())
@@ -460,7 +468,7 @@ async fn an_append_after_a_change_merge_publishes_though_its_staging_keeps_the_m
             .session
             .writer(written)
             .await
-            .expect("a writer opens");
+            .expect("a table writer opens");
         writer
             .write(SegmentId(segment), batch)
             .await
@@ -499,7 +507,7 @@ async fn an_append_after_an_abandoned_generation_publishes_though_its_staging_ke
             .session
             .writer(&generation)
             .await
-            .expect("a writer opens"),
+            .expect("a table writer opens"),
     );
     let add = TableChange::AddColumn {
         table: generation,
@@ -516,7 +524,7 @@ async fn an_append_after_an_abandoned_generation_publishes_though_its_staging_ke
         .session
         .writer(&events)
         .await
-        .expect("a writer opens");
+        .expect("a table writer opens");
     writer
         .write(SegmentId(1), batch("id"))
         .await
@@ -549,7 +557,7 @@ async fn a_commit_into_a_generation_that_lost_a_column_it_staged_fails_and_publi
         .session
         .writer(&generation)
         .await
-        .expect("a writer opens");
+        .expect("a table writer opens");
     writer
         .write(SegmentId(1), batch("id"))
         .await

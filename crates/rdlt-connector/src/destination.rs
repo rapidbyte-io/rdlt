@@ -263,7 +263,7 @@ impl TableChange {
     }
 }
 
-/// What a writer staged.
+/// What a table writer staged.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct WriteStats {
     /// Rows staged.
@@ -310,22 +310,22 @@ pub trait DestinationConnector: Sized + Send + Sync + 'static {
 
 /// One load's session with a destination.
 pub trait Session: Send + 'static {
-    /// A writer staging batches into one table.
+    /// A table writer staging batches into one table.
     type Writer: TableWriter;
 
     /// Applies a schema change before any write under the new version; staging follows the
     /// table.
     ///
     /// A change the table already reflects succeeds and changes nothing; a change that conflicts
-    /// with the table's columns fails as [`TableChange`] describes. Writers created before a
-    /// change receive batches with the new columns after it.
+    /// with the table's columns fails as [`TableChange`] describes. Table writers created
+    /// before a change receive batches with the new columns after it.
     ///
     /// A table belongs to the pipeline that first created it: a change from another pipeline's
     /// session fails with a `Config` error coded `table_owned` and changes nothing, so no
     /// pipeline's replace or merge reaches rows another pipeline loaded (clause `D-OWNED`).
     fn apply_schema(&mut self, change: &TableChange) -> impl Future<Output = Result<()>> + Send;
 
-    /// A writer for `table`; a table another pipeline owns fails as
+    /// A table writer for `table`; a table another pipeline owns fails as
     /// [`apply_schema`](Self::apply_schema) does.
     fn writer(&mut self, table: &TableRef) -> impl Future<Output = Result<Self::Writer>> + Send;
 
@@ -359,9 +359,9 @@ pub trait Session: Send + 'static {
 
 /// Stages batches into one table; staged data is invisible until a commit publishes it.
 ///
-/// A writer can outlive its session's epoch: once a newer session opens, anything this writer
-/// stages must never be published. Refuse the write with a fenced error, or keep it apart from the
-/// newer session's staging.
+/// A table writer can outlive its session's epoch: once a newer session opens, anything this table
+/// writer stages must never be published. Refuse the write with a fenced error, or keep it apart
+/// from the newer session's staging.
 pub trait TableWriter: Send + 'static {
     /// Stages `batch` as part of `segment`.
     ///
@@ -391,12 +391,13 @@ pub trait Destination: Send + Sync {
     /// Opens a session: fences older sessions, discards unpublished staging and returns state.
     fn open<'a>(&'a self, context: &'a OpenContext) -> BoxFuture<'a, Result<OpenedSession>>;
 
-    /// The most calls into the destination that may be in flight at once, an open writer each;
-    /// none where nothing bounds them, as in process.
+    /// The most calls into the destination that may be in flight at once, an open table writer
+    /// each; none where nothing bounds them, as in process.
     ///
-    /// The engine keeps within it: a session makes one other call at a time while writers are
-    /// open, a writer's opening being that writer's, so it holds fewer writers open than this,
-    /// and refuses a run into a destination that carries no more than that other call.
+    /// The engine keeps within it: a session makes one other call at a time while table writers are
+    /// open, a table writer's opening being that table writer's, so it holds fewer table writers
+    /// open than this, and refuses a run into a destination that carries no more than that other
+    /// call.
     fn max_calls(&self) -> Option<NonZeroUsize> {
         None
     }

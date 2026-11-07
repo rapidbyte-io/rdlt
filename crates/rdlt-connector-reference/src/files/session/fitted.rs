@@ -1,4 +1,4 @@
-//! What a table must hold before a writer's rows or a schema change are taken.
+//! What a table must hold before a table writer's rows or a schema change are taken.
 
 #[cfg(test)]
 mod tests;

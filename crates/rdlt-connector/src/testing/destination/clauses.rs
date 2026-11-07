@@ -131,9 +131,9 @@ pub const DESTINATION_CLAUSES: &[Clause] = &[
         unless: "",
     },
     Clause {
-        id: "D-LANES",
-        statement: "writers of one table, as many as the destination runs at once, stage at the \
-                    same time, and a commit publishes what each staged",
+        id: "D-WRITERS",
+        statement: "table writers of one table, as many as the destination runs writers at once, \
+                    stage at the same time, and a commit publishes what each staged",
         unless: "the destination runs one writer at a time",
     },
     Clause {
@@ -177,6 +177,6 @@ pub(super) const PROBED: [&str; 18] = [
     "D-ENCODING",
     "D-TABLES",
     "D-NAMES",
-    "D-LANES",
+    "D-WRITERS",
     "D-FENCE",
 ];

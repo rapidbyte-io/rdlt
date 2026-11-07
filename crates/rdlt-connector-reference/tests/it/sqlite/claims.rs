@@ -243,7 +243,7 @@ async fn a_table_created_again_by_its_pipeline_keeps_its_rows_and_its_record() {
         .session
         .writer(&orders)
         .await
-        .expect("a writer");
+        .expect("a table writer");
     writer
         .write(SegmentId(2), rows(&[3]))
         .await

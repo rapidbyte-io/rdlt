@@ -25,7 +25,7 @@ JSON exactness, which needs values judged and not only types, is ADR 0026's.
 ## Decision
 
 - **A table belongs to the pipeline that created it.**
-  - A schema change or writer of another pipeline's session fails with a `Config` error coded
+  - A schema change or table writer of another pipeline's session fails with a `Config` error coded
     `table_owned`, before it changes anything (clause `D-OWNED`). A pipeline creating its own
     table again, as a retry does, succeeds.
   - Each destination records the owner:

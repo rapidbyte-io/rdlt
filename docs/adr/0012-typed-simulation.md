@@ -36,14 +36,14 @@ every stored cell by type.
   destination's rules, and every column a stored row has is named, or metadata. A column whose
   values only ever arrived at one type must be exactly that type, in its own column: a column's
   type holding its values is not enough, as `Json` holds every value. Every batch through one
-  writer must have one schema, as a writer serves one version. Normalized streams' child tables
+  table writer must have one schema, as a table writer serves one version. Normalized streams' child tables
   are checked at any depth, each row matched to its parent through its lineage ids. Where no run
   was disrupted and no fault injected, the runs' reports must count exactly the rows and values
   the policy discarded, and on every other seed no more.
-- **Each write goes through a writer of the schema version it was lowered for.** A writer's
+- **Each write goes through a table writer of the schema version it was lowered for.** A table writer's
   `TableRef` names the version of the batches it writes, as the contract's "the schema version
   writes follow" asks, even across a schema change within an attempt; a flush reaches only the
-  writers written since the last, so older versions' writers cost nothing more.
+  table writers written since the last, so older versions' table writers cost nothing more.
 - **Written batches name what a lowered column holds.** A text column of dates looks like any
   text column, and state records only a commit's newest schema, so each column stored as another
   type names its logical type in the field metadata key `rdlt:logical_type`

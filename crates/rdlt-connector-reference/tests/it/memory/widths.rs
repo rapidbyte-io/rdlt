@@ -57,7 +57,11 @@ async fn loaded(session: &mut OpenedSession, segment: u64, batch: RecordBatch) {
         .apply_schema(&create)
         .await
         .expect("the columns are declared");
-    let mut writer = session.session.writer(&events()).await.expect("a writer");
+    let mut writer = session
+        .session
+        .writer(&events())
+        .await
+        .expect("a table writer");
     writer
         .write(SegmentId(segment), batch)
         .await
@@ -154,7 +158,11 @@ async fn a_row_of_a_shape_of_its_own_costs_a_batch_of_the_columns_it_holds() {
     loaded(&mut session, 1, rows(0..1, 400)).await;
     // Four hundred rows, each holding a column no other does, written a batch each: the table
     // keeps a batch for each, of three columns, and joins none.
-    let mut writer = session.session.writer(&events()).await.expect("a writer");
+    let mut writer = session
+        .session
+        .writer(&events())
+        .await
+        .expect("a table writer");
     for shape in 0..400_i64 {
         let column = usize::try_from(shape).expect("a column");
         let batch = only(shape + 1..shape + 2, column);
@@ -191,7 +199,11 @@ async fn a_reader_is_given_every_column_of_rows_written_without_one_declared_nev
         .expect("created");
     // Rows written without the column the table declares every row holds.
     let narrow = rows(0..3, 0);
-    let mut writer = session.session.writer(&events()).await.expect("a writer");
+    let mut writer = session
+        .session
+        .writer(&events())
+        .await
+        .expect("a table writer");
     writer.write(SegmentId(1), narrow).await.expect("buffers");
     writer.flush().await.expect("the flush stages");
     let commit = meta(&session, 1, &[1]);

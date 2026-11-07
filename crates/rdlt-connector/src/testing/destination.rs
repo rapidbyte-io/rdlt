@@ -11,7 +11,6 @@ mod evolving;
 mod fence;
 mod history;
 mod landed;
-mod lanes;
 mod names;
 mod owned;
 mod read;
@@ -19,6 +18,7 @@ mod retried;
 mod rows;
 mod tables;
 mod widenings;
+mod writers;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -107,7 +107,8 @@ pub async fn certify_destination<C: DestinationConnector>(
     certify_destination_factory(destination_factory::<C>().as_ref(), config, probe).await
 }
 
-/// Certifies the destination `factory` creates from `config`, reading published data through `probe`.
+/// Certifies the destination `factory` creates from `config`, reading published data through
+/// `probe`.
 ///
 /// The factory connects twice with the same configuration, so clauses can play two workers of one
 /// pipeline; every run uses its own pipelines and tables, so a store can be certified again.
@@ -232,7 +233,7 @@ impl Bench<'_> {
             "D-ENCODING" => self.dictionaries_publish_their_values().await,
             "D-TABLES" => self.segments_span_tables().await,
             "D-NAMES" => self.names_are_kept().await,
-            "D-LANES" => self.writers_stage_at_once().await,
+            "D-WRITERS" => self.writers_stage_at_once().await,
             "D-OWNED" => self.tables_belong_to_their_pipeline().await,
             "D-DROP" => self.drops_release_tables().await,
             _ => self.stale_sessions_are_fenced().await,
@@ -306,7 +307,7 @@ impl Bench<'_> {
         Ok(opened)
     }
 
-    /// Creates the clause's table in `session` and returns a writer for it.
+    /// Creates the clause's table in `session` and returns a table writer for it.
     async fn writer(
         &self,
         session: &mut Box<dyn DestinationSession>,
@@ -314,7 +315,8 @@ impl Bench<'_> {
         self.writer_of(session, &self.table()).await
     }
 
-    /// Creates `table`, of the certification schema, in `session` and returns a writer for it.
+    /// Creates `table`, of the certification schema, in `session` and returns a table writer for
+    /// it.
     async fn writer_of(
         &self,
         session: &mut Box<dyn DestinationSession>,

@@ -83,7 +83,10 @@ async fn stage(session: &mut impl Session) {
         .apply_schema(&create)
         .await
         .expect("the table is created");
-    let mut writer = session.writer(&table()).await.expect("a writer opens");
+    let mut writer = session
+        .writer(&table())
+        .await
+        .expect("a table writer opens");
     let ids: ArrayRef = Arc::new(Int64Array::from(vec![1, 2, 3]));
     let batch = RecordBatch::try_from_iter([("id", ids)]).expect("the batch is valid");
     writer

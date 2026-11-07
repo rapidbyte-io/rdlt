@@ -1,9 +1,9 @@
 //! A served write, in two stages: one receives and decodes the engine's frames for one table,
-//! while the other has the destination's writer stage each batch and returns its frame's bytes
-//! to the engine as credit as it takes it.
+//! while the other has the destination's table writer stage each batch and returns its frame's
+//! bytes to the engine as credit as it takes it.
 //!
-//! A frame decodes only once the writer has taken the frame before it, so a write holds what
-//! its writer stages, within the staged bound, and one decoded frame waiting for it.
+//! A frame decodes only once the table writer has taken the frame before it, so a write holds what
+//! its table writer stages, within the staged bound, and one decoded frame waiting for it.
 
 #[cfg(test)]
 mod tests;
@@ -58,7 +58,7 @@ fn writing(
     let writing = tokio::spawn(write(writer, taken, acks.clone(), limits));
     tokio::spawn(async move {
         let (receiving, writing) = tokio::join!(receiving, writing);
-        // A stage that panics fails the write once the writer has answered all it will, as a
+        // A stage that panics fails the write once the table writer has answered all it will, as a
         // read's panic fails the read. Not with the join error's text: its task number and the
         // panic's message, which may quote what was written, are not this connector's to tell.
         if let Some(join) = writing.err().or(receiving.err()) {
@@ -76,14 +76,14 @@ fn writing(
     Box::pin(ReceiverStream::new(answers))
 }
 
-/// A frame received, as its writer takes it.
+/// A frame received, as its table writer takes it.
 struct Staged {
-    /// Bytes: the frame's, returned as credit once the writer takes it.
+    /// Bytes: the frame's, returned as credit once the table writer takes it.
     bytes: u64,
     step: Step,
 }
 
-/// What a frame asks of the writer.
+/// What a frame asks of the table writer.
 enum Step {
     /// Nothing: a schema, or a dictionary the decoder keeps for the batches after it.
     Kept,
@@ -93,8 +93,8 @@ enum Step {
     Flush,
 }
 
-/// Receives and decodes the engine's frames, each once the writer has taken the frame before
-/// it, until the engine ends the write, a frame fails it, or the writer stops.
+/// Receives and decodes the engine's frames, each once the table writer has taken the frame before
+/// it, until the engine ends the write, a frame fails it, or the table writer stops.
 async fn receive(
     mut frames: Incoming<v1::WriteFrame>,
     received: mpsc::Sender<Result<Staged, ConnectorError>>,
@@ -132,7 +132,7 @@ async fn receive(
 
 /// What a write has staged since its last flush, and the decoder of its frames.
 ///
-/// A writer may keep what it stages until it flushes, so the frames a host sends between two
+/// A table writer may keep what it stages until it flushes, so the frames a host sends between two
 /// flushes are bounded together.
 struct Receiving {
     decoder: Decoder,
@@ -196,9 +196,9 @@ impl Receiving {
     }
 }
 
-/// Has the writer take each frame received, as [`taking`] does, until the write ends or its
-/// answers are dropped: a host that goes ends the write at once, whatever the writer waits for,
-/// and the writer is dropped with what it staged, which no commit published.
+/// Has the table writer take each frame received, as [`taking`] does, until the write ends or its
+/// answers are dropped: a host that goes ends the write at once, whatever the table writer waits
+/// for, and the table writer is dropped with what it staged, which no commit published.
 async fn write(
     writer: Box<dyn DestinationWriter>,
     taken: mpsc::Receiver<Result<Staged, ConnectorError>>,
@@ -207,15 +207,15 @@ async fn write(
 ) {
     tokio::select! {
         biased;
-        // The host's leaving wins over a writer that could still finish.
+        // The host's leaving wins over a table writer that could still finish.
         () = acks.closed() => {}
         () = taking(writer, taken, &acks, limits) => {}
     }
 }
 
-/// Has the writer take each frame received, in order: answers its credit, then stages its batch
-/// or flushes and answers the stats; a failure, the receiver's or the writer's, is answered with
-/// its error, after which the write ends.
+/// Has the table writer take each frame received, in order: answers its credit, then stages its
+/// batch or flushes and answers the stats; a failure, the receiver's or the table writer's, is
+/// answered with its error, after which the write ends.
 async fn taking(
     mut writer: Box<dyn DestinationWriter>,
     mut taken: mpsc::Receiver<Result<Staged, ConnectorError>>,

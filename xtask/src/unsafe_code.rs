@@ -205,6 +205,10 @@ fn find_tokens(tokens: TokenStream, held: Held, findings: &mut Vec<Finding>) {
                 } else {
                     name == "include"
                 };
+                if banned_segment(&name.to_string()) {
+                    let message = format!("`{name}` names a lane: the word is writer");
+                    findings.push(finding(line, Rule::BannedIdentifier, message));
+                }
                 let assigned = held.in_attribute && name == "path" && punct(tokens.peek(), '=');
                 let path = assigned && {
                     tokens.next();
@@ -220,6 +224,34 @@ fn find_tokens(tokens: TokenStream, held: Held, findings: &mut Vec<Finding>) {
         }
         after_hash = hash;
     }
+}
+
+/// Whether a `snake_case` or `CamelCase` segment of `name` is `lane` or `lanes`, in any case.
+fn banned_segment(name: &str) -> bool {
+    let chars: Vec<char> = name.chars().collect();
+    let mut segment = String::new();
+    let mut found = false;
+    for (index, &c) in chars.iter().enumerate() {
+        let after = chars.get(index + 1).copied();
+        let boundary = c == '_'
+            || (c.is_uppercase()
+                && index > 0
+                && (chars[index - 1].is_lowercase()
+                    || chars[index - 1].is_ascii_digit()
+                    || after.is_some_and(char::is_lowercase)));
+        if boundary {
+            found |= is_banned(&segment);
+            segment.clear();
+        }
+        if c != '_' {
+            segment.extend(c.to_lowercase());
+        }
+    }
+    found || is_banned(&segment)
+}
+
+fn is_banned(segment: &str) -> bool {
+    segment == "lane" || segment == "lanes"
 }
 
 /// Whether `token` is a string literal naming a Rust file at or beneath the directory it is

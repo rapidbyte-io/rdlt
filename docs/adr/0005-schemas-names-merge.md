@@ -22,7 +22,7 @@ different types.
 - **Changes describe the destination's columns.** `TableChange` names columns by identifier and
   gives the types the destination stores, metadata columns included. Applying a change the table
   already reflects succeeds and changes nothing, since an attempt that fails after applying a
-  change and before committing it makes the next attempt apply it again. Writers created before a
+  change and before committing it makes the next attempt apply it again. Table writers created before a
   change receive batches with the new columns after it, and a batch may carry a column at a type
   narrower than the column's, since a partition resolved before a widen writes it after.
 - **Crashed attempts' columns are named around.** An attempt that applied changes and never
@@ -113,7 +113,7 @@ different types.
   extended while still taken. A source column whose name folds and cleans to a metadata column's
   is refused. The columns one batch adds are named in sorted order, so arrival order never
   matters.
-- **Lanes and waiters.** Configured lanes never exceed the destination's `max_parallel_writers`; a
+- **Writers and waiters.** Configured writers never exceed the destination's `max_parallel_writers`; a
   budget waiter that gave up does not count toward `peak_memory`; `RunOutcome` documents the error
   a stop during backoff carries.
 - **Dependencies.** `arrow-array` enables `chrono-tz`, since rendering a timestamp with a named

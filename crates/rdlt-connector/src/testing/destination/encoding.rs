@@ -46,7 +46,7 @@ impl Bench<'_> {
         bounded("apply_schema", opened.session.apply_schema(&create))
             .await?
             .map_err(|error| Violation::from(format!("apply_schema: {error}")))?;
-        let mut writer = bounded("writer", opened.session.writer(&table))
+        let mut writer = bounded("table writer", opened.session.writer(&table))
             .await?
             .map_err(|error| Violation::from(format!("writer: {error}")))?;
         writer

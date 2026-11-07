@@ -48,8 +48,8 @@ JSON exactness ADR 0026's.
     on what came before it in its chunk.
   - Rejected: `arbitrary_precision` for the workspace, which costs an allocation per number on the
     hot path and changes `serde_json` everywhere.
-- **Writers' memory is charged until they flush.** A lane holds each write's reservation until its
-  writer flushes, since a writer may buffer what it stages. It flushes when the coordinator asks,
+- **Table writers' memory is charged until they flush.** A writer holds each write's reservation
+  until its table writer flushes, since a table writer may buffer what it stages. It flushes when the coordinator asks,
   and on its own when the budget is pressed while it holds writes it has not flushed. The budget
   is pressed while a request for pushes or for lowering waits, or while a holder of queued
   pieces waits for their writes.
@@ -60,7 +60,7 @@ JSON exactness ADR 0026's.
     checkpoint and reads them again.
   - The plan's proto lists the unbounded ids; a stray id is refused.
   - Change partitions are unbounded, and snapshot partitions stay bounded.
-  - The coordinator drains its lanes before it closes the session, since a write no commit took
+  - The coordinator drains its writers before it closes the session, since a write no commit took
     may still be queued.
 - **The simulation catches these classes.**
   - Drift columns take the engine's own names.

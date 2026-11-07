@@ -280,7 +280,11 @@ async fn commit(
         .apply_schema(&create)
         .await
         .expect("the table is created");
-    let mut writer = opened.session.writer(table).await.expect("a writer opens");
+    let mut writer = opened
+        .session
+        .writer(table)
+        .await
+        .expect("a table writer opens");
     let segments: Vec<SegmentId> = (0..batches.len() as u64)
         .map(|index| SegmentId(seq * 10 + index))
         .collect();

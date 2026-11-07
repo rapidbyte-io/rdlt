@@ -44,7 +44,7 @@ kill what it placed.
   macOS's does, still draws every point; or one chosen (`Target::kill_seed`, `--kill-seed`). A
   failure reports it, so it can be replayed.
 - **The loads are shaped so the kills land in flight**: batches of 8 rows, a commit every 16
-  rows, 1 MiB of engine memory, one event of partition buffer, one write in flight per lane, and
+  rows, 1 MiB of engine memory, one event of partition buffer, one write in flight per writer, and
   a read's credit floor of 64 KiB, so a source runs little ahead of the commits: 64 KiB, or two
   of its frames where they are larger. A load retries 20 times, quickly, and up to three loads
   run until one succeeds.

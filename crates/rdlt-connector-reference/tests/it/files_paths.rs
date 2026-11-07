@@ -257,7 +257,7 @@ async fn a_table_name_that_is_no_identifier_is_refused() {
         let error = changed.expect_err("the name is refused");
         assert_eq!(error.code(), Some("invalid_name"), "{name:?}");
         let Err(error) = opened.session.writer(&named).await else {
-            panic!("a writer opened for {name:?}");
+            panic!("a table writer opened for {name:?}");
         };
         assert_eq!(error.code(), Some("invalid_name"), "{name:?}");
         assert!(files::published(&root, &name).is_err(), "{name:?}");
@@ -309,7 +309,7 @@ async fn a_lock_file_that_is_a_link_is_refused() {
     let marker = base.path().join("marker");
     symlink(&marker, locks.join("orders")).unwrap();
     let Err(error) = opened.session.writer(&table("orders")).await else {
-        panic!("a writer opened through a link");
+        panic!("a table writer opened through a link");
     };
     assert_eq!(error.code(), Some("not_a_regular_file"));
     assert!(!marker.exists(), "the link's target was created");
@@ -337,7 +337,10 @@ async fn stale_temporaries_are_swept_at_open_and_fresh_ones_left() {
         .unwrap();
     drop(open(destination.as_ref()).await);
     assert!(!stale.exists(), "a temporary a crash left stays");
-    assert!(fresh.exists(), "a temporary another writer is writing went");
+    assert!(
+        fresh.exists(),
+        "a temporary another session is writing went"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -466,7 +469,7 @@ async fn a_root_or_a_directory_beneath_it_that_others_may_write_is_refused() {
             mode(&shared, 0o700);
         }
     }
-    // The catalog and the locks, which a writer and a reader enter.
+    // The catalog and the locks, which a table writer and a reader enter.
     let tables = rdlt.join("tables");
     for shared in [rdlt.join("locks"), tables.clone(), tables.join("rows")] {
         mode(&shared, 0o777);

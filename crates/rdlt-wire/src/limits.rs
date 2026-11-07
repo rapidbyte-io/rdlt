@@ -57,7 +57,7 @@ pub const SCHEMA_BYTES: u64 = 4 * 1024 * 1024;
 pub const DICTIONARY_FRAMES: u64 = 1;
 
 /// Frames: one write stages at most this many frames' bytes between two flushes, which a
-/// destination's writer may keep until it flushes.
+/// destination's table writer may keep until it flushes.
 pub const STAGED_FRAMES: u64 = 4;
 
 /// Bytes: bounds one JSON push.

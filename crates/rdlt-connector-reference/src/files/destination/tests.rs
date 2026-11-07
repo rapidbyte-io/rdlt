@@ -333,7 +333,7 @@ fn what_commits_wrote_and_no_manifest_lists_is_swept_and_what_writers_stage_is_n
     let listed = "staging/5/merged/c1/rows/table/0.jsonl";
     let kept = [
         listed,
-        // A writer of the session is staging these: no commit wrote them.
+        // A table writer of the session is staging these: no commit wrote them.
         "staging/5/7/rows/table/1.jsonl",
         "staging/5/8/rows/table/1.jsonl",
         // A newer session's.

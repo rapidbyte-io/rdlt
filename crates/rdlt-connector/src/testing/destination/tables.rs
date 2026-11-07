@@ -50,10 +50,10 @@ struct Dropping {
 }
 
 impl Bench<'_> {
-    /// Stages three rows in one segment through writers of two tables, as a stream and its child
-    /// table share their partition's segments, commits the segment, and reads both tables back;
-    /// then, where the probe drops columns, has it drop one between a write and its commit, for
-    /// each write mode the destination declares.
+    /// Stages three rows in one segment through table writers of two tables, as a stream and its
+    /// child table share their partition's segments, commits the segment, and reads both tables
+    /// back; then, where the probe drops columns, has it drop one between a write and its commit,
+    /// for each write mode the destination declares.
     pub(super) async fn segments_span_tables(&self) -> Result<(), Violation> {
         let mut opened = self.open(self.destination).await?;
         let child = child_table(&self.table());
@@ -149,7 +149,8 @@ impl Bench<'_> {
         let mut opened = self.open(self.destination).await?;
         for written in &dropping.written {
             bounded_call("apply_schema", opened.session.apply_schema(&written.create)).await?;
-            let mut writer = bounded_call("writer", opened.session.writer(&written.writer)).await?;
+            let mut writer =
+                bounded_call("table writer", opened.session.writer(&written.writer)).await?;
             bounded_call("write", writer.write(SegmentId(1), written.batch.clone())).await?;
             bounded_call("flush", writer.flush()).await?;
         }

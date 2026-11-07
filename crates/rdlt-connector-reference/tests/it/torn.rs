@@ -69,7 +69,7 @@ async fn staged(destination: &dyn Destination, batch: RecordBatch) -> OpenedSess
         .session
         .writer(&table())
         .await
-        .expect("a writer opens");
+        .expect("a table writer opens");
     writer
         .write(SegmentId(1), batch)
         .await

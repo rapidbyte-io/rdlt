@@ -48,9 +48,9 @@ pub struct FilesDestinationConfig {
     /// How files store rows.
     #[serde(default)]
     pub format: FileFormat,
-    /// How long a schema change, a writer or a release waits for a table's lock before it fails
-    /// as a transient error, as seconds and nanoseconds (`{"secs": 30, "nanos": 0}`); 30 seconds
-    /// where unset.
+    /// How long a schema change, a table writer or a release waits for a table's lock before it
+    /// fails as a transient error, as seconds and nanoseconds (`{"secs": 30, "nanos": 0}`); 30
+    /// seconds where unset.
     #[serde(default = "default_lock_wait")]
     pub lock_wait: Duration,
 }
@@ -62,7 +62,7 @@ fn default_lock_wait() -> Duration {
 /// Writes each flushed batch to its own file and publishes a commit by creating the pipeline's
 /// next manifest, which lists every published file and the pipeline's state.
 ///
-/// Creating a manifest version fails when another writer created it first, which fences older
+/// Creating a manifest version fails when another session created it first, which fences older
 /// sessions: a commit is atomic and happens at most once. Readers read only the files the latest
 /// manifest lists. A merge table's commit rewrites the table as one file.
 ///
@@ -248,7 +248,7 @@ const WRITTEN: [&str; 3] = ["merged", "compacted", "tombstones"];
 /// Removes what commits of the session at `epoch` of the pipeline whose directory `dir` is, and
 /// what older sessions, left that the latest manifest does not list.
 ///
-/// Only commits write under those directories, one at a time, so nothing a writer is staging
+/// Only commits write under those directories, one at a time, so nothing a table writer is staging
 /// is among them. The caller made the latest manifest's name durable.
 pub(super) fn discard_superseded(dir: &Dir, epoch: Epoch) -> Result<()> {
     discard_settled(dir, epoch)?;

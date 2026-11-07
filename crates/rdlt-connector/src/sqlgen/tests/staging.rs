@@ -55,7 +55,7 @@ fn indexes_of(connection: &Connection, name: &str) -> Vec<Vec<Value>> {
     query(connection, &statement)
 }
 
-/// Readies `table` for a writer as a session does: indexes its staging by who staged its rows
+/// Readies `table` for a table writer as a session does: indexes its staging by who staged its rows
 /// or drops that index, and indexes what a commit finds by key.
 fn ready(connection: &Connection, planner: &SqlPlanner<Sqlite>, table: &TableRef) {
     run_all(connection, &[planner.staged_index_of(table)]);
@@ -63,8 +63,8 @@ fn ready(connection: &Connection, planner: &SqlPlanner<Sqlite>, table: &TableRef
     run_all(connection, planner.root_index_of(table).unwrap().as_slice());
 }
 
-/// The table `orders` of an `id` and a sequence, created as `created` and readied for a writer
-/// of `written`.
+/// The table `orders` of an `id` and a sequence, created as `created` and readied for a table
+/// writer of `written`.
 fn orders(created: &TableRef, written: &TableRef) -> (Connection, SqlPlanner<Sqlite>) {
     let (connection, planner) = database();
     let fields = [
@@ -96,14 +96,14 @@ fn a_staging_index_stands_while_its_table_s_writer_appends() {
     let staging_index = |planner: &SqlPlanner<Sqlite>| {
         Value::Text(planner.staged_index_name(&planner.staging_table("orders")))
     };
-    // Created keyed, then written by an append writer.
+    // Created keyed, then written by an append table writer.
     let (connection, planner) = orders(&keyed("orders"), &table("orders"));
     let staging = planner.staging_table("orders");
     assert_eq!(
         indexes_of(&connection, &staging),
         [[staging_index(&planner)]]
     );
-    // Created to append, then written by a keyed writer, whose merge reads no such index.
+    // Created to append, then written by a keyed table writer, whose merge reads no such index.
     let (connection, planner) = orders(&table("orders"), &table("orders"));
     ready(&connection, &planner, &keyed("orders"));
     let key = Value::Text(planner.key_index_name(&staging));

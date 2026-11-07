@@ -82,7 +82,7 @@ fn deleted(id: i64, name: &str, seq: u8, from: i64, to: Option<i64>) -> Version 
     (id, Some(name.to_owned()), at, seq, from, to, to.is_none())
 }
 
-/// The hash a writer gives `name`: its bytes, zero-padded to 16.
+/// The hash a table writer gives `name`: its bytes, zero-padded to 16.
 fn hash(name: &str) -> Vec<u8> {
     let mut hash = vec![0_u8; 16];
     for (byte, source) in hash.iter_mut().zip(name.bytes()) {
@@ -118,7 +118,7 @@ fn history_key(kind: Kind) -> MergeKey {
 }
 
 /// A history table of `kind` in its own database, its change tables readied and indexed as a
-/// writer readies them.
+/// table writer readies them.
 struct History {
     connection: Connection,
     planner: SqlPlanner<Sqlite>,
@@ -219,7 +219,7 @@ impl History {
         stage_values(&self.connection, &self.planner, &self.table, &names, values);
     }
 
-    /// `row` as a writer stages it, with `extra` extra columns holding its sequence.
+    /// `row` as a table writer stages it, with `extra` extra columns holding its sequence.
     fn values(&self, row: &Row, extra: usize) -> Vec<Value> {
         let or_null = |value: Option<Value>| value.unwrap_or(Value::Null);
         let mut values = vec![

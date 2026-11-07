@@ -13,7 +13,7 @@ this standard, and points here where a rule is already stated.
 - Work on a branch and open a pull request; `main` accepts changes only through pull requests
   whose checks pass.
 - Commits follow [Conventional Commits](https://www.conventionalcommits.org) with a crate scope:
-  `fix(engine): release reservations on lane errors`. Subjects are imperative, lowercase, at most
+  `fix(engine): release reservations on writer errors`. Subjects are imperative, lowercase, at most
   72 characters. Details go in the body.
 - Keep commits small and focused. Every fixed defect gets a regression test in the same change.
 - Run `just ready` before pushing: lint, tests, Kani's proofs and the specs where your change
@@ -75,7 +75,7 @@ Use only these words for these concepts, in code, docs, logs and errors.
 | cursor / state | A partition's resume position / the pipeline's committed cursors, schemas, name maps and epoch |
 | staging | Written but unpublished destination data |
 | table | A destination-side relation |
-| lane | One concurrent destination writer inside the engine |
+| writer | One concurrent destination writer inside the engine; it opens a table writer for each table and schema version it writes |
 | limit | A numeric bound (not "ceiling", "cap" or "gate") |
 | budget | Only the byte-denominated memory backpressure mechanism |
 

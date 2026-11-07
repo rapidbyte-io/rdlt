@@ -114,7 +114,7 @@ async fn write(opened: &mut OpenedSession, table: &TableRef, segment: u64, batch
         .apply_schema(&create)
         .await
         .expect("the table is created");
-    let mut writer = opened.session.writer(table).await.expect("a writer");
+    let mut writer = opened.session.writer(table).await.expect("a table writer");
     writer
         .write(SegmentId(segment), batch)
         .await

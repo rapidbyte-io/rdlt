@@ -122,7 +122,7 @@ impl Opened {
             .session
             .writer(table)
             .await
-            .expect("a writer opens");
+            .expect("a table writer opens");
         writer
             .write(SegmentId(segment), rows(ids))
             .await

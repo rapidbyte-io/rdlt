@@ -35,6 +35,7 @@ pub(crate) enum Rule {
     UnforbiddenUnsafe,
     UnauditedFile,
     IncludedCode,
+    BannedIdentifier,
     UnlistedWorkspace,
     UnguardedUnwind,
     RecordHistory,
@@ -107,7 +108,7 @@ static RFC_SECTION: LazyLock<Regex> =
     LazyLock::new(|| pattern(r"\bRFC \d+,? §\s*[\d.]+(\s*(,|and|or)\s*§\s*[\d.]+)*"));
 static JARGON: LazyLock<Regex> = LazyLock::new(|| {
     pattern(
-        r"(?i)\b(seats?|doors?|belts?|honest|honestly|deliberately|laws?|spelling|house|the one)\b|\b(pins?|pinned|pinning)\b",
+        r"(?i)\b(seats?|doors?|belts?|honest|honestly|deliberately|laws?|spelling|house|the one)\b|\b(pins?|pinned|pinning)\b|(?:^|[^a-z])lanes?(?:[^a-z]|$)",
     )
 });
 static SHOUT: LazyLock<Regex> = LazyLock::new(|| pattern(r"\b[A-Z]{4,}\b"));
@@ -180,7 +181,10 @@ fn check_comment_words(comment: &Comment, findings: &mut Vec<Finding>) {
         findings.push(finding(
             comment.line,
             Rule::Jargon,
-            format!("banned word `{}`", m.as_str()),
+            format!(
+                "banned word `{}`",
+                m.as_str().trim_matches(|c: char| !c.is_alphabetic())
+            ),
         ));
     }
     for m in SHOUT.find_iter(&prose) {

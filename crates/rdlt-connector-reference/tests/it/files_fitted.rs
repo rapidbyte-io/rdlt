@@ -75,7 +75,11 @@ async fn changed(
         ),
     ])
     .expect("a valid batch");
-    let mut writer = session.session.writer(&changes()).await.expect("a writer");
+    let mut writer = session
+        .session
+        .writer(&changes())
+        .await
+        .expect("a table writer");
     writer
         .write(SegmentId(segment), batch)
         .await
@@ -215,7 +219,11 @@ async fn a_widen_a_staged_value_does_not_fit_is_refused_and_the_staged_rows_comm
         ("seq", Arc::new(Int64Array::from(vec![1])) as ArrayRef),
     ])
     .expect("a valid batch");
-    let mut writer = session.session.writer(&table).await.expect("a writer");
+    let mut writer = session
+        .session
+        .writer(&table)
+        .await
+        .expect("a table writer");
     writer.write(SegmentId(1), batch).await.expect("buffers");
     writer.flush().await.expect("the flush stages");
     let widen = TableChange::Widen {

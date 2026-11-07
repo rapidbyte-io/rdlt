@@ -124,7 +124,7 @@ async fn committed(directory: &tempfile::TempDir) -> std::path::PathBuf {
         .session
         .writer(&table())
         .await
-        .expect("a writer opens");
+        .expect("a table writer opens");
     writer
         .write(SegmentId(1), batch)
         .await
@@ -268,7 +268,7 @@ async fn an_open_discards_what_older_sessions_staged_and_never_committed() {
         .session
         .writer(&table())
         .await
-        .expect("a writer opens");
+        .expect("a table writer opens");
     writer
         .write(SegmentId(1), batch)
         .await
@@ -314,7 +314,7 @@ async fn an_integral_float_reads_back_as_the_float() {
         .session
         .writer(&table())
         .await
-        .expect("a writer opens");
+        .expect("a table writer opens");
     writer
         .write(SegmentId(1), batch)
         .await
