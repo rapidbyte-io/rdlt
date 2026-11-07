@@ -145,6 +145,7 @@ regex-syntax = { version = "0.8.11", default-features = false, features = [
   "unicode-case",
 ] } # Unicode 16.0's simple case folding, which certification's identifier pairs follow
 unicase = "2.9.0" # Unicode's full case folding, which certification's identifier pairs follow
+wildmatch = "2.7.0" # a document's stream selection by `*` and `?` against the source's catalog
 
 # Tooling and tests
 anyhow = "1.0.104" # error reporting at xtask's command-line entry point

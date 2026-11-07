@@ -21,6 +21,7 @@ pub use modes::{
 pub use policies::{Commit, Resources, Retry};
 pub use side::{Access, Connector, ConnectorReference, Side};
 pub use stream::{Column, Defaults, SchemaRules, Stream};
+pub(crate) use transform::refers_to_secret;
 pub use transform::{MaskStep, MaskWith, TransformStep};
 pub use until::Until;
 

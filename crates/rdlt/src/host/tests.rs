@@ -1,14 +1,34 @@
 use std::sync::Arc;
 
 use rdlt_connector::{
-    DestinationFactory, Role, SourceFactory, destination_factory, source_factory,
+    BoxFuture, DestinationFactory, Role, Secret, SourceFactory, destination_factory, source_factory,
 };
 use rdlt_connector_reference::{MemoryDestination, MemorySource};
 use rdlt_engine::{Code, ErrorKind, Origin};
-use rdlt_host::{Placement, Provider as _};
+use rdlt_host::{
+    Placement, Provider as _, SecretFault, SecretKind, SecretReference, SecretResolver,
+};
 
 use super::Host;
 use crate::{Access, Connector, Side};
+
+/// A store holding one secret, `mask_key`.
+#[derive(Debug)]
+pub(crate) struct Vault;
+
+impl SecretResolver for Vault {
+    fn resolve<'a>(
+        &'a self,
+        reference: &'a SecretReference,
+    ) -> BoxFuture<'a, Result<Secret<String>, SecretFault>> {
+        Box::pin(async move {
+            match (reference.kind, reference.name.as_str()) {
+                (SecretKind::Named, "mask_key") => Ok(Secret::new("CANARY-mask".to_owned())),
+                _ => Err(SecretFault::Missing),
+            }
+        })
+    }
+}
 
 #[tokio::test(start_paused = true)]
 async fn a_registered_connector_is_placed_in_process() {
@@ -191,4 +211,55 @@ async fn a_host_given_tls_dials_a_reference_with_an_endpoint_presenting_its_file
         (refused.kind(), refused.origin()),
         (ErrorKind::Source, Origin::Source)
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_mask_key_resolves_through_what_the_host_allows_and_nothing_else() {
+    let host = Host::new().secret_store(Vault);
+    let key = host.key("${secret:mask_key}").await.expect("resolved");
+    assert_eq!(key.expose(), "CANARY-mask");
+    let refused = host.key("${env:HOME}").await.expect_err("refused");
+    assert_eq!(refused.code(), Some(Code::new("secret_refused")));
+    assert_eq!(refused.kind(), ErrorKind::Config);
+    assert!(refused.to_string().contains("key"), "{refused}");
+    let missing = host
+        .key("${secret:other}")
+        .await
+        .expect_err("not in the store");
+    assert_eq!(missing.code(), Some(Code::new("secret_unresolved")));
+    assert!(!format!("{host:?}").contains("CANARY"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_mask_key_written_out_is_refused_and_never_shown() {
+    let host = Host::new().secret_store(Vault);
+    for literal in [
+        "CANARY-literal",
+        "$${secret:mask_key}",
+        "CANARY ${secret:mask_key}",
+    ] {
+        let refused = host.key(literal).await.expect_err("a key written out");
+        assert_eq!(
+            refused.code(),
+            Some(Code::new("mask_key_literal")),
+            "{literal}"
+        );
+        assert_eq!(refused.kind(), ErrorKind::Config);
+        let said = format!("{refused} {refused:?} {:?}", refused.report());
+        assert!(!said.contains("CANARY"), "{said}");
+        assert!(
+            said.contains("${secret:name}"),
+            "the refusal says what to write: {said}"
+        );
+    }
+}
+
+#[test]
+fn a_code_transform_is_the_host_s_by_its_name() {
+    let host = Host::new()
+        .transform("kept", rdlt_engine::Op::rename([("a", "b")]))
+        .transform("also", rdlt_engine::Op::rename([("c", "d")]));
+    assert!(host.code("kept").is_some());
+    assert!(host.code("other").is_none());
+    assert_eq!(host.codes().collect::<Vec<_>>(), ["also", "kept"]);
 }
