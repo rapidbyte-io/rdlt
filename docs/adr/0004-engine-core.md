@@ -14,31 +14,35 @@ a run reports and tells must show what it did without changing what it does.
 - **API.** `Engine::new(EngineConfig, Arc<dyn Env>)` and `Engine::run(PipelinePlan, source,
   destination) -> RunHandle`. The handle is a future; `control()` returns a `RunControl` that stops
   the run after committing or at once, and dropping the handle cancels every task the run started.
-- **A run tells what happens as it happens.** `Env::observe` is told each `Event` where it becomes
-  true: an attempt started, a commit landed with its counts, phases, discards by table, column and
-  reason, and its report's outcome, a lost commit credited, a schema change the destination applied,
-  a retention reset, partitions forgotten, a retry of the attempt or of a commit sent again in place
-  with its error and delay, and the run's end. `SystemEnv::with_observer` hands them to the
-  embedder's function; an environment that observes nothing (`Env::observes`) has no event built for
-  it. The engine calls the observer on its own tasks, outside the locks of its state, and holds no
-  event for it, so nothing waits outside the memory budget. A run's events are told one at a time
-  under a lock of their own, which the run's end closes: a task the end left running tells nothing
-  after it, and nothing it notes changes the status then. The observer must not block, panic or call
-  into the run, and hands each event to a channel. A panic fails the attempt it was told in, as any
-  panic of the engine's tasks does; one told between attempts or at the run's end reaches the task
-  awaiting the run. Each list an event holds names its first 128 entries and counts the rest, and
-  every text a connector chose is shown as error reports show it. Export is the embedder's: the
-  engine renders no metrics.
+  `Engine::check(plan, source, destination) -> Catalog` makes the checks a run's start makes, and
+  the connectors' own, before anything is read; it opens no session, so no run of the pipeline is
+  fenced.
+- **A run tells what happens as it happens.** `Env::observe` is told each `Event`, numbered by its
+  place among the run's events, from 1 and with no gap, where it becomes true: an attempt started, a
+  commit landed with its counts, phases, discards by table, column and reason, and its report's
+  outcome, a lost commit credited, a schema change the destination applied, a retention reset,
+  partitions forgotten, a retry of the attempt or of a commit sent again in place with its error and
+  delay, and the run's end. `SystemEnv::with_observer` hands them to the embedder's function; an
+  environment that observes nothing (`Env::observes`) has no event built for it. The engine calls
+  the observer on its own tasks, outside the locks of its state, and holds no event for it, so
+  nothing waits outside the memory budget. A run's events are told one at a time under a lock of
+  their own, which the run's end closes: a task the end left running tells nothing after it, and
+  nothing it notes changes the status then. The observer must not block, panic or call into the run,
+  and hands each event to a channel. A panic fails the attempt it was told in, as any panic of the
+  engine's tasks does; one told between attempts or at the run's end reaches the task awaiting the
+  run. Each list an event holds names its first 128 entries and counts the rest, and every text a
+  connector chose is shown as error reports show it. Export is the embedder's: the engine renders no
+  metrics.
 - **A run's status can be pulled.** `RunHandle::status()` never waits. It names what the run is in
   the middle of and since when (opening, reading, a commit's barrier, flush, commit with how many
   times it was sent, or report, backing off until its next attempt, stopping, ended), its partitions
   reading, waiting for a slot and ended, the one quiet longest and since when, the oldest wait for
-  room in each share of the budget, each writer's call into the destination in flight, each stream's
-  last landed commit, lag and retention headroom, and the report so far, assembled as the run's end
-  assembles it. The run writes it at attempt and commit-step boundaries; a partition's stamp and a
-  writer's call are relaxed atomic stores, around each destination call and each message a partition
-  sends but its writes. Its times are the run's start on the wall clock and the monotonic time
-  since.
+  room in each share of the budget and the bytes each share holds, each writer's call into the
+  destination in flight and its writes queued, each stream's last landed commit, lag and retention
+  headroom, and the report so far, assembled as the run's end assembles it. The run writes it at
+  attempt and commit-step boundaries; a partition's stamp and a writer's call are relaxed atomic
+  stores, around each destination call and each message a partition sends but its writes. Its times
+  are the run's start on the wall clock and the monotonic time since.
 - **Cores.** A `Cores` is the count of cores a run may use. The compute pool gets a thread for
   each, through `RayonPool::try_new`, and nothing else sizes a pool. A process that builds its own
   tokio runtime gives it `Cores::runtime_workers`: half the cores, rounded down, and two at least

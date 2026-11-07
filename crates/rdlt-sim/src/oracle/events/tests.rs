@@ -4,7 +4,7 @@ use std::time::{Duration, SystemTime};
 use rdlt_connector::{Epoch, PipelineId};
 use rdlt_engine::{
     Acks, AttemptReport, CommitPhases, Counters, ErrorKind, ErrorReport, Event, EventKind,
-    OpenWaits, Origin, Partitions, Phase, Report, RunStatus, Scope, Status, Trigger,
+    MemoryHeld, OpenWaits, Origin, Partitions, Phase, Report, RunStatus, Scope, Status, Trigger,
 };
 
 use super::{Told, disagreements};
@@ -63,6 +63,7 @@ fn ended(report: &Report) -> Status {
         partitions: Partitions::default(),
         quietest: None,
         waiting: OpenWaits::default(),
+        memory: MemoryHeld::default(),
         writers: Vec::new(),
         streams: BTreeMap::new(),
         report: report.clone(),

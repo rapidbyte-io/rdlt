@@ -95,7 +95,8 @@ pub use report::{
 };
 pub use run::{Engine, ResetReport, ResetScope, RunControl, RunHandle, RunOutcome, StopMode};
 pub use status::{
-    Call, OpenWaits, Partitions, Phase, Quiet, Status, Step, StreamStatus, WriterCall,
+    Call, MemoryHeld, OpenWaits, Partitions, Phase, Quiet, Status, Step, StreamStatus, WriterCall,
+    WriterStatus,
 };
 pub use transform::{
     Bound, Literal, Mask, Op, Transform, TransformError, TransformStep, allocated_beyond,
