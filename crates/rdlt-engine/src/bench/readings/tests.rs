@@ -2,7 +2,7 @@ use std::num::NonZeroUsize;
 use std::time::Duration;
 
 use super::Readings;
-use crate::report::{Counters, Flushes, LaneCounters, PoolCounters};
+use crate::report::{Counters, Flushes, PoolCounters, WriterCounters};
 
 #[test]
 fn readings_are_shares_of_the_run_and_counts_a_batch() {
@@ -16,16 +16,16 @@ fn readings_are_shares_of_the_run_and_counts_a_batch() {
         running: Duration::from_millis(400),
         returned: Duration::from_millis(30),
     };
-    let wrote = LaneCounters {
+    let wrote = WriterCounters {
         writing: Duration::from_millis(1),
         flushes: Flushes {
             pressure: 3,
             commit: 2,
             retired: 1,
         },
-        ..LaneCounters::default()
+        ..WriterCounters::default()
     };
-    counters.lanes = vec![wrote, LaneCounters::default(), wrote];
+    counters.writers = vec![wrote, WriterCounters::default(), wrote];
     counters.commits.interval = 1;
     counters.commits.size = 3;
     counters.commits.cursors = 2;
@@ -37,8 +37,8 @@ fn readings_are_shares_of_the_run_and_counts_a_batch() {
         readings.to_string(),
         "commits 11 (interval 1, size 3, cursors 2, end 5), work waits 2.5 % of the run, \
          intake waits 0.5 %, decode waits 1.5 %, pool idle 95.0 %, pool queue and way back 2.5 \
-         %, lanes written 2, writer flushes 12 (pressure 6, commit 4, retired 2), signals 4.0 a \
-         batch"
+         %, writers written 2, table writer flushes 12 (pressure 6, commit 4, retired 2), signals \
+         4.0 a batch"
     );
 }
 
@@ -50,7 +50,7 @@ fn a_run_of_no_time_and_no_batches_reads_as_nothing_rather_than_dividing_by_zero
         text,
         "commits 0 (interval 0, size 0, cursors 0, end 0), work waits 0.0 % of the run, \
          intake waits 0.0 %, decode waits 0.0 %, pool idle 0.0 %, pool queue and way back 0.0 \
-         %, lanes written 0, writer flushes 0 (pressure 0, commit 0, retired 0), signals 0.0 a \
-         batch"
+         %, writers written 0, table writer flushes 0 (pressure 0, commit 0, retired 0), signals \
+         0.0 a batch"
     );
 }

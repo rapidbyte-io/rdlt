@@ -76,11 +76,11 @@ model ADR 0037 sets, where a weaker one would:
     and one more, the waiting, four for each session, and 64 of its own. It raises its soft limit
     that far where the hard limit allows, and refuses to listen where it does not;
     `--max-sessions` serves fewer.
-  - A write's writer is not counted there. It lives no longer than its call, and a connection
-    holds 200 calls at most, HTTP/2's limit of concurrent streams. A destination whose writer
+  - A write's table writer is not counted there. It lives no longer than its call, and a connection
+    holds 200 calls at most, HTTP/2's limit of concurrent streams. A destination whose table writer
     opens a descriptor of its own beside its session's can take up to 200 more for each
-    connection: it keeps its writers' files among its sessions', or is served with fewer
-    sessions. A write holds its session only to take its writer, so eviction does not wait for
+    connection: it keeps its table writers' files among its sessions', or is served with fewer
+    sessions. A write holds its session only to take its table writer, so eviction does not wait for
     a write in flight.
   - Refused connections are counted by reason and reported in one line every 10 s in which any
     was refused. No line is written for a peer that has not authenticated.
@@ -195,9 +195,9 @@ Rejected:
 - **Closing the oldest session under a call in flight.** The call holds the session, so
   forgetting it closes nothing, and a host that starts a call on each session it opens keeps
   more of them than its share.
-- **Counting a write's writers in the descriptor estimate.** At 200 calls a connection, the
+- **Counting a write's table writers in the descriptor estimate.** At 200 calls a connection, the
   estimate would ask every listening connector for tens of thousands of descriptors, for
-  writers most destinations give none of their own.
+  table writers most destinations give none of their own.
 
 ## Consequences
 

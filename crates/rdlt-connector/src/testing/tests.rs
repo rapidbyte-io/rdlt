@@ -550,7 +550,7 @@ async fn a_source_call_that_never_returns_fails_instead_of_hanging() {
 async fn a_destination_whose_flushes_never_end_fails_instead_of_hanging() {
     let report = within_a_day(certify_vault("hang_flush", Some("hang_flush"))).await;
     assert!(
-        matches!(report.outcome("D-LANES"), Some(Outcome::Failed(_))),
+        matches!(report.outcome("D-WRITERS"), Some(Outcome::Failed(_))),
         "{report}"
     );
 }
@@ -710,8 +710,9 @@ struct VaultConfig {
     /// Declares it folds identifiers to lower case and takes any character, but compares them
     /// by Unicode's simple case folding: one column of those that fold alike so is published.
     fold_simply: bool,
-    /// Keeps only the staging of the table's writer that wrote last, of all its writers.
-    lose_lanes: bool,
+    /// Keeps only the staging of the table writer of the table that wrote last, of all its table
+    /// writers.
+    lose_writers: bool,
     /// Fails its check, though sessions open.
     refuse_check: bool,
     /// The writers it declares it runs at once, when not the default.
@@ -724,7 +725,8 @@ struct VaultConfig {
     hang_flush: bool,
     /// Lets any pipeline write into any table, whichever pipeline created it.
     share_tables: bool,
-    /// Refuses every writer of a table once another pipeline's writer of it was refused.
+    /// Refuses every table writer of a table once another pipeline's table writer of it was
+    /// refused.
     lock_on_intrusion: bool,
     /// Refuses another pipeline's table as a data error, though coded `table_owned`.
     owned_as_data: bool,
@@ -798,7 +800,7 @@ struct VaultStore {
     published: BTreeMap<String, Vec<RecordBatch>>,
     /// Committed rows of replace generations, by table and generation.
     generations: BTreeMap<(String, GenerationId), Vec<RecordBatch>>,
-    /// Each table's name, by path, as writers named it.
+    /// Each table's name, by path, as table writers named it.
     tables: BTreeMap<TablePath, String>,
     /// Every schema change applied, rendered.
     changes: BTreeSet<String>,
@@ -808,7 +810,7 @@ struct VaultStore {
     columns: BTreeMap<String, BTreeMap<String, LogicalType>>,
     /// The pipeline each table belongs to: the first to refer to it.
     owners: BTreeMap<String, PipelineId>,
-    /// Tables no writer may write, under `lock_on_intrusion`.
+    /// Tables no table writer may write, under `lock_on_intrusion`.
     locked: BTreeSet<String>,
     /// Each change stream's table's tombstones.
     tombstones: BTreeMap<String, changes::Tombstones>,
@@ -834,7 +836,7 @@ impl VaultStore {
     }
 }
 
-/// Every vault writer made, so each is told from the others.
+/// Every vault table writer made, so each is told from the others.
 static WRITERS: AtomicU64 = AtomicU64::new(0);
 
 /// A batch staged for a table, a replace generation of it, or a merge into it.
@@ -981,7 +983,7 @@ struct VaultSession {
 }
 
 struct VaultWriter {
-    /// Tells this writer's staging from its table's other writers'.
+    /// Tells this table writer's staging from its table's other table writers'.
     id: u64,
     config: Arc<VaultConfig>,
     stores: VaultStores,
@@ -1594,14 +1596,14 @@ impl VaultConfig {
 }
 
 impl VaultWriter {
-    /// `batch`, as the flags that break names and lanes stage it in `store`.
+    /// `batch`, as the flags that break names and table writers stage it in `store`.
     fn faulted(&self, store: &mut VaultStore, batch: RecordBatch) -> RecordBatch {
         let batch = if self.config.blank_names {
             blanked_names(&batch)
         } else {
             batch
         };
-        if self.config.lose_lanes {
+        if self.config.lose_writers {
             for ((pipeline, _), staged) in &mut store.staged {
                 if *pipeline == self.pipeline {
                     staged.retain(|staged| {
@@ -2045,10 +2047,10 @@ async fn certify_vault(name: &str, flag: Option<&str>) -> Report {
 }
 
 #[tokio::test]
-async fn the_lanes_clause_does_not_apply_to_one_writer_and_short_names_leave_names_unobserved() {
+async fn the_writers_clause_does_not_apply_to_one_writer_and_short_names_leave_names_unobserved() {
     let cases = [
-        (json!({ "writers": 1 }), "D-LANES", false),
-        (json!({ "writers": 2 }), "D-LANES", true),
+        (json!({ "writers": 1 }), "D-WRITERS", false),
+        (json!({ "writers": 2 }), "D-WRITERS", true),
         (json!({ "identifier_len": 31 }), "D-NAMES", false),
         (json!({ "identifier_len": 32 }), "D-NAMES", true),
     ];
@@ -2060,7 +2062,7 @@ async fn the_lanes_clause_does_not_apply_to_one_writer_and_short_names_leave_nam
         // columns whatever their length, which the clause's own names do not fit.
         let expected = match (runs, report.outcome(clause)) {
             (true, outcome) => outcome == Some(&Outcome::Passed),
-            (false, Some(Outcome::Inapplicable(_))) => clause == "D-LANES",
+            (false, Some(Outcome::Inapplicable(_))) => clause == "D-WRITERS",
             (false, Some(Outcome::Unobserved(_))) => clause == "D-NAMES",
             (false, _) => false,
         };
@@ -2079,7 +2081,7 @@ async fn a_destination_reserving_every_form_of_a_name_fails_the_names_clause_alo
 async fn a_correct_destination_passes_every_clause() {
     let report = certify_vault("correct", None).await;
     report.assert_passed();
-    for id in ["D-NAMES", "D-LANES", "D-HIST"] {
+    for id in ["D-NAMES", "D-WRITERS", "D-HIST"] {
         assert_eq!(report.outcome(id), Some(&Outcome::Passed), "{id}: {report}");
     }
 }
@@ -2107,7 +2109,7 @@ const BROKEN: &[(&str, &[&str])] = &[
     ("fold_simply", &["D-NAMES"]),
     ("widen_through_text", &["D-SCHEMA"]),
     ("refuse_check", &["D-CHECK"]),
-    ("lose_lanes", &["D-LANES"]),
+    ("lose_writers", &["D-WRITERS"]),
     ("keep_dropped", &["D-DROP"]),
     ("keep_owner", &["D-DROP"]),
     ("drop_others", &["D-DROP"]),
@@ -2142,7 +2144,7 @@ const BROKEN: &[(&str, &[&str])] = &[
             "D-HIST",
             "D-ENCODING",
             "D-TABLES",
-            "D-LANES",
+            "D-WRITERS",
             "D-OWNED",
             "D-DROP",
         ],
@@ -2388,7 +2390,7 @@ async fn visible_staging_fails_every_clause_that_reads_published_data() {
             "D-ENCODING",
             "D-TABLES",
             "D-NAMES",
-            "D-LANES",
+            "D-WRITERS",
             "D-OWNED",
             "D-DROP",
             "D-FENCE"

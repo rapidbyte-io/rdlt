@@ -95,7 +95,7 @@ fn merged(
 /// The runs of `files` to merge, each into one file, the latest first; the last `added` files
 /// are those the commit adds.
 ///
-/// The files a commit adds merge with each other whatever rows they hold, since a writer's
+/// The files a commit adds merge with each other whatever rows they hold, since a table writer's
 /// batches come in any order of sizes; a file listed before them joins the run that reaches it
 /// while it holds at most twice the run's rows. Every two files next to each other then either
 /// at least halve in rows or are together larger than [`COMPACT_BYTES`].

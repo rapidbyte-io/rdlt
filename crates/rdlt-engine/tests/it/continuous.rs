@@ -34,10 +34,10 @@ fn factory() -> Box<dyn SourceFactory> {
     acknowledging_source_factory::<LogSource>()
 }
 
-/// A configuration that plans again every 200 ms, with two lanes.
+/// A configuration that plans again every 200 ms, with two writers.
 fn following() -> EngineConfigBuilder {
     EngineConfig::builder()
-        .lanes(2)
+        .writers(2)
         .barrier_wait(Duration::from_millis(100))
         .replan(Duration::from_millis(200))
 }

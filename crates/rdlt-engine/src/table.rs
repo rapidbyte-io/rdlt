@@ -43,7 +43,7 @@ pub(crate) use session::{SharedSession, answered};
 /// A table at one schema version: everything needed to prepare batches for it.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct TableView {
-    /// The table as writers and changes name it.
+    /// The table as table writers and changes name it.
     pub(crate) table: TableRef,
     pub(crate) model: Model,
     /// How the destination stores each of the model's columns.

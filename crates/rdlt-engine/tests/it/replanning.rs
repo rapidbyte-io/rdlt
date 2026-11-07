@@ -75,7 +75,7 @@ async fn a_partition_added_mid_run_starts_from_its_beginning_as_one_planned_firs
     let incremental = stream("events").read(ReadMode::Incremental);
     let plan = pipeline("added", [incremental]).with_until(Until::For(Duration::from_secs(2)));
     let config = EngineConfig::builder()
-        .lanes(2)
+        .writers(2)
         .barrier_wait(Duration::from_millis(100))
         .replan(Duration::from_millis(200));
     let outcome = engine(config)

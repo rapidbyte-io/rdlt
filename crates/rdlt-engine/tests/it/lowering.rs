@@ -41,7 +41,7 @@ fn bound() -> usize {
 /// Runs a load of what `steps` makes under the budget: the most the heap held beyond what it
 /// held before, and how the run ended.
 async fn run(name: &str, source: Arc<dyn Source>) -> (usize, RunOutcome) {
-    let config = commit_every(1_000_000_000).memory(BUDGET).lanes(1);
+    let config = commit_every(1_000_000_000).memory(BUDGET).writers(1);
     HEAP.reset_peak_usage();
     let before = HEAP.current_usage();
     let outcome = engine(config)
@@ -278,7 +278,7 @@ async fn a_read_keeping_more_than_its_part_of_the_budget_fails_at_once_naming_th
         let config = commit_every(1_000_000_000)
             .memory(BUDGET)
             .retry(RetryPolicy::default().max_attempts(1))
-            .lanes(1);
+            .writers(1);
         let started = tokio::time::Instant::now();
         let outcome = engine(config)
             .run(pipeline(name, [stream("events")]), source, null().await)
@@ -318,7 +318,7 @@ async fn a_run_reports_the_most_its_reads_kept_at_once() {
         source: making("lowering_kept_peak", row_and_checkpoint()).await,
         bytes: SHARE,
     });
-    let config = commit_every(1_000_000_000).memory(BUDGET).lanes(1);
+    let config = commit_every(1_000_000_000).memory(BUDGET).writers(1);
     let outcome = engine(config)
         .run(
             pipeline("lowering_kept_peak", [stream("events")]),
@@ -365,7 +365,7 @@ async fn behind_a_commit(
         .memory(ONE_READ)
         .partitions(1)
         .retry(RetryPolicy::default().max_attempts(1))
-        .lanes(1);
+        .writers(1);
     let config = match wait {
         Some(wait) => config.connector_wait(wait),
         None => config,
@@ -427,7 +427,7 @@ async fn a_cursor_waits_behind_a_commit_for_as_long_as_twice_the_connector_deadl
 
 #[tokio::test(start_paused = true)]
 async fn a_destination_that_stops_writing_fails_at_its_write_deadline_within_the_budget() {
-    // No write returns, so nothing lowered is ever released: pieces queue on the lane, deep
+    // No write returns, so nothing lowered is ever released: pieces queue on the writer, deep
     // enough to take them, until the budget has no room for another, and the stuck write fails
     // at its own deadline with the attempt, before the wait for room reaches the budget's.
     let steps: Steps = Arc::new(|step| {
@@ -439,8 +439,8 @@ async fn a_destination_that_stops_writing_fails_at_its_write_deadline_within_the
         let config = commit_every(1_000_000_000)
             .memory(BUDGET)
             .retry(RetryPolicy::default().max_attempts(1))
-            .lanes(1)
-            .lane_window(10_000);
+            .writers(1)
+            .writer_window(10_000);
         let config = match wait {
             Some(wait) => config.connector_wait(wait),
             None => config,

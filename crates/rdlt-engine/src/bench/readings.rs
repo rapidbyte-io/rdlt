@@ -25,9 +25,9 @@ pub struct Readings {
     pub idle: f64,
     /// Jobs' waits to start and ways back to their callers, summed, over the run's time.
     pub hops: f64,
-    /// Lanes that wrote at least once.
-    pub lanes: usize,
-    /// The lanes' flushes of their writers, by what asked for each.
+    /// Writers that wrote at least once.
+    pub writers: usize,
+    /// The writers' flushes of their table writers, by what asked for each.
     pub flushes: Flushes,
     /// The budget's signals a batch.
     pub signals: f64,
@@ -60,16 +60,16 @@ impl Readings {
                 0.0
             },
             hops: share((pool.queued + pool.returned).as_secs_f64(), run),
-            lanes: counters
-                .lanes
+            writers: counters
+                .writers
                 .iter()
-                .filter(|lane| !lane.writing.is_zero())
+                .filter(|writer| !writer.writing.is_zero())
                 .count(),
             flushes: counters
-                .lanes
+                .writers
                 .iter()
-                .fold(Flushes::default(), |mut all, lane| {
-                    all.add(&lane.flushes);
+                .fold(Flushes::default(), |mut all, writer| {
+                    all.add(&writer.flushes);
                     all
                 }),
             signals: share(counters.signals as f64, batches as f64),
@@ -81,13 +81,13 @@ impl fmt::Display for Readings {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (c, flushes) = (&self.commits, &self.flushes);
         let commits = c.interval + c.size + c.cursors + c.end;
-        let writer_flushes = flushes.pressure + flushes.commit + flushes.retired;
+        let table_writer_flushes = flushes.pressure + flushes.commit + flushes.retired;
         write!(
             f,
             "commits {commits} (interval {}, size {}, cursors {}, end {}), work waits \
              {:.1} % of the run, intake waits {:.1} %, decode waits {:.1} %, pool idle {:.1} %, \
-             pool queue and way back {:.1} %, lanes written {}, writer flushes {writer_flushes} \
-             (pressure {}, commit {}, retired {}), signals {:.1} a batch",
+             pool queue and way back {:.1} %, writers written {}, table writer flushes \
+             {table_writer_flushes} (pressure {}, commit {}, retired {}), signals {:.1} a batch",
             c.interval,
             c.size,
             c.cursors,
@@ -97,7 +97,7 @@ impl fmt::Display for Readings {
             self.decode * 100.0,
             self.idle * 100.0,
             self.hops * 100.0,
-            self.lanes,
+            self.writers,
             flushes.pressure,
             flushes.commit,
             flushes.retired,

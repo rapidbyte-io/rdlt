@@ -79,7 +79,7 @@ carries its lineage: `_rdlt_id`, and in child tables `_rdlt_parent_id`, `_rdlt_r
   the parent row, and its name comes from the naming rules for that path, so `a__b` as a key and
   `a.b` as nesting never alias. Tables that state records keep their names. A child table is
   added the first time its rows arrive, creating it through the session, even when its rows hold
-  nothing but their lineage (an array of arrays); lanes open a table's writer on its first write
+  nothing but their lineage (an array of arrays); writers open a table writer for it on its first write
   rather than at the attempt's start.
 - **Schema policy per child table.** Child tables follow the stream's settings, not those of the
   stream's own table's columns, whose names they may share. A new array below a stream's table

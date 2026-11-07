@@ -94,7 +94,7 @@ over a network ADR 0019's.
     second after a burst of 256, the lines beyond counted (ADR 0043).
   - The last 8 KiB of standard error, and the exit status, are kept. A transport failure of that
     connector (`connector_lost` or `transport`) carries them as its source (`LastWords`), from
-    its source's and destination's calls and from its sessions' and writers'.
+    its source's and destination's calls and from its sessions' and table writers'.
   - Dropping a placed connector stops it: before the drop returns its standard input closes
     and its process group receives `SIGTERM`, and after the grace period (10 s by default) the
     thread that owns the group sends `SIGKILL`. That kill needs a host still running, so a host

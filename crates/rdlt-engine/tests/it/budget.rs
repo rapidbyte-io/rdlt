@@ -142,7 +142,7 @@ async fn list_views_naming_one_child_load_within_the_budget() {
         (step < 2).then(|| Step::Batch(batch(Arc::new(views))))
     });
     let source = making("budget_views", steps).await;
-    let config = commit_every(1_000_000).memory(BUDGET).lanes(1);
+    let config = commit_every(1_000_000).memory(BUDGET).writers(1);
     HEAP.reset_peak_usage();
     let before = HEAP.current_usage();
     let outcome = engine(config)
@@ -178,7 +178,7 @@ async fn views_naming_one_buffer_load_within_the_budget() {
         (step < 2).then(|| Step::Batch(batch(Arc::new(views.finish()))))
     });
     let source = making("budget_aliased", steps).await;
-    let config = commit_every(1_000_000).memory(BUDGET).lanes(1);
+    let config = commit_every(1_000_000).memory(BUDGET).writers(1);
     HEAP.reset_peak_usage();
     let before = HEAP.current_usage();
     let outcome = engine(config)
@@ -217,7 +217,7 @@ async fn batches_keeping_large_buffers_alive_load_within_the_budget() {
         Some(Step::Batch(batch(Arc::new(whole.slice(0, 3)))))
     });
     let source = making("budget_kept", steps).await;
-    let config = commit_every(1_000_000).memory(BUDGET).lanes(1);
+    let config = commit_every(1_000_000).memory(BUDGET).writers(1);
     HEAP.reset_peak_usage();
     let before = HEAP.current_usage();
     let outcome = engine(config)
@@ -258,7 +258,7 @@ async fn a_row_expanding_beyond_the_budget_fails_the_run_before_it_is_built() {
         (step < 1).then(|| Step::Batch(batch(Arc::new(nulls))))
     });
     let source = making("budget_row", steps).await;
-    let config = commit_every(1_000_000).memory(BUDGET).lanes(1);
+    let config = commit_every(1_000_000).memory(BUDGET).writers(1);
     HEAP.reset_peak_usage();
     let before = HEAP.current_usage();
     let outcome = engine(config)
@@ -282,7 +282,7 @@ async fn cursors_loaded(name: &str, count: usize, rows: bool) -> (usize, rdlt_en
         commit_every(1_000_000)
             .memory(CURSORS_BUDGET)
             .partitions(1)
-            .lanes(1)
+            .writers(1)
     };
     let limit = config().build().expect("valid").limits().cursor_bytes;
     let cursor = usize::try_from(limit).expect("a size");
@@ -387,7 +387,7 @@ async fn signals_sent_while_a_commit_is_in_flight_do_not_pile_up() {
         _ => None,
     });
     let source = making("budget_signals", steps).await;
-    let outcome = engine(commit_every(1).lanes(1))
+    let outcome = engine(commit_every(1).writers(1))
         .run(
             pipeline("signals", [stream("events")]),
             source,
@@ -415,7 +415,7 @@ async fn a_push_of_very_many_small_records_loads_within_the_budget() {
         (step < 1).then(|| Step::Json("{\"a\":1}\n".repeat(RECORDS).into()))
     });
     let source = making("budget_records", steps).await;
-    let config = commit_every(10_000_000).memory(BUDGET).lanes(1);
+    let config = commit_every(10_000_000).memory(BUDGET).writers(1);
     HEAP.reset_peak_usage();
     let before = HEAP.current_usage();
     let outcome = engine(config)
@@ -455,7 +455,7 @@ async fn a_null_typed_column_loads_within_the_budget_however_wide_its_table_colu
         }
     });
     let source = making("budget_nulls", steps).await;
-    let config = commit_every(1_000_000).memory(BUDGET).lanes(1);
+    let config = commit_every(1_000_000).memory(BUDGET).writers(1);
     HEAP.reset_peak_usage();
     let before = HEAP.current_usage();
     let outcome = engine(config)
@@ -495,7 +495,7 @@ async fn widened_nulls(
         _ => None,
     });
     let source = making(name, steps).await;
-    let config = commit_every(1_000_000).memory(BUDGET).lanes(1);
+    let config = commit_every(1_000_000).memory(BUDGET).writers(1);
     HEAP.reset_peak_usage();
     let before = HEAP.current_usage();
     let outcome = engine(config)

@@ -29,7 +29,7 @@ fn table(generation: Option<GenerationId>) -> TableRef {
     }
 }
 
-/// Whether `C` opens a writer of a history table, and of a generation of it.
+/// Whether `C` opens a table writer of a history table, and of a generation of it.
 async fn writers<C: DestinationConnector>(
     config: serde_json::Value,
 ) -> (bool, Option<ConnectorErrorKind>) {

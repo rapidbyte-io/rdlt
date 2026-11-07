@@ -65,7 +65,7 @@ fn within(outcome: &RunOutcome, rows: u64, peak: usize, bound: usize) {
 
 /// Loads what `steps` makes through a plan that normalizes, on the inline pool.
 async fn normalizing(name: &str, steps: Steps) -> (usize, RunOutcome) {
-    let config = commit_every(1_000_000_000).memory(BUDGET).lanes(1);
+    let config = commit_every(1_000_000_000).memory(BUDGET).writers(1);
     let source = making(name, steps).await;
     let run = engine(config).run(pipeline(name, [normalized("events")]), source, null().await);
     let (peak, outcome) = measured(run).await;
@@ -166,7 +166,7 @@ async fn sixteen_partitions_normalizing_into_two_tables_on_a_pool_stay_within_th
     let config = commit_every(1_000_000_000)
         .memory(BUDGET)
         .partitions(PARTS)
-        .lanes(2);
+        .writers(2);
     let source = making_parts("bound_pooled", nested(), PARTS).await;
     let plan = pipeline("bound_pooled", [normalized("events")]);
     let run = pooled_engine(config, 4).run(plan, source, null().await);
@@ -200,7 +200,7 @@ async fn sixteen_partitions_widening_on_a_pool_stay_within_the_budget() {
     let config = commit_every(1_000_000_000)
         .memory(BUDGET)
         .partitions(PARTS)
-        .lanes(1);
+        .writers(1);
     let source = making_parts("bound_widening", steps, PARTS).await;
     let plan = pipeline("bound_widening", [stream("events")]);
     let run = pooled_engine(config, 4).run(plan, source, null().await);
@@ -218,7 +218,7 @@ async fn a_load_whose_first_commit_fails_read_again_by_sixteen_partitions_stays_
         .commit(rdlt_engine::CommitPolicy::new(None, Some(100_000), None).expect("a policy"))
         .memory(BUDGET)
         .partitions(PARTS)
-        .lanes(2);
+        .writers(2);
     let source = making_parts("bound_read_again", nested(), PARTS).await;
     let plan = pipeline(
         "bound-read-again",
@@ -260,7 +260,7 @@ async fn a_row_whose_items_normalize_past_a_request_fails_unsplit_within_the_bou
             Step::Batch(batch(Arc::new(list)))
         })
     });
-    let config = commit_every(1_000_000_000).memory(BUDGET).lanes(1);
+    let config = commit_every(1_000_000_000).memory(BUDGET).writers(1);
     let source = making("bound_flags", steps).await;
     let run = engine(config).run(
         pipeline("bound_flags", [normalized("events")]),
@@ -294,10 +294,10 @@ async fn list_views_naming_shared_items_normalize_within_the_bound() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_commit_that_fails_staged_again_into_writers_that_buffer_stays_within_the_budget() {
+async fn a_commit_that_fails_staged_again_into_table_writers_that_buffer_stays_within_the_budget() {
     const BATCHES: usize = 120;
     // One commit takes every batch, about four times the budget; it fails before it lands, and
-    // the next attempt reads and stages it again through writers that hold every batch until
+    // the next attempt reads and stages it again through table writers that hold every batch until
     // they flush.
     let blob =
         |_: usize| -> ArrayRef { Arc::new(BinaryArray::from_iter_values([vec![7_u8; 1 << 20]])) };
@@ -309,7 +309,7 @@ async fn a_commit_that_fails_staged_again_into_writers_that_buffer_stays_within_
     let config = retrying(3)
         .commit(rdlt_engine::CommitPolicy::new(None, Some(1_000_000), None).expect("a policy"))
         .memory(BUDGET)
-        .lanes(1);
+        .writers(1);
     let source = making("bound_buffered", steps).await;
     let plan = pipeline(
         "bound-buffered",
@@ -327,7 +327,7 @@ async fn written_batches_go_before_the_flush_that_releases_their_charge() {
     const BATCHES: usize = 256;
     const BLOB: usize = 1 << 20;
     // A fresh blob a push, into a destination that keeps no write, within a budget that never
-    // presses its lane: the lane flushes once, for the run's one commit.
+    // presses its writer: the writer flushes once, for the run's one commit.
     let steps: Steps = Arc::new(move |step| match step {
         step if step < BATCHES => {
             let blob = BinaryArray::from_iter_values([vec![7_u8; BLOB]]);
@@ -336,7 +336,7 @@ async fn written_batches_go_before_the_flush_that_releases_their_charge() {
         step if step == BATCHES => Some(Step::Checkpoint(8)),
         _ => None,
     });
-    let config = commit_every(1 << 40).memory(1 << 30).lanes(1);
+    let config = commit_every(1 << 40).memory(1 << 30).writers(1);
     let source = making("bound_written", steps).await;
     let plan = pipeline(
         "bound-written",

@@ -25,7 +25,7 @@ JSON of a known schema, a candidate fast path beside the shredder (ADR 0007).
 - **Lowering that copies values runs on the compute pool.** A partition finds each batch's plan
   in order, since finding it may change the table, then lowers the flush's batches eight at a
   time, Arrow batches concatenated there too. Each window's lowered batches are charged to the
-  memory budget as soon as it returns, then queued on their lane in order: a flush of the default
+  memory budget as soon as it returns, then queued on their writer in order: a flush of the default
   size is one window, and a larger one never holds more than eight lowered batches uncharged.
   - A window runs on the compute pool where lowering any of its batches reads or writes a value,
     and on the partition's task where none does.

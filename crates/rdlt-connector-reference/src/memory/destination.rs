@@ -440,11 +440,12 @@ impl TableWriter for MemoryWriter {
             .unwrap_or_default();
         if current != self.epoch {
             return Err(ConnectorError::fenced(format!(
-                "pipeline {} is at epoch {current}; this writer's session opened at {}",
+                "pipeline {} is at epoch {current}; this table writer's session opened at {}",
                 self.pipeline, self.epoch
             )));
         }
-        // The table may have been dropped, and claimed by another pipeline, since the writer opened.
+        // The table may have been dropped, and claimed by another pipeline, since the table writer
+        // opened.
         store.owned(&self.pipeline, &self.table)?;
         let table = store.tables.entry(self.table.clone()).or_default();
         // Nothing of a flush is staged where a batch of it is refused.

@@ -62,7 +62,7 @@ pub(crate) async fn each<Run>(
 }
 
 /// The cores an engine whose compute jobs run inline declares, whatever runtime the test runs on:
-/// four, so lanes default to four on every machine.
+/// four, so writers default to four on every machine.
 const INLINE: Cores = Cores::new(NonZeroUsize::new(4).expect("four is not zero"));
 
 /// An engine on the system environment with `config`, running compute jobs inline.
@@ -372,7 +372,7 @@ pub(crate) fn commit_every(rows: u64) -> EngineConfigBuilder {
     let policy = CommitPolicy::new(None, Some(rows), None).expect("a row threshold is valid");
     EngineConfig::builder()
         .commit(policy)
-        .lanes(2)
+        .writers(2)
         .barrier_wait(Duration::from_millis(100))
 }
 

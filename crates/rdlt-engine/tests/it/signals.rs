@@ -32,7 +32,7 @@ async fn log(group: &str, stream: &Value) -> Arc<dyn Source> {
 /// A configuration whose runs plan again only every minute, as the default does.
 fn config() -> EngineConfigBuilder {
     EngineConfig::builder()
-        .lanes(2)
+        .writers(2)
         .barrier_wait(Duration::from_millis(100))
 }
 

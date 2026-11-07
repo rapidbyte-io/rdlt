@@ -1,5 +1,5 @@
 //! What a write stages between two flushes is bounded on both ends: a served destination refuses
-//! more than its limit, and the host's writer flushes before it would send more.
+//! more than its limit, and the host's table writer flushes before it would send more.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -130,7 +130,7 @@ async fn a_served_write_that_flushes_in_time_stages_as_much_as_it_likes() {
 
 #[tokio::test]
 async fn a_served_write_whose_writer_falls_behind_refuses_the_same_frame() {
-    // The writer takes two frames and then waits, while frames decode ahead of it.
+    // The table writer takes two frames and then waits, while frames decode ahead of it.
     static GATE: Gate = Gate::after(2);
     let (prompt, _) = raw_write(memory(), "staged_prompt", 40, usize::MAX).await;
     let opening = tokio::spawn(async {
@@ -172,8 +172,9 @@ async fn the_hosts_writer_flushes_before_it_stages_more_than_the_destination_hol
             .session
             .writer(&table())
             .await
-            .expect("the writer opens");
-        // Writes with no flush asked for: the writer flushes as the destination's limit nears.
+            .expect("the table writer opens");
+        // Writes with no flush asked for: the table writer flushes as the destination's limit
+        // nears.
         for _ in 0..writes {
             writer
                 .write(SegmentId(1), ids(rows))
@@ -181,7 +182,8 @@ async fn the_hosts_writer_flushes_before_it_stages_more_than_the_destination_hol
                 .expect("the write is staged");
         }
         let stats = writer.flush().await.expect("the flush answers");
-        // The stats of the flushes the writer made itself are in those of the flush asked for.
+        // The stats of the flushes the table writer made itself are in those of the flush asked
+        // for.
         assert_eq!(stats.rows, writes * rows.unsigned_abs(), "{store}");
     }
 }

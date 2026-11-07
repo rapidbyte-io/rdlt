@@ -65,8 +65,8 @@ use arrow_schema::{ArrowError, DataType, Field, Schema, SchemaRef};
 
 use sparse::{At, Base, Nulls, Pick, Sources, assemble};
 
-/// Refuses a writer of `table` where it is a replace generation of a history table, which merges
-/// into its table only.
+/// Refuses a table writer of `table` where it is a replace generation of a history table, which
+/// merges into its table only.
 pub fn refuse_history_generation(table: &TableRef) -> crate::Result<()> {
     let history = table
         .merge

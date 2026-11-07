@@ -170,7 +170,7 @@ impl Bench<'_> {
                 schema: stored(soft),
             };
             bounded_call("apply_schema", opened.session.apply_schema(&create)).await?;
-            let mut writer = bounded_call("writer", opened.session.writer(table)).await?;
+            let mut writer = bounded_call("table writer", opened.session.writer(table)).await?;
             bounded_call("write", writer.write(SegmentId(1), written(changes, soft))).await?;
             bounded_call("flush", writer.flush()).await?;
             commit(&mut opened, meta(&[1], Vec::new())).await?;
@@ -193,7 +193,7 @@ impl Bench<'_> {
         let batch = batch
             .project(&[0, 1, 2])
             .expect("the stored columns come first");
-        let mut writer = bounded_call("writer", opened.session.writer(&generation)).await?;
+        let mut writer = bounded_call("table writer", opened.session.writer(&generation)).await?;
         bounded_call("write", writer.write(SegmentId(1), batch)).await?;
         bounded_call("flush", writer.flush()).await?;
         let finishing = CommitMeta {

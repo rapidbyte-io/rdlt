@@ -78,7 +78,10 @@ fn engine() -> Engine {
         .initial(Duration::from_millis(10))
         .max_delay(Duration::from_millis(50));
     let commit = CommitPolicy::new(None, Some(100), None).expect("a row threshold is valid");
-    let config = EngineConfig::builder().commit(commit).retry(retry).lanes(2);
+    let config = EngineConfig::builder()
+        .commit(commit)
+        .retry(retry)
+        .writers(2);
     let config = config.build().expect("the configuration is valid");
     Engine::new(config, Arc::new(crate::support::system_env()))
 }

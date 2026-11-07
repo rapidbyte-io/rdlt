@@ -59,7 +59,7 @@ impl Dir {
     }
 
     /// Removes the temporaries in the directory last written at least `age` ago, which the
-    /// writers that died writing them left behind.
+    /// processes that died writing them left behind.
     pub(crate) fn sweep(&self, age: Duration) -> io::Result<()> {
         self.sweep_of("", age)
     }

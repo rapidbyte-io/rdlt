@@ -7,7 +7,7 @@ use crate::testing::{Violation, bounded};
 use crate::{CommitMeta, OpenContext, TableChange};
 
 impl Bench<'_> {
-    /// Another pipeline's schema change and writer for the clause's table are refused as
+    /// Another pipeline's schema change and table writer for the clause's table are refused as
     /// `table_owned`, its generation swap too unless it changes nothing, and the owner keeps
     /// loading it: it creates the table again, writes and commits, and, where the probe reads
     /// them, both its commits' rows are published.
@@ -26,7 +26,7 @@ impl Bench<'_> {
         };
         owned("apply_schema", intruder.session.apply_schema(&create).await)?;
         owned(
-            "writer",
+            "table writer",
             intruder.session.writer(&self.table()).await.map(drop),
         )?;
         // A generation of the table swapped in by another pipeline would replace the owner's

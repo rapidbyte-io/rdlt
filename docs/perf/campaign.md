@@ -37,7 +37,7 @@ and method, and the verdict; the baselines themselves are in their benches' reco
 | Are the boundary's copies worth a stream of their own for each data call? | gathers and encode copies ≥ 12 % of the pipeline's CPU s a GB | 26.3 % (25.7–26.5) | Passed: built; failed its adoption rule and closed |
 | Do pressure flushes cost served throughput? | `64×80000` from 16 partitions ≥ 10 % faster within 1 GiB | 4.4 % slower | Failed: closed |
 | Does a checkpoint-set flush cost the in-process run? | `1000x5120` at k = 6 ≥ 1.5× k = 1 from 1 partition and ≥ 1.2× from 16 | 0.77× and 1.46× | Failed: closed |
-| Can one hot partition use more lanes? | four partitions ≥ 1.25× one through a writer a core | 0.98× | Failed: closed |
+| Can one hot partition use more writers? | four partitions ≥ 1.25× one through a writer a core | 0.98× | Failed: closed |
 | Does acknowledgement cost a many-table commit? | its phase > 100 ms at the most served streams | 6.88 ms | Failed: closed |
 | What do many followed reads keep? | < a quarter of the reads' share at their least budget | 0.36 % | Passed: built, the read kept lazily |
 | Does the normalized hold cost? | 16 partitions ≥ 15 % slower within 256 MiB than 1 GiB | 9.9 % | Failed |
@@ -67,9 +67,9 @@ The baselines the later rules read, and their records, are listed after the deci
 
 ### Freeing a consuming writer's write as it returns
 
-- **Rule.** Stop holding a served lane's written batches until its flush only if
+- **Rule.** Stop holding a served writer's written batches until its flush only if
   `64×80000` from 16 partitions runs at least 10 % faster at the median within 1 GiB than within
-  256 MiB, on the same tree, with the lane flushes counted.
+  256 MiB, on the same tree, with the writer flushes counted.
 - **Figures.** Through a writer a core, the rows the production path's later changes are held to:
   1 298 MB/s [1 280–1 351] within 1 GiB against 1 358 [1 261–1 374] within 256 MiB,
   4.4 % slower, pressure flushes 4 against 27. Through one writer: 1 346 [1 304–1 348] against
@@ -78,13 +78,13 @@ The baselines the later rules read, and their records, are listed after the deci
 - **Verdict.** Failed: closed. The pressure flushes the larger budget removes are not what the
   case pays.
 
-### Spilling a hot partition's writes to lanes with room
+### Spilling a hot partition's writes to writers with room
 
 - **Rule.** Build only if four partitions move at least 1.25 times one partition, ranges apart, on
-  `both/64x80000` through as many writers as lanes.
+  `both/64x80000` through a writer a core.
 - **Figures.** 1 576 MB/s [1 523–1 758] from four partitions against 1 612 [1 559–1 875] from one,
   0.98 times, the ranges overlapping.
-- **Verdict.** Failed: closed. A partition keeps writing a table through one lane.
+- **Verdict.** Failed: closed. A partition keeps writing a table through one writer.
 
 ### One acknowledgement call a commit
 

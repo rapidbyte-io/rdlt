@@ -23,7 +23,8 @@ use tokio_stream::wrappers::ReceiverStream;
 use super::destination::out_of_turn;
 use super::{Connection, exceeded, lost_error};
 
-/// A writer for one table of a session on a destination served on the other end of a connection.
+/// A table writer for one table of a session on a destination served on the other end of a
+/// connection.
 pub(super) struct RemoteWriter {
     connection: Arc<Connection>,
     frames: mpsc::Sender<v1::WriteFrame>,
@@ -37,10 +38,10 @@ pub(super) struct RemoteWriter {
     /// Bytes: the batch frames sent since the last flush, header and body, as the connector
     /// counts what it has staged.
     staged: u64,
-    /// The stats of the flushes the writer made itself since the last one it was asked for.
+    /// The stats of the flushes the table writer made itself since the last one it was asked for.
     flushed: WriteStats,
     /// Whether a flush was sent whose stats have not arrived: they would be taken for a later
-    /// flush's, so the writer refuses every call.
+    /// flush's, so the table writer refuses every call.
     unanswered: bool,
 }
 
@@ -71,7 +72,7 @@ impl RemoteWriter {
             opened.map(tonic::Response::new)
         };
         let acks = connection
-            .call(deadline, "opening the writer", opening)
+            .call(deadline, "opening the table writer", opening)
             .await?;
         Ok(Self {
             connection,
@@ -139,13 +140,13 @@ impl RemoteWriter {
         }
         Err(ConnectorError::new(
             rdlt_connector::ConnectorErrorKind::Transient,
-            "a flush of the writer went unanswered, so the writer takes no more",
+            "a flush of the table writer went unanswered, so the table writer takes no more",
         )
         .with_code(super::DEADLINE_EXCEEDED))
     }
 
-    /// Sends `frame` once the connector has credit left for it and the writer's queue has room,
-    /// spending its size as the queue takes it.
+    /// Sends `frame` once the connector has credit left for it and the table writer's queue has
+    /// room, spending its size as the queue takes it.
     async fn send(&mut self, frame: v1::write_frame::Frame) -> rdlt_connector::Result<()> {
         let frame = v1::WriteFrame { frame: Some(frame) };
         let size = u64::try_from(frame.sent_len()).unwrap_or(u64::MAX);

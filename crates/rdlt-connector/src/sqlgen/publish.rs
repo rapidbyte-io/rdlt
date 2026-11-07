@@ -86,7 +86,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
     }
 
     /// The statement recording that `rows` rows of `bytes` bytes were staged for `table`, which
-    /// `owned` names, in `segment`, with how the writer's table merges.
+    /// `owned` names, in `segment`, with how the table writer's table merges.
     pub fn record_segment(
         &self,
         owned: &Owned<'_>,
@@ -189,10 +189,10 @@ impl<D: SqlDialect> SqlPlanner<D> {
     /// written with, as one an earlier write mode left, holds none of their values. Staged rows
     /// with no `written` columns are an `Internal` error, since nothing could be checked.
     ///
-    /// While a table's writer appends, a commit reads its own staged rows by the staging table's
-    /// index of who staged them, which [`SqlPlanner::staged_index`] creates where the rows are
-    /// staged and a keyed writer drops; a keyed commit scans its staging and finds each key's rows
-    /// by its key index.
+    /// While a table writer of the table appends, a commit reads its own staged rows by the staging
+    /// table's index of who staged them, which [`SqlPlanner::staged_index`] creates where the rows
+    /// are staged and a keyed table writer drops; a keyed commit scans its staging and finds each
+    /// key's rows by its key index.
     ///
     /// A merge keeps one row per key: a staged row replaces the published rows with its key, and
     /// among staged rows of one key the greatest sequence wins. It needs no unique key: the key

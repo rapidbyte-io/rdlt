@@ -1,4 +1,4 @@
-//! Queueing a lowered batch on its lane, with what holds its memory.
+//! Queueing a lowered batch on its writer, with what holds its memory.
 
 use arrow_array::RecordBatch;
 use rdlt_connector::Permit;
@@ -6,8 +6,8 @@ use rdlt_wire::{Weigher, Weight};
 
 use super::super::{OpenSegment, PartitionContext, PartitionJob, Progress};
 use crate::error::Error;
-use crate::lane::Write;
 use crate::table::Prepared;
+use crate::writer::Write;
 
 /// The bytes the rows of `batch` take, as reports and the commit policy count what was written.
 ///
@@ -24,7 +24,7 @@ pub(super) fn written_bytes(batch: &RecordBatch) -> u64 {
     weight.frame_bytes()
 }
 
-/// Queues `prepared` on `table`'s lane with `reservation`, the permits holding its bytes, which
+/// Queues `prepared` on `table`'s writer with `reservation`, the permits holding its bytes, which
 /// travel with it.
 pub(super) async fn queue(
     job: &PartitionJob,
@@ -50,8 +50,8 @@ pub(super) async fn queue(
     if rows == 0 {
         return Ok(());
     }
-    let lane = context.lanes.route(table, job.index);
-    context.lanes.write(lane, write).await?;
+    let writer = context.writers.route(table, job.index);
+    context.writers.write(writer, write).await?;
     open.rows += rows;
     open.bytes += bytes;
     match written(job, rows, bytes) {

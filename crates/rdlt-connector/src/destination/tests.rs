@@ -103,7 +103,9 @@ impl Session for RecorderSession {
     }
 
     async fn writer(&mut self, table: &TableRef) -> Result<RecorderWriter> {
-        self.journal.lock().push(format!("writer {}", table.name));
+        self.journal
+            .lock()
+            .push(format!("table writer {}", table.name));
         Ok(RecorderWriter(Arc::clone(&self.journal)))
     }
 
@@ -225,7 +227,7 @@ async fn sessions_forward_every_call() {
             "open orders",
             "discard",
             "create orders",
-            "writer orders",
+            "table writer orders",
             "write 4 1",
             "flush",
             "commit 1",

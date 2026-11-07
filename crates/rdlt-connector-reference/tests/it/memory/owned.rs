@@ -77,7 +77,11 @@ pub(super) async fn stage(
         .apply_schema(&create)
         .await
         .expect("the table is created");
-    let mut writer = session.session.writer(table).await.expect("a writer opens");
+    let mut writer = session
+        .session
+        .writer(table)
+        .await
+        .expect("a table writer opens");
     writer
         .write(SegmentId(segment), rows(ids))
         .await
@@ -228,7 +232,7 @@ async fn a_writer_of_a_table_dropped_since_stages_nothing() {
         .session
         .writer(&orders)
         .await
-        .expect("a writer opens");
+        .expect("a table writer opens");
     let mut drop = meta(&session, 1, &[]);
     drop.drop_tables = vec![DroppedTable {
         path: orders.path.clone(),

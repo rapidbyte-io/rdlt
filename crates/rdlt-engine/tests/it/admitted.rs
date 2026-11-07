@@ -40,7 +40,7 @@ async fn a_source_sending_all_the_default_budget_admits_is_refused_nothing() {
         }
         _ => None,
     });
-    let outcome = engine(commit_every(1_000_000_000).lanes(1))
+    let outcome = engine(commit_every(1_000_000_000).writers(1))
         .run(
             pipeline("admitted", [stream("events")]),
             making("admitted", steps).await,
@@ -68,7 +68,7 @@ async fn a_source_sending_beyond_what_the_budget_admits_is_refused_where_it_emit
             Step::Json(bytes::Bytes::from(record))
         })
     });
-    let outcome = engine(commit_every(1_000_000_000).lanes(1))
+    let outcome = engine(commit_every(1_000_000_000).writers(1))
         .run(
             pipeline("admitted_beyond", [stream("events")]),
             making("admitted_beyond", steps).await,

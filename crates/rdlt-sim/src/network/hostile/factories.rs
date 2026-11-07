@@ -320,7 +320,7 @@ impl Destination for WatchedDestination {
     }
 }
 
-/// A session of a hostile connection, whose call for a writer stays in flight for three of
+/// A session of a hostile connection, whose call for a table writer stays in flight for three of
 /// `opening`.
 struct WatchedSession {
     inner: Box<dyn DestinationSession>,

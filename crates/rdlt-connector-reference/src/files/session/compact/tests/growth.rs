@@ -190,7 +190,7 @@ fn an_append_table_of_batches_and_remainders_lists_few_files_and_rewrites_few_ro
         sessions.create(&table(), &schema);
         let (mut next, mut written, mut seen) = (0, 0, Vec::new());
         for commit in 0..40_u64 {
-            // A full batch, then the remainder after it, as a writer of fixed batches stages.
+            // A full batch, then the remainder after it, as a table writer of fixed batches stages.
             let full: Vec<i64> = (next..next + 4).collect();
             sessions.stage(&table(), 2 * commit + 1, ids(&full));
             sessions.stage(&table(), 2 * commit + 2, ids(&[next + 4]));

@@ -7,7 +7,7 @@ bound on the performance cores is what the paired cell reads with its cuts and l
 partition's task, which buys sixteen partitions 5–7 % more throughput in batches of 1 000 and 8 000
 rows, and one served partition 17–38 % more in frames of 1 000 rows ("Cutting and lowering where
 nothing is copied"). Every table stores the `_rdlt_load_id` and `_rdlt_loaded_at` columns, which the
-lane encodes with each batch's own. Each batch crosses from its partition's thread to its lane's,
+writer encodes with each batch's own. Each batch crosses from its partition's thread to its writer's,
 and the runtime's workers, parked and woken for it, run at a lower clock than a thread that never
 waits. These two make the part each batch pays inherent. The overhead is a ratio measured on one
 machine, so this record keeps the method with the figures.
@@ -30,7 +30,7 @@ machine, so this record keeps the method with the figures.
   and the four checkpointed ones, under `passthrough/full/`.
 - **Destination.** `Sinking::Ipc` from the `bench` feature, which encodes each staged batch as an
   Arrow IPC stream into a buffer it reuses: the least a real destination does with a batch. The
-  engine's sink declares sixteen writers, so a run has a lane a core up to sixteen. The two
+  engine's sink declares sixteen writers, so a run has a writer a core up to sixteen. The two
   `/null` cells drop each batch instead.
 - **Bare loop.** The paired cell's batches written to the sink's writer one after another, on one
   thread.
@@ -45,8 +45,8 @@ machine, so this record keeps the method with the figures.
   due; the time pushes, requests for lowering and served frames waiting to be decoded waited for
   room, each summed over the run's tasks, over the run's wall time; the compute pool's idle
   share, one less its jobs' running time over its threads times the wall time; its jobs' waits
-  to start and ways back to their callers, summed, over the wall time; the lanes that wrote; the
-  lanes' flushes of their writers, by what asked for each: pressure, a commit or a writer's
+  to start and ways back to their callers, summed, over the wall time; the writers that wrote; the
+  writers' flushes of their table writers, by what asked for each: pressure, a commit or a table writer's
   retirement; and the budget's signals a batch.
   The waits and the queue and way back are summed over every task or job, so where several wait
   at once they read past 100 %: a reading of 900 % is nine tasks waiting the whole run, on
@@ -118,11 +118,11 @@ no other build ran; the one-minute load average was 1.17, 1.17 and 1.73 at their
 0.66 and 0.37 at their ends. Each figure is the median of the three rounds, the range of the
 throughput in brackets; the readings are the last run's of each round, their medians: the intake
 waits and the pool's queue and way back as percentages of the run summed over its tasks, the pool
-idle, the lanes written, the lanes' flushes of their writers by cause, the budget's signals a
+idle, the writers written, the writers' flushes of their table writers by cause, the budget's signals a
 batch, and the sink's writes a run. Every cell makes one commit, at the end, but those committed
 every sixteenth, which make 17.
 
-| Cell | MB/s | Engine a run | Intake | Pool idle | Queue and way back | Lanes | Flushes: pressure + commit | Signals | Sink writes |
+| Cell | MB/s | Engine a run | Intake | Pool idle | Queue and way back | Writers | Flushes: pressure + commit | Signals | Sink writes |
 |---|---|---|---|---|---|---|---|---|---|
 | `80000x64/1p/1s/end` | 14 201 [14 005–14 581] | 31.1 ms | 77.9 % | 99.9 % | 0.8 % | 1 | 15 + 1 | 0.5 | 64 |
 | `8000x640/1p/1s/end` | 13 036 [11 926–13 419] | 33.8 ms | 2.0 % | 100.0 % | 0.1 % | 1 | 5 + 1 | 0.0 | 640 |
@@ -141,14 +141,14 @@ every sixteenth, which make 17.
 | `1000x5120/16p/1s/end/k6` | 6 677 [6 676–6 683] | 66.0 ms | 29.2 % | 82.8 % | 995 % | 4 | 28 + 3 | 0.0 | 881 |
 | `1000x5120/16p/1s/end/k97` | 5 729 [5 414–5 830] | 77.0 ms | 271 % | 79.5 % | 191 % | 4 | 64 + 3 | 0.0 | 186 |
 
-On these four cores a cell of four or sixteen partitions writes through four lanes, and one of
+On these four cores a cell of four or sixteen partitions writes through four writers, and one of
 four streams through two. No run waited for room for lowering, and no commit was made due by the
 budget's cursors or tables.
 
 **Pushes of 80 000 rows wait for room within the default budget.** Within 256 MiB the paired
 cell's pushes wait for room for 77.9 % [77.7–78.6] of the run, one partition's pushes waiting
 most of the time: its 442 MB of batches, 6.9 MB each, do not fit the pushes' share of the budget
-at once, so the source waits for writes to release room, and the lane flushes its writer for
+at once, so the source waits for writes to release room, and the writer flushes its table writers for
 pressure 15 times a run. With four partitions or streams the waits sum to 291–314 % of the run,
 and with sixteen partitions to 925 %. At 8 000 rows a batch from sixteen partitions they sum to
 745 %, with 376 pressure flushes a run; at 1 000 rows to 8.5 %, and to 2 % or less from one
@@ -179,11 +179,11 @@ measurement lock. Nothing here changed the engine.
   points where under 10 %.
 - **The production slice.** One round of `served/process/socket/both`, the host on CPUs 0–3 and
   the spawned connectors on 4–11, readings as [served.md](served.md) defines them. Its sink
-  declares one writer, so the rules about lanes are not read from it.
+  declares one writer, so the rules about writers are not read from it.
 - **Profiles.** `cpu_core/cycles/u` at 999 Hz with frame pointers, 15 seconds of each benchmark,
   from `just profiling`'s binaries, classified by the frames on each sample's stack. A sample
   making the batches (`fixtures::events`) or in the destination's own encode is not the engine's.
-  The encode is inlined into the lane's write, so it is the samples holding `arrow_ipc`; a share
+  The encode is inlined into the writer's write, so it is the samples holding `arrow_ipc`; a share
   leaving them in, which only lowers it, is given in brackets. The ledger and watch are the
   engine's samples holding `rdlt_engine::budget` or `rdlt_engine::watch`; the coordinator those
   holding `rdlt_engine::coordinator`. In the production slice only the host's process is
@@ -191,7 +191,7 @@ measurement lock. Nothing here changed the engine.
   The samples hashing the connector's binary as each run spawns it, before the timed run, are
   left out; the share with them in is given in brackets.
 - **A driver.** A program outside the repository, built against this tree's `rdlt_engine::bench`,
-  ran what no bench does: the passthrough on sixteen lanes, its pool's jobs a batch, normalized
+  ran what no bench does: the passthrough on sixteen writers, its pool's jobs a batch, normalized
   JSON from several partitions within the default budget, and the core layouts. It is not kept.
 - **Shares past 100 %** are summed over tasks, as the readings above are. Where a verdict rests
   on such a sum, it also gives a cell of one task, or the share each task has on average.
@@ -201,11 +201,11 @@ measurement lock. Nothing here changed the engine.
 | Change | Verdict |
 |---|---|
 | Send the budget's pressure only when it changes | Built: the cost fell by a third |
-| Route a partition to a lane by its index | Built: below its 5 %, no cell slower |
+| Route a partition to a writer by its index | Built: below its 5 %, no cell slower |
 | Hash ids in row chunks across the pool | The cost is there: worth building |
 | Shrink a normalized piece's hold after its split | Prototyped: the waits stay, not built |
 | Keep two flushes in flight a partition | Not built: nothing left to overlap |
-| Release held lane writes at a watermark | Prototyped: the waits stay, not built |
+| Release held writer writes at a watermark | Prototyped: the waits stay, not built |
 | Count each batch's progress instead of sending it | Built: the cost fell by a quarter |
 | Cut a unit's pieces in one job | Built as cutting and lowering where nothing is copied |
 
@@ -214,21 +214,21 @@ leaves out:
 
 - **Send the budget's pressure only when it changes.** Rule: at 16 partitions and 1 000–8 000
   rows a batch, the ledger and watch at least 2 % of the engine's CPU, or the budget's signals a
-  batch above 2 × (lanes + partitions), 40 here. Matrix: 4.80 % (4.00 %) at 1 000 rows, 4.13 %
+  batch above 2 × (writers + partitions), 40 here. Matrix: 4.80 % (4.00 %) at 1 000 rows, 4.13 %
   (3.55 %) committed every sixteenth, 2.08 % (1.92 %) at 8 000 rows; 8.0 and 11.3 signals a
   batch. Production slice, frames of 1 000 rows from 16 partitions: 2.69 % (2.27 %); 14.0
-  signals a frame against 34 at its one lane. The CPU share holds in both.
-- **Route a partition to a lane by its index.** Rule: on a fast sink, fewer lanes written than
-  partitions, 16 partitions on 16 lanes or 4 on 16; then a prototype at least 5 % faster.
-  Matrix: 14 lanes written of 16, and 4 of 4. Not read from the production slice, whose sink
-  declares one writer. The prototype, against `main` at `b0f322dd` on CPUs 0–3, routes to lane
-  `(place + table) mod lanes` and writes through 16 lanes of 16 and 4 of 4, but is not 5 %
-  faster. The driver, sixteen partitions on sixteen lanes, five rounds of ten runs: the rounds'
+  signals a frame against 34 at its one writer. The CPU share holds in both.
+- **Route a partition to a writer by its index.** Rule: on a fast sink, fewer writers written than
+  partitions, 16 partitions on 16 writers or 4 on 16; then a prototype at least 5 % faster.
+  Matrix: 14 writers written of 16, and 4 of 4. Not read from the production slice, whose sink
+  declares one writer. The prototype, against `main` at `b0f322dd` on CPUs 0–3, routes to writer
+  `(place + table) mod writers` and writes through 16 writers of 16 and 4 of 4, but is not 5 %
+  faster. The driver, sixteen partitions on sixteen writers, five rounds of ten runs: the rounds'
   medians 33.8–49.0 ms, their median 42.8, against 33.6–45.6 and 36.5 on `main`, a spread wider
-  than the difference. On the default four lanes, medians of three rounds:
+  than the difference. On the default four writers, medians of three rounds:
   `80000x64/16p/1s/end` 26.25 ms against 26.62, `8000x640/16p/1s/end` 30.28 against 30.28,
   `1000x5120/16p/1s/end` 94.73 against 94.04, each within noise. It is kept because it deletes
-  the hash and is no slower on the default lanes.
+  the hash and is no slower on the default writers.
 - **Hash ids in row chunks across the pool.** Rule: at 4 cores, one compute thread above 40 % of
   the samples of `normalized/keyless/50000`, whose flushes are cut in 9 units, and normalizing
   less than 2 times faster on 4 cores than on 1. Matrix: one thread 57.0 %, the other 41.4 %;
@@ -252,19 +252,19 @@ leaves out:
   and lowering now run on the partition's task, and these events have no JSON column to measure or
   check, so the pool is idle all of the run and its idle share no longer reads anything. The
   partition's task handles its events 76 % of the run at 1 000 rows and 83 % at 8 000, all of it
-  inline, and waits for its next push 20 % and 14 %; its waits on the pool, its lane's queue and the
+  inline, and waits for its next push 20 % and 14 %; its waits on the pool, its writer's queue and the
   budget come to under 1 % together. A second flush in flight on the same task could overlap only
   those, so it is not prototyped.
-- **Release held lane writes at a watermark.** Rule: requests for lowering or pushes waiting for
+- **Release held writer writes at a watermark.** Rule: requests for lowering or pushes waiting for
   room above 1 % of the run in any cell within 256 MiB. Matrix: 25 of the 38 cells, among them
   every cell of 80 000 rows; the pushes of `80000x64/1p/1s/end`, one task, 66.5 %; requests for
   lowering 11.0 % at `80000x64/16p/4s/end` and 3.9 % committed every sixteenth. Not read from
-  the production slice, through its one lane. A prototype flushing a lane once its held writes
-  take `data / (2 × lanes)` of the budget does not halve them, medians of three rounds against
+  the production slice, through its one writer. A prototype flushing a writer once its held writes
+  take `data / (2 × writers)` of the budget does not halve them, medians of three rounds against
   the routing above on `b0f322dd`: the pushes of `80000x64/1p/1s/end` wait 62.3 % against
   65.8 %, though the run is 6.6 % faster (29.11 ms against 31.16); lowering waits 4.2 % against
   6.3 % at `16p/4s/end` and 5.5 % against 3.9 % every sixteenth, both runs 2 to 4 % slower. The
-  lanes flushed 23 to 64 times a run where the commits flush once, 25 times at
+  writers flushed 23 to 64 times a run where the commits flush once, 25 times at
   `1000x5120/16p/1s/end`. In the production slice the pushes of `64x80000/16-partitions` wait
   69–901 % of the run against 91–815 %, its time unchanged. Not built.
 - **Count each batch's progress instead of sending it.** Rule: the coordinator at least 2 % of
@@ -281,8 +281,8 @@ leaves out:
 
 Notes on the readings:
 
-- **Sixteen lanes.** The engine set to sixteen lanes and a sink declaring sixteen writers,
-  sixteen partitions of `80000x64` wrote through 14 lanes: two lanes wrote nothing while others
+- **Sixteen writers.** The engine set to sixteen writers and a sink declaring sixteen writers,
+  sixteen partitions of `80000x64` wrote through 14 writers: two writers wrote nothing while others
   took more than one partition. Routing is deterministic, so one run decides it.
 - **The pool's jobs a batch.** On `2e49c6bae25b` every 1 000-row cell ran two jobs a batch; a
   plain Arrow run now takes one job a load. The queue and way back are summed over jobs, and a
@@ -350,7 +350,7 @@ The full round's throughput, one stream committed at the end, MB/s:
 | 80 000 | 14 419 | 17 287 | 17 192 | 1.19 |
 
 In process, sixteen partitions move more than one at every size of batch, and four as much as
-sixteen: on four cores the cell writes through four lanes. The production slice falls instead as
+sixteen: on four cores the cell writes through four writers. The production slice falls instead as
 partitions are added, at every size of frame ([served.md](served.md), "The production slice"),
 through its one writer.
 
@@ -403,7 +403,7 @@ with the shredding bench's in the same campaign; the median and range, the readi
 Every pass count is the same in every run: 128 chunks parsed, none tripped, observed, rebuilt or
 read exactly.
 
-| Cell | Cores | Time a run | Rows a second | MB a second | Intake waits | Pool idle | Lanes | Flushes: pressure + commit |
+| Cell | Cores | Time a run | Rows a second | MB a second | Intake waits | Pool idle | Writers | Flushes: pressure + commit |
 |---|---|---|---|---|---|---|---|---|
 | `nested/1p` | `0-3` | 124.9 ms (124.1–130.6) | 5.92 M | 1 075 | 79 % | 27.4 % | 1 | 96 + 1 |
 | `nested/1p` | `4-11` | 99.5 ms (99.2–100.3) | 7.42 M | 1 348 | 79 % | 43.8 % | 1 | 96 + 1 |
@@ -486,7 +486,7 @@ a side over two rounds:
 
 The change costs the paired cell about three points on the performance cores, most of it in what
 each batch pays, which stays within its 13 %; what a run pays once is unchanged. Each batch's cut
-and lowering, which a compute thread ran beside the lane's write, now run on the partition's worker.
+and lowering, which a compute thread ran beside the writer's write, now run on the partition's worker.
 On the efficient cores it costs a point, within their 10 %. The owner restated the bound at the
 measured figure for the gains below.
 
@@ -538,24 +538,24 @@ its two more threads sleep through it.
 
 Each within the other's range. The production slice is in [served.md](served.md).
 
-## A lane on its partition's task
+## A writer on its partition's task
 
-A lane is a task of its own, which a partition hands its writes to through a queue of four. A
-prototype on `6714f8ca` staged each write on the partition's own task instead, the lane's state
+A writer is a task of its own, which a partition hands its writes to through a queue of four. A
+prototype on `6714f8ca` staged each write on the partition's own task instead, the writer's state
 behind a lock and its task left answering flushes and pressure; it is not built.
 
-- **It loses the overlap.** The paired cell read 35.6 % against 15.5 % with the lane its own task
+- **It loses the overlap.** The paired cell read 35.6 % against 15.5 % with the writer its own task
   (two workers, cuts and lowerings on the partition's task), and 38.6 % against 18.0 % at four
   workers: the partition's per-batch work and the destination's encode no longer ran on two cores
   at once, and the run became their sum (33.8 ms against 29.3). Sixteen partitions gained
   nothing (16.1 ms either way at four workers).
 - **Served, it is slower too.** One partition into the spawned destination moved 31 % less in
-  large frames and 53 % less in frames of 1 000 rows; sixteen through one lane read +18 % and
+  large frames and 53 % less in frames of 1 000 rows; sixteen through one writer read +18 % and
   −9 %, one round each.
-- **Pressure needs someone not waiting.** The first build deadlocked: the lane's task waited for
+- **Pressure needs someone not waiting.** The first build deadlocked: the writer's task waited for
   a message, a write staged directly sent none, so its branch answering pressure was never armed
   again, and the partition waited for bytes only that flush frees. Any shape that writes outside
-  the lane's task has to keep the budget's pressure answered by a task that is not waiting.
+  the writer's task has to keep the budget's pressure answered by a task that is not waiting.
 
 ## Where the overhead goes
 
@@ -576,30 +576,30 @@ average of 0.79–0.98.
 - **Each side alone.** A driver outside the repository, built against this tree's
   `rdlt_engine::bench` (`Passthrough`, `replay`, `ipc_sink`, `SinkWriter`), with the bench's
   configuration and cores, runs one side many times and prints each engine run's report
-  counters. It also times the bare loop over the batches the lane is handed, captured from one
+  counters. It also times the bare loop over the batches the writer is handed, captured from one
   run. This measurement code is not kept. Run times are medians, the first three runs of each
   invocation left out.
 - **Scheduling and syscalls.** Each thread's switches from `/proc/<pid>/task/*/sched` as the
   process ends, and `strace -f -c` over 20 runs less a run of none, as profiling.md says.
 
-### The lane bounds the run
+### The writer bounds the run
 
 The engine's runs alone took 28.80 ms against the bare loop's 25.17 ms (200 runs each), 14.4 %
 more. The run report's counters, medians over 195 runs:
 
 | Counter | A run |
 |---|---|
-| Lane writing (the sink's `write` calls) | 27.50 ms |
-| Partitions blocked on the lane's full queue | 15.88 ms |
-| Lane flushing | 0.002 ms |
+| Writer writing (the sink's `write` calls) | 27.50 ms |
+| Partitions blocked on the writer's full queue | 15.88 ms |
+| Writer flushing | 0.002 ms |
 | Commit phases: flush, destination commit, ack | 1.03, 0.019, 0.006 ms |
 | Pool jobs; queued and running, summed | 128; 1.01 and 1.43 ms |
 | Budget waits | one, of the intake share, 0.29 ms |
 
-The lane writes for 95 % of the run, and for more than half of it the partition waits, at the same
-time, for room in the lane's queue: the two overlap rather than add, and the run is the lane's
-writes plus what keeps the lane from writing. The commit's
-flush phase is mostly the lane finishing the writes queued before it.
+The writer writes for 95 % of the run, and for more than half of it the partition waits, at the same
+time, for room in the writer's queue: the two overlap rather than add, and the run is the writer's
+writes plus what keeps the writer from writing. The commit's
+flush phase is mostly the writer finishing the writes queued before it.
 
 Run times against the batches a run moves split the overhead into a part each run pays once and
 a part each batch pays. Two rounds, the sides in opposite orders, medians of 37 runs:
@@ -618,19 +618,19 @@ the bare loop is 1.3–1.5 ms paid once a run and 2.2–2.8 ms paid by the batch
 % of a batch's bare time). Sides run alone drift more than the paired bench's blocks, whose ratio
 stays the recorded overhead.
 
-### What a batch pays: the lane's writes are slower
+### What a batch pays: the writer's writes are slower
 
-The lane's writes take 27.2–27.5 ms against the bare loop's 24.2–25.2 ms for the same batches,
+The writer's writes take 27.2–27.5 ms against the bare loop's 24.2–25.2 ms for the same batches,
 9–13 % more, inside the sink's `write` call, which returns without yielding. What goes with it:
 
-- **The metadata columns.** The lane is handed each batch with the two columns every table
+- **The metadata columns.** The writer is handed each batch with the two columns every table
   stores, `_rdlt_load_id` and `_rdlt_loaded_at`, as dictionaries of one value with 8-bit keys.
   Each batch's Arrow IPC grows from 6 991 944 to 7 173 000 bytes (2.6 %), and one thread encodes
   the 64 lowered batches in 24.59 ms against 23.78 ms for the batches pushed (3.4 %; 30 blocks
   of both, interleaved; 2.3–3.8 % in three later invocations on one core).
 - **Other cores busy.** One core encoding the pushed batches takes 24.58 ms with CPUs 1–3 idle,
   25.12 ms with one of them running a busy loop and 25.55 ms with all three (2.2 % and 3.9 %).
-  While the engine runs, its other threads keep about half a core busy beside the lane.
+  While the engine runs, its other threads keep about half a core busy beside the writer.
 - **A lower clock.** In user mode the runtime's workers ran at 1.14–1.15 times the reference
   clock, the bare loop's thread at 1.22–1.28 (`cycles` over `ref-cycles`, each thread over 4
   seconds of runs, two rounds): 6–11 % slower. The workers park and are woken about twice a batch;
@@ -638,14 +638,14 @@ The lane's writes take 27.2–27.5 ms against the bare loop's 24.2–25.2 ms for
   times the reference clock, and the writes took 28 % longer than with four (the table below).
 
 A second thread scanning the 64-bit integers of the batch four ahead of the one being encoded,
-as the partition does while the lane writes, did not slow the encode (25.63 ms without, 24.76 ms
+as the partition does while the writer writes, did not slow the encode (25.63 ms without, 24.76 ms
 with). Two runtime workers and one compute thread run as fast as two and two (28.39 and 28.33 ms
 against 28.32 and 28.42 ms; the bare loop 24.80 and 24.67 ms).
 
-The lane's queue holds four writes. Fewer slow the writes themselves; more do not speed them
+The writer's queue holds four writes. Fewer slow the writes themselves; more do not speed them
 (medians of 37 runs of 64 batches):
 
-| Queue | Run | Lane writing | Partitions blocked | Commit's flush phase |
+| Queue | Run | Writer writing | Partitions blocked | Commit's flush phase |
 |---|---|---|---|---|
 | 1 | 37.21 ms | 35.25 ms | 23.18 ms | 0.93 ms |
 | 2 | 32.08 ms | 30.49 ms | 18.77 ms | 0.95 ms |
@@ -655,7 +655,7 @@ The lane's queue holds four writes. Fewer slow the writes themselves; more do no
 
 ### What a run pays once
 
-Before the lane's first write and after its last, the run plans its stream, opens the
+Before the writer's first write and after its last, the run plans its stream, opens the
 destination, takes the first batch through the partition and commits. A profile of 400 runs of
 four batches (`cpu_core/cycles/u` at 9 999 Hz) gives the CPU each takes a run:
 
@@ -668,7 +668,7 @@ four batches (`cpu_core/cycles/u` at 9 999 Hz) gives the CPU each takes a run:
 | The coordinator, its commit's state included | 0.09 ms |
 | The run's own task (`attempt::launch`, `TableView::new`, `Naming::clean`) | 0.08 ms |
 
-The first batch waits for the keys, the scan and two pool jobs before the lane can write it, and
+The first batch waits for the keys, the scan and two pool jobs before the writer can write it, and
 each step is a hand-off between threads.
 
 ### Where the CPU goes
@@ -680,7 +680,7 @@ beyond the bare loop's:
 
 | Component | Samples | Of the extra |
 |---|---|---|
-| The lane's writes (the sink's encode, `memcpy` 97 % of it) | 40.6 % (the bare loop's 35.4 %) | 19.7 % |
+| The writer's writes (the sink's encode, `memcpy` 97 % of it) | 40.6 % (the bare loop's 35.4 %) | 19.7 % |
 | The 64-bit integer scan (`exact::beyond`) | 10.6 % | 40.8 % |
 | Pool jobs: cutting a piece and lowering it | 3.8 % | 14.7 % |
 | Pool threads idle between jobs (rayon's spinning and `sched_yield`) | 2.4 % | 9.1 % |
@@ -688,12 +688,12 @@ beyond the bare loop's:
 | Weighing the bytes written (`written_bytes`) | 1.3 % | 4.8 % |
 | The source's reads and pushes | 0.6 % | 2.2 % |
 | The coordinator and its commit | 0.3 % | 1.2 % |
-| The lane's queue and loop, tokio's scheduling, the budget, the run's own task | 0.5 % | 1.9 % |
+| The writer's queue and loop, tokio's scheduling, the budget, the run's own task | 0.5 % | 1.9 % |
 
 Over 200 runs alone the engine took 34.3 G user-mode cycles and 43.9 G instructions against
 24.4 G and 12.0 G, the batches' generation included in both. The scan and the pool threads'
 spinning hold most of the extra instructions; the scan runs on the partition's worker while the
-lane writes, and leaves the lane's path but for the first batch.
+writer writes, and leaves the writer's path but for the first batch.
 
 ### Scheduling and syscalls
 
@@ -714,14 +714,14 @@ report's counters, medians over 57 runs:
 | Counter | A run |
 |---|---|
 | Run | 207.7 ms (184.6–222.6) |
-| Lane writing (`RemoteDestination`'s writes) | 197.4 ms |
-| Partitions blocked on the lane's full queue | 159.4 ms |
-| Lane flushing | 6.4 ms |
+| Writer writing (`RemoteDestination`'s writes) | 197.4 ms |
+| Partitions blocked on the writer's full queue | 159.4 ms |
+| Writer flushing | 6.4 ms |
 | Commit phases: flush, destination commit | 14.8, 0.21 ms |
 | Pool jobs; queued and running, summed | 128; 2.56 and 4.09 ms |
 
-The lane writes for 95 % of the run, most of it waiting for the destination to take frames. The
-host's engine work beside it is off that path: of the host's 7 816 samples, the lane holds 2 723,
+The writer writes for 95 % of the run, most of it waiting for the destination to take frames. The
+host's engine work beside it is off that path: of the host's 7 816 samples, the writer holds 2 723,
 the 64-bit integer scan 593 and the compute threads 422. Another 2 927, outside the timed runs,
 hash the connector's binary as each run spawns it (`Binary::digest`; the bench's binary is 116 MB),
 which is also the run's 3 552 `pread64` calls. The destination's processes hold 11 021 samples:
@@ -732,16 +732,16 @@ Syscalls a run, both processes, spawning included: 2 343 `recvfrom`, 1 556 `writ
 
 ### Reading
 
-- The run is lane-bound in both layouts. In process, the lane's writes are the bare loop's
+- The run is writer-bound in both layouts. In process, the writer's writes are the bare loop's
   encode, 9–13 % slower; served, they wait on the destination's process.
 - At 64 batches, about a third of the overhead is paid once a run: planning, the first batch's way
-  through the partition to the lane, and the commit. It falls as runs move more batches: 12–14 %
+  through the partition to the writer, and the commit. It falls as runs move more batches: 12–14 %
   at 128.
-- About two thirds is the lane's writes taking 9–12 % longer a batch. The metadata columns every
-  table stores account for 3.4 points; the rest goes with the lane's workers running at a clock
+- About two thirds is the writer's writes taking 9–12 % longer a batch. The metadata columns every
+  table stores account for 3.4 points; the rest goes with the writer's workers running at a clock
   6–11 % lower than the bare loop's thread, of which other cores kept busy account for 2–4 points.
 - The engine's extra CPU is mostly the 64-bit integer scan and the compute pool's jobs and idle
-  spinning; both run beside the lane rather than on its path, but for the first batch.
+  spinning; both run beside the writer rather than on its path, but for the first batch.
 
 ## Many tables
 
@@ -767,7 +767,7 @@ which one served connection cannot carry ([served.md](served.md), "Many tables")
 - **Engine.** A followed cell reads a partition more than its streams, as a following run must,
   within the default 256 MiB: followed reads keep what they keep from the parts of the reads'
   share no other read holds, so the memory bounds what they keep, not how many a run follows
-  (ADR 0039). Every cell writes through as many writers as the host has cores, so as many lanes,
+  (ADR 0039). Every cell writes through as many writers as the host has cores, so as many writers,
   four on CPUs 0–3.
 - **Readings.** Over a cell's ten runs, its warm-up's left out, the median and range of: each commit
   phase's time a commit, the flush, the commit and the acknowledgement; the process's CPU seconds a
@@ -775,7 +775,7 @@ which one served connection cannot carry ([served.md](served.md), "Many tables")
   and the process's resident peak and how far it rose above the run's base. With them, the budget
   the cell runs within and the least that admits its partitions, the most its reads kept at once
   (the report's `kept_peak`) against their share, a quarter of the budget, and the last run's
-  readings, lane flushes by cause, retirements among them. Reads in the engine's process keep
+  readings, writer flushes by cause, retirements among them. Reads in the engine's process keep
   nothing beside their events, so in-process cells read zero there; served reads keep their
   decoders' schemas and dictionaries.
 - **Checks.** Every run checks every row its streams pushed lands.
@@ -805,7 +805,7 @@ CPU seconds a wall second while the streams are quiet, or over the snapshot's ru
 - Reads in the engine's process keep nothing beside their events, so every cell reads 0 KiB of
   the reads' share.
 - From 192 streams the run's tables outnumber its 128 writers, so writers retire: 1 123 of the
-  1 251 flushes at 256 streams. Every cell writes through two of the four lanes.
+  1 251 flushes at 256 streams. Every cell writes through two of the four writers.
 - The process's resident peak, the bench's batches of every other cell among it, is 1.2–1.4 GiB,
   and no run raised it more than 2.3 MiB above its base.
 

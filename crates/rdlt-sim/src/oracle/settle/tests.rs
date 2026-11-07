@@ -124,7 +124,7 @@ fn a_session_held_past_the_bound_fails_naming_the_seed() {
         .expect("a formatted panic message");
     assert!(
         message.contains(
-            "seed 7: 0 tasks on the connectors' hosts, and 1 sessions, 0 writers and 0 reads, \
+            "seed 7: 0 tasks on the connectors' hosts, and 1 sessions, 0 table writers and 0 reads, \
              outlived their runs"
         ),
         "{message}"
@@ -167,7 +167,7 @@ fn a_task_a_connector_host_still_runs_past_the_bound_fails_naming_the_seed() {
         .expect("the task outlived its run");
     assert!(
         message.contains(
-            "seed 8: 1 tasks on the connectors' hosts, and 0 sessions, 0 writers and 0 reads, \
+            "seed 8: 1 tasks on the connectors' hosts, and 0 sessions, 0 table writers and 0 reads, \
              outlived their runs"
         ),
         "{message}"
@@ -185,7 +185,7 @@ fn a_task_a_connector_host_ends_within_the_bound_is_released_when_it_ends() {
 /// Bounds every wait of a test that should end at once.
 const WAIT: Duration = Duration::from_secs(60);
 
-/// The table the served writer writes.
+/// The table the served table writer writes.
 fn table() -> TableRef {
     TableRef {
         path: TablePath::new(["t"]).expect("a valid path"),
@@ -202,7 +202,7 @@ fn rows() -> RecordBatch {
         .expect("a valid batch")
 }
 
-/// Runs a served writer whose write hangs, and returns whether its host let it go, with what
+/// Runs a served table writer whose write hangs, and returns whether its host let it go, with what
 /// was left.
 async fn hung_writer_released(net: Arc<Net>) -> (bool, (usize, Held)) {
     let mut rng = SplitMix64::new(7);
@@ -233,8 +233,8 @@ async fn hung_writer_released(net: Arc<Net>) -> (bool, (usize, Held)) {
         .expect("the table is created");
     let mut writer = tokio::time::timeout(WAIT, opened.session.writer(&table))
         .await
-        .expect("the writer's opening ends")
-        .expect("the writer opens");
+        .expect("the table writer's opening ends")
+        .expect("the table writer opens");
     let rows = rows();
     tokio::time::timeout(WAIT, writer.write(SegmentId(1), rows))
         .await
@@ -266,7 +266,7 @@ fn a_served_writer_whose_write_hangs_ends_once_its_host_lets_it_go() {
     });
     assert!(
         ended,
-        "a served writer whose write hangs outlived its host: {} tasks, {}",
+        "a served table writer whose write hangs outlived its host: {} tasks, {}",
         left.0, left.1
     );
 }

@@ -5,7 +5,7 @@ Status: accepted, 2026-09-23.
 ## Context
 
 The engine runs a pipeline in process: planning, segments, barriers, the commit coordinator,
-fencing, the memory budget, lanes, write modes, schemas, retries and reports. It delivers every
+fencing, the memory budget, writers, write modes, schemas, retries and reports. It delivers every
 stream exactly once through failed attempts, lost answers, crashes and concurrent runs, and what
 a run reports and tells must show what it did without changing what it does.
 
@@ -33,16 +33,16 @@ a run reports and tells must show what it did without changing what it does.
   the middle of and since when (opening, reading, a commit's barrier, flush, commit with how many
   times it was sent, or report, backing off until its next attempt, stopping, ended), its partitions
   reading, waiting for a slot and ended, the one quiet longest and since when, the oldest wait for
-  room in each share of the budget, each lane's call into the destination in flight, each stream's
+  room in each share of the budget, each writer's call into the destination in flight, each stream's
   last landed commit, lag and retention headroom, and the report so far, assembled as the run's end
   assembles it. The run writes it at attempt and commit-step boundaries; a partition's stamp and a
-  lane's call are relaxed atomic stores, around each destination call and each message a partition
+  writer's call are relaxed atomic stores, around each destination call and each message a partition
   sends but its writes. Its times are the run's start on the wall clock and the monotonic time
   since.
 - **Cores.** A `Cores` is the count of cores a run may use. The compute pool gets a thread for
   each, through `RayonPool::try_new`, and nothing else sizes a pool. A process that builds its own
   tokio runtime gives it `Cores::runtime_workers`: half the cores, rounded down, and two at least
-  where there are two, since one worker runs the engine's per-row work and every lane's writes
+  where there are two, since one worker runs the engine's per-row work and every writer's writes
   alone. The pool's threads overlap the workers' cores: the workers run the per-row work and the
   writes, the pool shreds and lowers, and with a thread a core the pool can take every core the
   workers leave idle, which JSON workloads need. A run of plain Arrow leaves the pool's threads
@@ -51,21 +51,21 @@ a run reports and tells must show what it did without changing what it does.
   pool. The runtime does not grow to match: more workers slow a run of one partition
   (`docs/perf/passthrough.md`). `Cores::try_from_host` and `SystemEnv::try_from_host` take the
   cores the process may run on (its affinity mask and cgroup quota honoured); an embedder that
-  fixes a count passes `Cores::new` to `SystemEnv::try_new`. `Env::cores` returns the count, and lanes default to one per core. The
+  fixes a count passes `Cores::new` to `SystemEnv::try_new`. `Env::cores` returns the count, and writers default to one per core. The
   engine reads the host's cores in `Cores::try_from_host` and nowhere else (clippy bans
   `available_parallelism` in the rest of `rdlt-engine`), and the simulation declares a fixed
   count, so a simulated run sizes itself alike on every machine.
-- **One writer per table per lane.** A lane opens a table's writer when it first writes to the
-  table, since normalized streams add child tables as their rows arrive. Each attempt routes a
-  partition's batches for a table to lane `(place + table) mod lanes`, the place being the
-  partition's index in the attempt, so as many partitions as lanes take a lane each. A partition
-  read again takes its ended read's place, and a new one a place whose seals all committed, so a
-  run that reads for ever tracks no more partitions than its plans name at once. A partition
-  writes a table through one lane since spreading its writes over more reaches nothing: on the
-  production path four partitions through four writers, the most one partition spread over four
-  lanes could reach, move 0.98 times what one partition moves
-  ([docs/perf/campaign.md](../perf/campaign.md), "Spilling a hot partition's writes to lanes with
-  room"). No order rests on the lane: merges, histories, change streams and child tables decide
+- **One table writer per table per writer.** A writer opens a table writer for a table when it
+  first writes to the table, since normalized streams add child tables as their rows arrive. Each
+  attempt routes a partition's batches for a table to writer `(place + table) mod writers`, the
+  place being the partition's index in the attempt, so as many partitions as writers take a writer
+  each. A partition read again takes its ended read's place, and a new one a place whose seals
+  all committed, so a run that reads for ever tracks no more partitions than its plans name at
+  once. A partition writes a table through one writer since spreading its writes over more
+  reaches nothing: on the production path four partitions through four writers, the most one partition spread over four
+  writers could reach, move 0.98 times what one partition moves
+  ([docs/perf/campaign.md](../perf/campaign.md), "Spilling a hot partition's writes to writers with
+  room"). No order rests on the writer: merges, histories, change streams and child tables decide
   by each row's sequence, never by the order rows were staged in.
 - **Barriers wait only for partitions that are reading.** A partition waiting for a read slot, or
   already ended, owes no answer, so many queued partitions never make every commit wait out
@@ -102,7 +102,7 @@ a run reports and tells must show what it did without changing what it does.
   sent again on the same session: the same commit, by the same key and expecting the same key
   landed. It is tried as many times at most as the run makes attempts, each wait drawn as the
   run's backoff draws it, a rate limit's own wait held to the policy's delays, and the session
-  locked for each try alone, so writers open and schema changes apply between tries; partitions
+  locked for each try alone, so table writers open and schema changes apply between tries; partitions
   read on, and what they seal waits for the next commit. A lost connection, the host's deadline or
   the engine's wait for the call, a fence and a permanent error end the attempt, as does the last
   try: one session owns one connection, and after such an end nothing tells whether the commit

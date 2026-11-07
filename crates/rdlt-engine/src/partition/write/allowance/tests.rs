@@ -142,7 +142,7 @@ async fn a_piece_waits_for_those_before_it_to_be_written_and_presses_for_it() {
         biased;
         _ = &mut third => panic!("three pieces pass the allowance"),
         () = pressure.raised() => {}
-        () = tokio::time::sleep(Duration::from_secs(1)) => panic!("no lane was pressed"),
+        () = tokio::time::sleep(Duration::from_secs(1)) => panic!("no writer was pressed"),
     }
     // The first piece written, the next is taken.
     drop(first);
@@ -181,7 +181,7 @@ async fn a_piece_waiting_for_its_allowance_stops_when_the_attempt_is_cancelled()
         waiting.err().map(|error| error.kind()),
         Some(ErrorKind::Cancelled)
     );
-    // The take let go took nothing, and presses no lane.
+    // The take let go took nothing, and presses no writer.
     let mut pressure = budget.pressure();
     tokio::select! {
         biased;

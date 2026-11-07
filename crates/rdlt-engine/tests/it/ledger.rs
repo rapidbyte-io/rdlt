@@ -49,7 +49,7 @@ async fn redelivered_segments_are_never_published_twice() {
     let (script, source) = Script::new(vec![unsealed]).connect("d5").await;
     let plan = pipeline("d5", [stream("events").read(ReadMode::Incremental)]);
     let interval = CommitPolicy::new(Some(Duration::from_secs(1)), None, None).unwrap();
-    let engine = engine(EngineConfig::builder().commit(interval).lanes(1));
+    let engine = engine(EngineConfig::builder().commit(interval).writers(1));
     let crashed = engine.run(plan.clone(), source, memory("d5").await);
     tokio::select! {
         biased;
@@ -124,7 +124,10 @@ async fn two_partitions_whose_pushes_do_not_fit_together_make_progress() {
     // Each push of a hundred thousand rows keeps about three megabytes alive, where pushes may
     // take four and a half of this budget.
     let source = generator(&[("orders", 400_000, 2, 100_000)]).await;
-    let config = commit_every(4_000).memory(40 << 20).lanes(1).lane_window(1);
+    let config = commit_every(4_000)
+        .memory(40 << 20)
+        .writers(1)
+        .writer_window(1);
     let run = engine(config).run(
         pipeline("l1", [stream("orders")]),
         source,
@@ -231,8 +234,8 @@ fn invalid_config_is_rejected_at_build() {
         .max_delay(Duration::from_secs(1));
     for error in [
         config(EngineConfig::builder().memory(0)),
-        config(EngineConfig::builder().lanes(0)),
-        config(EngineConfig::builder().lane_window(0)),
+        config(EngineConfig::builder().writers(0)),
+        config(EngineConfig::builder().writer_window(0)),
         config(EngineConfig::builder().partitions(0)),
         config(EngineConfig::builder().partition_buffer(0)),
         config(EngineConfig::builder().retry(backwards)),
@@ -343,12 +346,12 @@ async fn memory_stays_within_the_budget() {
     const ROWS: u64 = 2_000_000;
     let source = generator(&[("orders", ROWS, PARTITIONS, 20_000)]).await;
     let destination = null().await;
-    // A deep lane queue, so the budget alone holds the source back.
+    // A deep writer queue, so the budget alone holds the source back.
     let config = commit_every(500_000)
         .memory(BUDGET)
         .partitions(16)
-        .lanes(1)
-        .lane_window(1_000);
+        .writers(1)
+        .writer_window(1_000);
     let engine = engine(config);
     let plan = pipeline("l8", [stream("orders")]);
     HEAP.reset_peak_usage();
@@ -397,7 +400,7 @@ async fn encoded_pushes_stay_within_the_budget_once_decoded() {
         vec![BatchStream::new("blobs", (0..4).map(pushes).collect())],
     )
     .await;
-    let config = commit_every(1_000_000).memory(BUDGET).lanes(1);
+    let config = commit_every(1_000_000).memory(BUDGET).writers(1);
     HEAP.reset_peak_usage();
     let before = HEAP.current_usage();
     let outcome = engine(config)
@@ -418,10 +421,11 @@ async fn encoded_pushes_stay_within_the_budget_once_decoded() {
     );
 }
 
-/// Writers that keep what they stage until they flush are flushed once charges exceed the
-/// budget: one push, whose slices no admission waits behind, decodes 100 MB into such writers.
+/// Table writers that keep what they stage until they flush are flushed once charges exceed the
+/// budget: one push, whose slices no admission waits behind, decodes 100 MB into such table
+/// writers.
 #[tokio::test(start_paused = true)]
-async fn one_encoded_push_stays_within_the_budget_into_writers_that_buffer() {
+async fn one_encoded_push_stays_within_the_budget_into_table_writers_that_buffer() {
     use arrow_array::types::Int32Type;
     use arrow_array::{ArrayRef, Int32Array, Int64Array, RunArray, StringArray};
     const BUDGET: u64 = 40 << 20;
@@ -438,7 +442,7 @@ async fn one_encoded_push_stays_within_the_budget_into_writers_that_buffer() {
         vec![BatchStream::new("blobs", vec![pushed])],
     )
     .await;
-    let config = commit_every(1_000_000).memory(BUDGET).lanes(1);
+    let config = commit_every(1_000_000).memory(BUDGET).writers(1);
     HEAP.reset_peak_usage();
     let before = HEAP.current_usage();
     let outcome = engine(config)
@@ -477,7 +481,7 @@ async fn a_push_lowered_in_pieces_is_charged_for_its_rows_once() {
         vec![BatchStream::new("ids", vec![batch(vec![("id", ids)])])],
     )
     .await;
-    let config = commit_every(10_000_000).memory(BUDGET).lanes(1);
+    let config = commit_every(10_000_000).memory(BUDGET).writers(1);
     let outcome = engine(config)
         .run(
             pipeline("pieces", [stream("ids")]),
@@ -721,8 +725,8 @@ async fn a_destination_write_that_never_returns_fails_at_its_wait() {
         .await;
     let destination = failing(memory("stalled_writes").await, Step::StallWrites);
     let config = commit_every(1_000)
-        .lanes(1)
-        .lane_window(1)
+        .writers(1)
+        .writer_window(1)
         .connector_wait(WAIT)
         .retry(RetryPolicy::default().max_attempts(1));
     let plan = pipeline("stalled-writes", [stream("events")]);

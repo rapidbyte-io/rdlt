@@ -452,3 +452,44 @@ fn a_workspace_that_is_not_listed_is_reported_by_its_manifest() {
     assert_eq!(found, expected);
     assert!(unchecked(Vec::new()).is_empty());
 }
+
+#[test]
+fn an_identifier_with_the_banned_segment_is_refused() {
+    for source in [
+        "fn lane_count() {}\n",
+        "struct LaneId;\n",
+        "let per_lanes = 1;\n",
+        "const LANES: u16 = 4;\n",
+        "fn f() { let HTTPLane = 1; }\n",
+        "fn f() { let r#lane = 1; }\n",
+        "fn f(lane: u8) {}\n",
+        "fn perLANES() {}\n",
+        "fn v2LANE() {}\n",
+    ] {
+        let found = in_file("crates/rdlt-engine/src/lib.rs", source);
+        assert!(
+            found.contains(&(Rule::BannedIdentifier, 1)),
+            "source: {source:?}, found: {found:?}"
+        );
+    }
+}
+
+#[test]
+fn an_identifier_that_only_contains_the_letters_passes() {
+    for source in [
+        "fn plane() {}\n",
+        "struct Planet;\n",
+        "fn replan() {}\n",
+        "const DATA_PLANE: u8 = 1;\n",
+        "struct Elaine;\n",
+        "fn strings_may_say_it() { let _ = \"lane_count\"; }\n// lane_count\n",
+    ] {
+        let found = in_file("crates/rdlt-engine/src/lib.rs", source);
+        assert!(
+            !found
+                .iter()
+                .any(|(rule, _)| *rule == Rule::BannedIdentifier),
+            "source: {source:?}, found: {found:?}"
+        );
+    }
+}

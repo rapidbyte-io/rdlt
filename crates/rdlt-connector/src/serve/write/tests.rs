@@ -35,7 +35,7 @@ const WAIT: Duration = Duration::from_secs(60);
 /// How long a test lets a task that should end at once go on before it fails.
 const HOUR: Duration = Duration::from_mins(60);
 
-/// What a recording writer does when it is called.
+/// What a recording table writer does when it is called.
 #[derive(Clone, Copy, Debug)]
 enum Turn {
     /// Finishes after this long.
@@ -46,7 +46,7 @@ enum Turn {
     Panics,
 }
 
-/// What a recording writer was asked to do, in order.
+/// What a recording table writer was asked to do, in order.
 #[derive(Clone, Debug, Default)]
 struct Log(Arc<Mutex<Vec<String>>>);
 
@@ -60,7 +60,7 @@ impl Log {
     }
 }
 
-/// A writer that logs each write as `write segment:rows` and each flush as `flush`, each call
+/// A table writer that logs each write as `write segment:rows` and each flush as `flush`, each call
 /// taking the next of its turns, or none once they run out.
 struct Recording {
     log: Log,
@@ -88,7 +88,7 @@ impl Recording {
                 Ok(())
             }
             Some(Turn::Fails) => Err(ConnectorError::data("the write was refused")),
-            Some(Turn::Panics) => panic!("the writer held row 4417 of the ledger"),
+            Some(Turn::Panics) => panic!("the table writer held row 4417 of the ledger"),
         }
     }
 }
@@ -272,8 +272,8 @@ impl Stream for Open {
     }
 }
 
-/// A writer whose writes and flushes wait for ever once begun, telling `begun` of the first, and
-/// counted in its `Live` while it lives.
+/// A table writer whose writes and flushes wait for ever once begun, telling `begun` of the first,
+/// and counted in its `Live` while it lives.
 struct Stuck {
     begun: Option<oneshot::Sender<()>>,
     _live: Live,
@@ -461,7 +461,7 @@ async fn a_writer_s_panic_tells_its_host_neither_its_message_nor_its_task() {
 async fn the_staged_bound_refuses_a_frame_before_it_decodes_with_one_waiting() {
     // Four frames of nearly the least frame limit fill the sixteen mebibytes a write may stage
     // between flushes; a fifth, which would not decode, is refused for its size instead, while
-    // the fourth waits for the writer.
+    // the fourth waits for the table writer.
     let limits = Limits {
         frame_bytes: MIN_FRAME_BYTES,
         ..Limits::default()
@@ -566,15 +566,15 @@ async fn a_writer_waiting_in_a_write_or_a_flush_is_dropped_once_its_answers_are(
         let answers = writing(Box::new(writer), incoming, limits);
         tokio::time::timeout(WAIT, beginning)
             .await
-            .expect("the writer begins")
-            .expect("the writer says so");
+            .expect("the table writer begins")
+            .expect("the table writer says so");
         drop(answers);
         tokio::time::timeout(HOUR, gone(&writer_live))
             .await
-            .expect("the writer is dropped once its answers are");
+            .expect("the table writer is dropped once its answers are");
         tokio::time::timeout(WAIT, gone(&request_live))
             .await
-            .expect("the request is dropped with the writer");
+            .expect("the request is dropped with the table writer");
     }
 }
 
@@ -594,7 +594,7 @@ async fn a_write_waiting_for_its_next_frame_ends_once_its_answers_are_dropped() 
     let body = Body::new(Outgoing::request(frames, limits.largest()));
     let incoming = Incoming::request(Bounded::new(body, bounds(&limits), None));
     let mut answers = writing(Box::new(writer), incoming, limits);
-    // The opening credit, then the schema's: the writer took it and waits for the next frame.
+    // The opening credit, then the schema's: the table writer took it and waits for the next frame.
     for _ in 0..2 {
         let answer = tokio::time::timeout(WAIT, answers.next())
             .await
@@ -608,8 +608,8 @@ async fn a_write_waiting_for_its_next_frame_ends_once_its_answers_are_dropped() 
     drop(answers);
     tokio::time::timeout(HOUR, gone(&writer_live))
         .await
-        .expect("the writer is dropped once its answers are");
+        .expect("the table writer is dropped once its answers are");
     tokio::time::timeout(WAIT, gone(&request_live))
         .await
-        .expect("the request is dropped with the writer");
+        .expect("the request is dropped with the table writer");
 }

@@ -47,7 +47,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
                     self.quote(name),
                     self.quote(base)
                 )));
-                // The generation's indexes keep its name: the next writer indexes the table
+                // The generation's indexes keep its name: the next table writer indexes the table
                 // under its own.
                 for index in [self.key_index_name(name), self.root_index_name(name)] {
                     let sql = self

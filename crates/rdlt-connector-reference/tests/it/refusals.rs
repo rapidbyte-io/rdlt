@@ -129,7 +129,7 @@ async fn flushed(
         schema: TableSchema::from_arrow(&schema).expect("a schema"),
     };
     opened.session.apply_schema(&create).await.expect("created");
-    let mut writer = opened.session.writer(&table).await.expect("a writer");
+    let mut writer = opened.session.writer(&table).await.expect("a table writer");
     let batch = written.batch(history);
     writer.write(SegmentId(1), batch).await.expect("buffers");
     let refused = writer.flush().await.err()?;

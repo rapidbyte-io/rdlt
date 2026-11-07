@@ -1,4 +1,4 @@
-//! A SQLite session: schema changes, staging writers and commits, each one transaction.
+//! A SQLite session: schema changes, staging table writers and commits, each one transaction.
 
 mod commit;
 pub(super) mod owners;
@@ -32,7 +32,7 @@ pub struct SqliteSession {
     written: Written,
 }
 
-/// The columns the session's writers staged rows with, by segment, then by table and the
+/// The columns the session's table writers staged rows with, by segment, then by table and the
 /// generation of it the rows fill.
 ///
 /// A commit publishes only what its own session staged, and the catalog records no columns of

@@ -142,7 +142,7 @@ fn run(workload: &Workload, case: Case) -> Measured {
 
 /// Bytes: what ADR 0039's bound lets the run raise the host's resident memory by: the budget, a
 /// fifth of it and 32 MiB, a frame each partition holds before it is admitted, each open call's
-/// stream window, a read's each partition and a write's each writer, and a stack a thread.
+/// stream window, a read's each partition and a write's each table writer, and a stack a thread.
 fn limit(cores: Cores, case: Case) -> u64 {
     let (_, rows) = case.frames.shape();
     let frame = Passthrough::bytes(Cell {

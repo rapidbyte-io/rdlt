@@ -30,6 +30,10 @@ fn each_rule_fires_on_its_violation() {
         ("// the seat for this check\n", Rule::Jargon),
         ("// pinned by the test below\n", Rule::Jargon),
         ("// we honestly retry\n", Rule::Jargon),
+        ("// each lane writes in order\n", Rule::Jargon),
+        ("// the lanes flush first\n", Rule::Jargon),
+        ("// counted by lane_count\n", Rule::Jargon),
+        ("// per_lanes totals\n", Rule::Jargon),
         ("// this MUST happen first\n", Rule::Shouting),
         ("// TODO: later\n", Rule::TodoWithoutIssue),
         ("// FIXME(#1) broken\n", Rule::TodoWithoutIssue),
@@ -131,6 +135,18 @@ fn a_result_alias_of_one_argument_holding_a_string_passes() {
         "fn f() -> anyhow::Result<String> { g() }\n",
         "fn f() -> io::Result<&'static str> { g() }\n",
         "fn f() -> anyhow::Result<\n    String,\n> {\n    g()\n}\n",
+    ] {
+        assert_eq!(rules(source), Vec::<Rule>::new(), "source: {source:?}");
+    }
+}
+
+#[test]
+fn words_that_only_contain_the_letters_pass() {
+    for source in [
+        "// the plane of the data\n",
+        "// Elaine replans the planets\n",
+        "// a replan_count of two\n",
+        "// the data_plane carries it\n",
     ] {
         assert_eq!(rules(source), Vec::<Rule>::new(), "source: {source:?}");
     }

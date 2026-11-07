@@ -15,7 +15,7 @@ impl Coordinator {
     /// many times at most as the run makes attempts, each wait between drawn as the run's are
     /// and told of, and each try sent again noted for the run's status.
     ///
-    /// The session is locked for each try alone, so writers open and schema changes apply
+    /// The session is locked for each try alone, so table writers open and schema changes apply
     /// between them; partitions read on, and what they seal waits for the next commit. Once the
     /// attempt is cancelled, a try in flight has the close wait to answer, so a commit that lands
     /// as another task fails is recorded, though no later attempt may open to find it landed.

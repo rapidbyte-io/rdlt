@@ -262,22 +262,22 @@ fn land(
     Ok(receipt)
 }
 
-/// A writer of [`SimDestination`]: buffers rows and stages them on flush.
+/// A table writer of [`SimDestination`]: buffers rows and stages them on flush.
 #[derive(Debug)]
 pub struct SimWriter {
     world: Arc<World>,
     pipeline: PipelineId,
     epoch: Epoch,
     table: String,
-    /// The schema version the writer's writes follow.
+    /// The schema version the table writer's writes follow.
     version: SchemaVersion,
-    /// The schema of its first batch, which each of its batches must have: a writer serves one
-    /// version, and every batch lowered for a version has the version's schema.
+    /// The schema of its first batch, which each of its batches must have: a table writer serves
+    /// one version, and every batch lowered for a version has the version's schema.
     schema: Option<SchemaRef>,
     generation: Option<GenerationId>,
     merge: Option<MergeKey>,
     buffered: Vec<(SegmentId, Vec<Stored>)>,
-    /// Counts it among its world's writers until it is dropped.
+    /// Counts it among its world's table writers until it is dropped.
     _held: Live,
 }
 
@@ -302,7 +302,7 @@ impl TableWriter for SimWriter {
         let first = self.schema.get_or_insert_with(|| batch.schema());
         if *first != batch.schema() {
             self.world.violation(format!(
-                "table {}: a writer of version {} wrote batches of two schemas",
+                "table {}: a table writer of version {} wrote batches of two schemas",
                 self.table, self.version.0
             ));
         }

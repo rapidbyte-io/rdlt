@@ -17,8 +17,8 @@ use crate::event::Unreported;
 use crate::limits::{REPORTED_ATTEMPTS, REPORTED_FORGOTTEN};
 
 pub use counters::{
-    Acks, CommitPhases, Commits, Counters, Flushes, LaneCounters, PoolCounters, ShredCounts,
-    Trigger, Waited, Waits,
+    Acks, CommitPhases, Commits, Counters, Flushes, PoolCounters, ShredCounts, Trigger, Waited,
+    Waits, WriterCounters,
 };
 pub(crate) use counters::{Flush, Tally};
 pub(crate) use discards::ColumnDiscards;

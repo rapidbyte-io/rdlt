@@ -23,7 +23,11 @@ async fn staged(session: &mut OpenedSession, segment: u64, id: i64, held: ArrayR
     ])
     .expect("a valid batch");
     let table = merge_table("events");
-    let mut writer = session.session.writer(&table).await.expect("a writer");
+    let mut writer = session
+        .session
+        .writer(&table)
+        .await
+        .expect("a table writer");
     writer
         .write(SegmentId(segment), batch)
         .await
@@ -163,7 +167,11 @@ fn holding(ids: Vec<i64>, held: ArrayRef, kind: LogicalType) -> RecordBatch {
 /// Stages `batch` in `segment` and commits it as commit `seq`.
 async fn committed(session: &mut OpenedSession, segment: u64, seq: u64, batch: RecordBatch) {
     let table = merge_table("events");
-    let mut writer = session.session.writer(&table).await.expect("a writer");
+    let mut writer = session
+        .session
+        .writer(&table)
+        .await
+        .expect("a table writer");
     writer
         .write(SegmentId(segment), batch)
         .await
@@ -358,7 +366,7 @@ async fn a_table_of_json_lines_takes_a_widen_to_json_until_it_holds_rows_staged_
         .session
         .writer(&merge_table("events"))
         .await
-        .expect("a writer");
+        .expect("a table writer");
     let rows = holding(vec![1], text, LogicalType::Json);
     writer
         .write(SegmentId(1), rows)

@@ -1,4 +1,4 @@
-//! A spawned destination's sessions and writers, whose transport errors carry the connector's
+//! A spawned destination's sessions and table writers, whose transport errors carry the connector's
 //! last words as its source's and destination's own calls do.
 
 use arrow_array::RecordBatch;
@@ -59,7 +59,7 @@ impl DestinationSession for SupervisedSession {
     }
 }
 
-/// A writer of a spawned destination.
+/// A table writer of a spawned destination.
 struct SupervisedWriter {
     inner: Box<dyn DestinationWriter>,
     words: Words,

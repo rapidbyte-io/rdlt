@@ -158,7 +158,8 @@ fn batch() -> RecordBatch {
     RecordBatch::new_empty(Arc::new(arrow_schema::Schema::empty()))
 }
 
-/// Each call of `destination`'s session and of a writer of it, in turn, with how long each took.
+/// Each call of `destination`'s session and of a table writer of it, in turn, with how long each
+/// took.
 async fn calls(destination: &Arc<dyn Destination>) -> Vec<(Result<()>, Duration)> {
     let mut opened = destination.open(&context()).await.unwrap();
     let mut taken = Vec::new();

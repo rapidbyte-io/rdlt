@@ -42,7 +42,7 @@ fn one_long_list(items: i32, values: ArrayRef) -> RecordBatch {
 async fn run(name: &str, budget: u64, batch: RecordBatch) -> (usize, RunOutcome) {
     let steps: Steps = Arc::new(move |step| (step < 1).then(|| Step::Batch(batch.clone())));
     let source = making(name, steps).await;
-    let config = commit_every(1_000_000_000).memory(budget).lanes(1);
+    let config = commit_every(1_000_000_000).memory(budget).writers(1);
     HEAP.reset_peak_usage();
     let before = HEAP.current_usage();
     let outcome = engine(config)
@@ -129,7 +129,7 @@ async fn jobs(name: &str, flushes: u64, batch: RecordBatch) -> u64 {
         })
     });
     let source = making(name, steps).await;
-    let outcome = engine(commit_every(1_000_000_000).lanes(1))
+    let outcome = engine(commit_every(1_000_000_000).writers(1))
         .run(pipeline(name, [stream("events")]), source, null().await)
         .await;
     assert_eq!(

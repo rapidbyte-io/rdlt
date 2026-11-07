@@ -2,13 +2,13 @@ use std::num::{NonZeroU16, NonZeroUsize};
 
 use rdlt_connector::{BoxFuture, Capabilities, Destination, OpenContext, OpenedSession, Result};
 
-use super::{held_writers, lane_count};
+use super::{held_table_writers, writer_count};
 use crate::config::{EngineConfig, GrowthLimits};
 
 /// A destination of its capabilities that carries its calls at once.
-struct Writers(Capabilities, Option<NonZeroUsize>);
+struct Declaring(Capabilities, Option<NonZeroUsize>);
 
-impl Destination for Writers {
+impl Destination for Declaring {
     fn capabilities(&self) -> &Capabilities {
         &self.0
     }
@@ -18,7 +18,7 @@ impl Destination for Writers {
     }
 
     fn open<'a>(&'a self, _context: &'a OpenContext) -> BoxFuture<'a, Result<OpenedSession>> {
-        unreachable!("lane counts never open a session")
+        unreachable!("writer counts never open a session")
     }
 
     fn max_calls(&self) -> Option<NonZeroUsize> {
@@ -26,15 +26,15 @@ impl Destination for Writers {
     }
 }
 
-fn destination(writers: u16) -> Writers {
+fn destination(writers: u16) -> Declaring {
     carrying(writers, None)
 }
 
 /// A destination of `writers` parallel writers that carries `calls` at once.
-fn carrying(writers: u16, calls: Option<usize>) -> Writers {
+fn carrying(writers: u16, calls: Option<usize>) -> Declaring {
     let mut capabilities = Capabilities::minimal();
     capabilities.max_parallel_writers = NonZeroU16::new(writers).unwrap();
-    Writers(
+    Declaring(
         capabilities,
         calls.map(|calls| NonZeroUsize::new(calls).unwrap()),
     )
@@ -45,16 +45,16 @@ fn cores(count: usize) -> NonZeroUsize {
 }
 
 #[test]
-fn configured_lanes_never_exceed_the_destinations_writers() {
-    let config = EngineConfig::builder().lanes(5).build().unwrap();
-    assert_eq!(lane_count(&config, cores(16), &destination(2)).get(), 2);
-    assert_eq!(lane_count(&config, cores(1), &destination(8)).get(), 5);
+fn configured_writers_never_exceed_what_the_destination_runs_at_once() {
+    let config = EngineConfig::builder().writers(5).build().unwrap();
+    assert_eq!(writer_count(&config, cores(16), &destination(2)).get(), 2);
+    assert_eq!(writer_count(&config, cores(1), &destination(8)).get(), 5);
 }
 
 #[test]
-fn default_lanes_are_one_per_declared_core_up_to_the_destinations_limit() {
+fn default_writers_are_one_per_declared_core_up_to_the_destinations_limit() {
     let config = EngineConfig::builder().build().unwrap();
-    for (count, writers, lanes) in [
+    for (count, declared, expected) in [
         (1, u16::MAX, 1),
         (6, u16::MAX, 6),
         (64, u16::MAX, 64),
@@ -63,18 +63,19 @@ fn default_lanes_are_one_per_declared_core_up_to_the_destinations_limit() {
         (3, 8, 3),
     ] {
         assert_eq!(
-            lane_count(&config, cores(count), &destination(writers)).get(),
-            lanes,
-            "{count} cores, {writers} writers"
+            writer_count(&config, cores(count), &destination(declared)).get(),
+            expected,
+            "{count} cores, {declared} writers"
         );
     }
 }
 
 #[test]
-fn an_attempt_holds_no_more_writers_open_than_its_destination_carries_beside_a_sessions_call() {
+fn an_attempt_holds_no_more_table_writers_open_than_its_destination_carries_beside_a_sessions_call()
+{
     let growth = GrowthLimits::new(1024, 300).unwrap();
     let config = EngineConfig::builder().growth(growth).build().unwrap();
-    for (calls, writers) in [
+    for (calls, table_writers) in [
         (None, 300),
         (Some(199), 198),
         (Some(300), 299),
@@ -84,43 +85,43 @@ fn an_attempt_holds_no_more_writers_open_than_its_destination_carries_beside_a_s
     ] {
         let destination = carrying(u16::MAX, calls);
         assert_eq!(
-            held_writers(&config, &destination).get(),
-            writers,
+            held_table_writers(&config, &destination).get(),
+            table_writers,
             "{calls:?} calls"
         );
     }
 }
 
 #[test]
-fn lanes_never_exceed_the_writers_their_destination_carries() {
-    let config = EngineConfig::builder().lanes(250).build().unwrap();
+fn writers_never_exceed_the_table_writers_a_destination_carries() {
+    let config = EngineConfig::builder().writers(250).build().unwrap();
     let growth = GrowthLimits::new(1024, 300).unwrap();
     let grown = EngineConfig::builder()
-        .lanes(250)
+        .writers(250)
         .growth(growth)
         .build()
         .unwrap();
     assert_eq!(
-        lane_count(&config, cores(1), &carrying(1000, None)).get(),
+        writer_count(&config, cores(1), &carrying(1000, None)).get(),
         128
     );
     assert_eq!(
-        lane_count(&grown, cores(1), &carrying(1000, None)).get(),
+        writer_count(&grown, cores(1), &carrying(1000, None)).get(),
         250
     );
     assert_eq!(
-        lane_count(&grown, cores(1), &carrying(1000, Some(101))).get(),
+        writer_count(&grown, cores(1), &carrying(1000, Some(101))).get(),
         100
     );
 }
 
 #[test]
-fn lanes_never_exceed_the_writers_an_attempt_holds_open() {
+fn writers_never_exceed_the_table_writers_an_attempt_holds_open() {
     let growth = GrowthLimits::new(1, 3).unwrap();
     let config = EngineConfig::builder()
-        .lanes(5)
+        .writers(5)
         .growth(growth)
         .build()
         .unwrap();
-    assert_eq!(lane_count(&config, cores(16), &destination(8)).get(), 3);
+    assert_eq!(writer_count(&config, cores(16), &destination(8)).get(), 3);
 }

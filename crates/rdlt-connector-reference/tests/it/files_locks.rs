@@ -36,9 +36,9 @@ async fn a_lock_another_holds_is_waited_for_a_bounded_time() {
     assert_eq!(error.code(), Some("lock_timeout"));
     let writer = tokio::time::timeout(bound, opened.session.writer(&orders))
         .await
-        .expect("the writer's claim ends");
+        .expect("the table writer's claim ends");
     let Err(error) = writer else {
-        panic!("a writer opened under another's lock");
+        panic!("a table writer opened under another's lock");
     };
     assert_eq!(error.code(), Some("lock_timeout"));
     let waited = started.elapsed();

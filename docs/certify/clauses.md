@@ -90,7 +90,7 @@ A certification cut at its timeout reports what it saw: the clauses already chec
 | `D-ENCODING` | dictionary-encoded columns publish the values they encode | — |
 | `D-TABLES` | a segment may hold rows for several tables, and its commit publishes each table's rows whole: where a table lost a column outside the pipeline, it publishes every column it staged, or fails as column_missing and publishes nothing | — |
 | `D-NAMES` | identifiers at the edges of the destination's own rules, and names its rules keep apart though they compare alike by case, case folding or normalization, are published under their names | — |
-| `D-LANES` | writers of one table, as many as the destination runs at once, stage at the same time, and a commit publishes what each staged | the destination runs one writer at a time |
+| `D-WRITERS` | table writers of one table, as many as the destination runs writers at once, stage at the same time, and a commit publishes what each staged | the destination runs one writer at a time |
 | `D-OWNED` | a table belongs to the pipeline that created it: another pipeline's schema change or writer is refused as table_owned, its generation swap too unless it changes nothing, and the owner keeps loading it | — |
 | `D-DROP` | a commit drops the tables it names, leaving nothing of them, and releases them: dropping again changes nothing, a session fenced before cannot claim them again, another pipeline may create a table of the name, and dropping another pipeline's table is refused as table_owned | the destination drops no tables |
 | `D-FENCE` | a session opened before the latest one cannot commit | — |

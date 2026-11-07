@@ -20,9 +20,9 @@ use crate::budget::MemoryBudget;
 use crate::compute::Pool;
 use crate::config::BatchPolicy;
 use crate::env::{Env, InlineEnv};
-use crate::lane::Lanes;
 use crate::table::{SharedSession, Tables};
 use crate::watch;
+use crate::writer::Writers;
 
 /// Bounds every wait of a check; a request waits on the budget far longer.
 const WAIT: Duration = Duration::from_secs(1);
@@ -198,7 +198,7 @@ async fn a_read_ending_at_its_last_cursor_holds_that_cursor_in_the_cursors_share
 }
 
 /// A partition's context over `budget` whose jobs run on `pool`, its source never called and its
-/// lanes ended.
+/// writers ended.
 pub(super) async fn on_pool(budget: MemoryBudget, pool: Pool) -> PartitionContext {
     let env: Arc<dyn Env> = Arc::new(InlineEnv);
     let source = source_factory::<GeneratorSource>()
@@ -214,8 +214,8 @@ pub(super) async fn on_pool(budget: MemoryBudget, pool: Pool) -> PartitionContex
     };
     let opened = destination.open(&open).await.expect("the session opens");
     let tables = Arc::new(Tables::new(SharedSession::new(opened.session)));
-    let writers = crate::config::GrowthLimits::default().writers();
-    let (lanes, _) = Lanes::new(
+    let writers = crate::config::GrowthLimits::default().table_writers();
+    let (writers, _) = Writers::new(
         (NonZeroUsize::MIN, writers),
         &tables,
         NonZeroUsize::MIN,
@@ -227,7 +227,7 @@ pub(super) async fn on_pool(budget: MemoryBudget, pool: Pool) -> PartitionContex
     let slots = Slots::new(NonZeroUsize::MIN, None, &budget);
     PartitionContext {
         source: Arc::from(source),
-        lanes,
+        writers,
         tables,
         budget,
         rendering: Arc::new(crate::cost::rendering(&Capabilities::minimal())),

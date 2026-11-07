@@ -66,7 +66,7 @@ pub(super) struct Version {
     pub(super) current: bool,
     /// The last byte of the sequence of the row that opened it.
     pub(super) seq: u8,
-    /// Whether its hash is what its data's writer gave it.
+    /// Whether its hash is what its data's table writer gave it.
     pub(super) hashed: bool,
 }
 
@@ -104,7 +104,7 @@ pub(super) fn deleted(id: i64, name: &str, from: i64, to: Option<i64>, seq: u8) 
     }
 }
 
-/// The hash a writer gives `name`: its bytes, zero-padded to 16.
+/// The hash a table writer gives `name`: its bytes, zero-padded to 16.
 pub(super) fn hash(name: &str) -> [u8; 16] {
     let mut hash = [0_u8; 16];
     for (byte, source) in hash.iter_mut().zip(name.bytes()) {

@@ -83,7 +83,11 @@ async fn commit(destination: &dyn Destination, batch: Option<RecordBatch>, drop:
             .apply_schema(&create)
             .await
             .expect("the table is created");
-        let mut writer = opened.session.writer(&table()).await.expect("a writer");
+        let mut writer = opened
+            .session
+            .writer(&table())
+            .await
+            .expect("a table writer");
         writer
             .write(SegmentId(1), batch)
             .await

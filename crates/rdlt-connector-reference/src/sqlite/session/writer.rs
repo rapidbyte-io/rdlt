@@ -1,4 +1,4 @@
-//! A SQLite session's writer, which stages a table's batches.
+//! A SQLite session's table writer, which stages a table's batches.
 
 use std::sync::Arc;
 
@@ -15,11 +15,10 @@ use super::super::values;
 use super::Written;
 use super::owners::{changed, derived, distinct, owned};
 
-/// Readies `table`, which its pipeline created, for a writer of `pipeline`'s session: readies a
-/// change stream's tables, checks that it holds its merge key, creates the generation table it fills
-/// where that is missing, and indexes what a commit finds rows in, which a commit never does
-/// itself: the staging by who staged its rows while the table appends, and by key where it
-/// merges.
+/// Readies `table`, which its pipeline created, for a table writer of `pipeline`'s session: readies
+/// a change stream's tables, checks that it holds its merge key, creates the generation table it
+/// fills where that is missing, and indexes what a commit finds rows in, which a commit never does
+/// itself: the staging by who staged its rows while the table appends, and by key where it merges.
 pub(super) fn ready(
     transaction: &Transaction<'_>,
     planner: &SqlPlanner<Sqlite>,
@@ -97,7 +96,7 @@ impl TableWriter for SqliteWriter {
             .transaction(move |transaction| {
                 let mut stats = WriteStats::default();
                 // The table may have been dropped and claimed by another pipeline since the
-                // writer opened.
+                // table writer opened.
                 let staging = owned(transaction, &planner, &pipeline, &table.name)?;
                 let target = columns(transaction, planner.dialect(), &planner.target(&table))?;
                 for (segment, batch) in &buffered {

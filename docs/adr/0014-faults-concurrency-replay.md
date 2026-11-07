@@ -9,7 +9,7 @@ transient and rate-limited failures into connector calls, and crashes, stops and
 one thread with a paused clock. A simulation that stops there never meets:
 
 - a permanent failure or a panic;
-- a failure while a schema change applies, a writer opens or a session closes;
+- a failure while a schema change applies, a table writer opens or a session closes;
 - a run stopped at once;
 - a destination two pipelines share;
 - a scheduler that runs tasks in another order;
@@ -23,7 +23,7 @@ Nor does it check that a seed replays alike, or measure how much of the engine i
 ## Decision
 
 - **Faults beyond connector calls.**
-  - The simulated connectors fail before and after a schema change applies, when a writer opens,
+  - The simulated connectors fail before and after a schema change applies, when a table writer opens,
     when a session closes and when a stream lists its partitions.
   - Besides transient and rate-limited failures, one fault in ten is permanent and one in twenty
     is a panic.
@@ -47,7 +47,7 @@ Nor does it check that a seed replays alike, or measure how much of the engine i
     their own, so a seed's generator draws alike whatever the count.
   - A crash, stop or racing run lands within the length of the last run that succeeded, or a
     following run's deadline; within two seconds before any run has succeeded.
-- **Nothing a run began outlives it.** The simulated connectors count the sessions, writers and
+- **Nothing a run began outlives it.** The simulated connectors count the sessions, table writers and
   reads they hold. Once a phase's runs and the engine's tasks have ended, every count must fall
   to zero, and, over the network, every connector's host must run no task, within the longest a
   served connection whose host left behind a partition lives: its pings go unanswered for the

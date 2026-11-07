@@ -1,6 +1,6 @@
 //! The window of pieces a partition lowers together: reserved one by one, lowered at once, on
 //! the partition's task where none copies a value and on the compute pool otherwise, then queued
-//! on their lane in order.
+//! on their writer in order.
 
 use rdlt_connector::Permit;
 
@@ -67,7 +67,7 @@ impl Window {
     }
 
     /// Reserves `bytes` for a piece: with those the window holds where the budget has them at
-    /// once, or after the window's pieces are lowered and handed to their lane, so the wait is
+    /// once, or after the window's pieces are lowered and handed to their writer, so the wait is
     /// for bytes a write releases and this partition holds none of them.
     pub(super) async fn reserved(
         &mut self,

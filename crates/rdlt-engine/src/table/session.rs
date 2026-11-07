@@ -1,5 +1,5 @@
 //! The destination session an attempt shares: the coordinator commits through it, and partitions
-//! change tables and open writers through it.
+//! change tables and open table writers through it.
 
 use std::sync::Arc;
 
@@ -45,7 +45,7 @@ impl SharedSession {
         Ok(Ok(()))
     }
 
-    /// A writer for `table`.
+    /// A table writer for `table`.
     pub(crate) async fn writer(
         &self,
         table: &TableRef,

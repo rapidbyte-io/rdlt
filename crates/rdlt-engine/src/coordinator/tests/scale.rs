@@ -264,6 +264,6 @@ async fn a_partition_read_again_takes_its_place_and_a_new_one_a_retired_place() 
             ("a".to_owned(), 0),
             ("c".to_owned(), 1),
         ],
-        "`a` read again routes to its lane; `c` takes `b`'s retired place"
+        "`a` read again routes to its writer; `c` takes `b`'s retired place"
     );
 }

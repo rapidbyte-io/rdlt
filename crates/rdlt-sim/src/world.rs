@@ -54,7 +54,7 @@ pub(crate) enum FaultPoint {
     ApplyBefore,
     /// After a schema change applies, so its response is lost.
     ApplyAfter,
-    /// Opening a table's writer.
+    /// Opening a table writer.
     Writer,
     /// Closing a session.
     Close,
@@ -121,7 +121,7 @@ pub struct World {
     pressure: Mutex<Pressure>,
     /// What the source holds of the pushes it made and has not yet sent on.
     pub(crate) pushes: Pushes,
-    /// The sessions, writers and reads its connectors hold now.
+    /// The sessions, table writers and reads its connectors hold now.
     pub(crate) owners: Owners,
     /// What the connectors were told by their configurations, which their faults quote.
     pub(crate) heard: Heard,

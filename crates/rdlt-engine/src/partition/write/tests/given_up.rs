@@ -172,36 +172,36 @@ async fn a_normalized_write_given_up_waiting_for_room_frees_its_piece_before_its
 
 #[tokio::test(start_paused = true)]
 async fn a_unit_s_charge_is_released_once_the_last_of_its_pieces_is_let_go() {
-    // Pieces of a sixty-fourth of a mebibyte: the unit is cut into many, and its lane, which
+    // Pieces of a sixty-fourth of a mebibyte: the unit is cut into many, and its writer, which
     // queues one write and is never run, takes the first and leaves the next waiting.
     let budget = MemoryBudget::new(1 << 20, Arc::new(InlineEnv), Duration::from_secs(60));
     let mut context = context(budget, Pool::inline(), None).await;
     let env: Arc<dyn Env> = Arc::new(InlineEnv);
-    let writers = crate::config::GrowthLimits::default().writers();
-    let (lanes, ends) = crate::lane::Lanes::new(
+    let writers = crate::config::GrowthLimits::default().table_writers();
+    let (writers, ends) = crate::writer::Writers::new(
         (NonZeroUsize::MIN, writers),
         &context.tables,
         NonZeroUsize::MIN,
         &context.budget,
         (&env, &Arc::default()),
     );
-    context.lanes = lanes;
+    context.writers = writers;
     let batch = ids(0, 100_000);
     let (permit, freed) = charge(std::slice::from_ref(&batch));
     given_up(&context, flushed(vec![batch], permit)).await;
     assert_eq!(
         *freed.lock(),
         None,
-        "a piece on its lane still holds the unit"
+        "a piece on its writer still holds the unit"
     );
     drop((ends, context));
     assert_eq!(*freed.lock(), Some(true));
 }
 
-/// A context over `budget` normalizing its stream, writing to two lanes that are never run, and
-/// the lanes, each holding what is queued on it until dropped: a partition's rows go to the
+/// A context over `budget` normalizing its stream, writing to two writers that are never run, and
+/// the writers, each holding what is queued on it until dropped: a partition's rows go to the
 /// first, its array's items to the second.
-async fn normalizing(budget: MemoryBudget) -> (PartitionContext, Vec<crate::lane::Lane>) {
+async fn normalizing(budget: MemoryBudget) -> (PartitionContext, Vec<crate::writer::Writer>) {
     let shape = crate::normalize::Shape {
         max_depth: 8,
         whole: std::collections::BTreeSet::new(),
@@ -209,25 +209,25 @@ async fn normalizing(budget: MemoryBudget) -> (PartitionContext, Vec<crate::lane
     };
     let mut context = context(budget, Pool::inline(), Some(shape)).await;
     let env: Arc<dyn Env> = Arc::new(InlineEnv);
-    let writers = crate::config::GrowthLimits::default().writers();
+    let writers = crate::config::GrowthLimits::default().table_writers();
     let window = NonZeroUsize::new(1_024).unwrap();
-    let (lanes, ends) = crate::lane::Lanes::new(
+    let (writers, ends) = crate::writer::Writers::new(
         (NonZeroUsize::new(2).unwrap(), writers),
         &context.tables,
         window,
         &context.budget,
         (&env, &Arc::default()),
     );
-    context.lanes = lanes;
+    context.writers = writers;
     (context, ends)
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_normalized_unit_s_charge_is_released_once_the_last_of_its_pieces_on_any_lane_goes() {
+async fn a_normalized_unit_s_charge_is_released_once_the_last_of_its_pieces_on_any_writer_goes() {
     let budget = budget();
     let (context, mut ends) = normalizing(budget.clone()).await;
     // Rows holding arrays are cut into several pieces before the split, and the rows after them,
-    // holding empty arrays, into more: the last pieces go all to the first lane. Each item's
+    // holding empty arrays, into more: the last pieces go all to the first writer. Each item's
     // text is long enough that lowering a piece's items takes no more than its allowance holds.
     let count = 88_000_i64;
     let mut lists =
@@ -255,7 +255,7 @@ async fn a_normalized_unit_s_charge_is_released_once_the_last_of_its_pieces_on_a
     );
     written.await.unwrap();
     drop(context);
-    // The first lane lets go of its writes, the last piece's among them: the second still holds
+    // The first writer lets go of its writes, the last piece's among them: the second still holds
     // the items of the pieces before it.
     let second = ends.pop();
     drop(ends);
@@ -429,15 +429,15 @@ async fn a_merge_s_flush_waiting_for_room_holds_nothing_lowering_waits_for() {
     };
     let mut context = context(budget, Pool::inline(), Some(shape)).await;
     let env: Arc<dyn Env> = Arc::new(InlineEnv);
-    let writers = crate::config::GrowthLimits::default().writers();
-    let (lanes, _ends) = crate::lane::Lanes::new(
+    let writers = crate::config::GrowthLimits::default().table_writers();
+    let (writers, _ends) = crate::writer::Writers::new(
         (NonZeroUsize::MIN, writers),
         &context.tables,
         NonZeroUsize::new(1_024).unwrap(),
         &context.budget,
         (&env, &Arc::default()),
     );
-    context.lanes = lanes;
+    context.writers = writers;
     let batch = ids(0, 1_000);
     let (permit, _freed) = charge(std::slice::from_ref(&batch));
     let (job, mut open, mut schemas) = (job(), OpenSegment::default(), Schemas::default());

@@ -1185,7 +1185,7 @@ pub struct RootKey {
     #[prost(string, tag = "3")]
     pub seq: ::prost::alloc::string::String,
 }
-/// A table a change or writer applies to.
+/// A table a change or table writer applies to.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct TableRef {
     /// Its path.
@@ -1362,7 +1362,7 @@ pub mod write_ack {
         Error(super::Error),
     }
 }
-/// What a writer staged.
+/// What a table writer staged.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct WriteStats {
     /// Rows.

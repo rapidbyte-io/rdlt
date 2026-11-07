@@ -35,7 +35,6 @@ use crate::config::{CommitPolicy, RetryPolicy};
 use crate::env::SystemEnv;
 use crate::error::{Error, ErrorKind, Origin, codes};
 use crate::event::Announcer;
-use crate::lane::Lanes;
 use crate::naming::Naming;
 use crate::partition::{CursorHold, Latest, Progress, Seal};
 use crate::plan::StreamPlan;
@@ -44,6 +43,7 @@ use crate::report::{AttemptEnd, AttemptLog, CommitPhases, Tally};
 use crate::status::Live;
 use crate::table::{Incoming, MetaNames, Model, Resolver, Settings, SharedSession, Tables};
 use crate::watch;
+use crate::writer::Writers;
 
 /// How long a commit in flight has to answer once the attempt is cancelled: the run's default
 /// close wait.
@@ -122,7 +122,7 @@ impl DestinationSession for Recorder {
     ) -> BoxFuture<'a, Result<Box<dyn DestinationWriter>>> {
         Box::pin(async {
             Err(ConnectorError::internal(
-                "the coordinator creates no writers",
+                "the coordinator creates no table writers",
             ))
         })
     }
@@ -383,7 +383,7 @@ impl Setup {
             env: Arc::clone(&env),
             policy: self.policy,
             barrier_wait: self.barrier_wait,
-            lanes: lanes(&tables),
+            writers: writers(&tables),
             tables,
             source,
             epoch: Epoch(3),
@@ -459,22 +459,22 @@ impl Setup {
     }
 }
 
-/// One lane over `tables`, running.
-fn lanes(tables: &Arc<Tables>) -> Lanes {
+/// One writer over `tables`, running.
+fn writers(tables: &Arc<Tables>) -> Writers {
     let budget = crate::budget::budget(1 << 30);
-    let writers = crate::config::GrowthLimits::default().writers();
+    let writers = crate::config::GrowthLimits::default().table_writers();
     let env: Arc<dyn crate::env::Env> = Arc::new(crate::env::InlineEnv);
-    let (lanes, tasks) = Lanes::new(
+    let (writers, tasks) = Writers::new(
         (NonZeroUsize::MIN, writers),
         tables,
         NonZeroUsize::MIN,
         &budget,
         (&env, &Arc::default()),
     );
-    for lane in tasks {
-        tokio::spawn(lane.run(CancellationToken::new()));
+    for writer in tasks {
+        tokio::spawn(writer.run(CancellationToken::new()));
     }
-    lanes
+    writers
 }
 
 impl Harness {
@@ -715,7 +715,7 @@ async fn a_commit_of_what_was_left_at_the_end_counts_as_such_with_the_time_of_ea
         ..crate::report::Commits::default()
     };
     assert_eq!(counters.commits, end);
-    // The lanes hold nothing to flush and no log lists anything, at once.
+    // The writers hold nothing to flush and no log lists anything, at once.
     let phases = CommitPhases {
         commit: Duration::from_secs(1),
         ack: Duration::from_secs(2),

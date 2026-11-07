@@ -39,7 +39,7 @@ impl Bench<'_> {
         create(&mut opened.session, &roots, &[&items, &tags]).await?;
         let mut writers = Vec::new();
         for table in [&roots, &items, &tags] {
-            writers.push(bounded_call("writer", opened.session.writer(table)).await?);
+            writers.push(bounded_call("table writer", opened.session.writer(table)).await?);
         }
         stage(&mut writers).await?;
         let child_tables: Vec<ChildTable> = [&items, &tags].into_iter().map(child_table).collect();
@@ -117,7 +117,7 @@ impl Bench<'_> {
     }
 }
 
-/// Stages, through the writers of the roots and their two child tables, the clause's first
+/// Stages, through the table writers of the roots and their two child tables, the clause's first
 /// segment and its second, which gives the second child table nothing.
 async fn stage(writers: &mut [Box<dyn DestinationWriter>]) -> Result<(), Violation> {
     let first_roots = [(1, 1, 1), (2, 2, 2), (3, 3, 3), (4, 4, 4)];

@@ -63,7 +63,7 @@ fn ended(report: &Report) -> Status {
         partitions: Partitions::default(),
         quietest: None,
         waiting: OpenWaits::default(),
-        lanes: Vec::new(),
+        writers: Vec::new(),
         streams: BTreeMap::new(),
         report: report.clone(),
     }
