@@ -20,7 +20,7 @@ use serde_json::json;
 
 use crate::support::{engine, generator, memory, pipeline, published_rows, stream};
 
-fn calls(count: usize) -> NonZeroUsize {
+pub(crate) fn calls(count: usize) -> NonZeroUsize {
     NonZeroUsize::new(count).expect("a count of calls is more than zero")
 }
 
@@ -37,7 +37,11 @@ async fn log(group: &str, partitions: u32, calls: NonZeroUsize) -> Arc<dyn Sourc
 }
 
 /// `inner`, carrying `calls` at once, its reads counted in `reading`.
-fn carrying(inner: Arc<dyn Source>, calls: NonZeroUsize, reading: Arc<Open>) -> Arc<dyn Source> {
+pub(crate) fn carrying(
+    inner: Arc<dyn Source>,
+    calls: NonZeroUsize,
+    reading: Arc<Open>,
+) -> Arc<dyn Source> {
     Arc::new(CarryingSource {
         inner,
         calls,
@@ -103,7 +107,7 @@ struct CarryingDestination {
 /// What a carrying connector holds open, its reads or table writers, the most it held at once, and
 /// the sessions a destination opened.
 #[derive(Debug, Default)]
-struct Open {
+pub(crate) struct Open {
     now: AtomicUsize,
     most: AtomicUsize,
     sessions: AtomicUsize,

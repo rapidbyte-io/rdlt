@@ -1,5 +1,6 @@
 //! Runs: attempts, retries, stopping, and the handle an embedder awaits.
 
+mod check;
 mod reset;
 #[cfg(test)]
 mod tests;
@@ -58,6 +59,33 @@ impl Engine {
             config: Arc::new(config),
             env,
         }
+    }
+
+    /// Runs `work` on `source` and `destination` as an operation outside a run: each call into
+    /// them has its deadline, decoding their answers is charged to a budget of the run's memory,
+    /// and a connector's panic fails it as an internal error naming `what`.
+    async fn guarded<T, Fut>(
+        &self,
+        what: &str,
+        source: Arc<dyn Source>,
+        destination: Arc<dyn Destination>,
+        work: impl FnOnce(Arc<dyn Source>, Arc<dyn Destination>) -> Fut,
+    ) -> Result<T, Error>
+    where
+        Fut: Future<Output = Result<T, Error>>,
+    {
+        // Such an operation holds nothing but what decoding the connectors' answers takes.
+        let budget = MemoryBudget::new(
+            self.config.memory().get(),
+            Arc::clone(&self.env),
+            self.config.budget_wait(),
+        );
+        let waits =
+            Waits::new(Arc::clone(&self.env), self.config.connector_wait()).charging(&budget);
+        let working = work(waits.source(source), waits.destination(destination));
+        contained(working)
+            .await
+            .unwrap_or_else(|panic| Err(Error::internal(format!("the {what} panicked: {panic}"))))
     }
 
     /// Starts a run of `plan` from `source` to `destination`; nothing happens until the handle is

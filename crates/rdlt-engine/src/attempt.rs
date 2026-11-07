@@ -2,7 +2,7 @@
 
 mod check;
 mod sequences;
-mod streams;
+pub(crate) mod streams;
 #[cfg(test)]
 mod tests;
 mod together;
@@ -106,7 +106,7 @@ pub(crate) async fn run(
     log: Arc<Mutex<AttemptLog>>,
     announcer: &Announcer,
 ) -> Result<AttemptEnd, Error> {
-    within_calls(context)?;
+    within_calls(context.source.as_ref(), context.destination.as_ref())?;
     let opened = open(context).await?;
     let session = Arc::clone(&opened.session);
     let ran = opened_run(context, opened, &log, announcer).await;
@@ -125,14 +125,13 @@ pub(crate) async fn run(
 ///
 /// A `Config` error coded `calls_too_few`, naming the connector, the calls it carries and those a
 /// run needs.
-fn within_calls(context: &RunContext) -> Result<(), Error> {
+pub(crate) fn within_calls(
+    source: &dyn Source,
+    destination: &dyn Destination,
+) -> Result<(), Error> {
     let sides = [
-        ("source", context.source.max_calls(), "a read"),
-        (
-            "destination",
-            context.destination.max_calls(),
-            "a table writer",
-        ),
+        ("source", source.max_calls(), "a read"),
+        ("destination", destination.max_calls(), "a table writer"),
     ];
     for (side, calls, held) in sides {
         let Some(calls) = calls.filter(|calls| calls.get() < LEAST_CALLS) else {
