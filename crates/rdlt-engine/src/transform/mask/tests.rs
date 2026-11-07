@@ -271,3 +271,52 @@ fn a_redaction_making_more_text_than_a_column_holds_is_refused_naming_it() {
         .unwrap_err();
     assert_eq!(refused.column(), Some("n"));
 }
+
+#[test]
+fn a_mask_below_a_struct_drops_the_extension_its_ancestors_name() {
+    let inner_fields = Fields::from(vec![Field::new("c", DataType::Utf8, false)]);
+    let extension = |field: Field| {
+        field.with_metadata(
+            [
+                ("ARROW:extension:name".to_owned(), "x.ext".to_owned()),
+                ("ARROW:extension:metadata".to_owned(), String::new()),
+                ("other".to_owned(), "kept".to_owned()),
+            ]
+            .into(),
+        )
+    };
+    let middle_field = extension(Field::new(
+        "b",
+        DataType::Struct(inner_fields.clone()),
+        false,
+    ));
+    let inner = StructArray::new(
+        inner_fields,
+        vec![Arc::new(StringArray::from(vec!["a"])) as ArrayRef],
+        None,
+    );
+    let outer_fields = Fields::from(vec![middle_field]);
+    let outer = StructArray::new(outer_fields.clone(), vec![Arc::new(inner)], None);
+    let top = extension(Field::new("a", DataType::Struct(outer_fields), false));
+    let input = RecordBatch::try_new(
+        Arc::new(arrow_schema::Schema::new(vec![top])),
+        vec![Arc::new(outer)],
+    )
+    .unwrap();
+    let op = Op::mask([path("a.b.c")], Mask::redact("x"));
+    let output = op.output(input.schema_ref()).unwrap();
+    let applied = op.apply(input).unwrap();
+    assert_eq!(applied.schema(), output);
+    let top = output.field(0);
+    let DataType::Struct(children) = top.data_type() else {
+        panic!("a struct");
+    };
+    for field in [top, children[0].as_ref()] {
+        assert!(!field.metadata().contains_key("ARROW:extension:name"));
+        assert!(!field.metadata().contains_key("ARROW:extension:metadata"));
+        assert_eq!(
+            field.metadata().get("other").map(String::as_str),
+            Some("kept")
+        );
+    }
+}
