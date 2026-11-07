@@ -9,6 +9,8 @@ repository.workspace = true
 
 [dependencies]
 arrow-array.workspace = true
+arrow-schema.workspace = true
+arrow-select.workspace = true
 clap.workspace = true
 parking_lot.workspace = true
 rdlt-connector = { workspace = true, features = ["serve", "testing", "wire"] }
@@ -21,7 +23,6 @@ tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "syn
 tokio-stream.workspace = true
 
 [dev-dependencies]
-arrow-schema.workspace = true
 http.workspace = true
 hyper = { workspace = true, features = ["http2", "server"] }
 hyper-util = { workspace = true, features = ["service", "tokio"] }
