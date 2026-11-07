@@ -706,3 +706,107 @@ fn schema_metadata_that_varies_with_the_rows_fails_rowwise() {
     let report = certify_transform(&Bad::TagsSmall, &inputs(5));
     assert_eq!(kind(&report, "T-ROWWISE"), "failed", "{report}");
 }
+
+/// Declares a bound for batches whose first column is `a` only; passes batches on.
+struct BoundedForA;
+
+impl Transform for BoundedForA {
+    fn name(&self) -> &'static str {
+        "bounded_for_a"
+    }
+
+    fn output(&self, input: &Schema) -> Result<SchemaRef, TransformError> {
+        Ok(Arc::new(input.clone()))
+    }
+
+    fn apply(&self, batch: RecordBatch) -> Result<RecordBatch, TransformError> {
+        Ok(batch)
+    }
+
+    fn bound(&self, input: &Schema) -> Option<Bound> {
+        (input.field(0).name() == "a").then(|| Bound::new(0))
+    }
+}
+
+#[test]
+fn a_bound_declared_only_where_no_row_was_measured_is_unobserved() {
+    let column = |name: &str, rows: i64| {
+        let values: ArrayRef = Arc::new(Int64Array::from_iter_values(0..rows));
+        RecordBatch::try_from_iter([(name, values)]).unwrap()
+    };
+    let given = TransformInputs {
+        batches: vec![column("a", 0), column("b", 3)],
+        ..TransformInputs::default()
+    };
+    let report = certify_transform(&BoundedForA, &given);
+    assert_eq!(kind(&report, "T-BOUND"), "unobserved", "{report}");
+    let given = TransformInputs {
+        batches: vec![column("a", 3)],
+        ..TransformInputs::default()
+    };
+    let report = certify_transform(&BoundedForA, &given);
+    assert_eq!(kind(&report, "T-BOUND"), "passed", "{report}");
+}
+
+#[test]
+fn a_breach_found_on_a_batch_without_rows_still_fails() {
+    let bare = inputs(5).batches.remove(0).slice(0, 0);
+    let given = TransformInputs {
+        batches: vec![bare],
+        ..TransformInputs::default()
+    };
+    let report = certify_transform(&Bad::Fixed, &given);
+    assert_eq!(kind(&report, "T-BOUND"), "failed", "{report}");
+}
+
+/// Keeps every row, and returns its filter's answer as a column of its output too.
+struct Echoes {
+    answer: parking_lot::Mutex<Option<BooleanArray>>,
+    bound: Bound,
+}
+
+impl Transform for Echoes {
+    fn name(&self) -> &'static str {
+        "echoes"
+    }
+
+    fn output(&self, input: &Schema) -> Result<SchemaRef, TransformError> {
+        let mut fields: Vec<_> = input.fields().iter().cloned().collect();
+        fields.push(Arc::new(Field::new("kept", DataType::Boolean, false)));
+        Ok(Arc::new(Schema::new(fields)))
+    }
+
+    fn filters(&self) -> bool {
+        true
+    }
+
+    fn keep(&self, batch: &RecordBatch) -> Result<BooleanArray, TransformError> {
+        let answer: BooleanArray = (0..batch.num_rows()).map(|_| Some(true)).collect();
+        *self.answer.lock() = Some(answer.clone());
+        Ok(answer)
+    }
+
+    fn apply(&self, batch: RecordBatch) -> Result<RecordBatch, TransformError> {
+        let answer = self.answer.lock().take().unwrap();
+        let mut columns = batch.columns().to_vec();
+        columns.push(Arc::new(answer));
+        Ok(RecordBatch::try_new(self.output(batch.schema_ref())?, columns).unwrap())
+    }
+
+    fn bound(&self, _input: &Schema) -> Option<Bound> {
+        Some(self.bound.clone())
+    }
+}
+
+#[test]
+fn a_buffer_the_output_and_the_filter_answer_share_is_counted_once() {
+    let given = inputs(1000);
+    let answer: BooleanArray = (0..1000).map(|_| Some(true)).collect();
+    let one = rdlt_connector::cost::Allocations::default().add_array(&answer);
+    let echoes = Echoes {
+        answer: parking_lot::Mutex::new(None),
+        bound: Bound::new(one + one / 2),
+    };
+    let report = certify_transform(&echoes, &given);
+    assert_eq!(kind(&report, "T-BOUND"), "passed", "{report}");
+}

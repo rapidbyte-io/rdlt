@@ -24,18 +24,22 @@ fn cuts(batch: &RecordBatch) -> Vec<(&'static str, RecordBatch)> {
 
 pub(super) fn bounded(transform: &dyn Transform, taken: &[&RecordBatch]) -> Outcome {
     let mut declared = false;
+    let mut measured = false;
     let checked = taken.iter().try_for_each(|batch| {
         let Some(bound) = transform.bound(batch.schema_ref()) else {
             return Ok(());
         };
         declared = true;
+        measured |= batch.num_rows() > 0;
         for (part, cut) in cuts(batch) {
             let made = run(transform, &cut)?;
-            let held = Allocations::of(&cut);
-            let keep = made.keep.map_or(0, |keep| {
-                Allocations::default().add_array_beyond(&keep, &held)
-            });
-            let allocated = rdlt_engine::allocated_beyond(&made.output, &cut).saturating_add(keep);
+            let mut held = Allocations::of(&cut);
+            held.add(&RecordBatch::new_empty(made.output.schema()));
+            let mut returned = Allocations::default();
+            let mut allocated = returned.add_beyond(&made.output, &held);
+            if let Some(keep) = &made.keep {
+                allocated = allocated.saturating_add(returned.add_array_beyond(keep, &held));
+            }
             let limit = bound.of(&cut);
             if allocated > limit {
                 return Err(Breach(format!(
@@ -45,8 +49,13 @@ pub(super) fn bounded(transform: &dyn Transform, taken: &[&RecordBatch]) -> Outc
         }
         Ok(())
     });
-    if checked.is_ok() && !declared {
-        return Outcome::Inapplicable(Reason::new("the transform declares no bound"));
+    match checked {
+        Ok(()) if !declared => {
+            Outcome::Inapplicable(Reason::new("the transform declares no bound"))
+        }
+        Ok(()) if !measured => Outcome::Unobserved(Reason::new(
+            "no input with rows has a schema the transform declares a bound for",
+        )),
+        other => outcome(other),
     }
-    outcome(checked)
 }
