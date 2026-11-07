@@ -28,6 +28,9 @@ exceptions = [
   { crate = "target-lexicon", allow = ["Apache-2.0 WITH LLVM-exception"] },
   # Fuzzing only: libFuzzer's own license, which the fuzz targets link.
   { crate = "libfuzzer-sys", allow = ["NCSA"] },
+  # Tooling only: xtask links it through public-api, to list the facade's public API. The
+  # Unlicense dedicates it to the public domain.
+  { crate = "snapshot-testing", allow = ["Unlicense"] },
 ]
 
 [bans]

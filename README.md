@@ -985,6 +985,7 @@ These decisions are the ones to read first:
 | Topic | ADR |
 |---|---|
 | The architecture and the connector contract | [0001](docs/adr/0001-engine-architecture.md), [0002](docs/adr/0002-connector-contract.md), [0004](docs/adr/0004-engine-core.md) |
+| The public surface: the facade, its host and its document | [0054](docs/adr/0054-the-public-surface.md) |
 | Schemas, name maps and merges | [0005](docs/adr/0005-schemas-names-merge.md) |
 | Nested data | [0009](docs/adr/0009-normalize.md), [0010](docs/adr/0010-normalized-merges.md) |
 | Change streams, history and resets | [0023](docs/adr/0023-change-streams.md), [0035](docs/adr/0035-history.md), [0033](docs/adr/0033-resetting-streams.md) |
