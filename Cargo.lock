@@ -3182,8 +3182,13 @@ dependencies = [
 name = "rdlt"
 version = "0.0.0"
 dependencies = [
+ "proptest",
  "rdlt-connector",
  "rdlt-engine",
+ "schemars",
+ "serde",
+ "serde_json",
+ "serde_path_to_error",
 ]
 
 [[package]]
