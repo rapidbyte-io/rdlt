@@ -387,6 +387,8 @@ jobs:
           - { crate: rdlt-adopt, part: 0, of: 1, every: 1 }
           - { crate: rdlt-python, part: 0, of: 1, every: 1 }
           - { crate: rdlt-sql, part: 0, of: 1, every: 1 }
+          - { crate: rdlt, part: 0, of: 2, every: 1 }
+          - { crate: rdlt, part: 1, of: 2, every: 1 }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
