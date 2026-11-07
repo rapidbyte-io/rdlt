@@ -26,6 +26,18 @@ sqlparser.workspace = true
 stacker.workspace = true
 thiserror.workspace = true
 
+[dev-dependencies]
+datafusion.workspace = true
+proptest.workspace = true
+rdlt-certify.workspace = true
+rdlt-connector-reference.workspace = true
+rdlt-engine = { workspace = true, features = ["bench"] }
+rdlt-testkit.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
 [lints]
 workspace = true
 

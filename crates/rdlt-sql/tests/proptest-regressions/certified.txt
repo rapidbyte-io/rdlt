@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 233448c17350cbea5a9711888467c1408d2e321b1a7a61dfd81ef73770e43635 # shrinks to batches = [RecordBatch { schema: Schema { fields: [Field { name: "t", data_type: Utf8, nullable: true }, Field { name: "n", data_type: Int64, nullable: true }, Field { name: "f", data_type: Float64, nullable: true }, Field { name: "ts", data_type: Timestamp(Microsecond, Some("UTC")), nullable: true }], metadata: {} }, columns: [StringArray [   "aΐ",   "B x",   null, ], PrimitiveArray<Int64> [   4,   -7,   null, ], PrimitiveArray<Float64> [   1.25,   -3.5,   null, ], PrimitiveArray<Timestamp(µs, "UTC")> [   1970-01-01T00:00:00+00:00,   1970-01-02T01:01:01+00:00,   null, ]], row_count: 3 }], expression = "reverse(t)", predicate = None
+cc 11f842110686f474a609e0a7c5343c643718b1f661544e29e7fea29d60e508bc # shrinks to batches = [RecordBatch { schema: Schema { fields: [Field { name: "t", data_type: Utf8, nullable: true }, Field { name: "n", data_type: Int64, nullable: true }, Field { name: "f", data_type: Float64, nullable: true }, Field { name: "ts", data_type: Timestamp(Microsecond, Some("UTC")), nullable: true }], metadata: {} }, columns: [StringArray [   "aΐ",   "B x",   null, ], PrimitiveArray<Int64> [   4,   -7,   null, ], PrimitiveArray<Float64> [   1.25,   -3.5,   null, ], PrimitiveArray<Timestamp(µs, "UTC")> [   1970-01-01T00:00:00+00:00,   1970-01-02T01:01:01+00:00,   null, ]], row_count: 3 }], expression = "substr(t, 2, 3)", predicate = None

@@ -13,6 +13,7 @@ repository = "https://github.com/rapidbyte-io/rdlt"
 [workspace.dependencies]
 # Workspace crates
 rdlt-adopt = { path = "crates/rdlt-adopt", version = "0.0.0" }                             # the audited unsafe code: adopting a host's socket, and a child's inherited descriptors
+rdlt-certify = { path = "crates/rdlt-certify", version = "0.0.0" }                         # certification as a library, whose T clauses rdlt-sql's tests run
 rdlt-connector = { path = "crates/rdlt-connector", version = "0.0.0" }                     # the connector contract
 rdlt-connector-macros = { path = "crates/rdlt-connector-macros", version = "0.0.0" }       # #[source] and #[destination]
 rdlt-connector-reference = { path = "crates/rdlt-connector-reference", version = "0.0.0" } # reference connectors
