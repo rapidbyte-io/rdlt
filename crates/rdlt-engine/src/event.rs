@@ -21,6 +21,9 @@ use crate::report::{Acks, CommitPhases, RunStatus, StreamReport, Trigger};
 /// One thing a run did, told as it happens.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Event {
+    /// The event's place among its run's events, the first being 1, with no gap: a subscriber
+    /// that missed some knows how many.
+    pub seq: u64,
     /// When it happened, on the run's environment's wall clock.
     pub at: SystemTime,
     /// The pipeline the run loads.
@@ -41,7 +44,7 @@ pub enum EventKind {
     /// A commit landed, and its cursors were reported to the source.
     Committed {
         /// The commit's place among its attempt's commits, the first being 1.
-        seq: u64,
+        commit: u64,
         /// What made it due.
         trigger: Trigger,
         /// Rows it published, as its receipt counts them.
@@ -195,7 +198,7 @@ impl Unreported {
     pub(crate) fn reported(self, acks: Acks, ack: Duration, at: Instant) -> EventKind {
         let phases = CommitPhases { ack, ..self.phases };
         EventKind::Committed {
-            seq: self.seq,
+            commit: self.seq,
             trigger: self.trigger,
             rows: self.rows,
             bytes: self.bytes,
@@ -213,13 +216,21 @@ impl Unreported {
     }
 }
 
-/// Whether a run told its end, after which it tells nothing more.
+/// What a run told so far: how many events, and whether its end, after which it tells nothing
+/// more.
 ///
-/// Each event of the run is told holding it, so none follows the end, though a task the end left
-/// running still runs, and the run's events are told one at a time.
+/// Each event of the run is told holding it, so none follows the end and the numbers have no
+/// gap, though a task the end left running still runs, and the run's events are told one at a
+/// time.
 #[derive(Debug, Default)]
 pub(crate) struct Telling {
-    ended: Mutex<bool>,
+    told: Mutex<Told>,
+}
+
+#[derive(Debug, Default)]
+struct Told {
+    ended: bool,
+    last: u64,
 }
 
 /// Tells a run's environment what happens in one of its attempts.
@@ -261,24 +272,27 @@ impl Announcer {
         if !self.observes() {
             return;
         }
-        let ended = self.telling.ended.lock();
-        if !*ended {
-            self.tell(kind());
+        let mut told = self.telling.told.lock();
+        if !told.ended {
+            told.last += 1;
+            self.tell(told.last, kind());
         }
     }
 
     /// Tells the environment that the run ended as `status`, unless it was told so: nothing is
     /// told after.
     pub(crate) fn end(&self, status: RunStatus) {
-        let mut ended = self.telling.ended.lock();
-        if !std::mem::replace(&mut *ended, true) && self.observes() {
-            self.tell(EventKind::RunEnded { status });
+        let mut told = self.telling.told.lock();
+        if !std::mem::replace(&mut told.ended, true) && self.observes() {
+            told.last += 1;
+            self.tell(told.last, EventKind::RunEnded { status });
         }
     }
 
-    /// Tells the environment that `kind` happened, now.
-    fn tell(&self, kind: EventKind) {
+    /// Tells the environment that `kind` happened, now, as the run's `seq`th event.
+    fn tell(&self, seq: u64, kind: EventKind) {
         let event = Event {
+            seq,
             at: self.env.now(),
             pipeline: self.pipeline.clone(),
             attempt: self.attempt,

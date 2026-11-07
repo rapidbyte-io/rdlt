@@ -69,8 +69,10 @@ fn ended(report: &Report) -> Status {
     }
 }
 
+/// An event of `attempt`, whose place [`told`] gives it among those it is handed.
 fn event(attempt: u64, kind: EventKind) -> Event {
     Event {
+        seq: 0,
         at: SystemTime::UNIX_EPOCH,
         pipeline: pipeline(),
         attempt,
@@ -80,7 +82,7 @@ fn event(attempt: u64, kind: EventKind) -> Event {
 
 fn committed(rows: u64, bytes: u64) -> EventKind {
     EventKind::Committed {
-        seq: 1,
+        commit: 1,
         trigger: Trigger::End,
         rows,
         bytes,
@@ -112,10 +114,14 @@ fn agreeing() -> Vec<Event> {
     ]
 }
 
+/// What a run that told `events`, numbered in their order, comes to.
 fn told(events: &[Event]) -> Told {
     let mut told = Told::default();
-    for event in events {
-        told.tell(event);
+    for (seq, event) in (1..).zip(events) {
+        told.tell(&Event {
+            seq,
+            ..event.clone()
+        });
     }
     told
 }
@@ -163,6 +169,27 @@ fn each_disagreement_of_a_run_s_events_with_its_end_is_a_violation() {
         1,
         "the status once ended carries the outcome's report"
     );
+}
+
+#[test]
+fn a_number_skipped_or_repeated_is_a_violation() {
+    let report = report();
+    let numbered = |numbers: [u64; 6]| {
+        let mut told = Told::default();
+        for (seq, event) in numbers.into_iter().zip(agreeing()) {
+            told.tell(&Event { seq, ..event });
+        }
+        told
+    };
+    for numbers in [[1, 2, 3, 5, 6, 7], [1, 2, 3, 3, 4, 5]] {
+        let wrong = disagreements(&numbered(numbers), &report, &ended(&report));
+        assert_eq!(wrong.len(), 1, "{numbers:?}: {wrong:?}");
+        assert_eq!(
+            numbered(numbers).gaps,
+            1,
+            "{numbers:?} breaks the numbers once"
+        );
+    }
 }
 
 #[test]
