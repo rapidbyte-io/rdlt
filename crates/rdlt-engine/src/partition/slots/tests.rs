@@ -39,6 +39,7 @@ fn job(index: usize, followed: bool) -> PartitionJob {
         follow: followed,
         reset_retention: false,
         exclude: rdlt_connector::Exclusion::default(),
+        stage: None,
     }
 }
 

@@ -111,6 +111,10 @@ fn a_sealed_segment_carries_its_rows_state_and_discards() {
         deletes_ignored: 0,
         truncates_ignored: 0,
         shred: crate::report::ShredCounts::default(),
+        filtered: crate::report::FilteredRows {
+            dropped: 5,
+            deleted: 6,
+        },
     };
     let seal = open.seal(2, PartitionState::Done, Some(3), CursorHold::default());
     assert_eq!(
@@ -126,6 +130,7 @@ fn a_sealed_segment_carries_its_rows_state_and_discards() {
     assert_eq!(seal.state, PartitionState::Done);
     assert_eq!((seal.discarded_rows, seal.discarded_values), (2, 1));
     assert_eq!(seal.discards, discards);
+    assert_eq!((seal.filtered.dropped, seal.filtered.deleted), (5, 6));
 }
 
 #[tokio::test]
@@ -174,6 +179,7 @@ async fn a_read_ending_at_its_last_cursor_holds_that_cursor_in_the_cursors_share
         follow: false,
         reset_retention: false,
         exclude: rdlt_connector::Exclusion::default(),
+        stage: None,
     };
     let ran = tokio::time::timeout(WAIT, super::run(job, Arc::new(context))).await;
     ran.expect("the read ends in time")

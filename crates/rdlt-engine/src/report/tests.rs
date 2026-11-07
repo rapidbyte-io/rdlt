@@ -6,7 +6,7 @@ use rdlt_connector::{CommitKey, Epoch, Headroom, PartitionId, PipelineId, Receip
 
 use super::{
     AttemptLog, AttemptRecord, ColumnDiscards, CommitRecord, Committed, DiscardReason, Discards,
-    Forgotten, Report, RunStatus, ShredCounts, StreamReport,
+    FilteredRows, Forgotten, Report, RunStatus, ShredCounts, StreamReport,
 };
 use crate::error::{Error, ErrorKind, codes};
 use crate::limits::{REPORTED_ATTEMPTS, REPORTED_FORGOTTEN, REPORTED_LISTED};
@@ -40,6 +40,10 @@ fn commit(epoch: Epoch, rows: u64, streams: &[(&str, u64, u64)]) -> CommitRecord
                         parsed: 2,
                         rebuilt: 1,
                         ..ShredCounts::default()
+                    },
+                    filtered: FilteredRows {
+                        dropped: 3,
+                        deleted: 1,
                     },
                 };
                 (StreamName::new(name).unwrap(), report)
@@ -125,6 +129,7 @@ fn a_report_folds_every_attempt_from_receipts() {
     );
     // Each commit's shredding is summed: two parses and a rebuild a commit.
     assert_eq!((a.shred.parsed, a.shred.rebuilt, a.shred.exact), (4, 2, 0));
+    assert_eq!((a.filtered.dropped, a.filtered.deleted), (6, 2));
     let b = &report.streams["b"];
     assert_eq!((b.rows, b.commits, b.generations_swapped), (6, 2, 1));
 }

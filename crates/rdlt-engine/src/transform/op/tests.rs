@@ -205,3 +205,31 @@ fn text_room_is_what_32_bit_offsets_reach() {
     assert!(text_room(usize::MAX, 2, "c").is_err());
     assert!(text_room(40_000_000, 64, "c").is_err());
 }
+
+#[test]
+fn an_op_says_which_column_it_names_a_schema_lacks() {
+    use arrow_schema::{DataType, Field, Fields, Schema};
+
+    let inner = Fields::from(vec![Field::new("inner", DataType::Utf8, true)]);
+    let schema = Schema::new(vec![
+        Field::new("note", DataType::Utf8, true),
+        Field::new("s", DataType::Struct(inner), true),
+    ]);
+    let path = |dotted: &str| ColumnPath::new(dotted.split('.')).unwrap();
+    let cases = [
+        (Op::rename([("note", "remark")]), None),
+        (Op::rename([("nite", "remark")]), Some("nite")),
+        (Op::rename([("note", "remark"), ("x", "y")]), Some("x")),
+        (Op::constant([("c", Literal::Integer(1))]), None),
+        (Op::mask([path("s.inner"), path("note")], Mask::Null), None),
+        (
+            Op::mask([path("note"), path("s.absent")], Mask::Null),
+            Some("s.absent"),
+        ),
+        (Op::mask([path("absent")], Mask::Null), Some("absent")),
+        (Op::mask([path("note.below")], Mask::Null), None),
+    ];
+    for (op, lacks) in cases {
+        assert_eq!(op.lacks(&schema).as_deref(), lacks, "{op:?}");
+    }
+}

@@ -12,7 +12,7 @@ use rdlt_connector::{
 };
 
 use self::reads::{Partitioned, Read, Sourced, read, sourced};
-use super::check::{check_excluded, check_stream};
+use super::check::{check_excluded, check_stream, check_transformed};
 use super::{Planned, RunContext, sequences, together};
 use crate::coordinator::{Cycle, Phases, StreamRun, Template};
 use crate::error::{Error, codes};
@@ -25,6 +25,7 @@ use crate::policy::Nested;
 use crate::table::{
     ChangeLayout, Incoming, LineageColumns, MetaNames, Model, Resolver, Settings, Tables,
 };
+use crate::transform::stage::{Stage, refused};
 
 /// What planning an attempt's streams needs besides the stream itself.
 pub(super) struct Planning<'a> {
@@ -98,6 +99,9 @@ impl<'a> Planning<'a> {
         sourced: Sourced,
     ) -> Result<Planned, Error> {
         let Checked { spec, shape, key } = checked;
+        let primary = spec.primary_key().into_iter().flatten();
+        let keys: Vec<ColumnPath> = primary.chain(&key).cloned().collect();
+        let stage = Stage::new(plan, &keys, spec.change_time()).map(Arc::new);
         let generation = match (plan.write_mode(), &sourced.cycle) {
             (WriteMode::Replace, Some(cycle)) => Some(cycle.generation),
             _ => None,
@@ -116,7 +120,7 @@ impl<'a> Planning<'a> {
         let index = tables.add_normalized(resolver, &table, model, shape.clone())?;
         let mut children = Vec::new();
         if let Some(declared) = spec.schema() {
-            let declared = &kept(declared, plan)?;
+            let declared = &kept(declared, plan, stage.as_deref())?;
             let incoming = match &shape {
                 Some(shape) => {
                     let made = normalize::declared::children(declared, shape)?;
@@ -146,6 +150,7 @@ impl<'a> Planning<'a> {
             (on_demand, partial_updates, follow),
             cycle,
             partitioned,
+            stage,
         );
         planned.stream.sequences = sequences;
         Ok(planned)
@@ -228,13 +233,14 @@ fn checked<'a>(
     let max_depth = normalized_depth(context, plan);
     unnormalizable(plan, max_depth.is_some())?;
     let key = merge_key(plan, spec)?;
+    check_transformed(plan, spec, &key)?;
     let shape = max_depth.map(|max_depth| shape(plan, max_depth, &key));
     Ok(Checked { spec, shape, key })
 }
 
-/// `plan`'s stream, its table at `index`, ready to load `partitioned`, checkpointing on demand,
-/// changing unchanged columns and following its source as `(on_demand, partial_updates,
-/// follow)` say.
+/// `plan`'s stream, its table at `index`, ready to load `partitioned` through `stage`,
+/// checkpointing on demand, changing unchanged columns and following its source as
+/// `(on_demand, partial_updates, follow)` say.
 ///
 /// A change stream reads in phases, and an incremental stream of a following run tracks its
 /// partitions as one does, so it is planned again as it reads.
@@ -244,6 +250,7 @@ fn planned(
     (on_demand, partial_updates, follow): (bool, bool, bool),
     cycle: Option<Cycle>,
     partitioned: Partitioned,
+    stage: Option<Arc<Stage>>,
 ) -> Planned {
     let cdc = plan.read_mode() == ReadMode::Cdc;
     let reset_retention = plan.retention_loss() == RetentionLoss::Reset;
@@ -269,6 +276,7 @@ fn planned(
             changes,
             reset_retention,
             exclude: exclude.clone(),
+            stage: stage.clone(),
         },
     });
     Planned {
@@ -288,6 +296,7 @@ fn planned(
         follow: follow && tracked,
         reset_retention,
         exclude,
+        stage,
         partitions: partitioned.partitions,
     }
 }
@@ -350,16 +359,35 @@ fn shape(plan: &StreamPlan, max_depth: u8, key: &[ColumnPath]) -> Shape {
     }
 }
 
-/// `declared`, a stream's declared schema, without the columns `plan` excludes.
-fn kept(declared: &TableSchema, plan: &StreamPlan) -> Result<TableSchema, Error> {
+/// `declared`, a stream's declared schema, as its stage makes it: without the columns `plan`
+/// excludes, and through its include and transforms where it has a `stage`.
+fn kept(
+    declared: &TableSchema,
+    plan: &StreamPlan,
+    stage: Option<&Stage>,
+) -> Result<TableSchema, Error> {
+    let name = plan.name();
     let exclusion = plan.exclusion();
     let fields = declared.fields().iter();
     let kept = fields.filter(|field| !exclusion.contains(field.name()));
-    TableSchema::new(kept.cloned().collect()).map_err(|error| {
-        let name = plan.name();
+    let kept = TableSchema::new(kept.cloned().collect()).map_err(|error| {
         Error::internal(format!(
             "stream {name}: its declared schema without the columns it excludes: {error}"
         ))
+        .with_stream(name)
+    })?;
+    let Some(stage) = stage else {
+        return Ok(kept);
+    };
+    let chain = stage
+        .declared(&Arc::new(kept.to_arrow()))
+        .map_err(|refusal| refused(name, refusal))?;
+    TableSchema::from_arrow(chain.data_output()).map_err(|error| {
+        Error::config(format!(
+            "stream {name}: what its transforms make of its declared schema has no table \
+             schema: {error}"
+        ))
+        .with_code(codes::TRANSFORM_SCHEMA)
         .with_stream(name)
     })
 }

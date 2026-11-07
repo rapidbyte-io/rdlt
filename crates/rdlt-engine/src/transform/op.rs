@@ -98,6 +98,21 @@ impl Op {
             Self::Mask { .. } => Vec::new(),
         }
     }
+
+    /// The first column the op names that `input` lacks: what a declared schema must hold.
+    pub(crate) fn lacks(&self, input: &Schema) -> Option<String> {
+        match self {
+            Self::Rename(pairs) => pairs
+                .iter()
+                .find(|(from, _)| input.index_of(from).is_err())
+                .map(|(from, _)| from.clone()),
+            Self::Constant(_) => None,
+            Self::Mask { columns, .. } => columns
+                .iter()
+                .find(|path| matches!(mask::place(input, path), Ok(None)))
+                .map(ToString::to_string),
+        }
+    }
 }
 
 impl Literal {

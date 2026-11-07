@@ -42,6 +42,7 @@ use crate::scope::TaskScope;
 use crate::status::Live;
 use crate::stored::{StateLimits, Stored};
 use crate::table::{SharedSession, Tables};
+use crate::transform::stage::Stage;
 use crate::watch;
 
 use lanes::start_lanes;
@@ -83,6 +84,8 @@ struct Planned {
     reset_retention: bool,
     /// The columns it excludes.
     exclude: Exclusion,
+    /// What its include and transforms make of each batch, if it lists either.
+    stage: Option<Arc<Stage>>,
     partitions: Vec<(Partition, Option<Cursor>)>,
 }
 
@@ -391,6 +394,7 @@ fn spawn_partitions(
                 follow: stream.follow,
                 reset_retention: stream.reset_retention,
                 exclude: stream.exclude.clone(),
+                stage: stream.stage.clone(),
             };
             if let Some(phases) = stream.stream.phases.as_mut() {
                 phases.reading.insert(id.clone(), partitions.len());

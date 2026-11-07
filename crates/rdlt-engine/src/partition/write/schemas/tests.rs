@@ -74,3 +74,39 @@ fn a_schema_with_no_table_schema_is_refused_and_not_kept() {
     assert!(schemas.of(&refused).is_err());
     assert_eq!(schemas.misses, 2);
 }
+
+#[test]
+fn the_stage_s_chains_are_kept_for_the_input_schemas_met_last() {
+    use rdlt_connector::StreamName;
+
+    use crate::plan::StreamPlan;
+    use crate::transform::stage::Stage;
+
+    let plan = StreamPlan::new(StreamName::new("s").unwrap()).include_only(["id"]);
+    let stage = Stage::new(&plan, &[], None).unwrap();
+    let inputs: Vec<Arc<Schema>> = (0..=super::CHAINS)
+        .map(|n| schema(Field::new(format!("doc{n}"), DataType::Utf8, true)))
+        .collect();
+    let mut schemas = Schemas::default();
+    for input in &inputs {
+        assert!(schemas.chain(input).is_none());
+        schemas.keep_chain(Arc::new(stage.chain(input).unwrap()));
+    }
+    // The oldest was let go to keep the newest.
+    assert!(schemas.chain(&inputs[0]).is_none());
+    for input in &inputs[1..] {
+        let kept = schemas
+            .chain(input)
+            .expect("a chain is kept for each newer schema");
+        assert!(Arc::ptr_eq(kept.input(), input));
+    }
+    let equal = schema(Field::new(
+        format!("doc{}", super::CHAINS),
+        DataType::Utf8,
+        true,
+    ));
+    let kept = schemas
+        .chain(&equal)
+        .expect("an equal schema finds its chain");
+    assert!(Arc::ptr_eq(kept.input(), &inputs[super::CHAINS]));
+}

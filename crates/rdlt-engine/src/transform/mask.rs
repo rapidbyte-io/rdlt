@@ -46,7 +46,10 @@ const HEXED_ROW: u64 = 64 + 4 + 1;
 
 /// Where `path` sits in `schema`: its top-level column's index, then each nested field's; none
 /// where the schema lacks it.
-fn place(schema: &Schema, path: &ColumnPath) -> Result<Option<Vec<usize>>, TransformError> {
+pub(super) fn place(
+    schema: &Schema,
+    path: &ColumnPath,
+) -> Result<Option<Vec<usize>>, TransformError> {
     let mut segments = path.segments();
     let Some(root) = segments.next() else {
         return Ok(None);

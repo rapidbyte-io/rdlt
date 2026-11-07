@@ -90,8 +90,8 @@ pub use plan::{DeleteMode, OnTruncate, PipelinePlan, RetentionLoss, StreamPlan, 
 pub use policy::{Nested, OnUnsupported, SchemaPolicy, SchemaSettings};
 pub use report::{
     Acks, AttemptReport, CommitPhases, Commits, Counters, Discard, DiscardReason, Discards,
-    Flushes, Forgotten, LaneCounters, PoolCounters, Report, RunStatus, ShredCounts, StreamReport,
-    Trigger, Waited, Waits,
+    FilteredRows, Flushes, Forgotten, LaneCounters, PoolCounters, Report, RunStatus, ShredCounts,
+    StreamReport, Trigger, Waited, Waits,
 };
 pub use run::{Engine, ResetReport, ResetScope, RunControl, RunHandle, RunOutcome, StopMode};
 pub use status::{Call, LaneCall, OpenWaits, Partitions, Phase, Quiet, Status, Step, StreamStatus};
