@@ -3,6 +3,7 @@
 
 mod changes;
 mod contract;
+mod decoding;
 mod refused;
 mod room;
 #[cfg(test)]
@@ -19,6 +20,7 @@ use rdlt_connector::{ColumnPath, ReadMode, UNCHANGED_COLUMN};
 
 use self::changes::{ChangePlaces, Changes};
 use self::contract::{Declared, applied, carried, declares, kept};
+use self::decoding::Encoded;
 pub(crate) use self::refused::{Breach, Refusal, refused};
 use super::{Transform, TransformStep, allocated_beyond};
 use crate::plan::StreamPlan;
@@ -57,7 +59,12 @@ pub(crate) struct Chain {
     kept_places: Vec<Option<usize>>,
     /// Where a change batch's change columns sit in the input.
     places: Option<ChangePlaces>,
-    /// Each transform's input schema, then the transforms' output; data columns alone.
+    /// The data columns kept, as they arrive.
+    arrived: SchemaRef,
+    /// The kept data columns that arrive encoded, which a stage that transforms decodes first.
+    encoded: Encoded,
+    /// Each transform's input schema, then the transforms' output; data columns alone, the
+    /// encoded ones decoded.
     schemas: Vec<SchemaRef>,
     /// What each transform declares of its input.
     declared: Vec<Declared>,
@@ -146,10 +153,16 @@ impl Stage {
         for (at, place) in kept.iter().enumerate() {
             kept_places[*place] = Some(at);
         }
-        let first = input
+        let arrived = input
             .project(&kept)
             .map_err(|error| internal("keeping a batch's columns", &error))?;
-        let mut schemas = vec![Arc::new(first)];
+        let arrived = Arc::new(arrived);
+        let (first, encoded) = if self.steps.is_empty() {
+            (Arc::clone(&arrived), Encoded::default())
+        } else {
+            decoding::decoded_schema(&arrived)?
+        };
+        let mut schemas = vec![first];
         let mut declared = Vec::with_capacity(self.steps.len());
         for step in self.steps.iter() {
             let transform = step.as_transform();
@@ -171,6 +184,8 @@ impl Stage {
             kept,
             kept_places,
             places,
+            arrived,
+            encoded,
             schemas,
             declared,
             output,
@@ -266,6 +281,14 @@ impl Stage {
         }
         let (mut data, mut changes) = changes::split(part, chain)?;
         let mut held = changes.as_ref().map_or(0, |changes| changes.beyond(part));
+        if !chain.encoded.is_empty() {
+            let room = decoding::room(&data, &chain.encoded, free.saturating_sub(held))?;
+            if held.saturating_add(room) > free {
+                return too_large(None, part, held.saturating_add(room), free);
+            }
+            data = decoding::decode(&data, &chain.encoded, &chain.schemas[0])?;
+            held = room::held(part, &data, changes.as_ref());
+        }
         let mut done = Ran::default();
         for (index, step) in self.steps.iter().enumerate() {
             let transform = step.as_transform();

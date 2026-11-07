@@ -38,7 +38,8 @@ pub(crate) enum Refusal {
         bound: u64,
     },
     /// One row takes more than what one request leaves the stage, as a transform asks or, where
-    /// it names none, as moving its flags does.
+    /// it names none, as the stage's own work does: moving its flags, decoding its encoded
+    /// columns.
     Row {
         transform: Option<String>,
         asked: u64,
@@ -148,11 +149,14 @@ impl fmt::Display for Refusal {
 }
 
 /// Writes what one row takes, `asked` bytes as `transform` asks them or, where that is none, as
-/// moving its unchanged flags does, beyond the `free` bytes a request left.
+/// the stage's own work does, beyond the `free` bytes a request left.
 fn row(f: &mut fmt::Formatter<'_>, transform: Option<&str>, asked: u64, free: u64) -> fmt::Result {
     match transform {
         Some(transform) => write!(f, "transform {transform} takes {asked} bytes for one row")?,
-        None => write!(f, "moving one row's unchanged flags takes {asked} bytes")?,
+        None => write!(
+            f,
+            "moving one row's unchanged flags or decoding its encoded columns takes {asked} bytes"
+        )?,
     }
     write!(f, ", beyond the {free} {LEFT}")
 }
