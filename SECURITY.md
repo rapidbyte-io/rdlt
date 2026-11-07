@@ -35,6 +35,15 @@ complete, run only connectors you trust. The mechanisms in place today:
 - frames from a connector are checked against size limits before they are decoded, and every
   other message within the limit of what its call carries (The control plane, below).
 
+A pipeline's transforms are part of its configuration. Ops and SQL are data the engine
+validates and bounds: SQL text, its nesting, its literals and its regular expressions have
+limits, its functions are a fixed list bounded by their arguments, and an error never quotes
+a value. A Rust transform is the embedder's own code, which no configuration can name
+(ADR 0053). A panic in the libraries that parse or plan SQL refuses the query rather than
+ending the process, but the process's panic hook still runs first, and a library may have
+formatted its message from the query's text: the hook, stderr by default or an embedder's
+own, sees it.
+
 ## Placement
 
 A reference to a connector states what it requires: an id, and optionally a version, a path,

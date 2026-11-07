@@ -1,6 +1,7 @@
-//! `cargo xtask instructions`: counts the instructions and allocations each case of the engine's
-//! `allocations` benchmark takes per iteration, on this tree and on a base revision built beside
-//! it with the same toolchain, and fails where a case takes more than a limit above the base.
+//! `cargo xtask instructions`: counts the instructions and allocations each case of the
+//! `allocations` benchmarks of the engine and of rdlt-sql takes per iteration, on this tree and on
+//! a base revision built beside it with the same toolchain, and fails where a case takes more than
+//! a limit above the base.
 //!
 //! A case is counted under callgrind at two iteration counts, and its count is their difference
 //! over the iterations between them: what the process does once, making the case's inputs among
@@ -8,6 +9,7 @@
 
 #[cfg(test)]
 mod tests;
+mod worktree;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -20,6 +22,8 @@ use std::time::{Duration, Instant};
 use anyhow::Context as _;
 use cargo_metadata::Message;
 
+use self::worktree::Worktree;
+
 /// The iteration counts a case is counted at; neither is its first iteration alone.
 const ITERATIONS: (u64, u64) = (1, 3);
 
@@ -28,6 +32,9 @@ pub(crate) const VALGRIND: (u32, u32) = (3, 22);
 
 /// The commit trailer naming a case whose growth the commit's change accepts.
 pub(crate) const ACCEPTED: &str = "Instructions-Accepted";
+
+/// The packages whose `allocations` benchmark holds cases.
+const BENCHED: [&str; 2] = ["rdlt-engine", "rdlt-sql"];
 
 /// What one iteration of a case takes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -244,52 +251,6 @@ pub(crate) fn run(root: &Path, base: &str, limit: f64) -> anyhow::Result<ExitCod
     })
 }
 
-/// A detached checkout of a revision in a temporary directory outside this tree, so none of this
-/// tree's cargo configuration reaches its build; removed when dropped.
-struct Worktree {
-    root: PathBuf,
-    directory: tempfile::TempDir,
-}
-
-impl Worktree {
-    fn add(root: &Path, revision: &str) -> anyhow::Result<Self> {
-        // A run that was killed leaves its checkout registered after its directory is gone.
-        printed(root, "git", &["worktree", "prune"])?;
-        let directory = tempfile::Builder::new()
-            .prefix("rdlt-instructions-base-")
-            .tempdir()
-            .context("making a directory for the base")?;
-        let path = directory
-            .path()
-            .to_str()
-            .context("the base's directory is not UTF-8")?;
-        printed(
-            root,
-            "git",
-            &["worktree", "add", "--detach", path, revision],
-        )?;
-        Ok(Self {
-            root: root.to_path_buf(),
-            directory,
-        })
-    }
-
-    fn path(&self) -> &Path {
-        self.directory.path()
-    }
-}
-
-impl Drop for Worktree {
-    fn drop(&mut self) {
-        let removed = Command::new("git")
-            .current_dir(&self.root)
-            .args(["worktree", "remove", "--force"])
-            .arg(self.directory.path())
-            .status();
-        drop(removed);
-    }
-}
-
 /// The channel `rust-toolchain.toml` names, which both builds use.
 fn toolchain(root: &Path) -> anyhow::Result<String> {
     let text = fs::read_to_string(root.join("rust-toolchain.toml"))
@@ -303,9 +264,22 @@ fn toolchain(root: &Path) -> anyhow::Result<String> {
         .context("rust-toolchain.toml names no channel")
 }
 
-/// Builds the `allocations` benchmark of the base at `base` and of this tree side by side, each
+/// The packages of [`BENCHED`] a tree holds, as `holds` says: a base from before one lacks it.
+pub(crate) fn benched(holds: impl Fn(&str) -> bool) -> Vec<&'static str> {
+    BENCHED
+        .into_iter()
+        .filter(|package| holds(package))
+        .collect()
+}
+
+/// Builds the `allocations` benchmarks of the base at `base` and of this tree side by side, each
 /// into its own target directory under `out`, and returns their executables, the base's first.
-fn builds(root: &Path, base: &Path, out: &Path, toolchain: &str) -> anyhow::Result<[PathBuf; 2]> {
+fn builds(
+    root: &Path,
+    base: &Path,
+    out: &Path,
+    toolchain: &str,
+) -> anyhow::Result<[Vec<PathBuf>; 2]> {
     // Cargo fingerprints a workspace's units by paths within it, so two checkouts building into
     // one target directory would take each other's outputs as their own. Each build ends in a
     // long single-threaded link, so the two overlap.
@@ -319,15 +293,21 @@ fn builds(root: &Path, base: &Path, out: &Path, toolchain: &str) -> anyhow::Resu
     })
 }
 
-/// Builds the `allocations` benchmark of the workspace at `tree` into `target`, as `cargo bench`
-/// builds it, and returns its executable.
-fn build(tree: &Path, target: &Path, toolchain: &str) -> anyhow::Result<PathBuf> {
-    let mut child = Command::new("cargo")
+/// Builds the `allocations` benchmarks of the workspace at `tree` into `target`, as `cargo bench`
+/// builds them, in one invocation, and returns their executables.
+fn build(tree: &Path, target: &Path, toolchain: &str) -> anyhow::Result<Vec<PathBuf>> {
+    let mut command = Command::new("cargo");
+    command
         .current_dir(tree)
         .env("RUSTUP_TOOLCHAIN", toolchain)
-        .args(["bench", "--locked", "--package", "rdlt-engine"])
-        .args(["--features", "bench", "--bench", "allocations", "--no-run"])
+        .args(["bench", "--locked"]);
+    for package in benched(|package| tree.join("crates").join(package).exists()) {
+        command.args(["--package", package]);
+    }
+    let mut child = command
+        .args(["--features", "rdlt-engine/bench", "--bench", "allocations"])
         .args([
+            "--no-run",
             "--message-format",
             "json-render-diagnostics",
             "--target-dir",
@@ -337,33 +317,40 @@ fn build(tree: &Path, target: &Path, toolchain: &str) -> anyhow::Result<PathBuf>
         .spawn()
         .context("running cargo bench")?;
     let stdout = child.stdout.take().context("cargo's output")?;
-    let mut executable = None;
+    let mut executables = Vec::new();
     for message in Message::parse_stream(BufReader::new(stdout)) {
         if let Message::CompilerArtifact(artifact) = message.context("reading cargo's output")?
             && artifact.target.name == "allocations"
+            && let Some(executable) = artifact.executable.map(PathBuf::from)
+            && !executables.contains(&executable)
         {
-            executable = artifact.executable.or(executable);
+            executables.push(executable);
         }
     }
     let status = child.wait().context("waiting for cargo bench")?;
     anyhow::ensure!(
         status.success(),
-        "building the benchmark in {} failed",
+        "building the benchmarks in {} failed",
         tree.display()
     );
-    executable
-        .map(PathBuf::from)
-        .with_context(|| format!("{} has no allocations benchmark", tree.display()))
+    anyhow::ensure!(
+        !executables.is_empty(),
+        "{} has no allocations benchmark",
+        tree.display()
+    );
+    Ok(executables)
 }
 
-/// Every case's counts on both sides, from `binaries`, the base's first.
-fn count_cases(binaries: &[PathBuf; 2], out: &Path) -> anyhow::Result<Vec<Counted>> {
+/// Every case's counts on both sides, from each side's `binaries`, the base's first.
+fn count_cases(binaries: &[Vec<PathBuf>; 2], out: &Path) -> anyhow::Result<Vec<Counted>> {
     let mut counts: BTreeMap<String, [Option<Counts>; 2]> = BTreeMap::new();
-    for (side, binary) in binaries.iter().enumerate() {
+    for (side, built) in binaries.iter().enumerate() {
         let kept = out.join(["base", "head"][side]).join("callgrind");
-        for case in cases(binary)? {
-            let count = count(binary, &case, &kept)?;
-            counts.entry(case).or_default()[side] = Some(count);
+        for binary in built {
+            for case in cases(binary)? {
+                let count = count(binary, &case, &kept)?;
+                counts.entry(case).or_default()[side] = Some(count);
+            }
         }
     }
     Ok(counts
