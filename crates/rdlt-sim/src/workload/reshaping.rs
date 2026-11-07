@@ -1,8 +1,12 @@
 //! What a stream's include and transforms do to its rows: the columns it lists, a filter, a
-//! rename and a constant column.
+//! rename, a constant column and its mask, and a column a code transform adds.
 
+use std::fmt::Write as _;
+
+use hmac::{Hmac, Mac as _};
 use rdlt_connector::META_PREFIX;
 use rdlt_engine::WriteMode;
+use sha2::Sha256;
 
 use super::{Row, SimStream};
 use crate::rng::SplitMix64;
@@ -14,11 +18,24 @@ pub(crate) const CONSTANT_COLUMN: &str = "sim_constant";
 /// The text that column holds in every row.
 pub(crate) const CONSTANT: &str = "c";
 
+/// The column a stream's code transform adds, each row's offset doubled.
+pub(crate) const TWICE_COLUMN: &str = "sim_twice";
+
+/// The key a hashing mask hashes [`CONSTANT`] under.
+pub(crate) const MASK_KEY: &str = "sim";
+
+/// The text a redacting mask writes over [`CONSTANT`].
+pub(crate) const REDACTION: &str = "***";
+
 /// The columns every allow-list names: those the oracle finds each row by.
 pub(crate) const LISTED: [&str; 4] = ["id", "partition", "offset", "value"];
 
 /// What a stream's include and transforms do to its rows, drawn apart from every other draw.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each is a transform the stream draws or not, independently"
+)]
 pub struct Reshaping {
     /// Where the plan lists the columns it includes, those it lists beside `id`, `partition`,
     /// `offset` and `value`, which every list names: drift columns and the fat column, never the
@@ -30,17 +47,31 @@ pub struct Reshaping {
     pub filter: Option<i64>,
     /// Whether `offset` lands as `sim_offset`.
     pub rename: bool,
-    /// Whether every row carries `sim_constant`, holding `c`.
+    /// Whether every row carries `sim_constant`, holding `c` as its mask leaves it.
     pub constant: bool,
+    /// How the constant column is masked after it is added, where it is.
+    pub masked: Option<Masked>,
+    /// Whether every row carries `sim_twice`, which a code transform adds.
+    pub doubled: bool,
     /// Whether the filter answers a row it does not keep with null rather than false.
     pub cased: bool,
+}
+
+/// How a stream masks its constant column.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Masked {
+    /// Each value is written over by `***`.
+    Redacted,
+    /// Each value is its `HMAC-SHA256` under the key `sim`, in hex.
+    Hashed,
 }
 
 impl Reshaping {
     /// What `stream` does, where `features` transform, drawn from `seed` apart from every other
     /// draw: nothing, or an allow-list one time in three, naming each drift column and the fat
-    /// column one time in two, and a filter, a rename and a constant column one time in two each;
-    /// a filter says no with null one time in two.
+    /// column one time in two, and a filter, a rename and a constant column one time in two each,
+    /// the constant masked one time in two, redacted or hashed alike often, and the offset doubled
+    /// by a code transform one time in two; a filter says no with null one time in two.
     ///
     /// No stream with a drift column whose name begins as the engine's own columns' do filters:
     /// a SQL query outputs no such name.
@@ -62,12 +93,40 @@ impl Reshaping {
             .iter()
             .any(|drift| drift.name.starts_with(META_PREFIX));
         let filters = rng.chance(500) && stream.write != WriteMode::Merge && !engine;
+        let (rename, constant) = (rng.chance(500), rng.chance(500));
+        let (masks, hashes, doubled) = (rng.chance(500), rng.chance(500), rng.chance(500));
+        let cased = rng.chance(500);
+        let masked = if hashes {
+            Masked::Hashed
+        } else {
+            Masked::Redacted
+        };
         Self {
             listed: listing.then_some(named),
             filter: filters.then_some(modulus),
-            rename: rng.chance(500),
-            constant: rng.chance(500),
-            cased: rng.chance(500),
+            rename,
+            constant,
+            masked: (constant && masks).then_some(masked),
+            doubled,
+            cased,
+        }
+    }
+
+    /// The text [`CONSTANT_COLUMN`] lands holding, masked as the stream masks it.
+    pub(crate) fn landed_constant(&self) -> String {
+        match self.masked {
+            None => CONSTANT.to_owned(),
+            Some(Masked::Redacted) => REDACTION.to_owned(),
+            Some(Masked::Hashed) => {
+                let mut keyed = Hmac::<Sha256>::new_from_slice(MASK_KEY.as_bytes())
+                    .expect("an HMAC takes a key of any length");
+                keyed.update(CONSTANT.as_bytes());
+                let mut hex = String::with_capacity(64);
+                for byte in keyed.finalize().into_bytes() {
+                    write!(hex, "{byte:02x}").expect("writing to a string succeeds");
+                }
+                hex
+            }
         }
     }
 
@@ -104,5 +163,6 @@ impl SimStream {
             || reshaping.filter.is_some()
             || reshaping.rename
             || reshaping.constant
+            || reshaping.doubled
     }
 }

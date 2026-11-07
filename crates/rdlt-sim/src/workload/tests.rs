@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use rdlt_connector::{LogicalType, ReadMode, TypeKind};
 use rdlt_engine::{Nested, OnUnsupported, SchemaPolicy, WriteMode};
 
-use super::{Drift, Level, PHASES, Relaxed, SimStream, Workload};
+use super::{Drift, Level, Masked, PHASES, Relaxed, Reshaping, SimStream, Workload};
 use crate::rng::SplitMix64;
 use crate::swarm::Features;
 
@@ -549,7 +549,7 @@ fn features_off_leave_their_parts_of_the_workload_out() {
                 stream.drift.is_empty() && !stream.json && !stream.sliced && !stream.normalized()
             );
             assert!(!stream.shared_keys && !stream.composite);
-            assert_eq!(stream.reshaping, super::Reshaping::default());
+            assert_eq!(stream.reshaping, Reshaping::default());
             assert!(
                 stream
                     .key_types
@@ -676,4 +676,20 @@ fn a_merge_stream_draws_no_filter_and_another_s_filter_drops_some_row() {
         }
     }
     assert!(filtered > 0, "some row is filtered out");
+}
+
+#[test]
+fn a_masked_constant_lands_redacted_or_as_its_hmac_in_hex() {
+    let masked = |masked| Reshaping {
+        constant: true,
+        masked: Some(masked),
+        ..Reshaping::default()
+    };
+    assert_eq!(masked(Masked::Redacted).landed_constant(), "***");
+    // `HMAC-SHA256` of "c" under "sim", as Python's hmac module computes it.
+    assert_eq!(
+        masked(Masked::Hashed).landed_constant(),
+        "16ceecbf7205314c2c0001137e0c523d6e35812de255bc769d2e1d6754d245df"
+    );
+    assert_eq!(Reshaping::default().landed_constant(), "c");
 }

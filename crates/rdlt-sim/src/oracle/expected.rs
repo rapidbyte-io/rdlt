@@ -15,7 +15,7 @@ use rdlt_testkit::drawn::json::text;
 use serde_json::Value;
 
 use super::arrivals::{Arrival, all, alone, arrival, fixed, splits, widest};
-use crate::workload::{CONSTANT, CONSTANT_COLUMN, Drift, Relaxed, Row, SimStream};
+use crate::workload::{CONSTANT_COLUMN, Drift, Relaxed, Row, SimStream, TWICE_COLUMN};
 use discards::landing;
 pub(super) use discards::{Chance, Discards, discards, dropped, pruned};
 pub(super) use sent::Sent;
@@ -72,7 +72,8 @@ pub(super) fn tables(stream: &SimStream, rows: &[Row], delivered: &[Row]) -> Tab
 }
 
 /// Records the values of `row`'s base columns in `pending`: its position, under the name its
-/// transforms give it, value and key, and the constant column they add.
+/// transforms give it, value and key, the constant column they add, as they mask it, and the
+/// offset doubled.
 fn base(stream: &SimStream, row: &Row, pending: &mut Pending) {
     let int = |value: i64| Sent::Typed(Scalar::Int(value), LogicalType::Int64);
     let utf8 = |value: &str| Sent::Typed(Scalar::Utf8(value.to_owned()), LogicalType::Utf8);
@@ -81,24 +82,24 @@ fn base(stream: &SimStream, row: &Row, pending: &mut Pending) {
     pending.column(&[stream.reshaping.offset().into()], int(row.offset));
     pending.column(&["value".into()], int(row.value));
     if stream.reshaping.constant {
-        pending.column(&[CONSTANT_COLUMN.into()], utf8(CONSTANT));
+        let constant = utf8(&stream.reshaping.landed_constant());
+        pending.column(&[CONSTANT_COLUMN.into()], constant);
+    }
+    if stream.reshaping.doubled {
+        pending.column(&[TWICE_COLUMN.into()], int(row.offset * 2));
     }
     if row.key.is_some() {
         let partition = usize::try_from(row.partition).unwrap_or(0);
         let logical = stream.key_type(partition, row.delivered);
-        pending.column(
-            &["key".into()],
-            Sent::Typed(row.key_value(logical), logical.clone()),
-        );
+        let key = Sent::Typed(row.key_value(logical), logical.clone());
+        pending.column(&["key".into()], key);
     }
     if let Some(tag) = &row.tag {
         pending.column(&["tag".into()], utf8(tag));
     }
     if stream.fat > 0 && crate::fat::carried(row) && stream.lands(crate::fat::COLUMN) {
-        pending.column(
-            &[crate::fat::COLUMN.into()],
-            Sent::Json(crate::fat::expected(row, stream.fat)),
-        );
+        let wide = Sent::Json(crate::fat::expected(row, stream.fat));
+        pending.column(&[crate::fat::COLUMN.into()], wide);
     }
 }
 

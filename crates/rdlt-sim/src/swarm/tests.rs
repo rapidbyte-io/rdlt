@@ -217,7 +217,8 @@ fn excluded_columns_change_nothing_else_a_workload_draws() {
 
 #[test]
 fn transforms_change_nothing_else_a_workload_draws() {
-    let (mut listing, mut filtering, mut renaming, mut adding) = (false, false, false, false);
+    let (mut listing, mut filtering, mut renaming) = (false, false, false);
+    let (mut adding, mut masking, mut doubling) = (false, false, false);
     for seed in 0..1000 {
         let mut rng = SplitMix64::new(seed);
         let features = Features::draw(&mut rng);
@@ -235,6 +236,8 @@ fn transforms_change_nothing_else_a_workload_draws() {
             filtering |= reshaping.filter.is_some();
             renaming |= reshaping.rename;
             adding |= reshaping.constant;
+            masking |= reshaping.masked.is_some();
+            doubling |= reshaping.doubled;
             stream.reshaping = crate::workload::Reshaping::default();
         }
         reshaped.features = lean;
@@ -246,4 +249,6 @@ fn transforms_change_nothing_else_a_workload_draws() {
     assert!(filtering, "some stream filters its rows");
     assert!(renaming, "some stream renames a column");
     assert!(adding, "some stream adds a constant column");
+    assert!(masking, "some stream masks it");
+    assert!(doubling, "some stream runs a code transform");
 }
