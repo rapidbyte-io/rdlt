@@ -26,13 +26,15 @@ pub(crate) enum Form {
     Changes,
 }
 
-/// What a test's source serves: its pushes, in one form; whether it leaves out the columns the
-/// stream excludes, as a source that honours the projection does; and the schema, key and change
-/// time its catalog declares, if any.
+/// What a test's source serves: its pushes, in one form, each followed by a checkpoint unless it
+/// is the last and `tail` says so; whether it leaves out the columns the stream excludes, as a
+/// source that honours the projection does; and the schema, key and change time its catalog
+/// declares, if any.
 #[derive(Clone, Debug)]
 pub(crate) struct Served {
     pub(crate) form: Form,
     pub(crate) pushes: Vec<RecordBatch>,
+    pub(crate) tail: bool,
     pub(crate) honours: bool,
     pub(crate) declared: Option<TableSchema>,
     pub(crate) key: Option<ColumnPath>,
@@ -44,6 +46,7 @@ impl Served {
         Self {
             form,
             pushes,
+            tail: false,
             honours: false,
             declared: None,
             key: None,
@@ -137,7 +140,9 @@ impl ReadStream<Excluding> for People {
                 Form::Changes => out.changes(batch).await?,
                 Form::Json => out.json(lines(&batch)).await?,
             }
-            out.checkpoint(&(index + 1)).await?;
+            if !served.tail || index + 1 < served.pushes.len() {
+                out.checkpoint(&(index + 1)).await?;
+            }
         }
         Ok(())
     }

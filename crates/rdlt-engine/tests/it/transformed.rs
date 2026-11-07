@@ -1,6 +1,6 @@
 //! Transforms through the engine: ops on every push form, an include, a declared schema, the
-//! filter rule on appends and on merged changes, a flush a filter empties, partial updates, and
-//! transforms that fail.
+//! filter rule on appends and on merged changes, a flush a filter empties, a read ending in rows
+//! a filter drops or a stream ignores, partial updates, and transforms that fail.
 
 use std::sync::Arc;
 
@@ -12,12 +12,13 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Schema, SchemaRef, UnionFields, UnionMode};
 use rdlt_connector::{
-    ChangeOp, ColumnPath, Field, OP_COLUMN, ReadMode, SEQ_COLUMN, Secret, UNCHANGED_COLUMN,
+    ChangeOp, ColumnPath, Field, OP_COLUMN, OpenContext, PartitionState, PipelineId, PipelineState,
+    ReadMode, SEQ_COLUMN, Secret, StreamName, UNCHANGED_COLUMN,
 };
 use rdlt_connector_reference::{published, schema};
 use rdlt_engine::{
-    DeleteMode, ErrorKind, Literal, Mask, Op, RunOutcome, RunStatus, StreamPlan, Transform,
-    TransformError, WriteMode, codes,
+    DeleteMode, ErrorKind, Literal, Mask, Op, RunOutcome, RunStatus, StreamPlan, StreamReport,
+    Transform, TransformError, WriteMode, codes,
 };
 
 use crate::support::destinations::limited;
@@ -350,6 +351,77 @@ async fn a_flush_its_filter_empties_commits_its_checkpoint_and_the_next_run_resu
     let second = run(vec![people(1, 1), people(2, 1), people(6, 1), people(4, 1)]).await;
     succeeded(&second);
     assert_eq!(published_ids(name, "people"), [2, 4]);
+}
+
+/// Where stored state says the partitions of `people` in store `name` stand.
+async fn standing(name: &str) -> Vec<PartitionState> {
+    let context = OpenContext {
+        pipeline: PipelineId::parse(name).expect("a valid pipeline"),
+    };
+    let opened = memory(name).await.open(&context).await;
+    let opened = opened.expect("the destination opens");
+    let state = PipelineState::from_records(&opened.state).expect("the state reads");
+    let people = StreamName::new("people").expect("a valid name");
+    state.streams.get(&people).map_or_else(Vec::new, |stream| {
+        stream.partitions.values().cloned().collect()
+    })
+}
+
+/// Runs `plan` twice over `served`, whose last push follows its last checkpoint, into store
+/// `name`; the two runs' reports of `people`.
+async fn twice(name: &str, mut served: Served, plan: StreamPlan) -> [StreamReport; 2] {
+    served.tail = true;
+    let mut reports = Vec::new();
+    for _ in 0..2 {
+        let outcome = engine(commit_every(1))
+            .run(
+                pipeline(name, [plan.clone()]),
+                source(name, served.clone()).await,
+                memory(name).await,
+            )
+            .await;
+        succeeded(&outcome);
+        let report = outcome.report.streams.get("people").cloned();
+        reports.push(report.unwrap_or_default());
+    }
+    reports.try_into().expect("two runs")
+}
+
+#[tokio::test]
+async fn a_bounded_read_ending_in_rows_its_filter_drops_counts_them_once_and_ends_done() {
+    let name = "transformed_dropped_tail";
+    // Row 1 is dropped before the last checkpoint and row 3, the last push, after it.
+    let served = Served::new(Form::Arrow, vec![people(0, 2), people(3, 1)]);
+    let plan = stream("people")
+        .read(ReadMode::Incremental)
+        .transform(code(EVEN));
+    let [first, second] = twice(name, served, plan).await;
+    assert_eq!((first.filtered.dropped, second.filtered.dropped), (2, 0));
+    assert_eq!(published_ids(name, "people"), [0]);
+    assert_eq!(standing(name).await, [PartitionState::Done]);
+}
+
+#[tokio::test]
+async fn a_bounded_read_ending_in_deletes_its_stream_ignores_counts_them_once_and_ends_done() {
+    // Changes the stream ignores, with no transform, end a read as rows a filter drops do.
+    let name = "transformed_ignored_tail";
+    let pushes = vec![
+        changed(
+            &[(1, "ok", ChangeOp::Insert), (2, "ok", ChangeOp::Insert)],
+            1,
+        ),
+        changed(&[(1, "ok", ChangeOp::Delete)], 3),
+    ];
+    let mut served = Served::new(Form::Changes, pushes);
+    served.key = Some(ColumnPath::from("id"));
+    let plan = stream("people")
+        .read(ReadMode::Cdc)
+        .write(WriteMode::Merge)
+        .deletes(DeleteMode::Ignore);
+    let [first, second] = twice(name, served, plan).await;
+    assert_eq!((first.deletes_ignored, second.deletes_ignored), (1, 0));
+    assert_eq!(published_ids(name, "people"), [1, 2]);
+    assert_eq!(standing(name).await, [PartitionState::Done]);
 }
 
 #[tokio::test]

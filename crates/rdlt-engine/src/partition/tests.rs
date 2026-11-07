@@ -78,6 +78,55 @@ fn rows_after_the_last_cursor_its_policy_discarded_all_of_end_the_partition() {
 }
 
 #[test]
+fn rows_after_the_last_cursor_its_filters_dropped_or_its_changes_ignored_are_read() {
+    for cursor in [Some(5), None] {
+        let dropped = crate::report::FilteredRows {
+            dropped: 2,
+            deleted: 0,
+        };
+        let taken = [
+            (
+                "dropped",
+                OpenSegment {
+                    filtered: dropped,
+                    ..OpenSegment::default()
+                },
+            ),
+            (
+                "deletes ignored",
+                OpenSegment {
+                    deletes_ignored: 2,
+                    ..OpenSegment::default()
+                },
+            ),
+            (
+                "truncates ignored",
+                OpenSegment {
+                    truncates_ignored: 1,
+                    ..OpenSegment::default()
+                },
+            ),
+        ];
+        for (rows, open) in taken {
+            let ingested = Ingested {
+                open,
+                ..received(0, 0, cursor)
+            };
+            assert_eq!(
+                end_state(&ingested, false),
+                Some(PartitionState::Done),
+                "{rows} after cursor {cursor:?}"
+            );
+            assert_eq!(
+                end_state(&ingested, true),
+                None,
+                "{rows} after cursor {cursor:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn an_unbounded_partition_ends_only_at_its_last_cursor_and_rows_after_it_are_read_again() {
     let cursor = Cursor::encode(1, &5u64).unwrap();
     assert_eq!(
