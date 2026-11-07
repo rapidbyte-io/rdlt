@@ -46,9 +46,9 @@ async fn a_run_publishes_every_row_once() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn default_lanes_are_one_per_core_the_env_declares() {
+async fn default_writers_are_one_per_core_the_env_declares() {
     use crate::support::destinations::counting;
-    let unlimited = limited(memory("lanes_per_core").await, |capabilities| {
+    let unlimited = limited(memory("writers_per_core").await, |capabilities| {
         capabilities.max_parallel_writers = NonZeroU16::MAX;
     });
     let (destination, sessions) = counting(unlimited);
@@ -56,7 +56,7 @@ async fn default_lanes_are_one_per_core_the_env_declares() {
     let three = Cores::new(NonZeroUsize::new(3).expect("three is not zero"));
     let outcome = engine_within(EngineConfig::builder(), three)
         .run(
-            pipeline("lanes-per-core", [stream("orders")]),
+            pipeline("writers-per-core", [stream("orders")]),
             source,
             destination,
         )
@@ -222,7 +222,7 @@ async fn a_newer_run_fences_an_older_one() {
     let (script, source) = Script::new(vec![idle]).connect("fenced").await;
     let plan = pipeline("fenced", [stream("events").read(ReadMode::Incremental)]);
     let policy = CommitPolicy::new(Some(Duration::from_secs(1)), None, None).unwrap();
-    let engine = engine(EngineConfig::builder().commit(policy).lanes(1));
+    let engine = engine(EngineConfig::builder().commit(policy).writers(1));
     let older = engine.run(plan.clone(), source, memory("fenced").await);
     let newer = async {
         until(|| !script.acks.lock().is_empty()).await;

@@ -160,7 +160,10 @@ impl Config {
             .max_attempts(10)
             .initial(Duration::from_millis(10))
             .max_delay(Duration::from_millis(200));
-        let mut builder = EngineConfig::builder().commit(commit).retry(retry).lanes(2);
+        let mut builder = EngineConfig::builder()
+            .commit(commit)
+            .retry(retry)
+            .writers(2);
         if let Some(memory) = self.memory {
             builder = builder.memory(memory);
         }

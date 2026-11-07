@@ -57,7 +57,6 @@ mod event;
 #[cfg(any(test, feature = "bench"))]
 mod fixtures;
 mod json;
-mod lane;
 mod limits;
 mod named;
 mod naming;
@@ -74,6 +73,7 @@ mod stored;
 mod table;
 mod transform;
 mod watch;
+mod writer;
 
 pub use compute::{ComputePool, ComputePoolError, Cores, Job, RayonPool};
 pub use config::{
@@ -90,11 +90,13 @@ pub use plan::{DeleteMode, OnTruncate, PipelinePlan, RetentionLoss, StreamPlan, 
 pub use policy::{Nested, OnUnsupported, SchemaPolicy, SchemaSettings};
 pub use report::{
     Acks, AttemptReport, CommitPhases, Commits, Counters, Discard, DiscardReason, Discards,
-    FilteredRows, Flushes, Forgotten, LaneCounters, PoolCounters, Report, RunStatus, ShredCounts,
-    StreamReport, Trigger, Waited, Waits,
+    FilteredRows, Flushes, Forgotten, PoolCounters, Report, RunStatus, ShredCounts, StreamReport,
+    Trigger, Waited, Waits, WriterCounters,
 };
 pub use run::{Engine, ResetReport, ResetScope, RunControl, RunHandle, RunOutcome, StopMode};
-pub use status::{Call, LaneCall, OpenWaits, Partitions, Phase, Quiet, Status, Step, StreamStatus};
+pub use status::{
+    Call, OpenWaits, Partitions, Phase, Quiet, Status, Step, StreamStatus, WriterCall,
+};
 pub use transform::{
     Bound, Literal, Mask, Op, Transform, TransformError, TransformStep, allocated_beyond,
     column_bytes,

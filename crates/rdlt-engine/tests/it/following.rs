@@ -141,7 +141,7 @@ async fn log(group: &str, stream: &Value) -> Arc<dyn Source> {
 fn following(commit_every: Duration) -> EngineConfigBuilder {
     let every = CommitPolicy::new(Some(commit_every), None, None).expect("an interval is valid");
     EngineConfig::builder()
-        .lanes(2)
+        .writers(2)
         .barrier_wait(Duration::from_millis(100))
         .replan(Duration::from_millis(200))
         .commit(every)

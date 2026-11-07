@@ -205,7 +205,7 @@ fn a_writer_given_batches_of_two_schemas_is_a_violation() {
                 ])
             };
             let id = || batch(vec![("id", Arc::new(Int64Array::from(vec![1])) as _)]);
-            // Version 1's batches through its writer, then a version 2 batch through it too.
+            // Version 1's batches through its table writer, then a version 2 batch through it too.
             let mut old = session.writer(&table()).await.unwrap();
             old.write(SegmentId(1), id()).await.unwrap();
             old.write(SegmentId(1), id()).await.unwrap();
@@ -700,8 +700,8 @@ fn a_session_and_its_writer_count_until_they_end() {
                 .expect("the schema change applies");
             let writer = tokio::time::timeout(WAIT, opened.session.writer(&table()))
                 .await
-                .expect("the writer's open ends")
-                .expect("the writer opens");
+                .expect("the table writer's open ends")
+                .expect("the table writer opens");
             let open = world.owners.held();
             drop(writer);
             let written = world.owners.held();

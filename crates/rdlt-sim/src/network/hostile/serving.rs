@@ -166,7 +166,7 @@ impl Attacker<'_> {
         let Some(&oldest) = opened.first() else {
             return;
         };
-        // The oldest's call for a writer stays in flight for the destination's pause.
+        // The oldest's call for a table writer stays in flight for the destination's pause.
         let start = v1::WriteFrame {
             frame: Some(v1::write_frame::Frame::Start(v1::WriteStart {
                 session: oldest,
@@ -224,7 +224,7 @@ fn open() -> v1::OpenRequest {
     }
 }
 
-/// The table a hostile session asks a writer for, which its watched destination never gives.
+/// The table a hostile session asks a table writer for, which its watched destination never gives.
 fn table() -> TableRef {
     TableRef {
         path: TablePath::new(["h"]).expect("a one-segment path is valid"),

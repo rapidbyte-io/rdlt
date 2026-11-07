@@ -202,7 +202,7 @@ struct Case {
 }
 
 impl Case {
-    /// Every case, the sink of each declaring one writer or a host's `lanes`.
+    /// Every case, the sink of each declaring one writer or a host's `writers`.
     ///
     /// Every mode over each transport in large and in small frames, in each layout, read from
     /// one partition; and in processes of their own: a few of them in large frames read from
@@ -210,9 +210,9 @@ impl Case {
     /// frames from sixteen, in small frames from four and sixteen, and in tiny frames from one,
     /// four and sixteen; each into a sink declaring one writer. Then both over the socket in
     /// processes of their own in each size of frame from one, four and sixteen partitions into a
-    /// sink declaring `lanes` writers, where that is more than one. Then large frames from sixteen
-    /// partitions within 1 GiB, into a sink declaring one writer and `lanes`.
-    fn all(lanes: NonZeroU16) -> Vec<Self> {
+    /// sink declaring `writers` writers, where that is more than one. Then large frames from
+    /// sixteen partitions within 1 GiB, into a sink declaring one writer and `writers`.
+    fn all(writers: NonZeroU16) -> Vec<Self> {
         let mut cases = Vec::new();
         for layout in [Layout::Shared, Layout::Processes] {
             for transport in [Transport::Socket, Transport::Tls] {
@@ -247,8 +247,8 @@ impl Case {
                 budget: Budget::Default,
             }));
         }
-        // On a host of one lane they would repeat the rows through one writer.
-        if lanes > NonZeroU16::MIN {
+        // On a host of one writer they would repeat the rows through one writer.
+        if writers > NonZeroU16::MIN {
             for frames in Frames::ALL {
                 cases.extend([1, 4, 16].map(|partitions| Self {
                     layout: Layout::Processes,
@@ -256,15 +256,15 @@ impl Case {
                     mode: Mode::Both,
                     frames,
                     partitions: NonZeroUsize::new(partitions).expect("a count of partitions"),
-                    writers: lanes,
+                    writers,
                     budget: Budget::Default,
                 }));
             }
         }
         // Large frames from sixteen partitions again within 1 GiB, beside the default budget's.
-        let mut writers = vec![NonZeroU16::MIN];
-        writers.extend((lanes > NonZeroU16::MIN).then_some(lanes));
-        cases.extend(writers.into_iter().map(|writers| Self {
+        let mut sinks = vec![NonZeroU16::MIN];
+        sinks.extend((writers > NonZeroU16::MIN).then_some(writers));
+        cases.extend(sinks.into_iter().map(|writers| Self {
             layout: Layout::Processes,
             transport: Transport::Socket,
             mode: Mode::Both,
@@ -308,9 +308,9 @@ impl Case {
         shape
     }
 
-    /// The lanes a run of the case writes through at least: one a partition, up to its sink's
+    /// The writers a run of the case writes through at least: one a partition, up to its sink's
     /// writers.
-    fn lanes(self) -> usize {
+    fn least_writers(self) -> usize {
         self.partitions.get().min(usize::from(self.writers.get()))
     }
 
@@ -718,15 +718,15 @@ impl Workload {
             let report = passthrough.run(source, destination);
             took += started.elapsed();
             Usage::now(pids).add_since(before, &mut usage);
-            let written = report.counters.lanes.iter();
-            let written = written.filter(|lane| !lane.writing.is_zero()).count();
+            let written = report.counters.writers.iter();
+            let written = written.filter(|writer| !writer.writing.is_zero()).count();
             assert!(
-                written >= case.lanes(),
-                "served/{}/{}: {written} lanes written of the {} its partitions and writers \
+                written >= case.least_writers(),
+                "served/{}/{}: {written} writers written of the {} its partitions and writers \
                  make: a broken bench, not a figure",
                 case.served(),
                 case.shape(),
-                case.lanes()
+                case.least_writers()
             );
             last = Some(black_box(report));
             drop(held);
@@ -737,7 +737,7 @@ impl Workload {
 
 fn served(c: &mut Criterion) {
     let cores = Cores::try_from_host().expect("the host says how many cores the bench may use");
-    let lanes = u16::try_from(cores.count().get())
+    let writers = u16::try_from(cores.count().get())
         .ok()
         .and_then(NonZeroU16::new)
         .unwrap_or(NonZeroU16::MAX);
@@ -746,7 +746,7 @@ fn served(c: &mut Criterion) {
     let mut used = Vec::new();
     let mut group = c.benchmark_group("served");
     group.sample_size(10);
-    for case in Case::all(lanes) {
+    for case in Case::all(writers) {
         let (batches, rows) = case.frames.shape();
         let bytes = Passthrough::bytes(Cell {
             rows,

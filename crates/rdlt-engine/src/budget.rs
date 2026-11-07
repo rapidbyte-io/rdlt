@@ -33,7 +33,7 @@ use crate::watch;
 ///   data. The rest holds pushes waiting to be lowered and what lowering makes of them; pushes
 ///   never take all of it, so a request for lowering fits once the pieces before it are written.
 /// - **No hold and wait.** Whoever holds what lowering reserved, a piece on the compute pool or on
-///   its lane, needs no budget to release it. A partition waits for lowering while it holds
+///   its writer, needs no budget to release it. A partition waits for lowering while it holds
 ///   pushes, and nothing waits for pushes while it holds anything; while it holds lowering's bytes
 ///   it lowers inside what it reserved with them, a [`Lent`] it waits on for its own pieces.
 /// - **No wait for bytes is for ever.** A request's wait ends at the budget's deadline with what

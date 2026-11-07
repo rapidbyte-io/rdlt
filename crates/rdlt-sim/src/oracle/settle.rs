@@ -43,8 +43,8 @@ pub(super) async fn settle(seed: Seed) {
     }
 }
 
-/// How long a connector's host may run a task, or its connectors hold a session, writer or read,
-/// once the engine's tasks have ended.
+/// How long a connector's host may run a task, or its connectors hold a session, table writer or
+/// read, once the engine's tasks have ended.
 ///
 /// A connection whose host vanished behind a partition ends by the connector's own limits: its
 /// pings go unanswered for the connector's keep-alive interval and patience, 35 s together, the
@@ -66,7 +66,7 @@ fn alive(hosts: &[Handle]) -> usize {
 
 /// Lets the connectors release what they held for the runs that ended, ending once `hosts`, the
 /// connectors' hosts where they have their own, run no task and `world`'s connectors hold no
-/// session, writer or read.
+/// session, table writer or read.
 ///
 /// # Panics
 ///

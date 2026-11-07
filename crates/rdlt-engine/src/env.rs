@@ -42,7 +42,7 @@ pub trait Env: Send + Sync + 'static {
     /// The pool that runs CPU-bound work.
     fn compute(&self) -> &dyn ComputePool;
 
-    /// The cores the engine may use: lanes default to one per core.
+    /// The cores the engine may use: writers default to one per core.
     fn cores(&self) -> NonZeroUsize;
 
     /// Told each event of the engine's runs, at once, where it becomes true: nothing holds an

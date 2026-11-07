@@ -69,7 +69,7 @@ impl Waits {
     }
 
     /// `destination`, each of its calls ended at the wait, and those of its sessions and
-    /// writers.
+    /// table writers.
     pub(crate) fn destination(&self, destination: Arc<dyn Destination>) -> Arc<dyn Destination> {
         Arc::new(WaitedDestination {
             inner: destination,
@@ -208,7 +208,7 @@ impl DestinationSession for WaitedSession {
         let waits = self.waits.clone();
         let call = self.inner.writer(table);
         Box::pin(async move {
-            let writer = waits.within("opening a writer", call).await?;
+            let writer = waits.within("opening a table writer", call).await?;
             Ok(Box::new(WaitedWriter {
                 inner: writer,
                 waits,

@@ -36,7 +36,7 @@ impl DestinationSession for Recorder {
         &'a mut self,
         _table: &'a TableRef,
     ) -> BoxFuture<'a, Result<Box<dyn DestinationWriter>>> {
-        Box::pin(async { Err(ConnectorError::internal("no writers here")) })
+        Box::pin(async { Err(ConnectorError::internal("no table writers here")) })
     }
 
     fn commit<'a>(&'a mut self, _meta: &'a CommitMeta) -> BoxFuture<'a, Result<Receipt>> {
@@ -350,7 +350,7 @@ impl DestinationSession for Physical {
         &'a mut self,
         _table: &'a TableRef,
     ) -> BoxFuture<'a, Result<Box<dyn DestinationWriter>>> {
-        Box::pin(async { Err(ConnectorError::internal("no writers here")) })
+        Box::pin(async { Err(ConnectorError::internal("no table writers here")) })
     }
 
     fn commit<'a>(&'a mut self, _meta: &'a CommitMeta) -> BoxFuture<'a, Result<Receipt>> {
@@ -429,7 +429,7 @@ impl DestinationSession for Refusing {
         &'a mut self,
         _table: &'a TableRef,
     ) -> BoxFuture<'a, Result<Box<dyn DestinationWriter>>> {
-        Box::pin(async { Err(ConnectorError::internal("no writers here")) })
+        Box::pin(async { Err(ConnectorError::internal("no table writers here")) })
     }
 
     fn commit<'a>(&'a mut self, _meta: &'a CommitMeta) -> BoxFuture<'a, Result<Receipt>> {

@@ -1,6 +1,6 @@
 //! A run within what its connectors carry at once: it reads fewer partitions at once than its
-//! source carries calls, and holds fewer writers open than its destination does, keeping a call
-//! of each for the other call the engine makes into it at a time.
+//! source carries calls, and holds fewer table writers open than its destination does, keeping a
+//! call of each for the other call the engine makes into it at a time.
 
 use std::num::NonZeroUsize;
 use std::sync::Arc;
@@ -93,15 +93,15 @@ impl Source for CarryingSource {
     }
 }
 
-/// A destination that carries `calls` at once, counting the writers its sessions hold open.
+/// A destination that carries `calls` at once, counting the table writers its sessions hold open.
 struct CarryingDestination {
     inner: Arc<dyn Destination>,
     calls: NonZeroUsize,
     open: Arc<Open>,
 }
 
-/// What a carrying connector holds open, its reads or writers, the most it held at once, and the
-/// sessions a destination opened.
+/// What a carrying connector holds open, its reads or table writers, the most it held at once, and
+/// the sessions a destination opened.
 #[derive(Debug, Default)]
 struct Open {
     now: AtomicUsize,
@@ -179,7 +179,7 @@ impl DestinationSession for CountingSession {
     }
 }
 
-/// A writer counted open until it is dropped.
+/// A table writer counted open until it is dropped.
 struct CountedWriter {
     inner: Box<dyn DestinationWriter>,
     open: Arc<Open>,
@@ -204,7 +204,7 @@ impl DestinationWriter for CountedWriter {
 /// A configuration that follows its source with `partitions` read at once.
 fn following(partitions: usize) -> rdlt_engine::EngineConfigBuilder {
     EngineConfig::builder()
-        .lanes(2)
+        .writers(2)
         .barrier_wait(Duration::from_millis(100))
         .replan(Duration::from_millis(200))
         .partitions(partitions)
@@ -256,19 +256,23 @@ async fn a_following_run_reads_as_many_unbounded_partitions_as_its_source_leaves
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_run_holds_no_more_writers_open_than_its_destination_carries_beside_its_other_call() {
+async fn a_run_holds_no_more_table_writers_open_than_its_destination_carries_beside_its_other_call()
+{
     let names: Vec<String> = (0..10).map(|table| format!("t{table}")).collect();
     let streams: Vec<(&str, u64, u64, u64)> =
         names.iter().map(|name| (name.as_str(), 1, 1, 1)).collect();
     let source = generator(&streams).await;
     let open = Arc::new(Open::default());
     let destination = Arc::new(CarryingDestination {
-        inner: memory("carried_writers").await,
+        inner: memory("carried_table_writers").await,
         calls: calls(4),
         open: Arc::clone(&open),
     });
     let growth = GrowthLimits::new(1024, 300).expect("valid limits");
-    let plan = pipeline("carried_writers", names.iter().map(|name| stream(name)));
+    let plan = pipeline(
+        "carried_table_writers",
+        names.iter().map(|name| stream(name)),
+    );
     let outcome = engine(EngineConfig::builder().growth(growth))
         .run(plan, source, destination)
         .await;
@@ -279,7 +283,11 @@ async fn a_run_holds_no_more_writers_open_than_its_destination_carries_beside_it
         outcome.error
     );
     for name in &names {
-        assert_eq!(published_rows("carried_writers", name), 1, "table {name}");
+        assert_eq!(
+            published_rows("carried_table_writers", name),
+            1,
+            "table {name}"
+        );
     }
     assert_eq!(open.most.load(Ordering::SeqCst), 3);
 }
@@ -314,7 +322,8 @@ async fn tables(
 
 #[tokio::test(start_paused = true)]
 async fn a_run_whose_connector_carries_one_call_is_refused_before_it_opens_its_destination() {
-    // One call leaves no read or writer beside the other call the engine makes into either side.
+    // One call leaves no read or table writer beside the other call the engine makes into either
+    // side.
     for (source, destination) in [(1, 2), (2, 1)] {
         let store = format!("carried_one_{source}_{destination}");
         let (outcome, _, writing) = tables(&store, source, destination).await;

@@ -265,7 +265,7 @@ pub(crate) async fn fences_an_older_run(target: Target) {
     let plan = pipeline("fenced", [stream("events").read(ReadMode::Incremental)]);
     let policy =
         CommitPolicy::new(Some(Duration::from_millis(200)), None, None).expect("a valid policy");
-    let engine = engine(EngineConfig::builder().commit(policy).lanes(1));
+    let engine = engine(EngineConfig::builder().commit(policy).writers(1));
     let older = engine.run(plan.clone(), source, target.destination("fenced").await);
     let newer = async {
         until(|| !script.acks.lock().is_empty()).await;

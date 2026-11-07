@@ -123,7 +123,7 @@ async fn a_remote_writer_sends_two_frames_ahead_of_what_its_destination_took() {
     let bounded = Duration::from_secs(30);
     // The first frame goes on the opening credit, the next two on the window of two frames it
     // grows, and the fourth on the second's credit, which the gate holds; the third waits
-    // decoded for the writer.
+    // decoded for the table writer.
     for segment in 1..=4 {
         tokio::time::timeout(bounded, writer.write(SegmentId(segment), ids(ROWS)))
             .await
@@ -132,7 +132,7 @@ async fn a_remote_writer_sends_two_frames_ahead_of_what_its_destination_took() {
     }
     let staged = GATE.kept.lock().len();
     assert_eq!(staged, 1);
-    // A fifth waits: two frames are the window, and the writer took neither the third nor the
+    // A fifth waits: two frames are the window, and the table writer took neither the third nor the
     // fourth.
     let fifth = tokio::time::timeout(
         Duration::from_millis(500),
@@ -358,7 +358,7 @@ async fn a_write_whose_connector_does_not_read_fails_once_its_transport_window_f
         Ok::<_, rdlt_connector::ConnectorError>(())
     })
     .await
-    .expect("the writer does not hang past its deadline");
+    .expect("the table writer does not hang past its deadline");
     assert_eq!(
         written.expect_err("the write fails").code(),
         Some(rdlt_host::DEADLINE_EXCEEDED)

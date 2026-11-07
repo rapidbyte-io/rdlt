@@ -3,7 +3,7 @@
 //! JSON flush that leaves its pieces a narrow room loads such rows where they fit it.
 #![expect(
     clippy::disallowed_methods,
-    reason = "tests drive tokio's paused clock and run a lane directly"
+    reason = "tests drive tokio's paused clock and run a writer directly"
 )]
 
 use std::fmt::Write as _;
@@ -29,15 +29,15 @@ use crate::config::BatchPolicy;
 use crate::cost::tests::HEAP;
 use crate::env::{Env, InlineEnv};
 use crate::error::{Error, ErrorKind, codes};
-use crate::lane::{Lane, Lanes};
 use crate::limits::REQUEST_SHARE;
 use crate::normalize::Shape;
 use crate::partition::tests::on_pool;
 use crate::policy::{SchemaPolicy, SchemaSettings};
 use crate::shred::{self, ShredLimits};
 use crate::table::{Model, testing};
+use crate::writer::{Writer, Writers};
 
-/// Bounds every write: one that waits for room its lanes never give back fails, rather than
+/// Bounds every write: one that waits for room its writers never give back fails, rather than
 /// hangs.
 const WAIT: Duration = Duration::from_secs(1);
 
@@ -71,18 +71,18 @@ async fn dropping(budget: MemoryBudget) -> PartitionContext {
     context
 }
 
-/// Gives `context` one lane, which holds what is queued on it until it is run or dropped.
-fn lane(context: &mut PartitionContext) -> Vec<Lane> {
+/// Gives `context` one writer, which holds what is queued on it until it is run or dropped.
+fn writer(context: &mut PartitionContext) -> Vec<Writer> {
     let env: Arc<dyn Env> = Arc::new(InlineEnv);
-    let writers = crate::config::GrowthLimits::default().writers();
-    let (lanes, ends) = Lanes::new(
+    let writers = crate::config::GrowthLimits::default().table_writers();
+    let (writers, ends) = Writers::new(
         (NonZeroUsize::MIN, writers),
         &context.tables,
         NonZeroUsize::new(1_024).unwrap(),
         &context.budget,
         (&env, &Arc::default()),
     );
-    context.lanes = lanes;
+    context.writers = writers;
     ends
 }
 
@@ -130,12 +130,12 @@ async fn a_normalized_piece_holds_the_rows_its_cascade_copied_within_what_it_res
     let mut context = dropping(budget.clone()).await;
     let (job, mut open, mut schemas) = (job(), OpenSegment::default(), Schemas::default());
     // A first flush creates the table; none of it stays queued.
-    let first = lane(&mut context);
+    let first = writer(&mut context);
     let created = flushed(decimals(), Box::new(()));
     let write = write_flushed(&job, &context, &mut open, &mut schemas, created);
     let written = tokio::time::timeout(WAIT, write).await;
     written.expect("the first flush is written").unwrap();
-    let _lane = lane(&mut context);
+    let _writer = writer(&mut context);
     drop(first);
     // The first row holds a new array, which drops it: the cascade copies the rest of the
     // stream's part, slices of the unit. Lowered, they take more than an allowance of two
@@ -211,14 +211,14 @@ async fn excess(pushes: &[Bytes]) -> u64 {
 
 /// Writes `records(DENSE, ARRAYS, true)` after a flush that creates its table, through a
 /// partition whose budget's request leaves its splits `narrow` bytes beside what building its
-/// batches takes, its lane writing as it goes; how the second write ended.
+/// batches takes, its writer writing as it goes; how the second write ended.
 async fn narrowed(narrow: u64) -> Result<OpenSegment, Error> {
     let pushes = records(DENSE, ARRAYS, true);
     let capacity = (excess(&pushes).await + narrow) * REQUEST_SHARE;
     let budget = MemoryBudget::new(capacity, Arc::new(InlineEnv), Duration::from_secs(60));
     let mut context = dropping(budget.clone()).await;
-    let lane = lane(&mut context).remove(0);
-    let writing = tokio::spawn(lane.run(CancellationToken::new()));
+    let writer = writer(&mut context).remove(0);
+    let writing = tokio::spawn(writer.run(CancellationToken::new()));
     let (job, mut open, mut schemas) = (job(), OpenSegment::default(), Schemas::default());
     let mut ended = Ok(());
     for pushes in [records(1, 0, false), pushes] {

@@ -1,5 +1,5 @@
 //! The engine's destination for a connector served on the other end of a connection: its
-//! sessions, and their schema changes, writers and commits.
+//! sessions, and their schema changes, table writers and commits.
 
 use std::num::NonZeroUsize;
 use std::sync::Arc;

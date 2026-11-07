@@ -425,10 +425,10 @@ pub(crate) async fn applies_a_keys_row_in_an_earlier_piece_where_the_policy_drop
 }
 
 #[tokio::test(start_paused = true)]
-async fn every_destination_takes_a_normalized_stream_through_one_writer_open() {
+async fn every_destination_takes_a_normalized_stream_through_one_table_writer_open() {
     each(
         Target::IN_PROCESS,
-        takes_a_normalized_stream_through_one_writer_open,
+        takes_a_normalized_stream_through_one_table_writer_open,
     )
     .await;
 }
@@ -444,9 +444,9 @@ fn values(rows: &[serde_json::Value], column: &str) -> Vec<serde_json::Value> {
     sorted(rows.iter().map(|row| row[column].clone()).collect())
 }
 
-pub(crate) async fn takes_a_normalized_stream_through_one_writer_open(target: Target) {
-    // Every push writes the stream's table and its two child tables, so one writer open closes
-    // one of them for each other it writes.
+pub(crate) async fn takes_a_normalized_stream_through_one_table_writer_open(target: Target) {
+    // Every push writes the stream's table and its two child tables, so one table writer open
+    // closes one of them for each other it writes.
     let pushes: Vec<String> = (0..20)
         .map(|push| {
             json!({ "id": push % 5, "n": push, "items": [{ "sku": format!("s{push}") }], "tags": [push] })
@@ -455,11 +455,11 @@ pub(crate) async fn takes_a_normalized_stream_through_one_writer_open(target: Ta
         .collect();
     let pushes: Vec<&str> = pushes.iter().map(String::as_str).collect();
     for (store, plan) in [
-        ("one_writer_append", normalized("events")),
-        ("one_writer_merge", merged("events")),
+        ("one_table_writer_append", normalized("events")),
+        ("one_table_writer_merge", merged("events")),
     ] {
         let growth = rdlt_engine::GrowthLimits::new(1024, 1).expect("valid limits");
-        let config = commit_every(7).lanes(1).growth(growth);
+        let config = commit_every(7).writers(1).growth(growth);
         let source = batches(
             &target.name(store),
             vec![BatchStream::json("events", &pushes)],

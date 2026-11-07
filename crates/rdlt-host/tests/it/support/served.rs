@@ -96,15 +96,15 @@ pub(crate) fn engine(rows: u64) -> Engine {
     let policy = CommitPolicy::new(None, Some(rows), None).expect("a row threshold is valid");
     let config = EngineConfig::builder()
         .commit(policy)
-        .lanes(2)
+        .writers(2)
         .build()
         .expect("the engine's configuration is valid");
     let env = system_env();
     Engine::new(config, Arc::new(env))
 }
 
-/// The system environment declaring four cores whatever runtime the test runs on, so default lanes
-/// and the compute pool are alike on every machine.
+/// The system environment declaring four cores whatever runtime the test runs on, so default
+/// writers and the compute pool are alike on every machine.
 pub(crate) fn system_env() -> SystemEnv {
     let cores = Cores::new(NonZeroUsize::new(4).expect("four is not zero"));
     SystemEnv::try_new(cores).expect("the compute pool starts")

@@ -1,5 +1,5 @@
 //! One partition's pipeline: read, coalesce pushes, shred JSON, fit each batch to its table,
-//! prepare it, and hand it to a lane.
+//! prepare it, and hand it to a writer.
 
 mod barriers;
 mod clock;
@@ -32,10 +32,10 @@ use crate::config::BatchPolicy;
 use crate::cost::{Admitted, Charging};
 use crate::env::Env;
 use crate::error::{Error, ErrorKind, Side, codes};
-use crate::lane::Lanes;
 use crate::report::{ColumnDiscards, FilteredRows, ShredCounts};
 use crate::table::Tables;
 use crate::watch;
+use crate::writer::Writers;
 
 use barriers::Barriers;
 pub(crate) use clock::LoadClock;
@@ -52,7 +52,7 @@ use write::write_flushed;
 #[derive(Clone)]
 pub(crate) struct PartitionContext {
     pub(crate) source: Arc<dyn Source>,
-    pub(crate) lanes: Lanes,
+    pub(crate) writers: Writers,
     pub(crate) tables: Arc<Tables>,
     pub(crate) budget: MemoryBudget,
     /// How the destination renders values, which decides what a batch costs.

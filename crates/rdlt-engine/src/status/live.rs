@@ -1,5 +1,5 @@
 //! One run's live state: what it is in the middle of, the attempts it ended, the attempt in
-//! progress, and where its partitions and lanes stand.
+//! progress, and where its partitions and writers stand.
 //!
 //! The run writes it at attempt and commit-step boundaries; a status reads it.
 
@@ -12,7 +12,7 @@ use parking_lot::{Mutex, MutexGuard};
 use rdlt_connector::{PartitionId, PipelineId, StreamName};
 
 use super::clock::{stamp, unstamp};
-use super::{Call, LaneCall, Partitions, Phase, Quiet, RunClock, Status, Step, StreamStatus};
+use super::{Call, Partitions, Phase, Quiet, RunClock, Status, Step, StreamStatus, WriterCall};
 use crate::budget::MemoryBudget;
 use crate::env::Env;
 use crate::error::{Error, ErrorReport};
@@ -41,8 +41,8 @@ struct State {
     attempt: Option<Running>,
     /// The attempt's partitions, by their places.
     places: Vec<Place>,
-    /// The attempt's lanes' calls, once its lanes run.
-    lanes: Option<Arc<LaneCalls>>,
+    /// The attempt's writers' calls, once its writers run.
+    writers: Option<Arc<WriterCalls>>,
     /// When the last commit that landed each stream's rows or positions landed.
     landed: BTreeMap<StreamName, Instant>,
     /// The run's report, once it ended.
@@ -81,44 +81,44 @@ impl Place {
     pub(crate) const ENDED: u64 = u64::MAX;
 }
 
-/// Each lane's call into the destination in flight: the stamp of when it was made, from the
-/// lanes' start, shifted two bits left, and the call in the low two; zero between calls.
+/// Each writer's call into the destination in flight: the stamp of when it was made, from the
+/// writers' start, shifted two bits left, and the call in the low two; zero between calls.
 #[derive(Debug)]
-pub(crate) struct LaneCalls {
+pub(crate) struct WriterCalls {
     origin: Instant,
     calls: Box<[AtomicU64]>,
 }
 
-impl LaneCalls {
-    /// The calls of `lanes` lanes starting at `origin`, none in flight.
-    pub(crate) fn new(origin: Instant, lanes: usize) -> Self {
+impl WriterCalls {
+    /// The calls of `writers` writers starting at `origin`, none in flight.
+    pub(crate) fn new(origin: Instant, writers: usize) -> Self {
         Self {
             origin,
-            calls: (0..lanes).map(|_| AtomicU64::new(0)).collect(),
+            calls: (0..writers).map(|_| AtomicU64::new(0)).collect(),
         }
     }
 
-    /// Notes that lane `lane` makes `call`, at `at`.
-    pub(crate) fn calling(&self, lane: usize, call: Call, at: Instant) {
+    /// Notes that writer `writer` makes `call`, at `at`.
+    pub(crate) fn calling(&self, writer: usize, call: Call, at: Instant) {
         let code = match call {
             Call::Open => 1,
             Call::Write => 2,
             Call::Flush => 3,
         };
-        if let Some(calls) = self.calls.get(lane) {
+        if let Some(calls) = self.calls.get(writer) {
             calls.store((stamp(self.origin, at) << 2) + code, Ordering::Relaxed);
         }
     }
 
-    /// Notes that lane `lane`'s call returned.
-    pub(crate) fn returned(&self, lane: usize) {
-        if let Some(calls) = self.calls.get(lane) {
+    /// Notes that writer `writer`'s call returned.
+    pub(crate) fn returned(&self, writer: usize) {
+        if let Some(calls) = self.calls.get(writer) {
             calls.store(0, Ordering::Relaxed);
         }
     }
 
-    /// Each lane's call in flight, its time on `clock`.
-    pub(super) fn read(&self, clock: &RunClock) -> Vec<Option<LaneCall>> {
+    /// Each writer's call in flight, its time on `clock`.
+    pub(super) fn read(&self, clock: &RunClock) -> Vec<Option<WriterCall>> {
         let call = |stored: u64| {
             let call = match stored & 0b11 {
                 1 => Call::Open,
@@ -127,7 +127,7 @@ impl LaneCalls {
                 _ => return None,
             };
             let since = clock.wall(unstamp(self.origin, stored >> 2));
-            Some(LaneCall { call, since })
+            Some(WriterCall { call, since })
         };
         let calls = self.calls.iter();
         calls
@@ -153,7 +153,7 @@ impl Live {
             ledger: Ledger::new(pipeline.clone()),
             attempt: None,
             places: Vec::new(),
-            lanes: None,
+            writers: None,
             landed: BTreeMap::new(),
             ended: None,
         };
@@ -209,7 +209,7 @@ impl Live {
         let mut log = std::mem::take(&mut *running.log.lock());
         let unreported = log.unreported.take();
         state.places.clear();
-        state.lanes = None;
+        state.writers = None;
         let record = AttemptRecord {
             started_at: running.started_at,
             ended_at,
@@ -277,10 +277,10 @@ impl Live {
         }
     }
 
-    /// Notes the attempt's lanes' calls.
-    pub(crate) fn lanes(&self, calls: Arc<LaneCalls>) {
+    /// Notes the attempt's writers' calls.
+    pub(crate) fn writers(&self, calls: Arc<WriterCalls>) {
         if let Some(mut state) = self.running() {
-            state.lanes = Some(calls);
+            state.writers = Some(calls);
         }
     }
 
@@ -321,7 +321,7 @@ impl Live {
         };
         let clock = state.clock;
         let (partitions, quietest) = partitions(&state.places, &clock);
-        let lanes = state.lanes.as_ref().map(|lanes| lanes.read(&clock));
+        let writers = state.writers.as_ref().map(|writers| writers.read(&clock));
         let streams = streams(&report, &state.landed, &clock);
         let (phase, since) = (state.phase, clock.wall(state.since));
         drop(state);
@@ -331,7 +331,7 @@ impl Live {
             partitions,
             quietest,
             waiting: self.budget.open_waits(|at| clock.wall(at)),
-            lanes: lanes.unwrap_or_default(),
+            writers: writers.unwrap_or_default(),
             streams,
             report,
         }

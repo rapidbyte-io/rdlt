@@ -251,7 +251,7 @@ async fn a_connector_cuts_a_batch_of_more_values_than_the_hosts_frame_may_hold()
     assert_eq!(pieces, [1_032_444, 16_132]);
 }
 
-/// A writer of a destination that keeps what it is given in `kept`, served within `limits`.
+/// A table writer of a destination that keeps what it is given in `kept`, served within `limits`.
 async fn keeping(
     kept: &'static Kept,
     limits: Limits,
@@ -267,7 +267,11 @@ async fn keeping(
         .open(&context())
         .await
         .expect("the session opens");
-    opened.session.writer(&table()).await.expect("a writer")
+    opened
+        .session
+        .writer(&table())
+        .await
+        .expect("a table writer")
 }
 
 #[tokio::test]

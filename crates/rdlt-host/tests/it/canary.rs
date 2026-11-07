@@ -340,7 +340,7 @@ fn engine() -> Engine {
     let config = EngineConfig::builder()
         .commit(policy)
         .retry(retry)
-        .lanes(2)
+        .writers(2)
         .build()
         .expect("the engine's configuration is valid");
     Engine::new(config, Arc::new(crate::support::system_env()))

@@ -1,4 +1,4 @@
-//! Lanes: long-lived destination writers that stage batches in order.
+//! Writers: long-lived tasks that stage batches into the destination in order.
 
 #[cfg(test)]
 mod tests;
@@ -18,12 +18,13 @@ use tokio_util::sync::CancellationToken;
 use crate::budget::MemoryBudget;
 use crate::env::Env;
 use crate::error::{Error, Side};
-use crate::report::{Flush, LaneCounters, Tally};
-use crate::status::{Call, LaneCalls};
+use crate::report::{Flush, Tally, WriterCounters};
+use crate::status::{Call, WriterCalls};
 use crate::table::Tables;
 
 /// A batch for one table, tagged with its segment and the schema version it was lowered for; the
-/// reservation drops once its writer has flushed it, since a writer may buffer what it stages.
+/// reservation drops once its table writer has flushed it, since a table writer may buffer what it
+/// stages.
 ///
 /// The batch is declared before its reservation: dropped, it is freed before what was charged for
 /// it is released.
@@ -40,76 +41,78 @@ enum Message {
     Flush(oneshot::Sender<()>),
 }
 
-/// The senders of every lane of an attempt.
+/// The senders of every writer of an attempt.
 #[derive(Clone)]
-pub(crate) struct Lanes {
+pub(crate) struct Writers {
     senders: Vec<mpsc::Sender<Message>>,
-    /// The clock a write waiting for room in a lane's queue is timed on.
+    /// The clock a write waiting for room in a writer's queue is timed on.
     env: Arc<dyn Env>,
-    /// Where each lane's waits and times are counted.
+    /// Where each writer's waits and times are counted.
     tally: Arc<Tally>,
-    /// Each lane's call into the destination in flight.
-    calls: Arc<LaneCalls>,
+    /// Each writer's call into the destination in flight.
+    calls: Arc<WriterCalls>,
 }
 
-/// One lane's end: its queue, a writer for each table and schema version it writes, which of
-/// them it wrote since its last flush, and the reservations of those writes.
+/// One writer's end: its queue, a table writer for each table and schema version it writes, which
+/// of them it wrote since its last flush, and the reservations of those writes.
 ///
-/// A lane holds at most `share` writers open, and a table's writer of a version older than one
-/// it writes is retired: each is a call into a served destination. What it times is added to the
-/// run's tally once, when the lane is dropped, so a cancelled lane adds what it counted.
-pub(crate) struct Lane {
+/// A writer holds at most `share` table writers open, and a table writer of a version
+/// older than one it writes is retired: each is a call into a served destination. What it times is
+/// added to the run's tally once, when the writer is dropped, so a cancelled writer adds what it
+/// counted.
+pub(crate) struct Writer {
     receiver: mpsc::Receiver<Message>,
     tables: Arc<Tables>,
-    writers: BTreeMap<(usize, SchemaVersion), Open>,
+    table_writers: BTreeMap<(usize, SchemaVersion), Open>,
     written: BTreeSet<(usize, SchemaVersion)>,
     held: Vec<Permit>,
     budget: MemoryBudget,
-    /// The most writers the lane holds open.
+    /// The most table writers the writer holds open.
     share: NonZeroUsize,
-    /// Counts the lane's writes, so the writer written longest ago is found.
+    /// Counts the writer's writes, so the table writer written longest ago is found.
     writes: u64,
-    /// The lane's place among the attempt's lanes.
+    /// The writer's place among the attempt's writers.
     index: usize,
-    /// The clock the lane's writes and flushes are timed on.
+    /// The clock the writer's writes and flushes are timed on.
     env: Arc<dyn Env>,
-    /// What the lane's writes and flushes took so far.
-    counted: LaneCounters,
-    /// Where the lane adds what it counted.
+    /// What the writer's writes and flushes took so far.
+    counted: WriterCounters,
+    /// Where the writer adds what it counted.
     tally: Arc<Tally>,
-    /// Where the lane notes its call into the destination in flight.
-    calls: Arc<LaneCalls>,
+    /// Where the writer notes its call into the destination in flight.
+    calls: Arc<WriterCalls>,
 }
 
-/// An open writer, and the count of the lane's writes when it was last written.
+/// An open table writer, and the count of the writer's writes when it was last written.
 struct Open {
-    writer: Box<dyn DestinationWriter>,
+    table_writer: Box<dyn DestinationWriter>,
     used: u64,
 }
 
-impl Lanes {
-    /// `count` lanes writing into `tables`, each queueing up to `window` writes and holding an
-    /// equal share of `writers` open, one at least.
+impl Writers {
+    /// `count` writers writing into `tables`, each queueing up to `window` writes and holding an
+    /// equal share of `table_writers` open, one at least.
     ///
-    /// A lane opens a table's writer when it first writes to the table, since normalized streams
-    /// add child tables as their rows arrive. Each lane's waits and times are counted into
-    /// `tally`, on `env`'s clock.
+    /// A writer opens a table writer for a table when it first writes to it, since normalized
+    /// streams add child tables as their rows arrive. Each writer's waits and times are counted
+    /// into `tally`, on `env`'s clock.
     pub(crate) fn new(
-        (count, writers): (NonZeroUsize, NonZeroUsize),
+        (count, table_writers): (NonZeroUsize, NonZeroUsize),
         tables: &Arc<Tables>,
         window: NonZeroUsize,
         budget: &MemoryBudget,
         (env, tally): (&Arc<dyn Env>, &Arc<Tally>),
-    ) -> (Self, Vec<Lane>) {
-        let share = NonZeroUsize::new(writers.get() / count.get()).unwrap_or(NonZeroUsize::MIN);
-        let calls = Arc::new(LaneCalls::new(env.instant(), count.get()));
-        let (senders, lanes) = (0..count.get())
+    ) -> (Self, Vec<Writer>) {
+        let share =
+            NonZeroUsize::new(table_writers.get() / count.get()).unwrap_or(NonZeroUsize::MIN);
+        let calls = Arc::new(WriterCalls::new(env.instant(), count.get()));
+        let (senders, writers) = (0..count.get())
             .map(|index| {
                 let (sender, receiver) = mpsc::channel(window.get());
-                let lane = Lane {
+                let writer = Writer {
                     receiver,
                     tables: Arc::clone(tables),
-                    writers: BTreeMap::new(),
+                    table_writers: BTreeMap::new(),
                     written: BTreeSet::new(),
                     held: Vec::new(),
                     budget: budget.clone(),
@@ -117,11 +120,11 @@ impl Lanes {
                     writes: 0,
                     index,
                     env: Arc::clone(env),
-                    counted: LaneCounters::default(),
+                    counted: WriterCounters::default(),
                     tally: Arc::clone(tally),
                     calls: Arc::clone(&calls),
                 };
-                (sender, lane)
+                (sender, writer)
             })
             .unzip();
         let ends = Self {
@@ -130,25 +133,25 @@ impl Lanes {
             tally: Arc::clone(tally),
             calls,
         };
-        (ends, lanes)
+        (ends, writers)
     }
 
-    /// Each lane's call into the destination in flight.
-    pub(crate) fn calls(&self) -> &Arc<LaneCalls> {
+    /// Each writer's call into the destination in flight.
+    pub(crate) fn calls(&self) -> &Arc<WriterCalls> {
         &self.calls
     }
 
-    /// The lane for the writes to `table` of the partition at `place` in the attempt, so places
-    /// up to the lanes take a lane each; one lane a partition and table, since spreading a
-    /// partition's writes over more lanes gains nothing (ADR 0004), and no order rests on it.
+    /// The writer for the writes to `table` of the partition at `place` in the attempt, so places
+    /// up to the writers take a writer each; one writer a partition and table, since spreading a
+    /// partition's writes over more writers gains nothing (ADR 0004), and no order rests on it.
     pub(crate) fn route(&self, table: usize, place: usize) -> usize {
         place.wrapping_add(table) % self.senders.len()
     }
 
-    /// Queues `write` on `lane`, waiting while the lane's queue is full; the wait is counted as
-    /// the lane's.
-    pub(crate) async fn write(&self, lane: usize, write: Write) -> Result<(), Error> {
-        let sender = &self.senders[lane];
+    /// Queues `write` on `writer`, waiting while the writer's queue is full; the wait is counted as
+    /// the writer's.
+    pub(crate) async fn write(&self, writer: usize, write: Write) -> Result<(), Error> {
+        let sender = &self.senders[writer];
         let message = match sender.try_send(Message::Write(write)) {
             Ok(()) => return Ok(()),
             Err(mpsc::error::TrySendError::Full(message)) => message,
@@ -158,13 +161,13 @@ impl Lanes {
         let sent = sender.send(message).await;
         let blocked = self.env.instant().saturating_duration_since(began);
         self.tally.add(|counters| {
-            let lane = counters.lane(lane);
-            lane.blocked = lane.blocked.saturating_add(blocked);
+            let writer = counters.writer(writer);
+            writer.blocked = writer.blocked.saturating_add(blocked);
         });
         sent.map_err(|_| stopped())
     }
 
-    /// Waits until every lane has staged and flushed every write queued before this call.
+    /// Waits until every writer has staged and flushed every write queued before this call.
     pub(crate) async fn flush(&self) -> Result<(), Error> {
         let mut replies = Vec::with_capacity(self.senders.len());
         for sender in &self.senders {
@@ -182,16 +185,16 @@ impl Lanes {
     }
 }
 
-/// A lane that ended; the error that ended it is reported by the lane itself.
+/// A writer that ended; the error that ended it is reported by the writer itself.
 fn stopped() -> Error {
-    Error::cancelled("a lane stopped")
+    Error::cancelled("a writer stopped")
 }
 
-impl Lane {
+impl Writer {
     /// Stages queued writes until every sender is dropped or `cancel` fires.
     ///
-    /// A lane flushes its writers when the coordinator asks, and whenever a request waits for
-    /// bytes while the lane holds writes it has not flushed, which frees them.
+    /// A writer flushes its table writers when the coordinator asks, and whenever a request waits
+    /// for bytes while the writer holds writes it has not flushed, which frees them.
     pub(crate) async fn run(mut self, cancel: CancellationToken) -> Result<(), Error> {
         let mut pressure = self.budget.pressure();
         loop {
@@ -221,23 +224,23 @@ impl Lane {
         }
     }
 
-    /// Stages `write` with its table's writer, which then holds what the write held; the table's
-    /// writers of older versions are retired first.
+    /// Stages `write` with the table writer of its table, which then holds what the write held; the
+    /// table writers of older versions of the table are retired first.
     async fn stage(&mut self, write: Write) -> Result<(), Error> {
         let older: Vec<_> = self
-            .writers
+            .table_writers
             .range((write.table, SchemaVersion(0))..(write.table, write.version))
             .map(|(key, _)| *key)
             .collect();
         for key in older {
             self.retire(key).await?;
         }
-        let lane = self.index;
-        let (writer, env, calls) = self.writer(write.table, write.version).await?;
+        let index = self.index;
+        let (table_writer, env, calls) = self.table_writer(write.table, write.version).await?;
         let began = env.instant();
-        calls.calling(lane, Call::Write, began);
-        let written = writer.write(write.segment, write.batch).await;
-        calls.returned(lane);
+        calls.calling(index, Call::Write, began);
+        let written = table_writer.write(write.segment, write.batch).await;
+        calls.returned(index);
         let writing = env.instant().saturating_duration_since(began);
         self.counted.writing = self.counted.writing.saturating_add(writing);
         written.map_err(|error| Error::connector(Side::Destination, "writing a batch", error))?;
@@ -246,16 +249,17 @@ impl Lane {
         Ok(())
     }
 
-    /// Flushes every writer written since the last flush, as `asked` asked, then releases what
-    /// their writes held.
+    /// Flushes every table writer written since the last flush, as `asked` asked, then releases
+    /// what their writes held.
     async fn flush_written(&mut self, asked: Flush) -> Result<(), Error> {
-        // A writer written before the last flush holds nothing more to flush.
+        // A table writer written before the last flush holds nothing more to flush.
         for key in std::mem::take(&mut self.written) {
-            let Some(open) = self.writers.get_mut(&key) else {
+            let Some(open) = self.table_writers.get_mut(&key) else {
                 continue;
             };
             let calling = (self.calls.as_ref(), self.index);
-            let (flushing, flushed) = flush(open.writer.as_mut(), self.env.as_ref(), calling).await;
+            let (flushing, flushed) =
+                flush(open.table_writer.as_mut(), self.env.as_ref(), calling).await;
             self.flushed(asked, flushing);
             flushed?;
         }
@@ -263,21 +267,22 @@ impl Lane {
         Ok(())
     }
 
-    /// Counts a flush `asked` asked for, which took `flushing`, as the lane's.
+    /// Counts a flush `asked` asked for, which took `flushing`, as the writer's.
     fn flushed(&mut self, asked: Flush, flushing: Duration) {
         self.counted.flushing = self.counted.flushing.saturating_add(flushing);
         self.counted.flushes.count(asked);
     }
 
-    /// Closes the writer at `key`, having flushed what it was written since the last flush, so
-    /// what it staged stays staged; what the writes held is released at the lane's next flush.
+    /// Closes the table writer at `key`, having flushed what it was written since the last flush,
+    /// so what it staged stays staged; what the writes held is released at the writer's next flush.
     async fn retire(&mut self, key: (usize, SchemaVersion)) -> Result<(), Error> {
-        let Some(mut open) = self.writers.remove(&key) else {
+        let Some(mut open) = self.table_writers.remove(&key) else {
             return Ok(());
         };
         if self.written.remove(&key) {
             let calling = (self.calls.as_ref(), self.index);
-            let (flushing, flushed) = flush(open.writer.as_mut(), self.env.as_ref(), calling).await;
+            let (flushing, flushed) =
+                flush(open.table_writer.as_mut(), self.env.as_ref(), calling).await;
             self.flushed(Flush::Retirement, flushing);
             flushed?;
         }
@@ -285,17 +290,17 @@ impl Lane {
     }
 }
 
-/// Flushes `writer`, the flush noted as `lane`'s call in `calls`: how long it took on `env`'s
-/// clock.
+/// Flushes `table_writer`, the flush noted as writer `index`'s call in `calls`: how long it took
+/// on `env`'s clock.
 async fn flush(
-    writer: &mut dyn DestinationWriter,
+    table_writer: &mut dyn DestinationWriter,
     env: &dyn Env,
-    (calls, lane): (&LaneCalls, usize),
+    (calls, index): (&WriterCalls, usize),
 ) -> (Duration, Result<(), Error>) {
     let began = env.instant();
-    calls.calling(lane, Call::Flush, began);
-    let flushed = writer.flush().await.map(drop);
-    calls.returned(lane);
+    calls.calling(index, Call::Flush, began);
+    let flushed = table_writer.flush().await.map(drop);
+    calls.returned(index);
     let flushing = env.instant().saturating_duration_since(began);
     (
         flushing,
@@ -304,36 +309,41 @@ async fn flush(
     )
 }
 
-impl Drop for Lane {
+impl Drop for Writer {
     fn drop(&mut self) {
-        let (lane, counted) = (self.index, self.counted);
-        self.tally.add(|counters| counters.lane(lane).add(&counted));
+        let (index, counted) = (self.index, self.counted);
+        self.tally
+            .add(|counters| counters.writer(index).add(&counted));
     }
 }
 
-impl Lane {
-    /// The lane's writer for `table`'s batches lowered for `version`, opened on the first of them,
-    /// the clock its writes are timed on and where its calls are noted: a writer's table names
-    /// the schema its writes follow, and a partition may still write batches of an older version
-    /// after the table changes.
-    async fn writer(
+impl Writer {
+    /// The writer's table writer for `table`'s batches lowered for `version`, opened on the first
+    /// of them, the clock its writes are timed on and where its calls are noted: a table writer's
+    /// table names the schema its writes follow, and a partition may still write batches of an
+    /// older version after the table changes.
+    async fn table_writer(
         &mut self,
         table: usize,
         version: SchemaVersion,
-    ) -> Result<(&mut dyn DestinationWriter, &dyn Env, &LaneCalls), Error> {
+    ) -> Result<(&mut dyn DestinationWriter, &dyn Env, &WriterCalls), Error> {
         self.writes = self.writes.saturating_add(1);
         let key = (table, version);
-        if !self.writers.contains_key(&key) && self.writers.len() >= self.share.get() {
-            let oldest = self.writers.iter().min_by_key(|(_, open)| open.used);
+        if !self.table_writers.contains_key(&key) && self.table_writers.len() >= self.share.get() {
+            let oldest = self.table_writers.iter().min_by_key(|(_, open)| open.used);
             if let Some(oldest) = oldest.map(|(key, _)| *key) {
                 self.retire(oldest).await?;
             }
         }
-        match self.writers.entry(key) {
+        match self.table_writers.entry(key) {
             Entry::Occupied(open) => {
                 let open = open.into_mut();
                 open.used = self.writes;
-                Ok((open.writer.as_mut(), self.env.as_ref(), self.calls.as_ref()))
+                Ok((
+                    open.table_writer.as_mut(),
+                    self.env.as_ref(),
+                    self.calls.as_ref(),
+                ))
             }
             Entry::Vacant(vacant) => {
                 let view = self.tables.view(table);
@@ -343,17 +353,21 @@ impl Lane {
                 };
                 self.calls
                     .calling(self.index, Call::Open, self.env.instant());
-                let writer = self.tables.session().writer(&table).await;
+                let table_writer = self.tables.session().writer(&table).await;
                 self.calls.returned(self.index);
-                let writer = writer?.map_err(|error| {
-                    let context = format!("creating a writer for table {}", view.table.name);
+                let table_writer = table_writer?.map_err(|error| {
+                    let context = format!("creating a table writer for table {}", view.table.name);
                     Error::connector(Side::Destination, context, error)
                 })?;
                 let open = vacant.insert(Open {
-                    writer,
+                    table_writer,
                     used: self.writes,
                 });
-                Ok((open.writer.as_mut(), self.env.as_ref(), self.calls.as_ref()))
+                Ok((
+                    open.table_writer.as_mut(),
+                    self.env.as_ref(),
+                    self.calls.as_ref(),
+                ))
             }
         }
     }

@@ -29,7 +29,7 @@ pub struct Passthrough {
 impl Passthrough {
     /// Columns of each batch.
     pub const COLUMNS: usize = 10;
-    /// Writers the engine's sink declares it runs at once, so a run has a lane a core.
+    /// Writers the engine's sink declares it runs at once, so a run has a writer a core.
     pub const WRITERS: NonZeroU16 = NonZeroU16::new(16).expect("not zero");
 
     /// The batches of `cell`, their ids running on from one batch to the next, and a runtime of
@@ -101,11 +101,11 @@ impl Passthrough {
         &self.batches
     }
 
-    /// Writes the batches to the destination's writer one after another; the rows written.
+    /// Writes the batches to the destination's table writer one after another; the rows written.
     ///
     /// # Panics
     ///
-    /// Panics where the writer refuses a batch.
+    /// Panics where the table writer refuses a batch.
     pub fn bare_loop(&self) -> u64 {
         self.runner.block_on(async {
             let mut writer = SinkWriter::new(Arc::default(), self.cell.sinking);

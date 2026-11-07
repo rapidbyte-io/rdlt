@@ -44,7 +44,7 @@ async fn run_chunked(
         .expect("a valid policy");
     let config = commit_every(1_000_000_000)
         .memory(budget)
-        .lanes(1)
+        .writers(1)
         .batch(batch);
     HEAP.reset_peak_usage();
     let before = HEAP.current_usage();
@@ -185,7 +185,7 @@ async fn narrow_records_after_a_wide_one_fill_its_table_within_the_budget() {
         _ => None,
     });
     let source = making("narrow_after_wide", steps).await;
-    let config = commit_every(1_000_000_000).memory(LEAST).lanes(1);
+    let config = commit_every(1_000_000_000).memory(LEAST).writers(1);
     HEAP.reset_peak_usage();
     let before = HEAP.current_usage();
     let outcome = engine(config)

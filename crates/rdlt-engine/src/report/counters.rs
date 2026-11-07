@@ -21,8 +21,8 @@ pub struct Counters {
     pub acks: Acks,
     /// The time the run's commits took, phase by phase.
     pub phases: CommitPhases,
-    /// What each lane of the run waited for and spent its time on, by the lane's place.
-    pub lanes: Vec<LaneCounters>,
+    /// What each writer of the run waited for and spent its time on, by the writer's place.
+    pub writers: Vec<WriterCounters>,
     /// Changes the run's budget sent to the tasks watching for pressure and for cursors' waits,
     /// each waking every task waiting on that value.
     pub signals: u64,
@@ -80,7 +80,7 @@ pub struct Acks {
 /// The time commits that landed took, phase by phase, summed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct CommitPhases {
-    /// Flushing the lanes, so the destination holds every write the commit publishes.
+    /// Flushing the table writers, so the destination holds every write the commit publishes.
     pub flush: Duration,
     /// The destination's commit.
     pub commit: Duration,
@@ -102,34 +102,33 @@ pub enum Trigger {
     End,
 }
 
-/// What one lane waited for and spent its time on.
+/// What one writer waited for and spent its time on.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
-pub struct LaneCounters {
-    /// The time partitions waited for room in the lane's queue, summed.
+pub struct WriterCounters {
+    /// The time partitions waited for room in the writer's queue, summed.
     pub blocked: Duration,
-    /// The time its destination writers took to write batches, a failed write's included, summed.
+    /// The time its table writers took to write batches, a failed write's included, summed.
     pub writing: Duration,
-    /// The time its destination writers took to flush, a failed flush's included, summed.
+    /// The time its table writers took to flush, a failed flush's included, summed.
     pub flushing: Duration,
-    /// Its destination writers' flushes, by what asked for each.
+    /// Its table writers' flushes, by what asked for each.
     pub flushes: Flushes,
 }
 
-/// A lane's flushes of its destination writers, a failed flush's included, by what asked for
-/// each.
+/// A writer's flushes of its table writers, a failed flush's included, by what asked for each.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct Flushes {
-    /// A request waiting for bytes the lane's writes held.
+    /// A request waiting for bytes the writer's writes held.
     pub pressure: u64,
-    /// A commit, before it publishes what the lanes staged, or the attempt's end, for writes no
+    /// A commit, before it publishes what the writers staged, or the attempt's end, for writes no
     /// commit took.
     pub commit: u64,
-    /// The writer's retirement: of a schema version a newer one superseded, or of the writer
-    /// written longest ago where the lane holds as many open as it may.
+    /// A table writer's retirement: of a schema version a newer one superseded, or of the table
+    /// writer written longest ago where the writer holds as many open as it may.
     pub retired: u64,
 }
 
-/// What asked a lane to flush a writer.
+/// What asked a writer to flush a table writer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Flush {
     Pressure,
@@ -233,7 +232,7 @@ impl Commits {
     }
 }
 
-impl LaneCounters {
+impl WriterCounters {
     /// Adds what `other` counted.
     pub(crate) fn add(&mut self, other: &Self) {
         self.blocked = self.blocked.saturating_add(other.blocked);
@@ -272,12 +271,13 @@ impl CommitPhases {
 }
 
 impl Counters {
-    /// What lane `lane` counted, the lanes before it listed as none where they counted nothing.
-    pub(crate) fn lane(&mut self, lane: usize) -> &mut LaneCounters {
-        if self.lanes.len() <= lane {
-            self.lanes.resize(lane + 1, LaneCounters::default());
+    /// What writer `writer` counted, the writers before it listed as none where they counted
+    /// nothing.
+    pub(crate) fn writer(&mut self, writer: usize) -> &mut WriterCounters {
+        if self.writers.len() <= writer {
+            self.writers.resize(writer + 1, WriterCounters::default());
         }
-        &mut self.lanes[lane]
+        &mut self.writers[writer]
     }
 }
 

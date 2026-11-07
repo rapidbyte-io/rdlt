@@ -1,10 +1,10 @@
 //! The commit coordinator: one task per attempt that owns the destination session.
 //!
 //! It tracks every partition's sealed segments, decides when a commit is due, asks on-demand
-//! partitions to checkpoint (a barrier), flushes the lanes, commits the sealed segments with their
-//! state, sending the commit again in place where the destination answers it transiently, and
-//! acknowledges the committed cursors to the source, owing it those of a report that failed until
-//! a later commit's report carries them. At most one commit is in flight; partitions keep reading
+//! partitions to checkpoint (a barrier), flushes the writers, commits the sealed segments with
+//! their state, sending the commit again in place where the destination answers it transiently, and
+//! acknowledges the committed cursors to the source, owing it those of a report that failed until a
+//! later commit's report carries them. At most one commit is in flight; partitions keep reading
 //! while it runs.
 
 mod acks;
@@ -43,7 +43,6 @@ use crate::crash::crash_point;
 use crate::env::{Env, Sleep};
 use crate::error::Error;
 use crate::event::Announcer;
-use crate::lane::Lanes;
 use crate::partition::{Latest, Progress};
 use crate::plan::WriteMode;
 use crate::report::{AttemptEnd, AttemptLog, Tally, Trigger};
@@ -51,6 +50,7 @@ use crate::status::{Live, Place, RunClock};
 use crate::stored::{Measured, Stored};
 use crate::table::Tables;
 use crate::watch;
+use crate::writer::Writers;
 pub(crate) use done::DoneMarkers;
 use done::Recorded;
 pub(crate) use phases::{Begun, Launcher, Phases, Template, launcher, plan_of};
@@ -166,7 +166,7 @@ pub(crate) struct CoordinatorParts {
     /// The tables, and through them the destination session.
     pub(crate) tables: Arc<Tables>,
     pub(crate) source: Arc<dyn Source>,
-    pub(crate) lanes: Lanes,
+    pub(crate) writers: Writers,
     pub(crate) epoch: Epoch,
     /// The key of the pipeline's last commit that had landed when the session opened, which its
     /// first commit expects landed.
@@ -302,7 +302,7 @@ impl Coordinator {
         };
         // Writes of rows no commit took, as an unbounded partition's after its last checkpoint,
         // finish before the session closes; the next session discards them.
-        self.parts.lanes.flush().await?;
+        self.parts.writers.flush().await?;
         self.parts.tables.session().close().await?;
         self.parts.log.lock().end = Some(end);
         Ok(())

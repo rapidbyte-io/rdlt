@@ -164,8 +164,8 @@ async fn wide_child_tables_passing_the_state_limit_are_refused_as_child_tables()
 #[tokio::test]
 async fn a_table_changed_by_every_push_loads_through_a_served_destination() {
     use crate::support::targets::Target;
-    // A served connection carries at most 200 calls, and each open writer is one: a writer per
-    // schema version kept open would wait for a call it never gets.
+    // A served connection carries at most 200 calls, and each open table writer is one: a table
+    // writer per schema version kept open would wait for a call it never gets.
     let target = Target::SpawnedJsonl;
     let store = target.name("growth_versions");
     let pushes: Vec<String> = (0..250)

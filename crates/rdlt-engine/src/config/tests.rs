@@ -81,8 +81,8 @@ fn the_builder_applies_defaults_and_settings() {
     let defaults = EngineConfig::builder().build().unwrap();
     assert_eq!(defaults, EngineConfig::default());
     assert_eq!(defaults.memory().get(), 256 << 20);
-    assert_eq!(defaults.lanes(), None);
-    assert_eq!(defaults.lane_window().get(), 4);
+    assert_eq!(defaults.writers(), None);
+    assert_eq!(defaults.writer_window().get(), 4);
     assert_eq!(defaults.partitions().get(), 16);
     assert_eq!(defaults.partition_buffer().get(), 16);
     assert_eq!(defaults.barrier_wait(), Duration::from_secs(5));
@@ -91,8 +91,8 @@ fn the_builder_applies_defaults_and_settings() {
     let batch = BatchPolicy::new(10, 20, Duration::from_millis(30), 40).unwrap();
     let config = EngineConfig::builder()
         .memory(64 << 20)
-        .lanes(3)
-        .lane_window(2)
+        .writers(3)
+        .writer_window(2)
         .partitions(5)
         .partition_buffer(6)
         .barrier_wait(Duration::from_millis(7))
@@ -102,8 +102,8 @@ fn the_builder_applies_defaults_and_settings() {
         .build()
         .unwrap();
     assert_eq!(config.memory().get(), 64 << 20);
-    assert_eq!(config.lanes().map(std::num::NonZero::get), Some(3));
-    assert_eq!(config.lane_window().get(), 2);
+    assert_eq!(config.writers().map(std::num::NonZero::get), Some(3));
+    assert_eq!(config.writer_window().get(), 2);
     assert_eq!(config.partitions().get(), 5);
     assert_eq!(config.partition_buffer().get(), 6);
     assert_eq!(config.barrier_wait(), Duration::from_millis(7));
@@ -433,14 +433,33 @@ fn growth_limits_need_room_for_a_child_table_and_a_writer() {
     }
     let limits = super::GrowthLimits::new(1, 1).unwrap();
     assert_eq!(limits.child_tables().get(), 1);
-    assert_eq!(limits.writers().get(), 1);
+    assert_eq!(limits.table_writers().get(), 1);
     let defaults = super::GrowthLimits::default();
     assert_eq!(defaults.child_tables().get(), 1024);
-    assert_eq!(defaults.writers().get(), 128);
+    assert_eq!(defaults.table_writers().get(), 128);
     let config = EngineConfig::builder().growth(limits).build().unwrap();
     assert_eq!(config.growth(), &limits);
     assert_eq!(
         EngineConfig::default().growth(),
         &super::GrowthLimits::default()
     );
+}
+
+#[test]
+fn writers_and_their_window_are_configured_and_zero_is_refused() {
+    let config = EngineConfig::builder()
+        .writers(3)
+        .writer_window(2)
+        .build()
+        .unwrap();
+    assert_eq!(config.writers().map(std::num::NonZeroU16::get), Some(3));
+    assert_eq!(config.writer_window().get(), 2);
+    for refused in [
+        EngineConfig::builder().writers(0).build(),
+        EngineConfig::builder().writer_window(0).build(),
+    ] {
+        assert_eq!(refused.unwrap_err().code(), Some(codes::CONFIG_INVALID));
+    }
+    let growth = super::GrowthLimits::new(8, 16).unwrap();
+    assert_eq!(growth.table_writers().get(), 16);
 }

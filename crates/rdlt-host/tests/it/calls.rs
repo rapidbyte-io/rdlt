@@ -1,5 +1,5 @@
-//! What a served connection carries at once: a run reads, and holds writers open, within the
-//! calls its connector's connection carries, so no read or writer waits for the transport.
+//! What a served connection carries at once: a run reads, and holds table writers open, within the
+//! calls its connector's connection carries, so no read or table writer waits for the transport.
 
 use std::num::NonZeroUsize;
 use std::sync::Arc;
@@ -256,7 +256,7 @@ async fn a_served_destination_takes_more_tables_than_its_connection_carries() {
         }),
     )
     .expect("a valid plan");
-    // More writers than the connection carries calls, every table's open at once.
+    // More table writers than the connection carries calls, every table's open at once.
     let growth = GrowthLimits::new(1024, 300).expect("valid limits");
     let run = paused_engine(EngineConfig::builder().growth(growth)).run(
         plan,

@@ -50,7 +50,7 @@ async fn stopped(run: Guarded) {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_flush_that_hangs_shows_as_its_commit_s_flush_step_and_its_lane_s_call() {
+async fn a_flush_that_hangs_shows_as_its_commit_s_flush_step_and_its_writer_s_call() {
     let (engine, _) = told_engine(commit_every(10));
     let destination = failing(memory("status_flush").await, Step::StallFlushes);
     let source = generator(&[("events", 100, 1, 10)]).await;
@@ -78,21 +78,21 @@ async fn a_flush_that_hangs_shows_as_its_commit_s_flush_step_and_its_lane_s_call
     );
     assert!(later.report.elapsed >= hung.report.elapsed + Duration::from_secs(30));
     assert_eq!(later.report.status, RunStatus::Running);
-    let lane = later
-        .lanes
+    let writer = later
+        .writers
         .iter()
         .flatten()
         .find(|call| call.call == Call::Flush)
-        .expect("a lane flushes");
+        .expect("a writer flushes");
     assert_eq!(
-        lane.since, hung.since,
-        "the lane's flush began with the step"
+        writer.since, hung.since,
+        "the writer's flush began with the step"
     );
     stopped(run).await;
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_write_that_hangs_shows_as_its_lane_s_call_since_it_began() {
+async fn a_write_that_hangs_shows_as_its_writer_s_call_since_it_began() {
     let (engine, _) = told_engine(commit_every(1_000));
     let destination = failing(memory("status_write").await, Step::StallWrites);
     let source = generator(&[("events", 100, 1, 10)]).await;
@@ -102,18 +102,23 @@ async fn a_write_that_hangs_shows_as_its_lane_s_call_since_it_began() {
         destination,
     );
     let writing = |status: &Status| {
-        let mut calls = status.lanes.iter().flatten();
+        let mut calls = status.writers.iter().flatten();
         calls.any(|call| call.call == Call::Write)
     };
     let hung = when(&mut run, writing).await;
     passing(&mut run, Duration::from_secs(30)).await;
     let later = run.status();
     assert_eq!(
-        later.lanes, hung.lanes,
+        later.writers, hung.writers,
         "the call and its start stay while it hangs"
     );
     assert_eq!(later.phase, Phase::Reading);
-    let write = later.lanes.iter().flatten().next().expect("a lane writes");
+    let write = later
+        .writers
+        .iter()
+        .flatten()
+        .next()
+        .expect("a writer writes");
     assert!(
         write.since >= later.since,
         "the write began once reading did"
@@ -170,7 +175,7 @@ async fn a_push_waiting_for_room_shows_its_wait_since_it_began() {
         (step < 64).then(|| Made::Batch(batch(vec![("value", column)])))
     });
     let source = making("status_intake", steps).await;
-    let config = commit_every(1_000_000).memory(40 << 20).lanes(1);
+    let config = commit_every(1_000_000).memory(40 << 20).writers(1);
     let (engine, _) = told_engine(config);
     let destination = failing(memory("status_intake").await, Step::StallWrites);
     let mut run = engine.run(
