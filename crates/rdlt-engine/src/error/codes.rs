@@ -1,15 +1,16 @@
-//! Every code an engine [`Error`](crate::Error) may carry: the catalogue, and the module that
-//! alone makes a [`Code`].
+//! Every code an engine [`Error`](crate::Error) may carry, and the [`Code`] the layers above the
+//! engine name their failures with.
 //!
 //! A code names one failure for as long as the engine has it, and each constant is named after
-//! its text. A connector's own code is never one of these: an error keeps it apart, as
+//! its text. A connector's own code is never a [`Code`]: an error keeps it apart, as
 //! [`Error::connector_code`](crate::Error::connector_code).
 
 use std::fmt;
 
 use serde::Serialize;
 
-/// A stable machine code for an engine error, one of this module's constants.
+/// A stable machine code for a failure of the engine or of the trusted layers above it: one of
+/// this module's constants, or made by [`Code::new`].
 ///
 /// ```
 /// use rdlt_engine::codes;
@@ -21,6 +22,13 @@ use serde::Serialize;
 pub struct Code(&'static str);
 
 impl Code {
+    /// A code of the trusted computing base above the engine: a host's placement or secret code,
+    /// or the facade's own; a connector's code is never one.
+    #[must_use]
+    pub const fn new(text: &'static str) -> Self {
+        Self(text)
+    }
+
     /// The code's text, as reports show it.
     #[must_use]
     pub const fn as_str(self) -> &'static str {

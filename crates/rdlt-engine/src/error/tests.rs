@@ -476,3 +476,13 @@ fn the_transform_codes_read_as_their_names() {
         assert_eq!(code.as_str(), text);
     }
 }
+
+#[test]
+fn a_code_of_a_layer_above_the_engine_reports_as_the_engine_s_do() {
+    const REFUSED: crate::Code = crate::Code::new("placement_refused");
+    assert_eq!(REFUSED.as_str(), "placement_refused");
+    assert_eq!(
+        serde_json::to_string(&REFUSED).unwrap(),
+        "\"placement_refused\""
+    );
+}
