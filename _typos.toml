@@ -1,5 +1,6 @@
 [files]
-extend-exclude = ["target/"]
+# proptest's saved cases, whose comments hold drawn text.
+extend-exclude = ["target/", "proptest-regressions/"]
 
 [default.extend-identifiers]
 # The open flag O_WRONLY, as rustix names it.
