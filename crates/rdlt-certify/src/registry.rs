@@ -169,7 +169,7 @@ and the clauses after are not observed, so it exits 1.
 const LIMITS: &str = "
 ## What certification bounds
 
-- Every call has a deadline, each clause a bound on all its work (30 s a protocol clause, 600 s a \
+- Every call to a connector has a deadline, each connector clause a bound on all its work (30 s a protocol clause, 600 s a \
 source or destination clause, 300 s a kill clause unless `--kill-timeout` says). A whole run \
 takes at most an hour unless `--timeout` says otherwise or `--no-timeout` lifts the bound; the \
 clause being checked then fails, and nothing more is started.
@@ -196,7 +196,10 @@ two adjacent batches that share a schema joined; one batch cut in halves; and th
 on the whole, its halves and its first row. A dependence that a function hides on columns that \
 are constant in the inputs, or a behaviour that shows only on other rows, is not seen. A column \
 whose moved rows do not differ in any batch leaves `T-LINEAGE` and `T-READS` unobserved, and so \
-does an input with fewer than three rows for `T-ROWS`. The batches hold data columns only.
+does an input with fewer than three rows for `T-ROWS`. `T-BOUND` measures the buffers a transform \
+returns, its output and its filter's answer, beyond its input, not scratch memory it frees before \
+returning. The batches hold data columns only. The `T` clauses run in process with no deadline: a \
+transform that never returns hangs `certify_transform`.
 - A reason is at most 2048 bytes, and quotes at most the first eight rows of those it counts.
 - A kill clause passes only when a kill landed: the host saw a connection to the connector end \
 after the kill. A spawned connector's ends once no process holds its other end, which a kill of \
