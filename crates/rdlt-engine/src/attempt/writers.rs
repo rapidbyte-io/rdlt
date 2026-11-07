@@ -35,7 +35,9 @@ pub(super) fn start_writers(
         &context.budget,
         (&context.env, &context.tally),
     );
-    context.live.writers(Arc::clone(writers.calls()));
+    context
+        .live
+        .writers(Arc::clone(writers.calls()), writers.queues());
     let cancel = scope.token().clone();
     // A change of a table's schema reserves what its commit records, until the attempt ends.
     tables.charge(context.budget.clone(), cancel.clone());

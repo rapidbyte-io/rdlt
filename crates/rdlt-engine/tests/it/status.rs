@@ -81,7 +81,7 @@ async fn a_flush_that_hangs_shows_as_its_commit_s_flush_step_and_its_writer_s_ca
     let writer = later
         .writers
         .iter()
-        .flatten()
+        .filter_map(|writer| writer.call)
         .find(|call| call.call == Call::Flush)
         .expect("a writer flushes");
     assert_eq!(
@@ -102,22 +102,37 @@ async fn a_write_that_hangs_shows_as_its_writer_s_call_since_it_began() {
         destination,
     );
     let writing = |status: &Status| {
-        let mut calls = status.writers.iter().flatten();
+        let mut calls = status.writers.iter().filter_map(|writer| writer.call);
         calls.any(|call| call.call == Call::Write)
     };
     let hung = when(&mut run, writing).await;
     passing(&mut run, Duration::from_secs(30)).await;
     let later = run.status();
+    let calls = |status: &Status| {
+        status
+            .writers
+            .iter()
+            .map(|writer| writer.call)
+            .collect::<Vec<_>>()
+    };
     assert_eq!(
-        later.writers, hung.writers,
+        calls(&later),
+        calls(&hung),
         "the call and its start stay while it hangs"
     );
     assert_eq!(later.phase, Phase::Reading);
+    assert!(
+        later.memory.intake > 0,
+        "pushes admitted and not written are held"
+    );
+    assert!(
+        later.writers.iter().any(|writer| writer.queued > 0),
+        "the writes behind the hung one are queued"
+    );
     let write = later
         .writers
         .iter()
-        .flatten()
-        .next()
+        .find_map(|writer| writer.call)
         .expect("a writer writes");
     assert!(
         write.since >= later.since,

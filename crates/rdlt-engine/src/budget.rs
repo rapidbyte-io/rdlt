@@ -291,6 +291,11 @@ impl MemoryBudget {
         self.shared.lock().reserved()
     }
 
+    /// Bytes each share holds now.
+    pub(crate) fn held(&self) -> crate::status::MemoryHeld {
+        self.shared.lock().held_now()
+    }
+
     /// The requests that have waited for room, and for how long, by share.
     pub(crate) fn waited(&self) -> Waits {
         self.shared.lock().waited

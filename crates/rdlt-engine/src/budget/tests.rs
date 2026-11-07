@@ -13,7 +13,7 @@ mod observed;
 use super::{Denied, Exhausted, MemoryBudget, Reservation, Shares, TooLarge, budget};
 use crate::env::{Env as _, InlineEnv};
 use crate::report::{Waited, Waits};
-use crate::status::OpenWaits;
+use crate::status::{MemoryHeld, OpenWaits};
 
 /// A budget whose shares are round: 100 for cursors, 200 for tables' records, 1,600 for reads,
 /// 400 for answers, and 4,100 for data, of which a request for lowering takes 1,600 at most and
@@ -885,4 +885,28 @@ async fn a_part_of_a_lent_reservation_lent_again_presses_for_its_parts_and_gives
     );
     drop(lent);
     assert_eq!(budget.reserved(), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn what_each_share_holds_is_told_while_it_is_reserved() {
+    let budget = budget(1 << 20);
+    let held = (
+        budget.acquire(1).await.expect("room for it"),
+        budget.acquire_working(2).await.expect("room for it"),
+        budget.acquire_cursor(3).await.expect("room for it"),
+        budget.acquire_tables(4).await.expect("room for it"),
+        budget.keep(5).expect("room for it"),
+        budget.acquire_control(6).await.expect("room for it"),
+    );
+    let told = MemoryHeld {
+        intake: 1,
+        work: 2,
+        cursors: 3,
+        tables: 4,
+        reads: 5,
+        control: 6,
+    };
+    assert_eq!(budget.held(), told);
+    drop(held);
+    assert_eq!(budget.held(), MemoryHeld::default());
 }

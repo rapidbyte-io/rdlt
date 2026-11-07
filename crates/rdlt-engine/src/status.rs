@@ -35,9 +35,10 @@ pub struct Status {
     /// The oldest request waiting for room in each share of the memory budget, by when it began
     /// to wait.
     pub waiting: OpenWaits,
-    /// Each writer's call into the destination in flight, by the writer's place; none for a writer
-    /// between calls.
-    pub writers: Vec<Option<WriterCall>>,
+    /// What each share of the memory budget holds now.
+    pub memory: MemoryHeld,
+    /// The attempt's writers, by their place: each one's call in flight and writes queued.
+    pub writers: Vec<WriterStatus>,
     /// Each stream's freshness and how far its source says its reads are behind, by stream name.
     pub streams: BTreeMap<String, StreamStatus>,
     /// The run so far, as its report counts it: the attempt in progress listed as ending now.
@@ -135,6 +136,32 @@ pub struct OpenWaits {
     pub control: Option<SystemTime>,
     /// A read waiting for a slot.
     pub reads: Option<SystemTime>,
+}
+
+/// Bytes each share of the memory budget holds reserved now.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct MemoryHeld {
+    /// Pushes admitted and not yet written.
+    pub intake: u64,
+    /// What lowering holds.
+    pub work: u64,
+    /// Checkpoints' cursors waiting for a commit.
+    pub cursors: u64,
+    /// What commits record of tables.
+    pub tables: u64,
+    /// What reads keep beside their events.
+    pub reads: u64,
+    /// What decoding connectors' answers holds.
+    pub control: u64,
+}
+
+/// One writer of the attempt: its call into the destination in flight, and its writes queued.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct WriterStatus {
+    /// Its call in flight; none between calls.
+    pub call: Option<WriterCall>,
+    /// Writes and flushes queued for it and not yet taken.
+    pub queued: u64,
 }
 
 /// A writer's call into the destination in flight.

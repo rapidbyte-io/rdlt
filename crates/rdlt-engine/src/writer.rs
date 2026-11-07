@@ -53,6 +53,25 @@ pub(crate) struct Writers {
     calls: Arc<WriterCalls>,
 }
 
+/// What each writer of an attempt has queued and not taken, read without holding its queue
+/// open: a writer whose senders are gone ends.
+pub(crate) struct Queues(Vec<mpsc::WeakSender<Message>>);
+
+impl Queues {
+    /// Writes queued for each writer, by its place; none for a writer that ended.
+    pub(crate) fn queued(&self) -> Vec<u64> {
+        self.0
+            .iter()
+            .map(|weak| {
+                weak.upgrade().map_or(0, |sender| {
+                    let queued = sender.max_capacity() - sender.capacity();
+                    u64::try_from(queued).unwrap_or(u64::MAX)
+                })
+            })
+            .collect()
+    }
+}
+
 /// One writer's end: its queue, a table writer for each table and schema version it writes, which
 /// of them it wrote since its last flush, and the reservations of those writes.
 ///
@@ -139,6 +158,11 @@ impl Writers {
     /// Each writer's call into the destination in flight.
     pub(crate) fn calls(&self) -> &Arc<WriterCalls> {
         &self.calls
+    }
+
+    /// What each writer has queued, for the run's status.
+    pub(crate) fn queues(&self) -> Queues {
+        Queues(self.senders.iter().map(mpsc::Sender::downgrade).collect())
     }
 
     /// The writer for the writes to `table` of the partition at `place` in the attempt, so places

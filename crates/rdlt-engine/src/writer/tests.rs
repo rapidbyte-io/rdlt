@@ -726,3 +726,15 @@ async fn a_writer_counts_each_table_writer_flush_by_what_asked_for_it() {
         log.lock()
     );
 }
+
+#[tokio::test]
+async fn a_writer_s_queue_counts_the_writes_it_has_not_taken() {
+    let log = Log::default();
+    let budget = crate::budget::budget(1 << 20);
+    // The writers' ends are kept and never run, so nothing takes what is queued.
+    let (writers, _ends) = writers(2, 1, &log, [false, false, false], 4);
+    for segment in 1..=3 {
+        write(&writers, &budget, 0, 0, segment, 1).await.unwrap();
+    }
+    assert_eq!(writers.queues().queued(), [3, 0]);
+}

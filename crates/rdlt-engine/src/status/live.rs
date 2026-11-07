@@ -12,12 +12,15 @@ use parking_lot::{Mutex, MutexGuard};
 use rdlt_connector::{PartitionId, PipelineId, StreamName};
 
 use super::clock::{stamp, unstamp};
-use super::{Call, Partitions, Phase, Quiet, RunClock, Status, Step, StreamStatus, WriterCall};
+use super::{
+    Call, Partitions, Phase, Quiet, RunClock, Status, Step, StreamStatus, WriterCall, WriterStatus,
+};
 use crate::budget::MemoryBudget;
 use crate::env::Env;
 use crate::error::{Error, ErrorReport};
 use crate::event::Unreported;
 use crate::report::{AttemptLog, AttemptRecord, Credit, Ledger, Report, RunStatus, Tally};
+use crate::writer::Queues;
 
 /// One run's live state, shared by the run and every status of it.
 pub(crate) struct Live {
@@ -41,8 +44,8 @@ struct State {
     attempt: Option<Running>,
     /// The attempt's partitions, by their places.
     places: Vec<Place>,
-    /// The attempt's writers' calls, once its writers run.
-    writers: Option<Arc<WriterCalls>>,
+    /// The attempt's writers' calls and queues, once its writers run.
+    writers: Option<(Arc<WriterCalls>, Queues)>,
     /// When the last commit that landed each stream's rows or positions landed.
     landed: BTreeMap<StreamName, Instant>,
     /// The run's report, once it ended.
@@ -277,10 +280,10 @@ impl Live {
         }
     }
 
-    /// Notes the attempt's writers' calls.
-    pub(crate) fn writers(&self, calls: Arc<WriterCalls>) {
+    /// Notes the attempt's writers' calls and queues.
+    pub(crate) fn writers(&self, calls: Arc<WriterCalls>, queues: Queues) {
         if let Some(mut state) = self.running() {
-            state.writers = Some(calls);
+            state.writers = Some((calls, queues));
         }
     }
 
@@ -321,7 +324,16 @@ impl Live {
         };
         let clock = state.clock;
         let (partitions, quietest) = partitions(&state.places, &clock);
-        let writers = state.writers.as_ref().map(|writers| writers.read(&clock));
+        let writers = state
+            .writers
+            .as_ref()
+            .map_or_else(Vec::new, |(calls, queues)| {
+                let (calls, queued) = (calls.read(&clock), queues.queued());
+                let writers = calls.into_iter().zip(queued);
+                writers
+                    .map(|(call, queued)| WriterStatus { call, queued })
+                    .collect()
+            });
         let streams = streams(&report, &state.landed, &clock);
         let (phase, since) = (state.phase, clock.wall(state.since));
         drop(state);
@@ -330,8 +342,9 @@ impl Live {
             since,
             partitions,
             quietest,
+            memory: self.budget.held(),
             waiting: self.budget.open_waits(|at| clock.wall(at)),
-            writers: writers.unwrap_or_default(),
+            writers,
             streams,
             report,
         }

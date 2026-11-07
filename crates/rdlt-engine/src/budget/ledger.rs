@@ -264,6 +264,18 @@ impl Ledger {
         self.reads
     }
 
+    /// Bytes each share holds now.
+    pub(super) fn held_now(&self) -> crate::status::MemoryHeld {
+        crate::status::MemoryHeld {
+            intake: self.intake,
+            work: self.work,
+            cursors: self.cursors,
+            tables: self.tables,
+            reads: self.reads,
+            control: self.control,
+        }
+    }
+
     /// Bytes reserved, every share together.
     pub(super) fn reserved(&self) -> u64 {
         self.intake + self.work + self.cursors + self.tables + self.reads + self.control
