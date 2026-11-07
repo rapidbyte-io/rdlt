@@ -7,6 +7,7 @@ use rdlt_connector::testing::{Clause, DESTINATION_CLAUSES, SOURCE_CLAUSES};
 
 use crate::kill::KILL_CLAUSES;
 use crate::protocol::PROTOCOL_CLAUSES;
+use crate::transform::TRANSFORM_CLAUSES;
 
 /// A family of clauses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -19,10 +20,18 @@ pub enum Family {
     Destination,
     /// A connector's killed as an engine loads through it (`K`).
     Kill,
+    /// A transform, certified in process on given batches (`T`).
+    Transform,
 }
 
 impl Family {
-    const ALL: [Self; 4] = [Self::Protocol, Self::Source, Self::Destination, Self::Kill];
+    const ALL: [Self; 5] = [
+        Self::Protocol,
+        Self::Source,
+        Self::Destination,
+        Self::Kill,
+        Self::Transform,
+    ];
 
     /// Its clauses, in the order they are checked.
     pub fn clauses(self) -> &'static [Clause] {
@@ -31,6 +40,7 @@ impl Family {
             Self::Source => SOURCE_CLAUSES,
             Self::Destination => DESTINATION_CLAUSES,
             Self::Kill => KILL_CLAUSES,
+            Self::Transform => TRANSFORM_CLAUSES,
         }
     }
 
@@ -40,6 +50,7 @@ impl Family {
             Self::Source => "Source (`S`)",
             Self::Destination => "Destination (`D`)",
             Self::Kill => "Kill (`K`)",
+            Self::Transform => "Transform (`T`)",
         }
     }
 }
@@ -129,6 +140,9 @@ declares, only through a probe that alters the store, as an in-process certifica
 read-back over the wire alters nothing, so its pass says beside `pass`, and as `note` in JSON, \
 that no column was dropped.
 
+The `T` clauses certify a transform rather than a connector: `certify_transform` checks them in \
+process, on the batches a test or a binding gives it, with no protocol or engine run between.
+
 ## Exit codes
 
 | Code | When |
@@ -155,7 +169,7 @@ and the clauses after are not observed, so it exits 1.
 const LIMITS: &str = "
 ## What certification bounds
 
-- Every call has a deadline, each clause a bound on all its work (30 s a protocol clause, 600 s a \
+- Every call to a connector has a deadline, each connector clause a bound on all its work (30 s a protocol clause, 600 s a \
 source or destination clause, 300 s a kill clause unless `--kill-timeout` says). A whole run \
 takes at most an hour unless `--timeout` says otherwise or `--no-timeout` lifts the bound; the \
 clause being checked then fails, and nothing more is started.
@@ -175,6 +189,17 @@ dictionary or run-end encoded, that take at most 16 MiB once each row holds its 
 most 64 MiB on the wire. A column is read only as the kind it was written as, or a kind that \
 holds the same values: integers as 64-bit integers, text as any text, bytes as any bytes, an \
 instant as its count. A destination that reads back more, or other columns, fails the clause.
+- The `T` clauses see only the batches they are given, and each moves rows in a few ways: the \
+first row last and the first two rows swapped, to show a transform keeps its rows' order; one \
+input column's rows moved by the first, to show what an output column or a filter depends on; \
+two adjacent batches that share a schema joined; one batch cut in halves; and the bound checked \
+on the whole, its halves and its first row. A dependence that a function hides on columns that \
+are constant in the inputs, or a behaviour that shows only on other rows, is not seen. A column \
+whose moved rows do not differ in any batch leaves `T-LINEAGE` and `T-READS` unobserved, and so \
+does an input with fewer than three rows for `T-ROWS`. `T-BOUND` measures the buffers a transform \
+returns, its output and its filter's answer, beyond its input, not scratch memory it frees before \
+returning. The batches hold data columns only. The `T` clauses run in process with no deadline: a \
+transform that never returns hangs `certify_transform`.
 - A reason is at most 2048 bytes, and quotes at most the first eight rows of those it counts.
 - A kill clause passes only when a kill landed: the host saw a connection to the connector end \
 after the kill. A spawned connector's ends once no process holds its other end, which a kill of \

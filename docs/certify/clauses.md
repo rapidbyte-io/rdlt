@@ -29,6 +29,8 @@ A kill clause that passed says beside its `pass`, and as `note` in JSON, what it
 
 `D-TABLES` drops a column of a table outside the pipeline, for each write mode a destination declares, only through a probe that alters the store, as an in-process certification's may; the read-back over the wire alters nothing, so its pass says beside `pass`, and as `note` in JSON, that no column was dropped.
 
+The `T` clauses certify a transform rather than a connector: `certify_transform` checks them in process, on the batches a test or a binding gives it, with no protocol or engine run between.
+
 ## Exit codes
 
 | Code | When |
@@ -102,12 +104,26 @@ A certification cut at its timeout reports what it saw: the clauses already chec
 | `K-SOURCE` | a source killed at random points of a load after it commits is started again and resumes from what was committed, so the engine converges on exactly the tables a load never killed publishes | the source has no stream that is read in any mode |
 | `K-DESTINATION` | a destination killed at random points of a load, as it writes, before a commit, or after a commit before its answer, is started again and publishes every row exactly once when the engine converges | the destination declares no write mode |
 
+## Transform (`T`)
+
+| Clause | Statement | Does not apply when |
+|---|---|---|
+| `T-REPLAY` | a transform applied twice to one batch gives equal output and keeps equal rows | — |
+| `T-ROWWISE` | a transform's output and kept rows for two batches joined, or for one batch cut in halves, are those for each part, joined, so it carries nothing from one batch to the next and works row by row | — |
+| `T-KEYS` | the key columns and the change time pass a transform as they arrive: the same name, type and values | the inputs name no key and no change time |
+| `T-SCHEMA` | each batch a transform returns matches the output schema it declares for its input, metadata included | — |
+| `T-ROWS` | a transform's apply keeps its input's rows, their count and their order, and its filter answers one value a row, in the same order | — |
+| `T-BOUND` | the buffers a transform returns, its output and its filter's answer, beyond its input stay within the bound it declares; scratch memory it frees before returning is not measured | the transform declares no bound |
+| `T-LINEAGE` | the lineage a transform declares names, for each output column, input columns its input has, and every input column the output column changes with | the transform declares no lineage |
+| `T-READS` | the input columns a transform's filter declares it reads are every column its answer changes with | the transform does not filter, or declares no columns its filter reads |
+
 ## What certification bounds
 
-- Every call has a deadline, each clause a bound on all its work (30 s a protocol clause, 600 s a source or destination clause, 300 s a kill clause unless `--kill-timeout` says). A whole run takes at most an hour unless `--timeout` says otherwise or `--no-timeout` lifts the bound; the clause being checked then fails, and nothing more is started.
+- Every call to a connector has a deadline, each connector clause a bound on all its work (30 s a protocol clause, 600 s a source or destination clause, 300 s a kill clause unless `--kill-timeout` says). A whole run takes at most an hour unless `--timeout` says otherwise or `--no-timeout` lifts the bound; the clause being checked then fails, and nothing more is started.
 - A source clause holds at most 64 MiB and 1,048,576 rows of what its reads send, all its reads together, and renders at most 64 MiB of text; a kill clause loads at most 100,000 rows and 64 MiB. A push is charged as the engine admits it: a batch what it keeps alive, and JSON three times its text and a message's room. A source that holds more leaves the clause unobserved. A JSON push is charged a row for each record its text holds before any is parsed, and a record of more than 1 MiB leaves the clause unobserved.
 - `S-RESUME` resumes from every checkpoint of a read that sent five at most, and else from five spread from the first to the last: a resume that is wrong only from a checkpoint between them is not caught. It compares the pushes of a resumed read only while their batches, with the first read's, expand to 64 MiB at most once each row holds its own value; beyond that it is unobserved.
 - A read-back holds at most 10,000 rows (100,000 for the kill clause) of flat columns, plain, dictionary or run-end encoded, that take at most 16 MiB once each row holds its own value, and at most 64 MiB on the wire. A column is read only as the kind it was written as, or a kind that holds the same values: integers as 64-bit integers, text as any text, bytes as any bytes, an instant as its count. A destination that reads back more, or other columns, fails the clause.
+- The `T` clauses see only the batches they are given, and each moves rows in a few ways: the first row last and the first two rows swapped, to show a transform keeps its rows' order; one input column's rows moved by the first, to show what an output column or a filter depends on; two adjacent batches that share a schema joined; one batch cut in halves; and the bound checked on the whole, its halves and its first row. A dependence that a function hides on columns that are constant in the inputs, or a behaviour that shows only on other rows, is not seen. A column whose moved rows do not differ in any batch leaves `T-LINEAGE` and `T-READS` unobserved, and so does an input with fewer than three rows for `T-ROWS`. `T-BOUND` measures the buffers a transform returns, its output and its filter's answer, beyond its input, not scratch memory it frees before returning. The batches hold data columns only. The `T` clauses run in process with no deadline: a transform that never returns hangs `certify_transform`.
 - A reason is at most 2048 bytes, and quotes at most the first eight rows of those it counts.
 - A kill clause passes only when a kill landed: the host saw a connection to the connector end after the kill. A spawned connector's ends once no process holds its other end, which a kill of its process group brings about unless a process left the group and holds it. The connection of a connector reached at an endpoint, or served in process, is cut by the host, which proves no process stopped: the report notes which was seen.
 - A kill clause loads in a mode the connector declares: a destination in the first of append, merge and replace it writes, a source each stream in the first of incremental, full and change reads it serves. A destination that keeps history alone leaves `K-DESTINATION` unobserved, and one whose identifiers are shorter than the names `D-NAMES` writes leaves that unobserved.
