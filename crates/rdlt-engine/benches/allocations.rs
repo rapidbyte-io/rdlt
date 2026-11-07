@@ -23,15 +23,15 @@ use std::num::{NonZeroU64, NonZeroUsize};
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use arrow_array::RecordBatch;
-use rdlt_connector::{ConnectContext, destination_factory};
+use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
+use rdlt_connector::{ConnectContext, Secret, StreamName, destination_factory};
 use rdlt_connector_reference::MemoryDestination;
-use rdlt_engine::Cores;
 use rdlt_engine::bench::{
     CHUNK_BYTES, CORPUS_BYTES, Cell, Corpus, Form, JsonCell, JsonPassthrough, Lowering, Normalized,
-    Normalizing, Passthrough, Replayed, Wide, check_json, counted, json_column, null_sink, replay,
-    rows_pushed, shred,
+    Normalizing, Passthrough, Replayed, Transformed, Wide, check_json, counted, json_column,
+    null_sink, replay, rows_pushed, shred,
 };
+use rdlt_engine::{Cores, Mask, Op, StreamPlan};
 use rdlt_wire::{Decoder, Encoder, Limits};
 use stats_alloc::{INSTRUMENTED_SYSTEM, StatsAlloc};
 
@@ -71,7 +71,7 @@ const COMMITTED: NonZeroUsize = NonZeroUsize::new(1_024).expect("not zero");
 type Case = (&'static str, fn(usize));
 
 /// Every case the instruction counts run.
-const CASES: [Case; 28] = [
+const CASES: [Case; 30] = [
     ("passthrough/null_sink", passed_through),
     ("commit/1024", committed),
     ("shred/nested", |times| shredded(Corpus::Nested, times)),
@@ -115,6 +115,8 @@ const CASES: [Case; 28] = [
     ("wide/arrow_1000", widened),
     ("ipc/roundtrip", round_tripped),
     ("json/check", json_checked),
+    ("transform/include", included),
+    ("transform/mask", masked),
     ("lowering/history", |times| lowered("history", times)),
     ("lowering/changes", |times| lowered("changes", times)),
     ("lowering/one_bad_value", |times| {
@@ -493,6 +495,58 @@ fn json_checked(times: usize) {
     let batch = json_column(ROWS as usize, true);
     for _ in 0..times {
         check_json(&batch).expect("the column is JSON");
+    }
+}
+
+/// A batch of [`ROWS`] people: an id, an email, an amount and a status.
+fn people() -> RecordBatch {
+    let rows = i64::from(ROWS);
+    let emails = (0..rows).map(|row| format!("person{row}@example.com"));
+    let statuses = (0..rows).map(|row| if row % 10 == 0 { "test" } else { "live" });
+    RecordBatch::try_from_iter([
+        (
+            "id",
+            Arc::new(Int64Array::from_iter_values(0..rows)) as ArrayRef,
+        ),
+        (
+            "email",
+            Arc::new(StringArray::from_iter_values(emails)) as ArrayRef,
+        ),
+        (
+            "amount",
+            Arc::new(Int64Array::from_iter_values(0..rows)) as ArrayRef,
+        ),
+        (
+            "status",
+            Arc::new(StringArray::from_iter_values(statuses)) as ArrayRef,
+        ),
+    ])
+    .expect("the columns are of one length")
+}
+
+/// The stream `people`, as each transform case plans it.
+fn people_stream() -> StreamPlan {
+    StreamPlan::new(StreamName::new("people").expect("a valid name"))
+}
+
+/// The stage keeping two of the four columns of a batch of [`ROWS`] rows.
+fn included(times: usize) {
+    let plan = people_stream().include_only(["email"]);
+    let transformed =
+        Transformed::try_new(&plan, &["id"], people()).expect("the stage takes the batch");
+    for _ in 0..times {
+        black_box(transformed.run().expect("the stage runs"));
+    }
+}
+
+/// The stage masking a text column of [`ROWS`] rows with an `HMAC-SHA256`.
+fn masked(times: usize) {
+    let key = Mask::hmac_sha256(Secret::new("bench-key".to_owned()));
+    let plan = people_stream().transform(Op::mask(["email"], key));
+    let transformed =
+        Transformed::try_new(&plan, &[], people()).expect("the stage takes the batch");
+    for _ in 0..times {
+        black_box(transformed.run().expect("the stage runs"));
     }
 }
 
