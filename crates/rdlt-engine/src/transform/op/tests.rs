@@ -4,9 +4,10 @@ use arrow_array::cast::AsArray as _;
 use arrow_array::types::Int64Type;
 use arrow_array::{Array, ArrayRef, Int64Array, RecordBatch, StringArray};
 use proptest::prelude::*;
+use rdlt_connector::ColumnPath;
 
 use super::{Literal, Op};
-use crate::transform::{Transform, allocated_beyond};
+use crate::transform::{Mask, Transform, allocated_beyond};
 
 fn people(rows: usize) -> RecordBatch {
     let ids: ArrayRef = Arc::new(Int64Array::from_iter_values(
@@ -101,11 +102,56 @@ fn an_op_reports_each_column_read_from_its_own_place_and_a_constant_from_none() 
 }
 
 #[test]
+fn an_op_names_the_top_level_columns_it_reads_and_the_names_it_gives() {
+    let nested = ColumnPath::new(["s", "inner"]).unwrap();
+    let cases = [
+        (
+            Op::rename([("a", "b"), ("c", "d")]),
+            vec!["a", "c"],
+            vec!["b", "d"],
+        ),
+        (
+            Op::constant([("x", Literal::Integer(1)), ("y", Literal::Boolean(true))]),
+            vec![],
+            vec!["x", "y"],
+        ),
+        (
+            Op::mask([nested, ColumnPath::from("t")], Mask::Null),
+            vec!["s", "t"],
+            vec![],
+        ),
+    ];
+    for (op, reads, writes) in cases {
+        assert_eq!(
+            (op.reads(), op.writes()),
+            (strings(&reads), strings(&writes)),
+            "{op:?}"
+        );
+    }
+}
+
+fn strings(names: &[&str]) -> Vec<String> {
+    names.iter().map(|name| (*name).to_owned()).collect()
+}
+
+#[test]
+fn a_literal_takes_its_value_in_bytes_a_row() {
+    let cases = [
+        (Literal::Text("four".to_owned()), 4),
+        (Literal::Integer(-1), 8),
+        (Literal::Boolean(false), 1),
+    ];
+    for (literal, bytes) in cases {
+        assert_eq!(literal.bytes(), bytes, "{literal:?}");
+    }
+}
+
+#[test]
 fn an_op_is_named_for_what_it_does() {
     let names = [
         (Op::rename([("a", "b")]), "rename"),
         (Op::constant([("a", Literal::Integer(1))]), "constant"),
-        (Op::mask(["a"], crate::transform::Mask::Null), "mask"),
+        (Op::mask(["a"], Mask::Null), "mask"),
     ];
     for (op, name) in names {
         assert_eq!(op.name(), name);

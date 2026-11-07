@@ -77,6 +77,27 @@ impl Op {
             with,
         }
     }
+
+    /// The top-level columns the op reads, as they arrive, once for each time it names them.
+    pub(crate) fn reads(&self) -> Vec<String> {
+        match self {
+            Self::Rename(pairs) => pairs.iter().map(|(from, _)| from.clone()).collect(),
+            Self::Constant(_) => Vec::new(),
+            Self::Mask { columns, .. } => columns
+                .iter()
+                .filter_map(|path| path.segments().next().map(str::to_owned))
+                .collect(),
+        }
+    }
+
+    /// The names the op gives columns.
+    pub(crate) fn writes(&self) -> Vec<String> {
+        match self {
+            Self::Rename(pairs) => pairs.iter().map(|(_, to)| to.clone()).collect(),
+            Self::Constant(columns) => columns.iter().map(|(name, _)| name.clone()).collect(),
+            Self::Mask { .. } => Vec::new(),
+        }
+    }
 }
 
 impl Literal {
@@ -89,7 +110,7 @@ impl Literal {
     }
 
     /// Bytes: the literal's value, as its column holds it a row.
-    fn bytes(&self) -> usize {
+    pub(crate) fn bytes(&self) -> usize {
         match self {
             Self::Text(text) => text.len(),
             Self::Integer(_) => 8,
