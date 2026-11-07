@@ -40,8 +40,12 @@ bytes = { version = "1.12.1", features = [
   "serde",
 ] } # zero-copy byte buffers for pushes, cursors and state
 chrono = { version = "0.4.45", default-features = false } # calendar dates and zone offsets for exact temporal conversions, the version arrow uses
-datafusion-common = { version = "55.2.0", default-features = false } # DataFusion's schemas, scalars and options, for SQL transforms; one arrow major with the workspace
-datafusion-expr = { version = "55.2.0", default-features = false } # DataFusion's logical expressions and the context a SQL transform is planned in
+datafusion-common = { version = "55.2.0", default-features = false, features = [
+  "recursive_protection",
+] } # DataFusion's schemas, scalars and options, for SQL transforms, its stack grown on deep ones; one arrow major with the workspace
+datafusion-expr = { version = "55.2.0", default-features = false, features = [
+  "recursive_protection",
+] } # DataFusion's logical expressions and the context a SQL transform is planned in
 datafusion-functions = { version = "55.2.0", default-features = false, features = [
   "datetime_expressions",
   "math_expressions",
@@ -49,9 +53,14 @@ datafusion-functions = { version = "55.2.0", default-features = false, features 
   "string_expressions",
   "unicode_expressions",
 ] } # the scalar functions SQL transforms may call, of which they register a bounded few
-datafusion-optimizer = { version = "55.2.0", default-features = false } # type coercion of a planned SQL transform, which the planner leaves undone
-datafusion-physical-expr = { version = "55.2.0", default-features = false } # SQL transforms' expressions, evaluated batch by batch on the engine's pool
+datafusion-optimizer = { version = "55.2.0", default-features = false, features = [
+  "recursive_protection",
+] } # type coercion of a planned SQL transform, which the planner leaves undone
+datafusion-physical-expr = { version = "55.2.0", default-features = false, features = [
+  "recursive_protection",
+] } # SQL transforms' expressions, evaluated batch by batch on the engine's pool
 datafusion-sql = { version = "55.2.0", default-features = false, features = [
+  "recursive_protection",
   "unicode_expressions",
 ] } # parsing and planning SQL transforms
 proc-macro2 = "1.0.107" # token streams for rdlt-connector-macros
@@ -117,7 +126,12 @@ tracing = { version = "0.1.44", default-features = false, features = [
   "std",
 ] } # a spawned connector's output
 sonic-rs = "0.5.10" # SIMD JSON parsing and rendering for the shredder
-stacker = "0.1.25" # stack grown on demand, so JSON at the nesting limit parses in every build
+sqlparser = { version = "0.62.0", default-features = false, features = [
+  "recursive-protection",
+  "std",
+  "visitor",
+] } # SQL transforms' parser, its stack grown on deep text, which DataFusion's SQL front end leaves off
+stacker = "0.1.25" # stack grown on demand, so JSON at the nesting limit parses, and SQL at its depth limit plans, in every build
 thiserror = "2.0.20" # typed error derives
 tokio = { version = "1.53.3", default-features = false } # async runtime, timers and task sets
 turmoil = { version = "0.7.2", default-features = false } # a simulated network of hosts on paused tokio clocks
@@ -216,6 +230,12 @@ opt-level = 3
 
 # SQLite's C is built optimised: the bench smoke run loads the SQLite bench's million rows through it.
 [profile.dev.package.libsqlite3-sys]
+opt-level = 3
+
+# sqlparser is built optimised, as releases build it: a nested type is parsed a frame a level,
+# and the stack SQL text is parsed on is sized for optimised frames; unoptimised, 64 KiB of nested
+# `ARRAY<` takes sixteen times the stack.
+[profile.dev.package.sqlparser]
 opt-level = 3
 
 # Shipped binaries and benchmarks build alike, so a benchmark measures what ships: fat LTO and one
