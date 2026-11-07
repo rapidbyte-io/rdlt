@@ -15,6 +15,7 @@ use datafusion_sql::sqlparser::tokenizer::{TokenWithSpan, Tokenizer};
 use parking_lot::Mutex;
 use rdlt_engine::{Bound, Transform, TransformError, TransformStep};
 
+use crate::contain::contained;
 use crate::dialect::{Guarded, Refused};
 use crate::error::{SqlError, SqlErrorKind};
 use crate::limits::{PARSER_DEPTH, PLANS, SQL_BYTES, SQL_DEPTH};
@@ -46,9 +47,20 @@ impl Sql {
     /// # Errors
     ///
     /// A [`SqlError`], coded `transform_invalid`, where `text` is longer than [`SQL_BYTES`], is
-    /// not one query, nests deeper than [`SQL_DEPTH`], or asks for what a SQL transform may
-    /// not.
+    /// not one query, nests deeper than [`SQL_DEPTH`], asks for what a SQL transform may not,
+    /// or makes a library it is parsed by panic.
     pub fn parse(text: &str) -> Result<Self, SqlError> {
+        let parsed = contained(|| Self::parsed(text));
+        parsed.unwrap_or_else(|| {
+            let message = "parsing the text failed inside the library that parses it";
+            Err(SqlError::new(SqlErrorKind::Failed, message))
+        })
+    }
+
+    /// `text` parsed and checked.
+    fn parsed(text: &str) -> Result<Self, SqlError> {
+        #[cfg(test)]
+        crate::contain::panics_at(text);
         if text.len() > SQL_BYTES {
             let message = format!(
                 "the text takes {} bytes, beyond the limit of {SQL_BYTES}",
@@ -74,8 +86,20 @@ impl Sql {
     /// only to find or add its place, so asking for another schema never waits on a plan.
     fn planned(&self, input: &Schema, asked: Option<&SchemaRef>) -> Plan {
         let (schema, plan) = self.place(input, asked);
-        let planning = || Planned::plan(&self.statement, &schema).map(Arc::new);
-        plan.get_or_init(planning).clone()
+        let planning = || {
+            #[cfg(test)]
+            for field in schema.fields() {
+                crate::contain::panics_at(field.name());
+            }
+            Planned::plan(&self.statement, &schema).map(Arc::new)
+        };
+        let made = || {
+            contained(planning).unwrap_or_else(|| {
+                let message = "planning the query failed inside the library that plans it";
+                Err(TransformError::new(message))
+            })
+        };
+        plan.get_or_init(made).clone()
     }
 
     /// The place of the plan for batches of `input`, and the schema it is planned for: one kept,
