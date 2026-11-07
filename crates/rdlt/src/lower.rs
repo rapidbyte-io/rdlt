@@ -11,6 +11,8 @@ mod streams;
 mod tests;
 mod transforms;
 
+pub(crate) use streams::resolved;
+
 use rdlt_connector::{Catalog, ConnectorId, PipelineId, Role};
 use rdlt_engine::{CommitPolicy, EngineConfig, PipelinePlan, RetryPolicy};
 use rdlt_host::{ConnectorRef, Digest};
@@ -19,10 +21,6 @@ use crate::error::noun;
 use crate::{Connector, Document, Error, Host, Side, codes};
 
 /// What the engine runs of a document: its plan and its configuration.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "a pipeline is built from its document through it")
-)]
 #[derive(Debug)]
 pub(crate) struct Lowered {
     pub(crate) plan: PipelinePlan,
@@ -43,10 +41,6 @@ pub(crate) struct Prepared<'a> {
 /// entry's name, hints and transforms, with mask keys resolved through `host`'s secrets, SQL
 /// parsed and code transforms found among the host's; then its modes, keys, columns and
 /// transforms as the engine checks them, each entry under the name it is written with.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "a pipeline is built from its document through it")
-)]
 pub(crate) async fn prepare<'a>(
     document: &'a Document,
     host: &Host,
@@ -82,10 +76,6 @@ pub(crate) async fn prepare<'a>(
 impl Prepared<'_> {
     /// What the engine runs: the streams the document selects from `catalog`, the source's,
     /// each planned from its entry.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "a pipeline is built from its document through it")
-    )]
     pub(crate) fn bind(self, catalog: &Catalog) -> Result<Lowered, Error> {
         let document = self.document;
         let mut plans = Vec::new();

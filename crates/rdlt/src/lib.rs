@@ -11,6 +11,7 @@ mod error;
 mod host;
 pub mod limits;
 mod lower;
+mod pipeline;
 
 pub use document::{
     Access, Column, Commit, Connector, ConnectorReference, Defaults, DeleteMode, Document, Hint,
@@ -21,12 +22,15 @@ pub use error::Error;
 pub use host::Host;
 #[cfg(feature = "remote")]
 pub use host::Tls;
+pub use pipeline::{Checked, Pipeline, PipelineBuilder, PlacedConnector, Placement};
 pub use rdlt_connector::{
-    BoxFuture, ConnectorId, ConnectorSpec, DestinationConnector, DestinationFactory, Role, Secret,
-    SourceConnector, SourceFactory,
+    BoxFuture, Catalog, ConnectorId, ConnectorSpec, DestinationConnector, DestinationFactory,
+    Epoch, PipelineId, Role, Secret, SourceConnector, SourceFactory, StreamName, StreamSpec,
+    TablePath,
 };
 pub use rdlt_engine::{
-    Bound, Code, ErrorKind, ErrorReport, Literal, Mask, Op, Origin, Transform, TransformError,
+    Bound, Code, ErrorKind, ErrorReport, Literal, Mask, Op, Origin, ResetReport, ResetScope,
+    Transform, TransformError,
 };
 #[cfg(feature = "local")]
 pub use rdlt_host::{Interrupts, StopsSpawned};
