@@ -15,6 +15,13 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(panic = "abort")]
+compile_error!(
+    "rdlt-sql refuses a query whose parsing or planning panics by unwinding: build with \
+     panic = \"unwind\""
+);
+
+mod contain;
 mod depth;
 mod dialect;
 mod error;

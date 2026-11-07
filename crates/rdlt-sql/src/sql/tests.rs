@@ -2,8 +2,10 @@ use std::sync::Arc;
 use std::thread;
 
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
+use rdlt_engine::{Transform, codes};
 
 use super::Sql;
+use crate::contain::PANICS;
 use crate::{SQL_BYTES, SqlErrorKind, function_names};
 
 #[test]
@@ -246,4 +248,24 @@ fn the_function_list_is_sorted_and_holds_no_volatile_or_unbounded_function() {
     ] {
         assert!(!names.contains(&refused), "{refused}");
     }
+}
+
+#[test]
+fn a_panic_parsing_the_text_refuses_it_naming_no_value() {
+    let refused = Sql::parse(&format!("SELECT '{PANICS}' AS x FROM input")).unwrap_err();
+    assert_eq!(
+        (refused.kind(), refused.code()),
+        (SqlErrorKind::Failed, codes::TRANSFORM_INVALID)
+    );
+    assert!(!refused.to_string().contains(PANICS), "{refused}");
+}
+
+#[test]
+fn a_panic_planning_the_query_refuses_the_schema_naming_no_value() {
+    let sql = Sql::parse("SELECT * FROM input").unwrap();
+    let schema = Schema::new(vec![Field::new(PANICS, DataType::Int64, true)]);
+    let refused = sql.output(&schema).unwrap_err();
+    assert!(!refused.to_string().contains(PANICS), "{refused}");
+    assert!(sql.bound(&schema).is_none());
+    assert!(sql.lineage(&schema).is_none());
 }

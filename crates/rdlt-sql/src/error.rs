@@ -25,6 +25,8 @@ pub enum SqlErrorKind {
     Regex,
     /// An output column that is no bare column has no name.
     Unnamed,
+    /// Parsing the text panicked in a library it was parsed by, a bug there.
+    Failed,
 }
 
 /// A SQL transform's text refused, naming what in it is refused and never a value it holds.
