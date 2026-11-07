@@ -357,7 +357,8 @@ impl PipelinePlan {
     /// naming top-level columns, no excluded column the stream needs or sets (a change column, a
     /// key column, or one it sets or hints), no more excluded names than a read's start
     /// carries, an include beside no exclusion, and transforms the stream can carry (no op
-    /// naming a key or change column, no two ops naming one column, no name beginning with the
+    /// naming a key or change column, no two ops giving one column its name, though a later op
+    /// may read or mask a column an earlier one named, no op naming a column beginning with the
     /// engine's prefix, ops and literals within their limits, and a filter only where a row it
     /// stops keeping leaves its table).
     pub fn new(

@@ -155,6 +155,18 @@ fn ops_naming_a_key_a_change_column_or_an_engine_name_are_refused() {
 }
 
 #[test]
+fn an_op_reading_a_name_with_the_engine_s_prefix_is_refused() {
+    let plans = [
+        stream("s").transform(Op::mask(["_rdlt_x"], Mask::Null)),
+        stream("s").transform(Op::mask([path("_rdlt_x.inner")], Mask::Null)),
+        stream("s").transform(Op::rename([("_rdlt_y", "y")])),
+    ];
+    for plan in plans {
+        refused_with(plan, codes::TRANSFORM_INVALID);
+    }
+}
+
+#[test]
 fn ops_naming_one_column_twice_are_refused() {
     let plans = [
         stream("s")

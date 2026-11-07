@@ -88,13 +88,13 @@ fn check_op(stream: &StreamPlan, op: &Op, written: &mut BTreeSet<String>) -> Res
                  transform as they arrive"
             ));
         }
-    }
-    for name in writes {
         if name.starts_with(META_PREFIX) {
             return invalid(&format!(
                 "an op names column {name}, beginning {META_PREFIX} as the engine's own columns do"
             ));
         }
+    }
+    for name in writes {
         if written.contains(&name) {
             return invalid(&format!("its ops give column {name} its name twice"));
         }
