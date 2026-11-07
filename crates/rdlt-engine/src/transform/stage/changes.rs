@@ -93,8 +93,8 @@ pub(super) fn remapping(chain: &Chain, rows: usize) -> u64 {
     }
 }
 
-/// `batch`'s kept data columns, shared, as the chain's transforms take them, and its change
-/// columns set aside, its flags moved to the kept columns' places.
+/// `batch`'s kept data columns, shared, as they arrive, and its change columns set aside, its
+/// flags moved to the kept columns' places.
 pub(super) fn split(
     batch: &RecordBatch,
     chain: &Chain,
@@ -105,7 +105,7 @@ pub(super) fn split(
         .map(|place| Arc::clone(batch.column(*place)))
         .collect();
     let options = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
-    let data = RecordBatch::try_new_with_options(Arc::clone(&chain.schemas[0]), columns, &options)
+    let data = RecordBatch::try_new_with_options(Arc::clone(&chain.arrived), columns, &options)
         .map_err(|error| Refusal::Internal(format!("keeping a batch's columns: {error}")))?;
     let Some(places) = chain.places else {
         return Ok((data, None));

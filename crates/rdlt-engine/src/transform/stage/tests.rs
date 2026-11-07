@@ -1,19 +1,19 @@
 use std::sync::Arc;
 
 use arrow_array::cast::AsArray as _;
-use arrow_array::types::{Int8Type, Int64Type};
+use arrow_array::types::{Int8Type, Int32Type, Int64Type};
 use arrow_array::{
-    Array, ArrayRef, BinaryArray, BooleanArray, FixedSizeBinaryArray, Int8Array, Int64Array,
-    RecordBatch, StringArray,
+    Array, ArrayRef, BinaryArray, BooleanArray, DictionaryArray, FixedSizeBinaryArray, Int8Array,
+    Int32Array, Int64Array, RecordBatch, RunArray, StringArray,
 };
 use arrow_buffer::{BooleanBuffer, NullBuffer};
-use arrow_schema::{DataType, Field, Schema, SchemaRef};
-use rdlt_connector::cost::arrays;
+use arrow_schema::{DataType, Field, Fields, Schema, SchemaRef};
+use rdlt_connector::cost::{Rendering, arrays};
 use rdlt_connector::{
     ChangeOp, ColumnPath, OP_COLUMN, ReadMode, SEQ_COLUMN, StreamName, UNCHANGED_COLUMN,
 };
 
-use super::{Breach, Ran, Refusal, Stage};
+use super::{Breach, Ran, Refusal, Stage, decoding};
 use crate::error::{ErrorKind, codes};
 use crate::plan::{StreamPlan, WriteMode};
 use crate::transform::op::ARRAY_ROOM;
@@ -1508,4 +1508,130 @@ fn a_breach_reads_as_what_broke() {
         breaches.iter().map(ToString::to_string).collect();
     assert_eq!(shown.len(), breaches.len());
     assert!(shown.iter().all(|text| !text.is_empty()));
+}
+
+/// Three people: an id, a status as a dictionary and a name as runs.
+fn encoded_people() -> RecordBatch {
+    let statuses: DictionaryArray<Int32Type> =
+        vec![Some("live"), None, Some("live")].into_iter().collect();
+    let names = RunArray::<Int32Type>::try_new(
+        &Int32Array::from(vec![2, 3]),
+        &StringArray::from(vec!["ann", "bob"]),
+    )
+    .unwrap();
+    RecordBatch::try_from_iter([
+        ("id", Arc::new(Int64Array::from(vec![1, 2, 3])) as ArrayRef),
+        ("status", Arc::new(statuses) as ArrayRef),
+        ("name", Arc::new(names) as ArrayRef),
+    ])
+    .unwrap()
+}
+
+#[test]
+fn a_transformed_streams_encoded_columns_reach_its_transforms_decoded() {
+    for plan in [
+        stream().transform(code(Unlined)),
+        stream().transform(Op::rename([("status", "state")])),
+    ] {
+        let output = run(&plan, &["id"], encoded_people(), u64::MAX).unwrap();
+        let types: Vec<&DataType> = output[0]
+            .schema_ref()
+            .fields()
+            .iter()
+            .map(|field| field.data_type())
+            .collect();
+        assert_eq!(types, [&DataType::Int64, &DataType::Utf8, &DataType::Utf8]);
+        let statuses: Vec<Option<&str>> = output[0].column(1).as_string::<i32>().iter().collect();
+        assert_eq!(statuses, [Some("live"), None, Some("live")]);
+        let names: Vec<Option<&str>> = output[0].column(2).as_string::<i32>().iter().collect();
+        assert_eq!(names, [Some("ann"), Some("ann"), Some("bob")]);
+    }
+}
+
+#[test]
+fn decoding_asks_for_the_decoded_size_as_lowering_measures_it() {
+    let input = encoded_people().slice(0, 1);
+    let encoded = input.project(&[1, 2]).unwrap();
+    let decoded = Fields::from(vec![
+        Field::new("status", DataType::Utf8, true),
+        Field::new("name", DataType::Utf8, true),
+    ]);
+    let asked = Rendering::native()
+        .expanded(&encoded, 0..1, u64::MAX)
+        .saturating_add(arrays(&decoded));
+    let plan = stream().transform(code(Unlined));
+    let refused = ran(&plan, &["id"], input.clone(), asked - 1).unwrap_err();
+    assert!(
+        matches!(refused, Refusal::Row { transform: None, asked: taken, free } if taken == asked && free == asked - 1),
+        "{refused:?}"
+    );
+    fails_with(refused, ErrorKind::Source, Some(codes::ROW_EXCEEDS_BUDGET));
+    // Exactly the room the decode asks passes the decode, whatever the transform after it asks.
+    let at_room = ran(&plan, &["id"], input.clone(), asked).err();
+    assert!(
+        !matches!(
+            at_room,
+            Some(Refusal::Row {
+                transform: None,
+                ..
+            })
+        ),
+        "{at_room:?}"
+    );
+    assert!(ran(&plan, &["id"], input, u64::MAX).is_ok());
+}
+
+#[test]
+fn a_decoded_run_end_column_whose_values_hold_no_null_keeps_its_field_as_it_arrived() {
+    let runs = Arc::new(Field::new("run_ends", DataType::Int32, false));
+    let encoded = |nullable_values| {
+        let values = Field::new("values", DataType::Utf8, nullable_values);
+        DataType::RunEndEncoded(Arc::clone(&runs), Arc::new(values))
+    };
+    for (nullable_values, nullable) in [(false, false), (true, true)] {
+        let field = Field::new("tag", encoded(nullable_values), false);
+        let (decoded, _) = decoding::decoded_schema(&Arc::new(Schema::new(vec![field]))).unwrap();
+        assert_eq!(
+            decoded.field(0).is_nullable(),
+            nullable,
+            "{nullable_values}"
+        );
+        assert_eq!(decoded.field(0).data_type(), &DataType::Utf8);
+    }
+}
+
+#[test]
+fn a_stage_that_only_includes_columns_passes_an_encoded_column_as_it_arrived() {
+    let input = encoded_people();
+    let output = run(
+        &stream().include_only(["status"]),
+        &["id"],
+        input.clone(),
+        u64::MAX,
+    )
+    .unwrap();
+    assert!(Arc::ptr_eq(output[0].column(1), input.column(1)));
+    assert!(matches!(
+        output[0].column(1).data_type(),
+        DataType::Dictionary(..)
+    ));
+}
+
+#[test]
+fn a_null_among_the_values_of_a_non_nullable_dictionary_decodes_as_lowering_takes_it() {
+    // Lowering decodes it into a column of its table, nullable unless a key, whose nulls it
+    // refuses as `merge_key_null`; the stage decodes it alike, never failing as its own bug.
+    let keys = Int32Array::from(vec![0, 1]);
+    let values = StringArray::from(vec![Some("live"), None]);
+    let statuses = DictionaryArray::<Int32Type>::try_new(keys, Arc::new(values)).unwrap();
+    let schema = Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("status", statuses.data_type().clone(), false),
+    ]);
+    let ids: ArrayRef = Arc::new(Int64Array::from(vec![1, 2]));
+    let input = RecordBatch::try_new(Arc::new(schema), vec![ids, Arc::new(statuses)]).unwrap();
+    let output = run(&stream().transform(code(Unlined)), &["id"], input, u64::MAX).unwrap();
+    let statuses: Vec<Option<&str>> = output[0].column(1).as_string::<i32>().iter().collect();
+    assert_eq!(statuses, [Some("live"), None]);
+    assert!(output[0].schema_ref().field(1).is_nullable());
 }

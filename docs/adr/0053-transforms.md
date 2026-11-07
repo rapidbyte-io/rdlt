@@ -70,6 +70,15 @@ determinism under simulation whatever the configuration says.
     key passes updates that leave other columns unchanged.
   - An op naming a column a declared schema lacks is refused when the attempt starts,
     `transform_schema`. A batch lacking it is passed by, as a JSON stream's drift may.
+- **Encoded columns.** A dictionary's or a run-end encoding's rows, decoded, are not linear in
+  the bytes it keeps, so no transform could declare a bound on computing from one.
+  - The stage decodes a transformed stream's dictionary and run-end encoded columns before its
+    first transform, with lowering's decoder, and asks for the room the decoded rows take, as
+    lowering measures a decode, before it does. Lowering decodes them anyway, so the work moves
+    earlier rather than grows.
+  - Transforms, ops and SQL alike, then see every column flat: a filter on a categorical or a
+    Parquet dictionary string is computed like any other. A stage that only includes columns
+    decodes nothing and shares every array.
 - **Memory.**
   - A flush whose stage transforms, or whose change batches carry unchanged flags the stage
     moves, holds one lowering request. That is reserved while the partition holds only its

@@ -4,18 +4,22 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+use arrow_array::types::Int32Type;
+use arrow_array::{ArrayRef, DictionaryArray, Int32Array, RecordBatch, StringArray};
+use arrow_schema::{DataType, Schema, SchemaRef};
 use rdlt_connector::{
     BoxFuture, Catalog, ColumnPath, ConnectorError, ConnectorErrorKind, Cursor, PartitionId,
     PartitionPlan, PartitionSink, ReadMode, ReadRequest, Result, Source, StreamName, StreamState,
 };
 use rdlt_engine::{
-    Code, EngineConfig, ErrorKind, Mask, Nested, Op, SchemaSettings, StreamPlan, WriteMode, codes,
+    Code, EngineConfig, ErrorKind, Mask, Nested, Op, RunStatus, SchemaSettings, StreamPlan,
+    Transform, TransformError, WriteMode, codes,
 };
 
 use crate::carried::{calls, carrying};
 use crate::support::destinations::{Step, counting, failing, limited};
-use crate::support::served::{Form, Served, people, people_schema, source};
-use crate::support::{engine, memory, pipeline, stream};
+use crate::support::served::{Form, Served, ints, people, people_schema, source, texts};
+use crate::support::{commit_every, engine, memory, pipeline, stream};
 
 /// What fails besides the plan: a source that carries few calls or whose check fails, a
 /// destination whose identifier rules are refused or which fails as a step says.
@@ -211,4 +215,85 @@ async fn a_check_refuses_what_a_run_s_start_refuses_and_opens_no_session() {
             "case {place} opened a session"
         );
     }
+}
+
+/// A transform that, as SQL does, refuses to compute on a column of an encoded type.
+struct Flat;
+
+impl Transform for Flat {
+    fn name(&self) -> &'static str {
+        "flat"
+    }
+
+    fn output(&self, input: &Schema) -> std::result::Result<SchemaRef, TransformError> {
+        let encoded = |data_type: &DataType| {
+            matches!(
+                data_type,
+                DataType::Dictionary(..) | DataType::RunEndEncoded(..)
+            )
+        };
+        match input
+            .fields()
+            .iter()
+            .find(|field| encoded(field.data_type()))
+        {
+            Some(field) => {
+                Err(TransformError::new("an encoded column").with_column(field.name().clone()))
+            }
+            None => Ok(Arc::new(input.clone())),
+        }
+    }
+
+    fn apply(&self, batch: RecordBatch) -> std::result::Result<RecordBatch, TransformError> {
+        Ok(batch)
+    }
+}
+
+/// Three people, their notes a dictionary.
+fn encoded_people() -> RecordBatch {
+    let values = Arc::new(StringArray::from(vec!["w0", "w1"]));
+    let notes = DictionaryArray::<Int32Type>::try_new(Int32Array::from(vec![0, 1, 0]), values);
+    RecordBatch::try_from_iter([
+        ("id", ints(&[0, 1, 2])),
+        ("secret", texts(&["s0", "s1", "s2"])),
+        (
+            "note",
+            Arc::new(notes.expect("keys within the values")) as ArrayRef,
+        ),
+    ])
+    .expect("columns of one length")
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_check_and_a_run_agree_on_a_transform_of_a_column_served_encoded() {
+    // A declared schema is logical, so a check builds the chain of plain columns; a run's
+    // batches bring `note` as a dictionary, which the stage decodes before the first transform.
+    let name = "check_encoded";
+    assert!(Flat.output(encoded_people().schema_ref()).is_err());
+    let served = || Served {
+        declared: Some(people_schema()),
+        ..Served::new(Form::Arrow, vec![encoded_people()])
+    };
+    let plan = || {
+        pipeline(
+            name,
+            [stream("people").transform(Arc::new(Flat) as Arc<dyn Transform>)],
+        )
+    };
+    let (destination, sessions) = counting(memory(name).await);
+    engine(EngineConfig::builder())
+        .check(&plan(), source(name, served()).await, destination)
+        .await
+        .expect("checked");
+    assert_eq!(sessions.opened.load(Ordering::SeqCst), 0);
+    let outcome = engine(commit_every(4))
+        .run(plan(), source(name, served()).await, memory(name).await)
+        .await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    assert_eq!(outcome.report.rows, 3);
 }
