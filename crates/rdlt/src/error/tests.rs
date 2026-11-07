@@ -234,3 +234,53 @@ fn a_secret_that_does_not_resolve_is_config_coded_as_the_host_codes_it() {
     assert_eq!(error.code(), Some(Code::new("secret_refused")));
     assert!(error.source().is_some());
 }
+
+#[test]
+fn a_connector_s_failure_keeps_its_code_apart_and_says_whether_to_try_again() {
+    let transient = ConnectorError::new(ConnectorErrorKind::Transient, "busy").with_code("busy");
+    let error = Error::connector(Role::Destination, "discovering the catalog", transient);
+    assert_eq!(
+        (error.kind(), error.origin()),
+        (ErrorKind::Destination, Origin::Destination)
+    );
+    assert_eq!(error.code(), Some(codes::CONNECTOR_FAILED));
+    assert_eq!(error.connector_code(), Some("busy"));
+    assert!(error.is_retryable());
+    assert_eq!(
+        error.to_string(),
+        "discovering the catalog: the destination failed"
+    );
+    let report = error.report();
+    assert_eq!(report.connector_code.as_deref(), Some("busy"));
+    assert!(report.retryable);
+    assert_eq!(report.causes, ["busy"]);
+    for (failure, kind) in [
+        (
+            ConnectorError::new(ConnectorErrorKind::Auth, "denied"),
+            ErrorKind::Config,
+        ),
+        (ConnectorError::config("bad dsn"), ErrorKind::Config),
+        (ConnectorError::data("broken row"), ErrorKind::Source),
+    ] {
+        let error = Error::connector(Role::Source, "reading", failure);
+        assert_eq!((error.kind(), error.origin()), (kind, Origin::Source));
+        assert!(!error.is_retryable());
+        assert_eq!(error.connector_code(), None);
+    }
+}
+
+#[test]
+fn a_failure_of_the_facade_s_own_is_internal() {
+    let cause = std::io::Error::other("no cores");
+    let error = Error::internal(
+        codes::ENVIRONMENT_UNAVAILABLE,
+        "starting the compute pool",
+        cause,
+    );
+    assert_eq!(
+        (error.kind(), error.origin()),
+        (ErrorKind::Internal, Origin::Engine)
+    );
+    assert_eq!(error.code(), Some(codes::ENVIRONMENT_UNAVAILABLE));
+    assert_eq!(error.report().causes, ["no cores"]);
+}

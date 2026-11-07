@@ -263,3 +263,11 @@ fn a_code_transform_is_the_host_s_by_its_name() {
     assert!(host.code("other").is_none());
     assert_eq!(host.codes().collect::<Vec<_>>(), ["also", "kept"]);
 }
+
+#[test]
+fn a_host_starts_one_compute_pool_for_every_pipeline_built_on_it() {
+    let host = Host::new();
+    let first = host.environment().expect("the pool starts");
+    let again = host.environment().expect("the pool is the host's");
+    assert!(Arc::ptr_eq(&first, &again));
+}
