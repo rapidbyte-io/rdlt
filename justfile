@@ -169,14 +169,14 @@ sim-rate floor="2" cores=env("RDLT_SIM_CORES", ""): sim-archive
 # Measure how much of the engine, connector, host and data-plane code the simulation alone
 # reaches, and hold it above its floor: left out are test code, modules built only for tests and
 # benches among it, the connector's test kit and SQL planner, the SQL transforms' crate, whose
-# one query shape the simulation calls, generated code, and what the simulation never runs (what
-# process placement leaves to the operating system, files the seeds reach in under half their
-# lines, and a served binary's entry).
+# one query shape the simulation calls, the Python bindings, which pytest runs, generated code,
+# and what the simulation never runs (what process placement leaves to the operating system, files
+# the seeds reach in under half their lines, and a served binary's entry).
 # Each sweep's seeds run side by side on the host's cores, or on `cores` (by default
 # `RDLT_SIM_CORES`) when given
 sim-coverage seeds="1000" cores=env("RDLT_SIM_CORES", ""): python-env
     rustup toolchain install {{ nightly }} --profile minimal --component llvm-tools-preview
-    RDLT_SIM_SEEDS="{{ seeds }}" RDLT_SIM_CORES="{{ cores }}" cargo +{{ nightly }} llvm-cov nextest --branch --workspace --all-features --json --summary-only --output-path target/sim-coverage.json --ignore-filename-regex '(rdlt-sql|rdlt-sim|rdlt-testkit|rdlt-connector-reference|rdlt-adopt|xtask)/|/tests?(\.rs|/)|differential|reference(\.rs|/)|/bench|/testing|sqlgen|encodings\.rs|/generated/|rdlt-engine/src/(env/inline|shred/numbers)\.rs|rdlt-connector/src/(strategy|serve/live)\.rs|rdlt-host/src/(kills\.rs|local/(bubblewrap|sandbox)|local/grants/opened\.rs|local/process\.rs|local/process/(command|group)|connect|sink)|rdlt-certify/|serve/(args|binary)|rdlt-connector/src/required\.rs|rdlt-engine/src/fixtures(\.rs|/)' -E 'package(rdlt-sim) & test(through_faults)'
+    RDLT_SIM_SEEDS="{{ seeds }}" RDLT_SIM_CORES="{{ cores }}" cargo +{{ nightly }} llvm-cov nextest --branch --workspace --all-features --json --summary-only --output-path target/sim-coverage.json --ignore-filename-regex '(rdlt-sql|rdlt-sim|rdlt-testkit|rdlt-connector-reference|rdlt-adopt|rdlt-python|xtask)/|/tests?(\.rs|/)|differential|reference(\.rs|/)|/bench|/testing|sqlgen|encodings\.rs|/generated/|rdlt-engine/src/(env/inline|shred/numbers)\.rs|rdlt-connector/src/(strategy|serve/live)\.rs|rdlt-host/src/(kills\.rs|local/(bubblewrap|sandbox)|local/grants/opened\.rs|local/process\.rs|local/process/(command|group)|connect|sink)|rdlt-certify/|serve/(args|binary)|rdlt-connector/src/required\.rs|rdlt-engine/src/fixtures(\.rs|/)' -E 'package(rdlt-sim) & test(through_faults)'
     cargo xtask coverage-gate target/sim-coverage.json --lines 80 --branches 71
 
 # Measure line and branch coverage and apply the CI gate. Spawned connectors write profiles too, and
