@@ -922,6 +922,7 @@ dependencies = [
  "libc",
  "log",
  "num-traits",
+ "recursive",
  "sqlparser",
  "tokio",
  "uuid",
@@ -978,6 +979,7 @@ dependencies = [
  "datafusion-physical-expr-common",
  "indexmap",
  "itertools 0.15.0",
+ "recursive",
  "serde",
  "serde_json",
  "sqlparser",
@@ -1103,6 +1105,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "datafusion-optimizer"
+version = "55.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "acfb8cea6e05e2e75bae183340cf7d53cccb3db0449e2f1fbc07654d980fd19f"
+dependencies = [
+ "arrow",
+ "chrono",
+ "datafusion-common",
+ "datafusion-expr",
+ "datafusion-expr-common",
+ "datafusion-physical-expr",
+ "indexmap",
+ "itertools 0.15.0",
+ "log",
+ "recursive",
+ "regex",
+ "regex-syntax",
+]
+
+[[package]]
 name = "datafusion-physical-expr"
 version = "55.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1121,6 +1143,7 @@ dependencies = [
  "itertools 0.15.0",
  "parking_lot",
  "petgraph",
+ "recursive",
  "tokio",
 ]
 
@@ -3068,7 +3091,17 @@ dependencies = [
 name = "rdlt-sql"
 version = "0.0.0"
 dependencies = [
+ "arrow-array",
+ "arrow-buffer",
+ "arrow-schema",
+ "arrow-select",
+ "datafusion-common",
+ "datafusion-expr",
+ "datafusion-functions",
+ "datafusion-optimizer",
+ "datafusion-physical-expr",
  "datafusion-sql",
+ "parking_lot",
  "rdlt-connector",
  "rdlt-engine",
  "regex",

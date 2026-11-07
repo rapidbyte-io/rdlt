@@ -18,3 +18,6 @@ pub const SQL_LITERAL_BYTES: usize = 4 << 10;
 
 /// Bytes: the most a SQL transform's regular expression may compile to.
 pub const REGEX_BYTES: usize = 1 << 20;
+
+/// Plans a SQL transform keeps, one for each input schema it met last.
+pub(crate) const PLANS: usize = 8;
