@@ -179,3 +179,10 @@ inherits = "mutants"
 [[profile.mutants-rdlt-sql.overrides]]
 filter = "package(rdlt-sql)"
 priority = 1
+
+[profile.mutants-rdlt]
+inherits = "mutants"
+
+[[profile.mutants-rdlt.overrides]]
+filter = "package(rdlt)"
+priority = 1

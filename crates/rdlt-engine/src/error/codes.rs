@@ -24,6 +24,7 @@ pub struct Code(&'static str);
 impl Code {
     /// A code of the trusted computing base above the engine: a host's placement or secret code,
     /// or the facade's own; a connector's code is never one.
+    #[doc(hidden)]
     #[must_use]
     pub const fn new(text: &'static str) -> Self {
         Self(text)

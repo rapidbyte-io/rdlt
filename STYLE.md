@@ -17,7 +17,7 @@ Most rules are enforced by a tool, named beside the rule: rustfmt, clippy (the w
 
 ## Library and application code
 
-Google's API rules bind library code and guide application code. The library crates are
+Google's API rules bind library code and guide application code. The library crates are `rdlt`,
 `rdlt-connector`, `rdlt-engine`, `rdlt-host`, `rdlt-wire`, `rdlt-adopt`, `rdlt-sql` and
 `rdlt-connector-macros`: connector authors and embedders build on their public items. The
 application and tooling crates are `rdlt-certify`, `rdlt-connector-reference`, `rdlt-sim`,
@@ -217,8 +217,9 @@ no history. In addition:
 - **`#[must_use]`** on functions whose result is the point of the call and on types that do
   nothing unless used: guards, builders (clippy `return_self_not_must_use`), lazily evaluated
   values. Clippy's `must_use_candidate` is off as too broad; reviewers judge the rest.
-- **`#[doc(hidden)]`** items of other crates are private: don't use them. rdlt defines none
-  (CONTRIBUTING.md § API design).
+- **`#[doc(hidden)]`** items of other crates are private: don't use them. rdlt hides one item,
+  the engine's `Code::new`: the facade makes its own codes through it, and embedders read codes
+  and never make them (CONTRIBUTING.md § API design).
 - **Nothing runs before `main`:** no `ctor`, `inventory` or `linkme`. Process-wide state is a
   `static` built on first use (`LazyLock`, `OnceLock`).
 

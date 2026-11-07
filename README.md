@@ -859,6 +859,7 @@ flowchart LR
 
 | Crate | What it is |
 |---|---|
+| [`rdlt`](crates/rdlt) | The facade: one pipeline model, described in code or in a document, placed on a host its operator configures, and run with its events |
 | [`rdlt-engine`](crates/rdlt-engine) | The engine: plans, runs, schemas, shredding JSON and lowering batches, commits, the memory budget |
 | [`rdlt-sql`](crates/rdlt-sql) | Stateless SQL transforms: DataFusion's planner and expressions, evaluated by the engine |
 | [`rdlt-connector`](crates/rdlt-connector) | The connector contract and SDK: traits, vocabulary, in-process certification, serving the protocol, `sqlgen` |

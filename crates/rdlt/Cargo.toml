@@ -1,0 +1,17 @@
+[package]
+name = "rdlt"
+description = "Load data from sources into destinations exactly once: pipelines described in code or in a document, placed as their host's operator allows."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rdlt-engine.workspace = true
+
+[dev-dependencies]
+rdlt-connector.workspace = true
+
+[lints]
+workspace = true
