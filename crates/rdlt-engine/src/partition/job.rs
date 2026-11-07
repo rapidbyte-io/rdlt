@@ -1,7 +1,11 @@
 //! One partition to read, as an attempt asks for it.
 
+use std::sync::Arc;
+
 use rdlt_connector::{Cursor, Exclusion, Partition, StreamName};
 use tokio_util::sync::CancellationToken;
+
+use crate::transform::stage::Stage;
 
 /// One partition to read.
 #[derive(Clone, Debug)]
@@ -32,6 +36,8 @@ pub(crate) struct PartitionJob {
     /// The columns the stream excludes: its read may leave them out, and they are dropped from
     /// whatever it sends.
     pub(crate) exclude: Exclusion,
+    /// What the stream's include and transforms make of each batch, if it lists either.
+    pub(crate) stage: Option<Arc<Stage>>,
 }
 
 impl PartitionJob {

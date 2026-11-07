@@ -24,6 +24,7 @@ fn seal(partition: usize, segment: u64, rows: u64, next: u64, answers: Option<u6
         deletes_ignored: 0,
         truncates_ignored: 0,
         shred: crate::report::ShredCounts::default(),
+        filtered: crate::report::FilteredRows::default(),
         held: CursorHold::default(),
     }
 }
@@ -122,14 +123,16 @@ fn a_finished_partitions_seal_holds_no_cursor() {
     let mut seals = WaitingSeals::default();
     seals.push(done);
     assert_eq!(seals.cursor_bytes(), 0);
-    for counted in 0..5 {
+    for counted in 0..7 {
         let mut seal = seal(0, 1, 0, 1, None);
         match counted {
             0 => seal.rows = 1,
             1 => seal.bytes = 1,
             2 => seal.discarded_values = 1,
             3 => seal.deletes_ignored = 1,
-            _ => seal.truncates_ignored = 1,
+            4 => seal.truncates_ignored = 1,
+            5 => seal.filtered.dropped = 1,
+            _ => seal.filtered.deleted = 1,
         }
         assert!(!seal.moves_only(), "{counted}");
     }

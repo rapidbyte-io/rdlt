@@ -491,6 +491,7 @@ async fn a_done_partition_owed_as_its_phase_ends_is_told_by_a_later_commit_of_th
             changes: None,
             reset_retention: false,
             exclude: rdlt_connector::Exclusion::default(),
+            stage: None,
         },
     });
     let mut setup = Setup::new(vec![phased], vec![partition("p0", false)]);

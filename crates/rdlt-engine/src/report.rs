@@ -127,6 +127,27 @@ pub struct StreamReport {
     pub forgotten: Forgotten,
     /// What shredding the JSON of committed segments took, over every flush of them.
     pub shred: ShredCounts,
+    /// What the stream's filters did in committed segments.
+    pub filtered: FilteredRows,
+}
+
+/// What a stream's filters did in committed segments.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct FilteredRows {
+    /// Rows a filter dropped: of a stream that appends or replaces, or an insert or update of
+    /// a change log.
+    pub dropped: u64,
+    /// Inserts and updates a filter turned into deletes of their keys, in a change stream
+    /// matched by key.
+    pub deleted: u64,
+}
+
+impl FilteredRows {
+    /// Adds `other`'s counts.
+    pub fn add(&mut self, other: Self) {
+        self.dropped += other.dropped;
+        self.deleted += other.deleted;
+    }
 }
 
 /// The partitions a stream's commits forgot, as a run reports them: the latest named, the rest
@@ -250,6 +271,7 @@ impl StreamReport {
         self.deletes_ignored += other.deletes_ignored;
         self.truncates_ignored += other.truncates_ignored;
         self.shred.add(&other.shred);
+        self.filtered.add(other.filtered);
     }
 }
 

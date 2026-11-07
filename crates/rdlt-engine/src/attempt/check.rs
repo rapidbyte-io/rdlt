@@ -1,10 +1,13 @@
 //! Checking a planned stream against the source's catalog and the destination's capabilities.
 
+use std::collections::BTreeSet;
+
 use rdlt_connector::{Catalog, ColumnPath, Field, LogicalType, ReadMode, StreamSpec, TypeKind};
 
 use super::RunContext;
 use crate::error::{Code, Error, codes};
 use crate::plan::{DeleteMode, OnTruncate, RetentionLoss, StreamPlan, WriteMode};
+use crate::transform::TransformStep;
 
 /// The stream's catalog entry, once the source can read it as planned and the destination can
 /// write it as planned.
@@ -97,6 +100,38 @@ pub(super) fn check_excluded(plan: &StreamPlan, spec: &StreamSpec) -> Result<(),
     ))
     .with_code(codes::PLAN_EXCLUDE_INVALID)
     .with_stream(name))
+}
+
+/// Refuses `plan`'s ops naming a column its stream, `spec`, keeps as it arrives: one of the
+/// source's primary key or of `key`, the columns it merges by, or the source's change time, or
+/// the top-level column holding one.
+pub(super) fn check_transformed(
+    plan: &StreamPlan,
+    spec: &StreamSpec,
+    key: &[ColumnPath],
+) -> Result<(), Error> {
+    let primary = spec.primary_key().into_iter().flatten();
+    let kept: BTreeSet<&str> = primary
+        .chain(key)
+        .chain(spec.change_time())
+        .filter_map(|column| column.segments().next())
+        .collect();
+    for step in plan.transforms() {
+        let TransformStep::Op(op) = step else {
+            continue;
+        };
+        let mut named = op.reads().into_iter().chain(op.writes());
+        if let Some(column) = named.find(|name| kept.contains(name.as_str())) {
+            let name = plan.name();
+            return Err(Error::config(format!(
+                "stream {name}: an op names column {column}, which keys or times the stream; keys \
+                 and the change time pass every transform as they arrive"
+            ))
+            .with_code(codes::TRANSFORM_INVALID)
+            .with_stream(name));
+        }
+    }
+    Ok(())
 }
 
 /// Why the destination cannot merge `plan`'s change stream as planned, if it is one and cannot.

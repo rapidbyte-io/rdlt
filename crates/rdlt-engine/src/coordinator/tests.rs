@@ -526,6 +526,7 @@ fn seal(
         deletes_ignored: 0,
         truncates_ignored: 0,
         shred: crate::report::ShredCounts::default(),
+        filtered: crate::report::FilteredRows::default(),
         held: CursorHold::default(),
     }
 }
@@ -689,6 +690,7 @@ async fn what_shredding_a_segment_took_is_reported_with_its_stream_once_committe
         deletes_ignored: 0,
         truncates_ignored: 0,
         shred,
+        filtered: crate::report::FilteredRows::default(),
         held: CursorHold::default(),
     }));
     harness.end(0, false);
@@ -1257,6 +1259,7 @@ async fn discards_are_reported_with_the_commit_that_publishes_their_segment() {
         deletes_ignored: 0,
         truncates_ignored: 0,
         shred: crate::report::ShredCounts::default(),
+        filtered: crate::report::FilteredRows::default(),
         held: CursorHold::default(),
     }));
     harness.end(0, false);
@@ -1290,6 +1293,10 @@ async fn a_segment_left_without_rows_publishes_nothing_and_counts_only_what_it_d
         deletes_ignored: 3,
         truncates_ignored: 1,
         shred: crate::report::ShredCounts::default(),
+        filtered: crate::report::FilteredRows {
+            dropped: 4,
+            deleted: 5,
+        },
         held: CursorHold::default(),
     }));
     harness.end(0, false);
@@ -1313,6 +1320,7 @@ async fn a_segment_left_without_rows_publishes_nothing_and_counts_only_what_it_d
         ),
         (0, 0, 2, 3, 1)
     );
+    assert_eq!((report.filtered.dropped, report.filtered.deleted), (4, 5));
 }
 
 fn new_cycle(generation: u64, stale: &[&str]) -> Cycle {

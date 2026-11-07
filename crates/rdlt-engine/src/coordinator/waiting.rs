@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use rdlt_connector::{Cursor, PartitionState, SegmentId};
 
 use crate::partition::{CursorHold, Seal};
-use crate::report::{ColumnDiscards, ShredCounts};
+use crate::report::{ColumnDiscards, FilteredRows, ShredCounts};
 
 /// Seals as they arrive, until a commit takes them: what each sealed segment counts, and where
 /// each partition stands once they are committed.
@@ -35,6 +35,7 @@ pub(super) struct Counted {
     pub(super) deletes_ignored: u64,
     pub(super) truncates_ignored: u64,
     pub(super) shred: ShredCounts,
+    pub(super) filtered: FilteredRows,
 }
 
 /// Where a partition stands once the seals waiting are committed.
@@ -75,6 +76,7 @@ impl WaitingSeals {
             deletes_ignored,
             truncates_ignored,
             shred,
+            filtered,
             held,
         } = seal;
         if counts {
@@ -89,6 +91,7 @@ impl WaitingSeals {
                 deletes_ignored,
                 truncates_ignored,
                 shred,
+                filtered,
             });
         }
         let earlier = self.standing.remove(&partition);

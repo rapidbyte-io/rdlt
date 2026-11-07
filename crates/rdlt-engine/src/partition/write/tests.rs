@@ -18,6 +18,7 @@ use crate::shred::ShredError;
 mod given_up;
 mod growth;
 mod planned;
+mod staged;
 mod units;
 mod wide;
 
@@ -34,6 +35,7 @@ fn job() -> PartitionJob {
         follow: false,
         reset_retention: false,
         exclude: rdlt_connector::Exclusion::default(),
+        stage: None,
     }
 }
 

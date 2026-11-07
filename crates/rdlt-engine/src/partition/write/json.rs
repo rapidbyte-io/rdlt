@@ -32,7 +32,8 @@ pub(super) struct Pushes {
 /// they are lowered, so it never waits on the budget until they are written:
 ///
 /// - A normalized flush, whose splits each ask for a request, is observed and built inside a
-///   whole request, asked for first; the rest of it is lent to the splits.
+///   whole request, asked for first; the rest of it is lent to the splits. A flush of a stream
+///   that includes or transforms is too: its stage takes it.
 /// - Any other flush asks, with what its batches take, about what lowering them holds at once,
 ///   in one request it waits for holding only its pushes. Its units are planned and cut before
 ///   any is lowered, and what lowering the largest piece holds is kept of that, or reserved
@@ -54,18 +55,14 @@ pub(super) async fn write_json(
     schemas: &mut Schemas,
     pushes: Pushes,
 ) -> Result<(), Error> {
-    let normalized = context.tables.shape(job.table).is_some();
-    let mut beside = if normalized {
-        Beside::Rest
-    } else {
-        Beside::Lowering
-    };
+    let rest = context.tables.shape(job.table).is_some() || job.stage.is_some();
+    let mut beside = if rest { Beside::Rest } else { Beside::Lowering };
     loop {
         // The batches stay with what was reserved for them until they are held as units.
         let mut built = units::built(job, context, &pushes.text, beside).await?;
         open.shred.add(&built.counts);
         let reserved = match built.beside.take() {
-            Some(reserved) if !normalized => reserved,
+            Some(reserved) if !rest => reserved,
             reserved => {
                 let room = reserved.map_or(Room::Budget, |reserved| Room::Lent(reserved.lend()));
                 let units = Units {

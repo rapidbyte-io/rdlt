@@ -10,6 +10,7 @@ mod pieces;
 mod queue;
 mod refused;
 mod schemas;
+mod stage;
 #[cfg(test)]
 mod tests;
 mod units;
@@ -202,6 +203,7 @@ async fn reserving(
 /// Lowers `units`, each some batches of one schema and the memory they hold, written from pushes
 /// of `kind`, into the partition's table and queues them on its lane, in order.
 ///
+/// - The stream's include and transforms run first, as [`stage::staged`] says.
 /// - Each unit's plan is found in order, since finding it may change the table.
 /// - The unit is then cut into pieces by what lowering each holds at once as its table stores
 ///   it: its columns converted to the table's types and rendered as the destination stores
@@ -224,6 +226,10 @@ async fn write(
     units: Units,
     kind: PushKind,
 ) -> Result<(), Error> {
+    let units = match &job.stage {
+        Some(stage) => stage::staged(job, context, open, stage, schemas, units).await?,
+        None => units,
+    };
     if let Some(shape) = context.tables.shape(job.table) {
         let parts = &mut schemas.parts;
         return normalized::write_normalized(job, context, open, parts, units, (&shape, kind))

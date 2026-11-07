@@ -14,6 +14,7 @@ use tokio::sync::mpsc;
 use super::{Coordinator, PartitionRun};
 use crate::error::{Error, ErrorKind, Side, codes};
 use crate::partition::{self, ChangeMode, PartitionContext, PartitionJob};
+use crate::transform::stage::Stage;
 
 /// A phased stream's place in its phases.
 #[derive(Debug)]
@@ -51,6 +52,8 @@ pub(crate) struct Template {
     pub(crate) reset_retention: bool,
     /// The columns the stream excludes.
     pub(crate) exclude: Exclusion,
+    /// What the stream's include and transforms make of each batch, if it lists either.
+    pub(crate) stage: Option<Arc<Stage>>,
 }
 
 /// What `source` plans for the stream `name` from `state`, checked as
@@ -248,6 +251,7 @@ impl Coordinator {
             follow: self.parts.follow,
             reset_retention: template.reset_retention,
             exclude: template.exclude.clone(),
+            stage: template.stage.clone(),
         };
         (self.parts.launcher)(job)
     }

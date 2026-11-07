@@ -23,7 +23,7 @@ impl Transform for Identity {
 }
 
 #[test]
-fn a_transform_by_default_filters_nothing_keeps_every_row_and_declares_no_bound_or_lineage() {
+fn a_transform_by_default_filters_nothing_keeps_every_row_and_declares_nothing_it_reads() {
     let ids: ArrayRef = Arc::new(Int64Array::from(vec![1, 2, 3]));
     let batch = RecordBatch::try_from_iter([("id", ids)]).unwrap();
     assert!(!Identity.filters());
@@ -31,6 +31,7 @@ fn a_transform_by_default_filters_nothing_keeps_every_row_and_declares_no_bound_
     assert_eq!((keep.len(), keep.true_count()), (3, 3));
     assert_eq!(Identity.bound(batch.schema_ref()), None);
     assert_eq!(Identity.lineage(batch.schema_ref()), None);
+    assert_eq!(Identity.keep_reads(batch.schema_ref()), None);
 }
 
 #[test]

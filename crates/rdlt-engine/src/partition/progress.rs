@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 use crate::budget::{Denied, MemoryBudget};
 use crate::cost::Admitted;
 use crate::error::Error;
-use crate::report::{ColumnDiscards, ShredCounts};
+use crate::report::{ColumnDiscards, FilteredRows, ShredCounts};
 
 /// What a partition tells the commit coordinator.
 #[derive(Debug, PartialEq)]
@@ -109,13 +109,15 @@ pub(crate) struct Seal {
     pub(crate) truncates_ignored: u64,
     /// What shredding the segment's JSON took.
     pub(crate) shred: ShredCounts,
+    /// What the stream's filters did to the segment's rows.
+    pub(crate) filtered: FilteredRows,
     /// What holds the cursor's bytes in the budget until the seal's commit lands.
     pub(crate) held: CursorHold,
 }
 
 impl Seal {
-    /// Whether the seal moves its partition's position and nothing else: no row, discard or
-    /// ignored change is its segment's.
+    /// Whether the seal moves its partition's position and nothing else: no row, discard,
+    /// ignored change or filtered row is its segment's.
     pub(crate) fn moves_only(&self) -> bool {
         let counts = [
             self.rows,
@@ -124,8 +126,10 @@ impl Seal {
             self.discarded_values,
             self.deletes_ignored,
             self.truncates_ignored,
+            self.filtered.dropped,
+            self.filtered.deleted,
         ];
-        counts == [0; 6]
+        counts == [0; 8]
     }
 }
 

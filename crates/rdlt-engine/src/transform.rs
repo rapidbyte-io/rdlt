@@ -3,6 +3,7 @@
 mod bound;
 mod mask;
 mod op;
+pub(crate) mod stage;
 #[cfg(test)]
 mod tests;
 
@@ -94,6 +95,12 @@ pub trait Transform: Send + Sync + 'static {
     /// For each output column of batches of `input`, the input columns, by ordinal, it is
     /// computed from: what lets a change batch's unchanged flags pass the transform.
     fn lineage(&self, _input: &Schema) -> Option<Vec<Vec<usize>>> {
+        None
+    }
+
+    /// The input columns, by ordinal, that `keep` reads of batches of `input`: what lets a
+    /// filter judge an update whose other columns the source left unchanged; none for any.
+    fn keep_reads(&self, _input: &Schema) -> Option<Vec<usize>> {
         None
     }
 }

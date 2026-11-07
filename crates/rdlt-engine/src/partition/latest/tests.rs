@@ -18,6 +18,7 @@ fn moved(partition: usize, next: u64, answers: Option<u64>) -> Seal {
         deletes_ignored: 0,
         truncates_ignored: 0,
         shred: crate::report::ShredCounts::default(),
+        filtered: crate::report::FilteredRows::default(),
         held: CursorHold::default(),
     }
 }

@@ -79,6 +79,7 @@ impl Coordinator {
             counts.deletes_ignored += seal.deletes_ignored;
             counts.truncates_ignored += seal.truncates_ignored;
             counts.shred.add(&seal.shred);
+            counts.filtered.add(seal.filtered);
             if !seal.discards.is_empty() {
                 discards.entry(stream).or_default().absorb(seal.discards);
             }
