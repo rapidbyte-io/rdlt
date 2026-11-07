@@ -617,3 +617,16 @@ fn a_plan_reading_other_than_the_whole_of_input_is_refused() {
     assert!(logical(&scanned("input", Some(vec![0]))).is_err());
     assert!(logical(&scanned("other", None)).is_err());
 }
+
+#[cfg(feature = "bench")]
+#[test]
+fn an_accepted_plan_shows_only_a_projection_of_input_and_listed_functions() {
+    let text = "SELECT id, lower(email) AS email FROM input AS i WHERE status <> 'test'";
+    let sql = Sql::parse(text).unwrap();
+    let facts = crate::bench::facts(&sql, people().schema_ref()).unwrap();
+    assert_eq!(
+        facts.nodes,
+        ["Projection", "Filter", "SubqueryAlias", "TableScan"]
+    );
+    assert_eq!(facts.functions, ["lower"]);
+}

@@ -26,6 +26,7 @@ const SURFACES: &[(&str, &[&str])] = &[
     ("rdlt-connector", &["certify", "strategy", "testing"]),
     ("rdlt-connector-reference", &["certify", "test-connectors"]),
     ("rdlt-engine", &["bench", "failpoints", "sim"]),
+    ("rdlt-sql", &["bench"]),
 ];
 
 /// A way a shipped build carries what it must not.

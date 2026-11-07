@@ -1,0 +1,1 @@
+SELECT n FROM input UNION SELECT n FROM input

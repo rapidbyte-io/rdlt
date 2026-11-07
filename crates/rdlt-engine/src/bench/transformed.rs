@@ -61,7 +61,7 @@ impl Transformed {
     ///
     /// The error the stage's refusal of the batch fails its stream with.
     pub fn run(&self) -> Result<usize, Untransformed> {
-        let ran = self.ran()?;
+        let ran = self.ran(u64::MAX)?;
         Ok(ran.batches.iter().map(RecordBatch::num_rows).sum())
     }
 
@@ -71,11 +71,21 @@ impl Transformed {
     ///
     /// The error the stage's refusal of the batch fails its stream with.
     pub fn batches(&self) -> Result<Vec<RecordBatch>, Untransformed> {
-        Ok(self.ran()?.batches)
+        self.batches_within(u64::MAX)
     }
 
-    fn ran(&self) -> Result<Ran, Untransformed> {
-        let ran = self.stage.run(&self.chain, self.batch.clone(), u64::MAX);
+    /// Runs the stage on the batch, its transforms holding at most `free` bytes beyond it, a
+    /// part that does not fit cut in halves; returns the batches it leaves.
+    ///
+    /// # Errors
+    ///
+    /// The error the stage's refusal of the batch fails its stream with.
+    pub fn batches_within(&self, free: u64) -> Result<Vec<RecordBatch>, Untransformed> {
+        Ok(self.ran(free)?.batches)
+    }
+
+    fn ran(&self, free: u64) -> Result<Ran, Untransformed> {
+        let ran = self.stage.run(&self.chain, self.batch.clone(), free);
         ran.map_err(|refusal| Untransformed::Refused(refused(&self.stream, refusal)))
     }
 }

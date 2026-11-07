@@ -79,6 +79,12 @@ impl Sql {
         })
     }
 
+    /// The query, as parsed.
+    #[cfg(feature = "bench")]
+    pub(crate) fn statement(&self) -> &Statement {
+        &self.statement
+    }
+
     /// The plan for batches of `input`, asked for by `asked`, the schema a batch holds, where
     /// one does: one kept, or made and kept.
     ///

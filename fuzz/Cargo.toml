@@ -8,6 +8,10 @@ publish = false
 [package.metadata]
 cargo-fuzz = true
 
+[features]
+# SQL transforms, which only the targets that plan or run SQL build, as DataFusion takes long to.
+sql = ["dep:rdlt-sql"]
+
 [dependencies]
 arrow-array = "59.2"
 arrow-schema = "59.2"
@@ -21,6 +25,7 @@ rdlt-connector = { path = "../crates/rdlt-connector", default-features = false, 
   "wire",
 ] }
 rdlt-engine = { path = "../crates/rdlt-engine", features = ["bench"] }
+rdlt-sql = { path = "../crates/rdlt-sql", features = ["bench"], optional = true }
 rdlt-testkit = { path = "../crates/rdlt-testkit" }
 rdlt-wire = { path = "../crates/rdlt-wire" }
 
@@ -75,3 +80,19 @@ path = "fuzz_targets/wire_plane.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "sql_plan"
+path = "fuzz_targets/sql_plan.rs"
+test = false
+doc = false
+bench = false
+required-features = ["sql"]
+
+[[bin]]
+name = "transform_apply"
+path = "fuzz_targets/transform_apply.rs"
+test = false
+doc = false
+bench = false
+required-features = ["sql"]

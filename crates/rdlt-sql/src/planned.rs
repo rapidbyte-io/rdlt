@@ -281,7 +281,10 @@ impl<'a> Compiler<'a> {
 }
 
 /// `statement` planned against batches of `input` as the table `input`, its types coerced.
-fn analyzed(statement: &Statement, input: &SchemaRef) -> Result<LogicalPlan, TransformError> {
+pub(crate) fn analyzed(
+    statement: &Statement,
+    input: &SchemaRef,
+) -> Result<LogicalPlan, TransformError> {
     let provider = Provider::new(Arc::clone(input));
     let options = ParserOptions {
         enable_ident_normalization: false,

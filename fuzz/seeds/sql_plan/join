@@ -1,0 +1,1 @@
+SELECT input.n FROM input JOIN input AS b ON input.n = b.n

@@ -1,0 +1,1 @@
+SELECT n FROM input WHERE EXISTS (SELECT 1 FROM input)

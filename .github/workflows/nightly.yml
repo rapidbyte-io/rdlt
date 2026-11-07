@@ -266,13 +266,15 @@ jobs:
           cache_key_prefix: mise-v2-coverage
       - run: just sim-coverage 1000
 
+  # The targets that plan SQL build DataFusion too, about eight minutes more than the others
+  # before their twenty of fuzzing.
   fuzz:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        target: [state_record, shred, wire_messages, ipc_frame, scan, wire_plane, normalize]
+        target: [state_record, shred, wire_messages, ipc_frame, scan, wire_plane, normalize, sql_plan, transform_apply]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
