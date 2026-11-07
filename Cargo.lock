@@ -3421,6 +3421,7 @@ dependencies = [
  "rdlt-connector",
  "rdlt-engine",
  "rdlt-host",
+ "rdlt-sql",
  "rdlt-testkit",
  "rdlt-wire",
  "schemars",

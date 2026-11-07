@@ -6,13 +6,13 @@ type Flag = fn(&Features) -> bool;
 
 #[test]
 fn every_feature_is_drawn_on_and_off_and_now_and_then_all_at_once() {
-    // Every feature at once is about one seed in 29 127: 1/8, by 1/4 for each of the network,
-    // forgetting, streaming and resetting, 3/4 each for no fat values and no excluded columns, and
-    // 1/2 for each of a hostile host, churn and broken connectors.
+    // Every feature at once is about one seed in 38 836: 1/8, by 1/4 for each of the network,
+    // forgetting, streaming and resetting, 3/4 each for no fat values, no excluded columns and no
+    // transforms, and 1/2 for each of a hostile host, churn and broken connectors.
     let drawn: Vec<Features> = (0..256_000)
         .map(|seed| Features::draw(&mut SplitMix64::new(seed)))
         .collect();
-    let flags: [(&str, Flag); 23] = [
+    let flags: [(&str, Flag); 24] = [
         ("drift", |features| features.drift),
         ("encodings", |features| features.encodings),
         ("json", |features| features.json),
@@ -36,6 +36,7 @@ fn every_feature_is_drawn_on_and_off_and_now_and_then_all_at_once() {
         ("hostile", |features| features.hostile),
         ("framing", |features| features.framing),
         ("exclude", |features| features.exclude),
+        ("transform", |features| features.transform),
     ];
     for (name, flag) in flags {
         assert!(drawn.iter().any(flag), "{name} is never on");
@@ -212,4 +213,37 @@ fn excluded_columns_change_nothing_else_a_workload_draws() {
     }
     assert!(excluding, "some stream excludes columns");
     assert!(honouring, "some source leaves them out");
+}
+
+#[test]
+fn transforms_change_nothing_else_a_workload_draws() {
+    let (mut listing, mut filtering, mut renaming, mut adding) = (false, false, false, false);
+    for seed in 0..1000 {
+        let mut rng = SplitMix64::new(seed);
+        let features = Features::draw(&mut rng);
+        let lean = Features {
+            transform: false,
+            ..features
+        };
+        let mut reshaped = crate::workload::Workload::generate(&mut rng.clone(), features);
+        let plain = crate::workload::Workload::generate(&mut rng, lean);
+        for stream in &mut reshaped.streams {
+            let reshaping = &stream.reshaping;
+            let unchanged = *reshaping == crate::workload::Reshaping::default();
+            assert!(features.transform || unchanged, "seed {seed}");
+            listing |= stream.included().is_some();
+            filtering |= reshaping.filter.is_some();
+            renaming |= reshaping.rename;
+            adding |= reshaping.constant;
+            stream.reshaping = crate::workload::Reshaping::default();
+        }
+        reshaped.features = lean;
+        // Drawn floats include NaN, which is not equal to itself, so the workloads are compared
+        // by what they print.
+        assert_eq!(format!("{reshaped:?}"), format!("{plain:?}"), "seed {seed}");
+    }
+    assert!(listing, "some stream lists the columns it includes");
+    assert!(filtering, "some stream filters its rows");
+    assert!(renaming, "some stream renames a column");
+    assert!(adding, "some stream adds a constant column");
 }

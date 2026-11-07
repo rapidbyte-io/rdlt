@@ -39,6 +39,7 @@ const RULES: &[(&str, &[&str])] = &[
             "rdlt-engine",
             "rdlt-connector",
             "rdlt-host",
+            "rdlt-sql",
             "rdlt-testkit",
             "rdlt-wire",
         ],

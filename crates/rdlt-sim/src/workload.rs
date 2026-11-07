@@ -1,6 +1,7 @@
 //! Seeded workloads: the streams a simulated source serves and the rows each phase holds.
 
 mod keys;
+mod reshaping;
 mod rows;
 mod schema;
 mod settings;
@@ -13,11 +14,13 @@ use rdlt_engine::{Nested, OnUnsupported, SchemaPolicy, WriteMode};
 use rdlt_testkit::draw::{draw, mix};
 use rdlt_testkit::drawn::{Scalar, Shape, json, neighbors};
 
+pub use reshaping::Reshaping;
+pub(crate) use reshaping::{CONSTANT, CONSTANT_COLUMN, LISTED};
 use settings::resolve;
 pub use settings::{Level, Relaxed, Resolved};
 
 use crate::rng::SplitMix64;
-use crate::swarm::{EXCLUDE, Features};
+use crate::swarm::{EXCLUDE, Features, RESHAPE};
 
 /// How many phases a simulation runs; the source changes between them.
 pub const PHASES: usize = 2;
@@ -126,6 +129,8 @@ pub struct SimStream {
     pub unbounded: bool,
     /// The columns the plan excludes, none of which lands.
     pub excluded: Excluding,
+    /// What the stream's include and transforms do to its rows.
+    pub reshaping: Reshaping,
     /// Each partition's rows in each phase.
     rows: Vec<[Vec<Row>; PHASES]>,
 }
@@ -288,8 +293,10 @@ impl SimStream {
             drift,
             partitions,
             excluded: Excluding::drawn(features, json, mix(salt ^ EXCLUDE ^ index)),
+            reshaping: Reshaping::default(),
             rows: Vec::new(),
         };
+        stream.reshaping = Reshaping::drawn(features, &stream, mix(salt ^ RESHAPE ^ index));
         if features.settings {
             stream.draw_columns(rng, features);
         }

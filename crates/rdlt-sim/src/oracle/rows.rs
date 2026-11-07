@@ -26,7 +26,8 @@ pub(super) struct Group {
 
 /// The groups of rows `stream`'s table holds after `phase`, as the model has them, each held at
 /// most as often where the phase `stopped` short: for a merge stream, one row of each key the
-/// policy keeps; otherwise each row the policy keeps, as often as the table holds it.
+/// policy keeps; otherwise each row the filter and the policy keep, as often as the table holds
+/// it.
 ///
 /// A row the policy perhaps drops is held at most as often.
 pub(super) fn groups(
@@ -40,7 +41,8 @@ pub(super) fn groups(
         return merged(stream, phase, stopped);
     }
     let mut counts: BTreeMap<String, Group> = BTreeMap::new();
-    for row in loaded(world, stream, phase, stopped, seed) {
+    let loaded = loaded(world, stream, phase, stopped, seed);
+    for row in loaded.into_iter().filter(|row| stream.reshaping.keeps(row)) {
         let dropped = expected::dropped(stream, &row);
         if dropped != Chance::Surely {
             let group = counts.entry(expected::ident(&row)).or_insert(Group {
