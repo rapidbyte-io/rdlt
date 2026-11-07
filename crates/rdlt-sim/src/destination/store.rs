@@ -445,10 +445,10 @@ impl Store {
             // Rows of an incremental stream land once, so none lands below where its partition was
             // held, unless a reset racing the runs moved the position back.
             let judged = incremental(world, &stream) && !world.reset.lock().contains(stream.name());
+            let offset = offset_column(world, &stream);
             for row in rows {
                 let number = |column: &str| cells::number(row, &names, column);
-                let (Some(partition), Some(offset)) = (number("partition"), number("offset"))
-                else {
+                let (Some(partition), Some(offset)) = (number("partition"), number(offset)) else {
                     world.violation(format!("stream {stream}: a row lacks its position"));
                     continue;
                 };
@@ -471,6 +471,13 @@ impl Store {
             }
         }
     }
+}
+
+/// The column `world`'s stream `stream` lands its rows' offsets in, as its transforms name it.
+fn offset_column(world: &World, stream: &StreamName) -> &'static str {
+    let streams = &world.workload.streams;
+    let found = streams.iter().find(|found| found.name == stream.name());
+    found.map_or("offset", |found| found.reshaping.offset())
 }
 
 /// Whether `world`'s stream `stream` is read incrementally.

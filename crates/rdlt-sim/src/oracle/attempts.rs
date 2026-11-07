@@ -2,7 +2,8 @@
 //! budget and the protocol, their failures checked against the refusals the model predicts.
 
 use rdlt_connector::{ColumnPath, PipelineId, StreamName};
-use rdlt_engine::{PipelinePlan, Report, StreamPlan, Until, codes};
+use rdlt_engine::{Literal, Op, PipelinePlan, Report, StreamPlan, Until, codes};
+use rdlt_sql::Sql;
 
 use super::memory::{Counterweight, Tracing};
 use super::pressure::explained;
@@ -13,7 +14,7 @@ use crate::reached::Reach;
 use crate::rng::SplitMix64;
 use crate::seed::Seed;
 use crate::swarm::{FRAMING, HOSTILE};
-use crate::workload::{Level, Relaxed, Workload};
+use crate::workload::{CONSTANT, CONSTANT_COLUMN, LISTED, Level, Relaxed, SimStream, Workload};
 
 impl Simulation {
     /// Runs `scenario` in `phase` for every pipeline at once, keeping the reports of runs that
@@ -196,6 +197,35 @@ pub(super) struct Ran {
 /// The identifiers of the pipelines sharing the destination.
 pub(super) const PIPELINES: [&str; 2] = ["sim", "sim-b"];
 
+/// `plan` with what `stream` draws of its include and transforms: the columns it lists, and a SQL
+/// filter, a rename, then a constant column.
+fn reshaped(mut plan: StreamPlan, stream: &SimStream) -> StreamPlan {
+    if let Some(included) = stream.included() {
+        let listed = LISTED
+            .into_iter()
+            .chain(included.iter().map(String::as_str));
+        plan = plan.include_only(listed);
+    }
+    let reshaping = &stream.reshaping;
+    if let Some(modulus) = reshaping.filter {
+        let predicate = format!("id % {modulus} <> 0");
+        let text = if reshaping.cased {
+            format!("SELECT * FROM input WHERE CASE WHEN {predicate} THEN TRUE END")
+        } else {
+            format!("SELECT * FROM input WHERE {predicate}")
+        };
+        plan = plan.transform(Sql::parse(&text).expect("the simulation's filter parses"));
+    }
+    if reshaping.rename {
+        plan = plan.transform(Op::rename([("offset", reshaping.offset())]));
+    }
+    if reshaping.constant {
+        let constant = Literal::Text(CONSTANT.to_owned());
+        plan = plan.transform(Op::constant([(CONSTANT_COLUMN, constant)]));
+    }
+    plan
+}
+
 /// The plan of `workload`'s pipeline `pipeline`, of the streams it loads, each stream's settings
 /// as `relaxed` leaves them.
 pub(super) fn plan(workload: &Workload, relaxed: &[Relaxed], pipeline: usize) -> PipelinePlan {
@@ -224,6 +254,7 @@ pub(super) fn plan(workload: &Workload, relaxed: &[Relaxed], pipeline: usize) ->
             }
             let excluded = stream.excluded.columns.iter();
             plan = plan.exclude(excluded.map(|excluded| excluded.name.as_str()));
+            plan = reshaped(plan, stream);
             if stream.keys > 0 && stream.plan_key {
                 plan.key(stream.key_columns())
             } else {

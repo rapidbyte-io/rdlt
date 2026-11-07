@@ -1,6 +1,9 @@
 //! The types a stream's batch columns arrive as, which schema resolution decides by: an Arrow
 //! batch's column has its shape's type, however many of its values are null; a JSON push's is
-//! inferred from every value it holds.
+//! inferred from every value it holds, those of rows its filter then drops among them.
+//!
+//! Whether a column's integers are exact is judged over the rows the filter keeps, which alone
+//! reach the table.
 
 #[cfg(test)]
 mod tests;
@@ -117,25 +120,44 @@ pub(super) fn arrival(stream: &SimStream, row: &Row, column: usize) -> Option<Ar
         .into_iter()
         .find(|batch| batch.contains(&offset))?;
     if !stream.json {
-        return Some(typed(&shape.logical, &rows[batch], column));
+        return Some(typed(stream, &shape.logical, &rows[batch], column));
     }
-    rows[batch]
-        .iter()
-        .filter_map(|row| row.extras[column].as_ref())
-        .map(pushed)
-        .reduce(Arrival::join)
+    shredded(stream, &rows[batch], column)
 }
 
 /// The arrival of an Arrow column of `logical` holding `rows`' values of drift column `column`:
-/// its type, and for 64-bit integers, whether a float holds every one exactly.
-fn typed(logical: &LogicalType, rows: &[Row], column: usize) -> Arrival {
+/// its type, and for 64-bit integers, whether a float holds every one `stream`'s filter keeps
+/// exactly.
+fn typed(stream: &SimStream, logical: &LogicalType, rows: &[Row], column: usize) -> Arrival {
     if *logical != LogicalType::Int64 {
         return Arrival::Typed(logical.clone());
     }
-    Arrival::integers(rows.iter().filter_map(|row| match &row.extras[column] {
+    exact(stream, rows, column)
+}
+
+/// The arrival of 64-bit integers, `rows`' values of drift column `column`, exact where a float
+/// holds every one `stream`'s filter keeps.
+fn exact(stream: &SimStream, rows: &[Row], column: usize) -> Arrival {
+    let kept = rows.iter().filter(|row| stream.reshaping.keeps(row));
+    Arrival::integers(kept.filter_map(|row| match &row.extras[column] {
         Some(Scalar::Int(value)) => Some(*value),
         _ => None,
     }))
+}
+
+/// The arrival of a JSON column holding `rows`' values of drift column `column`: inferred from
+/// every value, and for integers, exact as [`exact`] judges them; `None` where no row holds the
+/// column.
+fn shredded(stream: &SimStream, rows: &[Row], column: usize) -> Option<Arrival> {
+    let inferred = rows
+        .iter()
+        .filter_map(|row| row.extras[column].as_ref())
+        .map(pushed)
+        .reduce(Arrival::join)?;
+    Some(match inferred {
+        Arrival::ExactInt | Arrival::Typed(LogicalType::Int64) => exact(stream, rows, column),
+        inferred => inferred,
+    })
 }
 
 /// The widest type drift column `column` may arrive as in the batch the engine writes `row` in:
@@ -151,12 +173,9 @@ pub(super) fn widest(stream: &SimStream, row: &Row, column: usize) -> Option<Arr
     let span = &rows[stream.span(partition, row.delivered, offset)];
     if !stream.json {
         let shape = stream.drift[column].shapes[partition][row.delivered].as_ref()?;
-        return Some(typed(&shape.logical, span, column));
+        return Some(typed(stream, &shape.logical, span, column));
     }
-    span.iter()
-        .filter_map(|row| row.extras[column].as_ref())
-        .map(pushed)
-        .reduce(Arrival::join)
+    shredded(stream, span, column)
 }
 
 /// Whether a column arriving as `arrival`, JSON text, is one whose own column, of `own`, takes

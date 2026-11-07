@@ -4,7 +4,7 @@
 use rdlt_engine::SchemaPolicy;
 
 use super::{changed, child_rows, counted, drift_type, node, policy};
-use crate::workload::{Row, SimStream};
+use crate::workload::{Drift, Row, SimStream};
 
 /// Whether a policy discards something, where the pushes the engine shreds together decide it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -24,13 +24,10 @@ pub(in crate::oracle) struct Discards {
     pub(in crate::oracle) values: (u64, u64),
 }
 
-/// Whether `stream`'s policies drop `row`: a column that discards rows changes in it with a
-/// value.
+/// Whether `stream`'s policies drop `row`: a column that lands and discards rows changes in it
+/// with a value.
 pub(in crate::oracle) fn dropped(stream: &SimStream, row: &Row) -> Chance {
-    stream
-        .drift
-        .iter()
-        .enumerate()
+    landing(stream)
         .filter(|(column, _)| policy(stream, *column) == SchemaPolicy::DiscardRow)
         .filter_map(|(column, drift)| {
             let extra = row.extras[column].as_ref()?;
@@ -50,7 +47,7 @@ pub(in crate::oracle) fn pruned(stream: &SimStream, row: &Row) -> bool {
     let Some(max_depth) = stream.max_depth() else {
         return false;
     };
-    stream.drift.iter().enumerate().any(|(column, drift)| {
+    landing(stream).any(|(column, drift)| {
         let Some(extra) = &row.extras[column] else {
             return false;
         };
@@ -65,15 +62,18 @@ pub(in crate::oracle) fn pruned(stream: &SimStream, row: &Row) -> bool {
 }
 
 /// The rows and values `stream`'s policies discard from `row`, each as the least and most it may
-/// be.
+/// be: none where its filter drops it, before any policy meets it.
 ///
 /// Where a column that discards rows changes in it with a value, that is the row, and the rows its
 /// values in child tables that take them would have added; otherwise each value of a column that
 /// discards values and changes in it. Where the stream normalizes, a value counts each value
 /// column and array item it normalizes into, so an empty array or an object of nulls counts none.
 pub(in crate::oracle) fn discards(stream: &SimStream, row: &Row) -> Discards {
+    if !stream.reshaping.keeps(row) {
+        return Discards::default();
+    }
     let (mut surely, mut perhaps) = (0, 0);
-    for (column, drift) in stream.drift.iter().enumerate() {
+    for (column, drift) in landing(stream) {
         let Some(extra) = &row.extras[column] else {
             continue;
         };
@@ -108,10 +108,7 @@ pub(in crate::oracle) fn discards(stream: &SimStream, row: &Row) -> Discards {
 
 /// The rows `row`'s values would add to the child tables that take them.
 fn children(stream: &SimStream, row: &Row) -> u64 {
-    stream
-        .drift
-        .iter()
-        .enumerate()
+    landing(stream)
         .filter(|(column, _)| {
             !matches!(
                 policy(stream, *column),
@@ -125,4 +122,11 @@ fn children(stream: &SimStream, row: &Row) -> u64 {
             Some(child_rows(&drift.name, node, max_depth))
         })
         .sum()
+}
+
+/// `stream`'s drift columns that land, by their places: none its allow-list leaves out reaches a
+/// policy.
+pub(super) fn landing(stream: &SimStream) -> impl Iterator<Item = (usize, &Drift)> {
+    let drift = stream.drift.iter().enumerate();
+    drift.filter(|(_, drift)| stream.lands(&drift.name))
 }

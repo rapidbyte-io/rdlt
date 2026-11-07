@@ -364,7 +364,11 @@ fn check_acknowledged(world: &World, stopped: bool, seed: Seed) {
 /// `stopped` short, each row the model expects at most as often.
 fn check_contents(world: &World, phase: usize, stopped: bool, seed: Seed) {
     for stream in &world.workload.streams {
-        let delivered: Vec<Row> = (0..=phase).flat_map(|done| stream.all_rows(done)).collect();
+        // A row the filter drops never reaches a table, nor its types.
+        let delivered: Vec<Row> = (0..=phase)
+            .flat_map(|done| stream.all_rows(done))
+            .filter(|row| stream.reshaping.keeps(row))
+            .collect();
         tables::check(
             world,
             stream,

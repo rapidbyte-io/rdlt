@@ -538,6 +538,7 @@ const NONE: Features = Features {
     hostile: false,
     framing: false,
     exclude: false,
+    transform: false,
 };
 
 #[test]
@@ -548,6 +549,7 @@ fn features_off_leave_their_parts_of_the_workload_out() {
                 stream.drift.is_empty() && !stream.json && !stream.sliced && !stream.normalized()
             );
             assert!(!stream.shared_keys && !stream.composite);
+            assert_eq!(stream.reshaping, super::Reshaping::default());
             assert!(
                 stream
                     .key_types
@@ -650,4 +652,28 @@ fn a_streaming_read_serves_whole_checkpoint_groups_until_every_row_has_arrived()
             }
         }
     }
+}
+
+#[test]
+fn a_merge_stream_draws_no_filter_and_another_s_filter_drops_some_row() {
+    let mut filtered = 0;
+    for seed in 0..500 {
+        let features = Features {
+            transform: true,
+            ..Features::ALL
+        };
+        let workload = Workload::generate(&mut SplitMix64::new(seed), features);
+        for stream in &workload.streams {
+            if stream.reshaping.filter.is_none() {
+                continue;
+            }
+            assert_ne!(stream.write, WriteMode::Merge, "seed {seed}");
+            let rows = stream.all_rows(PHASES - 1);
+            filtered += rows
+                .iter()
+                .filter(|row| !stream.reshaping.keeps(row))
+                .count();
+        }
+    }
+    assert!(filtered > 0, "some row is filtered out");
 }

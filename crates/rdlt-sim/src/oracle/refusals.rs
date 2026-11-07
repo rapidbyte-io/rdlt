@@ -15,7 +15,7 @@ use rdlt_testkit::canon::storage;
 
 use super::arrivals::{Arrival, arrival, widest};
 use super::expected;
-use crate::workload::{Relaxed, SimStream};
+use crate::workload::{Relaxed, Row, SimStream};
 use crate::world::World;
 pub(super) use failures::{Failure, refused, relax, unexplained, violation};
 use keys::key_outcome;
@@ -35,7 +35,9 @@ pub(super) fn predict(world: &World, relaxed: &[Relaxed], phase: usize) -> Predi
     let capabilities = world.capabilities();
     let mut prediction = Prediction::default();
     for (stream, relaxed) in world.workload.streams.iter().zip(relaxed) {
+        // A column the allow-list leaves out never reaches schema resolution.
         let columns = (0..stream.drift.len())
+            .filter(|column| stream.lands(&stream.drift[*column].name))
             .map(|column| Column::new(stream, column, *relaxed, &capabilities).outcome(phase));
         let key = (stream.keys > 0).then(|| key_outcome(stream, *relaxed, &capabilities, phase));
         let pruning = prunes(stream, phase);
@@ -58,13 +60,16 @@ pub(super) fn predict(world: &World, relaxed: &[Relaxed], phase: usize) -> Predi
 /// possible.
 fn prunes(stream: &SimStream, phase: usize) -> bool {
     (0..=phase).any(|at| {
-        (0..stream.partitions.len()).any(|partition| {
-            stream
-                .read(partition, at)
-                .iter()
-                .any(|row| expected::pruned(stream, row))
-        })
+        (0..stream.partitions.len())
+            .any(|partition| kept(stream, partition, at).any(|row| expected::pruned(stream, row)))
     })
+}
+
+/// The rows of `partition` read in `phase` that `stream`'s filter keeps: only their batches'
+/// columns reach schema resolution, as a batch the filter empties goes before it.
+fn kept(stream: &SimStream, partition: usize, phase: usize) -> impl Iterator<Item = &Row> {
+    let rows = stream.read(partition, phase).iter();
+    rows.filter(|row| stream.reshaping.keeps(row))
 }
 
 /// What one column's batches in a phase may meet.
@@ -184,7 +189,7 @@ impl<'a> Column<'a> {
     fn gathered(&self, phase: usize) -> bool {
         (0..=phase).any(|at| {
             (0..self.stream.partitions.len()).any(|partition| {
-                self.stream.read(partition, at).iter().any(|row| {
+                kept(self.stream, partition, at).any(|row| {
                     arrival(self.stream, row, self.index) != widest(self.stream, row, self.index)
                 })
             })
@@ -212,7 +217,7 @@ impl<'a> Column<'a> {
     fn arrivals(&self, phase: usize) -> Vec<Arrival> {
         let mut arrivals = Vec::new();
         for partition in 0..self.stream.partitions.len() {
-            for row in self.stream.read(partition, phase) {
+            for row in kept(self.stream, partition, phase) {
                 let pushes = [
                     arrival(self.stream, row, self.index),
                     widest(self.stream, row, self.index),
