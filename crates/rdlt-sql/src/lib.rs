@@ -2,10 +2,15 @@
 //! optionally filtered, planned by DataFusion and evaluated by the engine, batch by batch.
 //!
 //! ```
-//! use rdlt_sql::{Sql, SqlErrorKind};
+//! use rdlt_connector::StreamName;
+//! use rdlt_engine::StreamPlan;
+//! use rdlt_sql::Sql;
 //!
-//! let refused = Sql::parse("SELECT id FROM input ORDER BY id").unwrap_err();
-//! assert_eq!(refused.kind(), SqlErrorKind::Shape);
+//! let plan = StreamPlan::new(StreamName::new("people")?).transform(Sql::parse(
+//!     "SELECT id, lower(email) AS email FROM input WHERE status <> 'test'",
+//! )?);
+//! assert_eq!(plan.transforms().len(), 1);
+//! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
 #![forbid(unsafe_code)]
@@ -15,7 +20,10 @@ mod dialect;
 mod error;
 mod functions;
 mod limits;
+mod planned;
+mod provider;
 mod shape;
+mod size;
 mod sql;
 mod stack;
 

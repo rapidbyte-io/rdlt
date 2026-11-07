@@ -1,11 +1,16 @@
 //! The functions a SQL transform may call, each with what its output holds at most in terms of
 //! what its arguments output.
 
+use std::sync::Arc;
+
+use datafusion_expr::ScalarUDF;
+use datafusion_functions::{core, datetime, math, regex, string, unicode};
 use rdlt_engine::Bound;
 
 /// A function a SQL transform may call.
 pub(crate) struct Listed {
     pub(crate) name: &'static str,
+    pub(crate) udf: fn() -> Arc<ScalarUDF>,
     /// The arguments, by place, that must be text literals.
     pub(crate) literals: &'static [usize],
     /// Where its regular expression and that expression's flags sit, where it takes one.
@@ -46,25 +51,26 @@ pub(crate) const TEXT: u64 = 17;
 
 /// Every function a SQL transform may call, by name, in order.
 pub(crate) const LISTED: &[Listed] = &[
-    entry("abs", fixed),
-    entry("btrim", first),
-    entry("char_length", fixed),
-    entry("character_length", fixed),
-    entry("coalesce", all),
-    entry("concat", all),
-    entry("concat_ws", joined),
-    entry("date_part", fixed),
-    entry("date_trunc", fixed),
-    entry("ends_with", fixed),
-    entry("initcap", cased),
-    entry("left", first),
-    entry("length", fixed),
-    entry("lower", cased),
-    entry("ltrim", first),
-    entry("nullif", first),
-    entry("octet_length", fixed),
+    entry("abs", math::abs, fixed),
+    entry("btrim", string::btrim, first),
+    entry("char_length", unicode::character_length, fixed),
+    entry("character_length", unicode::character_length, fixed),
+    entry("coalesce", core::coalesce, all),
+    entry("concat", string::concat, all),
+    entry("concat_ws", string::concat_ws, joined),
+    entry("date_part", datetime::date_part, fixed),
+    entry("date_trunc", datetime::date_trunc, fixed),
+    entry("ends_with", string::ends_with, fixed),
+    entry("initcap", unicode::initcap, cased),
+    entry("left", unicode::left, first),
+    entry("length", unicode::character_length, fixed),
+    entry("lower", string::lower, cased),
+    entry("ltrim", string::ltrim, first),
+    entry("nullif", core::nullif, first),
+    entry("octet_length", string::octet_length, fixed),
     Listed {
         name: "regexp_like",
+        udf: regex::regexp_like,
         literals: &[1, 2],
         regex: Some(Pattern {
             at: 1,
@@ -75,6 +81,7 @@ pub(crate) const LISTED: &[Listed] = &[
     },
     Listed {
         name: "regexp_replace",
+        udf: regex::regexp_replace,
         literals: &[1, 2, 3],
         regex: Some(Pattern {
             at: 1,
@@ -85,25 +92,31 @@ pub(crate) const LISTED: &[Listed] = &[
     },
     Listed {
         name: "replace",
+        udf: string::replace,
         literals: &[1, 2],
         regex: None,
         output: replaced,
     },
-    entry("reverse", first),
-    entry("right", first),
-    entry("round", fixed),
-    entry("rtrim", first),
-    entry("starts_with", fixed),
-    entry("strpos", fixed),
-    entry("substr", first),
-    entry("trunc", fixed),
-    entry("upper", cased),
+    entry("reverse", unicode::reverse, first),
+    entry("right", unicode::right, first),
+    entry("round", math::round, fixed),
+    entry("rtrim", string::rtrim, first),
+    entry("starts_with", string::starts_with, fixed),
+    entry("strpos", unicode::strpos, fixed),
+    entry("substr", unicode::substr, first),
+    entry("trunc", math::trunc, fixed),
+    entry("upper", string::upper, cased),
 ];
 
 /// A function taking no literal and no regular expression.
-const fn entry(name: &'static str, output: fn(&Call<'_>) -> Option<Bound>) -> Listed {
+const fn entry(
+    name: &'static str,
+    udf: fn() -> Arc<ScalarUDF>,
+    output: fn(&Call<'_>) -> Option<Bound>,
+) -> Listed {
     Listed {
         name,
+        udf,
         literals: &[],
         regex: None,
         output,

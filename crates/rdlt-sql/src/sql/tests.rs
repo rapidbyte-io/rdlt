@@ -1,3 +1,8 @@
+use std::sync::Arc;
+use std::thread;
+
+use arrow_schema::{DataType, Field, Schema, SchemaRef};
+
 use super::Sql;
 use crate::{SQL_BYTES, SqlErrorKind, function_names};
 
@@ -164,6 +169,33 @@ fn a_refusal_shows_a_long_function_name_cut_short() {
         "{}",
         refused.to_string().len()
     );
+}
+
+#[test]
+fn a_schema_is_planned_once_however_many_ask_for_it_at_once_and_found_by_the_one_asked_last() {
+    let sql = Sql::parse("SELECT n, n + 1 AS m FROM input").unwrap();
+    let schema = || Arc::new(Schema::new(vec![Field::new("n", DataType::Int64, true)]));
+    let asked: Vec<SchemaRef> = (0..8).map(|_| schema()).collect();
+    let planned: Vec<_> = thread::scope(|scope| {
+        let asking: Vec<_> = asked
+            .iter()
+            .map(|asked| scope.spawn(|| sql.planned(asked, Some(asked)).unwrap()))
+            .collect();
+        asking
+            .into_iter()
+            .map(|asking| asking.join().unwrap())
+            .collect()
+    });
+    assert!(
+        planned
+            .windows(2)
+            .all(|pair| Arc::ptr_eq(&pair[0], &pair[1]))
+    );
+    assert_eq!(sql.plans.lock().len(), 1);
+    let again = schema();
+    let found = sql.planned(&again, Some(&again)).unwrap();
+    assert!(Arc::ptr_eq(&found, &planned[0]));
+    assert!(Arc::ptr_eq(&sql.plans.lock()[0].input, &again));
 }
 
 #[test]
