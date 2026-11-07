@@ -1,0 +1,13 @@
+[package]
+name = "rdlt-sql"
+description = "Stateless SQL transforms for rdlt streams: DataFusion's planner and expressions, evaluated by the engine."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

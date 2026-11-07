@@ -43,6 +43,7 @@ const RULES: &[(&str, &[&str])] = &[
             "rdlt-wire",
         ],
     ),
+    ("rdlt-sql", &["rdlt-connector", "rdlt-engine"]),
     ("rdlt-testkit", &["rdlt-connector", "rdlt-wire"]),
     ("xtask", &[]),
 ];
@@ -50,6 +51,13 @@ const RULES: &[(&str, &[&str])] = &[
 /// Crates nothing may use as a dev-dependency: those nothing depends on at all, and the audited
 /// `unsafe` crate, which only the crates [`RULES`] names may use.
 const LEAVES: &[&str] = &["rdlt-adopt", "rdlt-python", "rdlt-sim", "xtask"];
+
+/// Crates the crates beside them may not use at all, dev-dependencies included: what a crate
+/// builds on never depends on it, even in its tests.
+const BELOW: &[(&str, &[&str])] = &[(
+    "rdlt-sql",
+    &["rdlt-connector", "rdlt-engine", "rdlt-host", "rdlt-wire"],
+)];
 
 /// A dependency of one workspace crate on another.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -64,7 +72,7 @@ pub(crate) struct Edge {
 pub(crate) enum Violation {
     /// A workspace crate that has no entry in [`RULES`].
     Unlisted(String),
-    /// A dependency [`RULES`] or [`LEAVES`] does not allow.
+    /// A dependency [`RULES`], [`LEAVES`] or [`BELOW`] does not allow.
     Forbidden(Edge),
 }
 
@@ -76,8 +84,11 @@ pub(crate) fn check(crates: &[String], edges: &[Edge]) -> Vec<Violation> {
         .map(|krate| Violation::Unlisted(krate.clone()))
         .collect();
     for edge in edges {
+        let below = BELOW
+            .iter()
+            .any(|(krate, under)| *krate == edge.to && under.contains(&edge.from.as_str()));
         let permitted = if edge.dev {
-            !LEAVES.contains(&edge.to.as_str())
+            !LEAVES.contains(&edge.to.as_str()) && !below
         } else {
             allowed(&edge.from).is_some_and(|deps| deps.contains(&edge.to.as_str()))
         };

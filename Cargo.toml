@@ -17,6 +17,7 @@ rdlt-connector = { path = "crates/rdlt-connector", version = "0.0.0" }          
 rdlt-connector-macros = { path = "crates/rdlt-connector-macros", version = "0.0.0" }       # #[source] and #[destination]
 rdlt-connector-reference = { path = "crates/rdlt-connector-reference", version = "0.0.0" } # reference connectors
 rdlt-engine = { path = "crates/rdlt-engine", version = "0.0.0" }                           # the engine, for rdlt-sim
+rdlt-sql = { path = "crates/rdlt-sql", version = "0.0.0" }                                 # stateless SQL transforms, for embedders and rdlt-sim
 rdlt-host = { path = "crates/rdlt-host", version = "0.0.0" }                               # connectors out of process
 rdlt-testkit = { path = "crates/rdlt-testkit" }                                            # drawn data and the value model, for tests and rdlt-sim
 rdlt-wire = { path = "crates/rdlt-wire", version = "0.0.0" }                               # the wire protocol: messages, the Arrow codec and limits
@@ -39,6 +40,20 @@ bytes = { version = "1.12.1", features = [
   "serde",
 ] } # zero-copy byte buffers for pushes, cursors and state
 chrono = { version = "0.4.45", default-features = false } # calendar dates and zone offsets for exact temporal conversions, the version arrow uses
+datafusion-common = { version = "55.2.0", default-features = false } # DataFusion's schemas, scalars and options, for SQL transforms; one arrow major with the workspace
+datafusion-expr = { version = "55.2.0", default-features = false } # DataFusion's logical expressions and the context a SQL transform is planned in
+datafusion-functions = { version = "55.2.0", default-features = false, features = [
+  "datetime_expressions",
+  "math_expressions",
+  "regex_expressions",
+  "string_expressions",
+  "unicode_expressions",
+] } # the scalar functions SQL transforms may call, of which they register a bounded few
+datafusion-optimizer = { version = "55.2.0", default-features = false } # type coercion of a planned SQL transform, which the planner leaves undone
+datafusion-physical-expr = { version = "55.2.0", default-features = false } # SQL transforms' expressions, evaluated batch by batch on the engine's pool
+datafusion-sql = { version = "55.2.0", default-features = false, features = [
+  "unicode_expressions",
+] } # parsing and planning SQL transforms
 proc-macro2 = "1.0.107" # token streams for rdlt-connector-macros
 quote = "1.0.47" # code generation for rdlt-connector-macros
 schemars = "1.2.2" # JSON Schema for connector configuration
@@ -61,6 +76,7 @@ rustix = { version = "1.1.5", default-features = false, features = [
 libc = { version = "0.2.189", default-features = false } # close_range and fcntl in a spawned child, for rdlt-adopt alone
 nix = { version = "0.31.3", default-features = false } # a spawned connector ends with its host (PR_SET_PDEATHSIG), and the host signals its connectors
 parking_lot = "0.12.5" # locks without poisoning
+regex = "1.13.1" # xtask lint patterns, and the size limit SQL transforms' regular expressions compile under
 prost = "0.14.4" # protocol buffer messages of the wire protocol
 pyo3 = { version = "0.29.3", default-features = false, features = [
   "abi3-py311",
@@ -121,6 +137,14 @@ cargo_metadata = "0.23.1" # xtask reads the workspace graph for the dependency r
 clap = { version = "4.6.7", features = ["derive"] } # command-line parsing for xtask
 fail = { version = "0.5.1", default-features = false } # crash points for the failpoint sweep
 flatbuffers = "25.2.10" # the verifier's depth for IPC headers and Arrow file footers, and hand-built messages in their tests
+datafusion = { version = "55.2.0", default-features = false, features = [
+  "datetime_expressions",
+  "math_expressions",
+  "regex_expressions",
+  "sql",
+  "string_expressions",
+  "unicode_expressions",
+] } # the full executor SQL transforms' per-batch evaluation is tested against
 criterion = { version = "0.8.2", default-features = false, features = [
   "cargo_bench_support",
 ] } # throughput benchmarks
@@ -132,7 +156,6 @@ proptest = "1.11.0" # property tests
 rcgen = "0.14.10" # a certificate authority made at test time, for the protocol's TLS
 tonic-prost-build = "0.14.6" # xtask generates the wire protocol's messages and service stubs
 protox = "0.9.1" # xtask compiles the wire protocol's .proto files without protoc
-regex = "1.13.1" # xtask lint patterns
 rusqlite = { version = "0.40.2", default-features = false, features = [
   "bundled",
   "cache",

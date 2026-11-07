@@ -8,7 +8,7 @@ export PYO3_PYTHON := justfile_directory() / ".venv/bin/python"
 # The crates mutation testing mutates, and the crates whose tests may catch a mutant: the
 # protocol's served end is tested from the host, where a client exists, and the reference
 # connectors from the engine and certification too
-mutated := "rdlt-engine rdlt-connector rdlt-adopt rdlt-wire rdlt-host rdlt-certify rdlt-connector-reference rdlt-python"
+mutated := "rdlt-engine rdlt-connector rdlt-adopt rdlt-wire rdlt-host rdlt-certify rdlt-connector-reference rdlt-python rdlt-sql"
 
 # What a test runs under while mutants are tested: an address space of 6 GiB, room for the most any
 # test takes (about 3.5 GiB). A mutant that allocates without end aborts its test there, which
@@ -168,21 +168,22 @@ sim-rate floor="2" cores=env("RDLT_SIM_CORES", ""): sim-archive
 
 # Measure how much of the engine, connector, host and data-plane code the simulation alone
 # reaches, and hold it above its floor: left out are test code, modules built only for tests and
-# benches among it, the connector's test kit and SQL planner, generated code, and what the
-# simulation never runs (what process placement leaves to the operating system, files the seeds
-# reach in under half their lines, and a served binary's entry).
+# benches among it, the connector's test kit and SQL planner, the SQL transforms' crate, whose
+# one query shape the simulation calls, generated code, and what the simulation never runs (what
+# process placement leaves to the operating system, files the seeds reach in under half their
+# lines, and a served binary's entry).
 # Each sweep's seeds run side by side on the host's cores, or on `cores` (by default
 # `RDLT_SIM_CORES`) when given
 sim-coverage seeds="1000" cores=env("RDLT_SIM_CORES", ""): python-env
     rustup toolchain install {{ nightly }} --profile minimal --component llvm-tools-preview
-    RDLT_SIM_SEEDS="{{ seeds }}" RDLT_SIM_CORES="{{ cores }}" cargo +{{ nightly }} llvm-cov nextest --branch --workspace --all-features --json --summary-only --output-path target/sim-coverage.json --ignore-filename-regex '(rdlt-sim|rdlt-testkit|rdlt-connector-reference|rdlt-adopt|xtask)/|/tests?(\.rs|/)|differential|reference(\.rs|/)|/bench|/testing|sqlgen|encodings\.rs|/generated/|rdlt-engine/src/(env/inline|shred/numbers)\.rs|rdlt-connector/src/(strategy|serve/live)\.rs|rdlt-host/src/(kills\.rs|local/(bubblewrap|sandbox)|local/grants/opened\.rs|local/process\.rs|local/process/(command|group)|connect|sink)|rdlt-certify/|serve/(args|binary)|rdlt-connector/src/required\.rs|rdlt-engine/src/fixtures(\.rs|/)' -E 'package(rdlt-sim) & test(through_faults)'
+    RDLT_SIM_SEEDS="{{ seeds }}" RDLT_SIM_CORES="{{ cores }}" cargo +{{ nightly }} llvm-cov nextest --branch --workspace --all-features --json --summary-only --output-path target/sim-coverage.json --ignore-filename-regex '(rdlt-sql|rdlt-sim|rdlt-testkit|rdlt-connector-reference|rdlt-adopt|xtask)/|/tests?(\.rs|/)|differential|reference(\.rs|/)|/bench|/testing|sqlgen|encodings\.rs|/generated/|rdlt-engine/src/(env/inline|shred/numbers)\.rs|rdlt-connector/src/(strategy|serve/live)\.rs|rdlt-host/src/(kills\.rs|local/(bubblewrap|sandbox)|local/grants/opened\.rs|local/process\.rs|local/process/(command|group)|connect|sink)|rdlt-certify/|serve/(args|binary)|rdlt-connector/src/required\.rs|rdlt-engine/src/fixtures(\.rs|/)' -E 'package(rdlt-sim) & test(through_faults)'
     cargo xtask coverage-gate target/sim-coverage.json --lines 80 --branches 71
 
 # Measure line and branch coverage and apply the CI gate. Spawned connectors write profiles too, and
 # one killed as its test ends leaves a truncated profile, which the merge skips
 coverage:
     rustup toolchain install {{ nightly }} --profile minimal --component llvm-tools-preview
-    cargo +{{ nightly }} llvm-cov nextest --failure-mode all --branch --package rdlt-engine --package rdlt-connector --package rdlt-adopt --package rdlt-wire --package rdlt-host --package rdlt-certify --all-features --json --summary-only --output-path target/coverage.json --ignore-filename-regex '/generated/' -E 'not (package(rdlt-engine) & binary(crashes))'
+    cargo +{{ nightly }} llvm-cov nextest --failure-mode all --branch --package rdlt-engine --package rdlt-connector --package rdlt-adopt --package rdlt-wire --package rdlt-host --package rdlt-certify --package rdlt-sql --all-features --json --summary-only --output-path target/coverage.json --ignore-filename-regex '/generated/' -E 'not (package(rdlt-engine) & binary(crashes))'
     cargo xtask coverage-gate target/coverage.json --lines 96 --branches 93
 
 # Run the audited crate's test of its `unsafe` code under Miri: the workspace's only
@@ -259,7 +260,7 @@ mutants-diff base="origin/main" jobs="4":
     }
     {{ mutant_test_limit }}
     failed=0
-    for crate in rdlt-engine rdlt-connector rdlt-adopt rdlt-connector-reference rdlt-wire rdlt-host rdlt-certify rdlt-python; do
+    for crate in rdlt-engine rdlt-connector rdlt-adopt rdlt-connector-reference rdlt-wire rdlt-host rdlt-certify rdlt-python rdlt-sql; do
         grep -q "^+++ b/crates/$crate/" target/mutants.diff || continue
         tests=()
         for package in $(catching "$crate"); do tests+=(--test-package "$package"); done
