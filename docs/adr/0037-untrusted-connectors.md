@@ -28,9 +28,10 @@ the host can. ADR 0038 to ADR 0050 implement this decision.
   - Every wait on a connector has a deadline.
 - **A connector cannot pass itself off as the engine.** Every engine error says who failed: the
   engine, for every error it builds, its wait for a connector's call among them, or the side
-  whose connector or host raised it. The engine's codes are a closed set only the engine makes
-  (`rdlt_engine::codes`); a code a connector's error carries is kept apart as the connector's,
-  shown and bounded (`Error::connector_code`).
+  whose connector or host raised it. The engine's codes, and those of the host and the facade above
+  it, are a closed set only the trusted computing base makes (`rdlt_engine::codes`,
+  `Code::new`); a code a connector's error carries is kept apart as the connector's, shown and
+  bounded (`Error::connector_code`).
 - **Damage is confined to the connector's own pipeline.** A connector cannot read or change
   another pipeline's tables, state, log or secrets, and cannot make the engine do so.
 - **Untrusted code never shares the engine's address space or its access.** Where a connector

@@ -344,7 +344,7 @@ pub struct ErrorReport {
     pub origin: Origin,
     /// The stream it belongs to.
     pub stream: Option<String>,
-    /// The engine's code for it.
+    /// The code the engine, or a trusted layer above it, gave it.
     pub code: Option<Code>,
     /// The code a connector's error carried, shown and bounded.
     pub connector_code: Option<String>,
