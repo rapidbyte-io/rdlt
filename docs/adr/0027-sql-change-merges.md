@@ -44,7 +44,7 @@ commits, beside merges by key.
   - Changes the snapshot holds are never sent again: a source resumes past its position, so
     tombstones start with the changes, not the snapshot.
 - **SQL change merges** (`sqlgen`, and the SQLite destination through it).
-  - A change table's staging has the op column and the unchanged flags, which the writer stores
+  - A change table's staging has the op column and the unchanged flags, which the table writer stores
     as bytes, one per target column, set where it is flagged, which a commit reads at a position
     (ADR 0049). It resolves them when it stages, in the transaction that stages the rows; a flag
     naming a column the table lacks, or its key or sequence column, is a `Data` error. The

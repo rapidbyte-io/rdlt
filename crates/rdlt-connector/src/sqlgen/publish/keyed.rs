@@ -87,9 +87,9 @@ pub(in crate::sqlgen) fn holds_key(table: &str, key: &MergeKey, columns: &[Colum
 }
 
 impl<D: SqlDialect> SqlPlanner<D> {
-    /// Refuses a writer of `table` unless `columns`, the columns the table has, hold every column
-    /// its merge key names there, as [`SqlPlanner::publish`] refuses its commit: a `Data` error
-    /// coded `merge_key_invalid`; a table that does not merge has no key to hold.
+    /// Refuses a table writer of `table` unless `columns`, the columns the table has, hold every
+    /// column its merge key names there, as [`SqlPlanner::publish`] refuses its commit: a `Data`
+    /// error coded `merge_key_invalid`; a table that does not merge has no key to hold.
     pub fn merges(&self, table: &TableRef, columns: &[Column]) -> Result<()> {
         match &table.merge {
             Some(key) => holds_key(&table.name, key, columns),

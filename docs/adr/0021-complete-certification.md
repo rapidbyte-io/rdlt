@@ -47,7 +47,7 @@ in process:
   - `D-NAMES`: a table and a column named as long as the destination's rules allow, a column
     beyond ASCII when it allows any character, and one in mixed case when it keeps case, each
     folded as its rules fold, are published under their names. Unobserved below 32 bytes.
-  - `D-LANES`: as many writers of one table as the destination runs at once, up to four, stage
+  - `D-WRITERS`: as many table writers of one table as the destination runs at once, up to four, stage
     at the same time, and a commit publishes what each staged. Inapplicable for one writer.
   - `S-CHECK`: check succeeds exactly when a read of the first partition starts, and both do.
   - `D-CHECK`: check succeeds exactly when opening a session does, and both do.
@@ -71,7 +71,7 @@ in process:
 - A connector author makes a destination fully certifiable from its binary by reading back what
   it published; one that does not is certified with those clauses unobserved, so its report is
   incomplete (ADR 0050).
-- `D-NAMES` and `D-LANES` read what was published, so they run wherever that can be read; the P
+- `D-NAMES` and `D-WRITERS` read what was published, so they run wherever that can be read; the P
   clauses send a destination a frame as large as its frame limit, 64 MiB by default.
 - The `K` clauses and `S-ARROW-JSON`, which need an engine, are ADR 0022's, and `S-PARTITION`
   ADR 0032's.

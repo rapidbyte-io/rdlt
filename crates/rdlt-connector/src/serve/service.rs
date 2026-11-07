@@ -384,7 +384,7 @@ impl Plane for Service {
 }
 
 impl Service {
-    /// The session `id`'s writer for `table`.
+    /// The session `id`'s table writer for `table`.
     pub(super) async fn writer(
         &self,
         id: u64,

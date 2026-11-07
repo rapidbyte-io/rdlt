@@ -302,7 +302,7 @@ in forms its readers read back (ADR 0041):
   names, oldest first, each reported, and a reset of the stream clears the rest.
 - State that records two tables under one identifier is refused (`state_invalid`); a reset never
   drops such a table.
-- A lane holds a bounded share of open destination writers and retires superseded ones.
+- A writer holds a bounded share of open table writers and retires superseded ones.
 
 ## State the engine keeps
 

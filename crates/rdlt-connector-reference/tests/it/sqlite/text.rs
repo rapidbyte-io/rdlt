@@ -98,7 +98,7 @@ async fn a_recorded_sequence_that_is_no_column_fails_the_commit() {
         .session
         .writer(&orders)
         .await
-        .expect("a writer opens");
+        .expect("a table writer opens");
     for id in [1, 1, 1] {
         writer
             .write(rdlt_connector::SegmentId(2), rows(&[id]))

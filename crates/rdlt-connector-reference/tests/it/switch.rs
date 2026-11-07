@@ -1,4 +1,4 @@
-//! A table's merging follows the writer that stages its rows, whatever the table was before.
+//! A table's merging follows the table writer that stages its rows, whatever the table was before.
 
 use std::sync::Arc;
 
@@ -86,7 +86,7 @@ async fn switch<C: DestinationConnector>(config: serde_json::Value) {
             .session
             .writer(&table(merging))
             .await
-            .expect("a writer opens");
+            .expect("a table writer opens");
         writer
             .write(SegmentId(segment), batch)
             .await

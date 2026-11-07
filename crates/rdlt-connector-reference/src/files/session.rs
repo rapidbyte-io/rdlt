@@ -1,5 +1,5 @@
-//! A files session: schema changes in the table catalog, writers that stage one file per batch,
-//! and commits that create the next manifest.
+//! A files session: schema changes in the table catalog, table writers that stage one file per
+//! batch, and commits that create the next manifest.
 
 mod commit;
 mod compact;
@@ -40,7 +40,7 @@ pub(super) struct Location {
     pub(super) lock_wait: Duration,
 }
 
-/// A file a writer of this session staged.
+/// A file a table writer of this session staged.
 #[derive(Clone, Debug)]
 struct StagedFile {
     segment: SegmentId,
@@ -48,7 +48,7 @@ struct StagedFile {
     file: Listed,
 }
 
-/// What a session and its writers share.
+/// What a session and its table writers share.
 #[derive(Debug, Default)]
 pub(super) struct Shared {
     staged: Vec<StagedFile>,

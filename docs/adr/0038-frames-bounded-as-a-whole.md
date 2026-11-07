@@ -164,7 +164,7 @@ connector, a served connector reading from a host, and certification's read-back
   - One row beyond a limit, or a dictionary beyond one, cannot be cut: its sender refuses it with
     `limit_exceeded` naming the limit, where the cut reaches it, after the pieces before it went.
     - A refused write leaves the rows of the pieces before it staged under the batch's segment.
-      The writer itself stays usable, but its caller must not commit that segment: the engine
+      The table writer itself stays usable, but its caller must not commit that segment: the engine
       ends the attempt, and the next discards its staging. A write that fails or is dropped
       before its last frame is queued leaves the next write to send its schema, and every
       dictionary after it, again (ADR 0016).
@@ -183,9 +183,9 @@ connector, a served connector reading from a host, and certification's read-back
   logical type: fixed-width values, `Utf8`, `Binary`, structs and lists, with list views cast to
   lists, views to offsets, and dictionaries and run-end encodings decoded. Its two constant
   metadata columns are dictionaries of one entry under sliced keys. Batches of no rows are
-  dropped before they are queued. So the host's writer meets no view, list view,
+  dropped before they are queued. So the host's table writer meets no view, list view,
   union or run-end column and no empty batch from the engine, though it does meet slices that
-  share their parent's buffers, all of layouts that go as they are. The writer is a public
+  share their parent's buffers, all of layouts that go as they are. The table writer is a public
   trait all the same, and a served connector and read-back send whatever a source built, so
   the cut is correct for every layout and for empty slices, and is tested on each.
 - **A peer's limits have minimums.** A sender cuts to the limits its peer advertised at the

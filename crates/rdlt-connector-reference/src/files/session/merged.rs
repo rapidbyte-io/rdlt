@@ -90,7 +90,7 @@ pub(super) fn merged_rows(
         }
         Ok::<_, ConnectorError>(batches)
     };
-    // What a writer staged is read as it was written, since its flags count its columns.
+    // What a table writer staged is read as it was written, since its flags count its columns.
     let mut published = Vec::new();
     for file in &table.files {
         published.extend(manifest::read_held(&location.dir, &file.path, &schema)?);

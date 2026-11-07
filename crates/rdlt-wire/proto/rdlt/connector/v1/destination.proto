@@ -72,7 +72,7 @@ message RootKey {
   string seq = 3;
 }
 
-// A table a change or writer applies to.
+// A table a change or table writer applies to.
 message TableRef {
   // Its path.
   TablePath path = 1;
@@ -195,7 +195,7 @@ message WriteAck {
   }
 }
 
-// What a writer staged.
+// What a table writer staged.
 message WriteStats {
   // Rows.
   uint64 rows = 1;

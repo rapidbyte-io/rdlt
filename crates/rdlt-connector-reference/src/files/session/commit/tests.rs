@@ -24,7 +24,7 @@ fn a_removed_file_takes_the_directories_of_its_own_it_left_empty() {
     let exists = |path: &str| root.path().join(path).exists();
     assert!(!exists("staging/7/3/rows"), "its directories stay");
     assert!(exists(&sibling) && exists(&alone));
-    // The last file of a segment takes the segment's directory, and no directory writers of
+    // The last file of a segment takes the segment's directory, and no directory table writers of
     // the session share: the epoch's and the staging directory stay.
     remove(&dir, [&sibling, &alone].into_iter());
     assert!(!exists("staging/7/3") && !exists("staging/7/4"));

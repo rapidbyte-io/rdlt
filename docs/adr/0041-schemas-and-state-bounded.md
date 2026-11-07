@@ -16,7 +16,7 @@ one run to the next, puts both at risk:
   or a field with meaning added under one format number, is read as what it is not.
 - Growth with no limit on the whole. Limits on one push alone let a table's columns and a
   struct's fields grow by thousands a push for as long as pushes come, a normalized stream add a
-  child table for every array path, a lane keep a destination writer open for every schema
+  child table for every array path, a writer keep a table writer open for every schema
   version, and the entries of partitions no plan names stay in state for good.
 - State no message can carry. An open answers with all of a pipeline's state, a commit's request
   carries its changes, a plan's request a stream's positions. Cursors within their limit, long
@@ -58,7 +58,7 @@ one run to the next, puts both at risk:
   | Limit | Default | What it holds |
   |---|---|---|
   | `child_tables` | 1024 | the child tables a normalized stream's table has, recorded and new |
-  | `writers` | 128 | the destination writers an attempt holds open, across its lanes |
+  | `table_writers` | 128 | the table writers an attempt holds open, across its writers |
 
   - `EngineConfig::state_limit` is `state_bytes` of `EngineConfig::limits`, the one limit the
     host advertises for a message carrying state and the budget's control share holds (ADR
@@ -77,12 +77,13 @@ one run to the next, puts both at risk:
   attempt's tables from state refuses an identifier recorded for two tables as `state_invalid`;
   a reset, which recovers a pipeline and so reads state it may not trust, forgets such a table's
   records and never drops it. A plan names new tables outside every recorded identifier.
-- **Writers retire.** A lane flushes and closes a table's writers of older versions when it writes a
-  newer one, and holds at most its share of `writers` open, one at least, closing the one written
-  longest ago; a batch of an older version reopens that version's writer. An attempt runs no more
-  lanes than writers. A served connection carries at most 200 calls, and every open writer is one,
-  so an attempt holds at most 198 of a served destination's writers open, and fewer where
-  `writers` is lower, 128 by default (ADR 0042).
+- **Table writers retire.** A writer flushes and closes the table writers of a table's older versions
+  when it writes a newer one, and holds at most its share of `table_writers` open, one at least,
+  closing the one written longest ago; a batch of an older version reopens that version's table
+  writer. An attempt runs no more writers than table writers. A served connection carries at most
+  200 calls, and every open table writer is one, so an attempt holds at most 198 of a served
+  destination's table writers open, and fewer where `table_writers` is lower, 128 by default (ADR
+  0042).
 - **Stored state stays what a message can carry.** The engine measures what an open's answer
   carrying the stored state holds decoded, as the host's scan counts it, from the records it opened
   on and each commit that lands, and a commit's request alike. A commit whose request, or whose
@@ -139,7 +140,8 @@ Rejected:
   is reset or its policy discards new columns; more memory raises the limit.
 - A normalized stream with more array paths than its child table limit stops, typed; at the least
   memory the limit is about 516.
-- A lane may reopen a writer: a table written by more partitions at once than the lane's share,
+- A writer may reopen a table writer: a table written by more partitions at once than the writer's
+  share,
   or a batch lowered for a version a newer one has replaced.
 - A pipeline whose state is honestly larger than its state limit stops at the commit that would
   pass it until memory or `state_bytes` is raised at both ends, or its streams are reset; one
@@ -160,8 +162,8 @@ Rejected:
   cursor in an incremental stream keeps every cursor and stops at `state_bytes_exceeded` until
   its stream is reset. Certification does not check that finished
   partitions end done: a read that ends at a checkpoint is also how a polled table is read.
-- The simulation holds one to three writers open in a quarter of its worlds, drawn apart from
-  the rest of the seed, so lanes close writers.
+- The simulation holds one to three table writers open in a quarter of its worlds, drawn apart
+  from the rest of the seed, so writers close table writers.
 - One measure, one limit and one refusal hold state: what an open's answer holds decoded, the
   advertised `state_bytes`, and `state_bytes_exceeded`. `GrowthLimits` sets no state limit of
   its own, and the code `state_exceeds_budget` is gone. Two tables recorded under one

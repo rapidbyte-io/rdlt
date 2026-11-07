@@ -48,7 +48,7 @@ impl Bench<'_> {
             ..other.clone()
         };
         let mut opened = self.staged(self.destination, &[1]).await?;
-        let mut writer = bounded_call("writer", opened.session.writer(&generation)).await?;
+        let mut writer = bounded_call("table writer", opened.session.writer(&generation)).await?;
         write(&mut writer, 2, rows(2)).await?;
         write(&mut writer, 3, rows(3)).await?;
         self.writer_of(&mut opened.session, &other).await?;
@@ -94,7 +94,7 @@ impl Bench<'_> {
             field: Field::new("extra", LogicalType::Int64, true),
         };
         apply_twice(&mut opened.session, &add).await?;
-        let mut writer = bounded_call("writer", opened.session.writer(&table)).await?;
+        let mut writer = bounded_call("table writer", opened.session.writer(&table)).await?;
         write(&mut writer, 2, with_extra(&rows(2))).await?;
         commit(opened, meta(&[2], Vec::new())).await?;
         let values = self.values(&table, "extra").await?;
@@ -144,7 +144,7 @@ impl Bench<'_> {
                 .expect("the certification schema is valid"),
         };
         bounded_call("apply_schema", opened.session.apply_schema(&create)).await?;
-        let mut writer = bounded_call("writer", opened.session.writer(&table)).await?;
+        let mut writer = bounded_call("table writer", opened.session.writer(&table)).await?;
         let small =
             RecordBatch::try_from_iter([("small", Arc::new(Int32Array::from(vec![7])) as _)])
                 .expect("the certification batch is valid");
@@ -198,7 +198,7 @@ impl Bench<'_> {
         let (table, create) = merged(self.table());
         let mut opened = self.open(self.destination).await?;
         bounded_call("apply_schema", opened.session.apply_schema(&create)).await?;
-        let mut writer = bounded_call("writer", opened.session.writer(&table)).await?;
+        let mut writer = bounded_call("table writer", opened.session.writer(&table)).await?;
         write(&mut writer, 1, keyed(&[(1, "a", 1), (2, "b", 2)])).await?;
         write(&mut writer, 2, keyed(&[(2, "late", 9), (3, "c", 3)])).await?;
         // Key 2's newest row comes first, and key 3's last: neither the first nor the last row
@@ -264,7 +264,7 @@ pub(super) fn inapplicable(destination: &dyn Destination, id: &str) -> Option<&'
         }
         "D-HIST" if !capabilities.write_modes.history => Some("the destination keeps no history"),
         "D-DROP" if !capabilities.drop_tables => Some("the destination drops no tables"),
-        "D-LANES" if capabilities.max_parallel_writers.get() < 2 => {
+        "D-WRITERS" if capabilities.max_parallel_writers.get() < 2 => {
             Some("the destination runs one writer at a time")
         }
         _ => None,

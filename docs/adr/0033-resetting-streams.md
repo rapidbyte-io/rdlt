@@ -74,7 +74,7 @@ generation.
     pipeline's own tables, so a swap changes its own table or none, and the owner is checked
     before it does (ADR 0049).
   - A session a newer one fenced may not claim a table no pipeline owns: its schema change or
-    writer fails as fenced. Otherwise a load the reset fenced, still writing, claims the table
+    table writer fails as fenced. Otherwise a load the reset fenced, still writing, claims the table
     the reset just released, and another pipeline stays shut out.
 - **Certification.** `D-DROP`: a dropped table leaves nothing, dropping again changes nothing, a
   session fenced before cannot claim it again, another pipeline may create a table of the name,

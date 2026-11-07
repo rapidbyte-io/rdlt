@@ -36,7 +36,11 @@ async fn stage(opened: &mut OpenedSession, table: &TableRef, segment: u64, ids: 
         .apply_schema(&create)
         .await
         .expect("the table is created");
-    let mut writer = opened.session.writer(table).await.expect("a writer opens");
+    let mut writer = opened
+        .session
+        .writer(table)
+        .await
+        .expect("a table writer opens");
     let batch = RecordBatch::try_from_iter([("id", Arc::new(Int64Array::from(ids)) as _)])
         .expect("the batch is valid");
     writer
@@ -193,7 +197,11 @@ async fn sqlite_batches(kind: LogicalType, values: arrow_array::ArrayRef) -> Vec
         .await
         .expect("the table is created");
     let batch = RecordBatch::try_from_iter([("value", values)]).expect("the batch is valid");
-    let mut writer = opened.session.writer(&wide).await.expect("a writer opens");
+    let mut writer = opened
+        .session
+        .writer(&wide)
+        .await
+        .expect("a table writer opens");
     writer
         .write(SegmentId(1), batch)
         .await
@@ -327,7 +335,7 @@ async fn widened_to_json<C: DestinationConnector + ReadBack>(
         .session
         .writer(&widened)
         .await
-        .expect("a writer opens");
+        .expect("a table writer opens");
     writer.write(SegmentId(1), batch).await.expect("buffers");
     writer.flush().await.expect("the flush stages");
     let meta = first_commit(&opened);

@@ -201,7 +201,7 @@ fn put(
 }
 
 /// Names: how many of a staged path's leading names (the staging directory and the epoch) lead
-/// to directories every writer of a session shares, which a commit never removes.
+/// to directories every table writer of a session shares, which a commit never removes.
 const SHARED: usize = 2;
 
 /// Removes the files at `paths` under the pipeline's directory `dir`, and the directories of
@@ -229,7 +229,7 @@ pub(super) fn remove<'a>(dir: &Dir, paths: impl Iterator<Item = &'a String>) {
         {
             drop(holding.remove_file(file));
         }
-        // Each directory left empty goes, deepest first, but those writers share.
+        // Each directory left empty goes, deepest first, but those table writers share.
         for level in (SHARED..reached.len()).rev() {
             if reached[level - 1].remove_dir(parents[level]).is_err() {
                 break;

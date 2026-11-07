@@ -139,7 +139,7 @@ async fn stage(session: &mut OpenedSession, table: &TableRef, segment: u64, ids:
         .session
         .writer(table)
         .await
-        .expect("the memory destination creates writers");
+        .expect("the memory destination creates table writers");
     let batch = RecordBatch::try_from_iter([("id", Arc::new(Int64Array::from(ids)) as _)])
         .expect("one column makes a batch");
     writer
@@ -375,7 +375,7 @@ async fn merge_commit(opened: &mut OpenedSession, segment: u64, batch: RecordBat
         .session
         .writer(&merge_table())
         .await
-        .expect("the memory destination creates writers");
+        .expect("the memory destination creates table writers");
     writer
         .write(SegmentId(segment), batch)
         .await
@@ -508,7 +508,11 @@ async fn a_memory_writer_s_flush_and_its_commit_count_the_bytes_it_staged() {
         .await
         .expect("the session opens");
     let table = table_ref("flushed");
-    let mut writer = session.session.writer(&table).await.expect("a writer");
+    let mut writer = session
+        .session
+        .writer(&table)
+        .await
+        .expect("a table writer");
     let batch = RecordBatch::try_from_iter([("id", Arc::new(Int64Array::from(vec![1, 2])) as _)])
         .expect("a batch");
     let bytes = batch.get_array_memory_size() as u64;

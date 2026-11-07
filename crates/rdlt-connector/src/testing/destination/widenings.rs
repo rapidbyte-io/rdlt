@@ -42,7 +42,7 @@ impl Bench<'_> {
             };
             bounded_call("apply_schema", opened.session.apply_schema(&create)).await?;
             let values = edges(&from);
-            let mut writer = bounded_call("writer", opened.session.writer(&table)).await?;
+            let mut writer = bounded_call("table writer", opened.session.writer(&table)).await?;
             let rows = RecordBatch::try_from_iter([("v", Arc::clone(&values))])
                 .expect("the certification batch is valid");
             bounded_call("write", writer.write(segment, rows)).await?;

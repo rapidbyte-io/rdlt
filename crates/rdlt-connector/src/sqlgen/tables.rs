@@ -44,9 +44,9 @@ impl<D: SqlDialect> SqlPlanner<D> {
     /// The statement indexing the staging of `table`, which `owned` names, by who staged its
     /// rows where `table` has no merge key, and dropping that index where it has one.
     ///
-    /// It runs where the table's rows are staged, so the index stands while the table's writer
-    /// appends: an append commit finds its own rows by it. A keyed commit scans its staging and
-    /// finds each key's rows by its key index, a lookup this index would take.
+    /// It runs where the table's rows are staged, so the index stands while the table's table
+    /// writer appends: an append commit finds its own rows by it. A keyed commit scans its staging
+    /// and finds each key's rows by its key index, a lookup this index would take.
     pub fn staged_index(&self, owned: &Owned<'_>, table: &TableRef) -> Result<Statement> {
         owned.is(&table.name)?;
         let staging = self.staging_table(&table.name);

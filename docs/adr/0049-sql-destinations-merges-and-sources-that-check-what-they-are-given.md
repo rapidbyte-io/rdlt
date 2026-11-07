@@ -48,7 +48,7 @@ generated sources each take something as given unless they check it:
     keep.
   - **An owner record stands for a table its pipeline created.** The record, the table, its
     staging table and its registration are one plan, written by `TableChange::Create` alone, in
-    one transaction. A writer or any other change of a table no pipeline owns is refused as
+    one transaction. A table writer or any other change of a table no pipeline owns is refused as
     `table_unowned` and claims nothing; from a session a newer one fenced it is refused as
     fenced, as ADR 0033 has it. Where a pipeline opens, an owner record of its that stands for
     no staging table is released: the record goes and nothing is dropped.
@@ -60,7 +60,7 @@ generated sources each take something as given unless they check it:
     way wherever the table is changed or dropped, so a drop reaches only a table its
     pipeline's owner record names as the database holds it. A staging, tombstone, generation or
     catalog table the database holds in another case is a `table_name_clash`, checked before
-    the catalog is created, where a table is created and where a writer opens; the clash check
+    the catalog is created, where a table is created and where a table writer opens; the clash check
     between tables folds names as the dialect does.
   - A name under `_rdlt_`, in any case, or one the dialect keeps (`SqlDialect::reserves_table`:
     for SQLite `sqlite_`, `pragma_`, and any name that is not its own lower case, since SQLite
@@ -80,7 +80,7 @@ generated sources each take something as given unless they check it:
 - **No statement carries text the database or the host chose.**
   - A column type copied from the catalog is written only where it is one the dialect itself
     declares (`SqlDialect::declares`), as the dialect renders it.
-  - A merge key is checked against the table where its writer opens: it names at least one
+  - A merge key is checked against the table where its table writer opens: it names at least one
     column, and every column it names, its sequence, its deletion time and its history columns
     are columns of the table (`merge_key_invalid`). The Arrow merge refuses the same, where it
     panicked.
@@ -127,7 +127,7 @@ generated sources each take something as given unless they check it:
     not made again with the mode the process's mask leaves. The locks the files connectors
     take, on a table and on a keeper, are on the open file, not the process (`flock`, on Linux
     and macOS alike), and no other open or close releases them. SQLite adopts a log that is
-    already there as it is, and whoever can read the lock file can hold every writer out,
+    already there as it is, and whoever can read the lock file can hold every table writer out,
     which is why the rule covers more than the database.
   - A statement waits thirty seconds for another connection's write, then fails as transient. A
     full disk is transient too, coded `disk_full`.
@@ -217,13 +217,13 @@ generated sources each take something as given unless they check it:
     cells than it holds, once the run holds 256 lines or would lack 65536 cells: every batch
     costs its columns something, so lines that take turns between few columns and many read
     as batches of all of them, at what the whole schema costs, and a line of very many columns
-    still starts a run of its own. What a writer staged is read as it was written, since its
+    still starts a run of its own. What a table writer staged is read as it was written, since its
     flags count its columns. A reader of the destination is given every column, an absent one
     as nulls its rows share. No entry of the merge gives every column of every row,
     and nothing is refused for its width.
   - A line's columns are found by one pass over its bytes that decodes nothing but its keys
     and nests no call, so a record is taken or refused as its decoder takes or refuses it. A
-    line of more than one record is refused as `line_invalid`: no writer of these files, on
+    line of more than one record is refused as `line_invalid`: no table writer of these files, on
     this branch or before it, writes one, and compaction copies lines whole.
   - A merge gives a batch for each set of columns rows hold, however many, and makes no cell.
     A set comes with each written batch that has no value in some column, and with each row

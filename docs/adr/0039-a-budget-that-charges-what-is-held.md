@@ -83,8 +83,8 @@ budget before it is held, or bounded by a limit with a typed refusal.
   - **No hold and wait.** A task waits on the budget only while it holds nothing that only
     its own progress releases. A partition waits for lowering's bytes while it holds pushes,
     and nothing waits for pushes while it holds anything; whoever holds what lowering reserved,
-    a piece on the compute pool or on its lane, needs no budget to release
-    it. A partition lowers and hands to its lane whatever it reserved before it waits for more.
+    a piece on the compute pool or on its writer, needs no budget to release
+    it. A partition lowers and hands to its writer whatever it reserved before it waits for more.
     What lowering reserves that a partition holds while it lowers, the batches a JSON flush is
     built to beyond its pushes and a normalized piece's split, is reserved together with room
     for all that lowering them holds at once, within one request: the partition then waits for
@@ -262,7 +262,7 @@ budget before it is held, or bounded by a limit with a typed refusal.
   - A piece is at most a sixteenth of the budget, or one row where a row takes more, up to the
     quarter a request may take.
   - Each piece reserves its cost before it is lowered. A partition waits for one piece's bytes
-    only while it holds no piece it has not handed to its lane; beside that piece it lowers as
+    only while it holds no piece it has not handed to its writer; beside that piece it lowers as
     many more as the budget has room for at once, eight at most. How many pieces are lowered
     at once follows from what the budget admits.
   - A piece of several batches is joined into one batch, a copy its cost counts as each
@@ -272,7 +272,7 @@ budget before it is held, or bounded by a limit with a typed refusal.
   - Once lowered a piece holds what it keeps alive beyond its unit's batches and its batch's
     arrays, in place of what was reserved. What was charged for the unit and the piece's own
     reservation stay with its last piece until that is flushed; each of the unit's batches goes
-    once the pieces cut from it do, not when the lane flushes.
+    once the pieces cut from it do, not when the writer flushes.
   - **Normalized streams follow the same rule.** A unit's tables are known only once it is split,
     so it is measured twice. It is first cut, as it arrives, into pieces whose split makes no more
     than a piece: each row with its lineage, each item an array holds with its own, for the two
@@ -332,7 +332,7 @@ budget before it is held, or bounded by a limit with a typed refusal.
     own deadline, naming the call, before any wait that began less than one connector deadline
     before the call reaches the budget's; a chain of calls each near its deadline is not
     healthy, and the backstop may end it. No bound on a wait follows from the engine's other
-    deadlines: a commit is a barrier, each lane's queued writes, the commit itself and an
+    deadlines: a commit is a barrier, each writer's queued writes, the commit itself and an
     acknowledgement a stream, each a call of its own, and a cursor sealed late waits for the
     commit in flight and the next.
   - That kind and code are the engine's own. A read whose event waited until the deadline
@@ -344,8 +344,8 @@ budget before it is held, or bounded by a limit with a typed refusal.
     keeps too (`Admission::charge`).
   - A request nobody waits for any more leaves the queue at once.
   - A partition waiting for its own pieces to be written, for room in what it was lent, a JSON
-    flush's room or a normalized piece's allowance, waits on its lanes, not on the budget: no
-    deadline of the budget's ends it, as none ends a wait for a lane.
+    flush's room or a normalized piece's allowance, waits on its writers, not on the budget: no
+    deadline of the budget's ends it, as none ends a wait for a writer.
   - A read's schema and dictionaries are released before their replacement is charged, and
     however the read ends: returned, failed, stopped or dropped.
 - **A measure bounded by the rows and by what they name once.** What rows expand to is measured
@@ -492,9 +492,9 @@ budget before it is held, or bounded by a limit with a typed refusal.
   - Row identity reads integers, temporal values and decimals where they lie.
   - A state record's value is the JSON it is wherever the record is JSON.
   - A served write refuses more than four frames' bytes between two flushes, and the host's
-    writer flushes before it would send more. The connector decodes a frame only once its
-    writer has taken the frame before it, so a write holds its staged bound and one decoded
-    frame waiting for its writer.
+    table writer flushes before it would send more. The connector decodes a frame only once its
+    table writer has taken the frame before it, so a write holds its staged bound and one decoded
+    frame waiting for its table writer.
   - The columns a batch holds nothing in are built as the destination stores them, one array
     of nulls a type that every such column of the type shares, and a merge keeps its rows by
     slicing it, never copying it a column at a time. Those nulls are part of what each row
@@ -506,14 +506,14 @@ budget before it is held, or bounded by a limit with a typed refusal.
   - A charge is held in one value with what it covers, declared after it, so dropping the value
     frees what it covers first: a unit's batches with the permits they were admitted with, a JSON
     flush's text with its permits, a flush's batches with what was reserved beyond them, an event
-    with its admission while it waits for it, a lowered batch with what holds it on its lane.
+    with its admission while it waits for it, a lowered batch with what holds it on its writer.
   - A unit's pieces share what was charged for it, each holder of a piece's rows declaring its
     share last: the unit's permits go once the last piece is written or let go, wherever it is,
-    on the compute pool, in the window being lowered or on its lane.
+    on the compute pool, in the window being lowered or on its writer.
   - No job on the compute pool outlives the caller waiting for it: a caller that stops waiting
     drops its jobs not yet started, and waits for those running to end, so what a job reads and
     makes goes before what the caller holds.
-  - Tests let go of writes at each of their waits, for room, for the pool and for a lane, of an
+  - Tests let go of writes at each of their waits, for room, for the pool and for a writer, of an
     Arrow, a JSON and a normalized flush, and of a send waiting for its admission, and hold that
     what each charge covers was freed by the time it was released.
 - **The bound is tested as the system runs.** Every run of the engine's integration tests fails
@@ -672,9 +672,9 @@ admitted, and what a remote connector's calls hold in transport.
   for that job to end, on the runtime's thread that drops it: the one wait of the runtime on the
   pool, for bounded CPU work that never waits on the runtime. An attempt is let go no sooner
   than the longest of its jobs running then ends, a piece's lowering or a chunk's parse.
-- A lane's call into its destination ends with the attempt: a write that never returns keeps
-  no attempt that failed from ending. An in-process destination's write behind a lane too full
-  to queue on is bounded by nothing: the partition waits for its lane with no deadline. A served
+- A writer's call into its destination ends with the attempt: a write that never returns keeps
+  no attempt that failed from ending. An in-process destination's write behind a writer too full
+  to queue on is bounded by nothing: the partition waits for its writer with no deadline. A served
   one's is bounded by the host's write deadline.
 - A normalized piece holds a quarter of the budget from before its split until its parts are
   cut, so a little over two normalize at once while pushes fill their share; and a unit of a

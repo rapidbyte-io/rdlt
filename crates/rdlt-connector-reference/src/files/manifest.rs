@@ -1,5 +1,5 @@
 //! A pipeline's manifests: each version lists the published files and the pipeline's state, and
-//! is created only if no other writer created that version first.
+//! is created only if no other session created that version first.
 //!
 //! A manifest is checked when it is read: its version is its file's, the tables it names are
 //! identifiers, and the files it lists are staged files of its own pipeline.
@@ -291,7 +291,7 @@ pub(super) fn settle(dir: &Dir) -> Result<()> {
     }
 }
 
-/// Removes the temporaries writers that died left among the manifests of the pipeline whose
+/// Removes the temporaries that sessions which died left among the manifests of the pipeline whose
 /// directory `dir` is.
 pub(super) fn sweep(dir: &Dir) -> Result<()> {
     let Some(manifests) = manifests(dir)? else {
@@ -305,7 +305,7 @@ pub(super) fn sweep(dir: &Dir) -> Result<()> {
 /// Creates `manifest` as its version in the pipeline's directory `dir`, unless that version or
 /// a newer one exists; returns whether it did, removing versions older than those kept.
 ///
-/// A version older than the newest loses even where garbage collection removed it: its writer
+/// A version older than the newest loses even where garbage collection removed it: its session
 /// read a manifest others have moved past.
 pub(super) fn put(dir: &Dir, manifest: &Manifest) -> Result<bool> {
     // A manifest no reader accepts is never written.

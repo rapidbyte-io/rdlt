@@ -95,12 +95,13 @@ to be taken on trust either. Without the rules below:
       where those are fewer: one more is refused as it starts, with `source_calls_exceeded`,
       naming the calls, where the source's calls set the slots, and with `partitions_too_few`
       where the partitions do (ADR 0039). Bounded reads beyond the slots wait for one.
-    - A session makes one other call at a time while writers are open, a schema change, a
-      commit or a close, a writer's opening being that writer's own call, so an attempt holds at
-      most 198 of a served destination's writers open, or `GrowthLimits::writers` where that is
-      fewer (128 by default); its lanes retire writers beyond them (ADR 0041).
+    - A session makes one other call at a time while table writers are open, a schema change, a
+      commit or a close, a table writer's opening being that table writer's own call, so an
+      attempt holds at most 198 of a served destination's table writers open, or
+      `GrowthLimits::table_writers` where that is fewer (128 by default); its writers retire table
+      writers beyond them (ADR 0041).
     - A source or destination that carries no more calls than that other call has none left for
-      a read or a writer beside it: an attempt refuses it as it starts, before it opens the
+      a read or a table writer beside it: an attempt refuses it as it starts, before it opens the
       destination, with `calls_too_few`, naming the calls it carries and the two a run needs.
     - The connection's window holds every call's stream window and one more (ADR 0016), so each
       call lets a peer that ignores its credit park 4 MiB more, 804 MiB at 200; and HTTP/2's
@@ -117,7 +118,7 @@ to be taken on trust either. Without the rules below:
   is made within a charge (`rdlt_wire::bounded::charging`); the host's transport charges each
   message of its answer at what the scan counts before it is decoded, and holds the charge
   until it is decoded: the data plane's reader holds a read's frame's until the read has decoded
-  it, which releases it before its event waits for room, and a write's answer's until the writer
+  it, which releases it before its event waits for room, and a write's answer's until the table writer
   has decoded it; a generated call's ends with its next message or the call.
   - A read's frame is charged to what pushes may take, which the batch it carries is admitted to
     next: a frame decodes into twice its bytes at most, 8.5 MB at the least memory, where a read's
@@ -141,8 +142,8 @@ to be taken on trust either. Without the rules below:
     arriving; each call's body holds beside it the transport frame it read last, 1 MiB at most
     and 200 MiB on a connection of `MAX_CALLS`; and HTTP/2's stream windows bound what waits for
     them in transport, a stream window a call. A write holds its staged bound and one decoded
-    frame waiting for its writer, beside the frame it received next, which decodes once the
-    writer takes the frame before it. A read holds its source's pushes as the source made them,
+    frame waiting for its table writer, beside the frame it received next, which decodes once the
+    table writer takes the frame before it. A read holds its source's pushes as the source made them,
     bounded by bytes: those the source sends ahead wait in a channel of 16 events whose pushes
     keep alive at most the host's frame limit together, as `push_charge` counts them, each
     taking the lesser of its charge and that limit, so a push beyond a frame waits until no
@@ -178,7 +179,7 @@ to be taken on trust either. Without the rules below:
   - A read asked to stop is dropped after `EngineConfig::stop_wait` (60 s).
   - A remote write's whole wait for credit, a flush's stats or an ending write's error is bounded
     by the write-ack deadline, however many answers arrive; a credit of no bytes is refused, and
-    a writer whose flush went unanswered takes no more calls.
+    a table writer whose flush went unanswered takes no more calls.
   - A served connection whose writes make no progress for its send wait (60 s) is closed, and a
     stopping connector's drain ends at its drain wait (30 minutes), both `ListenLimits` fields.
   - A failed attempt waits for its commit in flight to answer, then closes the session it opened,
@@ -252,7 +253,8 @@ to be taken on trust either. Without the rules below:
   pipelines: with `source_calls_exceeded` where its partitions are more than 198, and with
   `partitions_too_few` where they are not, as at the default 16, which follow 15. Bounded
   partitions beyond the slots are read in turn, and an attempt with more tables than it holds
-  writers open writes them through at most 198 writers of a served destination, 128 at the
-  default `GrowthLimits::writers`, each lane retiring, and so flushing, a writer to open another.
+  table writers open writes them through at most 198 table writers of a served destination, 128 at
+  the default `GrowthLimits::table_writers`, each writer retiring, and so flushing, a table writer
+  to open another.
 - The state limit is `state_bytes` (ADR 0041), and the dictionary limit is field 11 of the
   handshake's limits (ADR 0039).

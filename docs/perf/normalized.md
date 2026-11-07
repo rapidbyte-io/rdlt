@@ -258,7 +258,7 @@ load average 1.70 to 2.51, gave the same: CPU a GB −17.0, −17.9 and −17.8 
   909.3. The ten-second cells were not run: their workload is a stream that neither normalizes
   nor merges, whose path the change does not reach.
 - **Staging.** The bits are found before any piece is split and dropped once each piece is lowered;
-  every staged row goes through the lanes as before.
+  every staged row goes through the writers as before.
 
 **Decision: adopted.** The CPU a run fell 16.8 % (the medians, 8.38 to 6.98 CPU seconds a GB),
 over 10 % in every round, and the run in process took 1.2 % less by the medians, no round more

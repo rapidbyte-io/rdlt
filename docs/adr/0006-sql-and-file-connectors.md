@@ -21,14 +21,14 @@ landed key must hold across a database's transactions and a file system's operat
   `rdlt-connectors`.
 - **Staged rows carry who staged them.** Every table has a staging table beside it whose rows
   record the pipeline, epoch, segment and generation. A commit publishes only its own epoch's
-  rows, so a fenced writer's late rows are never published, and `discard_staged` removes only
+  rows, so a fenced table writer's late rows are never published, and `discard_staged` removes only
   what older sessions staged, so a discard that waits behind a newer session and lands late
   never removes its staging (the memory destination keys its staging by epoch for the same
-  reason). While a table's writer appends, its staging is indexed by pipeline, epoch and segment,
+  reason). While a table writer of the table appends, its staging is indexed by pipeline, epoch and segment,
   as is the catalog of staged segments, so an append commit finds its own rows, and every commit
   its tables, rows and bytes, without scanning what is staged for later commits or by other
   pipelines; a load of one commit pays for the index as it stages, about a third more time (2.74 s
-  against 2.05 s for a million rows; docs/perf/sqlite.md). A keyed writer drops the index
+  against 2.05 s for a million rows; docs/perf/sqlite.md). A keyed table writer drops the index
   (ADR 0028): a keyed commit scans its staging and finds each key's rows by its key index, a
   lookup an index by who staged a row would take.
 - **A publish keeps every column its rows were written with, or publishes nothing.** A column
@@ -36,7 +36,7 @@ landed key must hold across a database's transactions and a file system's operat
   pipeline, fails the commit with a `Data` error coded `column_missing` that names it, rather
   than publishing the rows without it, as Confluent's JDBC sink fails a task with the missing
   columns; a generation is checked as a table is. The destination says what the rows were
-  written with: the SQLite session notes the columns its writers stage each segment's rows with,
+  written with: the SQLite session notes the columns its table writers stage each segment's rows with,
   since a commit publishes only its own session's rows and the catalog records no columns of
   them, and forgets a segment once a commit publishes or abandons it. A publish of staged rows
   told none of the columns they were written with fails as `Internal`, since it could check
@@ -45,10 +45,10 @@ landed key must hold across a database's transactions and a file system's operat
   to, or a column an abandoned generation added, holds none of their values and stops nothing;
   a change stream's op and unchanged flags direct its merge, and no table holds them.
 - **Merges delete and insert.** A commit ranks its staged rows per key by sequence, deletes the
-  published rows of those keys and inserts the first of each. The writer's `TableRef` decides:
+  published rows of those keys and inserts the first of each. The table writer's `TableRef` decides:
   each staged segment records its merge key, so a table that switches between append and merge
-  follows its writer. A merge needs no unique key, which a table that appended repeated keys
-  could not take: the key indexes a writer creates are not unique (ADR 0028). SQLite and
+  follows its table writer. A merge needs no unique key, which a table that appended repeated keys
+  could not take: the key indexes a table writer creates are not unique (ADR 0028). SQLite and
   Postgres share the form; `sqlgen` plans no `MERGE`, which no dialect needs.
 - **Generations are tables.** Rows of a replace generation fill their own table, created with the
   table's columns if the generation was never declared; the finishing commit drops the table and

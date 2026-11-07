@@ -14,7 +14,7 @@ processes, with real files, sockets and child processes.
 
 - **Crash points.** The engine's `failpoints` feature (the `fail` crate, never in a release)
   names a point at each durability step:
-  - either side of the lanes' flush (`engine.flush.*`);
+  - either side of the writers' flush (`engine.flush.*`);
   - either side of the destination's commit (`engine.commit.*`), and of the commit completing a
     stream, where a replace publishes its generation (`engine.complete.*`);
   - either side of a source hearing of a landed commit (`engine.ack.before`, `engine.ack.after`).

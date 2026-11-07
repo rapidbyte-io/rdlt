@@ -185,7 +185,7 @@ base's ran through its port. Their spawned processes' peaks, in the same runs, M
   tunables, its ranges apart; with them and at 16 cores the ranges overlap. The spawned processes'
   peaks overlap in every line but one: the source at four cores without the tunables, 907 to
   930 MiB, its ranges apart by 2 MiB. The cause is the one the timed cells below found: `main`
-  kept every frame a served read decoded until its lane's next flush. With each frame freed as
+  kept every frame a served read decoded until its writer's next flush. With each frame freed as
   the pieces cut from it go, the host grows 174 and 191 MiB at two and four cores, the medians of
   five runs a line beside `main`'s 234 and 244 ([served.md](served.md), "A unit's batches freed
   as their pieces go").
@@ -239,7 +239,7 @@ CPU seconds a GB moved, every process's together and the host's alone:
   `64x80000` first in the process, a run of `512x10000` took 2.4 to 3.1 times the base's page faults
   on `main` and fewer user instructions. A bisection of the 346 commits on those faults, counted
   over the runs alone, found one change, `348b5b649`: what a unit's pieces share came to hold the
-  unit's batches, so every frame a served read decoded stayed allocated until its lane's next flush,
+  unit's batches, so every frame a served read decoded stayed allocated until its writer's next flush,
   and freed together, the allocator gave their pages back for the next frames to fault in again.
   With each frame freed as the pieces cut from it go, and the charge as it was, five rounds beside
   `main`, two of them with the base, put `512x10000` at 3 535 MB/s against `main`'s 3 061 and the
@@ -462,7 +462,7 @@ as new rather than as a ratio:
   the `main` before it, with 13 times fewer allocations ([wide.md](wide.md), "A table kept by
   excluding columns").
 - **Live status.** `RunHandle::status()` reports what a run is in the middle of and since when,
-  each partition and lane, and each stream's lag, without waiting (ADR 0004).
+  each partition and writer, and each stream's lag, without waiting (ADR 0004).
 - **A commit retried in place.** A commit the destination fails transiently is sent again by the
   same key within the attempt, where the base ended the attempt ([latency.md](latency.md),
   "Transient commits"); a refused acknowledgement is owed to the next commit rather than failing a
@@ -503,7 +503,7 @@ log is gone from `main`, every stream told its cursor once its commit lands.
 **In memory:** in process, a run's growth is level for the passthrough workload and lower for the
 normalized one in five lines of six; the served host grows more at two and four cores without the
 tunables, 181 to 240 and 186 to 257 MiB at the medians, within limits of 522 and 526 MiB, as
-`main` kept a served read's frames until its lane's flush, and grows 174 and 191 MiB with them
+`main` kept a served read's frames until its writer's flush, and grows 174 and 191 MiB with them
 freed as their pieces go; and the engine reserves more of the same budget for the same work, 86 to
 106 MiB and 144 to 163.
 
@@ -519,7 +519,7 @@ freed as their pieces go; and the engine reserves more of the same budget for th
 - **Slower.** The production slice in frames of 10 000 rows from one and from sixteen partitions,
   0.86 and 0.94 times the base's MB/s, the host taking 1.07 to 1.16 times its CPU a GB; and in
   frames of 1 000 rows from four partitions, 0.94 times. One change cost them, `348b5b649`, which
-  kept every frame a served read decoded until its lane's next flush; with the frames freed as
+  kept every frame a served read decoded until its writer's next flush; with the frames freed as
   their pieces go, those cells move as fast as the base's or faster, and 80 000-row frames from
   one partition about 7 % slower than `main`'s, the price of glibc giving their pages back
   ([served.md](served.md), "A unit's batches freed as their pieces go").

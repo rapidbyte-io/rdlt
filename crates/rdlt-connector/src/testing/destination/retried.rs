@@ -29,7 +29,7 @@ impl Bench<'_> {
 
     /// Commits segment 1 whose first try was lost before it landed, then segment 2 whose try
     /// landed and whose answer was lost, each sent again once its session applied its table's
-    /// creation again and opened a writer of another table, then segment 3.
+    /// creation again and opened a table writer of another table, then segment 3.
     async fn lost_tries_are_taken_again(&self) -> Result<(), Violation> {
         let mut opened = self.staged(self.destination, &[1, 2, 3]).await?;
         let before = keyed(&opened, meta(&[1], Vec::new()));
@@ -56,7 +56,7 @@ impl Bench<'_> {
     }
 
     /// What a session does between two tries of a commit: applies its table's creation again and
-    /// opens a writer of another table, called after `suffix`.
+    /// opens a table writer of another table, called after `suffix`.
     async fn between(&self, opened: &mut OpenedSession, suffix: &str) -> Result<(), Violation> {
         self.writer(&mut opened.session).await?;
         self.writer_of(&mut opened.session, &self.other_table(suffix))
@@ -82,7 +82,7 @@ impl Bench<'_> {
             generation: Some(GENERATION),
             ..base.clone()
         };
-        let mut writer = bounded_call("writer", opened.session.writer(&generation)).await?;
+        let mut writer = bounded_call("table writer", opened.session.writer(&generation)).await?;
         stage(&mut writer, 3).await?;
         let swapping = keyed(
             &opened,

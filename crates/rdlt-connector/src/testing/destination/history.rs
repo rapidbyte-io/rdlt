@@ -87,7 +87,7 @@ impl Bench<'_> {
                 schema: stored(kind),
             };
             bounded_call("apply_schema", opened.session.apply_schema(&create)).await?;
-            let mut writer = bounded_call("writer", opened.session.writer(&table)).await?;
+            let mut writer = bounded_call("table writer", opened.session.writer(&table)).await?;
             bounded_call("write", writer.write(SegmentId(1), written(rows, kind))).await?;
             bounded_call("flush", writer.flush()).await?;
             commit(&mut opened, meta(&[1], Vec::new())).await?;

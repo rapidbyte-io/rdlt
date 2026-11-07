@@ -42,11 +42,11 @@ what it plans must not lean on what only some databases have, nor on names that 
   The merge's delete also takes the rows whose first key column is among the staged rows', which
   lets the database find them by the key's index rather than test every row of the table; a test
   checks SQLite's plan for it. Derived tables take their alias without `AS`, which Oracle refuses.
-- **No commit changes a table's indexes.** Where a table's rows are staged, its writer indexes
-  what a commit finds rows in (the SQLite writer runs each, and a test checks that a commit then
+- **No commit changes a table's indexes.** Where a table's rows are staged, its table writer indexes
+  what a commit finds rows in (the SQLite table writer runs each, and a test checks that a commit then
   changes no table or index):
-  - the staging of a table its writer appends to, by pipeline, epoch and segment
-    (`SqlPlanner::staged_index`, `_rdlt_staged__{staging}`), which a keyed writer drops: a keyed
+  - the staging of a table its table writer appends to, by pipeline, epoch and segment
+    (`SqlPlanner::staged_index`, `_rdlt_staged__{staging}`), which a keyed table writer drops: a keyed
     commit finds each key's staged rows by the key index, a lookup this index would take;
   - every merge table, its staging and, for a change stream, its tombstones, by the key
     (`SqlPlanner::key_indexes`, `_rdlt_key__{table}`);
@@ -63,7 +63,7 @@ what it plans must not lean on what only some databases have, nor on names that 
   declares rather than fail at the commit. Renaming within the commit is what makes the swap
   atomic, and a copy instead would change the table's columns inside the commit too.
   - The renamed generation keeps its indexes' names, which derive from the generation table's;
-    the swap drops them (the dialect's `drop_index`), and the next writer indexes the table under
+    the swap drops them (the dialect's `drop_index`), and the next table writer indexes the table under
     its own name, so a table never holds two indexes on one key.
 - **A change stream's tombstones widen with its key.** A widen applies to the table, its staging
   and its tombstones, each that has the column; a dialect widening in place would otherwise fail

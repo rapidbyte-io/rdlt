@@ -543,7 +543,7 @@ fn a_sweep_removes_only_temporaries_old_enough() {
     written(".tmp-closed", Duration::from_secs(600));
     let closed = std::fs::Permissions::from_mode(0o000);
     std::fs::set_permissions(base.path().join(".tmp-closed"), closed).unwrap();
-    // What no writer of this connector makes under a temporary's name is left where it is,
+    // What this connector never makes under a temporary's name is left where it is,
     // never followed and never entered.
     symlink(
         base.path().join("tmp-not-one"),

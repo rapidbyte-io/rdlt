@@ -172,7 +172,7 @@ when it is read and never written in a form its reader refuses.
   row of many columns among many rows of few costs the table its own cells in the file and
   where it is read. The halving cut above measures each file's batches under the file's own
   columns, and a joined batch it cuts is read back as the columns each part holds. A file a
-  writer staged, and a tombstone file, is read under its whole schema. In a
+  table writer staged, and a tombstone file, is read under its whole schema. In a
   compaction, lines of any columns share a file and read back as above, and Arrow files of
   differing columns join with none.
 - **Locks are on the open file.** A table's lock and a keeper's are `flock` locks on a lock

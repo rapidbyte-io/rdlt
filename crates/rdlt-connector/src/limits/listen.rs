@@ -134,7 +134,7 @@ impl ListenLimits {
     /// Every unauthenticated connection, a connection just accepted that closes one of them, every
     /// waiting connection, each session's share, and the connector's own. Unauthenticated peers
     /// hold the first two terms at most, so they cannot take a descriptor a session needs. A
-    /// write's writer is not counted: it lives no longer than its call.
+    /// write's table writer is not counted: it lives no longer than its call.
     pub fn descriptors(&self) -> u64 {
         count(self.unauthenticated)
             .saturating_add(1)

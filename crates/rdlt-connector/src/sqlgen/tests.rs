@@ -1514,7 +1514,7 @@ fn a_merge_replaces_every_published_row_of_its_keys_whatever_the_table_held() {
     assert_eq!(
         Some(&merge),
         orders.merge.as_ref(),
-        "the writer's key is recorded"
+        "the table writer's key is recorded"
     );
     let columns = columns(&connection, &planner, "orders");
     let plan = planner
@@ -2272,7 +2272,7 @@ fn a_swapped_in_generation_keeps_no_index_named_after_it() {
             .swap_of("orders", true, GenerationId(2), &generations)
             .unwrap(),
     );
-    // The next writer indexes the table under its own name; the generation's leave with it.
+    // The next table writer indexes the table under its own name; the generation's leave with it.
     run_all(&connection, &planner.key_indexes_of(&base));
     let listing = Statement {
         sql: "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'orders'".into(),

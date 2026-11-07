@@ -45,7 +45,11 @@ async fn staged(session: &mut OpenedSession, segment: u64, id: i64, until: Array
         ),
     ])
     .expect("a valid batch");
-    let mut writer = session.session.writer(&events()).await.expect("a writer");
+    let mut writer = session
+        .session
+        .writer(&events())
+        .await
+        .expect("a table writer");
     writer
         .write(SegmentId(segment), batch)
         .await
@@ -196,7 +200,11 @@ async fn a_table_that_holds_tombstones_takes_a_widen_whatever_its_sequence_is() 
                 ("op", Arc::new(Int8Array::from(vec![op.code()])) as ArrayRef),
             ])
             .expect("a valid batch");
-            let mut writer = session.session.writer(&changes()).await.expect("a writer");
+            let mut writer = session
+                .session
+                .writer(&changes())
+                .await
+                .expect("a table writer");
             writer
                 .write(SegmentId(segment), batch)
                 .await
@@ -272,7 +280,11 @@ fn holding(ids: Vec<i64>, held: ArrayRef, kind: LogicalType) -> RecordBatch {
 
 /// Stages `batch` in `segment` and commits it as the commit of that number.
 async fn committed(session: &mut OpenedSession, segment: u64, batch: RecordBatch) {
-    let mut writer = session.session.writer(&events()).await.expect("a writer");
+    let mut writer = session
+        .session
+        .writer(&events())
+        .await
+        .expect("a table writer");
     writer
         .write(SegmentId(segment), batch)
         .await

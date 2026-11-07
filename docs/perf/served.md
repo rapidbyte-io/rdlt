@@ -46,8 +46,8 @@ process or each in a process of its own.
 - **Readings.** Each process case prints its last run's readings from the host's report, as
   [passthrough.md](passthrough.md) defines them, a batch counted as a frame. In every case but
   those named `/<n>-writers` the served sink declares one writer, so the case writes through one
-  lane whatever its partitions: its lanes written say nothing of how the engine spreads
-  partitions over lanes. Those cases are below ("Through a writer a core").
+  writer whatever its partitions: its writers written say nothing of how the engine spreads
+  partitions over writers. Those cases are below ("Through a writer a core").
 - **CPU.** The CPUs `perf stat` counts busy over each case's runs, every thread of the process,
   the served connectors' included, a GB moved; the median and range over the rounds.
 - **CPU of each process.** In the process cases, for each run, the bench's process's user and
@@ -69,7 +69,7 @@ process or each in a process of its own.
   16, and in frames of 1 000 rows from 4 and 16, as the passthrough matrix's cells are read,
   besides one case of those frames from one partition; and over mutual TLS the destination and
   both, in large frames from 4 and 8. The engine reads the partitions
-  side by side, and every write goes over the destination's one connection, through one lane:
+  side by side, and every write goes over the destination's one connection, through one writer:
   the served sink declares one writer.
 - **Syscalls.** One run of each case in each round, in criterion's test mode under
   `strace -f -c`, its connection's setup included, both ends' threads counted; the median over
@@ -261,8 +261,8 @@ with the other benches' rounds ([campaign.md](campaign.md)), each started once n
 the one-minute load average was 1.15, 2.69 and 2.22 at their starts and 1.05, 1.55 and 0.93 at
 their ends. The table gives the median of the three rounds, the throughput's range in brackets,
 and the medians of each process's CPU seconds a GB, the CPUs each kept busy, the waits of frames
-for their decode charge and the lane's flushes of its writer by cause, as
-[passthrough.md](passthrough.md) defines them. Every case writes through one lane, the served
+for their decode charge and the writer's flushes of its table writers by cause, as
+[passthrough.md](passthrough.md) defines them. Every case writes through one writer, the served
 sink declaring one writer, and makes one commit, at the end.
 
 | Frames | Partitions | MB/s | CPU s a GB: all | Host's, source's, destination's | CPUs busy: host / source / destination | Decode waits | Flushes: pressure + commit |
@@ -308,7 +308,7 @@ binary as each run spawns it (in brackets with them in):
 | `5120x1000/16-partitions` | 10 552 | 2.69 % (2.27 %) | 2.05 % (1.73 %) |
 | `512x10000/16-partitions` | 6 633 | 1.40 % (0.96 %) | 1.01 % (0.69 %) |
 
-The served sink declares one writer, so the rules about lanes are not read here.
+The served sink declares one writer, so the rules about writers are not read here.
 
 The two changes passthrough.md records as built, on the production slice: `main` at
 `b0f322dd311f`, the host on CPUs 0–3 and the connectors on 4–11, three rounds of
@@ -996,7 +996,7 @@ them at 1.5 µs, 0.87, crosses 0.8, and the measured split rules it out.
 ## Codec work on the runtime's workers
 
 Every encode and decode of a batch frame runs inline on a tokio worker: the host's write encode, the
-served write's decode, the served read's encode and the host read's decode. The lane yields to the
+served write's decode, the served read's encode and the host read's decode. The writer yields to the
 runtime after each piece it encodes. The question was whether moving that work onto a pool would
 pay, in latency (a long poll holding a worker, a heartbeat delayed) or in throughput.
 
@@ -1004,7 +1004,7 @@ The rule set before measuring: build the move if either of these holds.
 
 - **The latency condition.** At frames near the 64 MiB limit, a codec poll holds a worker for at
   least 1 ms, and heartbeats arrive later than a quarter of their patience.
-- **The prototype.** A prototype that runs the lane's encode off the workers moves at least 10 %
+- **The prototype.** A prototype that runs the writer's encode off the workers moves at least 10 %
   more on `served/socket/destination/64x80000` with the bench on CPUs 0–3. Better is read by this
   file's protocol: the prototype's lowest round is above the base's highest, and the median gain
   meets the threshold.
@@ -1015,7 +1015,7 @@ measurement lock. For the latency condition, a build with tokio's unstable poll-
 its echo, a heartbeat every 100 ms, and frames of 8 batches of 640 000 rows (the same 5.12 M rows,
 57.36 MB a frame on the host's write side and 55.92 MB from the served read, uncut, under the 64 MiB
 limit). Two runs of each of the destination and the source case, socket transport. This measurement
-code is not kept. For the prototype, the lane's encode ran on a `spawn_blocking` thread, a thread
+code is not kept. For the prototype, the writer's encode ran on a `spawn_blocking` thread, a thread
 beside the two workers within CPUs 0–3, not the engine's compute pool, with the yield dropped; the
 case and the tls guard each ran five rounds, base and prototype interleaved, the order alternating.
 The rounds never agreed closely enough to stop early. Load average over a minute was 1.3–2.0 over
@@ -1182,28 +1182,28 @@ MB/s over the five pairs, the median with its range, and the change's median on 
 
 ## Through a writer a core
 
-The production slice above writes through one lane, its sink declaring one writer, so it cannot
+The production slice above writes through one writer, its sink declaring one writer, so it cannot
 tell whether the engine, the wire or the sink stops it scaling with partitions. Nine more process
 cases serve both connectors over the socket in each size of frame, 64 × 80 000, 512 × 10 000 and
 5 120 × 1 000 rows, from 1, 4 and 16 partitions, into a sink declaring as many writers as the
-host has lanes, one a core: four on CPUs 0–3. Each is named after its one-writer row with
+host has writers, one a core: four on CPUs 0–3. Each is named after its one-writer row with
 `/<n>-writers`, as `served/process/socket/both/64x80000/16-partitions/4-writers`. The one-writer
-rows stay, and the caveat about lanes in the method applies to them alone.
+rows stay, and the caveat about writers in the method applies to them alone.
 
 - **Running.** `just bench served 0-3 process/socket/both 4-11` runs these beside the one-writer
   rows and the many-table cells below; `just bench served 0-3 writers 4-11` runs them alone.
 - **Readings.** As the other process cases: MB/s, CPU seconds a GB of each process, the CPUs each
-  keeps busy, and the last run's readings, intake waits, lanes written and lane flushes by cause
+  keeps busy, and the last run's readings, intake waits, writers written and writer flushes by cause
   among them.
-- **Checks.** Every run checks every row arrives, and fails where it wrote through fewer lanes
+- **Checks.** Every run checks every row arrives, and fails where it wrote through fewer writers
   than its partitions or its sink's writers, whichever are fewer: such a run is a broken bench,
   not a figure.
 
 Measured in the same three rounds as the production slice above, with it, on the same tree
 and cores; the medians of the rounds, the throughput's range in brackets. A run that wrote through
-fewer lanes than its partitions and writers allow would have failed; none did.
+fewer writers than its partitions and writers allow would have failed; none did.
 
-| Frames | Partitions | MB/s | CPU s a GB: all | Host's, source's, destination's | CPUs busy: host / source / destination | Lanes written | Flushes: pressure + commit |
+| Frames | Partitions | MB/s | CPU s a GB: all | Host's, source's, destination's | CPUs busy: host / source / destination | Writers written | Flushes: pressure + commit |
 |---|---|---|---|---|---|---|---|
 | 64×80 000 | 1 | 1 612 [1 559–1 875] | 2.05 | 0.87, 0.55, 0.63 | 1.41 / 0.88 / 1.02 | 1 | 5 + 1 |
 | 64×80 000 | 4 | 1 576 [1 523–1 758] | 2.17 | 0.89, 0.60, 0.69 | 1.39 / 0.99 / 1.08 | 4 | 20 + 4 |
@@ -1227,7 +1227,7 @@ writer, in the host and the destination; not the sink's single writer.
 
 **One partition over four writers.** Four partitions through four writers move 1 576 MB/s
 [1 523–1 758] against 1 612 [1 559–1 875] from one partition through the same sink, 0.98 times,
-the ranges overlapping: spreading one partition's writes over more lanes has no throughput to
+the ranges overlapping: spreading one partition's writes over more writers has no throughput to
 reach on this path.
 
 **Within 1 GiB.** Large frames from sixteen partitions, run again with the engine within 1 GiB in
@@ -1241,7 +1241,7 @@ the same rounds (`/1GiB`):
 | 4 | 1 GiB | 1 298 [1 280–1 351] | 2.43 | 0.1 % | 4 + 4 |
 
 The larger budget removes nearly every pressure flush and decode wait, and the runs are 7.1 % and
-4.4 % slower at the median, not faster: the pressure flushes of served lanes are not what this
+4.4 % slower at the median, not faster: the pressure flushes of served writers are not what this
 case pays.
 
 ## Many tables
@@ -1270,7 +1270,7 @@ the largest of the in-process counts within that.
   streams are quiet, from seven seconds to ten, or over the snapshot's run; the most the reads kept
   of their share, from the report's `kept_peak`, against the share, a quarter of the budget; each
   process's resident peak, and the bench's above its base before the run; then the last run's
-  readings, lane flushes by cause, retirements among them.
+  readings, writer flushes by cause, retirements among them.
 - **Checks.** Every run checks every row its streams pushed lands.
 
 Measured in the same three rounds as the production slice above, where each read took a part of its
@@ -1295,7 +1295,7 @@ process's CPU seconds a wall second while the streams are quiet, or over the sna
   of the reads' share at the least budget that admitted them, which charged each read 2 MiB.
 - Quiet, the pipeline takes 0.008 of a core at 192 streams, nearly all of it the host's.
 - At 192 streams the run's 193 tables outnumber its 128 writers, so writers retire: 832 of its
-  960 flushes. Every cell writes through two of the four lanes.
+  960 flushes. Every cell writes through two of the four writers.
 - Each process's resident peak at 192 streams: the host's process 2.2 GiB, the bench's batches of
   every other case among it; the spawned source 124 MiB and the destination 35 MiB.
 
@@ -1379,7 +1379,7 @@ samples seen inside `Bounded::arrive`, without the copies whose caller unwinding
 15.5–16.0 %.
 
 - Every host and connector thread that copies is a runtime worker: the host's samples are 99.6 %
-  its workers', the partition's read and the lane's writes among them.
+  its workers', the partition's read and the writer's writes among them.
 - Kernel time is not sampled: 38 % of the host's kept samples are taken at a kernel entry, a page
   fault or a system call, and counted with the user frames that made it.
 
@@ -1467,14 +1467,14 @@ MB/s (the wide case in thousands of rows a second):
 
 What the rule does not gate, recorded:
 
-- **Where the 1 000-row cells lose.** A run of them writes through one lane. Through one writer
-  it moves 18–25 % less, while through four lanes it moves 17–25 % more. Every process keeps
+- **Where the 1 000-row cells lose.** A run of them writes through one writer. Through a sink declaring one
+  writer it moves 18–25 % less, while through four writers it moves 17–25 % more. Every process keeps
   fewer CPUs busy in the 1-partition cell: the host 1.86 to 1.27, the source 1.41 to 0.64 and the
   destination 1.61 to 0.79. So the run waits on one task, not on CPU. No profile was taken; the
-  likeliest task is the lane. Each frame it writes, it now copies into the kernel itself, where
+  likeliest task is the writer. Each frame it writes, it now copies into the kernel itself, where
   before it handed frames to HTTP/2's connection task, and with frames of a thousand rows that
   copy and its system call would bound it. B's deeper look-ahead brings no failing cell within
-  3 %, so no reader is what waits. A task a call that took the lane's frames, as HTTP/2's
+  3 %, so no reader is what waits. A task a call that took the writer's frames, as HTTP/2's
   connection task did, is what this points to. It was not run, since only A and B were
   registered before measuring.
 - **Larger frames gain.** The production slice's cells of 80 000 and 10 000 rows move 22–69 %
@@ -1561,7 +1561,7 @@ What the rule does not gate, recorded:
   What its frames wait for is room among pushes, which the change leaves as it was; the second
   charge, the push's, waited for nothing on `main` either, its intake waits 0.0 %, where "The
   production slice" measured 2.6 % on an earlier `main`.
-- **Where `512x10000` loses.** No profile was taken. Its waits and its lane's flushes are as on
+- **Where `512x10000` loses.** No profile was taken. Its waits and its writer's flushes are as on
   `main`: decode waits of 1.2 and 1.3 %, four flushes for pressure and one for its commit. Every
   process takes 2–3 % more CPU seconds a GB (the host 0.494 to 0.510, the source 0.459 to 0.470,
   the destination 0.388 to 0.395) and keeps fewer CPUs busy (the host 1.67 to 1.64, the source
@@ -1619,8 +1619,8 @@ and 2.06 G user instructions, as the base does, and it 19 957 and 15 703, and 1.
 
 That change made what a unit's pieces share hold the unit's batches beside its permits, so that
 the set of allocations each piece's growth was counted against named only live addresses. A
-written piece's share waits on its lane with the piece's reservation until the lane flushes, so
-every batch a partition pushed stayed allocated until the lane's next flush (on `main` four for
+written piece's share waits on its writer with the piece's reservation until the writer flushes, so
+every batch a partition pushed stayed allocated until the writer's next flush (on `main` four for
 pressure and one for the commit in a run of `512x10000`), where before a batch went once the
 pieces cut from it were lowered or written and only its permit waited. `257004c8b` later deleted
 the set; the retention stayed.
