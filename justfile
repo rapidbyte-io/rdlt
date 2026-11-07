@@ -109,13 +109,15 @@ deny: locked
 
 # Run the test suite; extra arguments go to nextest. Each benchmark, and each bench's allocation
 # counts, then runs once as a test in a process of its own beside the others, so every bench's
-# setup, checks and counts run on every change; the last run is of a connector built without
-# certification's probes, which a build with every feature never is: it must serve none
+# setup, checks and counts run on every change; then a connector built without certification's
+# probes, which a build with every feature never is, must serve none, and the facade built
+# without SQL must refuse a SQL step
 test *args: python-env
     cargo nextest run --workspace --all-features {{ args }}
     cargo test --workspace --all-features --doc
     cargo nextest run --workspace --all-features --benches -E 'kind(bench)'
     cargo nextest run --package rdlt-connector --features serve -E 'test(serve::probes)'
+    cargo nextest run --package rdlt --no-default-features -E 'test(/sql_step_needs_the_sql_feature/)'
     just python-test
 
 # Build the simulation's integration tests in the `sim` profile, optimised with its overflow

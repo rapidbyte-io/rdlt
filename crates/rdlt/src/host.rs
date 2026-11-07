@@ -1,7 +1,7 @@
 //! The host: what its operator allows the pipelines built on it.
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 #[cfg(feature = "remote")]
 mod tls;
 
@@ -11,16 +11,19 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use rdlt_connector::{
-    ConnectorSpec, DestinationConnector, DestinationFactory, Role, SourceConnector, SourceFactory,
-    destination_factory, source_factory,
+    ConnectorSpec, DestinationConnector, DestinationFactory, Role, Secret, SourceConnector,
+    SourceFactory, destination_factory, source_factory,
 };
 use rdlt_engine::Transform;
-use rdlt_host::{Provider as _, Registry, SecretResolver, Secrets};
+use rdlt_host::{
+    Config, Provider as _, Redactions, Registry, SecretError, SecretResolver, Secrets,
+};
 
 #[cfg(feature = "remote")]
 pub use tls::Tls;
 
-use crate::{Connector, Error, Side};
+use crate::document::refers_to_secret;
+use crate::{Connector, Error, Side, codes};
 
 /// What a host's operator allows the pipelines built on it: where local connectors are found and
 /// how they run, which paths a pipeline may let a connector reach, which secrets a configuration
@@ -46,6 +49,12 @@ pub struct Host {
     sources: Vec<Arc<dyn SourceFactory>>,
     destinations: Vec<Arc<dyn DestinationFactory>>,
     transforms: BTreeMap<String, Arc<dyn Transform>>,
+}
+
+/// A mask key's resolved reference, which is the secret alone.
+#[derive(serde::Deserialize)]
+struct Keyed {
+    key: Secret<String>,
 }
 
 /// How local connectors are found and run.
@@ -225,6 +234,38 @@ impl Host {
             registry = registry.local(self.local());
         }
         registry
+    }
+
+    /// The mask key the secret reference `text` refers to, resolved as a configuration's
+    /// references are.
+    ///
+    /// A key written out is refused, never resolved or shown: a document holding it would hold
+    /// the secret.
+    pub(crate) async fn key(&self, text: &str) -> Result<Secret<String>, Error> {
+        if !refers_to_secret(text) {
+            let message = "a mask's key is a secret reference, ${env:NAME}, ${file:/path} or \
+                           ${secret:name}, never the key itself: keep the key where the host \
+                           resolves secrets";
+            return Err(Error::config(codes::MASK_KEY_LITERAL, message));
+        }
+        let held = Config::from(&serde_json::json!({ "key": text }));
+        // Nothing shows a mask key, so no text needs the key scrubbed from it.
+        let redactions = Redactions::new();
+        let resolving = held.resolved(&self.secrets, &redactions);
+        let resolved = resolving.await.map_err(Error::secret)?;
+        let Keyed { key } =
+            serde_json::from_str(&resolved).map_err(|_| Error::secret(SecretError::NotJson))?;
+        Ok(key)
+    }
+
+    /// The code transform registered as `name`.
+    pub(crate) fn code(&self, name: &str) -> Option<Arc<dyn Transform>> {
+        self.transforms.get(name).map(Arc::clone)
+    }
+
+    /// The names of the code transforms the host registered.
+    pub(crate) fn codes(&self) -> impl Iterator<Item = &str> {
+        self.transforms.keys().map(String::as_str)
     }
 
     /// Local placement as this host allows it: sandboxed, unless the host trusts its binaries.

@@ -15,12 +15,16 @@ pub const DOCUMENT_VERSION: Code = Code::new("document_version");
 pub const REFERENCE_INVALID: Code = Code::new("reference_invalid");
 /// A stream's name is not one.
 pub const STREAM_INVALID: Code = Code::new("stream_invalid");
+/// A stream pattern matches no stream of the source's catalog.
+pub const PATTERN_UNMATCHED: Code = Code::new("pattern_unmatched");
 /// A `code` transform names nothing the host registered.
 pub const TRANSFORM_UNKNOWN: Code = Code::new("transform_unknown");
 /// A transform needs a feature this build of the facade lacks.
 pub const TRANSFORM_UNAVAILABLE: Code = Code::new("transform_unavailable");
 /// An `hmac_sha256` mask has no key.
 pub const MASK_KEY_MISSING: Code = Code::new("mask_key_missing");
+/// An `hmac_sha256` mask's key is written out, not a secret reference.
+pub const MASK_KEY_LITERAL: Code = Code::new("mask_key_literal");
 /// A TLS file the host names cannot be read.
 pub const TLS_UNREADABLE: Code = Code::new("tls_unreadable");
 /// The compute pool could not start, or the host's cores are unknown.
