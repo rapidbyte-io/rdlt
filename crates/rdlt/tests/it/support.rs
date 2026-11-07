@@ -1,8 +1,10 @@
 //! What the facade's tests share: a host of the reference memory connectors, and pipelines of
 //! them.
 
+use std::future::IntoFuture;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 use rdlt::{
     BoxFuture, Connector, Host, Pipeline, PipelineBuilder, Secret, SecretFault, SecretKind,
@@ -54,4 +56,14 @@ impl SecretResolver for Vault {
             }
         })
     }
+}
+
+/// `work`, which must end within a minute.
+///
+/// A run computes on its host's pool, beyond the runtime, so tests of runs keep the real clock,
+/// which a paused one would leap past while a job runs; each of their waits is bounded instead.
+pub(crate) async fn within<F: IntoFuture>(work: F) -> F::Output {
+    tokio::time::timeout(Duration::from_secs(60), work)
+        .await
+        .expect("it ends within a minute")
 }

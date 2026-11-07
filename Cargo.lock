@@ -3196,7 +3196,9 @@ dependencies = [
  "serde_json",
  "serde_path_to_error",
  "tempfile",
+ "thiserror",
  "tokio",
+ "tokio-stream",
  "wildmatch",
 ]
 
