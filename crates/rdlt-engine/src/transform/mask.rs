@@ -105,17 +105,18 @@ pub(super) fn output(
     )))
 }
 
-/// `field` holding masked values of `data_type`: nullable, and no longer the extension type its
-/// metadata names.
-fn masked_leaf(field: &Field, data_type: DataType) -> Field {
+/// `field` without the extension type its metadata names, which a masked value below it no
+/// longer matches.
+fn plain(field: &Field) -> Field {
     let mut metadata = field.metadata().clone();
     metadata.remove("ARROW:extension:name");
     metadata.remove("ARROW:extension:metadata");
-    field
-        .clone()
-        .with_data_type(data_type)
-        .with_nullable(true)
-        .with_metadata(metadata)
+    field.clone().with_metadata(metadata)
+}
+
+/// `field` holding masked values of `data_type`: nullable, and no longer an extension type.
+fn masked_leaf(field: &Field, data_type: DataType) -> Field {
+    plain(field).with_data_type(data_type).with_nullable(true)
 }
 
 fn masked_field(
@@ -141,9 +142,7 @@ fn masked_field(
     };
     let mut children: Vec<FieldRef> = children.iter().cloned().collect();
     children[*child] = Arc::new(masked_field(&children[*child], rest, with, path)?);
-    Ok(field
-        .clone()
-        .with_data_type(DataType::Struct(Fields::from(children))))
+    Ok(plain(field).with_data_type(DataType::Struct(Fields::from(children))))
 }
 
 pub(super) fn apply(
@@ -181,7 +180,7 @@ fn masked_at(
     fields[*child] = Arc::new(if rest.is_empty() {
         masked_leaf(field, data_type)
     } else {
-        field.clone().with_data_type(data_type)
+        plain(field).with_data_type(data_type)
     });
     children[*child] = replaced;
     let rebuilt = StructArray::try_new(Fields::from(fields), children, nulls).map_err(|_| {
