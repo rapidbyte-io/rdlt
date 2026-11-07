@@ -24,6 +24,7 @@ mod scenario;
 mod settle;
 mod streaming;
 mod tables;
+mod twice;
 
 use std::sync::Arc;
 use std::time::Duration;

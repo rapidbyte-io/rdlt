@@ -119,8 +119,9 @@ pub struct Features {
     /// Streams that exclude columns their source sends, or leaves out as its read's projection
     /// asks, and a change stream that excludes a column its updates flag unchanged.
     pub exclude: bool,
-    /// Streams that transform their rows: a filter, a rename and a constant column, and change
-    /// streams whose filter turns upserts into deletes.
+    /// Streams that list the columns they include and transform their rows: a filter, a rename, a
+    /// constant column, masked or not, and a column a code transform adds; and change streams
+    /// that list their counter alone, or whose filter turns upserts into deletes.
     pub transform: bool,
 }
 

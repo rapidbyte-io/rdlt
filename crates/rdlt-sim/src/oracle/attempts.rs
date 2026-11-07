@@ -1,20 +1,26 @@
 //! A simulation's attempts: every pipeline's runs of one scenario at once, held to the memory
 //! budget and the protocol, their failures checked against the refusals the model predicts.
 
-use rdlt_connector::{ColumnPath, PipelineId, StreamName};
-use rdlt_engine::{Literal, Op, PipelinePlan, Report, StreamPlan, Until, codes};
+use std::sync::Arc;
+
+use rdlt_connector::{ColumnPath, PipelineId, Secret, StreamName};
+use rdlt_engine::{Literal, Mask, Op, PipelinePlan, Report, StreamPlan, Transform, Until, codes};
 use rdlt_sql::Sql;
 
 use super::memory::{Counterweight, Tracing};
 use super::pressure::explained;
 use super::scenario::{Executed, Scenario, execute_all};
+use super::twice::Twice;
 use super::{Simulation, Window, refusals};
 use crate::placing::Placing;
 use crate::reached::Reach;
 use crate::rng::SplitMix64;
 use crate::seed::Seed;
 use crate::swarm::{FRAMING, HOSTILE};
-use crate::workload::{CONSTANT, CONSTANT_COLUMN, LISTED, Level, Relaxed, SimStream, Workload};
+use crate::workload::{
+    CONSTANT, CONSTANT_COLUMN, LISTED, Level, MASK_KEY, Masked, REDACTION, Relaxed, SimStream,
+    Workload,
+};
 
 impl Simulation {
     /// Runs `scenario` in `phase` for every pipeline at once, keeping the reports of runs that
@@ -198,7 +204,7 @@ pub(super) struct Ran {
 pub(super) const PIPELINES: [&str; 2] = ["sim", "sim-b"];
 
 /// `plan` with what `stream` draws of its include and transforms: the columns it lists, and a SQL
-/// filter, a rename, then a constant column.
+/// filter, the code transform doubling offsets, a rename, then a constant column and its mask.
 fn reshaped(mut plan: StreamPlan, stream: &SimStream) -> StreamPlan {
     if let Some(included) = stream.included() {
         let listed = LISTED
@@ -216,6 +222,9 @@ fn reshaped(mut plan: StreamPlan, stream: &SimStream) -> StreamPlan {
         };
         plan = plan.transform(Sql::parse(&text).expect("the simulation's filter parses"));
     }
+    if reshaping.doubled {
+        plan = plan.transform(Arc::new(Twice) as Arc<dyn Transform>);
+    }
     if reshaping.rename {
         plan = plan.transform(Op::rename([("offset", reshaping.offset())]));
     }
@@ -223,7 +232,12 @@ fn reshaped(mut plan: StreamPlan, stream: &SimStream) -> StreamPlan {
         let constant = Literal::Text(CONSTANT.to_owned());
         plan = plan.transform(Op::constant([(CONSTANT_COLUMN, constant)]));
     }
-    plan
+    let mask = match reshaping.masked {
+        Some(Masked::Redacted) => Mask::redact(REDACTION),
+        Some(Masked::Hashed) => Mask::hmac_sha256(Secret::new(MASK_KEY.to_owned())),
+        None => return plan,
+    };
+    plan.transform(Op::mask([CONSTANT_COLUMN], mask))
 }
 
 /// The plan of `workload`'s pipeline `pipeline`, of the streams it loads, each stream's settings

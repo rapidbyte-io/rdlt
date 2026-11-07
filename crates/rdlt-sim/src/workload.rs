@@ -14,8 +14,8 @@ use rdlt_engine::{Nested, OnUnsupported, SchemaPolicy, WriteMode};
 use rdlt_testkit::draw::{draw, mix};
 use rdlt_testkit::drawn::{Scalar, Shape, json, neighbors};
 
-pub use reshaping::Reshaping;
-pub(crate) use reshaping::{CONSTANT, CONSTANT_COLUMN, LISTED};
+pub(crate) use reshaping::{CONSTANT, CONSTANT_COLUMN, LISTED, MASK_KEY, REDACTION, TWICE_COLUMN};
+pub use reshaping::{Masked, Reshaping};
 use settings::resolve;
 pub use settings::{Level, Relaxed, Resolved};
 
