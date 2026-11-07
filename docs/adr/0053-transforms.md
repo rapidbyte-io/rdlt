@@ -31,9 +31,12 @@ determinism under simulation whatever the configuration says.
   in a tenant's document. A Rust transform is code: it runs in process, only as the embedder's
   own trusted code, and a document cannot name one.
 - **The contract.**
-  - A transform is a pure function of a batch. `keep` answers one value a row, a null keeping
-    nothing; `apply` keeps the row count and order and matches the schema `output` declared for
-    the input.
+  - A transform works row by row: what it makes of a row depends on that row alone, so the
+    stage may cut a batch and its parts give what the whole does (certification's `T-ROWWISE`
+    checks this). `keep` answers one value a row, a null keeping nothing; `apply` keeps the row
+    count and order and matches the schema `output` declared for the input.
+  - Code is trusted to pass keys, change columns and the change time on with their values: the
+    stage checks only that each passes with its name and type.
   - A breach is `transform_contract`: of kind `Internal` for a transform that declares a bound,
     which the engine's own ops and SQL do, and of kind `Transform` for code.
   - A failure is `transform_failed`, of kind `Transform`, never retried: a deterministic

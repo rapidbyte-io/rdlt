@@ -21,9 +21,13 @@ pub use self::op::{Literal, Op};
 /// A pure function of a batch that reshapes it, and may filter its rows, before the engine fits
 /// it to its table.
 ///
-/// A transform reads no time or randomness and keeps no state from one batch to the next, so a
-/// retry, a replan or a resume replays it exactly. A transform that declares a [`Bound`] is held
-/// to it; one that declares none is trusted code, its output measured after it runs.
+/// A transform works row by row: what it makes of a row depends on that row alone, so the stage
+/// may cut a batch and its parts give what the whole does. It reads no time or randomness and
+/// keeps no state from one batch to the next, so a retry, a replan or a resume replays it
+/// exactly. A transform that declares a [`Bound`] is held to it; one that declares none is
+/// trusted code, its output measured after it runs, and trusted to pass the stream's keys,
+/// change columns and change time on with their values, of which the stage checks only that
+/// each passes with its name and type.
 ///
 /// ```
 /// use std::sync::Arc;
