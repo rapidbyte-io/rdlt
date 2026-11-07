@@ -195,6 +195,8 @@ enum Bad {
     Fixed,
     /// Adds one to every id of a batch of two or three rows.
     Small,
+    /// Returns schema metadata its declaration lacks on batches of fewer than three rows.
+    TagsSmall,
     /// Declares a nullable column and returns it as one that is not.
     Nullable,
     /// Declares a column with field metadata and returns it with none.
@@ -219,6 +221,7 @@ impl Transform for Bad {
             Self::Slices => "slices",
             Self::Narrows => "narrows",
             Self::Tags => "tags",
+            Self::TagsSmall => "tags_small",
             Self::ShortLineage => "short_lineage",
             Self::FarLineage => "far_lineage",
             Self::Fixed => "fixed",
@@ -328,6 +331,15 @@ impl Transform for Bad {
     }
 }
 
+/// `batch` under `schema` with metadata added.
+fn tagged(batch: &RecordBatch, schema: &SchemaRef) -> RecordBatch {
+    let tagged = schema
+        .as_ref()
+        .clone()
+        .with_metadata(HashMap::from([("tag".to_owned(), "x".to_owned())]));
+    RecordBatch::try_new(Arc::new(tagged), batch.columns().to_vec()).unwrap()
+}
+
 impl Bad {
     /// `batch` damaged in the way `self` says; `schema` is the output schema it declares.
     fn damaged(&self, batch: RecordBatch, schema: &SchemaRef) -> RecordBatch {
@@ -396,13 +408,8 @@ impl Bad {
     fn relabelled(&self, batch: RecordBatch, schema: &SchemaRef) -> RecordBatch {
         let rows = batch.num_rows();
         match self {
-            Self::Tags => {
-                let tagged = schema
-                    .as_ref()
-                    .clone()
-                    .with_metadata(HashMap::from([("tag".to_owned(), "x".to_owned())]));
-                RecordBatch::try_new(Arc::new(tagged), batch.columns().to_vec()).unwrap()
-            }
+            Self::Tags => tagged(&batch, schema),
+            Self::TagsSmall if rows < 3 => tagged(&batch, schema),
             Self::Nullable | Self::Labelled => {
                 let mut fields = batch.schema().fields().to_vec();
                 fields.push(Arc::new(Field::new("n", DataType::Int64, false)));
@@ -692,4 +699,10 @@ fn batches_without_rows_leave_what_only_they_could_show_unobserved() {
     };
     let report = certify_transform(&rename, &paired);
     assert_eq!(kind(&report, "T-ROWWISE"), "unobserved", "{report}");
+}
+
+#[test]
+fn schema_metadata_that_varies_with_the_rows_fails_rowwise() {
+    let report = certify_transform(&Bad::TagsSmall, &inputs(5));
+    assert_eq!(kind(&report, "T-ROWWISE"), "failed", "{report}");
 }

@@ -172,13 +172,15 @@ fn run(transform: &dyn Transform, batch: &RecordBatch) -> Result<Made, Breach> {
     Ok(Made { keep, output })
 }
 
-/// Fails where two outputs of one transform have other columns than each other.
+/// Fails where two outputs of one transform have other columns or schema metadata than each
+/// other.
 fn alike(one: &RecordBatch, other: &RecordBatch) -> Result<(), Breach> {
-    if one.schema_ref().fields() == other.schema_ref().fields() {
+    let (one, other) = (one.schema_ref(), other.schema_ref());
+    if one.fields() == other.fields() && one.metadata() == other.metadata() {
         Ok(())
     } else {
         Err(Breach::new(
-            "the columns it returns vary with the rows it is given",
+            "the columns or schema metadata it returns vary with the rows it is given",
         ))
     }
 }
