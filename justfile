@@ -124,7 +124,7 @@ test *args: python-env
 sim-archive:
     cargo nextest archive --package rdlt-sim --all-features --cargo-profile sim --test it --archive-file target/sim.tar.zst
 
-# Run the simulation's two sweeps from its archive, each sweep's seeds side by side on the host's
+# Run the simulation's three sweeps from its archive, each sweep's seeds side by side on the host's
 # cores, or on `cores` (by default `RDLT_SIM_CORES`) when given; pass a seed to replay one run, or
 # an empty seed, a count and the first seed of a shard. Each seed's timing is a line of
 # `target/sim-timings/<sweep>.jsonl`

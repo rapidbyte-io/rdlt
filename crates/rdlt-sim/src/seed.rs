@@ -34,6 +34,14 @@ pub const SEEDS_FROM_VAR: &str = "RDLT_SIM_SEEDS_FROM";
 /// are not the ones to count on.
 pub const CORES_VAR: &str = "RDLT_SIM_CORES";
 
+/// How many of the seeds a sweep of every seed covers stand for each seed a sweep of picked
+/// seeds runs.
+const PICKED_SHARE: u64 = 10;
+
+/// Where a sweep of picked seeds starts to look for them: 2⁴⁰, past every seed a sweep of every
+/// seed runs, so the seeds it picks add to theirs.
+const PICKED_FROM: u64 = 1 << 40;
+
 /// The single value a simulation run derives from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Seed(u64);
@@ -70,11 +78,29 @@ pub struct SeedVarError {
 struct SeedRange {
     start: u64,
     count: u64,
+    /// Whether `RDLT_SIM_SEED` named its one seed.
+    named: bool,
 }
 
 impl SeedRange {
     fn seeds(self) -> impl Iterator<Item = Seed> {
         (0..self.count).map(move |offset| Seed(self.start.wrapping_add(offset)))
+    }
+
+    /// The seeds `picks` picks that the range stands for: its named seed, where `picks` picks
+    /// it; else a tenth as many as it covers, counted among the seeds `picks` picks from
+    /// [`PICKED_FROM`], from a tenth of where it starts.
+    fn picked(self, picks: impl Fn(Seed) -> bool) -> Vec<Seed> {
+        if self.named {
+            return self.seeds().filter(|seed| picks(*seed)).collect();
+        }
+        let start = self.start / PICKED_SHARE;
+        let end = self.start.saturating_add(self.count) / PICKED_SHARE;
+        let skipped = usize::try_from(start).unwrap_or(usize::MAX);
+        let taken = usize::try_from(end - start).unwrap_or(usize::MAX);
+        let candidates = (PICKED_FROM..=u64::MAX).map(Seed);
+        let picked = candidates.filter(|seed| picks(*seed));
+        picked.skip(skipped).take(taken).collect()
     }
 }
 
@@ -102,6 +128,33 @@ pub fn seeds(default_count: u64) -> impl Iterator<Item = Seed> {
     }
 }
 
+/// The seeds a sweep of the seeds `picks` picks covers, as [`seeds`] selects them: the seed
+/// `RDLT_SIM_SEED` names, where `picks` picks it; otherwise one for each ten seeds [`seeds`]
+/// covers, of `default_count` where `RDLT_SIM_SEEDS` is unset, each a seed `picks` picks, counted
+/// among them from 2⁴⁰.
+///
+/// Its seeds lie past those every other sweep runs, so they add to theirs, and shards that split
+/// a sweep of many seeds split them alike: the shard of seeds `n..m` runs picked seeds `n/10` to
+/// `m/10`.
+///
+/// # Panics
+///
+/// Panics when either variable holds something other than an unsigned integer.
+pub fn picked(default_count: u64, picks: impl Fn(Seed) -> bool) -> Vec<Seed> {
+    let single = std::env::var(SEED_VAR).ok();
+    let count = std::env::var(SEEDS_VAR).ok();
+    let from = std::env::var(SEEDS_FROM_VAR).ok();
+    match select(
+        single.as_deref(),
+        count.as_deref(),
+        from.as_deref(),
+        default_count,
+    ) {
+        Ok(range) => range.picked(picks),
+        Err(error) => panic!("{error}"),
+    }
+}
+
 fn select(
     single: Option<&str>,
     count: Option<&str>,
@@ -112,6 +165,7 @@ fn select(
         return Ok(SeedRange {
             start: parse(SEED_VAR, value)?,
             count: 1,
+            named: true,
         });
     }
     let count = match count.filter(|value| !value.is_empty()) {
@@ -122,7 +176,11 @@ fn select(
         Some(value) => parse(SEEDS_FROM_VAR, value)?,
         None => 0,
     };
-    Ok(SeedRange { start, count })
+    Ok(SeedRange {
+        start,
+        count,
+        named: false,
+    })
 }
 
 fn parse(variable: &'static str, value: &str) -> Result<u64, SeedVarError> {

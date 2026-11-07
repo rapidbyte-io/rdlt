@@ -7,8 +7,8 @@ use parking_lot::{Condvar, Mutex};
 use serde_json::{Map, Value, json};
 
 use super::{
-    CORES_VAR, Failed, Recorded, SEED_VAR, SEEDS_FROM_VAR, SEEDS_VAR, Seed, SeedRange, Weight,
-    cores, drive, replay, select, side_by_side, sweep, timings,
+    CORES_VAR, Failed, PICKED_FROM, Recorded, SEED_VAR, SEEDS_FROM_VAR, SEEDS_VAR, Seed, SeedRange,
+    Weight, cores, drive, replay, select, side_by_side, sweep, timings,
 };
 
 fn seeds(range: SeedRange) -> Vec<u64> {
@@ -47,6 +47,30 @@ fn seed_selection_follows_the_variables() {
             "single {single:?}, count {count:?}, from {from:?}"
         );
     }
+}
+
+#[test]
+fn a_sweep_of_picked_seeds_runs_a_tenth_as_many_past_every_other_sweep_s_and_a_named_one_if_picked()
+{
+    let even = |seed: Seed| seed.value().is_multiple_of(2);
+    let picked = |single, count, from| -> Vec<u64> {
+        let range = select(single, count, from, 30).unwrap();
+        range.picked(even).into_iter().map(Seed::value).collect()
+    };
+    let first = PICKED_FROM;
+    // A tenth as many, counted among the picked seeds from where a tenth of the range starts.
+    assert_eq!(picked(None, None, None), [first, first + 2, first + 4]);
+    assert_eq!(picked(None, Some("20"), Some("10")), [first + 2, first + 4]);
+    // Shards that split a sweep split its picked seeds alike, whatever their bounds.
+    let whole = picked(None, Some("100"), None);
+    let mut shards = picked(None, Some("35"), None);
+    shards.extend(picked(None, Some("35"), Some("35")));
+    shards.extend(picked(None, Some("30"), Some("70")));
+    assert_eq!(shards, whole);
+    assert_eq!(picked(None, Some("5"), None), Vec::<u64>::new());
+    // A named seed runs alone, where it is picked.
+    assert_eq!(picked(Some("8"), None, None), [8]);
+    assert_eq!(picked(Some("7"), None, None), Vec::<u64>::new());
 }
 
 #[test]
