@@ -8,13 +8,13 @@ mod tls;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use rdlt_connector::{
     ConnectorSpec, DestinationConnector, DestinationFactory, Role, Secret, SourceConnector,
     SourceFactory, destination_factory, source_factory,
 };
-use rdlt_engine::Transform;
+use rdlt_engine::{SystemEnv, Transform};
 use rdlt_host::{
     Config, Provider as _, Redactions, Registry, SecretError, SecretResolver, Secrets,
 };
@@ -49,6 +49,7 @@ pub struct Host {
     sources: Vec<Arc<dyn SourceFactory>>,
     destinations: Vec<Arc<dyn DestinationFactory>>,
     transforms: BTreeMap<String, Arc<dyn Transform>>,
+    env: OnceLock<Arc<SystemEnv>>,
 }
 
 /// A mask key's resolved reference, which is the secret alone.
@@ -79,6 +80,7 @@ impl Default for Host {
             sources: Vec::new(),
             destinations: Vec::new(),
             transforms: BTreeMap::new(),
+            env: OnceLock::new(),
         }
     }
 }
@@ -268,6 +270,19 @@ impl Host {
         self.transforms.keys().map(String::as_str)
     }
 
+    /// The environment every pipeline of this host runs on: one compute pool of a thread a core
+    /// the process may run on, started on first use.
+    pub(crate) fn environment(&self) -> Result<Arc<SystemEnv>, Error> {
+        if let Some(env) = self.env.get() {
+            return Ok(Arc::clone(env));
+        }
+        let started = SystemEnv::try_from_host().map_err(|error| {
+            let message = "starting the compute pool";
+            Error::internal(codes::ENVIRONMENT_UNAVAILABLE, message, error)
+        })?;
+        Ok(Arc::clone(self.env.get_or_init(|| Arc::new(started))))
+    }
+
     /// Local placement as this host allows it: sandboxed, unless the host trusts its binaries.
     #[cfg(feature = "local")]
     fn local(&self) -> rdlt_host::Local {
@@ -318,6 +333,6 @@ impl fmt::Debug for Host {
             .field("sources", &sources)
             .field("destinations", &destinations)
             .field("transforms", &transforms)
-            .finish()
+            .finish_non_exhaustive()
     }
 }

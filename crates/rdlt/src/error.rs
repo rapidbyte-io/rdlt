@@ -6,10 +6,12 @@ mod tests;
 use std::error::Error as StdError;
 use std::fmt;
 
-use rdlt_connector::limits::{MAX_ERROR_CAUSES, MAX_ERROR_TEXT_BYTES};
-use rdlt_connector::{ConnectorErrorKind, Role, text};
+use rdlt_connector::limits::{MAX_ERROR_CAUSES, MAX_ERROR_CODE_BYTES, MAX_ERROR_TEXT_BYTES};
+use rdlt_connector::{ConnectorError, ConnectorErrorKind, Role, text};
 use rdlt_engine::{Code, ErrorKind, ErrorReport, Origin};
 use rdlt_host::{ProviderError, SecretError};
+
+use crate::codes;
 
 /// Why a pipeline could not be built, or why its run failed: a kind, who failed, a code and the
 /// stream it belongs to, as the engine's own errors say them.
@@ -89,6 +91,22 @@ impl Error {
         )
     }
 
+    /// A failure of the facade's own, coded `code`, for `cause`.
+    pub(crate) fn internal(
+        code: Code,
+        message: impl Into<String>,
+        cause: impl StdError + Send + Sync + 'static,
+    ) -> Self {
+        let cause = Some(Box::new(cause) as Box<dyn StdError + Send + Sync>);
+        Self::built(
+            ErrorKind::Internal,
+            Origin::Engine,
+            code,
+            message.into(),
+            cause,
+        )
+    }
+
     /// `error`, which placing the connector of `role` met.
     ///
     /// A connector that could not be started or reached fails its side; one that refused its
@@ -106,6 +124,23 @@ impl Error {
         let message = format!("placing the {}: {error}", noun(role));
         let code = Code::new(error.code());
         Self::built(kind, origin, code, message, Some(Box::new(error)))
+    }
+
+    /// `error`, which the connector of `role` answered `context` with.
+    pub(crate) fn connector(role: Role, context: &str, error: ConnectorError) -> Self {
+        let (origin, failed) = side(role);
+        Self(Box::new(Inner::Built(Built {
+            kind: classed(error.kind(), failed),
+            origin,
+            code: Some(codes::CONNECTOR_FAILED),
+            connector_code: error
+                .code()
+                .map(|code| text::shown(code, MAX_ERROR_CODE_BYTES)),
+            stream: None,
+            message: format!("{context}: the {} failed", noun(role)),
+            retryable: error.is_retryable(),
+            source: Some(Box::new(error)),
+        })))
     }
 
     /// A secret reference the host would not, or could not, resolve: the field, never the value.
