@@ -137,7 +137,8 @@ impl ChangeRows {
         ChangeOp::from_code(self.op.value(row))
     }
 
-    /// The data fields, by ordinal, some row flags unchanged, in ascending order.
+    /// The data fields, by ordinal, some insert or update flags unchanged, in ascending order: a
+    /// delete or a truncate keeps no values, so its flags ask nothing of the destination.
     ///
     /// Only the bytes holding the pushed batch's fields are read, however long a bitmap is.
     pub(crate) fn flagged(&self) -> Vec<usize> {
@@ -145,7 +146,11 @@ impl ChangeRows {
             return Vec::new();
         };
         let mut any = vec![0_u8; self.ordinals.len().div_ceil(8)];
-        for bitmap in flags.iter().flatten() {
+        for (row, bitmap) in flags.iter().enumerate() {
+            let upsert = matches!(self.op(row), Some(ChangeOp::Insert | ChangeOp::Update));
+            let Some(bitmap) = bitmap.filter(|_| upsert) else {
+                continue;
+            };
             any.iter_mut()
                 .zip(bitmap)
                 .for_each(|(any, byte)| *any |= byte);

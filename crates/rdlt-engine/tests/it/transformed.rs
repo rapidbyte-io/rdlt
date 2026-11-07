@@ -20,6 +20,7 @@ use rdlt_engine::{
     TransformError, WriteMode, codes,
 };
 
+use crate::support::destinations::limited;
 use crate::support::served::{Form, Served, ints, people, people_schema, source, texts};
 use crate::support::{commit_every, engine, memory, pipeline, published_ids, retrying, stream};
 
@@ -672,4 +673,72 @@ async fn a_push_of_no_rows_lands_no_column_staged_or_not() {
     assert!(run("schema_only_transformed", renamed).await.is_empty());
     let included = stream("people").include_only(["note"]);
     assert!(run("schema_only_included", included).await.is_empty());
+}
+
+/// A filter keeping rows whose `status` is not `test`, saying it reads only `status` and that
+/// each column it outputs reads itself.
+struct Live;
+
+impl Transform for Live {
+    fn name(&self) -> &'static str {
+        "live"
+    }
+
+    fn output(&self, input: &Schema) -> Result<SchemaRef, TransformError> {
+        Ok(Arc::new(input.clone()))
+    }
+
+    fn filters(&self) -> bool {
+        true
+    }
+
+    fn keep(&self, batch: &RecordBatch) -> Result<BooleanArray, TransformError> {
+        NotTest.keep(batch)
+    }
+
+    fn apply(&self, batch: RecordBatch) -> Result<RecordBatch, TransformError> {
+        Ok(batch)
+    }
+
+    fn lineage(&self, input: &Schema) -> Option<Vec<Vec<usize>>> {
+        Some(
+            (0..input.fields().len())
+                .map(|column| vec![column])
+                .collect(),
+        )
+    }
+
+    fn keep_reads(&self, input: &Schema) -> Option<Vec<usize>> {
+        input.index_of("status").ok().map(|status| vec![status])
+    }
+}
+
+#[tokio::test]
+async fn an_update_a_filter_deletes_asks_a_destination_to_keep_no_column() {
+    let name = "transformed_deleted_partial";
+    // The update leaves its note unchanged, and its status makes the filter delete its row.
+    let unchanged: &[u8] = &[0b0000_0100];
+    let pushes = vec![
+        noted((1, "ok", Some("n1")), ChangeOp::Insert, None, 1),
+        noted((1, "test", None), ChangeOp::Update, Some(unchanged), 2),
+    ];
+    let mut served = Served::new(Form::Changes, pushes);
+    served.key = Some(ColumnPath::from("id"));
+    let plan = stream("people")
+        .read(ReadMode::Cdc)
+        .write(WriteMode::Merge)
+        .transform(code(Live));
+    let destination = limited(memory(name).await, |capabilities| {
+        capabilities.partial_updates = false;
+    });
+    let outcome = engine(commit_every(4))
+        .run(
+            pipeline(name, [plan]),
+            source(name, served).await,
+            destination,
+        )
+        .await;
+    succeeded(&outcome);
+    assert!(published_ids(name, "people").is_empty());
+    assert_eq!(outcome.report.streams["people"].filtered.deleted, 1);
 }

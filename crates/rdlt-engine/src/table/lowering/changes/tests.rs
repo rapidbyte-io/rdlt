@@ -46,6 +46,29 @@ fn pushed(ops: &[ChangeOp], flags: Vec<Option<Vec<u8>>>) -> RecordBatch {
 }
 
 #[test]
+fn only_an_insert_s_or_an_update_s_flags_ask_the_destination_to_keep_a_column() {
+    // Pushed field 2 is `b`, data field 1; pushed field 5 is `c`, data field 2.
+    let batch = pushed(
+        &[
+            ChangeOp::Delete,
+            ChangeOp::Truncate,
+            ChangeOp::Insert,
+            ChangeOp::Update,
+        ],
+        vec![
+            Some(vec![0b0010_0100]),
+            Some(vec![0b0010_0100]),
+            None,
+            Some(vec![0b0000_0100]),
+        ],
+    );
+    let (_, changes) = ChangeRows::split(&batch).unwrap();
+    assert_eq!(changes.flagged(), [1]);
+    let deletes = pushed(&[ChangeOp::Delete], vec![Some(vec![0b0010_0100])]);
+    assert!(ChangeRows::split(&deletes).unwrap().1.flagged().is_empty());
+}
+
+#[test]
 fn a_split_keeps_the_data_and_reads_the_flags_through_its_ordinals() {
     // Pushed field 2 is `b`, data field 1; pushed field 5 is `c`, data field 2; pushed field 1
     // is the op column, which no data field is.
