@@ -7,9 +7,10 @@ use std::ops::Range;
 use rdlt_connector::ChangeOp;
 use rdlt_engine::{DeleteMode, OnTruncate, WriteMode};
 
+use super::filter::{Filter, Filtered};
 use super::history::whole;
 use crate::rng::SplitMix64;
-use crate::swarm::{EXCLUDE, Features};
+use crate::swarm::{EXCLUDE, Features, RESHAPE};
 
 #[cfg(test)]
 mod tests;
@@ -62,12 +63,15 @@ pub struct ChangeStream {
     /// Whether a merge stream keeps every version of each key instead: its changes carry their
     /// position as their change time, and set whole rows.
     pub history: bool,
-    /// Whether the stream excludes `value`, the field its partial updates flag unchanged, so the
+    /// Whether the stream leaves out `value`, the field its partial updates flag unchanged, so the
     /// flags of the fields after it move, and whether its source sends it.
     pub value: Value,
+    /// The stream's filter: an insert or update it does not keep is filtered out, a merge's
+    /// turned into a delete of its key; none where the stream filters nothing.
+    pub filter: Option<Filter>,
 }
 
-/// Whether a change stream excludes its `value` column, and whether its source sends it.
+/// Whether a change stream loads its `value` column, and whether its source sends it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Value {
     /// Loaded.
@@ -78,6 +82,9 @@ pub enum Value {
     /// Excluded, and left out by the source, as one honouring its read's projection does,
     /// flagging nothing it leaves out.
     LeftOut,
+    /// Left off the columns the stream includes, which name only `n`, though the source sends
+    /// it; the stream keeps its key, which they do not name.
+    Unlisted,
 }
 
 /// One change.
@@ -146,13 +153,16 @@ impl ChangeWorkload {
     ///
     /// `apart` draws which merge streams keep history instead, and what their events send again,
     /// so every other draw falls as it did before they did; where `features` exclude columns, a
-    /// generator of its own draws which other streams exclude `value`.
+    /// generator of its own draws which other streams exclude `value`, and where they transform,
+    /// another draws which of the rest name only `n` among the columns they include, and which
+    /// streams filter their changes: none whose deletes a merge ignores.
     pub(crate) fn generate(
         rng: &mut SplitMix64,
         features: Features,
         apart: &mut SplitMix64,
     ) -> Self {
         let mut excluding = SplitMix64::new(apart.clone().next_u64() ^ EXCLUDE);
+        let mut reshaping = SplitMix64::new(apart.clone().next_u64() ^ RESHAPE);
         let streams = (0..=rng.below(3))
             .map(|index| {
                 let replayable = !(features.forgetting && index.is_multiple_of(2));
@@ -168,6 +178,22 @@ impl ChangeWorkload {
                         (true, false) => Value::Excluded,
                         (true, true) => Value::LeftOut,
                     };
+                }
+                // Drawn either way, so each stream's draws fall as they did.
+                let (unlisted, filters) = (reshaping.chance(250), reshaping.chance(500));
+                let (modulus, cased) = (2 + reshaping.below(3), reshaping.chance(500));
+                let loaded = stream.value == Value::Loaded && !stream.history;
+                if features.transform && unlisted && loaded {
+                    stream.value = Value::Unlisted;
+                }
+                let ignored =
+                    stream.write == WriteMode::Merge && stream.deletes == DeleteMode::Ignore;
+                if features.transform && filters && !ignored {
+                    stream.filter = Some(Filter {
+                        reads: stream.filterable(),
+                        modulus: i64::try_from(modulus).unwrap_or(2),
+                        cased,
+                    });
                 }
                 stream
             })
@@ -229,6 +255,59 @@ impl ChangeStream {
             replayable,
             history: false,
             value: Value::Loaded,
+            filter: None,
+        }
+    }
+
+    /// The column a filter of the stream reads: the key on a merge whose updates leave columns
+    /// unchanged, as one reading more would be refused, and the counter elsewhere.
+    fn filterable(&self) -> Filtered {
+        let partial = self.events.iter().any(|event| event.partial);
+        if self.write == WriteMode::Merge && partial {
+            Filtered::Key
+        } else {
+            Filtered::Counter
+        }
+    }
+
+    /// Whether the stream's filter keeps an insert or update of `key` setting counter `n`: every
+    /// one where it filters nothing.
+    pub(super) fn keeps(&self, key: Option<i64>, n: Option<i64>) -> bool {
+        self.filter.is_none_or(|filter| filter.keeps(key, n))
+    }
+
+    /// Whether the stream's filter keeps `event`: every delete and truncate, which hold no
+    /// values to judge.
+    fn passes(&self, event: &Event) -> bool {
+        !upsert(event.op) || self.keeps(event.key, event.n)
+    }
+
+    /// The inserts and updates first read in `round`, the snapshot's rows among them in the
+    /// first, that the stream's filter does not keep.
+    pub(crate) fn filtered_in(&self, round: usize) -> u64 {
+        let snapshot = self.snapshot();
+        let snapshot = snapshot.iter().filter(|_| round == 0);
+        let failing = snapshot.filter(|(key, row)| !self.keeps(Some(**key), Some(row.n)));
+        let first = round
+            .checked_sub(1)
+            .map_or(self.captured, |last| self.rounds[last]);
+        let read = self.events[first.min(self.rounds[round])..self.rounds[round]].iter();
+        let failed = read.filter(|event| !self.passes(event));
+        u64::try_from(failing.count() + failed.count()).unwrap_or(u64::MAX)
+    }
+
+    /// `event` as the stream's filter leaves it for a table merged by key: an insert or update
+    /// it filters out becomes a delete of its key.
+    pub(super) fn filtered(&self, event: &Event) -> Event {
+        match event.op {
+            ChangeOp::Insert | ChangeOp::Update if !self.keeps(event.key, event.n) => Event {
+                op: ChangeOp::Delete,
+                value: None,
+                n: None,
+                partial: false,
+                ..event.clone()
+            },
+            _ => event.clone(),
         }
     }
 
@@ -258,11 +337,18 @@ impl ChangeStream {
     }
 
     /// The table a merge leaves once the changes of `round` apply, by key: each row's value, none
-    /// where the stream excludes it, counter, and whether a soft delete marked it deleted.
+    /// where the stream leaves it out, counter, and whether a soft delete marked it deleted; a row
+    /// the filter does not keep leaves it, as a delete of its key.
     pub(crate) fn merged(&self, round: usize) -> BTreeMap<i64, Merged> {
         let mut table = self.snapshot();
+        table.retain(|key, row| self.keeps(Some(*key), Some(row.n)));
         for event in self.read(round) {
-            apply(&mut table, event, self.deletes, self.truncates);
+            apply(
+                &mut table,
+                &self.filtered(event),
+                self.deletes,
+                self.truncates,
+            );
         }
         if self.value != Value::Loaded {
             for row in table.values_mut() {
@@ -273,16 +359,18 @@ impl ChangeStream {
     }
 
     /// The log appending leaves once the changes of `round` are read: every snapshot row and
-    /// change, as its op, key, value, none where the stream excludes it, and counter, sorted.
+    /// change the filter keeps, as its op, key, value, none where the stream leaves it out,
+    /// and counter, sorted.
     pub(crate) fn log(&self, round: usize) -> Vec<Logged> {
         let mut log: Vec<Logged> = self
             .snapshot()
             .into_iter()
+            .filter(|(key, row)| self.keeps(Some(*key), Some(row.n)))
             .map(|(key, row)| (ChangeOp::Insert.code(), Some(key), row.value, Some(row.n)))
             .collect();
+        let read = self.read(round).iter();
         log.extend(
-            self.read(round)
-                .iter()
+            read.filter(|event| self.passes(event))
                 .map(|event| (event.op.code(), event.key, event.value.clone(), event.n)),
         );
         if self.value != Value::Loaded {
@@ -348,6 +436,11 @@ pub(crate) struct Merged {
 
 /// One row of a log: its op code, key, value and counter.
 pub(crate) type Logged = (i8, Option<i64>, Option<String>, Option<i64>);
+
+/// Whether `op` inserts or updates a row, holding values a filter judges.
+fn upsert(op: ChangeOp) -> bool {
+    matches!(op, ChangeOp::Insert | ChangeOp::Update)
+}
 
 fn to_usize(value: u64) -> usize {
     usize::try_from(value).unwrap_or(usize::MAX)

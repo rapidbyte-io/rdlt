@@ -57,15 +57,19 @@ pub(crate) fn whole(events: &mut [Event], keys: u64, rng: &mut SplitMix64) {
 
 impl ChangeStream {
     /// Every version a history table holds once the changes of `round` apply, sorted: the
-    /// snapshot's rows at the captured position, then each change read after it.
+    /// snapshot's rows the filter keeps at the captured position, then each change read after
+    /// it, an upsert the filter does not keep closing its key's version as a delete does.
     pub(crate) fn history(&self, round: usize) -> Vec<Version> {
         let captured = u64::try_from(self.captured).unwrap_or(u64::MAX);
         let mut chain = Chain::default();
         for (key, row) in self.snapshot() {
-            chain.open(key, captured, row.value, row.n, false);
+            if self.keeps(Some(key), Some(row.n)) {
+                chain.open(key, captured, row.value, row.n, false);
+            }
         }
         let read = &self.events[self.captured..self.rounds[round]];
         for (index, event) in read.iter().enumerate() {
+            let event = &self.filtered(event);
             let position = captured + 1 + u64::try_from(index).unwrap_or(u64::MAX);
             let soft = self.deletes == DeleteMode::Soft;
             match (event.op, event.key) {

@@ -9,6 +9,7 @@ mod config;
 mod events;
 mod expected;
 mod faulty;
+mod filtered;
 mod intruder;
 mod ledger;
 mod memory;
@@ -410,6 +411,7 @@ fn check_discards(world: &World, phase: usize, reports: &[Report], stopped: bool
                 .filter(|row| row.delivered == phase)
                 .collect(),
         };
+        filtered::check_rows(stream, &read, reports, complete, (phase, seed));
         let expected = read.iter().fold(Discards::default(), |sum, row| {
             let discards = expected::discards(stream, row);
             Discards {
