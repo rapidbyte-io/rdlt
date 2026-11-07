@@ -91,6 +91,7 @@ checks: locked python-env
     cargo machete
     cargo xtask deny
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
+    just public-api
     RUSTFLAGS="-D warnings" cargo hack check --workspace --each-feature --no-dev-deps
     RUSTFLAGS="-D warnings" cargo check --package rdlt-engine --lib --tests
     actionlint
@@ -272,6 +273,12 @@ mutants-diff base="origin/main" jobs="4":
             -- --profile "mutants-$crate" || failed=1
     done
     exit "$failed"
+
+# Compare the facade's public API with crates/rdlt/public-api.txt, from rustdoc's JSON of the
+# pinned nightly; `just public-api --update` records it again
+public-api *args:
+    rustup toolchain install {{ nightly }} --profile minimal
+    cargo xtask public-api --toolchain {{ nightly }} {{ args }}
 
 # Fuzz one target for a number of seconds, for example `just fuzz state_record 60`, from its
 # corpus, which keeps what it finds, and the seeds `fuzz/seeds/<target>` holds for it, if any

@@ -1,0 +1,1171 @@
+pub mod rdlt
+pub use rdlt::Acks
+pub use rdlt::AttemptReport
+pub use rdlt::Bound
+pub use rdlt::BoxFuture
+pub use rdlt::Call
+pub use rdlt::Catalog
+pub use rdlt::Code
+pub use rdlt::ColumnChange
+pub use rdlt::CommitPhases
+pub use rdlt::Commits
+pub use rdlt::ConnectorId
+pub use rdlt::ConnectorSpec
+pub use rdlt::Counters
+pub use rdlt::DestinationConnector
+pub use rdlt::DestinationFactory
+pub use rdlt::Discard
+pub use rdlt::DiscardReason
+pub use rdlt::Discards
+pub use rdlt::Epoch
+pub use rdlt::ErrorKind
+pub use rdlt::ErrorReport
+pub use rdlt::Event
+pub use rdlt::EventKind
+pub use rdlt::FilteredRows
+pub use rdlt::Flushes
+pub use rdlt::Forgotten
+pub use rdlt::Interrupts
+pub use rdlt::Listed
+pub use rdlt::Literal
+pub use rdlt::Mask
+pub use rdlt::MemoryHeld
+pub use rdlt::Op
+pub use rdlt::OpenWaits
+pub use rdlt::Origin
+pub use rdlt::Partitions
+pub use rdlt::Phase
+pub use rdlt::PipelineId
+pub use rdlt::PoolCounters
+pub use rdlt::Quiet
+pub use rdlt::Report
+pub use rdlt::ResetReport
+pub use rdlt::ResetScope
+pub use rdlt::Role
+pub use rdlt::RunControl
+pub use rdlt::RunStatus
+pub use rdlt::Scope
+pub use rdlt::Secret
+pub use rdlt::SecretFault
+pub use rdlt::SecretKind
+pub use rdlt::SecretReference
+pub use rdlt::SecretResolver
+pub use rdlt::ShredCounts
+pub use rdlt::SourceConnector
+pub use rdlt::SourceFactory
+pub use rdlt::Status
+pub use rdlt::Step
+pub use rdlt::StopMode
+pub use rdlt::StopsSpawned
+pub use rdlt::StreamName
+pub use rdlt::StreamReport
+pub use rdlt::StreamSpec
+pub use rdlt::StreamStatus
+pub use rdlt::TablePath
+pub use rdlt::Transform
+pub use rdlt::TransformError
+pub use rdlt::Trigger
+pub use rdlt::Value
+pub use rdlt::Waited
+pub use rdlt::Waits
+pub use rdlt::WriterCall
+pub use rdlt::WriterCounters
+pub use rdlt::WriterStatus
+pub use rdlt::arrow
+pub use rdlt::json
+pub mod rdlt::codes
+pub const rdlt::codes::CONNECTOR_FAILED: rdlt_engine::error::codes::Code
+pub const rdlt::codes::DOCUMENT_INVALID: rdlt_engine::error::codes::Code
+pub const rdlt::codes::DOCUMENT_UNKNOWN_KEY: rdlt_engine::error::codes::Code
+pub const rdlt::codes::DOCUMENT_VERSION: rdlt_engine::error::codes::Code
+pub const rdlt::codes::ENVIRONMENT_UNAVAILABLE: rdlt_engine::error::codes::Code
+pub const rdlt::codes::MASK_KEY_LITERAL: rdlt_engine::error::codes::Code
+pub const rdlt::codes::MASK_KEY_MISSING: rdlt_engine::error::codes::Code
+pub const rdlt::codes::PATTERN_UNMATCHED: rdlt_engine::error::codes::Code
+pub const rdlt::codes::REFERENCE_INVALID: rdlt_engine::error::codes::Code
+pub const rdlt::codes::STREAM_INVALID: rdlt_engine::error::codes::Code
+pub const rdlt::codes::TLS_UNREADABLE: rdlt_engine::error::codes::Code
+pub const rdlt::codes::TRANSFORM_UNAVAILABLE: rdlt_engine::error::codes::Code
+pub const rdlt::codes::TRANSFORM_UNKNOWN: rdlt_engine::error::codes::Code
+pub mod rdlt::limits
+pub const rdlt::limits::EVENT_BUFFER: usize
+pub const rdlt::limits::EVENT_BUFFER_MAX: usize
+#[non_exhaustive] pub enum rdlt::Connector
+pub rdlt::Connector::Id(alloc::string::String)
+pub rdlt::Connector::Reference(rdlt::ConnectorReference)
+impl rdlt::Connector
+pub fn rdlt::Connector::digest(self, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn rdlt::Connector::endpoint(self, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn rdlt::Connector::id(&self) -> &str
+pub fn rdlt::Connector::new(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn rdlt::Connector::version(self, impl core::convert::Into<alloc::string::String>) -> Self
+impl core::clone::Clone for rdlt::Connector
+pub fn rdlt::Connector::clone(&self) -> rdlt::Connector
+impl core::cmp::Eq for rdlt::Connector
+impl core::cmp::PartialEq for rdlt::Connector
+pub fn rdlt::Connector::eq(&self, &rdlt::Connector) -> bool
+impl core::fmt::Debug for rdlt::Connector
+pub fn rdlt::Connector::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for rdlt::Connector
+impl schemars::JsonSchema for rdlt::Connector
+pub fn rdlt::Connector::json_schema(&mut schemars::generate::SchemaGenerator) -> schemars::schema::Schema
+pub fn rdlt::Connector::schema_name() -> alloc::borrow::Cow<'static, str>
+impl serde_core::ser::Serialize for rdlt::Connector
+pub fn rdlt::Connector::serialize<S: serde_core::ser::Serializer>(&self, S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+impl<'de> serde_core::de::Deserialize<'de> for rdlt::Connector
+pub fn rdlt::Connector::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+impl core::marker::Freeze for rdlt::Connector
+impl core::marker::Send for rdlt::Connector
+impl core::marker::Sync for rdlt::Connector
+impl core::marker::Unpin for rdlt::Connector
+impl core::marker::UnsafeUnpin for rdlt::Connector
+impl core::panic::unwind_safe::RefUnwindSafe for rdlt::Connector
+impl core::panic::unwind_safe::UnwindSafe for rdlt::Connector
+#[non_exhaustive] pub enum rdlt::DeleteMode
+pub rdlt::DeleteMode::Hard
+pub rdlt::DeleteMode::Ignore
+pub rdlt::DeleteMode::Soft
+impl core::clone::Clone for rdlt::DeleteMode
+pub fn rdlt::DeleteMode::clone(&self) -> rdlt::DeleteMode
+impl core::cmp::Eq for rdlt::DeleteMode
+impl core::cmp::PartialEq for rdlt::DeleteMode
+pub fn rdlt::DeleteMode::eq(&self, &rdlt::DeleteMode) -> bool
+impl core::fmt::Debug for rdlt::DeleteMode
+pub fn rdlt::DeleteMode::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for rdlt::DeleteMode
+impl core::marker::StructuralPartialEq for rdlt::DeleteMode
+impl schemars::JsonSchema for rdlt::DeleteMode
+pub fn rdlt::DeleteMode::inline_schema() -> bool
+pub fn rdlt::DeleteMode::json_schema(&mut schemars::generate::SchemaGenerator) -> schemars::schema::Schema
+pub fn rdlt::DeleteMode::schema_id() -> alloc::borrow::Cow<'static, str>
+pub fn rdlt::DeleteMode::schema_name() -> alloc::borrow::Cow<'static, str>
+impl serde_core::ser::Serialize for rdlt::DeleteMode
+pub fn rdlt::DeleteMode::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for rdlt::DeleteMode
+pub fn rdlt::DeleteMode::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+impl core::marker::Freeze for rdlt::DeleteMode
+impl core::marker::Send for rdlt::DeleteMode
+impl core::marker::Sync for rdlt::DeleteMode
+impl core::marker::Unpin for rdlt::DeleteMode
+impl core::marker::UnsafeUnpin for rdlt::DeleteMode
+impl core::panic::unwind_safe::RefUnwindSafe for rdlt::DeleteMode
+impl core::panic::unwind_safe::UnwindSafe for rdlt::DeleteMode
+#[non_exhaustive] pub enum rdlt::Hint
+pub rdlt::Hint::Binary
+pub rdlt::Hint::Bool
+pub rdlt::Hint::Date
+pub rdlt::Hint::Decimal
+pub rdlt::Hint::Decimal::precision: u8
+pub rdlt::Hint::Decimal::scale: u8
+pub rdlt::Hint::Float32
+pub rdlt::Hint::Float64
+pub rdlt::Hint::Int16
+pub rdlt::Hint::Int32
+pub rdlt::Hint::Int64
+pub rdlt::Hint::Int8
+pub rdlt::Hint::Json
+pub rdlt::Hint::Timestamp
+pub rdlt::Hint::Utf8
+pub rdlt::Hint::Uuid
+impl core::clone::Clone for rdlt::Hint
+pub fn rdlt::Hint::clone(&self) -> rdlt::Hint
+impl core::cmp::Eq for rdlt::Hint
+impl core::cmp::PartialEq for rdlt::Hint
+pub fn rdlt::Hint::eq(&self, &rdlt::Hint) -> bool
+impl core::fmt::Debug for rdlt::Hint
+pub fn rdlt::Hint::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for rdlt::Hint
+impl core::marker::StructuralPartialEq for rdlt::Hint
+impl schemars::JsonSchema for rdlt::Hint
+pub fn rdlt::Hint::inline_schema() -> bool
+pub fn rdlt::Hint::json_schema(&mut schemars::generate::SchemaGenerator) -> schemars::schema::Schema
+pub fn rdlt::Hint::schema_id() -> alloc::borrow::Cow<'static, str>
+pub fn rdlt::Hint::schema_name() -> alloc::borrow::Cow<'static, str>
+impl serde_core::ser::Serialize for rdlt::Hint
+pub fn rdlt::Hint::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for rdlt::Hint
+pub fn rdlt::Hint::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+impl core::marker::Freeze for rdlt::Hint
+impl core::marker::Send for rdlt::Hint
+impl core::marker::Sync for rdlt::Hint
+impl core::marker::Unpin for rdlt::Hint
+impl core::marker::UnsafeUnpin for rdlt::Hint
+impl core::panic::unwind_safe::RefUnwindSafe for rdlt::Hint
+impl core::panic::unwind_safe::UnwindSafe for rdlt::Hint
+#[non_exhaustive] pub enum rdlt::MaskWith
+pub rdlt::MaskWith::HmacSha256
+pub rdlt::MaskWith::Null
+pub rdlt::MaskWith::Redact
+impl core::clone::Clone for rdlt::MaskWith
+pub fn rdlt::MaskWith::clone(&self) -> rdlt::MaskWith
+impl core::cmp::Eq for rdlt::MaskWith
+impl core::cmp::PartialEq for rdlt::MaskWith
+pub fn rdlt::MaskWith::eq(&self, &rdlt::MaskWith) -> bool
+impl core::fmt::Debug for rdlt::MaskWith
+pub fn rdlt::MaskWith::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for rdlt::MaskWith
+impl core::marker::StructuralPartialEq for rdlt::MaskWith
+impl schemars::JsonSchema for rdlt::MaskWith
+pub fn rdlt::MaskWith::inline_schema() -> bool
+pub fn rdlt::MaskWith::json_schema(&mut schemars::generate::SchemaGenerator) -> schemars::schema::Schema
+pub fn rdlt::MaskWith::schema_id() -> alloc::borrow::Cow<'static, str>
+pub fn rdlt::MaskWith::schema_name() -> alloc::borrow::Cow<'static, str>
+impl serde_core::ser::Serialize for rdlt::MaskWith
+pub fn rdlt::MaskWith::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for rdlt::MaskWith
+pub fn rdlt::MaskWith::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+impl core::marker::Freeze for rdlt::MaskWith
+impl core::marker::Send for rdlt::MaskWith
+impl core::marker::Sync for rdlt::MaskWith
+impl core::marker::Unpin for rdlt::MaskWith
+impl core::marker::UnsafeUnpin for rdlt::MaskWith
+impl core::panic::unwind_safe::RefUnwindSafe for rdlt::MaskWith
+impl core::panic::unwind_safe::UnwindSafe for rdlt::MaskWith
+#[non_exhaustive] pub enum rdlt::Nested
+pub rdlt::Nested::Json
+pub rdlt::Nested::Native
+pub rdlt::Nested::Normalize
+pub rdlt::Nested::Normalize::max_depth: u8
+impl core::clone::Clone for rdlt::Nested
+pub fn rdlt::Nested::clone(&self) -> rdlt::Nested
+impl core::cmp::Eq for rdlt::Nested
+impl core::cmp::PartialEq for rdlt::Nested
+pub fn rdlt::Nested::eq(&self, &rdlt::Nested) -> bool
+impl core::fmt::Debug for rdlt::Nested
+pub fn rdlt::Nested::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for rdlt::Nested
+impl core::marker::StructuralPartialEq for rdlt::Nested
+impl schemars::JsonSchema for rdlt::Nested
+pub fn rdlt::Nested::json_schema(&mut schemars::generate::SchemaGenerator) -> schemars::schema::Schema
+pub fn rdlt::Nested::schema_name() -> alloc::borrow::Cow<'static, str>
+impl serde_core::ser::Serialize for rdlt::Nested
+pub fn rdlt::Nested::serialize<S: serde_core::ser::Serializer>(&self, S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+impl<'de> serde_core::de::Deserialize<'de> for rdlt::Nested
+pub fn rdlt::Nested::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+impl core::marker::Freeze for rdlt::Nested
+impl core::marker::Send for rdlt::Nested
+impl core::marker::Sync for rdlt::Nested
+impl core::marker::Unpin for rdlt::Nested
+impl core::marker::UnsafeUnpin for rdlt::Nested
+impl core::panic::unwind_safe::RefUnwindSafe for rdlt::Nested
+impl core::panic::unwind_safe::UnwindSafe for rdlt::Nested
+#[non_exhaustive] pub enum rdlt::OnTruncate
+pub rdlt::OnTruncate::Apply
+pub rdlt::OnTruncate::Ignore
+impl core::clone::Clone for rdlt::OnTruncate
+pub fn rdlt::OnTruncate::clone(&self) -> rdlt::OnTruncate
+impl core::cmp::Eq for rdlt::OnTruncate
+impl core::cmp::PartialEq for rdlt::OnTruncate
+pub fn rdlt::OnTruncate::eq(&self, &rdlt::OnTruncate) -> bool
+impl core::fmt::Debug for rdlt::OnTruncate
+pub fn rdlt::OnTruncate::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for rdlt::OnTruncate
+impl core::marker::StructuralPartialEq for rdlt::OnTruncate
+impl schemars::JsonSchema for rdlt::OnTruncate
+pub fn rdlt::OnTruncate::inline_schema() -> bool
+pub fn rdlt::OnTruncate::json_schema(&mut schemars::generate::SchemaGenerator) -> schemars::schema::Schema
+pub fn rdlt::OnTruncate::schema_id() -> alloc::borrow::Cow<'static, str>
+pub fn rdlt::OnTruncate::schema_name() -> alloc::borrow::Cow<'static, str>
+impl serde_core::ser::Serialize for rdlt::OnTruncate
+pub fn rdlt::OnTruncate::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for rdlt::OnTruncate
+pub fn rdlt::OnTruncate::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+impl core::marker::Freeze for rdlt::OnTruncate
+impl core::marker::Send for rdlt::OnTruncate
+impl core::marker::Sync for rdlt::OnTruncate
+impl core::marker::Unpin for rdlt::OnTruncate
+impl core::marker::UnsafeUnpin for rdlt::OnTruncate
+impl core::panic::unwind_safe::RefUnwindSafe for rdlt::OnTruncate
+impl core::panic::unwind_safe::UnwindSafe for rdlt::OnTruncate
+#[non_exhaustive] pub enum rdlt::OnUnsupported
+pub rdlt::OnUnsupported::Refuse
+pub rdlt::OnUnsupported::VariantColumn
+impl core::clone::Clone for rdlt::OnUnsupported
+pub fn rdlt::OnUnsupported::clone(&self) -> rdlt::OnUnsupported
+impl core::cmp::Eq for rdlt::OnUnsupported
+impl core::cmp::PartialEq for rdlt::OnUnsupported
+pub fn rdlt::OnUnsupported::eq(&self, &rdlt::OnUnsupported) -> bool
+impl core::fmt::Debug for rdlt::OnUnsupported
+pub fn rdlt::OnUnsupported::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for rdlt::OnUnsupported
+impl core::marker::StructuralPartialEq for rdlt::OnUnsupported
+impl schemars::JsonSchema for rdlt::OnUnsupported
+pub fn rdlt::OnUnsupported::inline_schema() -> bool
+pub fn rdlt::OnUnsupported::json_schema(&mut schemars::generate::SchemaGenerator) -> schemars::schema::Schema
+pub fn rdlt::OnUnsupported::schema_id() -> alloc::borrow::Cow<'static, str>
+pub fn rdlt::OnUnsupported::schema_name() -> alloc::borrow::Cow<'static, str>
+impl serde_core::ser::Serialize for rdlt::OnUnsupported
+pub fn rdlt::OnUnsupported::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for rdlt::OnUnsupported
+pub fn rdlt::OnUnsupported::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+impl core::marker::Freeze for rdlt::OnUnsupported
+impl core::marker::Send for rdlt::OnUnsupported
+impl core::marker::Sync for rdlt::OnUnsupported
+impl core::marker::Unpin for rdlt::OnUnsupported
+impl core::marker::UnsafeUnpin for rdlt::OnUnsupported
+impl core::panic::unwind_safe::RefUnwindSafe for rdlt::OnUnsupported
+impl core::panic::unwind_safe::UnwindSafe for rdlt::OnUnsupported
+#[non_exhaustive] pub enum rdlt::Placement
+pub rdlt::Placement::InProcess
+pub rdlt::Placement::Process
+pub rdlt::Placement::Process::path: std::path::PathBuf
+pub rdlt::Placement::Remote
+pub rdlt::Placement::Remote::endpoint: alloc::string::String
+impl core::clone::Clone for rdlt::Placement
+pub fn rdlt::Placement::clone(&self) -> rdlt::Placement
+impl core::cmp::Eq for rdlt::Placement
+impl core::cmp::PartialEq for rdlt::Placement
+pub fn rdlt::Placement::eq(&self, &rdlt::Placement) -> bool
+impl core::fmt::Debug for rdlt::Placement
+pub fn rdlt::Placement::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for rdlt::Placement
+impl serde_core::ser::Serialize for rdlt::Placement
+pub fn rdlt::Placement::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl core::marker::Freeze for rdlt::Placement
+impl core::marker::Send for rdlt::Placement
+impl core::marker::Sync for rdlt::Placement
+impl core::marker::Unpin for rdlt::Placement
+impl core::marker::UnsafeUnpin for rdlt::Placement
+impl core::panic::unwind_safe::RefUnwindSafe for rdlt::Placement
+impl core::panic::unwind_safe::UnwindSafe for rdlt::Placement
+#[non_exhaustive] pub enum rdlt::ReadMode
+pub rdlt::ReadMode::Cdc
+pub rdlt::ReadMode::Full
+pub rdlt::ReadMode::Incremental
+impl core::clone::Clone for rdlt::ReadMode
+pub fn rdlt::ReadMode::clone(&self) -> rdlt::ReadMode
+impl core::cmp::Eq for rdlt::ReadMode
+impl core::cmp::PartialEq for rdlt::ReadMode
+pub fn rdlt::ReadMode::eq(&self, &rdlt::ReadMode) -> bool
+impl core::fmt::Debug for rdlt::ReadMode
+pub fn rdlt::ReadMode::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for rdlt::ReadMode
+impl core::marker::StructuralPartialEq for rdlt::ReadMode
+impl schemars::JsonSchema for rdlt::ReadMode
+pub fn rdlt::ReadMode::inline_schema() -> bool
+pub fn rdlt::ReadMode::json_schema(&mut schemars::generate::SchemaGenerator) -> schemars::schema::Schema
+pub fn rdlt::ReadMode::schema_id() -> alloc::borrow::Cow<'static, str>
+pub fn rdlt::ReadMode::schema_name() -> alloc::borrow::Cow<'static, str>
+impl serde_core::ser::Serialize for rdlt::ReadMode
+pub fn rdlt::ReadMode::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for rdlt::ReadMode
+pub fn rdlt::ReadMode::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+impl core::marker::Freeze for rdlt::ReadMode
+impl core::marker::Send for rdlt::ReadMode
+impl core::marker::Sync for rdlt::ReadMode
+impl core::marker::Unpin for rdlt::ReadMode
+impl core::marker::UnsafeUnpin for rdlt::ReadMode
+impl core::panic::unwind_safe::RefUnwindSafe for rdlt::ReadMode
+impl core::panic::unwind_safe::UnwindSafe for rdlt::ReadMode
+#[non_exhaustive] pub enum rdlt::RetentionLoss
+pub rdlt::RetentionLoss::Fail
+pub rdlt::RetentionLoss::Reset
+impl core::clone::Clone for rdlt::RetentionLoss
+pub fn rdlt::RetentionLoss::clone(&self) -> rdlt::RetentionLoss
+impl core::cmp::Eq for rdlt::RetentionLoss
+impl core::cmp::PartialEq for rdlt::RetentionLoss
+pub fn rdlt::RetentionLoss::eq(&self, &rdlt::RetentionLoss) -> bool
+impl core::fmt::Debug for rdlt::RetentionLoss
+pub fn rdlt::RetentionLoss::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for rdlt::RetentionLoss
+impl core::marker::StructuralPartialEq for rdlt::RetentionLoss
+impl schemars::JsonSchema for rdlt::RetentionLoss
+pub fn rdlt::RetentionLoss::inline_schema() -> bool
+pub fn rdlt::RetentionLoss::json_schema(&mut schemars::generate::SchemaGenerator) -> schemars::schema::Schema
+pub fn rdlt::RetentionLoss::schema_id() -> alloc::borrow::Cow<'static, str>
+pub fn rdlt::RetentionLoss::schema_name() -> alloc::borrow::Cow<'static, str>
+impl serde_core::ser::Serialize for rdlt::RetentionLoss
+pub fn rdlt::RetentionLoss::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for rdlt::RetentionLoss
+pub fn rdlt::RetentionLoss::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+impl core::marker::Freeze for rdlt::RetentionLoss
+impl core::marker::Send for rdlt::RetentionLoss
+impl core::marker::Sync for rdlt::RetentionLoss
+impl core::marker::Unpin for rdlt::RetentionLoss
+impl core::marker::UnsafeUnpin for rdlt::RetentionLoss
+impl core::panic::unwind_safe::RefUnwindSafe for rdlt::RetentionLoss
+impl core::panic::unwind_safe::UnwindSafe for rdlt::RetentionLoss
+#[non_exhaustive] pub enum rdlt::SchemaPolicy
+pub rdlt::SchemaPolicy::DiscardRow
+pub rdlt::SchemaPolicy::DiscardValue
+pub rdlt::SchemaPolicy::Evolve
+pub rdlt::SchemaPolicy::Freeze
+impl core::clone::Clone for rdlt::SchemaPolicy
+pub fn rdlt::SchemaPolicy::clone(&self) -> rdlt::SchemaPolicy
+impl core::cmp::Eq for rdlt::SchemaPolicy
+impl core::cmp::PartialEq for rdlt::SchemaPolicy
+pub fn rdlt::SchemaPolicy::eq(&self, &rdlt::SchemaPolicy) -> bool
+impl core::fmt::Debug for rdlt::SchemaPolicy
+pub fn rdlt::SchemaPolicy::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for rdlt::SchemaPolicy
+impl core::marker::StructuralPartialEq for rdlt::SchemaPolicy
+impl schemars::JsonSchema for rdlt::SchemaPolicy
+pub fn rdlt::SchemaPolicy::inline_schema() -> bool
+pub fn rdlt::SchemaPolicy::json_schema(&mut schemars::generate::SchemaGenerator) -> schemars::schema::Schema
+pub fn rdlt::SchemaPolicy::schema_id() -> alloc::borrow::Cow<'static, str>
+pub fn rdlt::SchemaPolicy::schema_name() -> alloc::borrow::Cow<'static, str>
+impl serde_core::ser::Serialize for rdlt::SchemaPolicy
+pub fn rdlt::SchemaPolicy::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for rdlt::SchemaPolicy
+pub fn rdlt::SchemaPolicy::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+impl core::marker::Freeze for rdlt::SchemaPolicy
+impl core::marker::Send for rdlt::SchemaPolicy
+impl core::marker::Sync for rdlt::SchemaPolicy
+impl core::marker::Unpin for rdlt::SchemaPolicy
+impl core::marker::UnsafeUnpin for rdlt::SchemaPolicy
+impl core::panic::unwind_safe::RefUnwindSafe for rdlt::SchemaPolicy
+impl core::panic::unwind_safe::UnwindSafe for rdlt::SchemaPolicy
+#[non_exhaustive] pub enum rdlt::TransformStep
+pub rdlt::TransformStep::Code(alloc::string::String)
+pub rdlt::TransformStep::Constant(alloc::vec::Vec<(alloc::string::String, rdlt_engine::transform::op::Literal)>)
+pub rdlt::TransformStep::Mask(rdlt::MaskStep)
+pub rdlt::TransformStep::Rename(alloc::vec::Vec<(alloc::string::String, alloc::string::String)>)
+pub rdlt::TransformStep::Sql(alloc::string::String)
+impl rdlt::TransformStep
+pub fn rdlt::TransformStep::constant(impl core::iter::traits::collect::IntoIterator<Item = (impl core::convert::Into<alloc::string::String>, rdlt_engine::transform::op::Literal)>) -> Self
+pub fn rdlt::TransformStep::rename(impl core::iter::traits::collect::IntoIterator<Item = (impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>)>) -> Self
+impl core::clone::Clone for rdlt::TransformStep
+pub fn rdlt::TransformStep::clone(&self) -> rdlt::TransformStep
+impl core::cmp::Eq for rdlt::TransformStep
+impl core::cmp::PartialEq for rdlt::TransformStep
+pub fn rdlt::TransformStep::eq(&self, &rdlt::TransformStep) -> bool
+impl core::fmt::Debug for rdlt::TransformStep
+pub fn rdlt::TransformStep::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for rdlt::TransformStep
+impl schemars::JsonSchema for rdlt::TransformStep
+pub fn rdlt::TransformStep::inline_schema() -> bool
+pub fn rdlt::TransformStep::json_schema(&mut schemars::generate::SchemaGenerator) -> schemars::schema::Schema
+pub fn rdlt::TransformStep::schema_id() -> alloc::borrow::Cow<'static, str>
+pub fn rdlt::TransformStep::schema_name() -> alloc::borrow::Cow<'static, str>
+impl serde_core::ser::Serialize for rdlt::TransformStep
+pub fn rdlt::TransformStep::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for rdlt::TransformStep
+pub fn rdlt::TransformStep::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+impl core::marker::Freeze for rdlt::TransformStep
+impl core::marker::Send for rdlt::TransformStep
+impl core::marker::Sync for rdlt::TransformStep
+impl core::marker::Unpin for rdlt::TransformStep
+impl core::marker::UnsafeUnpin for rdlt::TransformStep
+impl core::panic::unwind_safe::RefUnwindSafe for rdlt::TransformStep
+impl core::panic::unwind_safe::UnwindSafe for rdlt::TransformStep
+#[non_exhaustive] pub enum rdlt::Until
+pub rdlt::Until::Exhausted
+pub rdlt::Until::For(core::time::Duration)
+pub rdlt::Until::Forever
+impl rdlt::Until
+pub fn rdlt::Until::is_exhausted(&self) -> bool
+impl core::clone::Clone for rdlt::Until
+pub fn rdlt::Until::clone(&self) -> rdlt::Until
+impl core::cmp::Eq for rdlt::Until
+impl core::cmp::PartialEq for rdlt::Until
+pub fn rdlt::Until::eq(&self, &rdlt::Until) -> bool
+impl core::default::Default for rdlt::Until
+pub fn rdlt::Until::default() -> rdlt::Until
+impl core::fmt::Debug for rdlt::Until
+pub fn rdlt::Until::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for rdlt::Until
+impl core::marker::StructuralPartialEq for rdlt::Until
+impl schemars::JsonSchema for rdlt::Until
+pub fn rdlt::Until::json_schema(&mut schemars::generate::SchemaGenerator) -> schemars::schema::Schema
+pub fn rdlt::Until::schema_name() -> alloc::borrow::Cow<'static, str>
+impl serde_core::ser::Serialize for rdlt::Until
+pub fn rdlt::Until::serialize<S: serde_core::ser::Serializer>(&self, S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+impl<'de> serde_core::de::Deserialize<'de> for rdlt::Until
+pub fn rdlt::Until::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+impl core::marker::Freeze for rdlt::Until
+impl core::marker::Send for rdlt::Until
+impl core::marker::Sync for rdlt::Until
+impl core::marker::Unpin for rdlt::Until
+impl core::marker::UnsafeUnpin for rdlt::Until
+impl core::panic::unwind_safe::RefUnwindSafe for rdlt::Until
+impl core::panic::unwind_safe::UnwindSafe for rdlt::Until
+#[non_exhaustive] pub enum rdlt::WriteMode
+pub rdlt::WriteMode::Append
+pub rdlt::WriteMode::History
+pub rdlt::WriteMode::History::key: alloc::vec::Vec<alloc::string::String>
+pub rdlt::WriteMode::Merge
+pub rdlt::WriteMode::Merge::key: alloc::vec::Vec<alloc::string::String>
+pub rdlt::WriteMode::Replace
+impl rdlt::WriteMode
+pub fn rdlt::WriteMode::history(impl core::iter::traits::collect::IntoIterator<Item = impl core::convert::Into<alloc::string::String>>) -> Self
+pub fn rdlt::WriteMode::merge(impl core::iter::traits::collect::IntoIterator<Item = impl core::convert::Into<alloc::string::String>>) -> Self
+impl core::clone::Clone for rdlt::WriteMode
+pub fn rdlt::WriteMode::clone(&self) -> rdlt::WriteMode
+impl core::cmp::Eq for rdlt::WriteMode
+impl core::cmp::PartialEq for rdlt::WriteMode
+pub fn rdlt::WriteMode::eq(&self, &rdlt::WriteMode) -> bool
+impl core::fmt::Debug for rdlt::WriteMode
+pub fn rdlt::WriteMode::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for rdlt::WriteMode
+impl schemars::JsonSchema for rdlt::WriteMode
+pub fn rdlt::WriteMode::json_schema(&mut schemars::generate::SchemaGenerator) -> schemars::schema::Schema
+pub fn rdlt::WriteMode::schema_name() -> alloc::borrow::Cow<'static, str>
+impl serde_core::ser::Serialize for rdlt::WriteMode
+pub fn rdlt::WriteMode::serialize<S: serde_core::ser::Serializer>(&self, S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+impl<'de> serde_core::de::Deserialize<'de> for rdlt::WriteMode
+pub fn rdlt::WriteMode::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+impl core::marker::Freeze for rdlt::WriteMode
+impl core::marker::Send for rdlt::WriteMode
+impl core::marker::Sync for rdlt::WriteMode
+impl core::marker::Unpin for rdlt::WriteMode
+impl core::marker::UnsafeUnpin for rdlt::WriteMode
+impl core::panic::unwind_safe::RefUnwindSafe for rdlt::WriteMode
+impl core::panic::unwind_safe::UnwindSafe for rdlt::WriteMode
+#[non_exhaustive] pub struct rdlt::Access
+pub rdlt::Access::network: bool
+pub rdlt::Access::read: alloc::vec::Vec<std::path::PathBuf>
+pub rdlt::Access::write: alloc::vec::Vec<std::path::PathBuf>
+impl rdlt::Access
+pub fn rdlt::Access::is_empty(&self) -> bool
+pub fn rdlt::Access::network(self) -> Self
+pub fn rdlt::Access::new() -> Self
+pub fn rdlt::Access::read(self, impl core::convert::Into<std::path::PathBuf>) -> Self
+pub fn rdlt::Access::write(self, impl core::convert::Into<std::path::PathBuf>) -> Self
+impl core::clone::Clone for rdlt::Access
+pub fn rdlt::Access::clone(&self) -> rdlt::Access
+impl core::cmp::Eq for rdlt::Access
+impl core::cmp::PartialEq for rdlt::Access
+pub fn rdlt::Access::eq(&self, &rdlt::Access) -> bool
+impl core::default::Default for rdlt::Access
+pub fn rdlt::Access::default() -> rdlt::Access
+impl core::fmt::Debug for rdlt::Access
+pub fn rdlt::Access::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for rdlt::Access
+impl schemars::JsonSchema for rdlt::Access
+pub fn rdlt::Access::inline_schema() -> bool
+pub fn rdlt::Access::json_schema(&mut schemars::generate::SchemaGenerator) -> schemars::schema::Schema
+pub fn rdlt::Access::schema_id() -> alloc::borrow::Cow<'static, str>
+pub fn rdlt::Access::schema_name() -> alloc::borrow::Cow<'static, str>
+impl serde_core::ser::Serialize for rdlt::Access
+pub fn rdlt::Access::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for rdlt::Access
+pub fn rdlt::Access::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for rdlt::Access
+impl core::marker::Send for rdlt::Access
+impl core::marker::Sync for rdlt::Access
+impl core::marker::Unpin for rdlt::Access
+impl core::marker::UnsafeUnpin for rdlt::Access
+impl core::panic::unwind_safe::RefUnwindSafe for rdlt::Access
+impl core::panic::unwind_safe::UnwindSafe for rdlt::Access
+#[non_exhaustive] pub struct rdlt::Checked
+pub rdlt::Checked::destination: rdlt::PlacedConnector
+pub rdlt::Checked::pipeline: alloc::string::String
+pub rdlt::Checked::source: rdlt::PlacedConnector
+pub rdlt::Checked::streams: alloc::vec::Vec<alloc::string::String>
+impl core::clone::Clone for rdlt::Checked
+pub fn rdlt::Checked::clone(&self) -> rdlt::Checked
+impl core::cmp::Eq for rdlt::Checked
+impl core::cmp::PartialEq for rdlt::Checked
+pub fn rdlt::Checked::eq(&self, &rdlt::Checked) -> bool
+impl core::fmt::Debug for rdlt::Checked
+pub fn rdlt::Checked::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for rdlt::Checked
+impl serde_core::ser::Serialize for rdlt::Checked
+pub fn rdlt::Checked::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl core::marker::Freeze for rdlt::Checked
+impl core::marker::Send for rdlt::Checked
+impl core::marker::Sync for rdlt::Checked
+impl core::marker::Unpin for rdlt::Checked
+impl core::marker::UnsafeUnpin for rdlt::Checked
+impl core::panic::unwind_safe::RefUnwindSafe for rdlt::Checked
+impl core::panic::unwind_safe::UnwindSafe for rdlt::Checked
+#[non_exhaustive] pub struct rdlt::Column
+pub rdlt::Column::hint: core::option::Option<rdlt::Hint>
+pub rdlt::Column::nested: core::option::Option<rdlt::Nested>
+pub rdlt::Column::on_unsupported: core::option::Option<rdlt::OnUnsupported>
+pub rdlt::Column::policy: core::option::Option<rdlt::SchemaPolicy>
+impl rdlt::Column
+pub fn rdlt::Column::hint(self, rdlt::Hint) -> Self
+pub fn rdlt::Column::nested(self, rdlt::Nested) -> Self
+pub fn rdlt::Column::new() -> Self
+pub fn rdlt::Column::on_unsupported(self, rdlt::OnUnsupported) -> Self
+pub fn rdlt::Column::policy(self, rdlt::SchemaPolicy) -> Self
+impl core::clone::Clone for rdlt::Column
+pub fn rdlt::Column::clone(&self) -> rdlt::Column
+impl core::cmp::Eq for rdlt::Column
+impl core::cmp::PartialEq for rdlt::Column
+pub fn rdlt::Column::eq(&self, &rdlt::Column) -> bool
+impl core::default::Default for rdlt::Column
+pub fn rdlt::Column::default() -> rdlt::Column
+impl core::fmt::Debug for rdlt::Column
+pub fn rdlt::Column::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for rdlt::Column
+impl core::marker::StructuralPartialEq for rdlt::Column
+impl schemars::JsonSchema for rdlt::Column
+pub fn rdlt::Column::inline_schema() -> bool
+pub fn rdlt::Column::json_schema(&mut schemars::generate::SchemaGenerator) -> schemars::schema::Schema
+pub fn rdlt::Column::schema_id() -> alloc::borrow::Cow<'static, str>
+pub fn rdlt::Column::schema_name() -> alloc::borrow::Cow<'static, str>
+impl serde_core::ser::Serialize for rdlt::Column
+pub fn rdlt::Column::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for rdlt::Column
+pub fn rdlt::Column::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for rdlt::Column
+impl core::marker::Send for rdlt::Column
+impl core::marker::Sync for rdlt::Column
+impl core::marker::Unpin for rdlt::Column
+impl core::marker::UnsafeUnpin for rdlt::Column
+impl core::panic::unwind_safe::RefUnwindSafe for rdlt::Column
+impl core::panic::unwind_safe::UnwindSafe for rdlt::Column
+#[non_exhaustive] pub struct rdlt::Commit
+pub rdlt::Commit::bytes: core::option::Option<u64>
+pub rdlt::Commit::every: core::option::Option<core::time::Duration>
+pub rdlt::Commit::rows: core::option::Option<u64>
+impl rdlt::Commit
+pub fn rdlt::Commit::bytes(self, u64) -> Self
+pub fn rdlt::Commit::every(self, core::time::Duration) -> Self
+pub fn rdlt::Commit::new() -> Self
+pub fn rdlt::Commit::rows(self, u64) -> Self
+impl core::clone::Clone for rdlt::Commit
+pub fn rdlt::Commit::clone(&self) -> rdlt::Commit
+impl core::cmp::Eq for rdlt::Commit
+impl core::cmp::PartialEq for rdlt::Commit
+pub fn rdlt::Commit::eq(&self, &rdlt::Commit) -> bool
+impl core::default::Default for rdlt::Commit
+pub fn rdlt::Commit::default() -> rdlt::Commit
+impl core::fmt::Debug for rdlt::Commit
+pub fn rdlt::Commit::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for rdlt::Commit
+impl core::marker::StructuralPartialEq for rdlt::Commit
+impl schemars::JsonSchema for rdlt::Commit
+pub fn rdlt::Commit::inline_schema() -> bool
+pub fn rdlt::Commit::json_schema(&mut schemars::generate::SchemaGenerator) -> schemars::schema::Schema
+pub fn rdlt::Commit::schema_id() -> alloc::borrow::Cow<'static, str>
+pub fn rdlt::Commit::schema_name() -> alloc::borrow::Cow<'static, str>
+impl serde_core::ser::Serialize for rdlt::Commit
+pub fn rdlt::Commit::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for rdlt::Commit
+pub fn rdlt::Commit::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for rdlt::Commit
+impl core::marker::Send for rdlt::Commit
+impl core::marker::Sync for rdlt::Commit
+impl core::marker::Unpin for rdlt::Commit
+impl core::marker::UnsafeUnpin for rdlt::Commit
+impl core::panic::unwind_safe::RefUnwindSafe for rdlt::Commit
+impl core::panic::unwind_safe::UnwindSafe for rdlt::Commit
+#[non_exhaustive] pub struct rdlt::ConnectorReference
+pub rdlt::ConnectorReference::digest: core::option::Option<alloc::string::String>
+pub rdlt::ConnectorReference::endpoint: core::option::Option<alloc::string::String>
+pub rdlt::ConnectorReference::id: alloc::string::String
+pub rdlt::ConnectorReference::version: core::option::Option<alloc::string::String>
+impl core::clone::Clone for rdlt::ConnectorReference
+pub fn rdlt::ConnectorReference::clone(&self) -> rdlt::ConnectorReference
+impl core::cmp::Eq for rdlt::ConnectorReference
+impl core::cmp::PartialEq for rdlt::ConnectorReference
+pub fn rdlt::ConnectorReference::eq(&self, &rdlt::ConnectorReference) -> bool
+impl core::fmt::Debug for rdlt::ConnectorReference
+pub fn rdlt::ConnectorReference::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for rdlt::ConnectorReference
+impl schemars::JsonSchema for rdlt::ConnectorReference
+pub fn rdlt::ConnectorReference::inline_schema() -> bool
+pub fn rdlt::ConnectorReference::json_schema(&mut schemars::generate::SchemaGenerator) -> schemars::schema::Schema
+pub fn rdlt::ConnectorReference::schema_id() -> alloc::borrow::Cow<'static, str>
+pub fn rdlt::ConnectorReference::schema_name() -> alloc::borrow::Cow<'static, str>
+impl serde_core::ser::Serialize for rdlt::ConnectorReference
+pub fn rdlt::ConnectorReference::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for rdlt::ConnectorReference
+pub fn rdlt::ConnectorReference::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for rdlt::ConnectorReference
+impl core::marker::Send for rdlt::ConnectorReference
+impl core::marker::Sync for rdlt::ConnectorReference
+impl core::marker::Unpin for rdlt::ConnectorReference
+impl core::marker::UnsafeUnpin for rdlt::ConnectorReference
+impl core::panic::unwind_safe::RefUnwindSafe for rdlt::ConnectorReference
+impl core::panic::unwind_safe::UnwindSafe for rdlt::ConnectorReference
+#[non_exhaustive] pub struct rdlt::Defaults
+pub rdlt::Defaults::nested: core::option::Option<rdlt::Nested>
+pub rdlt::Defaults::read: core::option::Option<rdlt::ReadMode>
+pub rdlt::Defaults::schema: core::option::Option<rdlt::SchemaRules>
+pub rdlt::Defaults::write: core::option::Option<rdlt::WriteMode>
+impl rdlt::Defaults
+pub fn rdlt::Defaults::is_empty(&self) -> bool
+pub fn rdlt::Defaults::nested(self, rdlt::Nested) -> Self
+pub fn rdlt::Defaults::new() -> Self
+pub fn rdlt::Defaults::read(self, rdlt::ReadMode) -> Self
+pub fn rdlt::Defaults::schema(self, rdlt::SchemaRules) -> Self
+pub fn rdlt::Defaults::write(self, rdlt::WriteMode) -> Self
+impl core::clone::Clone for rdlt::Defaults
+pub fn rdlt::Defaults::clone(&self) -> rdlt::Defaults
+impl core::cmp::Eq for rdlt::Defaults
+impl core::cmp::PartialEq for rdlt::Defaults
+pub fn rdlt::Defaults::eq(&self, &rdlt::Defaults) -> bool
+impl core::default::Default for rdlt::Defaults
+pub fn rdlt::Defaults::default() -> rdlt::Defaults
+impl core::fmt::Debug for rdlt::Defaults
+pub fn rdlt::Defaults::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for rdlt::Defaults
+impl schemars::JsonSchema for rdlt::Defaults
+pub fn rdlt::Defaults::inline_schema() -> bool
+pub fn rdlt::Defaults::json_schema(&mut schemars::generate::SchemaGenerator) -> schemars::schema::Schema
+pub fn rdlt::Defaults::schema_id() -> alloc::borrow::Cow<'static, str>
+pub fn rdlt::Defaults::schema_name() -> alloc::borrow::Cow<'static, str>
+impl serde_core::ser::Serialize for rdlt::Defaults
+pub fn rdlt::Defaults::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for rdlt::Defaults
+pub fn rdlt::Defaults::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for rdlt::Defaults
+impl core::marker::Send for rdlt::Defaults
+impl core::marker::Sync for rdlt::Defaults
+impl core::marker::Unpin for rdlt::Defaults
+impl core::marker::UnsafeUnpin for rdlt::Defaults
+impl core::panic::unwind_safe::RefUnwindSafe for rdlt::Defaults
+impl core::panic::unwind_safe::UnwindSafe for rdlt::Defaults
+#[non_exhaustive] pub struct rdlt::Document
+pub rdlt::Document::commit: core::option::Option<rdlt::Commit>
+pub rdlt::Document::defaults: rdlt::Defaults
+pub rdlt::Document::destination: rdlt::Side
+pub rdlt::Document::pipeline: alloc::string::String
+pub rdlt::Document::resources: rdlt::Resources
+pub rdlt::Document::retry: core::option::Option<rdlt::Retry>
+pub rdlt::Document::source: rdlt::Side
+pub rdlt::Document::streams: alloc::vec::Vec<rdlt::Stream>
+pub rdlt::Document::until: rdlt::Until
+pub rdlt::Document::version: u8
+impl rdlt::Document
+pub fn rdlt::Document::json_schema() -> serde_json::value::Value
+pub fn rdlt::Document::new(impl core::convert::Into<alloc::string::String>, rdlt::Side, rdlt::Side) -> Self
+impl core::clone::Clone for rdlt::Document
+pub fn rdlt::Document::clone(&self) -> rdlt::Document
+impl core::cmp::PartialEq for rdlt::Document
+pub fn rdlt::Document::eq(&self, &rdlt::Document) -> bool
+impl core::fmt::Debug for rdlt::Document
+pub fn rdlt::Document::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for rdlt::Document
+impl schemars::JsonSchema for rdlt::Document
+pub fn rdlt::Document::inline_schema() -> bool
+pub fn rdlt::Document::json_schema(&mut schemars::generate::SchemaGenerator) -> schemars::schema::Schema
+pub fn rdlt::Document::schema_id() -> alloc::borrow::Cow<'static, str>
+pub fn rdlt::Document::schema_name() -> alloc::borrow::Cow<'static, str>
+impl serde_core::ser::Serialize for rdlt::Document
+pub fn rdlt::Document::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for rdlt::Document
+pub fn rdlt::Document::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for rdlt::Document
+impl core::marker::Send for rdlt::Document
+impl core::marker::Sync for rdlt::Document
+impl core::marker::Unpin for rdlt::Document
+impl core::marker::UnsafeUnpin for rdlt::Document
+impl core::panic::unwind_safe::RefUnwindSafe for rdlt::Document
+impl core::panic::unwind_safe::UnwindSafe for rdlt::Document
+pub struct rdlt::Error(_)
+impl rdlt::Error
+pub fn rdlt::Error::code(&self) -> core::option::Option<rdlt_engine::error::codes::Code>
+pub fn rdlt::Error::connector_code(&self) -> core::option::Option<&str>
+pub fn rdlt::Error::is_retryable(&self) -> bool
+pub fn rdlt::Error::kind(&self) -> rdlt_engine::error::ErrorKind
+pub fn rdlt::Error::origin(&self) -> rdlt_engine::error::Origin
+pub fn rdlt::Error::report(&self) -> rdlt_engine::error::ErrorReport
+pub fn rdlt::Error::stream(&self) -> core::option::Option<&str>
+impl core::error::Error for rdlt::Error
+pub fn rdlt::Error::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+impl core::fmt::Debug for rdlt::Error
+pub fn rdlt::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for rdlt::Error
+pub fn rdlt::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for rdlt::Error
+impl core::marker::Send for rdlt::Error
+impl core::marker::Sync for rdlt::Error
+impl core::marker::Unpin for rdlt::Error
+impl core::marker::UnsafeUnpin for rdlt::Error
+impl !core::panic::unwind_safe::RefUnwindSafe for rdlt::Error
+impl !core::panic::unwind_safe::UnwindSafe for rdlt::Error
+pub struct rdlt::Events
+impl rdlt::Events
+pub async fn rdlt::Events::next(&mut self) -> core::option::Option<core::result::Result<rdlt_engine::event::Event, rdlt::Lagged>>
+impl core::fmt::Debug for rdlt::Events
+pub fn rdlt::Events::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl futures_core::stream::Stream for rdlt::Events
+pub type rdlt::Events::Item = core::result::Result<rdlt_engine::event::Event, rdlt::Lagged>
+pub fn rdlt::Events::poll_next(core::pin::Pin<&mut Self>, &mut core::task::wake::Context<'_>) -> core::task::poll::Poll<core::option::Option<Self::Item>>
+impl core::marker::Freeze for rdlt::Events
+impl core::marker::Send for rdlt::Events
+impl core::marker::Sync for rdlt::Events
+impl core::marker::Unpin for rdlt::Events
+impl core::marker::UnsafeUnpin for rdlt::Events
+impl !core::panic::unwind_safe::RefUnwindSafe for rdlt::Events
+impl !core::panic::unwind_safe::UnwindSafe for rdlt::Events
+pub struct rdlt::Host
+impl rdlt::Host
+pub fn rdlt::Host::allow_env(self, impl core::iter::traits::collect::IntoIterator<Item = impl core::convert::Into<alloc::string::String>>) -> Self
+pub fn rdlt::Host::allow_files(self, impl core::iter::traits::collect::IntoIterator<Item = impl core::convert::Into<std::path::PathBuf>>) -> Self
+pub fn rdlt::Host::always_readable(self, impl core::convert::Into<std::path::PathBuf>) -> Self
+pub fn rdlt::Host::connectors(self, impl core::convert::Into<std::path::PathBuf>) -> Self
+pub fn rdlt::Host::destination<C: rdlt_connector::destination::DestinationConnector>(self) -> Self
+pub fn rdlt::Host::destination_factory(self, alloc::sync::Arc<dyn rdlt_connector::destination::DestinationFactory>) -> Self
+pub fn rdlt::Host::new() -> Self
+pub fn rdlt::Host::readable(self, impl core::convert::Into<std::path::PathBuf>) -> Self
+pub fn rdlt::Host::remote(self, rdlt::Tls) -> Self
+pub fn rdlt::Host::secret_store(self, impl rdlt_host::secrets::resolve::SecretResolver + 'static) -> Self
+pub fn rdlt::Host::source<C: rdlt_connector::source::SourceConnector>(self) -> Self
+pub fn rdlt::Host::source_factory(self, alloc::sync::Arc<dyn rdlt_connector::source::SourceFactory>) -> Self
+pub async fn rdlt::Host::spec(&self, &rdlt::Connector, rdlt_connector::spec::Role) -> core::result::Result<rdlt_connector::spec::ConnectorSpec, rdlt::Error>
+pub fn rdlt::Host::transform(self, impl core::convert::Into<alloc::string::String>, impl rdlt_engine::transform::Transform) -> Self
+pub fn rdlt::Host::trust_binaries(self) -> Self
+pub fn rdlt::Host::writable(self, impl core::convert::Into<std::path::PathBuf>) -> Self
+impl core::default::Default for rdlt::Host
+pub fn rdlt::Host::default() -> Self
+impl core::fmt::Debug for rdlt::Host
+pub fn rdlt::Host::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl !core::marker::Freeze for rdlt::Host
+impl core::marker::Send for rdlt::Host
+impl core::marker::Sync for rdlt::Host
+impl core::marker::Unpin for rdlt::Host
+impl core::marker::UnsafeUnpin for rdlt::Host
+impl !core::panic::unwind_safe::RefUnwindSafe for rdlt::Host
+impl !core::panic::unwind_safe::UnwindSafe for rdlt::Host
+#[non_exhaustive] pub struct rdlt::Lagged
+pub rdlt::Lagged::dropped: u64
+impl core::clone::Clone for rdlt::Lagged
+pub fn rdlt::Lagged::clone(&self) -> rdlt::Lagged
+impl core::cmp::Eq for rdlt::Lagged
+impl core::cmp::PartialEq for rdlt::Lagged
+pub fn rdlt::Lagged::eq(&self, &rdlt::Lagged) -> bool
+impl core::error::Error for rdlt::Lagged
+impl core::fmt::Debug for rdlt::Lagged
+pub fn rdlt::Lagged::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for rdlt::Lagged
+pub fn rdlt::Lagged::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for rdlt::Lagged
+impl core::marker::StructuralPartialEq for rdlt::Lagged
+impl serde_core::ser::Serialize for rdlt::Lagged
+pub fn rdlt::Lagged::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl core::marker::Freeze for rdlt::Lagged
+impl core::marker::Send for rdlt::Lagged
+impl core::marker::Sync for rdlt::Lagged
+impl core::marker::Unpin for rdlt::Lagged
+impl core::marker::UnsafeUnpin for rdlt::Lagged
+impl core::panic::unwind_safe::RefUnwindSafe for rdlt::Lagged
+impl core::panic::unwind_safe::UnwindSafe for rdlt::Lagged
+#[non_exhaustive] pub struct rdlt::MaskStep
+pub rdlt::MaskStep::columns: alloc::vec::Vec<alloc::string::String>
+pub rdlt::MaskStep::key: core::option::Option<alloc::string::String>
+pub rdlt::MaskStep::text: core::option::Option<alloc::string::String>
+pub rdlt::MaskStep::with: rdlt::MaskWith
+impl rdlt::MaskStep
+pub fn rdlt::MaskStep::key(self, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn rdlt::MaskStep::new(impl core::iter::traits::collect::IntoIterator<Item = impl core::convert::Into<alloc::string::String>>, rdlt::MaskWith) -> Self
+pub fn rdlt::MaskStep::text(self, impl core::convert::Into<alloc::string::String>) -> Self
+impl core::clone::Clone for rdlt::MaskStep
+pub fn rdlt::MaskStep::clone(&self) -> rdlt::MaskStep
+impl core::cmp::Eq for rdlt::MaskStep
+impl core::cmp::PartialEq for rdlt::MaskStep
+pub fn rdlt::MaskStep::eq(&self, &rdlt::MaskStep) -> bool
+impl core::fmt::Debug for rdlt::MaskStep
+pub fn rdlt::MaskStep::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for rdlt::MaskStep
+impl schemars::JsonSchema for rdlt::MaskStep
+pub fn rdlt::MaskStep::inline_schema() -> bool
+pub fn rdlt::MaskStep::json_schema(&mut schemars::generate::SchemaGenerator) -> schemars::schema::Schema
+pub fn rdlt::MaskStep::schema_id() -> alloc::borrow::Cow<'static, str>
+pub fn rdlt::MaskStep::schema_name() -> alloc::borrow::Cow<'static, str>
+impl serde_core::ser::Serialize for rdlt::MaskStep
+pub fn rdlt::MaskStep::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for rdlt::MaskStep
+pub fn rdlt::MaskStep::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for rdlt::MaskStep
+impl core::marker::Send for rdlt::MaskStep
+impl core::marker::Sync for rdlt::MaskStep
+impl core::marker::Unpin for rdlt::MaskStep
+impl core::marker::UnsafeUnpin for rdlt::MaskStep
+impl core::panic::unwind_safe::RefUnwindSafe for rdlt::MaskStep
+impl core::panic::unwind_safe::UnwindSafe for rdlt::MaskStep
+#[non_exhaustive] pub struct rdlt::Outcome
+pub rdlt::Outcome::error: core::option::Option<rdlt::Error>
+pub rdlt::Outcome::report: rdlt_engine::report::Report
+impl rdlt::Outcome
+pub fn rdlt::Outcome::status(&self) -> rdlt_engine::report::RunStatus
+impl core::fmt::Debug for rdlt::Outcome
+pub fn rdlt::Outcome::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for rdlt::Outcome
+impl core::marker::Send for rdlt::Outcome
+impl core::marker::Sync for rdlt::Outcome
+impl core::marker::Unpin for rdlt::Outcome
+impl core::marker::UnsafeUnpin for rdlt::Outcome
+impl !core::panic::unwind_safe::RefUnwindSafe for rdlt::Outcome
+impl !core::panic::unwind_safe::UnwindSafe for rdlt::Outcome
+pub struct rdlt::Pipeline
+impl rdlt::Pipeline
+pub fn rdlt::Pipeline::builder(impl core::convert::Into<alloc::string::String>, rdlt::Side, rdlt::Side) -> rdlt::PipelineBuilder
+pub async fn rdlt::Pipeline::check(&self) -> core::result::Result<rdlt::Checked, rdlt::Error>
+pub fn rdlt::Pipeline::destination(&self) -> &rdlt::PlacedConnector
+pub async fn rdlt::Pipeline::discover(&self) -> core::result::Result<rdlt_connector::catalog::Catalog, rdlt::Error>
+pub fn rdlt::Pipeline::document(&self) -> &rdlt::Document
+pub fn rdlt::Pipeline::from_document(rdlt::Document) -> rdlt::PipelineBuilder
+pub async fn rdlt::Pipeline::reset(&self, impl core::iter::traits::collect::IntoIterator<Item = impl core::convert::AsRef<str>>, rdlt_engine::run::reset::ResetScope) -> core::result::Result<rdlt_engine::run::reset::ResetReport, rdlt::Error>
+pub fn rdlt::Pipeline::source(&self) -> &rdlt::PlacedConnector
+pub fn rdlt::Pipeline::start(&self) -> rdlt::Run
+pub fn rdlt::Pipeline::with_event_buffer(self, core::num::nonzero::NonZeroUsize) -> Self
+impl core::fmt::Debug for rdlt::Pipeline
+pub fn rdlt::Pipeline::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for rdlt::Pipeline
+impl core::marker::Send for rdlt::Pipeline
+impl core::marker::Sync for rdlt::Pipeline
+impl core::marker::Unpin for rdlt::Pipeline
+impl core::marker::UnsafeUnpin for rdlt::Pipeline
+impl !core::panic::unwind_safe::RefUnwindSafe for rdlt::Pipeline
+impl !core::panic::unwind_safe::UnwindSafe for rdlt::Pipeline
+pub struct rdlt::PipelineBuilder
+impl rdlt::PipelineBuilder
+pub async fn rdlt::PipelineBuilder::build(self, &rdlt::Host) -> core::result::Result<rdlt::Pipeline, rdlt::Error>
+pub fn rdlt::PipelineBuilder::commit(self, rdlt::Commit) -> Self
+pub fn rdlt::PipelineBuilder::defaults(self, rdlt::Defaults) -> Self
+pub fn rdlt::PipelineBuilder::document(&self) -> &rdlt::Document
+pub fn rdlt::PipelineBuilder::resources(self, rdlt::Resources) -> Self
+pub fn rdlt::PipelineBuilder::retry(self, rdlt::Retry) -> Self
+pub fn rdlt::PipelineBuilder::stream(self, rdlt::Stream) -> Self
+pub fn rdlt::PipelineBuilder::until(self, rdlt::Until) -> Self
+impl core::clone::Clone for rdlt::PipelineBuilder
+pub fn rdlt::PipelineBuilder::clone(&self) -> rdlt::PipelineBuilder
+impl core::fmt::Debug for rdlt::PipelineBuilder
+pub fn rdlt::PipelineBuilder::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for rdlt::PipelineBuilder
+impl core::marker::Send for rdlt::PipelineBuilder
+impl core::marker::Sync for rdlt::PipelineBuilder
+impl core::marker::Unpin for rdlt::PipelineBuilder
+impl core::marker::UnsafeUnpin for rdlt::PipelineBuilder
+impl core::panic::unwind_safe::RefUnwindSafe for rdlt::PipelineBuilder
+impl core::panic::unwind_safe::UnwindSafe for rdlt::PipelineBuilder
+#[non_exhaustive] pub struct rdlt::PlacedConnector
+pub rdlt::PlacedConnector::id: alloc::string::String
+pub rdlt::PlacedConnector::placement: rdlt::Placement
+pub rdlt::PlacedConnector::version: alloc::string::String
+impl core::clone::Clone for rdlt::PlacedConnector
+pub fn rdlt::PlacedConnector::clone(&self) -> rdlt::PlacedConnector
+impl core::cmp::Eq for rdlt::PlacedConnector
+impl core::cmp::PartialEq for rdlt::PlacedConnector
+pub fn rdlt::PlacedConnector::eq(&self, &rdlt::PlacedConnector) -> bool
+impl core::fmt::Debug for rdlt::PlacedConnector
+pub fn rdlt::PlacedConnector::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for rdlt::PlacedConnector
+impl serde_core::ser::Serialize for rdlt::PlacedConnector
+pub fn rdlt::PlacedConnector::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl core::marker::Freeze for rdlt::PlacedConnector
+impl core::marker::Send for rdlt::PlacedConnector
+impl core::marker::Sync for rdlt::PlacedConnector
+impl core::marker::Unpin for rdlt::PlacedConnector
+impl core::marker::UnsafeUnpin for rdlt::PlacedConnector
+impl core::panic::unwind_safe::RefUnwindSafe for rdlt::PlacedConnector
+impl core::panic::unwind_safe::UnwindSafe for rdlt::PlacedConnector
+#[non_exhaustive] pub struct rdlt::Resources
+pub rdlt::Resources::memory: core::option::Option<u64>
+pub rdlt::Resources::partitions: core::option::Option<usize>
+pub rdlt::Resources::writers: core::option::Option<u16>
+impl rdlt::Resources
+pub fn rdlt::Resources::is_empty(&self) -> bool
+pub fn rdlt::Resources::memory(self, u64) -> Self
+pub fn rdlt::Resources::new() -> Self
+pub fn rdlt::Resources::partitions(self, usize) -> Self
+pub fn rdlt::Resources::writers(self, u16) -> Self
+impl core::clone::Clone for rdlt::Resources
+pub fn rdlt::Resources::clone(&self) -> rdlt::Resources
+impl core::cmp::Eq for rdlt::Resources
+impl core::cmp::PartialEq for rdlt::Resources
+pub fn rdlt::Resources::eq(&self, &rdlt::Resources) -> bool
+impl core::default::Default for rdlt::Resources
+pub fn rdlt::Resources::default() -> rdlt::Resources
+impl core::fmt::Debug for rdlt::Resources
+pub fn rdlt::Resources::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for rdlt::Resources
+impl core::marker::StructuralPartialEq for rdlt::Resources
+impl schemars::JsonSchema for rdlt::Resources
+pub fn rdlt::Resources::inline_schema() -> bool
+pub fn rdlt::Resources::json_schema(&mut schemars::generate::SchemaGenerator) -> schemars::schema::Schema
+pub fn rdlt::Resources::schema_id() -> alloc::borrow::Cow<'static, str>
+pub fn rdlt::Resources::schema_name() -> alloc::borrow::Cow<'static, str>
+impl serde_core::ser::Serialize for rdlt::Resources
+pub fn rdlt::Resources::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for rdlt::Resources
+pub fn rdlt::Resources::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for rdlt::Resources
+impl core::marker::Send for rdlt::Resources
+impl core::marker::Sync for rdlt::Resources
+impl core::marker::Unpin for rdlt::Resources
+impl core::marker::UnsafeUnpin for rdlt::Resources
+impl core::panic::unwind_safe::RefUnwindSafe for rdlt::Resources
+impl core::panic::unwind_safe::UnwindSafe for rdlt::Resources
+#[non_exhaustive] pub struct rdlt::Retry
+pub rdlt::Retry::initial: core::option::Option<core::time::Duration>
+pub rdlt::Retry::max_attempts: core::option::Option<u32>
+pub rdlt::Retry::max_delay: core::option::Option<core::time::Duration>
+impl rdlt::Retry
+pub fn rdlt::Retry::initial(self, core::time::Duration) -> Self
+pub fn rdlt::Retry::max_attempts(self, u32) -> Self
+pub fn rdlt::Retry::max_delay(self, core::time::Duration) -> Self
+pub fn rdlt::Retry::new() -> Self
+impl core::clone::Clone for rdlt::Retry
+pub fn rdlt::Retry::clone(&self) -> rdlt::Retry
+impl core::cmp::Eq for rdlt::Retry
+impl core::cmp::PartialEq for rdlt::Retry
+pub fn rdlt::Retry::eq(&self, &rdlt::Retry) -> bool
+impl core::default::Default for rdlt::Retry
+pub fn rdlt::Retry::default() -> rdlt::Retry
+impl core::fmt::Debug for rdlt::Retry
+pub fn rdlt::Retry::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for rdlt::Retry
+impl core::marker::StructuralPartialEq for rdlt::Retry
+impl schemars::JsonSchema for rdlt::Retry
+pub fn rdlt::Retry::inline_schema() -> bool
+pub fn rdlt::Retry::json_schema(&mut schemars::generate::SchemaGenerator) -> schemars::schema::Schema
+pub fn rdlt::Retry::schema_id() -> alloc::borrow::Cow<'static, str>
+pub fn rdlt::Retry::schema_name() -> alloc::borrow::Cow<'static, str>
+impl serde_core::ser::Serialize for rdlt::Retry
+pub fn rdlt::Retry::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for rdlt::Retry
+pub fn rdlt::Retry::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for rdlt::Retry
+impl core::marker::Send for rdlt::Retry
+impl core::marker::Sync for rdlt::Retry
+impl core::marker::Unpin for rdlt::Retry
+impl core::marker::UnsafeUnpin for rdlt::Retry
+impl core::panic::unwind_safe::RefUnwindSafe for rdlt::Retry
+impl core::panic::unwind_safe::UnwindSafe for rdlt::Retry
+pub struct rdlt::Run
+impl rdlt::Run
+pub fn rdlt::Run::control(&self) -> rdlt_engine::run::RunControl
+pub fn rdlt::Run::events(&self) -> rdlt::Events
+pub fn rdlt::Run::status(&self) -> rdlt_engine::status::Status
+pub fn rdlt::Run::stop(&self, rdlt_engine::run::StopMode)
+impl core::fmt::Debug for rdlt::Run
+pub fn rdlt::Run::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::future::future::Future for rdlt::Run
+pub type rdlt::Run::Output = rdlt::Outcome
+pub fn rdlt::Run::poll(core::pin::Pin<&mut Self>, &mut core::task::wake::Context<'_>) -> core::task::poll::Poll<rdlt::Outcome>
+impl core::marker::Freeze for rdlt::Run
+impl core::marker::Send for rdlt::Run
+impl !core::marker::Sync for rdlt::Run
+impl core::marker::Unpin for rdlt::Run
+impl core::marker::UnsafeUnpin for rdlt::Run
+impl !core::panic::unwind_safe::RefUnwindSafe for rdlt::Run
+impl !core::panic::unwind_safe::UnwindSafe for rdlt::Run
+#[non_exhaustive] pub struct rdlt::SchemaRules
+pub rdlt::SchemaRules::on_unsupported: core::option::Option<rdlt::OnUnsupported>
+pub rdlt::SchemaRules::policy: core::option::Option<rdlt::SchemaPolicy>
+impl rdlt::SchemaRules
+pub fn rdlt::SchemaRules::new() -> Self
+pub fn rdlt::SchemaRules::on_unsupported(self, rdlt::OnUnsupported) -> Self
+pub fn rdlt::SchemaRules::policy(self, rdlt::SchemaPolicy) -> Self
+impl core::clone::Clone for rdlt::SchemaRules
+pub fn rdlt::SchemaRules::clone(&self) -> rdlt::SchemaRules
+impl core::cmp::Eq for rdlt::SchemaRules
+impl core::cmp::PartialEq for rdlt::SchemaRules
+pub fn rdlt::SchemaRules::eq(&self, &rdlt::SchemaRules) -> bool
+impl core::default::Default for rdlt::SchemaRules
+pub fn rdlt::SchemaRules::default() -> rdlt::SchemaRules
+impl core::fmt::Debug for rdlt::SchemaRules
+pub fn rdlt::SchemaRules::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for rdlt::SchemaRules
+impl core::marker::StructuralPartialEq for rdlt::SchemaRules
+impl schemars::JsonSchema for rdlt::SchemaRules
+pub fn rdlt::SchemaRules::inline_schema() -> bool
+pub fn rdlt::SchemaRules::json_schema(&mut schemars::generate::SchemaGenerator) -> schemars::schema::Schema
+pub fn rdlt::SchemaRules::schema_id() -> alloc::borrow::Cow<'static, str>
+pub fn rdlt::SchemaRules::schema_name() -> alloc::borrow::Cow<'static, str>
+impl serde_core::ser::Serialize for rdlt::SchemaRules
+pub fn rdlt::SchemaRules::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for rdlt::SchemaRules
+pub fn rdlt::SchemaRules::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for rdlt::SchemaRules
+impl core::marker::Send for rdlt::SchemaRules
+impl core::marker::Sync for rdlt::SchemaRules
+impl core::marker::Unpin for rdlt::SchemaRules
+impl core::marker::UnsafeUnpin for rdlt::SchemaRules
+impl core::panic::unwind_safe::RefUnwindSafe for rdlt::SchemaRules
+impl core::panic::unwind_safe::UnwindSafe for rdlt::SchemaRules
+#[non_exhaustive] pub struct rdlt::Side
+pub rdlt::Side::access: rdlt::Access
+pub rdlt::Side::config: serde_json::value::Value
+pub rdlt::Side::connector: rdlt::Connector
+impl rdlt::Side
+pub fn rdlt::Side::access(self, rdlt::Access) -> Self
+pub fn rdlt::Side::config(self, serde_json::value::Value) -> Self
+pub fn rdlt::Side::new(rdlt::Connector) -> Self
+impl core::clone::Clone for rdlt::Side
+pub fn rdlt::Side::clone(&self) -> rdlt::Side
+impl core::cmp::PartialEq for rdlt::Side
+pub fn rdlt::Side::eq(&self, &rdlt::Side) -> bool
+impl core::fmt::Debug for rdlt::Side
+pub fn rdlt::Side::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for rdlt::Side
+impl schemars::JsonSchema for rdlt::Side
+pub fn rdlt::Side::inline_schema() -> bool
+pub fn rdlt::Side::json_schema(&mut schemars::generate::SchemaGenerator) -> schemars::schema::Schema
+pub fn rdlt::Side::schema_id() -> alloc::borrow::Cow<'static, str>
+pub fn rdlt::Side::schema_name() -> alloc::borrow::Cow<'static, str>
+impl serde_core::ser::Serialize for rdlt::Side
+pub fn rdlt::Side::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for rdlt::Side
+pub fn rdlt::Side::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for rdlt::Side
+impl core::marker::Send for rdlt::Side
+impl core::marker::Sync for rdlt::Side
+impl core::marker::Unpin for rdlt::Side
+impl core::marker::UnsafeUnpin for rdlt::Side
+impl core::panic::unwind_safe::RefUnwindSafe for rdlt::Side
+impl core::panic::unwind_safe::UnwindSafe for rdlt::Side
+#[non_exhaustive] pub struct rdlt::Stream
+pub rdlt::Stream::columns: alloc::collections::btree::map::BTreeMap<alloc::string::String, rdlt::Column>
+pub rdlt::Stream::deletes: core::option::Option<rdlt::DeleteMode>
+pub rdlt::Stream::exclude: alloc::vec::Vec<alloc::string::String>
+pub rdlt::Stream::included: alloc::vec::Vec<alloc::string::String>
+pub rdlt::Stream::name: alloc::string::String
+pub rdlt::Stream::nested: core::option::Option<rdlt::Nested>
+pub rdlt::Stream::on_retention_loss: core::option::Option<rdlt::RetentionLoss>
+pub rdlt::Stream::on_truncate: core::option::Option<rdlt::OnTruncate>
+pub rdlt::Stream::read: core::option::Option<rdlt::ReadMode>
+pub rdlt::Stream::schema: core::option::Option<rdlt::SchemaRules>
+pub rdlt::Stream::transform: alloc::vec::Vec<rdlt::TransformStep>
+pub rdlt::Stream::write: core::option::Option<rdlt::WriteMode>
+impl rdlt::Stream
+pub fn rdlt::Stream::column(self, impl core::convert::Into<alloc::string::String>, rdlt::Column) -> Self
+pub fn rdlt::Stream::deletes(self, rdlt::DeleteMode) -> Self
+pub fn rdlt::Stream::exclude(self, impl core::iter::traits::collect::IntoIterator<Item = impl core::convert::Into<alloc::string::String>>) -> Self
+pub fn rdlt::Stream::include_only(self, impl core::iter::traits::collect::IntoIterator<Item = impl core::convert::Into<alloc::string::String>>) -> Self
+pub fn rdlt::Stream::nested(self, rdlt::Nested) -> Self
+pub fn rdlt::Stream::new(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn rdlt::Stream::on_retention_loss(self, rdlt::RetentionLoss) -> Self
+pub fn rdlt::Stream::on_truncate(self, rdlt::OnTruncate) -> Self
+pub fn rdlt::Stream::read(self, rdlt::ReadMode) -> Self
+pub fn rdlt::Stream::schema(self, rdlt::SchemaRules) -> Self
+pub fn rdlt::Stream::transform(self, rdlt::TransformStep) -> Self
+pub fn rdlt::Stream::write(self, rdlt::WriteMode) -> Self
+impl core::clone::Clone for rdlt::Stream
+pub fn rdlt::Stream::clone(&self) -> rdlt::Stream
+impl core::cmp::PartialEq for rdlt::Stream
+pub fn rdlt::Stream::eq(&self, &rdlt::Stream) -> bool
+impl core::fmt::Debug for rdlt::Stream
+pub fn rdlt::Stream::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for rdlt::Stream
+impl schemars::JsonSchema for rdlt::Stream
+pub fn rdlt::Stream::inline_schema() -> bool
+pub fn rdlt::Stream::json_schema(&mut schemars::generate::SchemaGenerator) -> schemars::schema::Schema
+pub fn rdlt::Stream::schema_id() -> alloc::borrow::Cow<'static, str>
+pub fn rdlt::Stream::schema_name() -> alloc::borrow::Cow<'static, str>
+impl serde_core::ser::Serialize for rdlt::Stream
+pub fn rdlt::Stream::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for rdlt::Stream
+pub fn rdlt::Stream::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for rdlt::Stream
+impl core::marker::Send for rdlt::Stream
+impl core::marker::Sync for rdlt::Stream
+impl core::marker::Unpin for rdlt::Stream
+impl core::marker::UnsafeUnpin for rdlt::Stream
+impl core::panic::unwind_safe::RefUnwindSafe for rdlt::Stream
+impl core::panic::unwind_safe::UnwindSafe for rdlt::Stream
+pub struct rdlt::Tls
+impl rdlt::Tls
+pub fn rdlt::Tls::from_files(impl core::convert::Into<std::path::PathBuf>, impl core::convert::Into<std::path::PathBuf>, impl core::convert::Into<std::path::PathBuf>) -> core::result::Result<Self, rdlt::Error>
+impl core::clone::Clone for rdlt::Tls
+pub fn rdlt::Tls::clone(&self) -> rdlt::Tls
+impl core::cmp::Eq for rdlt::Tls
+impl core::cmp::PartialEq for rdlt::Tls
+pub fn rdlt::Tls::eq(&self, &rdlt::Tls) -> bool
+impl core::fmt::Debug for rdlt::Tls
+pub fn rdlt::Tls::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for rdlt::Tls
+impl core::marker::Freeze for rdlt::Tls
+impl core::marker::Send for rdlt::Tls
+impl core::marker::Sync for rdlt::Tls
+impl core::marker::Unpin for rdlt::Tls
+impl core::marker::UnsafeUnpin for rdlt::Tls
+impl core::panic::unwind_safe::RefUnwindSafe for rdlt::Tls
+impl core::panic::unwind_safe::UnwindSafe for rdlt::Tls

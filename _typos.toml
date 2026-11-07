@@ -1,6 +1,7 @@
 [files]
-# proptest's saved cases, whose comments hold drawn text.
-extend-exclude = ["target/", "proptest-regressions/"]
+# proptest's saved cases, whose comments hold drawn text, and the facade's public API, as
+# rustdoc names its dependencies' paths.
+extend-exclude = ["target/", "proptest-regressions/", "crates/rdlt/public-api.txt"]
 
 [default.extend-identifiers]
 # The open flag O_WRONLY, as rustix names it.

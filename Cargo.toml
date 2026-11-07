@@ -24,6 +24,7 @@ rdlt-testkit = { path = "crates/rdlt-testkit" }                                 
 rdlt-wire = { path = "crates/rdlt-wire", version = "0.0.0" }                               # the wire protocol: messages, the Arrow codec and limits
 
 # Libraries
+arrow = { version = "59.3", default-features = false } # the facade's re-export of Arrow, so its users never chase the version
 arrow-array = { version = "59.2", features = [
   "chrono-tz",
 ] } # record batches, with named time zones; one arrow major across the workspace, matching DataFusion
@@ -172,6 +173,8 @@ proptest = "1.11.0" # property tests
 rcgen = "0.14.10" # a certificate authority made at test time, for the protocol's TLS
 tonic-prost-build = "0.14.6" # xtask generates the wire protocol's messages and service stubs
 protox = "0.9.1" # xtask compiles the wire protocol's .proto files without protoc
+public-api = "0.52.2" # xtask lists the facade's public API, from rustdoc's JSON, against its snapshot
+rustdoc-json = "0.9.10" # xtask builds the facade's rustdoc JSON for its public-API snapshot
 rusqlite = { version = "0.40.2", default-features = false, features = [
   "bundled",
   "cache",
