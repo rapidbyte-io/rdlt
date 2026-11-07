@@ -78,10 +78,11 @@ a run reports and tells must show what it did without changing what it does.
   pending counts, so rows whose barrier went unanswered make the next commit due as soon as they
   seal, even with a rows-only policy.
 - **End of partition.** A partition that reads to its end seals with its last cursor, so an
-  incremental read resumes past it next run. Rows after the last checkpoint have no cursor that
-  resumes past them, so committing them marks the partition `Done`. A partition that read nothing
-  and never checkpointed records no position, so a stream that starts empty still loads rows added
-  later. Marking it `Done` always would stop incremental streams from ever growing.
+  incremental read resumes past it next run. Rows after the last checkpoint, written, filtered
+  out or ignored, have no cursor that resumes past them, so committing them marks the partition
+  `Done`. A partition that read nothing and never checkpointed records no position, so a stream
+  that starts empty still loads rows added later. Marking it `Done` always would stop incremental
+  streams from ever growing.
 - **Full reads are cycles.** A `full` read records its generation when it first commits and
   deletes the previous cycle's partition entries; its last commit records it as `completed`. Each
   run remembers the cycle it started or resumed per stream, and state keeps the stream's sixteen

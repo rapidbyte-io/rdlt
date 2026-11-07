@@ -229,16 +229,17 @@ async fn read_and_ingest(
 
 /// Where a partition that read to its end resumes, if anywhere new.
 ///
-/// Rows received after the last checkpoint have no cursor that resumes past them, so committing
-/// them marks the partition `Done`, whether they were written or its policy discarded them all,
-/// and the seal carries the discards. Otherwise the partition resumes from its last cursor, so an
-/// incremental read picks up rows the source adds later. A partition that read nothing and never
-/// checkpointed records no position, so its next read starts from the beginning again.
+/// Rows read after the last checkpoint have no cursor that resumes past them, so committing them
+/// marks the partition `Done`, whether they were written, its policy discarded them all, its
+/// filters dropped them or it ignores them, and the seal carries what was done to them.
+/// Otherwise the partition resumes from its last cursor, so an incremental read picks up rows the
+/// source adds later. A partition that read nothing and never checkpointed records no position,
+/// so its next read starts from the beginning again.
 ///
 /// An unbounded partition is never done: rows it pushed after its last checkpoint are not
 /// sealed, so its next read, from that checkpoint, reads them again.
 fn end_state(ingested: &Ingested, unbounded: bool) -> Option<PartitionState> {
-    match (&ingested.last_cursor, ingested.open.received) {
+    match (&ingested.last_cursor, ingested.open.read()) {
         (Some(cursor), 0) => Some(PartitionState::Cursor(cursor.clone())),
         (None, 0) => None,
         _ if unbounded => None,
@@ -287,6 +288,15 @@ impl OpenSegment {
             id,
             ..Self::default()
         }
+    }
+
+    /// Rows read into the segment: those received, and those the stream's filters dropped or
+    /// it ignores before they are.
+    fn read(&self) -> u64 {
+        self.received
+            .saturating_add(self.filtered.dropped)
+            .saturating_add(self.deletes_ignored)
+            .saturating_add(self.truncates_ignored)
     }
 
     fn seal(
