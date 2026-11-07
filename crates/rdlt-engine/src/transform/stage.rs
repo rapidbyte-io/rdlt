@@ -19,7 +19,7 @@ use rdlt_connector::cost::arrays;
 use rdlt_connector::{ColumnPath, OP_COLUMN, ReadMode, SEQ_COLUMN, UNCHANGED_COLUMN};
 
 use self::changes::{ChangePlaces, Changes};
-use self::contract::{Declared, applied, carried, declares, kept, passed};
+use self::contract::{Declared, applied, carried, declares, kept, passed, rejoined};
 use self::decoding::Encoded;
 pub(crate) use self::refused::{Breach, Refusal, refused};
 use super::{Transform, TransformStep, allocated_beyond};
@@ -47,6 +47,9 @@ pub(crate) struct Stage {
     /// The top-level columns every transform passes on as they arrive: the stream's key and
     /// change time.
     kept: BTreeSet<String>,
+    /// The stream's key columns that are top-level columns: a struct holding a nested key column
+    /// holds other fields beside it.
+    key: BTreeSet<String>,
     rule: FilterRule,
     /// Whether the stream's batches carry change columns.
     changes: bool,
@@ -107,6 +110,8 @@ impl Stage {
         }
         let root = |column: &ColumnPath| column.segments().next().map(str::to_owned);
         let kept: BTreeSet<String> = key.iter().chain(change_time).filter_map(root).collect();
+        let top_level = |column: &&ColumnPath| column.segments().nth(1).is_none();
+        let key: BTreeSet<String> = key.iter().filter(top_level).filter_map(root).collect();
         let included = plan.included().map(|columns| {
             let listed = columns.iter().filter_map(root);
             listed.chain(kept.iter().cloned()).collect()
@@ -120,6 +125,7 @@ impl Stage {
             steps: plan.transforms().into(),
             included,
             kept,
+            key,
             rule,
             changes: plan.read_mode() == ReadMode::Cdc,
         })
@@ -182,7 +188,7 @@ impl Stage {
                     transform: transform.name().to_owned(),
                     error,
                 })?;
-            declared.push(declares(transform, &current, &output)?);
+            declared.push(declares(transform, &current, &output, &self.key)?);
             passed(transform, &current, &output, &guarded)?;
             schemas.push(output);
         }
@@ -318,6 +324,9 @@ impl Stage {
             }
             if transform.filters() {
                 let keep = kept(transform, bounded, &data)?;
+                if let (FilterRule::Delete, Some(changes)) = (self.rule, &changes) {
+                    rejoined(transform, declared, changes, &keep)?;
+                }
                 (data, changes) = self.filtered(data, changes, &keep, &mut done)?;
             }
             let output = applied(transform, declared, &data, schema)?;

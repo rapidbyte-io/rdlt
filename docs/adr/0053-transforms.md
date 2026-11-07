@@ -73,6 +73,15 @@ determinism under simulation whatever the configuration says.
     row. A filter may declare the columns `keep` reads; a batch whose updates flag one of them,
     or any column where the filter declares none, is refused, `transform_partial`. A filter on a
     key passes updates that leave other columns unchanged.
+  - On a stream whose table keeps rows by key, merge or history, a filter reading a column
+    beyond the key can flip its answer for a row: a row it turned into a delete can come back
+    through a partial update, and its unchanged columns then have no current stored value, as a
+    hard delete removed the row and a soft one kept values from before it left. Such a filter,
+    or one declaring no columns, refuses an insert or update it keeps that flags columns,
+    `transform_partial`; one it does not keep still becomes a delete. A filter reading only the
+    key's top-level columns never flips, so it passes them; a struct holding a nested key column
+    holds other fields too, so a filter reading it is beyond the key. A change log keeps what it
+    is sent, so its filters follow the rule above.
   - An op naming a column a declared schema lacks is refused when the attempt starts,
     `transform_schema`. A batch lacking it is passed by, as a JSON stream's drift may.
 - **Encoded columns.** A dictionary's or a run-end encoding's rows, decoded, are not linear in
@@ -230,7 +239,8 @@ determinism under simulation whatever the configuration says.
   does, so fewer of them lower at once than flushes of streams that do not transform. A JSON
   flush of a stream that only includes columns holds as much while it is built.
 - An embedder's transform must declare its lineage to take partial updates, and a filter the
-  columns it reads.
+  columns it reads. A stream merged by key whose source sends partial updates, such as Postgres
+  with TOASTed columns, filters on its key, or has the source send whole rows.
 - DataFusion's crates build more than runs. `datafusion-functions` builds its execution crate
   and an object store's local files; `datafusion-sql` builds the nested and aggregate function
   crates, and the default function features through them, with `base64`, `hex` and `uuid`; and

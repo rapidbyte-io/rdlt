@@ -250,7 +250,9 @@ they arrive.
 - **Partial updates** pass a transform that declares its lineage, as ops and SQL do: a column
   computed only from unchanged columns stays unchanged, and one computed from an unchanged and
   a changed column is refused. A filter takes them where it declares the columns it reads and
-  the update sent each of them.
+  the update sent each of them. On a stream merged by key, a filter reading beyond the key could
+  bring back a row it deleted without its unsent values, so it refuses a partial update it
+  keeps: filter such a stream on its key, or have the source send whole rows.
 
 The memory budget holds a transform to its declared bound before it runs, and measures code's
 output after (ADR 0053).

@@ -224,6 +224,18 @@ impl Changes {
         })
     }
 
+    /// Whether `keep` keeps an insert or update that flags a column unchanged.
+    pub(super) fn keeps_flagged(&self, keep: &BooleanArray) -> bool {
+        let Some(flags) = &self.flags else {
+            return false;
+        };
+        let rows = flags.iter().zip(self.op.values()).zip(keep.values().iter());
+        let mut kept = rows.filter(|((_, op), kept)| *kept && upsert(**op));
+        kept.any(|((bitmap, _), _)| {
+            bitmap.is_some_and(|bitmap| bitmap.iter().any(|byte| *byte != 0))
+        })
+    }
+
     /// The change columns with each insert or update `keep` does not keep turned into a delete
     /// of its key, and how many were.
     pub(super) fn deleting(self, keep: &BooleanArray) -> (Self, u64) {
