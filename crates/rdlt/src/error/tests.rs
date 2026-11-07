@@ -1,9 +1,171 @@
 use std::error::Error as _;
+use std::fmt;
 
-use rdlt_connector::{PipelineId, ReadMode, StreamName};
-use rdlt_engine::{EngineConfig, ErrorKind, PipelinePlan, StreamPlan, WriteMode};
+use rdlt_connector::StreamName;
+use rdlt_connector::limits::MAX_ERROR_CAUSES;
+use rdlt_connector::{ConnectorError, ConnectorErrorKind, ConnectorId, PipelineId, ReadMode, Role};
+use rdlt_engine::{Code, EngineConfig, ErrorKind, Origin, PipelinePlan, StreamPlan, WriteMode};
+use rdlt_host::ProviderError;
 
 use super::Error;
+use crate::codes;
+
+fn id() -> ConnectorId {
+    ConnectorId::parse("io.example.missing").unwrap()
+}
+
+#[test]
+fn a_missing_connector_is_a_config_error_of_its_side_coded_as_the_host_codes_it() {
+    let missing = ProviderError::NotFound {
+        id: id(),
+        source: None,
+    };
+    let error = Error::placement(Role::Source, missing);
+    assert_eq!(error.kind(), ErrorKind::Config);
+    assert_eq!(error.origin(), Origin::Source);
+    assert_eq!(error.code(), Some(Code::new("connector_not_found")));
+    let report = error.report();
+    assert_eq!(
+        (report.kind, report.code),
+        (ErrorKind::Config, error.code())
+    );
+    assert_eq!(report.origin, Origin::Source);
+    assert!(
+        report.message.starts_with("placing the source: "),
+        "{}",
+        report.message
+    );
+}
+
+/// Checks `error`, placing the connector of `role`, is of `kind` and `origin`, coded as the host
+/// codes it, and keeps the host's error as its cause.
+fn placed(role: Role, error: ProviderError, expected: (ErrorKind, Origin)) {
+    let code = Code::new(error.code());
+    let placing = Error::placement(role, error);
+    assert_eq!((placing.kind(), placing.origin()), expected, "{placing:?}");
+    assert_eq!(placing.code(), Some(code));
+    assert!(
+        placing.source().is_some(),
+        "the host's error is kept as the cause"
+    );
+    assert!(!placing.is_retryable());
+    assert_eq!(placing.connector_code(), None);
+}
+
+#[test]
+fn a_connector_that_cannot_start_or_be_reached_fails_its_side() {
+    let unstarted = || ProviderError::SpawnFailed {
+        id: id(),
+        path: "/opt/rdlt/bin/rdlt-connector-missing".into(),
+        source: std::io::Error::other("exec format error"),
+    };
+    let unreachable = ProviderError::Unreachable {
+        id: id(),
+        endpoint: "db.example:7443".to_owned(),
+        source: std::io::Error::other("connection refused"),
+    };
+    let untrusted = ProviderError::Tls {
+        id: id(),
+        endpoint: "db.example:7443".to_owned(),
+        source: Box::new(std::io::Error::other("unknown issuer")),
+    };
+    let source = (ErrorKind::Source, Origin::Source);
+    let destination = (ErrorKind::Destination, Origin::Destination);
+    placed(Role::Destination, unstarted(), destination);
+    placed(Role::Source, unstarted(), source);
+    placed(Role::Source, unreachable, source);
+    placed(Role::Destination, untrusted, destination);
+    let broken = ConnectorError::internal("broke");
+    let handshake = ProviderError::HandshakeFailed {
+        id: id(),
+        source: Box::new(broken),
+    };
+    placed(Role::Destination, handshake, destination);
+}
+
+#[test]
+fn a_connector_refusing_its_config_and_a_placement_the_host_refuses_are_config() {
+    let handshake = |error: ConnectorError| ProviderError::HandshakeFailed {
+        id: id(),
+        source: Box::new(error),
+    };
+    let unsupported = ConnectorError::new(ConnectorErrorKind::Unsupported, "no merge");
+    let denied = ConnectorError::new(ConnectorErrorKind::Auth, "denied");
+    let refused = ProviderError::Refused {
+        id: id(),
+        placement: "remote",
+    };
+    let config = |origin| (ErrorKind::Config, origin);
+    let configured = handshake(ConnectorError::config("no such table"));
+    placed(Role::Source, configured, config(Origin::Source));
+    placed(Role::Source, handshake(unsupported), config(Origin::Source));
+    placed(
+        Role::Destination,
+        handshake(denied),
+        config(Origin::Destination),
+    );
+    placed(Role::Destination, refused, config(Origin::Destination));
+}
+
+#[test]
+fn a_facade_error_reports_its_code_message_and_cause() {
+    let error = Error::config_caused(
+        codes::REFERENCE_INVALID,
+        "the source connector's id is not one",
+        std::io::Error::other("the cause"),
+    );
+    assert_eq!(error.kind(), ErrorKind::Config);
+    assert_eq!(error.origin(), Origin::Engine);
+    assert_eq!(error.code(), Some(codes::REFERENCE_INVALID));
+    assert_eq!(error.to_string(), "the source connector's id is not one");
+    assert_eq!(error.stream(), None);
+    let report = error.report();
+    assert_eq!(report.causes, ["the cause"]);
+    assert_eq!(report.stream, None);
+    assert_eq!(report.message, "the source connector's id is not one");
+    assert!(!report.retryable);
+    let debug = format!("{error:?}");
+    for part in ["Config", "Engine", "reference_invalid", "is not one"] {
+        assert!(debug.contains(part), "{debug}");
+    }
+}
+
+/// An error whose chain of causes is `depth` long.
+#[derive(Debug)]
+struct Chain {
+    depth: usize,
+    next: Option<Box<Chain>>,
+}
+
+impl Chain {
+    fn of(depth: usize) -> Self {
+        let next = (depth > 1).then(|| Box::new(Self::of(depth - 1)));
+        Self { depth, next }
+    }
+}
+
+impl fmt::Display for Chain {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "cause {}", self.depth)
+    }
+}
+
+impl std::error::Error for Chain {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.next
+            .as_deref()
+            .map(|next| next as &(dyn std::error::Error + 'static))
+    }
+}
+
+#[test]
+fn a_report_holds_at_most_the_causes_a_report_may() {
+    let error = Error::config_caused(codes::DOCUMENT_INVALID, "deep", Chain::of(20));
+    let causes = error.report().causes;
+    assert_eq!(causes.len(), MAX_ERROR_CAUSES);
+    assert_eq!(causes.first().map(String::as_str), Some("cause 20"));
+    assert_eq!(causes.last().map(String::as_str), Some("cause 13"));
+}
 
 #[test]
 fn an_engine_error_reports_as_the_engine_reports_it() {

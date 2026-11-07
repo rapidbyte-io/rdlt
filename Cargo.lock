@@ -3184,11 +3184,17 @@ version = "0.0.0"
 dependencies = [
  "proptest",
  "rdlt-connector",
+ "rdlt-connector-reference",
  "rdlt-engine",
+ "rdlt-host",
+ "rdlt-testkit",
  "schemars",
+ "semver",
  "serde",
  "serde_json",
  "serde_path_to_error",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
